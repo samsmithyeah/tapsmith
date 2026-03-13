@@ -16,7 +16,7 @@ import { PilotGrpcClient } from './grpc-client.js';
 import { Device } from './device.js';
 import { runTestFile, collectResults, type TestResult } from './runner.js';
 import { glob } from 'glob';
-import { spawn } from 'node:child_process';
+import { spawn, execSync } from 'node:child_process';
 
 // ─── ANSI helpers ───
 
@@ -59,6 +59,49 @@ function getVersion(): string {
   }
 }
 
+// ─── TSX re-exec ───
+
+/**
+ * If test files are TypeScript and we're not already running under tsx,
+ * re-exec the CLI using tsx as the loader. This allows `import from "pilot"`
+ * and TypeScript syntax in test files.
+ */
+function needsTsx(testFiles: string[]): boolean {
+  return testFiles.some((f) => f.endsWith('.ts') || f.endsWith('.tsx'));
+}
+
+function reExecWithTsx(args: string[]): never {
+  // Find tsx binary — first check local node_modules, then global
+  const pilotPkgDir = path.resolve(__dirname, '..');
+  const localTsx = path.join(pilotPkgDir, 'node_modules', '.bin', 'tsx');
+  const tsxBin = fs.existsSync(localTsx) ? localTsx : 'tsx';
+
+  const cliPath = process.argv[1];
+  const result = spawn(tsxBin, [cliPath, ...args, '--__tsx-reexec'], {
+    stdio: 'inherit',
+    env: {
+      ...process.env,
+      // Tell Node to resolve "pilot" to our package
+      NODE_PATH: path.join(pilotPkgDir, '..'),
+    },
+  });
+
+  result.on('close', (code) => {
+    process.exit(code ?? 1);
+  });
+
+  // Keep alive until child exits
+  result.on('error', (err) => {
+    console.error(red(`Failed to start tsx: ${err.message}`));
+    console.error(dim('Install tsx: npm install -g tsx'));
+    process.exit(1);
+  });
+
+  // Prevent the current process from continuing
+  // This is a "never" return since we rely on the child process
+  return undefined as never;
+}
+
 // ─── Daemon management ───
 
 async function ensureDaemonRunning(address: string): Promise<PilotGrpcClient> {
@@ -80,7 +123,7 @@ async function ensureDaemonRunning(address: string): Promise<PilotGrpcClient> {
   console.log(dim('Starting Pilot daemon...'));
   client.close();
 
-  const daemonBin = process.env.PILOT_DAEMON_BIN ?? 'pilot-daemon';
+  const daemonBin = process.env.PILOT_DAEMON_BIN ?? 'pilot-core';
   const child = spawn(daemonBin, ['--address', address], {
     detached: true,
     stdio: 'ignore',
@@ -91,7 +134,7 @@ async function ensureDaemonRunning(address: string): Promise<PilotGrpcClient> {
   const newClient = new PilotGrpcClient(address);
   const started = await newClient.waitForReady(10_000);
   if (!started) {
-    console.error(red('Failed to start Pilot daemon. Is pilot-daemon installed?'));
+    console.error(red('Failed to start Pilot daemon. Is pilot-core installed?'));
     process.exit(1);
   }
 
@@ -183,6 +226,7 @@ interface CliArgs {
   device?: string;
   version: boolean;
   help: boolean;
+  tsxReexec: boolean;
 }
 
 function parseArgs(argv: string[]): CliArgs {
@@ -191,6 +235,7 @@ function parseArgs(argv: string[]): CliArgs {
     files: [],
     version: false,
     help: false,
+    tsxReexec: false,
   };
 
   const rest = argv.slice(2);
@@ -205,6 +250,8 @@ function parseArgs(argv: string[]): CliArgs {
       args.help = true;
     } else if (arg === '--device' || arg === '-d') {
       args.device = rest[++i];
+    } else if (arg === '--__tsx-reexec') {
+      args.tsxReexec = true;
     } else if (!arg.startsWith('-') && !args.command) {
       args.command = arg;
     } else if (!arg.startsWith('-')) {
@@ -268,6 +315,13 @@ async function main(): Promise<void> {
     process.exit(1);
   }
 
+  // Re-exec under tsx if we have TypeScript test files and haven't already
+  if (needsTsx(testFiles) && !args.tsxReexec) {
+    const forwardArgs = process.argv.slice(2).filter((a) => a !== '--__tsx-reexec');
+    reExecWithTsx(forwardArgs);
+    return;
+  }
+
   console.log(cyan(`Found ${testFiles.length} test file(s)`));
   console.log('');
 
@@ -283,6 +337,17 @@ async function main(): Promise<void> {
     } catch (err) {
       console.error(red(`Failed to set device: ${err}`));
       process.exit(1);
+    }
+  }
+
+  // Connect to agent if APK is specified
+  if (config.apk) {
+    try {
+      // Extract package name from APK path or use a default
+      await device.startAgent('');
+      console.log(dim('Agent connected.'));
+    } catch {
+      // Agent connection is best-effort at this stage
     }
   }
 

@@ -264,12 +264,17 @@ class CommandHandler(
     }
 
     private fun captureScreenshot(quality: Int): String {
-        val bitmap = device.takeScreenshot()
-            ?: throw ActionFailedException("Failed to capture screenshot")
-        val stream = ByteArrayOutputStream()
-        bitmap.compress(Bitmap.CompressFormat.PNG, quality, stream)
-        bitmap.recycle()
-        return Base64.encodeToString(stream.toByteArray(), Base64.NO_WRAP)
+        val tmpFile = java.io.File.createTempFile("pilot_screenshot", ".png")
+        try {
+            val success = device.takeScreenshot(tmpFile, quality.toFloat() / 100f, quality)
+            if (!success) {
+                throw ActionFailedException("Failed to capture screenshot")
+            }
+            val bytes = tmpFile.readBytes()
+            return Base64.encodeToString(bytes, Base64.NO_WRAP)
+        } finally {
+            tmpFile.delete()
+        }
     }
 
     private fun successResponse(id: String?, result: JSONObject): String {

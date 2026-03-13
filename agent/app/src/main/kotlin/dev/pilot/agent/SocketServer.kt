@@ -8,6 +8,7 @@ import java.io.PrintWriter
 import java.net.ServerSocket
 import java.net.Socket
 import java.net.SocketException
+import java.util.concurrent.Executors
 
 /**
  * TCP socket server that listens for JSON commands from the host daemon.
@@ -15,6 +16,10 @@ import java.net.SocketException
  * Protocol: newline-delimited JSON. Each line is a complete JSON object.
  * Request:  {"id": "uuid", "method": "methodName", "params": {...}}
  * Response: {"id": "uuid", "result": {...}} or {"id": "uuid", "error": {...}}
+ *
+ * Commands are dispatched to the CommandHandler which runs UIAutomator2
+ * operations. Each client connection is handled on a dedicated thread from
+ * a fixed thread pool to ensure UIAutomator calls have the right context.
  */
 class SocketServer(
     private val port: Int,
@@ -24,7 +29,7 @@ class SocketServer(
         private const val TAG = "PilotSocket"
     }
 
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val executor = Executors.newFixedThreadPool(2)
     private var serverSocket: ServerSocket? = null
 
     @Volatile
@@ -32,25 +37,29 @@ class SocketServer(
 
     suspend fun start() {
         running = true
-        try {
-            serverSocket = ServerSocket(port)
-            Log.i(TAG, "Listening on port $port")
+        withContext(Dispatchers.IO) {
+            try {
+                serverSocket = ServerSocket(port)
+                Log.i(TAG, "Listening on port $port")
 
-            while (running) {
-                val client = try {
-                    serverSocket?.accept()
-                } catch (e: SocketException) {
-                    if (running) Log.e(TAG, "Accept failed", e)
-                    break
-                } ?: break
+                while (running) {
+                    val client = try {
+                        serverSocket?.accept()
+                    } catch (e: SocketException) {
+                        if (running) Log.e(TAG, "Accept failed", e)
+                        break
+                    } ?: break
 
-                Log.i(TAG, "Client connected: ${client.remoteSocketAddress}")
-                scope.launch { handleClient(client) }
+                    Log.i(TAG, "Client connected: ${client.remoteSocketAddress}")
+                    // Handle each client on a worker thread so UIAutomator
+                    // operations run with the correct thread context
+                    executor.submit { handleClient(client) }
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "Server error", e)
+            } finally {
+                Log.i(TAG, "Server stopped")
             }
-        } catch (e: Exception) {
-            Log.e(TAG, "Server error", e)
-        } finally {
-            Log.i(TAG, "Server stopped")
         }
     }
 
@@ -59,10 +68,10 @@ class SocketServer(
         try {
             serverSocket?.close()
         } catch (_: Exception) {}
-        scope.cancel()
+        executor.shutdownNow()
     }
 
-    private suspend fun handleClient(socket: Socket) {
+    private fun handleClient(socket: Socket) {
         try {
             socket.use { s ->
                 s.tcpNoDelay = true
@@ -84,12 +93,16 @@ class SocketServer(
 
                     if (line.isBlank()) continue
 
+                    Log.d(TAG, "Received: $line")
+
                     val response = try {
                         commandHandler.handle(line)
                     } catch (e: Exception) {
                         Log.e(TAG, "Unhandled error processing command", e)
                         """{"id":null,"error":{"type":"INTERNAL_ERROR","message":"${e.message?.replace("\"", "\\\"") ?: "Unknown error"}"}}"""
                     }
+
+                    Log.d(TAG, "Responding: $response")
 
                     try {
                         writer.println(response)

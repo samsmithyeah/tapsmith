@@ -3,11 +3,13 @@ package dev.pilot.agent
 import android.app.Instrumentation
 import android.os.Bundle
 import android.util.Log
+import androidx.test.platform.app.InstrumentationRegistry
 import androidx.test.uiautomator.UiDevice
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
 
 /**
  * Entry point for the Pilot on-device agent.
@@ -28,13 +30,13 @@ class PilotAgent : Instrumentation() {
             private set
     }
 
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private var socketServer: SocketServer? = null
 
     override fun onCreate(arguments: Bundle?) {
         super.onCreate(arguments)
         Log.i(TAG, "PilotAgent starting")
 
+        // Initialize UiDevice — must pass the Instrumentation instance
         device = UiDevice.getInstance(this)
 
         val port = arguments?.getString(ARG_PORT)?.toIntOrNull() ?: DEFAULT_PORT
@@ -53,10 +55,6 @@ class PilotAgent : Instrumentation() {
 
         socketServer = SocketServer(port, commandHandler)
 
-        scope.launch {
-            socketServer?.start()
-        }
-
         Log.i(TAG, "PilotAgent started on port $port")
 
         // Keep instrumentation alive — do not call finish().
@@ -65,10 +63,11 @@ class PilotAgent : Instrumentation() {
 
     override fun onStart() {
         super.onStart()
-        // Block the instrumentation thread to keep the process alive.
-        synchronized(this) {
-            @Suppress("PLATFORM_CLASS_MAPPED_TO_KOTLIN")
-            (this as java.lang.Object).wait()
+        // Run the socket server on this thread (the instrumentation thread).
+        // UIAutomator2 requires calls from a thread with proper context,
+        // and the instrumentation thread provides that.
+        runBlocking {
+            socketServer?.start()
         }
     }
 

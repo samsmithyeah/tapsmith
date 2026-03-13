@@ -13,7 +13,6 @@ agent/.gradle/
 agent/build/
 agent/app/build/
 agent/local.properties
-agent/gradle/
 
 # IDE
 .idea/
