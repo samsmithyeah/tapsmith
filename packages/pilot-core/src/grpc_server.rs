@@ -76,7 +76,12 @@ impl PilotServiceImpl {
     }
 
     async fn error_screenshot(&self) -> Vec<u8> {
-        let serial = self.device_manager.read().await.active_serial().map(String::from);
+        let serial = self
+            .device_manager
+            .read()
+            .await
+            .active_serial()
+            .map(String::from);
         screenshot::capture_for_error(serial.as_deref()).await
     }
 
@@ -164,7 +169,11 @@ pub(crate) fn selector_to_json(selector: &proto::Selector) -> Value {
 }
 
 pub(crate) fn opt_timeout(ms: u64) -> Option<u64> {
-    if ms > 0 { Some(ms) } else { None }
+    if ms > 0 {
+        Some(ms)
+    } else {
+        None
+    }
 }
 
 #[tonic::async_trait]
@@ -205,7 +214,9 @@ impl proto::pilot_service_server::PilotService for PilotServiceImpl {
                 request_id,
                 found: false,
                 element: None,
-                error_message: resp.error.unwrap_or_else(|| "Element not found".to_string()),
+                error_message: resp
+                    .error
+                    .unwrap_or_else(|| "Element not found".to_string()),
             })),
             Err(status) => Ok(Response::new(proto::FindElementResponse {
                 request_id,
@@ -384,9 +395,7 @@ impl proto::pilot_service_server::PilotService for PilotServiceImpl {
             .await;
 
         if let Err(e) = &clear_result {
-            return self
-                .make_action_response(request_id, Err(e.clone()))
-                .await;
+            return self.make_action_response(request_id, Err(e.clone())).await;
         }
 
         if let Ok(ref resp) = clear_result {
@@ -420,7 +429,11 @@ impl proto::pilot_service_server::PilotService for PilotServiceImpl {
         let command = AgentCommand::Swipe {
             direction: req.direction,
             start_element,
-            speed: if req.speed > 0.0 { Some(req.speed) } else { None },
+            speed: if req.speed > 0.0 {
+                Some(req.speed)
+            } else {
+                None
+            },
             distance: if req.distance > 0.0 {
                 Some(req.distance)
             } else {
@@ -855,7 +868,9 @@ mod tests {
     #[test]
     fn selector_to_json_class_name() {
         let sel = proto::Selector {
-            selector: Some(proto::selector::Selector::ClassName("android.widget.Button".into())),
+            selector: Some(proto::selector::Selector::ClassName(
+                "android.widget.Button".into(),
+            )),
             parent: None,
         };
         let j = selector_to_json(&sel);
@@ -875,7 +890,9 @@ mod tests {
     #[test]
     fn selector_to_json_resource_id() {
         let sel = proto::Selector {
-            selector: Some(proto::selector::Selector::ResourceId("com.app:id/btn".into())),
+            selector: Some(proto::selector::Selector::ResourceId(
+                "com.app:id/btn".into(),
+            )),
             parent: None,
         };
         let j = selector_to_json(&sel);
@@ -885,7 +902,9 @@ mod tests {
     #[test]
     fn selector_to_json_xpath() {
         let sel = proto::Selector {
-            selector: Some(proto::selector::Selector::Xpath("//button[@text='OK']".into())),
+            selector: Some(proto::selector::Selector::Xpath(
+                "//button[@text='OK']".into(),
+            )),
             parent: None,
         };
         let j = selector_to_json(&sel);
@@ -895,7 +914,9 @@ mod tests {
     #[test]
     fn selector_to_json_with_parent() {
         let parent = proto::Selector {
-            selector: Some(proto::selector::Selector::ResourceId("com.app:id/toolbar".into())),
+            selector: Some(proto::selector::Selector::ResourceId(
+                "com.app:id/toolbar".into(),
+            )),
             parent: None,
         };
         let sel = proto::Selector {

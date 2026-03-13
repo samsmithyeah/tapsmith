@@ -79,68 +79,126 @@ impl AgentCommand {
     /// Serialize into the JSON protocol format: {"id": "...", "method": "...", "params": {...}}
     pub(crate) fn to_json(&self, id: &str) -> Value {
         let (method, params) = match self {
-            AgentCommand::FindElement { selector, timeout_ms } => {
+            AgentCommand::FindElement {
+                selector,
+                timeout_ms,
+            } => {
                 let mut p = selector.clone();
-                if let Some(t) = timeout_ms { p["timeout"] = json!(t); }
+                if let Some(t) = timeout_ms {
+                    p["timeout"] = json!(t);
+                }
                 ("findElement", p)
             }
-            AgentCommand::FindElements { selector, timeout_ms } => {
+            AgentCommand::FindElements {
+                selector,
+                timeout_ms,
+            } => {
                 let mut p = selector.clone();
-                if let Some(t) = timeout_ms { p["timeout"] = json!(t); }
+                if let Some(t) = timeout_ms {
+                    p["timeout"] = json!(t);
+                }
                 ("findElements", p)
             }
-            AgentCommand::Tap { selector, timeout_ms } => {
+            AgentCommand::Tap {
+                selector,
+                timeout_ms,
+            } => {
                 let mut p = selector.clone();
-                if let Some(t) = timeout_ms { p["timeout"] = json!(t); }
+                if let Some(t) = timeout_ms {
+                    p["timeout"] = json!(t);
+                }
                 ("tap", p)
             }
-            AgentCommand::LongPress { selector, duration_ms, timeout_ms } => {
+            AgentCommand::LongPress {
+                selector,
+                duration_ms,
+                timeout_ms,
+            } => {
                 let mut p = selector.clone();
-                if let Some(d) = duration_ms { p["duration"] = json!(d); }
-                if let Some(t) = timeout_ms { p["timeout"] = json!(t); }
+                if let Some(d) = duration_ms {
+                    p["duration"] = json!(d);
+                }
+                if let Some(t) = timeout_ms {
+                    p["timeout"] = json!(t);
+                }
                 ("longPress", p)
             }
-            AgentCommand::TypeText { selector, text, timeout_ms } => {
+            AgentCommand::TypeText {
+                selector,
+                text,
+                timeout_ms,
+            } => {
                 let mut p = selector.clone();
                 p["text"] = json!(text);
-                if let Some(t) = timeout_ms { p["timeout"] = json!(t); }
+                if let Some(t) = timeout_ms {
+                    p["timeout"] = json!(t);
+                }
                 ("typeText", p)
             }
-            AgentCommand::ClearText { selector, timeout_ms } => {
+            AgentCommand::ClearText {
+                selector,
+                timeout_ms,
+            } => {
                 let mut p = selector.clone();
-                if let Some(t) = timeout_ms { p["timeout"] = json!(t); }
+                if let Some(t) = timeout_ms {
+                    p["timeout"] = json!(t);
+                }
                 ("clearText", p)
             }
-            AgentCommand::Swipe { direction, start_element, speed, distance, timeout_ms } => {
+            AgentCommand::Swipe {
+                direction,
+                start_element,
+                speed,
+                distance,
+                timeout_ms,
+            } => {
                 let mut p = json!({"direction": direction});
-                if let Some(se) = start_element { p["startElement"] = se.clone(); }
-                if let Some(s) = speed { p["speed"] = json!(s); }
-                if let Some(d) = distance { p["distance"] = json!(d); }
-                if let Some(t) = timeout_ms { p["timeout"] = json!(t); }
+                if let Some(se) = start_element {
+                    p["startElement"] = se.clone();
+                }
+                if let Some(s) = speed {
+                    p["speed"] = json!(s);
+                }
+                if let Some(d) = distance {
+                    p["distance"] = json!(d);
+                }
+                if let Some(t) = timeout_ms {
+                    p["timeout"] = json!(t);
+                }
                 ("swipe", p)
             }
-            AgentCommand::Scroll { container, direction, scroll_until_visible, distance, timeout_ms } => {
+            AgentCommand::Scroll {
+                container,
+                direction,
+                scroll_until_visible,
+                distance,
+                timeout_ms,
+            } => {
                 let mut p = json!({"direction": direction});
-                if let Some(c) = container { p["container"] = c.clone(); }
-                if let Some(sv) = scroll_until_visible { p["scrollTo"] = sv.clone(); }
-                if let Some(d) = distance { p["distance"] = json!(d); }
-                if let Some(t) = timeout_ms { p["timeout"] = json!(t); }
+                if let Some(c) = container {
+                    p["container"] = c.clone();
+                }
+                if let Some(sv) = scroll_until_visible {
+                    p["scrollTo"] = sv.clone();
+                }
+                if let Some(d) = distance {
+                    p["distance"] = json!(d);
+                }
+                if let Some(t) = timeout_ms {
+                    p["timeout"] = json!(t);
+                }
                 ("scroll", p)
             }
-            AgentCommand::PressKey { key } => {
-                ("pressKey", json!({"key": key}))
-            }
-            AgentCommand::GetUiHierarchy {} => {
-                ("getUiHierarchy", json!({}))
-            }
+            AgentCommand::PressKey { key } => ("pressKey", json!({"key": key})),
+            AgentCommand::GetUiHierarchy {} => ("getUiHierarchy", json!({})),
             AgentCommand::WaitForIdle { timeout_ms } => {
                 let mut p = json!({});
-                if let Some(t) = timeout_ms { p["timeout"] = json!(t); }
+                if let Some(t) = timeout_ms {
+                    p["timeout"] = json!(t);
+                }
                 ("waitForIdle", p)
             }
-            AgentCommand::Screenshot {} => {
-                ("screenshot", json!({}))
-            }
+            AgentCommand::Screenshot {} => ("screenshot", json!({})),
         };
 
         json!({
@@ -166,7 +224,10 @@ impl AgentResponse {
         if let Some(error) = value.get("error") {
             AgentResponse {
                 success: false,
-                error: error.get("message").and_then(|v| v.as_str()).map(String::from),
+                error: error
+                    .get("message")
+                    .and_then(|v| v.as_str())
+                    .map(String::from),
                 error_type: error.get("type").and_then(|v| v.as_str()).map(String::from),
                 data: Value::Null,
             }
@@ -323,13 +384,12 @@ impl AgentConnection {
     }
 
     async fn ping_agent(&self) -> Result<()> {
-        let mut stream =
-            tokio::time::timeout(Duration::from_secs(3), async {
-                TcpStream::connect(format!("127.0.0.1:{AGENT_HOST_PORT}")).await
-            })
-            .await
-            .map_err(|_| anyhow!("Timed out connecting to agent"))?
-            .context("Agent socket not reachable")?;
+        let mut stream = tokio::time::timeout(Duration::from_secs(3), async {
+            TcpStream::connect(format!("127.0.0.1:{AGENT_HOST_PORT}")).await
+        })
+        .await
+        .map_err(|_| anyhow!("Timed out connecting to agent"))?
+        .context("Agent socket not reachable")?;
 
         // Send a simple ping
         let ping = r#"{"command":"ping"}"#;
@@ -603,7 +663,10 @@ mod tests {
         });
         let resp = AgentResponse::from_json(&raw);
         assert!(!resp.success);
-        assert_eq!(resp.error.as_deref(), Some("Could not find element matching selector"));
+        assert_eq!(
+            resp.error.as_deref(),
+            Some("Could not find element matching selector")
+        );
         assert_eq!(resp.error_type.as_deref(), Some("ELEMENT_NOT_FOUND"));
         assert_eq!(resp.data, Value::Null);
     }
