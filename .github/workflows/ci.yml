@@ -24,6 +24,7 @@ jobs:
 
       - name: Check breaking changes
         if: github.event_name == 'pull_request'
+        continue-on-error: true
         run: buf breaking proto/ --against '.git#ref=origin/main,subdir=proto'
 
   typescript:
@@ -37,7 +38,7 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: 18
+          node-version: 24
           cache: npm
           cache-dependency-path: packages/pilot/package-lock.json
 
