@@ -166,3 +166,111 @@ pub async fn screencap(serial: &str) -> Result<Vec<u8>> {
     debug!(bytes = png.len(), "Screenshot captured");
     Ok(png)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ─── AdbDevice::is_online ───
+
+    #[test]
+    fn is_online_device_state() {
+        let dev = AdbDevice {
+            serial: "ABC123".into(),
+            state: "device".into(),
+        };
+        assert!(dev.is_online());
+    }
+
+    #[test]
+    fn is_online_offline_state() {
+        let dev = AdbDevice {
+            serial: "ABC123".into(),
+            state: "offline".into(),
+        };
+        assert!(!dev.is_online());
+    }
+
+    #[test]
+    fn is_online_unauthorized_state() {
+        let dev = AdbDevice {
+            serial: "ABC123".into(),
+            state: "unauthorized".into(),
+        };
+        assert!(!dev.is_online());
+    }
+
+    #[test]
+    fn is_online_unknown_state() {
+        let dev = AdbDevice {
+            serial: "ABC123".into(),
+            state: "unknown".into(),
+        };
+        assert!(!dev.is_online());
+    }
+
+    #[test]
+    fn is_online_empty_state() {
+        let dev = AdbDevice {
+            serial: "ABC123".into(),
+            state: "".into(),
+        };
+        assert!(!dev.is_online());
+    }
+
+    // ─── AdbDevice::is_emulator ───
+
+    #[test]
+    fn is_emulator_emulator_serial() {
+        let dev = AdbDevice {
+            serial: "emulator-5554".into(),
+            state: "device".into(),
+        };
+        assert!(dev.is_emulator());
+    }
+
+    #[test]
+    fn is_emulator_emulator_other_port() {
+        let dev = AdbDevice {
+            serial: "emulator-5556".into(),
+            state: "device".into(),
+        };
+        assert!(dev.is_emulator());
+    }
+
+    #[test]
+    fn is_emulator_localhost() {
+        let dev = AdbDevice {
+            serial: "localhost:5555".into(),
+            state: "device".into(),
+        };
+        assert!(dev.is_emulator());
+    }
+
+    #[test]
+    fn is_emulator_ip_address_is_not_emulator() {
+        let dev = AdbDevice {
+            serial: "192.168.1.1:5555".into(),
+            state: "device".into(),
+        };
+        assert!(!dev.is_emulator());
+    }
+
+    #[test]
+    fn is_emulator_physical_device() {
+        let dev = AdbDevice {
+            serial: "HVA123456".into(),
+            state: "device".into(),
+        };
+        assert!(!dev.is_emulator());
+    }
+
+    #[test]
+    fn is_emulator_another_physical_serial() {
+        let dev = AdbDevice {
+            serial: "R5CR1234XYZ".into(),
+            state: "device".into(),
+        };
+        assert!(!dev.is_emulator());
+    }
+}
