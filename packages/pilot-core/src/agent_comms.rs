@@ -1,7 +1,6 @@
 use std::time::Duration;
 
 use anyhow::{anyhow, bail, Context, Result};
-use serde::Deserialize;
 use serde_json::{json, Value};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpStream;
@@ -72,6 +71,7 @@ pub enum AgentCommand {
     WaitForIdle {
         timeout_ms: Option<u64>,
     },
+    #[allow(dead_code)]
     Screenshot {},
 }
 
@@ -287,6 +287,7 @@ impl AgentConnection {
     }
 
     /// Disconnect and clean up port forwarding.
+    #[allow(dead_code)]
     pub async fn disconnect(&mut self) {
         if let Some(ref serial) = self.device_serial {
             let _ = adb::remove_forward(serial, AGENT_HOST_PORT).await;

@@ -99,8 +99,7 @@ impl DeviceManager {
         let device = self
             .devices
             .iter_mut()
-            .find(|d| d.serial == serial)
-            .or_else(|| None);
+            .find(|d| d.serial == serial);
 
         match device {
             Some(_) => {
@@ -132,6 +131,7 @@ impl DeviceManager {
     }
 
     /// Get the active device info.
+    #[allow(dead_code)]
     pub fn active_device(&self) -> Option<&DeviceInfo> {
         self.active_serial
             .as_ref()

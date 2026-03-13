@@ -424,7 +424,7 @@ impl proto::pilot_service_server::PilotService for PilotServiceImpl {
         let req = request.into_inner();
         let request_id = Self::request_id(&req.request_id);
 
-        let start_element = req.start_element.as_ref().map(|s| selector_to_json(s));
+        let start_element = req.start_element.as_ref().map(selector_to_json);
 
         let command = AgentCommand::Swipe {
             direction: req.direction,
@@ -456,11 +456,8 @@ impl proto::pilot_service_server::PilotService for PilotServiceImpl {
         let req = request.into_inner();
         let request_id = Self::request_id(&req.request_id);
 
-        let container = req.container.as_ref().map(|s| selector_to_json(s));
-        let scroll_until_visible = req
-            .scroll_until_visible
-            .as_ref()
-            .map(|s| selector_to_json(s));
+        let container = req.container.as_ref().map(selector_to_json);
+        let scroll_until_visible = req.scroll_until_visible.as_ref().map(selector_to_json);
 
         let command = AgentCommand::Scroll {
             container,
@@ -780,7 +777,7 @@ pub(crate) fn parse_element_list(data: &Value) -> Vec<proto::ElementInfo> {
         .cloned()
         .unwrap_or_default();
 
-    arr.iter().filter_map(|v| parse_element_info(v)).collect()
+    arr.iter().filter_map(parse_element_info).collect()
 }
 
 pub(crate) fn parse_bounds(value: Option<&Value>) -> Option<proto::Bounds> {
