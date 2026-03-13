@@ -5,16 +5,15 @@ import androidx.test.uiautomator.By
 import androidx.test.uiautomator.BySelector
 import androidx.test.uiautomator.UiDevice
 import androidx.test.uiautomator.UiObject2
-import androidx.test.uiautomator.UiSelector
 import org.json.JSONObject
+import org.w3c.dom.NodeList
+import org.xml.sax.InputSource
 import java.io.StringReader
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 import javax.xml.parsers.DocumentBuilderFactory
 import javax.xml.xpath.XPathConstants
 import javax.xml.xpath.XPathFactory
-import org.w3c.dom.NodeList
-import org.xml.sax.InputSource
 
 /**
  * Selector specification for finding elements.
@@ -32,7 +31,7 @@ data class ElementSelector(
     val xpath: String? = null,
     val enabled: Boolean? = null,
     val checked: Boolean? = null,
-    val focused: Boolean? = null
+    val focused: Boolean? = null,
 )
 
 /**
@@ -51,32 +50,36 @@ data class ElementInfo(
     val isClickable: Boolean,
     val isScrollable: Boolean,
     val isVisible: Boolean,
-    val childCount: Int
+    val childCount: Int,
 ) {
-    fun toJson(): JSONObject = JSONObject().apply {
-        put("elementId", elementId)
-        put("className", className)
-        put("text", text ?: JSONObject.NULL)
-        put("contentDescription", contentDescription ?: JSONObject.NULL)
-        put("resourceId", resourceId ?: JSONObject.NULL)
-        put("bounds", JSONObject().apply {
-            put("left", bounds.left)
-            put("top", bounds.top)
-            put("right", bounds.right)
-            put("bottom", bounds.bottom)
-            put("centerX", bounds.centerX())
-            put("centerY", bounds.centerY())
-            put("width", bounds.width())
-            put("height", bounds.height())
-        })
-        put("enabled", isEnabled)
-        put("checked", isChecked)
-        put("focused", isFocused)
-        put("clickable", isClickable)
-        put("scrollable", isScrollable)
-        put("visible", isVisible)
-        put("childCount", childCount)
-    }
+    fun toJson(): JSONObject =
+        JSONObject().apply {
+            put("elementId", elementId)
+            put("className", className)
+            put("text", text ?: JSONObject.NULL)
+            put("contentDescription", contentDescription ?: JSONObject.NULL)
+            put("resourceId", resourceId ?: JSONObject.NULL)
+            put(
+                "bounds",
+                JSONObject().apply {
+                    put("left", bounds.left)
+                    put("top", bounds.top)
+                    put("right", bounds.right)
+                    put("bottom", bounds.bottom)
+                    put("centerX", bounds.centerX())
+                    put("centerY", bounds.centerY())
+                    put("width", bounds.width())
+                    put("height", bounds.height())
+                },
+            )
+            put("enabled", isEnabled)
+            put("checked", isChecked)
+            put("focused", isFocused)
+            put("clickable", isClickable)
+            put("scrollable", isScrollable)
+            put("visible", isVisible)
+            put("childCount", childCount)
+        }
 }
 
 /**
@@ -87,7 +90,6 @@ data class ElementInfo(
  * so they can be referenced by ID in subsequent commands.
  */
 class ElementFinder(private val device: UiDevice) {
-
     /** Cache of element IDs to UiObject2 instances. */
     private val elementCache = ConcurrentHashMap<String, UiObject2>()
 
@@ -95,93 +97,114 @@ class ElementFinder(private val device: UiDevice) {
      * Role-to-class-name mappings. Each role maps to a list of Android class names
      * that could represent that role (including Material/AppCompat variants).
      */
-    private val roleClassMap = mapOf(
-        "button" to listOf(
-            "android.widget.Button",
-            "android.widget.ImageButton",
-            "com.google.android.material.button.MaterialButton",
-            "androidx.appcompat.widget.AppCompatButton"
-        ),
-        "textfield" to listOf(
-            "android.widget.EditText",
-            "android.widget.AutoCompleteTextView",
-            "com.google.android.material.textfield.TextInputEditText",
-            "androidx.appcompat.widget.AppCompatEditText"
-        ),
-        "checkbox" to listOf(
-            "android.widget.CheckBox",
-            "androidx.appcompat.widget.AppCompatCheckBox",
-            "com.google.android.material.checkbox.MaterialCheckBox"
-        ),
-        "switch" to listOf(
-            "android.widget.Switch",
-            "androidx.appcompat.widget.SwitchCompat",
-            "com.google.android.material.switchmaterial.SwitchMaterial"
-        ),
-        "image" to listOf(
-            "android.widget.ImageView",
-            "androidx.appcompat.widget.AppCompatImageView"
-        ),
-        "heading" to listOf(
-            "android.widget.TextView"
-        ),
-        "text" to listOf(
-            "android.widget.TextView",
-            "androidx.appcompat.widget.AppCompatTextView",
-            "com.google.android.material.textview.MaterialTextView"
-        ),
-        "link" to listOf(
-            "android.widget.TextView"
-        ),
-        "list" to listOf(
-            "android.widget.ListView",
-            "android.widget.GridView",
-            "androidx.recyclerview.widget.RecyclerView"
-        ),
-        "listitem" to listOf(
-            "android.widget.LinearLayout",
-            "android.widget.RelativeLayout",
-            "android.widget.FrameLayout"
-        ),
-        "scrollview" to listOf(
-            "android.widget.ScrollView",
-            "android.widget.HorizontalScrollView",
-            "androidx.core.widget.NestedScrollView"
-        ),
-        "progressbar" to listOf(
-            "android.widget.ProgressBar",
-            "com.google.android.material.progressindicator.LinearProgressIndicator",
-            "com.google.android.material.progressindicator.CircularProgressIndicator"
-        ),
-        "seekbar" to listOf(
-            "android.widget.SeekBar",
-            "com.google.android.material.slider.Slider"
-        ),
-        "radiobutton" to listOf(
-            "android.widget.RadioButton",
-            "androidx.appcompat.widget.AppCompatRadioButton",
-            "com.google.android.material.radiobutton.MaterialRadioButton"
-        ),
-        "spinner" to listOf(
-            "android.widget.Spinner",
-            "androidx.appcompat.widget.AppCompatSpinner"
-        ),
-        "toolbar" to listOf(
-            "android.widget.Toolbar",
-            "androidx.appcompat.widget.Toolbar",
-            "com.google.android.material.appbar.MaterialToolbar"
-        ),
-        "tab" to listOf(
-            "android.widget.TabWidget",
-            "com.google.android.material.tabs.TabLayout"
+    private val roleClassMap =
+        mapOf(
+            "button" to
+                listOf(
+                    "android.widget.Button",
+                    "android.widget.ImageButton",
+                    "com.google.android.material.button.MaterialButton",
+                    "androidx.appcompat.widget.AppCompatButton",
+                ),
+            "textfield" to
+                listOf(
+                    "android.widget.EditText",
+                    "android.widget.AutoCompleteTextView",
+                    "com.google.android.material.textfield.TextInputEditText",
+                    "androidx.appcompat.widget.AppCompatEditText",
+                ),
+            "checkbox" to
+                listOf(
+                    "android.widget.CheckBox",
+                    "androidx.appcompat.widget.AppCompatCheckBox",
+                    "com.google.android.material.checkbox.MaterialCheckBox",
+                ),
+            "switch" to
+                listOf(
+                    "android.widget.Switch",
+                    "androidx.appcompat.widget.SwitchCompat",
+                    "com.google.android.material.switchmaterial.SwitchMaterial",
+                ),
+            "image" to
+                listOf(
+                    "android.widget.ImageView",
+                    "androidx.appcompat.widget.AppCompatImageView",
+                ),
+            "heading" to
+                listOf(
+                    "android.widget.TextView",
+                ),
+            "text" to
+                listOf(
+                    "android.widget.TextView",
+                    "androidx.appcompat.widget.AppCompatTextView",
+                    "com.google.android.material.textview.MaterialTextView",
+                ),
+            "link" to
+                listOf(
+                    "android.widget.TextView",
+                ),
+            "list" to
+                listOf(
+                    "android.widget.ListView",
+                    "android.widget.GridView",
+                    "androidx.recyclerview.widget.RecyclerView",
+                ),
+            "listitem" to
+                listOf(
+                    "android.widget.LinearLayout",
+                    "android.widget.RelativeLayout",
+                    "android.widget.FrameLayout",
+                ),
+            "scrollview" to
+                listOf(
+                    "android.widget.ScrollView",
+                    "android.widget.HorizontalScrollView",
+                    "androidx.core.widget.NestedScrollView",
+                ),
+            "progressbar" to
+                listOf(
+                    "android.widget.ProgressBar",
+                    "com.google.android.material.progressindicator.LinearProgressIndicator",
+                    "com.google.android.material.progressindicator.CircularProgressIndicator",
+                ),
+            "seekbar" to
+                listOf(
+                    "android.widget.SeekBar",
+                    "com.google.android.material.slider.Slider",
+                ),
+            "radiobutton" to
+                listOf(
+                    "android.widget.RadioButton",
+                    "androidx.appcompat.widget.AppCompatRadioButton",
+                    "com.google.android.material.radiobutton.MaterialRadioButton",
+                ),
+            "spinner" to
+                listOf(
+                    "android.widget.Spinner",
+                    "androidx.appcompat.widget.AppCompatSpinner",
+                ),
+            "toolbar" to
+                listOf(
+                    "android.widget.Toolbar",
+                    "androidx.appcompat.widget.Toolbar",
+                    "com.google.android.material.appbar.MaterialToolbar",
+                ),
+            "tab" to
+                listOf(
+                    "android.widget.TabWidget",
+                    "com.google.android.material.tabs.TabLayout",
+                ),
         )
-    )
 
     /**
      * Find a single element matching the selector.
      * @throws ElementNotFoundException if no element matches
      */
-    fun findElement(selector: ElementSelector, parentId: String? = null): ElementInfo {
+    fun findElement(
+        selector: ElementSelector,
+        parentId: String? = null,
+    ): ElementInfo {
         val elements = findElements(selector, parentId)
         if (elements.isEmpty()) {
             throw ElementNotFoundException("No element found matching: ${describeSelector(selector)}")
@@ -192,25 +215,32 @@ class ElementFinder(private val device: UiDevice) {
     /**
      * Find all elements matching the selector.
      */
-    fun findElements(selector: ElementSelector, parentId: String? = null): List<ElementInfo> {
+    fun findElements(
+        selector: ElementSelector,
+        parentId: String? = null,
+    ): List<ElementInfo> {
         // XPath-based search uses a different path
         if (selector.xpath != null) {
             return findByXPath(selector.xpath)
         }
 
-        val parent = if (parentId != null) {
-            elementCache[parentId]
-                ?: throw ElementNotFoundException("Parent element '$parentId' not found in cache")
-        } else null
+        val parent =
+            if (parentId != null) {
+                elementCache[parentId]
+                    ?: throw ElementNotFoundException("Parent element '$parentId' not found in cache")
+            } else {
+                null
+            }
 
         val objects = findUiObjects(selector, parent)
 
         // Apply additional attribute filters
-        val filtered = objects.filter { obj ->
-            (selector.enabled == null || obj.isEnabled == selector.enabled) &&
-            (selector.checked == null || obj.isChecked == selector.checked) &&
-            (selector.focused == null || obj.isFocused == selector.focused)
-        }
+        val filtered =
+            objects.filter { obj ->
+                (selector.enabled == null || obj.isEnabled == selector.enabled) &&
+                    (selector.checked == null || obj.isChecked == selector.checked) &&
+                    (selector.focused == null || obj.isFocused == selector.focused)
+            }
 
         return filtered.map { cacheAndConvert(it) }
     }
@@ -232,9 +262,13 @@ class ElementFinder(private val device: UiDevice) {
         return obj.visibleBounds
     }
 
-    private fun findUiObjects(selector: ElementSelector, parent: UiObject2?): List<UiObject2> {
-        val bySelector = buildBySelector(selector)
-            ?: throw InvalidSelectorException("No valid selector criteria provided")
+    private fun findUiObjects(
+        selector: ElementSelector,
+        parent: UiObject2?,
+    ): List<UiObject2> {
+        val bySelector =
+            buildBySelector(selector)
+                ?: throw InvalidSelectorException("No valid selector criteria provided")
 
         return if (parent != null) {
             parent.findObjects(bySelector) ?: emptyList()
@@ -248,8 +282,9 @@ class ElementFinder(private val device: UiDevice) {
 
         // Role-based selection
         if (selector.role != null) {
-            val classNames = roleClassMap[selector.role.lowercase()]
-                ?: throw InvalidSelectorException("Unknown role: '${selector.role}'. Known roles: ${roleClassMap.keys.joinToString()}")
+            val classNames =
+                roleClassMap[selector.role.lowercase()]
+                    ?: throw InvalidSelectorException("Unknown role: '${selector.role}'. Known roles: ${roleClassMap.keys.joinToString()}")
 
             // Use regex to match any of the class variants
             val pattern = classNames.joinToString("|") { Regex.escape(it) }
@@ -258,8 +293,8 @@ class ElementFinder(private val device: UiDevice) {
             // If a name is also given, additionally filter by text or contentDescription
             if (selector.name != null) {
                 by = by.hasDescendant(
-                    By.text(selector.name)
-                ) ?: by  // fallback: will filter manually below
+                    By.text(selector.name),
+                ) ?: by // fallback: will filter manually below
                 // Actually, we need text OR contentDesc matching. Use a broader approach:
                 // Build the class selector, then filter results by name afterwards.
             }
@@ -270,8 +305,12 @@ class ElementFinder(private val device: UiDevice) {
             by = if (by != null) by.text(selector.text) else By.text(selector.text)
         }
         if (selector.textContains != null) {
-            by = if (by != null) by.textContains(selector.textContains)
-            else By.textContains(selector.textContains)
+            by =
+                if (by != null) {
+                    by.textContains(selector.textContains)
+                } else {
+                    By.textContains(selector.textContains)
+                }
         }
 
         // Content description
@@ -346,8 +385,8 @@ class ElementFinder(private val device: UiDevice) {
                     isClickable = elem.getAttribute("clickable") == "true",
                     isScrollable = elem.getAttribute("scrollable") == "true",
                     isVisible = bounds.width() > 0 && bounds.height() > 0,
-                    childCount = elem.childNodes.length
-                )
+                    childCount = elem.childNodes.length,
+                ),
             )
             // XPath elements can't be cached as UiObject2 — they're XML-based
         }
@@ -366,11 +405,12 @@ class ElementFinder(private val device: UiDevice) {
     private fun cacheAndConvert(obj: UiObject2): ElementInfo {
         val elementId = UUID.randomUUID().toString()
         elementCache[elementId] = obj
-        val bounds = try {
-            obj.visibleBounds
-        } catch (_: Exception) {
-            Rect(0, 0, 0, 0)
-        }
+        val bounds =
+            try {
+                obj.visibleBounds
+            } catch (_: Exception) {
+                Rect(0, 0, 0, 0)
+            }
         return ElementInfo(
             elementId = elementId,
             className = obj.className ?: "",
@@ -384,7 +424,7 @@ class ElementFinder(private val device: UiDevice) {
             isClickable = obj.isClickable,
             isScrollable = obj.isScrollable,
             isVisible = bounds.width() > 0 && bounds.height() > 0,
-            childCount = obj.childCount
+            childCount = obj.childCount,
         )
     }
 
@@ -392,7 +432,10 @@ class ElementFinder(private val device: UiDevice) {
      * Filter results by name (text or contentDescription match).
      * Used when role + name are specified together.
      */
-    internal fun filterByName(objects: List<UiObject2>, name: String): List<UiObject2> {
+    internal fun filterByName(
+        objects: List<UiObject2>,
+        name: String,
+    ): List<UiObject2> {
         return objects.filter { obj ->
             obj.text == name || obj.contentDescription == name
         }

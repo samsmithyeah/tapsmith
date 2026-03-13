@@ -96,10 +96,7 @@ impl DeviceManager {
 
     /// Set the active device by serial.
     pub fn set_active(&mut self, serial: &str) -> Result<()> {
-        let device = self
-            .devices
-            .iter_mut()
-            .find(|d| d.serial == serial);
+        let device = self.devices.iter_mut().find(|d| d.serial == serial);
 
         match device {
             Some(_) => {

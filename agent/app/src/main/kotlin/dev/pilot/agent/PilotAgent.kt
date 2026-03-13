@@ -3,12 +3,7 @@ package dev.pilot.agent
 import android.app.Instrumentation
 import android.os.Bundle
 import android.util.Log
-import androidx.test.platform.app.InstrumentationRegistry
 import androidx.test.uiautomator.UiDevice
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 
 /**
@@ -19,7 +14,6 @@ import kotlinx.coroutines.runBlocking
  * that accepts commands from the host daemon.
  */
 class PilotAgent : Instrumentation() {
-
     companion object {
         private const val TAG = "PilotAgent"
         private const val DEFAULT_PORT = 18700
@@ -45,13 +39,14 @@ class PilotAgent : Instrumentation() {
         val actionExecutor = ActionExecutor(device)
         val waitEngine = WaitEngine(device)
         val hierarchyDumper = HierarchyDumper(device)
-        val commandHandler = CommandHandler(
-            device = device,
-            elementFinder = elementFinder,
-            actionExecutor = actionExecutor,
-            waitEngine = waitEngine,
-            hierarchyDumper = hierarchyDumper
-        )
+        val commandHandler =
+            CommandHandler(
+                device = device,
+                elementFinder = elementFinder,
+                actionExecutor = actionExecutor,
+                waitEngine = waitEngine,
+                hierarchyDumper = hierarchyDumper,
+            )
 
         socketServer = SocketServer(port, commandHandler)
 

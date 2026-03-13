@@ -1,14 +1,10 @@
 package dev.pilot.agent
 
-import android.accessibilityservice.AccessibilityServiceInfo
 import android.os.SystemClock
 import android.util.Log
-import android.view.accessibility.AccessibilityEvent
 import androidx.test.uiautomator.By
 import androidx.test.uiautomator.UiDevice
 import androidx.test.uiautomator.Until
-import java.util.concurrent.CountDownLatch
-import java.util.concurrent.TimeUnit
 
 /**
  * Event-driven waiting engine that avoids polling loops and Thread.sleep().
@@ -17,7 +13,6 @@ import java.util.concurrent.TimeUnit
  * to detect when the UI has settled or when elements become available.
  */
 class WaitEngine(private val device: UiDevice) {
-
     companion object {
         private const val TAG = "PilotWait"
         private const val STABILITY_WINDOW_MS = 300L
@@ -62,7 +57,7 @@ class WaitEngine(private val device: UiDevice) {
     fun waitForElement(
         selector: ElementSelector,
         timeoutMs: Long = DEFAULT_ELEMENT_TIMEOUT_MS,
-        elementFinder: ElementFinder
+        elementFinder: ElementFinder,
     ): ElementInfo {
         val startTime = SystemClock.uptimeMillis()
 
@@ -75,7 +70,7 @@ class WaitEngine(private val device: UiDevice) {
             if (!found) {
                 throw TimeoutException(
                     "Timed out after ${timeoutMs}ms waiting for element to exist. " +
-                    "Selector: ${describeSelector(selector)}"
+                        "Selector: ${describeSelector(selector)}",
                 )
             }
 
@@ -83,7 +78,7 @@ class WaitEngine(private val device: UiDevice) {
             if (remainingTime <= 0) {
                 throw TimeoutException(
                     "Timed out after ${timeoutMs}ms: element exists but no time left for stability check. " +
-                    "Selector: ${describeSelector(selector)}"
+                        "Selector: ${describeSelector(selector)}",
                 )
             }
 
@@ -94,7 +89,7 @@ class WaitEngine(private val device: UiDevice) {
                 if (!enabled) {
                     throw TimeoutException(
                         "Timed out after ${timeoutMs}ms: element exists but is not enabled. " +
-                        "Selector: ${describeSelector(selector)}"
+                            "Selector: ${describeSelector(selector)}",
                     )
                 }
             }
@@ -126,7 +121,7 @@ class WaitEngine(private val device: UiDevice) {
         } catch (e: ElementNotFoundException) {
             throw TimeoutException(
                 "Timed out after ${timeoutMs}ms: element not found after waiting. " +
-                "Selector: ${describeSelector(selector)}"
+                    "Selector: ${describeSelector(selector)}",
             )
         }
     }

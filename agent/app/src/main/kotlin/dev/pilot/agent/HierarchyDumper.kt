@@ -12,7 +12,6 @@ import java.io.ByteArrayOutputStream
  * enabled, checked, focused, clickable, scrollable, and more.
  */
 class HierarchyDumper(private val device: UiDevice) {
-
     companion object {
         private const val TAG = "PilotHierarchy"
     }
