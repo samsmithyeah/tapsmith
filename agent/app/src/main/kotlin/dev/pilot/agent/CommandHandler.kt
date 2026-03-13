@@ -1,11 +1,9 @@
 package dev.pilot.agent
 
-import android.graphics.Bitmap
 import android.util.Base64
 import android.util.Log
 import androidx.test.uiautomator.UiDevice
 import org.json.JSONObject
-import java.io.ByteArrayOutputStream
 
 /**
  * Routes incoming JSON commands to the appropriate handler.
@@ -20,18 +18,19 @@ class CommandHandler(
     private val elementFinder: ElementFinder,
     private val actionExecutor: ActionExecutor,
     private val waitEngine: WaitEngine,
-    private val hierarchyDumper: HierarchyDumper
+    private val hierarchyDumper: HierarchyDumper,
 ) {
     companion object {
         private const val TAG = "PilotCommand"
     }
 
     fun handle(rawJson: String): String {
-        val json = try {
-            JSONObject(rawJson)
-        } catch (e: Exception) {
-            return errorResponse(null, "PARSE_ERROR", "Invalid JSON: ${e.message}")
-        }
+        val json =
+            try {
+                JSONObject(rawJson)
+            } catch (e: Exception) {
+                return errorResponse(null, "PARSE_ERROR", "Invalid JSON: ${e.message}")
+            }
 
         val id = json.optString("id", null)
         val method = json.optString("method", null)
@@ -69,7 +68,7 @@ class CommandHandler(
             val obj = elementFinder.getElement(elementId)
             return elementFinder.findElement(
                 ElementSelector(className = obj.className),
-                null
+                null,
             )
         }
         // Selector-based: auto-wait then find
@@ -78,18 +77,22 @@ class CommandHandler(
         return waitEngine.waitForElement(selector, timeout, elementFinder)
     }
 
-    private fun dispatch(method: String, params: JSONObject): JSONObject {
+    private fun dispatch(
+        method: String,
+        params: JSONObject,
+    ): JSONObject {
         return when (method) {
             "findElement" -> {
                 val selector = parseSelectorParams(params)
                 val parentId = params.optString("parentId", null)
                 val timeout = params.optLong("timeout", 10000L)
                 // Auto-wait for element if timeout > 0
-                val element = if (timeout > 0 && parentId == null) {
-                    waitEngine.waitForElement(selector, timeout, elementFinder)
-                } else {
-                    elementFinder.findElement(selector, parentId)
-                }
+                val element =
+                    if (timeout > 0 && parentId == null) {
+                        waitEngine.waitForElement(selector, timeout, elementFinder)
+                    } else {
+                        elementFinder.findElement(selector, parentId)
+                    }
                 element.toJson()
             }
 
@@ -97,9 +100,12 @@ class CommandHandler(
                 val selector = parseSelectorParams(params)
                 val parentId = params.optString("parentId", null)
                 val elements = elementFinder.findElements(selector, parentId)
-                JSONObject().put("elements", elements.map { it.toJson() }.toTypedArray().let {
-                    org.json.JSONArray(it)
-                })
+                JSONObject().put(
+                    "elements",
+                    elements.map { it.toJson() }.toTypedArray().let {
+                        org.json.JSONArray(it)
+                    },
+                )
             }
 
             "tap" -> {
@@ -139,9 +145,12 @@ class CommandHandler(
 
             "typeText" -> {
                 val text = params.getString("text")
-                val hasSelector = params.has("text") && (params.has("role") || params.has("id") ||
-                    params.has("contentDesc") || params.has("className") || params.has("testId") ||
-                    params.has("hint") || params.has("textContains") || params.has("elementId"))
+                val hasSelector =
+                    params.has("text") && (
+                        params.has("role") || params.has("id") ||
+                            params.has("contentDesc") || params.has("className") || params.has("testId") ||
+                            params.has("hint") || params.has("textContains") || params.has("elementId")
+                    )
                 if (hasSelector || params.has("elementId")) {
                     val element = resolveElement(params)
                     actionExecutor.typeText(elementFinder.getElement(element.elementId), text)
@@ -176,9 +185,12 @@ class CommandHandler(
 
             "scroll" -> {
                 val direction = params.getString("direction")
-                val targetSelector = if (params.has("scrollTo")) {
-                    parseSelectorParams(params.getJSONObject("scrollTo"))
-                } else null
+                val targetSelector =
+                    if (params.has("scrollTo")) {
+                        parseSelectorParams(params.getJSONObject("scrollTo"))
+                    } else {
+                        null
+                    }
                 if (params.has("container")) {
                     val containerSel = parseSelectorParams(params.getJSONObject("container"))
                     val containerEl = waitEngine.waitForElement(containerSel, 10000L, elementFinder)
@@ -259,7 +271,7 @@ class CommandHandler(
             xpath = params.optString("xpath", null),
             enabled = if (params.has("enabled")) params.getBoolean("enabled") else null,
             checked = if (params.has("checked")) params.getBoolean("checked") else null,
-            focused = if (params.has("focused")) params.getBoolean("focused") else null
+            focused = if (params.has("focused")) params.getBoolean("focused") else null,
         )
     }
 
@@ -277,26 +289,39 @@ class CommandHandler(
         }
     }
 
-    private fun successResponse(id: String?, result: JSONObject): String {
+    private fun successResponse(
+        id: String?,
+        result: JSONObject,
+    ): String {
         return JSONObject().apply {
             put("id", id ?: JSONObject.NULL)
             put("result", result)
         }.toString()
     }
 
-    private fun errorResponse(id: String?, type: String, message: String): String {
+    private fun errorResponse(
+        id: String?,
+        type: String,
+        message: String,
+    ): String {
         return JSONObject().apply {
             put("id", id ?: JSONObject.NULL)
-            put("error", JSONObject().apply {
-                put("type", type)
-                put("message", message)
-            })
+            put(
+                "error",
+                JSONObject().apply {
+                    put("type", type)
+                    put("message", message)
+                },
+            )
         }.toString()
     }
 }
 
 // Custom exceptions for structured error handling
 class ElementNotFoundException(message: String) : RuntimeException(message)
+
 class TimeoutException(message: String) : RuntimeException(message)
+
 class InvalidSelectorException(message: String) : RuntimeException(message)
+
 class ActionFailedException(message: String) : RuntimeException(message)

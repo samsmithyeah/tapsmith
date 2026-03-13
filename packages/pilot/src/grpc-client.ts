@@ -106,6 +106,7 @@ function requestId(): string {
 }
 
 export class PilotGrpcClient {
+  // eslint-disable-next-line @typescript-eslint/no-unsafe-function-type
   private client: grpc.Client & Record<string, Function>;
   private address: string;
 

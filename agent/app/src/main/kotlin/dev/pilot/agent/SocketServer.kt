@@ -1,7 +1,8 @@
 package dev.pilot.agent
 
 import android.util.Log
-import kotlinx.coroutines.*
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import java.io.BufferedReader
 import java.io.InputStreamReader
 import java.io.PrintWriter
@@ -23,7 +24,7 @@ import java.util.concurrent.Executors
  */
 class SocketServer(
     private val port: Int,
-    private val commandHandler: CommandHandler
+    private val commandHandler: CommandHandler,
 ) {
     companion object {
         private const val TAG = "PilotSocket"
@@ -43,12 +44,13 @@ class SocketServer(
                 Log.i(TAG, "Listening on port $port")
 
                 while (running) {
-                    val client = try {
-                        serverSocket?.accept()
-                    } catch (e: SocketException) {
-                        if (running) Log.e(TAG, "Accept failed", e)
-                        break
-                    } ?: break
+                    val client =
+                        try {
+                            serverSocket?.accept()
+                        } catch (e: SocketException) {
+                            if (running) Log.e(TAG, "Accept failed", e)
+                            break
+                        } ?: break
 
                     Log.i(TAG, "Client connected: ${client.remoteSocketAddress}")
                     // Handle each client on a worker thread so UIAutomator
@@ -67,7 +69,8 @@ class SocketServer(
         running = false
         try {
             serverSocket?.close()
-        } catch (_: Exception) {}
+        } catch (_: Exception) {
+        }
         executor.shutdownNow()
     }
 
@@ -79,12 +82,13 @@ class SocketServer(
                 val writer = PrintWriter(s.getOutputStream(), true)
 
                 while (running && !s.isClosed) {
-                    val line = try {
-                        reader.readLine()
-                    } catch (e: SocketException) {
-                        Log.d(TAG, "Client read error: ${e.message}")
-                        null
-                    }
+                    val line =
+                        try {
+                            reader.readLine()
+                        } catch (e: SocketException) {
+                            Log.d(TAG, "Client read error: ${e.message}")
+                            null
+                        }
 
                     if (line == null) {
                         Log.i(TAG, "Client disconnected")
@@ -95,12 +99,14 @@ class SocketServer(
 
                     Log.d(TAG, "Received: $line")
 
-                    val response = try {
-                        commandHandler.handle(line)
-                    } catch (e: Exception) {
-                        Log.e(TAG, "Unhandled error processing command", e)
-                        """{"id":null,"error":{"type":"INTERNAL_ERROR","message":"${e.message?.replace("\"", "\\\"") ?: "Unknown error"}"}}"""
-                    }
+                    val response =
+                        try {
+                            commandHandler.handle(line)
+                        } catch (e: Exception) {
+                            Log.e(TAG, "Unhandled error processing command", e)
+                            val msg = e.message?.replace("\"", "\\\"") ?: "Unknown error"
+                            """{"id":null,"error":{"type":"INTERNAL_ERROR","message":"$msg"}}"""
+                        }
 
                     Log.d(TAG, "Responding: $response")
 

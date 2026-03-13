@@ -44,7 +44,10 @@ impl DeviceManager {
 
         // Mark devices no longer present as disconnected
         for device in &mut self.devices {
-            if !adb_devices.iter().any(|d| d.serial == device.serial && d.is_online()) {
+            if !adb_devices
+                .iter()
+                .any(|d| d.serial == device.serial && d.is_online())
+            {
                 if device.state == ConnectionState::Active {
                     info!(serial = %device.serial, "Active device disconnected");
                 }
@@ -93,11 +96,7 @@ impl DeviceManager {
 
     /// Set the active device by serial.
     pub fn set_active(&mut self, serial: &str) -> Result<()> {
-        let device = self
-            .devices
-            .iter_mut()
-            .find(|d| d.serial == serial)
-            .or_else(|| None);
+        let device = self.devices.iter_mut().find(|d| d.serial == serial);
 
         match device {
             Some(_) => {
@@ -129,6 +128,7 @@ impl DeviceManager {
     }
 
     /// Get the active device info.
+    #[allow(dead_code)]
     pub fn active_device(&self) -> Option<&DeviceInfo> {
         self.active_serial
             .as_ref()
@@ -138,6 +138,12 @@ impl DeviceManager {
     /// Get all known devices.
     pub fn devices(&self) -> &[DeviceInfo] {
         &self.devices
+    }
+
+    /// Add a device directly (for testing purposes).
+    #[cfg(test)]
+    pub(crate) fn add_device(&mut self, info: DeviceInfo) {
+        self.devices.push(info);
     }
 
     /// Resolve the device serial to use for an operation.
@@ -164,10 +170,107 @@ impl DeviceManager {
                 Ok(serial)
             }
             n => {
-                bail!(
-                    "{n} devices connected but none selected. Use SetDevice to choose one."
-                );
+                bail!("{n} devices connected but none selected. Use SetDevice to choose one.");
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_device(serial: &str, state: ConnectionState) -> DeviceInfo {
+        DeviceInfo {
+            serial: serial.to_string(),
+            model: "TestModel".to_string(),
+            is_emulator: serial.starts_with("emulator-"),
+            state,
+        }
+    }
+
+    #[test]
+    fn new_manager_has_no_devices() {
+        let dm = DeviceManager::new();
+        assert!(dm.devices().is_empty());
+        assert!(dm.active_serial().is_none());
+        assert!(dm.active_device().is_none());
+    }
+
+    #[test]
+    fn set_active_unknown_device_returns_error() {
+        let mut dm = DeviceManager::new();
+        let result = dm.set_active("nonexistent-serial");
+        assert!(result.is_err());
+        let msg = result.unwrap_err().to_string();
+        assert!(
+            msg.contains("not found"),
+            "Error should mention 'not found': {msg}"
+        );
+    }
+
+    #[test]
+    fn set_active_known_device_succeeds() {
+        let mut dm = DeviceManager::new();
+        dm.add_device(make_device("ABC123", ConnectionState::Discovered));
+        dm.add_device(make_device("DEF456", ConnectionState::Discovered));
+
+        let result = dm.set_active("DEF456");
+        assert!(result.is_ok());
+        assert_eq!(dm.active_serial(), Some("DEF456"));
+
+        let active = dm.active_device().unwrap();
+        assert_eq!(active.serial, "DEF456");
+        assert_eq!(active.state, ConnectionState::Active);
+    }
+
+    #[test]
+    fn set_active_deactivates_previous() {
+        let mut dm = DeviceManager::new();
+        dm.add_device(make_device("dev-1", ConnectionState::Discovered));
+        dm.add_device(make_device("dev-2", ConnectionState::Discovered));
+
+        dm.set_active("dev-1").unwrap();
+        assert_eq!(dm.active_serial(), Some("dev-1"));
+
+        dm.set_active("dev-2").unwrap();
+        assert_eq!(dm.active_serial(), Some("dev-2"));
+
+        // dev-1 should be back to Discovered
+        let dev1 = dm.devices().iter().find(|d| d.serial == "dev-1").unwrap();
+        assert_eq!(dev1.state, ConnectionState::Discovered);
+
+        let dev2 = dm.devices().iter().find(|d| d.serial == "dev-2").unwrap();
+        assert_eq!(dev2.state, ConnectionState::Active);
+    }
+
+    #[test]
+    fn devices_returns_correct_list() {
+        let mut dm = DeviceManager::new();
+        assert_eq!(dm.devices().len(), 0);
+
+        dm.add_device(make_device("emulator-5554", ConnectionState::Discovered));
+        dm.add_device(make_device("HVA123", ConnectionState::Discovered));
+        assert_eq!(dm.devices().len(), 2);
+
+        let serials: Vec<&str> = dm.devices().iter().map(|d| d.serial.as_str()).collect();
+        assert!(serials.contains(&"emulator-5554"));
+        assert!(serials.contains(&"HVA123"));
+    }
+
+    #[test]
+    fn connection_state_equality() {
+        assert_eq!(ConnectionState::Discovered, ConnectionState::Discovered);
+        assert_eq!(ConnectionState::Active, ConnectionState::Active);
+        assert_eq!(ConnectionState::Disconnected, ConnectionState::Disconnected);
+        assert_ne!(ConnectionState::Discovered, ConnectionState::Active);
+        assert_ne!(ConnectionState::Active, ConnectionState::Disconnected);
+    }
+
+    #[test]
+    fn active_device_returns_none_when_no_active() {
+        let mut dm = DeviceManager::new();
+        dm.add_device(make_device("dev-1", ConnectionState::Discovered));
+        assert!(dm.active_device().is_none());
     }
 }

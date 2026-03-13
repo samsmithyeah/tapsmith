@@ -76,7 +76,12 @@ impl PilotServiceImpl {
     }
 
     async fn error_screenshot(&self) -> Vec<u8> {
-        let serial = self.device_manager.read().await.active_serial().map(String::from);
+        let serial = self
+            .device_manager
+            .read()
+            .await
+            .active_serial()
+            .map(String::from);
         screenshot::capture_for_error(serial.as_deref()).await
     }
 
@@ -118,7 +123,7 @@ impl PilotServiceImpl {
 }
 
 /// Convert a protobuf Selector into a JSON value for the agent protocol.
-fn selector_to_json(selector: &proto::Selector) -> Value {
+pub(crate) fn selector_to_json(selector: &proto::Selector) -> Value {
     let mut obj = json!({});
 
     if let Some(ref sel) = selector.selector {
@@ -163,8 +168,12 @@ fn selector_to_json(selector: &proto::Selector) -> Value {
     obj
 }
 
-fn opt_timeout(ms: u64) -> Option<u64> {
-    if ms > 0 { Some(ms) } else { None }
+pub(crate) fn opt_timeout(ms: u64) -> Option<u64> {
+    if ms > 0 {
+        Some(ms)
+    } else {
+        None
+    }
 }
 
 #[tonic::async_trait]
@@ -205,7 +214,9 @@ impl proto::pilot_service_server::PilotService for PilotServiceImpl {
                 request_id,
                 found: false,
                 element: None,
-                error_message: resp.error.unwrap_or_else(|| "Element not found".to_string()),
+                error_message: resp
+                    .error
+                    .unwrap_or_else(|| "Element not found".to_string()),
             })),
             Err(status) => Ok(Response::new(proto::FindElementResponse {
                 request_id,
@@ -384,9 +395,7 @@ impl proto::pilot_service_server::PilotService for PilotServiceImpl {
             .await;
 
         if let Err(e) = &clear_result {
-            return self
-                .make_action_response(request_id, Err(e.clone()))
-                .await;
+            return self.make_action_response(request_id, Err(e.clone())).await;
         }
 
         if let Ok(ref resp) = clear_result {
@@ -415,12 +424,16 @@ impl proto::pilot_service_server::PilotService for PilotServiceImpl {
         let req = request.into_inner();
         let request_id = Self::request_id(&req.request_id);
 
-        let start_element = req.start_element.as_ref().map(|s| selector_to_json(s));
+        let start_element = req.start_element.as_ref().map(selector_to_json);
 
         let command = AgentCommand::Swipe {
             direction: req.direction,
             start_element,
-            speed: if req.speed > 0.0 { Some(req.speed) } else { None },
+            speed: if req.speed > 0.0 {
+                Some(req.speed)
+            } else {
+                None
+            },
             distance: if req.distance > 0.0 {
                 Some(req.distance)
             } else {
@@ -443,11 +456,8 @@ impl proto::pilot_service_server::PilotService for PilotServiceImpl {
         let req = request.into_inner();
         let request_id = Self::request_id(&req.request_id);
 
-        let container = req.container.as_ref().map(|s| selector_to_json(s));
-        let scroll_until_visible = req
-            .scroll_until_visible
-            .as_ref()
-            .map(|s| selector_to_json(s));
+        let container = req.container.as_ref().map(selector_to_json);
+        let scroll_until_visible = req.scroll_until_visible.as_ref().map(selector_to_json);
 
         let command = AgentCommand::Scroll {
             container,
@@ -735,7 +745,7 @@ impl proto::pilot_service_server::PilotService for PilotServiceImpl {
 
 // ─── Helper: Parse ElementInfo from agent JSON ───
 
-fn parse_element_info(data: &Value) -> Option<proto::ElementInfo> {
+pub(crate) fn parse_element_info(data: &Value) -> Option<proto::ElementInfo> {
     let el = if data.get("element").is_some() {
         data.get("element")?
     } else {
@@ -760,17 +770,17 @@ fn parse_element_info(data: &Value) -> Option<proto::ElementInfo> {
     })
 }
 
-fn parse_element_list(data: &Value) -> Vec<proto::ElementInfo> {
+pub(crate) fn parse_element_list(data: &Value) -> Vec<proto::ElementInfo> {
     let arr = data
         .get("elements")
         .and_then(|v| v.as_array())
         .cloned()
         .unwrap_or_default();
 
-    arr.iter().filter_map(|v| parse_element_info(v)).collect()
+    arr.iter().filter_map(parse_element_info).collect()
 }
 
-fn parse_bounds(value: Option<&Value>) -> Option<proto::Bounds> {
+pub(crate) fn parse_bounds(value: Option<&Value>) -> Option<proto::Bounds> {
     let b = value?;
     Some(proto::Bounds {
         left: b.get("left").and_then(|v| v.as_i64()).unwrap_or(0) as i32,
@@ -780,13 +790,309 @@ fn parse_bounds(value: Option<&Value>) -> Option<proto::Bounds> {
     })
 }
 
-fn json_str(v: &Value, key: &str) -> String {
+pub(crate) fn json_str(v: &Value, key: &str) -> String {
     v.get(key)
         .and_then(|v| v.as_str())
         .unwrap_or("")
         .to_string()
 }
 
-fn json_bool(v: &Value, key: &str) -> bool {
+pub(crate) fn json_bool(v: &Value, key: &str) -> bool {
     v.get(key).and_then(|v| v.as_bool()).unwrap_or(false)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    // ─── selector_to_json ───
+
+    #[test]
+    fn selector_to_json_text() {
+        let sel = proto::Selector {
+            selector: Some(proto::selector::Selector::Text("Login".into())),
+            parent: None,
+        };
+        let j = selector_to_json(&sel);
+        assert_eq!(j["text"], "Login");
+    }
+
+    #[test]
+    fn selector_to_json_role_with_name() {
+        let sel = proto::Selector {
+            selector: Some(proto::selector::Selector::Role(proto::RoleSelector {
+                role: "button".into(),
+                name: "Submit".into(),
+            })),
+            parent: None,
+        };
+        let j = selector_to_json(&sel);
+        assert_eq!(j["role"]["role"], "button");
+        assert_eq!(j["role"]["name"], "Submit");
+    }
+
+    #[test]
+    fn selector_to_json_content_desc() {
+        let sel = proto::Selector {
+            selector: Some(proto::selector::Selector::ContentDesc("Back button".into())),
+            parent: None,
+        };
+        let j = selector_to_json(&sel);
+        assert_eq!(j["contentDesc"], "Back button");
+    }
+
+    #[test]
+    fn selector_to_json_text_contains() {
+        let sel = proto::Selector {
+            selector: Some(proto::selector::Selector::TextContains("Welcome".into())),
+            parent: None,
+        };
+        let j = selector_to_json(&sel);
+        assert_eq!(j["textContains"], "Welcome");
+    }
+
+    #[test]
+    fn selector_to_json_hint() {
+        let sel = proto::Selector {
+            selector: Some(proto::selector::Selector::Hint("Enter email".into())),
+            parent: None,
+        };
+        let j = selector_to_json(&sel);
+        assert_eq!(j["hint"], "Enter email");
+    }
+
+    #[test]
+    fn selector_to_json_class_name() {
+        let sel = proto::Selector {
+            selector: Some(proto::selector::Selector::ClassName(
+                "android.widget.Button".into(),
+            )),
+            parent: None,
+        };
+        let j = selector_to_json(&sel);
+        assert_eq!(j["className"], "android.widget.Button");
+    }
+
+    #[test]
+    fn selector_to_json_test_id() {
+        let sel = proto::Selector {
+            selector: Some(proto::selector::Selector::TestId("login-btn".into())),
+            parent: None,
+        };
+        let j = selector_to_json(&sel);
+        assert_eq!(j["testId"], "login-btn");
+    }
+
+    #[test]
+    fn selector_to_json_resource_id() {
+        let sel = proto::Selector {
+            selector: Some(proto::selector::Selector::ResourceId(
+                "com.app:id/btn".into(),
+            )),
+            parent: None,
+        };
+        let j = selector_to_json(&sel);
+        assert_eq!(j["resourceId"], "com.app:id/btn");
+    }
+
+    #[test]
+    fn selector_to_json_xpath() {
+        let sel = proto::Selector {
+            selector: Some(proto::selector::Selector::Xpath(
+                "//button[@text='OK']".into(),
+            )),
+            parent: None,
+        };
+        let j = selector_to_json(&sel);
+        assert_eq!(j["xpath"], "//button[@text='OK']");
+    }
+
+    #[test]
+    fn selector_to_json_with_parent() {
+        let parent = proto::Selector {
+            selector: Some(proto::selector::Selector::ResourceId(
+                "com.app:id/toolbar".into(),
+            )),
+            parent: None,
+        };
+        let sel = proto::Selector {
+            selector: Some(proto::selector::Selector::Text("Save".into())),
+            parent: Some(Box::new(parent)),
+        };
+        let j = selector_to_json(&sel);
+        assert_eq!(j["text"], "Save");
+        assert_eq!(j["parent"]["resourceId"], "com.app:id/toolbar");
+    }
+
+    #[test]
+    fn selector_to_json_no_selector_set() {
+        let sel = proto::Selector {
+            selector: None,
+            parent: None,
+        };
+        let j = selector_to_json(&sel);
+        assert_eq!(j, json!({}));
+    }
+
+    // ─── parse_element_info ───
+
+    #[test]
+    fn parse_element_info_valid() {
+        let data = json!({
+            "elementId": "e1",
+            "className": "android.widget.Button",
+            "text": "Click me",
+            "contentDescription": "A button",
+            "resourceId": "com.app:id/btn",
+            "enabled": true,
+            "visible": true,
+            "clickable": true,
+            "focusable": false,
+            "scrollable": false,
+            "hint": "tap here",
+            "checked": false,
+            "selected": true,
+            "bounds": { "left": 10, "top": 20, "right": 100, "bottom": 60 }
+        });
+        let el = parse_element_info(&data).unwrap();
+        assert_eq!(el.element_id, "e1");
+        assert_eq!(el.class_name, "android.widget.Button");
+        assert_eq!(el.text, "Click me");
+        assert_eq!(el.content_description, "A button");
+        assert_eq!(el.resource_id, "com.app:id/btn");
+        assert!(el.enabled);
+        assert!(el.visible);
+        assert!(el.clickable);
+        assert!(!el.focusable);
+        assert!(!el.scrollable);
+        assert_eq!(el.hint, "tap here");
+        assert!(!el.checked);
+        assert!(el.selected);
+        let b = el.bounds.unwrap();
+        assert_eq!((b.left, b.top, b.right, b.bottom), (10, 20, 100, 60));
+    }
+
+    #[test]
+    fn parse_element_info_missing_fields() {
+        let data = json!({});
+        let el = parse_element_info(&data).unwrap();
+        assert_eq!(el.element_id, "");
+        assert_eq!(el.text, "");
+        assert!(!el.enabled);
+        assert!(el.bounds.is_none());
+    }
+
+    #[test]
+    fn parse_element_info_nested_element_key() {
+        let data = json!({
+            "element": {
+                "elementId": "nested-1",
+                "text": "Nested",
+                "enabled": true
+            }
+        });
+        let el = parse_element_info(&data).unwrap();
+        assert_eq!(el.element_id, "nested-1");
+        assert_eq!(el.text, "Nested");
+        assert!(el.enabled);
+    }
+
+    // ─── parse_element_list ───
+
+    #[test]
+    fn parse_element_list_empty() {
+        let data = json!({"elements": []});
+        let list = parse_element_list(&data);
+        assert!(list.is_empty());
+    }
+
+    #[test]
+    fn parse_element_list_multiple() {
+        let data = json!({
+            "elements": [
+                {"elementId": "a", "text": "First"},
+                {"elementId": "b", "text": "Second"}
+            ]
+        });
+        let list = parse_element_list(&data);
+        assert_eq!(list.len(), 2);
+        assert_eq!(list[0].element_id, "a");
+        assert_eq!(list[1].element_id, "b");
+        assert_eq!(list[0].text, "First");
+        assert_eq!(list[1].text, "Second");
+    }
+
+    #[test]
+    fn parse_element_list_missing_key() {
+        let data = json!({});
+        let list = parse_element_list(&data);
+        assert!(list.is_empty());
+    }
+
+    // ─── parse_bounds ───
+
+    #[test]
+    fn parse_bounds_valid() {
+        let v = json!({"left": 5, "top": 10, "right": 200, "bottom": 150});
+        let b = parse_bounds(Some(&v)).unwrap();
+        assert_eq!(b.left, 5);
+        assert_eq!(b.top, 10);
+        assert_eq!(b.right, 200);
+        assert_eq!(b.bottom, 150);
+    }
+
+    #[test]
+    fn parse_bounds_none() {
+        assert!(parse_bounds(None).is_none());
+    }
+
+    #[test]
+    fn parse_bounds_partial_fields() {
+        let v = json!({"left": 1});
+        let b = parse_bounds(Some(&v)).unwrap();
+        assert_eq!(b.left, 1);
+        assert_eq!(b.top, 0);
+        assert_eq!(b.right, 0);
+        assert_eq!(b.bottom, 0);
+    }
+
+    // ─── opt_timeout ───
+
+    #[test]
+    fn opt_timeout_zero_returns_none() {
+        assert!(opt_timeout(0).is_none());
+    }
+
+    #[test]
+    fn opt_timeout_positive_returns_some() {
+        assert_eq!(opt_timeout(5000), Some(5000));
+        assert_eq!(opt_timeout(1), Some(1));
+    }
+
+    // ─── json_str / json_bool ───
+
+    #[test]
+    fn json_str_present() {
+        let v = json!({"name": "hello"});
+        assert_eq!(json_str(&v, "name"), "hello");
+    }
+
+    #[test]
+    fn json_str_missing() {
+        let v = json!({});
+        assert_eq!(json_str(&v, "name"), "");
+    }
+
+    #[test]
+    fn json_bool_present() {
+        let v = json!({"flag": true});
+        assert!(json_bool(&v, "flag"));
+    }
+
+    #[test]
+    fn json_bool_missing() {
+        let v = json!({});
+        assert!(!json_bool(&v, "flag"));
+    }
 }

@@ -1,8 +1,5 @@
 package dev.pilot.agent
 
-import android.graphics.Point
-import android.graphics.Rect
-import android.os.SystemClock
 import android.view.KeyEvent
 import androidx.test.uiautomator.By
 import androidx.test.uiautomator.Direction
@@ -13,7 +10,6 @@ import androidx.test.uiautomator.UiObject2
  * Executes UI actions: tap, long press, text input, swipe, scroll, and key presses.
  */
 class ActionExecutor(private val device: UiDevice) {
-
     /**
      * Tap on an element's center point.
      */
@@ -28,7 +24,10 @@ class ActionExecutor(private val device: UiDevice) {
     /**
      * Tap at specific screen coordinates.
      */
-    fun tapCoordinates(x: Int, y: Int) {
+    fun tapCoordinates(
+        x: Int,
+        y: Int,
+    ) {
         if (!device.click(x, y)) {
             throw ActionFailedException("Failed to tap at ($x, $y)")
         }
@@ -37,7 +36,10 @@ class ActionExecutor(private val device: UiDevice) {
     /**
      * Long press on an element with configurable duration.
      */
-    fun longPress(element: UiObject2, durationMs: Long = 1000L) {
+    fun longPress(
+        element: UiObject2,
+        durationMs: Long = 1000L,
+    ) {
         try {
             val bounds = element.visibleBounds
             val cx = bounds.centerX()
@@ -51,7 +53,11 @@ class ActionExecutor(private val device: UiDevice) {
     /**
      * Long press at specific coordinates.
      */
-    fun longPressCoordinates(x: Int, y: Int, durationMs: Long = 1000L) {
+    fun longPressCoordinates(
+        x: Int,
+        y: Int,
+        durationMs: Long = 1000L,
+    ) {
         // swipe from point to same point with steps proportional to duration
         device.swipe(x, y, x, y, (durationMs / 5).toInt().coerceAtLeast(1))
     }
@@ -60,7 +66,10 @@ class ActionExecutor(private val device: UiDevice) {
      * Type text into a focused element.
      * First clicks the element to ensure focus, then types the text.
      */
-    fun typeText(element: UiObject2, text: String) {
+    fun typeText(
+        element: UiObject2,
+        text: String,
+    ) {
         try {
             element.click()
             // Small delay to ensure focus is established
@@ -83,11 +92,12 @@ class ActionExecutor(private val device: UiDevice) {
      */
     fun typeTextWithoutFocus(text: String) {
         // Escape special characters for shell input
-        val escaped = text.replace("\\", "\\\\")
-            .replace("\"", "\\\"")
-            .replace("$", "\\$")
-            .replace("`", "\\`")
-            .replace(" ", "%s")
+        val escaped =
+            text.replace("\\", "\\\\")
+                .replace("\"", "\\\"")
+                .replace("$", "\\$")
+                .replace("`", "\\`")
+                .replace(" ", "%s")
         device.executeShellCommand("input text \"${escaped.replace("%s", "\\ ")}\"")
     }
 
@@ -123,19 +133,28 @@ class ActionExecutor(private val device: UiDevice) {
      * @param speed Swipe speed in pixels per second
      * @param distance Fraction of the element's dimension to swipe (0.0 to 1.0)
      */
-    fun swipe(element: UiObject2, direction: String, speed: Int = 5000, distance: Double = 0.5) {
+    fun swipe(
+        element: UiObject2,
+        direction: String,
+        speed: Int = 5000,
+        distance: Double = 0.5,
+    ) {
         val dir = parseDirection(direction)
         try {
             element.swipe(dir, distance.toFloat(), speed)
         } catch (e: Exception) {
-            throw ActionFailedException("Failed to swipe ${direction} on element: ${e.message}")
+            throw ActionFailedException("Failed to swipe $direction on element: ${e.message}")
         }
     }
 
     /**
      * Swipe on the full screen in a given direction.
      */
-    fun swipeScreen(direction: String, speed: Int = 5000, distance: Double = 0.5) {
+    fun swipeScreen(
+        direction: String,
+        speed: Int = 5000,
+        distance: Double = 0.5,
+    ) {
         val w = device.displayWidth
         val h = device.displayHeight
         val cx = w / 2
@@ -171,7 +190,7 @@ class ActionExecutor(private val device: UiDevice) {
     fun scroll(
         element: UiObject2,
         direction: String,
-        targetSelector: ElementSelector? = null
+        targetSelector: ElementSelector? = null,
     ) {
         val dir = parseDirection(direction)
         if (targetSelector != null) {
@@ -180,7 +199,7 @@ class ActionExecutor(private val device: UiDevice) {
             try {
                 element.scroll(dir, 1.0f)
             } catch (e: Exception) {
-                throw ActionFailedException("Failed to scroll ${direction}: ${e.message}")
+                throw ActionFailedException("Failed to scroll $direction: ${e.message}")
             }
         }
     }
@@ -188,19 +207,23 @@ class ActionExecutor(private val device: UiDevice) {
     /**
      * Scroll the full screen.
      */
-    fun scrollScreen(direction: String, targetSelector: ElementSelector? = null) {
+    fun scrollScreen(
+        direction: String,
+        targetSelector: ElementSelector? = null,
+    ) {
         // For full-screen scrolling, use swipe gestures
         swipeScreen(
             // Invert direction: scrolling "down" means swiping "up"
-            direction = when (direction.lowercase()) {
-                "down" -> "up"
-                "up" -> "down"
-                "left" -> "right"
-                "right" -> "left"
-                else -> direction
-            },
+            direction =
+                when (direction.lowercase()) {
+                    "down" -> "up"
+                    "up" -> "down"
+                    "left" -> "right"
+                    "right" -> "left"
+                    else -> direction
+                },
             speed = 5000,
-            distance = 0.6
+            distance = 0.6,
         )
     }
 
@@ -211,17 +234,18 @@ class ActionExecutor(private val device: UiDevice) {
         container: UiObject2,
         direction: Direction,
         targetSelector: ElementSelector,
-        maxScrolls: Int = 20
+        maxScrolls: Int = 20,
     ) {
         for (i in 0 until maxScrolls) {
             // Check if target is already visible
-            val targetBy = when {
-                targetSelector.text != null -> By.text(targetSelector.text)
-                targetSelector.textContains != null -> By.textContains(targetSelector.textContains)
-                targetSelector.contentDesc != null -> By.desc(targetSelector.contentDesc)
-                targetSelector.id != null -> By.res(targetSelector.id)
-                else -> throw InvalidSelectorException("scrollTo requires text, textContains, contentDesc, or id")
-            }
+            val targetBy =
+                when {
+                    targetSelector.text != null -> By.text(targetSelector.text)
+                    targetSelector.textContains != null -> By.textContains(targetSelector.textContains)
+                    targetSelector.contentDesc != null -> By.desc(targetSelector.contentDesc)
+                    targetSelector.id != null -> By.res(targetSelector.id)
+                    else -> throw InvalidSelectorException("scrollTo requires text, textContains, contentDesc, or id")
+                }
 
             val found = container.findObject(targetBy)
             if (found != null) return
@@ -229,7 +253,9 @@ class ActionExecutor(private val device: UiDevice) {
             val canScroll = container.scroll(direction, 0.8f)
             if (!canScroll) {
                 throw ElementNotFoundException(
-                    "Could not find target element after scrolling to the end. Selector: ${targetSelector.text ?: targetSelector.textContains ?: targetSelector.contentDesc ?: targetSelector.id}"
+                    "Could not find target element after scrolling to the end. " +
+                        "Selector: ${targetSelector.text ?: targetSelector.textContains
+                            ?: targetSelector.contentDesc ?: targetSelector.id}",
                 )
             }
             device.waitForIdle(500)
