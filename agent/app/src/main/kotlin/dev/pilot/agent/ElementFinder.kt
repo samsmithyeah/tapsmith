@@ -138,15 +138,15 @@ class ElementFinder(private val device: UiDevice) {
                     "android.widget.ImageView",
                     "androidx.appcompat.widget.AppCompatImageView",
                 ),
-            "heading" to
-                listOf(
-                    "android.widget.TextView",
-                ),
             "text" to
                 listOf(
                     "android.widget.TextView",
                     "androidx.appcompat.widget.AppCompatTextView",
                     "com.google.android.material.textview.MaterialTextView",
+                ),
+            "heading" to
+                listOf(
+                    "android.widget.TextView",
                 ),
             "link" to
                 listOf(

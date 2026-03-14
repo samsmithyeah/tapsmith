@@ -61,12 +61,12 @@ const ROLE_CLASS_MAP: Record<string, string[]> = {
     "android.widget.ImageView",
     "androidx.appcompat.widget.AppCompatImageView",
   ],
-  heading: ["android.widget.TextView"],
   text: [
     "android.widget.TextView",
     "androidx.appcompat.widget.AppCompatTextView",
     "com.google.android.material.textview.MaterialTextView",
   ],
+  heading: ["android.widget.TextView"],
   link: ["android.widget.TextView"],
   list: [
     "android.widget.ListView",
@@ -402,7 +402,7 @@ function createAssertions(
           const res = await handle._client.findElement(handle._selector, 0);
           if (res.found && res.element) {
             lastText = res.element.text;
-            return !res.element.text || res.element.text === "";
+            return !res.element.text;
           }
           return false;
         } catch {
