@@ -210,7 +210,9 @@ class ElementFinder(private val device: UiDevice) {
         val map = mutableMapOf<String, String>()
         for ((role, classNames) in roleClassMap) {
             for (className in classNames) {
-                map[className] = role
+                if (!map.containsKey(className)) {
+                    map[className] = role
+                }
             }
         }
         map

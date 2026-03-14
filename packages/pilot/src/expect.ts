@@ -115,9 +115,9 @@ const ROLE_CLASS_MAP: Record<string, string[]> = {
 const EDITABLE_CLASSES = new Set(ROLE_CLASS_MAP["textfield"]);
 
 const CLASS_TO_ROLE_MAP: Record<string, string> = Object.fromEntries(
-  Object.entries(ROLE_CLASS_MAP).flatMap(([role, classes]) =>
-    classes.map((className) => [className, role]),
-  ),
+  Object.entries(ROLE_CLASS_MAP)
+    .reverse()
+    .flatMap(([role, classes]) => classes.map((className) => [className, role])),
 );
 
 // ─── Assertion object ───
@@ -528,7 +528,10 @@ function createAssertions(
           if (res.found && res.element) {
             // On Android, accessible name is contentDescription if set, otherwise text
             lastName = res.element.contentDescription || res.element.text;
-            return matchesStringOrRegExp(lastName, name);
+            if (typeof name === "string") {
+              return lastName === name;
+            }
+            return name.test(lastName);
           }
           return false;
         } catch {
@@ -559,7 +562,10 @@ function createAssertions(
           const res = await handle._client.findElement(handle._selector, 0);
           if (res.found && res.element) {
             lastDesc = res.element.hint;
-            return matchesStringOrRegExp(lastDesc, description);
+            if (typeof description === "string") {
+              return lastDesc === description;
+            }
+            return description.test(lastDesc);
           }
           return false;
         } catch {
