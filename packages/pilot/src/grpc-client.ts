@@ -28,6 +28,9 @@ export interface ElementInfo {
   hint: string;
   checked: boolean;
   selected: boolean;
+  focused: boolean;
+  role: string;
+  viewportRatio: number;
 }
 
 export interface ActionResponse {

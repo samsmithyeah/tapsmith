@@ -25,6 +25,9 @@ function makeElementInfo(overrides: Partial<ElementInfo> = {}): ElementInfo {
     hint: '',
     checked: false,
     selected: false,
+    focused: false,
+    role: '',
+    viewportRatio: 1.0,
     ...overrides,
   };
 }
