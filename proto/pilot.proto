@@ -62,6 +62,9 @@ message ElementInfo {
   string hint = 12;
   bool checked = 13;
   bool selected = 14;
+  bool focused = 15;
+  string role = 16;
+  float viewport_ratio = 17;
 }
 
 message Bounds {

@@ -767,6 +767,9 @@ pub(crate) fn parse_element_info(data: &Value) -> Option<proto::ElementInfo> {
         hint: json_str(el, "hint"),
         checked: json_bool(el, "checked"),
         selected: json_bool(el, "selected"),
+        focused: json_bool(el, "focused"),
+        role: json_str(el, "role"),
+        viewport_ratio: json_float(el, "viewportRatio"),
     })
 }
 
@@ -799,6 +802,10 @@ pub(crate) fn json_str(v: &Value, key: &str) -> String {
 
 pub(crate) fn json_bool(v: &Value, key: &str) -> bool {
     v.get(key).and_then(|v| v.as_bool()).unwrap_or(false)
+}
+
+pub(crate) fn json_float(v: &Value, key: &str) -> f32 {
+    v.get(key).and_then(|v| v.as_f64()).unwrap_or(0.0) as f32
 }
 
 #[cfg(test)]
@@ -953,6 +960,9 @@ mod tests {
             "hint": "tap here",
             "checked": false,
             "selected": true,
+            "focused": true,
+            "role": "button",
+            "viewportRatio": 0.75,
             "bounds": { "left": 10, "top": 20, "right": 100, "bottom": 60 }
         });
         let el = parse_element_info(&data).unwrap();
@@ -969,6 +979,9 @@ mod tests {
         assert_eq!(el.hint, "tap here");
         assert!(!el.checked);
         assert!(el.selected);
+        assert!(el.focused);
+        assert_eq!(el.role, "button");
+        assert!((el.viewport_ratio - 0.75).abs() < 0.01);
         let b = el.bounds.unwrap();
         assert_eq!((b.left, b.top, b.right, b.bottom), (10, 20, 100, 60));
     }
@@ -980,6 +993,9 @@ mod tests {
         assert_eq!(el.element_id, "");
         assert_eq!(el.text, "");
         assert!(!el.enabled);
+        assert!(!el.focused);
+        assert_eq!(el.role, "");
+        assert_eq!(el.viewport_ratio, 0.0);
         assert!(el.bounds.is_none());
     }
 

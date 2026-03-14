@@ -423,6 +423,128 @@ await expect(device.element(testId("hidden-input"))).toExist();
 await expect(device.element(text("Deleted item"))).not.toExist();
 ```
 
+### `.toBeChecked(options?): Promise<void>`
+
+Assert that a checkbox, switch, or radio button is in the checked state.
+
+```typescript
+await expect(device.element(role("switch", "Dark Mode"))).toBeChecked();
+await expect(device.element(role("checkbox"))).not.toBeChecked();
+```
+
+### `.toBeDisabled(options?): Promise<void>`
+
+Assert that the element is disabled (not interactive). More expressive than `.not.toBeEnabled()`.
+
+```typescript
+await expect(device.element(role("button", "Submit"))).toBeDisabled();
+```
+
+### `.toBeHidden(options?): Promise<void>`
+
+Assert that the element is not visible on screen (either not in the hierarchy or has visibility=false). More expressive than `.not.toBeVisible()`.
+
+```typescript
+await expect(device.element(text("Loading..."))).toBeHidden();
+```
+
+### `.toBeEmpty(options?): Promise<void>`
+
+Assert that the element has no text content or is an empty input field.
+
+```typescript
+await expect(device.element(role("textfield", "Search"))).toBeEmpty();
+```
+
+### `.toBeFocused(options?): Promise<void>`
+
+Assert that the element currently has accessibility/input focus.
+
+```typescript
+await device.element(role("textfield", "Email")).tap();
+await expect(device.element(role("textfield", "Email"))).toBeFocused();
+```
+
+### `.toContainText(expected: string | RegExp, options?): Promise<void>`
+
+Assert that the element's text contains the given substring or matches a regex. Unlike `toHaveText()` which requires an exact match, this allows partial matching.
+
+```typescript
+await expect(device.element(testId("status"))).toContainText("Success");
+await expect(device.element(testId("status"))).toContainText(/\d+ items/);
+```
+
+### `.toHaveCount(count: number, options?): Promise<void>`
+
+Assert that the selector resolves to exactly N elements.
+
+```typescript
+await expect(device.element(role("listitem"))).toHaveCount(5);
+await expect(device.element(text("Error"))).toHaveCount(0);
+```
+
+### `.toHaveAttribute(name: string, value: unknown, options?): Promise<void>`
+
+Assert that the element has a specific property/attribute value. For Android, this maps to view properties like `className`, `resourceId`, `contentDescription`, `enabled`, `clickable`, `focusable`, `scrollable`, `selected`, etc.
+
+```typescript
+await expect(device.element(text("Item"))).toHaveAttribute("selected", true);
+await expect(device.element(text("Item"))).toHaveAttribute("className", "android.widget.TextView");
+```
+
+### `.toHaveAccessibleName(name: string | RegExp, options?): Promise<void>`
+
+Assert that the element has the given accessible name. On Android, this is the `contentDescription` if set, otherwise the `text` property.
+
+```typescript
+await expect(device.element(role("button"))).toHaveAccessibleName("Submit form");
+await expect(device.element(role("image"))).toHaveAccessibleName(/Profile/);
+```
+
+### `.toHaveAccessibleDescription(description: string | RegExp, options?): Promise<void>`
+
+Assert that the element has the given accessible description. On Android, this maps to the `hint` property.
+
+```typescript
+await expect(device.element(role("image"))).toHaveAccessibleDescription("Profile photo");
+```
+
+### `.toHaveRole(role: string, options?): Promise<void>`
+
+Assert that the element has a specific accessibility role.
+
+```typescript
+await expect(device.element(text("Submit"))).toHaveRole("button");
+await expect(device.element(testId("toggle"))).toHaveRole("switch");
+```
+
+### `.toHaveValue(value: string, options?): Promise<void>`
+
+Assert that an input field contains a specific value.
+
+```typescript
+await device.element(role("textfield", "Email")).type("test@example.com");
+await expect(device.element(role("textfield", "Email"))).toHaveValue("test@example.com");
+```
+
+### `.toBeEditable(options?): Promise<void>`
+
+Assert that the element is an editable input field (a text field that is enabled).
+
+```typescript
+await expect(device.element(role("textfield", "Name"))).toBeEditable();
+await expect(device.element(role("textfield", "ID"))).not.toBeEditable(); // read-only
+```
+
+### `.toBeInViewport(options?): Promise<void>`
+
+Assert that the element is currently within the visible screen area. Different from `toBeVisible()` which checks the visibility property — this checks if the element's bounds intersect with the screen bounds.
+
+```typescript
+await expect(device.element(text("Footer"))).toBeInViewport();
+await expect(device.element(text("Footer"))).toBeInViewport({ ratio: 0.5 }); // at least 50% visible
+```
+
 **Assertion options:**
 
 All assertion methods accept an optional `options` object:
@@ -430,6 +552,7 @@ All assertion methods accept an optional `options` object:
 | Option | Type | Default | Description |
 |---|---|---|---|
 | `timeout` | `number` | Element's timeout (default 30s) | How long to wait for the condition |
+| `ratio` | `number` | `0` | (toBeInViewport only) Minimum fraction of element visible in viewport |
 
 ---
 
