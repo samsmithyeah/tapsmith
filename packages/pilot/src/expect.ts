@@ -114,6 +114,12 @@ const ROLE_CLASS_MAP: Record<string, string[]> = {
 
 const EDITABLE_CLASSES = new Set(ROLE_CLASS_MAP["textfield"]);
 
+const CLASS_TO_ROLE_MAP: Record<string, string> = Object.fromEntries(
+  Object.entries(ROLE_CLASS_MAP).flatMap(([role, classes]) =>
+    classes.map((className) => [className, role]),
+  ),
+);
+
 // ─── Assertion object ───
 
 export interface PilotAssertions {
@@ -705,13 +711,10 @@ function createAssertions(
 }
 
 /**
- * Resolve a class name to a role using the role-to-class mapping.
+ * Resolve a class name to a role using the pre-computed reverse map.
  */
 function classNameToRole(className: string): string {
-  for (const [role, classes] of Object.entries(ROLE_CLASS_MAP)) {
-    if (classes.includes(className)) return role;
-  }
-  return "";
+  return CLASS_TO_ROLE_MAP[className] || "";
 }
 
 /**
