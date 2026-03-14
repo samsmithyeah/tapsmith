@@ -1241,15 +1241,14 @@ function createPollAssertions(
     return async () => {
       const deadline = Date.now() + timeout;
       let intervalIdx = 0;
-      let lastError: Error | undefined;
 
       while (true) {
         try {
           const value = await fn();
           check(value);
           return; // Assertion passed
-        } catch (err) {
-          lastError = err instanceof Error ? err : new Error(String(err));
+        } catch {
+          // Will retry if timeout not exceeded
         }
 
         if (Date.now() >= deadline) break;

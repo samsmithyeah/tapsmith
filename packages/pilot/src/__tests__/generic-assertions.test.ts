@@ -1,4 +1,4 @@
-import { describe, it, expect as vitestExpect, vi, beforeEach } from "vitest";
+import { describe, it, expect as vitestExpect, vi, beforeEach, afterEach } from "vitest";
 import { expect as pilotExpect, flushSoftErrors } from "../expect.js";
 import { ElementHandle } from "../element-handle.js";
 import { text } from "../selectors.js";
@@ -639,13 +639,21 @@ describe("PILOT-43: expect.soft()", () => {
 // ════════════════════════════════════════════════════════════════
 
 describe("PILOT-44: expect.poll()", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
   it("passes immediately when condition is met", async () => {
     await pilotExpect.poll(() => 5, { timeout: 1000 }).toBe(5);
   });
 
   it("polls until condition is met", async () => {
     let count = 0;
-    await pilotExpect
+    const promise = pilotExpect
       .poll(
         () => {
           count++;
@@ -655,10 +663,14 @@ describe("PILOT-44: expect.poll()", () => {
       )
       .toBeGreaterThan(3);
 
+    await vi.advanceTimersByTimeAsync(250);
+    await promise;
+
     vitestExpect(count).toBeGreaterThanOrEqual(4);
   });
 
   it("times out when condition is never met", async () => {
+    vi.useRealTimers();
     await vitestExpect(
       pilotExpect.poll(() => 1, { timeout: 200, intervals: [50] }).toBe(999),
     ).rejects.toThrow("to be 999");
@@ -666,7 +678,7 @@ describe("PILOT-44: expect.poll()", () => {
 
   it("works with async functions", async () => {
     let count = 0;
-    await pilotExpect
+    const promise = pilotExpect
       .poll(
         async () => {
           count++;
@@ -675,6 +687,9 @@ describe("PILOT-44: expect.poll()", () => {
         { timeout: 2000, intervals: [50] },
       )
       .toBeGreaterThanOrEqual(2);
+
+    await vi.advanceTimersByTimeAsync(150);
+    await promise;
   });
 
   it("supports .not", async () => {
@@ -689,9 +704,12 @@ describe("PILOT-44: expect.poll()", () => {
       items = [1, 2, 3];
     }, 100);
 
-    await pilotExpect
+    const promise = pilotExpect
       .poll(() => items, { timeout: 2000, intervals: [50] })
       .toContain(3);
+
+    await vi.advanceTimersByTimeAsync(200);
+    await promise;
   });
 
   it("supports toHaveLength", async () => {
@@ -700,9 +718,12 @@ describe("PILOT-44: expect.poll()", () => {
       arr = [1, 2, 3];
     }, 100);
 
-    await pilotExpect
+    const promise = pilotExpect
       .poll(() => arr, { timeout: 2000, intervals: [50] })
       .toHaveLength(3);
+
+    await vi.advanceTimersByTimeAsync(200);
+    await promise;
   });
 
   it("supports toBeTruthy", async () => {
@@ -711,14 +732,17 @@ describe("PILOT-44: expect.poll()", () => {
       value = "loaded";
     }, 100);
 
-    await pilotExpect
+    const promise = pilotExpect
       .poll(() => value, { timeout: 2000, intervals: [50] })
       .toBeTruthy();
+
+    await vi.advanceTimersByTimeAsync(200);
+    await promise;
   });
 
   it("handles errors thrown by the polled function", async () => {
     let count = 0;
-    await pilotExpect
+    const promise = pilotExpect
       .poll(
         () => {
           count++;
@@ -728,6 +752,9 @@ describe("PILOT-44: expect.poll()", () => {
         { timeout: 2000, intervals: [50] },
       )
       .toBeGreaterThanOrEqual(3);
+
+    await vi.advanceTimersByTimeAsync(200);
+    await promise;
   });
 
   it("uses default timeout when none provided", async () => {
@@ -735,6 +762,7 @@ describe("PILOT-44: expect.poll()", () => {
   });
 
   it("throws for invalid/misspelled assertion methods", async () => {
+    vi.useRealTimers();
     await vitestExpect(
       (pilotExpect.poll(() => 5, { timeout: 100 }) as unknown as Record<string, (...args: unknown[]) => Promise<void>>)
         .toBee(5),
