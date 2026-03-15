@@ -669,12 +669,11 @@ describe('filter()', () => {
         makeElementInfo({ elementId: 'c1', text: 'Premium', bounds: { left: 10, top: 10, right: 90, bottom: 40 } }),
       ];
 
-      const findElements = vi.fn(async () => {
-        // First call: parent elements, second call: child elements within parent
-        if (findElements.mock.calls.length <= 1) {
-          return makeFindElementsResponse(parentElements);
-        }
-        return makeFindElementsResponse(childElements);
+      const findElements = vi.fn(async (selector: any) => {
+        const proto = selectorToProto(selector);
+        // Child selector is text('Premium').within(role('listitem')), so it has a parent
+        if (proto.parent) return makeFindElementsResponse(childElements);
+        return makeFindElementsResponse(parentElements);
       });
       const client = makeMockClient({ findElements });
       const handle = new ElementHandle(client, role('listitem'), 5000);
@@ -694,11 +693,11 @@ describe('filter()', () => {
         makeElementInfo({ elementId: 'c1', text: 'Disabled', bounds: { left: 10, top: 110, right: 90, bottom: 140 } }),
       ];
 
-      const findElements = vi.fn(async () => {
-        if (findElements.mock.calls.length <= 1) {
-          return makeFindElementsResponse(parentElements);
-        }
-        return makeFindElementsResponse(childElements);
+      const findElements = vi.fn(async (selector: any) => {
+        const proto = selectorToProto(selector);
+        // Child selector is text('Disabled').within(role('listitem')), so it has a parent
+        if (proto.parent) return makeFindElementsResponse(childElements);
+        return makeFindElementsResponse(parentElements);
       });
       const client = makeMockClient({ findElements });
       const handle = new ElementHandle(client, role('listitem'), 5000);

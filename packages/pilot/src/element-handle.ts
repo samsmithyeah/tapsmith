@@ -35,6 +35,7 @@ interface ElementHandleOptions {
   filters?: FilterOptions[];
   andHandle?: ElementHandle;
   orHandle?: ElementHandle;
+  resolvedElementsPromise?: Promise<ElementInfo[]>;
 }
 
 // ─── Helpers ───
@@ -161,15 +162,10 @@ export class ElementHandle {
         orHandle._resolveAll(),
       ]);
 
-      const seen = new Set<string>();
-      const elements: ElementInfo[] = [];
-      for (const el of [...selfElements, ...otherElements]) {
-        if (!seen.has(el.elementId)) {
-          seen.add(el.elementId);
-          elements.push(el);
-        }
-      }
-      return elements;
+      const combined = [...selfElements, ...otherElements];
+      return Array.from(
+        new Map(combined.map((el) => [el.elementId, el])).values(),
+      );
     }
 
     if (this._options.andHandle) {
@@ -222,7 +218,7 @@ export class ElementHandle {
 
     if (filter.has !== undefined) {
       const childSelector = filter.has.within(this._selector);
-      const childRes = await this._client.findElements(childSelector, 0);
+      const childRes = await this._client.findElements(childSelector, this._timeoutMs);
       const childElements = childRes.elements ?? [];
       result = result.filter((parent) =>
         childElements.some((child) => boundsContain(parent.bounds, child.bounds)),
@@ -231,7 +227,7 @@ export class ElementHandle {
 
     if (filter.hasNot !== undefined) {
       const childSelector = filter.hasNot.within(this._selector);
-      const childRes = await this._client.findElements(childSelector, 0);
+      const childRes = await this._client.findElements(childSelector, this._timeoutMs);
       const childElements = childRes.elements ?? [];
       result = result.filter(
         (parent) =>
@@ -244,7 +240,9 @@ export class ElementHandle {
 
   /** @internal — Resolve to a single target element, respecting nth index. */
   private async _resolveOne(): Promise<ElementInfo> {
-    const elements = await this._resolveAll();
+    const elements = this._options.resolvedElementsPromise
+      ? await this._options.resolvedElementsPromise
+      : await this._resolveAll();
     const nthIndex = this._options.nthIndex;
 
     if (nthIndex !== undefined) {
@@ -326,16 +324,17 @@ export class ElementHandle {
   /**
    * Return an array of ElementHandles, one for each matching element (PILOT-13).
    *
-   * Note: each returned handle is lazy — actions or queries on individual handles
-   * will re-execute `findElements`. For large result sets, prefer using `count()`
-   * for simple cardinality checks.
+   * The resolved elements are cached in the returned handles, so iterating
+   * and performing actions will not re-query `findElements` for each handle.
    */
   async all(): Promise<ElementHandle[]> {
-    const elements = await this._resolveAll();
+    const resolvedElementsPromise = this._resolveAll();
+    const elements = await resolvedElementsPromise;
     return elements.map((_, i) =>
       new ElementHandle(this._client, this._selector, this._timeoutMs, {
         ...this._options,
         nthIndex: i,
+        resolvedElementsPromise,
       }),
     );
   }
