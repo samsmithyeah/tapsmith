@@ -1,9 +1,9 @@
 import { describe, it, expect, vi } from 'vitest';
 import { ElementHandle } from '../element-handle.js';
-import { text, role, className, selectorToProto } from '../selectors.js';
+import { type Selector, text, role, className, selectorToProto } from '../selectors.js';
 import type {
   PilotGrpcClient,
-  FindElementResponse,
+  FindElementsResponse,
   ActionResponse,
   ElementInfo,
 } from '../grpc-client.js';
@@ -52,6 +52,10 @@ function failureResponse(msg = 'Action failed'): ActionResponse {
   };
 }
 
+function makeFindElementsResponse(elements: ElementInfo[]): FindElementsResponse {
+  return { requestId: '1', elements, errorMessage: '' };
+}
+
 function makeMockClient(overrides: Partial<PilotGrpcClient> = {}): PilotGrpcClient {
   return {
     findElement: vi.fn(async () => ({
@@ -60,6 +64,7 @@ function makeMockClient(overrides: Partial<PilotGrpcClient> = {}): PilotGrpcClie
       element: makeElementInfo(),
       errorMessage: '',
     })),
+    findElements: vi.fn(async () => makeFindElementsResponse([makeElementInfo()])),
     tap: vi.fn(async () => successResponse()),
     longPress: vi.fn(async () => successResponse()),
     typeText: vi.fn(async () => successResponse()),
@@ -382,5 +387,570 @@ describe('isEnabled()', () => {
     });
     const handle = new ElementHandle(client, text('X'), 5000);
     expect(await handle.isEnabled()).toBe(false);
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════
+// New Locator API tests (PILOT-13 through PILOT-17)
+// ═══════════════════════════════════════════════════════════════════════
+
+const threeItems: ElementInfo[] = [
+  makeElementInfo({ elementId: 'el-1', text: 'Apple', resourceId: 'item_1', bounds: { left: 0, top: 0, right: 100, bottom: 50 } }),
+  makeElementInfo({ elementId: 'el-2', text: 'Banana', resourceId: 'item_2', bounds: { left: 0, top: 50, right: 100, bottom: 100 } }),
+  makeElementInfo({ elementId: 'el-3', text: 'Cherry', resourceId: 'item_3', bounds: { left: 0, top: 100, right: 100, bottom: 150 } }),
+];
+
+// ─── count() (PILOT-14) ───
+
+describe('count()', () => {
+  it('returns the number of matching elements', async () => {
+    const client = makeMockClient({
+      findElements: vi.fn(async () => makeFindElementsResponse(threeItems)),
+    });
+    const handle = new ElementHandle(client, role('listitem'), 5000);
+    expect(await handle.count()).toBe(3);
+  });
+
+  it('returns 0 when no elements match', async () => {
+    const client = makeMockClient({
+      findElements: vi.fn(async () => makeFindElementsResponse([])),
+    });
+    const handle = new ElementHandle(client, role('listitem'), 5000);
+    expect(await handle.count()).toBe(0);
+  });
+
+  it('passes timeout to findElements', async () => {
+    const findElements = vi.fn(async () => makeFindElementsResponse([]));
+    const client = makeMockClient({ findElements });
+    const handle = new ElementHandle(client, role('listitem'), 7000);
+    await handle.count();
+    expect(findElements).toHaveBeenCalledWith(handle._selector, 7000);
+  });
+});
+
+// ─── all() (PILOT-13) ───
+
+describe('all()', () => {
+  it('returns an array of ElementHandles for each match', async () => {
+    const client = makeMockClient({
+      findElements: vi.fn(async () => makeFindElementsResponse(threeItems)),
+    });
+    const handle = new ElementHandle(client, role('listitem'), 5000);
+    const items = await handle.all();
+    expect(items).toHaveLength(3);
+    items.forEach((item) => {
+      expect(item).toBeInstanceOf(ElementHandle);
+      expect(item._client).toBe(client);
+      expect(item._timeoutMs).toBe(5000);
+    });
+  });
+
+  it('returns empty array when no elements match', async () => {
+    const client = makeMockClient({
+      findElements: vi.fn(async () => makeFindElementsResponse([])),
+    });
+    const handle = new ElementHandle(client, role('listitem'), 5000);
+    const items = await handle.all();
+    expect(items).toEqual([]);
+  });
+
+  it('returned handles resolve to the correct element via nth index', async () => {
+    const findElements = vi.fn(async () => makeFindElementsResponse(threeItems));
+    const client = makeMockClient({ findElements });
+    const handle = new ElementHandle(client, role('listitem'), 5000);
+    const items = await handle.all();
+
+    // Each handle's find() should resolve to the correct element by index
+    const second = await items[1].find();
+    expect(second.text).toBe('Banana');
+  });
+});
+
+// ─── first(), last(), nth() (PILOT-15) ───
+
+describe('first()', () => {
+  it('returns a new ElementHandle (lazy — does not resolve)', () => {
+    const client = makeMockClient();
+    const handle = new ElementHandle(client, role('listitem'), 5000);
+    const first = handle.first();
+    expect(first).toBeInstanceOf(ElementHandle);
+    expect(first).not.toBe(handle);
+    expect(first._selector).toBe(handle._selector);
+    // findElements should not have been called yet
+    expect(client.findElements).not.toHaveBeenCalled();
+  });
+
+  it('find() resolves to the first matching element', async () => {
+    const client = makeMockClient({
+      findElements: vi.fn(async () => makeFindElementsResponse(threeItems)),
+    });
+    const handle = new ElementHandle(client, role('listitem'), 5000);
+    const result = await handle.first().find();
+    expect(result.text).toBe('Apple');
+  });
+
+  it('exists() returns true when at least one element matches', async () => {
+    const client = makeMockClient({
+      findElements: vi.fn(async () => makeFindElementsResponse(threeItems)),
+    });
+    const handle = new ElementHandle(client, role('listitem'), 5000);
+    expect(await handle.first().exists()).toBe(true);
+  });
+
+  it('exists() returns false when no elements match', async () => {
+    const client = makeMockClient({
+      findElements: vi.fn(async () => makeFindElementsResponse([])),
+    });
+    const handle = new ElementHandle(client, role('listitem'), 5000);
+    expect(await handle.first().exists()).toBe(false);
+  });
+});
+
+describe('last()', () => {
+  it('find() resolves to the last matching element', async () => {
+    const client = makeMockClient({
+      findElements: vi.fn(async () => makeFindElementsResponse(threeItems)),
+    });
+    const handle = new ElementHandle(client, role('listitem'), 5000);
+    const result = await handle.last().find();
+    expect(result.text).toBe('Cherry');
+  });
+
+  it('throws when no elements match', async () => {
+    const client = makeMockClient({
+      findElements: vi.fn(async () => makeFindElementsResponse([])),
+    });
+    const handle = new ElementHandle(client, role('listitem'), 5000);
+    await expect(handle.last().find()).rejects.toThrow('nth(-1)');
+  });
+});
+
+describe('nth()', () => {
+  it('find() resolves to the element at the given index', async () => {
+    const client = makeMockClient({
+      findElements: vi.fn(async () => makeFindElementsResponse(threeItems)),
+    });
+    const handle = new ElementHandle(client, role('listitem'), 5000);
+    const result = await handle.nth(1).find();
+    expect(result.text).toBe('Banana');
+  });
+
+  it('supports negative indices (counting from end)', async () => {
+    const client = makeMockClient({
+      findElements: vi.fn(async () => makeFindElementsResponse(threeItems)),
+    });
+    const handle = new ElementHandle(client, role('listitem'), 5000);
+    const result = await handle.nth(-2).find();
+    expect(result.text).toBe('Banana');
+  });
+
+  it('throws when index is out of bounds', async () => {
+    const client = makeMockClient({
+      findElements: vi.fn(async () => makeFindElementsResponse(threeItems)),
+    });
+    const handle = new ElementHandle(client, role('listitem'), 5000);
+    await expect(handle.nth(5).find()).rejects.toThrow('nth(5)');
+  });
+
+  it('throws when negative index is out of bounds', async () => {
+    const client = makeMockClient({
+      findElements: vi.fn(async () => makeFindElementsResponse(threeItems)),
+    });
+    const handle = new ElementHandle(client, role('listitem'), 5000);
+    await expect(handle.nth(-4).find()).rejects.toThrow('nth(-4)');
+  });
+
+  it('tap() on nth handle uses resolved element selector', async () => {
+    const tap = vi.fn(async () => successResponse());
+    const client = makeMockClient({
+      findElements: vi.fn(async () => makeFindElementsResponse(threeItems)),
+      tap,
+    });
+    const handle = new ElementHandle(client, role('listitem'), 5000);
+    await handle.nth(1).tap();
+    // Banana has resourceId 'item_2', so the resolved selector should be id('item_2')
+    const calledSelector = (tap.mock.calls[0] as any[])[0] as Selector;
+    expect(selectorToProto(calledSelector)).toEqual({ resourceId: 'item_2' });
+  });
+
+  it('longPress() on nth handle uses resolved element selector', async () => {
+    const longPress = vi.fn(async () => successResponse());
+    const client = makeMockClient({
+      findElements: vi.fn(async () => makeFindElementsResponse(threeItems)),
+      longPress,
+    });
+    const handle = new ElementHandle(client, role('listitem'), 5000);
+    await handle.nth(2).longPress(500);
+    const calledSelector = (longPress.mock.calls[0] as any[])[0] as Selector;
+    expect(selectorToProto(calledSelector)).toEqual({ resourceId: 'item_3' });
+  });
+
+  it('type() on nth handle uses resolved element selector', async () => {
+    const typeText = vi.fn(async () => successResponse());
+    const client = makeMockClient({
+      findElements: vi.fn(async () => makeFindElementsResponse(threeItems)),
+      typeText,
+    });
+    const handle = new ElementHandle(client, role('listitem'), 5000);
+    await handle.nth(0).type('hello');
+    const calledSelector = (typeText.mock.calls[0] as any[])[0] as Selector;
+    expect(selectorToProto(calledSelector)).toEqual({ resourceId: 'item_1' });
+  });
+});
+
+// ─── filter() (PILOT-16) ───
+
+describe('filter()', () => {
+  it('returns a new lazy ElementHandle', () => {
+    const client = makeMockClient();
+    const handle = new ElementHandle(client, role('listitem'), 5000);
+    const filtered = handle.filter({ hasText: 'Apple' });
+    expect(filtered).toBeInstanceOf(ElementHandle);
+    expect(filtered).not.toBe(handle);
+    expect(client.findElements).not.toHaveBeenCalled();
+  });
+
+  describe('hasText', () => {
+    it('filters by substring match', async () => {
+      const client = makeMockClient({
+        findElements: vi.fn(async () => makeFindElementsResponse(threeItems)),
+      });
+      const handle = new ElementHandle(client, role('listitem'), 5000);
+      const count = await handle.filter({ hasText: 'an' }).count();
+      expect(count).toBe(1); // Only "Banana" contains "an"
+    });
+
+    it('filters by RegExp', async () => {
+      const client = makeMockClient({
+        findElements: vi.fn(async () => makeFindElementsResponse(threeItems)),
+      });
+      const handle = new ElementHandle(client, role('listitem'), 5000);
+      const count = await handle.filter({ hasText: /^[AB]/ }).count();
+      expect(count).toBe(2); // Apple and Banana
+    });
+
+    it('find() returns the first matching element', async () => {
+      const client = makeMockClient({
+        findElements: vi.fn(async () => makeFindElementsResponse(threeItems)),
+      });
+      const handle = new ElementHandle(client, role('listitem'), 5000);
+      const result = await handle.filter({ hasText: 'Cherry' }).find();
+      expect(result.text).toBe('Cherry');
+    });
+  });
+
+  describe('hasNotText', () => {
+    it('excludes elements matching the text', async () => {
+      const client = makeMockClient({
+        findElements: vi.fn(async () => makeFindElementsResponse(threeItems)),
+      });
+      const handle = new ElementHandle(client, role('listitem'), 5000);
+      const count = await handle.filter({ hasNotText: 'Apple' }).count();
+      expect(count).toBe(2); // Banana and Cherry
+    });
+
+    it('excludes elements matching a RegExp', async () => {
+      const client = makeMockClient({
+        findElements: vi.fn(async () => makeFindElementsResponse(threeItems)),
+      });
+      const handle = new ElementHandle(client, role('listitem'), 5000);
+      const items = await handle.filter({ hasNotText: /rry$/ }).all();
+      expect(items).toHaveLength(2); // Apple and Banana
+    });
+  });
+
+  describe('has (child selector)', () => {
+    it('keeps elements that contain a descendant matching the selector', async () => {
+      const parentElements: ElementInfo[] = [
+        makeElementInfo({ elementId: 'p1', text: 'Card 1', bounds: { left: 0, top: 0, right: 200, bottom: 100 } }),
+        makeElementInfo({ elementId: 'p2', text: 'Card 2', bounds: { left: 0, top: 100, right: 200, bottom: 200 } }),
+      ];
+      const childElements: ElementInfo[] = [
+        makeElementInfo({ elementId: 'c1', text: 'Premium', bounds: { left: 10, top: 10, right: 90, bottom: 40 } }),
+      ];
+
+      const findElements = vi.fn(async () => {
+        // First call: parent elements, second call: child elements within parent
+        if (findElements.mock.calls.length <= 1) {
+          return makeFindElementsResponse(parentElements);
+        }
+        return makeFindElementsResponse(childElements);
+      });
+      const client = makeMockClient({ findElements });
+      const handle = new ElementHandle(client, role('listitem'), 5000);
+      const count = await handle.filter({ has: text('Premium') }).count();
+      // Only Card 1 contains the "Premium" child (bounds overlap)
+      expect(count).toBe(1);
+    });
+  });
+
+  describe('hasNot (child selector)', () => {
+    it('excludes elements that contain a descendant matching the selector', async () => {
+      const parentElements: ElementInfo[] = [
+        makeElementInfo({ elementId: 'p1', text: 'Card 1', bounds: { left: 0, top: 0, right: 200, bottom: 100 } }),
+        makeElementInfo({ elementId: 'p2', text: 'Card 2', bounds: { left: 0, top: 100, right: 200, bottom: 200 } }),
+      ];
+      const childElements: ElementInfo[] = [
+        makeElementInfo({ elementId: 'c1', text: 'Disabled', bounds: { left: 10, top: 110, right: 90, bottom: 140 } }),
+      ];
+
+      const findElements = vi.fn(async () => {
+        if (findElements.mock.calls.length <= 1) {
+          return makeFindElementsResponse(parentElements);
+        }
+        return makeFindElementsResponse(childElements);
+      });
+      const client = makeMockClient({ findElements });
+      const handle = new ElementHandle(client, role('listitem'), 5000);
+      const count = await handle.filter({ hasNot: text('Disabled') }).count();
+      // Card 2 contains the "Disabled" child, so only Card 1 remains
+      expect(count).toBe(1);
+    });
+  });
+
+  describe('combined filters', () => {
+    it('applies hasText and hasNotText together', async () => {
+      const items: ElementInfo[] = [
+        makeElementInfo({ elementId: 'e1', text: 'Apple Pie' }),
+        makeElementInfo({ elementId: 'e2', text: 'Apple Sauce' }),
+        makeElementInfo({ elementId: 'e3', text: 'Banana Split' }),
+      ];
+      const client = makeMockClient({
+        findElements: vi.fn(async () => makeFindElementsResponse(items)),
+      });
+      const handle = new ElementHandle(client, role('listitem'), 5000);
+      const result = await handle
+        .filter({ hasText: 'Apple' })
+        .filter({ hasNotText: 'Pie' })
+        .count();
+      expect(result).toBe(1); // Only "Apple Sauce"
+    });
+  });
+
+  it('filter() composes with nth()', async () => {
+    const client = makeMockClient({
+      findElements: vi.fn(async () => makeFindElementsResponse(threeItems)),
+    });
+    const handle = new ElementHandle(client, role('listitem'), 5000);
+    // Filter to items not containing "Apple", then pick the last
+    const result = await handle.filter({ hasNotText: 'Apple' }).last().find();
+    expect(result.text).toBe('Cherry');
+  });
+});
+
+// ─── and() (PILOT-17) ───
+
+describe('and()', () => {
+  it('returns elements matching both selectors (intersection by elementId)', async () => {
+    const buttonsEls: ElementInfo[] = [
+      makeElementInfo({ elementId: 'e1', text: 'Submit', resourceId: 'btn1' }),
+      makeElementInfo({ elementId: 'e2', text: 'Cancel', resourceId: 'btn2' }),
+    ];
+    const submitEls: ElementInfo[] = [
+      makeElementInfo({ elementId: 'e1', text: 'Submit', resourceId: 'btn1' }),
+    ];
+
+    const findElements = vi.fn(async (selector: any) => {
+      const proto = selectorToProto(selector);
+      if (proto.text === 'Submit') return makeFindElementsResponse(submitEls);
+      return makeFindElementsResponse(buttonsEls);
+    });
+    const client = makeMockClient({ findElements });
+
+    const buttons = new ElementHandle(client, role('button'), 5000);
+    const submit = new ElementHandle(client, text('Submit'), 5000);
+    const result = await buttons.and(submit).count();
+    expect(result).toBe(1);
+  });
+
+  it('returns empty when no elements match both', async () => {
+    const findElements = vi.fn(async (selector: any) => {
+      const proto = selectorToProto(selector);
+      if (proto.text) {
+        return makeFindElementsResponse([
+          makeElementInfo({ elementId: 'e3', text: 'Other' }),
+        ]);
+      }
+      return makeFindElementsResponse([
+        makeElementInfo({ elementId: 'e1', text: 'Submit' }),
+      ]);
+    });
+    const client = makeMockClient({ findElements });
+
+    const buttons = new ElementHandle(client, role('button'), 5000);
+    const other = new ElementHandle(client, text('Other'), 5000);
+    expect(await buttons.and(other).count()).toBe(0);
+  });
+
+  it('and() with tap() resolves and taps the matching element', async () => {
+    const tap = vi.fn(async () => successResponse());
+    const intersectEl = makeElementInfo({ elementId: 'e1', text: 'Submit', resourceId: 'btn-submit' });
+    const findElements = vi.fn(async () => makeFindElementsResponse([intersectEl]));
+    const client = makeMockClient({ findElements, tap });
+
+    const buttons = new ElementHandle(client, role('button'), 5000);
+    const submit = new ElementHandle(client, text('Submit'), 5000);
+    await buttons.and(submit).tap();
+
+    const calledSelector = (tap.mock.calls[0] as any[])[0] as Selector;
+    expect(selectorToProto(calledSelector)).toEqual({ resourceId: 'btn-submit' });
+  });
+});
+
+// ─── or() (PILOT-17) ───
+
+describe('or()', () => {
+  it('returns elements matching either selector (union, deduped)', async () => {
+    const okEls: ElementInfo[] = [
+      makeElementInfo({ elementId: 'e1', text: 'OK' }),
+    ];
+    const confirmEls: ElementInfo[] = [
+      makeElementInfo({ elementId: 'e2', text: 'Confirm' }),
+    ];
+
+    const findElements = vi.fn(async (selector: any) => {
+      const proto = selectorToProto(selector);
+      if (proto.text === 'OK') return makeFindElementsResponse(okEls);
+      return makeFindElementsResponse(confirmEls);
+    });
+    const client = makeMockClient({ findElements });
+
+    const ok = new ElementHandle(client, text('OK'), 5000);
+    const confirm = new ElementHandle(client, text('Confirm'), 5000);
+    expect(await ok.or(confirm).count()).toBe(2);
+  });
+
+  it('deduplicates elements present in both selectors', async () => {
+    const sharedEl = makeElementInfo({ elementId: 'e1', text: 'Submit' });
+    const findElements = vi.fn(async () => makeFindElementsResponse([sharedEl]));
+    const client = makeMockClient({ findElements });
+
+    const a = new ElementHandle(client, role('button'), 5000);
+    const b = new ElementHandle(client, text('Submit'), 5000);
+    expect(await a.or(b).count()).toBe(1);
+  });
+
+  it('or() with tap() uses the first available element', async () => {
+    const tap = vi.fn(async () => successResponse());
+    const okEl = makeElementInfo({ elementId: 'e1', text: 'OK', resourceId: '' });
+    const findElements = vi.fn(async (selector: any) => {
+      const proto = selectorToProto(selector);
+      if (proto.text === 'OK') return makeFindElementsResponse([okEl]);
+      return makeFindElementsResponse([]); // "Confirm" not present
+    });
+    const client = makeMockClient({ findElements, tap });
+
+    const ok = new ElementHandle(client, text('OK'), 5000);
+    const confirm = new ElementHandle(client, text('Confirm'), 5000);
+    await ok.or(confirm).tap();
+
+    const calledSelector = (tap.mock.calls[0] as any[])[0] as Selector;
+    // OK has no resourceId or contentDescription, so falls back to text selector
+    expect(selectorToProto(calledSelector)).toEqual({ text: 'OK' });
+  });
+
+  it('or() throws when neither selector matches', async () => {
+    const findElements = vi.fn(async () => makeFindElementsResponse([]));
+    const client = makeMockClient({ findElements });
+
+    const a = new ElementHandle(client, text('OK'), 5000);
+    const b = new ElementHandle(client, text('Confirm'), 5000);
+    await expect(a.or(b).find()).rejects.toThrow('Element not found');
+  });
+});
+
+// ─── Composition / integration ───
+
+describe('method composition', () => {
+  it('filter().first() works correctly', async () => {
+    const client = makeMockClient({
+      findElements: vi.fn(async () => makeFindElementsResponse(threeItems)),
+    });
+    const handle = new ElementHandle(client, role('listitem'), 5000);
+    const result = await handle.filter({ hasNotText: 'Apple' }).first().find();
+    expect(result.text).toBe('Banana');
+  });
+
+  it('or().nth() works correctly', async () => {
+    const aEls = [makeElementInfo({ elementId: 'e1', text: 'A' })];
+    const bEls = [makeElementInfo({ elementId: 'e2', text: 'B' })];
+    const findElements = vi.fn(async (selector: any) => {
+      const proto = selectorToProto(selector);
+      if (proto.text === 'A') return makeFindElementsResponse(aEls);
+      return makeFindElementsResponse(bEls);
+    });
+    const client = makeMockClient({ findElements });
+
+    const a = new ElementHandle(client, text('A'), 5000);
+    const b = new ElementHandle(client, text('B'), 5000);
+    const result = await a.or(b).nth(1).find();
+    expect(result.text).toBe('B');
+  });
+
+  it('all() handles resolve correctly for iteration with assertions', async () => {
+    const client = makeMockClient({
+      findElements: vi.fn(async () => makeFindElementsResponse(threeItems)),
+    });
+    const handle = new ElementHandle(client, role('listitem'), 5000);
+    const items = await handle.all();
+
+    // Simulate the Playwright-style pattern: iterate and check visibility
+    for (const item of items) {
+      const info = await item.find();
+      expect(info.visible).toBe(true);
+    }
+  });
+
+  it('action methods on unmodified handle use direct selector (fast path)', async () => {
+    const tap = vi.fn(async () => successResponse());
+    const findElements = vi.fn();
+    const client = makeMockClient({ tap, findElements });
+    const sel = text('Button');
+    const handle = new ElementHandle(client, sel, 5000);
+
+    await handle.tap();
+
+    // Should use direct selector, not resolve via findElements
+    expect(findElements).not.toHaveBeenCalled();
+    expect(tap).toHaveBeenCalledWith(sel, 5000);
+  });
+
+  it('action selector falls back to contentDescription when no resourceId', async () => {
+    const tap = vi.fn(async () => successResponse());
+    const elWithDesc = makeElementInfo({
+      elementId: 'e1',
+      text: '',
+      resourceId: '',
+      contentDescription: 'Close button',
+    });
+    const client = makeMockClient({
+      findElements: vi.fn(async () => makeFindElementsResponse([elWithDesc])),
+      tap,
+    });
+    const handle = new ElementHandle(client, role('button'), 5000);
+    await handle.first().tap();
+
+    const calledSelector = (tap.mock.calls[0] as any[])[0] as Selector;
+    expect(selectorToProto(calledSelector)).toEqual({ contentDesc: 'Close button' });
+  });
+
+  it('action selector falls back to original selector when no identifying info', async () => {
+    const tap = vi.fn(async () => successResponse());
+    const bareEl = makeElementInfo({
+      elementId: 'e1',
+      text: '',
+      resourceId: '',
+      contentDescription: '',
+    });
+    const client = makeMockClient({
+      findElements: vi.fn(async () => makeFindElementsResponse([bareEl])),
+      tap,
+    });
+    const sel = role('button');
+    const handle = new ElementHandle(client, sel, 5000);
+    await handle.first().tap();
+
+    const calledSelector = (tap.mock.calls[0] as any[])[0];
+    expect(calledSelector).toBe(sel);
   });
 });

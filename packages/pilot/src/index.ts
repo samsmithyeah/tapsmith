@@ -24,7 +24,7 @@ export {
 export { Device } from './device.js';
 
 // ElementHandle
-export { ElementHandle } from './element-handle.js';
+export { ElementHandle, type FilterOptions } from './element-handle.js';
 
 // Assertions
 export { expect, flushSoftErrors, type PilotAssertions, type GenericAssertions, type PollOptions } from './expect.js';
