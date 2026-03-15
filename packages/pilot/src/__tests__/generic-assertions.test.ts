@@ -121,6 +121,22 @@ describe("PILOT-42: Generic value assertions", () => {
     it("works with .not", () => {
       pilotExpect({ a: 1 }).not.toEqual({ a: 2 });
     });
+
+    it("handles circular references", () => {
+      const a: Record<string, unknown> = { x: 1 };
+      a.self = a;
+      const b: Record<string, unknown> = { x: 1 };
+      b.self = b;
+      pilotExpect(a).toEqual(b);
+    });
+
+    it("handles circular references that differ", () => {
+      const a: Record<string, unknown> = { x: 1 };
+      a.self = a;
+      const b: Record<string, unknown> = { x: 2 };
+      b.self = b;
+      vitestExpect(() => pilotExpect(a).toEqual(b)).toThrow("to equal");
+    });
   });
 
   // ─── toStrictEqual ───
@@ -141,6 +157,14 @@ describe("PILOT-42: Generic value assertions", () => {
       vitestExpect(() =>
         pilotExpect(new A()).toStrictEqual(new B()),
       ).toThrow();
+    });
+
+    it("handles circular references", () => {
+      const a: Record<string, unknown> = { x: 1 };
+      a.self = a;
+      const b: Record<string, unknown> = { x: 1 };
+      b.self = b;
+      pilotExpect(a).toStrictEqual(b);
     });
   });
 

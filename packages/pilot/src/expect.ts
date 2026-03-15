@@ -799,58 +799,74 @@ export interface GenericAssertions {
 }
 
 function deepEqual(a: unknown, b: unknown): boolean {
-  if (Object.is(a, b)) return true;
-  if (a === null || b === null) return false;
-  if (typeof a !== typeof b) return false;
+  function _deepEqual(a: unknown, b: unknown, visited: Map<unknown, unknown>): boolean {
+    if (Object.is(a, b)) return true;
+    if (a === null || b === null) return false;
+    if (typeof a !== typeof b) return false;
 
-  if (a instanceof Date && b instanceof Date) return a.getTime() === b.getTime();
-  if (a instanceof RegExp && b instanceof RegExp) return a.toString() === b.toString();
+    if (a instanceof Date && b instanceof Date) return a.getTime() === b.getTime();
+    if (a instanceof RegExp && b instanceof RegExp) return a.toString() === b.toString();
 
-  if (typeof a === "object" && typeof b === "object") {
-    const aObj = a as Record<string, unknown>;
-    const bObj = b as Record<string, unknown>;
+    if (typeof a === "object" && typeof b === "object") {
+      if (visited.has(a) && visited.get(a) === b) return true;
+      visited.set(a, b);
 
-    if (Array.isArray(aObj) !== Array.isArray(bObj)) return false;
+      const aObj = a as Record<string, unknown>;
+      const bObj = b as Record<string, unknown>;
 
-    const aKeys = Object.keys(aObj);
-    const bKeys = Object.keys(bObj);
-    if (aKeys.length !== bKeys.length) return false;
-    return aKeys.every(
-      (key) =>
-        Object.prototype.hasOwnProperty.call(bObj, key) &&
-        deepEqual(aObj[key], bObj[key]),
-    );
+      if (Array.isArray(aObj) !== Array.isArray(bObj)) return false;
+
+      const aKeys = Object.keys(aObj);
+      const bKeys = Object.keys(bObj);
+      if (aKeys.length !== bKeys.length) return false;
+
+      for (const key of aKeys) {
+        if (
+          !Object.prototype.hasOwnProperty.call(bObj, key) ||
+          !_deepEqual(aObj[key], bObj[key], visited)
+        ) {
+          return false;
+        }
+      }
+      return true;
+    }
+    return false;
   }
-  return false;
+  return _deepEqual(a, b, new Map());
 }
 
 function deepStrictEqual(a: unknown, b: unknown): boolean {
-  if (Object.is(a, b)) return true;
-  if (a === null || b === null) return false;
-  if (typeof a !== typeof b) return false;
+  function _deepStrictEqual(a: unknown, b: unknown, visited: Map<unknown, unknown>): boolean {
+    if (Object.is(a, b)) return true;
+    if (a === null || b === null) return false;
+    if (typeof a !== typeof b) return false;
 
-  if (a instanceof Date && b instanceof Date) return a.getTime() === b.getTime();
-  if (a instanceof RegExp && b instanceof RegExp) return a.toString() === b.toString();
+    if (a instanceof Date && b instanceof Date) return a.getTime() === b.getTime();
+    if (a instanceof RegExp && b instanceof RegExp) return a.toString() === b.toString();
 
-  if (typeof a === "object" && typeof b === "object") {
-    const aObj = a as Record<string, unknown>;
-    const bObj = b as Record<string, unknown>;
+    if (typeof a === "object" && typeof b === "object") {
+      if (visited.has(a) && visited.get(a) === b) return true;
+      visited.set(a, b);
 
-    if (Array.isArray(aObj) !== Array.isArray(bObj)) return false;
-    if (aObj.constructor !== bObj.constructor) return false;
+      const aObj = a as Record<string, unknown>;
+      const bObj = b as Record<string, unknown>;
 
-    const aKeys = Object.keys(aObj);
-    const bKeys = Object.keys(bObj);
-    if (aKeys.length !== bKeys.length) return false;
+      if (Array.isArray(aObj) !== Array.isArray(bObj)) return false;
+      if (aObj.constructor !== bObj.constructor) return false;
 
-    // Check for undefined values explicitly (strict: {a: undefined} !== {})
-    for (const key of aKeys) {
-      if (!Object.prototype.hasOwnProperty.call(bObj, key)) return false;
-      if (!deepStrictEqual(aObj[key], bObj[key])) return false;
+      const aKeys = Object.keys(aObj);
+      const bKeys = Object.keys(bObj);
+      if (aKeys.length !== bKeys.length) return false;
+
+      for (const key of aKeys) {
+        if (!Object.prototype.hasOwnProperty.call(bObj, key)) return false;
+        if (!_deepStrictEqual(aObj[key], bObj[key], visited)) return false;
+      }
+      return true;
     }
-    return true;
+    return false;
   }
-  return false;
+  return _deepStrictEqual(a, b, new Map());
 }
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
