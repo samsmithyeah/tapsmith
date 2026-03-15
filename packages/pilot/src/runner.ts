@@ -12,6 +12,7 @@
 
 import type { PilotConfig } from './config.js';
 import type { Device } from './device.js';
+import { flushSoftErrors } from './expect.js';
 
 // ─── Result types ───
 
@@ -261,6 +262,28 @@ async function runSuiteContext(
         } catch {
           // afterEach errors should not mask test errors
         }
+      }
+    }
+
+    // Collect soft assertion failures (PILOT-43)
+    const softErrors = flushSoftErrors();
+    if (softErrors.length > 0) {
+      const messages = softErrors.map((e) => e.message).join('\n');
+      const softErrorSummary = `${softErrors.length} soft assertion(s) failed:\n${messages}`;
+
+      if (status !== 'failed') {
+        status = 'failed';
+        error = new Error(softErrorSummary);
+      } else if (error) {
+        error.message += `\n\n--- Additionally ---\n${softErrorSummary}`;
+      }
+
+      if (!screenshotPath && opts.config.screenshot !== 'never') {
+        screenshotPath = await captureFailureScreenshot(
+          opts.device,
+          opts.screenshotDir,
+          fullName,
+        );
       }
     }
 
