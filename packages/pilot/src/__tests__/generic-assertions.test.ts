@@ -396,6 +396,26 @@ describe("PILOT-42: Generic value assertions", () => {
     });
   });
 
+  describe("numeric assertions reject non-numbers", () => {
+    it("toBeGreaterThan rejects strings", () => {
+      vitestExpect(() => pilotExpect("10").toBeGreaterThan(5)).toThrow(
+        "Expected a number for toBeGreaterThan but got string",
+      );
+    });
+
+    it("toBeLessThan rejects strings", () => {
+      vitestExpect(() => pilotExpect("3").toBeLessThan(5)).toThrow(
+        "Expected a number for toBeLessThan but got string",
+      );
+    });
+
+    it("toBeCloseTo rejects strings", () => {
+      vitestExpect(() => pilotExpect("0.3").toBeCloseTo(0.3)).toThrow(
+        "Expected a number for toBeCloseTo but got string",
+      );
+    });
+  });
+
   // ─── toBeCloseTo ───
   describe("toBeCloseTo()", () => {
     it("passes for close floating point values", () => {
@@ -534,6 +554,15 @@ describe("PILOT-42: Generic value assertions", () => {
 
     it("double negation is positive", () => {
       pilotExpect(5).not.not.toBe(5);
+    });
+  });
+
+  // ─── Circular object handling ───
+  describe("circular object formatting", () => {
+    it("handles circular references in error messages", () => {
+      const obj: Record<string, unknown> = { a: 1 };
+      obj.self = obj;
+      vitestExpect(() => pilotExpect(obj).toBe("x")).toThrow("[Circular Object]");
     });
   });
 

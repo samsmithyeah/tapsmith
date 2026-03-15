@@ -893,7 +893,14 @@ function getPropertyAtPath(
 
 function formatValue(value: unknown): string {
   if (typeof value === "string") return `"${value}"`;
-  if (typeof value === "object") return JSON.stringify(value);
+  if (typeof value === "object") {
+    if (value === null) return "null";
+    try {
+      return JSON.stringify(value);
+    } catch {
+      return "[Circular Object]";
+    }
+  }
   return String(value);
 }
 
@@ -1057,40 +1064,60 @@ function createGenericAssertions(
     },
 
     toBeGreaterThan(expected) {
+      if (typeof actual !== "number") {
+        onFail(`Expected a number for toBeGreaterThan but got ${typeof actual}: ${formatValue(actual)}`);
+        return;
+      }
       assert(
-        (actual as number) > expected,
+        actual > expected,
         `Expected ${formatValue(actual)} to be greater than ${expected}`,
         `Expected ${formatValue(actual)} not to be greater than ${expected}`,
       );
     },
 
     toBeGreaterThanOrEqual(expected) {
+      if (typeof actual !== "number") {
+        onFail(`Expected a number for toBeGreaterThanOrEqual but got ${typeof actual}: ${formatValue(actual)}`);
+        return;
+      }
       assert(
-        (actual as number) >= expected,
+        actual >= expected,
         `Expected ${formatValue(actual)} to be greater than or equal to ${expected}`,
         `Expected ${formatValue(actual)} not to be greater than or equal to ${expected}`,
       );
     },
 
     toBeLessThan(expected) {
+      if (typeof actual !== "number") {
+        onFail(`Expected a number for toBeLessThan but got ${typeof actual}: ${formatValue(actual)}`);
+        return;
+      }
       assert(
-        (actual as number) < expected,
+        actual < expected,
         `Expected ${formatValue(actual)} to be less than ${expected}`,
         `Expected ${formatValue(actual)} not to be less than ${expected}`,
       );
     },
 
     toBeLessThanOrEqual(expected) {
+      if (typeof actual !== "number") {
+        onFail(`Expected a number for toBeLessThanOrEqual but got ${typeof actual}: ${formatValue(actual)}`);
+        return;
+      }
       assert(
-        (actual as number) <= expected,
+        actual <= expected,
         `Expected ${formatValue(actual)} to be less than or equal to ${expected}`,
         `Expected ${formatValue(actual)} not to be less than or equal to ${expected}`,
       );
     },
 
     toBeCloseTo(expected, numDigits = 2) {
+      if (typeof actual !== "number") {
+        onFail(`Expected a number for toBeCloseTo but got ${typeof actual}: ${formatValue(actual)}`);
+        return;
+      }
       const precision = Math.pow(10, -numDigits) / 2;
-      const pass = Math.abs((actual as number) - expected) < precision;
+      const pass = Math.abs(actual - expected) < precision;
       assert(
         pass,
         `Expected ${formatValue(actual)} to be close to ${expected} (precision: ${numDigits} digits)`,
