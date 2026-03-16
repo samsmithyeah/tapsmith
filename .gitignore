@@ -32,3 +32,6 @@ pilot-results/
 # Environment
 .env
 .env.local
+
+# Claude
+.mcp.json
