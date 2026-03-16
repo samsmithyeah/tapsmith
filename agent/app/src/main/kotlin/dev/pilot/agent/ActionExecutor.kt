@@ -11,6 +11,23 @@ import androidx.test.uiautomator.Until
  * Executes UI actions: tap, long press, text input, swipe, scroll, and key presses.
  */
 class ActionExecutor(private val device: UiDevice) {
+    companion object {
+        /** Interval between taps for double-tap gesture. */
+        private const val DOUBLE_TAP_INTERVAL_MS = 40L
+
+        /** Timeout for waiting for dropdown options to appear. */
+        private const val DROPDOWN_WAIT_TIMEOUT_MS = 3000L
+
+        /** Fallback timeout for scrollable container detection. */
+        private const val SCROLLABLE_FALLBACK_TIMEOUT_MS = 1000L
+
+        /** Minimum pixel margin for tapping outside an element during blur. */
+        private const val BLUR_TAP_MARGIN_PX = 50
+
+        /** Time to wait for idle after focus/blur actions. */
+        private const val FOCUS_IDLE_TIMEOUT_MS = 500L
+    }
+
     /**
      * Tap on an element's center point.
      */
@@ -296,7 +313,7 @@ class ActionExecutor(private val device: UiDevice) {
             val cx = bounds.centerX()
             val cy = bounds.centerY()
             device.click(cx, cy)
-            Thread.sleep(40)
+            Thread.sleep(DOUBLE_TAP_INTERVAL_MS)
             device.click(cx, cy)
         } catch (e: Exception) {
             throw ActionFailedException("Failed to double tap element: ${e.message}")
@@ -330,7 +347,7 @@ class ActionExecutor(private val device: UiDevice) {
             element.click()
             // Wait for the option to appear then tap it
             val option =
-                device.wait(Until.findObject(By.text(optionText)), 3000)
+                device.wait(Until.findObject(By.text(optionText)), DROPDOWN_WAIT_TIMEOUT_MS)
                     ?: throw ElementNotFoundException("Option '$optionText' not found in dropdown")
             option.click()
         } catch (e: ElementNotFoundException) {
@@ -353,8 +370,8 @@ class ActionExecutor(private val device: UiDevice) {
             // Wait for a common dropdown container to appear
             val popupSelector = By.clazz(java.util.regex.Pattern.compile(".*(ListView|RecyclerView|PopupWindow)$"))
             val popup =
-                device.wait(Until.findObject(popupSelector), 3000)
-                    ?: device.wait(Until.findObject(By.scrollable(true)), 1000)
+                device.wait(Until.findObject(popupSelector), DROPDOWN_WAIT_TIMEOUT_MS)
+                    ?: device.wait(Until.findObject(By.scrollable(true)), SCROLLABLE_FALLBACK_TIMEOUT_MS)
                     ?: throw ActionFailedException(
                         "Could not find dropdown popup. " +
                             "The spinner may use a custom popup that is not auto-detected.",
@@ -400,7 +417,7 @@ class ActionExecutor(private val device: UiDevice) {
     fun focus(element: UiObject2) {
         try {
             element.click()
-            device.waitForIdle(500)
+            device.waitForIdle(FOCUS_IDLE_TIMEOUT_MS)
         } catch (e: Exception) {
             throw ActionFailedException("Failed to focus element: ${e.message}")
         }
@@ -419,19 +436,19 @@ class ActionExecutor(private val device: UiDevice) {
             // Find a safe point outside the element to tap
             val tapX: Int
             val tapY: Int
-            if (bounds.top > 50) {
+            if (bounds.top > BLUR_TAP_MARGIN_PX) {
                 // Tap above the element
                 tapX = bounds.centerX()
                 tapY = bounds.top / 2
-            } else if (bounds.bottom < screenHeight - 50) {
+            } else if (bounds.bottom < screenHeight - BLUR_TAP_MARGIN_PX) {
                 // Tap below the element
                 tapX = bounds.centerX()
                 tapY = (bounds.bottom + screenHeight) / 2
-            } else if (bounds.left > 50) {
+            } else if (bounds.left > BLUR_TAP_MARGIN_PX) {
                 // Tap to the left
                 tapX = bounds.left / 2
                 tapY = bounds.centerY()
-            } else if (bounds.right < screenWidth - 50) {
+            } else if (bounds.right < screenWidth - BLUR_TAP_MARGIN_PX) {
                 // Tap to the right
                 tapX = (bounds.right + screenWidth) / 2
                 tapY = bounds.centerY()
@@ -442,7 +459,7 @@ class ActionExecutor(private val device: UiDevice) {
             }
 
             device.click(tapX, tapY)
-            device.waitForIdle(500)
+            device.waitForIdle(FOCUS_IDLE_TIMEOUT_MS)
         } catch (e: Exception) {
             throw ActionFailedException("Failed to blur element: ${e.message}")
         }

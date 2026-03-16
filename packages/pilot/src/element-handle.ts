@@ -13,7 +13,7 @@ import {
   text as textSelector,
   contentDesc as contentDescSelector,
 } from './selectors.js';
-import type { PilotGrpcClient, ElementInfo } from './grpc-client.js';
+import type { PilotGrpcClient, ElementInfo, ActionResponse } from './grpc-client.js';
 
 // ─── Public types ───
 
@@ -419,84 +419,68 @@ export class ElementHandle {
 
   // ── Actions ──
 
+  /** @internal — Run an action RPC and throw on failure. */
+  private async _action(
+    fn: () => Promise<ActionResponse>,
+    fallbackMsg: string,
+  ): Promise<void> {
+    const res = await fn();
+    if (!res.success) {
+      throw new Error(res.errorMessage || fallbackMsg);
+    }
+  }
+
   async tap(): Promise<void> {
     const sel = await this._actionSelector();
-    const res = await this._client.tap(sel, this._timeoutMs);
-    if (!res.success) {
-      throw new Error(res.errorMessage || 'Tap failed');
-    }
+    return this._action(() => this._client.tap(sel, this._timeoutMs), 'Tap failed');
   }
 
   async longPress(durationMs?: number): Promise<void> {
     const sel = await this._actionSelector();
-    const res = await this._client.longPress(sel, durationMs, this._timeoutMs);
-    if (!res.success) {
-      throw new Error(res.errorMessage || 'Long press failed');
-    }
+    return this._action(() => this._client.longPress(sel, durationMs, this._timeoutMs), 'Long press failed');
   }
 
   async type(text: string): Promise<void> {
     const sel = await this._actionSelector();
-    const res = await this._client.typeText(sel, text, this._timeoutMs);
-    if (!res.success) {
-      throw new Error(res.errorMessage || 'Type text failed');
-    }
+    return this._action(() => this._client.typeText(sel, text, this._timeoutMs), 'Type text failed');
   }
 
   async clearAndType(text: string): Promise<void> {
     const sel = await this._actionSelector();
-    const res = await this._client.clearAndType(sel, text, this._timeoutMs);
-    if (!res.success) {
-      throw new Error(res.errorMessage || 'Clear and type failed');
-    }
+    return this._action(() => this._client.clearAndType(sel, text, this._timeoutMs), 'Clear and type failed');
   }
 
   async clear(): Promise<void> {
     const sel = await this._actionSelector();
-    const res = await this._client.clearText(sel, this._timeoutMs);
-    if (!res.success) {
-      throw new Error(res.errorMessage || 'Clear text failed');
-    }
+    return this._action(() => this._client.clearText(sel, this._timeoutMs), 'Clear text failed');
   }
 
   async scroll(direction: string, options?: { distance?: number }): Promise<void> {
     const sel = await this._actionSelector();
-    const res = await this._client.scroll(sel, direction, {
-      distance: options?.distance,
-      timeoutMs: this._timeoutMs,
-    });
-    if (!res.success) {
-      throw new Error(res.errorMessage || 'Scroll failed');
-    }
+    return this._action(
+      () => this._client.scroll(sel, direction, { distance: options?.distance, timeoutMs: this._timeoutMs }),
+      'Scroll failed',
+    );
   }
 
   // ── Element Actions (PILOT-2) ──
 
   async doubleTap(): Promise<void> {
     const sel = await this._actionSelector();
-    const res = await this._client.doubleTap(sel, this._timeoutMs);
-    if (!res.success) {
-      throw new Error(res.errorMessage || 'Double tap failed');
-    }
+    return this._action(() => this._client.doubleTap(sel, this._timeoutMs), 'Double tap failed');
   }
 
   async dragTo(target: ElementHandle): Promise<void> {
     const sourceSel = await this._actionSelector();
     const targetSel = await target._actionSelector();
-    const res = await this._client.dragAndDrop(sourceSel, targetSel, this._timeoutMs);
-    if (!res.success) {
-      throw new Error(res.errorMessage || 'Drag and drop failed');
-    }
+    return this._action(() => this._client.dragAndDrop(sourceSel, targetSel, this._timeoutMs), 'Drag and drop failed');
   }
 
   async setChecked(checked: boolean): Promise<void> {
     const el = await this._resolveOne();
     if (el.checked !== checked) {
       const sel = this._selectorForElement(el);
-      const res = await this._client.tap(sel, this._timeoutMs);
-      if (!res.success) {
-        throw new Error(res.errorMessage || 'setChecked tap failed');
-      }
+      await this._action(() => this._client.tap(sel, this._timeoutMs), 'setChecked tap failed');
       // Verify the state actually changed
       const after = await this._resolveOne();
       if (after.checked !== checked) {
@@ -509,10 +493,7 @@ export class ElementHandle {
 
   async selectOption(option: string | { index: number }): Promise<void> {
     const sel = await this._actionSelector();
-    const res = await this._client.selectOption(sel, option, this._timeoutMs);
-    if (!res.success) {
-      throw new Error(res.errorMessage || 'Select option failed');
-    }
+    return this._action(() => this._client.selectOption(sel, option, this._timeoutMs), 'Select option failed');
   }
 
   async screenshot(): Promise<Buffer> {
@@ -538,43 +519,28 @@ export class ElementHandle {
   async pinchIn(options?: { scale?: number }): Promise<void> {
     const sel = await this._actionSelector();
     const scale = options?.scale ?? 0.5;
-    const res = await this._client.pinchZoom(sel, scale, this._timeoutMs);
-    if (!res.success) {
-      throw new Error(res.errorMessage || 'Pinch in failed');
-    }
+    return this._action(() => this._client.pinchZoom(sel, scale, this._timeoutMs), 'Pinch in failed');
   }
 
   async pinchOut(options?: { scale?: number }): Promise<void> {
     const sel = await this._actionSelector();
     const scale = options?.scale ?? 2.0;
-    const res = await this._client.pinchZoom(sel, scale, this._timeoutMs);
-    if (!res.success) {
-      throw new Error(res.errorMessage || 'Pinch out failed');
-    }
+    return this._action(() => this._client.pinchZoom(sel, scale, this._timeoutMs), 'Pinch out failed');
   }
 
   async focus(): Promise<void> {
     const sel = await this._actionSelector();
-    const res = await this._client.focus(sel, this._timeoutMs);
-    if (!res.success) {
-      throw new Error(res.errorMessage || 'Focus failed');
-    }
+    return this._action(() => this._client.focus(sel, this._timeoutMs), 'Focus failed');
   }
 
   async blur(): Promise<void> {
     const sel = await this._actionSelector();
-    const res = await this._client.blur(sel, this._timeoutMs);
-    if (!res.success) {
-      throw new Error(res.errorMessage || 'Blur failed');
-    }
+    return this._action(() => this._client.blur(sel, this._timeoutMs), 'Blur failed');
   }
 
   async highlight(options?: { durationMs?: number }): Promise<void> {
     const sel = await this._actionSelector();
-    const res = await this._client.highlight(sel, options?.durationMs, this._timeoutMs);
-    if (!res.success) {
-      throw new Error(res.errorMessage || 'Highlight failed');
-    }
+    return this._action(() => this._client.highlight(sel, options?.durationMs, this._timeoutMs), 'Highlight failed');
   }
 
   // ── Info accessors (convenience) ──

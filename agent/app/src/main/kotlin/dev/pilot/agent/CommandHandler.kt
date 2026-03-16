@@ -301,8 +301,7 @@ class CommandHandler(
                 val bounds = uiObj.visibleBounds
 
                 // Take full screenshot and crop to element bounds
-                val quality = 80
-                val base64 = captureElementScreenshot(bounds, quality)
+                val base64 = captureElementScreenshot(bounds)
                 JSONObject().put("data", base64).put("format", "png")
             }
 
@@ -347,13 +346,11 @@ class CommandHandler(
         )
     }
 
-    private fun captureElementScreenshot(
-        bounds: android.graphics.Rect,
-        quality: Int,
-    ): String {
+    private fun captureElementScreenshot(bounds: android.graphics.Rect): String {
         val tmpFile = java.io.File.createTempFile("pilot_screenshot", ".png")
         try {
-            val success = device.takeScreenshot(tmpFile, 1.0f, quality)
+            // Scale 1.0 for full resolution; quality is ignored for PNG format
+            val success = device.takeScreenshot(tmpFile, 1.0f, 100)
             if (!success) {
                 throw ActionFailedException("Failed to capture screenshot")
             }
@@ -377,7 +374,7 @@ class CommandHandler(
             fullBitmap.recycle()
 
             val outputStream = java.io.ByteArrayOutputStream()
-            cropped.compress(android.graphics.Bitmap.CompressFormat.PNG, quality, outputStream)
+            cropped.compress(android.graphics.Bitmap.CompressFormat.PNG, 100, outputStream)
             cropped.recycle()
 
             return Base64.encodeToString(outputStream.toByteArray(), Base64.NO_WRAP)
