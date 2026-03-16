@@ -1,5 +1,8 @@
 package dev.pilot.agent
 
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.content.Context
 import android.util.Base64
 import android.util.Log
 import androidx.test.uiautomator.UiDevice
@@ -14,6 +17,7 @@ import org.json.JSONObject
  *         or: {"id": "uuid", "error": {"type": "...", "message": "..."}}
  */
 class CommandHandler(
+    private val context: Context,
     private val device: UiDevice,
     private val elementFinder: ElementFinder,
     private val actionExecutor: ActionExecutor,
@@ -303,6 +307,20 @@ class CommandHandler(
                 // Take full screenshot and crop to element bounds
                 val base64 = captureElementScreenshot(bounds)
                 JSONObject().put("data", base64).put("format", "png")
+            }
+
+            "setClipboard" -> {
+                val text = params.getString("text")
+                val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                val clip = ClipData.newPlainText("pilot", text)
+                clipboard.setPrimaryClip(clip)
+                JSONObject().put("success", true)
+            }
+
+            "getClipboard" -> {
+                val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                val text = clipboard.primaryClip?.getItemAt(0)?.text?.toString() ?: ""
+                JSONObject().put("text", text)
             }
 
             "ping" -> {

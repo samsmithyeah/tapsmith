@@ -41,6 +41,7 @@ class PilotAgent : Instrumentation() {
         val hierarchyDumper = HierarchyDumper(device)
         val commandHandler =
             CommandHandler(
+                context = targetContext,
                 device = device,
                 elementFinder = elementFinder,
                 actionExecutor = actionExecutor,

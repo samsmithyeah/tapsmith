@@ -507,7 +507,7 @@ export class PilotGrpcClient {
     });
   }
 
-  async setOrientation(orientation: string): Promise<ActionResponse> {
+  async setOrientation(orientation: Orientation): Promise<ActionResponse> {
     return this.call<ActionResponse>('setOrientation', {
       requestId: requestId(),
       orientation,
@@ -544,7 +544,7 @@ export class PilotGrpcClient {
     });
   }
 
-  async setColorScheme(scheme: string): Promise<ActionResponse> {
+  async setColorScheme(scheme: ColorScheme): Promise<ActionResponse> {
     return this.call<ActionResponse>('setColorScheme', {
       requestId: requestId(),
       scheme,

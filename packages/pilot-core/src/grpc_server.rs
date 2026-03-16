@@ -121,6 +121,55 @@ impl PilotServiceImpl {
         }
     }
 
+    /// Validate that a string looks like a valid Android package name (e.g. `com.example.app`).
+    #[allow(clippy::result_large_err)] // Status is tonic's standard error type
+    fn validate_package_name(name: &str) -> Result<(), Status> {
+        if name.is_empty() {
+            return Err(Status::invalid_argument("package_name is required"));
+        }
+        // Package names: letters, digits, dots, underscores
+        if !name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '_')
+        {
+            return Err(Status::invalid_argument(format!(
+                "invalid package name: {name:?} — must contain only alphanumeric characters, dots, and underscores"
+            )));
+        }
+        Ok(())
+    }
+
+    /// Validate that a string looks like a valid Android permission (e.g. `android.permission.CAMERA`).
+    #[allow(clippy::result_large_err)]
+    fn validate_permission(perm: &str) -> Result<(), Status> {
+        if perm.is_empty() {
+            return Err(Status::invalid_argument("permission is required"));
+        }
+        if !perm
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '_')
+        {
+            return Err(Status::invalid_argument(format!(
+                "invalid permission: {perm:?} — must contain only alphanumeric characters, dots, and underscores"
+            )));
+        }
+        Ok(())
+    }
+
+    /// Validate that a string looks like a valid Android activity name (e.g. `.MainActivity`).
+    #[allow(clippy::result_large_err)]
+    fn validate_activity(activity: &str) -> Result<(), Status> {
+        if !activity
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '_' || c == '$')
+        {
+            return Err(Status::invalid_argument(format!(
+                "invalid activity name: {activity:?}"
+            )));
+        }
+        Ok(())
+    }
+
     /// Run an ADB shell command and return a success/failure ActionResponse.
     async fn adb_action(
         &self,
@@ -1034,8 +1083,9 @@ impl proto::pilot_service_server::PilotService for PilotServiceImpl {
         let request_id = Self::request_id(&req.request_id);
         let serial = self.active_serial().await?;
 
-        if req.package_name.is_empty() {
-            return Err(Status::invalid_argument("package_name is required"));
+        Self::validate_package_name(&req.package_name)?;
+        if !req.activity.is_empty() {
+            Self::validate_activity(&req.activity)?;
         }
 
         // Clear data first if requested
@@ -1058,8 +1108,11 @@ impl proto::pilot_service_server::PilotService for PilotServiceImpl {
         match adb::shell(&serial, &cmd).await {
             Ok(_) => {
                 if req.wait_for_idle {
-                    // Give the app a moment to settle, then send waitForIdle to the agent
-                    tokio::time::sleep(Duration::from_millis(500)).await;
+                    // Wait for the UI to settle after app launch
+                    let idle_cmd = AgentCommand::WaitForIdle {
+                        timeout_ms: Some(10_000),
+                    };
+                    let _ = self.send_agent_command_with_timeout(&idle_cmd, 10_000).await;
                 }
                 Ok(Response::new(proto::ActionResponse {
                     request_id,
@@ -1094,6 +1147,15 @@ impl proto::pilot_service_server::PilotService for PilotServiceImpl {
             return Err(Status::invalid_argument("uri is required"));
         }
 
+        // Reject URIs containing shell metacharacters
+        if req.uri.contains('\'') || req.uri.contains(';') || req.uri.contains('`')
+            || req.uri.contains('$') || req.uri.contains('|') || req.uri.contains('\n')
+        {
+            return Err(Status::invalid_argument(
+                "uri contains invalid characters — shell metacharacters are not allowed",
+            ));
+        }
+
         let cmd = format!(
             "am start -a android.intent.action.VIEW -d '{}'",
             req.uri
@@ -1110,14 +1172,18 @@ impl proto::pilot_service_server::PilotService for PilotServiceImpl {
         let request_id = Self::request_id(&req.request_id);
         let serial = self.active_serial().await?;
 
-        let output = adb::shell(&serial, "dumpsys activity activities | grep mResumedActivity")
-            .await
-            .map_err(|e| Status::internal(e.to_string()))?;
+        let output = adb::shell_lenient(
+            &serial,
+            "dumpsys activity activities | grep mResumedActivity",
+        )
+        .await
+        .map_err(|e| Status::internal(e.to_string()))?;
 
-        // Parse "mResumedActivity: ActivityRecord{... com.example.app/.MainActivity ...}"
+        // Parse "mResumedActivity: ActivityRecord{... u0 com.example.app/.MainActivity t123}"
+        // The component token looks like "com.example.app/.MainActivity" and follows a "u0" token.
         let package_name = output
             .split_whitespace()
-            .find(|s| s.contains('/'))
+            .find(|s| s.contains('/') && s.contains('.'))
             .and_then(|s| s.split('/').next())
             .unwrap_or("")
             .to_string();
@@ -1137,14 +1203,17 @@ impl proto::pilot_service_server::PilotService for PilotServiceImpl {
         let request_id = Self::request_id(&req.request_id);
         let serial = self.active_serial().await?;
 
-        let output = adb::shell(&serial, "dumpsys activity activities | grep mResumedActivity")
-            .await
-            .map_err(|e| Status::internal(e.to_string()))?;
+        let output = adb::shell_lenient(
+            &serial,
+            "dumpsys activity activities | grep mResumedActivity",
+        )
+        .await
+        .map_err(|e| Status::internal(e.to_string()))?;
 
-        // Parse "mResumedActivity: ActivityRecord{... com.example.app/.MainActivity ...}"
+        // Parse "mResumedActivity: ActivityRecord{... u0 com.example.app/.MainActivity t123}"
         let activity = output
             .split_whitespace()
-            .find(|s| s.contains('/'))
+            .find(|s| s.contains('/') && s.contains('.'))
             .and_then(|s| {
                 let parts: Vec<&str> = s.split('/').collect();
                 if parts.len() >= 2 {
@@ -1170,9 +1239,7 @@ impl proto::pilot_service_server::PilotService for PilotServiceImpl {
         let req = request.into_inner();
         let request_id = Self::request_id(&req.request_id);
 
-        if req.package_name.is_empty() {
-            return Err(Status::invalid_argument("package_name is required"));
-        }
+        Self::validate_package_name(&req.package_name)?;
 
         let cmd = format!("am force-stop {}", req.package_name);
         self.adb_action(request_id, &cmd).await
@@ -1187,9 +1254,7 @@ impl proto::pilot_service_server::PilotService for PilotServiceImpl {
         let request_id = Self::request_id(&req.request_id);
         let serial = self.active_serial().await?;
 
-        if req.package_name.is_empty() {
-            return Err(Status::invalid_argument("package_name is required"));
-        }
+        Self::validate_package_name(&req.package_name)?;
 
         // Check if app is installed
         let installed = adb::shell_lenient(
@@ -1249,9 +1314,7 @@ impl proto::pilot_service_server::PilotService for PilotServiceImpl {
         let req = request.into_inner();
         let request_id = Self::request_id(&req.request_id);
 
-        if req.package_name.is_empty() {
-            return Err(Status::invalid_argument("package_name is required"));
-        }
+        Self::validate_package_name(&req.package_name)?;
 
         let cmd = format!("pm clear {}", req.package_name);
         self.adb_action(request_id, &cmd).await
@@ -1265,12 +1328,8 @@ impl proto::pilot_service_server::PilotService for PilotServiceImpl {
         let req = request.into_inner();
         let request_id = Self::request_id(&req.request_id);
 
-        if req.package_name.is_empty() {
-            return Err(Status::invalid_argument("package_name is required"));
-        }
-        if req.permission.is_empty() {
-            return Err(Status::invalid_argument("permission is required"));
-        }
+        Self::validate_package_name(&req.package_name)?;
+        Self::validate_permission(&req.permission)?;
 
         let cmd = format!("pm grant {} {}", req.package_name, req.permission);
         self.adb_action(request_id, &cmd).await
@@ -1284,12 +1343,8 @@ impl proto::pilot_service_server::PilotService for PilotServiceImpl {
         let req = request.into_inner();
         let request_id = Self::request_id(&req.request_id);
 
-        if req.package_name.is_empty() {
-            return Err(Status::invalid_argument("package_name is required"));
-        }
-        if req.permission.is_empty() {
-            return Err(Status::invalid_argument("permission is required"));
-        }
+        Self::validate_package_name(&req.package_name)?;
+        Self::validate_permission(&req.permission)?;
 
         let cmd = format!("pm revoke {} {}", req.package_name, req.permission);
         self.adb_action(request_id, &cmd).await
@@ -1303,8 +1358,13 @@ impl proto::pilot_service_server::PilotService for PilotServiceImpl {
         let req = request.into_inner();
         let request_id = Self::request_id(&req.request_id);
 
-        let cmd = format!("am broadcast -a clipper.set -e text '{}'", req.text.replace('\'', "'\\''"));
-        self.adb_action(request_id, &cmd).await
+        // Use the on-device agent for clipboard operations since it has access
+        // to Android's ClipboardManager via the instrumentation context.
+        let command = AgentCommand::SetClipboard {
+            text: req.text,
+        };
+        let result = self.send_agent_command(&command).await;
+        self.make_action_response(request_id, result).await
     }
 
     #[instrument(skip_all, fields(request_id))]
@@ -1314,18 +1374,24 @@ impl proto::pilot_service_server::PilotService for PilotServiceImpl {
     ) -> Result<Response<proto::GetClipboardResponse>, Status> {
         let req = request.into_inner();
         let request_id = Self::request_id(&req.request_id);
-        let serial = self.active_serial().await?;
 
-        let output = adb::shell_lenient(
-            &serial,
-            "am broadcast -a clipper.get 2>/dev/null | grep -o 'data=\"[^\"]*\"' | sed 's/data=\"//;s/\"$//'",
-        )
-        .await
-        .map_err(|e| Status::internal(e.to_string()))?;
+        // Use the on-device agent for clipboard operations
+        let command = AgentCommand::GetClipboard {};
+        let result = self
+            .send_agent_command(&command)
+            .await
+            .map_err(|e| Status::internal(e.to_string()))?;
+
+        let text = result
+            .data
+            .get("text")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
 
         Ok(Response::new(proto::GetClipboardResponse {
             request_id,
-            text: output.trim().to_string(),
+            text,
         }))
     }
 

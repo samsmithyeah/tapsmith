@@ -110,6 +110,10 @@ pub enum AgentCommand {
         selector: Value,
         timeout_ms: Option<u64>,
     },
+    SetClipboard {
+        text: String,
+    },
+    GetClipboard {},
 }
 
 impl AgentCommand {
@@ -334,6 +338,10 @@ impl AgentCommand {
                 }
                 ("elementScreenshot", p)
             }
+            AgentCommand::SetClipboard { text } => {
+                ("setClipboard", json!({"text": text}))
+            }
+            AgentCommand::GetClipboard {} => ("getClipboard", json!({})),
         };
 
         json!({
