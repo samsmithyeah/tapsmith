@@ -5,6 +5,7 @@ import androidx.test.uiautomator.By
 import androidx.test.uiautomator.Direction
 import androidx.test.uiautomator.UiDevice
 import androidx.test.uiautomator.UiObject2
+import androidx.test.uiautomator.Until
 
 /**
  * Executes UI actions: tap, long press, text input, swipe, scroll, and key presses.
@@ -327,10 +328,9 @@ class ActionExecutor(private val device: UiDevice) {
         try {
             // Tap the spinner to open it
             element.click()
-            device.waitForIdle(1000)
-            // Find and tap the option
+            // Wait for the option to appear then tap it
             val option =
-                device.findObject(By.text(optionText))
+                device.wait(Until.findObject(By.text(optionText)), 3000)
                     ?: throw ElementNotFoundException("Option '$optionText' not found in dropdown")
             option.click()
         } catch (e: ElementNotFoundException) {
@@ -350,14 +350,11 @@ class ActionExecutor(private val device: UiDevice) {
         try {
             // Tap the spinner to open it
             element.click()
-            device.waitForIdle(1000)
-            // Find the popup container — try common list/recycler types, then fall back
-            // to any scrollable container that appeared after tapping
+            // Wait for a common dropdown container to appear
+            val popupSelector = By.clazz(java.util.regex.Pattern.compile(".*(ListView|RecyclerView|PopupWindow)$"))
             val popup =
-                device.findObject(By.clazz("android.widget.ListView"))
-                    ?: device.findObject(By.clazz("androidx.recyclerview.widget.RecyclerView"))
-                    ?: device.findObject(By.clazz("android.widget.PopupWindow"))
-                    ?: device.findObject(By.scrollable(true))
+                device.wait(Until.findObject(popupSelector), 3000)
+                    ?: device.wait(Until.findObject(By.scrollable(true)), 1000)
                     ?: throw ActionFailedException(
                         "Could not find dropdown popup. " +
                             "The spinner may use a custom popup that is not auto-detected.",
