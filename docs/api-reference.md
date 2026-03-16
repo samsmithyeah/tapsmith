@@ -119,6 +119,14 @@ await device.tap(text("Sign In"));
 await device.tap(role("button", "Submit"));
 ```
 
+### `device.doubleTap(selector: Selector): Promise<void>`
+
+Double-tap an element. The mobile equivalent of double-click.
+
+```typescript
+await device.doubleTap(text("Zoom here"));
+```
+
 ### `device.longPress(selector: Selector, durationMs?: number): Promise<void>`
 
 Long press an element. The duration defaults to the system long-press duration if not specified.
@@ -142,6 +150,54 @@ Clear existing text in an input field, then type new text.
 
 ```typescript
 await device.clearAndType(id("email_input"), "new@example.com");
+```
+
+### `device.drag(options: DragOptions): Promise<void>`
+
+Drag from one element to another.
+
+```typescript
+await device.drag({ from: text("Item 1"), to: text("Drop Zone") });
+```
+
+**DragOptions:**
+
+| Option | Type | Description |
+|---|---|---|
+| `from` | `Selector` | Source element to drag from |
+| `to` | `Selector` | Target element to drag to |
+
+### `device.selectOption(selector: Selector, option: string | { index: number }): Promise<void>`
+
+Select an option from a native spinner or dropdown.
+
+```typescript
+await device.selectOption(role("combobox"), "Option 2");
+await device.selectOption(role("combobox"), { index: 1 });
+```
+
+### `device.focus(selector: Selector): Promise<void>`
+
+Programmatically focus an element. For text fields, this shows the keyboard.
+
+```typescript
+await device.focus(role("textfield", "Email"));
+```
+
+### `device.blur(selector: Selector): Promise<void>`
+
+Remove focus from an element by tapping outside its bounds.
+
+```typescript
+await device.blur(role("textfield", "Email"));
+```
+
+### `device.highlight(selector: Selector, options?: { durationMs?: number }): Promise<void>`
+
+Highlight an element for debugging. Validates that the element exists and is accessible.
+
+```typescript
+await device.highlight(role("button", "Submit"));
 ```
 
 ### `device.swipe(direction: string, options?: SwipeOptions): Promise<void>`
@@ -176,6 +232,30 @@ await device.scroll(id("my_list"), "down", { distance: 300 });
 |---|---|---|
 | `distance` | `number` | Scroll distance in pixels |
 | `timeoutMs` | `number` | Override the default timeout |
+
+### `device.pinchIn(selector: Selector, options?: PinchOptions): Promise<void>`
+
+Perform a pinch-in (zoom out) gesture on an element.
+
+```typescript
+await device.pinchIn(text("Map"));
+await device.pinchIn(text("Map"), { scale: 0.3 });
+```
+
+### `device.pinchOut(selector: Selector, options?: PinchOptions): Promise<void>`
+
+Perform a pinch-out (zoom in) gesture on an element.
+
+```typescript
+await device.pinchOut(text("Map"));
+await device.pinchOut(text("Map"), { scale: 3.0 });
+```
+
+**PinchOptions:**
+
+| Option | Type | Description |
+|---|---|---|
+| `scale` | `number` | Zoom scale factor. Defaults to 0.5 for pinchIn, 2.0 for pinchOut |
 
 ### `device.pressKey(key: string): Promise<void>`
 
@@ -248,11 +328,15 @@ Close the gRPC connection to the daemon.
 
 ## ElementHandle
 
-An `ElementHandle` is a lazy reference to a UI element. It is returned by `device.element()` and supports chaining, queries, and actions.
+An `ElementHandle` is a lazy reference to a UI element. It is returned by `device.element()` and supports chaining, queries, actions, and positional selection.
 
-### `elementHandle.element(childSelector: Selector): ElementHandle`
+### Scoping
+
+#### `elementHandle.element(childSelector: Selector): ElementHandle`
 
 Scope a child selector within this element. Returns a new `ElementHandle`.
+
+Cannot be called on modified handles (e.g. after `.first()`, `.filter()`, `.and()`).
 
 ```typescript
 const list = device.element(role("list", "Shopping cart"));
@@ -260,7 +344,76 @@ const item = list.element(text("Item 3"));
 await item.tap();
 ```
 
-### `elementHandle.find(): Promise<ElementInfo>`
+### Positional Selection
+
+#### `elementHandle.first(): ElementHandle`
+
+Return a new handle targeting the first match. The handle is lazy -- it does not resolve until an action or assertion is performed.
+
+```typescript
+await device.element(role("listitem")).first().tap();
+```
+
+#### `elementHandle.last(): ElementHandle`
+
+Return a new handle targeting the last match.
+
+```typescript
+await device.element(role("listitem")).last().tap();
+```
+
+#### `elementHandle.nth(index: number): ElementHandle`
+
+Return a new handle targeting the match at the given 0-based index. Negative indices count from the end.
+
+```typescript
+await device.element(role("listitem")).nth(2).tap();
+await device.element(role("listitem")).nth(-1).tap(); // last item
+```
+
+### Filtering
+
+#### `elementHandle.filter(criteria: FilterOptions): ElementHandle`
+
+Narrow matches by additional criteria without changing the selector. Returns a new lazy handle.
+
+```typescript
+const premiumItems = device.element(role("listitem")).filter({ hasText: "Premium" });
+const count = await premiumItems.count();
+```
+
+**FilterOptions:**
+
+| Option | Type | Description |
+|---|---|---|
+| `hasText` | `string \| RegExp` | Keep elements whose text contains this string or matches this RegExp |
+| `hasNotText` | `string \| RegExp` | Exclude elements whose text contains this string or matches this RegExp |
+| `has` | `Selector` | Keep elements that have a descendant matching this selector |
+| `hasNot` | `Selector` | Exclude elements that have a descendant matching this selector |
+
+### Combining Selectors
+
+#### `elementHandle.and(other: ElementHandle): ElementHandle`
+
+Return a handle matching elements that satisfy both this and the other handle's selector (intersection). AND binds tighter than OR.
+
+```typescript
+const submitButton = device.element(role("button")).and(device.element(text("Submit")));
+await submitButton.tap();
+```
+
+#### `elementHandle.or(other: ElementHandle): ElementHandle`
+
+Return a handle matching elements that satisfy either this or the other handle's selector (union).
+
+```typescript
+const acceptButton = device.element(text("OK")).or(device.element(text("Accept")));
+await acceptButton.tap();
+```
+
+### Queries
+
+#### `elementHandle.find(): Promise<ElementInfo>`
 
 Resolve the handle to an `ElementInfo` object. Throws if the element is not found within the timeout.
 
@@ -283,10 +436,10 @@ The `ElementInfo` object contains:
 | `selected` | `boolean` | Whether the element is selected |
 | `focused` | `boolean` | Whether the element has input focus |
 | `role` | `string` | Accessibility role (e.g. "button", "textfield") |
-| `viewportRatio` | `number` | Fraction of element visible in viewport (0.0–1.0) |
+| `viewportRatio` | `number` | Fraction of element visible in viewport (0.0-1.0) |
 | `bounds` | `Bounds` | Element bounding rectangle |
 
-### `elementHandle.exists(): Promise<boolean>`
+#### `elementHandle.exists(): Promise<boolean>`
 
 Returns `true` if the element exists in the current UI hierarchy.
 
@@ -294,7 +447,29 @@ Returns `true` if the element exists in the current UI hierarchy.
 const exists = await device.element(text("Optional banner")).exists();
 ```
 
-### `elementHandle.tap(): Promise<void>`
+#### `elementHandle.count(): Promise<number>`
+
+Return the number of elements matching the selector.
+
+```typescript
+const itemCount = await device.element(role("listitem")).count();
+```
+
+#### `elementHandle.all(): Promise<ElementHandle[]>`
+
+Return an array of `ElementHandle` instances, one for each matching element. Useful for iterating over a list of elements.
+
+```typescript
+const items = await device.element(role("listitem")).all();
+for (const item of items) {
+  const info = await item.find();
+  console.log(info.text);
+}
+```
+
+### Actions
+
+#### `elementHandle.tap(): Promise<void>`
 
 Tap this element.
 
@@ -302,7 +477,15 @@ Tap this element.
 await device.element(role("button", "Submit")).tap();
 ```
 
-### `elementHandle.longPress(durationMs?: number): Promise<void>`
+#### `elementHandle.doubleTap(): Promise<void>`
+
+Double-tap this element.
+
+```typescript
+await device.element(text("Zoom here")).doubleTap();
+```
+
+#### `elementHandle.longPress(durationMs?: number): Promise<void>`
 
 Long press this element.
 
@@ -310,7 +493,7 @@ Long press this element.
 await device.element(text("Item 1")).longPress(2000);
 ```
 
-### `elementHandle.type(text: string): Promise<void>`
+#### `elementHandle.type(text: string): Promise<void>`
 
 Type text into this element.
 
@@ -318,7 +501,7 @@ Type text into this element.
 await device.element(hint("Email")).type("user@example.com");
 ```
 
-### `elementHandle.clearAndType(text: string): Promise<void>`
+#### `elementHandle.clearAndType(text: string): Promise<void>`
 
 Clear existing text and type new text.
 
@@ -326,7 +509,7 @@ Clear existing text and type new text.
 await device.element(id("search_box")).clearAndType("new query");
 ```
 
-### `elementHandle.clear(): Promise<void>`
+#### `elementHandle.clear(): Promise<void>`
 
 Clear the text content of this element.
 
@@ -334,7 +517,7 @@ Clear the text content of this element.
 await device.element(id("search_box")).clear();
 ```
 
-### `elementHandle.scroll(direction: string, options?: { distance?: number }): Promise<void>`
+#### `elementHandle.scroll(direction: string, options?: { distance?: number }): Promise<void>`
 
 Scroll this element in the given direction.
 
@@ -342,7 +525,87 @@ Scroll this element in the given direction.
 await device.element(role("list")).scroll("down", { distance: 300 });
 ```
 
-### `elementHandle.getText(): Promise<string>`
+#### `elementHandle.dragTo(target: ElementHandle): Promise<void>`
+
+Drag this element to a target element.
+
+```typescript
+const source = device.element(text("Item 1"));
+const target = device.element(text("Drop Zone"));
+await source.dragTo(target);
+```
+
+#### `elementHandle.setChecked(checked: boolean): Promise<void>`
+
+Ensure a checkbox, switch, or radio button is in the desired state. Idempotent -- only taps if the current state differs from the desired state, and verifies the state changed after tapping.
+
+```typescript
+await device.element(role("switch", "Dark Mode")).setChecked(true);
+await device.element(role("checkbox", "Remember me")).setChecked(false);
+```
+
+#### `elementHandle.selectOption(option: string | { index: number }): Promise<void>`
+
+Select an option from a native spinner or dropdown. Abstracts the tap-spinner, wait-for-popup, tap-option pattern into a single action.
+
+```typescript
+await device.element(role("combobox")).selectOption("Option 2");
+await device.element(role("combobox")).selectOption({ index: 1 });
+```
+
+#### `elementHandle.focus(): Promise<void>`
+
+Programmatically focus this element. For text fields, this shows the keyboard.
+
+```typescript
+await device.element(role("textfield", "Email")).focus();
+```
+
+#### `elementHandle.blur(): Promise<void>`
+
+Remove focus from this element by tapping outside its bounds.
+
+```typescript
+await device.element(role("textfield", "Email")).blur();
+```
+
+#### `elementHandle.pinchIn(options?: { scale?: number }): Promise<void>`
+
+Perform a pinch-in (zoom out) gesture on this element.
+
+```typescript
+await device.element(text("Map")).pinchIn();
+await device.element(text("Map")).pinchIn({ scale: 0.3 });
+```
+
+#### `elementHandle.pinchOut(options?: { scale?: number }): Promise<void>`
+
+Perform a pinch-out (zoom in) gesture on this element.
+
+```typescript
+await device.element(text("Map")).pinchOut();
+await device.element(text("Map")).pinchOut({ scale: 3.0 });
+```
+
+#### `elementHandle.highlight(options?: { durationMs?: number }): Promise<void>`
+
+Highlight this element for debugging. Validates that the element exists and is accessible.
+
+```typescript
+await device.element(role("button", "Submit")).highlight();
+```
+
+#### `elementHandle.screenshot(): Promise<Buffer>`
+
+Capture a screenshot cropped to this element's bounding box. Returns a `Buffer` containing PNG image data.
+
+```typescript
+const png = await device.element(role("image", "Profile")).screenshot();
+```
+
+### Info Accessors
+
+#### `elementHandle.getText(): Promise<string>`
 
 Get the visible text content of this element.
 
@@ -350,7 +613,7 @@ Get the visible text content of this element.
 const label = await device.element(id("status_label")).getText();
 ```
 
-### `elementHandle.isVisible(): Promise<boolean>`
+#### `elementHandle.isVisible(): Promise<boolean>`
 
 Check whether this element is visible on screen.
 
@@ -358,7 +621,7 @@ Check whether this element is visible on screen.
 const visible = await device.element(text("Error")).isVisible();
 ```
 
-### `elementHandle.isEnabled(): Promise<boolean>`
+#### `elementHandle.isEnabled(): Promise<boolean>`
 
 Check whether this element is enabled (interactive).
 
@@ -366,11 +629,36 @@ Check whether this element is enabled (interactive).
 const enabled = await device.element(role("button", "Submit")).isEnabled();
 ```
 
+#### `elementHandle.isChecked(): Promise<boolean>`
+
+Check whether this checkbox, switch, or radio button is in the checked state.
+
+```typescript
+const checked = await device.element(role("switch", "Notifications")).isChecked();
+```
+
+#### `elementHandle.inputValue(): Promise<string>`
+
+Get the current value of an input field. On Android, this returns the element's text property.
+
+```typescript
+const value = await device.element(role("textfield", "Email")).inputValue();
+```
+
+#### `elementHandle.boundingBox(): Promise<BoundingBox | null>`
+
+Get the element's position and dimensions. Returns `null` if the element has no bounds.
+
+```typescript
+const box = await device.element(text("Header")).boundingBox();
+// Returns: { x: number, y: number, width: number, height: number }
+```
+
 ---
 
 ## Assertions
 
-The `expect()` function creates assertions for an `ElementHandle`. All assertions auto-wait by polling until the condition is met or the timeout expires.
+The `expect()` function creates assertions for an `ElementHandle` or a plain value. Locator assertions auto-wait by polling until the condition is met or the timeout expires.
 
 ### `expect(elementHandle: ElementHandle): PilotAssertions`
 
@@ -378,6 +666,60 @@ Create an assertion object for the given element handle.
 
 ```typescript
 await expect(device.element(text("Hello"))).toBeVisible();
+```
+
+### `expect(value: unknown): GenericAssertions`
+
+Create a generic assertion for a plain value (non-ElementHandle). These are synchronous and do not auto-wait.
+
+```typescript
+expect(5).toBe(5);
+expect("hello").toContain("ell");
+expect([1, 2, 3]).toHaveLength(3);
+```
+
+### `expect.soft(elementHandle: ElementHandle): PilotAssertions`
+
+Create a soft assertion that records failures without stopping the test. Failures are collected and can be flushed at the end.
+
+```typescript
+expect.soft(device.element(text("Header"))).toBeVisible();
+expect.soft(device.element(text("Footer"))).toBeVisible();
+// Test continues even if assertions fail
+
+const errors = flushSoftErrors();
+// errors contains any failures from soft assertions
+```
+
+### `expect.poll(fn: () => unknown | Promise<unknown>, options?: PollOptions): GenericAssertions`
+
+Poll an async function until the assertion passes or the timeout expires. Useful for waiting on values that change over time.
+
+```typescript
+await expect.poll(async () => {
+  const el = await device.element(role("listitem")).count();
+  return el;
+}).toBe(5);
+
+await expect.poll(() => fetchStatus(), { timeout: 10000 }).toBe("ready");
+```
+
+**PollOptions:**
+
+| Option | Type | Default | Description |
+|---|---|---|---|
+| `timeout` | `number` | 5000 | How long to poll before failing |
+| `intervals` | `number[]` | `[250]` | Polling intervals in milliseconds |
+
+### `flushSoftErrors(): Error[]`
+
+Retrieve and clear all soft assertion failures collected by `expect.soft()`.
+
+```typescript
+const errors = flushSoftErrors();
+if (errors.length > 0) {
+  console.log(`${errors.length} soft assertions failed`);
+}
 ```
 
 ### `.not`
@@ -388,7 +730,16 @@ Negate the following assertion.
 await expect(device.element(text("Loading..."))).not.toBeVisible();
 ```
 
-### `.toBeVisible(options?): Promise<void>`
+### Locator Assertions
+
+All locator assertions accept an optional `options` object:
+
+| Option | Type | Default | Description |
+|---|---|---|---|
+| `timeout` | `number` | Element's timeout (default 30s) | How long to wait for the condition |
+| `ratio` | `number` | `0` | (toBeInViewport only) Minimum fraction of element visible in viewport |
+
+#### `.toBeVisible(options?): Promise<void>`
 
 Assert that the element is visible on screen. With `.not`, waits for the element to disappear.
 
@@ -400,7 +751,7 @@ await expect(device.element(text("Spinner"))).not.toBeVisible();
 await expect(device.element(text("Welcome"))).toBeVisible({ timeout: 10000 });
 ```
 
-### `.toBeEnabled(options?): Promise<void>`
+#### `.toBeEnabled(options?): Promise<void>`
 
 Assert that the element is enabled (interactive).
 
@@ -409,24 +760,15 @@ await expect(device.element(role("button", "Submit"))).toBeEnabled();
 await expect(device.element(role("button", "Submit"))).not.toBeEnabled();
 ```
 
-### `.toHaveText(expected: string, options?): Promise<void>`
+#### `.toBeDisabled(options?): Promise<void>`
 
-Assert that the element's text content matches the expected string exactly.
-
-```typescript
-await expect(device.element(id("counter"))).toHaveText("42");
-```
-
-### `.toExist(options?): Promise<void>`
-
-Assert that the element exists in the UI hierarchy (regardless of visibility).
+Assert that the element is disabled (not interactive). More expressive than `.not.toBeEnabled()`.
 
 ```typescript
-await expect(device.element(testId("hidden-input"))).toExist();
-await expect(device.element(text("Deleted item"))).not.toExist();
+await expect(device.element(role("button", "Submit"))).toBeDisabled();
 ```
 
-### `.toBeChecked(options?): Promise<void>`
+#### `.toBeChecked(options?): Promise<void>`
 
 Assert that a checkbox, switch, or radio button is in the checked state.
 
@@ -435,15 +777,7 @@ await expect(device.element(role("switch", "Dark Mode"))).toBeChecked();
 await expect(device.element(role("checkbox"))).not.toBeChecked();
 ```
 
-### `.toBeDisabled(options?): Promise<void>`
-
-Assert that the element is disabled (not interactive). More expressive than `.not.toBeEnabled()`.
-
-```typescript
-await expect(device.element(role("button", "Submit"))).toBeDisabled();
-```
-
-### `.toBeHidden(options?): Promise<void>`
+#### `.toBeHidden(options?): Promise<void>`
 
 Assert that the element is not visible on screen (either not in the hierarchy or has visibility=false). More expressive than `.not.toBeVisible()`.
 
@@ -451,7 +785,7 @@ Assert that the element is not visible on screen (either not in the hierarchy or
 await expect(device.element(text("Loading..."))).toBeHidden();
 ```
 
-### `.toBeEmpty(options?): Promise<void>`
+#### `.toBeEmpty(options?): Promise<void>`
 
 Assert that the element has no text content or is an empty input field.
 
@@ -459,7 +793,7 @@ Assert that the element has no text content or is an empty input field.
 await expect(device.element(role("textfield", "Search"))).toBeEmpty();
 ```
 
-### `.toBeFocused(options?): Promise<void>`
+#### `.toBeFocused(options?): Promise<void>`
 
 Assert that the element currently has accessibility/input focus.
 
@@ -468,69 +802,7 @@ await device.element(role("textfield", "Email")).tap();
 await expect(device.element(role("textfield", "Email"))).toBeFocused();
 ```
 
-### `.toContainText(expected: string | RegExp, options?): Promise<void>`
-
-Assert that the element's text contains the given substring or matches a regex. Unlike `toHaveText()` which requires an exact match, this allows partial matching.
-
-```typescript
-await expect(device.element(testId("status"))).toContainText("Success");
-await expect(device.element(testId("status"))).toContainText(/\d+ items/);
-```
-
-### `.toHaveCount(count: number, options?): Promise<void>`
-
-Assert that the selector resolves to exactly N elements.
-
-```typescript
-await expect(device.element(role("listitem"))).toHaveCount(5);
-await expect(device.element(text("Error"))).toHaveCount(0);
-```
-
-### `.toHaveAttribute(name: string, value: unknown, options?): Promise<void>`
-
-Assert that the element has a specific property/attribute value. For Android, this maps to view properties like `className`, `resourceId`, `contentDescription`, `enabled`, `clickable`, `focusable`, `scrollable`, `selected`, etc.
-
-```typescript
-await expect(device.element(text("Item"))).toHaveAttribute("selected", true);
-await expect(device.element(text("Item"))).toHaveAttribute("className", "android.widget.TextView");
-```
-
-### `.toHaveAccessibleName(name: string | RegExp, options?): Promise<void>`
-
-Assert that the element has the given accessible name. On Android, this is the `contentDescription` if set, otherwise the `text` property.
-
-```typescript
-await expect(device.element(role("button"))).toHaveAccessibleName("Submit form");
-await expect(device.element(role("image"))).toHaveAccessibleName(/Profile/);
-```
-
-### `.toHaveAccessibleDescription(description: string | RegExp, options?): Promise<void>`
-
-Assert that the element has the given accessible description. On Android, this maps to the `hint` property.
-
-```typescript
-await expect(device.element(role("image"))).toHaveAccessibleDescription("Profile photo");
-```
-
-### `.toHaveRole(role: string, options?): Promise<void>`
-
-Assert that the element has a specific accessibility role.
-
-```typescript
-await expect(device.element(text("Submit"))).toHaveRole("button");
-await expect(device.element(testId("toggle"))).toHaveRole("switch");
-```
-
-### `.toHaveValue(value: string, options?): Promise<void>`
-
-Assert that an input field contains a specific value.
-
-```typescript
-await device.element(role("textfield", "Email")).type("test@example.com");
-await expect(device.element(role("textfield", "Email"))).toHaveValue("test@example.com");
-```
-
-### `.toBeEditable(options?): Promise<void>`
+#### `.toBeEditable(options?): Promise<void>`
 
 Assert that the element is an editable input field (a text field that is enabled).
 
@@ -539,23 +811,130 @@ await expect(device.element(role("textfield", "Name"))).toBeEditable();
 await expect(device.element(role("textfield", "ID"))).not.toBeEditable(); // read-only
 ```
 
-### `.toBeInViewport(options?): Promise<void>`
+#### `.toBeInViewport(options?): Promise<void>`
 
-Assert that the element is currently within the visible screen area. Different from `toBeVisible()` which checks the visibility property — this checks if the element's bounds intersect with the screen bounds.
+Assert that the element is currently within the visible screen area. Different from `toBeVisible()` which checks the visibility property -- this checks if the element's bounds intersect with the screen bounds.
 
 ```typescript
 await expect(device.element(text("Footer"))).toBeInViewport();
 await expect(device.element(text("Footer"))).toBeInViewport({ ratio: 0.5 }); // at least 50% visible
 ```
 
-**Assertion options:**
+#### `.toHaveText(expected: string, options?): Promise<void>`
 
-All assertion methods accept an optional `options` object:
+Assert that the element's text content matches the expected string exactly.
 
-| Option | Type | Default | Description |
-|---|---|---|---|
-| `timeout` | `number` | Element's timeout (default 30s) | How long to wait for the condition |
-| `ratio` | `number` | `0` | (toBeInViewport only) Minimum fraction of element visible in viewport |
+```typescript
+await expect(device.element(id("counter"))).toHaveText("42");
+```
+
+#### `.toContainText(expected: string | RegExp, options?): Promise<void>`
+
+Assert that the element's text contains the given substring or matches a regex. Unlike `toHaveText()` which requires an exact match, this allows partial matching.
+
+```typescript
+await expect(device.element(testId("status"))).toContainText("Success");
+await expect(device.element(testId("status"))).toContainText(/\d+ items/);
+```
+
+#### `.toHaveCount(count: number, options?): Promise<void>`
+
+Assert that the selector resolves to exactly N elements.
+
+```typescript
+await expect(device.element(role("listitem"))).toHaveCount(5);
+await expect(device.element(text("Error"))).toHaveCount(0);
+```
+
+#### `.toHaveAttribute(name: string, value: unknown, options?): Promise<void>`
+
+Assert that the element has a specific property/attribute value. For Android, this maps to view properties like `className`, `resourceId`, `contentDescription`, `enabled`, `clickable`, `focusable`, `scrollable`, `selected`, etc.
+
+```typescript
+await expect(device.element(text("Item"))).toHaveAttribute("selected", true);
+await expect(device.element(text("Item"))).toHaveAttribute("className", "android.widget.TextView");
+```
+
+#### `.toHaveAccessibleName(name: string | RegExp, options?): Promise<void>`
+
+Assert that the element has the given accessible name. On Android, this is the `contentDescription` if set, otherwise the `text` property.
+
+```typescript
+await expect(device.element(role("button"))).toHaveAccessibleName("Submit form");
+await expect(device.element(role("image"))).toHaveAccessibleName(/Profile/);
+```
+
+#### `.toHaveAccessibleDescription(description: string | RegExp, options?): Promise<void>`
+
+Assert that the element has the given accessible description. On Android, this maps to the `hint` property.
+
+```typescript
+await expect(device.element(role("image"))).toHaveAccessibleDescription("Profile photo");
+```
+
+#### `.toHaveRole(role: string, options?): Promise<void>`
+
+Assert that the element has a specific accessibility role.
+
+```typescript
+await expect(device.element(text("Submit"))).toHaveRole("button");
+await expect(device.element(testId("toggle"))).toHaveRole("switch");
+```
+
+#### `.toHaveValue(value: string, options?): Promise<void>`
+
+Assert that an input field contains a specific value.
+
+```typescript
+await device.element(role("textfield", "Email")).type("test@example.com");
+await expect(device.element(role("textfield", "Email"))).toHaveValue("test@example.com");
+```
+
+#### `.toExist(options?): Promise<void>`
+
+Assert that the element exists in the UI hierarchy (regardless of visibility).
+
+```typescript
+await expect(device.element(testId("hidden-input"))).toExist();
+await expect(device.element(text("Deleted item"))).not.toExist();
+```
+
+### Generic Value Assertions
+
+When `expect()` receives a non-ElementHandle value, it returns `GenericAssertions` with synchronous Jest-style matchers. All support `.not` for negation.
+
+| Assertion | Description |
+|---|---|
+| `.toBe(expected)` | Strict equality using `Object.is` |
+| `.toEqual(expected)` | Deep equality |
+| `.toStrictEqual(expected)` | Deep equality with type checking |
+| `.toBeTruthy()` | Value is truthy |
+| `.toBeFalsy()` | Value is falsy |
+| `.toBeDefined()` | Value is not `undefined` |
+| `.toBeUndefined()` | Value is `undefined` |
+| `.toBeNull()` | Value is `null` |
+| `.toBeNaN()` | Value is `NaN` |
+| `.toContain(expected)` | String/array contains item |
+| `.toContainEqual(expected)` | Array contains item matching deep equality |
+| `.toHaveLength(expected)` | Value has `.length` equal to expected |
+| `.toHaveProperty(path, value?)` | Value has property at path, optionally with value |
+| `.toMatch(expected)` | String matches regex or string pattern |
+| `.toMatchObject(expected)` | Object matches subset of properties |
+| `.toBeGreaterThan(expected)` | Number is greater than expected |
+| `.toBeGreaterThanOrEqual(expected)` | Number is greater than or equal to expected |
+| `.toBeLessThan(expected)` | Number is less than expected |
+| `.toBeLessThanOrEqual(expected)` | Number is less than or equal to expected |
+| `.toBeCloseTo(expected, numDigits?)` | Number is close to expected within precision |
+| `.toBeInstanceOf(expected)` | Value is instance of class |
+| `.toThrow(expected?)` | Function throws, optionally matching message |
+
+```typescript
+expect(result).toBe(42);
+expect(items).toHaveLength(3);
+expect(name).toMatch(/^[A-Z]/);
+expect(config).toMatchObject({ debug: true });
+expect(() => parse("bad")).toThrow("Invalid");
+```
 
 ---
 
