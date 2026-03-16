@@ -355,10 +355,14 @@ class CommandHandler(
                 throw ActionFailedException("Failed to capture screenshot")
             }
 
-            // Crop to element bounds
+            // Crop to element bounds — guard against OOM on large screenshots
             val fullBitmap =
-                android.graphics.BitmapFactory.decodeFile(tmpFile.absolutePath)
-                    ?: throw ActionFailedException("Failed to decode screenshot")
+                try {
+                    android.graphics.BitmapFactory.decodeFile(tmpFile.absolutePath)
+                        ?: throw ActionFailedException("Failed to decode screenshot")
+                } catch (e: OutOfMemoryError) {
+                    throw ActionFailedException("Screenshot too large to decode: ${e.message}")
+                }
 
             val cropLeft = bounds.left.coerceAtLeast(0)
             val cropTop = bounds.top.coerceAtLeast(0)

@@ -485,7 +485,7 @@ export class ElementHandle {
       const after = await this._resolveOne();
       if (after.checked !== checked) {
         throw new Error(
-          `setChecked(${checked}): element checked state did not change after tap (still ${after.checked})`,
+          `setChecked(${checked}): element ${this._describe()} checked state did not change after tap (still ${after.checked})`,
         );
       }
     }
