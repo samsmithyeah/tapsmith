@@ -3,13 +3,40 @@ import plugin from '../eslint-plugin/index.js';
 
 // ─── Test helpers ───
 
+// Mirror the minimal types from the ESLint plugin so test mocks satisfy the
+// rule signatures without resorting to `as any`.
+
+interface ASTNode {
+  type: string;
+  callee?: { type: string; name?: string };
+  arguments?: ASTNode[];
+  value?: unknown;
+  loc?: { start: { line: number }; end: { line: number } };
+}
+
+interface Comment {
+  loc?: { start: { line: number }; end: { line: number } };
+}
+
 interface ReportDescriptor {
-  node: unknown;
+  node: ASTNode;
   messageId: string;
   data?: Record<string, string>;
 }
 
-function makeNode(calleeName: string, args: Array<{ type: string; value?: unknown }> = []) {
+interface RuleContext {
+  report(descriptor: ReportDescriptor): void;
+  sourceCode?: {
+    getCommentsBefore(node: ASTNode): Comment[];
+    getAllComments(): Comment[];
+  };
+  getSourceCode(): {
+    getCommentsBefore(node: ASTNode): Comment[];
+    getAllComments(): Comment[];
+  };
+}
+
+function makeNode(calleeName: string, args: Array<{ type: string; value?: unknown }> = []): ASTNode {
   return {
     type: 'CallExpression',
     callee: { type: 'Identifier', name: calleeName },
@@ -18,7 +45,7 @@ function makeNode(calleeName: string, args: Array<{ type: string; value?: unknow
   };
 }
 
-function makeContext(reports: ReportDescriptor[] = [], comments: Array<{ loc?: { start: { line: number }; end: { line: number } } }> = []) {
+function makeContext(reports: ReportDescriptor[] = [], comments: Comment[] = []): RuleContext {
   const sourceCode = {
     getCommentsBefore: vi.fn(() => []),
     getAllComments: vi.fn(() => comments),
@@ -43,10 +70,10 @@ describe('prefer-role rule', () => {
   it('warns when className is a standard Android widget (Button)', () => {
     const reports: ReportDescriptor[] = [];
     const ctx = makeContext(reports);
-    const visitor = rule.create(ctx as any);
+    const visitor = rule.create(ctx);
 
     const node = makeNode('className', [{ type: 'Literal', value: 'android.widget.Button' }]);
-    visitor.CallExpression(node as any);
+    visitor.CallExpression(node);
 
     expect(reports).toHaveLength(1);
     expect(reports[0].messageId).toBe('preferRole');
@@ -72,10 +99,10 @@ describe('prefer-role rule', () => {
     for (const { className, role } of standardWidgets) {
       const reports: ReportDescriptor[] = [];
       const ctx = makeContext(reports);
-      const visitor = rule.create(ctx as any);
+      const visitor = rule.create(ctx);
 
       const node = makeNode('className', [{ type: 'Literal', value: className }]);
-      visitor.CallExpression(node as any);
+      visitor.CallExpression(node);
 
       expect(reports).toHaveLength(1);
       expect(reports[0].data?.role).toBe(role);
@@ -85,10 +112,10 @@ describe('prefer-role rule', () => {
   it('does not warn for custom/non-standard class names', () => {
     const reports: ReportDescriptor[] = [];
     const ctx = makeContext(reports);
-    const visitor = rule.create(ctx as any);
+    const visitor = rule.create(ctx);
 
     const node = makeNode('className', [{ type: 'Literal', value: 'com.custom.Widget' }]);
-    visitor.CallExpression(node as any);
+    visitor.CallExpression(node);
 
     expect(reports).toHaveLength(0);
   });
@@ -96,10 +123,10 @@ describe('prefer-role rule', () => {
   it('does not warn for non-className function calls', () => {
     const reports: ReportDescriptor[] = [];
     const ctx = makeContext(reports);
-    const visitor = rule.create(ctx as any);
+    const visitor = rule.create(ctx);
 
     const node = makeNode('text', [{ type: 'Literal', value: 'android.widget.Button' }]);
-    visitor.CallExpression(node as any);
+    visitor.CallExpression(node);
 
     expect(reports).toHaveLength(0);
   });
@@ -107,10 +134,10 @@ describe('prefer-role rule', () => {
   it('does not warn when argument is not a string literal', () => {
     const reports: ReportDescriptor[] = [];
     const ctx = makeContext(reports);
-    const visitor = rule.create(ctx as any);
+    const visitor = rule.create(ctx);
 
     const node = makeNode('className', [{ type: 'Identifier' }]);
-    visitor.CallExpression(node as any);
+    visitor.CallExpression(node);
 
     expect(reports).toHaveLength(0);
   });
@@ -118,10 +145,10 @@ describe('prefer-role rule', () => {
   it('does not warn when className has no arguments', () => {
     const reports: ReportDescriptor[] = [];
     const ctx = makeContext(reports);
-    const visitor = rule.create(ctx as any);
+    const visitor = rule.create(ctx);
 
     const node = makeNode('className', []);
-    visitor.CallExpression(node as any);
+    visitor.CallExpression(node);
 
     expect(reports).toHaveLength(0);
   });
@@ -140,10 +167,10 @@ describe('no-bare-xpath rule', () => {
   it('reports error when xpath() has no comment', () => {
     const reports: ReportDescriptor[] = [];
     const ctx = makeContext(reports, []);
-    const visitor = rule.create(ctx as any);
+    const visitor = rule.create(ctx);
 
     const node = makeNode('xpath', [{ type: 'Literal', value: '//Button' }]);
-    visitor.CallExpression(node as any);
+    visitor.CallExpression(node);
 
     expect(reports).toHaveLength(1);
     expect(reports[0].messageId).toBe('noBareXpath');
@@ -160,10 +187,10 @@ describe('no-bare-xpath rule', () => {
       sourceCode,
       getSourceCode: () => sourceCode,
     };
-    const visitor = rule.create(ctx as any);
+    const visitor = rule.create(ctx);
 
     const node = makeNode('xpath', [{ type: 'Literal', value: '//Button' }]);
-    visitor.CallExpression(node as any);
+    visitor.CallExpression(node);
 
     expect(reports).toHaveLength(0);
   });
@@ -172,10 +199,10 @@ describe('no-bare-xpath rule', () => {
     const reports: ReportDescriptor[] = [];
     const inlineComment = { loc: { start: { line: 5 }, end: { line: 5 } } };
     const ctx = makeContext(reports, [inlineComment]);
-    const visitor = rule.create(ctx as any);
+    const visitor = rule.create(ctx);
 
     const node = makeNode('xpath', [{ type: 'Literal', value: '//Button' }]);
-    visitor.CallExpression(node as any);
+    visitor.CallExpression(node);
 
     expect(reports).toHaveLength(0);
   });
@@ -183,10 +210,10 @@ describe('no-bare-xpath rule', () => {
   it('does not report for non-xpath function calls', () => {
     const reports: ReportDescriptor[] = [];
     const ctx = makeContext(reports, []);
-    const visitor = rule.create(ctx as any);
+    const visitor = rule.create(ctx);
 
     const node = makeNode('text', [{ type: 'Literal', value: '//Button' }]);
-    visitor.CallExpression(node as any);
+    visitor.CallExpression(node);
 
     expect(reports).toHaveLength(0);
   });
@@ -195,10 +222,10 @@ describe('no-bare-xpath rule', () => {
     const reports: ReportDescriptor[] = [];
     const differentLineComment = { loc: { start: { line: 1 }, end: { line: 1 } } };
     const ctx = makeContext(reports, [differentLineComment]);
-    const visitor = rule.create(ctx as any);
+    const visitor = rule.create(ctx);
 
     const node = makeNode('xpath', [{ type: 'Literal', value: '//Button' }]);
-    visitor.CallExpression(node as any);
+    visitor.CallExpression(node);
 
     expect(reports).toHaveLength(1);
   });
@@ -217,10 +244,10 @@ describe('prefer-accessible-selectors rule', () => {
   it('warns when testId() is used', () => {
     const reports: ReportDescriptor[] = [];
     const ctx = makeContext(reports);
-    const visitor = rule.create(ctx as any);
+    const visitor = rule.create(ctx);
 
     const node = makeNode('testId', [{ type: 'Literal', value: 'btn-submit' }]);
-    visitor.CallExpression(node as any);
+    visitor.CallExpression(node);
 
     expect(reports).toHaveLength(1);
     expect(reports[0].messageId).toBe('preferAccessible');
@@ -230,10 +257,10 @@ describe('prefer-accessible-selectors rule', () => {
   it('warns when id() is used', () => {
     const reports: ReportDescriptor[] = [];
     const ctx = makeContext(reports);
-    const visitor = rule.create(ctx as any);
+    const visitor = rule.create(ctx);
 
     const node = makeNode('id', [{ type: 'Literal', value: 'com.app:id/btn' }]);
-    visitor.CallExpression(node as any);
+    visitor.CallExpression(node);
 
     expect(reports).toHaveLength(1);
     expect(reports[0].messageId).toBe('preferAccessible');
@@ -243,10 +270,10 @@ describe('prefer-accessible-selectors rule', () => {
   it('does not warn for role()', () => {
     const reports: ReportDescriptor[] = [];
     const ctx = makeContext(reports);
-    const visitor = rule.create(ctx as any);
+    const visitor = rule.create(ctx);
 
     const node = makeNode('role', [{ type: 'Literal', value: 'button' }]);
-    visitor.CallExpression(node as any);
+    visitor.CallExpression(node);
 
     expect(reports).toHaveLength(0);
   });
@@ -254,10 +281,10 @@ describe('prefer-accessible-selectors rule', () => {
   it('does not warn for text()', () => {
     const reports: ReportDescriptor[] = [];
     const ctx = makeContext(reports);
-    const visitor = rule.create(ctx as any);
+    const visitor = rule.create(ctx);
 
     const node = makeNode('text', [{ type: 'Literal', value: 'Hello' }]);
-    visitor.CallExpression(node as any);
+    visitor.CallExpression(node);
 
     expect(reports).toHaveLength(0);
   });
@@ -265,10 +292,10 @@ describe('prefer-accessible-selectors rule', () => {
   it('does not warn for contentDesc()', () => {
     const reports: ReportDescriptor[] = [];
     const ctx = makeContext(reports);
-    const visitor = rule.create(ctx as any);
+    const visitor = rule.create(ctx);
 
     const node = makeNode('contentDesc', [{ type: 'Literal', value: 'Close' }]);
-    visitor.CallExpression(node as any);
+    visitor.CallExpression(node);
 
     expect(reports).toHaveLength(0);
   });
@@ -276,10 +303,10 @@ describe('prefer-accessible-selectors rule', () => {
   it('does not warn for textContains()', () => {
     const reports: ReportDescriptor[] = [];
     const ctx = makeContext(reports);
-    const visitor = rule.create(ctx as any);
+    const visitor = rule.create(ctx);
 
     const node = makeNode('textContains', [{ type: 'Literal', value: 'partial' }]);
-    visitor.CallExpression(node as any);
+    visitor.CallExpression(node);
 
     expect(reports).toHaveLength(0);
   });
@@ -287,10 +314,10 @@ describe('prefer-accessible-selectors rule', () => {
   it('does not warn for unrelated functions', () => {
     const reports: ReportDescriptor[] = [];
     const ctx = makeContext(reports);
-    const visitor = rule.create(ctx as any);
+    const visitor = rule.create(ctx);
 
     const node = makeNode('querySelector', [{ type: 'Literal', value: '#btn' }]);
-    visitor.CallExpression(node as any);
+    visitor.CallExpression(node);
 
     expect(reports).toHaveLength(0);
   });

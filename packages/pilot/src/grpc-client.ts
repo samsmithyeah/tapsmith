@@ -122,17 +122,21 @@ export class PilotGrpcClient {
       defaults: true,
       oneofs: true,
     });
-    const proto = grpc.loadPackageDefinition(packageDef) as any;
-    this.client = new proto.pilot.PilotService(
+    const proto = grpc.loadPackageDefinition(packageDef);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- proto-loader returns untyped package definitions
+    const PilotService = (proto.pilot as any).PilotService as grpc.ServiceClientConstructor;
+    this.client = new PilotService(
       this.address,
       grpc.credentials.createInsecure(),
-    ) as any;
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-function-type
+    ) as grpc.Client & Record<string, Function>;
   }
 
   // ── Helpers ──
 
   private call<T>(method: string, request: Record<string, unknown>): Promise<T> {
     return new Promise<T>((resolve, reject) => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- dynamic RPC dispatch on proto-loaded client
       (this.client as any)[method](request, (err: grpc.ServiceError | null, response: T) => {
         if (err) {
           reject(err);
@@ -308,6 +312,7 @@ export class PilotGrpcClient {
   async waitForReady(timeoutMs: number = 5000): Promise<boolean> {
     return new Promise<boolean>((resolve) => {
       const deadline = Date.now() + timeoutMs;
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- waitForReady is on grpc.Client but not in the TS type surface
       (this.client as any).waitForReady(deadline, (err: Error | null) => {
         resolve(!err);
       });

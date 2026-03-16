@@ -592,7 +592,7 @@ describe('nth()', () => {
     const handle = new ElementHandle(client, role('listitem'), 5000);
     await handle.nth(1).tap();
     // Banana has resourceId 'item_2', so the resolved selector should be id('item_2')
-    const calledSelector = (tap.mock.calls[0] as any[])[0] as Selector;
+    const calledSelector = (tap.mock.calls[0] as unknown[])[0] as Selector;
     expect(selectorToProto(calledSelector)).toEqual({ resourceId: 'item_2' });
   });
 
@@ -604,7 +604,7 @@ describe('nth()', () => {
     });
     const handle = new ElementHandle(client, role('listitem'), 5000);
     await handle.nth(2).longPress(500);
-    const calledSelector = (longPress.mock.calls[0] as any[])[0] as Selector;
+    const calledSelector = (longPress.mock.calls[0] as unknown[])[0] as Selector;
     expect(selectorToProto(calledSelector)).toEqual({ resourceId: 'item_3' });
   });
 
@@ -616,7 +616,7 @@ describe('nth()', () => {
     });
     const handle = new ElementHandle(client, role('listitem'), 5000);
     await handle.nth(0).type('hello');
-    const calledSelector = (typeText.mock.calls[0] as any[])[0] as Selector;
+    const calledSelector = (typeText.mock.calls[0] as unknown[])[0] as Selector;
     expect(selectorToProto(calledSelector)).toEqual({ resourceId: 'item_1' });
   });
 });
@@ -692,7 +692,7 @@ describe('filter()', () => {
         makeElementInfo({ elementId: 'c1', text: 'Premium', bounds: { left: 10, top: 10, right: 90, bottom: 40 } }),
       ];
 
-      const findElements = vi.fn(async (selector: any) => {
+      const findElements = vi.fn(async (selector: Selector) => {
         const proto = selectorToProto(selector);
         // Child selector is text('Premium').within(role('listitem')), so it has a parent
         if (proto.parent) return makeFindElementsResponse(childElements);
@@ -716,7 +716,7 @@ describe('filter()', () => {
         makeElementInfo({ elementId: 'c1', text: 'Disabled', bounds: { left: 10, top: 110, right: 90, bottom: 140 } }),
       ];
 
-      const findElements = vi.fn(async (selector: any) => {
+      const findElements = vi.fn(async (selector: Selector) => {
         const proto = selectorToProto(selector);
         // Child selector is text('Disabled').within(role('listitem')), so it has a parent
         if (proto.parent) return makeFindElementsResponse(childElements);
@@ -772,7 +772,7 @@ describe('and()', () => {
       makeElementInfo({ elementId: 'e1', text: 'Submit', resourceId: 'btn1' }),
     ];
 
-    const findElements = vi.fn(async (selector: any) => {
+    const findElements = vi.fn(async (selector: Selector) => {
       const proto = selectorToProto(selector);
       if (proto.text === 'Submit') return makeFindElementsResponse(submitEls);
       return makeFindElementsResponse(buttonsEls);
@@ -786,7 +786,7 @@ describe('and()', () => {
   });
 
   it('returns empty when no elements match both', async () => {
-    const findElements = vi.fn(async (selector: any) => {
+    const findElements = vi.fn(async (selector: Selector) => {
       const proto = selectorToProto(selector);
       if (proto.text) {
         return makeFindElementsResponse([
@@ -814,7 +814,7 @@ describe('and()', () => {
     const submit = new ElementHandle(client, text('Submit'), 5000);
     await buttons.and(submit).tap();
 
-    const calledSelector = (tap.mock.calls[0] as any[])[0] as Selector;
+    const calledSelector = (tap.mock.calls[0] as unknown[])[0] as Selector;
     expect(selectorToProto(calledSelector)).toEqual({ resourceId: 'btn-submit' });
   });
 });
@@ -830,7 +830,7 @@ describe('or()', () => {
       makeElementInfo({ elementId: 'e2', text: 'Confirm' }),
     ];
 
-    const findElements = vi.fn(async (selector: any) => {
+    const findElements = vi.fn(async (selector: Selector) => {
       const proto = selectorToProto(selector);
       if (proto.text === 'OK') return makeFindElementsResponse(okEls);
       return makeFindElementsResponse(confirmEls);
@@ -855,7 +855,7 @@ describe('or()', () => {
   it('or() with tap() uses the first available element', async () => {
     const tap = vi.fn(async () => successResponse());
     const okEl = makeElementInfo({ elementId: 'e1', text: 'OK', resourceId: '' });
-    const findElements = vi.fn(async (selector: any) => {
+    const findElements = vi.fn(async (selector: Selector) => {
       const proto = selectorToProto(selector);
       if (proto.text === 'OK') return makeFindElementsResponse([okEl]);
       return makeFindElementsResponse([]); // "Confirm" not present
@@ -866,7 +866,7 @@ describe('or()', () => {
     const confirm = new ElementHandle(client, text('Confirm'), 5000);
     await ok.or(confirm).tap();
 
-    const calledSelector = (tap.mock.calls[0] as any[])[0] as Selector;
+    const calledSelector = (tap.mock.calls[0] as unknown[])[0] as Selector;
     // OK has no resourceId or contentDescription, so falls back to text selector
     expect(selectorToProto(calledSelector)).toEqual({ text: 'OK' });
   });
@@ -886,7 +886,7 @@ describe('or()', () => {
 describe('chaining and()', () => {
   it('a.and(b).and(c) matches elements in all three', async () => {
     const shared = makeElementInfo({ elementId: 'e1', text: 'Submit' });
-    const findElements = vi.fn(async (selector: any) => {
+    const findElements = vi.fn(async (selector: Selector) => {
       const proto = selectorToProto(selector);
       if (proto.text === 'B') {
         return makeFindElementsResponse([
@@ -917,7 +917,7 @@ describe('chaining and()', () => {
 
 describe('chaining or()', () => {
   it('a.or(b).or(c) matches elements in any of the three', async () => {
-    const findElements = vi.fn(async (selector: any) => {
+    const findElements = vi.fn(async (selector: Selector) => {
       const proto = selectorToProto(selector);
       if (proto.text === 'A') return makeFindElementsResponse([makeElementInfo({ elementId: 'e1', text: 'A' })]);
       if (proto.text === 'B') return makeFindElementsResponse([makeElementInfo({ elementId: 'e2', text: 'B' })]);
@@ -949,7 +949,7 @@ describe('method composition', () => {
   it('or().nth() works correctly', async () => {
     const aEls = [makeElementInfo({ elementId: 'e1', text: 'A' })];
     const bEls = [makeElementInfo({ elementId: 'e2', text: 'B' })];
-    const findElements = vi.fn(async (selector: any) => {
+    const findElements = vi.fn(async (selector: Selector) => {
       const proto = selectorToProto(selector);
       if (proto.text === 'A') return makeFindElementsResponse(aEls);
       return makeFindElementsResponse(bEls);
@@ -1005,7 +1005,7 @@ describe('method composition', () => {
     const handle = new ElementHandle(client, role('button'), 5000);
     await handle.first().tap();
 
-    const calledSelector = (tap.mock.calls[0] as any[])[0] as Selector;
+    const calledSelector = (tap.mock.calls[0] as unknown[])[0] as Selector;
     expect(selectorToProto(calledSelector)).toEqual({ contentDesc: 'Close button' });
   });
 
@@ -1025,7 +1025,7 @@ describe('method composition', () => {
       makeElementInfo({ elementId: 'e2', text: 'Banana' }),
       makeElementInfo({ elementId: 'e3', text: 'Cherry' }),
     ];
-    const findElements = vi.fn(async (selector: any) => {
+    const findElements = vi.fn(async (selector: Selector) => {
       const proto = selectorToProto(selector);
       if (proto.text === 'B') return makeFindElementsResponse(bEls);
       return makeFindElementsResponse(aEls);
@@ -1073,7 +1073,7 @@ describe('method composition', () => {
       makeElementInfo({ elementId: 'e1', text: 'Apple' }),
       makeElementInfo({ elementId: 'e2', text: 'Banana' }),
     ];
-    const findElements = vi.fn(async (selector: any) => {
+    const findElements = vi.fn(async (selector: Selector) => {
       const proto = selectorToProto(selector);
       if (proto.text === 'B') return makeFindElementsResponse(bEls);
       return makeFindElementsResponse(aEls);

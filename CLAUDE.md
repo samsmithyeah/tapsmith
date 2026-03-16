@@ -63,7 +63,7 @@ GitHub Actions runs 4 parallel jobs: `proto-lint`, `typescript`, `rust`, `androi
 - **Type exports** use explicit `type` keyword
 - **No barrel exports** — `index.ts` has explicit re-exports
 - **Unused vars**: `_` prefix to suppress warnings (`argsIgnorePattern: '^_'`)
-- **`@typescript-eslint/no-explicit-any`**: off (any is permitted)
+- **`@typescript-eslint/no-explicit-any`**: error — avoid `any`; use `unknown` with type narrowing, or targeted `eslint-disable` with a justification comment for genuinely untyped boundaries (e.g., dynamic proto loading)
 - Tests live in `src/__tests__/*.test.ts` and use Vitest with mocks (no live device)
 
 ## Key SDK abstractions
