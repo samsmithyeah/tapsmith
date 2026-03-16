@@ -7,7 +7,7 @@
  */
 
 import type { Selector } from './selectors.js';
-import { PilotGrpcClient, type SwipeOptions, type ScrollOptions, type ScreenshotResponse } from './grpc-client.js';
+import { PilotGrpcClient, type ActionResponse, type SwipeOptions, type ScrollOptions, type ScreenshotResponse } from './grpc-client.js';
 import { ElementHandle } from './element-handle.js';
 import type { PilotConfig } from './config.js';
 
@@ -32,6 +32,17 @@ export class Device {
     this.defaultTimeoutMs = config?.timeout ?? 30_000;
   }
 
+  /** @internal — Run an action RPC and throw on failure. */
+  private async _action(
+    fn: () => Promise<ActionResponse>,
+    fallbackMsg: string,
+  ): Promise<void> {
+    const res = await fn();
+    if (!res.success) {
+      throw new Error(res.errorMessage || fallbackMsg);
+    }
+  }
+
   // ── Element handle ──
 
   /**
@@ -46,58 +57,37 @@ export class Device {
   // ── Actions ──
 
   async tap(selector: Selector): Promise<void> {
-    const res = await this._client.tap(selector, this.defaultTimeoutMs);
-    if (!res.success) {
-      throw new Error(res.errorMessage || 'Tap failed');
-    }
+    return this._action(() => this._client.tap(selector, this.defaultTimeoutMs), 'Tap failed');
   }
 
   async longPress(selector: Selector, durationMs?: number): Promise<void> {
-    const res = await this._client.longPress(selector, durationMs, this.defaultTimeoutMs);
-    if (!res.success) {
-      throw new Error(res.errorMessage || 'Long press failed');
-    }
+    return this._action(() => this._client.longPress(selector, durationMs, this.defaultTimeoutMs), 'Long press failed');
   }
 
   async type(selector: Selector, text: string): Promise<void> {
-    const res = await this._client.typeText(selector, text, this.defaultTimeoutMs);
-    if (!res.success) {
-      throw new Error(res.errorMessage || 'Type text failed');
-    }
+    return this._action(() => this._client.typeText(selector, text, this.defaultTimeoutMs), 'Type text failed');
   }
 
   async clearAndType(selector: Selector, text: string): Promise<void> {
-    const res = await this._client.clearAndType(selector, text, this.defaultTimeoutMs);
-    if (!res.success) {
-      throw new Error(res.errorMessage || 'Clear and type failed');
-    }
+    return this._action(() => this._client.clearAndType(selector, text, this.defaultTimeoutMs), 'Clear and type failed');
   }
 
   async swipe(direction: string, options?: SwipeOptions): Promise<void> {
-    const res = await this._client.swipe(direction, {
-      ...options,
-      timeoutMs: options?.timeoutMs ?? this.defaultTimeoutMs,
-    });
-    if (!res.success) {
-      throw new Error(res.errorMessage || 'Swipe failed');
-    }
+    return this._action(
+      () => this._client.swipe(direction, { ...options, timeoutMs: options?.timeoutMs ?? this.defaultTimeoutMs }),
+      'Swipe failed',
+    );
   }
 
   async scroll(selector: Selector, direction: string, options?: ScrollOptions): Promise<void> {
-    const res = await this._client.scroll(selector, direction, {
-      ...options,
-      timeoutMs: options?.timeoutMs ?? this.defaultTimeoutMs,
-    });
-    if (!res.success) {
-      throw new Error(res.errorMessage || 'Scroll failed');
-    }
+    return this._action(
+      () => this._client.scroll(selector, direction, { ...options, timeoutMs: options?.timeoutMs ?? this.defaultTimeoutMs }),
+      'Scroll failed',
+    );
   }
 
   async pressKey(key: string): Promise<void> {
-    const res = await this._client.pressKey(key);
-    if (!res.success) {
-      throw new Error(res.errorMessage || 'Press key failed');
-    }
+    return this._action(() => this._client.pressKey(key), 'Press key failed');
   }
 
   async pressBack(): Promise<void> {
@@ -105,61 +95,37 @@ export class Device {
   }
 
   async doubleTap(selector: Selector): Promise<void> {
-    const res = await this._client.doubleTap(selector, this.defaultTimeoutMs);
-    if (!res.success) {
-      throw new Error(res.errorMessage || 'Double tap failed');
-    }
+    return this._action(() => this._client.doubleTap(selector, this.defaultTimeoutMs), 'Double tap failed');
   }
 
   async drag(options: DragOptions): Promise<void> {
-    const res = await this._client.dragAndDrop(options.from, options.to, this.defaultTimeoutMs);
-    if (!res.success) {
-      throw new Error(res.errorMessage || 'Drag and drop failed');
-    }
+    return this._action(() => this._client.dragAndDrop(options.from, options.to, this.defaultTimeoutMs), 'Drag and drop failed');
   }
 
   async pinchIn(selector: Selector, options?: PinchOptions): Promise<void> {
     const scale = options?.scale ?? 0.5;
-    const res = await this._client.pinchZoom(selector, scale, this.defaultTimeoutMs);
-    if (!res.success) {
-      throw new Error(res.errorMessage || 'Pinch in failed');
-    }
+    return this._action(() => this._client.pinchZoom(selector, scale, this.defaultTimeoutMs), 'Pinch in failed');
   }
 
   async pinchOut(selector: Selector, options?: PinchOptions): Promise<void> {
     const scale = options?.scale ?? 2.0;
-    const res = await this._client.pinchZoom(selector, scale, this.defaultTimeoutMs);
-    if (!res.success) {
-      throw new Error(res.errorMessage || 'Pinch out failed');
-    }
+    return this._action(() => this._client.pinchZoom(selector, scale, this.defaultTimeoutMs), 'Pinch out failed');
   }
 
   async focus(selector: Selector): Promise<void> {
-    const res = await this._client.focus(selector, this.defaultTimeoutMs);
-    if (!res.success) {
-      throw new Error(res.errorMessage || 'Focus failed');
-    }
+    return this._action(() => this._client.focus(selector, this.defaultTimeoutMs), 'Focus failed');
   }
 
   async blur(selector: Selector): Promise<void> {
-    const res = await this._client.blur(selector, this.defaultTimeoutMs);
-    if (!res.success) {
-      throw new Error(res.errorMessage || 'Blur failed');
-    }
+    return this._action(() => this._client.blur(selector, this.defaultTimeoutMs), 'Blur failed');
   }
 
   async selectOption(selector: Selector, option: string | { index: number }): Promise<void> {
-    const res = await this._client.selectOption(selector, option, this.defaultTimeoutMs);
-    if (!res.success) {
-      throw new Error(res.errorMessage || 'Select option failed');
-    }
+    return this._action(() => this._client.selectOption(selector, option, this.defaultTimeoutMs), 'Select option failed');
   }
 
   async highlight(selector: Selector, options?: { durationMs?: number }): Promise<void> {
-    const res = await this._client.highlight(selector, options?.durationMs, this.defaultTimeoutMs);
-    if (!res.success) {
-      throw new Error(res.errorMessage || 'Highlight failed');
-    }
+    return this._action(() => this._client.highlight(selector, options?.durationMs, this.defaultTimeoutMs), 'Highlight failed');
   }
 
   // ── Utilities ──

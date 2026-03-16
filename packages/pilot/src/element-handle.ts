@@ -13,7 +13,7 @@ import {
   text as textSelector,
   contentDesc as contentDescSelector,
 } from './selectors.js';
-import type { PilotGrpcClient, ElementInfo, ScreenshotResponse } from './grpc-client.js';
+import type { PilotGrpcClient, ElementInfo } from './grpc-client.js';
 
 // ─── Public types ───
 
@@ -497,6 +497,13 @@ export class ElementHandle {
       if (!res.success) {
         throw new Error(res.errorMessage || 'setChecked tap failed');
       }
+      // Verify the state actually changed
+      const after = await this._resolveOne();
+      if (after.checked !== checked) {
+        throw new Error(
+          `setChecked(${checked}): element checked state did not change after tap (still ${after.checked})`,
+        );
+      }
     }
   }
 
@@ -508,17 +515,17 @@ export class ElementHandle {
     }
   }
 
-  async screenshot(): Promise<ScreenshotResponse> {
+  async screenshot(): Promise<Buffer> {
     const sel = await this._actionSelector();
     const res = await this._client.takeElementScreenshot(sel, this._timeoutMs);
     if (!res.success) {
       throw new Error(res.errorMessage || 'Element screenshot failed');
     }
-    return res;
+    return res.data;
   }
 
   async boundingBox(): Promise<BoundingBox | null> {
-    const info = await this.find();
+    const info = this._hasModifiers() ? await this._resolveOne() : await this.find();
     if (!info.bounds) return null;
     return {
       x: info.bounds.left,
@@ -588,12 +595,12 @@ export class ElementHandle {
   }
 
   async isChecked(): Promise<boolean> {
-    const info = await this.find();
+    const info = this._hasModifiers() ? await this._resolveOne() : await this.find();
     return info.checked;
   }
 
   async inputValue(): Promise<string> {
-    const info = await this.find();
+    const info = this._hasModifiers() ? await this._resolveOne() : await this.find();
     return info.text;
   }
 }

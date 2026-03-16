@@ -957,24 +957,26 @@ impl proto::pilot_service_server::PilotService for PilotServiceImpl {
 
         match result {
             Ok(resp) if resp.success => {
-                let data = resp
-                    .data
-                    .get("data")
-                    .and_then(|v| v.as_str())
-                    .map(|b64| {
-                        use base64::Engine;
-                        base64::engine::general_purpose::STANDARD
-                            .decode(b64)
-                            .unwrap_or_default()
-                    })
-                    .unwrap_or_default();
+                let b64_str = resp.data.get("data").and_then(|v| v.as_str()).unwrap_or("");
 
-                Ok(Response::new(proto::ScreenshotResponse {
-                    request_id,
-                    success: true,
-                    data,
-                    error_message: String::new(),
-                }))
+                use base64::Engine;
+                match base64::engine::general_purpose::STANDARD.decode(b64_str) {
+                    Ok(data) => Ok(Response::new(proto::ScreenshotResponse {
+                        request_id,
+                        success: true,
+                        data,
+                        error_message: String::new(),
+                    })),
+                    Err(e) => {
+                        error!("Failed to decode element screenshot base64: {e}");
+                        Ok(Response::new(proto::ScreenshotResponse {
+                            request_id,
+                            success: false,
+                            data: Vec::new(),
+                            error_message: format!("Failed to decode screenshot data: {e}"),
+                        }))
+                    }
+                }
             }
             Ok(resp) => Ok(Response::new(proto::ScreenshotResponse {
                 request_id,

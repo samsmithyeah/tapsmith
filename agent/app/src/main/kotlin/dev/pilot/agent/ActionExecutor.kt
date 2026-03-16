@@ -288,11 +288,14 @@ class ActionExecutor(private val device: UiDevice) {
      */
     fun doubleTap(element: UiObject2) {
         try {
+            // Perform two rapid taps at the element's center.
+            // We use device.click() with a short interval to ensure the gesture
+            // is recognized as a double-tap by the target app.
             val bounds = element.visibleBounds
             val cx = bounds.centerX()
             val cy = bounds.centerY()
             device.click(cx, cy)
-            Thread.sleep(50)
+            Thread.sleep(40)
             device.click(cx, cy)
         } catch (e: Exception) {
             throw ActionFailedException("Failed to double tap element: ${e.message}")
@@ -348,12 +351,17 @@ class ActionExecutor(private val device: UiDevice) {
             // Tap the spinner to open it
             element.click()
             device.waitForIdle(1000)
-            // Find all items in the popup and select by index
-            // Look for common popup containers
+            // Find the popup container — try common list/recycler types, then fall back
+            // to any scrollable container that appeared after tapping
             val popup =
                 device.findObject(By.clazz("android.widget.ListView"))
                     ?: device.findObject(By.clazz("androidx.recyclerview.widget.RecyclerView"))
-                    ?: throw ActionFailedException("Could not find dropdown popup")
+                    ?: device.findObject(By.clazz("android.widget.PopupWindow"))
+                    ?: device.findObject(By.scrollable(true))
+                    ?: throw ActionFailedException(
+                        "Could not find dropdown popup. " +
+                            "The spinner may use a custom popup that is not auto-detected.",
+                    )
             val children = popup.children
             if (index < 0 || index >= children.size) {
                 throw ActionFailedException("Index $index out of range (0..${children.size - 1})")
@@ -402,12 +410,41 @@ class ActionExecutor(private val device: UiDevice) {
     }
 
     /**
-     * Blur an element (remove focus by pressing back or tapping outside).
+     * Blur an element by tapping outside its bounds to remove focus.
+     * Avoids pressBack() which could navigate away or close dialogs.
      */
     fun blur(element: UiObject2) {
         try {
-            // Press back to dismiss keyboard / remove focus
-            device.pressBack()
+            val bounds = element.visibleBounds
+            val screenWidth = device.displayWidth
+            val screenHeight = device.displayHeight
+
+            // Find a safe point outside the element to tap
+            val tapX: Int
+            val tapY: Int
+            if (bounds.top > 50) {
+                // Tap above the element
+                tapX = bounds.centerX()
+                tapY = bounds.top / 2
+            } else if (bounds.bottom < screenHeight - 50) {
+                // Tap below the element
+                tapX = bounds.centerX()
+                tapY = (bounds.bottom + screenHeight) / 2
+            } else if (bounds.left > 50) {
+                // Tap to the left
+                tapX = bounds.left / 2
+                tapY = bounds.centerY()
+            } else if (bounds.right < screenWidth - 50) {
+                // Tap to the right
+                tapX = (bounds.right + screenWidth) / 2
+                tapY = bounds.centerY()
+            } else {
+                // Element fills the screen — tap top-left corner as last resort
+                tapX = 1
+                tapY = 1
+            }
+
+            device.click(tapX, tapY)
             device.waitForIdle(500)
         } catch (e: Exception) {
             throw ActionFailedException("Failed to blur element: ${e.message}")
@@ -415,15 +452,18 @@ class ActionExecutor(private val device: UiDevice) {
     }
 
     /**
-     * Highlight an element by briefly drawing its bounds overlay.
-     * Currently implemented as a no-op that validates the element exists.
+     * Highlight an element for debugging.
+     *
+     * Currently validates that the element exists and is accessible by reading its
+     * bounds. A future version may draw an overlay rectangle on the device screen.
      */
     fun highlight(
         element: UiObject2,
         @Suppress("UNUSED_PARAMETER") durationMs: Long = 1000L,
     ) {
         try {
-            // Validate element exists and is accessible
+            // Validate element exists and is accessible by reading its bounds.
+            // TODO: Draw an overlay rectangle on the device screen for visual debugging.
             element.visibleBounds
         } catch (e: Exception) {
             throw ActionFailedException("Failed to highlight element: ${e.message}")

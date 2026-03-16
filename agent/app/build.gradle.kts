@@ -6,7 +6,7 @@ plugins {
 
 android {
     namespace = "dev.pilot.agent"
-    compileSdk = 34
+    compileSdk = 35
 
     defaultConfig {
         applicationId = "dev.pilot.agent"
@@ -44,17 +44,17 @@ android {
 }
 
 dependencies {
-    implementation("androidx.core:core-ktx:1.12.0")
-    implementation("androidx.test:runner:1.5.2")
-    implementation("androidx.test:core:1.5.0")
+    implementation("androidx.core:core-ktx:1.15.0")
+    implementation("androidx.test:runner:1.6.2")
+    implementation("androidx.test:core:1.6.1")
     implementation("androidx.test.uiautomator:uiautomator:2.3.0")
-    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3")
-    implementation("org.json:json:20231013")
+    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1")
+    implementation("org.json:json:20240303")
 
-    androidTestImplementation("androidx.test:runner:1.5.2")
-    androidTestImplementation("androidx.test:core:1.5.0")
+    androidTestImplementation("androidx.test:runner:1.6.2")
+    androidTestImplementation("androidx.test:core:1.6.1")
     androidTestImplementation("androidx.test.uiautomator:uiautomator:2.3.0")
 
     testImplementation("junit:junit:4.13.2")
-    testImplementation("org.json:json:20231013")
+    testImplementation("org.json:json:20240303")
 }

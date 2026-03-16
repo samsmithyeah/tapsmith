@@ -353,7 +353,7 @@ class CommandHandler(
     ): String {
         val tmpFile = java.io.File.createTempFile("pilot_screenshot", ".png")
         try {
-            val success = device.takeScreenshot(tmpFile, quality.toFloat() / 100f, quality)
+            val success = device.takeScreenshot(tmpFile, 1.0f, quality)
             if (!success) {
                 throw ActionFailedException("Failed to capture screenshot")
             }

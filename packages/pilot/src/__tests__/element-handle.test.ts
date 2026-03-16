@@ -1223,11 +1223,16 @@ describe('dragTo()', () => {
 // ─── setChecked() (PILOT-20) ───
 
 describe('setChecked()', () => {
-  it('taps when current state differs from desired state', async () => {
+  it('taps when current state differs from desired state and verifies', async () => {
     const tap = vi.fn(async () => successResponse());
-    const el = makeElementInfo({ checked: false, text: 'Switch', resourceId: 'sw1' });
+    let callCount = 0;
     const client = makeMockClient({
-      findElements: vi.fn(async () => makeFindElementsResponse([el])),
+      findElements: vi.fn(async () => {
+        callCount++;
+        // First call: unchecked, second call (verification): checked
+        const checked = callCount > 1;
+        return makeFindElementsResponse([makeElementInfo({ checked, text: 'Switch', resourceId: 'sw1' })]);
+      }),
       tap,
     });
     const handle = new ElementHandle(client, text('Switch'), 5000);
@@ -1249,9 +1254,14 @@ describe('setChecked()', () => {
 
   it('taps to uncheck when element is checked and desired is false', async () => {
     const tap = vi.fn(async () => successResponse());
-    const el = makeElementInfo({ checked: true, text: 'Switch', resourceId: 'sw1' });
+    let callCount = 0;
     const client = makeMockClient({
-      findElements: vi.fn(async () => makeFindElementsResponse([el])),
+      findElements: vi.fn(async () => {
+        callCount++;
+        // First call: checked, second call (verification): unchecked
+        const checked = callCount <= 1;
+        return makeFindElementsResponse([makeElementInfo({ checked, text: 'Switch', resourceId: 'sw1' })]);
+      }),
       tap,
     });
     const handle = new ElementHandle(client, text('Switch'), 5000);
@@ -1269,14 +1279,36 @@ describe('setChecked()', () => {
     await expect(handle.setChecked(true)).rejects.toThrow('Tap failed');
   });
 
+  it('throws when state does not change after tap', async () => {
+    const tap = vi.fn(async () => successResponse());
+    // Always returns unchecked — simulates a non-responsive checkbox
+    const el = makeElementInfo({ checked: false, text: 'Switch', resourceId: 'sw1' });
+    const client = makeMockClient({
+      findElements: vi.fn(async () => makeFindElementsResponse([el])),
+      tap,
+    });
+    const handle = new ElementHandle(client, text('Switch'), 5000);
+    await expect(handle.setChecked(true)).rejects.toThrow('did not change after tap');
+  });
+
   it('works on modified handles', async () => {
     const tap = vi.fn(async () => successResponse());
-    const items = [
-      makeElementInfo({ elementId: 'e1', text: 'Switch 1', resourceId: 'sw1', checked: true }),
-      makeElementInfo({ elementId: 'e2', text: 'Switch 2', resourceId: 'sw2', checked: false }),
-    ];
+    let callCount = 0;
     const client = makeMockClient({
-      findElements: vi.fn(async () => makeFindElementsResponse(items)),
+      findElements: vi.fn(async () => {
+        callCount++;
+        const items = [
+          makeElementInfo({ elementId: 'e1', text: 'Switch 1', resourceId: 'sw1', checked: true }),
+          makeElementInfo({
+            elementId: 'e2',
+            text: 'Switch 2',
+            resourceId: 'sw2',
+            // First call: unchecked, second call (verification): checked
+            checked: callCount > 1,
+          }),
+        ];
+        return makeFindElementsResponse(items);
+      }),
       tap,
     });
     const handle = new ElementHandle(client, role('switch'), 5000);
@@ -1328,14 +1360,14 @@ describe('selectOption()', () => {
 // ─── screenshot() (PILOT-22) ───
 
 describe('screenshot()', () => {
-  it('delegates to client.takeElementScreenshot', async () => {
+  it('delegates to client.takeElementScreenshot and returns Buffer', async () => {
     const takeElementScreenshot = vi.fn(async () => screenshotResponse());
     const client = makeMockClient({ takeElementScreenshot });
     const sel = text('Image');
     const handle = new ElementHandle(client, sel, 5000);
     const result = await handle.screenshot();
     expect(takeElementScreenshot).toHaveBeenCalledWith(sel, 5000);
-    expect(result.data).toEqual(Buffer.from('PNG_DATA'));
+    expect(result).toEqual(Buffer.from('PNG_DATA'));
   });
 
   it('resolves selector for modified handles', async () => {
