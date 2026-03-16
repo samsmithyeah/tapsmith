@@ -283,6 +283,153 @@ class ActionExecutor(private val device: UiDevice) {
         }
     }
 
+    /**
+     * Double-tap on an element's center point.
+     */
+    fun doubleTap(element: UiObject2) {
+        try {
+            val bounds = element.visibleBounds
+            val cx = bounds.centerX()
+            val cy = bounds.centerY()
+            device.click(cx, cy)
+            Thread.sleep(50)
+            device.click(cx, cy)
+        } catch (e: Exception) {
+            throw ActionFailedException("Failed to double tap element: ${e.message}")
+        }
+    }
+
+    /**
+     * Drag from one element to another.
+     */
+    fun dragTo(
+        source: UiObject2,
+        target: UiObject2,
+    ) {
+        try {
+            val tgtBounds = target.visibleBounds
+            source.drag(android.graphics.Point(tgtBounds.centerX(), tgtBounds.centerY()))
+        } catch (e: Exception) {
+            throw ActionFailedException("Failed to drag element: ${e.message}")
+        }
+    }
+
+    /**
+     * Select an option from a spinner/dropdown by text.
+     */
+    fun selectOption(
+        element: UiObject2,
+        optionText: String,
+    ) {
+        try {
+            // Tap the spinner to open it
+            element.click()
+            device.waitForIdle(1000)
+            // Find and tap the option
+            val option =
+                device.findObject(By.text(optionText))
+                    ?: throw ElementNotFoundException("Option '$optionText' not found in dropdown")
+            option.click()
+        } catch (e: ElementNotFoundException) {
+            throw e
+        } catch (e: Exception) {
+            throw ActionFailedException("Failed to select option '$optionText': ${e.message}")
+        }
+    }
+
+    /**
+     * Select an option from a spinner/dropdown by index.
+     */
+    fun selectOptionByIndex(
+        element: UiObject2,
+        index: Int,
+    ) {
+        try {
+            // Tap the spinner to open it
+            element.click()
+            device.waitForIdle(1000)
+            // Find all items in the popup and select by index
+            // Look for common popup containers
+            val popup =
+                device.findObject(By.clazz("android.widget.ListView"))
+                    ?: device.findObject(By.clazz("androidx.recyclerview.widget.RecyclerView"))
+                    ?: throw ActionFailedException("Could not find dropdown popup")
+            val children = popup.children
+            if (index < 0 || index >= children.size) {
+                throw ActionFailedException("Index $index out of range (0..${children.size - 1})")
+            }
+            children[index].click()
+        } catch (e: ActionFailedException) {
+            throw e
+        } catch (e: Exception) {
+            throw ActionFailedException("Failed to select option at index $index: ${e.message}")
+        }
+    }
+
+    /**
+     * Pinch zoom on an element.
+     * Scale > 1.0 zooms in (pinch out), scale < 1.0 zooms out (pinch in).
+     */
+    fun pinchZoom(
+        element: UiObject2,
+        scale: Float,
+    ) {
+        try {
+            if (scale > 1.0f) {
+                // Pinch out (zoom in) — percentage is how far apart fingers end
+                val percent = ((scale - 1.0f) * 100).coerceIn(10f, 100f) / 100f
+                element.pinchOpen(percent)
+            } else {
+                // Pinch in (zoom out) — percentage is how far fingers move inward
+                val percent = ((1.0f - scale) * 100).coerceIn(10f, 100f) / 100f
+                element.pinchClose(percent)
+            }
+        } catch (e: Exception) {
+            throw ActionFailedException("Failed to pinch zoom: ${e.message}")
+        }
+    }
+
+    /**
+     * Focus an element (click to focus, typically shows keyboard for text fields).
+     */
+    fun focus(element: UiObject2) {
+        try {
+            element.click()
+            device.waitForIdle(500)
+        } catch (e: Exception) {
+            throw ActionFailedException("Failed to focus element: ${e.message}")
+        }
+    }
+
+    /**
+     * Blur an element (remove focus by pressing back or tapping outside).
+     */
+    fun blur(element: UiObject2) {
+        try {
+            // Press back to dismiss keyboard / remove focus
+            device.pressBack()
+            device.waitForIdle(500)
+        } catch (e: Exception) {
+            throw ActionFailedException("Failed to blur element: ${e.message}")
+        }
+    }
+
+    /**
+     * Highlight an element by briefly drawing its bounds overlay.
+     * Currently implemented as a no-op that validates the element exists.
+     */
+    fun highlight(
+        element: UiObject2,
+        @Suppress("UNUSED_PARAMETER") durationMs: Long = 1000L,
+    ) {
+        try {
+            // Validate element exists and is accessible
+            element.visibleBounds
+        } catch (e: Exception) {
+            throw ActionFailedException("Failed to highlight element: ${e.message}")
+        }
+    }
+
     private fun resolveKeyCode(key: String): Int {
         return when (key.lowercase()) {
             "back" -> KeyEvent.KEYCODE_BACK

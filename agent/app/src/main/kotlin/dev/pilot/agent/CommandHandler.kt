@@ -234,6 +234,78 @@ class CommandHandler(
                 JSONObject().put("data", base64).put("format", "png")
             }
 
+            "doubleTap" -> {
+                val element = resolveElement(params)
+                actionExecutor.doubleTap(elementFinder.getElement(element.elementId))
+                JSONObject().put("success", true)
+            }
+
+            "dragAndDrop" -> {
+                val sourceParams = params.getJSONObject("source")
+                val targetParams = params.getJSONObject("target")
+                val sourceSel = parseSelectorParams(sourceParams)
+                val targetSel = parseSelectorParams(targetParams)
+                val timeout = params.optLong("timeout", 10000L)
+                val sourceEl = waitEngine.waitForElement(sourceSel, timeout, elementFinder)
+                val targetEl = waitEngine.waitForElement(targetSel, timeout, elementFinder)
+                actionExecutor.dragTo(
+                    elementFinder.getElement(sourceEl.elementId),
+                    elementFinder.getElement(targetEl.elementId),
+                )
+                JSONObject().put("success", true)
+            }
+
+            "selectOption" -> {
+                val element = resolveElement(params)
+                val optionText = params.optString("option", null)
+                val index = if (params.has("index")) params.getInt("index") else -1
+                if (optionText != null) {
+                    actionExecutor.selectOption(elementFinder.getElement(element.elementId), optionText)
+                } else if (index >= 0) {
+                    actionExecutor.selectOptionByIndex(elementFinder.getElement(element.elementId), index)
+                } else {
+                    throw InvalidSelectorException("selectOption requires either 'option' (string) or 'index' (int)")
+                }
+                JSONObject().put("success", true)
+            }
+
+            "pinchZoom" -> {
+                val element = resolveElement(params)
+                val scale = params.optDouble("scale", 1.0).toFloat()
+                actionExecutor.pinchZoom(elementFinder.getElement(element.elementId), scale)
+                JSONObject().put("success", true)
+            }
+
+            "focus" -> {
+                val element = resolveElement(params)
+                actionExecutor.focus(elementFinder.getElement(element.elementId))
+                JSONObject().put("success", true)
+            }
+
+            "blur" -> {
+                val element = resolveElement(params)
+                actionExecutor.blur(elementFinder.getElement(element.elementId))
+                JSONObject().put("success", true)
+            }
+
+            "highlight" -> {
+                val element = resolveElement(params)
+                val duration = params.optLong("duration", 1000L)
+                actionExecutor.highlight(elementFinder.getElement(element.elementId), duration)
+                JSONObject().put("success", true)
+            }
+
+            "elementScreenshot" -> {
+                val element = resolveElement(params)
+                val uiObj = elementFinder.getElement(element.elementId)
+                val bounds = uiObj.visibleBounds
+
+                // Take full screenshot and crop to element bounds
+                val quality = 80
+                val base64 = captureElementScreenshot(bounds, quality)
+                JSONObject().put("data", base64).put("format", "png")
+            }
+
             "ping" -> {
                 JSONObject().put("pong", true)
             }
@@ -273,6 +345,45 @@ class CommandHandler(
             checked = if (params.has("checked")) params.getBoolean("checked") else null,
             focused = if (params.has("focused")) params.getBoolean("focused") else null,
         )
+    }
+
+    private fun captureElementScreenshot(
+        bounds: android.graphics.Rect,
+        quality: Int,
+    ): String {
+        val tmpFile = java.io.File.createTempFile("pilot_screenshot", ".png")
+        try {
+            val success = device.takeScreenshot(tmpFile, quality.toFloat() / 100f, quality)
+            if (!success) {
+                throw ActionFailedException("Failed to capture screenshot")
+            }
+
+            // Crop to element bounds
+            val fullBitmap =
+                android.graphics.BitmapFactory.decodeFile(tmpFile.absolutePath)
+                    ?: throw ActionFailedException("Failed to decode screenshot")
+
+            val cropLeft = bounds.left.coerceAtLeast(0)
+            val cropTop = bounds.top.coerceAtLeast(0)
+            val cropWidth = (bounds.width()).coerceAtMost(fullBitmap.width - cropLeft)
+            val cropHeight = (bounds.height()).coerceAtMost(fullBitmap.height - cropTop)
+
+            if (cropWidth <= 0 || cropHeight <= 0) {
+                fullBitmap.recycle()
+                throw ActionFailedException("Element bounds are outside the screen")
+            }
+
+            val cropped = android.graphics.Bitmap.createBitmap(fullBitmap, cropLeft, cropTop, cropWidth, cropHeight)
+            fullBitmap.recycle()
+
+            val outputStream = java.io.ByteArrayOutputStream()
+            cropped.compress(android.graphics.Bitmap.CompressFormat.PNG, quality, outputStream)
+            cropped.recycle()
+
+            return Base64.encodeToString(outputStream.toByteArray(), Base64.NO_WRAP)
+        } finally {
+            tmpFile.delete()
+        }
     }
 
     private fun captureScreenshot(quality: Int): String {

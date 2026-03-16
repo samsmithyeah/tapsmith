@@ -73,6 +73,43 @@ pub enum AgentCommand {
     },
     #[allow(dead_code)]
     Screenshot {},
+    DoubleTap {
+        selector: Value,
+        timeout_ms: Option<u64>,
+    },
+    DragAndDrop {
+        source_selector: Value,
+        target_selector: Value,
+        timeout_ms: Option<u64>,
+    },
+    SelectOption {
+        selector: Value,
+        option: Option<String>,
+        index: Option<i32>,
+        timeout_ms: Option<u64>,
+    },
+    PinchZoom {
+        selector: Value,
+        scale: f32,
+        timeout_ms: Option<u64>,
+    },
+    Focus {
+        selector: Value,
+        timeout_ms: Option<u64>,
+    },
+    Blur {
+        selector: Value,
+        timeout_ms: Option<u64>,
+    },
+    Highlight {
+        selector: Value,
+        duration_ms: Option<u64>,
+        timeout_ms: Option<u64>,
+    },
+    TakeElementScreenshot {
+        selector: Value,
+        timeout_ms: Option<u64>,
+    },
 }
 
 impl AgentCommand {
@@ -199,6 +236,104 @@ impl AgentCommand {
                 ("waitForIdle", p)
             }
             AgentCommand::Screenshot {} => ("screenshot", json!({})),
+            AgentCommand::DoubleTap {
+                selector,
+                timeout_ms,
+            } => {
+                let mut p = selector.clone();
+                if let Some(t) = timeout_ms {
+                    p["timeout"] = json!(t);
+                }
+                ("doubleTap", p)
+            }
+            AgentCommand::DragAndDrop {
+                source_selector,
+                target_selector,
+                timeout_ms,
+            } => {
+                let mut p = json!({
+                    "source": source_selector,
+                    "target": target_selector,
+                });
+                if let Some(t) = timeout_ms {
+                    p["timeout"] = json!(t);
+                }
+                ("dragAndDrop", p)
+            }
+            AgentCommand::SelectOption {
+                selector,
+                option,
+                index,
+                timeout_ms,
+            } => {
+                let mut p = selector.clone();
+                if let Some(ref opt) = option {
+                    p["option"] = json!(opt);
+                }
+                if let Some(idx) = index {
+                    p["index"] = json!(idx);
+                }
+                if let Some(t) = timeout_ms {
+                    p["timeout"] = json!(t);
+                }
+                ("selectOption", p)
+            }
+            AgentCommand::PinchZoom {
+                selector,
+                scale,
+                timeout_ms,
+            } => {
+                let mut p = selector.clone();
+                p["scale"] = json!(scale);
+                if let Some(t) = timeout_ms {
+                    p["timeout"] = json!(t);
+                }
+                ("pinchZoom", p)
+            }
+            AgentCommand::Focus {
+                selector,
+                timeout_ms,
+            } => {
+                let mut p = selector.clone();
+                if let Some(t) = timeout_ms {
+                    p["timeout"] = json!(t);
+                }
+                ("focus", p)
+            }
+            AgentCommand::Blur {
+                selector,
+                timeout_ms,
+            } => {
+                let mut p = selector.clone();
+                if let Some(t) = timeout_ms {
+                    p["timeout"] = json!(t);
+                }
+                ("blur", p)
+            }
+            AgentCommand::Highlight {
+                selector,
+                duration_ms,
+                timeout_ms,
+            } => {
+                let mut p = selector.clone();
+                if let Some(d) = duration_ms {
+                    p["duration"] = json!(d);
+                }
+                if let Some(t) = timeout_ms {
+                    p["timeout"] = json!(t);
+                }
+                ("highlight", p)
+            }
+            AgentCommand::TakeElementScreenshot {
+                selector,
+                timeout_ms,
+            } => {
+                let mut p = selector.clone();
+                if let Some(t) = timeout_ms {
+                    p["timeout"] = json!(t);
+                }
+                ("elementScreenshot", p)
+            }
         };
 
         json!({
@@ -626,6 +761,136 @@ mod tests {
         let j = cmd.to_json("ss1");
         assert_eq!(j["method"], "screenshot");
         assert_eq!(j["params"], json!({}));
+    }
+
+    // ─── New Element Actions (PILOT-2) ───
+
+    #[test]
+    fn to_json_double_tap() {
+        let cmd = AgentCommand::DoubleTap {
+            selector: json!({"text": "Button"}),
+            timeout_ms: Some(5000),
+        };
+        let j = cmd.to_json("dt1");
+        assert_eq!(j["method"], "doubleTap");
+        assert_eq!(j["params"]["text"], "Button");
+        assert_eq!(j["params"]["timeout"], 5000);
+    }
+
+    #[test]
+    fn to_json_drag_and_drop() {
+        let cmd = AgentCommand::DragAndDrop {
+            source_selector: json!({"text": "Item 1"}),
+            target_selector: json!({"text": "Drop Zone"}),
+            timeout_ms: Some(10000),
+        };
+        let j = cmd.to_json("dd1");
+        assert_eq!(j["method"], "dragAndDrop");
+        assert_eq!(j["params"]["source"]["text"], "Item 1");
+        assert_eq!(j["params"]["target"]["text"], "Drop Zone");
+        assert_eq!(j["params"]["timeout"], 10000);
+    }
+
+    #[test]
+    fn to_json_select_option_by_text() {
+        let cmd = AgentCommand::SelectOption {
+            selector: json!({"role": {"role": "combobox", "name": ""}}),
+            option: Some("Option 2".into()),
+            index: None,
+            timeout_ms: Some(5000),
+        };
+        let j = cmd.to_json("so1");
+        assert_eq!(j["method"], "selectOption");
+        assert_eq!(j["params"]["option"], "Option 2");
+        assert!(j["params"].get("index").is_none());
+    }
+
+    #[test]
+    fn to_json_select_option_by_index() {
+        let cmd = AgentCommand::SelectOption {
+            selector: json!({"text": "Dropdown"}),
+            option: None,
+            index: Some(2),
+            timeout_ms: None,
+        };
+        let j = cmd.to_json("so2");
+        assert_eq!(j["method"], "selectOption");
+        assert_eq!(j["params"]["index"], 2);
+        assert!(j["params"].get("option").is_none());
+    }
+
+    #[test]
+    fn to_json_pinch_zoom() {
+        let cmd = AgentCommand::PinchZoom {
+            selector: json!({"text": "Map"}),
+            scale: 2.0,
+            timeout_ms: Some(5000),
+        };
+        let j = cmd.to_json("pz1");
+        assert_eq!(j["method"], "pinchZoom");
+        assert_eq!(j["params"]["scale"], 2.0);
+        assert_eq!(j["params"]["timeout"], 5000);
+    }
+
+    #[test]
+    fn to_json_focus() {
+        let cmd = AgentCommand::Focus {
+            selector: json!({"hint": "Email"}),
+            timeout_ms: Some(3000),
+        };
+        let j = cmd.to_json("f1");
+        assert_eq!(j["method"], "focus");
+        assert_eq!(j["params"]["hint"], "Email");
+        assert_eq!(j["params"]["timeout"], 3000);
+    }
+
+    #[test]
+    fn to_json_blur() {
+        let cmd = AgentCommand::Blur {
+            selector: json!({"hint": "Email"}),
+            timeout_ms: None,
+        };
+        let j = cmd.to_json("b1");
+        assert_eq!(j["method"], "blur");
+        assert_eq!(j["params"]["hint"], "Email");
+        assert!(j["params"].get("timeout").is_none());
+    }
+
+    #[test]
+    fn to_json_highlight() {
+        let cmd = AgentCommand::Highlight {
+            selector: json!({"text": "Submit"}),
+            duration_ms: Some(2000),
+            timeout_ms: Some(5000),
+        };
+        let j = cmd.to_json("h1");
+        assert_eq!(j["method"], "highlight");
+        assert_eq!(j["params"]["duration"], 2000);
+        assert_eq!(j["params"]["timeout"], 5000);
+    }
+
+    #[test]
+    fn to_json_highlight_no_optionals() {
+        let cmd = AgentCommand::Highlight {
+            selector: json!({"text": "X"}),
+            duration_ms: None,
+            timeout_ms: None,
+        };
+        let j = cmd.to_json("h2");
+        assert!(j["params"].get("duration").is_none());
+        assert!(j["params"].get("timeout").is_none());
+    }
+
+    #[test]
+    fn to_json_take_element_screenshot() {
+        let cmd = AgentCommand::TakeElementScreenshot {
+            selector: json!({"resourceId": "profile_image"}),
+            timeout_ms: Some(5000),
+        };
+        let j = cmd.to_json("es1");
+        assert_eq!(j["method"], "elementScreenshot");
+        assert_eq!(j["params"]["resourceId"], "profile_image");
+        assert_eq!(j["params"]["timeout"], 5000);
     }
 
     #[test]

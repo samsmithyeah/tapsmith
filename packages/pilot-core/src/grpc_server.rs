@@ -741,6 +741,257 @@ impl proto::pilot_service_server::PilotService for PilotServiceImpl {
             agent_connected,
         }))
     }
+
+    // ── Element Actions (PILOT-2) ──
+
+    #[instrument(skip_all, fields(request_id))]
+    async fn double_tap(
+        &self,
+        request: Request<proto::DoubleTapRequest>,
+    ) -> Result<Response<proto::ActionResponse>, Status> {
+        let req = request.into_inner();
+        let request_id = Self::request_id(&req.request_id);
+
+        let selector = req
+            .selector
+            .as_ref()
+            .ok_or_else(|| Status::invalid_argument("selector is required"))?;
+
+        let command = AgentCommand::DoubleTap {
+            selector: selector_to_json(selector),
+            timeout_ms: opt_timeout(req.timeout_ms),
+        };
+
+        let result = self
+            .send_agent_command_with_timeout(&command, req.timeout_ms)
+            .await;
+        self.make_action_response(request_id, result).await
+    }
+
+    #[instrument(skip_all, fields(request_id))]
+    async fn drag_and_drop(
+        &self,
+        request: Request<proto::DragAndDropRequest>,
+    ) -> Result<Response<proto::ActionResponse>, Status> {
+        let req = request.into_inner();
+        let request_id = Self::request_id(&req.request_id);
+
+        let source = req
+            .source_selector
+            .as_ref()
+            .ok_or_else(|| Status::invalid_argument("source_selector is required"))?;
+        let target = req
+            .target_selector
+            .as_ref()
+            .ok_or_else(|| Status::invalid_argument("target_selector is required"))?;
+
+        let command = AgentCommand::DragAndDrop {
+            source_selector: selector_to_json(source),
+            target_selector: selector_to_json(target),
+            timeout_ms: opt_timeout(req.timeout_ms),
+        };
+
+        let result = self
+            .send_agent_command_with_timeout(&command, req.timeout_ms)
+            .await;
+        self.make_action_response(request_id, result).await
+    }
+
+    #[instrument(skip_all, fields(request_id))]
+    async fn select_option(
+        &self,
+        request: Request<proto::SelectOptionRequest>,
+    ) -> Result<Response<proto::ActionResponse>, Status> {
+        let req = request.into_inner();
+        let request_id = Self::request_id(&req.request_id);
+
+        let selector = req
+            .selector
+            .as_ref()
+            .ok_or_else(|| Status::invalid_argument("selector is required"))?;
+
+        let (option, index) = match req.selection {
+            Some(proto::select_option_request::Selection::Option(ref opt)) => {
+                (Some(opt.clone()), None)
+            }
+            Some(proto::select_option_request::Selection::Index(idx)) => (None, Some(idx)),
+            None => {
+                return Err(Status::invalid_argument(
+                    "either option or index is required",
+                ));
+            }
+        };
+
+        let command = AgentCommand::SelectOption {
+            selector: selector_to_json(selector),
+            option,
+            index,
+            timeout_ms: opt_timeout(req.timeout_ms),
+        };
+
+        let result = self
+            .send_agent_command_with_timeout(&command, req.timeout_ms)
+            .await;
+        self.make_action_response(request_id, result).await
+    }
+
+    #[instrument(skip_all, fields(request_id))]
+    async fn pinch_zoom(
+        &self,
+        request: Request<proto::PinchZoomRequest>,
+    ) -> Result<Response<proto::ActionResponse>, Status> {
+        let req = request.into_inner();
+        let request_id = Self::request_id(&req.request_id);
+
+        let selector = req
+            .selector
+            .as_ref()
+            .ok_or_else(|| Status::invalid_argument("selector is required"))?;
+
+        let command = AgentCommand::PinchZoom {
+            selector: selector_to_json(selector),
+            scale: req.scale,
+            timeout_ms: opt_timeout(req.timeout_ms),
+        };
+
+        let result = self
+            .send_agent_command_with_timeout(&command, req.timeout_ms)
+            .await;
+        self.make_action_response(request_id, result).await
+    }
+
+    #[instrument(skip_all, fields(request_id))]
+    async fn focus(
+        &self,
+        request: Request<proto::FocusRequest>,
+    ) -> Result<Response<proto::ActionResponse>, Status> {
+        let req = request.into_inner();
+        let request_id = Self::request_id(&req.request_id);
+
+        let selector = req
+            .selector
+            .as_ref()
+            .ok_or_else(|| Status::invalid_argument("selector is required"))?;
+
+        let command = AgentCommand::Focus {
+            selector: selector_to_json(selector),
+            timeout_ms: opt_timeout(req.timeout_ms),
+        };
+
+        let result = self
+            .send_agent_command_with_timeout(&command, req.timeout_ms)
+            .await;
+        self.make_action_response(request_id, result).await
+    }
+
+    #[instrument(skip_all, fields(request_id))]
+    async fn blur(
+        &self,
+        request: Request<proto::BlurRequest>,
+    ) -> Result<Response<proto::ActionResponse>, Status> {
+        let req = request.into_inner();
+        let request_id = Self::request_id(&req.request_id);
+
+        let selector = req
+            .selector
+            .as_ref()
+            .ok_or_else(|| Status::invalid_argument("selector is required"))?;
+
+        let command = AgentCommand::Blur {
+            selector: selector_to_json(selector),
+            timeout_ms: opt_timeout(req.timeout_ms),
+        };
+
+        let result = self
+            .send_agent_command_with_timeout(&command, req.timeout_ms)
+            .await;
+        self.make_action_response(request_id, result).await
+    }
+
+    #[instrument(skip_all, fields(request_id))]
+    async fn highlight(
+        &self,
+        request: Request<proto::HighlightRequest>,
+    ) -> Result<Response<proto::ActionResponse>, Status> {
+        let req = request.into_inner();
+        let request_id = Self::request_id(&req.request_id);
+
+        let selector = req
+            .selector
+            .as_ref()
+            .ok_or_else(|| Status::invalid_argument("selector is required"))?;
+
+        let command = AgentCommand::Highlight {
+            selector: selector_to_json(selector),
+            duration_ms: opt_timeout(req.duration_ms),
+            timeout_ms: opt_timeout(req.timeout_ms),
+        };
+
+        let result = self
+            .send_agent_command_with_timeout(&command, req.timeout_ms)
+            .await;
+        self.make_action_response(request_id, result).await
+    }
+
+    #[instrument(skip_all, fields(request_id))]
+    async fn take_element_screenshot(
+        &self,
+        request: Request<proto::TakeElementScreenshotRequest>,
+    ) -> Result<Response<proto::ScreenshotResponse>, Status> {
+        let req = request.into_inner();
+        let request_id = Self::request_id(&req.request_id);
+
+        let selector = req
+            .selector
+            .as_ref()
+            .ok_or_else(|| Status::invalid_argument("selector is required"))?;
+
+        let command = AgentCommand::TakeElementScreenshot {
+            selector: selector_to_json(selector),
+            timeout_ms: opt_timeout(req.timeout_ms),
+        };
+
+        let result = self
+            .send_agent_command_with_timeout(&command, req.timeout_ms)
+            .await;
+
+        match result {
+            Ok(resp) if resp.success => {
+                let data = resp
+                    .data
+                    .get("data")
+                    .and_then(|v| v.as_str())
+                    .map(|b64| {
+                        use base64::Engine;
+                        base64::engine::general_purpose::STANDARD
+                            .decode(b64)
+                            .unwrap_or_default()
+                    })
+                    .unwrap_or_default();
+
+                Ok(Response::new(proto::ScreenshotResponse {
+                    request_id,
+                    success: true,
+                    data,
+                    error_message: String::new(),
+                }))
+            }
+            Ok(resp) => Ok(Response::new(proto::ScreenshotResponse {
+                request_id,
+                success: false,
+                data: Vec::new(),
+                error_message: resp
+                    .error
+                    .unwrap_or_else(|| "Screenshot failed".to_string()),
+            })),
+            Err(status) => Ok(Response::new(proto::ScreenshotResponse {
+                request_id,
+                success: false,
+                data: Vec::new(),
+                error_message: status.message().to_string(),
+            })),
+        }
+    }
 }
 
 // ─── Helper: Parse ElementInfo from agent JSON ───
