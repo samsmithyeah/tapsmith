@@ -80,6 +80,11 @@ GitHub Actions runs 4 parallel jobs: `proto-lint`, `typescript`, `rust`, `androi
 - **Playwright is the bar.** The goal is to match Playwright's robustness, reliability, and developer experience for mobile. Don't cut corners — handle edge cases, add proper error messages, implement auto-waiting correctly, and write thorough tests.
 - **Don't reinvent the wheel.** Use well-maintained open source packages rather than writing custom implementations. If a proven library exists for the job (parsing, diffing, formatting, etc.), prefer it over hand-rolling.
 
+## Documentation
+
+- **Keep `docs/api-reference.md` up to date** when adding or changing public API (new methods on Device, ElementHandle, new assertions, new types, etc.). This is the single source of truth for users.
+- Other docs (`getting-started.md`, `selectors.md`, `configuration.md`, `ci-setup.md`) only need updates if the feature changes user-facing workflows.
+
 ## Commit style
 
 Descriptive imperative messages. Feature work happens on branches (e.g., `feat/locator-api-enhancements`) with PRs to main.
