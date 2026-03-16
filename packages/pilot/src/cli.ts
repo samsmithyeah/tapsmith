@@ -350,11 +350,17 @@ async function main(): Promise<void> {
   }
 
   // Start agent (with auto-install if APK paths configured)
+  const resolvedAgentApk = config.agentApk
+    ? path.resolve(config.rootDir, config.agentApk)
+    : undefined;
+  const resolvedAgentTestApk = config.agentTestApk
+    ? path.resolve(config.rootDir, config.agentTestApk)
+    : undefined;
   try {
     await device.startAgent(
       '',
-      config.agentApk,
-      config.agentTestApk,
+      resolvedAgentApk,
+      resolvedAgentTestApk,
     );
     console.log(dim('Agent connected.'));
   } catch (err) {
