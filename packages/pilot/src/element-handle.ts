@@ -13,7 +13,16 @@ import {
   text as textSelector,
   contentDesc as contentDescSelector,
 } from './selectors.js';
-import type { PilotGrpcClient, ElementInfo } from './grpc-client.js';
+import type { PilotGrpcClient, ElementInfo, ScreenshotResponse } from './grpc-client.js';
+
+// ─── Public types ───
+
+export interface BoundingBox {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
 
 // ─── Filter options for .filter() ───
 
@@ -461,6 +470,106 @@ export class ElementHandle {
     }
   }
 
+  // ── Element Actions (PILOT-2) ──
+
+  async doubleTap(): Promise<void> {
+    const sel = await this._actionSelector();
+    const res = await this._client.doubleTap(sel, this._timeoutMs);
+    if (!res.success) {
+      throw new Error(res.errorMessage || 'Double tap failed');
+    }
+  }
+
+  async dragTo(target: ElementHandle): Promise<void> {
+    const sourceSel = await this._actionSelector();
+    const targetSel = await target._actionSelector();
+    const res = await this._client.dragAndDrop(sourceSel, targetSel, this._timeoutMs);
+    if (!res.success) {
+      throw new Error(res.errorMessage || 'Drag and drop failed');
+    }
+  }
+
+  async setChecked(checked: boolean): Promise<void> {
+    const el = await this._resolveOne();
+    if (el.checked !== checked) {
+      const sel = this._selectorForElement(el);
+      const res = await this._client.tap(sel, this._timeoutMs);
+      if (!res.success) {
+        throw new Error(res.errorMessage || 'setChecked tap failed');
+      }
+    }
+  }
+
+  async selectOption(option: string | { index: number }): Promise<void> {
+    const sel = await this._actionSelector();
+    const res = await this._client.selectOption(sel, option, this._timeoutMs);
+    if (!res.success) {
+      throw new Error(res.errorMessage || 'Select option failed');
+    }
+  }
+
+  async screenshot(): Promise<ScreenshotResponse> {
+    const sel = await this._actionSelector();
+    const res = await this._client.takeElementScreenshot(sel, this._timeoutMs);
+    if (!res.success) {
+      throw new Error(res.errorMessage || 'Element screenshot failed');
+    }
+    return res;
+  }
+
+  async boundingBox(): Promise<BoundingBox | null> {
+    const info = await this.find();
+    if (!info.bounds) return null;
+    return {
+      x: info.bounds.left,
+      y: info.bounds.top,
+      width: info.bounds.right - info.bounds.left,
+      height: info.bounds.bottom - info.bounds.top,
+    };
+  }
+
+  async pinchIn(options?: { scale?: number }): Promise<void> {
+    const sel = await this._actionSelector();
+    const scale = options?.scale ?? 0.5;
+    const res = await this._client.pinchZoom(sel, scale, this._timeoutMs);
+    if (!res.success) {
+      throw new Error(res.errorMessage || 'Pinch in failed');
+    }
+  }
+
+  async pinchOut(options?: { scale?: number }): Promise<void> {
+    const sel = await this._actionSelector();
+    const scale = options?.scale ?? 2.0;
+    const res = await this._client.pinchZoom(sel, scale, this._timeoutMs);
+    if (!res.success) {
+      throw new Error(res.errorMessage || 'Pinch out failed');
+    }
+  }
+
+  async focus(): Promise<void> {
+    const sel = await this._actionSelector();
+    const res = await this._client.focus(sel, this._timeoutMs);
+    if (!res.success) {
+      throw new Error(res.errorMessage || 'Focus failed');
+    }
+  }
+
+  async blur(): Promise<void> {
+    const sel = await this._actionSelector();
+    const res = await this._client.blur(sel, this._timeoutMs);
+    if (!res.success) {
+      throw new Error(res.errorMessage || 'Blur failed');
+    }
+  }
+
+  async highlight(options?: { durationMs?: number }): Promise<void> {
+    const sel = await this._actionSelector();
+    const res = await this._client.highlight(sel, options?.durationMs, this._timeoutMs);
+    if (!res.success) {
+      throw new Error(res.errorMessage || 'Highlight failed');
+    }
+  }
+
   // ── Info accessors (convenience) ──
 
   async getText(): Promise<string> {
@@ -476,5 +585,15 @@ export class ElementHandle {
   async isEnabled(): Promise<boolean> {
     const info = await this.find();
     return info.enabled;
+  }
+
+  async isChecked(): Promise<boolean> {
+    const info = await this.find();
+    return info.checked;
+  }
+
+  async inputValue(): Promise<string> {
+    const info = await this.find();
+    return info.text;
   }
 }

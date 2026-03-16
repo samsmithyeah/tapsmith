@@ -23,6 +23,14 @@ service PilotService {
   rpc SetDevice(SetDeviceRequest) returns (ActionResponse);
   rpc StartAgent(StartAgentRequest) returns (ActionResponse);
   rpc Ping(PingRequest) returns (PingResponse);
+  rpc DoubleTap(DoubleTapRequest) returns (ActionResponse);
+  rpc DragAndDrop(DragAndDropRequest) returns (ActionResponse);
+  rpc SelectOption(SelectOptionRequest) returns (ActionResponse);
+  rpc PinchZoom(PinchZoomRequest) returns (ActionResponse);
+  rpc Focus(FocusRequest) returns (ActionResponse);
+  rpc Blur(BlurRequest) returns (ActionResponse);
+  rpc Highlight(HighlightRequest) returns (ActionResponse);
+  rpc TakeElementScreenshot(TakeElementScreenshotRequest) returns (ScreenshotResponse);
 }
 
 // ─── Common Types ───
@@ -227,4 +235,61 @@ message PingRequest {}
 message PingResponse {
   string version = 1;
   bool agent_connected = 2;
+}
+
+// ─── Element Actions (PILOT-2) ───
+
+message DoubleTapRequest {
+  string request_id = 1;
+  Selector selector = 2;
+  uint64 timeout_ms = 3;
+}
+
+message DragAndDropRequest {
+  string request_id = 1;
+  Selector source_selector = 2;
+  Selector target_selector = 3;
+  uint64 timeout_ms = 4;
+}
+
+message SelectOptionRequest {
+  string request_id = 1;
+  Selector selector = 2;
+  oneof selection {
+    string option = 3;
+    int32 index = 4;
+  }
+  uint64 timeout_ms = 5;
+}
+
+message PinchZoomRequest {
+  string request_id = 1;
+  Selector selector = 2;
+  float scale = 3;
+  uint64 timeout_ms = 4;
+}
+
+message FocusRequest {
+  string request_id = 1;
+  Selector selector = 2;
+  uint64 timeout_ms = 3;
+}
+
+message BlurRequest {
+  string request_id = 1;
+  Selector selector = 2;
+  uint64 timeout_ms = 3;
+}
+
+message HighlightRequest {
+  string request_id = 1;
+  Selector selector = 2;
+  uint64 duration_ms = 3;
+  uint64 timeout_ms = 4;
+}
+
+message TakeElementScreenshotRequest {
+  string request_id = 1;
+  Selector selector = 2;
+  uint64 timeout_ms = 3;
 }

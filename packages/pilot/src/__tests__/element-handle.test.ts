@@ -6,6 +6,7 @@ import type {
   FindElementsResponse,
   ActionResponse,
   ElementInfo,
+  ScreenshotResponse,
 } from '../grpc-client.js';
 
 // ─── Mock helpers ───
@@ -56,6 +57,15 @@ function makeFindElementsResponse(elements: ElementInfo[]): FindElementsResponse
   return { requestId: '1', elements, errorMessage: '' };
 }
 
+function screenshotResponse(): ScreenshotResponse {
+  return {
+    requestId: '1',
+    success: true,
+    data: Buffer.from('PNG_DATA'),
+    errorMessage: '',
+  };
+}
+
 function makeMockClient(overrides: Partial<PilotGrpcClient> = {}): PilotGrpcClient {
   return {
     findElement: vi.fn(async () => ({
@@ -71,6 +81,15 @@ function makeMockClient(overrides: Partial<PilotGrpcClient> = {}): PilotGrpcClie
     clearAndType: vi.fn(async () => successResponse()),
     clearText: vi.fn(async () => successResponse()),
     scroll: vi.fn(async () => successResponse()),
+    doubleTap: vi.fn(async () => successResponse()),
+    dragAndDrop: vi.fn(async () => successResponse()),
+    selectOption: vi.fn(async () => successResponse()),
+    pinchZoom: vi.fn(async () => successResponse()),
+    focus: vi.fn(async () => successResponse()),
+    blur: vi.fn(async () => successResponse()),
+    highlight: vi.fn(async () => successResponse()),
+    takeElementScreenshot: vi.fn(async () => screenshotResponse()),
+    takeScreenshot: vi.fn(async () => screenshotResponse()),
     ...overrides,
   } as unknown as PilotGrpcClient;
 }
@@ -1058,6 +1077,18 @@ describe('method composition', () => {
     await expect(handle.first().tap()).rejects.toThrow('Cannot target element for action');
   });
 
+  it('doubleTap() on nth handle uses resolved element selector', async () => {
+    const doubleTap = vi.fn(async () => successResponse());
+    const client = makeMockClient({
+      findElements: vi.fn(async () => makeFindElementsResponse(threeItems)),
+      doubleTap,
+    });
+    const handle = new ElementHandle(client, role('listitem'), 5000);
+    await handle.nth(1).doubleTap();
+    const calledSelector = (doubleTap.mock.calls[0] as unknown[])[0] as Selector;
+    expect(selectorToProto(calledSelector)).toEqual({ resourceId: 'item_2' });
+  });
+
   it('a.and(b).filter(F) applies filter after intersection', async () => {
     // a has e1 ("Apple"), e2 ("Banana"), e3 ("Cherry")
     // b has e1 ("Apple"), e2 ("Banana")
@@ -1094,5 +1125,530 @@ describe('method composition', () => {
     // then .and(b) = intersection with [e1, e2] = [e2 Banana]
     const altResult = await a.filter({ hasNotText: 'Apple' }).and(b).count();
     expect(altResult).toBe(1); // Only Banana in both
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════
+// Element Actions tests (PILOT-2: PILOT-18 through PILOT-28)
+// ═══════════════════════════════════════════════════════════════════════
+
+// ─── doubleTap() (PILOT-18) ───
+
+describe('doubleTap()', () => {
+  it('delegates to client.doubleTap with selector and timeout', async () => {
+    const doubleTap = vi.fn(async () => successResponse());
+    const client = makeMockClient({ doubleTap });
+    const sel = text('Button');
+    const handle = new ElementHandle(client, sel, 4000);
+    await handle.doubleTap();
+    expect(doubleTap).toHaveBeenCalledWith(sel, 4000);
+  });
+
+  it('throws on failure', async () => {
+    const client = makeMockClient({
+      doubleTap: vi.fn(async () => failureResponse('Double tap target not found')),
+    });
+    const handle = new ElementHandle(client, text('Missing'), 5000);
+    await expect(handle.doubleTap()).rejects.toThrow('Double tap target not found');
+  });
+
+  it('throws default message when errorMessage is empty', async () => {
+    const client = makeMockClient({
+      doubleTap: vi.fn(async () => failureResponse('')),
+    });
+    const handle = new ElementHandle(client, text('X'), 5000);
+    await expect(handle.doubleTap()).rejects.toThrow('Double tap failed');
+  });
+
+  it('unmodified handle uses direct selector (fast path)', async () => {
+    const doubleTap = vi.fn(async () => successResponse());
+    const findElements = vi.fn();
+    const client = makeMockClient({ doubleTap, findElements });
+    const sel = text('Button');
+    const handle = new ElementHandle(client, sel, 5000);
+    await handle.doubleTap();
+    expect(findElements).not.toHaveBeenCalled();
+    expect(doubleTap).toHaveBeenCalledWith(sel, 5000);
+  });
+});
+
+// ─── dragTo() (PILOT-19) ───
+
+describe('dragTo()', () => {
+  it('delegates to client.dragAndDrop with source and target selectors', async () => {
+    const dragAndDrop = vi.fn(async () => successResponse());
+    const client = makeMockClient({ dragAndDrop });
+    const sourceSel = text('Item 1');
+    const targetSel = text('Drop Zone');
+    const source = new ElementHandle(client, sourceSel, 5000);
+    const target = new ElementHandle(client, targetSel, 5000);
+    await source.dragTo(target);
+    expect(dragAndDrop).toHaveBeenCalledWith(sourceSel, targetSel, 5000);
+  });
+
+  it('throws on failure', async () => {
+    const client = makeMockClient({
+      dragAndDrop: vi.fn(async () => failureResponse('Drag failed')),
+    });
+    const source = new ElementHandle(client, text('Item'), 5000);
+    const target = new ElementHandle(client, text('Zone'), 5000);
+    await expect(source.dragTo(target)).rejects.toThrow('Drag failed');
+  });
+
+  it('throws default message when errorMessage is empty', async () => {
+    const client = makeMockClient({
+      dragAndDrop: vi.fn(async () => failureResponse('')),
+    });
+    const source = new ElementHandle(client, text('Item'), 5000);
+    const target = new ElementHandle(client, text('Zone'), 5000);
+    await expect(source.dragTo(target)).rejects.toThrow('Drag and drop failed');
+  });
+
+  it('resolves selectors for modified handles', async () => {
+    const dragAndDrop = vi.fn(async () => successResponse());
+    const client = makeMockClient({
+      findElements: vi.fn(async () => makeFindElementsResponse(threeItems)),
+      dragAndDrop,
+    });
+    const source = new ElementHandle(client, role('listitem'), 5000);
+    const target = new ElementHandle(client, role('listitem'), 5000);
+    await source.first().dragTo(target.last());
+    const calledSource = (dragAndDrop.mock.calls[0] as unknown[])[0] as Selector;
+    const calledTarget = (dragAndDrop.mock.calls[0] as unknown[])[1] as Selector;
+    expect(selectorToProto(calledSource)).toEqual({ resourceId: 'item_1' });
+    expect(selectorToProto(calledTarget)).toEqual({ resourceId: 'item_3' });
+  });
+});
+
+// ─── setChecked() (PILOT-20) ───
+
+describe('setChecked()', () => {
+  it('taps when current state differs from desired state', async () => {
+    const tap = vi.fn(async () => successResponse());
+    const el = makeElementInfo({ checked: false, text: 'Switch', resourceId: 'sw1' });
+    const client = makeMockClient({
+      findElements: vi.fn(async () => makeFindElementsResponse([el])),
+      tap,
+    });
+    const handle = new ElementHandle(client, text('Switch'), 5000);
+    await handle.setChecked(true);
+    expect(tap).toHaveBeenCalled();
+  });
+
+  it('does not tap when current state matches desired state', async () => {
+    const tap = vi.fn(async () => successResponse());
+    const el = makeElementInfo({ checked: true, text: 'Switch', resourceId: 'sw1' });
+    const client = makeMockClient({
+      findElements: vi.fn(async () => makeFindElementsResponse([el])),
+      tap,
+    });
+    const handle = new ElementHandle(client, text('Switch'), 5000);
+    await handle.setChecked(true);
+    expect(tap).not.toHaveBeenCalled();
+  });
+
+  it('taps to uncheck when element is checked and desired is false', async () => {
+    const tap = vi.fn(async () => successResponse());
+    const el = makeElementInfo({ checked: true, text: 'Switch', resourceId: 'sw1' });
+    const client = makeMockClient({
+      findElements: vi.fn(async () => makeFindElementsResponse([el])),
+      tap,
+    });
+    const handle = new ElementHandle(client, text('Switch'), 5000);
+    await handle.setChecked(false);
+    expect(tap).toHaveBeenCalled();
+  });
+
+  it('throws when tap fails', async () => {
+    const el = makeElementInfo({ checked: false, text: 'Switch', resourceId: 'sw1' });
+    const client = makeMockClient({
+      findElements: vi.fn(async () => makeFindElementsResponse([el])),
+      tap: vi.fn(async () => failureResponse('Tap failed')),
+    });
+    const handle = new ElementHandle(client, text('Switch'), 5000);
+    await expect(handle.setChecked(true)).rejects.toThrow('Tap failed');
+  });
+
+  it('works on modified handles', async () => {
+    const tap = vi.fn(async () => successResponse());
+    const items = [
+      makeElementInfo({ elementId: 'e1', text: 'Switch 1', resourceId: 'sw1', checked: true }),
+      makeElementInfo({ elementId: 'e2', text: 'Switch 2', resourceId: 'sw2', checked: false }),
+    ];
+    const client = makeMockClient({
+      findElements: vi.fn(async () => makeFindElementsResponse(items)),
+      tap,
+    });
+    const handle = new ElementHandle(client, role('switch'), 5000);
+    await handle.nth(1).setChecked(true);
+    expect(tap).toHaveBeenCalled();
+    const calledSelector = (tap.mock.calls[0] as unknown[])[0] as Selector;
+    expect(selectorToProto(calledSelector)).toEqual({ resourceId: 'sw2' });
+  });
+});
+
+// ─── selectOption() (PILOT-21) ───
+
+describe('selectOption()', () => {
+  it('delegates to client.selectOption with string option', async () => {
+    const selectOption = vi.fn(async () => successResponse());
+    const client = makeMockClient({ selectOption });
+    const sel = text('Dropdown');
+    const handle = new ElementHandle(client, sel, 5000);
+    await handle.selectOption('Option 2');
+    expect(selectOption).toHaveBeenCalledWith(sel, 'Option 2', 5000);
+  });
+
+  it('delegates to client.selectOption with index option', async () => {
+    const selectOption = vi.fn(async () => successResponse());
+    const client = makeMockClient({ selectOption });
+    const sel = text('Dropdown');
+    const handle = new ElementHandle(client, sel, 5000);
+    await handle.selectOption({ index: 1 });
+    expect(selectOption).toHaveBeenCalledWith(sel, { index: 1 }, 5000);
+  });
+
+  it('throws on failure', async () => {
+    const client = makeMockClient({
+      selectOption: vi.fn(async () => failureResponse('Option not found')),
+    });
+    const handle = new ElementHandle(client, text('Dropdown'), 5000);
+    await expect(handle.selectOption('Missing')).rejects.toThrow('Option not found');
+  });
+
+  it('throws default message when errorMessage is empty', async () => {
+    const client = makeMockClient({
+      selectOption: vi.fn(async () => failureResponse('')),
+    });
+    const handle = new ElementHandle(client, text('X'), 5000);
+    await expect(handle.selectOption('A')).rejects.toThrow('Select option failed');
+  });
+});
+
+// ─── screenshot() (PILOT-22) ───
+
+describe('screenshot()', () => {
+  it('delegates to client.takeElementScreenshot', async () => {
+    const takeElementScreenshot = vi.fn(async () => screenshotResponse());
+    const client = makeMockClient({ takeElementScreenshot });
+    const sel = text('Image');
+    const handle = new ElementHandle(client, sel, 5000);
+    const result = await handle.screenshot();
+    expect(takeElementScreenshot).toHaveBeenCalledWith(sel, 5000);
+    expect(result.data).toEqual(Buffer.from('PNG_DATA'));
+  });
+
+  it('resolves selector for modified handles', async () => {
+    const takeElementScreenshot = vi.fn(async () => screenshotResponse());
+    const client = makeMockClient({
+      findElements: vi.fn(async () => makeFindElementsResponse(threeItems)),
+      takeElementScreenshot,
+    });
+    const handle = new ElementHandle(client, role('image'), 5000);
+    await handle.first().screenshot();
+    const calledSelector = (takeElementScreenshot.mock.calls[0] as unknown[])[0] as Selector;
+    expect(selectorToProto(calledSelector)).toEqual({ resourceId: 'item_1' });
+  });
+
+  it('throws on failure', async () => {
+    const client = makeMockClient({
+      takeElementScreenshot: vi.fn(async () => ({
+        requestId: '1',
+        success: false,
+        data: Buffer.alloc(0),
+        errorMessage: 'Screenshot capture failed',
+      })),
+    });
+    const handle = new ElementHandle(client, text('Image'), 5000);
+    await expect(handle.screenshot()).rejects.toThrow('Screenshot capture failed');
+  });
+
+  it('throws default message when errorMessage is empty', async () => {
+    const client = makeMockClient({
+      takeElementScreenshot: vi.fn(async () => ({
+        requestId: '1',
+        success: false,
+        data: Buffer.alloc(0),
+        errorMessage: '',
+      })),
+    });
+    const handle = new ElementHandle(client, text('Image'), 5000);
+    await expect(handle.screenshot()).rejects.toThrow('Element screenshot failed');
+  });
+});
+
+// ─── boundingBox() (PILOT-23) ───
+
+describe('boundingBox()', () => {
+  it('returns bounding box from element bounds', async () => {
+    const client = makeMockClient({
+      findElement: vi.fn(async () => ({
+        requestId: '1',
+        found: true,
+        element: makeElementInfo({ bounds: { left: 10, top: 20, right: 110, bottom: 70 } }),
+        errorMessage: '',
+      })),
+    });
+    const handle = new ElementHandle(client, text('Header'), 5000);
+    const box = await handle.boundingBox();
+    expect(box).toEqual({ x: 10, y: 20, width: 100, height: 50 });
+  });
+
+  it('returns null when element has no bounds', async () => {
+    const client = makeMockClient({
+      findElement: vi.fn(async () => ({
+        requestId: '1',
+        found: true,
+        element: makeElementInfo({ bounds: undefined }),
+        errorMessage: '',
+      })),
+    });
+    const handle = new ElementHandle(client, text('Header'), 5000);
+    const box = await handle.boundingBox();
+    expect(box).toBeNull();
+  });
+
+  it('works on modified handles', async () => {
+    const items = [
+      makeElementInfo({ elementId: 'e1', text: 'A', resourceId: 'a', bounds: { left: 0, top: 0, right: 50, bottom: 50 } }),
+      makeElementInfo({ elementId: 'e2', text: 'B', resourceId: 'b', bounds: { left: 50, top: 0, right: 150, bottom: 80 } }),
+    ];
+    const client = makeMockClient({
+      findElements: vi.fn(async () => makeFindElementsResponse(items)),
+    });
+    const handle = new ElementHandle(client, role('button'), 5000);
+    const box = await handle.last().boundingBox();
+    expect(box).toEqual({ x: 50, y: 0, width: 100, height: 80 });
+  });
+});
+
+// ─── pinchIn() / pinchOut() (PILOT-24) ───
+
+describe('pinchIn()', () => {
+  it('delegates to client.pinchZoom with default scale 0.5', async () => {
+    const pinchZoom = vi.fn(async () => successResponse());
+    const client = makeMockClient({ pinchZoom });
+    const sel = text('Map');
+    const handle = new ElementHandle(client, sel, 5000);
+    await handle.pinchIn();
+    expect(pinchZoom).toHaveBeenCalledWith(sel, 0.5, 5000);
+  });
+
+  it('accepts custom scale', async () => {
+    const pinchZoom = vi.fn(async () => successResponse());
+    const client = makeMockClient({ pinchZoom });
+    const sel = text('Map');
+    const handle = new ElementHandle(client, sel, 5000);
+    await handle.pinchIn({ scale: 0.3 });
+    expect(pinchZoom).toHaveBeenCalledWith(sel, 0.3, 5000);
+  });
+
+  it('throws on failure', async () => {
+    const client = makeMockClient({
+      pinchZoom: vi.fn(async () => failureResponse('Pinch failed')),
+    });
+    const handle = new ElementHandle(client, text('Map'), 5000);
+    await expect(handle.pinchIn()).rejects.toThrow('Pinch failed');
+  });
+
+  it('throws default message when errorMessage is empty', async () => {
+    const client = makeMockClient({
+      pinchZoom: vi.fn(async () => failureResponse('')),
+    });
+    const handle = new ElementHandle(client, text('X'), 5000);
+    await expect(handle.pinchIn()).rejects.toThrow('Pinch in failed');
+  });
+});
+
+describe('pinchOut()', () => {
+  it('delegates to client.pinchZoom with default scale 2.0', async () => {
+    const pinchZoom = vi.fn(async () => successResponse());
+    const client = makeMockClient({ pinchZoom });
+    const sel = text('Map');
+    const handle = new ElementHandle(client, sel, 5000);
+    await handle.pinchOut();
+    expect(pinchZoom).toHaveBeenCalledWith(sel, 2.0, 5000);
+  });
+
+  it('accepts custom scale', async () => {
+    const pinchZoom = vi.fn(async () => successResponse());
+    const client = makeMockClient({ pinchZoom });
+    const sel = text('Map');
+    const handle = new ElementHandle(client, sel, 5000);
+    await handle.pinchOut({ scale: 3.0 });
+    expect(pinchZoom).toHaveBeenCalledWith(sel, 3.0, 5000);
+  });
+
+  it('throws on failure', async () => {
+    const client = makeMockClient({
+      pinchZoom: vi.fn(async () => failureResponse('')),
+    });
+    const handle = new ElementHandle(client, text('X'), 5000);
+    await expect(handle.pinchOut()).rejects.toThrow('Pinch out failed');
+  });
+});
+
+// ─── focus() / blur() (PILOT-25) ───
+
+describe('focus()', () => {
+  it('delegates to client.focus with selector and timeout', async () => {
+    const focus = vi.fn(async () => successResponse());
+    const client = makeMockClient({ focus });
+    const sel = text('Email');
+    const handle = new ElementHandle(client, sel, 5000);
+    await handle.focus();
+    expect(focus).toHaveBeenCalledWith(sel, 5000);
+  });
+
+  it('throws on failure', async () => {
+    const client = makeMockClient({
+      focus: vi.fn(async () => failureResponse('Cannot focus')),
+    });
+    const handle = new ElementHandle(client, text('X'), 5000);
+    await expect(handle.focus()).rejects.toThrow('Cannot focus');
+  });
+
+  it('throws default message when errorMessage is empty', async () => {
+    const client = makeMockClient({
+      focus: vi.fn(async () => failureResponse('')),
+    });
+    const handle = new ElementHandle(client, text('X'), 5000);
+    await expect(handle.focus()).rejects.toThrow('Focus failed');
+  });
+
+  it('unmodified handle uses direct selector', async () => {
+    const focus = vi.fn(async () => successResponse());
+    const findElements = vi.fn();
+    const client = makeMockClient({ focus, findElements });
+    const sel = text('Input');
+    const handle = new ElementHandle(client, sel, 5000);
+    await handle.focus();
+    expect(findElements).not.toHaveBeenCalled();
+    expect(focus).toHaveBeenCalledWith(sel, 5000);
+  });
+});
+
+describe('blur()', () => {
+  it('delegates to client.blur with selector and timeout', async () => {
+    const blur = vi.fn(async () => successResponse());
+    const client = makeMockClient({ blur });
+    const sel = text('Email');
+    const handle = new ElementHandle(client, sel, 5000);
+    await handle.blur();
+    expect(blur).toHaveBeenCalledWith(sel, 5000);
+  });
+
+  it('throws on failure', async () => {
+    const client = makeMockClient({
+      blur: vi.fn(async () => failureResponse('Cannot blur')),
+    });
+    const handle = new ElementHandle(client, text('X'), 5000);
+    await expect(handle.blur()).rejects.toThrow('Cannot blur');
+  });
+
+  it('throws default message when errorMessage is empty', async () => {
+    const client = makeMockClient({
+      blur: vi.fn(async () => failureResponse('')),
+    });
+    const handle = new ElementHandle(client, text('X'), 5000);
+    await expect(handle.blur()).rejects.toThrow('Blur failed');
+  });
+});
+
+// ─── isChecked() (PILOT-26) ───
+
+describe('isChecked()', () => {
+  it('returns true when element is checked', async () => {
+    const client = makeMockClient({
+      findElement: vi.fn(async () => ({
+        requestId: '1',
+        found: true,
+        element: makeElementInfo({ checked: true }),
+        errorMessage: '',
+      })),
+    });
+    const handle = new ElementHandle(client, text('Switch'), 5000);
+    expect(await handle.isChecked()).toBe(true);
+  });
+
+  it('returns false when element is not checked', async () => {
+    const client = makeMockClient({
+      findElement: vi.fn(async () => ({
+        requestId: '1',
+        found: true,
+        element: makeElementInfo({ checked: false }),
+        errorMessage: '',
+      })),
+    });
+    const handle = new ElementHandle(client, text('Switch'), 5000);
+    expect(await handle.isChecked()).toBe(false);
+  });
+});
+
+// ─── inputValue() (PILOT-27) ───
+
+describe('inputValue()', () => {
+  it('returns the text value of the element', async () => {
+    const client = makeMockClient({
+      findElement: vi.fn(async () => ({
+        requestId: '1',
+        found: true,
+        element: makeElementInfo({ text: 'user@example.com' }),
+        errorMessage: '',
+      })),
+    });
+    const handle = new ElementHandle(client, text('Email'), 5000);
+    expect(await handle.inputValue()).toBe('user@example.com');
+  });
+
+  it('returns empty string when field is empty', async () => {
+    const client = makeMockClient({
+      findElement: vi.fn(async () => ({
+        requestId: '1',
+        found: true,
+        element: makeElementInfo({ text: '' }),
+        errorMessage: '',
+      })),
+    });
+    const handle = new ElementHandle(client, text('Email'), 5000);
+    expect(await handle.inputValue()).toBe('');
+  });
+});
+
+// ─── highlight() (PILOT-28) ───
+
+describe('highlight()', () => {
+  it('delegates to client.highlight with selector and timeout', async () => {
+    const highlight = vi.fn(async () => successResponse());
+    const client = makeMockClient({ highlight });
+    const sel = text('Submit');
+    const handle = new ElementHandle(client, sel, 5000);
+    await handle.highlight();
+    expect(highlight).toHaveBeenCalledWith(sel, undefined, 5000);
+  });
+
+  it('passes durationMs option', async () => {
+    const highlight = vi.fn(async () => successResponse());
+    const client = makeMockClient({ highlight });
+    const sel = text('Submit');
+    const handle = new ElementHandle(client, sel, 5000);
+    await handle.highlight({ durationMs: 2000 });
+    expect(highlight).toHaveBeenCalledWith(sel, 2000, 5000);
+  });
+
+  it('throws on failure', async () => {
+    const client = makeMockClient({
+      highlight: vi.fn(async () => failureResponse('Highlight failed')),
+    });
+    const handle = new ElementHandle(client, text('X'), 5000);
+    await expect(handle.highlight()).rejects.toThrow('Highlight failed');
+  });
+
+  it('throws default message when errorMessage is empty', async () => {
+    const client = makeMockClient({
+      highlight: vi.fn(async () => failureResponse('')),
+    });
+    const handle = new ElementHandle(client, text('X'), 5000);
+    await expect(handle.highlight()).rejects.toThrow('Highlight failed');
   });
 });

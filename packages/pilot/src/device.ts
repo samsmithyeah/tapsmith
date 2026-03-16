@@ -11,6 +11,17 @@ import { PilotGrpcClient, type SwipeOptions, type ScrollOptions, type Screenshot
 import { ElementHandle } from './element-handle.js';
 import type { PilotConfig } from './config.js';
 
+// ─── Types for element actions (PILOT-2) ───
+
+export interface DragOptions {
+  from: Selector;
+  to: Selector;
+}
+
+export interface PinchOptions {
+  scale?: number;
+}
+
 export class Device {
   /** @internal */
   readonly _client: PilotGrpcClient;
@@ -91,6 +102,64 @@ export class Device {
 
   async pressBack(): Promise<void> {
     return this.pressKey('BACK');
+  }
+
+  async doubleTap(selector: Selector): Promise<void> {
+    const res = await this._client.doubleTap(selector, this.defaultTimeoutMs);
+    if (!res.success) {
+      throw new Error(res.errorMessage || 'Double tap failed');
+    }
+  }
+
+  async drag(options: DragOptions): Promise<void> {
+    const res = await this._client.dragAndDrop(options.from, options.to, this.defaultTimeoutMs);
+    if (!res.success) {
+      throw new Error(res.errorMessage || 'Drag and drop failed');
+    }
+  }
+
+  async pinchIn(selector: Selector, options?: PinchOptions): Promise<void> {
+    const scale = options?.scale ?? 0.5;
+    const res = await this._client.pinchZoom(selector, scale, this.defaultTimeoutMs);
+    if (!res.success) {
+      throw new Error(res.errorMessage || 'Pinch in failed');
+    }
+  }
+
+  async pinchOut(selector: Selector, options?: PinchOptions): Promise<void> {
+    const scale = options?.scale ?? 2.0;
+    const res = await this._client.pinchZoom(selector, scale, this.defaultTimeoutMs);
+    if (!res.success) {
+      throw new Error(res.errorMessage || 'Pinch out failed');
+    }
+  }
+
+  async focus(selector: Selector): Promise<void> {
+    const res = await this._client.focus(selector, this.defaultTimeoutMs);
+    if (!res.success) {
+      throw new Error(res.errorMessage || 'Focus failed');
+    }
+  }
+
+  async blur(selector: Selector): Promise<void> {
+    const res = await this._client.blur(selector, this.defaultTimeoutMs);
+    if (!res.success) {
+      throw new Error(res.errorMessage || 'Blur failed');
+    }
+  }
+
+  async selectOption(selector: Selector, option: string | { index: number }): Promise<void> {
+    const res = await this._client.selectOption(selector, option, this.defaultTimeoutMs);
+    if (!res.success) {
+      throw new Error(res.errorMessage || 'Select option failed');
+    }
+  }
+
+  async highlight(selector: Selector, options?: { durationMs?: number }): Promise<void> {
+    const res = await this._client.highlight(selector, options?.durationMs, this.defaultTimeoutMs);
+    if (!res.success) {
+      throw new Error(res.errorMessage || 'Highlight failed');
+    }
   }
 
   // ── Utilities ──

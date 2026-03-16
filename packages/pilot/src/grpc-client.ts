@@ -299,6 +299,86 @@ export class PilotGrpcClient {
     return this.call<PingResponse>('ping', {});
   }
 
+  // ── Element Actions (PILOT-2) ──
+
+  async doubleTap(selector: Selector, timeoutMs?: number): Promise<ActionResponse> {
+    return this.call<ActionResponse>('doubleTap', {
+      requestId: requestId(),
+      selector: this.selectorProto(selector),
+      timeoutMs: timeoutMs ?? 0,
+    });
+  }
+
+  async dragAndDrop(source: Selector, target: Selector, timeoutMs?: number): Promise<ActionResponse> {
+    return this.call<ActionResponse>('dragAndDrop', {
+      requestId: requestId(),
+      sourceSelector: this.selectorProto(source),
+      targetSelector: this.selectorProto(target),
+      timeoutMs: timeoutMs ?? 0,
+    });
+  }
+
+  async selectOption(
+    selector: Selector,
+    option: string | { index: number },
+    timeoutMs?: number,
+  ): Promise<ActionResponse> {
+    const request: Record<string, unknown> = {
+      requestId: requestId(),
+      selector: this.selectorProto(selector),
+      timeoutMs: timeoutMs ?? 0,
+    };
+    if (typeof option === 'string') {
+      request.option = option;
+    } else {
+      request.index = option.index;
+    }
+    return this.call<ActionResponse>('selectOption', request);
+  }
+
+  async pinchZoom(selector: Selector, scale: number, timeoutMs?: number): Promise<ActionResponse> {
+    return this.call<ActionResponse>('pinchZoom', {
+      requestId: requestId(),
+      selector: this.selectorProto(selector),
+      scale,
+      timeoutMs: timeoutMs ?? 0,
+    });
+  }
+
+  async focus(selector: Selector, timeoutMs?: number): Promise<ActionResponse> {
+    return this.call<ActionResponse>('focus', {
+      requestId: requestId(),
+      selector: this.selectorProto(selector),
+      timeoutMs: timeoutMs ?? 0,
+    });
+  }
+
+  async blur(selector: Selector, timeoutMs?: number): Promise<ActionResponse> {
+    return this.call<ActionResponse>('blur', {
+      requestId: requestId(),
+      selector: this.selectorProto(selector),
+      timeoutMs: timeoutMs ?? 0,
+    });
+  }
+
+  async highlight(selector: Selector, durationMs?: number, timeoutMs?: number): Promise<ActionResponse> {
+    const request: Record<string, unknown> = {
+      requestId: requestId(),
+      selector: this.selectorProto(selector),
+      timeoutMs: timeoutMs ?? 0,
+    };
+    if (durationMs != null) request.durationMs = durationMs;
+    return this.call<ActionResponse>('highlight', request);
+  }
+
+  async takeElementScreenshot(selector: Selector, timeoutMs?: number): Promise<ScreenshotResponse> {
+    return this.call<ScreenshotResponse>('takeElementScreenshot', {
+      requestId: requestId(),
+      selector: this.selectorProto(selector),
+      timeoutMs: timeoutMs ?? 0,
+    });
+  }
+
   // ── Lifecycle ──
 
   close(): void {
