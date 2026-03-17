@@ -1,7 +1,7 @@
-import { contentDesc, describe, expect, id, test, text } from "pilot"
+import { beforeAll, contentDesc, describe, expect, id, test, text } from "pilot"
 
 describe("Accessibility screen", () => {
-  test("navigate to accessibility screen", async ({ device }) => {
+  beforeAll(async ({ device }) => {
     await device.tap(contentDesc("Accessibility"))
   })
 

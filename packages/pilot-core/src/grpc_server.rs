@@ -198,6 +198,56 @@ impl PilotServiceImpl {
         }
     }
 
+    /// Launch an app via ADB shell command, optionally wait for idle, and return
+    /// a success/failure ActionResponse. Shared by `launch_app` and `restart_app`.
+    async fn launch_and_idle(
+        &self,
+        serial: &str,
+        request_id: String,
+        launch_cmd: &str,
+        wait_for_idle: bool,
+    ) -> Result<Response<proto::ActionResponse>, Status> {
+        match adb::shell(serial, launch_cmd).await {
+            Ok(_) => {
+                if wait_for_idle {
+                    let idle_cmd = AgentCommand::WaitForIdle {
+                        timeout_ms: Some(10_000),
+                    };
+                    if let Err(e) = self
+                        .send_agent_command_with_timeout(&idle_cmd, 10_000)
+                        .await
+                    {
+                        let screenshot = self.error_screenshot().await;
+                        return Ok(Response::new(proto::ActionResponse {
+                            request_id,
+                            success: false,
+                            error_type: "WAIT_FOR_IDLE_FAILED".to_string(),
+                            error_message: format!("App launched but UI did not become idle: {e}"),
+                            screenshot,
+                        }));
+                    }
+                }
+                Ok(Response::new(proto::ActionResponse {
+                    request_id,
+                    success: true,
+                    error_type: String::new(),
+                    error_message: String::new(),
+                    screenshot: Vec::new(),
+                }))
+            }
+            Err(e) => {
+                let screenshot = self.error_screenshot().await;
+                Ok(Response::new(proto::ActionResponse {
+                    request_id,
+                    success: false,
+                    error_type: "LAUNCH_FAILED".to_string(),
+                    error_message: format!("Failed to launch app: {e}"),
+                    screenshot,
+                }))
+            }
+        }
+    }
+
     /// Query dumpsys for the current resumed activity and return `(package, activity)`.
     async fn get_current_component(&self) -> Result<Option<(String, String)>, Status> {
         let serial = self.active_serial().await?;
@@ -1174,7 +1224,6 @@ impl proto::pilot_service_server::PilotService for PilotServiceImpl {
             }
         }
 
-        // Build am start command
         let cmd = if req.activity.is_empty() {
             format!(
                 "monkey -p {} -c android.intent.category.LAUNCHER 1",
@@ -1184,46 +1233,8 @@ impl proto::pilot_service_server::PilotService for PilotServiceImpl {
             format!("am start -n {}/{}", req.package_name, req.activity)
         };
 
-        match adb::shell(&serial, &cmd).await {
-            Ok(_) => {
-                if req.wait_for_idle {
-                    // Wait for the UI to settle after app launch
-                    let idle_cmd = AgentCommand::WaitForIdle {
-                        timeout_ms: Some(10_000),
-                    };
-                    if let Err(e) = self
-                        .send_agent_command_with_timeout(&idle_cmd, 10_000)
-                        .await
-                    {
-                        let screenshot = self.error_screenshot().await;
-                        return Ok(Response::new(proto::ActionResponse {
-                            request_id,
-                            success: false,
-                            error_type: "WAIT_FOR_IDLE_FAILED".to_string(),
-                            error_message: format!("App launched but UI did not become idle: {e}"),
-                            screenshot,
-                        }));
-                    }
-                }
-                Ok(Response::new(proto::ActionResponse {
-                    request_id,
-                    success: true,
-                    error_type: String::new(),
-                    error_message: String::new(),
-                    screenshot: Vec::new(),
-                }))
-            }
-            Err(e) => {
-                let screenshot = self.error_screenshot().await;
-                Ok(Response::new(proto::ActionResponse {
-                    request_id,
-                    success: false,
-                    error_type: "LAUNCH_FAILED".to_string(),
-                    error_message: e.to_string(),
-                    screenshot,
-                }))
-            }
-        }
+        self.launch_and_idle(&serial, request_id, &cmd, req.wait_for_idle)
+            .await
     }
 
     #[instrument(skip_all, fields(request_id))]
@@ -1289,6 +1300,41 @@ impl proto::pilot_service_server::PilotService for PilotServiceImpl {
             request_id,
             activity,
         }))
+    }
+
+    #[instrument(skip_all, fields(request_id))]
+    async fn restart_app(
+        &self,
+        request: Request<proto::RestartAppRequest>,
+    ) -> Result<Response<proto::ActionResponse>, Status> {
+        let req = request.into_inner();
+        let request_id = Self::request_id(&req.request_id);
+        let serial = self.active_serial().await?;
+
+        Self::validate_package_name(&req.package_name)?;
+
+        // Force-stop the app to kill the process and reset all in-memory state.
+        // Unlike clearAppData(), this preserves persistent storage (SharedPrefs,
+        // databases, files) while still getting a clean React/JS state on relaunch.
+        if let Err(e) = adb::shell(&serial, &format!("am force-stop {}", req.package_name)).await {
+            error!(error = %e, "Failed to force-stop app");
+            let screenshot = self.error_screenshot().await;
+            return Ok(Response::new(proto::ActionResponse {
+                request_id,
+                success: false,
+                error_type: "FORCE_STOP_FAILED".to_string(),
+                error_message: format!("Failed to stop app: {e}"),
+                screenshot,
+            }));
+        }
+
+        let launch_cmd = format!(
+            "monkey -p {} -c android.intent.category.LAUNCHER 1",
+            req.package_name
+        );
+
+        self.launch_and_idle(&serial, request_id, &launch_cmd, req.wait_for_idle)
+            .await
     }
 
     #[instrument(skip_all, fields(request_id))]

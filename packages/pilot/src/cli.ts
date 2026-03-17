@@ -177,7 +177,7 @@ async function checkDeviceHealth(serial: string | undefined): Promise<void> {
 
 // ─── Daemon management ───
 
-async function ensureDaemonRunning(address: string): Promise<PilotGrpcClient> {
+async function ensureDaemonRunning(address: string, daemonBin?: string): Promise<PilotGrpcClient> {
   const client = new PilotGrpcClient(address);
 
   // Try to connect to existing daemon
@@ -196,9 +196,9 @@ async function ensureDaemonRunning(address: string): Promise<PilotGrpcClient> {
   console.log(dim('Starting Pilot daemon...'));
   client.close();
 
-  const daemonBin = process.env.PILOT_DAEMON_BIN ?? 'pilot-core';
+  const resolvedBin = process.env.PILOT_DAEMON_BIN ?? daemonBin ?? 'pilot-core';
   const port = address.split(':').pop() ?? '50051';
-  const child = spawn(daemonBin, ['--port', port], {
+  const child = spawn(resolvedBin, ['--port', port], {
     detached: true,
     stdio: 'ignore',
   });
@@ -406,7 +406,7 @@ async function main(): Promise<void> {
   await checkDeviceHealth(config.device);
 
   // Connect to daemon
-  const client = await ensureDaemonRunning(config.daemonAddress);
+  const client = await ensureDaemonRunning(config.daemonAddress, config.daemonBin);
   const device = new Device(client, config);
 
   // Set device if specified

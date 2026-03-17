@@ -26,6 +26,7 @@ Pilot also supports `pilot.config.js` and `pilot.config.mjs` if you prefer plain
 | `screenshot` | `ScreenshotMode` | `"only-on-failure"` | When to capture screenshots: `"always"`, `"only-on-failure"`, or `"never"`. |
 | `testMatch` | `string[]` | `["**/*.test.ts", "**/*.spec.ts"]` | Glob patterns for discovering test files. |
 | `daemonAddress` | `string` | `"localhost:50051"` | Address of the Pilot daemon (host:port). |
+| `daemonBin` | `string` | `undefined` | Path to the `pilot-core` binary. Defaults to `"pilot-core"` (must be on `PATH`). Set this if the binary is not on your PATH. |
 | `device` | `string` | `undefined` | Target device serial. If unset, the daemon picks the first available device. |
 | `rootDir` | `string` | `process.cwd()` | Working directory for test discovery. |
 | `outputDir` | `string` | `"pilot-results"` | Directory for screenshots and other artifacts. |

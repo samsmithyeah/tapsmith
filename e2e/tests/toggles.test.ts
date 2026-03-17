@@ -1,8 +1,12 @@
-import { contentDesc, describe, expect, role, test, text } from "pilot"
+import { beforeEach, contentDesc, describe, expect, role, test, text } from "pilot"
+
+const PKG = "dev.pilot.testapp"
 
 describe("Toggles screen", () => {
-  test("navigate to toggles screen", async ({ device }) => {
+  beforeEach(async ({ device }) => {
+    await device.restartApp(PKG)
     await device.tap(contentDesc("Toggles"))
+    await expect(device.element(text("Switches"))).toBeVisible()
   })
 
   // ─── Switches ───
@@ -19,12 +23,10 @@ describe("Toggles screen", () => {
     await expect(device.element(role("switch", "Notifications"))).toBeChecked()
   })
 
-  test("setChecked(true) turns dark mode on", async ({ device }) => {
+  test("setChecked() can turn dark mode on and off", async ({ device }) => {
     await device.element(role("switch", "Dark Mode")).setChecked(true)
     await expect(device.element(role("switch", "Dark Mode"))).toBeChecked()
-  })
 
-  test("setChecked(false) turns dark mode off", async ({ device }) => {
     await device.element(role("switch", "Dark Mode")).setChecked(false)
     await expect(device.element(role("switch", "Dark Mode"))).not.toBeChecked()
   })
@@ -40,12 +42,10 @@ describe("Toggles screen", () => {
     await expect(device.element(role("checkbox", "I agree to terms"))).not.toBeChecked()
   })
 
-  test("tapping checkbox checks it", async ({ device }) => {
+  test("tapping checkbox toggles its state", async ({ device }) => {
     await device.tap(role("checkbox", "I agree to terms"))
     await expect(device.element(role("checkbox", "I agree to terms"))).toBeChecked()
-  })
 
-  test("tapping again unchecks it", async ({ device }) => {
     await device.tap(role("checkbox", "I agree to terms"))
     await expect(device.element(role("checkbox", "I agree to terms"))).not.toBeChecked()
   })
@@ -60,6 +60,7 @@ describe("Toggles screen", () => {
   })
 
   test("tapping small selects it", async ({ device }) => {
+    await device.swipe("up")
     await device.tap(role("radiobutton", "Small"))
     await expect(device.element(role("radiobutton", "Small"))).toBeChecked()
   })

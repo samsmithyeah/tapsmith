@@ -54,6 +54,7 @@ service PilotService {
   rpc GetColorScheme(GetColorSchemeRequest) returns (GetColorSchemeResponse);
   rpc WakeDevice(WakeDeviceRequest) returns (ActionResponse);
   rpc UnlockDevice(UnlockDeviceRequest) returns (ActionResponse);
+  rpc RestartApp(RestartAppRequest) returns (ActionResponse);
 }
 
 // ─── Common Types ───
@@ -453,4 +454,10 @@ message WakeDeviceRequest {
 
 message UnlockDeviceRequest {
   string request_id = 1;
+}
+
+message RestartAppRequest {
+  string request_id = 1;
+  string package_name = 2;
+  bool wait_for_idle = 3;
 }

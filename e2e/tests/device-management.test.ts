@@ -200,16 +200,14 @@ describe("Key presses", () => {
 })
 
 // ─── App Data ───
-// Note: clearAppData stops the app, so we relaunch after to leave a clean state
 
 describe("App data", () => {
-  test("clearAppData() clears app data and stops the app", async ({ device }) => {
+  test("clearAppData() clears app data, app can be relaunched", async ({ device }) => {
     await device.clearAppData(PKG)
     const state = await device.getAppState(PKG)
     expect(state).toBe("stopped")
-  })
 
-  test("relaunch app after clear", async ({ device }) => {
+    // clearAppData stops the app — relaunch to leave a clean state
     await device.launchApp(PKG)
     const pkg = await device.currentPackage()
     expect(pkg).toBe(PKG)

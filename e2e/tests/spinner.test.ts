@@ -1,7 +1,7 @@
-import { contentDesc, describe, expect, id, test, text } from "pilot"
+import { beforeAll, contentDesc, describe, expect, id, test, text } from "pilot"
 
 describe("Spinner screen", () => {
-  test("navigate to spinner screen", async ({ device }) => {
+  beforeAll(async ({ device }) => {
     await device.tap(contentDesc("Spinner"))
   })
 
@@ -16,13 +16,10 @@ describe("Spinner screen", () => {
     await expect(device.element(text("Select..."))).toBeVisible()
   })
 
-  test("tapping dropdown opens options", async ({ device }) => {
+  test("tapping country dropdown opens options and allows selection", async ({ device }) => {
     await device.tap(id("country-dropdown"))
     await expect(device.element(text("United States"))).toBeVisible()
     await expect(device.element(text("United Kingdom"))).toBeVisible()
-  })
-
-  test("selecting an option updates value", async ({ device }) => {
     await device.tap(text("Canada"))
     await expect(device.element(id("selected-country"))).toHaveText("Country: Canada")
   })
@@ -37,11 +34,5 @@ describe("Spinner screen", () => {
     await device.tap(id("priority-dropdown"))
     await device.tap(text("High"))
     await expect(device.element(id("selected-priority"))).toHaveText("Priority: High")
-  })
-
-  test("selected values section shows all choices", async ({ device }) => {
-    await expect(device.element(id("selected-country"))).toContainText("Canada")
-    await expect(device.element(id("selected-color"))).toContainText("Blue")
-    await expect(device.element(id("selected-priority"))).toContainText("High")
   })
 })

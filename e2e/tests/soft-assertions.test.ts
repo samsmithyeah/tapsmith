@@ -1,7 +1,7 @@
-import { contentDesc, describe, expect, flushSoftErrors, test, text } from "pilot"
+import { beforeAll, contentDesc, describe, expect, flushSoftErrors, test, text } from "pilot"
 
 describe("Soft assertions", () => {
-  test("navigate to toggles screen for soft assertion testing", async ({ device }) => {
+  beforeAll(async ({ device }) => {
     await device.tap(contentDesc("Toggles"))
   })
 

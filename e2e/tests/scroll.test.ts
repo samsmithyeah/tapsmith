@@ -1,7 +1,7 @@
-import { contentDesc, describe, expect, id, test, text } from "pilot"
+import { beforeAll, contentDesc, describe, expect, id, test, text } from "pilot"
 
 describe("Scroll screen", () => {
-  test("navigate to scroll screen", async ({ device }) => {
+  beforeAll(async ({ device }) => {
     await device.swipe("up")
     await device.tap(contentDesc("Scroll"))
   })

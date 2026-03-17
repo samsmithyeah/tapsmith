@@ -1,7 +1,7 @@
-import { contentDesc, describe, expect, role, test, text } from "pilot"
+import { beforeAll, contentDesc, describe, expect, role, test, text } from "pilot"
 
 describe("Login screen", () => {
-  test("navigate to login screen", async ({ device }) => {
+  beforeAll(async ({ device }) => {
     await device.tap(contentDesc("Login Form"))
   })
 
@@ -45,17 +45,15 @@ describe("Login screen", () => {
 
   // ─── Focus & Keyboard ───
 
-  test("focusing email field shows keyboard", async ({ device }) => {
+  test("focusing and blurring email field toggles keyboard", async ({ device }) => {
     await device.focus(role("textfield", "Email"))
     await expect(device.element(role("textfield", "Email"))).toBeFocused()
-    const shown = await device.isKeyboardShown()
+    let shown = await device.isKeyboardShown()
     expect(shown).toBe(true)
-  })
 
-  test("blurring hides keyboard", async ({ device }) => {
     await device.blur(role("textfield", "Email"))
     await device.hideKeyboard()
-    const shown = await device.isKeyboardShown()
+    shown = await device.isKeyboardShown()
     expect(shown).toBe(false)
   })
 

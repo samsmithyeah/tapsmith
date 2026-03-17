@@ -1,7 +1,7 @@
-import { contentDesc, describe, expect, id, test, text, textContains } from "pilot"
+import { beforeAll, contentDesc, describe, expect, id, test, text, textContains } from "pilot"
 
 describe("List screen", () => {
-  test("navigate to list screen", async ({ device }) => {
+  beforeAll(async ({ device }) => {
     await device.tap(contentDesc("List"))
   })
 
@@ -40,12 +40,10 @@ describe("List screen", () => {
 
   // ─── Selection ───
 
-  test("tapping item by accessibilityLabel selects it", async ({ device }) => {
+  test("tapping an item selects and deselects it", async ({ device }) => {
     await device.tap(contentDesc("Item 1"))
     await expect(device.element(id("selected-count"))).toContainText("1 selected")
-  })
 
-  test("tapping again deselects it", async ({ device }) => {
     await device.tap(contentDesc("Item 1"))
     await expect(device.element(id("selected-count"))).toContainText("0 selected")
   })
