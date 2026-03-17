@@ -469,6 +469,7 @@ async function main(): Promise<void> {
       : undefined;
 
   for (const file of testFiles) {
+
     const relativePath = path.relative(config.rootDir, file);
     console.log(bold(`  ${relativePath}`));
 

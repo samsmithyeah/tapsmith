@@ -1,8 +1,8 @@
 import { defineConfig } from "pilot"
 
 export default defineConfig({
-  package: "com.samlovesit.StoryApp",
-  timeout: 30_000,
+  package: "dev.pilot.testapp",
+  timeout: 10_000,
   retries: 0,
   screenshot: "only-on-failure",
   device: "emulator-5554",

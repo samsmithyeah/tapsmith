@@ -1,0 +1,41 @@
+{
+  "name": "test-app",
+  "version": "1.0.0",
+  "main": "expo-router/entry",
+  "scripts": {
+    "start": "expo start",
+    "android": "expo run:android",
+    "ios": "expo run:ios",
+    "web": "expo start --web",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint app/",
+    "format": "prettier --write app/",
+    "format:check": "prettier --check app/",
+    "knip": "knip"
+  },
+  "dependencies": {
+    "@expo/vector-icons": "^15.0.2",
+    "expo": "~55.0.6",
+    "expo-camera": "~55.0.9",
+    "expo-clipboard": "~55.0.8",
+    "expo-constants": "~55.0.7",
+    "expo-linking": "~55.0.7",
+    "expo-location": "~55.1.2",
+    "expo-router": "~55.0.5",
+    "expo-status-bar": "~55.0.4",
+    "react": "19.2.0",
+    "react-native": "0.83.2",
+    "react-native-safe-area-context": "~5.6.2",
+    "react-native-screens": "~4.23.0"
+  },
+  "devDependencies": {
+    "@react-native-community/cli": "^20.1.2",
+    "@types/react": "~19.2.2",
+    "eslint": "^10.0.3",
+    "knip": "^5.87.0",
+    "prettier": "^3.8.1",
+    "typescript": "~5.9.2",
+    "typescript-eslint": "^8.57.1"
+  },
+  "private": true
+}

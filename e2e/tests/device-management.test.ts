@@ -1,6 +1,6 @@
 import { test, expect, describe } from "pilot"
 
-const PKG = "com.samlovesit.StoryApp"
+const PKG = "dev.pilot.testapp"
 
 // ─── Device Setup ───
 
@@ -14,15 +14,9 @@ describe("Device setup", () => {
   })
 })
 
-// ─── App Lifecycle (PILOT-91, 93, 94) ───
+// ─── App Lifecycle ───
 
 describe("App lifecycle", () => {
-  test("launchApp() starts the app", async ({ device }) => {
-    await device.launchApp(PKG)
-    const pkg = await device.currentPackage()
-    expect(pkg).toBe(PKG)
-  })
-
   test("currentPackage() returns the foreground app", async ({ device }) => {
     const pkg = await device.currentPackage()
     expect(pkg).toBe(PKG)
@@ -68,20 +62,19 @@ describe("App lifecycle", () => {
   })
 })
 
-// ─── Deep Links (PILOT-92) ───
+// ─── Deep Links ───
 
 describe("Deep links", () => {
-  test("openDeepLink() opens a URL", async ({ device }) => {
-    await device.openDeepLink("https://example.com")
-    // Just verifying it doesn't throw — the URL opens in browser/chooser
+  test("openDeepLink() navigates to a screen", async ({ device }) => {
+    await device.openDeepLink("pilottest:///login")
   })
 
-  test("navigate back to home after deep link", async ({ device }) => {
-    await device.pressHome()
+  test("navigate back after deep link", async ({ device }) => {
+    await device.pressBack()
   })
 })
 
-// ─── Orientation (PILOT-99) ───
+// ─── Orientation ───
 
 describe("Orientation", () => {
   test("setOrientation('landscape') changes to landscape", async ({ device }) => {
@@ -97,16 +90,21 @@ describe("Orientation", () => {
   })
 })
 
-// ─── Keyboard (PILOT-102) ───
+// ─── Keyboard ───
 
 describe("Keyboard", () => {
   test("isKeyboardShown() returns false when no keyboard visible", async ({ device }) => {
+    await device.pressHome()
     const shown = await device.isKeyboardShown()
     expect(shown).toBe(false)
   })
+
+  test("hideKeyboard() does not throw when no keyboard is shown", async ({ device }) => {
+    await device.hideKeyboard()
+  })
 })
 
-// ─── Navigation (PILOT-113) ───
+// ─── Device Navigation ───
 
 describe("Device navigation", () => {
   test("pressHome() goes to home screen", async ({ device }) => {
@@ -138,7 +136,7 @@ describe("Device navigation", () => {
   })
 })
 
-// ─── Color Scheme (PILOT-117) ───
+// ─── Color Scheme ───
 
 describe("Color scheme", () => {
   test("setColorScheme('dark') enables dark mode", async ({ device }) => {
@@ -154,7 +152,7 @@ describe("Color scheme", () => {
   })
 })
 
-// ─── Permissions (PILOT-95) ───
+// ─── Permissions ───
 
 describe("Permissions", () => {
   test("grantPermission() grants a runtime permission", async ({ device }) => {
@@ -166,11 +164,10 @@ describe("Permissions", () => {
   })
 })
 
-// ─── Clipboard (PILOT-96) ───
+// ─── Clipboard ───
 
 describe("Clipboard", () => {
   test("setClipboard() + getClipboard() round-trips text", async ({ device }) => {
-    // Ensure app is in foreground for agent clipboard access
     await device.launchApp(PKG)
     await device.setClipboard("Pilot E2E clipboard test!")
     const clipText = await device.getClipboard()
@@ -178,12 +175,43 @@ describe("Clipboard", () => {
   })
 })
 
-// ─── App Data (PILOT-100) ───
+// ─── waitForIdle ───
+
+describe("Wait for idle", () => {
+  test("waitForIdle() completes without error", async ({ device }) => {
+    await device.waitForIdle()
+  })
+
+  test("waitForIdle() with custom timeout", async ({ device }) => {
+    await device.waitForIdle(5000)
+  })
+})
+
+// ─── pressKey ───
+
+describe("Key presses", () => {
+  test("pressKey('VOLUME_UP') does not throw", async ({ device }) => {
+    await device.pressKey("VOLUME_UP")
+  })
+
+  test("pressKey('VOLUME_DOWN') does not throw", async ({ device }) => {
+    await device.pressKey("VOLUME_DOWN")
+  })
+})
+
+// ─── App Data ───
+// Note: clearAppData stops the app, so we relaunch after to leave a clean state
 
 describe("App data", () => {
   test("clearAppData() clears app data and stops the app", async ({ device }) => {
     await device.clearAppData(PKG)
     const state = await device.getAppState(PKG)
     expect(state).toBe("stopped")
+  })
+
+  test("relaunch app after clear", async ({ device }) => {
+    await device.launchApp(PKG)
+    const pkg = await device.currentPackage()
+    expect(pkg).toBe(PKG)
   })
 })
