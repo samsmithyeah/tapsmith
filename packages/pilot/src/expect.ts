@@ -29,19 +29,24 @@ const POLL_FIND_TIMEOUT_MS = 100;
 
 /**
  * Repeatedly call `check` until it returns the expected value or the timeout
- * is exceeded. When `expectFalse` is true the poll succeeds as soon as `check`
- * returns `false` — used for negated assertions so they don't burn the entire
- * timeout when the condition is already not met.
+ * is exceeded.
+ *
+ * @param negated When true, the poll succeeds as soon as `check` returns
+ *   `false` — used for negated assertions (`.not.toBeVisible()` etc.) so they
+ *   don't burn the entire timeout when the condition is already not met.
+ * @returns The raw `check()` result on the final attempt (callers compare this
+ *   against `negated` to decide pass/fail).
  */
 async function poll(
   check: () => Promise<boolean>,
   timeoutMs: number,
-  expectFalse = false,
+  negated = false,
 ): Promise<boolean> {
+  const target = !negated; // true = want check() to be true; false = want false
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     const value = await check();
-    if (expectFalse ? !value : value) return value;
+    if (value === target) return value;
     await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS));
   }
   // Final attempt
@@ -390,6 +395,8 @@ function createAssertions(
     },
 
     // ─── PILOT-31: toBeHidden ───
+    // Note: check() returns true when hidden. With `.not.toBeHidden()`,
+    // negated=true makes poll succeed when check returns false (= visible).
 
     async toBeHidden(options) {
       const timeout = timeoutFor(options);

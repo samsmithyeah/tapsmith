@@ -1,5 +1,4 @@
-import { test, expect, describe } from "pilot"
-import { text } from "pilot"
+import { describe, expect, test, text } from "pilot"
 
 describe("Home screen", () => {
   test("shows the app header", async ({ device }) => {

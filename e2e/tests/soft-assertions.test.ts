@@ -1,5 +1,4 @@
-import { test, expect, describe, flushSoftErrors } from "pilot"
-import { text, contentDesc } from "pilot"
+import { contentDesc, describe, expect, flushSoftErrors, test, text } from "pilot"
 
 describe("Soft assertions", () => {
   test("navigate to toggles screen for soft assertion testing", async ({ device }) => {

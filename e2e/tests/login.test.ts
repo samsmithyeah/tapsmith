@@ -1,5 +1,4 @@
-import { test, expect, describe } from "pilot"
-import { text, role, id, contentDesc } from "pilot"
+import { contentDesc, describe, expect, id, role, test, text } from "pilot"
 
 describe("Login screen", () => {
   test("navigate to login screen", async ({ device }) => {

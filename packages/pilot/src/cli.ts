@@ -480,6 +480,7 @@ async function main(): Promise<void> {
       try {
         await device.terminateApp(config.package);
         await device.launchApp(config.package);
+        await device.waitForIdle();
 
         const pong = await client.ping();
         if (!pong.agentConnected) {

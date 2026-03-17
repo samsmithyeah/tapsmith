@@ -2,8 +2,7 @@
  * Known bugs — tests that SHOULD pass but don't due to Pilot bugs.
  * Uncomment each test as the corresponding bug is fixed.
  */
-import { test, expect, describe } from "pilot"
-import { text, textContains, hint, id, testId, contentDesc, role } from "pilot"
+import { contentDesc, describe, expect, hint, id, role, test, testId, text, textContains } from "pilot"
 
 describe("Known bugs", () => {
   // ─── PILOT-131: testId() uses content-desc prefix instead of resource-id ───
