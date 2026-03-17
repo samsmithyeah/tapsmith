@@ -468,7 +468,29 @@ async function main(): Promise<void> {
       ? path.resolve(config.rootDir, config.outputDir, 'screenshots')
       : undefined;
 
-  for (const file of testFiles) {
+  for (let i = 0; i < testFiles.length; i++) {
+    const file = testFiles[i];
+
+    // Reset app to main activity between test files for isolation (PILOT-134).
+    // Uses direct ADB commands (force-stop + launcher intent) which bypass the
+    // on-device agent — the agent survives because it runs as a separate package.
+    if (i > 0 && config.package) {
+      try {
+        await device.terminateApp(config.package);
+        await new Promise(r => setTimeout(r, 500));
+        await device.launchApp(config.package);
+        await new Promise(r => setTimeout(r, 1_000));
+
+        const pong = await client.ping();
+        if (!pong.agentConnected) {
+          console.error(red('Agent disconnected after app reset. Aborting.'));
+          process.exit(1);
+        }
+      } catch (err) {
+        console.error(red(`Failed to reset app between test files: ${err}`));
+        process.exit(1);
+      }
+    }
 
     const relativePath = path.relative(config.rootDir, file);
     console.log(bold(`  ${relativePath}`));
