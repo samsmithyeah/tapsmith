@@ -319,11 +319,23 @@ class ElementFinder(private val device: UiDevice) {
             buildBySelector(selector)
                 ?: throw InvalidSelectorException("No valid selector criteria provided")
 
-        return if (parent != null) {
-            parent.findObjects(bySelector) ?: emptyList()
-        } else {
-            device.findObjects(bySelector) ?: emptyList()
+        val results =
+            if (parent != null) {
+                parent.findObjects(bySelector) ?: emptyList()
+            } else {
+                device.findObjects(bySelector) ?: emptyList()
+            }
+
+        // Post-filter by role name: match contentDescription, text, or descendant text
+        if (selector.role != null && selector.name != null) {
+            return results.filter { obj ->
+                obj.contentDescription == selector.name ||
+                    obj.text == selector.name ||
+                    (obj.findObjects(By.text(selector.name))?.isNotEmpty() == true)
+            }
         }
+
+        return results
     }
 
     private fun buildBySelector(selector: ElementSelector): BySelector? {
@@ -339,14 +351,10 @@ class ElementFinder(private val device: UiDevice) {
             val pattern = classNames.joinToString("|") { Regex.escape(it) }
             by = By.clazz(java.util.regex.Pattern.compile(pattern))
 
-            // If a name is also given, additionally filter by text or contentDescription
-            if (selector.name != null) {
-                by = by.hasDescendant(
-                    By.text(selector.name),
-                ) ?: by // fallback: will filter manually below
-                // Actually, we need text OR contentDesc matching. Use a broader approach:
-                // Build the class selector, then filter results by name afterwards.
-            }
+            // If a name is also given, filter by accessible name (contentDescription
+            // or text on the element itself, or text on a descendant). We can't express
+            // OR conditions in a single BySelector, so we filter in findElements() below.
+            // Store the name requirement but don't add it to `by` here.
         }
 
         // Text selectors

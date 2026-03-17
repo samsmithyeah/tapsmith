@@ -159,13 +159,16 @@ class CommandHandler(
             "typeText" -> {
                 val text = params.getString("text")
                 val hasSelector =
-                    params.has("text") && (
-                        params.has("role") || params.has("id") ||
-                            params.has("contentDesc") || params.has("className") || params.has("testId") ||
-                            params.has("hint") || params.has("textContains") || params.has("elementId")
-                    )
-                if (hasSelector || params.has("elementId")) {
-                    val element = resolveElement(params)
+                    params.has("role") || params.has("id") ||
+                        params.has("contentDesc") || params.has("className") || params.has("testId") ||
+                        params.has("hint") || params.has("textContains") || params.has("elementId")
+                if (hasSelector) {
+                    // Remove "text" from params before resolving selector, since "text" here
+                    // is the value to type, not a text selector. Without this, parseSelectorParams
+                    // would treat the typed value as a text match criterion.
+                    val selectorParams = JSONObject(params.toString())
+                    selectorParams.remove("text")
+                    val element = resolveElement(selectorParams)
                     actionExecutor.typeText(elementFinder.getElement(element.elementId), text)
                 } else {
                     actionExecutor.typeTextWithoutFocus(text)
@@ -366,11 +369,11 @@ class CommandHandler(
         val role: String?
         val name: String?
         if (roleObj is JSONObject) {
-            role = roleObj.optString("role", null)
-            name = roleObj.optString("name", null)
+            role = roleObj.optString("role", null)?.ifEmpty { null }
+            name = roleObj.optString("name", null)?.ifEmpty { null }
         } else {
-            role = params.optString("role", null)
-            name = params.optString("name", null)
+            role = params.optString("role", null)?.ifEmpty { null }
+            name = params.optString("name", null)?.ifEmpty { null }
         }
 
         // Handle "resourceId" (sent by daemon) or "id" (legacy)
