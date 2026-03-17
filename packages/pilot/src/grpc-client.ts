@@ -181,10 +181,11 @@ export class PilotGrpcClient {
 
   // ── Helpers ──
 
-  private call<T>(method: string, request: Record<string, unknown>): Promise<T> {
+  private call<T>(method: string, request: Record<string, unknown>, deadlineMs?: number): Promise<T> {
     return new Promise<T>((resolve, reject) => {
+      const deadline = new Date(Date.now() + (deadlineMs ?? 60_000));
       // eslint-disable-next-line @typescript-eslint/no-explicit-any -- dynamic RPC dispatch on proto-loaded client
-      (this.client as any)[method](request, (err: grpc.ServiceError | null, response: T) => {
+      (this.client as any)[method](request, { deadline }, (err: grpc.ServiceError | null, response: T) => {
         if (err) {
           reject(err);
         } else {
@@ -319,7 +320,7 @@ export class PilotGrpcClient {
     return this.call<ActionResponse>('installApk', {
       requestId: requestId(),
       apkPath,
-    });
+    }, 120_000);
   }
 
   async listDevices(): Promise<ListDevicesResponse> {
@@ -332,7 +333,7 @@ export class PilotGrpcClient {
     return this.call<ActionResponse>('setDevice', {
       requestId: requestId(),
       serial,
-    });
+    }, 120_000);
   }
 
   async startAgent(
@@ -345,7 +346,7 @@ export class PilotGrpcClient {
       targetPackage,
       agentApkPath: agentApkPath ?? '',
       agentTestApkPath: agentTestApkPath ?? '',
-    });
+    }, 120_000);
   }
 
   async ping(): Promise<PingResponse> {
@@ -441,7 +442,7 @@ export class PilotGrpcClient {
       activity: options?.activity ?? '',
       clearData: options?.clearData ?? false,
       waitForIdle: options?.waitForIdle ?? false,
-    });
+    }, 120_000);
   }
 
   async openDeepLink(uri: string): Promise<ActionResponse> {

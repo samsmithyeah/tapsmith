@@ -16,7 +16,7 @@ import { PilotGrpcClient } from './grpc-client.js';
 import { Device } from './device.js';
 import { runTestFile, collectResults, type TestResult } from './runner.js';
 import { glob } from 'glob';
-import { spawn, execSync } from 'node:child_process';
+import { spawn, execFileSync } from 'node:child_process';
 
 // ─── ANSI helpers ───
 
@@ -102,6 +102,79 @@ function reExecWithTsx(args: string[]): never {
   return undefined as never;
 }
 
+// ─── Device health check ───
+
+/**
+ * Verify the target device is responsive before running tests.
+ * Attempts ADB restart recovery if unresponsive, exits the process if not recoverable.
+ */
+async function checkDeviceHealth(serial: string | undefined): Promise<void> {
+  const target = serial ?? 'any connected device';
+
+  // Quick ADB responsiveness check (5s timeout)
+  const adbArgs = serial
+    ? ['-s', serial, 'shell', 'echo', '__pilot_health_ok__']
+    : ['shell', 'echo', '__pilot_health_ok__'];
+
+  const tryAdb = (): boolean => {
+    try {
+      const result = execFileSync('adb', adbArgs, {
+        timeout: 5_000,
+        encoding: 'utf-8',
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
+      return result.trim().includes('__pilot_health_ok__');
+    } catch {
+      return false;
+    }
+  };
+
+  if (tryAdb()) return;
+
+  // Device is unresponsive — try ADB restart recovery
+  console.log(yellow(`Device ${target} is unresponsive. Restarting ADB server...`));
+
+  try {
+    execFileSync('adb', ['kill-server'], { timeout: 5_000, stdio: 'ignore' });
+  } catch {
+    // kill-server can fail if daemon isn't running
+  }
+  // Give ADB time to fully shut down
+  await new Promise((r) => setTimeout(r, 2_000));
+
+  try {
+    execFileSync('adb', ['start-server'], { timeout: 10_000, stdio: 'ignore' });
+  } catch {
+    console.error(red('Failed to restart ADB server.'));
+    console.error(dim('  Check that Android SDK platform-tools are installed and on PATH.'));
+    process.exit(1);
+  }
+
+  // Wait for device to come back
+  await new Promise((r) => setTimeout(r, 3_000));
+
+  if (tryAdb()) {
+    console.log(dim('ADB recovered. Device is responsive.'));
+    return;
+  }
+
+  // Still unresponsive — give the user actionable guidance
+  console.error(red(`Device ${target} is not responding.`));
+  console.error('');
+  console.error('  Possible causes:');
+  console.error(dim('    • Emulator crashed or froze — restart it'));
+  console.error(dim('    • Multiple emulators competing for the same port'));
+  console.error(dim('    • USB device disconnected'));
+  console.error('');
+  console.error('  Try:');
+  console.error(dim('    $ adb kill-server && adb start-server'));
+  console.error(dim('    $ adb devices -l'));
+  if (serial?.startsWith('emulator')) {
+    console.error(dim(`    $ adb -s ${serial} emu kill  # restart the emulator`));
+  }
+  process.exit(1);
+}
+
 // ─── Daemon management ───
 
 async function ensureDaemonRunning(address: string): Promise<PilotGrpcClient> {
@@ -124,9 +197,13 @@ async function ensureDaemonRunning(address: string): Promise<PilotGrpcClient> {
   client.close();
 
   const daemonBin = process.env.PILOT_DAEMON_BIN ?? 'pilot-core';
-  const child = spawn(daemonBin, ['--address', address], {
+  const port = address.split(':').pop() ?? '50051';
+  const child = spawn(daemonBin, ['--port', port], {
     detached: true,
     stdio: 'ignore',
+  });
+  child.on('error', () => {
+    // Handled below via waitForReady timeout
   });
   child.unref();
 
@@ -324,6 +401,9 @@ async function main(): Promise<void> {
 
   console.log(cyan(`Found ${testFiles.length} test file(s)`));
   console.log('');
+
+  // Pre-flight: verify device is responsive before doing anything slow
+  await checkDeviceHealth(config.device);
 
   // Connect to daemon
   const client = await ensureDaemonRunning(config.daemonAddress);

@@ -171,7 +171,13 @@ async function captureFailureScreenshot(
     const fs = await import('node:fs');
     const path = await import('node:path');
     fs.mkdirSync(screenshotDir, { recursive: true });
-    const res = await device.takeScreenshot();
+    let screenshotTimer: ReturnType<typeof setTimeout>;
+    const res = await Promise.race([
+      device.takeScreenshot().finally(() => clearTimeout(screenshotTimer)),
+      new Promise<never>((_, reject) => {
+        screenshotTimer = setTimeout(() => reject(new Error('Screenshot timed out')), 10_000);
+      }),
+    ]);
     if (res.success && res.data) {
       const safeName = testName.replace(/[^a-zA-Z0-9_-]/g, '_');
       const filePath = path.join(screenshotDir, `${safeName}-${Date.now()}.png`);
@@ -229,19 +235,35 @@ async function runSuiteContext(
     let status: TestStatus = 'passed';
     let error: Error | undefined;
     let screenshotPath: string | undefined;
+    // 2x the assertion timeout: a test may have multiple actions, each with
+    // their own timeout. The test-level timeout is a safety net against hangs.
+    const testTimeoutMs = opts.config.timeout * 2;
 
     try {
-      // Run beforeEach hooks
-      for (const hook of allBeforeEach) {
-        await hook();
-      }
+      const testBody = async () => {
+        // Run beforeEach hooks
+        for (const hook of allBeforeEach) {
+          await hook();
+        }
 
-      // Call with fixtures if the test function expects arguments
-      if (entry.fn.length > 0 && opts.device) {
-        await (entry.fn as (fixtures: TestFixtures) => void | Promise<void>)({ device: opts.device });
-      } else {
-        await (entry.fn as () => void | Promise<void>)();
-      }
+        // Call with fixtures if the test function expects arguments
+        if (entry.fn.length > 0 && opts.device) {
+          await (entry.fn as (fixtures: TestFixtures) => void | Promise<void>)({ device: opts.device });
+        } else {
+          await (entry.fn as () => void | Promise<void>)();
+        }
+      };
+
+      // Wrap test execution with a timeout to prevent tests from hanging forever
+      let testTimer: ReturnType<typeof setTimeout>;
+      await Promise.race([
+        testBody().finally(() => clearTimeout(testTimer)),
+        new Promise<never>((_, reject) => {
+          testTimer = setTimeout(() => reject(new Error(
+            `Test timed out after ${testTimeoutMs}ms`
+          )), testTimeoutMs);
+        }),
+      ]);
     } catch (err) {
       status = 'failed';
       error = err instanceof Error ? err : new Error(String(err));

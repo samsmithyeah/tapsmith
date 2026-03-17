@@ -23,6 +23,9 @@ import { selectorToProto } from "./selectors.js";
 
 const DEFAULT_ASSERTION_TIMEOUT_MS = 5_000;
 const POLL_INTERVAL_MS = 250;
+// Short server-side timeout for element lookups inside assertion polls.
+// Must be > 0 because the Rust daemon treats 0 as "use 30s default".
+const POLL_FIND_TIMEOUT_MS = 100;
 
 /**
  * Repeatedly call `check` until it returns `true` or the timeout is exceeded.
@@ -253,7 +256,7 @@ function createAssertions(
       const desc = selectorDescription(handle);
       const result = await poll(async () => {
         try {
-          const res = await handle._client.findElement(handle._selector, 0);
+          const res = await handle._client.findElement(handle._selector, POLL_FIND_TIMEOUT_MS);
           return res.found && res.element?.visible === true;
         } catch {
           return false;
@@ -273,7 +276,7 @@ function createAssertions(
       const desc = selectorDescription(handle);
       const result = await poll(async () => {
         try {
-          const res = await handle._client.findElement(handle._selector, 0);
+          const res = await handle._client.findElement(handle._selector, POLL_FIND_TIMEOUT_MS);
           return res.found && res.element?.enabled === true;
         } catch {
           return false;
@@ -294,7 +297,7 @@ function createAssertions(
       let lastText = "";
       const result = await poll(async () => {
         try {
-          const res = await handle._client.findElement(handle._selector, 0);
+          const res = await handle._client.findElement(handle._selector, POLL_FIND_TIMEOUT_MS);
           if (res.found && res.element) {
             lastText = res.element.text;
             return res.element.text === expected;
@@ -322,7 +325,7 @@ function createAssertions(
       const desc = selectorDescription(handle);
       const result = await poll(async () => {
         try {
-          const res = await handle._client.findElement(handle._selector, 0);
+          const res = await handle._client.findElement(handle._selector, POLL_FIND_TIMEOUT_MS);
           return res.found;
         } catch {
           return false;
@@ -344,7 +347,7 @@ function createAssertions(
       const desc = selectorDescription(handle);
       const result = await poll(async () => {
         try {
-          const res = await handle._client.findElement(handle._selector, 0);
+          const res = await handle._client.findElement(handle._selector, POLL_FIND_TIMEOUT_MS);
           return res.found && res.element?.checked === true;
         } catch {
           return false;
@@ -366,7 +369,7 @@ function createAssertions(
       const desc = selectorDescription(handle);
       const result = await poll(async () => {
         try {
-          const res = await handle._client.findElement(handle._selector, 0);
+          const res = await handle._client.findElement(handle._selector, POLL_FIND_TIMEOUT_MS);
           return res.found && res.element?.enabled === false;
         } catch {
           return false;
@@ -388,7 +391,7 @@ function createAssertions(
       const desc = selectorDescription(handle);
       const result = await poll(async () => {
         try {
-          const res = await handle._client.findElement(handle._selector, 0);
+          const res = await handle._client.findElement(handle._selector, POLL_FIND_TIMEOUT_MS);
           return !res.found || res.element?.visible === false;
         } catch {
           return true;
@@ -411,7 +414,7 @@ function createAssertions(
       let lastText = "";
       const result = await poll(async () => {
         try {
-          const res = await handle._client.findElement(handle._selector, 0);
+          const res = await handle._client.findElement(handle._selector, POLL_FIND_TIMEOUT_MS);
           if (res.found && res.element) {
             lastText = res.element.text;
             return !res.element.text;
@@ -439,7 +442,7 @@ function createAssertions(
       const desc = selectorDescription(handle);
       const result = await poll(async () => {
         try {
-          const res = await handle._client.findElement(handle._selector, 0);
+          const res = await handle._client.findElement(handle._selector, POLL_FIND_TIMEOUT_MS);
           return res.found && res.element?.focused === true;
         } catch {
           return false;
@@ -462,7 +465,7 @@ function createAssertions(
       let lastText = "";
       const result = await poll(async () => {
         try {
-          const res = await handle._client.findElement(handle._selector, 0);
+          const res = await handle._client.findElement(handle._selector, POLL_FIND_TIMEOUT_MS);
           if (res.found && res.element) {
             lastText = res.element.text;
             return matchesStringOrRegExp(res.element.text, expected);
@@ -493,7 +496,7 @@ function createAssertions(
       let lastCount = 0;
       const result = await poll(async () => {
         try {
-          const res = await handle._client.findElements(handle._selector, 0);
+          const res = await handle._client.findElements(handle._selector, POLL_FIND_TIMEOUT_MS);
           lastCount = res.elements?.length ?? 0;
           return lastCount === count;
         } catch {
@@ -519,7 +522,7 @@ function createAssertions(
       let lastValue: unknown;
       const result = await poll(async () => {
         try {
-          const res = await handle._client.findElement(handle._selector, 0);
+          const res = await handle._client.findElement(handle._selector, POLL_FIND_TIMEOUT_MS);
           if (res.found && res.element) {
             lastValue = (res.element as unknown as Record<string, unknown>)[
               name
@@ -552,7 +555,7 @@ function createAssertions(
       let lastName = "";
       const result = await poll(async () => {
         try {
-          const res = await handle._client.findElement(handle._selector, 0);
+          const res = await handle._client.findElement(handle._selector, POLL_FIND_TIMEOUT_MS);
           if (res.found && res.element) {
             // On Android, accessible name is contentDescription if set, otherwise text
             lastName = res.element.contentDescription || res.element.text;
@@ -584,7 +587,7 @@ function createAssertions(
       let lastDesc = "";
       const result = await poll(async () => {
         try {
-          const res = await handle._client.findElement(handle._selector, 0);
+          const res = await handle._client.findElement(handle._selector, POLL_FIND_TIMEOUT_MS);
           if (res.found && res.element) {
             lastDesc = res.element.hint;
             return matchesExact(lastDesc, description);
@@ -615,7 +618,7 @@ function createAssertions(
       let lastRole = "";
       const result = await poll(async () => {
         try {
-          const res = await handle._client.findElement(handle._selector, 0);
+          const res = await handle._client.findElement(handle._selector, POLL_FIND_TIMEOUT_MS);
           if (res.found && res.element) {
             // Use the role field from the agent if available, otherwise compute from className
             lastRole =
@@ -646,7 +649,7 @@ function createAssertions(
       let lastValue = "";
       const result = await poll(async () => {
         try {
-          const res = await handle._client.findElement(handle._selector, 0);
+          const res = await handle._client.findElement(handle._selector, POLL_FIND_TIMEOUT_MS);
           if (res.found && res.element) {
             lastValue = res.element.text;
             return res.element.text === value;
@@ -676,7 +679,7 @@ function createAssertions(
       const desc = selectorDescription(handle);
       const result = await poll(async () => {
         try {
-          const res = await handle._client.findElement(handle._selector, 0);
+          const res = await handle._client.findElement(handle._selector, POLL_FIND_TIMEOUT_MS);
           if (res.found && res.element) {
             const isTextField =
               res.element.role === "textfield" ||
@@ -706,7 +709,7 @@ function createAssertions(
       let lastRatio = 0;
       const result = await poll(async () => {
         try {
-          const res = await handle._client.findElement(handle._selector, 0);
+          const res = await handle._client.findElement(handle._selector, POLL_FIND_TIMEOUT_MS);
           if (res.found && res.element) {
             lastRatio = res.element.viewportRatio ?? 0;
             if (requiredRatio > 0) {
