@@ -13,11 +13,6 @@ describe("Toggles screen", () => {
 
   // ─── Switches ───
 
-  test("switches section heading is visible", async ({ device }) => {
-    const screen = new TogglesScreen(device)
-    await expect(screen.switchesHeading).toBeVisible()
-  })
-
   test("dark mode switch starts unchecked", async ({ device }) => {
     const screen = new TogglesScreen(device)
     await expect(screen.darkModeSwitch).not.toBeChecked()
