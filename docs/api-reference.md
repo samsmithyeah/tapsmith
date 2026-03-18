@@ -1371,6 +1371,18 @@ export default defineConfig({
 
 ### `PilotReporter` interface
 
+All types are importable from `"pilot"`:
+
+```typescript
+import type {
+  PilotReporter,
+  FullResult,
+  PilotConfig,
+  TestResult,
+  SuiteResult,
+} from "pilot";
+```
+
 ```typescript
 interface PilotReporter {
   onRunStart?(config: PilotConfig, fileCount: number): void;
@@ -1387,9 +1399,9 @@ interface PilotReporter {
 ```typescript
 interface FullResult {
   status: "passed" | "failed";
-  duration: number;
-  tests: TestResult[];
-  suites: SuiteResult[];
+  duration: number; // milliseconds
+  tests: TestResult[]; // flattened list of all test results
+  suites: SuiteResult[]; // hierarchical suite tree (one per test file)
 }
 ```
 

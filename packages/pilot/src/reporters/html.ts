@@ -56,9 +56,9 @@ export class HtmlReporter implements PilotReporter {
 
     if (shouldOpen) {
       try {
-        const { exec } = await import('node:child_process')
+        const { spawn } = await import('node:child_process')
         const cmd = process.platform === 'darwin' ? 'open' : process.platform === 'win32' ? 'start' : 'xdg-open'
-        exec(`${cmd} ${indexPath}`)
+        spawn(cmd, [indexPath], { detached: true, stdio: 'ignore' }).unref()
       } catch {
         // Best-effort open
       }

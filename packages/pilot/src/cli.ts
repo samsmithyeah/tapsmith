@@ -323,9 +323,8 @@ async function main(): Promise<void> {
       console.error(red(`No report found at ${reportPath}`))
       process.exit(1)
     }
-    const { exec } = await import('node:child_process')
     const cmd = process.platform === 'darwin' ? 'open' : process.platform === 'win32' ? 'start' : 'xdg-open'
-    exec(`${cmd} ${reportPath}`)
+    spawn(cmd, [reportPath], { detached: true, stdio: 'ignore' }).unref()
     return
   }
 
