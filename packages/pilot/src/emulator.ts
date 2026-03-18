@@ -308,9 +308,12 @@ export async function provisionEmulators(opts: {
     )
   }
 
-  // Check if existing emulators are using the same AVD — Android emulator
-  // doesn't allow two instances of the same AVD unless both use -read-only,
-  // and we can't change the flags on an already-running emulator.
+  // Track which AVDs are already running. We still prefer the requested AVD
+  // even when it is already in use, because Pilot launches new instances with
+  // -read-only and should treat "N workers on N instances of the same AVD"
+  // as the primary supported path. If an existing manually started instance
+  // was launched incompatibly, the subsequent launch/health probe will fail
+  // and we can fall back or degrade from there.
   const runningAvds = new Set<string>()
   for (const serial of existingSerials) {
     if (serial.startsWith('emulator-')) {
@@ -433,19 +436,9 @@ function resolveLaunchCandidates(
 
   const alternatives = avds.filter((avd) => avd !== requestedAvd && !runningAvds.has(avd))
   if (runningAvds.has(requestedAvd)) {
-    if (alternatives.length === 0) {
-      throw new Error(
-        `Cannot launch another instance of AVD "${requestedAvd}" — it is already running ` +
-        'and no alternative AVDs are available. Android requires all instances of ' +
-        'the same AVD to be started with -read-only. Either:\n' +
-        '  1. Create a second AVD in Android Studio\n' +
-        '  2. Start your base emulator with: emulator -avd ' + requestedAvd + ' -read-only',
-      )
-    }
     process.stderr.write(
-      `${YELLOW}AVD "${requestedAvd}" is already running. Trying alternative AVDs instead: ${alternatives.join(', ')}.${RESET}\n`,
+      `${YELLOW}AVD "${requestedAvd}" is already running. Pilot will still try additional read-only instances of that AVD first.${RESET}\n`,
     )
-    return alternatives
   }
 
   return [requestedAvd, ...alternatives]

@@ -163,6 +163,33 @@ describe('emulator utilities', () => {
       expect(result.allSerials).toEqual(['emulator-5554'])
       expect(result.launched).toEqual([])
     })
+
+    it('keeps the requested AVD first even when another instance is already running', async () => {
+      const launchedAvds: string[] = []
+
+      const result = await provisionEmulators(
+        {
+          existingSerials: ['emulator-5554'],
+          workers: 2,
+          avd: 'Pixel_9_API_35',
+        },
+        {
+          listAvds: () => ['Pixel_9_API_35', 'Small_Phone_API_35'],
+          getRunningAvdName: (serial) => serial === 'emulator-5554' ? 'Pixel_9_API_35' : undefined,
+          launchEmulator: (avd, port) => {
+            launchedAvds.push(avd)
+            return makeLaunchedEmulator(avd, port)
+          },
+          waitForBoot: async () => undefined,
+          probeDeviceHealth: (serial) => ({ serial, healthy: true }),
+          killEmulator: vi.fn(),
+        },
+      )
+
+      expect(launchedAvds).toEqual(['Pixel_9_API_35'])
+      expect(result.allSerials).toEqual(['emulator-5554', 'emulator-5556'])
+      expect(result.launched.map((emu) => emu.avd)).toEqual(['Pixel_9_API_35'])
+    })
   })
 })
 
