@@ -198,6 +198,50 @@ impl PilotServiceImpl {
         }
     }
 
+    fn success_action_response(request_id: String) -> Response<proto::ActionResponse> {
+        Response::new(proto::ActionResponse {
+            request_id,
+            success: true,
+            error_type: String::new(),
+            error_message: String::new(),
+            screenshot: Vec::new(),
+        })
+    }
+
+    async fn finish_launch(
+        &self,
+        request_id: String,
+        wait_for_idle: bool,
+        idle_timeout_ms: u64,
+    ) -> Result<Response<proto::ActionResponse>, Status> {
+        let idle_timeout = if idle_timeout_ms > 0 {
+            idle_timeout_ms
+        } else {
+            10_000
+        };
+
+        if wait_for_idle {
+            let idle_cmd = AgentCommand::WaitForIdle {
+                timeout_ms: Some(idle_timeout),
+            };
+            if let Err(e) = self
+                .send_agent_command_with_timeout(&idle_cmd, idle_timeout)
+                .await
+            {
+                let screenshot = self.error_screenshot().await;
+                return Ok(Response::new(proto::ActionResponse {
+                    request_id,
+                    success: false,
+                    error_type: "WAIT_FOR_IDLE_FAILED".to_string(),
+                    error_message: format!("App launched but UI did not become idle: {e}"),
+                    screenshot,
+                }));
+            }
+        }
+
+        Ok(Self::success_action_response(request_id))
+    }
+
     /// Launch an app via ADB shell command, optionally wait for idle, and return
     /// a success/failure ActionResponse. Shared by `launch_app` and `restart_app`.
     async fn launch_and_idle(
@@ -208,38 +252,10 @@ impl PilotServiceImpl {
         wait_for_idle: bool,
         idle_timeout_ms: u64,
     ) -> Result<Response<proto::ActionResponse>, Status> {
-        let idle_timeout = if idle_timeout_ms > 0 {
-            idle_timeout_ms
-        } else {
-            10_000
-        };
         match adb::shell(serial, launch_cmd).await {
             Ok(_) => {
-                if wait_for_idle {
-                    let idle_cmd = AgentCommand::WaitForIdle {
-                        timeout_ms: Some(idle_timeout),
-                    };
-                    if let Err(e) = self
-                        .send_agent_command_with_timeout(&idle_cmd, idle_timeout)
-                        .await
-                    {
-                        let screenshot = self.error_screenshot().await;
-                        return Ok(Response::new(proto::ActionResponse {
-                            request_id,
-                            success: false,
-                            error_type: "WAIT_FOR_IDLE_FAILED".to_string(),
-                            error_message: format!("App launched but UI did not become idle: {e}"),
-                            screenshot,
-                        }));
-                    }
-                }
-                Ok(Response::new(proto::ActionResponse {
-                    request_id,
-                    success: true,
-                    error_type: String::new(),
-                    error_message: String::new(),
-                    screenshot: Vec::new(),
-                }))
+                self.finish_launch(request_id, wait_for_idle, idle_timeout_ms)
+                    .await
             }
             Err(e) => {
                 let screenshot = self.error_screenshot().await;
@@ -250,6 +266,83 @@ impl PilotServiceImpl {
                     error_message: format!("Failed to launch app: {e}"),
                     screenshot,
                 }))
+            }
+        }
+    }
+
+    async fn resolve_launcher_activity(
+        &self,
+        serial: &str,
+        package_name: &str,
+    ) -> Result<Option<String>, Status> {
+        let commands = [
+            format!("cmd package resolve-activity --brief {package_name}"),
+            format!("pm resolve-activity --brief {package_name}"),
+        ];
+
+        for command in commands {
+            let output = adb::shell_lenient(serial, &command)
+                .await
+                .map_err(|e| Status::internal(e.to_string()))?;
+
+            if let Some(activity) = parse_resolved_activity(&output, package_name) {
+                return Ok(Some(activity));
+            }
+        }
+
+        Ok(None)
+    }
+
+    async fn launch_package(
+        &self,
+        serial: &str,
+        request_id: String,
+        package_name: &str,
+        wait_for_idle: bool,
+        idle_timeout_ms: u64,
+    ) -> Result<Response<proto::ActionResponse>, Status> {
+        let monkey_cmd = format!(
+            "monkey -p {} -c android.intent.category.LAUNCHER 1",
+            package_name
+        );
+
+        match adb::shell(serial, &monkey_cmd).await {
+            Ok(_) => {
+                self.finish_launch(request_id, wait_for_idle, idle_timeout_ms)
+                    .await
+            }
+            Err(monkey_err) => {
+                let Some(activity) = self.resolve_launcher_activity(serial, package_name).await?
+                else {
+                    let screenshot = self.error_screenshot().await;
+                    return Ok(Response::new(proto::ActionResponse {
+                        request_id,
+                        success: false,
+                        error_type: "LAUNCH_FAILED".to_string(),
+                        error_message: format!("Failed to launch app: {monkey_err}"),
+                        screenshot,
+                    }));
+                };
+
+                let fallback_cmd = format!("am start -n {package_name}/{activity}");
+                match adb::shell(serial, &fallback_cmd).await {
+                    Ok(_) => {
+                        self.finish_launch(request_id, wait_for_idle, idle_timeout_ms)
+                            .await
+                    }
+                    Err(fallback_err) => {
+                        let screenshot = self.error_screenshot().await;
+                        Ok(Response::new(proto::ActionResponse {
+                            request_id,
+                            success: false,
+                            error_type: "LAUNCH_FAILED".to_string(),
+                            error_message: format!(
+                                "Failed to launch app via launcher intent ({monkey_err}) and explicit activity {activity} ({fallback_err})"
+                            ),
+                            screenshot,
+                        }))
+                    }
+                }
             }
         }
     }
@@ -1230,23 +1323,26 @@ impl proto::pilot_service_server::PilotService for PilotServiceImpl {
             }
         }
 
-        let cmd = if req.activity.is_empty() {
-            format!(
-                "monkey -p {} -c android.intent.category.LAUNCHER 1",
-                req.package_name
+        if req.activity.is_empty() {
+            self.launch_package(
+                &serial,
+                request_id,
+                &req.package_name,
+                req.wait_for_idle,
+                req.idle_timeout_ms,
             )
+            .await
         } else {
-            format!("am start -n {}/{}", req.package_name, req.activity)
-        };
-
-        self.launch_and_idle(
-            &serial,
-            request_id,
-            &cmd,
-            req.wait_for_idle,
-            req.idle_timeout_ms,
-        )
-        .await
+            let cmd = format!("am start -n {}/{}", req.package_name, req.activity);
+            self.launch_and_idle(
+                &serial,
+                request_id,
+                &cmd,
+                req.wait_for_idle,
+                req.idle_timeout_ms,
+            )
+            .await
+        }
     }
 
     #[instrument(skip_all, fields(request_id))]
@@ -1340,15 +1436,10 @@ impl proto::pilot_service_server::PilotService for PilotServiceImpl {
             }));
         }
 
-        let launch_cmd = format!(
-            "monkey -p {} -c android.intent.category.LAUNCHER 1",
-            req.package_name
-        );
-
-        self.launch_and_idle(
+        self.launch_package(
             &serial,
             request_id,
-            &launch_cmd,
+            &req.package_name,
             req.wait_for_idle,
             req.idle_timeout_ms,
         )
@@ -1802,6 +1893,15 @@ fn parse_component_name(dumpsys_output: &str) -> Option<(String, String)> {
     None
 }
 
+fn parse_resolved_activity(output: &str, package_name: &str) -> Option<String> {
+    let (pkg, activity) = parse_component_name(output)?;
+    if pkg == package_name {
+        Some(activity)
+    } else {
+        None
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2142,5 +2242,25 @@ mod tests {
         let (pkg, act) = parse_component_name(output).unwrap();
         assert_eq!(pkg, "com.foo");
         assert_eq!(act, ".Bar");
+    }
+
+    #[test]
+    fn parse_resolved_activity_brief_output() {
+        let output = "priority=0 preferredOrder=0 match=0x108000 specificIndex=-1 isDefault=true\ncom.example.app/.MainActivity";
+        let activity = parse_resolved_activity(output, "com.example.app").unwrap();
+        assert_eq!(activity, ".MainActivity");
+    }
+
+    #[test]
+    fn parse_resolved_activity_full_name() {
+        let output = "com.example.app/com.example.app.settings.ProfileActivity";
+        let activity = parse_resolved_activity(output, "com.example.app").unwrap();
+        assert_eq!(activity, "com.example.app.settings.ProfileActivity");
+    }
+
+    #[test]
+    fn parse_resolved_activity_rejects_other_package() {
+        let output = "com.other.app/.MainActivity";
+        assert!(parse_resolved_activity(output, "com.example.app").is_none());
     }
 }

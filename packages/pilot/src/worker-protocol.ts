@@ -79,6 +79,7 @@ export interface SerializedConfig {
   rootDir: string
   outputDir: string
   apk?: string
+  activity?: string
   package?: string
   agentApk?: string
   agentTestApk?: string

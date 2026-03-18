@@ -16,11 +16,17 @@ export default defineConfig({
 
 Pilot also supports `pilot.config.js` and `pilot.config.mjs` if you prefer plain JavaScript.
 
+For clean emulators or CI devices, `apk` is the important setting because it lets
+Pilot install the app under test itself. `activity` is optional and mainly
+useful as a stability hint when you want Pilot to launch a specific activity.
+
 ## All Options
 
 | Option | Type | Default | Description |
 |---|---|---|---|
 | `apk` | `string` | `undefined` | Path to the APK under test. |
+| `package` | `string` | `undefined` | Android package name of the app under test. When set, Pilot launches the app before tests. |
+| `activity` | `string` | `undefined` | Optional activity name to launch for `package`. Usually not needed; Pilot will try the default launcher activity automatically. |
 | `timeout` | `number` | `30000` | Default timeout in milliseconds for actions and assertions. |
 | `retries` | `number` | `0` | Number of times to retry a failed test. |
 | `screenshot` | `ScreenshotMode` | `"only-on-failure"` | When to capture screenshots: `"always"`, `"only-on-failure"`, or `"never"`. |
@@ -61,6 +67,30 @@ import { defineConfig } from "pilot";
 export default defineConfig({
   apk: "./app-debug.apk",
   timeout: 15_000, // 15 seconds instead of 30
+});
+```
+
+### Auto-Launch The App
+
+```typescript
+import { defineConfig } from "pilot";
+
+export default defineConfig({
+  apk: "./app-release.apk",
+  package: "com.example.myapp",
+});
+```
+
+If your app has an unusual launcher setup, you can also provide `activity`, but
+most apps do not need it:
+
+```typescript
+import { defineConfig } from "pilot";
+
+export default defineConfig({
+  apk: "./app-release.apk",
+  package: "com.example.myapp",
+  activity: ".MainActivity", // Optional
 });
 ```
 

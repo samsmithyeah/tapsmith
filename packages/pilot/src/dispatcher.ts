@@ -205,6 +205,7 @@ export async function runParallel(opts: DispatcherOptions): Promise<FullResult> 
       rootDir: config.rootDir,
       outputDir: config.outputDir,
       apk: config.apk,
+      activity: config.activity,
       package: config.package,
       agentApk: config.agentApk,
       agentTestApk: config.agentTestApk,

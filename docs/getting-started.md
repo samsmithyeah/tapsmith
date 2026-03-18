@@ -36,7 +36,7 @@ export default defineConfig({
 });
 ```
 
-The only required option is `apk` -- the path to the Android APK you want to test. Everything else has sensible defaults.
+The only required option is `apk` -- the path to the Android APK you want to test. If you want Pilot to auto-launch the app before tests, also set `package`. `activity` is optional and usually not needed.
 
 See the [Configuration](configuration.md) guide for all available options.
 

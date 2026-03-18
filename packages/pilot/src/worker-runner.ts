@@ -42,6 +42,7 @@ function configFromSerialized(s: SerializedConfig, daemonAddress: string): Pilot
     rootDir: s.rootDir,
     outputDir: s.outputDir,
     apk: s.apk,
+    activity: s.activity,
     package: s.package,
     agentApk: s.agentApk,
     agentTestApk: s.agentTestApk,
@@ -100,7 +101,7 @@ async function handleInit(msg: InitMessage): Promise<void> {
   if (config.package) {
     try { await device.terminateApp(config.package) } catch { /* may not be running */ }
     try {
-      await device.launchApp(config.package)
+      await device.launchApp(config.package, config.activity ? { activity: config.activity } : undefined)
     } catch (err) {
       throw new Error(
         `Worker ${workerId} (${msg.deviceSerial}): Failed to launch app: ${err instanceof Error ? err.message : err}`,
@@ -121,7 +122,7 @@ async function handleRunFile(filePath: string): Promise<void> {
   // Reset app between files for isolation
   if (config.package) {
     try { await device.terminateApp(config.package) } catch { /* app may not be running */ }
-    await device.launchApp(config.package)
+    await device.launchApp(config.package, config.activity ? { activity: config.activity } : undefined)
   }
 
   const screenshotDir =

@@ -12,6 +12,7 @@ describe('defineConfig()', () => {
     expect(config.rootDir).toBe(process.cwd());
     expect(config.outputDir).toBe('pilot-results');
     expect(config.apk).toBeUndefined();
+    expect(config.activity).toBeUndefined();
     expect(config.device).toBeUndefined();
     expect(config.daemonBin).toBeUndefined();
     expect(config.workers).toBe(1);
@@ -76,6 +77,11 @@ describe('defineConfig()', () => {
     expect(config.apk).toBe('/path/to/app.apk');
   });
 
+  it('sets optional activity', () => {
+    const config = defineConfig({ activity: 'com.example.app.MainActivity' });
+    expect(config.activity).toBe('com.example.app.MainActivity');
+  });
+
   it('sets optional device', () => {
     const config = defineConfig({ device: 'emulator-5554' });
     expect(config.device).toBe('emulator-5554');
@@ -92,6 +98,7 @@ describe('defineConfig()', () => {
       retries: 2,
       screenshot: 'always',
       apk: 'app.apk',
+      activity: 'com.example.app.MainActivity',
       device: 'pixel6',
       daemonAddress: 'host:1234',
       rootDir: '/src',
@@ -102,6 +109,7 @@ describe('defineConfig()', () => {
     expect(config.retries).toBe(2);
     expect(config.screenshot).toBe('always');
     expect(config.apk).toBe('app.apk');
+    expect(config.activity).toBe('com.example.app.MainActivity');
     expect(config.device).toBe('pixel6');
     expect(config.daemonAddress).toBe('host:1234');
     expect(config.rootDir).toBe('/src');

@@ -17,6 +17,13 @@ export interface PilotConfig {
   /** Path to the APK under test. */
   apk?: string;
 
+  /**
+   * Optional activity name to use when auto-launching the app under test.
+   * Usually not needed. When unset, Pilot launches the package's default
+   * launcher activity and falls back to resolving it automatically.
+   */
+  activity?: string;
+
   /** Default timeout for actions and assertions in milliseconds. */
   timeout: number;
 

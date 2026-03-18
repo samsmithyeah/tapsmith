@@ -56,6 +56,10 @@ export default defineConfig({
 });
 ```
 
+`apk` is the main required setting for clean-device runs. You can also set
+`package` to have Pilot auto-launch the app before tests, and `activity` as an
+optional stability hint if your launcher activity needs to be explicit.
+
 ### 3. Write a test
 
 Create `tests/login.test.ts`:

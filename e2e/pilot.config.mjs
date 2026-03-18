@@ -1,6 +1,8 @@
 import { defineConfig } from "pilot"
 
 export default defineConfig({
+  apk: "../test-app/android/app/build/outputs/apk/release/app-release.apk",
+  activity: "dev.pilot.testapp.MainActivity",
   package: "dev.pilot.testapp",
   timeout: 10_000,
   retries: 0,

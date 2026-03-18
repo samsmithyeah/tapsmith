@@ -483,6 +483,19 @@ async function main(): Promise<void> {
     // Non-fatal — device might already be awake/unlocked
   }
 
+  // Install app under test if APK path is configured.
+  if (config.apk) {
+    const resolvedApk = path.resolve(config.rootDir, config.apk);
+    try {
+      await device.installApk(resolvedApk);
+      await new Promise((r) => setTimeout(r, 2_000));
+      console.log(dim(`Installed app APK: ${path.basename(resolvedApk)}`));
+    } catch (err) {
+      console.error(red(`Failed to install app APK: ${err}`));
+      process.exit(1);
+    }
+  }
+
   // Start agent (with auto-install if APK paths configured)
   const resolvedAgentApk = config.agentApk
     ? path.resolve(config.rootDir, config.agentApk)
@@ -507,7 +520,10 @@ async function main(): Promise<void> {
   if (config.package) {
     try {
       try { await device.terminateApp(config.package); } catch { /* may not be running */ }
-      await device.launchApp(config.package);
+      await device.launchApp(
+        config.package,
+        config.activity ? { activity: config.activity } : undefined,
+      );
       console.log(dim(`Launched ${config.package}`));
     } catch (err) {
       console.error(red(`Failed to launch app: ${err}`));
@@ -536,7 +552,10 @@ async function main(): Promise<void> {
         // terminateApp may fail if the app already crashed — that's fine,
         // we just need it stopped before relaunching.
         try { await device.terminateApp(config.package); } catch { /* app may not be running */ }
-        await device.launchApp(config.package);
+        await device.launchApp(
+          config.package,
+          config.activity ? { activity: config.activity } : undefined,
+        );
 
         const pong = await client.ping();
         if (!pong.agentConnected) {
