@@ -5,6 +5,7 @@ import {
   probeDeviceHealth,
   filterHealthyDevices,
   provisionEmulators,
+  selectDevicesForStrategy,
 } from '../emulator.js'
 
 describe('emulator utilities', () => {
@@ -107,6 +108,46 @@ describe('emulator utilities', () => {
     })
   })
 
+  describe('selectDevicesForStrategy', () => {
+    it('returns all devices for prefer-connected', () => {
+      expect(
+        selectDevicesForStrategy(['emulator-5554', 'device-123'], 'prefer-connected', 'Pixel_9_API_35'),
+      ).toEqual({
+        selectedSerials: ['emulator-5554', 'device-123'],
+        skippedDevices: [],
+      })
+    })
+
+    it('keeps only matching AVD instances for avd-only', () => {
+      expect(
+        selectDevicesForStrategy(
+          ['emulator-5554', 'emulator-5556', 'device-123'],
+          'avd-only',
+          'Pixel_9_API_35',
+          (serial) => serial === 'emulator-5554' ? 'Pixel_9_API_35' : 'Small_Phone_API_35',
+        ),
+      ).toEqual({
+        selectedSerials: ['emulator-5554'],
+        skippedDevices: [
+          {
+            serial: 'emulator-5556',
+            reason: 'running AVD Small_Phone_API_35 does not match requested AVD Pixel_9_API_35',
+          },
+          {
+            serial: 'device-123',
+            reason: 'device is not an emulator instance of requested AVD Pixel_9_API_35',
+          },
+        ],
+      })
+    })
+
+    it('requires avd when avd-only is selected', () => {
+      expect(() => selectDevicesForStrategy(['emulator-5554'], 'avd-only', undefined)).toThrow(
+        'deviceStrategy "avd-only" requires `avd` to be set in config',
+      )
+    })
+  })
+
   describe('provisionEmulators', () => {
     it('falls back to an alternative AVD when the requested one boots unhealthy', async () => {
       const killed: string[] = []
@@ -189,6 +230,33 @@ describe('emulator utilities', () => {
       expect(launchedAvds).toEqual(['Pixel_9_API_35'])
       expect(result.allSerials).toEqual(['emulator-5554', 'emulator-5556'])
       expect(result.launched.map((emu) => emu.avd)).toEqual(['Pixel_9_API_35'])
+    })
+
+    it('avoids occupied emulator ports even when those devices are not counted as existing workers', async () => {
+      const launchedPorts: number[] = []
+
+      const result = await provisionEmulators(
+        {
+          existingSerials: [],
+          occupiedSerials: ['emulator-5554'],
+          workers: 1,
+          avd: 'Pixel_9_API_35',
+        },
+        {
+          listAvds: () => ['Pixel_9_API_35'],
+          getRunningAvdName: () => 'Small_Phone_API_35',
+          launchEmulator: (avd, port) => {
+            launchedPorts.push(port)
+            return makeLaunchedEmulator(avd, port)
+          },
+          waitForBoot: async () => undefined,
+          probeDeviceHealth: (serial) => ({ serial, healthy: true }),
+          killEmulator: vi.fn(),
+        },
+      )
+
+      expect(launchedPorts).toEqual([5556])
+      expect(result.allSerials).toEqual(['emulator-5556'])
     })
   })
 })

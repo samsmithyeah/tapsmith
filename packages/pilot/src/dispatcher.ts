@@ -11,7 +11,7 @@
 import { fork, spawn, execFileSync, type ChildProcess } from 'node:child_process'
 import * as path from 'node:path'
 import * as fs from 'node:fs'
-import type { PilotConfig } from './config.js'
+import { resolveDeviceStrategy, type PilotConfig } from './config.js'
 import { PilotGrpcClient } from './grpc-client.js'
 import type { TestResult, SuiteResult } from './runner.js'
 import type { PilotReporter, FullResult } from './reporter.js'
@@ -26,6 +26,7 @@ import {
   cleanupEmulators,
   filterHealthyDevices,
   getRunningAvdName,
+  selectDevicesForStrategy,
   type DeviceHealthResult,
   type LaunchedEmulator,
 } from './emulator.js'
@@ -59,6 +60,7 @@ export interface DispatcherOptions {
  */
 export async function runParallel(opts: DispatcherOptions): Promise<FullResult> {
   const { config, reporter, testFiles } = opts
+  const deviceStrategy = resolveDeviceStrategy(config)
 
   // Spawn the first worker daemon early so we can use it for device discovery.
   // This daemon will also serve as worker 0's daemon.
@@ -99,6 +101,12 @@ export async function runParallel(opts: DispatcherOptions): Promise<FullResult> 
 
   const healthyOnline = filterHealthyDevices(onlineDevices.map((d) => d.serial))
   warnUnhealthyDevices(healthyOnline.unhealthyDevices)
+  const selectedOnline = selectDevicesForStrategy(
+    healthyOnline.healthySerials,
+    deviceStrategy,
+    config.avd,
+  )
+  warnSkippedDevices(selectedOnline.skippedDevices)
 
   // Auto-launch emulators if enabled and we don't have enough devices
   let launchedEmulators: LaunchedEmulator[] = []
@@ -106,19 +114,26 @@ export async function runParallel(opts: DispatcherOptions): Promise<FullResult> 
 
   if (
     config.launchEmulators &&
-    healthyOnline.healthySerials.length < Math.min(opts.workers, testFiles.length)
+    selectedOnline.selectedSerials.length < Math.min(opts.workers, testFiles.length)
   ) {
     const provision = await provisionEmulators({
-      existingSerials: healthyOnline.healthySerials,
+      existingSerials: selectedOnline.selectedSerials,
+      occupiedSerials: healthyOnline.healthySerials,
       workers: Math.min(opts.workers, testFiles.length),
       avd: config.avd,
     })
     launchedEmulators = provision.launched
     const healthyProvisioned = filterHealthyDevices(provision.allSerials)
     warnUnhealthyDevices(healthyProvisioned.unhealthyDevices)
-    deviceSerials = healthyProvisioned.healthySerials
+    const selectedProvisioned = selectDevicesForStrategy(
+      healthyProvisioned.healthySerials,
+      deviceStrategy,
+      config.avd,
+    )
+    warnSkippedDevices(selectedProvisioned.skippedDevices)
+    deviceSerials = selectedProvisioned.selectedSerials
   } else {
-    deviceSerials = healthyOnline.healthySerials
+    deviceSerials = selectedOnline.selectedSerials
   }
 
   if (deviceSerials.length === 0) {
@@ -590,6 +605,14 @@ function warnUnhealthyDevices(devices: DeviceHealthResult[]): void {
     const label = avd ? `${device.serial} (${avd})` : device.serial
     process.stderr.write(
       `${YELLOW}Skipping unhealthy device ${label}: ${device.reason ?? 'unknown health check failure'}.${RESET}\n`,
+    )
+  }
+}
+
+function warnSkippedDevices(devices: Array<{ serial: string; reason: string }>): void {
+  for (const device of devices) {
+    process.stderr.write(
+      `${YELLOW}Skipping device ${device.serial}: ${device.reason}.${RESET}\n`,
     )
   }
 }

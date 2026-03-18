@@ -60,6 +60,25 @@ export default defineConfig({
 `package` to have Pilot auto-launch the app before tests, and `activity` as an
 optional stability hint if your launcher activity needs to be explicit.
 
+For emulator-managed runs, prefer configuring an AVD instead of pinning a
+specific device serial:
+
+```typescript
+import { defineConfig } from "pilot";
+
+export default defineConfig({
+  apk: "./app/build/outputs/apk/debug/app-debug.apk",
+  package: "com.example.myapp",
+  workers: 4,
+  launchEmulators: true,
+  avd: "Pixel_9_API_35",
+});
+```
+
+When `avd` is set, Pilot defaults to using instances of that AVD. Set
+`deviceStrategy: "prefer-connected"` if you want Pilot to reuse unrelated
+healthy connected devices first instead.
+
 ### 3. Write a test
 
 Create `tests/login.test.ts`:
@@ -89,6 +108,9 @@ test("shows error on invalid credentials", async ({ device }) => {
 ```bash
 npx pilot test
 ```
+
+Single-device debugging is still available with `--device`, but the recommended
+emulator-managed path is `workers + launchEmulators + avd`.
 
 ## Requirements
 

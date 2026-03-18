@@ -9,6 +9,7 @@
  */
 
 import { execFileSync, spawn, type ChildProcess } from 'node:child_process'
+import type { DeviceStrategy } from './config.js'
 
 const DIM = '\x1b[2m'
 const YELLOW = '\x1b[33m'
@@ -94,6 +95,11 @@ export interface DeviceHealthResult {
   serial: string
   healthy: boolean
   reason?: string
+}
+
+export interface DeviceSelectionResult {
+  selectedSerials: string[]
+  skippedDevices: Array<{ serial: string; reason: string }>
 }
 
 /**
@@ -200,6 +206,41 @@ export function filterHealthyDevices(
   return { healthySerials, unhealthyDevices }
 }
 
+export function selectDevicesForStrategy(
+  serials: string[],
+  strategy: DeviceStrategy,
+  avd: string | undefined,
+  resolveAvdName: (serial: string) => string | undefined = getRunningAvdName,
+): DeviceSelectionResult {
+  if (strategy === 'prefer-connected') {
+    return { selectedSerials: serials, skippedDevices: [] }
+  }
+
+  if (!avd) {
+    throw new Error('deviceStrategy "avd-only" requires `avd` to be set in config')
+  }
+
+  const selectedSerials: string[] = []
+  const skippedDevices: Array<{ serial: string; reason: string }> = []
+
+  for (const serial of serials) {
+    const runningAvd = serial.startsWith('emulator-') ? resolveAvdName(serial) : undefined
+    if (runningAvd === avd) {
+      selectedSerials.push(serial)
+      continue
+    }
+
+    skippedDevices.push({
+      serial,
+      reason: serial.startsWith('emulator-')
+        ? `running AVD ${runningAvd ?? 'unknown'} does not match requested AVD ${avd}`
+        : `device is not an emulator instance of requested AVD ${avd}`,
+    })
+  }
+
+  return { selectedSerials, skippedDevices }
+}
+
 /**
  * Wait for an emulator to finish booting.
  * Polls `adb -s <serial> shell getprop sys.boot_completed` until it returns "1".
@@ -282,10 +323,11 @@ interface ProvisionDeps {
  */
 export async function provisionEmulators(opts: {
   existingSerials: string[]
+  occupiedSerials?: string[]
   workers: number
   avd?: string
 }, deps: Partial<ProvisionDeps> = {}): Promise<ProvisionResult> {
-  const { existingSerials, workers, avd } = opts
+  const { existingSerials, occupiedSerials = existingSerials, workers, avd } = opts
   const resolvedDeps: ProvisionDeps = {
     listAvds: deps.listAvds ?? listAvds,
     getRunningAvdName: deps.getRunningAvdName ?? getRunningAvdName,
@@ -315,7 +357,7 @@ export async function provisionEmulators(opts: {
   // was launched incompatibly, the subsequent launch/health probe will fail
   // and we can fall back or degrade from there.
   const runningAvds = new Set<string>()
-  for (const serial of existingSerials) {
+  for (const serial of occupiedSerials) {
     if (serial.startsWith('emulator-')) {
       const name = resolvedDeps.getRunningAvdName(serial)
       if (name) runningAvds.add(name)
@@ -326,7 +368,7 @@ export async function provisionEmulators(opts: {
 
   // Determine which ports are already in use
   const usedPorts = new Set<number>()
-  for (const serial of existingSerials) {
+  for (const serial of occupiedSerials) {
     const match = serial.match(/^emulator-(\d+)$/)
     if (match) {
       usedPorts.add(parseInt(match[1], 10))

@@ -1420,11 +1420,15 @@ npx pilot test tests/login.test.ts tests/signup.test.ts
 
 ### `pilot test --device <serial>` / `pilot test -d <serial>`
 
-Target a specific device by its ADB serial number.
+Target a specific device by its ADB serial number. This is mainly useful for
+single-device debugging or reproducing an issue on one known device.
 
 ```bash
 npx pilot test --device emulator-5554
 ```
+
+For multi-worker emulator runs, prefer config-based provisioning with
+`workers`, `launchEmulators`, and `avd`.
 
 ### `pilot --version` / `pilot -v`
 

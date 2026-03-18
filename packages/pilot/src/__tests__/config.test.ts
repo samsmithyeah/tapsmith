@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { defineConfig, type PilotConfig } from '../config.js';
+import { defineConfig, resolveDeviceStrategy } from '../config.js';
 
 describe('defineConfig()', () => {
   it('returns defaults when called with no arguments', () => {
@@ -14,6 +14,7 @@ describe('defineConfig()', () => {
     expect(config.apk).toBeUndefined();
     expect(config.activity).toBeUndefined();
     expect(config.device).toBeUndefined();
+    expect(config.deviceStrategy).toBeUndefined();
     expect(config.daemonBin).toBeUndefined();
     expect(config.workers).toBe(1);
     expect(config.fullyParallel).toBe(false);
@@ -139,5 +140,28 @@ describe('defineConfig()', () => {
     const b = defineConfig();
     a.timeout = 1;
     expect(b.timeout).toBe(30_000);
+  });
+
+  it('allows explicit deviceStrategy override', () => {
+    const config = defineConfig({ deviceStrategy: 'prefer-connected' });
+    expect(config.deviceStrategy).toBe('prefer-connected');
+  });
+});
+
+describe('resolveDeviceStrategy()', () => {
+  it('defaults to prefer-connected when avd is not set', () => {
+    expect(resolveDeviceStrategy(defineConfig())).toBe('prefer-connected');
+  });
+
+  it('defaults to avd-only when avd is set', () => {
+    expect(resolveDeviceStrategy(defineConfig({ avd: 'Pixel_9_API_35' }))).toBe('avd-only');
+  });
+
+  it('respects explicit override when avd is set', () => {
+    expect(
+      resolveDeviceStrategy(
+        defineConfig({ avd: 'Pixel_9_API_35', deviceStrategy: 'prefer-connected' }),
+      ),
+    ).toBe('prefer-connected');
   });
 });

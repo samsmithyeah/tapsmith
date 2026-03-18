@@ -12,6 +12,7 @@ import * as fs from 'node:fs';
 import type { ReporterConfig } from './reporter.js';
 
 export type ScreenshotMode = 'always' | 'only-on-failure' | 'never';
+export type DeviceStrategy = 'prefer-connected' | 'avd-only';
 
 export interface PilotConfig {
   /** Path to the APK under test. */
@@ -42,8 +43,20 @@ export interface PilotConfig {
   /** Path to the pilot-core binary. Defaults to 'pilot-core' (must be on PATH). */
   daemonBin?: string;
 
-  /** Target device serial. If unset, daemon picks the first available. */
+  /**
+   * Target a specific device serial for single-device runs or debugging.
+   * Prefer `avd` + `launchEmulators` for parallel emulator provisioning.
+   */
   device?: string;
+
+  /**
+   * How Pilot chooses devices when `device` is not explicitly set.
+   * When unset, Pilot defaults to `avd-only` if `avd` is configured and
+   * `prefer-connected` otherwise.
+   * `prefer-connected` uses any healthy connected device first.
+   * `avd-only` ignores non-matching devices and only uses the configured AVD.
+   */
+  deviceStrategy?: DeviceStrategy;
 
   /** Working directory for test discovery. */
   rootDir: string;
@@ -89,16 +102,17 @@ export interface PilotConfig {
 
   /**
    * Automatically launch emulators to fill the requested worker count.
-   * When true and `workers > 1`, the dispatcher will start Android emulators
-   * for any workers that don't have an already-running device.
+   * When true, the dispatcher starts Android emulators for any workers that
+   * don't already have a healthy connected device.
    * Defaults to false.
    */
   launchEmulators: boolean;
 
   /**
    * Android Virtual Device (AVD) name to use when launching emulators.
-   * Required when `launchEmulators` is true. Run `emulator -list-avds` to see
-   * available AVDs.
+   * Strongly recommended when `launchEmulators` is true so Pilot can launch
+   * repeated instances of the same emulator definition for parallel runs.
+   * Run `emulator -list-avds` to see available AVDs.
    */
   avd?: string;
 }
@@ -121,6 +135,20 @@ const DEFAULT_CONFIG: PilotConfig = {
  */
 export function defineConfig(overrides: Partial<PilotConfig> = {}): PilotConfig {
   return { ...DEFAULT_CONFIG, ...overrides };
+}
+
+/**
+ * Resolve the effective device selection strategy for a config.
+ * When an AVD is configured, default to using only that AVD unless the user
+ * explicitly opts back into preferring already-connected devices.
+ */
+export function resolveDeviceStrategy(
+  config: Pick<PilotConfig, 'deviceStrategy' | 'avd'>,
+): DeviceStrategy {
+  if (config.deviceStrategy) {
+    return config.deviceStrategy;
+  }
+  return config.avd ? 'avd-only' : 'prefer-connected';
 }
 
 /**

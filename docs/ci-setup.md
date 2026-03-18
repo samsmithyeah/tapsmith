@@ -1,6 +1,6 @@
 # CI Setup
 
-This guide covers running Pilot tests in continuous integration environments. The key challenge is setting up an Android emulator in a headless environment.
+This guide covers running Pilot tests in continuous integration environments. The key challenge is setting up enough Android emulator capacity in a headless environment.
 
 ## Overview
 
@@ -177,9 +177,31 @@ Cache the Android SDK and emulator system images to speed up CI runs:
     key: android-sdk-${{ runner.os }}-api33
 ```
 
-### Parallel Test Files
+### Parallel Workers
 
-Pilot currently runs tests sequentially on a single device. To speed up CI, you can split test files across multiple jobs using a matrix strategy:
+Pilot can run multiple workers in parallel as long as each worker has its own
+device or emulator instance. The recommended emulator-managed setup is:
+
+```typescript
+import { defineConfig } from "pilot";
+
+export default defineConfig({
+  apk: "./app-debug.apk",
+  package: "com.example.myapp",
+  workers: 4,
+  launchEmulators: true,
+  avd: "Pixel_9_API_35",
+  timeout: 60_000,
+});
+```
+
+With that config, `npx pilot test` will try to launch repeated instances of the
+same AVD for all workers.
+
+### CI Sharding
+
+If your CI environment cannot support multiple emulator instances on one host,
+split the suite across multiple jobs instead:
 
 ```yaml
 strategy:
