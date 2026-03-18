@@ -14,6 +14,8 @@ const DIM = '\x1b[2m'
 const YELLOW = '\x1b[33m'
 const RESET = '\x1b[0m'
 
+type ExecFileSyncLike = typeof execFileSync
+
 // ─── Emulator discovery ───
 
 /**
@@ -88,6 +90,12 @@ export interface LaunchedEmulator {
   avd: string
 }
 
+export interface DeviceHealthResult {
+  serial: string
+  healthy: boolean
+  reason?: string
+}
+
 /**
  * Launch an emulator instance for the given AVD on the specified port.
  * Returns immediately — use `waitForBoot` to wait until the device is ready.
@@ -99,6 +107,7 @@ export function launchEmulator(avd: string, port: number): LaunchedEmulator {
     '-avd', avd,
     '-port', String(port),
     '-read-only',
+    '-no-snapshot-load',
     '-no-snapshot-save',
     '-no-boot-anim',
     '-no-audio',
@@ -115,6 +124,80 @@ export function launchEmulator(avd: string, port: number): LaunchedEmulator {
   })
 
   return { process: proc, port, serial, avd }
+}
+
+/**
+ * Probe whether a device is healthy enough to be assigned to a worker.
+ *
+ * Checks:
+ * - ADB shell is responsive
+ * - Emulators report boot completed
+ * - Android package manager is responding
+ */
+export function probeDeviceHealth(
+  serial: string,
+  exec: ExecFileSyncLike = execFileSync,
+): DeviceHealthResult {
+  const adb = (args: string[], timeout: number): string =>
+    String(exec('adb', ['-s', serial, ...args], {
+      encoding: 'utf-8',
+      timeout,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    }))
+
+  try {
+    const echo = adb(['shell', 'echo', '__pilot_health_ok__'], 5_000)
+    if (!echo.includes('__pilot_health_ok__')) {
+      return { serial, healthy: false, reason: 'ADB shell did not respond correctly' }
+    }
+  } catch {
+    return { serial, healthy: false, reason: 'ADB shell is unresponsive' }
+  }
+
+  if (serial.startsWith('emulator-')) {
+    try {
+      const bootCompleted = adb(['shell', 'getprop', 'sys.boot_completed'], 5_000).trim()
+      if (bootCompleted !== '1') {
+        return { serial, healthy: false, reason: 'emulator is not fully booted' }
+      }
+    } catch {
+      return { serial, healthy: false, reason: 'emulator boot status could not be read' }
+    }
+  }
+
+  try {
+    const packageManager = adb(['shell', 'pm', 'path', 'android'], 10_000)
+    if (!packageManager.includes('package:')) {
+      return { serial, healthy: false, reason: 'package manager is not ready' }
+    }
+  } catch {
+    return { serial, healthy: false, reason: 'package manager is unresponsive' }
+  }
+
+  return { serial, healthy: true }
+}
+
+/**
+ * Filter a device list down to healthy candidates, returning probe results
+ * for any devices that should be excluded from worker assignment.
+ */
+export function filterHealthyDevices(
+  serials: string[],
+  exec: ExecFileSyncLike = execFileSync,
+): { healthySerials: string[]; unhealthyDevices: DeviceHealthResult[] } {
+  const healthySerials: string[] = []
+  const unhealthyDevices: DeviceHealthResult[] = []
+
+  for (const serial of serials) {
+    const result = probeDeviceHealth(serial, exec)
+    if (result.healthy) {
+      healthySerials.push(serial)
+    } else {
+      unhealthyDevices.push(result)
+    }
+  }
+
+  return { healthySerials, unhealthyDevices }
 }
 
 /**
@@ -181,6 +264,15 @@ export interface ProvisionResult {
   allSerials: string[]
 }
 
+interface ProvisionDeps {
+  listAvds: () => string[]
+  getRunningAvdName: (serial: string) => string | undefined
+  launchEmulator: (avd: string, port: number) => LaunchedEmulator
+  waitForBoot: (serial: string, timeoutMs?: number) => Promise<void>
+  probeDeviceHealth: (serial: string) => DeviceHealthResult
+  killEmulator: (serial: string) => void
+}
+
 /**
  * Ensure enough emulators are running to satisfy the requested worker count.
  *
@@ -192,34 +284,27 @@ export async function provisionEmulators(opts: {
   existingSerials: string[]
   workers: number
   avd?: string
-}): Promise<ProvisionResult> {
+}, deps: Partial<ProvisionDeps> = {}): Promise<ProvisionResult> {
   const { existingSerials, workers, avd } = opts
+  const resolvedDeps: ProvisionDeps = {
+    listAvds: deps.listAvds ?? listAvds,
+    getRunningAvdName: deps.getRunningAvdName ?? getRunningAvdName,
+    launchEmulator: deps.launchEmulator ?? launchEmulator,
+    waitForBoot: deps.waitForBoot ?? waitForBoot,
+    probeDeviceHealth: deps.probeDeviceHealth ?? probeDeviceHealth,
+    killEmulator: deps.killEmulator ?? killEmulator,
+  }
   const needed = workers - existingSerials.length
 
   if (needed <= 0) {
     return { launched: [], allSerials: existingSerials.slice(0, workers) }
   }
 
-  if (!avd) {
-    // Try to auto-detect: use the first available AVD
-    const avds = listAvds()
-    if (avds.length === 0) {
-      throw new Error(
-        `Need ${needed} more emulator(s) but no AVDs found. ` +
-        'Create an AVD with Android Studio or `avdmanager`, or set the `avd` config option.',
-      )
-    }
-    process.stderr.write(
-      `${YELLOW}No avd specified in config. Use the 'avd' config option to control which AVD is launched.${RESET}\n`,
-    )
-    return provisionEmulators({ ...opts, avd: avds[0] })
-  }
-
-  // Verify the AVD exists
-  const avds = listAvds()
-  if (!avds.includes(avd)) {
+  const avds = resolvedDeps.listAvds()
+  if (avds.length === 0) {
     throw new Error(
-      `AVD "${avd}" not found. Available AVDs: ${avds.join(', ') || '(none)'}`,
+      `Need ${needed} more emulator(s) but no AVDs found. ` +
+      'Create an AVD with Android Studio or `avdmanager`, or set the `avd` config option.',
     )
   }
 
@@ -229,30 +314,12 @@ export async function provisionEmulators(opts: {
   const runningAvds = new Set<string>()
   for (const serial of existingSerials) {
     if (serial.startsWith('emulator-')) {
-      const name = getRunningAvdName(serial)
+      const name = resolvedDeps.getRunningAvdName(serial)
       if (name) runningAvds.add(name)
     }
   }
 
-  let effectiveAvd = avd
-  if (runningAvds.has(avd)) {
-    // The requested AVD is already running — find an alternative
-    const alternatives = avds.filter((a) => a !== avd && !runningAvds.has(a))
-    if (alternatives.length > 0) {
-      effectiveAvd = alternatives[0]
-      process.stderr.write(
-        `${YELLOW}AVD "${avd}" is already running. Using "${effectiveAvd}" for new emulator(s) instead.${RESET}\n`,
-      )
-    } else {
-      throw new Error(
-        `Cannot launch another instance of AVD "${avd}" — it is already running ` +
-        'and no alternative AVDs are available. Android requires all instances of ' +
-        'the same AVD to be started with -read-only. Either:\n' +
-        '  1. Create a second AVD in Android Studio\n' +
-        '  2. Start your base emulator with: emulator -avd ' + avd + ' -read-only',
-      )
-    }
-  }
+  const launchCandidates = resolveLaunchCandidates(avds, avd, runningAvds)
 
   // Determine which ports are already in use
   const usedPorts = new Set<number>()
@@ -265,22 +332,58 @@ export async function provisionEmulators(opts: {
 
   // Launch emulators
   const launched: LaunchedEmulator[] = []
+  const badAvds = new Set<string>()
   process.stderr.write(
-    `${DIM}Launching ${needed} emulator(s) (AVD: ${effectiveAvd})...${RESET}\n`,
+    `${DIM}Launching ${needed} emulator(s) (${launchCandidates.join(', ')})...${RESET}\n`,
   )
 
   for (let i = 0; i < needed; i++) {
-    const port = findAvailablePort(usedPorts)
-    usedPorts.add(port)
-    const emu = launchEmulator(effectiveAvd, port)
-    launched.push(emu)
-    process.stderr.write(`${DIM}  Starting ${emu.serial} (port ${port})${RESET}\n`)
+    let launchedEmulator: LaunchedEmulator | undefined
+
+    for (const candidateAvd of launchCandidates) {
+      if (badAvds.has(candidateAvd)) continue
+
+      const port = findAvailablePort(usedPorts)
+      usedPorts.add(port)
+      const emu = resolvedDeps.launchEmulator(candidateAvd, port)
+      process.stderr.write(
+        `${DIM}  Starting ${emu.serial} (port ${port}, AVD ${candidateAvd})${RESET}\n`,
+      )
+
+      try {
+        await resolvedDeps.waitForBoot(emu.serial)
+        const health = resolvedDeps.probeDeviceHealth(emu.serial)
+        if (!health.healthy) {
+          throw new Error(health.reason ?? 'device health probe failed')
+        }
+        launchedEmulator = emu
+        launched.push(emu)
+        break
+      } catch (err) {
+        badAvds.add(candidateAvd)
+        process.stderr.write(
+          `${YELLOW}Skipping launched emulator ${emu.serial} (${candidateAvd}): ${err instanceof Error ? err.message : err}.${RESET}\n`,
+        )
+        resolvedDeps.killEmulator(emu.serial)
+        try {
+          emu.process.kill()
+        } catch {
+          // Already dead
+        }
+      }
+    }
+
+    if (!launchedEmulator) {
+      process.stderr.write(
+        `${YELLOW}Unable to provision additional emulator ${i + 1}/${needed}; all candidate AVDs failed health checks.${RESET}\n`,
+      )
+      break
+    }
   }
 
-  // Wait for all emulators to boot in parallel
-  process.stderr.write(`${DIM}Waiting for emulator(s) to boot...${RESET}\n`)
-  await Promise.all(launched.map((emu) => waitForBoot(emu.serial)))
-  process.stderr.write(`${DIM}All emulators ready.${RESET}\n`)
+  if (launched.length > 0) {
+    process.stderr.write(`${DIM}Provisioned ${launched.length} healthy emulator(s).${RESET}\n`)
+  }
 
   const allSerials = [
     ...existingSerials,
@@ -302,6 +405,50 @@ export function cleanupEmulators(launched: LaunchedEmulator[]): void {
       // Already dead
     }
   }
+}
+
+function resolveLaunchCandidates(
+  avds: string[],
+  requestedAvd: string | undefined,
+  runningAvds: Set<string>,
+): string[] {
+  if (!requestedAvd) {
+    const available = avds.filter((avd) => !runningAvds.has(avd))
+    if (available.length === 0) {
+      throw new Error(
+        'No launchable AVDs are available. All discovered AVDs are already running.',
+      )
+    }
+    process.stderr.write(
+      `${YELLOW}No avd specified in config. Use the 'avd' config option to control which AVD is launched.${RESET}\n`,
+    )
+    return available
+  }
+
+  if (!avds.includes(requestedAvd)) {
+    throw new Error(
+      `AVD "${requestedAvd}" not found. Available AVDs: ${avds.join(', ') || '(none)'}`,
+    )
+  }
+
+  const alternatives = avds.filter((avd) => avd !== requestedAvd && !runningAvds.has(avd))
+  if (runningAvds.has(requestedAvd)) {
+    if (alternatives.length === 0) {
+      throw new Error(
+        `Cannot launch another instance of AVD "${requestedAvd}" — it is already running ` +
+        'and no alternative AVDs are available. Android requires all instances of ' +
+        'the same AVD to be started with -read-only. Either:\n' +
+        '  1. Create a second AVD in Android Studio\n' +
+        '  2. Start your base emulator with: emulator -avd ' + requestedAvd + ' -read-only',
+      )
+    }
+    process.stderr.write(
+      `${YELLOW}AVD "${requestedAvd}" is already running. Trying alternative AVDs instead: ${alternatives.join(', ')}.${RESET}\n`,
+    )
+    return alternatives
+  }
+
+  return [requestedAvd, ...alternatives]
 }
 
 // ─── Helpers ───

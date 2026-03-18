@@ -21,7 +21,14 @@ import type {
   SerializedConfig,
 } from './worker-protocol.js'
 import { deserializeTestResult, deserializeSuiteResult } from './worker-protocol.js'
-import { provisionEmulators, cleanupEmulators, type LaunchedEmulator } from './emulator.js'
+import {
+  provisionEmulators,
+  cleanupEmulators,
+  filterHealthyDevices,
+  getRunningAvdName,
+  type DeviceHealthResult,
+  type LaunchedEmulator,
+} from './emulator.js'
 
 const DIM = '\x1b[2m'
 const YELLOW = '\x1b[33m'
@@ -35,6 +42,8 @@ interface WorkerHandle {
   agentPort: number
   daemonProcess?: ChildProcess
   busy: boolean
+  currentFile?: string
+  retired?: boolean
 }
 
 export interface DispatcherOptions {
@@ -88,20 +97,28 @@ export async function runParallel(opts: DispatcherOptions): Promise<FullResult> 
     d.state === 'Discovered' || d.state === 'Active',
   )
 
+  const healthyOnline = filterHealthyDevices(onlineDevices.map((d) => d.serial))
+  warnUnhealthyDevices(healthyOnline.unhealthyDevices)
+
   // Auto-launch emulators if enabled and we don't have enough devices
   let launchedEmulators: LaunchedEmulator[] = []
   let deviceSerials: string[]
 
-  if (config.launchEmulators && onlineDevices.length < Math.min(opts.workers, testFiles.length)) {
+  if (
+    config.launchEmulators &&
+    healthyOnline.healthySerials.length < Math.min(opts.workers, testFiles.length)
+  ) {
     const provision = await provisionEmulators({
-      existingSerials: onlineDevices.map((d) => d.serial),
+      existingSerials: healthyOnline.healthySerials,
       workers: Math.min(opts.workers, testFiles.length),
       avd: config.avd,
     })
     launchedEmulators = provision.launched
-    deviceSerials = provision.allSerials
+    const healthyProvisioned = filterHealthyDevices(provision.allSerials)
+    warnUnhealthyDevices(healthyProvisioned.unhealthyDevices)
+    deviceSerials = healthyProvisioned.healthySerials
   } else {
-    deviceSerials = onlineDevices.map((d) => d.serial)
+    deviceSerials = healthyOnline.healthySerials
   }
 
   if (deviceSerials.length === 0) {
@@ -111,63 +128,15 @@ export async function runParallel(opts: DispatcherOptions): Promise<FullResult> 
     )
   }
 
-  const workerCount = Math.min(opts.workers, deviceSerials.length, testFiles.length)
-
-  if (workerCount < opts.workers) {
-    const reason = deviceSerials.length < opts.workers
-      ? `only ${deviceSerials.length} device(s) available`
-      : `only ${testFiles.length} test file(s) to run`
-    process.stderr.write(
-      `${YELLOW}Warning: Requested ${opts.workers} workers but ${reason}. Using ${workerCount} worker(s).${RESET}\n`,
-    )
-  }
-
   const workers: WorkerHandle[] = []
   const fileQueue = [...testFiles]
   const allResults: TestResult[] = []
   const allSuites: SuiteResult[] = []
   const totalStart = Date.now()
+  const maxUsefulWorkers = Math.min(opts.workers, testFiles.length)
+  let firstDaemonAssigned = false
 
   try {
-    // Start a dedicated daemon per worker (each on a unique port).
-    // Worker 0 reuses the daemon we already spawned for discovery.
-    for (let i = 0; i < workerCount; i++) {
-      const daemonPort = baseDaemonPort + 1 + i
-      const agentPort = baseAgentPort + 1 + i
-      const deviceSerial = deviceSerials[i]
-
-      let daemonProcess: ChildProcess | undefined
-      if (i === 0) {
-        // Reuse the daemon already spawned for discovery
-        daemonProcess = firstDaemon
-      } else {
-        daemonProcess = spawn(
-          daemonBin,
-          ['--port', String(daemonPort), '--agent-port', String(agentPort)],
-          { detached: true, stdio: 'ignore' },
-        )
-        daemonProcess.unref()
-        daemonProcess.on('error', (err) => {
-          process.stderr.write(`Daemon for worker ${i} failed to start: ${err.message}\n`)
-        })
-      }
-
-      workers.push({
-        id: i,
-        process: undefined as unknown as ChildProcess,
-        deviceSerial,
-        daemonPort,
-        agentPort,
-        daemonProcess,
-        busy: false,
-      })
-    }
-
-    // Wait for additional daemons to start (worker 0's daemon is already ready)
-    if (workerCount > 1) {
-      await new Promise((r) => setTimeout(r, 2_000))
-    }
-
     // Fork worker processes.
     // When running under tsx (TypeScript test files), __dirname points to src/
     // and we need to fork with tsx as the loader. When running from compiled JS,
@@ -211,47 +180,63 @@ export async function runParallel(opts: DispatcherOptions): Promise<FullResult> 
       agentTestApk: config.agentTestApk,
     }
 
-    // Initialize all workers and wait for ready
-    await Promise.all(
-      workers.map(
-        (worker) =>
-          new Promise<void>((resolve, reject) => {
-            const timeout = setTimeout(() => {
-              reject(new Error(`Worker ${worker.id} timed out during initialization`))
-            }, 60_000)
+    for (let workerId = 0; workerId < maxUsefulWorkers && workerId < deviceSerials.length; workerId++) {
+      let initializedWorker: WorkerHandle | undefined
+      let lastInitError: unknown
 
-            worker.process.on('exit', (code) => {
-              if (code !== 0) {
-                clearTimeout(timeout)
-                reject(new Error(`Worker ${worker.id} exited with code ${code} during initialization`))
-              }
-            })
+      for (let candidateIndex = workerId; candidateIndex < deviceSerials.length; candidateIndex++) {
+        const candidateSerial = deviceSerials[candidateIndex]
+        if (workers.some((w) => w.deviceSerial === candidateSerial)) continue
 
-            const onMessage = (msg: WorkerToMainMessage) => {
-              if (msg.type === 'ready' && msg.workerId === worker.id) {
-                clearTimeout(timeout)
-                worker.process.removeListener('message', onMessage)
-                resolve()
-              } else if (msg.type === 'error' && msg.workerId === worker.id) {
-                clearTimeout(timeout)
-                worker.process.removeListener('message', onMessage)
-                reject(new Error(msg.error.message))
-              }
-            }
+        try {
+          const worker = await initializeWorker({
+            workerId,
+            deviceSerial: candidateSerial,
+            daemonBin,
+            serializedConfig,
+            baseDaemonPort,
+            baseAgentPort,
+            firstDaemon,
+            resolvedScript,
+            tsxBin,
+          })
+          if (worker.id === 0) firstDaemonAssigned = true
+          workers.push(worker)
+          initializedWorker = worker
+          break
+        } catch (err) {
+          lastInitError = err
+          process.stderr.write(
+            `${YELLOW}Skipping device ${candidateSerial}: ${err instanceof Error ? err.message : err}.${RESET}\n`,
+          )
+        }
+      }
 
-            worker.process.on('message', onMessage)
+      if (!initializedWorker) {
+        if (lastInitError && workers.length === 0) {
+          throw lastInitError instanceof Error ? lastInitError : new Error(String(lastInitError))
+        }
+        break
+      }
+    }
 
-            const initMsg: MainToWorkerMessage = {
-              type: 'init',
-              workerId: worker.id,
-              deviceSerial: worker.deviceSerial,
-              daemonPort: worker.daemonPort,
-              config: serializedConfig,
-            }
-            worker.process.send(initMsg)
-          }),
-      ),
-    )
+    const workerCount = workers.length
+
+    if (workerCount === 0) {
+      throw new Error(
+        'No worker-ready devices found. Start healthy emulators or devices, ' +
+        'or set `launchEmulators: true` in your config.',
+      )
+    }
+
+    if (workerCount < opts.workers) {
+      const reason = testFiles.length < opts.workers && workerCount === testFiles.length
+        ? `only ${testFiles.length} test file(s) to run`
+        : `only ${workerCount} healthy worker-ready device(s) available`
+      process.stderr.write(
+        `${YELLOW}Warning: Requested ${opts.workers} workers but ${reason}. Using ${workerCount} worker(s).${RESET}\n`,
+      )
+    }
 
     process.stderr.write(
       `${DIM}Running ${testFiles.length} test file(s) across ${workerCount} worker(s)${RESET}\n`,
@@ -260,28 +245,85 @@ export async function runParallel(opts: DispatcherOptions): Promise<FullResult> 
     // Work-stealing distribution loop
     await new Promise<void>((resolve, reject) => {
       let hasError = false
+      let settled = false
+
+      function maybeResolve(): void {
+        if (settled || hasError) return
+        if (fileQueue.length > 0) return
+        if (workers.every((w) => w.retired || !w.busy)) {
+          settled = true
+          resolve()
+        }
+      }
+
+      function failRun(error: Error): void {
+        if (settled || hasError) return
+        hasError = true
+        settled = true
+        reject(error)
+      }
 
       function dispatchNext(worker: WorkerHandle): void {
+        if (worker.retired) return
+
         const nextFile = fileQueue.shift()
         if (!nextFile) {
           worker.busy = false
-          // Check if all workers are done
-          if (workers.every((w) => !w.busy)) {
-            resolve()
-          }
+          worker.currentFile = undefined
+          maybeResolve()
           return
         }
 
         worker.busy = true
+        worker.currentFile = nextFile
         reporter.onTestFileStart?.(nextFile)
 
         const msg: MainToWorkerMessage = { type: 'run-file', filePath: nextFile }
         worker.process.send(msg)
       }
 
+      function retireWorker(worker: WorkerHandle, reason: string): void {
+        if (worker.retired) return
+
+        worker.retired = true
+        const inFlightFile = worker.currentFile
+        worker.currentFile = undefined
+        worker.busy = false
+
+        cleanupWorkerResources(worker)
+
+        if (inFlightFile) {
+          fileQueue.unshift(inFlightFile)
+          process.stderr.write(
+            `${YELLOW}Worker ${worker.id} (${worker.deviceSerial}) became unavailable: ${reason}. Requeueing ${path.basename(inFlightFile)} and continuing with remaining workers.${RESET}\n`,
+          )
+        } else {
+          process.stderr.write(
+            `${YELLOW}Worker ${worker.id} (${worker.deviceSerial}) became unavailable: ${reason}. Continuing with remaining workers.${RESET}\n`,
+          )
+        }
+
+        const activeWorkers = workers.filter((w) => !w.retired)
+        if (activeWorkers.length === 0) {
+          failRun(
+            new Error(
+              `All workers became unavailable before the run completed. Last failure: ${reason}`,
+            ),
+          )
+          return
+        }
+
+        const idleWorker = activeWorkers.find((w) => !w.busy)
+        if (idleWorker) {
+          dispatchNext(idleWorker)
+        }
+
+        maybeResolve()
+      }
+
       for (const worker of workers) {
         worker.process.on('message', (msg: WorkerToMainMessage) => {
-          if (hasError) return
+          if (hasError || worker.retired) return
 
           switch (msg.type) {
             case 'test-end': {
@@ -293,6 +335,7 @@ export async function runParallel(opts: DispatcherOptions): Promise<FullResult> 
               // Already notified above in dispatchNext
               break
             case 'file-done': {
+              worker.currentFile = undefined
               const results = msg.results.map(deserializeTestResult)
               const suite = deserializeSuiteResult(msg.suite)
               allResults.push(...results)
@@ -304,17 +347,15 @@ export async function runParallel(opts: DispatcherOptions): Promise<FullResult> 
               break
             }
             case 'error': {
-              hasError = true
-              reject(new Error(`Worker ${msg.workerId} error: ${msg.error.message}`))
+              retireWorker(worker, msg.error.message)
               break
             }
           }
         })
 
         worker.process.on('exit', (code) => {
-          if (code !== 0 && !hasError && worker.busy) {
-            hasError = true
-            reject(new Error(`Worker ${worker.id} exited unexpectedly with code ${code}`))
+          if (code !== 0 && !hasError && !worker.retired) {
+            retireWorker(worker, `exited unexpectedly with code ${code}`)
           }
         })
 
@@ -352,6 +393,12 @@ export async function runParallel(opts: DispatcherOptions): Promise<FullResult> 
       } catch { /* daemon may already be dead */ }
     }
 
+    if (!firstDaemonAssigned) {
+      try {
+        firstDaemon.kill()
+      } catch { /* daemon may already be dead */ }
+    }
+
     // 3. Clean up ADB port forwards created by worker daemons.
     // Each daemon set up `adb forward tcp:<agentPort> tcp:18700` on its device.
     // Stale forwards break subsequent runs on the same device.
@@ -378,5 +425,171 @@ export async function runParallel(opts: DispatcherOptions): Promise<FullResult> 
     duration: totalDuration,
     tests: allResults,
     suites: allSuites,
+  }
+}
+
+function cleanupWorkerResources(worker: WorkerHandle): void {
+  try {
+    if (worker.process.connected) {
+      worker.process.kill()
+    }
+  } catch { /* already dead */ }
+
+  try {
+    worker.daemonProcess?.kill()
+  } catch { /* already dead */ }
+
+  try {
+    execFileSync('adb', ['-s', worker.deviceSerial, 'forward', '--remove', `tcp:${worker.agentPort}`], {
+      timeout: 5_000,
+      stdio: 'ignore',
+    })
+  } catch { /* forward may already be gone */ }
+}
+
+interface InitializeWorkerOptions {
+  workerId: number
+  deviceSerial: string
+  daemonBin: string
+  serializedConfig: SerializedConfig
+  baseDaemonPort: number
+  baseAgentPort: number
+  firstDaemon: ChildProcess
+  resolvedScript: string
+  tsxBin?: string
+}
+
+async function initializeWorker(opts: InitializeWorkerOptions): Promise<WorkerHandle> {
+  const {
+    workerId,
+    deviceSerial,
+    daemonBin,
+    serializedConfig,
+    baseDaemonPort,
+    baseAgentPort,
+    firstDaemon,
+    resolvedScript,
+    tsxBin,
+  } = opts
+
+  const daemonPort = baseDaemonPort + 1 + workerId
+  const agentPort = baseAgentPort + 1 + workerId
+
+  let daemonProcess: ChildProcess | undefined
+  if (workerId === 0) {
+    daemonProcess = firstDaemon
+  } else {
+    daemonProcess = spawn(
+      daemonBin,
+      ['--port', String(daemonPort), '--agent-port', String(agentPort)],
+      { detached: true, stdio: 'ignore' },
+    )
+    daemonProcess.unref()
+    daemonProcess.on('error', (err) => {
+      process.stderr.write(`Daemon for worker ${workerId} failed to start: ${err.message}\n`)
+    })
+
+    const client = new PilotGrpcClient(`localhost:${daemonPort}`)
+    const ready = await client.waitForReady(10_000)
+    client.close()
+    if (!ready) {
+      try { daemonProcess.kill() } catch { /* already dead */ }
+      throw new Error(`worker daemon on port ${daemonPort} did not become ready`)
+    }
+  }
+
+  const child = fork(resolvedScript, [], {
+    stdio: ['ignore', 'inherit', 'inherit', 'ipc'],
+    ...(tsxBin ? { execPath: tsxBin } : {}),
+    env: {
+      ...process.env,
+      PILOT_WORKER_ID: String(workerId),
+    },
+  })
+
+  const worker: WorkerHandle = {
+    id: workerId,
+    process: child,
+    deviceSerial,
+    daemonPort,
+    agentPort,
+    daemonProcess,
+    busy: false,
+  }
+
+  try {
+    await new Promise<void>((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        reject(new Error(`worker ${workerId} timed out during initialization`))
+      }, 90_000)
+
+      const onExit = (code: number | null) => {
+        if (code !== 0) {
+          clearTimeout(timeout)
+          cleanup()
+          reject(new Error(`worker ${workerId} exited with code ${code} during initialization`))
+        }
+      }
+
+      const onMessage = (msg: WorkerToMainMessage) => {
+        if (msg.type === 'ready' && msg.workerId === worker.id) {
+          clearTimeout(timeout)
+          cleanup()
+          resolve()
+        } else if (msg.type === 'error' && msg.workerId === worker.id) {
+          clearTimeout(timeout)
+          cleanup()
+          reject(new Error(msg.error.message))
+        }
+      }
+
+      const cleanup = () => {
+        worker.process.removeListener('exit', onExit)
+        worker.process.removeListener('message', onMessage)
+      }
+
+      worker.process.on('exit', onExit)
+      worker.process.on('message', onMessage)
+
+      const initMsg: MainToWorkerMessage = {
+        type: 'init',
+        workerId: worker.id,
+        deviceSerial: worker.deviceSerial,
+        daemonPort: worker.daemonPort,
+        config: serializedConfig,
+      }
+      worker.process.send(initMsg)
+    })
+
+    return worker
+  } catch (err) {
+    try {
+      if (worker.process.connected) {
+        worker.process.kill()
+      }
+    } catch { /* already dead */ }
+
+    if (workerId !== 0) {
+      try { daemonProcess?.kill() } catch { /* already dead */ }
+    }
+
+    try {
+      execFileSync('adb', ['-s', deviceSerial, 'forward', '--remove', `tcp:${agentPort}`], {
+        timeout: 5_000,
+        stdio: 'ignore',
+      })
+    } catch { /* forward may not exist */ }
+
+    throw err
+  }
+}
+
+function warnUnhealthyDevices(devices: DeviceHealthResult[]): void {
+  for (const device of devices) {
+    const avd = device.serial.startsWith('emulator-') ? getRunningAvdName(device.serial) : undefined
+    const label = avd ? `${device.serial} (${avd})` : device.serial
+    process.stderr.write(
+      `${YELLOW}Skipping unhealthy device ${label}: ${device.reason ?? 'unknown health check failure'}.${RESET}\n`,
+    )
   }
 }

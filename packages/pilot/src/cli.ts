@@ -16,6 +16,7 @@ import { PilotGrpcClient } from './grpc-client.js';
 import { Device } from './device.js';
 import { runTestFile, collectResults, type TestResult, type SuiteResult } from './runner.js';
 import { createReporters, ReporterDispatcher, type FullResult } from './reporter.js';
+import { ensureSessionReady, launchConfiguredApp } from './session-preflight.js';
 import { glob } from 'glob';
 import { spawn, execFileSync } from 'node:child_process';
 
@@ -509,6 +510,14 @@ async function main(): Promise<void> {
       resolvedAgentApk,
       resolvedAgentTestApk,
     );
+    await ensureSessionReady({
+      label: config.device ? `Device ${config.device}` : 'Active device',
+      config,
+      device,
+      client,
+      agentApkPath: resolvedAgentApk,
+      agentTestApkPath: resolvedAgentTestApk,
+    }, 'startup');
     console.log(dim('Agent connected.'));
   } catch (err) {
     console.error(red(`Failed to start agent: ${err}`));
@@ -519,11 +528,14 @@ async function main(): Promise<void> {
   // on the main activity regardless of any previous state.
   if (config.package) {
     try {
-      try { await device.terminateApp(config.package); } catch { /* may not be running */ }
-      await device.launchApp(
-        config.package,
-        config.activity ? { activity: config.activity } : undefined,
-      );
+      await launchConfiguredApp({
+        label: config.device ? `Device ${config.device}` : 'Active device',
+        config,
+        device,
+        client,
+        agentApkPath: resolvedAgentApk,
+        agentTestApkPath: resolvedAgentTestApk,
+      }, 'startup');
       console.log(dim(`Launched ${config.package}`));
     } catch (err) {
       console.error(red(`Failed to launch app: ${err}`));
@@ -549,13 +561,14 @@ async function main(): Promise<void> {
     // on-device agent — the agent survives because it runs as a separate package.
     if (i > 0 && config.package) {
       try {
-        // terminateApp may fail if the app already crashed — that's fine,
-        // we just need it stopped before relaunching.
-        try { await device.terminateApp(config.package); } catch { /* app may not be running */ }
-        await device.launchApp(
-          config.package,
-          config.activity ? { activity: config.activity } : undefined,
-        );
+        await launchConfiguredApp({
+          label: config.device ? `Device ${config.device}` : 'Active device',
+          config,
+          device,
+          client,
+          agentApkPath: resolvedAgentApk,
+          agentTestApkPath: resolvedAgentTestApk,
+        }, `reset before ${path.basename(file)}`);
 
         const pong = await client.ping();
         if (!pong.agentConnected) {

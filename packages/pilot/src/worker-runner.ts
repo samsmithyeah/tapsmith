@@ -20,6 +20,7 @@ import type {
   SerializedConfig,
 } from './worker-protocol.js'
 import { serializeTestResult, serializeSuiteResult } from './worker-protocol.js'
+import { ensureSessionReady, launchConfiguredApp, type SessionPreflightContext } from './session-preflight.js'
 
 let workerId = -1
 let device: Device | undefined
@@ -97,16 +98,22 @@ async function handleInit(msg: InitMessage): Promise<void> {
     : undefined
   await device.startAgent('', resolvedAgentApk, resolvedAgentTestApk)
 
-  // Launch app under test
-  if (config.package) {
-    try { await device.terminateApp(config.package) } catch { /* may not be running */ }
-    try {
-      await device.launchApp(config.package, config.activity ? { activity: config.activity } : undefined)
-    } catch (err) {
-      throw new Error(
-        `Worker ${workerId} (${msg.deviceSerial}): Failed to launch app: ${err instanceof Error ? err.message : err}`,
+  try {
+    if (config.package) {
+      await launchConfiguredApp(
+        sessionContext(msg.deviceSerial, resolvedAgentApk, resolvedAgentTestApk),
+        'worker initialization',
+      )
+    } else {
+      await ensureSessionReady(
+        sessionContext(msg.deviceSerial, resolvedAgentApk, resolvedAgentTestApk),
+        'worker initialization',
       )
     }
+  } catch (err) {
+    throw new Error(
+      `Worker ${workerId} (${msg.deviceSerial}): ${err instanceof Error ? err.message : err}`,
+    )
   }
 
   send({ type: 'ready', workerId })
@@ -121,8 +128,7 @@ async function handleRunFile(filePath: string): Promise<void> {
 
   // Reset app between files for isolation
   if (config.package) {
-    try { await device.terminateApp(config.package) } catch { /* app may not be running */ }
-    await device.launchApp(config.package, config.activity ? { activity: config.activity } : undefined)
+    await launchConfiguredApp(sessionContext(undefined), `file reset for ${path.basename(filePath)}`)
   }
 
   const screenshotDir =
@@ -141,12 +147,7 @@ async function handleRunFile(filePath: string): Promise<void> {
     },
   }
 
-  const suiteResult = await runTestFile(filePath, {
-    config,
-    device,
-    screenshotDir,
-    reporter: reporterProxy,
-  })
+  const suiteResult = await runFileWithRecovery(filePath, screenshotDir, reporterProxy)
 
   const results = collectResults(suiteResult)
 
@@ -159,11 +160,110 @@ async function handleRunFile(filePath: string): Promise<void> {
   })
 }
 
+async function runFileWithRecovery(
+  filePath: string,
+  screenshotDir: string | undefined,
+  reporterProxy: { onTestEnd(result: import('./runner.js').TestResult): void },
+): Promise<import('./runner.js').SuiteResult> {
+  if (!config || !device) {
+    throw new Error(`Worker ${workerId}: Not initialized`)
+  }
+
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    try {
+      const suite = await runTestFile(filePath, {
+        config,
+        device,
+        screenshotDir,
+        reporter: reporterProxy,
+      })
+      const infrastructureFailure = findRecoverableInfrastructureFailure(collectResults(suite))
+      if (!infrastructureFailure) {
+        return suite
+      }
+      if (attempt === 2) {
+        throw infrastructureFailure
+      }
+      await recoverFileSession(filePath, infrastructureFailure)
+      continue
+    } catch (err) {
+      if (!isRecoverableInfrastructureError(err) || attempt === 2) {
+        throw err
+      }
+
+      await recoverFileSession(filePath, err)
+    }
+  }
+
+  throw new Error(`Worker ${workerId}: exhausted recovery attempts for ${path.basename(filePath)}`)
+}
+
 function handleShutdown(): void {
   if (device) {
     device.close()
   }
   process.exit(0)
+}
+
+function sessionContext(
+  deviceSerial?: string,
+  agentApkPath?: string,
+  agentTestApkPath?: string,
+): SessionPreflightContext {
+  if (!device || !client || !config) {
+    throw new Error(`Worker ${workerId}: Not initialized`)
+  }
+
+  const label = deviceSerial
+    ? `Worker ${workerId} (${deviceSerial})`
+    : `Worker ${workerId}`
+
+  return {
+    label,
+    config,
+    device,
+    client,
+    agentApkPath,
+    agentTestApkPath,
+  }
+}
+
+function isRecoverableInfrastructureError(err: unknown): boolean {
+  const message = err instanceof Error ? err.message : String(err)
+  return [
+    'Agent command timed out',
+    'Agent returned empty response',
+    'Not connected to agent',
+    'Timed out connecting to agent socket',
+    'Failed to connect to agent socket',
+    '14 UNAVAILABLE',
+    'No connection established',
+    'ECONNREFUSED',
+  ].some((pattern) => message.includes(pattern))
+}
+
+function findRecoverableInfrastructureFailure(
+  results: Array<import('./runner.js').TestResult>,
+): Error | undefined {
+  for (const result of results) {
+    if (result.status !== 'failed' || !result.error) continue
+    if (!isRecoverableInfrastructureError(result.error)) continue
+    return new Error(`${result.fullName}: ${result.error.message}`)
+  }
+
+  return undefined
+}
+
+async function recoverFileSession(filePath: string, err: unknown): Promise<void> {
+  process.stderr.write(
+    `Worker ${workerId}: Recovering session after infrastructure error in ${path.basename(filePath)}: ${err instanceof Error ? err.message : err}\n`,
+  )
+
+  if (config?.package) {
+    await launchConfiguredApp(sessionContext(undefined), `recovery for ${path.basename(filePath)}`)
+  } else {
+    await ensureSessionReady(sessionContext(undefined), `recovery for ${path.basename(filePath)}`)
+  }
 }
 
 // ─── IPC message handler ───
