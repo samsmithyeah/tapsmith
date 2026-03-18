@@ -14,6 +14,9 @@ describe('defineConfig()', () => {
     expect(config.apk).toBeUndefined();
     expect(config.device).toBeUndefined();
     expect(config.daemonBin).toBeUndefined();
+    expect(config.workers).toBe(1);
+    expect(config.fullyParallel).toBe(false);
+    expect(config.shard).toBeUndefined();
   });
 
   it('returns defaults when called with empty object', () => {
@@ -102,6 +105,17 @@ describe('defineConfig()', () => {
     expect(config.rootDir).toBe('/src');
     expect(config.outputDir).toBe('out');
     expect(config.testMatch).toEqual(['*.test.ts']);
+  });
+
+  it('overrides workers and fullyParallel', () => {
+    const config = defineConfig({ workers: 4, fullyParallel: true });
+    expect(config.workers).toBe(4);
+    expect(config.fullyParallel).toBe(true);
+  });
+
+  it('overrides shard', () => {
+    const config = defineConfig({ shard: { current: 2, total: 4 } });
+    expect(config.shard).toEqual({ current: 2, total: 4 });
   });
 
   it('returns a plain object (not frozen or sealed)', () => {

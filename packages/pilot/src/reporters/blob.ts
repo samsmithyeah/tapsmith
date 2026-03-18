@@ -21,6 +21,7 @@ interface BlobData {
     timeout: number
     retries: number
   }
+  shard?: { current: number; total: number }
   duration: number
   suites: SerializedSuite[]
   tests: SerializedTest[]
@@ -97,6 +98,7 @@ export class BlobReporter implements PilotReporter {
         timeout: this._config?.timeout ?? 30_000,
         retries: this._config?.retries ?? 0,
       },
+      shard: this._config?.shard,
       duration: result.duration,
       suites: result.suites.map(serializeSuite),
       tests: result.tests.map(serializeTest),

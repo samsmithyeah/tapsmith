@@ -61,6 +61,24 @@ export interface PilotConfig {
    * an array of these, or undefined for auto-detection (list locally, dot in CI).
    */
   reporter?: ReporterConfig;
+
+  /**
+   * Number of parallel workers. Each worker gets its own device and daemon.
+   * Defaults to 1 (sequential execution).
+   */
+  workers: number;
+
+  /**
+   * When true, distribute individual tests across workers.
+   * When false, distribute test files (default).
+   */
+  fullyParallel: boolean;
+
+  /**
+   * Shard specification for splitting tests across CI machines.
+   * Usually set via the `--shard=x/y` CLI flag.
+   */
+  shard?: { current: number; total: number };
 }
 
 const DEFAULT_CONFIG: PilotConfig = {
@@ -71,6 +89,8 @@ const DEFAULT_CONFIG: PilotConfig = {
   daemonAddress: 'localhost:50051',
   rootDir: process.cwd(),
   outputDir: 'pilot-results',
+  workers: 1,
+  fullyParallel: false,
 };
 
 /**

@@ -23,12 +23,14 @@ pub mod proto {
 #[derive(Debug)]
 struct CliArgs {
     port: u16,
+    agent_port: Option<u16>,
     verbose: bool,
 }
 
 fn parse_args() -> CliArgs {
     let mut args = std::env::args().skip(1);
     let mut port: u16 = 50051;
+    let mut agent_port: Option<u16> = None;
     let mut verbose = false;
 
     while let Some(arg) = args.next() {
@@ -41,15 +43,24 @@ fn parse_args() -> CliArgs {
                     });
                 }
             }
+            "--agent-port" => {
+                if let Some(val) = args.next() {
+                    agent_port = Some(val.parse().unwrap_or_else(|_| {
+                        eprintln!("Invalid agent port number: {val}");
+                        std::process::exit(1);
+                    }));
+                }
+            }
             "--verbose" | "-v" => {
                 verbose = true;
             }
             "--help" | "-h" => {
-                eprintln!("Usage: pilot-core [--port PORT] [--verbose]");
+                eprintln!("Usage: pilot-core [--port PORT] [--agent-port PORT] [--verbose]");
                 eprintln!();
                 eprintln!("Options:");
-                eprintln!("  --port PORT   gRPC listen port (default: 50051)");
-                eprintln!("  --verbose     Enable debug logging");
+                eprintln!("  --port PORT         gRPC listen port (default: 50051)");
+                eprintln!("  --agent-port PORT   Local port for ADB forwarding to on-device agent (default: 18700)");
+                eprintln!("  --verbose           Enable debug logging");
                 std::process::exit(0);
             }
             other => {
@@ -60,7 +71,11 @@ fn parse_args() -> CliArgs {
         }
     }
 
-    CliArgs { port, verbose }
+    CliArgs {
+        port,
+        agent_port,
+        verbose,
+    }
 }
 
 #[tokio::main]
@@ -87,7 +102,10 @@ async fn main() -> Result<()> {
     }
 
     let device_manager = Arc::new(RwLock::new(DeviceManager::new()));
-    let agent_connection = Arc::new(RwLock::new(AgentConnection::new()));
+    let agent_connection = Arc::new(RwLock::new(match args.agent_port {
+        Some(port) => AgentConnection::with_port(port),
+        None => AgentConnection::new(),
+    }));
 
     let service = PilotServiceImpl::new(device_manager, agent_connection);
 

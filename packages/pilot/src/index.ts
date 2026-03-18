@@ -48,6 +48,13 @@ export {
   type TestStatus,
 } from './runner.js';
 
+// Fixtures
+export {
+  type FixtureScope,
+  type FixtureDefinitions,
+  type BuiltinFixtures,
+} from './fixtures.js';
+
 // Config
 export { defineConfig, loadConfig, type PilotConfig, type ScreenshotMode } from './config.js';
 

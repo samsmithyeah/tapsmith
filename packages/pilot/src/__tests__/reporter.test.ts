@@ -39,6 +39,8 @@ function makeConfig(overrides: Partial<PilotConfig> = {}): PilotConfig {
     daemonAddress: 'localhost:50051',
     rootDir: '/tmp/test',
     outputDir: 'pilot-results',
+    workers: 1,
+    fullyParallel: false,
     ...overrides,
   }
 }

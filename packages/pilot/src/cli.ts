@@ -242,6 +242,8 @@ interface CliArgs {
   command: string;
   files: string[];
   device?: string;
+  workers?: number;
+  shard?: { current: number; total: number };
   version: boolean;
   help: boolean;
   tsxReexec: boolean;
@@ -268,6 +270,27 @@ function parseArgs(argv: string[]): CliArgs {
       args.help = true;
     } else if (arg === '--device' || arg === '-d') {
       args.device = rest[++i];
+    } else if (arg === '--workers' || arg === '-j') {
+      const val = parseInt(rest[++i], 10);
+      if (isNaN(val) || val < 1) {
+        console.error(red('--workers must be a positive integer'));
+        process.exit(1);
+      }
+      args.workers = val;
+    } else if (arg?.startsWith('--shard=')) {
+      const shardStr = arg.slice('--shard='.length);
+      const match = shardStr.match(/^(\d+)\/(\d+)$/);
+      if (!match) {
+        console.error(red('--shard must be in the format x/y (e.g. --shard=1/4)'));
+        process.exit(1);
+      }
+      const current = parseInt(match[1], 10);
+      const total = parseInt(match[2], 10);
+      if (current < 1 || current > total) {
+        console.error(red(`Invalid shard: ${current}/${total}. Current must be between 1 and total.`));
+        process.exit(1);
+      }
+      args.shard = { current, total };
     } else if (arg === '--__tsx-reexec') {
       args.tsxReexec = true;
     } else if (!arg.startsWith('-') && !args.command) {
@@ -289,13 +312,17 @@ ${bold('pilot')} — Mobile app testing framework
 ${bold('Usage:')}
   pilot test [files...]           Run test files
   pilot test --device <serial>    Target specific device
+  pilot test --workers <n>        Run tests in parallel across n devices
+  pilot test --shard=x/y          Run shard x of y (for CI)
   pilot show-report [dir]         Open HTML test report
   pilot merge-reports [dir]       Merge blob reports from sharded runs
   pilot --version                 Print version
   pilot --help                    Show this help
 
 ${bold('Options:')}
-  -d, --device <serial>   Target a specific device by serial
+  -d, --device <serial>    Target a specific device by serial
+  -j, --workers <n>        Number of parallel workers (default: 1)
+  --shard=x/y              Split tests across CI machines (e.g. --shard=1/4)
   -v, --version            Print version
   -h, --help               Show this help
 `);
@@ -357,12 +384,29 @@ async function main(): Promise<void> {
   if (args.device) {
     config.device = args.device;
   }
+  if (args.workers !== undefined) {
+    config.workers = args.workers;
+  }
+  if (args.shard) {
+    config.shard = args.shard;
+  }
 
   // Discover test files
-  const testFiles = await discoverTestFiles(config.testMatch, config.rootDir, args.files);
+  let testFiles = await discoverTestFiles(config.testMatch, config.rootDir, args.files);
   if (testFiles.length === 0) {
     console.error(red('No test files found.'));
     process.exit(1);
+  }
+
+  // Apply sharding — deterministic split across CI machines
+  if (config.shard) {
+    const { current, total } = config.shard;
+    testFiles = testFiles.filter((_, i) => i % total === current - 1);
+    if (testFiles.length === 0) {
+      console.log(dim(`Shard ${current}/${total}: no test files in this shard.`));
+      process.exit(0);
+    }
+    console.log(dim(`Shard ${current}/${total}: running ${testFiles.length} file(s)`));
   }
 
   // Re-exec under tsx if we have TypeScript test files and haven't already
@@ -382,9 +426,41 @@ async function main(): Promise<void> {
       reporters.push(new GitHubActionsReporter());
     }
   }
+  // Auto-add blob reporter when sharding (for merge-reports)
+  if (config.shard) {
+    const hasBlob = reporters.some((r) => r.constructor.name === 'BlobReporter');
+    if (!hasBlob) {
+      const { BlobReporter } = await import('./reporters/blob.js');
+      reporters.push(new BlobReporter());
+    }
+  }
   const reporter = new ReporterDispatcher(reporters);
 
   reporter.onRunStart(config, testFiles.length);
+
+  // ─── Parallel mode ───
+  if (config.workers > 1) {
+    // Pre-flight: just check that ADB is available (individual workers manage their own devices)
+    await checkDeviceHealth(config.device);
+
+    // Need a client to discover devices
+    const client = await ensureDaemonRunning(config.daemonAddress, config.daemonBin);
+
+    const { runParallel } = await import('./dispatcher.js');
+    const fullResult = await runParallel({
+      config,
+      client,
+      reporter,
+      testFiles,
+      workers: config.workers,
+    });
+
+    await reporter.onRunEnd(fullResult);
+    client.close();
+    process.exit(fullResult.status === 'failed' ? 1 : 0);
+  }
+
+  // ─── Sequential mode (workers: 1, default) ───
 
   // Pre-flight: verify device is responsive before doing anything slow
   await checkDeviceHealth(config.device);
