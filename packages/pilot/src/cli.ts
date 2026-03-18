@@ -478,7 +478,9 @@ async function main(): Promise<void> {
     // on-device agent — the agent survives because it runs as a separate package.
     if (i > 0 && config.package) {
       try {
-        await device.terminateApp(config.package);
+        // terminateApp may fail if the app already crashed — that's fine,
+        // we just need it stopped before relaunching.
+        try { await device.terminateApp(config.package); } catch { /* app may not be running */ }
         await device.launchApp(config.package);
 
         const pong = await client.ping();
