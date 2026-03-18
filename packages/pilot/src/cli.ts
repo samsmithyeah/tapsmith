@@ -11,10 +11,11 @@
 
 import * as path from 'node:path';
 import * as fs from 'node:fs';
-import { loadConfig, type PilotConfig } from './config.js';
+import { loadConfig } from './config.js';
 import { PilotGrpcClient } from './grpc-client.js';
 import { Device } from './device.js';
-import { runTestFile, collectResults, type TestResult } from './runner.js';
+import { runTestFile, collectResults, type TestResult, type SuiteResult } from './runner.js';
+import { createReporters, ReporterDispatcher, type FullResult } from './reporter.js';
 import { glob } from 'glob';
 import { spawn, execFileSync } from 'node:child_process';
 
@@ -24,21 +25,13 @@ const RESET = '\x1b[0m';
 const BOLD = '\x1b[1m';
 const DIM = '\x1b[2m';
 const RED = '\x1b[31m';
-const GREEN = '\x1b[32m';
 const YELLOW = '\x1b[33m';
-const CYAN = '\x1b[36m';
 
-function green(s: string): string {
-  return `${GREEN}${s}${RESET}`;
-}
 function red(s: string): string {
   return `${RED}${s}${RESET}`;
 }
 function yellow(s: string): string {
   return `${YELLOW}${s}${RESET}`;
-}
-function cyan(s: string): string {
-  return `${CYAN}${s}${RESET}`;
 }
 function bold(s: string): string {
   return `${BOLD}${s}${RESET}`;
@@ -243,58 +236,6 @@ async function discoverTestFiles(
   return [...new Set(files)].sort();
 }
 
-// ─── Result formatting ───
-
-function printResults(allResults: TestResult[], totalDurationMs: number): void {
-  const passed = allResults.filter((r) => r.status === 'passed').length;
-  const failed = allResults.filter((r) => r.status === 'failed').length;
-  const skipped = allResults.filter((r) => r.status === 'skipped').length;
-
-  console.log('');
-  console.log(bold('Results:'));
-  console.log('');
-
-  for (const result of allResults) {
-    const icon =
-      result.status === 'passed'
-        ? green('PASS')
-        : result.status === 'failed'
-          ? red('FAIL')
-          : yellow('SKIP');
-    const duration = dim(`(${result.durationMs}ms)`);
-    console.log(`  ${icon}  ${result.fullName} ${duration}`);
-
-    if (result.error) {
-      const indent = '        ';
-      console.log(`${indent}${red(result.error.message)}`);
-      if (result.error.stack) {
-        const stackLines = result.error.stack.split('\n').slice(1, 4);
-        for (const line of stackLines) {
-          console.log(`${indent}${dim(line.trim())}`);
-        }
-      }
-    }
-
-    if (result.screenshotPath) {
-      console.log(`        ${dim(`Screenshot: ${result.screenshotPath}`)}`);
-    }
-  }
-
-  console.log('');
-  console.log(
-    bold('Summary: ') +
-      [
-        passed > 0 ? green(`${passed} passed`) : null,
-        failed > 0 ? red(`${failed} failed`) : null,
-        skipped > 0 ? yellow(`${skipped} skipped`) : null,
-      ]
-        .filter(Boolean)
-        .join(', ') +
-      dim(` | ${(totalDurationMs / 1000).toFixed(2)}s`),
-  );
-  console.log('');
-}
-
 // ─── Argument parsing ───
 
 interface CliArgs {
@@ -348,6 +289,8 @@ ${bold('pilot')} — Mobile app testing framework
 ${bold('Usage:')}
   pilot test [files...]           Run test files
   pilot test --device <serial>    Target specific device
+  pilot show-report [dir]         Open HTML test report
+  pilot merge-reports [dir]       Merge blob reports from sharded runs
   pilot --version                 Print version
   pilot --help                    Show this help
 
@@ -371,6 +314,37 @@ async function main(): Promise<void> {
   if (args.help || !args.command) {
     printHelp();
     return;
+  }
+
+  if (args.command === 'show-report') {
+    const reportDir = args.files[0] ?? 'pilot-report'
+    const reportPath = path.resolve(process.cwd(), reportDir, 'index.html')
+    if (!fs.existsSync(reportPath)) {
+      console.error(red(`No report found at ${reportPath}`))
+      process.exit(1)
+    }
+    const { exec } = await import('node:child_process')
+    const cmd = process.platform === 'darwin' ? 'open' : process.platform === 'win32' ? 'start' : 'xdg-open'
+    exec(`${cmd} ${reportPath}`)
+    return
+  }
+
+  if (args.command === 'merge-reports') {
+    const blobDir = args.files[0] ?? 'blob-report'
+    const resolvedDir = path.resolve(process.cwd(), blobDir)
+    if (!fs.existsSync(resolvedDir)) {
+      console.error(red(`No blob directory found at ${resolvedDir}`))
+      process.exit(1)
+    }
+    const { mergeBlobs } = await import('./reporters/blob.js')
+    const { createReporters, ReporterDispatcher } = await import('./reporter.js')
+    const config = await loadConfig()
+    const result = mergeBlobs(resolvedDir)
+    const reporters = await createReporters(config.reporter ?? 'list')
+    const dispatcher = new ReporterDispatcher(reporters)
+    dispatcher.onRunStart(config, 0)
+    await dispatcher.onRunEnd(result)
+    return
   }
 
   if (args.command !== 'test') {
@@ -399,8 +373,19 @@ async function main(): Promise<void> {
     return;
   }
 
-  console.log(cyan(`Found ${testFiles.length} test file(s)`));
-  console.log('');
+  // Initialize reporters
+  const reporters = await createReporters(config.reporter);
+  // Auto-add GitHub Actions reporter when running in GitHub Actions
+  if (process.env.GITHUB_ACTIONS) {
+    const hasGithub = reporters.some((r) => r.constructor.name === 'GitHubActionsReporter');
+    if (!hasGithub) {
+      const { GitHubActionsReporter } = await import('./reporters/github.js');
+      reporters.push(new GitHubActionsReporter());
+    }
+  }
+  const reporter = new ReporterDispatcher(reporters);
+
+  reporter.onRunStart(config, testFiles.length);
 
   // Pre-flight: verify device is responsive before doing anything slow
   await checkDeviceHealth(config.device);
@@ -463,6 +448,7 @@ async function main(): Promise<void> {
 
   // Run tests
   const allResults: TestResult[] = [];
+  const allSuites: SuiteResult[] = [];
   const totalStart = Date.now();
 
   const screenshotDir =
@@ -494,29 +480,38 @@ async function main(): Promise<void> {
       }
     }
 
-    const relativePath = path.relative(config.rootDir, file);
-    console.log(bold(`  ${relativePath}`));
+    reporter.onTestFileStart(file);
 
     const suiteResult = await runTestFile(file, {
       config,
       device,
       screenshotDir,
+      reporter,
     });
 
     const fileResults = collectResults(suiteResult);
     allResults.push(...fileResults);
+    allSuites.push(suiteResult);
+
+    reporter.onTestFileEnd(file, fileResults);
   }
 
   const totalDurationMs = Date.now() - totalStart;
 
-  // Print results
-  printResults(allResults, totalDurationMs);
+  // Notify reporters of run completion
+  const hasFailed = allResults.some((r) => r.status === 'failed');
+  const fullResult: FullResult = {
+    status: hasFailed ? 'failed' : 'passed',
+    duration: totalDurationMs,
+    tests: allResults,
+    suites: allSuites,
+  };
+  await reporter.onRunEnd(fullResult);
 
   // Cleanup
   device.close();
 
   // Exit code
-  const hasFailed = allResults.some((r) => r.status === 'failed');
   process.exit(hasFailed ? 1 : 0);
 }
 

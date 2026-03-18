@@ -51,6 +51,14 @@ export {
 // Config
 export { defineConfig, loadConfig, type PilotConfig, type ScreenshotMode } from './config.js';
 
+// Reporters
+export {
+  type PilotReporter,
+  type FullResult,
+  type ReporterConfig,
+  type ReporterDescription,
+} from './reporter.js';
+
 // gRPC client (advanced usage)
 export { PilotGrpcClient } from './grpc-client.js';
 
