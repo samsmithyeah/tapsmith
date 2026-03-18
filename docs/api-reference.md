@@ -328,13 +328,13 @@ Launch an Android app by package name. This is the mobile equivalent of `page.go
 await device.launchApp("com.example.myapp");
 await device.launchApp("com.example.myapp", { activity: ".MainActivity" });
 await device.launchApp("com.example.myapp", { clearData: true }); // fresh start
-await device.launchApp("com.example.myapp", { waitForIdle: true });
+await device.launchApp("com.example.myapp", { waitForIdle: false }); // return immediately
 ```
 
 **Options:**
 - `activity?` — specific Activity to launch (e.g., `".settings.ProfileActivity"`)
-- `clearData?` — clear all app data before launching
-- `waitForIdle?` — wait for the UI to settle after launch
+- `clearData?` — clear all app data before launching (default: `false`)
+- `waitForIdle?` — wait for the UI to settle after launch (default: `true`)
 
 ### `device.openDeepLink(uri: string): Promise<void>`
 
@@ -392,6 +392,23 @@ Bring a backgrounded app back to the foreground.
 ```typescript
 await device.bringToForeground("com.example.myapp");
 ```
+
+### `device.restartApp(packageName: string, options?: { waitForIdle?: boolean }): Promise<void>`
+
+Force-stops and relaunches the app without clearing persistent storage. Resets all in-memory state (React component state, navigation stack) while preserving data on disk (AsyncStorage, SQLite, SharedPreferences).
+
+Use this in `beforeEach` hooks when tests modify in-memory state and you need isolation, but don't need a clean persistent state:
+
+```typescript
+beforeEach(async ({ device }) => {
+  await device.restartApp("com.example.myapp")
+  await device.tap(contentDesc("Settings"))
+  await expect(device.element(text("Settings"))).toBeVisible()
+})
+```
+
+**Options:**
+- `waitForIdle?` — wait for the UI to settle after relaunch (default: `true`)
 
 ### `device.clearAppData(packageName: string): Promise<void>`
 

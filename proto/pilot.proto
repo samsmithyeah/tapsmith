@@ -54,6 +54,7 @@ service PilotService {
   rpc GetColorScheme(GetColorSchemeRequest) returns (GetColorSchemeResponse);
   rpc WakeDevice(WakeDeviceRequest) returns (ActionResponse);
   rpc UnlockDevice(UnlockDeviceRequest) returns (ActionResponse);
+  rpc RestartApp(RestartAppRequest) returns (ActionResponse);
 }
 
 // ─── Common Types ───
@@ -327,6 +328,7 @@ message LaunchAppRequest {
   string activity = 3;       // optional: specific activity to launch
   bool clear_data = 4;       // clear app data before launch
   bool wait_for_idle = 5;    // wait for UI to settle after launch
+  uint64 idle_timeout_ms = 6; // timeout for waitForIdle (0 = use default 10s)
 }
 
 message OpenDeepLinkRequest {
@@ -453,4 +455,11 @@ message WakeDeviceRequest {
 
 message UnlockDeviceRequest {
   string request_id = 1;
+}
+
+message RestartAppRequest {
+  string request_id = 1;
+  string package_name = 2;
+  bool wait_for_idle = 3;
+  uint64 idle_timeout_ms = 4; // timeout for waitForIdle (0 = use default 10s)
 }

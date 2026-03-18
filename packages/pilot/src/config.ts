@@ -31,6 +31,9 @@ export interface PilotConfig {
   /** Address of the Pilot daemon. */
   daemonAddress: string;
 
+  /** Path to the pilot-core binary. Defaults to 'pilot-core' (must be on PATH). */
+  daemonBin?: string;
+
   /** Target device serial. If unset, daemon picks the first available. */
   device?: string;
 

@@ -1581,6 +1581,98 @@ describe("polling behavior", () => {
   });
 });
 
+// ─── Negated polling (fast-path) ───
+
+describe("negated assertion polling", () => {
+  it("not.toBeVisible() returns immediately when element is not visible", async () => {
+    let callCount = 0;
+    const client = makeMockClient(async () => {
+      callCount++;
+      return {
+        requestId: "1",
+        found: true,
+        element: makeElementInfo({ visible: false }),
+        errorMessage: "",
+      };
+    });
+    const handle = makeHandle(client, text("hidden"), 5000);
+    const start = Date.now();
+    await pilotExpect(handle).not.toBeVisible({ timeout: 5000 });
+    const elapsed = Date.now() - start;
+    // Should return almost immediately, well under the 5s timeout
+    vitestExpect(elapsed).toBeLessThan(2000);
+    vitestExpect(callCount).toBeLessThanOrEqual(3);
+  });
+
+  it("not.toBeVisible() polls until element disappears", async () => {
+    let callCount = 0;
+    const client = makeMockClient(async () => {
+      callCount++;
+      // Visible for first 2 calls, then hidden
+      return {
+        requestId: "1",
+        found: true,
+        element: makeElementInfo({ visible: callCount < 3 }),
+        errorMessage: "",
+      };
+    });
+    const handle = makeHandle(client, text("disappearing"), 2000);
+    await pilotExpect(handle).not.toBeVisible({ timeout: 2000 });
+    vitestExpect(callCount).toBeGreaterThanOrEqual(3);
+  });
+
+  it("not.toBeVisible() fails if element stays visible past timeout", async () => {
+    const client = makeMockClient(async () => ({
+      requestId: "1",
+      found: true,
+      element: makeElementInfo({ visible: true }),
+      errorMessage: "",
+    }));
+    const handle = makeHandle(client, text("sticky"), 300);
+    await vitestExpect(
+      pilotExpect(handle).not.toBeVisible({ timeout: 300 }),
+    ).rejects.toThrow("NOT to be visible");
+  });
+
+  it("not.toBeChecked() returns immediately when unchecked", async () => {
+    let callCount = 0;
+    const client = makeMockClient(async () => {
+      callCount++;
+      return {
+        requestId: "1",
+        found: true,
+        element: makeElementInfo({ checked: false }),
+        errorMessage: "",
+      };
+    });
+    const handle = makeHandle(client, text("switch"), 5000);
+    const start = Date.now();
+    await pilotExpect(handle).not.toBeChecked({ timeout: 5000 });
+    const elapsed = Date.now() - start;
+    vitestExpect(elapsed).toBeLessThan(2000);
+    vitestExpect(callCount).toBeLessThanOrEqual(3);
+  });
+
+  it("not.toExist() returns immediately when element does not exist", async () => {
+    let callCount = 0;
+    const client = makeMockClient(async () => {
+      callCount++;
+      return {
+        requestId: "1",
+        found: false,
+        element: undefined as unknown as ElementInfo,
+        errorMessage: "",
+      };
+    });
+    const handle = makeHandle(client, text("gone"), 5000);
+    const start = Date.now();
+    await pilotExpect(handle).not.toExist({ timeout: 5000 });
+    const elapsed = Date.now() - start;
+    vitestExpect(elapsed).toBeLessThan(2000);
+    vitestExpect(callCount).toBeLessThanOrEqual(3);
+  });
+});
+
 // ─── Double negation ───
 
 describe("double negation", () => {

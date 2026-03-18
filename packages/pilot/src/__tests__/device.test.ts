@@ -57,6 +57,7 @@ function makeMockClient(overrides: Partial<PilotGrpcClient> = {}): PilotGrpcClie
     wakeDevice: vi.fn(async () => successResponse()),
     unlockDevice: vi.fn(async () => successResponse()),
     startAgent: vi.fn(async () => successResponse()),
+    restartApp: vi.fn(async () => successResponse()),
     ...overrides,
   } as unknown as PilotGrpcClient
 }
@@ -413,6 +414,34 @@ describe('Device.clearAppData()', () => {
     })
     const device = new Device(client)
     await expect(device.clearAppData('com.example.app')).rejects.toThrow('Clear app data failed')
+  })
+})
+
+// ─── restartApp() ───
+
+describe('Device.restartApp()', () => {
+  it('delegates to client.restartApp with waitForIdle true by default', async () => {
+    const restartApp = vi.fn(async () => successResponse())
+    const client = makeMockClient({ restartApp })
+    const device = new Device(client)
+    await device.restartApp('com.example.app')
+    expect(restartApp).toHaveBeenCalledWith('com.example.app', true)
+  })
+
+  it('passes waitForIdle false when specified', async () => {
+    const restartApp = vi.fn(async () => successResponse())
+    const client = makeMockClient({ restartApp })
+    const device = new Device(client)
+    await device.restartApp('com.example.app', { waitForIdle: false })
+    expect(restartApp).toHaveBeenCalledWith('com.example.app', false)
+  })
+
+  it('throws on failure', async () => {
+    const client = makeMockClient({
+      restartApp: vi.fn(async () => failureResponse('')),
+    })
+    const device = new Device(client)
+    await expect(device.restartApp('com.example.app')).rejects.toThrow('Restart app failed')
   })
 })
 

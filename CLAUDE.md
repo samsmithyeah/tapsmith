@@ -11,7 +11,8 @@ packages/pilot-core/   # Rust daemon — gRPC server, ADB bridge, device managem
 agent/                 # Android Kotlin agent — UIAutomator2 instrumentation
 proto/pilot.proto      # gRPC contract (single proto file, buf for linting)
 docs/                  # User-facing documentation
-examples/              # Example test projects
+test-app/              # React Native (Expo) test app for E2E testing
+e2e/                   # E2E test suite run against the test app
 ```
 
 Each component has independent dependencies and build lifecycle (not a JS monorepo).

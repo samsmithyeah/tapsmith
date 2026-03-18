@@ -1,7 +1,0 @@
-{
-  "private": true,
-  "type": "module",
-  "dependencies": {
-    "pilot": "file:../../packages/pilot"
-  }
-}

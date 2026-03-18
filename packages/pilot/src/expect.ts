@@ -28,15 +28,25 @@ const POLL_INTERVAL_MS = 250;
 const POLL_FIND_TIMEOUT_MS = 100;
 
 /**
- * Repeatedly call `check` until it returns `true` or the timeout is exceeded.
+ * Repeatedly call `check` until it returns the expected value or the timeout
+ * is exceeded.
+ *
+ * @param negated When true, the poll succeeds as soon as `check` returns
+ *   `false` — used for negated assertions (`.not.toBeVisible()` etc.) so they
+ *   don't burn the entire timeout when the condition is already not met.
+ * @returns The raw `check()` result on the final attempt (callers compare this
+ *   against `negated` to decide pass/fail).
  */
 async function poll(
   check: () => Promise<boolean>,
   timeoutMs: number,
+  negated = false,
 ): Promise<boolean> {
+  const target = !negated; // true = want check() to be true; false = want false
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
-    if (await check()) return true;
+    const value = await check();
+    if (value === target) return value;
     await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS));
   }
   // Final attempt
@@ -261,7 +271,7 @@ function createAssertions(
         } catch {
           return false;
         }
-      }, timeout);
+      }, timeout, negated);
 
       if (!negated && !result) {
         fail(`Expected element ${desc} to be visible, but it was not`);
@@ -281,7 +291,7 @@ function createAssertions(
         } catch {
           return false;
         }
-      }, timeout);
+      }, timeout, negated);
 
       if (!negated && !result) {
         fail(`Expected element ${desc} to be enabled, but it was not`);
@@ -306,7 +316,7 @@ function createAssertions(
         } catch {
           return false;
         }
-      }, timeout);
+      }, timeout, negated);
 
       if (!negated && !result) {
         fail(
@@ -330,7 +340,7 @@ function createAssertions(
         } catch {
           return false;
         }
-      }, timeout);
+      }, timeout, negated);
 
       if (!negated && !result) {
         fail(`Expected element ${desc} to exist, but it did not`);
@@ -352,7 +362,7 @@ function createAssertions(
         } catch {
           return false;
         }
-      }, timeout);
+      }, timeout, negated);
 
       if (!negated && !result) {
         fail(`Expected element ${desc} to be checked, but it was not`);
@@ -374,7 +384,7 @@ function createAssertions(
         } catch {
           return false;
         }
-      }, timeout);
+      }, timeout, negated);
 
       if (!negated && !result) {
         fail(`Expected element ${desc} to be disabled, but it was not`);
@@ -385,6 +395,8 @@ function createAssertions(
     },
 
     // ─── PILOT-31: toBeHidden ───
+    // Note: check() returns true when hidden. With `.not.toBeHidden()`,
+    // negated=true makes poll succeed when check returns false (= visible).
 
     async toBeHidden(options) {
       const timeout = timeoutFor(options);
@@ -396,7 +408,7 @@ function createAssertions(
         } catch {
           return true;
         }
-      }, timeout);
+      }, timeout, negated);
 
       if (!negated && !result) {
         fail(`Expected element ${desc} to be hidden, but it was visible`);
@@ -423,7 +435,7 @@ function createAssertions(
         } catch {
           return false;
         }
-      }, timeout);
+      }, timeout, negated);
 
       if (!negated && !result) {
         fail(
@@ -447,7 +459,7 @@ function createAssertions(
         } catch {
           return false;
         }
-      }, timeout);
+      }, timeout, negated);
 
       if (!negated && !result) {
         fail(`Expected element ${desc} to be focused, but it was not`);
@@ -474,7 +486,7 @@ function createAssertions(
         } catch {
           return false;
         }
-      }, timeout);
+      }, timeout, negated);
 
       if (!negated && !result) {
         fail(
@@ -502,7 +514,7 @@ function createAssertions(
         } catch {
           return false;
         }
-      }, timeout);
+      }, timeout, negated);
 
       if (!negated && !result) {
         fail(
@@ -533,7 +545,7 @@ function createAssertions(
         } catch {
           return false;
         }
-      }, timeout);
+      }, timeout, negated);
 
       if (!negated && !result) {
         fail(
@@ -565,7 +577,7 @@ function createAssertions(
         } catch {
           return false;
         }
-      }, timeout);
+      }, timeout, negated);
 
       if (!negated && !result) {
         fail(
@@ -596,7 +608,7 @@ function createAssertions(
         } catch {
           return false;
         }
-      }, timeout);
+      }, timeout, negated);
 
       if (!negated && !result) {
         fail(
@@ -629,7 +641,7 @@ function createAssertions(
         } catch {
           return false;
         }
-      }, timeout);
+      }, timeout, negated);
 
       if (!negated && !result) {
         fail(
@@ -658,7 +670,7 @@ function createAssertions(
         } catch {
           return false;
         }
-      }, timeout);
+      }, timeout, negated);
 
       if (!negated && !result) {
         fail(
@@ -690,7 +702,7 @@ function createAssertions(
         } catch {
           return false;
         }
-      }, timeout);
+      }, timeout, negated);
 
       if (!negated && !result) {
         fail(`Expected element ${desc} to be editable, but it was not`);
@@ -721,7 +733,7 @@ function createAssertions(
         } catch {
           return false;
         }
-      }, timeout);
+      }, timeout, negated);
 
       if (!negated && !result) {
         const ratioInfo =

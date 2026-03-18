@@ -435,13 +435,21 @@ export class PilotGrpcClient {
 
   // ── Device Management (PILOT-10) ──
 
+  async restartApp(packageName: string, waitForIdle = true): Promise<ActionResponse> {
+    return this.call<ActionResponse>('restartApp', {
+      requestId: requestId(),
+      packageName,
+      waitForIdle,
+    }, 120_000);
+  }
+
   async launchApp(packageName: string, options?: LaunchAppOptions): Promise<ActionResponse> {
     return this.call<ActionResponse>('launchApp', {
       requestId: requestId(),
       packageName,
       activity: options?.activity ?? '',
       clearData: options?.clearData ?? false,
-      waitForIdle: options?.waitForIdle ?? false,
+      waitForIdle: options?.waitForIdle ?? true,
     }, 120_000);
   }
 

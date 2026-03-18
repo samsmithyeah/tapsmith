@@ -177,7 +177,7 @@ async function checkDeviceHealth(serial: string | undefined): Promise<void> {
 
 // ─── Daemon management ───
 
-async function ensureDaemonRunning(address: string): Promise<PilotGrpcClient> {
+async function ensureDaemonRunning(address: string, daemonBin?: string): Promise<PilotGrpcClient> {
   const client = new PilotGrpcClient(address);
 
   // Try to connect to existing daemon
@@ -196,9 +196,9 @@ async function ensureDaemonRunning(address: string): Promise<PilotGrpcClient> {
   console.log(dim('Starting Pilot daemon...'));
   client.close();
 
-  const daemonBin = process.env.PILOT_DAEMON_BIN ?? 'pilot-core';
+  const resolvedBin = process.env.PILOT_DAEMON_BIN ?? daemonBin ?? 'pilot-core';
   const port = address.split(':').pop() ?? '50051';
-  const child = spawn(daemonBin, ['--port', port], {
+  const child = spawn(resolvedBin, ['--port', port], {
     detached: true,
     stdio: 'ignore',
   });
@@ -406,7 +406,7 @@ async function main(): Promise<void> {
   await checkDeviceHealth(config.device);
 
   // Connect to daemon
-  const client = await ensureDaemonRunning(config.daemonAddress);
+  const client = await ensureDaemonRunning(config.daemonAddress, config.daemonBin);
   const device = new Device(client, config);
 
   // Set device if specified
@@ -448,9 +448,11 @@ async function main(): Promise<void> {
     process.exit(1);
   }
 
-  // Launch the app under test
+  // Launch the app under test — force-stop first to ensure it starts fresh
+  // on the main activity regardless of any previous state.
   if (config.package) {
     try {
+      try { await device.terminateApp(config.package); } catch { /* may not be running */ }
       await device.launchApp(config.package);
       console.log(dim(`Launched ${config.package}`));
     } catch (err) {
@@ -468,7 +470,30 @@ async function main(): Promise<void> {
       ? path.resolve(config.rootDir, config.outputDir, 'screenshots')
       : undefined;
 
-  for (const file of testFiles) {
+  for (let i = 0; i < testFiles.length; i++) {
+    const file = testFiles[i];
+
+    // Reset app to main activity between test files for isolation (PILOT-134).
+    // Uses direct ADB commands (force-stop + launcher intent) which bypass the
+    // on-device agent — the agent survives because it runs as a separate package.
+    if (i > 0 && config.package) {
+      try {
+        // terminateApp may fail if the app already crashed — that's fine,
+        // we just need it stopped before relaunching.
+        try { await device.terminateApp(config.package); } catch { /* app may not be running */ }
+        await device.launchApp(config.package);
+
+        const pong = await client.ping();
+        if (!pong.agentConnected) {
+          console.error(red('Agent disconnected after app reset. Aborting.'));
+          process.exit(1);
+        }
+      } catch (err) {
+        console.error(red(`Failed to reset app between test files: ${err}`));
+        process.exit(1);
+      }
+    }
+
     const relativePath = path.relative(config.rootDir, file);
     console.log(bold(`  ${relativePath}`));
 

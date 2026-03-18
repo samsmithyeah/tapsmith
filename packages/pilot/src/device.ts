@@ -182,6 +182,13 @@ export class Device {
 
   // ── Device Management (PILOT-10) ──
 
+  async restartApp(packageName: string, options?: { waitForIdle?: boolean }): Promise<void> {
+    return this._action(
+      () => this._client.restartApp(packageName, options?.waitForIdle ?? true),
+      'Restart app failed',
+    );
+  }
+
   async launchApp(packageName: string, options?: LaunchAppOptions): Promise<void> {
     return this._action(
       () => this._client.launchApp(packageName, options),

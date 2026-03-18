@@ -1,0 +1,13 @@
+{
+  "$schema": "https://unpkg.com/knip@5/schema.json",
+  "entry": ["app/**/*.tsx"],
+  "project": ["app/**/*.tsx"],
+  "ignoreDependencies": [
+    "@expo/vector-icons",
+    "expo-status-bar",
+    "expo-updates",
+    "expo-system-ui",
+    "expo-router"
+  ],
+  "ignoreExportsUsedInFile": true
+}

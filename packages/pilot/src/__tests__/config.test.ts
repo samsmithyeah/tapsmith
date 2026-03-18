@@ -13,6 +13,7 @@ describe('defineConfig()', () => {
     expect(config.outputDir).toBe('pilot-results');
     expect(config.apk).toBeUndefined();
     expect(config.device).toBeUndefined();
+    expect(config.daemonBin).toBeUndefined();
   });
 
   it('returns defaults when called with empty object', () => {
@@ -73,6 +74,11 @@ describe('defineConfig()', () => {
   it('sets optional device', () => {
     const config = defineConfig({ device: 'emulator-5554' });
     expect(config.device).toBe('emulator-5554');
+  });
+
+  it('sets optional daemonBin', () => {
+    const config = defineConfig({ daemonBin: '/usr/local/bin/pilot-core' });
+    expect(config.daemonBin).toBe('/usr/local/bin/pilot-core');
   });
 
   it('overrides multiple fields at once', () => {

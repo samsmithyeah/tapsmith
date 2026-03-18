@@ -77,12 +77,9 @@ class CommandHandler(
     private fun resolveElement(params: JSONObject): ElementInfo {
         val elementId = params.optString("elementId", null)
         if (elementId != null) {
-            // Use cached element
-            val obj = elementFinder.getElement(elementId)
-            return elementFinder.findElement(
-                ElementSelector(className = obj.className),
-                null,
-            )
+            // Use cached element directly — avoids a new search by className
+            // which is not guaranteed to be unique.
+            return elementFinder.getElementInfo(elementId)
         }
         // Selector-based: auto-wait then find
         val selector = parseSelectorParams(params)
@@ -158,14 +155,25 @@ class CommandHandler(
 
             "typeText" -> {
                 val text = params.getString("text")
-                val hasSelector =
-                    params.has("text") && (
-                        params.has("role") || params.has("id") ||
-                            params.has("contentDesc") || params.has("className") || params.has("testId") ||
-                            params.has("hint") || params.has("textContains") || params.has("elementId")
+                val selectorKeys =
+                    listOf(
+                        "role",
+                        "id",
+                        "contentDesc",
+                        "className",
+                        "testId",
+                        "hint",
+                        "textContains",
+                        "elementId",
                     )
-                if (hasSelector || params.has("elementId")) {
-                    val element = resolveElement(params)
+                val hasSelector = selectorKeys.any(params::has)
+                if (hasSelector) {
+                    // Remove "text" from params before resolving selector, since "text" here
+                    // is the value to type, not a text selector. Without this, parseSelectorParams
+                    // would treat the typed value as a text match criterion.
+                    val selectorParams = JSONObject(params.toString())
+                    selectorParams.remove("text")
+                    val element = resolveElement(selectorParams)
                     actionExecutor.typeText(elementFinder.getElement(element.elementId), text)
                 } else {
                     actionExecutor.typeTextWithoutFocus(text)
@@ -363,15 +371,9 @@ class CommandHandler(
     private fun parseSelectorParams(params: JSONObject): ElementSelector {
         // Handle "role" which can be either a string or a {"role": "...", "name": "..."} object
         val roleObj = params.opt("role")
-        val role: String?
-        val name: String?
-        if (roleObj is JSONObject) {
-            role = roleObj.optString("role", null)
-            name = roleObj.optString("name", null)
-        } else {
-            role = params.optString("role", null)
-            name = params.optString("name", null)
-        }
+        val source = if (roleObj is JSONObject) roleObj else params
+        val role = source.optString("role", null)?.ifEmpty { null }
+        val name = source.optString("name", null)?.ifEmpty { null }
 
         // Handle "resourceId" (sent by daemon) or "id" (legacy)
         val resourceId = params.optString("resourceId", null) ?: params.optString("id", null)

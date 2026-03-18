@@ -42,7 +42,7 @@ export interface TestFixtures {
 
 // ─── Internal registration types ───
 
-type HookFn = () => void | Promise<void>;
+type HookFn = ((fixtures: TestFixtures) => void | Promise<void>) | (() => void | Promise<void>);
 
 /** Test functions can either take fixtures or no arguments. */
 type TestCallback = ((fixtures: TestFixtures) => void | Promise<void>) | (() => void | Promise<void>);
@@ -190,6 +190,18 @@ async function captureFailureScreenshot(
   return undefined;
 }
 
+// Dispatch based on Function.length (parameter count). Note: fn.length does
+// not count parameters with default values or rest parameters, so hooks like
+// `async ({ device } = {}) => …` would be mis-classified as zero-arg. In
+// practice this is fine because hooks are simple `async ({ device }) => …`.
+async function invokeHook(fn: HookFn, device?: Device): Promise<void> {
+  if (fn.length > 0 && device) {
+    await (fn as (fixtures: TestFixtures) => void | Promise<void>)({ device });
+  } else {
+    await (fn as () => void | Promise<void>)();
+  }
+}
+
 async function runSuiteContext(
   ctx: SuiteContext,
   parentPrefix: string,
@@ -207,7 +219,7 @@ async function runSuiteContext(
 
   // Run beforeAll hooks
   for (const hook of ctx.beforeAll) {
-    await hook();
+    await invokeHook(hook, opts.device);
   }
 
   // All beforeEach hooks (inherited + local)
@@ -243,7 +255,7 @@ async function runSuiteContext(
       const testBody = async () => {
         // Run beforeEach hooks
         for (const hook of allBeforeEach) {
-          await hook();
+          await invokeHook(hook, opts.device);
         }
 
         // Call with fixtures if the test function expects arguments
@@ -280,7 +292,7 @@ async function runSuiteContext(
       // Run afterEach hooks (always)
       for (const hook of allAfterEach) {
         try {
-          await hook();
+          await invokeHook(hook, opts.device);
         } catch {
           // afterEach errors should not mask test errors
         }
@@ -354,7 +366,7 @@ async function runSuiteContext(
   // Run afterAll hooks
   for (const hook of ctx.afterAll) {
     try {
-      await hook();
+      await invokeHook(hook, opts.device);
     } catch {
       // afterAll errors are logged but don't fail individual tests
     }
