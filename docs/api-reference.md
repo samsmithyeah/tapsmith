@@ -1271,6 +1271,142 @@ Load configuration from a `pilot.config.ts`, `pilot.config.js`, or `pilot.config
 
 ---
 
+## Reporters
+
+Pilot includes a reporter system inspired by Playwright. Reporters receive lifecycle events during a test run and produce output in various formats.
+
+### Configuration
+
+Configure reporters in `pilot.config.ts`:
+
+```typescript
+import { defineConfig } from "pilot";
+
+export default defineConfig({
+  // Single reporter
+  reporter: "list",
+
+  // Reporter with options
+  reporter: ["json", { outputFile: "results.json" }],
+
+  // Multiple reporters
+  reporter: ["list", ["json", { outputFile: "results.json" }]],
+});
+```
+
+**Auto-detection:** When `reporter` is not set, Pilot uses `list` for local runs and `dot` for CI (detected via the `CI` environment variable). The `github` reporter is automatically added when running in GitHub Actions.
+
+### Built-in reporters
+
+| Reporter | Description | Default |
+| --- | --- | --- |
+| `list` | Detailed per-test output with status, name, and duration | Local runs |
+| `line` | Concise single-line output, overwrites previous line | — |
+| `dot` | Minimal output: one character per test (`·` / `F` / `×`) | CI runs |
+| `json` | Structured JSON file with full test data | — |
+| `junit` | JUnit XML for CI system ingestion | — |
+| `html` | Self-contained interactive HTML report | — |
+| `github` | GitHub Actions annotations on failures | Auto in GH Actions |
+| `blob` | Serialized data for shard merging | — |
+
+### Reporter options
+
+**`json`**
+
+| Option | Type | Default |
+| --- | --- | --- |
+| `outputFile` | `string` | `"pilot-results/results.json"` |
+
+**`junit`**
+
+| Option | Type | Default |
+| --- | --- | --- |
+| `outputFile` | `string` | `"pilot-results/results.xml"` |
+
+**`html`**
+
+| Option | Type | Default |
+| --- | --- | --- |
+| `outputFolder` | `string` | `"pilot-report"` |
+| `open` | `"always" \| "never" \| "on-failure"` | `"on-failure"` |
+
+**`blob`**
+
+| Option | Type | Default |
+| --- | --- | --- |
+| `outputDir` | `string` | `"blob-report"` |
+
+### Custom reporters
+
+Implement the `PilotReporter` interface:
+
+```typescript
+import type { PilotReporter, FullResult } from "pilot";
+import type { TestResult } from "pilot";
+
+class MyReporter implements PilotReporter {
+  onRunStart(config, fileCount) {
+    console.log(`Running ${fileCount} test files`);
+  }
+
+  onTestEnd(test: TestResult) {
+    console.log(`${test.status}: ${test.fullName}`);
+  }
+
+  onRunEnd(result: FullResult) {
+    console.log(`Done in ${result.duration}ms`);
+  }
+}
+
+export default MyReporter;
+```
+
+Use by path in config:
+
+```typescript
+export default defineConfig({
+  reporter: [["./my-reporter.ts", {}]],
+});
+```
+
+### `PilotReporter` interface
+
+All types are importable from `"pilot"`:
+
+```typescript
+import type {
+  PilotReporter,
+  FullResult,
+  PilotConfig,
+  TestResult,
+  SuiteResult,
+} from "pilot";
+```
+
+```typescript
+interface PilotReporter {
+  onRunStart?(config: PilotConfig, fileCount: number): void;
+  onTestFileStart?(filePath: string): void;
+  onTestEnd?(test: TestResult): void;
+  onTestFileEnd?(filePath: string, results: TestResult[]): void;
+  onRunEnd?(result: FullResult): Promise<void> | void;
+  onError?(error: Error): void;
+}
+```
+
+### `FullResult`
+
+```typescript
+interface FullResult {
+  status: "passed" | "failed";
+  duration: number; // milliseconds
+  tests: TestResult[]; // flattened list of all test results
+  suites: SuiteResult[]; // hierarchical suite tree (one per test file)
+}
+```
+
+---
+
 ## CLI
 
 ### `pilot test [files...]`

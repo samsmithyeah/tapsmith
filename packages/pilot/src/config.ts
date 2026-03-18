@@ -9,6 +9,7 @@
 
 import * as path from 'node:path';
 import * as fs from 'node:fs';
+import type { ReporterConfig } from './reporter.js';
 
 export type ScreenshotMode = 'always' | 'only-on-failure' | 'never';
 
@@ -51,6 +52,15 @@ export interface PilotConfig {
 
   /** Path to the Pilot agent test APK. Used for auto-install if agent is not on device. */
   agentTestApk?: string;
+
+  /**
+   * Test reporter configuration.
+   *
+   * Can be a reporter name ('list', 'dot', 'line', 'json', 'junit', 'html',
+   * 'github', 'blob'), a tuple with options (['json', { outputFile: 'r.json' }]),
+   * an array of these, or undefined for auto-detection (list locally, dot in CI).
+   */
+  reporter?: ReporterConfig;
 }
 
 const DEFAULT_CONFIG: PilotConfig = {

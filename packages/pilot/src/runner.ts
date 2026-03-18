@@ -12,6 +12,7 @@
 
 import type { PilotConfig } from './config.js';
 import type { Device } from './device.js';
+import type { PilotReporter } from './reporter.js';
 import { flushSoftErrors } from './expect.js';
 
 // ─── Result types ───
@@ -159,6 +160,7 @@ export interface RunOptions {
   config: PilotConfig;
   device?: Device;
   screenshotDir?: string;
+  reporter?: PilotReporter;
 }
 
 async function captureFailureScreenshot(
@@ -234,12 +236,14 @@ async function runSuiteContext(
     const shouldSkip = entry.skip || (hasOnly && !entry.only);
 
     if (shouldSkip) {
-      result.tests.push({
+      const skippedResult: TestResult = {
         name: entry.name,
         fullName,
         status: 'skipped',
         durationMs: 0,
-      });
+      };
+      result.tests.push(skippedResult);
+      opts.reporter?.onTestEnd?.(skippedResult);
       continue;
     }
 
@@ -330,14 +334,16 @@ async function runSuiteContext(
       );
     }
 
-    result.tests.push({
+    const testResult: TestResult = {
       name: entry.name,
       fullName,
       status,
       durationMs: Date.now() - testStart,
       error,
       screenshotPath,
-    });
+    };
+    result.tests.push(testResult);
+    opts.reporter?.onTestEnd?.(testResult);
   }
 
   // Run child suites
