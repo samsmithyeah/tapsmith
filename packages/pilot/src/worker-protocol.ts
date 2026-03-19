@@ -16,6 +16,8 @@ export interface InitMessage {
   deviceSerial: string
   daemonPort: number
   config: SerializedConfig
+  /** True when the emulator was freshly launched for this run (needs warmup). */
+  freshEmulator?: boolean
 }
 
 export interface RunFileMessage {

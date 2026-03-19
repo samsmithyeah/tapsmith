@@ -24,14 +24,19 @@ import {
 export class ListReporter implements PilotReporter {
   private _testIndex = 0
   private _totalTests = 0
+  private _parallel = false
 
-  onRunStart(_config: PilotConfig, fileCount: number): void {
+  onRunStart(config: PilotConfig, fileCount: number): void {
     this._testIndex = 0
     this._totalTests = 0
+    this._parallel = config.workers > 1
     process.stdout.write(`\nRunning tests from ${fileCount} file(s)\n\n`)
   }
 
   onTestFileStart(filePath: string): void {
+    // In parallel mode, results from multiple files are interleaved so
+    // file headers create a false visual grouping. Skip them.
+    if (this._parallel) return
     const relative = filePath.replace(process.cwd() + '/', '')
     process.stdout.write(`  ${bold(relative)}\n`)
   }
@@ -56,8 +61,11 @@ export class ListReporter implements PilotReporter {
   }
 
   onTestFileEnd(): void {
-    // Reset per-file counter for the next file
-    this._testIndex = 0
+    // Reset per-file counter for the next file (sequential mode only —
+    // in parallel mode the counter is global since results are interleaved)
+    if (!this._parallel) {
+      this._testIndex = 0
+    }
   }
 
   onRunEnd(result: FullResult): void {

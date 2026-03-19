@@ -137,6 +137,20 @@ async function handleInit(msg: InitMessage): Promise<void> {
     )
   }
 
+  // Warm up freshly launched emulators by cycling the app once. The first
+  // launch on a cold emulator triggers JIT compilation and DEX optimization
+  // that makes the first few tests unreasonably slow or timeout.
+  if (msg.freshEmulator && config.package) {
+    sendProgress('warming up fresh emulator')
+    await device.waitForIdle()
+    await device.terminateApp(config.package)
+    await launchConfiguredApp(
+      sessionContext(msg.deviceSerial, resolvedAgentApk, resolvedAgentTestApk),
+      'warmup',
+    )
+    await device.waitForIdle()
+  }
+
   sendProgress('ready')
   send({ type: 'ready', workerId })
 }

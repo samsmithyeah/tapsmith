@@ -238,46 +238,43 @@ export async function runParallel(opts: DispatcherOptions): Promise<FullResult> 
 
     const launchedSerials = new Set(launchedEmulators.map((emu) => emu.serial))
 
+    // Initialize all workers in parallel — each has its own daemon, device,
+    // and agent so there are no shared resources during init.
+    const initPromises: Promise<WorkerHandle>[] = []
     for (let workerId = 0; workerId < maxUsefulWorkers && workerId < deviceSerials.length; workerId++) {
-      let initializedWorker: WorkerHandle | undefined
-      let lastInitError: unknown
+      const candidateSerial = deviceSerials[workerId]
+      const isFreshEmulator = launchedSerials.has(candidateSerial)
+      initPromises.push(
+        initializeWorker({
+          workerId,
+          deviceSerial: candidateSerial,
+          daemonBin,
+          serializedConfig,
+          baseDaemonPort,
+          baseAgentPort,
+          firstDaemon,
+          resolvedScript,
+          initializationTimeoutMs: isFreshEmulator
+            ? LAUNCHED_EMULATOR_INIT_TIMEOUT_MS
+            : EXISTING_DEVICE_INIT_TIMEOUT_MS,
+          freshEmulator: isFreshEmulator,
+          tsxBin,
+        }),
+      )
+    }
 
-      for (let candidateIndex = workerId; candidateIndex < deviceSerials.length; candidateIndex++) {
-        const candidateSerial = deviceSerials[candidateIndex]
-        if (workers.some((w) => w.deviceSerial === candidateSerial)) continue
-
-        try {
-          const worker = await initializeWorker({
-            workerId,
-            deviceSerial: candidateSerial,
-            daemonBin,
-            serializedConfig,
-            baseDaemonPort,
-            baseAgentPort,
-            firstDaemon,
-            resolvedScript,
-            initializationTimeoutMs: launchedSerials.has(candidateSerial)
-              ? LAUNCHED_EMULATOR_INIT_TIMEOUT_MS
-              : EXISTING_DEVICE_INIT_TIMEOUT_MS,
-            tsxBin,
-          })
-          if (worker.id === 0) firstDaemonAssigned = true
-          workers.push(worker)
-          initializedWorker = worker
-          break
-        } catch (err) {
-          lastInitError = err
-          process.stderr.write(
-            `${YELLOW}Skipping device ${candidateSerial}: ${err instanceof Error ? err.message : err}.${RESET}\n`,
-          )
-        }
-      }
-
-      if (!initializedWorker) {
-        if (lastInitError && workers.length === 0) {
-          throw lastInitError instanceof Error ? lastInitError : new Error(String(lastInitError))
-        }
-        break
+    const initResults = await Promise.allSettled(initPromises)
+    for (let i = 0; i < initResults.length; i++) {
+      const result = initResults[i]
+      if (result.status === 'fulfilled') {
+        const worker = result.value
+        if (worker.id === 0) firstDaemonAssigned = true
+        workers.push(worker)
+      } else {
+        const serial = deviceSerials[i]
+        process.stderr.write(
+          `${YELLOW}Skipping device ${serial}: ${result.reason instanceof Error ? result.reason.message : result.reason}.${RESET}\n`,
+        )
       }
     }
 
@@ -523,6 +520,7 @@ interface InitializeWorkerOptions {
   firstDaemon: ChildProcess
   resolvedScript: string
   initializationTimeoutMs: number
+  freshEmulator: boolean
   tsxBin?: string
 }
 
@@ -633,6 +631,7 @@ async function initializeWorker(opts: InitializeWorkerOptions): Promise<WorkerHa
         deviceSerial: worker.deviceSerial,
         daemonPort: worker.daemonPort,
         config: serializedConfig,
+        freshEmulator: opts.freshEmulator || undefined,
       }
       worker.process.send(initMsg)
     })
