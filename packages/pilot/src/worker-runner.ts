@@ -54,7 +54,6 @@ function configFromSerialized(s: SerializedConfig, daemonAddress: string): Pilot
     agentApk: s.agentApk,
     agentTestApk: s.agentTestApk,
     workers: 1,
-    fullyParallel: false,
     launchEmulators: false,
   }
 }

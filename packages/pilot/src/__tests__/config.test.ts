@@ -17,7 +17,6 @@ describe('defineConfig()', () => {
     expect(config.deviceStrategy).toBeUndefined();
     expect(config.daemonBin).toBeUndefined();
     expect(config.workers).toBe(1);
-    expect(config.fullyParallel).toBe(false);
     expect(config.shard).toBeUndefined();
     expect(config.launchEmulators).toBe(false);
     expect(config.avd).toBeUndefined();
@@ -118,10 +117,9 @@ describe('defineConfig()', () => {
     expect(config.testMatch).toEqual(['*.test.ts']);
   });
 
-  it('overrides workers and fullyParallel', () => {
-    const config = defineConfig({ workers: 4, fullyParallel: true });
+  it('overrides workers', () => {
+    const config = defineConfig({ workers: 4 });
     expect(config.workers).toBe(4);
-    expect(config.fullyParallel).toBe(true);
   });
 
   it('overrides shard', () => {

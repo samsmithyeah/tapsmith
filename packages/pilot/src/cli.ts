@@ -497,7 +497,6 @@ async function main(): Promise<void> {
       process.exit(1)
     }
     const { mergeBlobs } = await import('./reporters/blob.js')
-    const { createReporters, ReporterDispatcher } = await import('./reporter.js')
     const config = await loadConfig()
     const result = mergeBlobs(resolvedDir)
     const reporters = await createReporters(config.reporter ?? 'list')

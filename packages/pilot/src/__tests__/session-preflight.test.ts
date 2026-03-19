@@ -84,6 +84,29 @@ describe('session-preflight', () => {
     expect(ctx.device.launchApp).not.toHaveBeenCalled()
   })
 
+  it('dismisses system overlay via pressBack when app is underneath', async () => {
+    const ctx = makeContext()
+    vi.mocked(ctx.device.currentPackage).mockResolvedValue('com.google.android.apps.nexuslauncher')
+    vi.mocked(ctx.client.getUiHierarchy).mockResolvedValue({
+      requestId: '1',
+      hierarchyXml: '<node package="com.example.app" /><node package="com.google.android.apps.nexuslauncher" />',
+      errorMessage: '',
+    })
+
+    await expect(ensureSessionReady(ctx, 'startup')).resolves.toBeUndefined()
+    expect(ctx.device.pressBack).toHaveBeenCalled()
+    expect(ctx.device.startAgent).not.toHaveBeenCalled()
+  })
+
+  it('fails on package mismatch when app is not in hierarchy', async () => {
+    const ctx = makeContext()
+    vi.mocked(ctx.device.currentPackage).mockResolvedValue('com.google.android.apps.nexuslauncher')
+
+    await expect(ensureSessionReady(ctx, 'startup')).rejects.toThrow(
+      'foreground package mismatch',
+    )
+  })
+
   it('dismisses blocking system dialogs before relaunching', async () => {
     const ctx = makeContext()
     vi.mocked(ctx.client.ping)

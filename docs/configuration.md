@@ -42,7 +42,6 @@ For emulator-managed runs, the recommended path is `launchEmulators + avd`.
 | `agentTestApk` | `string` | `undefined` | Path to the Pilot agent test APK used when starting the on-device agent. |
 | `reporter` | `ReporterConfig` | auto-detected | Reporter output configuration. Defaults to `list` locally and `dot` in CI. |
 | `workers` | `number` | `1` | Number of parallel workers. Each worker needs its own device/emulator. |
-| `fullyParallel` | `boolean` | `false` | When true, distribute individual tests across workers instead of test files. |
 | `shard` | `{ current: number; total: number }` | `undefined` | Shard specification for splitting a run across multiple machines. Usually set via `--shard=x/y`. |
 | `launchEmulators` | `boolean` | `false` | Automatically launch emulators to fill the requested worker count. |
 | `avd` | `string` | `undefined` | AVD name to use for `launchEmulators`. When set, Pilot launches repeated instances of this AVD. |

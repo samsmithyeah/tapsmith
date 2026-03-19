@@ -40,7 +40,6 @@ function makeConfig(overrides: Partial<PilotConfig> = {}): PilotConfig {
     rootDir: '/tmp/test',
     outputDir: 'pilot-results',
     workers: 1,
-    fullyParallel: false,
     launchEmulators: false,
     ...overrides,
   }

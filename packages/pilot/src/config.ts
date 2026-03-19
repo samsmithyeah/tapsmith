@@ -89,12 +89,6 @@ export interface PilotConfig {
   workers: number;
 
   /**
-   * When true, distribute individual tests across workers.
-   * When false, distribute test files (default).
-   */
-  fullyParallel: boolean;
-
-  /**
    * Shard specification for splitting tests across CI machines.
    * Usually set via the `--shard=x/y` CLI flag.
    */
@@ -126,7 +120,6 @@ const DEFAULT_CONFIG: PilotConfig = {
   rootDir: process.cwd(),
   outputDir: 'pilot-results',
   workers: 1,
-  fullyParallel: false,
   launchEmulators: false,
 };
 

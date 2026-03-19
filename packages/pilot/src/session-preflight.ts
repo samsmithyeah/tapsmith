@@ -2,7 +2,7 @@ import type { PilotConfig } from './config.js'
 import type { Device } from './device.js'
 import type { LaunchAppOptions, PilotGrpcClient } from './grpc-client.js'
 import { text } from './selectors.js'
-import { dismissSystemDialogsViaAdb } from './emulator.js'
+import { detectBlockingSystemDialog, dismissSystemDialogsViaAdb } from './emulator.js'
 
 type SessionDevice = Pick<Device, 'startAgent' | 'terminateApp' | 'launchApp' | 'waitForIdle' | 'currentPackage' | 'tap' | 'pressBack'>
 type SessionClient = Pick<PilotGrpcClient, 'ping' | 'getUiHierarchy'>
@@ -20,7 +20,6 @@ export interface SessionPreflightContext {
 
 const DEFAULT_READY_TIMEOUT_MS = 5_000
 const DEFAULT_MAX_ATTEMPTS = 2
-const BLOCKING_DIALOG_PATTERN = /(isn(?:’|&apos;|’)t responding|keeps stopping|close app|app info)/i
 
 export async function ensureSessionReady(
   ctx: SessionPreflightContext,
@@ -85,9 +84,17 @@ async function verifySession(ctx: SessionPreflightContext): Promise<void> {
   if (ctx.config.package) {
     const currentPackage = await ctx.device.currentPackage()
     if (currentPackage !== ctx.config.package) {
-      throw new Error(
-        `foreground package mismatch (expected ${ctx.config.package}, got ${currentPackage || '(none)'})`,
-      )
+      // The app may still be visible underneath a system overlay (e.g. launcher
+      // text-selection, share sheet). Check if the hierarchy contains nodes
+      // from the expected package — if so, dismiss the overlay rather than failing.
+      const appInHierarchy = hierarchy.hierarchyXml.includes(`package="${ctx.config.package}"`)
+      if (!appInHierarchy) {
+        throw new Error(
+          `foreground package mismatch (expected ${ctx.config.package}, got ${currentPackage || '(none)'})`,
+        )
+      }
+      await ctx.device.pressBack()
+      await ctx.device.waitForIdle(DEFAULT_READY_TIMEOUT_MS)
     }
   }
 }
@@ -110,12 +117,6 @@ async function recoverSession(ctx: SessionPreflightContext): Promise<void> {
   }
 
   await ctx.device.launchApp(ctx.config.package, launchOptions(ctx.config))
-}
-
-function detectBlockingSystemDialog(hierarchyXml: string): string | undefined {
-  const compact = hierarchyXml.replace(/\s+/g, ' ').trim()
-  const match = compact.match(BLOCKING_DIALOG_PATTERN)
-  return match ? match[0] : undefined
 }
 
 async function dismissBlockingSystemUi(ctx: SessionPreflightContext): Promise<void> {

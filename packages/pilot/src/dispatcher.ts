@@ -221,18 +221,6 @@ export async function runParallel(opts: DispatcherOptions): Promise<FullResult> 
       tsxBin = fs.existsSync(localTsx) ? localTsx : 'tsx'
     }
 
-    for (const worker of workers) {
-      const child = fork(resolvedScript, [], {
-        stdio: ['ignore', 'inherit', 'inherit', 'ipc'],
-        ...(tsxBin ? { execPath: tsxBin } : {}),
-        env: {
-          ...process.env,
-          PILOT_WORKER_ID: String(worker.id),
-        },
-      })
-      worker.process = child
-    }
-
     // Serialize config for workers
     const serializedConfig: SerializedConfig = {
       timeout: config.timeout,
