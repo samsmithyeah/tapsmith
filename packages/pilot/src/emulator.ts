@@ -1183,11 +1183,7 @@ function resolveLaunchCandidates(
     )
   }
 
-  if (runningAvds.has(requestedAvd)) {
-    process.stderr.write(
-      `${YELLOW}AVD "${requestedAvd}" is already running. Pilot will still try additional read-only instances of that AVD first.${RESET}\n`,
-    )
-  }
+  // Same-AVD multi-instance is the normal path — no warning needed.
 
   return [requestedAvd]
 }
