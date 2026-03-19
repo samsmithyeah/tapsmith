@@ -20,6 +20,7 @@ import { ensureSessionReady, launchConfiguredApp } from './session-preflight.js'
 import { glob } from 'glob';
 import { spawn, execFileSync } from 'node:child_process';
 import {
+  clearOfflineEmulatorTransports,
   cleanupEmulators,
   filterHealthyDevices,
   provisionEmulators,
@@ -286,6 +287,13 @@ async function ensureSequentialTargetDevice(
 ): Promise<{ selectedSerial?: string; launched: LaunchedEmulator[] }> {
   if (config.device) {
     return { selectedSerial: config.device, launched: [] };
+  }
+
+  const clearedOfflineEmulators = clearOfflineEmulatorTransports();
+  for (const serial of clearedOfflineEmulators) {
+    process.stderr.write(
+      `${YELLOW}Cleared stale offline emulator transport ${serial} before device selection.${RESET}\n`,
+    );
   }
 
   const deviceStrategy = resolveDeviceStrategy(config);

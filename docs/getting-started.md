@@ -103,7 +103,7 @@ Pilot will:
 
 For multi-worker runs, Pilot will assign one device per worker. If
 `launchEmulators: true` is configured, it will launch additional emulator
-instances automatically.
+instances automatically. If `avd` is set, those instances will use that AVD.
 
 ### Run a specific file
 

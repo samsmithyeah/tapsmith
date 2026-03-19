@@ -22,6 +22,7 @@ import type {
 } from './worker-protocol.js'
 import { deserializeTestResult, deserializeSuiteResult } from './worker-protocol.js'
 import {
+  clearOfflineEmulatorTransports,
   provisionEmulators,
   cleanupEmulators,
   filterHealthyDevices,
@@ -54,6 +55,9 @@ export interface DispatcherOptions {
   workers: number
 }
 
+const EXISTING_DEVICE_INIT_TIMEOUT_MS = 90_000
+const LAUNCHED_EMULATOR_INIT_TIMEOUT_MS = 180_000
+
 /**
  * Run test files in parallel across multiple workers/devices.
  * Returns a FullResult aggregating all worker results.
@@ -61,6 +65,13 @@ export interface DispatcherOptions {
 export async function runParallel(opts: DispatcherOptions): Promise<FullResult> {
   const { config, reporter, testFiles } = opts
   const deviceStrategy = resolveDeviceStrategy(config)
+
+  const clearedOfflineEmulators = clearOfflineEmulatorTransports()
+  for (const serial of clearedOfflineEmulators) {
+    process.stderr.write(
+      `${YELLOW}Cleared stale offline emulator transport ${serial} before device discovery.${RESET}\n`,
+    )
+  }
 
   // Spawn the first worker daemon early so we can use it for device discovery.
   // This daemon will also serve as worker 0's daemon.
@@ -118,7 +129,9 @@ export async function runParallel(opts: DispatcherOptions): Promise<FullResult> 
   ) {
     const provision = await provisionEmulators({
       existingSerials: selectedOnline.selectedSerials,
-      occupiedSerials: healthyOnline.healthySerials,
+      // Even unhealthy connected emulators still occupy console/ADB ports.
+      // Treat every discovered online serial as occupied when choosing new ports.
+      occupiedSerials: onlineDevices.map((d) => d.serial),
       workers: Math.min(opts.workers, testFiles.length),
       avd: config.avd,
     })
@@ -195,6 +208,8 @@ export async function runParallel(opts: DispatcherOptions): Promise<FullResult> 
       agentTestApk: config.agentTestApk,
     }
 
+    const launchedSerials = new Set(launchedEmulators.map((emu) => emu.serial))
+
     for (let workerId = 0; workerId < maxUsefulWorkers && workerId < deviceSerials.length; workerId++) {
       let initializedWorker: WorkerHandle | undefined
       let lastInitError: unknown
@@ -213,6 +228,9 @@ export async function runParallel(opts: DispatcherOptions): Promise<FullResult> 
             baseAgentPort,
             firstDaemon,
             resolvedScript,
+            initializationTimeoutMs: launchedSerials.has(candidateSerial)
+              ? LAUNCHED_EMULATOR_INIT_TIMEOUT_MS
+              : EXISTING_DEVICE_INIT_TIMEOUT_MS,
             tsxBin,
           })
           if (worker.id === 0) firstDaemonAssigned = true
@@ -471,6 +489,7 @@ interface InitializeWorkerOptions {
   baseAgentPort: number
   firstDaemon: ChildProcess
   resolvedScript: string
+  initializationTimeoutMs: number
   tsxBin?: string
 }
 
@@ -484,6 +503,7 @@ async function initializeWorker(opts: InitializeWorkerOptions): Promise<WorkerHa
     baseAgentPort,
     firstDaemon,
     resolvedScript,
+    initializationTimeoutMs,
     tsxBin,
   } = opts
 
@@ -535,8 +555,12 @@ async function initializeWorker(opts: InitializeWorkerOptions): Promise<WorkerHa
   try {
     await new Promise<void>((resolve, reject) => {
       const timeout = setTimeout(() => {
-        reject(new Error(`worker ${workerId} timed out during initialization`))
-      }, 90_000)
+        reject(
+          new Error(
+            `worker ${workerId} timed out during initialization after ${Math.round(initializationTimeoutMs / 1000)}s`,
+          ),
+        )
+      }, initializationTimeoutMs)
 
       const onExit = (code: number | null) => {
         if (code !== 0) {

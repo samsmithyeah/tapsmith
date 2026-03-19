@@ -149,7 +149,7 @@ describe('emulator utilities', () => {
   })
 
   describe('provisionEmulators', () => {
-    it('falls back to an alternative AVD when the requested one boots unhealthy', async () => {
+    it('does not fall back to a different AVD when the requested one boots unhealthy', async () => {
       const killed: string[] = []
       const launchedAvds: string[] = []
 
@@ -176,10 +176,10 @@ describe('emulator utilities', () => {
         },
       )
 
-      expect(launchedAvds).toEqual(['Broken_API_35', 'Pixel_9_API_35'])
+      expect(launchedAvds).toEqual(['Broken_API_35'])
       expect(killed).toEqual(['emulator-5554'])
-      expect(result.allSerials).toEqual(['emulator-5556'])
-      expect(result.launched.map((emu) => emu.avd)).toEqual(['Pixel_9_API_35'])
+      expect(result.allSerials).toEqual([])
+      expect(result.launched.map((emu) => emu.avd)).toEqual([])
     })
 
     it('returns existing devices when all launch candidates fail', async () => {

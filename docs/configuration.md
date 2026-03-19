@@ -45,7 +45,7 @@ For emulator-managed runs, the recommended path is `launchEmulators + avd`.
 | `fullyParallel` | `boolean` | `false` | When true, distribute individual tests across workers instead of test files. |
 | `shard` | `{ current: number; total: number }` | `undefined` | Shard specification for splitting a run across multiple machines. Usually set via `--shard=x/y`. |
 | `launchEmulators` | `boolean` | `false` | Automatically launch emulators to fill the requested worker count. |
-| `avd` | `string` | `undefined` | Preferred AVD name for `launchEmulators`. Pilot will try repeated instances of this AVD first. |
+| `avd` | `string` | `undefined` | AVD name to use for `launchEmulators`. When set, Pilot launches repeated instances of this AVD. |
 
 ### `ScreenshotMode`
 

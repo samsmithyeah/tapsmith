@@ -17,7 +17,63 @@ const RESET = '\x1b[0m'
 
 type ExecFileSyncLike = typeof execFileSync
 
+export interface AdbDeviceEntry {
+  serial: string
+  state: string
+}
+
 // ─── Emulator discovery ───
+
+/**
+ * List devices known to ADB, including offline transports.
+ */
+export function listAdbDevices(): AdbDeviceEntry[] {
+  try {
+    const output = execFileSync('adb', ['devices'], {
+      encoding: 'utf-8',
+      timeout: 10_000,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    })
+
+    return output
+      .split('\n')
+      .map((line) => line.trim())
+      .filter((line) => line.length > 0 && !line.startsWith('List of devices attached'))
+      .map((line) => line.split(/\s+/))
+      .filter((parts) => parts.length >= 2)
+      .map((parts) => ({ serial: parts[0], state: parts[1] }))
+  } catch {
+    return []
+  }
+}
+
+/**
+ * Clear stale offline emulator transports from ADB.
+ *
+ * Interrupted runs can leave emulator serials stuck in `offline` even after
+ * the underlying process is gone. `adb reconnect offline` clears those stale
+ * transports so future provisioning starts from a cleaner inventory.
+ */
+export function clearOfflineEmulatorTransports(): string[] {
+  const offlineEmulators = listAdbDevices()
+    .filter((device) => device.state === 'offline' && device.serial.startsWith('emulator-'))
+    .map((device) => device.serial)
+
+  if (offlineEmulators.length === 0) {
+    return []
+  }
+
+  try {
+    execFileSync('adb', ['reconnect', 'offline'], {
+      timeout: 10_000,
+      stdio: 'ignore',
+    })
+  } catch {
+    // Best effort
+  }
+
+  return offlineEmulators
+}
 
 /**
  * List available Android Virtual Devices (AVDs).
@@ -353,9 +409,7 @@ export async function provisionEmulators(opts: {
   // Track which AVDs are already running. We still prefer the requested AVD
   // even when it is already in use, because Pilot launches new instances with
   // -read-only and should treat "N workers on N instances of the same AVD"
-  // as the primary supported path. If an existing manually started instance
-  // was launched incompatibly, the subsequent launch/health probe will fail
-  // and we can fall back or degrade from there.
+  // as the primary supported path.
   const runningAvds = new Set<string>()
   for (const serial of occupiedSerials) {
     if (serial.startsWith('emulator-')) {
@@ -378,9 +432,15 @@ export async function provisionEmulators(opts: {
   // Launch emulators
   const launched: LaunchedEmulator[] = []
   const badAvds = new Set<string>()
-  process.stderr.write(
-    `${DIM}Launching ${needed} emulator(s) (${launchCandidates.join(', ')})...${RESET}\n`,
-  )
+  if (avd) {
+    process.stderr.write(
+      `${DIM}Launching ${needed} emulator(s) using AVD ${avd}...${RESET}\n`,
+    )
+  } else {
+    process.stderr.write(
+      `${DIM}Launching ${needed} emulator(s) from available AVDs (${launchCandidates.join(', ')})...${RESET}\n`,
+    )
+  }
 
   for (let i = 0; i < needed; i++) {
     let launchedEmulator: LaunchedEmulator | undefined
@@ -420,7 +480,7 @@ export async function provisionEmulators(opts: {
 
     if (!launchedEmulator) {
       process.stderr.write(
-        `${YELLOW}Unable to provision additional emulator ${i + 1}/${needed}; all candidate AVDs failed health checks.${RESET}\n`,
+        `${YELLOW}Unable to provision additional emulator ${i + 1}/${needed}; ${avd ? `AVD ${avd}` : 'all candidate AVDs'} failed health checks.${RESET}\n`,
       )
       break
     }
@@ -476,14 +536,13 @@ function resolveLaunchCandidates(
     )
   }
 
-  const alternatives = avds.filter((avd) => avd !== requestedAvd && !runningAvds.has(avd))
   if (runningAvds.has(requestedAvd)) {
     process.stderr.write(
       `${YELLOW}AVD "${requestedAvd}" is already running. Pilot will still try additional read-only instances of that AVD first.${RESET}\n`,
     )
   }
 
-  return [requestedAvd, ...alternatives]
+  return [requestedAvd]
 }
 
 // ─── Helpers ───

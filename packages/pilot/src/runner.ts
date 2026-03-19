@@ -199,6 +199,8 @@ export interface RunOptions {
   device?: Device;
   screenshotDir?: string;
   reporter?: PilotReporter;
+  beforeEachTest?: (fullName: string) => Promise<void>;
+  abortFileOnError?: (error: Error) => boolean;
   /** Pre-resolved worker-scoped fixture values (set by worker-runner). */
   workerFixtures?: Record<string, unknown>;
 }
@@ -298,6 +300,10 @@ async function runSuiteContext(
     try {
       const testBody = async () => {
         // Run beforeEach hooks
+        if (opts.beforeEachTest) {
+          await opts.beforeEachTest(fullName);
+        }
+
         for (const hook of allBeforeEach) {
           await invokeHook(hook, opts.device);
         }
@@ -406,6 +412,10 @@ async function runSuiteContext(
     };
     result.tests.push(testResult);
     opts.reporter?.onTestEnd?.(testResult);
+
+    if (status === 'failed' && error && opts.abortFileOnError?.(error)) {
+      throw error;
+    }
   }
 
   // Run child suites

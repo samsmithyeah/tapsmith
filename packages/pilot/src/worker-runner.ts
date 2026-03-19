@@ -176,6 +176,13 @@ async function runFileWithRecovery(
         device,
         screenshotDir,
         reporter: reporterProxy,
+        beforeEachTest: async (fullName) => {
+          await ensureSessionReady(
+            sessionContext(undefined),
+            `before test ${fullName}`,
+          )
+        },
+        abortFileOnError: isRecoverableInfrastructureError,
       })
       const infrastructureFailure = findRecoverableInfrastructureFailure(collectResults(suite))
       if (!infrastructureFailure) {
