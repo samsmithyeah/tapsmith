@@ -1,11 +1,9 @@
 import { beforeEach, contentDesc, describe, expect, test } from "pilot"
 import { TogglesScreen } from "../screens/toggles.screen.js"
 
-const PKG = "dev.pilot.testapp"
-
 describe("Toggles screen", () => {
   beforeEach(async ({ device }) => {
-    await device.restartApp(PKG)
+    await device.restartApp()
     await device.tap(contentDesc("Toggles"))
     const screen = new TogglesScreen(device)
     await expect(screen.switchesHeading).toBeVisible()

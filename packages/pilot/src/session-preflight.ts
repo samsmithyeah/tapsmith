@@ -1,8 +1,9 @@
 import type { PilotConfig } from './config.js'
 import type { Device } from './device.js'
 import type { LaunchAppOptions, PilotGrpcClient } from './grpc-client.js'
+import { text } from './selectors.js'
 
-type SessionDevice = Pick<Device, 'startAgent' | 'terminateApp' | 'launchApp' | 'waitForIdle' | 'currentPackage'>
+type SessionDevice = Pick<Device, 'startAgent' | 'terminateApp' | 'launchApp' | 'waitForIdle' | 'currentPackage' | 'tap' | 'pressBack'>
 type SessionClient = Pick<PilotGrpcClient, 'ping' | 'getUiHierarchy'>
 
 export interface SessionPreflightContext {
@@ -16,6 +17,7 @@ export interface SessionPreflightContext {
 
 const DEFAULT_READY_TIMEOUT_MS = 5_000
 const DEFAULT_MAX_ATTEMPTS = 2
+const BLOCKING_DIALOG_PATTERN = /(isn(?:'|&apos;|’)t responding|keeps stopping|close app|wait|app info)/i
 
 export async function ensureSessionReady(
   ctx: SessionPreflightContext,
@@ -72,6 +74,11 @@ async function verifySession(ctx: SessionPreflightContext): Promise<void> {
     throw new Error('UI hierarchy is empty')
   }
 
+  const blockingDialog = detectBlockingSystemDialog(hierarchy.hierarchyXml)
+  if (blockingDialog) {
+    throw new Error(`blocking system dialog detected (${blockingDialog})`)
+  }
+
   if (ctx.config.package) {
     const currentPackage = await ctx.device.currentPackage()
     if (currentPackage !== ctx.config.package) {
@@ -83,6 +90,7 @@ async function verifySession(ctx: SessionPreflightContext): Promise<void> {
 }
 
 async function recoverSession(ctx: SessionPreflightContext): Promise<void> {
+  await dismissBlockingSystemUi(ctx)
   await ctx.device.startAgent('', ctx.agentApkPath, ctx.agentTestApkPath)
   if (!ctx.config.package) return
 
@@ -93,6 +101,39 @@ async function recoverSession(ctx: SessionPreflightContext): Promise<void> {
   }
 
   await ctx.device.launchApp(ctx.config.package, launchOptions(ctx.config))
+}
+
+function detectBlockingSystemDialog(hierarchyXml: string): string | undefined {
+  const compact = hierarchyXml.replace(/\s+/g, ' ').trim()
+  const match = compact.match(BLOCKING_DIALOG_PATTERN)
+  return match ? match[0] : undefined
+}
+
+async function dismissBlockingSystemUi(ctx: SessionPreflightContext): Promise<void> {
+  let hierarchy = ''
+  try {
+    hierarchy = (await ctx.client.getUiHierarchy()).hierarchyXml
+  } catch {
+    return
+  }
+
+  if (!detectBlockingSystemDialog(hierarchy)) return
+
+  for (const selector of [text('Wait'), text('Close app'), text('OK')]) {
+    try {
+      await ctx.device.tap(selector)
+      await ctx.device.waitForIdle(1_000)
+    } catch {
+      // Best effort
+    }
+  }
+
+  try {
+    await ctx.device.pressBack()
+    await ctx.device.waitForIdle(1_000)
+  } catch {
+    // Best effort
+  }
 }
 
 function launchOptions(config: Pick<PilotConfig, 'activity'>): LaunchAppOptions {

@@ -8,6 +8,8 @@ function makeContext(overrides: Partial<Parameters<typeof ensureSessionReady>[0]
     launchApp: vi.fn(async () => undefined),
     waitForIdle: vi.fn(async () => undefined),
     currentPackage: vi.fn(async () => 'com.example.app'),
+    tap: vi.fn(async () => undefined),
+    pressBack: vi.fn(async () => undefined),
   }
 
   const client = {
@@ -80,5 +82,37 @@ describe('session-preflight', () => {
 
     await expect(launchConfiguredApp(ctx, 'startup')).resolves.toBeUndefined()
     expect(ctx.device.launchApp).not.toHaveBeenCalled()
+  })
+
+  it('dismisses blocking system dialogs before relaunching', async () => {
+    const ctx = makeContext()
+    vi.mocked(ctx.client.ping)
+      .mockResolvedValueOnce({ version: '0.1.0', agentConnected: true })
+      .mockResolvedValueOnce({ version: '0.1.0', agentConnected: true })
+    vi.mocked(ctx.client.getUiHierarchy)
+      .mockResolvedValueOnce({
+        requestId: '1',
+        hierarchyXml: '<node text="Pixel Launcher isn&apos;t responding" /><node text="Wait" /><node text="Close app" />',
+        errorMessage: '',
+      })
+      .mockResolvedValueOnce({
+        requestId: '1',
+        hierarchyXml: '<node text="Pixel Launcher isn&apos;t responding" /><node text="Wait" /><node text="Close app" />',
+        errorMessage: '',
+      })
+      .mockResolvedValueOnce({
+        requestId: '1',
+        hierarchyXml: '<hierarchy />',
+        errorMessage: '',
+      })
+      .mockResolvedValueOnce({
+        requestId: '1',
+        hierarchyXml: '<hierarchy />',
+        errorMessage: '',
+    })
+
+    await expect(ensureSessionReady(ctx, 'startup')).resolves.toBeUndefined()
+    expect(ctx.device.startAgent).toHaveBeenCalledTimes(1)
+    expect(ctx.client.getUiHierarchy).toHaveBeenCalledTimes(3)
   })
 })

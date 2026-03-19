@@ -1,11 +1,9 @@
 import { beforeEach, contentDesc, describe, expect, id, test, text } from "pilot"
 import { GesturesScreen } from "../screens/gestures.screen.js"
 
-const PKG = "dev.pilot.testapp"
-
 describe("Gestures screen", () => {
   beforeEach(async ({ device }) => {
-    await device.restartApp(PKG)
+    await device.restartApp()
     await device.tap(contentDesc("Gestures"))
     await expect(device.element(text("Gesture Testing"))).toBeVisible()
   })

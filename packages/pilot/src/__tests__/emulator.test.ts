@@ -2,11 +2,14 @@ import { describe, it, expect, vi } from 'vitest'
 import {
   findAvailablePort,
   serialForPort,
+  readUiHierarchyViaAdb,
+  detectBlockingSystemDialog,
   probeDeviceHealth,
   filterHealthyDevices,
   prefilterDevicesForStrategy,
   provisionEmulators,
   selectDevicesForStrategy,
+  waitForDeviceStability,
 } from '../emulator.js'
 
 describe('emulator utilities', () => {
@@ -86,6 +89,39 @@ describe('emulator utilities', () => {
         reason: 'package manager is unresponsive',
       })
     })
+
+    it('rejects a device showing a blocking system dialog', () => {
+      const exec = makeExec({
+        'adb|-s|emulator-5554|shell|echo|__pilot_health_ok__': '__pilot_health_ok__\n',
+        'adb|-s|emulator-5554|shell|getprop|sys.boot_completed': '1\n',
+        'adb|-s|emulator-5554|shell|pm|path|android': 'package:/system/framework/framework-res.apk\n',
+        'adb|-s|emulator-5554|exec-out|uiautomator|dump|/dev/tty':
+          'UI hierchary dumped to: /dev/tty\n<hierarchy><node text="Pixel Launcher isn&apos;t responding" /></hierarchy>\n',
+      })
+
+      expect(probeDeviceHealth('emulator-5554', exec)).toEqual({
+        serial: 'emulator-5554',
+        healthy: false,
+        reason: 'blocking system dialog detected (<hierarchy><node text="Pixel Launcher isn&apos;t responding" /></hierarchy>)',
+      })
+    })
+  })
+
+  describe('readUiHierarchyViaAdb / detectBlockingSystemDialog', () => {
+    it('extracts XML from uiautomator dump output', () => {
+      const exec = makeExec({
+        'adb|-s|emulator-5554|exec-out|uiautomator|dump|/dev/tty':
+          'UI hierchary dumped to: /dev/tty\n<hierarchy><node text="Hello" /></hierarchy>\n',
+      })
+
+      expect(readUiHierarchyViaAdb('emulator-5554', exec)).toBe('<hierarchy><node text="Hello" /></hierarchy>')
+    })
+
+    it('detects launcher ANR text in the hierarchy', () => {
+      expect(
+        detectBlockingSystemDialog('<hierarchy><node text="Pixel Launcher isn&apos;t responding" /></hierarchy>'),
+      ).toContain('Pixel Launcher')
+    })
   })
 
   describe('filterHealthyDevices', () => {
@@ -106,6 +142,22 @@ describe('emulator utilities', () => {
           reason: 'emulator is not fully booted',
         }],
       })
+    })
+  })
+
+  describe('waitForDeviceStability', () => {
+    it('requires consecutive healthy probes before accepting the device', async () => {
+      const results = [
+        { serial: 'emulator-5554', healthy: false, reason: 'emulator is not fully booted' },
+        { serial: 'emulator-5554', healthy: true },
+        { serial: 'emulator-5554', healthy: true },
+      ]
+
+      const probe = vi.fn(() => results.shift() ?? { serial: 'emulator-5554', healthy: true })
+      const health = await waitForDeviceStability('emulator-5554', 10_000, probe)
+
+      expect(health).toEqual({ serial: 'emulator-5554', healthy: true })
+      expect(probe).toHaveBeenCalledTimes(3)
     })
   })
 
@@ -214,6 +266,7 @@ describe('emulator utilities', () => {
           probeDeviceHealth: (serial) => serial === 'emulator-5554'
             ? { serial, healthy: false, reason: 'package manager is unresponsive' }
             : { serial, healthy: true },
+          waitForDeviceStability: async (serial, _timeoutMs, probe) => probe?.(serial) ?? { serial, healthy: true },
           killEmulator: (serial) => {
             killed.push(serial)
           },
@@ -241,6 +294,7 @@ describe('emulator utilities', () => {
             throw new Error('boot timed out')
           },
           probeDeviceHealth: () => ({ serial: 'unused', healthy: true }),
+          waitForDeviceStability: async (serial, _timeoutMs, probe) => probe?.(serial) ?? { serial, healthy: true },
           killEmulator: vi.fn(),
         },
       )
@@ -267,6 +321,7 @@ describe('emulator utilities', () => {
           },
           waitForBoot: async () => undefined,
           probeDeviceHealth: (serial) => ({ serial, healthy: true }),
+          waitForDeviceStability: async (serial, _timeoutMs, probe) => probe?.(serial) ?? { serial, healthy: true },
           killEmulator: vi.fn(),
         },
       )
@@ -295,6 +350,7 @@ describe('emulator utilities', () => {
           },
           waitForBoot: async () => undefined,
           probeDeviceHealth: (serial) => ({ serial, healthy: true }),
+          waitForDeviceStability: async (serial, _timeoutMs, probe) => probe?.(serial) ?? { serial, healthy: true },
           killEmulator: vi.fn(),
         },
       )

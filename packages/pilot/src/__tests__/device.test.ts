@@ -436,6 +436,30 @@ describe('Device.restartApp()', () => {
     expect(restartApp).toHaveBeenCalledWith('com.example.app', false)
   })
 
+  it('uses config.package when packageName is omitted', async () => {
+    const restartApp = vi.fn(async () => successResponse())
+    const client = makeMockClient({ restartApp })
+    const device = new Device(client, { package: 'com.example.configured' })
+    await device.restartApp()
+    expect(restartApp).toHaveBeenCalledWith('com.example.configured', true)
+  })
+
+  it('accepts options as the first argument when using config.package', async () => {
+    const restartApp = vi.fn(async () => successResponse())
+    const client = makeMockClient({ restartApp })
+    const device = new Device(client, { package: 'com.example.configured' })
+    await device.restartApp({ waitForIdle: false })
+    expect(restartApp).toHaveBeenCalledWith('com.example.configured', false)
+  })
+
+  it('throws a helpful error when no package is available', async () => {
+    const client = makeMockClient()
+    const device = new Device(client)
+    await expect(device.restartApp()).rejects.toThrow(
+      'Package name is required. Pass one explicitly or set `package` in your Pilot config.',
+    )
+  })
+
   it('throws on failure', async () => {
     const client = makeMockClient({
       restartApp: vi.fn(async () => failureResponse('')),

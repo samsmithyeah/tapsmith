@@ -14,6 +14,9 @@ import type { DeviceStrategy } from './config.js'
 const DIM = '\x1b[2m'
 const YELLOW = '\x1b[33m'
 const RESET = '\x1b[0m'
+const DEVICE_STABILITY_POLL_MS = 2_000
+const DEFAULT_DEVICE_STABILITY_TIMEOUT_MS = 20_000
+const REQUIRED_STABLE_HEALTH_CHECKS = 2
 
 type ExecFileSyncLike = typeof execFileSync
 
@@ -162,6 +165,45 @@ export interface DevicePrefilterResult extends DeviceSelectionResult {
   candidateSerials: string[]
 }
 
+function extractHierarchyXml(raw: string): string {
+  const start = raw.indexOf('<')
+  return start >= 0 ? raw.slice(start) : ''
+}
+
+export function detectBlockingSystemDialog(rawHierarchy: string): string | undefined {
+  const hierarchy = rawHierarchy.toLowerCase()
+  const patterns = [
+    /isn(?:'|&apos;|’)t responding/,
+    /keeps stopping/,
+    /wait/,
+    /close app/,
+    /app info/,
+  ]
+
+  const matched = patterns.find((pattern) => pattern.test(hierarchy))
+  if (!matched) return undefined
+
+  const compact = rawHierarchy.replace(/\s+/g, ' ').trim()
+  return compact.slice(0, 160) || 'blocking system dialog detected'
+}
+
+export function readUiHierarchyViaAdb(
+  serial: string,
+  exec: ExecFileSyncLike = execFileSync,
+): string | undefined {
+  try {
+    const output = String(exec('adb', ['-s', serial, 'exec-out', 'uiautomator', 'dump', '/dev/tty'], {
+      encoding: 'utf-8',
+      timeout: 10_000,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    }))
+    const xml = extractHierarchyXml(output)
+    return xml.trim() || undefined
+  } catch {
+    return undefined
+  }
+}
+
 /**
  * Launch an emulator instance for the given AVD on the specified port.
  * Returns immediately — use `waitForBoot` to wait until the device is ready.
@@ -238,6 +280,14 @@ export function probeDeviceHealth(
     }
   } catch {
     return { serial, healthy: false, reason: 'package manager is unresponsive' }
+  }
+
+  const hierarchy = readUiHierarchyViaAdb(serial, exec)
+  if (hierarchy) {
+    const blockingDialog = detectBlockingSystemDialog(hierarchy)
+    if (blockingDialog) {
+      return { serial, healthy: false, reason: `blocking system dialog detected (${blockingDialog})` }
+    }
   }
 
   return { serial, healthy: true }
@@ -392,6 +442,38 @@ export async function waitForBoot(serial: string, timeoutMs = 120_000): Promise<
   throw new Error(`Emulator ${serial} did not boot within ${timeoutMs / 1000}s`)
 }
 
+export async function waitForDeviceStability(
+  serial: string,
+  timeoutMs = DEFAULT_DEVICE_STABILITY_TIMEOUT_MS,
+  probe: (serial: string) => DeviceHealthResult = probeDeviceHealth,
+): Promise<DeviceHealthResult> {
+  const start = Date.now()
+  let consecutiveHealthy = 0
+  let lastResult: DeviceHealthResult = {
+    serial,
+    healthy: false,
+    reason: 'device stability checks did not complete',
+  }
+
+  while (Date.now() - start < timeoutMs) {
+    const result = probe(serial)
+    lastResult = result
+
+    if (result.healthy) {
+      consecutiveHealthy += 1
+      if (consecutiveHealthy >= REQUIRED_STABLE_HEALTH_CHECKS) {
+        return result
+      }
+    } else {
+      consecutiveHealthy = 0
+    }
+
+    await sleep(DEVICE_STABILITY_POLL_MS)
+  }
+
+  return lastResult
+}
+
 // ─── Emulator shutdown ───
 
 /**
@@ -421,6 +503,11 @@ interface ProvisionDeps {
   launchEmulator: (avd: string, port: number) => LaunchedEmulator
   waitForBoot: (serial: string, timeoutMs?: number) => Promise<void>
   probeDeviceHealth: (serial: string) => DeviceHealthResult
+  waitForDeviceStability: (
+    serial: string,
+    timeoutMs?: number,
+    probe?: (serial: string) => DeviceHealthResult,
+  ) => Promise<DeviceHealthResult>
   killEmulator: (serial: string) => void
 }
 
@@ -444,6 +531,7 @@ export async function provisionEmulators(opts: {
     launchEmulator: deps.launchEmulator ?? launchEmulator,
     waitForBoot: deps.waitForBoot ?? waitForBoot,
     probeDeviceHealth: deps.probeDeviceHealth ?? probeDeviceHealth,
+    waitForDeviceStability: deps.waitForDeviceStability ?? waitForDeviceStability,
     killEmulator: deps.killEmulator ?? killEmulator,
   }
   const needed = workers - existingSerials.length
@@ -511,7 +599,11 @@ export async function provisionEmulators(opts: {
 
       try {
         await resolvedDeps.waitForBoot(emu.serial)
-        const health = resolvedDeps.probeDeviceHealth(emu.serial)
+        const health = await resolvedDeps.waitForDeviceStability(
+          emu.serial,
+          DEFAULT_DEVICE_STABILITY_TIMEOUT_MS,
+          resolvedDeps.probeDeviceHealth,
+        )
         if (!health.healthy) {
           throw new Error(health.reason ?? 'device health probe failed')
         }

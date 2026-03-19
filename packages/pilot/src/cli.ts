@@ -24,10 +24,12 @@ import {
   cleanupEmulators,
   filterHealthyDevices,
   prefilterDevicesForStrategy,
+  probeDeviceHealth,
   provisionEmulators,
   type DeviceHealthResult,
   type LaunchedEmulator,
   selectDevicesForStrategy,
+  waitForDeviceStability,
 } from './emulator.js';
 
 // ─── ANSI helpers ───
@@ -131,6 +133,16 @@ function reExecWithTsx(args: string[]): never {
 async function checkDeviceHealth(serial: string | undefined): Promise<void> {
   const target = serial ?? 'any connected device';
 
+  if (serial) {
+    const stable = await waitForDeviceStability(serial, 20_000, probeDeviceHealth);
+    if (stable.healthy) return;
+
+    if (stable.reason && !stable.reason.includes('ADB shell')) {
+      console.error(red(`Device ${target} is not ready: ${stable.reason}.`));
+      process.exit(1);
+    }
+  }
+
   // Quick ADB responsiveness check (5s timeout)
   const adbArgs = serial
     ? ['-s', serial, 'shell', 'echo', '__pilot_health_ok__']
@@ -173,7 +185,7 @@ async function checkDeviceHealth(serial: string | undefined): Promise<void> {
   // Wait for device to come back
   await new Promise((r) => setTimeout(r, 3_000));
 
-  if (tryAdb()) {
+  if (!serial ? tryAdb() : (await waitForDeviceStability(serial, 20_000, probeDeviceHealth)).healthy) {
     console.log(dim('ADB recovered. Device is responsive.'));
     return;
   }
