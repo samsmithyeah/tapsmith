@@ -158,6 +158,10 @@ export interface DeviceSelectionResult {
   skippedDevices: Array<{ serial: string; reason: string }>
 }
 
+export interface DevicePrefilterResult extends DeviceSelectionResult {
+  candidateSerials: string[]
+}
+
 /**
  * Launch an emulator instance for the given AVD on the specified port.
  * Returns immediately — use `waitForBoot` to wait until the device is ready.
@@ -260,6 +264,56 @@ export function filterHealthyDevices(
   }
 
   return { healthySerials, unhealthyDevices }
+}
+
+export function prefilterDevicesForStrategy(
+  serials: string[],
+  strategy: DeviceStrategy,
+  avd: string | undefined,
+  resolveAvdName: (serial: string) => string | undefined = getRunningAvdName,
+): DevicePrefilterResult {
+  if (strategy === 'prefer-connected') {
+    return { candidateSerials: serials, selectedSerials: serials, skippedDevices: [] }
+  }
+
+  if (!avd) {
+    throw new Error('deviceStrategy "avd-only" requires `avd` to be set in config')
+  }
+
+  const candidateSerials: string[] = []
+  const selectedSerials: string[] = []
+  const skippedDevices: Array<{ serial: string; reason: string }> = []
+
+  for (const serial of serials) {
+    if (!serial.startsWith('emulator-')) {
+      skippedDevices.push({
+        serial,
+        reason: `device is not an emulator instance of requested AVD ${avd}`,
+      })
+      continue
+    }
+
+    const runningAvd = resolveAvdName(serial)
+    if (runningAvd === avd) {
+      candidateSerials.push(serial)
+      selectedSerials.push(serial)
+      continue
+    }
+
+    if (runningAvd) {
+      skippedDevices.push({
+        serial,
+        reason: `running AVD ${runningAvd} does not match requested AVD ${avd}`,
+      })
+      continue
+    }
+
+    // If we cannot determine the AVD yet, keep the device in play so later
+    // health/selection checks can make a more informed decision.
+    candidateSerials.push(serial)
+  }
+
+  return { candidateSerials, selectedSerials, skippedDevices }
 }
 
 export function selectDevicesForStrategy(

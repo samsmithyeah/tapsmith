@@ -9,7 +9,7 @@ export default defineConfig({
   screenshot: "only-on-failure",
   workers: 2,
   launchEmulators: true,
-  avd: "Pixel_9_API_35",
+  avd: "Pilot_Generic_Phone_API_35",
   daemonBin: "../packages/pilot-core/target/release/pilot-core",
   agentApk: "../agent/app/build/outputs/apk/debug/app-debug.apk",
   agentTestApk:

@@ -4,6 +4,7 @@ import {
   serialForPort,
   probeDeviceHealth,
   filterHealthyDevices,
+  prefilterDevicesForStrategy,
   provisionEmulators,
   selectDevicesForStrategy,
 } from '../emulator.js'
@@ -109,6 +110,49 @@ describe('emulator utilities', () => {
   })
 
   describe('selectDevicesForStrategy', () => {
+    it('prefilters clearly non-matching AVD instances before health checks', () => {
+      expect(
+        prefilterDevicesForStrategy(
+          ['emulator-5554', 'emulator-5556', 'device-123'],
+          'avd-only',
+          'Pilot_Generic_Phone_API_35',
+          (serial) => {
+            if (serial === 'emulator-5554') return 'Pilot_Generic_Phone_API_35'
+            if (serial === 'emulator-5556') return 'Small_Phone_API_35'
+            return undefined
+          },
+        ),
+      ).toEqual({
+        candidateSerials: ['emulator-5554'],
+        selectedSerials: ['emulator-5554'],
+        skippedDevices: [
+          {
+            serial: 'emulator-5556',
+            reason: 'running AVD Small_Phone_API_35 does not match requested AVD Pilot_Generic_Phone_API_35',
+          },
+          {
+            serial: 'device-123',
+            reason: 'device is not an emulator instance of requested AVD Pilot_Generic_Phone_API_35',
+          },
+        ],
+      })
+    })
+
+    it('keeps unknown-emulator devices in play until health/selection can decide', () => {
+      expect(
+        prefilterDevicesForStrategy(
+          ['emulator-5554'],
+          'avd-only',
+          'Pilot_Generic_Phone_API_35',
+          () => undefined,
+        ),
+      ).toEqual({
+        candidateSerials: ['emulator-5554'],
+        selectedSerials: [],
+        skippedDevices: [],
+      })
+    })
+
     it('returns all devices for prefer-connected', () => {
       expect(
         selectDevicesForStrategy(['emulator-5554', 'device-123'], 'prefer-connected', 'Pixel_9_API_35'),

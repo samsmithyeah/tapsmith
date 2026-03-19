@@ -27,6 +27,7 @@ import {
   cleanupEmulators,
   filterHealthyDevices,
   getRunningAvdName,
+  prefilterDevicesForStrategy,
   selectDevicesForStrategy,
   type DeviceHealthResult,
   type LaunchedEmulator,
@@ -110,14 +111,24 @@ export async function runParallel(opts: DispatcherOptions): Promise<FullResult> 
     d.state === 'Discovered' || d.state === 'Active',
   )
 
-  const healthyOnline = filterHealthyDevices(onlineDevices.map((d) => d.serial))
+  const prefilteredOnline = prefilterDevicesForStrategy(
+    onlineDevices.map((d) => d.serial),
+    deviceStrategy,
+    config.avd,
+  )
+  warnSkippedDevices(prefilteredOnline.skippedDevices)
+  const healthyOnline = filterHealthyDevices(prefilteredOnline.candidateSerials)
   warnUnhealthyDevices(healthyOnline.unhealthyDevices)
   const selectedOnline = selectDevicesForStrategy(
     healthyOnline.healthySerials,
     deviceStrategy,
     config.avd,
   )
-  warnSkippedDevices(selectedOnline.skippedDevices)
+  warnSkippedDevices(
+    selectedOnline.skippedDevices.filter(
+      (device) => !prefilteredOnline.skippedDevices.some((prefiltered) => prefiltered.serial === device.serial),
+    ),
+  )
 
   // Auto-launch emulators if enabled and we don't have enough devices
   let launchedEmulators: LaunchedEmulator[] = []
@@ -575,6 +586,10 @@ async function initializeWorker(opts: InitializeWorkerOptions): Promise<WorkerHa
           clearTimeout(timeout)
           cleanup()
           resolve()
+        } else if (msg.type === 'progress' && msg.workerId === worker.id) {
+          process.stderr.write(
+            `${DIM}  Worker ${worker.id} (${worker.deviceSerial}): ${msg.message}${RESET}\n`,
+          )
         } else if (msg.type === 'error' && msg.workerId === worker.id) {
           clearTimeout(timeout)
           cleanup()

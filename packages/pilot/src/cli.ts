@@ -23,6 +23,7 @@ import {
   clearOfflineEmulatorTransports,
   cleanupEmulators,
   filterHealthyDevices,
+  prefilterDevicesForStrategy,
   provisionEmulators,
   type DeviceHealthResult,
   type LaunchedEmulator,
@@ -298,14 +299,24 @@ async function ensureSequentialTargetDevice(
 
   const deviceStrategy = resolveDeviceStrategy(config);
   const onlineSerials = listConnectedDeviceSerials();
-  const healthyOnline = filterHealthyDevices(onlineSerials);
+  const prefilteredOnline = prefilterDevicesForStrategy(
+    onlineSerials,
+    deviceStrategy,
+    config.avd,
+  );
+  warnSequentialSkippedDevices(prefilteredOnline.skippedDevices);
+  const healthyOnline = filterHealthyDevices(prefilteredOnline.candidateSerials);
   warnSequentialUnhealthyDevices(healthyOnline.unhealthyDevices);
   const selectedOnline = selectDevicesForStrategy(
     healthyOnline.healthySerials,
     deviceStrategy,
     config.avd,
   );
-  warnSequentialSkippedDevices(selectedOnline.skippedDevices);
+  warnSequentialSkippedDevices(
+    selectedOnline.skippedDevices.filter(
+      (device) => !prefilteredOnline.skippedDevices.some((prefiltered) => prefiltered.serial === device.serial),
+    ),
+  );
 
   if (selectedOnline.selectedSerials.length > 0) {
     return { selectedSerial: selectedOnline.selectedSerials[0], launched: [] };

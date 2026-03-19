@@ -36,6 +36,12 @@ export interface ReadyMessage {
   workerId: number
 }
 
+export interface WorkerProgressMessage {
+  type: 'progress'
+  workerId: number
+  message: string
+}
+
 export interface TestEndMessage {
   type: 'test-end'
   workerId: number
@@ -64,6 +70,7 @@ export interface WorkerErrorMessage {
 
 export type WorkerToMainMessage =
   | ReadyMessage
+  | WorkerProgressMessage
   | TestEndMessage
   | FileStartMessage
   | FileDoneMessage

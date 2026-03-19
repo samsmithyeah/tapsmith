@@ -33,6 +33,10 @@ function send(msg: WorkerToMainMessage): void {
   }
 }
 
+function sendProgress(message: string): void {
+  send({ type: 'progress', workerId, message })
+}
+
 function configFromSerialized(s: SerializedConfig, daemonAddress: string): PilotConfig {
   return {
     timeout: s.timeout,
@@ -56,6 +60,7 @@ function configFromSerialized(s: SerializedConfig, daemonAddress: string): Pilot
 async function handleInit(msg: InitMessage): Promise<void> {
   workerId = msg.workerId
   const daemonAddress = `localhost:${msg.daemonPort}`
+  sendProgress(`connecting to daemon on ${daemonAddress}`)
 
   config = configFromSerialized(msg.config, daemonAddress)
 
@@ -70,11 +75,13 @@ async function handleInit(msg: InitMessage): Promise<void> {
 
   // Set the assigned device
   if (msg.deviceSerial) {
+    sendProgress(`selecting device ${msg.deviceSerial}`)
     await device.setDevice(msg.deviceSerial)
   }
 
   // Wake and unlock device screen
   try {
+    sendProgress('waking and unlocking device')
     await device.wake()
     await device.unlock()
   } catch {
@@ -84,6 +91,7 @@ async function handleInit(msg: InitMessage): Promise<void> {
   // Install app under test if APK path is configured
   if (config.apk) {
     const resolvedApk = path.resolve(config.rootDir, config.apk)
+    sendProgress(`installing app APK ${path.basename(resolvedApk)}`)
     await device.installApk(resolvedApk)
     // Give package manager time to index the new app
     await new Promise((r) => setTimeout(r, 2_000))
@@ -96,15 +104,18 @@ async function handleInit(msg: InitMessage): Promise<void> {
   const resolvedAgentTestApk = config.agentTestApk
     ? path.resolve(config.rootDir, config.agentTestApk)
     : undefined
+  sendProgress('starting Pilot agent')
   await device.startAgent('', resolvedAgentApk, resolvedAgentTestApk)
 
   try {
     if (config.package) {
+      sendProgress(`launching ${config.package}`)
       await launchConfiguredApp(
         sessionContext(msg.deviceSerial, resolvedAgentApk, resolvedAgentTestApk),
         'worker initialization',
       )
     } else {
+      sendProgress('validating session readiness')
       await ensureSessionReady(
         sessionContext(msg.deviceSerial, resolvedAgentApk, resolvedAgentTestApk),
         'worker initialization',
@@ -116,6 +127,7 @@ async function handleInit(msg: InitMessage): Promise<void> {
     )
   }
 
+  sendProgress('ready')
   send({ type: 'ready', workerId })
 }
 
