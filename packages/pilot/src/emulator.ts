@@ -210,6 +210,9 @@ export async function waitForPackageIndexed(
     if (isPackageInstalled(serial, packageName)) return
     await sleep(500)
   }
+  process.stderr.write(
+    `${YELLOW}Warning: package ${packageName} not found by pm after ${Math.round(timeoutMs / 1000)}s — continuing anyway.${RESET}\n`,
+  )
 }
 
 /**
@@ -574,16 +577,28 @@ function extractHierarchyXml(raw: string): string {
 
 export function detectBlockingSystemDialog(rawHierarchy: string): string | undefined {
   const hierarchy = rawHierarchy.toLowerCase()
-  const patterns = [
+
+  // Patterns that strongly indicate a system ANR/crash dialog — no ambiguity
+  const strongPatterns = [
     /isn(?:’|&apos;|’)t responding/,
     /keeps stopping/,
+  ]
+
+  // Patterns that only indicate a system dialog when a strong pattern is also present.
+  // "wait" and "close app" can appear in normal app UI, so we require them to
+  // co-occur with a system dialog indicator to avoid false positives.
+  const weakPatterns = [
     /text="wait"/,
     /close app/,
     /app info/,
   ]
 
-  const matched = patterns.find((pattern) => pattern.test(hierarchy))
-  if (!matched) return undefined
+  const hasStrongMatch = strongPatterns.some((pattern) => pattern.test(hierarchy))
+  const hasWeakMatch = weakPatterns.some((pattern) => pattern.test(hierarchy))
+
+  if (!hasStrongMatch && !hasWeakMatch) return undefined
+  // Weak matches alone are not sufficient — require at least one strong indicator
+  if (!hasStrongMatch) return undefined
 
   const compact = rawHierarchy.replace(/\s+/g, ' ').trim()
   return compact.slice(0, 160) || 'blocking system dialog detected'
@@ -1162,10 +1177,9 @@ export async function provisionEmulators(opts: {
  * Only ADB port forwards (created by per-worker daemons) are cleaned up,
  * since stale forwards break subsequent runs.
  */
-export function cleanupRunResources(launched: LaunchedEmulator[]): void {
-  // Intentionally do NOT kill emulators or remove from manifest.
-  // The next run will health-check them via reclaimOrphanedEmulators().
-  void launched
+export function preserveEmulatorsForReuse(_launched: LaunchedEmulator[]): void {
+  // Intentionally a no-op. Emulators stay alive and in the PID manifest so
+  // the next run can reuse them via reclaimOrphanedEmulators().
 }
 
 /**

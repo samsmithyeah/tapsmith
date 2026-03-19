@@ -9,6 +9,7 @@
  */
 
 import { fork, spawn, execFileSync, type ChildProcess } from 'node:child_process'
+import * as net from 'node:net'
 import * as path from 'node:path'
 import * as fs from 'node:fs'
 import { resolveDeviceStrategy, type PilotConfig } from './config.js'
@@ -24,7 +25,7 @@ import { deserializeTestResult, deserializeSuiteResult } from './worker-protocol
 import {
   clearOfflineEmulatorTransports,
   provisionEmulators,
-  cleanupRunResources,
+  preserveEmulatorsForReuse,
   forceCleanupEmulators,
   filterHealthyDevices,
   getRunningAvdName,
@@ -96,6 +97,7 @@ export async function runParallel(opts: DispatcherOptions): Promise<FullResult> 
 
   const firstDaemonPort = baseDaemonPort + 1
   const firstAgentPort = baseAgentPort + 1
+
   const firstDaemon = spawn(
     daemonBin,
     ['--port', String(firstDaemonPort), '--agent-port', String(firstAgentPort)],
@@ -111,7 +113,11 @@ export async function runParallel(opts: DispatcherOptions): Promise<FullResult> 
   const ready = await discoveryClient.waitForReady(10_000)
   if (!ready) {
     firstDaemon.kill()
-    throw new Error(`Failed to start worker daemon. Is pilot-core installed? (tried: ${daemonBin})`)
+    const portInUse = !(await isPortAvailable(firstDaemonPort))
+    const hint = portInUse
+      ? ` Port ${firstDaemonPort} is already in use — another Pilot run may be active, or a stale daemon is running. Kill it with: lsof -ti tcp:${firstDaemonPort} | xargs kill`
+      : ` Is pilot-core installed? (tried: ${daemonBin})`
+    throw new Error(`Failed to start worker daemon.${hint}`)
   }
 
   // Discover available devices
@@ -476,7 +482,7 @@ export async function runParallel(opts: DispatcherOptions): Promise<FullResult> 
 
     // 4. Leave emulators running for reuse by the next run.
     // The PID manifest keeps them tracked. Only emergency cleanup kills them.
-    cleanupRunResources(launchedEmulators)
+    preserveEmulatorsForReuse(launchedEmulators)
   }
 
   const totalDuration = Date.now() - totalStart
@@ -560,7 +566,9 @@ async function initializeWorker(opts: InitializeWorkerOptions): Promise<WorkerHa
     client.close()
     if (!ready) {
       try { daemonProcess.kill() } catch { /* already dead */ }
-      throw new Error(`worker daemon on port ${daemonPort} did not become ready`)
+      const portInUse = !(await isPortAvailable(daemonPort))
+      const hint = portInUse ? ` (port ${daemonPort} is already in use)` : ''
+      throw new Error(`worker daemon on port ${daemonPort} did not become ready${hint}`)
     }
   }
 
@@ -572,6 +580,8 @@ async function initializeWorker(opts: InitializeWorkerOptions): Promise<WorkerHa
       PILOT_WORKER_ID: String(workerId),
     },
   })
+  // Init + dispatch loop each add message/exit listeners; raise the cap to avoid warnings.
+  child.setMaxListeners(20)
 
   const worker: WorkerHandle = {
     id: workerId,
@@ -625,15 +635,15 @@ async function initializeWorker(opts: InitializeWorkerOptions): Promise<WorkerHa
       worker.process.on('exit', onExit)
       worker.process.on('message', onMessage)
 
-      const initMsg: MainToWorkerMessage = {
+      // Send init after listeners are registered so no messages are lost.
+      worker.process.send({
         type: 'init',
         workerId: worker.id,
         deviceSerial: worker.deviceSerial,
         daemonPort: worker.daemonPort,
         config: serializedConfig,
-        freshEmulator: opts.freshEmulator || undefined,
-      }
-      worker.process.send(initMsg)
+        freshEmulator: opts.freshEmulator === true ? true : undefined,
+      } satisfies MainToWorkerMessage)
     })
 
     return worker
@@ -657,6 +667,20 @@ async function initializeWorker(opts: InitializeWorkerOptions): Promise<WorkerHa
 
     throw err
   }
+}
+
+/**
+ * Check whether a TCP port is available for binding.
+ * Returns true if the port is free, false if already in use.
+ */
+function isPortAvailable(port: number): Promise<boolean> {
+  return new Promise((resolve) => {
+    const server = net.createServer()
+    server.once('error', () => resolve(false))
+    server.listen(port, '127.0.0.1', () => {
+      server.close(() => resolve(true))
+    })
+  })
 }
 
 function warnUnhealthyDevices(devices: DeviceHealthResult[]): void {

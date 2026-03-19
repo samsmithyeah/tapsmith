@@ -21,7 +21,7 @@ import { glob } from 'glob';
 import { spawn, execFileSync } from 'node:child_process';
 import {
   clearOfflineEmulatorTransports,
-  cleanupRunResources,
+  preserveEmulatorsForReuse,
   filterHealthyDevices,
   isPackageInstalled,
   listAdbDevices,
@@ -767,7 +767,7 @@ async function main(): Promise<void> {
     device?.close();
     client?.close();
     // Leave emulators running for reuse by the next run.
-    cleanupRunResources(launchedEmulators);
+    preserveEmulatorsForReuse(launchedEmulators);
   }
 
   process.exit(sequentialExitCode);
