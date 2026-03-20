@@ -19,6 +19,7 @@ import {
   formatDuration,
   formatError,
   formatSummaryLine,
+  workerTag,
 } from './base.js'
 
 export class LineReporter implements PilotReporter {
@@ -42,7 +43,7 @@ export class LineReporter implements PilotReporter {
         // Clear current line first
         process.stdout.write('\x1b[2K\r')
       }
-      process.stdout.write(`  ${statusIcon('failed')} ${test.fullName} ${dim(`(${formatDuration(test.durationMs)})`)}\n`)
+      process.stdout.write(`  ${statusIcon('failed')} ${workerTag(test.workerIndex)}${test.fullName} ${dim(`(${formatDuration(test.durationMs)})`)}\n`)
       if (test.error) {
         process.stdout.write(formatError(test.error) + '\n')
       }
@@ -53,7 +54,8 @@ export class LineReporter implements PilotReporter {
       // Overwrite the current line with latest passed/skipped test
       const icon = statusIcon(test.status)
       const duration = dim(`(${formatDuration(test.durationMs)})`)
-      const line = `  ${icon} [${this._completed}] ${test.fullName} ${duration}`
+      const worker = workerTag(test.workerIndex)
+      const line = `  ${icon} [${this._completed}] ${worker}${test.fullName} ${duration}`
       // Truncate to terminal width
       const maxWidth = process.stdout.columns ?? 80
       const truncated = line.length > maxWidth ? line.slice(0, maxWidth - 1) + '…' : line
@@ -77,13 +79,13 @@ export class LineReporter implements PilotReporter {
     if (this._failed.length > 0) {
       process.stdout.write(bold(red('Failures:\n\n')))
       for (const test of this._failed) {
-        process.stdout.write(`  ${red('✗')} ${test.fullName}\n`)
+        process.stdout.write(`  ${red('✗')} ${workerTag(test.workerIndex)}${test.fullName}\n`)
         if (test.error) {
           process.stdout.write(formatError(test.error) + '\n\n')
         }
       }
     }
 
-    process.stdout.write(formatSummaryLine(passed, failed, skipped, result.duration) + '\n\n')
+    process.stdout.write(formatSummaryLine(passed, failed, skipped, result.duration, result.setupDuration) + '\n\n')
   }
 }

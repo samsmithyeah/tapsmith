@@ -1,22 +1,37 @@
-import { useRef, useState } from "react"
+import { useEffect, useRef, useState } from "react"
 import { Animated, PanResponder, StyleSheet, Text, TouchableOpacity, View } from "react-native"
+
+const DOUBLE_TAP_WINDOW_MS = 450
 
 export default function GesturesScreen() {
   const [lastGesture, setLastGesture] = useState("None")
   const [tapCount, setTapCount] = useState(0)
   const [longPressed, setLongPressed] = useState(false)
 
-  const lastTapRef = useRef(0)
+  const pendingSingleTapRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  useEffect(() => {
+    return () => {
+      if (pendingSingleTapRef.current) {
+        clearTimeout(pendingSingleTapRef.current)
+      }
+    }
+  }, [])
 
   const handleTap = () => {
-    const now = Date.now()
-    if (now - lastTapRef.current < 300) {
-      setLastGesture("Double tap")
-    } else {
-      setLastGesture("Single tap")
-    }
     setTapCount((c) => c + 1)
-    lastTapRef.current = now
+
+    if (pendingSingleTapRef.current) {
+      clearTimeout(pendingSingleTapRef.current)
+      pendingSingleTapRef.current = null
+      setLastGesture("Double tap")
+      return
+    }
+
+    pendingSingleTapRef.current = setTimeout(() => {
+      setLastGesture("Single tap")
+      pendingSingleTapRef.current = null
+    }, DOUBLE_TAP_WINDOW_MS)
   }
 
   const pan = useRef(new Animated.ValueXY()).current

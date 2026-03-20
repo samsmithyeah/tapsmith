@@ -20,6 +20,7 @@ interface JsonTestEntry {
   duration: number
   error?: { message: string; stack?: string }
   screenshotPath?: string
+  workerIndex?: number
 }
 
 interface JsonSuiteEntry {
@@ -41,6 +42,7 @@ interface JsonReport {
     failed: number
     skipped: number
     duration: number
+    setupDuration?: number
     startTime: string
   }
   suites: JsonSuiteEntry[]
@@ -73,6 +75,7 @@ export class JsonReporter implements PilotReporter {
         failed: result.tests.filter((t) => t.status === 'failed').length,
         skipped: result.tests.filter((t) => t.status === 'skipped').length,
         duration: result.duration,
+        setupDuration: result.setupDuration,
         startTime: this._startTime.toISOString(),
       },
       suites: result.suites.map((s) => serializeSuite(s)),
@@ -95,6 +98,7 @@ function serializeSuite(suite: SuiteResult): JsonSuiteEntry {
       duration: t.durationMs,
       error: t.error ? { message: t.error.message, stack: t.error.stack } : undefined,
       screenshotPath: t.screenshotPath,
+      workerIndex: t.workerIndex,
     })),
     suites: suite.suites.map((s) => serializeSuite(s)),
   }

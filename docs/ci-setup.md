@@ -1,6 +1,6 @@
 # CI Setup
 
-This guide covers running Pilot tests in continuous integration environments. The key challenge is setting up an Android emulator in a headless environment.
+This guide covers running Pilot tests in continuous integration environments. The key challenge is setting up enough Android emulator capacity in a headless environment.
 
 ## Overview
 
@@ -177,19 +177,80 @@ Cache the Android SDK and emulator system images to speed up CI runs:
     key: android-sdk-${{ runner.os }}-api33
 ```
 
-### Parallel Test Files
+### Parallel Workers
 
-Pilot currently runs tests sequentially on a single device. To speed up CI, you can split test files across multiple jobs using a matrix strategy:
+Pilot can run multiple workers in parallel as long as each worker has its own
+device or emulator instance. The recommended emulator-managed setup is:
+
+```typescript
+import { defineConfig } from "pilot";
+
+export default defineConfig({
+  apk: "./app-debug.apk",
+  package: "com.example.myapp",
+  workers: 4,
+  launchEmulators: true,
+  avd: "Pixel_9_API_35",
+  timeout: 60_000,
+});
+```
+
+With that config, `npx pilot test` will try to launch repeated instances of the
+same AVD for all workers.
+
+### CI Sharding
+
+If your CI environment cannot support multiple emulator instances on one host,
+split the suite across multiple jobs instead. Use `--shard=x/y` to
+deterministically assign test files to each job:
 
 ```yaml
 strategy:
   matrix:
-    test-shard: [1, 2, 3]
+    shard: [1, 2, 3]
 
 steps:
   # ... setup steps ...
-  - name: Run tests (shard ${{ matrix.test-shard }})
-    run: |
-      files=$(npx pilot test --list | awk "NR % 3 == ${{ matrix.test-shard }} - 1")
-      npx pilot test $files
+  - name: Run tests (shard ${{ matrix.shard }}/3)
+    run: npx pilot test --shard=${{ matrix.shard }}/3
+
+  - name: Upload blob report
+    if: always()
+    uses: actions/upload-artifact@v4
+    with:
+      name: blob-report-${{ matrix.shard }}
+      path: blob-report/
+```
+
+When `--shard` is used, Pilot automatically adds the `blob` reporter so results
+can be merged after all shards complete.
+
+### Merging Sharded Reports
+
+After all shard jobs finish, download the blob artifacts and merge them into a
+single HTML report:
+
+```yaml
+merge-reports:
+  needs: test
+  runs-on: ubuntu-latest
+  if: always()
+  steps:
+    - uses: actions/checkout@v4
+
+    - name: Download blob reports
+      uses: actions/download-artifact@v4
+      with:
+        pattern: blob-report-*
+        path: all-blob-reports
+        merge-multiple: true
+
+    - name: Merge reports
+      run: npx pilot merge-reports all-blob-reports
+
+    - name: Upload HTML report
+      uses: actions/upload-artifact@v4
+      with:
+        name: pilot-report
+        path: pilot-report/
 ```

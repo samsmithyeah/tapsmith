@@ -1,9 +1,20 @@
-import { beforeAll, contentDesc, describe, expect, test, text } from "pilot"
+import { beforeEach, contentDesc, describe, expect, test, text } from "pilot"
 import { AccessibilityScreen } from "../screens/accessibility.screen.js"
 
 describe("Accessibility screen", () => {
-  beforeAll(async ({ device }) => {
-    await device.tap(contentDesc("Accessibility"))
+  beforeEach(async ({ device }) => {
+    await device.restartApp()
+
+    const accessibilityCard = device.element(contentDesc("Accessibility"))
+    for (let i = 0; i < 4; i++) {
+      if (await accessibilityCard.isVisible()) {
+        break
+      }
+      await device.swipe("up")
+    }
+
+    await accessibilityCard.tap()
+    await expect(device.element(text("Accessibility Testing"))).toBeVisible()
   })
 
   test("shows heading", async ({ device }) => {

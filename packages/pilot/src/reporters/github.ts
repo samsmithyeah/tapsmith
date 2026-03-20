@@ -23,7 +23,8 @@ export class GitHubActionsReporter implements PilotReporter {
     // Escape the message for GitHub Actions
     const message = escapeGitHub(test.error.message)
 
-    process.stdout.write(`::error${locationPart} title=${escapeGitHub(test.fullName)}::${message}\n`)
+    const workerSuffix = test.workerIndex != null ? ` (worker ${test.workerIndex})` : ''
+    process.stdout.write(`::error${locationPart} title=${escapeGitHub(test.fullName + workerSuffix)}::${message}\n`)
   }
 
   async onRunEnd(result: FullResult): Promise<void> {
@@ -49,7 +50,8 @@ export class GitHubActionsReporter implements PilotReporter {
         summaryLines.push('')
         for (const test of result.tests) {
           if (test.status === 'failed' && test.error) {
-            summaryLines.push(`- **${test.fullName}**: ${test.error.message}`)
+            const workerInfo = test.workerIndex != null ? ` (worker ${test.workerIndex})` : ''
+            summaryLines.push(`- **${test.fullName}${workerInfo}**: ${test.error.message}`)
           }
         }
       }
@@ -63,7 +65,7 @@ export class GitHubActionsReporter implements PilotReporter {
     }
 
     // Also print a plain summary line to stdout
-    process.stdout.write('\n' + formatSummaryLine(passed, failed, skipped, result.duration) + '\n\n')
+    process.stdout.write('\n' + formatSummaryLine(passed, failed, skipped, result.duration, result.setupDuration) + '\n\n')
   }
 }
 

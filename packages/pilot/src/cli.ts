@@ -11,13 +11,30 @@
 
 import * as path from 'node:path';
 import * as fs from 'node:fs';
-import { loadConfig } from './config.js';
+import { loadConfig, resolveDeviceStrategy } from './config.js';
 import { PilotGrpcClient } from './grpc-client.js';
 import { Device } from './device.js';
 import { runTestFile, collectResults, type TestResult, type SuiteResult } from './runner.js';
 import { createReporters, ReporterDispatcher, type FullResult } from './reporter.js';
+import { ensureSessionReady, launchConfiguredApp } from './session-preflight.js';
 import { glob } from 'glob';
 import { spawn, execFileSync } from 'node:child_process';
+import {
+  clearOfflineEmulatorTransports,
+  preserveEmulatorsForReuse,
+  filterHealthyDevices,
+  isPackageInstalled,
+  listAdbDevices,
+  waitForPackageIndexed,
+  cleanupStaleEmulators,
+  prefilterDevicesForStrategy,
+  probeDeviceHealth,
+  provisionEmulators,
+  type DeviceHealthResult,
+  type LaunchedEmulator,
+  selectDevicesForStrategy,
+  waitForDeviceStability,
+} from './emulator.js';
 
 // ─── ANSI helpers ───
 
@@ -38,6 +55,22 @@ function bold(s: string): string {
 }
 function dim(s: string): string {
   return `${DIM}${s}${RESET}`;
+}
+
+function warnSequentialUnhealthyDevices(devices: DeviceHealthResult[]): void {
+  for (const device of devices) {
+    process.stderr.write(
+      `${YELLOW}Skipping unhealthy device ${device.serial}: ${device.reason ?? 'unknown health check failure'}.${RESET}\n`,
+    );
+  }
+}
+
+function warnSequentialSkippedDevices(devices: Array<{ serial: string; reason: string }>): void {
+  for (const device of devices) {
+    process.stderr.write(
+      `${YELLOW}Skipping device ${device.serial}: ${device.reason}.${RESET}\n`,
+    );
+  }
 }
 
 // ─── Version ───
@@ -104,6 +137,16 @@ function reExecWithTsx(args: string[]): never {
 async function checkDeviceHealth(serial: string | undefined): Promise<void> {
   const target = serial ?? 'any connected device';
 
+  if (serial) {
+    const stable = await waitForDeviceStability(serial, 20_000, probeDeviceHealth);
+    if (stable.healthy) return;
+
+    if (stable.reason && !stable.reason.includes('ADB shell')) {
+      console.error(red(`Device ${target} is not ready: ${stable.reason}.`));
+      process.exit(1);
+    }
+  }
+
   // Quick ADB responsiveness check (5s timeout)
   const adbArgs = serial
     ? ['-s', serial, 'shell', 'echo', '__pilot_health_ok__']
@@ -146,7 +189,7 @@ async function checkDeviceHealth(serial: string | undefined): Promise<void> {
   // Wait for device to come back
   await new Promise((r) => setTimeout(r, 3_000));
 
-  if (tryAdb()) {
+  if (!serial ? tryAdb() : (await waitForDeviceStability(serial, 20_000, probeDeviceHealth)).healthy) {
     console.log(dim('ADB recovered. Device is responsive.'));
     return;
   }
@@ -236,12 +279,93 @@ async function discoverTestFiles(
   return [...new Set(files)].sort();
 }
 
+function listConnectedDeviceSerials(): string[] {
+  return listAdbDevices()
+    .filter((d) => d.state === 'device')
+    .map((d) => d.serial);
+}
+
+async function ensureSequentialTargetDevice(
+  config: Awaited<ReturnType<typeof loadConfig>>,
+): Promise<{ selectedSerial?: string; launched: LaunchedEmulator[] }> {
+  if (config.device) {
+    return { selectedSerial: config.device, launched: [] };
+  }
+
+  const clearedOfflineEmulators = clearOfflineEmulatorTransports();
+  for (const serial of clearedOfflineEmulators) {
+    process.stderr.write(
+      `${YELLOW}Cleared stale offline emulator transport ${serial} before device selection.${RESET}\n`,
+    );
+  }
+
+  // Reclaim healthy emulators from previous runs, kill unhealthy ones.
+  // cleanupStaleEmulators logs details about each action internally.
+  const staleResult = cleanupStaleEmulators(config.avd);
+  if (staleResult.killed.length > 0) {
+    process.stderr.write(
+      `${DIM}Cleaned up ${staleResult.killed.length} stale emulator(s).${RESET}\n`,
+    );
+  }
+
+  const deviceStrategy = resolveDeviceStrategy(config);
+  const onlineSerials = listConnectedDeviceSerials();
+  const prefilteredOnline = prefilterDevicesForStrategy(
+    onlineSerials,
+    deviceStrategy,
+    config.avd,
+  );
+  warnSequentialSkippedDevices(prefilteredOnline.skippedDevices);
+  const healthyOnline = filterHealthyDevices(prefilteredOnline.candidateSerials);
+  warnSequentialUnhealthyDevices(healthyOnline.unhealthyDevices);
+  const selectedOnline = selectDevicesForStrategy(
+    healthyOnline.healthySerials,
+    deviceStrategy,
+    config.avd,
+  );
+  warnSequentialSkippedDevices(
+    selectedOnline.skippedDevices.filter(
+      (device) => !prefilteredOnline.skippedDevices.some((prefiltered) => prefiltered.serial === device.serial),
+    ),
+  );
+
+  if (selectedOnline.selectedSerials.length > 0) {
+    return { selectedSerial: selectedOnline.selectedSerials[0], launched: [] };
+  }
+
+  if (!config.launchEmulators) {
+    return { selectedSerial: undefined, launched: [] };
+  }
+
+  const provision = await provisionEmulators({
+    existingSerials: [],
+    occupiedSerials: onlineSerials,
+    workers: 1,
+    avd: config.avd,
+  });
+  const healthyProvisioned = filterHealthyDevices(provision.allSerials);
+  warnSequentialUnhealthyDevices(healthyProvisioned.unhealthyDevices);
+  const selectedProvisioned = selectDevicesForStrategy(
+    healthyProvisioned.healthySerials,
+    deviceStrategy,
+    config.avd,
+  );
+  warnSequentialSkippedDevices(selectedProvisioned.skippedDevices);
+
+  return {
+    selectedSerial: selectedProvisioned.selectedSerials[0],
+    launched: provision.launched,
+  };
+}
+
 // ─── Argument parsing ───
 
 interface CliArgs {
   command: string;
   files: string[];
   device?: string;
+  workers?: number;
+  shard?: { current: number; total: number };
   version: boolean;
   help: boolean;
   tsxReexec: boolean;
@@ -268,6 +392,27 @@ function parseArgs(argv: string[]): CliArgs {
       args.help = true;
     } else if (arg === '--device' || arg === '-d') {
       args.device = rest[++i];
+    } else if (arg === '--workers' || arg === '-j') {
+      const val = parseInt(rest[++i], 10);
+      if (isNaN(val) || val < 1) {
+        console.error(red('--workers must be a positive integer'));
+        process.exit(1);
+      }
+      args.workers = val;
+    } else if (arg?.startsWith('--shard=')) {
+      const shardStr = arg.slice('--shard='.length);
+      const match = shardStr.match(/^(\d+)\/(\d+)$/);
+      if (!match) {
+        console.error(red('--shard must be in the format x/y (e.g. --shard=1/4)'));
+        process.exit(1);
+      }
+      const current = parseInt(match[1], 10);
+      const total = parseInt(match[2], 10);
+      if (current < 1 || current > total) {
+        console.error(red(`Invalid shard: ${current}/${total}. Current must be between 1 and total.`));
+        process.exit(1);
+      }
+      args.shard = { current, total };
     } else if (arg === '--__tsx-reexec') {
       args.tsxReexec = true;
     } else if (!arg.startsWith('-') && !args.command) {
@@ -289,13 +434,17 @@ ${bold('pilot')} — Mobile app testing framework
 ${bold('Usage:')}
   pilot test [files...]           Run test files
   pilot test --device <serial>    Target specific device
+  pilot test --workers <n>        Run tests in parallel across n devices
+  pilot test --shard=x/y          Run shard x of y (for CI)
   pilot show-report [dir]         Open HTML test report
   pilot merge-reports [dir]       Merge blob reports from sharded runs
   pilot --version                 Print version
   pilot --help                    Show this help
 
 ${bold('Options:')}
-  -d, --device <serial>   Target a specific device by serial
+  -d, --device <serial>    Target a specific device by serial
+  -j, --workers <n>        Number of parallel workers (default: 1)
+  --shard=x/y              Split tests across CI machines (e.g. --shard=1/4)
   -v, --version            Print version
   -h, --help               Show this help
 `);
@@ -336,7 +485,6 @@ async function main(): Promise<void> {
       process.exit(1)
     }
     const { mergeBlobs } = await import('./reporters/blob.js')
-    const { createReporters, ReporterDispatcher } = await import('./reporter.js')
     const config = await loadConfig()
     const result = mergeBlobs(resolvedDir)
     const reporters = await createReporters(config.reporter ?? 'list')
@@ -357,12 +505,29 @@ async function main(): Promise<void> {
   if (args.device) {
     config.device = args.device;
   }
+  if (args.workers !== undefined) {
+    config.workers = args.workers;
+  }
+  if (args.shard) {
+    config.shard = args.shard;
+  }
 
   // Discover test files
-  const testFiles = await discoverTestFiles(config.testMatch, config.rootDir, args.files);
+  let testFiles = await discoverTestFiles(config.testMatch, config.rootDir, args.files);
   if (testFiles.length === 0) {
     console.error(red('No test files found.'));
     process.exit(1);
+  }
+
+  // Apply sharding — deterministic split across CI machines
+  if (config.shard) {
+    const { current, total } = config.shard;
+    testFiles = testFiles.filter((_, i) => i % total === current - 1);
+    if (testFiles.length === 0) {
+      console.log(dim(`Shard ${current}/${total}: no test files in this shard.`));
+      process.exit(0);
+    }
+    console.log(dim(`Shard ${current}/${total}: running ${testFiles.length} file(s)`));
   }
 
   // Re-exec under tsx if we have TypeScript test files and haven't already
@@ -382,136 +547,230 @@ async function main(): Promise<void> {
       reporters.push(new GitHubActionsReporter());
     }
   }
+  // Auto-add blob reporter when sharding (for merge-reports)
+  if (config.shard) {
+    const hasBlob = reporters.some((r) => r.constructor.name === 'BlobReporter');
+    if (!hasBlob) {
+      const { BlobReporter } = await import('./reporters/blob.js');
+      reporters.push(new BlobReporter());
+    }
+  }
   const reporter = new ReporterDispatcher(reporters);
 
   reporter.onRunStart(config, testFiles.length);
 
-  // Pre-flight: verify device is responsive before doing anything slow
-  await checkDeviceHealth(config.device);
+  // ─── Parallel mode ───
+  if (config.workers > 1) {
+    // The dispatcher manages its own daemons — one per worker — each with
+    // exclusive ADB access to its assigned device. No discovery daemon needed.
+    const { runParallel } = await import('./dispatcher.js');
+    const fullResult = await runParallel({
+      config,
+      reporter,
+      testFiles,
+      workers: config.workers,
+    });
 
-  // Connect to daemon
-  const client = await ensureDaemonRunning(config.daemonAddress, config.daemonBin);
-  const device = new Device(client, config);
+    await reporter.onRunEnd(fullResult);
+    process.exit(fullResult.status === 'failed' ? 1 : 0);
+  }
 
-  // Set device if specified
-  if (config.device) {
+  // ─── Sequential mode (workers: 1, default) ───
+  let launchedEmulators: LaunchedEmulator[] = [];
+  let client: PilotGrpcClient | undefined;
+  let device: Device | undefined;
+  let sequentialExitCode = 1;
+  const sequentialStart = Date.now();
+
+  try {
+    const target = await ensureSequentialTargetDevice(config);
+    launchedEmulators = target.launched;
+
+    if (!target.selectedSerial) {
+      console.error(
+        red(
+          'No online devices found. Connect a device, start an emulator, or set `launchEmulators: true` with `avd` in your config.',
+        ),
+      );
+      sequentialExitCode = 1;
+      return;
+    }
+
+    config.device = target.selectedSerial;
+
+    // Pre-flight: verify device is responsive before doing anything slow
+    await checkDeviceHealth(config.device);
+
+    // Connect to daemon
+    client = await ensureDaemonRunning(config.daemonAddress, config.daemonBin);
+    device = new Device(client, config);
+
     try {
       await device.setDevice(config.device);
       console.log(dim(`Using device: ${config.device}`));
     } catch (err) {
       console.error(red(`Failed to set device: ${err}`));
-      process.exit(1);
+      sequentialExitCode = 1;
+      return;
     }
-  }
 
-  // Wake and unlock device screen
-  try {
-    await device.wake();
-    await device.unlock();
-    console.log(dim('Device screen unlocked.'));
-  } catch {
-    // Non-fatal — device might already be awake/unlocked
-  }
-
-  // Start agent (with auto-install if APK paths configured)
-  const resolvedAgentApk = config.agentApk
-    ? path.resolve(config.rootDir, config.agentApk)
-    : undefined;
-  const resolvedAgentTestApk = config.agentTestApk
-    ? path.resolve(config.rootDir, config.agentTestApk)
-    : undefined;
-  try {
-    await device.startAgent(
-      '',
-      resolvedAgentApk,
-      resolvedAgentTestApk,
-    );
-    console.log(dim('Agent connected.'));
-  } catch (err) {
-    console.error(red(`Failed to start agent: ${err}`));
-    process.exit(1);
-  }
-
-  // Launch the app under test — force-stop first to ensure it starts fresh
-  // on the main activity regardless of any previous state.
-  if (config.package) {
+    // Wake and unlock device screen
     try {
-      try { await device.terminateApp(config.package); } catch { /* may not be running */ }
-      await device.launchApp(config.package);
-      console.log(dim(`Launched ${config.package}`));
-    } catch (err) {
-      console.error(red(`Failed to launch app: ${err}`));
-      process.exit(1);
+      await device.wake();
+      await device.unlock();
+      console.log(dim('Device screen unlocked.'));
+    } catch {
+      // Non-fatal — device might already be awake/unlocked
     }
-  }
 
-  // Run tests
-  const allResults: TestResult[] = [];
-  const allSuites: SuiteResult[] = [];
-  const totalStart = Date.now();
+    // Install app under test if APK path is configured and not already installed.
+    if (config.apk) {
+      const alreadyInstalled = config.package
+        && config.device
+        && isPackageInstalled(config.device, config.package);
 
-  const screenshotDir =
-    config.screenshot !== 'never'
-      ? path.resolve(config.rootDir, config.outputDir, 'screenshots')
-      : undefined;
-
-  for (let i = 0; i < testFiles.length; i++) {
-    const file = testFiles[i];
-
-    // Reset app to main activity between test files for isolation (PILOT-134).
-    // Uses direct ADB commands (force-stop + launcher intent) which bypass the
-    // on-device agent — the agent survives because it runs as a separate package.
-    if (i > 0 && config.package) {
-      try {
-        // terminateApp may fail if the app already crashed — that's fine,
-        // we just need it stopped before relaunching.
-        try { await device.terminateApp(config.package); } catch { /* app may not be running */ }
-        await device.launchApp(config.package);
-
-        const pong = await client.ping();
-        if (!pong.agentConnected) {
-          console.error(red('Agent disconnected after app reset. Aborting.'));
-          process.exit(1);
+      if (alreadyInstalled) {
+        console.log(dim(`App ${config.package} already installed, skipping APK install.`));
+      } else {
+        const resolvedApk = path.resolve(config.rootDir, config.apk);
+        try {
+          await device.installApk(resolvedApk);
+          // Wait for package manager to index the new app
+          if (config.package && config.device) {
+            await waitForPackageIndexed(config.device, config.package);
+          }
+          console.log(dim(`Installed app APK: ${path.basename(resolvedApk)}`));
+        } catch (err) {
+          console.error(red(`Failed to install app APK: ${err}`));
+          sequentialExitCode = 1;
+          return;
         }
-      } catch (err) {
-        console.error(red(`Failed to reset app between test files: ${err}`));
-        process.exit(1);
       }
     }
 
-    reporter.onTestFileStart(file);
+    // Start agent (with auto-install if APK paths configured)
+    const resolvedAgentApk = config.agentApk
+      ? path.resolve(config.rootDir, config.agentApk)
+      : undefined;
+    const resolvedAgentTestApk = config.agentTestApk
+      ? path.resolve(config.rootDir, config.agentTestApk)
+      : undefined;
+    try {
+      await device.startAgent(
+        '',
+        resolvedAgentApk,
+        resolvedAgentTestApk,
+      );
+      await ensureSessionReady({
+        label: `Device ${config.device}`,
+        config,
+        device,
+        client,
+        agentApkPath: resolvedAgentApk,
+        agentTestApkPath: resolvedAgentTestApk,
+        deviceSerial: config.device,
+      }, 'startup');
+      console.log(dim('Agent connected.'));
+    } catch (err) {
+      console.error(red(`Failed to start agent: ${err}`));
+      sequentialExitCode = 1;
+      return;
+    }
 
-    const suiteResult = await runTestFile(file, {
-      config,
-      device,
-      screenshotDir,
-      reporter,
-    });
+    // Launch the app under test — force-stop first to ensure it starts fresh
+    // on the main activity regardless of any previous state.
+    if (config.package) {
+      try {
+        await launchConfiguredApp({
+          label: `Device ${config.device}`,
+          config,
+          device,
+          client,
+          agentApkPath: resolvedAgentApk,
+          agentTestApkPath: resolvedAgentTestApk,
+          deviceSerial: config.device,
+        }, 'startup');
+        console.log(dim(`Launched ${config.package}`));
+      } catch (err) {
+        console.error(red(`Failed to launch app: ${err}`));
+        sequentialExitCode = 1;
+        return;
+      }
+    }
 
-    const fileResults = collectResults(suiteResult);
-    allResults.push(...fileResults);
-    allSuites.push(suiteResult);
+    // Run tests
+    const allResults: TestResult[] = [];
+    const allSuites: SuiteResult[] = [];
+    const setupDuration = Date.now() - sequentialStart;
 
-    reporter.onTestFileEnd(file, fileResults);
+    const screenshotDir =
+      config.screenshot !== 'never'
+        ? path.resolve(config.rootDir, config.outputDir, 'screenshots')
+        : undefined;
+
+    for (let i = 0; i < testFiles.length; i++) {
+      const file = testFiles[i];
+
+      if (i > 0 && config.package) {
+        try {
+          await launchConfiguredApp({
+            label: `Device ${config.device}`,
+            config,
+            device,
+            client,
+            agentApkPath: resolvedAgentApk,
+            agentTestApkPath: resolvedAgentTestApk,
+            deviceSerial: config.device,
+          }, `reset before ${path.basename(file)}`);
+
+          const pong = await client.ping();
+          if (!pong.agentConnected) {
+            console.error(red('Agent disconnected after app reset. Aborting.'));
+            sequentialExitCode = 1;
+            return;
+          }
+        } catch (err) {
+          console.error(red(`Failed to reset app between test files: ${err}`));
+          sequentialExitCode = 1;
+          return;
+        }
+      }
+
+      reporter.onTestFileStart(file);
+
+      const suiteResult = await runTestFile(file, {
+        config,
+        device,
+        screenshotDir,
+        reporter,
+      });
+
+      const fileResults = collectResults(suiteResult);
+      allResults.push(...fileResults);
+      allSuites.push(suiteResult);
+
+      reporter.onTestFileEnd(file, fileResults);
+    }
+
+    const totalDurationMs = Date.now() - sequentialStart;
+    const hasFailed = allResults.some((r) => r.status === 'failed');
+    const fullResult: FullResult = {
+      status: hasFailed ? 'failed' : 'passed',
+      duration: totalDurationMs,
+      setupDuration,
+      tests: allResults,
+      suites: allSuites,
+    };
+    await reporter.onRunEnd(fullResult);
+    sequentialExitCode = hasFailed ? 1 : 0;
+  } finally {
+    device?.close();
+    client?.close();
+    // Leave emulators running for reuse by the next run.
+    preserveEmulatorsForReuse(launchedEmulators);
   }
 
-  const totalDurationMs = Date.now() - totalStart;
-
-  // Notify reporters of run completion
-  const hasFailed = allResults.some((r) => r.status === 'failed');
-  const fullResult: FullResult = {
-    status: hasFailed ? 'failed' : 'passed',
-    duration: totalDurationMs,
-    tests: allResults,
-    suites: allSuites,
-  };
-  await reporter.onRunEnd(fullResult);
-
-  // Cleanup
-  device.close();
-
-  // Exit code
-  process.exit(hasFailed ? 1 : 0);
+  process.exit(sequentialExitCode);
 }
 
 main().catch((err) => {

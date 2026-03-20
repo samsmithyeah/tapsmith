@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { defineConfig, type PilotConfig } from '../config.js';
+import { defineConfig, resolveDeviceStrategy } from '../config.js';
 
 describe('defineConfig()', () => {
   it('returns defaults when called with no arguments', () => {
@@ -12,8 +12,14 @@ describe('defineConfig()', () => {
     expect(config.rootDir).toBe(process.cwd());
     expect(config.outputDir).toBe('pilot-results');
     expect(config.apk).toBeUndefined();
+    expect(config.activity).toBeUndefined();
     expect(config.device).toBeUndefined();
+    expect(config.deviceStrategy).toBeUndefined();
     expect(config.daemonBin).toBeUndefined();
+    expect(config.workers).toBe(1);
+    expect(config.shard).toBeUndefined();
+    expect(config.launchEmulators).toBe(false);
+    expect(config.avd).toBeUndefined();
   });
 
   it('returns defaults when called with empty object', () => {
@@ -71,6 +77,11 @@ describe('defineConfig()', () => {
     expect(config.apk).toBe('/path/to/app.apk');
   });
 
+  it('sets optional activity', () => {
+    const config = defineConfig({ activity: 'com.example.app.MainActivity' });
+    expect(config.activity).toBe('com.example.app.MainActivity');
+  });
+
   it('sets optional device', () => {
     const config = defineConfig({ device: 'emulator-5554' });
     expect(config.device).toBe('emulator-5554');
@@ -87,6 +98,7 @@ describe('defineConfig()', () => {
       retries: 2,
       screenshot: 'always',
       apk: 'app.apk',
+      activity: 'com.example.app.MainActivity',
       device: 'pixel6',
       daemonAddress: 'host:1234',
       rootDir: '/src',
@@ -97,11 +109,22 @@ describe('defineConfig()', () => {
     expect(config.retries).toBe(2);
     expect(config.screenshot).toBe('always');
     expect(config.apk).toBe('app.apk');
+    expect(config.activity).toBe('com.example.app.MainActivity');
     expect(config.device).toBe('pixel6');
     expect(config.daemonAddress).toBe('host:1234');
     expect(config.rootDir).toBe('/src');
     expect(config.outputDir).toBe('out');
     expect(config.testMatch).toEqual(['*.test.ts']);
+  });
+
+  it('overrides workers', () => {
+    const config = defineConfig({ workers: 4 });
+    expect(config.workers).toBe(4);
+  });
+
+  it('overrides shard', () => {
+    const config = defineConfig({ shard: { current: 2, total: 4 } });
+    expect(config.shard).toEqual({ current: 2, total: 4 });
   });
 
   it('returns a plain object (not frozen or sealed)', () => {
@@ -115,5 +138,28 @@ describe('defineConfig()', () => {
     const b = defineConfig();
     a.timeout = 1;
     expect(b.timeout).toBe(30_000);
+  });
+
+  it('allows explicit deviceStrategy override', () => {
+    const config = defineConfig({ deviceStrategy: 'prefer-connected' });
+    expect(config.deviceStrategy).toBe('prefer-connected');
+  });
+});
+
+describe('resolveDeviceStrategy()', () => {
+  it('defaults to prefer-connected when avd is not set', () => {
+    expect(resolveDeviceStrategy(defineConfig())).toBe('prefer-connected');
+  });
+
+  it('defaults to avd-only when avd is set', () => {
+    expect(resolveDeviceStrategy(defineConfig({ avd: 'Pixel_9_API_35' }))).toBe('avd-only');
+  });
+
+  it('respects explicit override when avd is set', () => {
+    expect(
+      resolveDeviceStrategy(
+        defineConfig({ avd: 'Pixel_9_API_35', deviceStrategy: 'prefer-connected' }),
+      ),
+    ).toBe('prefer-connected');
   });
 });

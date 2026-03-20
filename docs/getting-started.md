@@ -12,7 +12,9 @@ Before you begin, make sure you have the following installed:
 | ADB (Android Debug Bridge) | Any recent version | `adb --version` |
 | Android device or emulator | Android 8.0+ (API 26+) | `adb devices` |
 
-If you are using an emulator, start it before running tests. Pilot detects connected devices automatically but does not launch emulators for you.
+If you are using a single emulator or device, you can start it yourself and let
+Pilot detect it automatically. Pilot can also launch emulator instances for you
+when configured with `launchEmulators` and `avd`.
 
 ## Installation
 
@@ -36,9 +38,27 @@ export default defineConfig({
 });
 ```
 
-The only required option is `apk` -- the path to the Android APK you want to test. Everything else has sensible defaults.
+The only required option is `apk` -- the path to the Android APK you want to test. If you want Pilot to auto-launch the app before tests, also set `package`. `activity` is optional and usually not needed.
 
 See the [Configuration](configuration.md) guide for all available options.
+
+For parallel emulator runs, use:
+
+```typescript
+import { defineConfig } from "pilot";
+
+export default defineConfig({
+  apk: "./app/build/outputs/apk/debug/app-debug.apk",
+  package: "com.example.myapp",
+  workers: 4,
+  launchEmulators: true,
+  avd: "Pixel_9_API_35",
+});
+```
+
+When `avd` is set, Pilot defaults to using that AVD for provisioned emulator
+capacity. Set `deviceStrategy: "prefer-connected"` if you want connected
+devices to win instead.
 
 ## Write Your First Test
 
@@ -81,19 +101,33 @@ Pilot will:
 4. Discover all test files matching `**/*.test.ts` and `**/*.spec.ts`.
 5. Run each test sequentially and report results.
 
+For multi-worker runs, Pilot will assign one device per worker. If
+`launchEmulators: true` is configured, it will launch additional emulator
+instances automatically. If `avd` is set, those instances will use that AVD.
+
 ### Run a specific file
 
 ```bash
 npx pilot test tests/smoke.test.ts
 ```
 
+### Run on multiple devices in parallel
+
+```bash
+npx pilot test --workers 4
+```
+
+Or configure `workers` in `pilot.config.ts`. Each worker gets its own device. See [CI Setup](ci-setup.md) for sharding across CI machines.
+
 ### Target a specific device
 
-If you have multiple devices connected, specify which one to use:
+If you need to debug against one known device, specify which one to use:
 
 ```bash
 npx pilot test --device emulator-5554
 ```
+
+For normal parallel runs, prefer `workers + launchEmulators + avd` in config.
 
 ## Understanding the Output
 

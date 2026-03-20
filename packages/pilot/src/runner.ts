@@ -14,6 +14,7 @@ import type { PilotConfig } from './config.js';
 import type { Device } from './device.js';
 import type { PilotReporter } from './reporter.js';
 import { flushSoftErrors } from './expect.js';
+import { FixtureRegistry, resolveFixtures, type FixtureDefinitions, type BuiltinFixtures } from './fixtures.js';
 
 // ─── Result types ───
 
@@ -26,6 +27,8 @@ export interface TestResult {
   durationMs: number;
   error?: Error;
   screenshotPath?: string;
+  /** Index of the worker that ran this test (only set in parallel mode). */
+  workerIndex?: number;
 }
 
 export interface SuiteResult {
@@ -74,6 +77,12 @@ interface SuiteContext {
 }
 
 let contextStack: SuiteContext[] = [];
+let activeFixtureRegistry: FixtureRegistry = new FixtureRegistry();
+
+/** Get the current fixture registry (used by the runner). */
+export function getFixtureRegistry(): FixtureRegistry {
+  return activeFixtureRegistry;
+}
 
 function currentContext(): SuiteContext {
   return contextStack[contextStack.length - 1];
@@ -102,6 +111,21 @@ export interface TestFn {
   (name: string, fn: TestCallback): void;
   only: (name: string, fn: TestCallback) => void;
   skip: (name: string, fn: TestCallback) => void;
+  /**
+   * Create a new test function with additional fixtures.
+   *
+   * ```ts
+   * const test = base.extend<{ auth: Device }>({
+   *   auth: [async ({ device }, use) => {
+   *     await loginHelper(device)
+   *     await use(device)
+   *   }, { scope: 'worker' }],
+   * })
+   * ```
+   */
+  extend: <T extends Record<string, unknown>>(
+    definitions: FixtureDefinitions<T, BuiltinFixtures & T>,
+  ) => TestFn;
 }
 
 export interface DescribeFn {
@@ -110,19 +134,33 @@ export interface DescribeFn {
   skip: (name: string, fn: () => void) => void;
 }
 
-export const test: TestFn = Object.assign(
-  (name: string, fn: TestCallback) => {
-    currentContext().tests.push({ name, fn, only: false, skip: false });
-  },
-  {
-    only: (name: string, fn: TestCallback) => {
-      currentContext().tests.push({ name, fn, only: true, skip: false });
+function createTestFn(registry: FixtureRegistry): TestFn {
+  const fn: TestFn = Object.assign(
+    (name: string, testFn: TestCallback) => {
+      currentContext().tests.push({ name, fn: testFn, only: false, skip: false });
     },
-    skip: (name: string, fn: TestCallback) => {
-      currentContext().tests.push({ name, fn, only: false, skip: true });
+    {
+      only: (name: string, testFn: TestCallback) => {
+        currentContext().tests.push({ name, fn: testFn, only: true, skip: false });
+      },
+      skip: (name: string, testFn: TestCallback) => {
+        currentContext().tests.push({ name, fn: testFn, only: false, skip: true });
+      },
+      extend: <T extends Record<string, unknown>>(
+        definitions: FixtureDefinitions<T, BuiltinFixtures & T>,
+      ): TestFn => {
+        const childRegistry = new FixtureRegistry();
+        childRegistry.register(definitions);
+        const merged = registry.merge(childRegistry);
+        activeFixtureRegistry = merged;
+        return createTestFn(merged);
+      },
     },
-  },
-);
+  );
+  return fn;
+}
+
+export const test: TestFn = createTestFn(activeFixtureRegistry);
 
 export const describe: DescribeFn = Object.assign(
   (name: string, fn: () => void) => {
@@ -161,6 +199,10 @@ export interface RunOptions {
   device?: Device;
   screenshotDir?: string;
   reporter?: PilotReporter;
+  beforeEachTest?: (fullName: string) => Promise<void>;
+  abortFileOnError?: (error: Error) => boolean;
+  /** Pre-resolved worker-scoped fixture values (set by worker-runner). */
+  workerFixtures?: Record<string, unknown>;
 }
 
 async function captureFailureScreenshot(
@@ -258,15 +300,41 @@ async function runSuiteContext(
     try {
       const testBody = async () => {
         // Run beforeEach hooks
+        if (opts.beforeEachTest) {
+          await opts.beforeEachTest(fullName);
+        }
+
         for (const hook of allBeforeEach) {
           await invokeHook(hook, opts.device);
         }
 
-        // Call with fixtures if the test function expects arguments
-        if (entry.fn.length > 0 && opts.device) {
-          await (entry.fn as (fixtures: TestFixtures) => void | Promise<void>)({ device: opts.device });
-        } else {
-          await (entry.fn as () => void | Promise<void>)();
+        // Build fixture context: base (device) + worker-scoped + test-scoped
+        const registry = getFixtureRegistry();
+        const baseFixtures: Record<string, unknown> = {
+          ...(opts.device ? { device: opts.device } : {}),
+          ...(opts.workerFixtures ?? {}),
+        };
+
+        let testFixtureTeardown: (() => Promise<void>) | undefined;
+        let allFixtures = baseFixtures;
+
+        if (!registry.isEmpty) {
+          const resolved = await resolveFixtures(registry, 'test', baseFixtures);
+          allFixtures = resolved.fixtures;
+          testFixtureTeardown = resolved.teardown;
+        }
+
+        try {
+          // Call with fixtures if the test function expects arguments
+          if (entry.fn.length > 0) {
+            await (entry.fn as (fixtures: Record<string, unknown>) => void | Promise<void>)(allFixtures);
+          } else {
+            await (entry.fn as () => void | Promise<void>)();
+          }
+        } finally {
+          if (testFixtureTeardown) {
+            await testFixtureTeardown();
+          }
         }
       };
 
@@ -344,6 +412,10 @@ async function runSuiteContext(
     };
     result.tests.push(testResult);
     opts.reporter?.onTestEnd?.(testResult);
+
+    if (status === 'failed' && error && opts.abortFileOnError?.(error)) {
+      throw error;
+    }
   }
 
   // Run child suites
@@ -417,13 +489,41 @@ export async function runTestFile(
   filePath: string,
   opts: RunOptions,
 ): Promise<SuiteResult> {
-  // Reset context
+  // Reset context and fixture registry
   contextStack = [];
+  activeFixtureRegistry = new FixtureRegistry();
   pushContext();
 
   // Import the test file — this registers tests/suites via side effects
+  // and may call test.extend() to register fixtures.
+  // Note: Node.js caches ESM imports, so the same file path cannot be
+  // re-imported in the same process. Each worker runs each file at most once.
   await import(filePath);
 
   const rootCtx = popContext();
-  return runSuiteContext(rootCtx, '', [], [], opts);
+  const registry = getFixtureRegistry();
+
+  // Resolve worker-scoped fixtures once for the entire file
+  const baseFixtures: Record<string, unknown> = opts.device ? { device: opts.device } : {};
+  let workerFixtures: Record<string, unknown> = opts.workerFixtures ?? {};
+  let workerTeardown: (() => Promise<void>) | undefined;
+
+  if (!registry.isEmpty) {
+    const resolved = await resolveFixtures(registry, 'worker', {
+      ...baseFixtures,
+      ...workerFixtures,
+    });
+    workerFixtures = resolved.fixtures;
+    workerTeardown = resolved.teardown;
+  }
+
+  const fileOpts: RunOptions = { ...opts, workerFixtures };
+
+  try {
+    return await runSuiteContext(rootCtx, '', [], [], fileOpts);
+  } finally {
+    if (workerTeardown) {
+      await workerTeardown();
+    }
+  }
 }

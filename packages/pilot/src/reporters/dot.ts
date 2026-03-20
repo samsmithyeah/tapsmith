@@ -17,6 +17,7 @@ import {
   bold,
   formatError,
   formatSummaryLine,
+  workerTag,
 } from './base.js'
 
 const DOTS_PER_LINE = 80
@@ -71,13 +72,13 @@ export class DotReporter implements PilotReporter {
     if (this._failed.length > 0) {
       process.stdout.write(bold(red('Failures:\n\n')))
       for (const test of this._failed) {
-        process.stdout.write(`  ${red('✗')} ${test.fullName}\n`)
+        process.stdout.write(`  ${red('✗')} ${workerTag(test.workerIndex)}${test.fullName}\n`)
         if (test.error) {
           process.stdout.write(formatError(test.error) + '\n\n')
         }
       }
     }
 
-    process.stdout.write(formatSummaryLine(passed, failed, skipped, result.duration) + '\n\n')
+    process.stdout.write(formatSummaryLine(passed, failed, skipped, result.duration, result.setupDuration) + '\n\n')
   }
 }

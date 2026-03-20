@@ -25,7 +25,9 @@ const DEFAULT_ASSERTION_TIMEOUT_MS = 5_000;
 const POLL_INTERVAL_MS = 250;
 // Short server-side timeout for element lookups inside assertion polls.
 // Must be > 0 because the Rust daemon treats 0 as "use 30s default".
-const POLL_FIND_TIMEOUT_MS = 100;
+// 100ms was too aggressive under multi-emulator load and produced false
+// negatives where the UI was visibly present but the lookup timed out.
+const POLL_FIND_TIMEOUT_MS = 500;
 
 /**
  * Repeatedly call `check` until it returns the expected value or the timeout

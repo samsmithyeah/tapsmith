@@ -1394,15 +1394,47 @@ interface PilotReporter {
 }
 ```
 
+### `TestResult`
+
+```typescript
+interface TestResult {
+  name: string;
+  fullName: string;
+  status: "passed" | "failed" | "skipped";
+  durationMs: number;
+  error?: Error;
+  screenshotPath?: string;
+  workerIndex?: number; // set in parallel mode — index of the worker that ran this test
+}
+```
+
+### `SuiteResult`
+
+```typescript
+interface SuiteResult {
+  name: string;
+  durationMs: number;
+  tests: TestResult[];
+  suites: SuiteResult[]; // nested describe() blocks
+}
+```
+
 ### `FullResult`
 
 ```typescript
 interface FullResult {
   status: "passed" | "failed";
-  duration: number; // milliseconds
+  duration: number; // total wall-clock time in milliseconds (including setup)
+  setupDuration?: number; // time spent on device provisioning, APK install, agent startup
   tests: TestResult[]; // flattened list of all test results
   suites: SuiteResult[]; // hierarchical suite tree (one per test file)
 }
+```
+
+When `setupDuration` is present, console reporters show a timing breakdown:
+
+```
+Summary: 12 passed | 45.2s (setup 30.1s, tests 15.1s)
 ```
 
 ---
@@ -1420,10 +1452,58 @@ npx pilot test tests/login.test.ts tests/signup.test.ts
 
 ### `pilot test --device <serial>` / `pilot test -d <serial>`
 
-Target a specific device by its ADB serial number.
+Target a specific device by its ADB serial number. This is mainly useful for
+single-device debugging or reproducing an issue on one known device.
 
 ```bash
 npx pilot test --device emulator-5554
+```
+
+For multi-worker emulator runs, prefer config-based provisioning with
+`workers`, `launchEmulators`, and `avd`.
+
+### `pilot test --workers <n>` / `pilot test -j <n>`
+
+Run tests in parallel across `n` devices. Each worker gets its own device/emulator and daemon instance. Tests are distributed via a work-stealing queue for natural load balancing.
+
+```bash
+npx pilot test --workers 4
+npx pilot test -j 2
+```
+
+Overrides the `workers` config option. Requires enough connected devices or `launchEmulators: true` with an `avd` configured. In parallel mode, each test result includes a `workerIndex` field and console reporters show `[worker N]` tags.
+
+### `pilot test --shard=x/y`
+
+Split the test suite deterministically across `y` machines, running only shard `x`. Shards are assigned by file index (`file_index % total === current - 1`).
+
+```bash
+# In a CI matrix with 4 jobs:
+npx pilot test --shard=1/4
+npx pilot test --shard=2/4
+npx pilot test --shard=3/4
+npx pilot test --shard=4/4
+```
+
+When sharding is active, the `blob` reporter is automatically added so results can be merged later with `pilot merge-reports`.
+
+### `pilot merge-reports [dir]`
+
+Merge blob reports from sharded CI runs into a single HTML report.
+
+```bash
+# After collecting all shard blob-report/ directories:
+npx pilot merge-reports           # reads from blob-report/
+npx pilot merge-reports ./blobs   # custom directory
+```
+
+### `pilot show-report [dir]`
+
+Open the HTML test report in the default browser.
+
+```bash
+npx pilot show-report               # opens pilot-report/index.html
+npx pilot show-report ./my-report   # custom directory
 ```
 
 ### `pilot --version` / `pilot -v`

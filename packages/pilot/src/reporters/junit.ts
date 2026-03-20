@@ -68,6 +68,12 @@ export class JUnitReporter implements PilotReporter {
             lines.push(`      <failure message="${message}">${stack}</failure>`)
           }
 
+          if (test.workerIndex != null) {
+            lines.push(
+              `      <properties><property name="workerIndex" value="${test.workerIndex}"/></properties>`
+            )
+          }
+
           if (test.screenshotPath) {
             lines.push(
               `      <system-out>Screenshot: ${escapeXml(test.screenshotPath)}</system-out>`

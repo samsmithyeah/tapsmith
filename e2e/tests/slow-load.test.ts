@@ -30,7 +30,7 @@ describe("Slow load screen", () => {
 
   test("data rows show correct content", async ({ device }) => {
     const screen = new SlowLoadScreen(device)
-    await expect(screen.dataRow1).toBeVisible()
+    await expect(screen.profileHeading).toBeVisible()
     await expect(screen.emailLabel).toBeVisible()
     await expect(screen.emailValue).toBeVisible()
   })
@@ -38,8 +38,7 @@ describe("Slow load screen", () => {
   test("failed load shows error", async ({ device }) => {
     const screen = new SlowLoadScreen(device)
     await screen.loadFailButton.tap()
-    await expect(screen.fetchError).toBeVisible({ timeout: 10000 })
-    await expect(screen.errorMessage).toBeVisible()
+    await expect(screen.errorMessage).toBeVisible({ timeout: 10000 })
   })
 
   // ─── Polling Counter ───

@@ -16,7 +16,10 @@ import type { TestResult, SuiteResult } from './runner.js'
 
 export interface FullResult {
   status: 'passed' | 'failed'
+  /** Total wall-clock time including setup and tests. */
   duration: number
+  /** Time spent on device provisioning, APK install, agent startup, etc. */
+  setupDuration?: number
   tests: TestResult[]
   suites: SuiteResult[]
 }

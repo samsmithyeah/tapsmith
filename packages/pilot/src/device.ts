@@ -36,10 +36,12 @@ export class Device {
   /** @internal */
   readonly _client: PilotGrpcClient;
   private readonly defaultTimeoutMs: number;
+  private readonly defaultPackageName?: string;
 
-  constructor(client: PilotGrpcClient, config?: Pick<PilotConfig, 'timeout'>) {
+  constructor(client: PilotGrpcClient, config?: Partial<Pick<PilotConfig, 'timeout' | 'package'>>) {
     this._client = client;
     this.defaultTimeoutMs = config?.timeout ?? 30_000;
+    this.defaultPackageName = config?.package;
   }
 
   /** @internal — Run an action RPC and throw on failure. */
@@ -182,9 +184,26 @@ export class Device {
 
   // ── Device Management (PILOT-10) ──
 
-  async restartApp(packageName: string, options?: { waitForIdle?: boolean }): Promise<void> {
+  private requirePackageName(packageName?: string): string {
+    const resolved = packageName ?? this.defaultPackageName;
+    if (!resolved) {
+      throw new Error(
+        'Package name is required. Pass one explicitly or set `package` in your Pilot config.',
+      );
+    }
+    return resolved;
+  }
+
+  async restartApp(options?: { waitForIdle?: boolean }): Promise<void>;
+  async restartApp(packageName: string, options?: { waitForIdle?: boolean }): Promise<void>;
+  async restartApp(
+    packageOrOptions?: string | { waitForIdle?: boolean },
+    maybeOptions?: { waitForIdle?: boolean },
+  ): Promise<void> {
+    const packageName = typeof packageOrOptions === 'string' ? packageOrOptions : undefined;
+    const options = typeof packageOrOptions === 'string' ? maybeOptions : packageOrOptions;
     return this._action(
-      () => this._client.restartApp(packageName, options?.waitForIdle ?? true),
+      () => this._client.restartApp(this.requirePackageName(packageName), options?.waitForIdle ?? true),
       'Restart app failed',
     );
   }
