@@ -55,6 +55,9 @@ service PilotService {
   rpc WakeDevice(WakeDeviceRequest) returns (ActionResponse);
   rpc UnlockDevice(UnlockDeviceRequest) returns (ActionResponse);
   rpc RestartApp(RestartAppRequest) returns (ActionResponse);
+
+  // ─── Trace Support (PILOT-85) ───
+  rpc GetLogcat(GetLogcatRequest) returns (GetLogcatResponse);
 }
 
 // ─── Common Types ───
@@ -462,4 +465,19 @@ message RestartAppRequest {
   string package_name = 2;
   bool wait_for_idle = 3;
   uint64 idle_timeout_ms = 4; // timeout for waitForIdle (0 = use default 10s)
+}
+
+// ─── Trace Support (PILOT-85) ───
+
+message GetLogcatRequest {
+  string request_id = 1;
+  string package_name = 2;   // filter by app package (resolved to PID)
+  uint64 since_ms = 3;       // only return entries after this epoch timestamp
+  uint64 until_ms = 4;       // only return entries before this timestamp (0 = now)
+}
+
+message GetLogcatResponse {
+  string request_id = 1;
+  string logcat = 2;         // raw logcat output
+  string error_message = 3;
 }

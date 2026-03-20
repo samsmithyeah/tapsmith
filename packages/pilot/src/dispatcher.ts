@@ -240,6 +240,7 @@ export async function runParallel(opts: DispatcherOptions): Promise<FullResult> 
       package: config.package,
       agentApk: config.agentApk,
       agentTestApk: config.agentTestApk,
+      trace: config.trace as string | Record<string, unknown> | undefined,
     }
 
     const launchedSerials = new Set(launchedEmulators.map((emu) => emu.serial))

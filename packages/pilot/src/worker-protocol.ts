@@ -120,6 +120,7 @@ export interface SerializedConfig {
   package?: string
   agentApk?: string
   agentTestApk?: string
+  trace?: string | Record<string, unknown>
 }
 
 /** TestResult with Error serialized to plain object for IPC. */

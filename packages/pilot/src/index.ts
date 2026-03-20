@@ -56,7 +56,7 @@ export {
 } from './fixtures.js';
 
 // Config
-export { defineConfig, loadConfig, type PilotConfig, type ScreenshotMode } from './config.js';
+export { defineConfig, loadConfig, type PilotConfig, type ScreenshotMode, type TraceMode, type TraceConfig } from './config.js';
 
 // Reporters
 export {
@@ -68,6 +68,9 @@ export {
 
 // gRPC client (advanced usage)
 export { PilotGrpcClient } from './grpc-client.js';
+
+// Tracing
+export { Tracing, type TracingStartOptions, type TracingStopOptions } from './trace/tracing.js';
 
 // ESLint plugin
 export { default as eslintPlugin } from './eslint-plugin/index.js';

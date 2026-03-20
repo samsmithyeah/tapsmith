@@ -10,11 +10,18 @@
  *   - Timing information
  */
 
+import * as fs from 'node:fs';
+import * as path from 'node:path';
+import * as os from 'node:os';
 import type { PilotConfig } from './config.js';
 import type { Device } from './device.js';
 import type { PilotReporter } from './reporter.js';
 import { flushSoftErrors } from './expect.js';
 import { FixtureRegistry, resolveFixtures, type FixtureDefinitions, type BuiltinFixtures } from './fixtures.js';
+import { resolveTraceConfig } from './trace/types.js';
+import { shouldRecord, shouldRetain } from './trace/trace-mode.js';
+import { packageTrace } from './trace/trace-packager.js';
+import type { TraceCollector } from './trace/trace-collector.js';
 
 // ─── Result types ───
 
@@ -27,6 +34,8 @@ export interface TestResult {
   durationMs: number;
   error?: Error;
   screenshotPath?: string;
+  /** Path to the trace archive, if recorded. */
+  tracePath?: string;
   /** Index of the worker that ran this test (only set in parallel mode). */
   workerIndex?: number;
 }
@@ -192,6 +201,18 @@ export function afterEach(fn: HookFn): void {
   currentContext().afterEach.push(fn);
 }
 
+// ─── Helpers ───
+
+function getPackageVersion(): string {
+  try {
+    const pkgPath = path.resolve(__dirname, '../package.json');
+    const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf-8'));
+    return pkg.version ?? '0.0.0';
+  } catch {
+    return '0.0.0';
+  }
+}
+
 // ─── Runner engine ───
 
 export interface RunOptions {
@@ -293,9 +314,21 @@ async function runSuiteContext(
     let status: TestStatus = 'passed';
     let error: Error | undefined;
     let screenshotPath: string | undefined;
+    let tracePath: string | undefined;
     // 2x the assertion timeout: a test may have multiple actions, each with
     // their own timeout. The test-level timeout is a safety net against hangs.
     const testTimeoutMs = opts.config.timeout * 2;
+
+    // Trace recording — start if configured
+    const traceConfig = resolveTraceConfig(opts.config.trace);
+    const attempt = 0; // TODO: wire up retry count when retries are implemented
+    const recording = shouldRecord(traceConfig.mode, attempt);
+    let traceCollector: TraceCollector | null = null;
+
+    if (recording && opts.device) {
+      const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pilot-trace-'));
+      traceCollector = opts.device.tracing._startManaged(traceConfig, tempDir);
+    }
 
     try {
       const testBody = async () => {
@@ -402,6 +435,42 @@ async function runSuiteContext(
       );
     }
 
+    // Finalize trace recording
+    if (traceCollector && opts.device) {
+      const collector = opts.device.tracing._stopManaged();
+      if (collector) {
+        const retain = shouldRetain(traceConfig.mode, status === 'passed', attempt);
+        if (retain) {
+          try {
+            const outputDir = path.resolve(
+              opts.config.rootDir,
+              opts.config.outputDir,
+              'traces',
+            );
+            const version = getPackageVersion();
+            tracePath = packageTrace(collector, {
+              testFile: '', // set by runTestFile wrapper
+              testName: fullName,
+              testStatus: status,
+              testDuration: Date.now() - testStart,
+              startTime: testStart,
+              endTime: Date.now(),
+              device: {
+                serial: opts.config.device ?? 'unknown',
+                isEmulator: false,
+              },
+              pilotVersion: version,
+              error: error?.message,
+              outputDir,
+            });
+          } catch {
+            // Trace packaging is best-effort
+          }
+        }
+        collector.cleanup();
+      }
+    }
+
     const testResult: TestResult = {
       name: entry.name,
       fullName,
@@ -409,6 +478,7 @@ async function runSuiteContext(
       durationMs: Date.now() - testStart,
       error,
       screenshotPath,
+      tracePath,
     };
     result.tests.push(testResult);
     opts.reporter?.onTestEnd?.(testResult);

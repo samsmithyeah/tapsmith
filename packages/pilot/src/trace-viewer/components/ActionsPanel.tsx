@@ -1,0 +1,183 @@
+import { useState, useRef, useEffect } from 'preact/hooks'
+import type { AnyTraceEvent, ActionTraceEvent, AssertionTraceEvent, GroupTraceEvent, TraceMetadata } from '../../trace/types.js'
+
+interface Props {
+  events: AnyTraceEvent[]
+  actionEvents: (ActionTraceEvent | AssertionTraceEvent)[]
+  selectedIndex: number
+  onSelect: (index: number) => void
+  metadata: TraceMetadata
+}
+
+// Simple text-based icons — no emoji
+const ACTION_ICONS: Record<string, [string, string]> = {
+  tap:         ['\u25ce', 'tap'],      // ◎
+  longPress:   ['\u25ce', 'tap'],
+  doubleTap:   ['\u25ce', 'tap'],
+  type:        ['T',      'type'],
+  clearAndType:['T',      'type'],
+  swipe:       ['\u2194', 'swipe'],    // ↔
+  scroll:      ['\u2195', 'scroll'],   // ↕
+  pressKey:    ['\u21b5', 'type'],     // ↵
+  launchApp:   ['\u25b6', 'nav'],      // ▶
+  openDeepLink:['\u2197', 'nav'],      // ↗
+  drag:        ['\u21c4', 'swipe'],    // ⇄
+  pinchIn:     ['\u25c9', 'tap'],
+  pinchOut:    ['\u25c9', 'tap'],
+  focus:       ['\u25cb', 'tap'],
+  blur:        ['\u25cb', 'tap'],
+  selectOption:['\u25bc', 'tap'],      // ▼
+  highlight:   ['\u25a1', 'tap'],
+}
+
+function getIcon(event: ActionTraceEvent | AssertionTraceEvent): [string, string] {
+  if (event.type === 'assertion') {
+    const passed = event.passed
+    return [passed ? '\u2713' : '\u2717', passed ? 'assert' : 'assert failed']
+  }
+  return ACTION_ICONS[event.action] ?? ['\u2022', 'tap']
+}
+
+function getLabel(event: ActionTraceEvent | AssertionTraceEvent): string {
+  if (event.type === 'assertion') return event.assertion
+  return event.action
+}
+
+function getSelectorDisplay(event: ActionTraceEvent | AssertionTraceEvent): string {
+  const sel = event.selector
+  if (!sel) return ''
+  try {
+    const parsed = JSON.parse(sel)
+    if (parsed.text) return `"${parsed.text}"`
+    if (parsed.role) return `role=${parsed.role.role}${parsed.role.name ? ` "${parsed.role.name}"` : ''}`
+    if (parsed.contentDesc) return `desc="${parsed.contentDesc}"`
+    if (parsed.testId) return `testId="${parsed.testId}"`
+    if (parsed.resourceId) return `id="${parsed.resourceId}"`
+    return sel
+  } catch {
+    return sel
+  }
+}
+
+export function ActionsPanel({ events, actionEvents, selectedIndex, onSelect, metadata }: Props) {
+  const [tab, setTab] = useState<'actions' | 'metadata'>('actions')
+  const [filter, setFilter] = useState('')
+  const selectedRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    selectedRef.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' })
+  }, [selectedIndex])
+
+  // Build flat list with groups
+  const items: Array<
+    | { kind: 'action'; event: ActionTraceEvent | AssertionTraceEvent; actionIndex: number }
+    | { kind: 'group-start'; event: GroupTraceEvent }
+    | { kind: 'group-end'; event: GroupTraceEvent }
+  > = []
+
+  let actionIdx = 0
+  for (const event of events) {
+    if (event.type === 'action' || event.type === 'assertion') {
+      items.push({ kind: 'action', event: event as ActionTraceEvent | AssertionTraceEvent, actionIndex: actionIdx })
+      actionIdx++
+    } else if (event.type === 'group-start') {
+      items.push({ kind: 'group-start', event: event as GroupTraceEvent })
+    } else if (event.type === 'group-end') {
+      items.push({ kind: 'group-end', event: event as GroupTraceEvent })
+    }
+  }
+
+  const filterLower = filter.toLowerCase()
+
+  return (
+    <div class="actions-panel">
+      <div class="actions-header">
+        <div class={`actions-header-tab${tab === 'actions' ? ' active' : ''}`} onClick={() => setTab('actions')}>Actions</div>
+        <div class={`actions-header-tab${tab === 'metadata' ? ' active' : ''}`} onClick={() => setTab('metadata')}>Metadata</div>
+      </div>
+
+      {tab === 'actions' && (
+        <>
+          <div class="actions-filter">
+            <input
+              type="text"
+              placeholder="Filter actions..."
+              value={filter}
+              onInput={e => setFilter((e.target as HTMLInputElement).value)}
+            />
+          </div>
+          <div class="actions-list">
+            {items.map((item, i) => {
+              if (item.kind === 'group-start') {
+                if (filterLower && !item.event.name.toLowerCase().includes(filterLower)) return null
+                return <div key={`g-${i}`} class="group-item">{'\u25b8'} {item.event.name}</div>
+              }
+              if (item.kind === 'group-end') return null
+
+              const event = item.event
+              const label = getLabel(event)
+              const selector = getSelectorDisplay(event)
+              const matchesFilter = !filterLower ||
+                label.toLowerCase().includes(filterLower) ||
+                selector.toLowerCase().includes(filterLower)
+              if (!matchesFilter) return null
+
+              const isSelected = item.actionIndex === selectedIndex
+              const isFailed = event.type === 'action' ? !event.success : !event.passed
+              const [icon, iconClass] = getIcon(event)
+
+              return (
+                <div
+                  key={`a-${item.actionIndex}`}
+                  ref={isSelected ? selectedRef : undefined}
+                  class={`action-item${isSelected ? ' selected' : ''}${isFailed ? ' failed' : ''}`}
+                  onClick={() => onSelect(item.actionIndex)}
+                >
+                  <span class={`action-icon ${iconClass}`}>{icon}</span>
+                  <div class="action-details">
+                    <span class="action-name">{label}</span>
+                    {selector && <span class="action-selector-text">{selector}</span>}
+                  </div>
+                  <span class="action-duration">{event.duration}ms</span>
+                </div>
+              )
+            })}
+          </div>
+        </>
+      )}
+
+      {tab === 'metadata' && (
+        <div class="metadata-panel">
+          <div class="metadata-grid">
+            <span class="metadata-label">Test</span>
+            <span class="metadata-value">{metadata.testName}</span>
+            <span class="metadata-label">File</span>
+            <span class="metadata-value">{metadata.testFile}</span>
+            <span class="metadata-label">Status</span>
+            <span class="metadata-value" style={{ color: metadata.testStatus === 'passed' ? '#4ec9b0' : '#f85149' }}>{metadata.testStatus}</span>
+            <span class="metadata-label">Duration</span>
+            <span class="metadata-value">{metadata.testDuration}ms</span>
+            <span class="metadata-label">Device</span>
+            <span class="metadata-value">{metadata.device.serial}</span>
+            {metadata.device.model && <>
+              <span class="metadata-label">Model</span>
+              <span class="metadata-value">{metadata.device.model}</span>
+            </>}
+            <span class="metadata-label">Emulator</span>
+            <span class="metadata-value">{metadata.device.isEmulator ? 'Yes' : 'No'}</span>
+            <span class="metadata-label">Actions</span>
+            <span class="metadata-value">{metadata.actionCount}</span>
+            <span class="metadata-label">Screenshots</span>
+            <span class="metadata-value">{metadata.screenshotCount}</span>
+            <span class="metadata-label">Pilot</span>
+            <span class="metadata-value">v{metadata.pilotVersion}</span>
+            {metadata.error && <>
+              <span class="metadata-label">Error</span>
+              <span class="metadata-value" style={{ color: '#f85149' }}>{metadata.error}</span>
+            </>}
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}

@@ -121,6 +121,14 @@ export interface GetColorSchemeResponse {
   scheme: string;
 }
 
+// ─── Trace Support (PILOT-85) ───
+
+export interface GetLogcatResponse {
+  requestId: string;
+  logcat: string;
+  errorMessage: string;
+}
+
 export type AppState = 'not_installed' | 'stopped' | 'background' | 'foreground';
 export type Orientation = 'portrait' | 'landscape';
 export type ColorScheme = 'dark' | 'light';
@@ -581,6 +589,17 @@ export class PilotGrpcClient {
   async unlockDevice(): Promise<ActionResponse> {
     return this.call<ActionResponse>('unlockDevice', {
       requestId: requestId(),
+    });
+  }
+
+  // ── Trace Support (PILOT-85) ──
+
+  async getLogcat(packageName: string, sinceMs?: number, untilMs?: number): Promise<GetLogcatResponse> {
+    return this.call<GetLogcatResponse>('getLogcat', {
+      requestId: requestId(),
+      packageName,
+      sinceMs: sinceMs ?? 0,
+      untilMs: untilMs ?? 0,
     });
   }
 

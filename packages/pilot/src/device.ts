@@ -7,6 +7,7 @@
  */
 
 import type { Selector } from './selectors.js';
+import { selectorToProto } from './selectors.js';
 import {
   PilotGrpcClient,
   type ActionResponse,
@@ -20,6 +21,10 @@ import {
 } from './grpc-client.js';
 import { ElementHandle } from './element-handle.js';
 import type { PilotConfig } from './config.js';
+import { Tracing } from './trace/tracing.js';
+import type { TraceCollector } from './trace/trace-collector.js';
+import { extractSourceLocation } from './trace/trace-collector.js';
+import type { ActionCategory } from './trace/types.js';
 
 // ─── Types for element actions (PILOT-2) ───
 
@@ -38,10 +43,42 @@ export class Device {
   private readonly defaultTimeoutMs: number;
   private readonly defaultPackageName?: string;
 
+  /** Programmatic tracing API. */
+  readonly tracing: Tracing;
+
   constructor(client: PilotGrpcClient, config?: Partial<Pick<PilotConfig, 'timeout' | 'package'>>) {
     this._client = client;
     this.defaultTimeoutMs = config?.timeout ?? 30_000;
     this.defaultPackageName = config?.package;
+    this.tracing = new Tracing(
+      () => this._takeScreenshotBuffer(),
+      () => this._captureHierarchy(),
+    );
+  }
+
+  /** @internal — Get the active trace collector, if any. */
+  private get _traceCollector(): TraceCollector | null {
+    return this.tracing._currentCollector;
+  }
+
+  /** @internal — Take a screenshot and return the raw buffer. */
+  private async _takeScreenshotBuffer(): Promise<Buffer | undefined> {
+    try {
+      const res = await this._client.takeScreenshot();
+      return res.success ? res.data : undefined;
+    } catch {
+      return undefined;
+    }
+  }
+
+  /** @internal — Capture the view hierarchy XML. */
+  private async _captureHierarchy(): Promise<string | undefined> {
+    try {
+      const res = await this._client.getUiHierarchy();
+      return res.hierarchyXml || undefined;
+    } catch {
+      return undefined;
+    }
   }
 
   /** @internal — Run an action RPC and throw on failure. */
@@ -55,6 +92,98 @@ export class Device {
     }
   }
 
+  /**
+   * @internal — Wrap an action with trace recording (before/after screenshots + hierarchy).
+   */
+  private async _tracedAction(
+    action: string,
+    category: ActionCategory,
+    selector: Selector | undefined,
+    fn: () => Promise<ActionResponse>,
+    fallbackMsg: string,
+    extra?: { inputValue?: string },
+  ): Promise<void> {
+    const collector = this._traceCollector;
+    if (!collector) {
+      return this._action(fn, fallbackMsg);
+    }
+
+    const sourceLocation = extractSourceLocation(new Error().stack ?? '');
+    const selectorStr = selector ? JSON.stringify(selectorToProto(selector)) : undefined;
+
+    // Before capture
+    const { actionIndex, captures: beforeCaptures } = await collector.captureBeforeAction(
+      () => this._takeScreenshotBuffer(),
+      () => this._captureHierarchy(),
+    );
+
+    const start = Date.now();
+    let success = true;
+    let error: string | undefined;
+    let errorStack: string | undefined;
+
+    try {
+      const res = await fn();
+      if (!res.success) {
+        success = false;
+        error = res.errorMessage || fallbackMsg;
+        throw new Error(error);
+      }
+    } catch (err) {
+      success = false;
+      if (err instanceof Error) {
+        error = err.message;
+        errorStack = err.stack;
+      } else {
+        error = String(err);
+      }
+      // After capture even on failure
+      const afterCaptures = await collector.captureAfterAction(
+        actionIndex,
+        () => this._takeScreenshotBuffer(),
+        () => this._captureHierarchy(),
+      );
+
+      collector.addActionEvent({
+        category,
+        action,
+        selector: selectorStr,
+        inputValue: extra?.inputValue,
+        duration: Date.now() - start,
+        success,
+        error,
+        errorStack,
+        hasScreenshotBefore: !!beforeCaptures.screenshotBefore,
+        hasScreenshotAfter: !!afterCaptures.screenshotAfter,
+        hasHierarchyBefore: !!beforeCaptures.hierarchyBefore,
+        hasHierarchyAfter: !!afterCaptures.hierarchyAfter,
+        sourceLocation,
+      });
+      throw err instanceof Error ? err : new Error(String(err));
+    }
+
+    // After capture on success
+    const afterCaptures = await collector.captureAfterAction(
+      actionIndex,
+      () => this._takeScreenshotBuffer(),
+      () => this._captureHierarchy(),
+    );
+
+    collector.addActionEvent({
+      category,
+      action,
+      selector: selectorStr,
+      inputValue: extra?.inputValue,
+      duration: Date.now() - start,
+      success,
+      hasScreenshotBefore: !!beforeCaptures.screenshotBefore,
+      hasScreenshotAfter: !!afterCaptures.screenshotAfter,
+      hasHierarchyBefore: !!beforeCaptures.hierarchyBefore,
+      hasHierarchyAfter: !!afterCaptures.hierarchyAfter,
+      sourceLocation,
+    });
+  }
+
   // ── Element handle ──
 
   /**
@@ -63,43 +192,53 @@ export class Device {
    * is performed.
    */
   element(selector: Selector): ElementHandle {
-    return new ElementHandle(this._client, selector, this.defaultTimeoutMs);
+    const traceCapture = this._traceCollector ? {
+      collector: this._traceCollector,
+      takeScreenshot: () => this._takeScreenshotBuffer(),
+      captureHierarchy: () => this._captureHierarchy(),
+    } : undefined;
+    return new ElementHandle(this._client, selector, this.defaultTimeoutMs, { traceCapture });
   }
 
   // ── Actions ──
 
   async tap(selector: Selector): Promise<void> {
-    return this._action(() => this._client.tap(selector, this.defaultTimeoutMs), 'Tap failed');
+    return this._tracedAction('tap', 'tap', selector,
+      () => this._client.tap(selector, this.defaultTimeoutMs), 'Tap failed');
   }
 
   async longPress(selector: Selector, durationMs?: number): Promise<void> {
-    return this._action(() => this._client.longPress(selector, durationMs, this.defaultTimeoutMs), 'Long press failed');
+    return this._tracedAction('longPress', 'tap', selector,
+      () => this._client.longPress(selector, durationMs, this.defaultTimeoutMs), 'Long press failed');
   }
 
   async type(selector: Selector, text: string): Promise<void> {
-    return this._action(() => this._client.typeText(selector, text, this.defaultTimeoutMs), 'Type text failed');
+    return this._tracedAction('type', 'type', selector,
+      () => this._client.typeText(selector, text, this.defaultTimeoutMs), 'Type text failed',
+      { inputValue: text });
   }
 
   async clearAndType(selector: Selector, text: string): Promise<void> {
-    return this._action(() => this._client.clearAndType(selector, text, this.defaultTimeoutMs), 'Clear and type failed');
+    return this._tracedAction('clearAndType', 'type', selector,
+      () => this._client.clearAndType(selector, text, this.defaultTimeoutMs), 'Clear and type failed',
+      { inputValue: text });
   }
 
   async swipe(direction: string, options?: SwipeOptions): Promise<void> {
-    return this._action(
+    return this._tracedAction('swipe', 'swipe', options?.selector,
       () => this._client.swipe(direction, { ...options, timeoutMs: options?.timeoutMs ?? this.defaultTimeoutMs }),
-      'Swipe failed',
-    );
+      'Swipe failed');
   }
 
   async scroll(selector: Selector, direction: string, options?: ScrollOptions): Promise<void> {
-    return this._action(
+    return this._tracedAction('scroll', 'scroll', selector,
       () => this._client.scroll(selector, direction, { ...options, timeoutMs: options?.timeoutMs ?? this.defaultTimeoutMs }),
-      'Scroll failed',
-    );
+      'Scroll failed');
   }
 
   async pressKey(key: string): Promise<void> {
-    return this._action(() => this._client.pressKey(key), 'Press key failed');
+    return this._tracedAction('pressKey', 'press-key', undefined,
+      () => this._client.pressKey(key), 'Press key failed');
   }
 
   async pressBack(): Promise<void> {
@@ -107,37 +246,45 @@ export class Device {
   }
 
   async doubleTap(selector: Selector): Promise<void> {
-    return this._action(() => this._client.doubleTap(selector, this.defaultTimeoutMs), 'Double tap failed');
+    return this._tracedAction('doubleTap', 'tap', selector,
+      () => this._client.doubleTap(selector, this.defaultTimeoutMs), 'Double tap failed');
   }
 
   async drag(options: DragOptions): Promise<void> {
-    return this._action(() => this._client.dragAndDrop(options.from, options.to, this.defaultTimeoutMs), 'Drag and drop failed');
+    return this._tracedAction('drag', 'tap', options.from,
+      () => this._client.dragAndDrop(options.from, options.to, this.defaultTimeoutMs), 'Drag and drop failed');
   }
 
   async pinchIn(selector: Selector, options?: PinchOptions): Promise<void> {
     const scale = options?.scale ?? 0.5;
-    return this._action(() => this._client.pinchZoom(selector, scale, this.defaultTimeoutMs), 'Pinch in failed');
+    return this._tracedAction('pinchIn', 'tap', selector,
+      () => this._client.pinchZoom(selector, scale, this.defaultTimeoutMs), 'Pinch in failed');
   }
 
   async pinchOut(selector: Selector, options?: PinchOptions): Promise<void> {
     const scale = options?.scale ?? 2.0;
-    return this._action(() => this._client.pinchZoom(selector, scale, this.defaultTimeoutMs), 'Pinch out failed');
+    return this._tracedAction('pinchOut', 'tap', selector,
+      () => this._client.pinchZoom(selector, scale, this.defaultTimeoutMs), 'Pinch out failed');
   }
 
   async focus(selector: Selector): Promise<void> {
-    return this._action(() => this._client.focus(selector, this.defaultTimeoutMs), 'Focus failed');
+    return this._tracedAction('focus', 'tap', selector,
+      () => this._client.focus(selector, this.defaultTimeoutMs), 'Focus failed');
   }
 
   async blur(selector: Selector): Promise<void> {
-    return this._action(() => this._client.blur(selector, this.defaultTimeoutMs), 'Blur failed');
+    return this._tracedAction('blur', 'tap', selector,
+      () => this._client.blur(selector, this.defaultTimeoutMs), 'Blur failed');
   }
 
   async selectOption(selector: Selector, option: string | { index: number }): Promise<void> {
-    return this._action(() => this._client.selectOption(selector, option, this.defaultTimeoutMs), 'Select option failed');
+    return this._tracedAction('selectOption', 'tap', selector,
+      () => this._client.selectOption(selector, option, this.defaultTimeoutMs), 'Select option failed');
   }
 
   async highlight(selector: Selector, options?: { durationMs?: number }): Promise<void> {
-    return this._action(() => this._client.highlight(selector, options?.durationMs, this.defaultTimeoutMs), 'Highlight failed');
+    return this._tracedAction('highlight', 'other', selector,
+      () => this._client.highlight(selector, options?.durationMs, this.defaultTimeoutMs), 'Highlight failed');
   }
 
   // ── Utilities ──
@@ -209,17 +356,15 @@ export class Device {
   }
 
   async launchApp(packageName: string, options?: LaunchAppOptions): Promise<void> {
-    return this._action(
+    return this._tracedAction('launchApp', 'navigation', undefined,
       () => this._client.launchApp(packageName, options),
-      'Launch app failed',
-    );
+      'Launch app failed');
   }
 
   async openDeepLink(uri: string): Promise<void> {
-    return this._action(
+    return this._tracedAction('openDeepLink', 'navigation', undefined,
       () => this._client.openDeepLink(uri),
-      'Open deep link failed',
-    );
+      'Open deep link failed');
   }
 
   async currentPackage(): Promise<string> {

@@ -10,9 +10,12 @@
 import * as path from 'node:path';
 import * as fs from 'node:fs';
 import type { ReporterConfig } from './reporter.js';
+import type { TraceMode, TraceConfig } from './trace/types.js';
 
 export type ScreenshotMode = 'always' | 'only-on-failure' | 'never';
 export type DeviceStrategy = 'prefer-connected' | 'avd-only';
+
+export type { TraceMode, TraceConfig };
 
 export interface PilotConfig {
   /** Path to the APK under test. */
@@ -109,6 +112,22 @@ export interface PilotConfig {
    * Run `emulator -list-avds` to see available AVDs.
    */
   avd?: string;
+
+  /**
+   * Trace recording configuration.
+   *
+   * Can be a mode string ('off', 'on', 'retain-on-failure', etc.) or an
+   * object with granular options. Defaults to 'off'.
+   *
+   * @example
+   * // String shorthand
+   * trace: 'on'
+   *
+   * @example
+   * // Object form with granular control
+   * trace: { mode: 'retain-on-failure', screenshots: true, snapshots: true }
+   */
+  trace?: TraceMode | Partial<TraceConfig>;
 }
 
 const DEFAULT_CONFIG: PilotConfig = {

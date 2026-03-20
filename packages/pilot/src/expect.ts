@@ -20,6 +20,7 @@
 import { ElementHandle } from "./element-handle.js";
 import type { ElementInfo } from "./grpc-client.js";
 import { selectorToProto } from "./selectors.js";
+import { extractSourceLocation } from "./trace/trace-collector.js";
 
 const DEFAULT_ASSERTION_TIMEOUT_MS = 5_000;
 const POLL_INTERVAL_MS = 250;
@@ -245,6 +246,89 @@ function matchesExact(
     return actual === expected;
   }
   return expected.test(actual);
+}
+
+/**
+ * Wrap an assertion method to emit trace events when tracing is active.
+ */
+function wrapAssertionWithTrace(
+  name: string,
+  fn: (...args: unknown[]) => Promise<void>,
+  handle: ElementHandle,
+  negated: boolean,
+): (...args: unknown[]) => Promise<void> {
+  const trace = handle._traceCapture;
+  if (!trace) return fn;
+
+  return async (...args: unknown[]) => {
+    const sourceLocation = extractSourceLocation(new Error().stack ?? "");
+    const selectorStr = selectorDescription(handle);
+    const start = Date.now();
+
+    // Before capture
+    const { actionIndex, captures: beforeCaptures } =
+      await trace.collector.captureBeforeAction(
+        trace.takeScreenshot,
+        trace.captureHierarchy,
+      );
+
+    let passed = true;
+    let error: string | undefined;
+    const attempts = 1;
+
+    try {
+      await fn(...args);
+    } catch (err) {
+      passed = false;
+      error = err instanceof Error ? err.message : String(err);
+      // After capture even on failure
+      const afterCaptures = await trace.collector.captureAfterAction(
+        actionIndex,
+        trace.takeScreenshot,
+        trace.captureHierarchy,
+      );
+
+      trace.collector.addAssertionEvent({
+        assertion: (negated ? "not." : "") + name,
+        selector: selectorStr,
+        passed,
+        soft: false,
+        negated,
+        duration: Date.now() - start,
+        attempts,
+        error,
+        sourceLocation,
+        hasScreenshotBefore: !!beforeCaptures.screenshotBefore,
+        hasScreenshotAfter: !!afterCaptures.screenshotAfter,
+        hasHierarchyBefore: !!beforeCaptures.hierarchyBefore,
+        hasHierarchyAfter: !!afterCaptures.hierarchyAfter,
+      } as Parameters<typeof trace.collector.addAssertionEvent>[0]);
+
+      throw err;
+    }
+
+    // After capture on success
+    const afterCaptures = await trace.collector.captureAfterAction(
+      actionIndex,
+      trace.takeScreenshot,
+      trace.captureHierarchy,
+    );
+
+    trace.collector.addAssertionEvent({
+      assertion: (negated ? "not." : "") + name,
+      selector: selectorStr,
+      passed,
+      soft: false,
+      negated,
+      duration: Date.now() - start,
+      attempts,
+      sourceLocation,
+      hasScreenshotBefore: !!beforeCaptures.screenshotBefore,
+      hasScreenshotAfter: !!afterCaptures.screenshotAfter,
+      hasHierarchyBefore: !!beforeCaptures.hierarchyBefore,
+      hasHierarchyAfter: !!afterCaptures.hierarchyAfter,
+    } as Parameters<typeof trace.collector.addAssertionEvent>[0]);
+  };
 }
 
 function createAssertions(
@@ -751,6 +835,23 @@ function createAssertions(
       }
     },
   };
+
+  // Wrap with tracing if active
+  if (handle._traceCapture) {
+    const traced: PilotAssertions = {
+      get not(): PilotAssertions {
+        return createAssertions(handle, !negated);
+      },
+    } as PilotAssertions;
+
+    for (const key of Object.keys(assertions) as (keyof PilotAssertions)[]) {
+      if (key === "not") continue;
+      const original = assertions[key] as (...args: unknown[]) => Promise<void>;
+      (traced as unknown as Record<string, unknown>)[key] =
+        wrapAssertionWithTrace(key, original.bind(assertions), handle, negated);
+    }
+    return traced;
+  }
 
   return assertions;
 }
