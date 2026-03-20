@@ -274,41 +274,17 @@ function wrapAssertionWithTrace(
 
     let passed = true;
     let error: string | undefined;
+    let caughtErr: unknown;
 
     try {
       await fn(...args);
     } catch (err) {
       passed = false;
       error = err instanceof Error ? err.message : String(err);
-      const duration = Date.now() - start;
-      const attempts = Math.max(1, Math.round(duration / POLL_INTERVAL_MS));
-      // After capture even on failure
-      const afterCaptures = await trace.collector.captureAfterAction(
-        actionIndex,
-        trace.takeScreenshot,
-        trace.captureHierarchy,
-      );
-
-      trace.collector.addAssertionEvent({
-        assertion: (negated ? "not." : "") + name,
-        selector: selectorStr,
-        passed,
-        soft: false,
-        negated,
-        duration,
-        attempts,
-        error,
-        sourceLocation,
-        hasScreenshotBefore: !!beforeCaptures.screenshotBefore,
-        hasScreenshotAfter: !!afterCaptures.screenshotAfter,
-        hasHierarchyBefore: !!beforeCaptures.hierarchyBefore,
-        hasHierarchyAfter: !!afterCaptures.hierarchyAfter,
-      } as Parameters<typeof trace.collector.addAssertionEvent>[0]);
-
-      throw err;
+      caughtErr = err;
     }
 
-    // After capture on success
+    // After capture (success or failure)
     const duration = Date.now() - start;
     const attempts = Math.max(1, Math.round(duration / POLL_INTERVAL_MS));
     const afterCaptures = await trace.collector.captureAfterAction(
@@ -325,12 +301,17 @@ function wrapAssertionWithTrace(
       negated,
       duration,
       attempts,
+      error,
       sourceLocation,
       hasScreenshotBefore: !!beforeCaptures.screenshotBefore,
       hasScreenshotAfter: !!afterCaptures.screenshotAfter,
       hasHierarchyBefore: !!beforeCaptures.hierarchyBefore,
       hasHierarchyAfter: !!afterCaptures.hierarchyAfter,
     } as Parameters<typeof trace.collector.addAssertionEvent>[0]);
+
+    if (caughtErr !== undefined) {
+      throw caughtErr;
+    }
   };
 }
 

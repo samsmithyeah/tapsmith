@@ -1859,13 +1859,7 @@ impl proto::pilot_service_server::PilotService for PilotServiceImpl {
             .await
             .map_err(|e| Status::internal(format!("Failed to start proxy: {e}")))?;
         let port = proxy.port();
-        // For emulators, 10.0.2.2 is the host loopback. For real devices,
-        // we use the host's local IP, but 10.0.2.2 covers the common case.
-        let proxy_host = if serial.starts_with("emulator-") {
-            "10.0.2.2"
-        } else {
-            "127.0.0.1"
-        };
+        let proxy_host = crate::network_proxy::proxy_host_for_device(&serial);
         let proxy_setting = format!("{proxy_host}:{port}");
         info!(%serial, %proxy_setting, "Configuring device HTTP proxy");
 
@@ -1927,9 +1921,14 @@ impl proto::pilot_service_server::PilotService for PilotServiceImpl {
                 response_size: e.response_size,
                 start_time_ms: e.start_time_ms,
                 duration_ms: e.duration_ms,
-                request_headers_json: serde_json::to_string(&e.request_headers).unwrap_or_default(),
-                response_headers_json: serde_json::to_string(&e.response_headers)
-                    .unwrap_or_default(),
+                request_headers_json: crate::network_proxy::headers_to_json_object(
+                    &e.request_headers,
+                )
+                .to_string(),
+                response_headers_json: crate::network_proxy::headers_to_json_object(
+                    &e.response_headers,
+                )
+                .to_string(),
                 request_body: e.request_body,
                 response_body: e.response_body,
                 is_https: e.is_https,

@@ -5,10 +5,9 @@
 //! HTTPS, performs MITM interception using per-host certificates signed by
 //! the Pilot CA to decrypt and capture request/response content.
 
-use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result};
 use rustls::ClientConfig;
@@ -19,6 +18,11 @@ use tokio_rustls::{TlsAcceptor, TlsConnector};
 use tracing::{debug, info, warn};
 
 use crate::mitm_ca::MitmAuthority;
+
+/// Timeout for connecting to upstream servers.
+const UPSTREAM_CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
+/// Timeout for individual read operations from upstream.
+const UPSTREAM_READ_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// A captured network request/response pair.
 #[derive(Debug, Clone)]
@@ -31,8 +35,8 @@ pub struct CapturedEntry {
     pub response_size: u64,
     pub start_time_ms: u64,
     pub duration_ms: u64,
-    pub request_headers: HashMap<String, String>,
-    pub response_headers: HashMap<String, String>,
+    pub request_headers: Vec<(String, String)>,
+    pub response_headers: Vec<(String, String)>,
     pub request_body: Vec<u8>,
     pub response_body: Vec<u8>,
     pub is_https: bool,
@@ -120,6 +124,31 @@ fn now_ms() -> u64 {
         .as_millis() as u64
 }
 
+/// Detect the host machine's local network IP.
+///
+/// Uses the UDP socket trick: connect (without sending) to an external IP
+/// and read back the local address the OS chose. Falls back to `127.0.0.1`.
+fn local_ip() -> std::net::IpAddr {
+    std::net::UdpSocket::bind("0.0.0.0:0")
+        .and_then(|s| {
+            s.connect("8.8.8.8:80")?;
+            s.local_addr()
+        })
+        .map(|a| a.ip())
+        .unwrap_or(std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST))
+}
+
+/// Return the proxy host address a device should use to reach this machine.
+/// Emulators use 10.0.2.2 (Android emulator host loopback alias).
+/// Physical devices use the host's LAN IP.
+pub fn proxy_host_for_device(device_serial: &str) -> String {
+    if device_serial.starts_with("emulator-") {
+        "10.0.2.2".to_string()
+    } else {
+        local_ip().to_string()
+    }
+}
+
 /// Handle a single proxy connection.
 async fn handle_connection(
     mut client: TcpStream,
@@ -193,9 +222,14 @@ async fn handle_connect(
     };
 
     // Connect to the real upstream server
-    let upstream_tcp = match TcpStream::connect(&connect_target).await {
-        Ok(s) => s,
-        Err(e) => {
+    let upstream_tcp = match tokio::time::timeout(
+        UPSTREAM_CONNECT_TIMEOUT,
+        TcpStream::connect(&connect_target),
+    )
+    .await
+    {
+        Ok(Ok(s)) => s,
+        Ok(Err(e)) => {
             debug!("CONNECT failed to {connect_target}: {e}");
             let _ = client.write_all(b"HTTP/1.1 502 Bad Gateway\r\n\r\n").await;
 
@@ -208,8 +242,29 @@ async fn handle_connect(
                 response_size: 0,
                 start_time_ms: now_ms(),
                 duration_ms: 0,
-                request_headers: HashMap::new(),
-                response_headers: HashMap::new(),
+                request_headers: Vec::new(),
+                response_headers: Vec::new(),
+                request_body: Vec::new(),
+                response_body: Vec::new(),
+                is_https: true,
+            });
+            return;
+        }
+        Err(_) => {
+            debug!("CONNECT timed out to {connect_target}");
+            let _ = client.write_all(b"HTTP/1.1 502 Bad Gateway\r\n\r\n").await;
+
+            state.lock().await.entries.push(CapturedEntry {
+                method: "CONNECT".to_string(),
+                url: format!("https://{target}"),
+                status_code: 502,
+                content_type: String::new(),
+                request_size: 0,
+                response_size: 0,
+                start_time_ms: now_ms(),
+                duration_ms: 0,
+                request_headers: Vec::new(),
+                response_headers: Vec::new(),
                 request_body: Vec::new(),
                 response_body: Vec::new(),
                 is_https: true,
@@ -315,8 +370,9 @@ async fn handle_mitm_http<C, U>(
             }
         }
 
-        let request_str = String::from_utf8_lossy(&request_buf);
-        let first_line = request_str.lines().next().unwrap_or("");
+        let first_line_end = request_buf.iter().position(|&b| b == b'\n').unwrap_or(0);
+        let first_line_str = String::from_utf8_lossy(&request_buf[..first_line_end]);
+        let first_line = first_line_str.trim();
         let parts: Vec<&str> = first_line.split_whitespace().collect();
 
         if parts.len() < 3 {
@@ -328,12 +384,10 @@ async fn handle_mitm_http<C, U>(
         let path = parts[1].to_string();
         let url = format!("https://{hostname}{path}");
 
-        let (req_headers, header_end) = parse_headers(&request_str);
+        let (req_headers, header_end) = parse_headers(&request_buf);
 
         // Read request body if Content-Length is set
-        let content_length: usize = req_headers
-            .get("Content-Length")
-            .or_else(|| req_headers.get("content-length"))
+        let content_length: usize = get_header(&req_headers, "content-length")
             .and_then(|v| v.parse().ok())
             .unwrap_or(0);
 
@@ -364,12 +418,13 @@ async fn handle_mitm_http<C, U>(
             return;
         }
 
-        // Read response from upstream
+        // Read response from upstream (with per-read timeout)
         let mut response_buf = Vec::new();
         loop {
-            match upstream_stream.read(&mut tmp).await {
-                Ok(0) => break, // upstream closed
-                Ok(n) => {
+            match tokio::time::timeout(UPSTREAM_READ_TIMEOUT, upstream_stream.read(&mut tmp)).await
+            {
+                Ok(Ok(0)) => break, // upstream closed
+                Ok(Ok(n)) => {
                     response_buf.extend_from_slice(&tmp[..n]);
                     if response_complete(&response_buf) {
                         break;
@@ -379,8 +434,12 @@ async fn handle_mitm_http<C, U>(
                         break;
                     }
                 }
-                Err(e) => {
+                Ok(Err(e)) => {
                     debug!("MITM read from upstream for {hostname}: {e}");
+                    break;
+                }
+                Err(_) => {
+                    debug!("MITM read from upstream timed out for {hostname}");
                     break;
                 }
             }
@@ -396,14 +455,11 @@ async fn handle_mitm_http<C, U>(
         }
 
         // Parse response for capture
-        let response_str = String::from_utf8_lossy(&response_buf);
-        let status_code = parse_status_code(&response_str);
-        let (resp_headers, resp_header_end) = parse_headers(&response_str);
-        let content_type = resp_headers
-            .get("content-type")
-            .or_else(|| resp_headers.get("Content-Type"))
-            .cloned()
-            .unwrap_or_default();
+        let status_code = parse_status_code(&response_buf);
+        let (resp_headers, resp_header_end) = parse_headers(&response_buf);
+        let content_type = get_header(&resp_headers, "content-type")
+            .unwrap_or_default()
+            .to_string();
         let response_body = if resp_header_end < response_buf.len() {
             response_buf[resp_header_end..].to_vec()
         } else {
@@ -421,10 +477,8 @@ async fn handle_mitm_http<C, U>(
 
         // Check if the connection should stay alive (HTTP/1.1 keep-alive)
         // Must extract before moving resp_headers into the entry.
-        let connection_close = resp_headers
-            .get("Connection")
-            .or_else(|| resp_headers.get("connection"))
-            .map(|v| v.to_lowercase() == "close")
+        let connection_close = get_header(&resp_headers, "connection")
+            .map(|v| v.eq_ignore_ascii_case("close"))
             .unwrap_or(false);
 
         let max_body = 1_048_576;
@@ -462,34 +516,44 @@ async fn handle_mitm_http<C, U>(
 ///
 /// Handles both Content-Length and chunked transfer encoding. Returns `true`
 /// if we've received enough data to constitute a full response.
+///
+/// This is called in a tight read loop, so it scans raw bytes directly
+/// rather than invoking `parse_headers` on every call.
 fn response_complete(buf: &[u8]) -> bool {
     let header_end = match buf.windows(4).position(|w| w == b"\r\n\r\n") {
         Some(pos) => pos + 4,
         None => return false, // haven't received all headers yet
     };
 
-    let header_str = String::from_utf8_lossy(&buf[..header_end]);
+    // Scan header bytes for Transfer-Encoding and Content-Length without
+    // allocating a full header Vec on every call.
+    let header_bytes = &buf[..header_end];
+    let header_str = String::from_utf8_lossy(header_bytes);
+    let header_lower = header_str.to_lowercase();
 
     // Check for chunked transfer encoding
-    let is_chunked = header_str.lines().any(|line| {
-        let lower = line.to_lowercase();
-        lower.starts_with("transfer-encoding:") && lower.contains("chunked")
-    });
+    let is_chunked = header_lower
+        .lines()
+        .any(|line| line.starts_with("transfer-encoding:") && line.contains("chunked"));
 
     if is_chunked {
-        // The terminal chunk is "0\r\n\r\n" — only match at the buffer tail
-        // to avoid false positives from body content.
-        return buf.ends_with(b"0\r\n\r\n");
+        // The chunked terminator is "0\r\n\r\n" (zero-length chunk + empty
+        // trailer section). Verify the "0" sits right after a CRLF so we
+        // don't false-match body content.
+        if buf.len() < 5 || !buf.ends_with(b"0\r\n\r\n") {
+            return false;
+        }
+        let zero_pos = buf.len() - 5;
+        // "0" at body start or preceded by \r\n (end of previous chunk)
+        return zero_pos == header_end
+            || (zero_pos >= 2 && &buf[zero_pos - 2..zero_pos] == b"\r\n");
     }
 
     // Check Content-Length
-    for line in header_str.lines() {
-        let lower = line.to_lowercase();
-        if lower.starts_with("content-length:") {
-            if let Some(len_str) = line.split_once(':').map(|(_, v)| v.trim()) {
-                if let Ok(content_length) = len_str.parse::<usize>() {
-                    return buf.len() >= header_end + content_length;
-                }
+    for line in header_lower.lines() {
+        if let Some(rest) = line.strip_prefix("content-length:") {
+            if let Ok(content_length) = rest.trim().parse::<usize>() {
+                return buf.len() >= header_end + content_length;
             }
         }
     }
@@ -497,12 +561,7 @@ fn response_complete(buf: &[u8]) -> bool {
     // No Content-Length and not chunked — assume we need to read until close.
     // For keep-alive connections with no body indicators, the response is
     // just the headers (e.g., 204 No Content, 304 Not Modified).
-    let status_line = header_str.lines().next().unwrap_or("");
-    let status_code: i32 = status_line
-        .split_whitespace()
-        .nth(1)
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(0);
+    let status_code = parse_status_code(buf);
 
     // Responses with no body
     matches!(status_code, 204 | 304 | 100..=199)
@@ -529,8 +588,7 @@ async fn handle_http(
     };
 
     // Parse request headers from initial data
-    let request_str = String::from_utf8_lossy(initial_data);
-    let (req_headers, header_end) = parse_headers(&request_str);
+    let (req_headers, header_end) = parse_headers(initial_data);
     let request_body = if header_end < initial_data.len() {
         initial_data[header_end..].to_vec()
     } else {
@@ -566,7 +624,19 @@ async fn handle_http(
         format!("{host}:80")
     };
 
-    let mut upstream = match TcpStream::connect(&connect_target).await {
+    let connect_result = tokio::time::timeout(
+        UPSTREAM_CONNECT_TIMEOUT,
+        TcpStream::connect(&connect_target),
+    )
+    .await
+    .unwrap_or_else(|_| {
+        Err(std::io::Error::new(
+            std::io::ErrorKind::TimedOut,
+            "connect timed out",
+        ))
+    });
+
+    let mut upstream = match connect_result {
         Ok(s) => s,
         Err(e) => {
             debug!("Failed to connect to {connect_target}: {e}");
@@ -581,7 +651,7 @@ async fn handle_http(
                 start_time_ms: start,
                 duration_ms: now_ms() - start,
                 request_headers: req_headers,
-                response_headers: HashMap::new(),
+                response_headers: Vec::new(),
                 request_body,
                 response_body: Vec::new(),
                 is_https: false,
@@ -602,13 +672,13 @@ async fn handle_http(
         return;
     }
 
-    // Read response until complete (Content-Length or chunked)
+    // Read response until complete (Content-Length or chunked, with per-read timeout)
     let mut response_data = Vec::new();
     let mut buf = vec![0u8; 8192];
     loop {
-        match upstream.read(&mut buf).await {
-            Ok(0) => break,
-            Ok(n) => {
+        match tokio::time::timeout(UPSTREAM_READ_TIMEOUT, upstream.read(&mut buf)).await {
+            Ok(Ok(0)) => break,
+            Ok(Ok(n)) => {
                 response_data.extend_from_slice(&buf[..n]);
                 if response_complete(&response_data) {
                     break;
@@ -617,19 +687,16 @@ async fn handle_http(
                     break; // 10MB safety limit
                 }
             }
-            Err(_) => break,
+            Ok(Err(_)) | Err(_) => break,
         }
     }
 
     // Parse response status and headers
-    let response_str = String::from_utf8_lossy(&response_data);
-    let status_code = parse_status_code(&response_str);
-    let (resp_headers, resp_header_end) = parse_headers(&response_str);
-    let content_type = resp_headers
-        .get("content-type")
-        .or_else(|| resp_headers.get("Content-Type"))
-        .cloned()
-        .unwrap_or_default();
+    let status_code = parse_status_code(&response_data);
+    let (resp_headers, resp_header_end) = parse_headers(&response_data);
+    let content_type = get_header(&resp_headers, "content-type")
+        .unwrap_or_default()
+        .to_string();
     let response_body = if resp_header_end < response_data.len() {
         response_data[resp_header_end..].to_vec()
     } else {
@@ -677,7 +744,9 @@ async fn handle_http(
 
 /// Parse host and path from an absolute HTTP URL.
 fn parse_http_url(url: &str) -> Option<(String, String)> {
-    let stripped = url.strip_prefix("http://")?;
+    let stripped = url
+        .strip_prefix("http://")
+        .or_else(|| url.strip_prefix("https://"))?;
     let (host, path) = match stripped.find('/') {
         Some(idx) => (stripped[..idx].to_string(), stripped[idx..].to_string()),
         None => (stripped.to_string(), "/".to_string()),
@@ -685,43 +754,227 @@ fn parse_http_url(url: &str) -> Option<(String, String)> {
     Some((host, path))
 }
 
-/// Parse headers from a raw HTTP message. Returns headers map and byte offset
-/// of the body start.
-fn parse_headers(raw: &str) -> (HashMap<String, String>, usize) {
-    let mut headers = HashMap::new();
-    let mut offset = 0;
+/// Case-insensitive header lookup on a `Vec<(String, String)>`.
+/// Returns the first matching value.
+fn get_header<'a>(headers: &'a [(String, String)], name: &str) -> Option<&'a str> {
+    let lower = name.to_lowercase();
+    headers
+        .iter()
+        .find(|(k, _)| k.to_lowercase() == lower)
+        .map(|(_, v)| v.as_str())
+}
 
-    for (i, line) in raw.lines().enumerate() {
-        offset += line.len() + 1; // rough estimate, corrected below by \r\n\r\n search
+/// Parse headers from a raw HTTP message bytes. Returns headers list and byte
+/// offset of the body start. Headers are stored in order, preserving
+/// duplicates (e.g. multiple Set-Cookie headers).
+fn parse_headers(raw: &[u8]) -> (Vec<(String, String)>, usize) {
+    let mut headers = Vec::new();
+
+    // Find the header/body boundary in the raw bytes
+    let header_end = raw
+        .windows(4)
+        .position(|w| w == b"\r\n\r\n")
+        .map(|pos| pos + 4)
+        .or_else(|| raw.windows(2).position(|w| w == b"\n\n").map(|pos| pos + 2))
+        .unwrap_or(raw.len());
+
+    // Parse header lines from the header portion only (ASCII-safe)
+    let header_bytes = &raw[..header_end];
+    let header_str = String::from_utf8_lossy(header_bytes);
+
+    for (i, line) in header_str.lines().enumerate() {
         if i == 0 {
             continue; // skip request/status line
         }
-        if line.is_empty() || line == "\r" {
+        let clean = line.trim_end_matches('\r');
+        if clean.is_empty() {
             break;
         }
-        let clean = line.trim_end_matches('\r');
         if let Some((key, value)) = clean.split_once(':') {
-            headers.insert(key.trim().to_string(), value.trim().to_string());
+            headers.push((key.trim().to_string(), value.trim().to_string()));
         }
     }
 
-    // Find the actual \r\n\r\n boundary for body offset
-    if let Some(pos) = raw.find("\r\n\r\n") {
-        offset = pos + 4;
-    } else if let Some(pos) = raw.find("\n\n") {
-        offset = pos + 2;
-    }
-
-    (headers, offset)
+    (headers, header_end)
 }
 
 /// Extract the status code from the first line of an HTTP response.
-fn parse_status_code(response: &str) -> i32 {
-    let first_line = response.lines().next().unwrap_or("");
+fn parse_status_code(raw: &[u8]) -> i32 {
+    let header_end = raw.len().min(256); // status line is always near the start
+    let snippet = String::from_utf8_lossy(&raw[..header_end]);
+    let first_line = snippet.lines().next().unwrap_or("");
     let parts: Vec<&str> = first_line.split_whitespace().collect();
     if parts.len() >= 2 {
         parts[1].parse().unwrap_or(0)
     } else {
         0
+    }
+}
+
+/// Serialize headers as a JSON object. Duplicate header names are joined
+/// with ", " per RFC 9110 §5.3, except Set-Cookie which uses "\n" per
+/// RFC 6265 (cookies can contain commas so must not be comma-folded).
+pub fn headers_to_json_object(headers: &[(String, String)]) -> serde_json::Value {
+    let mut map = serde_json::Map::new();
+    for (key, value) in headers {
+        let lower = key.to_lowercase();
+        if let Some(existing) = map.get_mut(&lower) {
+            if let serde_json::Value::String(s) = existing {
+                // Set-Cookie must not be comma-folded (RFC 6265)
+                let separator = if lower == "set-cookie" { "\n" } else { ", " };
+                s.push_str(separator);
+                s.push_str(value);
+            }
+        } else {
+            map.insert(lower, serde_json::Value::String(value.clone()));
+        }
+    }
+    serde_json::Value::Object(map)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_headers_basic() {
+        let raw = b"GET / HTTP/1.1\r\nHost: example.com\r\nContent-Type: text/html\r\n\r\nbody";
+        let (headers, offset) = parse_headers(raw);
+        assert_eq!(headers.len(), 2);
+        assert_eq!(get_header(&headers, "Host"), Some("example.com"));
+        assert_eq!(get_header(&headers, "content-type"), Some("text/html"));
+        assert_eq!(&raw[offset..], b"body");
+    }
+
+    #[test]
+    fn parse_headers_preserves_duplicates() {
+        let raw = b"HTTP/1.1 200 OK\r\nSet-Cookie: a=1\r\nSet-Cookie: b=2\r\n\r\n";
+        let (headers, _) = parse_headers(raw);
+        let cookies: Vec<&str> = headers
+            .iter()
+            .filter(|(k, _)| k.eq_ignore_ascii_case("Set-Cookie"))
+            .map(|(_, v)| v.as_str())
+            .collect();
+        assert_eq!(cookies, vec!["a=1", "b=2"]);
+    }
+
+    #[test]
+    fn get_header_case_insensitive() {
+        let headers = vec![("Content-Type".to_string(), "application/json".to_string())];
+        assert_eq!(
+            get_header(&headers, "content-type"),
+            Some("application/json")
+        );
+        assert_eq!(
+            get_header(&headers, "CONTENT-TYPE"),
+            Some("application/json")
+        );
+        assert_eq!(
+            get_header(&headers, "Content-Type"),
+            Some("application/json")
+        );
+        assert_eq!(get_header(&headers, "x-missing"), None);
+    }
+
+    #[test]
+    fn parse_status_code_basic() {
+        assert_eq!(parse_status_code(b"HTTP/1.1 200 OK\r\n\r\n"), 200);
+        assert_eq!(parse_status_code(b"HTTP/1.1 404 Not Found\r\n\r\n"), 404);
+        assert_eq!(parse_status_code(b"HTTP/1.1 302 Found\r\n\r\n"), 302);
+        assert_eq!(parse_status_code(b"garbage"), 0);
+    }
+
+    #[test]
+    fn parse_http_url_basic() {
+        assert_eq!(
+            parse_http_url("http://example.com/path"),
+            Some(("example.com".to_string(), "/path".to_string())),
+        );
+        assert_eq!(
+            parse_http_url("http://example.com:8080/path"),
+            Some(("example.com:8080".to_string(), "/path".to_string())),
+        );
+        assert_eq!(
+            parse_http_url("http://example.com"),
+            Some(("example.com".to_string(), "/".to_string())),
+        );
+        assert_eq!(
+            parse_http_url("https://example.com/secure"),
+            Some(("example.com".to_string(), "/secure".to_string())),
+        );
+        assert_eq!(parse_http_url("ftp://nope"), None);
+    }
+
+    #[test]
+    fn response_complete_content_length() {
+        let resp = b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nhello";
+        assert!(response_complete(resp));
+
+        let partial = b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nhel";
+        assert!(!response_complete(partial));
+    }
+
+    #[test]
+    fn response_complete_chunked() {
+        let resp = b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhello\r\n0\r\n\r\n";
+        assert!(response_complete(resp));
+
+        let partial = b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhello\r\n";
+        assert!(!response_complete(partial));
+    }
+
+    #[test]
+    fn response_complete_no_body() {
+        let resp = b"HTTP/1.1 204 No Content\r\n\r\n";
+        assert!(response_complete(resp));
+
+        let resp = b"HTTP/1.1 304 Not Modified\r\n\r\n";
+        assert!(response_complete(resp));
+    }
+
+    #[test]
+    fn response_complete_headers_not_done() {
+        let partial = b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\n";
+        assert!(!response_complete(partial));
+    }
+
+    #[test]
+    fn headers_to_json_merges_duplicates() {
+        let headers = vec![
+            ("X-Custom".to_string(), "a".to_string()),
+            ("X-Custom".to_string(), "b".to_string()),
+            ("Content-Type".to_string(), "text/html".to_string()),
+        ];
+        let json = headers_to_json_object(&headers);
+        assert_eq!(json["x-custom"], "a, b");
+        assert_eq!(json["content-type"], "text/html");
+    }
+
+    #[test]
+    fn headers_to_json_set_cookie_uses_newline_separator() {
+        let headers = vec![
+            ("Set-Cookie".to_string(), "a=1; Path=/".to_string()),
+            ("Set-Cookie".to_string(), "b=2; HttpOnly".to_string()),
+        ];
+        let json = headers_to_json_object(&headers);
+        assert_eq!(json["set-cookie"], "a=1; Path=/\nb=2; HttpOnly");
+    }
+
+    #[test]
+    fn proxy_host_emulator_vs_physical() {
+        assert_eq!(proxy_host_for_device("emulator-5554"), "10.0.2.2");
+        // Physical devices get the host LAN IP (not 127.0.0.1)
+        let host = proxy_host_for_device("R5CT12345");
+        assert_ne!(
+            host, "127.0.0.1",
+            "Physical devices should not use loopback"
+        );
+    }
+
+    #[test]
+    fn parse_headers_body_offset_correct_with_body() {
+        let raw = b"POST /api HTTP/1.1\r\nContent-Length: 13\r\n\r\n{\"key\":\"val\"}";
+        let (_, offset) = parse_headers(raw);
+        assert_eq!(&raw[offset..], b"{\"key\":\"val\"}");
     }
 }

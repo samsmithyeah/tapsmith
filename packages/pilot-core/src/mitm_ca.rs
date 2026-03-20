@@ -5,7 +5,7 @@
 //! is cached so TLS handshakes are fast on repeat visits.
 
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
@@ -51,7 +51,7 @@ impl MitmAuthority {
     }
 
     /// Path to the CA PEM certificate file (for pushing to device).
-    pub fn ca_pem_path(&self) -> &PathBuf {
+    pub fn ca_pem_path(&self) -> &Path {
         &self.ca_pem_path
     }
 
@@ -105,7 +105,7 @@ impl MitmAuthority {
         Ok(PathBuf::from(home).join(PILOT_DIR))
     }
 
-    fn generate_new(cert_path: &PathBuf, key_path: &PathBuf) -> Result<Self> {
+    fn generate_new(cert_path: &Path, key_path: &Path) -> Result<Self> {
         let ca_key = KeyPair::generate().context("Failed to generate CA key pair")?;
 
         let mut params =
@@ -136,17 +136,25 @@ impl MitmAuthority {
         std::fs::write(key_path, &key_pem)
             .with_context(|| format!("Failed to write CA key to {}", key_path.display()))?;
 
+        // Restrict key file permissions to owner-only (0600)
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(key_path, std::fs::Permissions::from_mode(0o600))
+                .with_context(|| format!("Failed to set permissions on {}", key_path.display()))?;
+        }
+
         info!(path = %cert_path.display(), "MITM CA certificate saved");
 
         Ok(Self {
             ca_cert,
             ca_key,
-            ca_pem_path: cert_path.clone(),
+            ca_pem_path: cert_path.to_path_buf(),
             host_cache: Mutex::new(HashMap::new()),
         })
     }
 
-    fn load_from_disk(cert_path: &PathBuf, key_path: &PathBuf) -> Result<Self> {
+    fn load_from_disk(cert_path: &Path, key_path: &Path) -> Result<Self> {
         let cert_pem = std::fs::read_to_string(cert_path)
             .with_context(|| format!("Failed to read CA cert from {}", cert_path.display()))?;
         let key_pem = std::fs::read_to_string(key_path)
@@ -164,7 +172,7 @@ impl MitmAuthority {
         Ok(Self {
             ca_cert,
             ca_key,
-            ca_pem_path: cert_path.clone(),
+            ca_pem_path: cert_path.to_path_buf(),
             host_cache: Mutex::new(HashMap::new()),
         })
     }

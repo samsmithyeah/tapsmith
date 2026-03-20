@@ -210,13 +210,18 @@ pub async fn install_ca_cert(serial: &str, ca_pem_path: &str) -> Result<()> {
                     %serial,
                     "Device does not support adb root — CA must be installed manually"
                 );
-                return Ok(());
+                return Err(anyhow::anyhow!(
+                    "Device does not support adb root — HTTPS traffic will not be captured. \
+                     Install the CA cert manually from ~/.pilot/ca.pem"
+                ));
             }
             debug!(%serial, "adb root succeeded, waiting for device");
         }
         Err(e) => {
             tracing::warn!(%serial, "adb root failed: {e} — CA must be installed manually");
-            return Ok(());
+            return Err(anyhow::anyhow!(
+                "adb root failed: {e} — HTTPS traffic will not be captured"
+            ));
         }
     }
 

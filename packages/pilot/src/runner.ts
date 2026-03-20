@@ -456,27 +456,13 @@ async function runSuiteContext(
 
     // Finalize trace recording
     if (traceCollector && opts.device) {
-      // Stop network capture and collect entries
-      let networkEntries: import('./trace/types.js').NetworkEntry[] | undefined;
+      // Stop network capture and collect raw entries
+      let rawNetworkEntries: Awaited<ReturnType<typeof opts.device._stopNetworkCapture>>['entries'] | undefined;
       if (traceConfig.network) {
         try {
           const res = await opts.device._stopNetworkCapture();
           if (res.success && res.entries.length > 0) {
-            networkEntries = res.entries.map((e, i) => ({
-              index: i,
-              actionIndex: 0, // TODO: associate with actions by timestamp
-              startTime: e.startTimeMs,
-              endTime: e.startTimeMs + e.durationMs,
-              method: e.method,
-              url: e.url,
-              status: e.statusCode,
-              contentType: e.contentType,
-              requestSize: e.requestSize,
-              responseSize: e.responseSize,
-              duration: e.durationMs,
-              requestHeaders: e.requestHeadersJson ? JSON.parse(e.requestHeadersJson) : {},
-              responseHeaders: e.responseHeadersJson ? JSON.parse(e.responseHeadersJson) : {},
-            }));
+            rawNetworkEntries = res.entries;
           }
         } catch {
           // Network capture is best-effort
@@ -484,6 +470,42 @@ async function runSuiteContext(
       }
 
       const collector = opts.device.tracing._stopManaged();
+
+      // Map network entries, associating each with the closest preceding action
+      let networkEntries: import('./trace/types.js').NetworkEntry[] | undefined;
+      if (rawNetworkEntries && collector) {
+        // Build sorted list of action timestamps with their indices
+        const actionTimestamps = collector.events
+          .filter((e): e is import('./trace/types.js').ActionTraceEvent | import('./trace/types.js').AssertionTraceEvent =>
+            e.type === 'action' || e.type === 'assertion')
+          .map((e) => ({ timestamp: e.timestamp, actionIndex: e.actionIndex }));
+
+        const findActionIndex = (startTimeMs: number): number => {
+          let best = 0;
+          for (const a of actionTimestamps) {
+            if (a.timestamp <= startTimeMs) {
+              best = a.actionIndex;
+            }
+          }
+          return best;
+        };
+
+        networkEntries = rawNetworkEntries.map((e, i) => ({
+          index: i,
+          actionIndex: findActionIndex(e.startTimeMs),
+          startTime: e.startTimeMs,
+          endTime: e.startTimeMs + e.durationMs,
+          method: e.method,
+          url: e.url,
+          status: e.statusCode,
+          contentType: e.contentType,
+          requestSize: e.requestSize,
+          responseSize: e.responseSize,
+          duration: e.durationMs,
+          requestHeaders: e.requestHeadersJson ? JSON.parse(e.requestHeadersJson) : {},
+          responseHeaders: e.responseHeadersJson ? JSON.parse(e.responseHeadersJson) : {},
+        }));
+      }
       if (collector) {
         const retain = shouldRetain(traceConfig.mode, status === 'passed', attempt);
         if (retain) {
@@ -506,7 +528,7 @@ async function runSuiteContext(
               endTime: Date.now(),
               device: {
                 serial: opts.config.device ?? 'unknown',
-                isEmulator: false,
+                isEmulator: (opts.config.device ?? '').startsWith('emulator-'),
               },
               pilotVersion: version,
               error: error?.message,

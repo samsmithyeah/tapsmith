@@ -117,10 +117,10 @@ export function packageTrace(
 
   // 6. Network entries (optional)
   if (options.networkEntries && options.networkEntries.length > 0) {
-    const ndjson = options.networkEntries
+    const networkNdjson = options.networkEntries
       .map((e) => JSON.stringify(e))
       .join('\n') + '\n'
-    zipData['network.json'] = new TextEncoder().encode(ndjson)
+    zipData['network.json'] = new TextEncoder().encode(networkNdjson)
   }
 
   // Build zip

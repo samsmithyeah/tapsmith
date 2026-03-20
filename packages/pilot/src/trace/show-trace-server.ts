@@ -53,6 +53,23 @@ export async function showTrace(options: ShowTraceOptions): Promise<{ port: numb
       return
     }
 
+    // Serve vendored fflate browser ESM bundle from node_modules
+    if (url.pathname === '/vendor/fflate.js') {
+      const fflatePath = path.resolve(__dirname, '../node_modules/fflate/esm/browser.js')
+      if (!fs.existsSync(fflatePath)) {
+        res.writeHead(404)
+        res.end('fflate bundle not found')
+        return
+      }
+      const stat = fs.statSync(fflatePath)
+      res.writeHead(200, {
+        'Content-Type': 'application/javascript',
+        'Content-Length': stat.size,
+      })
+      fs.createReadStream(fflatePath).pipe(res)
+      return
+    }
+
     // Serve the trace zip
     if (url.pathname === '/trace.zip') {
       const stat = fs.statSync(resolvedTrace)
@@ -124,7 +141,7 @@ function buildFallbackViewer(): string {
   <h1>Pilot Trace Viewer</h1>
   <div id="app" class="loading">Loading trace...</div>
   <script type="module">
-    import { unzipSync, strFromU8 } from 'https://cdn.jsdelivr.net/npm/fflate@0.8.2/esm/browser.js'
+    import { unzipSync, strFromU8 } from '/vendor/fflate.js'
 
     const params = new URLSearchParams(location.search)
     const tracePath = params.get('trace') ?? '/trace.zip'
