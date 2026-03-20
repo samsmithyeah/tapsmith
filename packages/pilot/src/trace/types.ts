@@ -45,7 +45,7 @@ export type ActionCategory =
 export type ConsoleLevel = 'log' | 'warn' | 'error' | 'info' | 'debug'
 
 /** Logcat log level. */
-export type LogcatLevel = 'verbose' | 'debug' | 'info' | 'warn' | 'error' | 'fatal'
+type LogcatLevel = 'verbose' | 'debug' | 'info' | 'warn' | 'error' | 'fatal'
 
 // ─── Core Event Schema ───
 
