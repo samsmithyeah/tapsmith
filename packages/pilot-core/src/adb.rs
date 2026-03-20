@@ -65,6 +65,9 @@ async fn run_adb(serial: Option<&str>, args: &[&str], timeout: Duration) -> Resu
 
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(30);
 
+/// On-device path where Pilot installs its MITM CA certificate.
+pub const DEVICE_CA_CERT_PATH: &str = "/data/misc/user/0/cacerts-added/pilot-ca.0";
+
 /// List connected ADB devices.
 #[instrument]
 pub async fn list_devices() -> Result<Vec<AdbDevice>> {
@@ -228,14 +231,10 @@ pub async fn install_ca_cert(serial: &str, ca_pem_path: &str) -> Result<()> {
     let _ = shell(serial, "mkdir -p /data/misc/user/0/cacerts-added").await;
     let _ = shell(
         serial,
-        "cp /data/local/tmp/pilot-ca.pem /data/misc/user/0/cacerts-added/pilot-ca.0",
+        &format!("cp /data/local/tmp/pilot-ca.pem {DEVICE_CA_CERT_PATH}"),
     )
     .await;
-    let _ = shell(
-        serial,
-        "chmod 644 /data/misc/user/0/cacerts-added/pilot-ca.0",
-    )
-    .await;
+    let _ = shell(serial, &format!("chmod 644 {DEVICE_CA_CERT_PATH}")).await;
 
     info!(%serial, "CA certificate installed on device");
     Ok(())

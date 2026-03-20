@@ -334,7 +334,7 @@ async function runSuiteContext(
       // Start network capture if configured
       if (traceConfig.network) {
         try {
-          await opts.device._client.startNetworkCapture();
+          await opts.device._startNetworkCapture();
         } catch {
           // Network capture is best-effort
         }
@@ -460,7 +460,7 @@ async function runSuiteContext(
       let networkEntries: import('./trace/types.js').NetworkEntry[] | undefined;
       if (traceConfig.network) {
         try {
-          const res = await opts.device._client.stopNetworkCapture();
+          const res = await opts.device._stopNetworkCapture();
           if (res.success && res.entries.length > 0) {
             networkEntries = res.entries.map((e, i) => ({
               index: i,

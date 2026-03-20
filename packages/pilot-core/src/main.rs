@@ -110,6 +110,7 @@ async fn main() -> Result<()> {
     }));
 
     let service = PilotServiceImpl::new(device_manager, agent_connection);
+    let service_handle = Arc::new(service);
 
     let addr: SocketAddr = format!("127.0.0.1:{}", args.port)
         .parse()
@@ -118,12 +119,15 @@ async fn main() -> Result<()> {
     info!(%addr, "Starting Pilot gRPC server");
 
     Server::builder()
-        .add_service(proto::pilot_service_server::PilotServiceServer::new(
-            service,
+        .add_service(proto::pilot_service_server::PilotServiceServer::from_arc(
+            service_handle.clone(),
         ))
         .serve_with_shutdown(addr, shutdown_signal())
         .await
         .context("gRPC server failed")?;
+
+    // Clean up any active network proxy before exiting
+    service_handle.cleanup_network_proxy().await;
 
     info!("Pilot daemon shut down cleanly");
     Ok(())

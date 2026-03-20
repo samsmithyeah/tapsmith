@@ -7,7 +7,6 @@
  */
 
 import type { Selector } from './selectors.js';
-import { selectorToProto } from './selectors.js';
 import {
   PilotGrpcClient,
   type ActionResponse,
@@ -23,8 +22,8 @@ import { ElementHandle } from './element-handle.js';
 import type { PilotConfig } from './config.js';
 import { Tracing } from './trace/tracing.js';
 import type { TraceCollector } from './trace/trace-collector.js';
-import { extractSourceLocation } from './trace/trace-collector.js';
 import type { ActionCategory } from './trace/types.js';
+import { tracedAction } from './trace/traced-action.js';
 
 // ─── Types for element actions (PILOT-2) ───
 
@@ -104,121 +103,13 @@ export class Device {
     extra?: { inputValue?: string },
   ): Promise<void> {
     const collector = this._traceCollector;
-    if (!collector) {
-      return this._action(fn, fallbackMsg);
-    }
-
-    const sourceLocation = extractSourceLocation(new Error().stack ?? '');
-    const selectorStr = selector ? JSON.stringify(selectorToProto(selector)) : undefined;
-    const log: string[] = [];
-
-    // Best-effort element bounds lookup for trace overlay
-    let bounds: { left: number; top: number; right: number; bottom: number } | undefined;
-    let point: { x: number; y: number } | undefined;
-    if (selector) {
-      const lookupStart = Date.now();
-      try {
-        const res = await this._client.findElement(selector, 500);
-        if (res.found && res.element?.bounds) {
-          bounds = res.element.bounds;
-          log.push(`Element found at [${bounds.left},${bounds.top}][${bounds.right},${bounds.bottom}] (${Date.now() - lookupStart}ms)`);
-          if (category === 'tap') {
-            point = {
-              x: (bounds.left + bounds.right) / 2,
-              y: (bounds.top + bounds.bottom) / 2,
-            };
-            log.push(`Tap target: (${point.x}, ${point.y})`);
-          }
-        } else {
-          log.push(`Element lookup returned no match (${Date.now() - lookupStart}ms)`);
-        }
-      } catch {
-        log.push(`Element lookup failed (${Date.now() - lookupStart}ms)`);
-      }
-    }
-
-    log.push('Capturing before screenshot + hierarchy');
-
-    // Before capture
-    const { actionIndex, captures: beforeCaptures } = await collector.captureBeforeAction(
-      () => this._takeScreenshotBuffer(),
-      () => this._captureHierarchy(),
-    );
-
-    const start = Date.now();
-    let success = true;
-    let error: string | undefined;
-    let errorStack: string | undefined;
-
-    try {
-      const res = await fn();
-      if (!res.success) {
-        success = false;
-        error = res.errorMessage || fallbackMsg;
-        throw new Error(error);
-      }
-    } catch (err) {
-      success = false;
-      if (err instanceof Error) {
-        error = err.message;
-        errorStack = err.stack;
-      } else {
-        error = String(err);
-      }
-      log.push(`Action failed: ${error} (${Date.now() - start}ms)`);
-      // After capture even on failure
-      const afterCaptures = await collector.captureAfterAction(
-        actionIndex,
-        () => this._takeScreenshotBuffer(),
-        () => this._captureHierarchy(),
-      );
-
-      collector.addActionEvent({
-        category,
-        action,
-        selector: selectorStr,
-        inputValue: extra?.inputValue,
-        duration: Date.now() - start,
-        success,
-        error,
-        errorStack,
-        bounds,
-        point,
-        hasScreenshotBefore: !!beforeCaptures.screenshotBefore,
-        hasScreenshotAfter: !!afterCaptures.screenshotAfter,
-        hasHierarchyBefore: !!beforeCaptures.hierarchyBefore,
-        hasHierarchyAfter: !!afterCaptures.hierarchyAfter,
-        sourceLocation,
-        log,
-      });
-      throw err instanceof Error ? err : new Error(String(err));
-    }
-
-    log.push(`Action completed successfully (${Date.now() - start}ms)`);
-
-    // After capture on success
-    const afterCaptures = await collector.captureAfterAction(
-      actionIndex,
-      () => this._takeScreenshotBuffer(),
-      () => this._captureHierarchy(),
-    );
-
-    collector.addActionEvent({
-      category,
-      action,
-      selector: selectorStr,
-      inputValue: extra?.inputValue,
-      duration: Date.now() - start,
-      success,
-      bounds,
-      point,
-      hasScreenshotBefore: !!beforeCaptures.screenshotBefore,
-      hasScreenshotAfter: !!afterCaptures.screenshotAfter,
-      hasHierarchyBefore: !!beforeCaptures.hierarchyBefore,
-      hasHierarchyAfter: !!afterCaptures.hierarchyAfter,
-      sourceLocation,
-      log,
-    });
+    const ctx = collector ? {
+      collector,
+      takeScreenshot: () => this._takeScreenshotBuffer(),
+      captureHierarchy: () => this._captureHierarchy(),
+      findElement: (sel: Selector, timeout: number) => this._client.findElement(sel, timeout),
+    } : undefined;
+    return tracedAction(ctx, action, category, selector, fn, fallbackMsg, extra);
   }
 
   // ── Element handle ──
@@ -537,6 +428,16 @@ export class Device {
   async getColorScheme(): Promise<ColorScheme> {
     const res = await this._client.getColorScheme();
     return res.scheme as ColorScheme;
+  }
+
+  /** @internal — Start network capture (used by the runner). */
+  async _startNetworkCapture(): Promise<void> {
+    await this._client.startNetworkCapture();
+  }
+
+  /** @internal — Stop network capture and return entries (used by the runner). */
+  async _stopNetworkCapture(): Promise<ReturnType<PilotGrpcClient['stopNetworkCapture']>> {
+    return this._client.stopNetworkCapture();
   }
 
   close(): void {

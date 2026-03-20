@@ -129,17 +129,28 @@ async fn handle_connection(
 ) {
     debug!(%addr, "New proxy connection");
 
-    // Read the initial request line + headers
-    let mut buf = vec![0u8; 8192];
-    let n = match client.read(&mut buf).await {
-        Ok(0) => return,
-        Ok(n) => n,
-        Err(e) => {
-            debug!("Read error from proxy client: {e}");
-            return;
+    // Read the initial request line + headers (loop until \r\n\r\n)
+    let mut buf = Vec::new();
+    let mut tmp = vec![0u8; 8192];
+    loop {
+        match client.read(&mut tmp).await {
+            Ok(0) => return,
+            Ok(n) => {
+                buf.extend_from_slice(&tmp[..n]);
+                if buf.windows(4).any(|w| w == b"\r\n\r\n") {
+                    break;
+                }
+                if buf.len() > 65536 {
+                    debug!("Proxy request headers too large");
+                    return;
+                }
+            }
+            Err(e) => {
+                debug!("Read error from proxy client: {e}");
+                return;
+            }
         }
-    };
-    buf.truncate(n);
+    }
 
     let request_str = String::from_utf8_lossy(&buf);
     let first_line = request_str.lines().next().unwrap_or("");
@@ -244,7 +255,7 @@ async fn handle_connect(
     };
 
     // Generate a per-host cert signed by our CA and accept TLS from the client
-    let server_config = match mitm_ca.server_config_for_host(&hostname) {
+    let server_config = match mitm_ca.server_config_for_host(&hostname).await {
         Ok(cfg) => cfg,
         Err(e) => {
             debug!("Failed to generate MITM cert for {hostname}: {e}");
@@ -466,8 +477,9 @@ fn response_complete(buf: &[u8]) -> bool {
     });
 
     if is_chunked {
-        // Chunked responses end with "0\r\n\r\n"
-        return buf.windows(5).any(|w| w == b"0\r\n\r\n");
+        // The terminal chunk is "0\r\n\r\n" — only match at the buffer tail
+        // to avoid false positives from body content.
+        return buf.ends_with(b"0\r\n\r\n");
     }
 
     // Check Content-Length
@@ -680,7 +692,7 @@ fn parse_headers(raw: &str) -> (HashMap<String, String>, usize) {
     let mut offset = 0;
 
     for (i, line) in raw.lines().enumerate() {
-        offset += line.len() + 1; // +1 for \n (approximate)
+        offset += line.len() + 1; // rough estimate, corrected below by \r\n\r\n search
         if i == 0 {
             continue; // skip request/status line
         }

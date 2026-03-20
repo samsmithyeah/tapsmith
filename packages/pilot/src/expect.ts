@@ -274,13 +274,14 @@ function wrapAssertionWithTrace(
 
     let passed = true;
     let error: string | undefined;
-    const attempts = 1;
 
     try {
       await fn(...args);
     } catch (err) {
       passed = false;
       error = err instanceof Error ? err.message : String(err);
+      const duration = Date.now() - start;
+      const attempts = Math.max(1, Math.round(duration / POLL_INTERVAL_MS));
       // After capture even on failure
       const afterCaptures = await trace.collector.captureAfterAction(
         actionIndex,
@@ -294,7 +295,7 @@ function wrapAssertionWithTrace(
         passed,
         soft: false,
         negated,
-        duration: Date.now() - start,
+        duration,
         attempts,
         error,
         sourceLocation,
@@ -308,6 +309,8 @@ function wrapAssertionWithTrace(
     }
 
     // After capture on success
+    const duration = Date.now() - start;
+    const attempts = Math.max(1, Math.round(duration / POLL_INTERVAL_MS));
     const afterCaptures = await trace.collector.captureAfterAction(
       actionIndex,
       trace.takeScreenshot,
@@ -320,7 +323,7 @@ function wrapAssertionWithTrace(
       passed,
       soft: false,
       negated,
-      duration: Date.now() - start,
+      duration,
       attempts,
       sourceLocation,
       hasScreenshotBefore: !!beforeCaptures.screenshotBefore,

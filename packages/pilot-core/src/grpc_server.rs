@@ -20,6 +20,8 @@ pub struct PilotServiceImpl {
     device_manager: Arc<RwLock<DeviceManager>>,
     agent: Arc<RwLock<AgentConnection>>,
     network_proxy: Arc<RwLock<Option<NetworkProxy>>>,
+    /// Serial of the device whose proxy settings were modified (for cleanup).
+    proxy_device_serial: Arc<RwLock<Option<String>>>,
 }
 
 impl PilotServiceImpl {
@@ -31,6 +33,7 @@ impl PilotServiceImpl {
             device_manager,
             agent,
             network_proxy: Arc::new(RwLock::new(None)),
+            proxy_device_serial: Arc::new(RwLock::new(None)),
         }
     }
 
@@ -87,6 +90,24 @@ impl PilotServiceImpl {
             .active_serial()
             .map(String::from);
         screenshot::capture_for_error(serial.as_deref()).await
+    }
+
+    /// Clean up network proxy state: revert device proxy settings, remove CA
+    /// cert, and stop the proxy. Called during graceful shutdown to ensure the
+    /// device isn't left with a dangling proxy configuration.
+    pub async fn cleanup_network_proxy(&self) {
+        let proxy = self.network_proxy.write().await.take();
+        let serial = self.proxy_device_serial.write().await.take();
+
+        if let Some(serial) = serial {
+            info!(%serial, "Cleaning up device proxy settings on shutdown");
+            let _ = adb::shell(&serial, "settings put global http_proxy :0").await;
+            let _ = adb::shell(&serial, &format!("rm -f {}", adb::DEVICE_CA_CERT_PATH)).await;
+        }
+
+        if let Some(proxy) = proxy {
+            let _ = proxy.stop().await;
+        }
     }
 
     async fn make_action_response(
@@ -1859,6 +1880,7 @@ impl proto::pilot_service_server::PilotService for PilotServiceImpl {
         }
 
         *proxy_guard = Some(proxy);
+        *self.proxy_device_serial.write().await = Some(serial);
 
         Ok(Response::new(proto::StartNetworkCaptureResponse {
             request_id,
@@ -1886,10 +1908,11 @@ impl proto::pilot_service_server::PilotService for PilotServiceImpl {
         };
 
         // Revert device proxy settings and clean up CA cert
-        if let Ok(serial) = self.active_serial().await {
+        let serial = self.proxy_device_serial.write().await.take();
+        if let Some(serial) = serial {
             info!(%serial, "Reverting device HTTP proxy");
             let _ = adb::shell(&serial, "settings put global http_proxy :0").await;
-            let _ = adb::shell(&serial, "rm -f /data/misc/user/0/cacerts-added/pilot-ca.0").await;
+            let _ = adb::shell(&serial, &format!("rm -f {}", adb::DEVICE_CA_CERT_PATH)).await;
         }
 
         let captured = proxy.stop().await;
@@ -1929,13 +1952,73 @@ impl proto::pilot_service_server::PilotService for PilotServiceImpl {
         let request_id = Self::request_id(&req.request_id);
         let serial = self.active_serial().await?;
 
-        let output = adb::shell_lenient(&serial, "logcat -d -v time")
+        // Fetch logcat with epoch timestamps for reliable filtering
+        let output = adb::shell_lenient(&serial, "logcat -d -v epoch")
             .await
             .unwrap_or_default();
 
+        // Filter by timestamp and package in Rust for cross-device consistency.
+        // Logcat `-v epoch` format: "<epoch_secs>.<fractional>  <pid> ..."
+        let since_ms = req.since_ms;
+        let until_ms = if req.until_ms > 0 {
+            req.until_ms
+        } else {
+            u64::MAX
+        };
+        let package_name = req.package_name;
+
+        // If package_name is set, resolve its PID(s) for filtering
+        let pids: Vec<String> = if !package_name.is_empty() {
+            let pid_output = adb::shell_lenient(&serial, &format!("pidof {package_name}"))
+                .await
+                .unwrap_or_default();
+            pid_output.split_whitespace().map(String::from).collect()
+        } else {
+            Vec::new()
+        };
+
+        let need_filter = since_ms > 0 || until_ms < u64::MAX || !pids.is_empty();
+
+        let logcat = if need_filter {
+            let since_secs = since_ms as f64 / 1000.0;
+            let until_secs = until_ms as f64 / 1000.0;
+
+            output
+                .lines()
+                .filter(|line| {
+                    // Parse epoch timestamp from the beginning of the line
+                    let ts_ok = if since_ms > 0 || until_ms < u64::MAX {
+                        // Epoch format: "1234567890.123  <pid> ..."
+                        line.split_whitespace()
+                            .next()
+                            .and_then(|ts| ts.parse::<f64>().ok())
+                            .map(|ts| ts >= since_secs && ts <= until_secs)
+                            .unwrap_or(true) // keep non-parseable lines (e.g. headers)
+                    } else {
+                        true
+                    };
+
+                    let pid_ok = if !pids.is_empty() {
+                        // PID is the second whitespace-delimited field in epoch format
+                        line.split_whitespace()
+                            .nth(1)
+                            .map(|pid_field| pids.iter().any(|p| p == pid_field))
+                            .unwrap_or(false)
+                    } else {
+                        true
+                    };
+
+                    ts_ok && pid_ok
+                })
+                .collect::<Vec<&str>>()
+                .join("\n")
+        } else {
+            output
+        };
+
         Ok(Response::new(proto::GetLogcatResponse {
             request_id,
-            logcat: output,
+            logcat,
             error_message: String::new(),
         }))
     }

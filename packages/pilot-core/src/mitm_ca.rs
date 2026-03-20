@@ -57,9 +57,9 @@ impl MitmAuthority {
 
     /// Get or create a `rustls::ServerConfig` for the given hostname.
     /// Results are cached so subsequent calls for the same host are fast.
-    pub fn server_config_for_host(&self, hostname: &str) -> Result<Arc<ServerConfig>> {
-        // Fast path: check cache (blocking is fine, we hold it briefly)
-        let mut cache = self.host_cache.blocking_lock();
+    pub async fn server_config_for_host(&self, hostname: &str) -> Result<Arc<ServerConfig>> {
+        // Fast path: check cache
+        let mut cache = self.host_cache.lock().await;
         if let Some(config) = cache.get(hostname) {
             return Ok(config.clone());
         }
