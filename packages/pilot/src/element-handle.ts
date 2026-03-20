@@ -456,6 +456,24 @@ export class ElementHandle {
     const sourceLocation = extractSourceLocation(new Error().stack ?? '');
     const selectorStr = JSON.stringify(selectorToProto(this._selector));
 
+    // Best-effort element bounds lookup for trace overlay
+    let bounds: { left: number; top: number; right: number; bottom: number } | undefined;
+    let point: { x: number; y: number } | undefined;
+    try {
+      const res = await this._client.findElement(this._selector, 500);
+      if (res.found && res.element?.bounds) {
+        bounds = res.element.bounds;
+        if (category === 'tap') {
+          point = {
+            x: (bounds.left + bounds.right) / 2,
+            y: (bounds.top + bounds.bottom) / 2,
+          };
+        }
+      }
+    } catch {
+      // bounds are best-effort — continue without them
+    }
+
     const { actionIndex, captures: beforeCaptures } = await trace.collector.captureBeforeAction(
       trace.takeScreenshot, trace.captureHierarchy,
     );
@@ -483,6 +501,8 @@ export class ElementHandle {
       trace.collector.addActionEvent({
         category, action, selector: selectorStr, inputValue: extra?.inputValue,
         duration: Date.now() - start, success, error, errorStack,
+        bounds,
+        point,
         hasScreenshotBefore: !!beforeCaptures.screenshotBefore,
         hasScreenshotAfter: !!afterCaptures.screenshotAfter,
         hasHierarchyBefore: !!beforeCaptures.hierarchyBefore,
@@ -498,6 +518,8 @@ export class ElementHandle {
     trace.collector.addActionEvent({
       category, action, selector: selectorStr, inputValue: extra?.inputValue,
       duration: Date.now() - start, success,
+      bounds,
+      point,
       hasScreenshotBefore: !!beforeCaptures.screenshotBefore,
       hasScreenshotAfter: !!afterCaptures.screenshotAfter,
       hasHierarchyBefore: !!beforeCaptures.hierarchyBefore,

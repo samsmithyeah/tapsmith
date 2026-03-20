@@ -295,8 +295,7 @@ style.textContent = `
   .screenshot-tab:hover { color: #ccc; }
   .screenshot-tab.active { color: #e8e8e8; border-bottom-color: #4fc1ff; }
   .screenshot-container { flex: 1; display: flex; align-items: center; justify-content: center; overflow: auto; padding: 16px; }
-  .device-frame { background: #111; border-radius: 24px; padding: 12px 8px; box-shadow: 0 8px 32px rgba(0,0,0,0.5); display: inline-block; }
-  .device-frame img { display: block; border-radius: 12px; max-height: calc(100vh - 320px); width: auto; }
+  .device-frame { background: #111; border-radius: 24px; padding: 12px 8px; box-shadow: 0 8px 32px rgba(0,0,0,0.5); display: inline-block; transition: transform 0.1s; }
   .screenshot-empty { color: #555; text-align: center; font-size: 13px; }
 
   /* ─── Detail tabs (bottom panel) ─── */

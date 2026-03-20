@@ -224,6 +224,8 @@ export interface RunOptions {
   abortFileOnError?: (error: Error) => boolean;
   /** Pre-resolved worker-scoped fixture values (set by worker-runner). */
   workerFixtures?: Record<string, unknown>;
+  /** Test file path — used by trace packager for testFile metadata and source inclusion. */
+  testFilePath?: string;
 }
 
 async function captureFailureScreenshot(
@@ -448,8 +450,11 @@ async function runSuiteContext(
               'traces',
             );
             const version = getPackageVersion();
+            const sourceFiles = opts.testFilePath && traceConfig.sources
+              ? [opts.testFilePath]
+              : undefined;
             tracePath = packageTrace(collector, {
-              testFile: '', // set by runTestFile wrapper
+              testFile: opts.testFilePath ?? '',
               testName: fullName,
               testStatus: status,
               testDuration: Date.now() - testStart,
@@ -462,6 +467,7 @@ async function runSuiteContext(
               pilotVersion: version,
               error: error?.message,
               outputDir,
+              sourceFiles,
             });
           } catch {
             // Trace packaging is best-effort
@@ -587,7 +593,7 @@ export async function runTestFile(
     workerTeardown = resolved.teardown;
   }
 
-  const fileOpts: RunOptions = { ...opts, workerFixtures };
+  const fileOpts: RunOptions = { ...opts, workerFixtures, testFilePath: filePath };
 
   try {
     return await runSuiteContext(rootCtx, '', [], [], fileOpts);

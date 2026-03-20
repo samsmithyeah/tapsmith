@@ -148,6 +148,127 @@ function ConsoleTab({ event, events: consoleEvents }: { event: ActionTraceEvent 
 
 // ─── Source Tab ───
 
+interface SourceToken {
+  text: string
+  type: 'keyword' | 'string' | 'comment' | 'number' | 'plain'
+}
+
+const KEYWORDS = new Set([
+  'import', 'from', 'export', 'const', 'let', 'var', 'async', 'await',
+  'function', 'return', 'if', 'else', 'try', 'catch', 'throw', 'new',
+  'typeof', 'describe', 'test', 'expect', 'beforeEach', 'afterEach',
+])
+
+function tokenizeLine(line: string, inBlockComment: boolean): { tokens: SourceToken[]; inBlockComment: boolean } {
+  const tokens: SourceToken[] = []
+  let remaining = line
+  let blockComment = inBlockComment
+
+  // If we're inside a block comment from a previous line, consume until we find */
+  if (blockComment) {
+    const endIdx = remaining.indexOf('*/')
+    if (endIdx === -1) {
+      tokens.push({ text: remaining, type: 'comment' })
+      return { tokens, inBlockComment: true }
+    }
+    tokens.push({ text: remaining.slice(0, endIdx + 2), type: 'comment' })
+    remaining = remaining.slice(endIdx + 2)
+    blockComment = false
+  }
+
+  while (remaining.length > 0) {
+    // Line comment
+    if (remaining.startsWith('//')) {
+      tokens.push({ text: remaining, type: 'comment' })
+      remaining = ''
+      break
+    }
+
+    // Block comment start
+    if (remaining.startsWith('/*')) {
+      const endIdx = remaining.indexOf('*/', 2)
+      if (endIdx === -1) {
+        tokens.push({ text: remaining, type: 'comment' })
+        remaining = ''
+        blockComment = true
+        break
+      }
+      tokens.push({ text: remaining.slice(0, endIdx + 2), type: 'comment' })
+      remaining = remaining.slice(endIdx + 2)
+      continue
+    }
+
+    // Single-quoted string
+    if (remaining[0] === "'") {
+      const match = remaining.match(/^'(?:[^'\\]|\\.)*'/)
+      if (match) {
+        tokens.push({ text: match[0], type: 'string' })
+        remaining = remaining.slice(match[0].length)
+        continue
+      }
+    }
+
+    // Double-quoted string
+    if (remaining[0] === '"') {
+      const match = remaining.match(/^"(?:[^"\\]|\\.)*"/)
+      if (match) {
+        tokens.push({ text: match[0], type: 'string' })
+        remaining = remaining.slice(match[0].length)
+        continue
+      }
+    }
+
+    // Template literal (basic - no nesting)
+    if (remaining[0] === '`') {
+      const match = remaining.match(/^`(?:[^`\\]|\\.)*`/)
+      if (match) {
+        tokens.push({ text: match[0], type: 'string' })
+        remaining = remaining.slice(match[0].length)
+        continue
+      }
+    }
+
+    // Number
+    const numMatch = remaining.match(/^(?:0[xX][0-9a-fA-F]+|0[bB][01]+|0[oO][0-7]+|\d+\.?\d*(?:[eE][+-]?\d+)?)(?!\w)/)
+    if (numMatch && (tokens.length === 0 || /[^a-zA-Z_$]$/.test(tokens[tokens.length - 1].text))) {
+      tokens.push({ text: numMatch[0], type: 'number' })
+      remaining = remaining.slice(numMatch[0].length)
+      continue
+    }
+
+    // Keyword or identifier
+    const wordMatch = remaining.match(/^[a-zA-Z_$][a-zA-Z0-9_$]*/)
+    if (wordMatch) {
+      const word = wordMatch[0]
+      const type = KEYWORDS.has(word) ? 'keyword' : 'plain'
+      tokens.push({ text: word, type })
+      remaining = remaining.slice(word.length)
+      continue
+    }
+
+    // Any other character
+    // Collect consecutive non-special characters as plain text
+    const plainMatch = remaining.match(/^[^a-zA-Z_$'"`/0-9]+/)
+    if (plainMatch) {
+      tokens.push({ text: plainMatch[0], type: 'plain' })
+      remaining = remaining.slice(plainMatch[0].length)
+    } else {
+      tokens.push({ text: remaining[0], type: 'plain' })
+      remaining = remaining.slice(1)
+    }
+  }
+
+  return { tokens, inBlockComment: blockComment }
+}
+
+const TOKEN_COLORS: Record<SourceToken['type'], string | undefined> = {
+  keyword: '#569cd6',
+  string: '#ce9178',
+  comment: '#6a9955',
+  number: '#b5cea8',
+  plain: undefined,
+}
+
 function SourceTab({ event, sources }: { event: ActionTraceEvent | AssertionTraceEvent | undefined; sources: Map<string, string> }) {
   if (sources.size === 0) return <div class="no-content">No source files in trace</div>
 
@@ -157,14 +278,33 @@ function SourceTab({ event, sources }: { event: ActionTraceEvent | AssertionTrac
 
   const lines = content.split('\n')
 
+  // Tokenize all lines, tracking block comment state across lines
+  let inBlockComment = false
+  const tokenizedLines: SourceToken[][] = []
+  for (const line of lines) {
+    const result = tokenizeLine(line, inBlockComment)
+    tokenizedLines.push(result.tokens)
+    inBlockComment = result.inBlockComment
+  }
+
   return (
     <div>
       <div style={{ color: '#888', fontSize: '11px', marginBottom: '6px', fontFamily: 'monospace' }}>{filename}</div>
       <div class="source-code">
-        {lines.map((line, i) => (
+        {tokenizedLines.map((tokens, i) => (
           <div key={i} class={`source-line${highlightLine === i + 1 ? ' highlight' : ''}`}>
             <span class="source-line-number">{i + 1}</span>
-            <span class="source-line-content">{line}</span>
+            <span class="source-line-content">
+              {tokens.length === 0
+                ? '\u200b'
+                : tokens.map((token, j) => {
+                    const color = TOKEN_COLORS[token.type]
+                    return color
+                      ? <span key={j} style={{ color }}>{token.text}</span>
+                      : <span key={j}>{token.text}</span>
+                  })
+              }
+            </span>
           </div>
         ))}
       </div>

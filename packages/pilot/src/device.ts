@@ -111,6 +111,26 @@ export class Device {
     const sourceLocation = extractSourceLocation(new Error().stack ?? '');
     const selectorStr = selector ? JSON.stringify(selectorToProto(selector)) : undefined;
 
+    // Best-effort element bounds lookup for trace overlay
+    let bounds: { left: number; top: number; right: number; bottom: number } | undefined;
+    let point: { x: number; y: number } | undefined;
+    if (selector) {
+      try {
+        const res = await this._client.findElement(selector, 500);
+        if (res.found && res.element?.bounds) {
+          bounds = res.element.bounds;
+          if (category === 'tap') {
+            point = {
+              x: (bounds.left + bounds.right) / 2,
+              y: (bounds.top + bounds.bottom) / 2,
+            };
+          }
+        }
+      } catch {
+        // bounds are best-effort — continue without them
+      }
+    }
+
     // Before capture
     const { actionIndex, captures: beforeCaptures } = await collector.captureBeforeAction(
       () => this._takeScreenshotBuffer(),
@@ -153,6 +173,8 @@ export class Device {
         success,
         error,
         errorStack,
+        bounds,
+        point,
         hasScreenshotBefore: !!beforeCaptures.screenshotBefore,
         hasScreenshotAfter: !!afterCaptures.screenshotAfter,
         hasHierarchyBefore: !!beforeCaptures.hierarchyBefore,
@@ -176,6 +198,8 @@ export class Device {
       inputValue: extra?.inputValue,
       duration: Date.now() - start,
       success,
+      bounds,
+      point,
       hasScreenshotBefore: !!beforeCaptures.screenshotBefore,
       hasScreenshotAfter: !!afterCaptures.screenshotAfter,
       hasHierarchyBefore: !!beforeCaptures.hierarchyBefore,
