@@ -105,7 +105,7 @@ impl MitmAuthority {
         Ok(PathBuf::from(home).join(PILOT_DIR))
     }
 
-    fn generate_new(cert_path: &Path, key_path: &Path) -> Result<Self> {
+    pub(crate) fn generate_new(cert_path: &Path, key_path: &Path) -> Result<Self> {
         let ca_key = KeyPair::generate().context("Failed to generate CA key pair")?;
 
         let mut params =
@@ -154,7 +154,7 @@ impl MitmAuthority {
         })
     }
 
-    fn load_from_disk(cert_path: &Path, key_path: &Path) -> Result<Self> {
+    pub(crate) fn load_from_disk(cert_path: &Path, key_path: &Path) -> Result<Self> {
         let cert_pem = std::fs::read_to_string(cert_path)
             .with_context(|| format!("Failed to read CA cert from {}", cert_path.display()))?;
         let key_pem = std::fs::read_to_string(key_path)
@@ -175,5 +175,57 @@ impl MitmAuthority {
             ca_pem_path: cert_path.to_path_buf(),
             host_cache: Mutex::new(HashMap::new()),
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+
+    #[test]
+    fn generate_and_load_roundtrip() {
+        let dir = tempfile::tempdir().unwrap();
+        let cert_path = dir.path().join("ca.pem");
+        let key_path = dir.path().join("ca-key.pem");
+
+        // Generate new CA
+        let ca = MitmAuthority::generate_new(&cert_path, &key_path).unwrap();
+        assert!(cert_path.exists());
+        assert!(key_path.exists());
+
+        // Key file should have restricted permissions on Unix
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let perms = fs::metadata(&key_path).unwrap().permissions();
+            assert_eq!(perms.mode() & 0o777, 0o600);
+        }
+
+        // Verify CA PEM path is correct
+        assert_eq!(ca.ca_pem_path(), cert_path.as_path());
+
+        // Load from disk should succeed
+        let _loaded = MitmAuthority::load_from_disk(&cert_path, &key_path).unwrap();
+    }
+
+    #[tokio::test]
+    async fn server_config_for_host_generates_and_caches() {
+        let _ = rustls::crypto::ring::default_provider().install_default();
+
+        let dir = tempfile::tempdir().unwrap();
+        let cert_path = dir.path().join("ca.pem");
+        let key_path = dir.path().join("ca-key.pem");
+        let ca = MitmAuthority::generate_new(&cert_path, &key_path).unwrap();
+
+        // First call generates
+        let config1 = ca.server_config_for_host("example.com").await.unwrap();
+        // Second call should return cached config (same Arc)
+        let config2 = ca.server_config_for_host("example.com").await.unwrap();
+        assert!(Arc::ptr_eq(&config1, &config2));
+
+        // Different host should generate a different config
+        let config3 = ca.server_config_for_host("other.com").await.unwrap();
+        assert!(!Arc::ptr_eq(&config1, &config3));
     }
 }

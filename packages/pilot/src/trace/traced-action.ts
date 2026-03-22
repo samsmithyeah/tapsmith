@@ -81,6 +81,7 @@ export async function tracedAction(
   let success = true
   let error: string | undefined
   let errorStack: string | undefined
+  let caughtErr: unknown
 
   try {
     const res = await fn()
@@ -94,31 +95,19 @@ export async function tracedAction(
     if (err instanceof Error) { error = err.message; errorStack = err.stack }
     else { error = String(err) }
     log.push(`Action failed: ${error} (${Date.now() - start}ms)`)
-
-    const afterCaptures = await ctx.collector.captureAfterAction(
-      actionIndex, ctx.takeScreenshot, ctx.captureHierarchy,
-    )
-    ctx.collector.addActionEvent({
-      category, action, selector: selectorStr, inputValue: extra?.inputValue,
-      duration: Date.now() - start, success, error, errorStack,
-      bounds, point, log,
-      hasScreenshotBefore: !!beforeCaptures.screenshotBefore,
-      hasScreenshotAfter: !!afterCaptures.screenshotAfter,
-      hasHierarchyBefore: !!beforeCaptures.hierarchyBefore,
-      hasHierarchyAfter: !!afterCaptures.hierarchyAfter,
-      sourceLocation,
-    })
-    throw err instanceof Error ? err : new Error(String(err))
+    caughtErr = err
   }
 
-  log.push(`Action completed successfully (${Date.now() - start}ms)`)
+  if (success) {
+    log.push(`Action completed successfully (${Date.now() - start}ms)`)
+  }
 
   const afterCaptures = await ctx.collector.captureAfterAction(
     actionIndex, ctx.takeScreenshot, ctx.captureHierarchy,
   )
   ctx.collector.addActionEvent({
     category, action, selector: selectorStr, inputValue: extra?.inputValue,
-    duration: Date.now() - start, success,
+    duration: Date.now() - start, success, error, errorStack,
     bounds, point, log,
     hasScreenshotBefore: !!beforeCaptures.screenshotBefore,
     hasScreenshotAfter: !!afterCaptures.screenshotAfter,
@@ -126,4 +115,8 @@ export async function tracedAction(
     hasHierarchyAfter: !!afterCaptures.hierarchyAfter,
     sourceLocation,
   })
+
+  if (caughtErr !== undefined) {
+    throw caughtErr instanceof Error ? caughtErr : new Error(String(caughtErr))
+  }
 }

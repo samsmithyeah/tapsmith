@@ -335,8 +335,9 @@ async function runSuiteContext(
       if (traceConfig.network) {
         try {
           await opts.device._startNetworkCapture();
-        } catch {
-          // Network capture is best-effort
+        } catch (err) {
+          // Network capture is best-effort — log so failures aren't invisible
+          console.warn(`[pilot] Network capture failed to start: ${err instanceof Error ? err.message : err}`);
         }
       }
     }
@@ -463,9 +464,11 @@ async function runSuiteContext(
           const res = await opts.device._stopNetworkCapture();
           if (res.success && res.entries.length > 0) {
             rawNetworkEntries = res.entries;
+          } else if (!res.success) {
+            console.warn(`[pilot] Network capture stopped with error: ${res.errorMessage}`);
           }
-        } catch {
-          // Network capture is best-effort
+        } catch (err) {
+          console.warn(`[pilot] Failed to stop network capture: ${err instanceof Error ? err.message : err}`);
         }
       }
 
@@ -504,6 +507,8 @@ async function runSuiteContext(
           duration: e.durationMs,
           requestHeaders: e.requestHeadersJson ? JSON.parse(e.requestHeadersJson) : {},
           responseHeaders: e.responseHeadersJson ? JSON.parse(e.responseHeadersJson) : {},
+          requestBody: e.requestBody,
+          responseBody: e.responseBody,
         }));
       }
       if (collector) {

@@ -144,6 +144,41 @@ pub async fn remove_forward(serial: &str, host_port: u16) -> Result<()> {
     Ok(())
 }
 
+/// Set up reverse port forwarding: `adb reverse tcp:<device_port> tcp:<host_port>`.
+///
+/// Makes `127.0.0.1:<device_port>` on the device forward to `127.0.0.1:<host_port>`
+/// on the host. More reliable than `settings put global http_proxy` with `10.0.2.2`
+/// because it works at the ADB transport level.
+#[instrument]
+pub async fn reverse_port(serial: &str, device_port: u16, host_port: u16) -> Result<()> {
+    let device_arg = format!("tcp:{device_port}");
+    let host_arg = format!("tcp:{host_port}");
+    run_adb(
+        Some(serial),
+        &["reverse", &device_arg, &host_arg],
+        DEFAULT_TIMEOUT,
+    )
+    .await?;
+    debug!(
+        device_port,
+        host_port, "Reverse port forwarding established"
+    );
+    Ok(())
+}
+
+/// Remove a specific reverse port forward.
+#[instrument]
+pub async fn remove_reverse(serial: &str, device_port: u16) -> Result<()> {
+    let device_arg = format!("tcp:{device_port}");
+    run_adb(
+        Some(serial),
+        &["reverse", "--remove", &device_arg],
+        DEFAULT_TIMEOUT,
+    )
+    .await?;
+    Ok(())
+}
+
 /// Execute a shell command on the device, returning stdout as a String.
 #[instrument]
 pub async fn shell(serial: &str, command: &str) -> Result<String> {

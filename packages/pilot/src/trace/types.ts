@@ -222,6 +222,7 @@ export interface TraceConfigSnapshot {
   screenshots: boolean
   snapshots: boolean
   sources: boolean
+  network: boolean
 }
 
 // ─── Trace Configuration ───
@@ -304,6 +305,10 @@ export interface NetworkEntry {
   requestHeaders: Record<string, string>
   /** Response headers. */
   responseHeaders: Record<string, string>
+  /** Request body bytes (transient — not serialized to archive JSON). */
+  requestBody?: Buffer
+  /** Response body bytes (transient — not serialized to archive JSON). */
+  responseBody?: Buffer
 }
 
 // ─── Union type for all events ───

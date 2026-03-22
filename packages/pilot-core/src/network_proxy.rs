@@ -23,6 +23,10 @@ use crate::mitm_ca::MitmAuthority;
 const UPSTREAM_CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
 /// Timeout for individual read operations from upstream.
 const UPSTREAM_READ_TIMEOUT: Duration = Duration::from_secs(30);
+/// Timeout for reading initial request headers from a client.
+const CLIENT_READ_TIMEOUT: Duration = Duration::from_secs(30);
+/// Maximum request/response body size to capture (1 MB).
+const MAX_BODY_SIZE: usize = 1_048_576;
 
 /// A captured network request/response pair.
 #[derive(Debug, Clone)]
@@ -45,6 +49,7 @@ pub struct CapturedEntry {
 /// Shared state for the proxy server.
 struct ProxyState {
     entries: Vec<CapturedEntry>,
+    tls_client_config: Arc<ClientConfig>,
 }
 
 /// Handle to the running proxy. Dropping it stops the proxy.
@@ -64,8 +69,17 @@ impl NetworkProxy {
             .context("Failed to bind proxy port")?;
         let port = listener.local_addr()?.port();
 
+        let mut root_store = rustls::RootCertStore::empty();
+        root_store.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
+        let tls_client_config = Arc::new(
+            ClientConfig::builder()
+                .with_root_certificates(root_store)
+                .with_no_client_auth(),
+        );
+
         let state = Arc::new(Mutex::new(ProxyState {
             entries: Vec::new(),
+            tls_client_config,
         }));
 
         let (shutdown_tx, mut shutdown_rx) = tokio::sync::oneshot::channel::<()>();
@@ -124,31 +138,6 @@ fn now_ms() -> u64 {
         .as_millis() as u64
 }
 
-/// Detect the host machine's local network IP.
-///
-/// Uses the UDP socket trick: connect (without sending) to an external IP
-/// and read back the local address the OS chose. Falls back to `127.0.0.1`.
-fn local_ip() -> std::net::IpAddr {
-    std::net::UdpSocket::bind("0.0.0.0:0")
-        .and_then(|s| {
-            s.connect("8.8.8.8:80")?;
-            s.local_addr()
-        })
-        .map(|a| a.ip())
-        .unwrap_or(std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST))
-}
-
-/// Return the proxy host address a device should use to reach this machine.
-/// Emulators use 10.0.2.2 (Android emulator host loopback alias).
-/// Physical devices use the host's LAN IP.
-pub fn proxy_host_for_device(device_serial: &str) -> String {
-    if device_serial.starts_with("emulator-") {
-        "10.0.2.2".to_string()
-    } else {
-        local_ip().to_string()
-    }
-}
-
 /// Handle a single proxy connection.
 async fn handle_connection(
     mut client: TcpStream,
@@ -162,9 +151,9 @@ async fn handle_connection(
     let mut buf = Vec::new();
     let mut tmp = vec![0u8; 8192];
     loop {
-        match client.read(&mut tmp).await {
-            Ok(0) => return,
-            Ok(n) => {
+        match tokio::time::timeout(CLIENT_READ_TIMEOUT, client.read(&mut tmp)).await {
+            Ok(Ok(0)) => return,
+            Ok(Ok(n)) => {
                 buf.extend_from_slice(&tmp[..n]);
                 if buf.windows(4).any(|w| w == b"\r\n\r\n") {
                     break;
@@ -174,8 +163,12 @@ async fn handle_connection(
                     return;
                 }
             }
-            Err(e) => {
+            Ok(Err(e)) => {
                 debug!("Read error from proxy client: {e}");
+                return;
+            }
+            Err(_) => {
+                debug!("Proxy client header read timed out");
                 return;
             }
         }
@@ -282,15 +275,8 @@ async fn handle_connect(
         return;
     }
 
-    // TLS handshake with upstream using system root certificates
-    let mut root_store = rustls::RootCertStore::empty();
-    root_store.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
-
-    let tls_client_config = Arc::new(
-        ClientConfig::builder()
-            .with_root_certificates(root_store)
-            .with_no_client_auth(),
-    );
+    // TLS handshake with upstream using shared root certificates
+    let tls_client_config = state.lock().await.tls_client_config.clone();
 
     let server_name = match rustls::pki_types::ServerName::try_from(hostname.clone()) {
         Ok(sn) => sn,
@@ -350,9 +336,9 @@ async fn handle_mitm_http<C, U>(
         let mut request_buf = Vec::new();
         let mut tmp = vec![0u8; 8192];
         loop {
-            match client_stream.read(&mut tmp).await {
-                Ok(0) => return, // client closed
-                Ok(n) => {
+            match tokio::time::timeout(CLIENT_READ_TIMEOUT, client_stream.read(&mut tmp)).await {
+                Ok(Ok(0)) => return, // client closed
+                Ok(Ok(n)) => {
                     request_buf.extend_from_slice(&tmp[..n]);
                     // Check if we have a complete set of headers
                     if request_buf.windows(4).any(|w| w == b"\r\n\r\n") {
@@ -363,8 +349,12 @@ async fn handle_mitm_http<C, U>(
                         return;
                     }
                 }
-                Err(e) => {
+                Ok(Err(e)) => {
                     debug!("MITM read from client for {hostname}: {e}");
+                    return;
+                }
+                Err(_) => {
+                    debug!("MITM client header read timed out for {hostname}");
                     return;
                 }
             }
@@ -386,10 +376,11 @@ async fn handle_mitm_http<C, U>(
 
         let (req_headers, header_end) = parse_headers(&request_buf);
 
-        // Read request body if Content-Length is set
+        // Read request body if Content-Length is set (capped to 10MB to prevent OOM)
         let content_length: usize = get_header(&req_headers, "content-length")
             .and_then(|v| v.parse().ok())
-            .unwrap_or(0);
+            .unwrap_or(0)
+            .min(10 * 1024 * 1024);
 
         let body_so_far = if header_end < request_buf.len() {
             request_buf[header_end..].len()
@@ -481,7 +472,7 @@ async fn handle_mitm_http<C, U>(
             .map(|v| v.eq_ignore_ascii_case("close"))
             .unwrap_or(false);
 
-        let max_body = 1_048_576;
+        let max_body = MAX_BODY_SIZE;
         state.lock().await.entries.push(CapturedEntry {
             method,
             url,
@@ -537,16 +528,18 @@ fn response_complete(buf: &[u8]) -> bool {
         .any(|line| line.starts_with("transfer-encoding:") && line.contains("chunked"));
 
     if is_chunked {
-        // The chunked terminator is "0\r\n\r\n" (zero-length chunk + empty
-        // trailer section). Verify the "0" sits right after a CRLF so we
-        // don't false-match body content.
-        if buf.len() < 5 || !buf.ends_with(b"0\r\n\r\n") {
+        // Chunked terminator: "0\r\n" final chunk + optional trailers + "\r\n\r\n".
+        // The buffer must end with \r\n\r\n (end of trailer section).
+        if !buf.ends_with(b"\r\n\r\n") {
             return false;
         }
-        let zero_pos = buf.len() - 5;
-        // "0" at body start or preceded by \r\n (end of previous chunk)
-        return zero_pos == header_end
-            || (zero_pos >= 2 && &buf[zero_pos - 2..zero_pos] == b"\r\n");
+        // Find the last-chunk marker "0\r\n" after a CRLF (or at body start).
+        let body = &buf[header_end..];
+        // Search for "\r\n0\r\n" in the body, or "0\r\n" at the very start of the body.
+        if body.starts_with(b"0\r\n") {
+            return true;
+        }
+        return body.windows(5).any(|w| w == b"\r\n0\r\n");
     }
 
     // Check Content-Length
@@ -589,11 +582,27 @@ async fn handle_http(
 
     // Parse request headers from initial data
     let (req_headers, header_end) = parse_headers(initial_data);
-    let request_body = if header_end < initial_data.len() {
+    let mut request_body = if header_end < initial_data.len() {
         initial_data[header_end..].to_vec()
     } else {
         Vec::new()
     };
+
+    // Read remaining request body if Content-Length indicates more data (capped to 10MB)
+    let content_length: usize = get_header(&req_headers, "content-length")
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(0)
+        .min(10 * 1024 * 1024);
+    let body_so_far = request_body.len();
+    if content_length > body_so_far {
+        let remaining = content_length - body_so_far;
+        let mut body_buf = vec![0u8; remaining];
+        if let Err(e) = client.read_exact(&mut body_buf).await {
+            debug!("Reading HTTP request body: {e}");
+            return;
+        }
+        request_body.extend_from_slice(&body_buf);
+    }
 
     // Rebuild the request with a relative path for the upstream server
     let mut upstream_request = format!("{method} {path} HTTP/1.1\r\n");
@@ -716,7 +725,7 @@ async fn handle_http(
     );
 
     // Truncate bodies to 1MB max
-    let max_body = 1_048_576;
+    let max_body = MAX_BODY_SIZE;
     state.lock().await.entries.push(CapturedEntry {
         method: method.to_string(),
         url: target_url.to_string(),
@@ -924,6 +933,12 @@ mod tests {
     }
 
     #[test]
+    fn response_complete_chunked_with_trailers() {
+        let resp = b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhello\r\n0\r\nTrailer: value\r\n\r\n";
+        assert!(response_complete(resp));
+    }
+
+    #[test]
     fn response_complete_no_body() {
         let resp = b"HTTP/1.1 204 No Content\r\n\r\n";
         assert!(response_complete(resp));
@@ -958,17 +973,6 @@ mod tests {
         ];
         let json = headers_to_json_object(&headers);
         assert_eq!(json["set-cookie"], "a=1; Path=/\nb=2; HttpOnly");
-    }
-
-    #[test]
-    fn proxy_host_emulator_vs_physical() {
-        assert_eq!(proxy_host_for_device("emulator-5554"), "10.0.2.2");
-        // Physical devices get the host LAN IP (not 127.0.0.1)
-        let host = proxy_host_for_device("R5CT12345");
-        assert_ne!(
-            host, "127.0.0.1",
-            "Physical devices should not use loopback"
-        );
     }
 
     #[test]

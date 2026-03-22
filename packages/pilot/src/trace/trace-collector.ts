@@ -19,6 +19,9 @@ import type {
   TraceConfig,
 } from './types.js'
 
+/** Module-level count of active console interceptors to prevent racing. */
+let _activeConsoleInterceptors = 0
+
 // ─── Trace capture context ───
 
 /**
@@ -138,12 +141,14 @@ export class TraceCollector {
   startConsoleCapture(): void {
     if (this._consoleIntercepted) return
     this._consoleIntercepted = true
+    _activeConsoleInterceptors++
+
+    // Only patch if we're the first interceptor
+    if (_activeConsoleInterceptors > 1) return
 
     const capture = (level: ConsoleLevel) => {
       return (...args: unknown[]) => {
-        // Call original
         this._originalConsole[level](...args)
-        // Record event
         const message = args.map((a) =>
           typeof a === 'string' ? a : JSON.stringify(a),
         ).join(' ')
@@ -161,6 +166,11 @@ export class TraceCollector {
   stopConsoleCapture(): void {
     if (!this._consoleIntercepted) return
     this._consoleIntercepted = false
+    _activeConsoleInterceptors--
+
+    // Only restore if we're the last interceptor
+    if (_activeConsoleInterceptors > 0) return
+
     console.log = this._originalConsole.log
     console.warn = this._originalConsole.warn
     console.error = this._originalConsole.error
@@ -357,6 +367,11 @@ export class TraceCollector {
    */
   cleanup(): void {
     this.stopConsoleCapture()
-    // Temp files are cleaned up by the packager or on trace discard
+    // Remove temp directory and its contents
+    try {
+      fs.rmSync(this._tempDir, { recursive: true, force: true })
+    } catch {
+      // best-effort cleanup
+    }
   }
 }

@@ -26,10 +26,13 @@ uuid = { version = "1", features = ["v4"] }
 base64 = "0.22"
 rcgen = { version = "0.13", features = ["pem", "x509-parser"] }
 time = "0.3"
-tokio-rustls = "0.26"
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 rustls-pemfile = "2"
 webpki-roots = "0.26"
+
+[dev-dependencies]
+tempfile = "3"
 
 [build-dependencies]
 tonic-build = "0.12"

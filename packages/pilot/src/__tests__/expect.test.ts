@@ -1698,3 +1698,112 @@ describe("double negation", () => {
     await pilotExpect(handle).not.not.toBeChecked({ timeout: 50 });
   });
 });
+
+// ─── wrapAssertionWithTrace ───
+
+describe("wrapAssertionWithTrace", () => {
+  function makeTracedHandle(
+    client: PilotGrpcClient,
+    collector: {
+      captureBeforeAction: ReturnType<typeof vi.fn>;
+      captureAfterAction: ReturnType<typeof vi.fn>;
+      addAssertionEvent: ReturnType<typeof vi.fn>;
+    },
+  ): ElementHandle {
+    const traceCapture = {
+      collector,
+      takeScreenshot: async () => undefined,
+      captureHierarchy: async () => undefined,
+    };
+    return new ElementHandle(client, text("Traced"), 100, {
+      traceCapture: traceCapture as unknown as import("../trace/trace-collector.js").TraceCapture,
+    });
+  }
+
+  function makeMockCollector() {
+    return {
+      captureBeforeAction: vi.fn(async () => ({
+        actionIndex: 0,
+        captures: {},
+      })),
+      captureAfterAction: vi.fn(async () => ({})),
+      addAssertionEvent: vi.fn(),
+    };
+  }
+
+  it("emits a passing assertion event when tracing is active", async () => {
+    const collector = makeMockCollector();
+    const client = makeMockClient(async () => ({
+      requestId: "1",
+      found: true,
+      element: makeElementInfo({ visible: true }),
+      errorMessage: "",
+    }));
+    const handle = makeTracedHandle(client, collector);
+
+    await pilotExpect(handle).toBeVisible({ timeout: 50 });
+
+    vitestExpect(collector.addAssertionEvent).toHaveBeenCalledTimes(1);
+    const event = collector.addAssertionEvent.mock.calls[0][0];
+    vitestExpect(event.assertion).toBe("toBeVisible");
+    vitestExpect(event.passed).toBe(true);
+    vitestExpect(event.negated).toBe(false);
+    vitestExpect(event.soft).toBe(false);
+  });
+
+  it("emits a failing assertion event when tracing is active", async () => {
+    const collector = makeMockCollector();
+    const client = makeMockClient(async () => ({
+      requestId: "1",
+      found: true,
+      element: makeElementInfo({ visible: false }),
+      errorMessage: "",
+    }));
+    const handle = makeTracedHandle(client, collector);
+
+    await vitestExpect(
+      pilotExpect(handle).toBeVisible({ timeout: 50 }),
+    ).rejects.toThrow("to be visible");
+
+    vitestExpect(collector.addAssertionEvent).toHaveBeenCalledTimes(1);
+    const event = collector.addAssertionEvent.mock.calls[0][0];
+    vitestExpect(event.assertion).toBe("toBeVisible");
+    vitestExpect(event.passed).toBe(false);
+    vitestExpect(event.error).toBeDefined();
+  });
+
+  it("emits negated assertion event for not.toBeVisible()", async () => {
+    const collector = makeMockCollector();
+    const client = makeMockClient(async () => ({
+      requestId: "1",
+      found: true,
+      element: makeElementInfo({ visible: false }),
+      errorMessage: "",
+    }));
+    const handle = makeTracedHandle(client, collector);
+
+    await pilotExpect(handle).not.toBeVisible({ timeout: 50 });
+
+    vitestExpect(collector.addAssertionEvent).toHaveBeenCalledTimes(1);
+    const event = collector.addAssertionEvent.mock.calls[0][0];
+    vitestExpect(event.assertion).toBe("not.toBeVisible");
+    vitestExpect(event.negated).toBe(true);
+    vitestExpect(event.passed).toBe(true);
+  });
+
+  it("captures before and after screenshots", async () => {
+    const collector = makeMockCollector();
+    const client = makeMockClient(async () => ({
+      requestId: "1",
+      found: true,
+      element: makeElementInfo({ visible: true }),
+      errorMessage: "",
+    }));
+    const handle = makeTracedHandle(client, collector);
+
+    await pilotExpect(handle).toBeVisible({ timeout: 50 });
+
+    vitestExpect(collector.captureBeforeAction).toHaveBeenCalledTimes(1);
+    vitestExpect(collector.captureAfterAction).toHaveBeenCalledTimes(1);
+  });
+});

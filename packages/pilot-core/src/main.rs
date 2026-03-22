@@ -82,6 +82,11 @@ fn parse_args() -> CliArgs {
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    // Install the ring crypto provider for rustls (required for MITM proxy TLS).
+    rustls::crypto::ring::default_provider()
+        .install_default()
+        .expect("Failed to install rustls crypto provider");
+
     let args = parse_args();
 
     let filter = if args.verbose {
@@ -108,6 +113,25 @@ async fn main() -> Result<()> {
         Some(port) => AgentConnection::with_port(port),
         None => AgentConnection::new(),
     }));
+
+    // Clean up stale proxy settings from a previous crash
+    {
+        if let Some(serial) = device_manager
+            .read()
+            .await
+            .active_serial()
+            .map(String::from)
+        {
+            let proxy_setting = adb::shell(&serial, "settings get global http_proxy")
+                .await
+                .unwrap_or_default();
+            let trimmed = proxy_setting.trim();
+            if !trimmed.is_empty() && trimmed != ":0" && trimmed != "null" {
+                warn!(%serial, proxy = trimmed, "Cleaning up stale proxy settings from previous session");
+                let _ = adb::shell(&serial, "settings put global http_proxy :0").await;
+            }
+        }
+    }
 
     let service = PilotServiceImpl::new(device_manager, agent_connection);
     let service_handle = Arc::new(service);

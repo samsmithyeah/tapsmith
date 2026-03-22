@@ -22,6 +22,8 @@ pub struct PilotServiceImpl {
     network_proxy: Arc<RwLock<Option<NetworkProxy>>>,
     /// Serial of the device whose proxy settings were modified (for cleanup).
     proxy_device_serial: Arc<RwLock<Option<String>>>,
+    /// Device-side port used for `adb reverse` (for cleanup).
+    proxy_reverse_port: Arc<RwLock<Option<u16>>>,
 }
 
 impl PilotServiceImpl {
@@ -34,6 +36,7 @@ impl PilotServiceImpl {
             agent,
             network_proxy: Arc::new(RwLock::new(None)),
             proxy_device_serial: Arc::new(RwLock::new(None)),
+            proxy_reverse_port: Arc::new(RwLock::new(None)),
         }
     }
 
@@ -98,11 +101,15 @@ impl PilotServiceImpl {
     pub async fn cleanup_network_proxy(&self) {
         let proxy = self.network_proxy.write().await.take();
         let serial = self.proxy_device_serial.write().await.take();
+        let reverse_port = self.proxy_reverse_port.write().await.take();
 
-        if let Some(serial) = serial {
+        if let Some(serial) = &serial {
             info!(%serial, "Cleaning up device proxy settings on shutdown");
-            let _ = adb::shell(&serial, "settings put global http_proxy :0").await;
-            let _ = adb::shell(&serial, &format!("rm -f {}", adb::DEVICE_CA_CERT_PATH)).await;
+            let _ = adb::shell(serial, "settings put global http_proxy :0").await;
+            if let Some(port) = reverse_port {
+                let _ = adb::remove_reverse(serial, port).await;
+            }
+            let _ = adb::shell(serial, &format!("rm -f {}", adb::DEVICE_CA_CERT_PATH)).await;
         }
 
         if let Some(proxy) = proxy {
@@ -1858,10 +1865,19 @@ impl proto::pilot_service_server::PilotService for PilotServiceImpl {
         let proxy = NetworkProxy::start(mitm_ca)
             .await
             .map_err(|e| Status::internal(format!("Failed to start proxy: {e}")))?;
-        let port = proxy.port();
-        let proxy_host = crate::network_proxy::proxy_host_for_device(&serial);
-        let proxy_setting = format!("{proxy_host}:{port}");
-        info!(%serial, %proxy_setting, "Configuring device HTTP proxy");
+        let host_port = proxy.port();
+
+        // Use `adb reverse` to make the proxy reachable as 127.0.0.1:{port} on
+        // the device. This is more reliable than `settings put global http_proxy`
+        // with 10.0.2.2 because it works at the ADB transport level and doesn't
+        // depend on the emulator's network routing or Android version behavior.
+        let device_port = host_port; // use same port number on device side
+        if let Err(e) = adb::reverse_port(&serial, device_port, host_port).await {
+            error!("Failed to set up adb reverse: {e}");
+        }
+
+        let proxy_setting = format!("127.0.0.1:{device_port}");
+        info!(%serial, %proxy_setting, host_port, "Configuring device HTTP proxy via adb reverse");
 
         if let Err(e) = adb::shell(
             &serial,
@@ -1870,16 +1886,16 @@ impl proto::pilot_service_server::PilotService for PilotServiceImpl {
         .await
         {
             error!("Failed to set device proxy: {e}");
-            // Still return success — the proxy is running, the device just won't route through it
         }
 
         *proxy_guard = Some(proxy);
         *self.proxy_device_serial.write().await = Some(serial);
+        *self.proxy_reverse_port.write().await = Some(device_port);
 
         Ok(Response::new(proto::StartNetworkCaptureResponse {
             request_id,
             success: true,
-            proxy_port: port as u32,
+            proxy_port: host_port as u32,
             error_message: String::new(),
         }))
     }
@@ -1901,12 +1917,16 @@ impl proto::pilot_service_server::PilotService for PilotServiceImpl {
             }));
         };
 
-        // Revert device proxy settings and clean up CA cert
+        // Revert device proxy settings, remove reverse port forward, and clean up CA cert
         let serial = self.proxy_device_serial.write().await.take();
-        if let Some(serial) = serial {
+        let reverse_port = self.proxy_reverse_port.write().await.take();
+        if let Some(serial) = &serial {
             info!(%serial, "Reverting device HTTP proxy");
-            let _ = adb::shell(&serial, "settings put global http_proxy :0").await;
-            let _ = adb::shell(&serial, &format!("rm -f {}", adb::DEVICE_CA_CERT_PATH)).await;
+            let _ = adb::shell(serial, "settings put global http_proxy :0").await;
+            if let Some(port) = reverse_port {
+                let _ = adb::remove_reverse(serial, port).await;
+            }
+            let _ = adb::shell(serial, &format!("rm -f {}", adb::DEVICE_CA_CERT_PATH)).await;
         }
 
         let captured = proxy.stop().await;

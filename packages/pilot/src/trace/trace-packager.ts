@@ -78,6 +78,7 @@ export function packageTrace(
       screenshots: collector.config.screenshots,
       snapshots: collector.config.snapshots,
       sources: collector.config.sources,
+      network: collector.config.network,
     },
     actionCount: collector.currentActionIndex,
     screenshotCount: collector.screenshots.length,
@@ -117,8 +118,26 @@ export function packageTrace(
 
   // 6. Network entries (optional)
   if (options.networkEntries && options.networkEntries.length > 0) {
+    // Write body files into the archive and set paths
+    for (const entry of options.networkEntries) {
+      if (entry.requestBody && entry.requestBody.length > 0) {
+        const bodyPath = `network/req-${entry.index}.bin`
+        zipData[bodyPath] = new Uint8Array(entry.requestBody)
+        entry.requestBodyPath = bodyPath
+      }
+      if (entry.responseBody && entry.responseBody.length > 0) {
+        const bodyPath = `network/res-${entry.index}.bin`
+        zipData[bodyPath] = new Uint8Array(entry.responseBody)
+        entry.responseBodyPath = bodyPath
+      }
+    }
+
+    // Serialize entries without transient body fields
     const networkNdjson = options.networkEntries
-      .map((e) => JSON.stringify(e))
+      .map((e) => {
+        const { requestBody: _rb, responseBody: _rsb, ...rest } = e
+        return JSON.stringify(rest)
+      })
       .join('\n') + '\n'
     zipData['network.json'] = new TextEncoder().encode(networkNdjson)
   }
