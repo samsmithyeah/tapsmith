@@ -874,7 +874,7 @@ async function main(): Promise<void> {
         let projectFailed = false;
 
         if (showProjectHeaders && project.testFiles.length > 0) {
-          console.log(dim(`\n  ── Project: ${project.name} ──`));
+          process.stdout.write(`\n${dim(`  ── Project: ${project.name} ──`)}\n`);
         }
 
         for (const file of project.testFiles) {

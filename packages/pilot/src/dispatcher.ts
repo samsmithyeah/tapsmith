@@ -512,7 +512,7 @@ export async function runParallel(opts: DispatcherOptions): Promise<FullResult> 
               .filter((p) => !failedProjects.has(p.name) && p.testFiles.length > 0)
               .map((p) => p.name)
             for (const name of projectNames) {
-              process.stderr.write(`${DIM}  ── Project: ${name} ──${RESET}\n`)
+              process.stdout.write(`\n${DIM}  ── Project: ${name} ──${RESET}\n`)
             }
           }
           const resultsBefore = allResults.length
