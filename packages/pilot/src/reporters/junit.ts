@@ -68,10 +68,15 @@ export class JUnitReporter implements PilotReporter {
             lines.push(`      <failure message="${message}">${stack}</failure>`)
           }
 
+          const props: string[] = []
+          if (test.project) {
+            props.push(`<property name="project" value="${escapeXml(test.project)}"/>`)
+          }
           if (test.workerIndex != null) {
-            lines.push(
-              `      <properties><property name="workerIndex" value="${test.workerIndex}"/></properties>`
-            )
+            props.push(`<property name="workerIndex" value="${test.workerIndex}"/>`)
+          }
+          if (props.length > 0) {
+            lines.push(`      <properties>${props.join('')}</properties>`)
           }
 
           if (test.screenshotPath) {

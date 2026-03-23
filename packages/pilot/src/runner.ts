@@ -38,6 +38,8 @@ export interface TestResult {
   tracePath?: string;
   /** Index of the worker that ran this test (only set in parallel mode). */
   workerIndex?: number;
+  /** Project name this test belongs to (only set when projects are configured). */
+  project?: string;
 }
 
 export interface SuiteResult {
@@ -257,6 +259,8 @@ export interface RunOptions {
   testFilePath?: string;
   /** Project-level use options applied as a base layer under file-level test.use(). */
   projectUseOptions?: UseOptions;
+  /** Project name — stamped on test results for reporter grouping. */
+  projectName?: string;
 }
 
 async function captureFailureScreenshot(
@@ -371,6 +375,7 @@ async function runSuiteContext(
         fullName,
         status: 'skipped',
         durationMs: 0,
+        project: opts.projectName,
       };
       result.tests.push(skippedResult);
       opts.reporter?.onTestEnd?.(skippedResult);
@@ -622,6 +627,7 @@ async function runSuiteContext(
       error,
       screenshotPath,
       tracePath,
+      project: opts.projectName,
     };
     result.tests.push(testResult);
     opts.reporter?.onTestEnd?.(testResult);

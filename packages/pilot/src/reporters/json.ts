@@ -21,6 +21,7 @@ interface JsonTestEntry {
   error?: { message: string; stack?: string }
   screenshotPath?: string
   workerIndex?: number
+  project?: string
 }
 
 interface JsonSuiteEntry {
@@ -99,6 +100,7 @@ function serializeSuite(suite: SuiteResult): JsonSuiteEntry {
       error: t.error ? { message: t.error.message, stack: t.error.stack } : undefined,
       screenshotPath: t.screenshotPath,
       workerIndex: t.workerIndex,
+      project: t.project,
     })),
     suites: suite.suites.map((s) => serializeSuite(s)),
   }

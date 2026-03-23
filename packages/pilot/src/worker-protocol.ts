@@ -25,6 +25,8 @@ export interface RunFileMessage {
   filePath: string
   /** Project-level use options to apply as base layer. */
   projectUseOptions?: RunFileUseOptions
+  /** Project name for reporter grouping. */
+  projectName?: string
 }
 
 /** IPC-safe subset of UseOptions for project-level overrides. */
@@ -143,6 +145,7 @@ export interface SerializedTestResult {
   error?: { message: string; stack?: string }
   screenshotPath?: string
   workerIndex: number
+  project?: string
 }
 
 export interface SerializedSuiteResult {
@@ -165,6 +168,7 @@ export function serializeTestResult(result: TestResult, workerIndex: number): Se
       : undefined,
     screenshotPath: result.screenshotPath,
     workerIndex,
+    project: result.project,
   }
 }
 
@@ -188,6 +192,7 @@ export function deserializeTestResult(s: SerializedTestResult): TestResult & { w
       : undefined,
     screenshotPath: s.screenshotPath,
     workerIndex: s.workerIndex,
+    project: s.project,
   }
 }
 

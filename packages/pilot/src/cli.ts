@@ -911,6 +911,7 @@ async function main(): Promise<void> {
             screenshotDir,
             reporter,
             projectUseOptions: project.use,
+            projectName: project.name !== 'default' ? project.name : undefined,
           });
 
           const fileResults = collectResults(suiteResult);

@@ -324,6 +324,7 @@ export async function runParallel(opts: DispatcherOptions): Promise<FullResult> 
     interface TaggedFile {
       filePath: string
       projectUseOptions?: import('./worker-protocol.js').RunFileUseOptions
+      projectName?: string
     }
 
     type Wave = TaggedFile[]
@@ -339,6 +340,7 @@ export async function runParallel(opts: DispatcherOptions): Promise<FullResult> 
             waveFiles.push({
               filePath: file,
               projectUseOptions: project.use as TaggedFile['projectUseOptions'],
+              projectName: project.name !== 'default' ? project.name : undefined,
             })
           }
         }
@@ -394,6 +396,7 @@ export async function runParallel(opts: DispatcherOptions): Promise<FullResult> 
             type: 'run-file',
             filePath: next.filePath,
             projectUseOptions: next.projectUseOptions,
+            projectName: next.projectName,
           }
           worker.process.send(msg)
         }
@@ -503,6 +506,7 @@ export async function runParallel(opts: DispatcherOptions): Promise<FullResult> 
             filteredWaveFiles.push({
               filePath: file,
               projectUseOptions: project.use as TaggedFile['projectUseOptions'],
+              projectName: project.name !== 'default' ? project.name : undefined,
             })
           }
         }
