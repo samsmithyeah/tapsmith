@@ -5,7 +5,7 @@ use anyhow::Result;
 use serde_json::{json, Value};
 use tokio::sync::RwLock;
 use tonic::{Request, Response, Status};
-use tracing::{error, info, instrument};
+use tracing::{error, info, instrument, warn};
 use uuid::Uuid;
 
 use crate::adb;
@@ -105,11 +105,18 @@ impl PilotServiceImpl {
 
         if let Some(serial) = &serial {
             info!(%serial, "Cleaning up device proxy settings on shutdown");
-            let _ = adb::shell(serial, "settings put global http_proxy :0").await;
-            if let Some(port) = reverse_port {
-                let _ = adb::remove_reverse(serial, port).await;
+            if let Err(e) = adb::shell(serial, "settings put global http_proxy :0").await {
+                warn!(%serial, "Failed to reset http_proxy on shutdown: {e}");
             }
-            let _ = adb::shell(serial, &format!("rm -f {}", adb::DEVICE_CA_CERT_PATH)).await;
+            if let Some(port) = reverse_port {
+                if let Err(e) = adb::remove_reverse(serial, port).await {
+                    warn!(%serial, port, "Failed to remove reverse port forward on shutdown: {e}");
+                }
+            }
+            if let Err(e) = adb::shell(serial, &format!("rm -f {}", adb::DEVICE_CA_CERT_PATH)).await
+            {
+                warn!(%serial, "Failed to remove CA cert on shutdown: {e}");
+            }
         }
 
         if let Some(proxy) = proxy {
@@ -1922,11 +1929,18 @@ impl proto::pilot_service_server::PilotService for PilotServiceImpl {
         let reverse_port = self.proxy_reverse_port.write().await.take();
         if let Some(serial) = &serial {
             info!(%serial, "Reverting device HTTP proxy");
-            let _ = adb::shell(serial, "settings put global http_proxy :0").await;
-            if let Some(port) = reverse_port {
-                let _ = adb::remove_reverse(serial, port).await;
+            if let Err(e) = adb::shell(serial, "settings put global http_proxy :0").await {
+                warn!(%serial, "Failed to reset http_proxy: {e}");
             }
-            let _ = adb::shell(serial, &format!("rm -f {}", adb::DEVICE_CA_CERT_PATH)).await;
+            if let Some(port) = reverse_port {
+                if let Err(e) = adb::remove_reverse(serial, port).await {
+                    warn!(%serial, port, "Failed to remove reverse port forward: {e}");
+                }
+            }
+            if let Err(e) = adb::shell(serial, &format!("rm -f {}", adb::DEVICE_CA_CERT_PATH)).await
+            {
+                warn!(%serial, "Failed to remove CA cert: {e}");
+            }
         }
 
         let captured = proxy.stop().await;
@@ -1972,9 +1986,16 @@ impl proto::pilot_service_server::PilotService for PilotServiceImpl {
         let serial = self.active_serial().await?;
 
         // Fetch logcat with epoch timestamps for reliable filtering
-        let output = adb::shell_lenient(&serial, "logcat -d -v epoch")
-            .await
-            .unwrap_or_default();
+        let output = match adb::shell_lenient(&serial, "logcat -d -v epoch").await {
+            Ok(output) => output,
+            Err(e) => {
+                return Ok(Response::new(proto::GetLogcatResponse {
+                    request_id,
+                    logcat: String::new(),
+                    error_message: format!("Failed to get logcat: {e}"),
+                }));
+            }
+        };
 
         // Filter by timestamp and package in Rust for cross-device consistency.
         // Logcat `-v epoch` format: "<epoch_secs>.<fractional>  <pid> ..."

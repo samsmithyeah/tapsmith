@@ -268,13 +268,13 @@ pub async fn install_ca_cert(serial: &str, ca_pem_path: &str) -> Result<()> {
     push_file(serial, ca_pem_path, "/data/local/tmp/pilot-ca.pem").await?;
 
     // Install into user CA store
-    let _ = shell(serial, "mkdir -p /data/misc/user/0/cacerts-added").await;
-    let _ = shell(
+    shell(serial, "mkdir -p /data/misc/user/0/cacerts-added").await?;
+    shell(
         serial,
         &format!("cp /data/local/tmp/pilot-ca.pem {DEVICE_CA_CERT_PATH}"),
     )
-    .await;
-    let _ = shell(serial, &format!("chmod 644 {DEVICE_CA_CERT_PATH}")).await;
+    .await?;
+    shell(serial, &format!("chmod 644 {DEVICE_CA_CERT_PATH}")).await?;
 
     info!(%serial, "CA certificate installed on device");
     Ok(())

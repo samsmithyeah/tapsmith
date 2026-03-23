@@ -669,16 +669,18 @@ async function main(): Promise<void> {
 
     // Install app under test if APK path is configured and not already installed.
     if (config.apk) {
-      const alreadyInstalled = !args.forceInstall
-        && config.package
+      const isInstalled = config.package
         && config.device
         && isPackageInstalled(config.device, config.package);
 
-      if (alreadyInstalled) {
+      if (isInstalled && !args.forceInstall) {
         console.log(dim(`App ${config.package} already installed, skipping APK install. Use --force-install to reinstall.`));
       } else {
         const resolvedApk = path.resolve(config.rootDir, config.apk);
         try {
+          if (isInstalled) {
+            console.log(dim(`Reinstalling app APK: ${path.basename(resolvedApk)}`));
+          }
           await device.installApk(resolvedApk);
           // Wait for package manager to index the new app
           if (config.package && config.device) {

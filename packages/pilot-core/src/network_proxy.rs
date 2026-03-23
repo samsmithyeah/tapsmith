@@ -25,8 +25,14 @@ const UPSTREAM_CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
 const UPSTREAM_READ_TIMEOUT: Duration = Duration::from_secs(30);
 /// Timeout for reading initial request headers from a client.
 const CLIENT_READ_TIMEOUT: Duration = Duration::from_secs(30);
-/// Maximum request/response body size to capture (1 MB).
+/// Maximum request/response body size to capture (1 MB). Only used for storage
+/// in CapturedEntry — the proxy pipeline uses MAX_PROXY_BODY to avoid truncating
+/// forwarded traffic.
 const MAX_BODY_SIZE: usize = 1_048_576;
+/// Maximum body size to read through the proxy pipeline (10 MB). This is higher
+/// than MAX_BODY_SIZE because we need to forward complete requests/responses to
+/// upstream even though we only store a truncated copy in the capture.
+const MAX_PROXY_BODY: usize = 10 * 1024 * 1024;
 
 /// A captured network request/response pair.
 #[derive(Debug, Clone)]
@@ -376,11 +382,11 @@ async fn handle_mitm_http<C, U>(
 
         let (req_headers, header_end) = parse_headers(&request_buf);
 
-        // Read request body if Content-Length is set (capped to 10MB to prevent OOM)
+        // Read request body if Content-Length is set (capped to prevent OOM)
         let content_length: usize = get_header(&req_headers, "content-length")
             .and_then(|v| v.parse().ok())
             .unwrap_or(0)
-            .min(10 * 1024 * 1024);
+            .min(MAX_PROXY_BODY);
 
         let body_so_far = if header_end < request_buf.len() {
             request_buf[header_end..].len()
@@ -420,8 +426,7 @@ async fn handle_mitm_http<C, U>(
                     if response_complete(&response_buf) {
                         break;
                     }
-                    if response_buf.len() > 10 * 1024 * 1024 {
-                        // 10MB safety limit
+                    if response_buf.len() > MAX_PROXY_BODY {
                         break;
                     }
                 }
@@ -588,11 +593,11 @@ async fn handle_http(
         Vec::new()
     };
 
-    // Read remaining request body if Content-Length indicates more data (capped to 10MB)
+    // Read remaining request body if Content-Length indicates more data
     let content_length: usize = get_header(&req_headers, "content-length")
         .and_then(|v| v.parse().ok())
         .unwrap_or(0)
-        .min(10 * 1024 * 1024);
+        .min(MAX_PROXY_BODY);
     let body_so_far = request_body.len();
     if content_length > body_so_far {
         let remaining = content_length - body_so_far;
@@ -692,8 +697,8 @@ async fn handle_http(
                 if response_complete(&response_data) {
                     break;
                 }
-                if response_data.len() > 10 * 1024 * 1024 {
-                    break; // 10MB safety limit
+                if response_data.len() > MAX_PROXY_BODY {
+                    break;
                 }
             }
             Ok(Err(_)) | Err(_) => break,
