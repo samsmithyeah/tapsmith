@@ -40,6 +40,12 @@ const DIM = '\x1b[2m'
 const YELLOW = '\x1b[33m'
 const RESET = '\x1b[0m'
 
+interface TaggedFile {
+  filePath: string
+  projectUseOptions?: import('./worker-protocol.js').RunFileUseOptions
+  projectName?: string
+}
+
 interface WorkerHandle {
   id: number
   process: ChildProcess
@@ -48,7 +54,7 @@ interface WorkerHandle {
   agentPort: number
   daemonProcess?: ChildProcess
   busy: boolean
-  currentFile?: string
+  currentFile?: TaggedFile
   retired?: boolean
 }
 
@@ -321,11 +327,6 @@ export async function runParallel(opts: DispatcherOptions): Promise<FullResult> 
     // ─── Wave-based work-stealing dispatch ───
     // Build tagged file entries for dispatch. When projects are configured,
     // we dispatch in waves (one per dependency tier). Otherwise, single wave.
-    interface TaggedFile {
-      filePath: string
-      projectUseOptions?: import('./worker-protocol.js').RunFileUseOptions
-      projectName?: string
-    }
 
     type Wave = TaggedFile[]
 
@@ -389,7 +390,7 @@ export async function runParallel(opts: DispatcherOptions): Promise<FullResult> 
           }
 
           worker.busy = true
-          worker.currentFile = next.filePath
+          worker.currentFile = next
           reporter.onTestFileStart?.(next.filePath)
 
           const msg: MainToWorkerMessage = {
@@ -412,9 +413,9 @@ export async function runParallel(opts: DispatcherOptions): Promise<FullResult> 
           cleanupWorkerResources(worker)
 
           if (inFlightFile) {
-            fileQueue.unshift({ filePath: inFlightFile })
+            fileQueue.unshift(inFlightFile)
             process.stderr.write(
-              `${YELLOW}Worker ${worker.id} (${worker.deviceSerial}) became unavailable: ${reason}. Requeueing ${path.basename(inFlightFile)} and continuing with remaining workers.${RESET}\n`,
+              `${YELLOW}Worker ${worker.id} (${worker.deviceSerial}) became unavailable: ${reason}. Requeueing ${path.basename(inFlightFile.filePath)} and continuing with remaining workers.${RESET}\n`,
             )
           } else {
             process.stderr.write(
