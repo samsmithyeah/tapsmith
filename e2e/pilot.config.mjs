@@ -7,7 +7,7 @@ export default defineConfig({
   timeout: 10_000,
   retries: 0,
   screenshot: "only-on-failure",
-  workers: 2,
+  workers: 1,
   trace: "retain-on-failure",
   launchEmulators: true,
   avd: "Pilot_Generic_Phone_API_35",
@@ -15,4 +15,22 @@ export default defineConfig({
   agentApk: "../agent/app/build/outputs/apk/debug/app-debug.apk",
   agentTestApk:
     "../agent/app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk",
+  projects: [
+    {
+      name: "setup",
+      testMatch: ["**/auth.setup.ts"],
+    },
+    {
+      name: "default",
+      testMatch: ["**/*.test.ts"],
+      testIgnore: ["**/app-state.test.ts"],
+      dependencies: ["setup"],
+    },
+    {
+      name: "authenticated",
+      dependencies: ["setup"],
+      use: { appState: "./pilot-results/auth-state.tar.gz" },
+      testMatch: ["**/app-state.test.ts"],
+    },
+  ],
 });

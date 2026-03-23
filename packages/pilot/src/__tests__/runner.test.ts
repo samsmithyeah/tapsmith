@@ -316,6 +316,22 @@ describe('test.use()', () => {
     expect(ctx.useOptions).toEqual({ timeout: 10000 });
   });
 
+  it('stores appState in useOptions', () => {
+    pushContext();
+    pilotTest.use({ appState: './auth-state.tar.gz' });
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- accessing private SuiteContext for testing
+    const ctx = popContext() as any;
+    expect(ctx.useOptions).toEqual({ appState: './auth-state.tar.gz' });
+  });
+
+  it('merges appState with other options', () => {
+    pushContext();
+    pilotTest.use({ timeout: 5000, appState: './state.tar.gz' });
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- accessing private SuiteContext for testing
+    const ctx = popContext() as any;
+    expect(ctx.useOptions).toEqual({ timeout: 5000, appState: './state.tar.gz' });
+  });
+
   it('applies timeout override during execution', async () => {
     pushContext();
 

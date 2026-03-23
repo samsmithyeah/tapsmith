@@ -418,6 +418,26 @@ Clear all app data and cache, providing test isolation similar to Playwright's f
 await device.clearAppData("com.example.myapp");
 ```
 
+### `device.saveAppState(packageName: string, path: string): Promise<void>`
+
+Snapshot the app's data directory (`/data/data/<package>/`) — including SharedPreferences, databases, and internal files — and save it as a tar.gz archive on the host. The app is force-stopped before snapshotting to avoid data corruption.
+
+Requires root (emulators) or a debuggable app (`run-as` fallback on physical devices).
+
+```typescript
+// Save authenticated state after login
+await device.saveAppState("com.example.myapp", "./auth-state.tar.gz");
+```
+
+### `device.restoreAppState(packageName: string, path: string): Promise<void>`
+
+Restore a previously saved app state archive. Clears the app's data first (`pm clear`), then extracts the archive, fixing file ownership and SELinux contexts when running as root.
+
+```typescript
+// Restore state instead of logging in again
+await device.restoreAppState("com.example.myapp", "./auth-state.tar.gz");
+```
+
 ### `device.grantPermission(packageName: string, permission: string): Promise<void>`
 
 Programmatically grant an Android runtime permission.
@@ -1229,12 +1249,33 @@ describe("custom config", () => {
 
 **`UseOptions`**
 
-| Option       | Type                                        | Description                   |
-| ------------ | ------------------------------------------- | ----------------------------- |
-| `timeout`    | `number`                                    | Action/assertion timeout (ms) |
-| `screenshot` | `'always' \| 'only-on-failure' \| 'never'` | Screenshot capture mode       |
-| `retries`    | `number`                                    | Retry count for failed tests  |
-| `trace`      | `TraceMode \| Partial<TraceConfig>`         | Trace recording configuration |
+| Option       | Type                                        | Description                                  |
+| ------------ | ------------------------------------------- | -------------------------------------------- |
+| `timeout`    | `number`                                    | Action/assertion timeout (ms)                |
+| `screenshot` | `'always' \| 'only-on-failure' \| 'never'` | Screenshot capture mode                      |
+| `retries`    | `number`                                    | Retry count for failed tests                 |
+| `trace`      | `TraceMode \| Partial<TraceConfig>`         | Trace recording configuration                |
+| `appState`   | `string`                                    | Path to saved app state archive to restore   |
+
+**Reusable auth state** — mirrors Playwright's `storageState`:
+
+```typescript
+// Setup: authenticate once and save state
+test("authenticate", async ({ device }) => {
+  await device.launchApp("com.example.myapp");
+  // ... perform login flow ...
+  await device.saveAppState("com.example.myapp", "./auth-state.tar.gz");
+});
+
+// Tests: restore state instead of logging in
+describe("authenticated tests", () => {
+  test.use({ appState: "./auth-state.tar.gz" });
+
+  test("shows profile", async ({ device }) => {
+    // Already logged in — no login flow needed
+  });
+});
+```
 
 ### `describe(name: string, fn: () => void): void`
 
@@ -1297,6 +1338,39 @@ export default defineConfig({
 ```
 
 See the [Configuration](configuration.md) guide for all options.
+
+### Projects
+
+Projects group test files with shared options and dependency ordering, mirroring Playwright's project concept. Setup projects run first; dependent projects run after their dependencies complete.
+
+```typescript
+import { defineConfig } from "pilot";
+
+export default defineConfig({
+  projects: [
+    // Setup project: runs first
+    { name: "setup", testMatch: ["**/auth.setup.ts"] },
+    // Default tests: no dependencies, runs in parallel with setup
+    { name: "default", testMatch: ["**/*.test.ts"] },
+    // Authenticated tests: runs after setup, with restored app state
+    {
+      name: "authenticated",
+      dependencies: ["setup"],
+      use: { appState: "./pilot-results/auth-state.tar.gz" },
+      testMatch: ["**/app-state.test.ts"],
+    },
+  ],
+});
+```
+
+**`ProjectConfig`**
+
+| Field | Type | Description |
+|---|---|---|
+| `name` | `string` | Unique project name |
+| `testMatch` | `string[]` | Glob patterns for test files (inherits global if unset) |
+| `dependencies` | `string[]` | Projects that must complete first |
+| `use` | `UseOptions` | Per-project option overrides (applied under file-level `test.use()`) |
 
 ### `loadConfig(dir?: string): Promise<PilotConfig>`
 

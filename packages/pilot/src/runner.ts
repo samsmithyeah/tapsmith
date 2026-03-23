@@ -13,7 +13,7 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as os from 'node:os';
-import type { PilotConfig } from './config.js';
+import type { PilotConfig, UseOptions } from './config.js';
 import type { Device } from './device.js';
 import type { PilotReporter } from './reporter.js';
 import { flushSoftErrors } from './expect.js';
@@ -55,8 +55,9 @@ export interface TestFixtures {
 
 // ─── Per-scope option overrides ───
 
-/** Options that can be overridden per-describe via `test.use()`. */
-export type UseOptions = Partial<Pick<PilotConfig, 'timeout' | 'screenshot' | 'retries' | 'trace'>>
+// UseOptions is defined in config.ts (where PilotConfig lives) to avoid circular deps.
+// Re-exported here for backward compatibility.
+export type { UseOptions } from './config.js';
 
 // ─── Internal registration types ───
 
@@ -254,6 +255,8 @@ export interface RunOptions {
   workerFixtures?: Record<string, unknown>;
   /** Test file path — used by trace packager for testFile metadata and source inclusion. */
   testFilePath?: string;
+  /** Project-level use options applied as a base layer under file-level test.use(). */
+  projectUseOptions?: UseOptions;
 }
 
 async function captureFailureScreenshot(
@@ -307,7 +310,8 @@ async function runSuiteContext(
   // Apply test.use() overrides for this scope (cascading from parent).
   // `timeout` is handled separately via the device — it should only affect
   // assertion/action auto-wait, not the test-level safety timeout.
-  const { timeout: scopeTimeout, ...configOverrides } = ctx.useOptions ?? {};
+  // `appState` is handled below (restore before hooks).
+  const { timeout: scopeTimeout, appState: scopeAppState, ...configOverrides } = ctx.useOptions ?? {};
   const opts: RunOptions = Object.keys(configOverrides).length > 0
     ? { ...parentOpts, config: { ...parentOpts.config, ...configOverrides } }
     : parentOpts;
@@ -326,6 +330,15 @@ async function runSuiteContext(
   // try/finally ensures device timeout is restored even if a hook or
   // abortFileOnError throws. Body intentionally not re-indented.
   try {
+
+  // Restore app state if test.use({ appState }) was specified for this scope.
+  // Mirrors Playwright's storageState: tests start already authenticated.
+  if (scopeAppState && opts.device && opts.config.package) {
+    await opts.device.restoreAppState(opts.config.package, scopeAppState);
+    // restoreAppState force-stops the app internally. Use restartApp (terminate + launch)
+    // to ensure the app fully re-reads restored data from disk on startup.
+    await opts.device.restartApp(opts.config.package);
+  }
 
   // Determine if any test/suite in this context uses `.only`
   const hasOnlyTests = ctx.tests.some((t) => t.only);
@@ -704,6 +717,12 @@ export async function runTestFile(
   await import(filePath);
 
   const rootCtx = popContext();
+
+  // Apply project-level use options as a base layer under file-level test.use()
+  if (opts.projectUseOptions) {
+    rootCtx.useOptions = { ...opts.projectUseOptions, ...rootCtx.useOptions };
+  }
+
   const registry = getFixtureRegistry();
 
   // Resolve worker-scoped fixtures once for the entire file

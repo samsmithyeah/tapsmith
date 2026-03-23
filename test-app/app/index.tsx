@@ -23,6 +23,11 @@ const screens = [
   { href: "/slow-load", label: "Slow Load", description: "Simulated loading delays" },
   { href: "/scroll", label: "Scroll", description: "Nested scrollable containers" },
   { href: "/api-calls", label: "API Calls", description: "Real HTTP requests to a test API" },
+  {
+    href: "/profile",
+    label: "Profile",
+    description: "Auth-gated screen — requires login",
+  },
 ] as const
 
 export default function HomeScreen() {

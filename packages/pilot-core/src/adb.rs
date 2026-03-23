@@ -234,6 +234,22 @@ pub async fn push_file(serial: &str, local_path: &str, remote_path: &str) -> Res
     Ok(())
 }
 
+/// Pull a file from the device to a local path via `adb pull`.
+#[instrument(skip(local_path, remote_path))]
+pub async fn pull_file(serial: &str, remote_path: &str, local_path: &str) -> Result<()> {
+    let timeout = Duration::from_secs(300); // large app data can take a while
+    run_adb(Some(serial), &["pull", remote_path, local_path], timeout).await?;
+    debug!(remote_path, local_path, "File pulled from device");
+    Ok(())
+}
+
+/// Execute a shell command on the device with a custom timeout, returning stdout as a String.
+#[instrument]
+pub async fn shell_with_timeout(serial: &str, command: &str, timeout: Duration) -> Result<String> {
+    let stdout = run_adb(Some(serial), &["shell", command], timeout).await?;
+    Ok(String::from_utf8_lossy(&stdout).to_string())
+}
+
 /// Install a CA certificate on the device for MITM HTTPS interception.
 ///
 /// `cert_filename` is the hash-based filename (e.g. `a1b2c3d4.0`) required by

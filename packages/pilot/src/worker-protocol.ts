@@ -23,6 +23,17 @@ export interface InitMessage {
 export interface RunFileMessage {
   type: 'run-file'
   filePath: string
+  /** Project-level use options to apply as base layer. */
+  projectUseOptions?: RunFileUseOptions
+}
+
+/** IPC-safe subset of UseOptions for project-level overrides. */
+export interface RunFileUseOptions {
+  timeout?: number
+  screenshot?: 'always' | 'only-on-failure' | 'never'
+  retries?: number
+  trace?: 'off' | 'on' | 'retain-on-failure' | 'on-first-retry' | 'on-all-retries'
+  appState?: string
 }
 
 export interface ShutdownMessage {

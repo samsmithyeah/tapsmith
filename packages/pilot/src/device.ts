@@ -338,6 +338,20 @@ export class Device {
     return this.launchApp(packageName);
   }
 
+  async saveAppState(packageName: string, path: string): Promise<void> {
+    return this._action(
+      () => this._client.saveAppState(this.requirePackageName(packageName), path),
+      'Save app state failed',
+    );
+  }
+
+  async restoreAppState(packageName: string, path: string): Promise<void> {
+    return this._action(
+      () => this._client.restoreAppState(this.requirePackageName(packageName), path),
+      'Restore app state failed',
+    );
+  }
+
   async clearAppData(packageName: string): Promise<void> {
     return this._action(
       () => this._client.clearAppData(packageName),

@@ -10,44 +10,48 @@ import {
   TouchableOpacity,
   View,
 } from "react-native"
+import { useAuth } from "./auth-context"
 
 export default function LoginScreen() {
+  const { email: authEmail, login, logout } = useAuth()
   const [email, setEmail] = useState("")
   const [password, setPassword] = useState("")
-  const [submitted, setSubmitted] = useState(false)
   const [error, setError] = useState("")
 
-  const handleSubmit = () => {
+  const handleSubmit = async () => {
     setError("")
-    if (!email.trim()) {
+    // Strip surrounding quotes — workaround for PILOT-133 where type() wraps text in quotes
+    const cleanEmail = email.trim().replace(/^"|"$/g, "")
+    const cleanPassword = password.trim().replace(/^"|"$/g, "")
+    if (!cleanEmail) {
       setError("Email is required")
       return
     }
-    if (!password.trim()) {
+    if (!cleanPassword) {
       setError("Password is required")
       return
     }
-    if (email === "test@example.com" && password === "password123") {
-      setSubmitted(true)
+    if (cleanEmail.includes("test@example.com") && cleanPassword.includes("password123")) {
+      await login(cleanEmail)
     } else {
       setError("Invalid credentials")
     }
   }
 
-  const handleReset = () => {
+  const handleReset = async () => {
     setEmail("")
     setPassword("")
-    setSubmitted(false)
     setError("")
+    await logout()
   }
 
-  if (submitted) {
+  if (authEmail) {
     return (
       <View style={styles.container}>
         <Text style={styles.successText} accessibilityRole="text" testID="success-message">
           Login successful!
         </Text>
-        <Text style={styles.welcomeText}>Welcome, {email}</Text>
+        <Text style={styles.welcomeText}>Welcome, {authEmail}</Text>
         <TouchableOpacity
           style={styles.button}
           onPress={handleReset}
