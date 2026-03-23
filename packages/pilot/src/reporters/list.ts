@@ -58,6 +58,10 @@ export class ListReporter implements PilotReporter {
     if (test.screenshotPath) {
       process.stdout.write(`        ${dim(`Screenshot: ${test.screenshotPath}`)}\n`)
     }
+
+    if (test.tracePath) {
+      process.stdout.write(`        ${dim(`Trace:      npx pilot show-trace ${test.tracePath}`)}\n`)
+    }
   }
 
   onTestFileEnd(): void {
@@ -81,7 +85,11 @@ export class ListReporter implements PilotReporter {
       for (const test of result.tests) {
         if (test.status === 'failed' && test.error) {
           process.stdout.write(`  ${red('✗')} ${workerTag(test.workerIndex)}${test.fullName}\n`)
-          process.stdout.write(formatError(test.error) + '\n\n')
+          process.stdout.write(formatError(test.error) + '\n')
+          if (test.tracePath) {
+            process.stdout.write(`        ${dim(`Trace: npx pilot show-trace ${test.tracePath}`)}\n`)
+          }
+          process.stdout.write('\n')
         }
       }
     }

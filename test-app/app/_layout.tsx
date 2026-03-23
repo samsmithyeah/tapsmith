@@ -20,6 +20,7 @@ export default function RootLayout() {
       <Stack.Screen name="clipboard" options={{ title: "Clipboard" }} />
       <Stack.Screen name="slow-load" options={{ title: "Slow Load" }} />
       <Stack.Screen name="scroll" options={{ title: "Scroll" }} />
+      <Stack.Screen name="api-calls" options={{ title: "API Calls" }} />
     </Stack>
   )
 }

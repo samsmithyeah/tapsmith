@@ -121,6 +121,14 @@ export interface GetColorSchemeResponse {
   scheme: string;
 }
 
+// ─── Trace Support (PILOT-85) ───
+
+export interface GetLogcatResponse {
+  requestId: string;
+  logcat: string;
+  errorMessage: string;
+}
+
 export type AppState = 'not_installed' | 'stopped' | 'background' | 'foreground';
 export type Orientation = 'portrait' | 'landscape';
 export type ColorScheme = 'dark' | 'light';
@@ -581,6 +589,47 @@ export class PilotGrpcClient {
   async unlockDevice(): Promise<ActionResponse> {
     return this.call<ActionResponse>('unlockDevice', {
       requestId: requestId(),
+    });
+  }
+
+  // ── Trace Support (PILOT-85) ──
+
+  async startNetworkCapture(): Promise<{ success: boolean; proxyPort: number; errorMessage: string }> {
+    return this.call('startNetworkCapture', {
+      requestId: requestId(),
+    });
+  }
+
+  async stopNetworkCapture(): Promise<{
+    success: boolean;
+    entries: Array<{
+      method: string;
+      url: string;
+      statusCode: number;
+      contentType: string;
+      requestSize: number;
+      responseSize: number;
+      startTimeMs: number;
+      durationMs: number;
+      requestHeadersJson: string;
+      responseHeadersJson: string;
+      requestBody: Buffer;
+      responseBody: Buffer;
+      isHttps: boolean;
+    }>;
+    errorMessage: string;
+  }> {
+    return this.call('stopNetworkCapture', {
+      requestId: requestId(),
+    }, 30_000);
+  }
+
+  async getLogcat(packageName: string, sinceMs?: number, untilMs?: number): Promise<GetLogcatResponse> {
+    return this.call<GetLogcatResponse>('getLogcat', {
+      requestId: requestId(),
+      packageName,
+      sinceMs: sinceMs ?? 0,
+      untilMs: untilMs ?? 0,
     });
   }
 

@@ -20,6 +20,9 @@ export interface SessionPreflightContext {
 
 const DEFAULT_READY_TIMEOUT_MS = 5_000
 const DEFAULT_MAX_ATTEMPTS = 2
+/** Time to wait for UIAutomator2 to produce a non-empty hierarchy on cold start. */
+const HIERARCHY_READY_TIMEOUT_MS = 10_000
+const HIERARCHY_POLL_INTERVAL_MS = 500
 
 export async function ensureSessionReady(
   ctx: SessionPreflightContext,
@@ -71,10 +74,7 @@ async function verifySession(ctx: SessionPreflightContext): Promise<void> {
 
   await ctx.device.waitForIdle(DEFAULT_READY_TIMEOUT_MS)
 
-  const hierarchy = await ctx.client.getUiHierarchy()
-  if (!hierarchy.hierarchyXml.trim()) {
-    throw new Error('UI hierarchy is empty')
-  }
+  const hierarchy = await waitForHierarchy(ctx.client)
 
   const blockingDialog = detectBlockingSystemDialog(hierarchy.hierarchyXml)
   if (blockingDialog) {
@@ -151,6 +151,20 @@ function launchOptions(config: Pick<PilotConfig, 'activity'>): LaunchAppOptions 
     ...(config.activity ? { activity: config.activity } : {}),
     waitForIdle: false,
   }
+}
+
+async function waitForHierarchy(
+  client: SessionClient,
+): Promise<{ hierarchyXml: string }> {
+  const deadline = Date.now() + HIERARCHY_READY_TIMEOUT_MS
+  while (Date.now() < deadline) {
+    const hierarchy = await client.getUiHierarchy()
+    if (hierarchy.hierarchyXml.trim()) {
+      return hierarchy
+    }
+    await new Promise(resolve => setTimeout(resolve, HIERARCHY_POLL_INTERVAL_MS))
+  }
+  throw new Error('UI hierarchy is empty (timed out waiting for UIAutomator2)')
 }
 
 function formatError(err: unknown): string {

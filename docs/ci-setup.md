@@ -163,6 +163,37 @@ pilot-results/screenshots/
   shows_error_on_invalid_credentials-1710345601234.png
 ```
 
+### Trace Artifacts
+
+Enable trace recording in CI to get full step-by-step debugging for failures. The recommended mode is `retain-on-failure`, which records every test but only keeps the trace archive when a test fails:
+
+```bash
+npx pilot test --trace retain-on-failure
+```
+
+Upload traces as CI artifacts alongside screenshots:
+
+```yaml
+- name: Run tests
+  run: npx pilot test --trace retain-on-failure
+
+- name: Upload traces
+  if: failure()
+  uses: actions/upload-artifact@v4
+  with:
+    name: pilot-traces
+    path: pilot-results/traces/
+    retention-days: 30
+```
+
+After downloading the artifact, open the trace locally:
+
+```bash
+npx pilot show-trace pilot-results/traces/trace-login_test.zip
+```
+
+Network capture works in CI as well -- HTTP/HTTPS requests made by the app are recorded in the trace and visible in the Network tab of the trace viewer. No additional CI configuration is needed.
+
 ### Caching
 
 Cache the Android SDK and emulator system images to speed up CI runs:

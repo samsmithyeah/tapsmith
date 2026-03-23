@@ -415,6 +415,51 @@ export function dismissSystemDialogsViaAdb(
 }
 
 /**
+ * Ensure ADB is running as root on the device. Returns true if adbd was
+ * actually restarted (meaning ADB port forwards were lost and the caller
+ * should re-establish connections).
+ *
+ * On userdebug/eng emulator images, `adb root` restarts adbd in root mode.
+ * On production/non-rooted devices, this is a no-op that returns false.
+ *
+ * Call this BEFORE starting the Pilot agent to avoid disrupting UIAutomator2's
+ * accessibility service connection.
+ */
+export function ensureAdbRoot(
+  serial: string,
+  exec: ExecFileSyncLike = execFileSync,
+): boolean {
+  try {
+    const output = String(exec('adb', ['-s', serial, 'root'], {
+      encoding: 'utf-8',
+      timeout: 10_000,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    })).trim()
+
+    if (output.includes('already running as root')) {
+      return false
+    }
+
+    if (output.includes('cannot run as root') || output.includes('adbd cannot run as root')) {
+      return false
+    }
+
+    // adbd was restarted — wait for device to come back
+    try {
+      exec('adb', ['-s', serial, 'wait-for-device'], {
+        timeout: 15_000,
+        stdio: 'ignore',
+      })
+    } catch {
+      // Best effort
+    }
+    return true
+  } catch {
+    return false
+  }
+}
+
+/**
  * Wait for system services to settle after boot.
  *
  * Even after `sys.boot_completed=1`, critical services like the Launcher,

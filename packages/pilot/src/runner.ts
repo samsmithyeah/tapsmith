@@ -10,11 +10,18 @@
  *   - Timing information
  */
 
+import * as fs from 'node:fs';
+import * as path from 'node:path';
+import * as os from 'node:os';
 import type { PilotConfig } from './config.js';
 import type { Device } from './device.js';
 import type { PilotReporter } from './reporter.js';
 import { flushSoftErrors } from './expect.js';
 import { FixtureRegistry, resolveFixtures, type FixtureDefinitions, type BuiltinFixtures } from './fixtures.js';
+import { resolveTraceConfig } from './trace/types.js';
+import { shouldRecord, shouldRetain } from './trace/trace-mode.js';
+import { packageTrace } from './trace/trace-packager.js';
+import type { TraceCollector } from './trace/trace-collector.js';
 
 // ─── Result types ───
 
@@ -27,6 +34,8 @@ export interface TestResult {
   durationMs: number;
   error?: Error;
   screenshotPath?: string;
+  /** Path to the trace archive, if recorded. */
+  tracePath?: string;
   /** Index of the worker that ran this test (only set in parallel mode). */
   workerIndex?: number;
 }
@@ -192,6 +201,18 @@ export function afterEach(fn: HookFn): void {
   currentContext().afterEach.push(fn);
 }
 
+// ─── Helpers ───
+
+function getPackageVersion(): string {
+  try {
+    const pkgPath = path.resolve(__dirname, '../package.json');
+    const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf-8'));
+    return pkg.version ?? '0.0.0';
+  } catch {
+    return '0.0.0';
+  }
+}
+
 // ─── Runner engine ───
 
 export interface RunOptions {
@@ -203,6 +224,8 @@ export interface RunOptions {
   abortFileOnError?: (error: Error) => boolean;
   /** Pre-resolved worker-scoped fixture values (set by worker-runner). */
   workerFixtures?: Record<string, unknown>;
+  /** Test file path — used by trace packager for testFile metadata and source inclusion. */
+  testFilePath?: string;
 }
 
 async function captureFailureScreenshot(
@@ -293,13 +316,36 @@ async function runSuiteContext(
     let status: TestStatus = 'passed';
     let error: Error | undefined;
     let screenshotPath: string | undefined;
+    let tracePath: string | undefined;
     // 2x the assertion timeout: a test may have multiple actions, each with
     // their own timeout. The test-level timeout is a safety net against hangs.
     const testTimeoutMs = opts.config.timeout * 2;
 
+    // Trace recording — start if configured
+    const traceConfig = resolveTraceConfig(opts.config.trace);
+    const attempt = 0; // TODO: wire up retry count when retries are implemented
+    const recording = shouldRecord(traceConfig.mode, attempt);
+    let traceCollector: TraceCollector | null = null;
+
+    if (recording && opts.device) {
+      const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pilot-trace-'));
+      traceCollector = opts.device.tracing._startManaged(traceConfig, tempDir);
+
+      // Start network capture if configured
+      if (traceConfig.network) {
+        try {
+          await opts.device._startNetworkCapture();
+        } catch (err) {
+          // Network capture is best-effort — log so failures aren't invisible
+          console.warn(`[pilot] Network capture failed to start: ${err instanceof Error ? err.message : err}`);
+        }
+      }
+    }
+
     try {
       const testBody = async () => {
         // Run beforeEach hooks
+        traceCollector?.startGroup('Before Hooks');
         if (opts.beforeEachTest) {
           await opts.beforeEachTest(fullName);
         }
@@ -307,6 +353,7 @@ async function runSuiteContext(
         for (const hook of allBeforeEach) {
           await invokeHook(hook, opts.device);
         }
+        traceCollector?.endGroup();
 
         // Build fixture context: base (device) + worker-scoped + test-scoped
         const registry = getFixtureRegistry();
@@ -324,6 +371,7 @@ async function runSuiteContext(
           testFixtureTeardown = resolved.teardown;
         }
 
+        traceCollector?.startGroup('Test');
         try {
           // Call with fixtures if the test function expects arguments
           if (entry.fn.length > 0) {
@@ -332,6 +380,7 @@ async function runSuiteContext(
             await (entry.fn as () => void | Promise<void>)();
           }
         } finally {
+          traceCollector?.endGroup();
           if (testFixtureTeardown) {
             await testFixtureTeardown();
           }
@@ -362,12 +411,16 @@ async function runSuiteContext(
       }
     } finally {
       // Run afterEach hooks (always)
-      for (const hook of allAfterEach) {
-        try {
-          await invokeHook(hook, opts.device);
-        } catch {
-          // afterEach errors should not mask test errors
+      if (allAfterEach.length > 0) {
+        traceCollector?.startGroup('After Hooks');
+        for (const hook of allAfterEach) {
+          try {
+            await invokeHook(hook, opts.device);
+          } catch {
+            // afterEach errors should not mask test errors
+          }
         }
+        traceCollector?.endGroup();
       }
     }
 
@@ -402,6 +455,100 @@ async function runSuiteContext(
       );
     }
 
+    // Finalize trace recording
+    if (traceCollector && opts.device) {
+      // Stop network capture and collect raw entries
+      let rawNetworkEntries: Awaited<ReturnType<typeof opts.device._stopNetworkCapture>>['entries'] | undefined;
+      if (traceConfig.network) {
+        try {
+          const res = await opts.device._stopNetworkCapture();
+          if (res.success && res.entries.length > 0) {
+            rawNetworkEntries = res.entries;
+          } else if (!res.success) {
+            console.warn(`[pilot] Network capture stopped with error: ${res.errorMessage}`);
+          }
+        } catch (err) {
+          console.warn(`[pilot] Failed to stop network capture: ${err instanceof Error ? err.message : err}`);
+        }
+      }
+
+      const collector = opts.device.tracing._stopManaged();
+
+      // Map network entries, associating each with the closest preceding action
+      let networkEntries: import('./trace/types.js').NetworkEntry[] | undefined;
+      if (rawNetworkEntries && collector) {
+        // Build sorted list of action timestamps with their indices
+        const actionTimestamps = collector.events
+          .filter((e): e is import('./trace/types.js').ActionTraceEvent | import('./trace/types.js').AssertionTraceEvent =>
+            e.type === 'action' || e.type === 'assertion')
+          .map((e) => ({ timestamp: e.timestamp, actionIndex: e.actionIndex }));
+
+        const findActionIndex = (startTimeMs: number): number => {
+          let best = 0;
+          for (const a of actionTimestamps) {
+            if (a.timestamp <= startTimeMs) {
+              best = a.actionIndex;
+            }
+          }
+          return best;
+        };
+
+        networkEntries = rawNetworkEntries.map((e, i) => ({
+          index: i,
+          actionIndex: findActionIndex(e.startTimeMs),
+          startTime: e.startTimeMs,
+          endTime: e.startTimeMs + e.durationMs,
+          method: e.method,
+          url: e.url,
+          status: e.statusCode,
+          contentType: e.contentType,
+          requestSize: e.requestSize,
+          responseSize: e.responseSize,
+          duration: e.durationMs,
+          requestHeaders: e.requestHeadersJson ? JSON.parse(e.requestHeadersJson) : {},
+          responseHeaders: e.responseHeadersJson ? JSON.parse(e.responseHeadersJson) : {},
+          requestBody: e.requestBody,
+          responseBody: e.responseBody,
+        }));
+      }
+      if (collector) {
+        const retain = shouldRetain(traceConfig.mode, status === 'passed', attempt);
+        if (retain) {
+          try {
+            const outputDir = path.resolve(
+              opts.config.rootDir,
+              opts.config.outputDir,
+              'traces',
+            );
+            const version = getPackageVersion();
+            const sourceFiles = opts.testFilePath && traceConfig.sources
+              ? [opts.testFilePath]
+              : undefined;
+            tracePath = packageTrace(collector, {
+              testFile: opts.testFilePath ?? '',
+              testName: fullName,
+              testStatus: status,
+              testDuration: Date.now() - testStart,
+              startTime: testStart,
+              endTime: Date.now(),
+              device: {
+                serial: opts.config.device ?? 'unknown',
+                isEmulator: (opts.config.device ?? '').startsWith('emulator-'),
+              },
+              pilotVersion: version,
+              error: error?.message,
+              outputDir,
+              sourceFiles,
+              networkEntries,
+            });
+          } catch {
+            // Trace packaging is best-effort
+          }
+        }
+        collector.cleanup();
+      }
+    }
+
     const testResult: TestResult = {
       name: entry.name,
       fullName,
@@ -409,6 +556,7 @@ async function runSuiteContext(
       durationMs: Date.now() - testStart,
       error,
       screenshotPath,
+      tracePath,
     };
     result.tests.push(testResult);
     opts.reporter?.onTestEnd?.(testResult);
@@ -517,7 +665,7 @@ export async function runTestFile(
     workerTeardown = resolved.teardown;
   }
 
-  const fileOpts: RunOptions = { ...opts, workerFixtures };
+  const fileOpts: RunOptions = { ...opts, workerFixtures, testFilePath: filePath };
 
   try {
     return await runSuiteContext(rootCtx, '', [], [], fileOpts);

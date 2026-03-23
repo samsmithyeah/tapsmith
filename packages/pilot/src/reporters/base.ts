@@ -2,6 +2,8 @@
  * Shared ANSI helpers and utilities for console-based reporters.
  */
 
+import * as fs from 'node:fs'
+
 // ─── ANSI codes ───
 
 const RESET = '\x1b[0m'
@@ -78,11 +80,76 @@ export function workerTag(workerIndex: number | undefined): string {
 export function formatError(error: Error, indent: string = '        '): string {
   const lines: string[] = []
   lines.push(`${indent}${red(error.message)}`)
+
   if (error.stack) {
-    const stackLines = error.stack.split('\n').slice(1, 4)
-    for (const line of stackLines) {
+    const stackLines = error.stack.split('\n').slice(1)
+
+    // Find the first user-code frame (not Pilot internals or node internals)
+    const userFrame = stackLines.find(
+      (l) => !l.includes('/packages/pilot/') && !l.includes('node:internal/') && l.includes(':'),
+    )
+
+    // Show code snippet from the user frame
+    const snippet = userFrame ? extractCodeSnippet(userFrame.trim()) : null
+    if (snippet) {
+      lines.push('')
+      for (const sl of snippet.lines) {
+        const gutter = String(sl.lineNumber).padStart(snippet.gutterWidth)
+        if (sl.highlight) {
+          lines.push(`${indent}${red('>')} ${red(gutter)} ${red('|')} ${red(sl.text)}`)
+        } else {
+          lines.push(`${indent}  ${dim(gutter)} ${dim('|')} ${dim(sl.text)}`)
+        }
+      }
+      lines.push('')
+    }
+
+    // Show first 3 stack frames
+    for (const line of stackLines.slice(0, 3)) {
       lines.push(`${indent}${dim(line.trim())}`)
     }
   }
   return lines.join('\n')
+}
+
+// ─── Code snippet extraction ───
+
+interface SnippetLine {
+  lineNumber: number
+  text: string
+  highlight: boolean
+}
+
+function extractCodeSnippet(frame: string): { lines: SnippetLine[]; gutterWidth: number } | null {
+  // Parse "at ... (file:line:col)" or "at file:line:col"
+  const match = frame.match(/\(?([^()]+):(\d+):\d+\)?$/)
+  if (!match) return null
+
+  const filePath = match[1]
+  const lineNum = parseInt(match[2], 10)
+  if (isNaN(lineNum)) return null
+
+  try {
+    if (!fs.existsSync(filePath)) return null
+    const source = fs.readFileSync(filePath, 'utf-8')
+    const sourceLines = source.split('\n')
+
+    const contextSize = 2
+    const start = Math.max(0, lineNum - 1 - contextSize)
+    const end = Math.min(sourceLines.length, lineNum + contextSize)
+
+    const result: SnippetLine[] = []
+    for (let i = start; i < end; i++) {
+      result.push({
+        lineNumber: i + 1,
+        text: sourceLines[i],
+        highlight: i + 1 === lineNum,
+      })
+    }
+
+    const gutterWidth = String(end).length
+    return { lines: result, gutterWidth }
+  } catch {
+    return null
+  }
 }

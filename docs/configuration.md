@@ -45,6 +45,7 @@ For emulator-managed runs, the recommended path is `launchEmulators + avd`.
 | `shard` | `{ current: number; total: number }` | `undefined` | Shard specification for splitting a run across multiple machines. Usually set via `--shard=x/y`. |
 | `launchEmulators` | `boolean` | `false` | Automatically launch emulators to fill the requested worker count. |
 | `avd` | `string` | `undefined` | AVD name to use for `launchEmulators`. When set, Pilot launches repeated instances of this AVD. |
+| `trace` | `TraceMode \| Partial<TraceConfig>` | `"off"` | Trace recording mode. See [TraceMode](#tracemode) below. |
 
 ### `ScreenshotMode`
 
@@ -80,6 +81,48 @@ Examples:
 reporter: "list"
 reporter: ["json", { outputFile: "pilot-report.json" }]
 reporter: [["html", { outputFolder: "pilot-report" }], "list"]
+```
+
+### `TraceMode`
+
+```typescript
+type TraceMode = "off" | "on" | "on-first-retry" | "on-all-retries" | "retain-on-failure" | "retain-on-first-failure";
+```
+
+- `"off"` -- No tracing.
+- `"on"` -- Record and keep traces for every test.
+- `"on-first-retry"` -- Record traces only on the first retry of a failed test.
+- `"on-all-retries"` -- Record traces on every retry.
+- `"retain-on-failure"` -- Always record, but delete the trace zip if the test passes.
+- `"retain-on-first-failure"` -- Always record, but only keep traces for the first failure (attempt 0).
+
+### `TraceConfig`
+
+For fine-grained control, pass an object instead of a mode string:
+
+```typescript
+interface TraceConfig {
+  mode: TraceMode;       // Recording mode (default: "off")
+  screenshots: boolean;  // Capture before/after screenshots (default: true)
+  snapshots: boolean;    // Capture view hierarchy XML (default: true)
+  sources: boolean;      // Include test source files (default: true)
+  attachments: boolean;  // Include user attachments (default: true)
+  network: boolean;      // Capture HTTP/HTTPS traffic via proxy (default: true)
+}
+```
+
+When `network` is enabled, the Rust daemon starts an HTTP proxy and configures the device to route traffic through it. HTTPS traffic is decrypted using an auto-generated CA certificate installed on the device.
+
+Example:
+
+```typescript
+trace: {
+  mode: "retain-on-failure",
+  screenshots: true,
+  snapshots: true,
+  sources: false,
+  network: true,
+}
 ```
 
 ## Example Configurations

@@ -8,6 +8,7 @@ export default defineConfig({
   retries: 0,
   screenshot: "only-on-failure",
   workers: 2,
+  trace: "retain-on-failure",
   launchEmulators: true,
   avd: "Pilot_Generic_Phone_API_35",
   daemonBin: "../packages/pilot-core/target/release/pilot-core",

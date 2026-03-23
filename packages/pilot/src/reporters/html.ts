@@ -46,7 +46,18 @@ export class HtmlReporter implements PilotReporter {
       }
     }
 
-    const html = generateHtml(result, this._startTime, screenshotMap)
+    // Copy trace zips to report folder
+    const traceMap = new Map<string, string>()
+    for (const test of result.tests) {
+      if (test.tracePath && fs.existsSync(test.tracePath)) {
+        const basename = path.basename(test.tracePath)
+        const dest = path.join(outputDir, basename)
+        fs.copyFileSync(test.tracePath, dest)
+        traceMap.set(test.tracePath, basename)
+      }
+    }
+
+    const html = generateHtml(result, this._startTime, screenshotMap, traceMap)
     const indexPath = path.join(outputDir, 'index.html')
     fs.writeFileSync(indexPath, html)
 
@@ -72,6 +83,7 @@ function generateHtml(
   result: FullResult,
   startTime: Date,
   screenshotMap: Map<string, string>,
+  traceMap: Map<string, string>,
 ): string {
   const passed = result.tests.filter((t) => t.status === 'passed').length
   const failed = result.tests.filter((t) => t.status === 'failed').length
@@ -80,13 +92,16 @@ function generateHtml(
 
   const testRows = result.tests.map((t) => {
     const screenshotFile = t.screenshotPath ? screenshotMap.get(t.screenshotPath) : null
+    const traceFile = t.tracePath ? traceMap.get(t.tracePath) : null
     return {
       name: escapeHtml(t.fullName),
       status: t.status,
       duration: t.durationMs,
       error: t.error ? escapeHtml(t.error.message) : null,
       stack: t.error?.stack ? escapeHtml(t.error.stack.split('\n').slice(1, 6).join('\n')) : null,
+      codeSnippet: t.error?.stack ? extractCodeSnippetForHtml(t.error) : null,
       screenshot: screenshotFile,
+      trace: traceFile,
     }
   })
 
@@ -127,10 +142,27 @@ function generateHtml(
   .test-details { padding: 0 16px 16px; border-top: 1px solid #f0f0f0; display: none; }
   .test-details.open { display: block; padding-top: 12px; }
   .error-msg { background: #fff3f3; border-left: 3px solid #f44336; padding: 12px; font-family: monospace; font-size: 13px; white-space: pre-wrap; margin-bottom: 8px; border-radius: 0 4px 4px 0; }
+  .code-snippet { background: #1e1e2e; border-radius: 6px; padding: 0; margin-bottom: 8px; overflow-x: auto; font-family: 'SF Mono', Menlo, Monaco, Consolas, monospace; font-size: 12px; line-height: 1.6; }
+  .code-snippet .code-file { padding: 8px 12px; background: #2a2a3e; color: #a0a0c0; font-size: 11px; border-radius: 6px 6px 0 0; }
+  .code-snippet .code-lines { padding: 8px 0; }
+  .code-line { display: flex; }
+  .code-line .gutter { width: 48px; text-align: right; padding-right: 12px; color: #555; user-select: none; flex-shrink: 0; }
+  .code-line .code { padding-right: 12px; color: #ccc; white-space: pre; }
+  .code-line.highlight { background: rgba(244,67,54,0.15); }
+  .code-line.highlight .gutter { color: #f44336; }
+  .code-line.highlight .code { color: #fff; }
   .stack-trace { background: #f8f8f8; padding: 12px; font-family: monospace; font-size: 12px; white-space: pre-wrap; color: #666; border-radius: 4px; }
   .screenshot { margin-top: 12px; }
   .screenshot img { max-width: 400px; border: 1px solid #ddd; border-radius: 4px; cursor: pointer; }
   .screenshot img:hover { box-shadow: 0 4px 12px rgba(0,0,0,0.15); }
+  .trace-section { margin-top: 12px; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+  .trace-btn { display: inline-flex; align-items: center; gap: 6px; padding: 8px 16px; background: #6c5ce7; color: white; border: none; border-radius: 6px; font-size: 13px; font-weight: 600; cursor: pointer; text-decoration: none; transition: background 0.15s; }
+  .trace-btn:hover { background: #5a4bd1; }
+  .trace-btn svg { width: 16px; height: 16px; fill: currentColor; }
+  .trace-cmd { display: inline-block; margin-top: 6px; padding: 6px 12px; background: #f8f8f8; border: 1px solid #e0e0e0; border-radius: 4px; font-family: monospace; font-size: 12px; color: #555; cursor: pointer; width: 100%; }
+  .trace-cmd:hover { background: #f0f0f0; }
+  .trace-cmd-copied { background: #e8f5e9; border-color: #a5d6a7; }
+  .trace-badge { display: inline-flex; align-items: center; gap: 4px; padding: 2px 8px; background: #6c5ce7; color: white; border-radius: 10px; font-size: 11px; font-weight: 600; margin-left: 8px; }
   .status-passed { color: #4caf50; }
   .status-failed { color: #f44336; }
   .status-skipped { color: #ff9800; }
@@ -177,12 +209,34 @@ function render(filter, query) {
     li.className = 'test-item';
     var header = '<div class="test-header" onclick="toggle(' + i + ')">';
     header += '<span class="test-icon status-' + t.status + '">' + icon + '</span>';
-    header += '<span class="test-name">' + t.name + '</span>';
+    header += '<span class="test-name">' + t.name;
+    if (t.trace) header += '<span class="trace-badge">&#9654; Trace</span>';
+    header += '</span>';
     header += '<span class="test-duration">' + dur + '</span></div>';
     var details = '<div class="test-details" id="details-' + i + '">';
+    if (t.trace && t.status === 'failed') {
+      details += '<div class="trace-section">';
+      details += '<a class="trace-btn" href="' + t.trace + '" download><svg viewBox="0 0 24 24"><path d="M13 3v9.59l3.3-3.3 1.4 1.42L12 16.41l-5.7-5.7 1.4-1.42L11 12.59V3h2zM4 19v2h16v-2H4z"/></svg>Download Trace</a>';
+      details += '</div>';
+      details += '<div class="trace-cmd" onclick="copyCmd(this)" title="Click to copy">npx pilot show-trace ' + t.trace + '</div>';
+    }
     if (t.error) details += '<div class="error-msg">' + t.error + '</div>';
+    if (t.codeSnippet) {
+      details += '<div class="code-snippet"><div class="code-file">' + t.codeSnippet.file + '</div><div class="code-lines">';
+      t.codeSnippet.lines.forEach(function(sl) {
+        var cls = sl.highlight ? 'code-line highlight' : 'code-line';
+        details += '<div class="' + cls + '"><span class="gutter">' + sl.lineNumber + '</span><span class="code">' + sl.text + '</span></div>';
+      });
+      details += '</div></div>';
+    }
     if (t.stack) details += '<div class="stack-trace">' + t.stack + '</div>';
     if (t.screenshot) details += '<div class="screenshot"><img src="' + t.screenshot + '" onclick="window.open(this.src)"></div>';
+    if (t.trace && t.status !== 'failed') {
+      details += '<div class="trace-section">';
+      details += '<a class="trace-btn" href="' + t.trace + '" download><svg viewBox="0 0 24 24"><path d="M13 3v9.59l3.3-3.3 1.4 1.42L12 16.41l-5.7-5.7 1.4-1.42L11 12.59V3h2zM4 19v2h16v-2H4z"/></svg>Download Trace</a>';
+      details += '</div>';
+      details += '<div class="trace-cmd" onclick="copyCmd(this)" title="Click to copy">npx pilot show-trace ' + t.trace + '</div>';
+    }
     details += '</div>';
     li.innerHTML = header + details;
     list.appendChild(li);
@@ -192,6 +246,18 @@ function render(filter, query) {
 function toggle(i) {
   var el = document.getElementById('details-' + i);
   if (el) el.classList.toggle('open');
+}
+
+function copyCmd(el) {
+  var text = el.textContent;
+  if (navigator.clipboard) {
+    navigator.clipboard.writeText(text).then(function() {
+      el.classList.add('trace-cmd-copied');
+      var orig = el.textContent;
+      el.textContent = 'Copied!';
+      setTimeout(function() { el.textContent = orig; el.classList.remove('trace-cmd-copied'); }, 1500);
+    });
+  }
 }
 
 document.querySelectorAll('.filter-btn').forEach(function(btn) {
@@ -219,4 +285,56 @@ function escapeHtml(s: string): string {
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;')
+}
+
+interface HtmlSnippetLine {
+  lineNumber: number
+  text: string
+  highlight: boolean
+}
+
+function extractCodeSnippetForHtml(
+  error: Error,
+): { file: string; lines: HtmlSnippetLine[] } | null {
+  if (!error.stack) return null
+
+  const frames = error.stack.split('\n').slice(1)
+  const userFrame = frames.find(
+    (l) => !l.includes('/packages/pilot/') && !l.includes('node:internal/') && l.includes(':'),
+  )
+  if (!userFrame) return null
+
+  const match = userFrame.trim().match(/\(?([^()]+):(\d+):\d+\)?$/)
+  if (!match) return null
+
+  const filePath = match[1]
+  const lineNum = parseInt(match[2], 10)
+  if (isNaN(lineNum)) return null
+
+  try {
+    if (!fs.existsSync(filePath)) return null
+    const source = fs.readFileSync(filePath, 'utf-8')
+    const sourceLines = source.split('\n')
+
+    const contextSize = 2
+    const start = Math.max(0, lineNum - 1 - contextSize)
+    const end = Math.min(sourceLines.length, lineNum + contextSize)
+
+    const lines: HtmlSnippetLine[] = []
+    for (let i = start; i < end; i++) {
+      lines.push({
+        lineNumber: i + 1,
+        text: escapeHtml(sourceLines[i]),
+        highlight: i + 1 === lineNum,
+      })
+    }
+
+    // Show a relative path for the header
+    const cwd = process.cwd()
+    const relFile = filePath.startsWith(cwd) ? filePath.slice(cwd.length + 1) : filePath
+
+    return { file: escapeHtml(`${relFile}:${lineNum}`), lines }
+  } catch {
+    return null
+  }
 }

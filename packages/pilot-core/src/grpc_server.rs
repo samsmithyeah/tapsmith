@@ -5,18 +5,27 @@ use anyhow::Result;
 use serde_json::{json, Value};
 use tokio::sync::RwLock;
 use tonic::{Request, Response, Status};
-use tracing::{error, info, instrument};
+use tracing::{error, info, instrument, warn};
 use uuid::Uuid;
 
 use crate::adb;
 use crate::agent_comms::{AgentCommand, AgentConnection, AgentResponse};
 use crate::device::DeviceManager;
+use crate::mitm_ca::MitmAuthority;
+use crate::network_proxy::NetworkProxy;
 use crate::proto;
 use crate::screenshot;
 
 pub struct PilotServiceImpl {
     device_manager: Arc<RwLock<DeviceManager>>,
     agent: Arc<RwLock<AgentConnection>>,
+    network_proxy: Arc<RwLock<Option<NetworkProxy>>>,
+    /// Serial of the device whose proxy settings were modified (for cleanup).
+    proxy_device_serial: Arc<RwLock<Option<String>>>,
+    /// Device-side port used for `adb reverse` (for cleanup).
+    proxy_reverse_port: Arc<RwLock<Option<u16>>>,
+    /// On-device path of the installed CA cert (for cleanup).
+    proxy_ca_cert_path: Arc<RwLock<Option<String>>>,
 }
 
 impl PilotServiceImpl {
@@ -27,6 +36,10 @@ impl PilotServiceImpl {
         Self {
             device_manager,
             agent,
+            network_proxy: Arc::new(RwLock::new(None)),
+            proxy_device_serial: Arc::new(RwLock::new(None)),
+            proxy_reverse_port: Arc::new(RwLock::new(None)),
+            proxy_ca_cert_path: Arc::new(RwLock::new(None)),
         }
     }
 
@@ -83,6 +96,37 @@ impl PilotServiceImpl {
             .active_serial()
             .map(String::from);
         screenshot::capture_for_error(serial.as_deref()).await
+    }
+
+    /// Clean up network proxy state: revert device proxy settings, remove CA
+    /// cert, and stop the proxy. Called during graceful shutdown to ensure the
+    /// device isn't left with a dangling proxy configuration.
+    pub async fn cleanup_network_proxy(&self) {
+        let proxy = self.network_proxy.write().await.take();
+        let serial = self.proxy_device_serial.write().await.take();
+        let reverse_port = self.proxy_reverse_port.write().await.take();
+        let ca_cert_path = self.proxy_ca_cert_path.write().await.take();
+
+        if let Some(serial) = &serial {
+            info!(%serial, "Cleaning up device proxy settings on shutdown");
+            if let Err(e) = adb::shell(serial, "settings put global http_proxy :0").await {
+                warn!(%serial, "Failed to reset http_proxy on shutdown: {e}");
+            }
+            if let Some(port) = reverse_port {
+                if let Err(e) = adb::remove_reverse(serial, port).await {
+                    warn!(%serial, port, "Failed to remove reverse port forward on shutdown: {e}");
+                }
+            }
+            if let Some(cert_path) = &ca_cert_path {
+                if let Err(e) = adb::shell(serial, &format!("rm -f {cert_path}")).await {
+                    warn!(%serial, "Failed to remove CA cert on shutdown: {e}");
+                }
+            }
+        }
+
+        if let Some(proxy) = proxy {
+            let _ = proxy.stop().await;
+        }
     }
 
     async fn make_action_response(
@@ -1793,6 +1837,246 @@ impl proto::pilot_service_server::PilotService for PilotServiceImpl {
             error_type: String::new(),
             error_message: String::new(),
             screenshot: Vec::new(),
+        }))
+    }
+
+    // ─── Network Capture (PILOT-164) ───
+
+    async fn start_network_capture(
+        &self,
+        request: Request<proto::StartNetworkCaptureRequest>,
+    ) -> Result<Response<proto::StartNetworkCaptureResponse>, Status> {
+        let req = request.into_inner();
+        let request_id = Self::request_id(&req.request_id);
+
+        let mut proxy_guard = self.network_proxy.write().await;
+        if proxy_guard.is_some() {
+            return Ok(Response::new(proto::StartNetworkCaptureResponse {
+                request_id,
+                success: false,
+                proxy_port: 0,
+                error_message: "Network capture is already running".to_string(),
+            }));
+        }
+
+        // Load or create the MITM CA for HTTPS interception
+        let mitm_ca = Arc::new(
+            MitmAuthority::load_or_create()
+                .map_err(|e| Status::internal(format!("Failed to create MITM CA: {e}")))?,
+        );
+
+        // Get device serial early so we can install the CA cert
+        let serial = self.active_serial().await?;
+
+        // Install the CA cert on the device (best-effort — may fail on non-rooted devices)
+        let ca_pem_path = mitm_ca.ca_pem_path().to_string_lossy().to_string();
+        let cert_filename = mitm_ca
+            .device_cert_filename()
+            .map_err(|e| Status::internal(format!("Failed to compute CA cert hash: {e}")))?;
+        let device_cert_path = adb::device_ca_cert_path(&cert_filename);
+        let mut warning: Option<String> = None;
+        if let Err(e) = adb::install_ca_cert(&serial, &ca_pem_path, &cert_filename).await {
+            let msg = format!(
+                "Failed to install CA cert on device: {e} — HTTPS traffic will not be captured"
+            );
+            error!("{msg}");
+            warning = Some(msg);
+        }
+
+        let proxy = NetworkProxy::start(mitm_ca)
+            .await
+            .map_err(|e| Status::internal(format!("Failed to start proxy: {e}")))?;
+        let host_port = proxy.port();
+
+        // Use `adb reverse` to make the proxy reachable as 127.0.0.1:{port} on
+        // the device. This is more reliable than `settings put global http_proxy`
+        // with 10.0.2.2 because it works at the ADB transport level and doesn't
+        // depend on the emulator's network routing or Android version behavior.
+        let device_port = host_port; // use same port number on device side
+        if let Err(e) = adb::reverse_port(&serial, device_port, host_port).await {
+            error!("Failed to set up adb reverse: {e}");
+        }
+
+        let proxy_setting = format!("127.0.0.1:{device_port}");
+        info!(%serial, %proxy_setting, host_port, "Configuring device HTTP proxy via adb reverse");
+
+        if let Err(e) = adb::shell(
+            &serial,
+            &format!("settings put global http_proxy {proxy_setting}"),
+        )
+        .await
+        {
+            error!("Failed to set device proxy: {e}");
+        }
+
+        *proxy_guard = Some(proxy);
+        *self.proxy_device_serial.write().await = Some(serial);
+        *self.proxy_reverse_port.write().await = Some(device_port);
+        *self.proxy_ca_cert_path.write().await = Some(device_cert_path);
+
+        Ok(Response::new(proto::StartNetworkCaptureResponse {
+            request_id,
+            success: true,
+            proxy_port: host_port as u32,
+            error_message: warning.unwrap_or_default(),
+        }))
+    }
+
+    async fn stop_network_capture(
+        &self,
+        request: Request<proto::StopNetworkCaptureRequest>,
+    ) -> Result<Response<proto::StopNetworkCaptureResponse>, Status> {
+        let req = request.into_inner();
+        let request_id = Self::request_id(&req.request_id);
+
+        let proxy = self.network_proxy.write().await.take();
+        let Some(proxy) = proxy else {
+            return Ok(Response::new(proto::StopNetworkCaptureResponse {
+                request_id,
+                success: false,
+                entries: Vec::new(),
+                error_message: "Network capture is not running".to_string(),
+            }));
+        };
+
+        // Revert device proxy settings, remove reverse port forward, and clean up CA cert
+        let serial = self.proxy_device_serial.write().await.take();
+        let reverse_port = self.proxy_reverse_port.write().await.take();
+        let ca_cert_path = self.proxy_ca_cert_path.write().await.take();
+        if let Some(serial) = &serial {
+            info!(%serial, "Reverting device HTTP proxy");
+            if let Err(e) = adb::shell(serial, "settings put global http_proxy :0").await {
+                warn!(%serial, "Failed to reset http_proxy: {e}");
+            }
+            if let Some(port) = reverse_port {
+                if let Err(e) = adb::remove_reverse(serial, port).await {
+                    warn!(%serial, port, "Failed to remove reverse port forward: {e}");
+                }
+            }
+            if let Some(cert_path) = &ca_cert_path {
+                if let Err(e) = adb::shell(serial, &format!("rm -f {cert_path}")).await {
+                    warn!(%serial, "Failed to remove CA cert: {e}");
+                }
+            }
+        }
+
+        let captured = proxy.stop().await;
+        let entries: Vec<proto::CapturedNetworkEntry> = captured
+            .into_iter()
+            .map(|e| proto::CapturedNetworkEntry {
+                method: e.method,
+                url: e.url,
+                status_code: e.status_code,
+                content_type: e.content_type,
+                request_size: e.request_size,
+                response_size: e.response_size,
+                start_time_ms: e.start_time_ms,
+                duration_ms: e.duration_ms,
+                request_headers_json: crate::network_proxy::headers_to_json_object(
+                    &e.request_headers,
+                )
+                .to_string(),
+                response_headers_json: crate::network_proxy::headers_to_json_object(
+                    &e.response_headers,
+                )
+                .to_string(),
+                request_body: e.request_body,
+                response_body: e.response_body,
+                is_https: e.is_https,
+            })
+            .collect();
+
+        Ok(Response::new(proto::StopNetworkCaptureResponse {
+            request_id,
+            success: true,
+            entries,
+            error_message: String::new(),
+        }))
+    }
+
+    async fn get_logcat(
+        &self,
+        request: Request<proto::GetLogcatRequest>,
+    ) -> Result<Response<proto::GetLogcatResponse>, Status> {
+        let req = request.into_inner();
+        let request_id = Self::request_id(&req.request_id);
+        let serial = self.active_serial().await?;
+
+        // Fetch logcat with epoch timestamps for reliable filtering
+        let output = match adb::shell_lenient(&serial, "logcat -d -v epoch").await {
+            Ok(output) => output,
+            Err(e) => {
+                return Ok(Response::new(proto::GetLogcatResponse {
+                    request_id,
+                    logcat: String::new(),
+                    error_message: format!("Failed to get logcat: {e}"),
+                }));
+            }
+        };
+
+        // Filter by timestamp and package in Rust for cross-device consistency.
+        // Logcat `-v epoch` format: "<epoch_secs>.<fractional>  <pid> ..."
+        let since_ms = req.since_ms;
+        let until_ms = if req.until_ms > 0 {
+            req.until_ms
+        } else {
+            u64::MAX
+        };
+        let package_name = req.package_name;
+
+        // If package_name is set, resolve its PID(s) for filtering
+        let pids: Vec<String> = if !package_name.is_empty() {
+            let pid_output = adb::shell_lenient(&serial, &format!("pidof {package_name}"))
+                .await
+                .unwrap_or_default();
+            pid_output.split_whitespace().map(String::from).collect()
+        } else {
+            Vec::new()
+        };
+
+        let need_filter = since_ms > 0 || until_ms < u64::MAX || !pids.is_empty();
+
+        let logcat = if need_filter {
+            let since_secs = since_ms as f64 / 1000.0;
+            let until_secs = until_ms as f64 / 1000.0;
+
+            output
+                .lines()
+                .filter(|line| {
+                    // Parse epoch timestamp from the beginning of the line
+                    let ts_ok = if since_ms > 0 || until_ms < u64::MAX {
+                        // Epoch format: "1234567890.123  <pid> ..."
+                        line.split_whitespace()
+                            .next()
+                            .and_then(|ts| ts.parse::<f64>().ok())
+                            .map(|ts| ts >= since_secs && ts <= until_secs)
+                            .unwrap_or(true) // keep non-parseable lines (e.g. headers)
+                    } else {
+                        true
+                    };
+
+                    let pid_ok = if !pids.is_empty() {
+                        // PID is the second whitespace-delimited field in epoch format
+                        line.split_whitespace()
+                            .nth(1)
+                            .map(|pid_field| pids.iter().any(|p| p == pid_field))
+                            .unwrap_or(false)
+                    } else {
+                        true
+                    };
+
+                    ts_ok && pid_ok
+                })
+                .collect::<Vec<&str>>()
+                .join("\n")
+        } else {
+            output
+        };
+
+        Ok(Response::new(proto::GetLogcatResponse {
+            request_id,
+            logcat,
+            error_message: String::new(),
         }))
     }
 }

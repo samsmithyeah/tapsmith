@@ -20,6 +20,7 @@
 import { ElementHandle } from "./element-handle.js";
 import type { ElementInfo } from "./grpc-client.js";
 import { selectorToProto } from "./selectors.js";
+import { extractSourceLocation } from "./trace/trace-collector.js";
 
 const DEFAULT_ASSERTION_TIMEOUT_MS = 5_000;
 const POLL_INTERVAL_MS = 250;
@@ -247,6 +248,73 @@ function matchesExact(
   return expected.test(actual);
 }
 
+/**
+ * Wrap an assertion method to emit trace events when tracing is active.
+ */
+function wrapAssertionWithTrace(
+  name: string,
+  fn: (...args: unknown[]) => Promise<void>,
+  handle: ElementHandle,
+  negated: boolean,
+): (...args: unknown[]) => Promise<void> {
+  const trace = handle._traceCapture;
+  if (!trace) return fn;
+
+  return async (...args: unknown[]) => {
+    const sourceLocation = extractSourceLocation(new Error().stack ?? "");
+    const selectorStr = selectorDescription(handle);
+    const start = Date.now();
+
+    // Before capture
+    const { actionIndex, captures: beforeCaptures } =
+      await trace.collector.captureBeforeAction(
+        trace.takeScreenshot,
+        trace.captureHierarchy,
+      );
+
+    let passed = true;
+    let error: string | undefined;
+    let caughtErr: unknown;
+
+    try {
+      await fn(...args);
+    } catch (err) {
+      passed = false;
+      error = err instanceof Error ? err.message : String(err);
+      caughtErr = err;
+    }
+
+    // After capture (success or failure)
+    const duration = Date.now() - start;
+    const attempts = Math.max(1, Math.round(duration / POLL_INTERVAL_MS));
+    const afterCaptures = await trace.collector.captureAfterAction(
+      actionIndex,
+      trace.takeScreenshot,
+      trace.captureHierarchy,
+    );
+
+    trace.collector.addAssertionEvent({
+      assertion: (negated ? "not." : "") + name,
+      selector: selectorStr,
+      passed,
+      soft: false,
+      negated,
+      duration,
+      attempts,
+      error,
+      sourceLocation,
+      hasScreenshotBefore: !!beforeCaptures.screenshotBefore,
+      hasScreenshotAfter: !!afterCaptures.screenshotAfter,
+      hasHierarchyBefore: !!beforeCaptures.hierarchyBefore,
+      hasHierarchyAfter: !!afterCaptures.hierarchyAfter,
+    } as Parameters<typeof trace.collector.addAssertionEvent>[0]);
+
+    if (caughtErr !== undefined) {
+      throw caughtErr;
+    }
+  };
+}
+
 function createAssertions(
   handle: ElementHandle,
   negated: boolean,
@@ -254,8 +322,24 @@ function createAssertions(
   const timeoutFor = (opts?: { timeout?: number }) =>
     opts?.timeout ?? handle._timeoutMs ?? DEFAULT_ASSERTION_TIMEOUT_MS;
 
-  const fail = (message: string): never => {
-    throw new Error(message);
+  const fail = (message: string, callsite?: Error): never => {
+    const err = new Error(message);
+    // Replace the stack so the top frame points to the test file (where the
+    // assertion was called) rather than to Pilot internals.
+    const source = callsite ?? err;
+    if (source.stack) {
+      const frames = source.stack.split('\n').slice(1);
+      // Move user frames (non-Pilot-internal) to the top so the test file
+      // location is the first thing developers see.
+      const isInternal = (line: string) =>
+        line.includes('/packages/pilot/') ||
+        line.includes('node:internal/');
+      const userFrames = frames.filter((l) => !isInternal(l));
+      const internalFrames = frames.filter((l) => isInternal(l));
+      const reordered = [...userFrames, ...internalFrames];
+      err.stack = `Error: ${message}\n${reordered.join('\n')}`;
+    }
+    throw err;
   };
 
   const assertions: PilotAssertions = {
@@ -751,6 +835,23 @@ function createAssertions(
       }
     },
   };
+
+  // Wrap with tracing if active
+  if (handle._traceCapture) {
+    const traced: PilotAssertions = {
+      get not(): PilotAssertions {
+        return createAssertions(handle, !negated);
+      },
+    } as PilotAssertions;
+
+    for (const key of Object.keys(assertions) as (keyof PilotAssertions)[]) {
+      if (key === "not") continue;
+      const original = assertions[key] as (...args: unknown[]) => Promise<void>;
+      (traced as unknown as Record<string, unknown>)[key] =
+        wrapAssertionWithTrace(key, original.bind(assertions), handle, negated);
+    }
+    return traced;
+  }
 
   return assertions;
 }

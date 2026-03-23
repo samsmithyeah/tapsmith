@@ -11,13 +11,14 @@
 
 import * as path from 'node:path';
 import * as fs from 'node:fs';
-import { loadConfig, resolveDeviceStrategy } from './config.js';
+import { loadConfig, resolveDeviceStrategy, type PilotConfig } from './config.js';
 import { PilotGrpcClient } from './grpc-client.js';
 import { Device } from './device.js';
 import { runTestFile, collectResults, type TestResult, type SuiteResult } from './runner.js';
 import { createReporters, ReporterDispatcher, type FullResult } from './reporter.js';
 import { ensureSessionReady, launchConfiguredApp } from './session-preflight.js';
 import { glob } from 'glob';
+import { resolveTraceConfig } from './trace/types.js';
 import { spawn, execFileSync } from 'node:child_process';
 import {
   clearOfflineEmulatorTransports,
@@ -34,6 +35,7 @@ import {
   type LaunchedEmulator,
   selectDevicesForStrategy,
   waitForDeviceStability,
+  ensureAdbRoot,
 } from './emulator.js';
 
 // ─── ANSI helpers ───
@@ -366,6 +368,8 @@ interface CliArgs {
   device?: string;
   workers?: number;
   shard?: { current: number; total: number };
+  trace?: string;
+  forceInstall: boolean;
   version: boolean;
   help: boolean;
   tsxReexec: boolean;
@@ -377,6 +381,7 @@ function parseArgs(argv: string[]): CliArgs {
     files: [],
     version: false,
     help: false,
+    forceInstall: false,
     tsxReexec: false,
   };
 
@@ -413,6 +418,12 @@ function parseArgs(argv: string[]): CliArgs {
         process.exit(1);
       }
       args.shard = { current, total };
+    } else if (arg === '--trace') {
+      args.trace = rest[++i] ?? 'on';
+    } else if (arg?.startsWith('--trace=')) {
+      args.trace = arg.slice('--trace='.length);
+    } else if (arg === '--force-install') {
+      args.forceInstall = true;
     } else if (arg === '--__tsx-reexec') {
       args.tsxReexec = true;
     } else if (!arg.startsWith('-') && !args.command) {
@@ -436,6 +447,8 @@ ${bold('Usage:')}
   pilot test --device <serial>    Target specific device
   pilot test --workers <n>        Run tests in parallel across n devices
   pilot test --shard=x/y          Run shard x of y (for CI)
+  pilot test --trace <mode>       Record traces (on, retain-on-failure, etc.)
+  pilot show-trace <file.zip>     Open trace viewer in browser
   pilot show-report [dir]         Open HTML test report
   pilot merge-reports [dir]       Merge blob reports from sharded runs
   pilot --version                 Print version
@@ -445,6 +458,9 @@ ${bold('Options:')}
   -d, --device <serial>    Target a specific device by serial
   -j, --workers <n>        Number of parallel workers (default: 1)
   --shard=x/y              Split tests across CI machines (e.g. --shard=1/4)
+  --trace <mode>           Trace mode: off, on, on-first-retry, on-all-retries,
+                           retain-on-failure, retain-on-first-failure
+  --force-install          Reinstall the APK even if already installed
   -v, --version            Print version
   -h, --help               Show this help
 `);
@@ -474,6 +490,31 @@ async function main(): Promise<void> {
     }
     const cmd = process.platform === 'darwin' ? 'open' : process.platform === 'win32' ? 'start' : 'xdg-open'
     spawn(cmd, [reportPath], { detached: true, stdio: 'ignore' }).unref()
+    return
+  }
+
+  if (args.command === 'show-trace') {
+    const traceFile = args.files[0]
+    if (!traceFile) {
+      console.error(red('Usage: pilot show-trace <trace.zip>'))
+      process.exit(1)
+    }
+    const { showTrace } = await import('./trace/show-trace-server.js')
+    try {
+      const server = await showTrace({ tracePath: traceFile })
+      console.log(dim(`Trace viewer running at http://127.0.0.1:${server.port}/`))
+      console.log(dim('Press Ctrl+C to stop.'))
+      // Keep alive until Ctrl+C
+      process.on('SIGINT', () => {
+        server.close()
+        process.exit(0)
+      })
+      // Prevent Node from exiting
+      await new Promise(() => {})
+    } catch (err) {
+      console.error(red(`${err instanceof Error ? err.message : String(err)}`))
+      process.exit(1)
+    }
     return
   }
 
@@ -510,6 +551,9 @@ async function main(): Promise<void> {
   }
   if (args.shard) {
     config.shard = args.shard;
+  }
+  if (args.trace) {
+    config.trace = args.trace as PilotConfig['trace'];
   }
 
   // Discover test files
@@ -560,7 +604,9 @@ async function main(): Promise<void> {
   reporter.onRunStart(config, testFiles.length);
 
   // ─── Parallel mode ───
-  if (config.workers > 1) {
+  // Fall back to sequential when there's only one test file — no point
+  // spinning up the full dispatcher/worker infrastructure for a single file.
+  if (config.workers > 1 && testFiles.length > 1) {
     // The dispatcher manages its own daemons — one per worker — each with
     // exclusive ADB access to its assigned device. No discovery daemon needed.
     const { runParallel } = await import('./dispatcher.js');
@@ -625,15 +671,18 @@ async function main(): Promise<void> {
 
     // Install app under test if APK path is configured and not already installed.
     if (config.apk) {
-      const alreadyInstalled = config.package
+      const isInstalled = config.package
         && config.device
         && isPackageInstalled(config.device, config.package);
 
-      if (alreadyInstalled) {
-        console.log(dim(`App ${config.package} already installed, skipping APK install.`));
+      if (isInstalled && !args.forceInstall) {
+        console.log(dim(`App ${config.package} already installed, skipping APK install. Use --force-install to reinstall.`));
       } else {
         const resolvedApk = path.resolve(config.rootDir, config.apk);
         try {
+          if (isInstalled) {
+            console.log(dim(`Reinstalling app APK: ${path.basename(resolvedApk)}`));
+          }
           await device.installApk(resolvedApk);
           // Wait for package manager to index the new app
           if (config.package && config.device) {
@@ -645,6 +694,16 @@ async function main(): Promise<void> {
           sequentialExitCode = 1;
           return;
         }
+      }
+    }
+
+    // If tracing with network capture, ensure adb root BEFORE starting agent
+    // so that the adbd restart doesn't disrupt UIAutomator2's accessibility service.
+    const traceConfig = resolveTraceConfig(config.trace)
+    if (traceConfig.mode !== 'off' && traceConfig.network && config.device) {
+      const restarted = ensureAdbRoot(config.device)
+      if (restarted) {
+        console.log(dim('Enabled adb root for network capture.'))
       }
     }
 

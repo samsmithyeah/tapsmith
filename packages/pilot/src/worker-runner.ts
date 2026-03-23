@@ -59,6 +59,7 @@ function configFromSerialized(s: SerializedConfig, daemonAddress: string): Pilot
     agentTestApk: s.agentTestApk,
     workers: 1,
     launchEmulators: false,
+    trace: s.trace as PilotConfig['trace'],
   }
 }
 
@@ -80,6 +81,7 @@ async function handleInit(msg: InitMessage): Promise<void> {
 
   // Set the assigned device
   assignedSerial = msg.deviceSerial
+  config.device = msg.deviceSerial
   if (msg.deviceSerial) {
     sendProgress(`selecting device ${msg.deviceSerial}`)
     await device.setDevice(msg.deviceSerial)

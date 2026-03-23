@@ -1271,6 +1271,70 @@ Load configuration from a `pilot.config.ts`, `pilot.config.js`, or `pilot.config
 
 ---
 
+## Tracing
+
+The `device.tracing` API provides programmatic control over trace recording.
+
+### `device.tracing.start(options?)`
+
+Start tracing. All subsequent device actions will be recorded.
+
+```typescript
+await device.tracing.start();
+await device.tracing.start({ screenshots: true, snapshots: true });
+```
+
+**Options:**
+| Option | Type | Default | Description |
+|---|---|---|---|
+| `screenshots` | `boolean` | `true` | Capture before/after screenshots |
+| `snapshots` | `boolean` | `true` | Capture view hierarchy XML |
+| `sources` | `boolean` | `true` | Include test source files |
+| `network` | `boolean` | `true` | Capture HTTP/HTTPS traffic via proxy |
+| `title` | `string` | — | Custom title for the trace |
+
+### `device.tracing.stop(options?)`
+
+Stop tracing and optionally write the trace archive.
+
+```typescript
+// Stop and save
+await device.tracing.stop({ path: 'traces/my-test.zip' });
+
+// Stop and discard
+await device.tracing.stop();
+```
+
+Returns the path to the created zip file, or `undefined` if no path was specified.
+
+### `device.tracing.group(name)` / `device.tracing.groupEnd()`
+
+Group actions in the trace viewer for better organization.
+
+```typescript
+device.tracing.group('Login flow');
+await device.tap(text('Username'));
+await device.type(text('Username'), 'admin');
+await device.tap(role('button', 'Sign In'));
+device.tracing.groupEnd();
+```
+
+### `device.tracing.startChunk(options?)` / `device.tracing.stopChunk(options?)`
+
+Start a new trace chunk. Useful for splitting long test runs into multiple trace files.
+
+```typescript
+await device.tracing.startChunk();
+// ... actions ...
+await device.tracing.stopChunk({ path: 'traces/chunk-1.zip' });
+
+await device.tracing.startChunk();
+// ... more actions ...
+await device.tracing.stopChunk({ path: 'traces/chunk-2.zip' });
+```
+
+---
+
 ## Reporters
 
 Pilot includes a reporter system inspired by Playwright. Reporters receive lifecycle events during a test run and produce output in various formats.
@@ -1404,6 +1468,7 @@ interface TestResult {
   durationMs: number;
   error?: Error;
   screenshotPath?: string;
+  tracePath?: string; // path to the trace archive (.zip) when tracing is enabled
   workerIndex?: number; // set in parallel mode — index of the worker that ran this test
 }
 ```
@@ -1486,6 +1551,38 @@ npx pilot test --shard=4/4
 ```
 
 When sharding is active, the `blob` reporter is automatically added so results can be merged later with `pilot merge-reports`.
+
+### `pilot show-trace <file.zip>`
+
+Open the trace viewer in the default browser to inspect a recorded trace.
+
+```bash
+npx pilot show-trace test-results/traces/trace-my_test.zip
+```
+
+The trace viewer shows:
+- **Actions panel** — chronological list of actions with icons, selectors, and durations
+- **Timeline filmstrip** — screenshot thumbnails for quick navigation
+- **Screenshot panel** — before/after screenshots with tap coordinate overlays
+- **Detail tabs** — Call info, Console output, Source code, View hierarchy, Network requests, Errors
+- **Keyboard navigation** — Arrow keys or j/k to move between actions
+
+### `pilot test --trace <mode>`
+
+Record traces during test execution. Overrides the `trace` config option.
+
+```bash
+npx pilot test --trace on                    # Record all tests
+npx pilot test --trace retain-on-failure     # Only keep traces for failures
+```
+
+### `pilot test --network` / `pilot test --no-network`
+
+Enable or disable network capture when tracing. By default, network capture is enabled whenever tracing is active. Use `--no-network` to disable it.
+
+```bash
+npx pilot test --trace on --no-network      # Trace without network capture
+```
 
 ### `pilot merge-reports [dir]`
 

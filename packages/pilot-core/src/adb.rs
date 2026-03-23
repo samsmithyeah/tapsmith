@@ -3,15 +3,16 @@ use std::time::Duration;
 
 use anyhow::{anyhow, bail, Context, Result};
 use tokio::process::Command;
-use tracing::{debug, instrument};
+use tracing::{debug, info, instrument};
 
 /// Locate the `adb` binary on PATH.
 pub async fn find_adb() -> Result<PathBuf> {
-    let output = Command::new("which")
+    let cmd = if cfg!(windows) { "where" } else { "which" };
+    let output = Command::new(cmd)
         .arg("adb")
         .output()
         .await
-        .context("Failed to execute `which adb`")?;
+        .context(format!("Failed to execute `{cmd} adb`"))?;
 
     if !output.status.success() {
         bail!("adb not found on PATH");
@@ -64,6 +65,14 @@ async fn run_adb(serial: Option<&str>, args: &[&str], timeout: Duration) -> Resu
 }
 
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Base directory for user-installed CA certificates on Android.
+const DEVICE_CA_CERT_DIR: &str = "/data/misc/user/0/cacerts-added";
+
+/// Build the full on-device path for a CA cert given its filename (e.g. `a1b2c3d4.0`).
+pub fn device_ca_cert_path(filename: &str) -> String {
+    format!("{DEVICE_CA_CERT_DIR}/{filename}")
+}
 
 /// List connected ADB devices.
 #[instrument]
@@ -141,6 +150,41 @@ pub async fn remove_forward(serial: &str, host_port: u16) -> Result<()> {
     Ok(())
 }
 
+/// Set up reverse port forwarding: `adb reverse tcp:<device_port> tcp:<host_port>`.
+///
+/// Makes `127.0.0.1:<device_port>` on the device forward to `127.0.0.1:<host_port>`
+/// on the host. More reliable than `settings put global http_proxy` with `10.0.2.2`
+/// because it works at the ADB transport level.
+#[instrument]
+pub async fn reverse_port(serial: &str, device_port: u16, host_port: u16) -> Result<()> {
+    let device_arg = format!("tcp:{device_port}");
+    let host_arg = format!("tcp:{host_port}");
+    run_adb(
+        Some(serial),
+        &["reverse", &device_arg, &host_arg],
+        DEFAULT_TIMEOUT,
+    )
+    .await?;
+    debug!(
+        device_port,
+        host_port, "Reverse port forwarding established"
+    );
+    Ok(())
+}
+
+/// Remove a specific reverse port forward.
+#[instrument]
+pub async fn remove_reverse(serial: &str, device_port: u16) -> Result<()> {
+    let device_arg = format!("tcp:{device_port}");
+    run_adb(
+        Some(serial),
+        &["reverse", "--remove", &device_arg],
+        DEFAULT_TIMEOUT,
+    )
+    .await?;
+    Ok(())
+}
+
 /// Execute a shell command on the device, returning stdout as a String.
 #[instrument]
 pub async fn shell(serial: &str, command: &str) -> Result<String> {
@@ -175,6 +219,103 @@ pub async fn screencap(serial: &str) -> Result<Vec<u8>> {
 pub async fn is_package_installed(serial: &str, package: &str) -> Result<bool> {
     let stdout = shell_lenient(serial, &format!("pm list packages {package}")).await?;
     Ok(stdout.contains(&format!("package:{package}")))
+}
+
+/// Push a local file to the device via `adb push`.
+#[instrument(skip(local_path, remote_path))]
+pub async fn push_file(serial: &str, local_path: &str, remote_path: &str) -> Result<()> {
+    run_adb(
+        Some(serial),
+        &["push", local_path, remote_path],
+        DEFAULT_TIMEOUT,
+    )
+    .await?;
+    debug!(local_path, remote_path, "File pushed to device");
+    Ok(())
+}
+
+/// Install a CA certificate on the device for MITM HTTPS interception.
+///
+/// `cert_filename` is the hash-based filename (e.g. `a1b2c3d4.0`) required by
+/// Android's certificate store. See [`crate::mitm_ca::MitmAuthority::device_cert_filename`].
+///
+/// Attempts `adb root` to gain root access (works on emulator userdebug
+/// images), then copies the PEM certificate into the user CA store.
+/// On physical devices where root is unavailable, logs a warning and
+/// continues — the user will need to install the CA manually.
+pub async fn install_ca_cert(serial: &str, ca_pem_path: &str, cert_filename: &str) -> Result<()> {
+    // Check if already running as root (e.g. CLI called `adb root` during setup)
+    let already_root = shell_lenient(serial, "id")
+        .await
+        .map(|out| out.contains("uid=0"))
+        .unwrap_or(false);
+
+    if already_root {
+        debug!(%serial, "adb already running as root, skipping adb root");
+    } else {
+        // Attempt to restart adb as root — required for writing to system dirs
+        let root_result = run_adb_lenient(serial, &["root"]).await;
+        match root_result {
+            Ok(output) => {
+                let msg = String::from_utf8_lossy(&output);
+                if msg.contains("cannot run as root") || msg.contains("adbd cannot run as root") {
+                    tracing::warn!(
+                        %serial,
+                        "Device does not support adb root — CA must be installed manually"
+                    );
+                    return Err(anyhow::anyhow!(
+                        "Device does not support adb root — HTTPS traffic will not be captured. \
+                         Install the CA cert manually from ~/.pilot/ca.pem"
+                    ));
+                }
+                debug!(%serial, "adb root succeeded, waiting for device");
+            }
+            Err(e) => {
+                tracing::warn!(%serial, "adb root failed: {e} — CA must be installed manually");
+                return Err(anyhow::anyhow!(
+                    "adb root failed: {e} — HTTPS traffic will not be captured"
+                ));
+            }
+        }
+
+        // Wait for device to come back after root restart
+        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+        let _ = run_adb(Some(serial), &["wait-for-device"], DEFAULT_TIMEOUT).await;
+    }
+
+    // Push cert to a temp location
+    push_file(serial, ca_pem_path, "/data/local/tmp/pilot-ca.pem").await?;
+
+    // Install into user CA store with hash-based filename
+    let device_path = device_ca_cert_path(cert_filename);
+    shell(serial, &format!("mkdir -p {DEVICE_CA_CERT_DIR}")).await?;
+    shell(
+        serial,
+        &format!("cp /data/local/tmp/pilot-ca.pem {device_path}"),
+    )
+    .await?;
+    shell(serial, &format!("chmod 644 {device_path}")).await?;
+
+    info!(%serial, "CA certificate installed on device");
+    Ok(())
+}
+
+/// Run an adb command (with serial targeting) that may fail, returning stdout
+/// regardless. Used for commands like `adb root` that can fail on non-rooted
+/// devices.
+async fn run_adb_lenient(serial: &str, args: &[&str]) -> Result<Vec<u8>> {
+    let mut cmd = Command::new("adb");
+    cmd.arg("-s").arg(serial);
+    cmd.args(args);
+
+    debug!(serial = serial, args = ?args, "Running adb command (lenient)");
+
+    let output = tokio::time::timeout(DEFAULT_TIMEOUT, cmd.output())
+        .await
+        .map_err(|_| anyhow!("adb command timed out after {DEFAULT_TIMEOUT:?}"))?
+        .context("Failed to execute adb")?;
+
+    Ok(output.stdout)
 }
 
 /// Execute a shell command on the device, returning stdout as a String.

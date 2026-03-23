@@ -55,6 +55,13 @@ service PilotService {
   rpc WakeDevice(WakeDeviceRequest) returns (ActionResponse);
   rpc UnlockDevice(UnlockDeviceRequest) returns (ActionResponse);
   rpc RestartApp(RestartAppRequest) returns (ActionResponse);
+
+  // ─── Trace Support (PILOT-85) ───
+  rpc GetLogcat(GetLogcatRequest) returns (GetLogcatResponse);
+
+  // ─── Network Capture (PILOT-164) ───
+  rpc StartNetworkCapture(StartNetworkCaptureRequest) returns (StartNetworkCaptureResponse);
+  rpc StopNetworkCapture(StopNetworkCaptureRequest) returns (StopNetworkCaptureResponse);
 }
 
 // ─── Common Types ───
@@ -462,4 +469,59 @@ message RestartAppRequest {
   string package_name = 2;
   bool wait_for_idle = 3;
   uint64 idle_timeout_ms = 4; // timeout for waitForIdle (0 = use default 10s)
+}
+
+// ─── Trace Support (PILOT-85) ───
+
+message GetLogcatRequest {
+  string request_id = 1;
+  string package_name = 2;   // filter by app package (resolved to PID)
+  uint64 since_ms = 3;       // only return entries after this epoch timestamp
+  uint64 until_ms = 4;       // only return entries before this timestamp (0 = now)
+}
+
+message GetLogcatResponse {
+  string request_id = 1;
+  string logcat = 2;         // raw logcat output
+  string error_message = 3;
+}
+
+// ─── Network Capture (PILOT-164) ───
+
+message StartNetworkCaptureRequest {
+  string request_id = 1;
+}
+
+message StartNetworkCaptureResponse {
+  string request_id = 1;
+  bool success = 2;
+  uint32 proxy_port = 3;     // port the proxy is listening on
+  string error_message = 4;
+}
+
+message StopNetworkCaptureRequest {
+  string request_id = 1;
+}
+
+message CapturedNetworkEntry {
+  string method = 1;
+  string url = 2;
+  int32 status_code = 3;
+  string content_type = 4;
+  uint64 request_size = 5;
+  uint64 response_size = 6;
+  uint64 start_time_ms = 7;  // epoch ms
+  uint64 duration_ms = 8;
+  string request_headers_json = 9;   // JSON-encoded headers
+  string response_headers_json = 10;
+  bytes request_body = 11;
+  bytes response_body = 12;
+  bool is_https = 13;
+}
+
+message StopNetworkCaptureResponse {
+  string request_id = 1;
+  bool success = 2;
+  repeated CapturedNetworkEntry entries = 3;
+  string error_message = 4;
 }

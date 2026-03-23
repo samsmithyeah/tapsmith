@@ -22,6 +22,7 @@ const screens = [
   { href: "/clipboard", label: "Clipboard", description: "Copy and paste" },
   { href: "/slow-load", label: "Slow Load", description: "Simulated loading delays" },
   { href: "/scroll", label: "Scroll", description: "Nested scrollable containers" },
+  { href: "/api-calls", label: "API Calls", description: "Real HTTP requests to a test API" },
 ] as const
 
 export default function HomeScreen() {

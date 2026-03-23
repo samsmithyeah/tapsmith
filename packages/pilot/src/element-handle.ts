@@ -14,6 +14,9 @@ import {
   contentDesc as contentDescSelector,
 } from './selectors.js';
 import type { PilotGrpcClient, ElementInfo, ActionResponse } from './grpc-client.js';
+import type { TraceCapture } from './trace/trace-collector.js';
+import type { ActionCategory } from './trace/types.js';
+import { tracedAction } from './trace/traced-action.js';
 
 // ─── Public types ───
 
@@ -49,6 +52,8 @@ interface ElementHandleOptions {
   orSelf?: ElementHandle;
   orHandle?: ElementHandle;
   resolvedElementsPromise?: Promise<ElementInfo[]>;
+  /** Trace capture context, propagated from the Device. */
+  traceCapture?: TraceCapture;
 }
 
 // ─── Helpers ───
@@ -75,6 +80,11 @@ export class ElementHandle {
   readonly _timeoutMs: number;
   /** @internal */
   private readonly _options: ElementHandleOptions;
+
+  /** @internal — Trace capture context from the Device, if tracing is active. */
+  get _traceCapture(): TraceCapture | undefined {
+    return this._options.traceCapture;
+  }
 
   constructor(
     client: PilotGrpcClient,
@@ -104,7 +114,7 @@ export class ElementHandle {
       );
     }
     const scoped = childSelector.within(this._selector);
-    return new ElementHandle(this._client, scoped, this._timeoutMs);
+    return new ElementHandle(this._client, scoped, this._timeoutMs, { traceCapture: this._options.traceCapture });
   }
 
   // ── Positional selection (PILOT-15) ──
@@ -166,6 +176,7 @@ export class ElementHandle {
     return new ElementHandle(this._client, this._selector, this._timeoutMs, {
       andSelf: this,
       andHandle: other,
+      traceCapture: this._options.traceCapture,
     });
   }
 
@@ -177,6 +188,7 @@ export class ElementHandle {
     return new ElementHandle(this._client, this._selector, this._timeoutMs, {
       orSelf: this,
       orHandle: other,
+      traceCapture: this._options.traceCapture,
     });
   }
 
@@ -430,44 +442,61 @@ export class ElementHandle {
     }
   }
 
+  /** @internal — Wrap an action with trace recording. */
+  private async _tracedAction(
+    action: string,
+    category: ActionCategory,
+    fn: () => Promise<ActionResponse>,
+    fallbackMsg: string,
+    extra?: { inputValue?: string },
+  ): Promise<void> {
+    const trace = this._traceCapture;
+    const ctx = trace ? {
+      collector: trace.collector,
+      takeScreenshot: trace.takeScreenshot,
+      captureHierarchy: trace.captureHierarchy,
+      findElement: (sel: Selector, timeout: number) => this._client.findElement(sel, timeout),
+    } : undefined;
+    return tracedAction(ctx, action, category, this._selector, fn, fallbackMsg, extra);
+  }
+
   async tap(): Promise<void> {
     const sel = await this._actionSelector();
-    return this._action(() => this._client.tap(sel, this._timeoutMs), 'Tap failed');
+    return this._tracedAction('tap', 'tap', () => this._client.tap(sel, this._timeoutMs), 'Tap failed');
   }
 
   async longPress(durationMs?: number): Promise<void> {
     const sel = await this._actionSelector();
-    return this._action(() => this._client.longPress(sel, durationMs, this._timeoutMs), 'Long press failed');
+    return this._tracedAction('longPress', 'tap', () => this._client.longPress(sel, durationMs, this._timeoutMs), 'Long press failed');
   }
 
   async type(text: string): Promise<void> {
     const sel = await this._actionSelector();
-    return this._action(() => this._client.typeText(sel, text, this._timeoutMs), 'Type text failed');
+    return this._tracedAction('type', 'type', () => this._client.typeText(sel, text, this._timeoutMs), 'Type text failed', { inputValue: text });
   }
 
   async clearAndType(text: string): Promise<void> {
     const sel = await this._actionSelector();
-    return this._action(() => this._client.clearAndType(sel, text, this._timeoutMs), 'Clear and type failed');
+    return this._tracedAction('clearAndType', 'type', () => this._client.clearAndType(sel, text, this._timeoutMs), 'Clear and type failed', { inputValue: text });
   }
 
   async clear(): Promise<void> {
     const sel = await this._actionSelector();
-    return this._action(() => this._client.clearText(sel, this._timeoutMs), 'Clear text failed');
+    return this._tracedAction('clear', 'type', () => this._client.clearText(sel, this._timeoutMs), 'Clear text failed');
   }
 
   async scroll(direction: string, options?: { distance?: number }): Promise<void> {
     const sel = await this._actionSelector();
-    return this._action(
+    return this._tracedAction('scroll', 'scroll',
       () => this._client.scroll(sel, direction, { distance: options?.distance, timeoutMs: this._timeoutMs }),
-      'Scroll failed',
-    );
+      'Scroll failed');
   }
 
   // ── Element Actions (PILOT-2) ──
 
   async doubleTap(): Promise<void> {
     const sel = await this._actionSelector();
-    return this._action(() => this._client.doubleTap(sel, this._timeoutMs), 'Double tap failed');
+    return this._tracedAction('doubleTap', 'tap', () => this._client.doubleTap(sel, this._timeoutMs), 'Double tap failed');
   }
 
   async dragTo(target: ElementHandle): Promise<void> {
