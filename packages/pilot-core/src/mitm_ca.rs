@@ -120,8 +120,8 @@ impl MitmAuthority {
     // ─── Private helpers ───
 
     fn pilot_dir() -> Result<PathBuf> {
-        let home = std::env::var("HOME").context("HOME environment variable not set")?;
-        Ok(PathBuf::from(home).join(PILOT_DIR))
+        let home = dirs::home_dir().context("Could not determine home directory")?;
+        Ok(home.join(PILOT_DIR))
     }
 
     pub(crate) fn generate_new(cert_path: &Path, key_path: &Path) -> Result<Self> {

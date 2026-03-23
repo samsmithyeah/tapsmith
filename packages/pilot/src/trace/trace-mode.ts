@@ -25,6 +25,8 @@ export function shouldRecord(mode: TraceMode, attempt: number): boolean {
       return attempt === 1
     case 'on-all-retries':
       return attempt > 0
+    default:
+      return false
   }
 }
 
@@ -52,5 +54,7 @@ export function shouldRetain(
       return !passed
     case 'retain-on-first-failure':
       return !passed && attempt === 0
+    default:
+      return false
   }
 }

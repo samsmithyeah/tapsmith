@@ -199,6 +199,25 @@ async fn handle_connection(
     }
 }
 
+/// Create a 502 error entry for a failed CONNECT attempt.
+fn connect_error_entry(target: &str) -> CapturedEntry {
+    CapturedEntry {
+        method: "CONNECT".to_string(),
+        url: format!("https://{target}"),
+        status_code: 502,
+        content_type: String::new(),
+        request_size: 0,
+        response_size: 0,
+        start_time_ms: now_ms(),
+        duration_ms: 0,
+        request_headers: Vec::new(),
+        response_headers: Vec::new(),
+        request_body: Vec::new(),
+        response_body: Vec::new(),
+        is_https: true,
+    }
+}
+
 /// Handle HTTP CONNECT with MITM TLS interception.
 ///
 /// 1. Connect to upstream server
@@ -231,43 +250,13 @@ async fn handle_connect(
         Ok(Err(e)) => {
             debug!("CONNECT failed to {connect_target}: {e}");
             let _ = client.write_all(b"HTTP/1.1 502 Bad Gateway\r\n\r\n").await;
-
-            state.lock().await.entries.push(CapturedEntry {
-                method: "CONNECT".to_string(),
-                url: format!("https://{target}"),
-                status_code: 502,
-                content_type: String::new(),
-                request_size: 0,
-                response_size: 0,
-                start_time_ms: now_ms(),
-                duration_ms: 0,
-                request_headers: Vec::new(),
-                response_headers: Vec::new(),
-                request_body: Vec::new(),
-                response_body: Vec::new(),
-                is_https: true,
-            });
+            state.lock().await.entries.push(connect_error_entry(target));
             return;
         }
         Err(_) => {
             debug!("CONNECT timed out to {connect_target}");
             let _ = client.write_all(b"HTTP/1.1 502 Bad Gateway\r\n\r\n").await;
-
-            state.lock().await.entries.push(CapturedEntry {
-                method: "CONNECT".to_string(),
-                url: format!("https://{target}"),
-                status_code: 502,
-                content_type: String::new(),
-                request_size: 0,
-                response_size: 0,
-                start_time_ms: now_ms(),
-                duration_ms: 0,
-                request_headers: Vec::new(),
-                response_headers: Vec::new(),
-                request_body: Vec::new(),
-                response_body: Vec::new(),
-                is_https: true,
-            });
+            state.lock().await.entries.push(connect_error_entry(target));
             return;
         }
     };

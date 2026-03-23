@@ -7,11 +7,12 @@ use tracing::{debug, info, instrument};
 
 /// Locate the `adb` binary on PATH.
 pub async fn find_adb() -> Result<PathBuf> {
-    let output = Command::new("which")
+    let cmd = if cfg!(windows) { "where" } else { "which" };
+    let output = Command::new(cmd)
         .arg("adb")
         .output()
         .await
-        .context("Failed to execute `which adb`")?;
+        .context(format!("Failed to execute `{cmd} adb`"))?;
 
     if !output.status.success() {
         bail!("adb not found on PATH");

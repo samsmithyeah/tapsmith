@@ -1874,8 +1874,13 @@ impl proto::pilot_service_server::PilotService for PilotServiceImpl {
             .device_cert_filename()
             .map_err(|e| Status::internal(format!("Failed to compute CA cert hash: {e}")))?;
         let device_cert_path = adb::device_ca_cert_path(&cert_filename);
+        let mut warning: Option<String> = None;
         if let Err(e) = adb::install_ca_cert(&serial, &ca_pem_path, &cert_filename).await {
-            error!("Failed to install CA cert on device: {e}");
+            let msg = format!(
+                "Failed to install CA cert on device: {e} — HTTPS traffic will not be captured"
+            );
+            error!("{msg}");
+            warning = Some(msg);
         }
 
         let proxy = NetworkProxy::start(mitm_ca)
@@ -1913,7 +1918,7 @@ impl proto::pilot_service_server::PilotService for PilotServiceImpl {
             request_id,
             success: true,
             proxy_port: host_port as u32,
-            error_message: String::new(),
+            error_message: warning.unwrap_or_default(),
         }))
     }
 

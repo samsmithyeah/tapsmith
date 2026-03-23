@@ -52,7 +52,7 @@ export async function tracedAction(
   if (selector && ctx.findElement) {
     const lookupStart = Date.now()
     try {
-      const res = await ctx.findElement(selector, 500)
+      const res = await ctx.findElement(selector, 2000)
       if (res.found && res.element?.bounds) {
         bounds = res.element.bounds
         log.push(`Element found at [${bounds.left},${bounds.top}][${bounds.right},${bounds.bottom}] (${Date.now() - lookupStart}ms)`)

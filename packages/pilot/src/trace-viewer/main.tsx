@@ -234,9 +234,7 @@ function App() {
     )
   }
 
-  const selectedEvent = actionEvents[selectedIndex]
-
-  // Resizable panel sizes
+  // Resizable panel sizes (must be before conditional returns — rules of hooks)
   const [leftWidth, setLeftWidth] = useState(300)
   const [bottomHeight, setBottomHeight] = useState(220)
 
@@ -247,6 +245,8 @@ function App() {
   const handleBottomResize = useCallback((delta: number) => {
     setBottomHeight(h => Math.max(80, Math.min(500, h - delta)))
   }, [])
+
+  const selectedEvent = actionEvents[selectedIndex]
 
   return (
     <div class="viewer">
