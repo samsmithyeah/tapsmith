@@ -18,6 +18,7 @@ import type { PilotConfig } from '../config.js'
 import type { PilotGrpcClient } from '../grpc-client.js'
 import type { Device } from '../device.js'
 import type { ResolvedProject } from '../project.js'
+import { collectTransitiveDeps } from '../project.js'
 import type { LaunchedEmulator } from '../emulator.js'
 import { preserveEmulatorsForReuse } from '../emulator.js'
 import {
@@ -54,6 +55,8 @@ export interface UIServerContext {
   screenshotDir?: string
   launchedEmulators: LaunchedEmulator[]
   projects?: ResolvedProject[]
+  /** Dependency-ordered project waves from topologicalSort(). */
+  projectWaves?: ResolvedProject[][]
 }
 
 export interface UIServerOptions {
@@ -75,6 +78,11 @@ export async function startUIServer(
   let screenPollActive = false
   let watcher: FSWatcher | null = null
   const watchedFiles = new Set<string>()
+
+  // Detect whether meaningful projects are configured (not just a synthetic 'default')
+  const hasRealProjects = ctx.projects != null
+    && ctx.projects.length > 0
+    && !(ctx.projects.length === 1 && ctx.projects[0].name === 'default')
 
   // Build file → project lookup
   const fileToProject = new Map<string, ResolvedProject>()
@@ -187,16 +195,42 @@ export async function startUIServer(
   }
 
   async function discoverAllFiles(): Promise<void> {
-    const trees: TestTreeNode[] = []
-
+    // Discover all files first
+    const fileNodes = new Map<string, TestTreeNode>()
     for (const file of ctx.testFiles) {
       const tree = await discoverFile(file)
       if (tree) {
-        trees.push(tree)
+        fileNodes.set(file, tree)
       }
     }
 
-    testTree = trees
+    // Group into project nodes when projects are configured
+    if (hasRealProjects && ctx.projects) {
+      const trees: TestTreeNode[] = []
+      for (const project of ctx.projects) {
+        const projectFiles = project.testFiles
+          .map((f) => fileNodes.get(f))
+          .filter((n): n is TestTreeNode => n != null)
+
+        if (projectFiles.length === 0) continue
+
+        trees.push({
+          id: `project::${project.name}`,
+          type: 'project',
+          name: project.name,
+          filePath: '',
+          fullName: project.name,
+          status: 'idle',
+          children: projectFiles,
+          dependencies: project.dependencies.length > 0 ? project.dependencies : undefined,
+        })
+      }
+      testTree = trees
+    } else {
+      // No meaningful projects — flat file list
+      testTree = [...fileNodes.values()]
+    }
+
     broadcast({ type: 'test-tree', files: testTree })
   }
 
@@ -282,27 +316,55 @@ export async function startUIServer(
     let totalDuration = 0
 
     try {
-      for (const file of ctx.testFiles) {
-        const project = fileToProject.get(file)
-        const useOptions = project?.use as RunFileUseOptions | undefined
-        const projectName = project && project.name !== 'default' ? project.name : undefined
+      if (hasRealProjects && ctx.projectWaves) {
+        // Wave-based execution respecting project dependencies
+        const failedProjects = new Set<string>()
 
-        broadcast({ type: 'file-status', filePath: file, status: 'running' })
+        for (const wave of ctx.projectWaves) {
+          for (const project of wave) {
+            const blockedBy = project.dependencies.find((d) => failedProjects.has(d))
+            if (blockedBy) {
+              broadcast({
+                type: 'error',
+                message: `Skipping project "${project.name}" — dependency "${blockedBy}" failed`,
+              })
+              markProjectTestsSkipped(project.name)
+              failedProjects.add(project.name)
+              continue
+            }
 
-        try {
-          const { results, suite } = await runFileInChild(file, useOptions, projectName)
-
-          totalPassed += results.filter((r) => r.status === 'passed').length
-          totalFailed += results.filter((r) => r.status === 'failed').length
-          totalSkipped += results.filter((r) => r.status === 'skipped').length
-          totalDuration += suite.durationMs
-        } catch (err) {
-          const msg = err instanceof Error ? err.message : String(err)
-          broadcast({ type: 'error', message: `Error in ${path.basename(file)}: ${msg}` })
-          totalFailed++
+            const { passed, failed, skipped, duration, anyFailed } = await runProjectFiles(project)
+            totalPassed += passed
+            totalFailed += failed
+            totalSkipped += skipped
+            totalDuration += duration
+            if (anyFailed) failedProjects.add(project.name)
+          }
         }
+      } else {
+        // No projects — sequential
+        for (const file of ctx.testFiles) {
+          const project = fileToProject.get(file)
+          const useOptions = project?.use as RunFileUseOptions | undefined
+          const projectName = project && project.name !== 'default' ? project.name : undefined
 
-        broadcast({ type: 'file-status', filePath: file, status: 'done' })
+          broadcast({ type: 'file-status', filePath: file, status: 'running' })
+
+          try {
+            const { results, suite } = await runFileInChild(file, useOptions, projectName)
+
+            totalPassed += results.filter((r) => r.status === 'passed').length
+            totalFailed += results.filter((r) => r.status === 'failed').length
+            totalSkipped += results.filter((r) => r.status === 'skipped').length
+            totalDuration += suite.durationMs
+          } catch (err) {
+            const errMsg = err instanceof Error ? err.message : String(err)
+            broadcast({ type: 'error', message: `Error in ${path.basename(file)}: ${errMsg}` })
+            totalFailed++
+          }
+
+          broadcast({ type: 'file-status', filePath: file, status: 'done' })
+        }
       }
 
       broadcast({
@@ -316,6 +378,119 @@ export async function startUIServer(
     } finally {
       isRunning = false
       screenPollActive = false
+    }
+  }
+
+  /** Run all files belonging to a single project, returning aggregate counts. */
+  async function runProjectFiles(project: ResolvedProject): Promise<{
+    passed: number; failed: number; skipped: number; duration: number; anyFailed: boolean
+  }> {
+    let passed = 0, failed = 0, skipped = 0, duration = 0, anyFailed = false
+    const useOptions = project.use as RunFileUseOptions | undefined
+    const projectName = project.name !== 'default' ? project.name : undefined
+
+    for (const file of project.testFiles) {
+      broadcast({ type: 'file-status', filePath: file, status: 'running' })
+
+      try {
+        const { results, suite } = await runFileInChild(file, useOptions, projectName)
+        passed += results.filter((r) => r.status === 'passed').length
+        failed += results.filter((r) => r.status === 'failed').length
+        skipped += results.filter((r) => r.status === 'skipped').length
+        duration += suite.durationMs
+        if (results.some((r) => r.status === 'failed')) anyFailed = true
+      } catch (err) {
+        const errMsg = err instanceof Error ? err.message : String(err)
+        broadcast({ type: 'error', message: `Error in ${path.basename(file)}: ${errMsg}` })
+        failed++
+        anyFailed = true
+      }
+
+      broadcast({ type: 'file-status', filePath: file, status: 'done' })
+    }
+
+    return { passed, failed, skipped, duration, anyFailed }
+  }
+
+  /** Run a single project with its transitive dependencies in wave order. */
+  async function runProject(projectName: string): Promise<void> {
+    if (isRunning) return
+    if (!ctx.projects || !ctx.projectWaves) return
+
+    const target = ctx.projects.find((p) => p.name === projectName)
+    if (!target) return
+
+    isRunning = true
+    screenPollActive = true
+
+    // Collect transitive deps and filter waves
+    const requiredNames = collectTransitiveDeps(new Set([projectName]), ctx.projects)
+    const filteredWaves = ctx.projectWaves
+      .map((wave) => wave.filter((p) => requiredNames.has(p.name)))
+      .filter((wave) => wave.length > 0)
+
+    const allFiles = filteredWaves.flatMap((w) => w.flatMap((p) => p.testFiles))
+    broadcast({ type: 'run-start', fileCount: allFiles.length })
+
+    let totalPassed = 0, totalFailed = 0, totalSkipped = 0, totalDuration = 0
+    const failedProjects = new Set<string>()
+
+    try {
+      for (const wave of filteredWaves) {
+        for (const project of wave) {
+          const blockedBy = project.dependencies.find((d) => failedProjects.has(d))
+          if (blockedBy) {
+            broadcast({
+              type: 'error',
+              message: `Skipping project "${project.name}" — dependency "${blockedBy}" failed`,
+            })
+            markProjectTestsSkipped(project.name)
+            failedProjects.add(project.name)
+            continue
+          }
+
+          const { passed, failed, skipped, duration, anyFailed } = await runProjectFiles(project)
+          totalPassed += passed
+          totalFailed += failed
+          totalSkipped += skipped
+          totalDuration += duration
+          if (anyFailed) failedProjects.add(project.name)
+        }
+      }
+
+      broadcast({
+        type: 'run-end',
+        status: totalFailed > 0 ? 'failed' : 'passed',
+        duration: totalDuration,
+        passed: totalPassed,
+        failed: totalFailed,
+        skipped: totalSkipped,
+      })
+    } finally {
+      isRunning = false
+      screenPollActive = false
+    }
+  }
+
+  /**
+   * Walk the test tree and broadcast 'skipped' status for every test under
+   * a project whose dependency failed, so the UI shows them correctly.
+   */
+  function markProjectTestsSkipped(projectName: string): void {
+    function markChildren(nodes: TestTreeNode[]): void {
+      for (const node of nodes) {
+        if (node.type === 'test') {
+          updateTestStatus(node.fullName, node.filePath, 'skipped')
+        }
+        if (node.children) markChildren(node.children)
+      }
+    }
+
+    for (const node of testTree) {
+      if (node.type === 'project' && node.name === projectName && node.children) {
+        markChildren(node.children)
+        return
+      }
     }
   }
 
@@ -446,6 +621,98 @@ export async function startUIServer(
     })
   }
 
+  /**
+   * Run a file (or single test) with its project's dependency projects first.
+   * Falls back to plain runFile when there are no deps or no project context.
+   */
+  async function runFileWithDeps(filePath: string, testFilter?: string): Promise<void> {
+    if (isRunning) return
+
+    const project = fileToProject.get(filePath)
+    if (!project || project.dependencies.length === 0 || !ctx.projects || !ctx.projectWaves) {
+      return runFile(filePath, testFilter)
+    }
+
+    isRunning = true
+    screenPollActive = true
+
+    // Collect only the dependency projects (not the target project itself)
+    const depNames = collectTransitiveDeps(new Set(project.dependencies), ctx.projects)
+    depNames.delete(project.name)
+
+    const depWaves = ctx.projectWaves
+      .map((wave) => wave.filter((p) => depNames.has(p.name)))
+      .filter((wave) => wave.length > 0)
+
+    const depFileCount = depWaves.reduce((n, w) => n + w.reduce((m, p) => m + p.testFiles.length, 0), 0)
+    broadcast({ type: 'run-start', fileCount: depFileCount + 1, filePath, testFilter })
+
+    let totalPassed = 0, totalFailed = 0, totalSkipped = 0, totalDuration = 0
+    const failedProjects = new Set<string>()
+
+    try {
+      // Run dependency waves first
+      for (const wave of depWaves) {
+        for (const depProject of wave) {
+          const blockedBy = depProject.dependencies.find((d) => failedProjects.has(d))
+          if (blockedBy) {
+            broadcast({ type: 'error', message: `Skipping project "${depProject.name}" — dependency "${blockedBy}" failed` })
+            markProjectTestsSkipped(depProject.name)
+            failedProjects.add(depProject.name)
+            continue
+          }
+
+          const r = await runProjectFiles(depProject)
+          totalPassed += r.passed
+          totalFailed += r.failed
+          totalSkipped += r.skipped
+          totalDuration += r.duration
+          if (r.anyFailed) failedProjects.add(depProject.name)
+        }
+      }
+
+      // Check if any direct dependency failed
+      const blockedBy = project.dependencies.find((d) => failedProjects.has(d))
+      if (blockedBy) {
+        broadcast({ type: 'error', message: `Skipping "${path.basename(filePath)}" — dependency "${blockedBy}" failed` })
+        // Mark target file's tests as skipped via file-status cycle
+        broadcast({ type: 'file-status', filePath, status: 'done' })
+      } else {
+        // Run the target file/test
+        const useOptions = project.use as RunFileUseOptions | undefined
+        const projectName = project.name !== 'default' ? project.name : undefined
+
+        broadcast({ type: 'file-status', filePath, status: 'running' })
+
+        try {
+          const { results, suite } = await runFileInChild(filePath, useOptions, projectName, testFilter)
+          totalPassed += results.filter((r) => r.status === 'passed').length
+          totalFailed += results.filter((r) => r.status === 'failed').length
+          totalSkipped += results.filter((r) => r.status === 'skipped').length
+          totalDuration += suite.durationMs
+        } catch (err) {
+          const errMsg = err instanceof Error ? err.message : String(err)
+          broadcast({ type: 'error', message: `Failed to run ${path.basename(filePath)}: ${errMsg}` })
+          totalFailed++
+        }
+
+        broadcast({ type: 'file-status', filePath, status: 'done' })
+      }
+
+      broadcast({
+        type: 'run-end',
+        status: totalFailed > 0 ? 'failed' : 'passed',
+        duration: totalDuration,
+        passed: totalPassed,
+        failed: totalFailed,
+        skipped: totalSkipped,
+      })
+    } finally {
+      isRunning = false
+      screenPollActive = false
+    }
+  }
+
   // ─── Screen Polling ───
 
   async function pollScreen(): Promise<void> {
@@ -521,13 +788,18 @@ export async function startUIServer(
   function handleCommand(msg: ClientMessage): void {
     switch (msg.type) {
       case 'run-test':
-        runFile(msg.filePath, msg.fullName).catch(() => {})
+        if (msg.runDeps) runFileWithDeps(msg.filePath, msg.fullName).catch(() => {})
+        else runFile(msg.filePath, msg.fullName).catch(() => {})
         break
       case 'run-file':
-        runFile(msg.filePath).catch(() => {})
+        if (msg.runDeps) runFileWithDeps(msg.filePath).catch(() => {})
+        else runFile(msg.filePath).catch(() => {})
         break
       case 'run-all':
         runAllFiles().catch(() => {})
+        break
+      case 'run-project':
+        runProject(msg.projectName).catch(() => {})
         break
       case 'stop-run':
         if (activeChild) {

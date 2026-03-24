@@ -106,7 +106,9 @@ function TreeNode({ node, depth, expandedNodes, selectedTestId, onToggleExpanded
 
   const handleRun = useCallback((e: Event) => {
     e.stopPropagation()
-    if (node.type === 'file') {
+    if (node.type === 'project') {
+      onSend({ type: 'run-project', projectName: node.name })
+    } else if (node.type === 'file') {
       onSend({ type: 'run-file', filePath: node.filePath })
     } else {
       onSend({ type: 'run-test', fullName: node.fullName, filePath: node.filePath })
@@ -140,8 +142,14 @@ function TreeNode({ node, depth, expandedNodes, selectedTestId, onToggleExpanded
         <StatusIcon status={node.status} />
 
         <span class="te-name" title={node.fullName}>
-          {node.name}
+          {node.type === 'project' ? `[${node.name}]` : node.name}
         </span>
+
+        {node.type === 'project' && node.dependencies && node.dependencies.length > 0 && (
+          <span class="te-deps" title={`Depends on: ${node.dependencies.join(', ')}`}>
+            {'\u2190'} {node.dependencies.join(', ')}
+          </span>
+        )}
 
         {node.duration !== undefined && node.duration > 0 && (
           <span class="te-duration">{formatDuration(node.duration)}</span>

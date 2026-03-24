@@ -15,7 +15,7 @@ import type { AnyTraceEvent } from '../trace/types.js'
 export interface TestTreeNode {
   /** Deterministic ID: filePath + suite chain + test name. */
   id: string
-  type: 'file' | 'suite' | 'test'
+  type: 'project' | 'file' | 'suite' | 'test'
   name: string
   filePath: string
   /** Fully qualified name: "suite > nested > test name". */
@@ -25,6 +25,8 @@ export interface TestTreeNode {
   error?: string
   children?: TestTreeNode[]
   watchEnabled?: boolean
+  /** For project nodes: names of projects this depends on. */
+  dependencies?: string[]
 }
 
 export type TestNodeStatus =
@@ -170,15 +172,24 @@ export interface RunTestCommand {
   type: 'run-test'
   fullName: string
   filePath: string
+  /** When true, run dependency projects before this test. */
+  runDeps?: boolean
 }
 
 export interface RunFileCommand {
   type: 'run-file'
   filePath: string
+  /** When true, run dependency projects before this file. */
+  runDeps?: boolean
 }
 
 export interface RunAllCommand {
   type: 'run-all'
+}
+
+export interface RunProjectCommand {
+  type: 'run-project'
+  projectName: string
 }
 
 export interface StopRunCommand {
@@ -214,6 +225,7 @@ export type ClientMessage =
   | RunTestCommand
   | RunFileCommand
   | RunAllCommand
+  | RunProjectCommand
   | StopRunCommand
   | ToggleWatchCommand
   | RequestHierarchyCommand

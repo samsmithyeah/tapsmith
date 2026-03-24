@@ -919,6 +919,7 @@ async function main(): Promise<void> {
         screenshotDir: uiScreenshotDir,
         launchedEmulators,
         projects: hasProjects ? projects : undefined,
+        projectWaves: hasProjects ? projectWaves : undefined,
       }, {
         port: args.uiPort,
       });

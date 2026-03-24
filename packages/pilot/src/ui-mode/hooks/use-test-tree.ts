@@ -25,10 +25,16 @@ export function useTestTree() {
 
   const setTestTree = useCallback((newFiles: TestTreeNode[]) => {
     setFiles(newFiles)
-    // Auto-expand all file nodes
+    // Auto-expand project and file nodes
     const expanded = new Set<string>()
-    for (const file of newFiles) {
-      expanded.add(file.id)
+    for (const node of newFiles) {
+      expanded.add(node.id)
+      // For project nodes, also expand their file children
+      if (node.type === 'project' && node.children) {
+        for (const child of node.children) {
+          if (child.type === 'file') expanded.add(child.id)
+        }
+      }
     }
     setExpandedNodes(expanded)
   }, [])
@@ -56,23 +62,11 @@ export function useTestTree() {
   }, [])
 
   const updateFileStatus = useCallback((filePath: string, status: 'running' | 'done') => {
-    setFiles((prev) => prev.map((file) => {
-      if (file.filePath !== filePath) return file
-      if (status === 'running') {
-        return { ...file, status: 'running' as const }
-      }
-      // 'done' — walk the entire file tree and re-derive all parent
-      // statuses so neither the file nor any describe block stays stuck
-      // at 'running' after the run finishes.
-      return rederiveTree(file)
-    }))
+    setFiles((prev) => updateFileStatusInTree(prev, filePath, status))
   }, [])
 
   const updateWatchEnabled = useCallback((filePath: string, enabled: boolean) => {
-    setFiles((prev) => prev.map((file) => {
-      if (file.filePath !== filePath) return file
-      return { ...file, watchEnabled: enabled }
-    }))
+    setFiles((prev) => updateWatchInTree(prev, filePath, enabled))
   }, [])
 
   // Filter the tree based on name and status
@@ -129,7 +123,9 @@ function updateNodeInTree(
   error?: string,
 ): TestTreeNode[] {
   return nodes.map((node) => {
-    if (node.filePath !== filePath) return node
+    // Project nodes contain files with various paths — always recurse.
+    // Other nodes skip if filePath doesn't match.
+    if (node.type !== 'project' && node.filePath !== filePath) return node
 
     if (node.type === 'test' && node.fullName === fullName) {
       return { ...node, status, duration, error }
@@ -189,6 +185,56 @@ function rederiveTree(node: TestTreeNode): TestTreeNode {
     : node.status === 'running' ? 'idle'
     : node.status
   return { ...node, children, status }
+}
+
+/**
+ * Recursively update a file node's status, handling project → file nesting.
+ * Re-derives parent (project/suite) statuses after the update.
+ */
+function updateFileStatusInTree(
+  nodes: TestTreeNode[],
+  filePath: string,
+  status: 'running' | 'done',
+): TestTreeNode[] {
+  return nodes.map((node) => {
+    // Direct match — file node
+    if (node.type === 'file' && node.filePath === filePath) {
+      if (status === 'running') return { ...node, status: 'running' as const }
+      return rederiveTree(node)
+    }
+
+    // Recurse into project (or suite) children
+    if (node.children) {
+      const updatedChildren = updateFileStatusInTree(node.children, filePath, status)
+      if (updatedChildren.some((c, i) => c !== node.children![i])) {
+        return rederiveTree({ ...node, children: updatedChildren })
+      }
+    }
+
+    return node
+  })
+}
+
+/**
+ * Recursively update a file node's watchEnabled flag, handling project nesting.
+ */
+function updateWatchInTree(
+  nodes: TestTreeNode[],
+  filePath: string,
+  enabled: boolean,
+): TestTreeNode[] {
+  return nodes.map((node) => {
+    if (node.type === 'file' && node.filePath === filePath) {
+      return { ...node, watchEnabled: enabled }
+    }
+    if (node.children) {
+      const updatedChildren = updateWatchInTree(node.children, filePath, enabled)
+      if (updatedChildren.some((c, i) => c !== node.children![i])) {
+        return { ...node, children: updatedChildren }
+      }
+    }
+    return node
+  })
 }
 
 function filterTree(

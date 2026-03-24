@@ -70,8 +70,21 @@ function App() {
   // Whether to show live device vs action screenshots
   const [showLiveDevice, setShowLiveDevice] = useState(true)
 
+  // "Run deps first" toggle — persisted in localStorage
+  const [runDepsFirst, setRunDepsFirst] = useState(() => {
+    return localStorage.getItem('pilot-ui-run-deps') === 'true'
+  })
+  const runDepsRef = useRef(runDepsFirst)
+
   const tree = useTestTree()
   const { canvasRef, handleBinaryFrame } = useScreenMirror()
+
+  // Whether any project has dependencies (controls visibility of the toggle)
+  const hasProjectDeps = useMemo(() => {
+    return tree.allFiles.some((node) =>
+      node.type === 'project' && node.dependencies && node.dependencies.length > 0,
+    )
+  }, [tree.allFiles])
 
   // Get the currently viewed test's trace data.
   // Prefer the test selected in the explorer; fall back to the actively running test.
@@ -311,8 +324,23 @@ function App() {
   }, [])
 
   const handleSend = useCallback((msg: ClientMessage) => {
-    send(msg)
+    // Inject runDeps flag when the toggle is on. Use the ref for the latest
+    // value regardless of React batching (same pattern as activeTestRef).
+    if (runDepsRef.current && (msg.type === 'run-file' || msg.type === 'run-test')) {
+      send({ ...msg, runDeps: true })
+    } else {
+      send(msg)
+    }
   }, [send])
+
+  const handleToggleRunDeps = useCallback(() => {
+    setRunDepsFirst((prev) => {
+      const next = !prev
+      runDepsRef.current = next
+      localStorage.setItem('pilot-ui-run-deps', String(next))
+      return next
+    })
+  }, [])
 
   const handleActionPin = useCallback((index: number) => {
     setPinnedIndex(index)
@@ -331,6 +359,9 @@ function App() {
           theme={theme}
           onThemeChange={handleThemeChange}
           onSend={handleSend}
+          hasProjectDeps={hasProjectDeps}
+          runDepsFirst={runDepsFirst}
+          onToggleRunDeps={handleToggleRunDeps}
         />
       }
       testExplorer={
@@ -696,6 +727,7 @@ html, body, #app {
 .rc-run-all { color: var(--color-success); }
 .rc-stop { color: var(--color-error); }
 .rc-watch-all.active { color: var(--color-accent); border-color: var(--color-accent); background: rgba(79,193,255,0.1); }
+.rc-deps-toggle.active { color: var(--color-accent); border-color: var(--color-accent); background: rgba(79,193,255,0.1); }
 
 .rc-counts { display: flex; gap: 8px; font-size: 12px; }
 .rc-count.passed { color: var(--color-success); }
@@ -787,6 +819,8 @@ html, body, #app {
 }
 .te-node:hover { background: var(--bg-hover); }
 .te-node.selected { background: var(--bg-selected); }
+.te-node.te-node-project { margin-top: 4px; padding-top: 6px; padding-bottom: 6px; border-top: 1px solid var(--border); }
+.te-node-group:first-child > .te-node.te-node-project { margin-top: 0; border-top: none; }
 
 .te-chevron {
   display: inline-flex;
@@ -822,6 +856,9 @@ html, body, #app {
 
 .te-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; }
 .te-node-file .te-name { font-weight: 600; }
+.te-node-project .te-name { font-weight: 700; color: var(--color-accent); font-size: 11px; letter-spacing: 0.03em; text-transform: uppercase; }
+
+.te-deps { font-size: 10px; color: var(--color-text-faint); font-style: italic; flex-shrink: 0; margin-right: 4px; }
 
 .te-duration { font-size: 10px; color: var(--color-text-faint); font-family: var(--font-mono); flex-shrink: 0; }
 

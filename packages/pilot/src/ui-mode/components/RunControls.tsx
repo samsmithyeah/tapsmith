@@ -15,9 +15,13 @@ interface RunControlsProps {
   theme: Theme
   onThemeChange: (theme: Theme) => void
   onSend: (msg: ClientMessage) => void
+  /** Whether any project has dependencies (controls visibility of the deps toggle). */
+  hasProjectDeps: boolean
+  runDepsFirst: boolean
+  onToggleRunDeps: () => void
 }
 
-export function RunControls({ connected, isRunning, isWatching, deviceSerial, counts, theme, onThemeChange, onSend }: RunControlsProps) {
+export function RunControls({ connected, isRunning, isWatching, deviceSerial, counts, theme, onThemeChange, onSend, hasProjectDeps, runDepsFirst, onToggleRunDeps }: RunControlsProps) {
   return (
     <div class="run-controls">
       <div class="rc-left">
@@ -53,6 +57,17 @@ export function RunControls({ connected, isRunning, isWatching, deviceSerial, co
         >
           {'\u25C9'} Watch{isWatching ? ' On' : ''}
         </button>
+        {hasProjectDeps && (
+          <button
+            class={`rc-btn rc-deps-toggle ${runDepsFirst ? 'active' : ''}`}
+            onClick={onToggleRunDeps}
+            title={runDepsFirst
+              ? 'Dependencies run automatically before tests — click to disable'
+              : 'Run dependency projects before tests — click to enable'}
+          >
+            {'\u26D3'} Deps{runDepsFirst ? ' On' : ''}
+          </button>
+        )}
       </div>
 
       <div class="rc-right">
