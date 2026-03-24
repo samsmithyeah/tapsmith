@@ -2240,6 +2240,7 @@ impl proto::pilot_service_server::PilotService for PilotServiceImpl {
 
         // 3. Push archive to device
         if let Err(e) = adb::push_file(&serial, local_path, &device_tmp).await {
+            let _ = adb::shell_lenient(&serial, &format!("rm -f {device_tmp}")).await;
             return Ok(self
                 .action_error(
                     request_id,
