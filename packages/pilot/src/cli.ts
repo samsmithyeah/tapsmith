@@ -591,13 +591,8 @@ async function main(): Promise<void> {
       console.error(red('--watch cannot be combined with --shard'));
       process.exit(1);
     }
-    if (config.workers > 1) {
-      // Guard with tsxReexec to avoid printing twice (before and after tsx re-exec)
-      if (args.tsxReexec) {
-        process.stderr.write(`${YELLOW}Watch mode uses a single device. Ignoring --workers.${RESET}\n`);
-      }
-      config.workers = 1;
-    }
+    // Watch mode supports parallel workers when multiple devices are available.
+    // config.workers is left as-is; the watch coordinator handles multi-device setup.
   }
 
   // Validate UI mode constraints
@@ -962,6 +957,23 @@ async function main(): Promise<void> {
           ? path.resolve(config.rootDir, config.outputDir, 'screenshots')
           : undefined;
 
+      // Collect additional device serials for multi-worker watch mode.
+      let watchDeviceSerials: string[] | undefined;
+      if (config.workers > 1) {
+        const allConnected = listConnectedDeviceSerials();
+        const others = allConnected.filter((s) => s !== config.device);
+        watchDeviceSerials = [config.device!, ...others].filter(Boolean);
+
+        if (watchDeviceSerials.length < 2) {
+          if (args.tsxReexec) {
+            process.stderr.write(
+              `${YELLOW}Only ${watchDeviceSerials.length} device(s) available. Watch mode needs 2+ devices for parallel. Using single-worker mode.${RESET}\n`,
+            );
+          }
+          watchDeviceSerials = undefined;
+        }
+      }
+
       await runWatchMode({
         config,
         device,
@@ -973,6 +985,8 @@ async function main(): Promise<void> {
         launchedEmulators,
         projects: hasProjects ? projects : undefined,
         projectWaves: hasProjects ? projectWaves : undefined,
+        workers: watchDeviceSerials ? config.workers : undefined,
+        deviceSerials: watchDeviceSerials,
       });
       // runWatchMode never returns — exits via cleanup()
     }
