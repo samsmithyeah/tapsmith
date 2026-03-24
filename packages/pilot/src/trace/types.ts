@@ -122,6 +122,8 @@ export interface AssertionTraceEvent extends TraceEvent {
   attempts: number
   /** Error message if the assertion failed. */
   error?: string
+  /** Element bounds at the time of the assertion (for screenshot overlay). */
+  bounds?: { left: number; top: number; right: number; bottom: number }
   /** Source location. */
   sourceLocation?: SourceLocation
   /** Whether a "before" screenshot was captured. */

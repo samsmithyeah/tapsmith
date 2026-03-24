@@ -1,6 +1,6 @@
 import { render } from 'preact'
-import { useState, useCallback, useMemo } from 'preact/hooks'
-import type { ServerMessage, ClientMessage, TraceEventMessage } from './ui-protocol.js'
+import { useState, useCallback, useMemo, useRef } from 'preact/hooks'
+import type { ServerMessage, ClientMessage } from './ui-protocol.js'
 import type { AnyTraceEvent, ActionTraceEvent, AssertionTraceEvent, TraceMetadata, NetworkEntry } from '../trace/types.js'
 import { useWebSocket } from './hooks/use-websocket.js'
 import { useScreenMirror } from './hooks/use-screen-mirror.js'
@@ -52,6 +52,9 @@ function App() {
 
   // Per-test trace data, keyed by test fullName
   const [testTraces, setTestTraces] = useState<Map<string, TestTraceData>>(new Map())
+  // Ref tracks the currently-running test — a ref (not state) so the message
+  // handler always reads the latest value regardless of React batching.
+  const activeTestRef = useRef<string | null>(null)
   const [activeTestName, setActiveTestName] = useState<string | null>(null)
   const [sources, setSources] = useState<Map<string, string>>(new Map())
   const [pinnedIndex, setPinnedIndex] = useState(0)
@@ -122,6 +125,7 @@ function App() {
       case 'run-start':
         setIsRunning(true)
         setTestTraces(new Map())
+        activeTestRef.current = null
         setActiveTestName(null)
         setSources(new Map())
         setPinnedIndex(0)
@@ -132,6 +136,8 @@ function App() {
         setIsRunning(false)
         break
       case 'test-start':
+        // Update ref immediately (no batching delay)
+        activeTestRef.current = msg.fullName
         setActiveTestName(msg.fullName)
         setPinnedIndex(0)
         setHoveredIndex(null)
@@ -152,7 +158,7 @@ function App() {
         tree.updateFileStatus(msg.filePath, msg.status)
         break
       case 'trace-event': {
-        const testName = msg.testFullName || activeTestName
+        const testName = msg.testFullName || activeTestRef.current
         if (!testName) break
         const ev = msg.event
 
@@ -190,7 +196,7 @@ function App() {
         })
 
         // Auto-pin to latest action for the active test
-        if ((ev.type === 'action' || ev.type === 'assertion') && testName === activeTestName) {
+        if ((ev.type === 'action' || ev.type === 'assertion') && testName === activeTestRef.current) {
           setPinnedIndex(ev.actionIndex)
           setShowLiveDevice(false)
         }
@@ -205,7 +211,7 @@ function App() {
         break
       case 'network': {
         // Attach network entries to the active test
-        const testName = activeTestName
+        const testName = activeTestRef.current
         if (!testName) break
         setTestTraces((prev) => {
           const { data, map } = getOrCreateTrace(testName, prev)
@@ -215,6 +221,13 @@ function App() {
         })
         break
       }
+      case 'watch-event':
+        if (msg.event === 'watch-enabled') {
+          tree.updateWatchEnabled(msg.filePath, true)
+        } else if (msg.event === 'watch-disabled') {
+          tree.updateWatchEnabled(msg.filePath, false)
+        }
+        break
       case 'device-info':
         setDeviceSerial(msg.serial)
         break
@@ -222,7 +235,7 @@ function App() {
         console.error('[Pilot UI]', msg.message)
         break
     }
-  }, [tree, activeTestName])
+  }, [tree])
 
   const handleConnectionChange = useCallback((isConnected: boolean) => {
     setConnected(isConnected)
@@ -249,6 +262,7 @@ function App() {
         <RunControls
           connected={connected}
           isRunning={isRunning}
+          isWatching={tree.allFiles.some((f) => f.watchEnabled)}
           deviceSerial={deviceSerial}
           counts={tree.counts}
           onSend={handleSend}
@@ -503,7 +517,10 @@ html, body, #app {
 .ui-screenshot {
   flex: 1;
   min-width: 0;
+  min-height: 0;
   overflow: hidden;
+  display: flex;
+  flex-direction: column;
 }
 
 .ui-detail {
@@ -526,7 +543,8 @@ html, body, #app {
 .ui-screen-area {
   display: flex;
   flex-direction: column;
-  height: 100%;
+  flex: 1;
+  min-height: 0;
 }
 
 .ui-screen-tabs {
@@ -559,6 +577,8 @@ html, body, #app {
   flex: 1;
   min-height: 0;
   overflow: hidden;
+  display: flex;
+  flex-direction: column;
 }
 
 /* ─── Run Controls (Top Bar) ─── */
@@ -610,6 +630,7 @@ html, body, #app {
 
 .rc-run-all { color: var(--color-success); }
 .rc-stop { color: var(--color-error); }
+.rc-watch-all.active { color: var(--color-accent); border-color: var(--color-accent); background: rgba(79,193,255,0.1); }
 
 .rc-counts { display: flex; gap: 8px; font-size: 12px; }
 .rc-count.passed { color: var(--color-success); }
@@ -690,16 +711,27 @@ html, body, #app {
 .te-node.selected { background: var(--bg-selected); }
 
 .te-chevron {
-  display: inline-block;
-  width: 14px;
-  text-align: center;
-  font-size: 10px;
-  color: var(--color-text-muted);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
   transition: transform 0.15s;
+  cursor: pointer;
   flex-shrink: 0;
 }
+.te-chevron::before {
+  content: '';
+  display: block;
+  width: 0;
+  height: 0;
+  border-style: solid;
+  border-width: 4px 0 4px 6px;
+  border-color: transparent transparent transparent var(--color-text-muted);
+}
+.te-chevron:hover::before { border-left-color: var(--color-text); }
 .te-chevron.expanded { transform: rotate(90deg); }
-.te-chevron-spacer { display: inline-block; width: 14px; flex-shrink: 0; }
+.te-chevron-spacer { display: inline-block; width: 20px; flex-shrink: 0; }
 
 .te-status-icon { width: 16px; text-align: center; font-size: 12px; flex-shrink: 0; }
 .te-status-icon.passed { color: var(--color-success); }
@@ -717,6 +749,7 @@ html, body, #app {
 
 .te-actions { display: flex; gap: 2px; opacity: 0; transition: opacity 0.15s; flex-shrink: 0; }
 .te-node:hover .te-actions { opacity: 1; }
+.te-actions:has(.te-watch-btn.active) { opacity: 1; }
 
 .te-action-btn {
   width: 20px; height: 20px;
@@ -803,6 +836,15 @@ html, body, #app {
 .metadata-grid { display: grid; grid-template-columns: 100px 1fr; gap: 4px 12px; }
 .metadata-label { color: var(--color-text-muted); }
 .metadata-value { color: var(--color-text-secondary); word-break: break-all; }
+
+/* Screenshot panel */
+.screenshot-panel { flex: 1; display: flex; flex-direction: column; overflow: hidden; background: var(--color-bg); min-height: 0; }
+.screenshot-tabs { display: flex; gap: 0; border-bottom: 1px solid var(--color-border); background: var(--color-bg-secondary); flex-shrink: 0; }
+.screenshot-tab { padding: 6px 16px; cursor: pointer; color: var(--color-text-muted); border-bottom: 2px solid transparent; font-size: 12px; }
+.screenshot-tab:hover { color: var(--color-text-secondary); }
+.screenshot-tab.active { color: var(--color-text-primary); border-bottom-color: var(--color-accent); }
+.screenshot-container { flex: 1; display: flex; align-items: center; justify-content: center; overflow: hidden; padding: 8px; min-height: 0; }
+.screenshot-empty { color: var(--color-text-faintest); text-align: center; font-size: 13px; }
 
 .detail-panel { height: 100%; display: flex; flex-direction: column; background: var(--color-bg); }
 .detail-tabs-bar { display: flex; gap: 0; background: var(--color-bg-secondary); border-bottom: 1px solid var(--color-border); flex-shrink: 0; }

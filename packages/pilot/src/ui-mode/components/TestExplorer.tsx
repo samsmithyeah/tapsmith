@@ -133,9 +133,7 @@ function TreeNode({ node, depth, expandedNodes, selectedTestId, onToggleExpanded
         onClick={handleClick}
       >
         {hasChildren && (
-          <span class={`te-chevron ${isExpanded ? 'expanded' : ''}`}>
-            {'\u25B8'}
-          </span>
+          <span class={`te-chevron ${isExpanded ? 'expanded' : ''}`} />
         )}
         {!hasChildren && <span class="te-chevron-spacer" />}
 

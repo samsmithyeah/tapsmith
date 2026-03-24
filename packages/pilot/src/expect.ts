@@ -293,6 +293,17 @@ function wrapAssertionWithTrace(
       trace.captureHierarchy,
     );
 
+    // Best-effort element bounds lookup for screenshot overlay
+    let bounds: { left: number; top: number; right: number; bottom: number } | undefined;
+    try {
+      const res = await handle._client.findElement(handle._selector, 1000);
+      if (res.found && res.element?.bounds) {
+        bounds = res.element.bounds;
+      }
+    } catch {
+      // best-effort — element may not exist (e.g. not.toBeVisible)
+    }
+
     trace.collector.addAssertionEvent({
       assertion: (negated ? "not." : "") + name,
       selector: selectorStr,
@@ -302,6 +313,7 @@ function wrapAssertionWithTrace(
       duration,
       attempts,
       error,
+      bounds,
       sourceLocation,
       hasScreenshotBefore: !!beforeCaptures.screenshotBefore,
       hasScreenshotAfter: !!afterCaptures.screenshotAfter,

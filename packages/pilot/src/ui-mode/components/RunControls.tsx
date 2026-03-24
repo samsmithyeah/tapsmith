@@ -7,12 +7,13 @@ import type { ClientMessage } from '../ui-protocol.js'
 interface RunControlsProps {
   connected: boolean
   isRunning: boolean
+  isWatching: boolean
   deviceSerial: string
   counts: { passed: number; failed: number; skipped: number; total: number }
   onSend: (msg: ClientMessage) => void
 }
 
-export function RunControls({ connected, isRunning, deviceSerial, counts, onSend }: RunControlsProps) {
+export function RunControls({ connected, isRunning, isWatching, deviceSerial, counts, onSend }: RunControlsProps) {
   return (
     <div class="run-controls">
       <div class="rc-left">
@@ -41,12 +42,12 @@ export function RunControls({ connected, isRunning, deviceSerial, counts, onSend
           </button>
         )}
         <button
-          class="rc-btn rc-watch-all"
+          class={`rc-btn rc-watch-all ${isWatching ? 'active' : ''}`}
           onClick={() => onSend({ type: 'toggle-watch', filePath: 'all' })}
           disabled={!connected}
-          title="Toggle watch mode for all files"
+          title={isWatching ? 'Disable watch mode' : 'Watch all files for changes'}
         >
-          {'\u25C9'} Watch
+          {'\u25C9'} Watch{isWatching ? ' On' : ''}
         </button>
       </div>
 

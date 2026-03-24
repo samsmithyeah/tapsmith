@@ -65,6 +65,13 @@ export function useTestTree() {
     }))
   }, [])
 
+  const updateWatchEnabled = useCallback((filePath: string, enabled: boolean) => {
+    setFiles((prev) => prev.map((file) => {
+      if (file.filePath !== filePath) return file
+      return { ...file, watchEnabled: enabled }
+    }))
+  }, [])
+
   // Filter the tree based on name and status
   const filteredFiles = useMemo(() => {
     if (!nameFilter && statusFilter === 'all') return files
@@ -104,6 +111,7 @@ export function useTestTree() {
     setStatusFilter,
     updateTestStatus,
     updateFileStatus,
+    updateWatchEnabled,
   }
 }
 

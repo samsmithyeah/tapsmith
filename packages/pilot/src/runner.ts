@@ -422,11 +422,13 @@ async function runSuiteContext(
 
     try {
       const testBody = async () => {
-        // Run beforeEach hooks
-        traceCollector?.startGroup('Before Hooks');
+        // Notify before tracing starts so UI mode can tag events to this test
         if (opts.beforeEachTest) {
           await opts.beforeEachTest(fullName);
         }
+
+        // Run beforeEach hooks
+        traceCollector?.startGroup('Before Hooks');
 
         for (const hook of allBeforeEach) {
           await invokeHook(hook, opts.device);

@@ -100,9 +100,10 @@ export function ScreenshotPanel({ event, screenshots, highlightBounds, onScreens
     currentUrl = afterUrl ?? beforeUrl
   }
 
-  const showOverlay = tab === 'action' && event.type === 'action'
-  const bounds = event.type === 'action' ? event.bounds : undefined
+  const bounds = (event.type === 'action' || event.type === 'assertion') ? event.bounds : undefined
   const point = event.type === 'action' ? event.point : undefined
+  // Show bounds overlay: for actions on the "action" tab, for assertions on any tab
+  const showOverlay = event.type === 'assertion' ? !!bounds : (tab === 'action')
 
   return (
     <div class="screenshot-panel">
