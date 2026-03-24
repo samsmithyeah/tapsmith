@@ -16,6 +16,7 @@ import { fork, type ChildProcess } from 'node:child_process'
 import * as path from 'node:path'
 import * as fs from 'node:fs'
 import { watch as chokidarWatch, type FSWatcher } from 'chokidar'
+import { minimatch } from 'minimatch'
 import type { PilotConfig } from './config.js'
 import type { Device } from './device.js'
 import type { PilotGrpcClient } from './grpc-client.js'
@@ -501,13 +502,32 @@ export async function runWatchMode(ctx: WatchModeContext): Promise<void> {
   }
 
   // ─── File watching ───
-  // Chokidar v4 does NOT support glob patterns — only actual file/directory
-  // paths. So we watch the discovered test files directly for changes, and
-  // watch the root directory for new file detection.
+  // Chokidar v4 does not support glob patterns (it has no picomatch/glob
+  // dependency). We watch:
+  //   1. The discovered test files directly (for change/unlink)
+  //   2. The directories containing test files (for new file detection)
+  //   3. The config file (for change notification)
+
+  /** Check if a file path matches any of the configured test patterns. */
+  function matchesTestPatterns(filePath: string): boolean {
+    const relative = filePath.startsWith(ctx.config.rootDir)
+      ? filePath.slice(ctx.config.rootDir.length).replace(/^\//, '')
+      : filePath
+    const patterns = ctx.projects
+      ? ctx.projects.flatMap((p) => p.testMatch)
+      : ctx.config.testMatch
+    return patterns.some((pattern) => minimatch(relative, pattern))
+  }
 
   function startWatcher(): FSWatcher {
-    // Watch the actual discovered test files (not globs)
-    const filesToWatch = [...state.knownFiles]
+    const filesToWatch: string[] = [...state.knownFiles]
+
+    // Watch directories that contain test files so we detect new files
+    const testDirs = new Set<string>()
+    for (const file of state.knownFiles) {
+      testDirs.add(path.dirname(file))
+    }
+    filesToWatch.push(...testDirs)
 
     // Also watch the config file for change notification
     const configCandidates = ['pilot.config.ts', 'pilot.config.js', 'pilot.config.mjs']
@@ -529,6 +549,15 @@ export async function runWatchMode(ctx: WatchModeContext): Promise<void> {
         return
       }
       if (state.knownFiles.has(filePath)) {
+        queue.scheduleFiles([filePath])
+      }
+    })
+
+    watcher.on('add', (filePath) => {
+      if (!state.knownFiles.has(filePath) && matchesTestPatterns(filePath)) {
+        state.knownFiles.add(filePath)
+        // Also start watching the new file itself for changes
+        watcher.add(filePath)
         queue.scheduleFiles([filePath])
       }
     })
