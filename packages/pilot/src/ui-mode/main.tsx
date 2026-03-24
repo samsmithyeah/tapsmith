@@ -7,7 +7,7 @@ import { useScreenMirror } from './hooks/use-screen-mirror.js'
 import { useTestTree } from './hooks/use-test-tree.js'
 import { Layout } from './components/Layout.js'
 import { TestExplorer } from './components/TestExplorer.js'
-import { RunControls } from './components/RunControls.js'
+import { RunControls, type Theme } from './components/RunControls.js'
 import { DeviceMirror } from './components/DeviceMirror.js'
 
 // Trace viewer components — reused for live trace display
@@ -49,6 +49,10 @@ function App() {
   const [connected, setConnected] = useState(false)
   const [isRunning, setIsRunning] = useState(false)
   const [deviceSerial, setDeviceSerial] = useState('')
+  const [theme, setTheme] = useState<Theme>(() => {
+    const stored = localStorage.getItem('pilot-ui-theme')
+    return (stored === 'light' || stored === 'dark' || stored === 'system') ? stored : 'system'
+  })
 
   // Per-test trace data, keyed by test fullName
   const [testTraces, setTestTraces] = useState<Map<string, TestTraceData>>(new Map())
@@ -141,6 +145,8 @@ function App() {
         setActiveTestName(msg.fullName)
         setPinnedIndex(0)
         setHoveredIndex(null)
+        // Mark this test (and its parent describe/file) as running
+        tree.updateTestStatus(msg.fullName, msg.filePath, 'running')
         // Auto-select this test in the explorer
         tree.setSelectedTestId(`${msg.filePath}::${msg.fullName}`)
         // Ensure trace data exists for this test
@@ -165,10 +171,20 @@ function App() {
         setTestTraces((prev) => {
           const { data, map } = getOrCreateTrace(testName, prev)
 
-          // Append event
-          const events = [...data.events, ev]
-          const actionEvents = (ev.type === 'action' || ev.type === 'assertion')
-            ? [...data.actionEvents, ev as ActionTraceEvent | AssertionTraceEvent]
+          // Append event. For assertions without bounds, inherit from the
+          // most recent action that had bounds (e.g. find() → toBe() chain).
+          let eventToStore = ev
+          if ((ev.type === 'assertion' && !ev.bounds) || (ev.type === 'action' && !ev.bounds)) {
+            const prevWithBounds = [...data.actionEvents].reverse().find((e) =>
+              (e.type === 'action' || e.type === 'assertion') && e.bounds
+            )
+            if (prevWithBounds?.bounds) {
+              eventToStore = { ...ev, bounds: prevWithBounds.bounds }
+            }
+          }
+          const events = [...data.events, eventToStore]
+          const actionEvents = (eventToStore.type === 'action' || eventToStore.type === 'assertion')
+            ? [...data.actionEvents, eventToStore as ActionTraceEvent | AssertionTraceEvent]
             : data.actionEvents
 
           // Store screenshots/hierarchies
@@ -181,6 +197,20 @@ function App() {
             }
             if (msg.screenshotAfter) {
               screenshots.set(`screenshots/action-${pad}-after.png`, base64ToBlobUrl(msg.screenshotAfter))
+            }
+            // For actions without screenshots (e.g. generic toBe assertions),
+            // inherit the most recent screenshot so clicking them still shows
+            // the device state.
+            if (!msg.screenshotBefore && !msg.screenshotAfter) {
+              const prevIdx = ev.actionIndex - 1
+              if (prevIdx >= 0) {
+                const prevPad = String(prevIdx).padStart(3, '0')
+                const prevAfter = screenshots.get(`screenshots/action-${prevPad}-after.png`)
+                  ?? screenshots.get(`screenshots/action-${prevPad}-before.png`)
+                if (prevAfter) {
+                  screenshots.set(`screenshots/action-${pad}-before.png`, prevAfter)
+                }
+              }
             }
             if (msg.hierarchyBefore) {
               hierarchies.set(`hierarchy/action-${pad}-before.xml`, msg.hierarchyBefore)
@@ -247,6 +277,15 @@ function App() {
     onConnectionChange: handleConnectionChange,
   })
 
+  const handleThemeChange = useCallback((newTheme: Theme) => {
+    setTheme(newTheme)
+    localStorage.setItem('pilot-ui-theme', newTheme)
+    const resolved = newTheme === 'system'
+      ? (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light')
+      : newTheme
+    document.documentElement.setAttribute('data-theme', resolved)
+  }, [])
+
   const handleSend = useCallback((msg: ClientMessage) => {
     send(msg)
   }, [send])
@@ -265,6 +304,8 @@ function App() {
           isWatching={tree.allFiles.some((f) => f.watchEnabled)}
           deviceSerial={deviceSerial}
           counts={tree.counts}
+          theme={theme}
+          onThemeChange={handleThemeChange}
           onSend={handleSend}
         />
       }
@@ -651,6 +692,19 @@ html, body, #app {
   background: var(--color-error);
 }
 .rc-connection.connected .rc-dot { background: var(--color-success); }
+
+.rc-theme-select {
+  padding: 3px 6px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg-tertiary);
+  color: var(--color-text-muted);
+  font-size: 11px;
+  font-family: var(--font-ui);
+  cursor: pointer;
+  outline: none;
+}
+.rc-theme-select:focus { border-color: var(--color-accent); }
 
 /* ─── Test Explorer ─── */
 

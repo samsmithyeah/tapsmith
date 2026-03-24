@@ -4,16 +4,20 @@
 
 import type { ClientMessage } from '../ui-protocol.js'
 
+export type Theme = 'system' | 'light' | 'dark'
+
 interface RunControlsProps {
   connected: boolean
   isRunning: boolean
   isWatching: boolean
   deviceSerial: string
   counts: { passed: number; failed: number; skipped: number; total: number }
+  theme: Theme
+  onThemeChange: (theme: Theme) => void
   onSend: (msg: ClientMessage) => void
 }
 
-export function RunControls({ connected, isRunning, isWatching, deviceSerial, counts, onSend }: RunControlsProps) {
+export function RunControls({ connected, isRunning, isWatching, deviceSerial, counts, theme, onThemeChange, onSend }: RunControlsProps) {
   return (
     <div class="run-controls">
       <div class="rc-left">
@@ -59,6 +63,15 @@ export function RunControls({ connected, isRunning, isWatching, deviceSerial, co
             {counts.skipped > 0 && <span class="rc-count skipped">{counts.skipped} skipped</span>}
           </div>
         )}
+        <select
+          class="rc-theme-select"
+          value={theme}
+          onChange={(e) => onThemeChange((e.target as HTMLSelectElement).value as Theme)}
+        >
+          <option value="system">System</option>
+          <option value="light">Light</option>
+          <option value="dark">Dark</option>
+        </select>
         <div class={`rc-connection ${connected ? 'connected' : 'disconnected'}`}>
           <span class="rc-dot" />
           {deviceSerial || (connected ? 'Connected' : 'Disconnected')}

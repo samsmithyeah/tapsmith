@@ -137,10 +137,14 @@ function updateNodeInTree(
       if (updatedChildren !== node.children) {
         // Derive parent status from children
         const childStatuses = flattenStatuses(updatedChildren)
-        const parentStatus = childStatuses.includes('running') ? 'running'
-          : childStatuses.includes('failed') ? 'failed'
-          : childStatuses.every((s) => s === 'passed') ? 'passed'
-          : childStatuses.every((s) => s === 'skipped' || s === 'idle') ? node.status
+        const hasRunning = childStatuses.includes('running')
+        const hasFailed = childStatuses.includes('failed')
+        const hasPassed = childStatuses.includes('passed')
+        const allIdle = childStatuses.every((s) => s === 'skipped' || s === 'idle')
+        const parentStatus = hasRunning ? 'running'
+          : hasFailed ? 'failed'
+          : hasPassed ? 'passed'
+          : allIdle ? node.status
           : node.status
         return { ...node, children: updatedChildren, status: parentStatus }
       }

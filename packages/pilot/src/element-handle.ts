@@ -14,7 +14,7 @@ import {
   contentDesc as contentDescSelector,
 } from './selectors.js';
 import type { PilotGrpcClient, ElementInfo, ActionResponse } from './grpc-client.js';
-import type { TraceCapture } from './trace/trace-collector.js';
+import { type TraceCapture, extractSourceLocation } from './trace/trace-collector.js';
 import type { ActionCategory } from './trace/types.js';
 import { tracedAction } from './trace/traced-action.js';
 
@@ -378,36 +378,48 @@ export class ElementHandle {
 
   /** Resolve this handle to an ElementInfo. Throws if not found within timeout. */
   async find(): Promise<ElementInfo> {
+    const start = Date.now()
+    let result: ElementInfo
     if (this._hasModifiers()) {
-      return this._resolveOne();
+      result = await this._resolveOne();
+    } else {
+      const res = await this._client.findElement(this._selector, this._timeoutMs);
+      if (!res.found || !res.element) {
+        throw new Error(
+          res.errorMessage ||
+            `Element not found: ${this._describe()}`,
+        );
+      }
+      result = res.element
     }
-    const res = await this._client.findElement(this._selector, this._timeoutMs);
-    if (!res.found || !res.element) {
-      throw new Error(
-        res.errorMessage ||
-          `Element not found: ${this._describe()}`,
-      );
-    }
-    return res.element;
+    await this._traceQuery('find', `Found: ${result.text || result.className}`, Date.now() - start, result.bounds)
+    return result;
   }
 
   /** Returns true if the element exists in the current UI. */
   async exists(): Promise<boolean> {
+    const start = Date.now()
+    let found: boolean
     if (this._hasModifiers()) {
       try {
         await this._resolveOne();
-        return true;
+        found = true
       } catch {
-        return false;
+        found = false
       }
+    } else {
+      const res = await this._client.findElement(this._selector, this._timeoutMs);
+      found = res.found;
     }
-    const res = await this._client.findElement(this._selector, this._timeoutMs);
-    return res.found;
+    await this._traceQuery('exists', `Exists: ${found}`, Date.now() - start)
+    return found;
   }
 
   /** Return the number of elements matching the selector (PILOT-14). */
   async count(): Promise<number> {
+    const start = Date.now()
     const elements = await this._resolveAll();
+    await this._traceQuery('count', `Count: ${elements.length}`, Date.now() - start)
     return elements.length;
   }
 
@@ -418,8 +430,10 @@ export class ElementHandle {
    * and performing actions will not re-query `findElements` for each handle.
    */
   async all(): Promise<ElementHandle[]> {
+    const start = Date.now()
     const resolvedElementsPromise = this._resolveAll();
     const elements = await resolvedElementsPromise;
+    await this._traceQuery('all', `Found ${elements.length} element(s)`, Date.now() - start)
     return elements.map((_, i) =>
       new ElementHandle(this._client, this._selector, this._timeoutMs, {
         ...this._options,
@@ -440,6 +454,34 @@ export class ElementHandle {
     if (!res.success) {
       throw new Error(res.errorMessage || fallbackMsg);
     }
+  }
+
+  /**
+   * @internal — Emit a trace event for a read-only query with a single
+   * screenshot capture (the "after" shot showing current device state).
+   */
+  private async _traceQuery(action: string, result: string, durationMs: number, bounds?: ElementInfo['bounds']): Promise<void> {
+    const trace = this._traceCapture
+    if (!trace) return
+    const sourceLocation = extractSourceLocation(new Error().stack ?? '')
+    const actionIndex = trace.collector.currentActionIndex
+    const { captures: beforeCaptures } = await trace.collector.captureBeforeAction(
+      trace.takeScreenshot, trace.captureHierarchy,
+    )
+    trace.collector.addActionEvent({
+      category: 'other',
+      action,
+      selector: JSON.stringify(selectorToProto(this._selector)),
+      duration: durationMs,
+      success: true,
+      bounds,
+      sourceLocation,
+      hasScreenshotBefore: !!beforeCaptures.screenshotBefore,
+      hasScreenshotAfter: false,
+      hasHierarchyBefore: !!beforeCaptures.hierarchyBefore,
+      hasHierarchyAfter: false,
+      log: [result],
+    })
   }
 
   /** @internal — Wrap an action with trace recording. */

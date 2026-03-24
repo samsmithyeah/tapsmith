@@ -20,7 +20,7 @@
 import { ElementHandle } from "./element-handle.js";
 import type { ElementInfo } from "./grpc-client.js";
 import { selectorToProto } from "./selectors.js";
-import { extractSourceLocation } from "./trace/trace-collector.js";
+import { extractSourceLocation, getActiveTraceCollector } from "./trace/trace-collector.js";
 
 const DEFAULT_ASSERTION_TIMEOUT_MS = 5_000;
 const POLL_INTERVAL_MS = 250;
@@ -1060,81 +1060,82 @@ function createGenericAssertions(
     if (negated && pass) onFail(negMessage);
   };
 
+  /** Emit a trace event for a generic value assertion. */
+  const trace = (name: string, pass: boolean, expected?: unknown) => {
+    const collector = getActiveTraceCollector();
+    if (!collector) return;
+    const finalPass = negated ? !pass : pass;
+    collector.addAssertionEvent({
+      assertion: (negated ? 'not.' : '') + name,
+      passed: finalPass,
+      soft: false,
+      negated,
+      duration: 0,
+      attempts: 1,
+      expected: expected !== undefined ? formatValue(expected) : undefined,
+      actual: formatValue(actual),
+      error: finalPass ? undefined : `Expected ${formatValue(actual)} ${negated ? 'not ' : ''}${name}${expected !== undefined ? ' ' + formatValue(expected) : ''}`,
+      sourceLocation: extractSourceLocation(new Error().stack ?? ''),
+    });
+  };
+
   const assertions: GenericAssertions = {
     get not(): GenericAssertions {
       return createGenericAssertions(actual, !negated, onFail);
     },
 
     toBe(expected) {
-      assert(
-        Object.is(actual, expected),
-        `Expected ${formatValue(actual)} to be ${formatValue(expected)}`,
-        `Expected ${formatValue(actual)} not to be ${formatValue(expected)}`,
-      );
+      const pass = Object.is(actual, expected);
+      trace('toBe', pass, expected);
+      assert(pass, `Expected ${formatValue(actual)} to be ${formatValue(expected)}`, `Expected ${formatValue(actual)} not to be ${formatValue(expected)}`);
     },
 
     toEqual(expected) {
-      assert(
-        deepEqual(actual, expected),
-        `Expected ${formatValue(actual)} to equal ${formatValue(expected)}`,
-        `Expected ${formatValue(actual)} not to equal ${formatValue(expected)}`,
-      );
+      const pass = deepEqual(actual, expected);
+      trace('toEqual', pass, expected);
+      assert(pass, `Expected ${formatValue(actual)} to equal ${formatValue(expected)}`, `Expected ${formatValue(actual)} not to equal ${formatValue(expected)}`);
     },
 
     toStrictEqual(expected) {
-      assert(
-        deepStrictEqual(actual, expected),
-        `Expected ${formatValue(actual)} to strictly equal ${formatValue(expected)}`,
-        `Expected ${formatValue(actual)} not to strictly equal ${formatValue(expected)}`,
-      );
+      const pass = deepStrictEqual(actual, expected);
+      trace('toStrictEqual', pass, expected);
+      assert(pass, `Expected ${formatValue(actual)} to strictly equal ${formatValue(expected)}`, `Expected ${formatValue(actual)} not to strictly equal ${formatValue(expected)}`);
     },
 
     toBeTruthy() {
-      assert(
-        !!actual,
-        `Expected ${formatValue(actual)} to be truthy`,
-        `Expected ${formatValue(actual)} not to be truthy`,
-      );
+      const pass = !!actual;
+      trace('toBeTruthy', pass);
+      assert(pass, `Expected ${formatValue(actual)} to be truthy`, `Expected ${formatValue(actual)} not to be truthy`);
     },
 
     toBeFalsy() {
-      assert(
-        !actual,
-        `Expected ${formatValue(actual)} to be falsy`,
-        `Expected ${formatValue(actual)} not to be falsy`,
-      );
+      const pass = !actual;
+      trace('toBeFalsy', pass);
+      assert(pass, `Expected ${formatValue(actual)} to be falsy`, `Expected ${formatValue(actual)} not to be falsy`);
     },
 
     toBeDefined() {
-      assert(
-        actual !== undefined,
-        `Expected value to be defined, but it was undefined`,
-        `Expected value to be undefined, but got ${formatValue(actual)}`,
-      );
+      const pass = actual !== undefined;
+      trace('toBeDefined', pass);
+      assert(pass, `Expected value to be defined, but it was undefined`, `Expected value to be undefined, but got ${formatValue(actual)}`);
     },
 
     toBeUndefined() {
-      assert(
-        actual === undefined,
-        `Expected ${formatValue(actual)} to be undefined`,
-        `Expected value not to be undefined`,
-      );
+      const pass = actual === undefined;
+      trace('toBeUndefined', pass);
+      assert(pass, `Expected ${formatValue(actual)} to be undefined`, `Expected value not to be undefined`);
     },
 
     toBeNull() {
-      assert(
-        actual === null,
-        `Expected ${formatValue(actual)} to be null`,
-        `Expected value not to be null`,
-      );
+      const pass = actual === null;
+      trace('toBeNull', pass);
+      assert(pass, `Expected ${formatValue(actual)} to be null`, `Expected value not to be null`);
     },
 
     toBeNaN() {
-      assert(
-        Number.isNaN(actual),
-        `Expected ${formatValue(actual)} to be NaN`,
-        `Expected value not to be NaN`,
-      );
+      const pass = Number.isNaN(actual);
+      trace('toBeNaN', pass);
+      assert(pass, `Expected ${formatValue(actual)} to be NaN`, `Expected value not to be NaN`);
     },
 
     toContain(expected) {
@@ -1144,69 +1145,46 @@ function createGenericAssertions(
       } else if (Array.isArray(actual)) {
         pass = actual.includes(expected);
       }
-      assert(
-        pass,
-        `Expected ${formatValue(actual)} to contain ${formatValue(expected)}`,
-        `Expected ${formatValue(actual)} not to contain ${formatValue(expected)}`,
-      );
+      trace('toContain', pass, expected);
+      assert(pass, `Expected ${formatValue(actual)} to contain ${formatValue(expected)}`, `Expected ${formatValue(actual)} not to contain ${formatValue(expected)}`);
     },
 
     toContainEqual(expected) {
       const pass = Array.isArray(actual) && actual.some((item) => deepEqual(item, expected));
-      assert(
-        pass,
-        `Expected ${formatValue(actual)} to contain equal ${formatValue(expected)}`,
-        `Expected ${formatValue(actual)} not to contain equal ${formatValue(expected)}`,
-      );
+      trace('toContainEqual', pass, expected);
+      assert(pass, `Expected ${formatValue(actual)} to contain equal ${formatValue(expected)}`, `Expected ${formatValue(actual)} not to contain equal ${formatValue(expected)}`);
     },
 
     toHaveLength(expected) {
       const length = (actual as { length?: number })?.length;
-      assert(
-        length === expected,
-        `Expected length ${expected}, but got ${length}`,
-        `Expected length not to be ${expected}`,
-      );
+      const pass = length === expected;
+      trace('toHaveLength', pass, expected);
+      assert(pass, `Expected length ${expected}, but got ${length}`, `Expected length not to be ${expected}`);
     },
 
     toHaveProperty(path, value?) {
       const result = getPropertyAtPath(actual, path);
       if (arguments.length >= 2) {
         const pass = result.exists && deepEqual(result.value, value);
-        assert(
-          pass,
-          `Expected property ${formatValue(path)} to be ${formatValue(value)}, but got ${formatValue(result.value)}`,
-          `Expected property ${formatValue(path)} not to be ${formatValue(value)}`,
-        );
+        trace('toHaveProperty', pass, value);
+        assert(pass, `Expected property ${formatValue(path)} to be ${formatValue(value)}, but got ${formatValue(result.value)}`, `Expected property ${formatValue(path)} not to be ${formatValue(value)}`);
       } else {
-        assert(
-          result.exists,
-          `Expected property ${formatValue(path)} to exist`,
-          `Expected property ${formatValue(path)} not to exist`,
-        );
+        trace('toHaveProperty', result.exists, path);
+        assert(result.exists, `Expected property ${formatValue(path)} to exist`, `Expected property ${formatValue(path)} not to exist`);
       }
     },
 
     toMatch(expected) {
       const str = String(actual);
-      const pass =
-        typeof expected === "string" ? str.includes(expected) : expected.test(str);
-      assert(
-        pass,
-        `Expected ${formatValue(actual)} to match ${formatValue(expected)}`,
-        `Expected ${formatValue(actual)} not to match ${formatValue(expected)}`,
-      );
+      const pass = typeof expected === "string" ? str.includes(expected) : expected.test(str);
+      trace('toMatch', pass, expected);
+      assert(pass, `Expected ${formatValue(actual)} to match ${formatValue(expected)}`, `Expected ${formatValue(actual)} not to match ${formatValue(expected)}`);
     },
 
     toMatchObject(expected) {
-      const pass =
-        isPlainObject(actual) &&
-        matchesObjectSubset(actual, expected);
-      assert(
-        pass,
-        `Expected ${formatValue(actual)} to match object ${formatValue(expected)}`,
-        `Expected ${formatValue(actual)} not to match object ${formatValue(expected)}`,
-      );
+      const pass = isPlainObject(actual) && matchesObjectSubset(actual, expected);
+      trace('toMatchObject', pass, expected);
+      assert(pass, `Expected ${formatValue(actual)} to match object ${formatValue(expected)}`, `Expected ${formatValue(actual)} not to match object ${formatValue(expected)}`);
     },
 
     toBeGreaterThan(expected) {
@@ -1214,11 +1192,9 @@ function createGenericAssertions(
         onFail(`Expected a number for toBeGreaterThan but got ${typeof actual}: ${formatValue(actual)}`);
         return;
       }
-      assert(
-        actual > expected,
-        `Expected ${formatValue(actual)} to be greater than ${expected}`,
-        `Expected ${formatValue(actual)} not to be greater than ${expected}`,
-      );
+      const pass = actual > expected;
+      trace('toBeGreaterThan', pass, expected);
+      assert(pass, `Expected ${formatValue(actual)} to be greater than ${expected}`, `Expected ${formatValue(actual)} not to be greater than ${expected}`);
     },
 
     toBeGreaterThanOrEqual(expected) {
@@ -1226,11 +1202,9 @@ function createGenericAssertions(
         onFail(`Expected a number for toBeGreaterThanOrEqual but got ${typeof actual}: ${formatValue(actual)}`);
         return;
       }
-      assert(
-        actual >= expected,
-        `Expected ${formatValue(actual)} to be greater than or equal to ${expected}`,
-        `Expected ${formatValue(actual)} not to be greater than or equal to ${expected}`,
-      );
+      const pass = actual >= expected;
+      trace('toBeGreaterThanOrEqual', pass, expected);
+      assert(pass, `Expected ${formatValue(actual)} to be greater than or equal to ${expected}`, `Expected ${formatValue(actual)} not to be greater than or equal to ${expected}`);
     },
 
     toBeLessThan(expected) {
@@ -1238,9 +1212,9 @@ function createGenericAssertions(
         onFail(`Expected a number for toBeLessThan but got ${typeof actual}: ${formatValue(actual)}`);
         return;
       }
-      assert(
-        actual < expected,
-        `Expected ${formatValue(actual)} to be less than ${expected}`,
+      const pass = actual < expected;
+      trace('toBeLessThan', pass, expected);
+      assert(pass, `Expected ${formatValue(actual)} to be less than ${expected}`,
         `Expected ${formatValue(actual)} not to be less than ${expected}`,
       );
     },
@@ -1250,11 +1224,9 @@ function createGenericAssertions(
         onFail(`Expected a number for toBeLessThanOrEqual but got ${typeof actual}: ${formatValue(actual)}`);
         return;
       }
-      assert(
-        actual <= expected,
-        `Expected ${formatValue(actual)} to be less than or equal to ${expected}`,
-        `Expected ${formatValue(actual)} not to be less than or equal to ${expected}`,
-      );
+      const pass = actual <= expected;
+      trace('toBeLessThanOrEqual', pass, expected);
+      assert(pass, `Expected ${formatValue(actual)} to be less than or equal to ${expected}`, `Expected ${formatValue(actual)} not to be less than or equal to ${expected}`);
     },
 
     toBeCloseTo(expected, numDigits = 2) {
@@ -1264,20 +1236,14 @@ function createGenericAssertions(
       }
       const precision = Math.pow(10, -numDigits) / 2;
       const pass = Math.abs(actual - expected) < precision;
-      assert(
-        pass,
-        `Expected ${formatValue(actual)} to be close to ${expected} (precision: ${numDigits} digits)`,
-        `Expected ${formatValue(actual)} not to be close to ${expected} (precision: ${numDigits} digits)`,
-      );
+      trace('toBeCloseTo', pass, expected);
+      assert(pass, `Expected ${formatValue(actual)} to be close to ${expected} (precision: ${numDigits} digits)`, `Expected ${formatValue(actual)} not to be close to ${expected} (precision: ${numDigits} digits)`);
     },
 
     toBeInstanceOf(expected) {
       const pass = actual instanceof expected;
-      assert(
-        pass,
-        `Expected ${formatValue(actual)} to be instance of ${expected.name}`,
-        `Expected ${formatValue(actual)} not to be instance of ${expected.name}`,
-      );
+      trace('toBeInstanceOf', pass);
+      assert(pass, `Expected ${formatValue(actual)} to be instance of ${expected.name}`, `Expected ${formatValue(actual)} not to be instance of ${expected.name}`);
     },
 
     toThrow(expected?) {
@@ -1293,6 +1259,7 @@ function createGenericAssertions(
         threw = true;
         thrownError = e;
       }
+      trace('toThrow', negated ? !threw : threw, expected);
 
       if (!negated) {
         if (!threw) {

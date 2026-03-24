@@ -22,6 +22,20 @@ import type {
 /** Module-level count of active console interceptors to prevent racing. */
 let _activeConsoleInterceptors = 0
 
+// ─── Global collector accessor ───
+
+let _activeCollector: TraceCollector | null = null
+
+/** Get the currently active trace collector (set by the runner during test execution). */
+export function getActiveTraceCollector(): TraceCollector | null {
+  return _activeCollector
+}
+
+/** @internal — Set the active collector. Called by the runner. */
+export function setActiveTraceCollector(collector: TraceCollector | null): void {
+  _activeCollector = collector
+}
+
 // ─── Trace capture context ───
 
 /**
@@ -163,6 +177,11 @@ export class TraceCollector {
    */
   setEventCallback(cb: TraceEventCallback): void {
     this._onEvent = cb
+  }
+
+  /** Get the current event callback (for transferring between collectors). */
+  getEventCallback(): TraceEventCallback | undefined {
+    return this._onEvent
   }
 
   // ── Console interception ──

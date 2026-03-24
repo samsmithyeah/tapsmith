@@ -21,7 +21,7 @@ import {
 import { ElementHandle } from './element-handle.js';
 import type { PilotConfig } from './config.js';
 import { Tracing } from './trace/tracing.js';
-import type { TraceCollector } from './trace/trace-collector.js';
+import { type TraceCollector, getActiveTraceCollector } from './trace/trace-collector.js';
 import type { ActionCategory } from './trace/types.js';
 import { tracedAction } from './trace/traced-action.js';
 
@@ -70,7 +70,7 @@ export class Device {
 
   /** @internal — Get the active trace collector, if any. */
   private get _traceCollector(): TraceCollector | null {
-    return this.tracing._currentCollector;
+    return this.tracing._currentCollector ?? getActiveTraceCollector();
   }
 
   /** @internal — Take a screenshot and return the raw buffer. */

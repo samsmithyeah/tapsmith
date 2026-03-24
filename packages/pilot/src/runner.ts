@@ -21,7 +21,7 @@ import { FixtureRegistry, resolveFixtures, type FixtureDefinitions, type Builtin
 import { resolveTraceConfig } from './trace/types.js';
 import { shouldRecord, shouldRetain } from './trace/trace-mode.js';
 import { packageTrace } from './trace/trace-packager.js';
-import type { TraceCollector } from './trace/trace-collector.js';
+import { TraceCollector, setActiveTraceCollector } from './trace/trace-collector.js';
 
 // ─── Result types ───
 
@@ -357,9 +357,38 @@ async function runSuiteContext(
   const hasOnlySuites = ctx.suites.some((s) => s.only);
   const hasOnly = hasOnlyTests || hasOnlySuites;
 
-  // Run beforeAll hooks
+  // Run beforeAll hooks with tracing. We create a standalone collector
+  // (via setActiveTraceCollector) that Device._traceCollector falls back to.
+  // This is simpler than managing the Tracing-managed collector lifecycle.
+  let beforeAllCollector: TraceCollector | null = null;
+  if (ctx.beforeAll.length > 0 && opts.device) {
+    const traceConfig = resolveTraceConfig(opts.config.trace);
+    if (shouldRecord(traceConfig.mode, 0)) {
+      const firstTest = ctx.tests.find((t) => !t.skip);
+      if (firstTest && opts.beforeEachTest) {
+        const firstFullName = parentPrefix ? `${parentPrefix} > ${firstTest.name}` : firstTest.name;
+        await opts.beforeEachTest(firstFullName);
+      }
+      const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pilot-trace-ba-'));
+      // Trigger _startManaged to fire the monkey-patch (ui-run.ts sets up
+      // the event callback), then transfer the callback to a standalone
+      // collector and clear the managed one.
+      const managedCollector = opts.device.tracing._startManaged(traceConfig, tempDir);
+      beforeAllCollector = new TraceCollector(traceConfig, tempDir);
+      const cb = managedCollector.getEventCallback();
+      if (cb) beforeAllCollector.setEventCallback(cb);
+      opts.device.tracing._stopManaged();
+
+      setActiveTraceCollector(beforeAllCollector);
+      beforeAllCollector.startGroup('Before Hooks (suite)');
+    }
+  }
   for (const hook of ctx.beforeAll) {
     await invokeHook(hook, opts.device);
+  }
+  if (beforeAllCollector) {
+    beforeAllCollector.endGroup();
+    setActiveTraceCollector(null);
   }
 
   // All beforeEach hooks (inherited + local)
@@ -408,6 +437,7 @@ async function runSuiteContext(
     if (recording && opts.device) {
       const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pilot-trace-'));
       traceCollector = opts.device.tracing._startManaged(traceConfig, tempDir);
+      setActiveTraceCollector(traceCollector);
 
       // Start network capture if configured
       if (traceConfig.network) {
@@ -553,6 +583,7 @@ async function runSuiteContext(
       }
 
       const collector = opts.device.tracing._stopManaged();
+      setActiveTraceCollector(null);
 
       // Map network entries, associating each with the closest preceding action
       let networkEntries: import('./trace/types.js').NetworkEntry[] | undefined;
