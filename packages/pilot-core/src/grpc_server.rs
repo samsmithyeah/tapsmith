@@ -2283,20 +2283,46 @@ impl proto::pilot_service_server::PilotService for PilotServiceImpl {
             let uid = uid_output.trim().to_string();
 
             if !uid.is_empty() {
-                let _ = adb::shell_with_timeout(
+                if let Err(e) = adb::shell_with_timeout(
                     &serial,
                     &format!("chown -R {uid}:{uid} {data_dir}"),
                     Duration::from_secs(60),
                 )
-                .await;
+                .await
+                {
+                    let screenshot = self.error_screenshot().await;
+                    let _ = adb::shell_lenient(&serial, &format!("rm -f {device_tmp}")).await;
+                    return Ok(Response::new(proto::ActionResponse {
+                        request_id,
+                        success: false,
+                        error_type: "APP_STATE_RESTORE_FAILED".to_string(),
+                        error_message: format!(
+                            "Failed to fix ownership on restored app state: {e}"
+                        ),
+                        screenshot,
+                    }));
+                }
             }
 
-            let _ = adb::shell_with_timeout(
+            if let Err(e) = adb::shell_with_timeout(
                 &serial,
                 &format!("restorecon -R {data_dir}"),
                 Duration::from_secs(60),
             )
-            .await;
+            .await
+            {
+                let screenshot = self.error_screenshot().await;
+                let _ = adb::shell_lenient(&serial, &format!("rm -f {device_tmp}")).await;
+                return Ok(Response::new(proto::ActionResponse {
+                    request_id,
+                    success: false,
+                    error_type: "APP_STATE_RESTORE_FAILED".to_string(),
+                    error_message: format!(
+                        "Failed to fix SELinux context on restored app state: {e}"
+                    ),
+                    screenshot,
+                }));
+            }
         }
 
         // 7. Clean up temp file
