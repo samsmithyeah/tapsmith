@@ -37,3 +37,5 @@ blob-report/
 
 # Claude
 .mcp.json
+
+repomix-output.xml

@@ -372,6 +372,8 @@ interface CliArgs {
   shard?: { current: number; total: number };
   trace?: string;
   watch: boolean;
+  ui: boolean;
+  uiPort?: number;
   forceInstall: boolean;
   version: boolean;
   help: boolean;
@@ -383,6 +385,7 @@ function parseArgs(argv: string[]): CliArgs {
     command: '',
     files: [],
     watch: false,
+    ui: false,
     version: false,
     help: false,
     forceInstall: false,
@@ -428,6 +431,22 @@ function parseArgs(argv: string[]): CliArgs {
       args.trace = arg.slice('--trace='.length);
     } else if (arg === '--watch' || arg === '-w') {
       args.watch = true;
+    } else if (arg === '--ui') {
+      args.ui = true;
+    } else if (arg === '--ui-port') {
+      const val = parseInt(rest[++i], 10);
+      if (isNaN(val) || val < 0) {
+        console.error(red('--ui-port must be a non-negative integer'));
+        process.exit(1);
+      }
+      args.uiPort = val;
+    } else if (arg?.startsWith('--ui-port=')) {
+      const val = parseInt(arg.slice('--ui-port='.length), 10);
+      if (isNaN(val) || val < 0) {
+        console.error(red('--ui-port must be a non-negative integer'));
+        process.exit(1);
+      }
+      args.uiPort = val;
     } else if (arg === '--force-install') {
       args.forceInstall = true;
     } else if (arg === '--__tsx-reexec') {
@@ -451,6 +470,8 @@ ${bold('pilot')} — Mobile app testing framework
 ${bold('Usage:')}
   pilot test [files...]           Run test files
   pilot test --watch              Watch test files and re-run on change
+  pilot test --ui                 Open interactive UI mode
+  pilot test --ui --ui-port 8080  UI mode on specific port
   pilot test --device <serial>    Target specific device
   pilot test --workers <n>        Run tests in parallel across n devices
   pilot test --shard=x/y          Run shard x of y (for CI)
@@ -574,6 +595,25 @@ async function main(): Promise<void> {
       // Guard with tsxReexec to avoid printing twice (before and after tsx re-exec)
       if (args.tsxReexec) {
         process.stderr.write(`${YELLOW}Watch mode uses a single device. Ignoring --workers.${RESET}\n`);
+      }
+      config.workers = 1;
+    }
+  }
+
+  // Validate UI mode constraints
+  if (args.ui) {
+    if (args.shard) {
+      console.error(red('--ui cannot be combined with --shard'));
+      process.exit(1);
+    }
+    if (args.watch) {
+      // UI mode has its own watch — ignore --watch
+      args.watch = false;
+    }
+    // UI mode currently supports a single device
+    if (config.workers > 1) {
+      if (args.tsxReexec) {
+        process.stderr.write(`${YELLOW}UI mode currently uses a single device. Ignoring --workers.${RESET}\n`);
       }
       config.workers = 1;
     }
@@ -856,6 +896,37 @@ async function main(): Promise<void> {
         sequentialExitCode = 1;
         return;
       }
+    }
+
+    // ─── UI mode ───
+    // If --ui is set, start the interactive UI server. It keeps the
+    // daemon, emulator, and agent alive and serves a Preact SPA.
+    if (args.ui) {
+      const { startUIServer } = await import('./ui-mode/ui-server.js');
+
+      const uiScreenshotDir =
+        config.screenshot !== 'never'
+          ? path.resolve(config.rootDir, config.outputDir, 'screenshots')
+          : undefined;
+
+      const uiServer = await startUIServer({
+        config,
+        device,
+        client,
+        deviceSerial: config.device!,
+        daemonAddress: config.daemonAddress,
+        testFiles,
+        screenshotDir: uiScreenshotDir,
+        launchedEmulators,
+        projects: hasProjects ? projects : undefined,
+      }, {
+        port: args.uiPort,
+      });
+
+      // Keep alive until user exits
+      process.on('SIGINT', () => { uiServer.close(); process.exit(0); });
+      process.on('SIGTERM', () => { uiServer.close(); process.exit(0); });
+      await new Promise<void>(() => { /* never resolves */ });
     }
 
     // ─── Watch mode ───

@@ -86,6 +86,17 @@ export function extractSourceLocation(stack: string): SourceLocation | undefined
 
 // ─── TraceCollector ───
 
+/** Callback for live trace event streaming (UI mode). */
+export type TraceEventCallback = (
+  event: AnyTraceEvent,
+  screenshots?: {
+    before?: Buffer
+    after?: Buffer
+    hierarchyBefore?: string
+    hierarchyAfter?: string
+  },
+) => void
+
 export class TraceCollector {
   readonly config: TraceConfig
   private _events: AnyTraceEvent[] = []
@@ -94,6 +105,14 @@ export class TraceCollector {
   private _hierarchies: HierarchyCapture[] = []
   private _groupStack: string[] = []
   private _tempDir: string
+  private _onEvent?: TraceEventCallback
+  /** Buffered screenshot/hierarchy data for the current action, forwarded via _onEvent. */
+  private _pendingCaptures = new Map<number, {
+    before?: Buffer
+    after?: Buffer
+    hierarchyBefore?: string
+    hierarchyAfter?: string
+  }>()
   private _originalConsole: {
     log: typeof console.log
     warn: typeof console.warn
@@ -134,6 +153,16 @@ export class TraceCollector {
 
   get currentActionIndex(): number {
     return this._actionIndex
+  }
+
+  // ── Event callback (UI mode live streaming) ──
+
+  /**
+   * Set a callback that is invoked for every trace event as it is emitted.
+   * Used by UI mode to stream events in real-time via IPC.
+   */
+  setEventCallback(cb: TraceEventCallback): void {
+    this._onEvent = cb
   }
 
   // ── Console interception ──
@@ -206,6 +235,12 @@ export class TraceCollector {
             }
             this._screenshots.push(capture)
             captures.screenshotBefore = capture
+            // Buffer for live streaming
+            if (this._onEvent) {
+              const pending = this._pendingCaptures.get(actionIndex) ?? {}
+              pending.before = data
+              this._pendingCaptures.set(actionIndex, pending)
+            }
           }
         }).catch(() => { /* best-effort */ }),
       )
@@ -220,6 +255,12 @@ export class TraceCollector {
               xml,
             }
             this._hierarchies.push(captures.hierarchyBefore!)
+            // Buffer for live streaming
+            if (this._onEvent) {
+              const pending = this._pendingCaptures.get(actionIndex) ?? {}
+              pending.hierarchyBefore = xml
+              this._pendingCaptures.set(actionIndex, pending)
+            }
           }
         }).catch(() => { /* best-effort */ }),
       )
@@ -253,6 +294,12 @@ export class TraceCollector {
             }
             this._screenshots.push(capture)
             captures.screenshotAfter = capture
+            // Buffer for live streaming
+            if (this._onEvent) {
+              const pending = this._pendingCaptures.get(actionIndex) ?? {}
+              pending.after = data
+              this._pendingCaptures.set(actionIndex, pending)
+            }
           }
         }).catch(() => { /* best-effort */ }),
       )
@@ -267,6 +314,12 @@ export class TraceCollector {
               xml,
             }
             this._hierarchies.push(captures.hierarchyAfter!)
+            // Buffer for live streaming
+            if (this._onEvent) {
+              const pending = this._pendingCaptures.get(actionIndex) ?? {}
+              pending.hierarchyAfter = xml
+              this._pendingCaptures.set(actionIndex, pending)
+            }
           }
         }).catch(() => { /* best-effort */ }),
       )
@@ -280,12 +333,16 @@ export class TraceCollector {
    * Emit a fully-formed action event.
    */
   addActionEvent(event: Omit<ActionTraceEvent, 'type' | 'actionIndex' | 'timestamp'>): void {
-    this._events.push({
+    const full = {
       ...event,
       type: 'action',
       actionIndex: this._actionIndex,
       timestamp: Date.now(),
-    } as ActionTraceEvent)
+    } as ActionTraceEvent
+    this._events.push(full)
+    const pending = this._pendingCaptures.get(this._actionIndex)
+    this._pendingCaptures.delete(this._actionIndex)
+    this._onEvent?.(full, pending)
     this._actionIndex++
   }
 
@@ -293,12 +350,16 @@ export class TraceCollector {
    * Emit an assertion event.
    */
   addAssertionEvent(event: Omit<AssertionTraceEvent, 'type' | 'actionIndex' | 'timestamp'>): void {
-    this._events.push({
+    const full = {
       ...event,
       type: 'assertion',
       actionIndex: this._actionIndex,
       timestamp: Date.now(),
-    } as AssertionTraceEvent)
+    } as AssertionTraceEvent
+    this._events.push(full)
+    const pending = this._pendingCaptures.get(this._actionIndex)
+    this._pendingCaptures.delete(this._actionIndex)
+    this._onEvent?.(full, pending)
     this._actionIndex++
   }
 
@@ -306,35 +367,41 @@ export class TraceCollector {
 
   startGroup(name: string): void {
     this._groupStack.push(name)
-    this._events.push({
+    const event = {
       type: 'group-start',
       name,
       actionIndex: this._actionIndex,
       timestamp: Date.now(),
-    } as GroupTraceEvent)
+    } as GroupTraceEvent
+    this._events.push(event)
+    this._onEvent?.(event)
   }
 
   endGroup(): void {
     const name = this._groupStack.pop() ?? 'unknown'
-    this._events.push({
+    const event = {
       type: 'group-end',
       name,
       actionIndex: this._actionIndex,
       timestamp: Date.now(),
-    } as GroupTraceEvent)
+    } as GroupTraceEvent
+    this._events.push(event)
+    this._onEvent?.(event)
   }
 
   // ── Console ──
 
   private _addConsoleEvent(level: ConsoleLevel, message: string, source: 'test' | 'device'): void {
-    this._events.push({
+    const event = {
       type: 'console',
       level,
       message,
       source,
       actionIndex: this._actionIndex,
       timestamp: Date.now(),
-    } as ConsoleTraceEvent)
+    } as ConsoleTraceEvent
+    this._events.push(event)
+    this._onEvent?.(event)
   }
 
   addLogcatEntry(level: ConsoleLevel, message: string): void {
@@ -344,13 +411,15 @@ export class TraceCollector {
   // ── Error ──
 
   addError(message: string, stack?: string): void {
-    this._events.push({
-      type: 'error',
+    const event = {
+      type: 'error' as const,
       message,
       stack,
       actionIndex: this._actionIndex,
       timestamp: Date.now(),
-    })
+    }
+    this._events.push(event)
+    this._onEvent?.(event as AnyTraceEvent)
   }
 
   // ── Finalization ──

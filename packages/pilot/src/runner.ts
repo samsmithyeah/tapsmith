@@ -261,6 +261,10 @@ export interface RunOptions {
   projectUseOptions?: UseOptions;
   /** Project name — stamped on test results for reporter grouping. */
   projectName?: string;
+  /** Run only the test whose fullName matches this value. All other tests are skipped. */
+  testFilter?: string;
+  /** Called with mapped network entries after capture stops. Used by UI mode for live streaming. */
+  onNetworkEntries?: (entries: import('./trace/types.js').NetworkEntry[]) => void;
 }
 
 async function captureFailureScreenshot(
@@ -366,8 +370,12 @@ async function runSuiteContext(
   for (const entry of ctx.tests) {
     const fullName = parentPrefix ? `${parentPrefix} > ${entry.name}` : entry.name;
 
-    // Determine if this test should be skipped
-    const shouldSkip = entry.skip || (hasOnly && !entry.only);
+    // Determine if this test should be skipped.
+    // testFilter matches either an exact test name or a describe prefix.
+    const filteredOut = opts.testFilter
+      && fullName !== opts.testFilter
+      && !fullName.startsWith(opts.testFilter + ' > ');
+    const shouldSkip = entry.skip || (hasOnly && !entry.only) || filteredOut;
 
     if (shouldSkip) {
       const skippedResult: TestResult = {
@@ -580,6 +588,10 @@ async function runSuiteContext(
           requestBody: e.requestBody,
           responseBody: e.responseBody,
         }));
+
+        if (networkEntries && opts.onNetworkEntries) {
+          opts.onNetworkEntries(networkEntries);
+        }
       }
       if (collector) {
         const retain = shouldRetain(traceConfig.mode, status === 'passed', attempt);
@@ -760,6 +772,57 @@ export async function runTestFile(
       await workerTeardown();
     }
   }
+}
+
+// ─── Test discovery (UI mode) ───
+
+export interface DiscoveredTest {
+  name: string
+  fullName: string
+  only: boolean
+  skip: boolean
+}
+
+export interface DiscoveredSuite {
+  name: string
+  tests: DiscoveredTest[]
+  suites: DiscoveredSuite[]
+}
+
+/**
+ * Import a test file and collect its test/suite tree without executing
+ * any test bodies. Used by UI mode for test discovery.
+ */
+export async function discoverTestFile(filePath: string): Promise<DiscoveredSuite> {
+  contextStack = [];
+  activeFixtureRegistry = new FixtureRegistry();
+  pushContext();
+
+  await import(filePath);
+
+  const rootCtx = popContext();
+  return discoverSuiteContext(rootCtx, '');
+}
+
+function discoverSuiteContext(ctx: SuiteContext, parentPrefix: string): DiscoveredSuite {
+  const tests: DiscoveredTest[] = ctx.tests.map((t) => ({
+    name: t.name,
+    fullName: parentPrefix ? `${parentPrefix} > ${t.name}` : t.name,
+    only: t.only,
+    skip: t.skip,
+  }));
+
+  const suites: DiscoveredSuite[] = [];
+  for (const entry of ctx.suites) {
+    const suitePrefix = parentPrefix ? `${parentPrefix} > ${entry.name}` : entry.name;
+    // Execute the describe callback to register nested tests/suites
+    pushContext();
+    entry.fn();
+    const childCtx = popContext();
+    suites.push(discoverSuiteContext(childCtx, suitePrefix));
+  }
+
+  return { name: parentPrefix, tests, suites };
 }
 
 /** @internal — exposed for unit testing only. */
