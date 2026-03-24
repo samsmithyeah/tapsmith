@@ -40,6 +40,12 @@ const DIM = '\x1b[2m'
 const YELLOW = '\x1b[33m'
 const RESET = '\x1b[0m'
 
+interface TaggedFile {
+  filePath: string
+  projectUseOptions?: import('./worker-protocol.js').RunFileUseOptions
+  projectName?: string
+}
+
 interface WorkerHandle {
   id: number
   process: ChildProcess
@@ -48,7 +54,7 @@ interface WorkerHandle {
   agentPort: number
   daemonProcess?: ChildProcess
   busy: boolean
-  currentFile?: string
+  currentFile?: TaggedFile
   retired?: boolean
 }
 
@@ -57,6 +63,10 @@ export interface DispatcherOptions {
   reporter: PilotReporter
   testFiles: string[]
   workers: number
+  /** Resolved projects for wave-based execution. When set, files are dispatched per-wave. */
+  projects?: import('./project.js').ResolvedProject[]
+  /** Pre-sorted project waves from topologicalSort(). Required when `projects` is set. */
+  projectWaves?: import('./project.js').ResolvedProject[][]
 }
 
 const EXISTING_DEVICE_INIT_TIMEOUT_MS = 90_000
@@ -185,12 +195,18 @@ export async function runParallel(opts: DispatcherOptions): Promise<FullResult> 
   }
 
   const workers: WorkerHandle[] = []
-  const fileQueue = [...testFiles]
   const allResults: TestResult[] = []
   const allSuites: SuiteResult[] = []
   const totalStart = Date.now()
   let setupDuration = 0
-  const maxUsefulWorkers = Math.min(opts.workers, testFiles.length)
+  // Cap workers at the max files in any single wave — workers in other waves
+  // would sit idle since waves execute sequentially.
+  const maxFilesInWave = opts.projectWaves
+    ? Math.max(...opts.projectWaves.map((wave) =>
+        wave.reduce((sum, p) => sum + p.testFiles.length, 0),
+      ))
+    : testFiles.length
+  const maxUsefulWorkers = Math.min(opts.workers, maxFilesInWave)
   let firstDaemonAssigned = false
 
   // Register signal handlers to ensure cleanup on SIGINT/SIGTERM.
@@ -296,12 +312,9 @@ export async function runParallel(opts: DispatcherOptions): Promise<FullResult> 
       )
     }
 
-    if (workerCount < opts.workers) {
-      const reason = testFiles.length < opts.workers && workerCount === testFiles.length
-        ? `only ${testFiles.length} test file(s) to run`
-        : `only ${workerCount} healthy worker-ready device(s) available`
+    if (workerCount < maxUsefulWorkers) {
       process.stderr.write(
-        `${YELLOW}Warning: Requested ${opts.workers} workers but ${reason}. Using ${workerCount} worker(s).${RESET}\n`,
+        `${YELLOW}Warning: Requested ${maxUsefulWorkers} workers but only ${workerCount} healthy worker-ready device(s) available. Using ${workerCount} worker(s).${RESET}\n`,
       )
     }
 
@@ -311,127 +324,224 @@ export async function runParallel(opts: DispatcherOptions): Promise<FullResult> 
       `${DIM}Running ${testFiles.length} test file(s) across ${workerCount} worker(s)${RESET}\n`,
     )
 
-    // Work-stealing distribution loop
-    await new Promise<void>((resolve, reject) => {
-      let hasError = false
-      let settled = false
+    // ─── Wave-based work-stealing dispatch ───
+    // Build tagged file entries for dispatch. When projects are configured,
+    // we dispatch in waves (one per dependency tier). Otherwise, single wave.
 
-      function maybeResolve(): void {
-        if (settled || hasError) return
-        if (fileQueue.length > 0) return
-        if (workers.every((w) => w.retired || !w.busy)) {
+    type Wave = TaggedFile[]
+
+    const waves: Wave[] = []
+    const failedProjects = new Set<string>()
+
+    if (opts.projectWaves && opts.projects) {
+      for (const wave of opts.projectWaves) {
+        const waveFiles: TaggedFile[] = []
+        for (const project of wave) {
+          for (const file of project.testFiles) {
+            waveFiles.push({
+              filePath: file,
+              projectUseOptions: project.use as TaggedFile['projectUseOptions'],
+              projectName: project.name,
+            })
+          }
+        }
+        if (waveFiles.length > 0) {
+          waves.push(waveFiles)
+        }
+      }
+    } else {
+      // No projects — single wave with all files
+      waves.push(testFiles.map((f) => ({ filePath: f })))
+    }
+
+    // Dispatch one wave at a time. Within a wave, work-stealing across workers.
+    async function dispatchWave(waveFiles: TaggedFile[]): Promise<void> {
+      const fileQueue = [...waveFiles]
+
+      await new Promise<void>((resolve, reject) => {
+        let hasError = false
+        let settled = false
+
+        function maybeResolve(): void {
+          if (settled || hasError) return
+          if (fileQueue.length > 0) return
+          if (workers.every((w) => w.retired || !w.busy)) {
+            settled = true
+            resolve()
+          }
+        }
+
+        function failRun(error: Error): void {
+          if (settled || hasError) return
+          hasError = true
           settled = true
-          resolve()
+          reject(error)
         }
-      }
 
-      function failRun(error: Error): void {
-        if (settled || hasError) return
-        hasError = true
-        settled = true
-        reject(error)
-      }
+        function dispatchNext(worker: WorkerHandle): void {
+          if (worker.retired) return
 
-      function dispatchNext(worker: WorkerHandle): void {
-        if (worker.retired) return
+          const next = fileQueue.shift()
+          if (!next) {
+            worker.busy = false
+            worker.currentFile = undefined
+            maybeResolve()
+            return
+          }
 
-        const nextFile = fileQueue.shift()
-        if (!nextFile) {
-          worker.busy = false
+          worker.busy = true
+          worker.currentFile = next
+          reporter.onTestFileStart?.(next.filePath)
+
+          const msg: MainToWorkerMessage = {
+            type: 'run-file',
+            filePath: next.filePath,
+            projectUseOptions: next.projectUseOptions,
+            projectName: next.projectName,
+          }
+          worker.process.send(msg)
+        }
+
+        function retireWorker(worker: WorkerHandle, reason: string): void {
+          if (worker.retired) return
+
+          worker.retired = true
+          const inFlightFile = worker.currentFile
           worker.currentFile = undefined
+          worker.busy = false
+
+          cleanupWorkerResources(worker)
+
+          if (inFlightFile) {
+            fileQueue.unshift(inFlightFile)
+            process.stderr.write(
+              `${YELLOW}Worker ${worker.id} (${worker.deviceSerial}) became unavailable: ${reason}. Requeueing ${path.basename(inFlightFile.filePath)} and continuing with remaining workers.${RESET}\n`,
+            )
+          } else {
+            process.stderr.write(
+              `${YELLOW}Worker ${worker.id} (${worker.deviceSerial}) became unavailable: ${reason}. Continuing with remaining workers.${RESET}\n`,
+            )
+          }
+
+          const activeWorkers = workers.filter((w) => !w.retired)
+          if (activeWorkers.length === 0) {
+            failRun(
+              new Error(
+                `All workers became unavailable before the run completed. Last failure: ${reason}`,
+              ),
+            )
+            return
+          }
+
+          const idleWorker = activeWorkers.find((w) => !w.busy)
+          if (idleWorker) {
+            dispatchNext(idleWorker)
+          }
+
           maybeResolve()
-          return
         }
 
-        worker.busy = true
-        worker.currentFile = nextFile
-        reporter.onTestFileStart?.(nextFile)
+        // Remove previous listeners and re-attach for this wave
+        for (const worker of workers) {
+          worker.process.removeAllListeners('message')
+          worker.process.removeAllListeners('exit')
 
-        const msg: MainToWorkerMessage = { type: 'run-file', filePath: nextFile }
-        worker.process.send(msg)
-      }
+          worker.process.on('message', (msg: WorkerToMainMessage) => {
+            if (hasError || worker.retired) return
 
-      function retireWorker(worker: WorkerHandle, reason: string): void {
-        if (worker.retired) return
+            switch (msg.type) {
+              case 'test-end': {
+                const result = deserializeTestResult(msg.result)
+                reporter.onTestEnd?.(result)
+                break
+              }
+              case 'file-start':
+                break
+              case 'file-done': {
+                worker.currentFile = undefined
+                const results = msg.results.map(deserializeTestResult)
+                const suite = deserializeSuiteResult(msg.suite)
+                allResults.push(...results)
+                allSuites.push(suite)
 
-        worker.retired = true
-        const inFlightFile = worker.currentFile
-        worker.currentFile = undefined
-        worker.busy = false
+                reporter.onTestFileEnd?.(msg.filePath, results)
 
-        cleanupWorkerResources(worker)
-
-        if (inFlightFile) {
-          fileQueue.unshift(inFlightFile)
-          process.stderr.write(
-            `${YELLOW}Worker ${worker.id} (${worker.deviceSerial}) became unavailable: ${reason}. Requeueing ${path.basename(inFlightFile)} and continuing with remaining workers.${RESET}\n`,
-          )
-        } else {
-          process.stderr.write(
-            `${YELLOW}Worker ${worker.id} (${worker.deviceSerial}) became unavailable: ${reason}. Continuing with remaining workers.${RESET}\n`,
-          )
-        }
-
-        const activeWorkers = workers.filter((w) => !w.retired)
-        if (activeWorkers.length === 0) {
-          failRun(
-            new Error(
-              `All workers became unavailable before the run completed. Last failure: ${reason}`,
-            ),
-          )
-          return
-        }
-
-        const idleWorker = activeWorkers.find((w) => !w.busy)
-        if (idleWorker) {
-          dispatchNext(idleWorker)
-        }
-
-        maybeResolve()
-      }
-
-      for (const worker of workers) {
-        worker.process.on('message', (msg: WorkerToMainMessage) => {
-          if (hasError || worker.retired) return
-
-          switch (msg.type) {
-            case 'test-end': {
-              const result = deserializeTestResult(msg.result)
-              reporter.onTestEnd?.(result)
-              break
+                dispatchNext(worker)
+                break
+              }
+              case 'error': {
+                retireWorker(worker, msg.error.message)
+                break
+              }
             }
-            case 'file-start':
-              // Already notified above in dispatchNext
-              break
-            case 'file-done': {
-              worker.currentFile = undefined
-              const results = msg.results.map(deserializeTestResult)
-              const suite = deserializeSuiteResult(msg.suite)
-              allResults.push(...results)
-              allSuites.push(suite)
+          })
 
-              reporter.onTestFileEnd?.(msg.filePath, results)
-
-              dispatchNext(worker)
-              break
+          worker.process.on('exit', (code) => {
+            if (code !== 0 && !hasError && !worker.retired) {
+              retireWorker(worker, `exited unexpectedly with code ${code}`)
             }
-            case 'error': {
-              retireWorker(worker, msg.error.message)
-              break
+          })
+
+          // Start dispatching to each worker
+          dispatchNext(worker)
+        }
+      })
+    }
+
+    // Execute waves sequentially, with dependency-failure skipping
+    if (opts.projectWaves && opts.projects) {
+      for (const projectWave of opts.projectWaves) {
+        const filteredWaveFiles: TaggedFile[] = []
+        for (const project of projectWave) {
+          const blockedBy = project.dependencies.find((d) => failedProjects.has(d))
+          if (blockedBy) {
+            process.stderr.write(
+              `${DIM}Skipping project "${project.name}" — dependency "${blockedBy}" failed${RESET}\n`,
+            )
+            for (const file of project.testFiles) {
+              const skippedResult: TestResult = {
+                name: path.basename(file),
+                fullName: path.basename(file),
+                status: 'skipped',
+                durationMs: 0,
+                project: project.name,
+              }
+              allResults.push(skippedResult)
+              reporter.onTestEnd?.(skippedResult)
+            }
+            failedProjects.add(project.name)
+            continue
+          }
+          for (const file of project.testFiles) {
+            filteredWaveFiles.push({
+              filePath: file,
+              projectUseOptions: project.use as TaggedFile['projectUseOptions'],
+              projectName: project.name,
+            })
+          }
+        }
+        if (filteredWaveFiles.length > 0) {
+          const resultsBefore = allResults.length
+          await dispatchWave(filteredWaveFiles)
+
+          // Track failures per-project (not per-wave) so only actual failed
+          // projects block their dependents, not unrelated sibling projects.
+          const waveResults = allResults.slice(resultsBefore)
+          for (const project of projectWave) {
+            if (failedProjects.has(project.name)) continue
+            const projectFailed = waveResults.some(
+              (r) => r.status === 'failed' && r.project === project.name,
+            )
+            if (projectFailed) {
+              failedProjects.add(project.name)
             }
           }
-        })
-
-        worker.process.on('exit', (code) => {
-          if (code !== 0 && !hasError && !worker.retired) {
-            retireWorker(worker, `exited unexpectedly with code ${code}`)
-          }
-        })
-
-        // Start dispatching to each worker
-        dispatchNext(worker)
+        }
       }
-    })
+    } else {
+      // No projects — single wave with all files
+      await dispatchWave(waves[0] ?? [])
+    }
   } finally {
     process.removeListener('SIGINT', emergencyCleanup)
     process.removeListener('SIGTERM', emergencyCleanup)

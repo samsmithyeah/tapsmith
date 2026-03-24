@@ -18,6 +18,7 @@ import {
   formatError,
   formatSummaryLine,
   workerTag,
+  projectTag,
 } from './base.js'
 
 const DOTS_PER_LINE = 80
@@ -25,10 +26,12 @@ const DOTS_PER_LINE = 80
 export class DotReporter implements PilotReporter {
   private _column = 0
   private _failed: TestResult[] = []
+  private _showProjectTags = false
 
-  onRunStart(_config: PilotConfig, _fileCount: number): void {
+  onRunStart(config: PilotConfig, _fileCount: number): void {
     this._column = 0
     this._failed = []
+    this._showProjectTags = config.workers > 1 && (config.projects?.length ?? 0) > 1
     process.stdout.write('\n')
   }
 
@@ -72,7 +75,8 @@ export class DotReporter implements PilotReporter {
     if (this._failed.length > 0) {
       process.stdout.write(bold(red('Failures:\n\n')))
       for (const test of this._failed) {
-        process.stdout.write(`  ${red('✗')} ${workerTag(test.workerIndex)}${test.fullName}\n`)
+        const project = this._showProjectTags ? projectTag(test.project) : ''
+        process.stdout.write(`  ${red('✗')} ${workerTag(test.workerIndex)}${project}${test.fullName}\n`)
         if (test.error) {
           process.stdout.write(formatError(test.error) + '\n\n')
         }

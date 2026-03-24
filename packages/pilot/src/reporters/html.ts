@@ -102,6 +102,7 @@ function generateHtml(
       codeSnippet: t.error?.stack ? extractCodeSnippetForHtml(t.error) : null,
       screenshot: screenshotFile,
       trace: traceFile,
+      project: t.project || null,
     }
   })
 
@@ -162,6 +163,7 @@ function generateHtml(
   .trace-cmd { display: inline-block; margin-top: 6px; padding: 6px 12px; background: #f8f8f8; border: 1px solid #e0e0e0; border-radius: 4px; font-family: monospace; font-size: 12px; color: #555; cursor: pointer; width: 100%; }
   .trace-cmd:hover { background: #f0f0f0; }
   .trace-cmd-copied { background: #e8f5e9; border-color: #a5d6a7; }
+  .project-badge { display: inline-block; padding: 1px 6px; background: #dfe6e9; color: #636e72; border-radius: 4px; font-size: 11px; font-weight: 600; }
   .trace-badge { display: inline-flex; align-items: center; gap: 4px; padding: 2px 8px; background: #6c5ce7; color: white; border-radius: 10px; font-size: 11px; font-weight: 600; margin-left: 8px; }
   .status-passed { color: #4caf50; }
   .status-failed { color: #f44336; }
@@ -209,7 +211,9 @@ function render(filter, query) {
     li.className = 'test-item';
     var header = '<div class="test-header" onclick="toggle(' + i + ')">';
     header += '<span class="test-icon status-' + t.status + '">' + icon + '</span>';
-    header += '<span class="test-name">' + t.name;
+    header += '<span class="test-name">';
+    if (t.project) header += '<span class="project-badge">' + t.project + '</span> ';
+    header += t.name;
     if (t.trace) header += '<span class="trace-badge">&#9654; Trace</span>';
     header += '</span>';
     header += '<span class="test-duration">' + dur + '</span></div>';

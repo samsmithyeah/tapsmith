@@ -624,6 +624,24 @@ export class PilotGrpcClient {
     }, 30_000);
   }
 
+  // ── App State Snapshot (PILOT-115) ──
+
+  async saveAppState(packageName: string, path: string): Promise<ActionResponse> {
+    return this.call<ActionResponse>('saveAppState', {
+      requestId: requestId(),
+      packageName,
+      path,
+    }, 300_000);
+  }
+
+  async restoreAppState(packageName: string, path: string): Promise<ActionResponse> {
+    return this.call<ActionResponse>('restoreAppState', {
+      requestId: requestId(),
+      packageName,
+      path,
+    }, 300_000);
+  }
+
   async getLogcat(packageName: string, sinceMs?: number, untilMs?: number): Promise<GetLogcatResponse> {
     return this.call<GetLogcatResponse>('getLogcat', {
       requestId: requestId(),

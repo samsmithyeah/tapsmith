@@ -57,7 +57,7 @@ export {
 } from './fixtures.js';
 
 // Config
-export { defineConfig, loadConfig, type PilotConfig, type ScreenshotMode, type TraceMode, type TraceConfig } from './config.js';
+export { defineConfig, loadConfig, type PilotConfig, type ProjectConfig, type ScreenshotMode, type TraceMode, type TraceConfig } from './config.js';
 
 // Reporters
 export {

@@ -58,6 +58,8 @@ function makeMockClient(overrides: Partial<PilotGrpcClient> = {}): PilotGrpcClie
     unlockDevice: vi.fn(async () => successResponse()),
     startAgent: vi.fn(async () => successResponse()),
     restartApp: vi.fn(async () => successResponse()),
+    saveAppState: vi.fn(async () => successResponse()),
+    restoreAppState: vi.fn(async () => successResponse()),
     ...overrides,
   } as unknown as PilotGrpcClient
 }
@@ -721,5 +723,61 @@ describe('Device.startAgent()', () => {
     })
     const device = new Device(client)
     await expect(device.startAgent('com.example.app')).rejects.toThrow('Agent not installed')
+  })
+})
+
+// ─── saveAppState() ───
+
+describe('Device.saveAppState()', () => {
+  it('delegates to client.saveAppState with package name and path', async () => {
+    const saveAppState = vi.fn(async () => successResponse())
+    const client = makeMockClient({ saveAppState })
+    const device = new Device(client)
+    await device.saveAppState('com.example.app', './auth-state.tar.gz')
+    expect(saveAppState).toHaveBeenCalledWith('com.example.app', './auth-state.tar.gz')
+  })
+
+  it('throws on failure', async () => {
+    const client = makeMockClient({
+      saveAppState: vi.fn(async () => failureResponse('Permission denied')),
+    })
+    const device = new Device(client)
+    await expect(device.saveAppState('com.example.app', './state.tar.gz')).rejects.toThrow('Permission denied')
+  })
+
+  it('uses default package name from config', async () => {
+    const saveAppState = vi.fn(async () => successResponse())
+    const client = makeMockClient({ saveAppState })
+    const device = new Device(client, { package: 'com.default.app' })
+    await device.saveAppState(undefined as unknown as string, './state.tar.gz')
+    expect(saveAppState).toHaveBeenCalledWith('com.default.app', './state.tar.gz')
+  })
+})
+
+// ─── restoreAppState() ───
+
+describe('Device.restoreAppState()', () => {
+  it('delegates to client.restoreAppState with package name and path', async () => {
+    const restoreAppState = vi.fn(async () => successResponse())
+    const client = makeMockClient({ restoreAppState })
+    const device = new Device(client)
+    await device.restoreAppState('com.example.app', './auth-state.tar.gz')
+    expect(restoreAppState).toHaveBeenCalledWith('com.example.app', './auth-state.tar.gz')
+  })
+
+  it('throws on failure', async () => {
+    const client = makeMockClient({
+      restoreAppState: vi.fn(async () => failureResponse('Archive not found')),
+    })
+    const device = new Device(client)
+    await expect(device.restoreAppState('com.example.app', './state.tar.gz')).rejects.toThrow('Archive not found')
+  })
+
+  it('uses default package name from config', async () => {
+    const restoreAppState = vi.fn(async () => successResponse())
+    const client = makeMockClient({ restoreAppState })
+    const device = new Device(client, { package: 'com.default.app' })
+    await device.restoreAppState(undefined as unknown as string, './state.tar.gz')
+    expect(restoreAppState).toHaveBeenCalledWith('com.default.app', './state.tar.gz')
   })
 })

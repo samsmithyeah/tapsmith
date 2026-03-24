@@ -12,7 +12,6 @@ const DIM = '\x1b[2m'
 const RED = '\x1b[31m'
 const GREEN = '\x1b[32m'
 const YELLOW = '\x1b[33m'
-const CYAN = '\x1b[36m'
 
 export function green(s: string): string {
   return `${GREEN}${s}${RESET}`
@@ -28,9 +27,6 @@ export function bold(s: string): string {
 }
 export function dim(s: string): string {
   return `${DIM}${s}${RESET}`
-}
-export function cyan(s: string): string {
-  return `${CYAN}${s}${RESET}`
 }
 
 // ─── Formatting helpers ───
@@ -74,7 +70,12 @@ export function formatSummaryLine(
 
 export function workerTag(workerIndex: number | undefined): string {
   if (workerIndex == null) return ''
-  return cyan(`[worker ${workerIndex}]`) + ' '
+  return dim(`[worker ${workerIndex}]`) + ' '
+}
+
+export function projectTag(project: string | undefined): string {
+  if (!project) return ''
+  return dim(`[${project}]`) + ' '
 }
 
 export function formatError(error: Error, indent: string = '        '): string {

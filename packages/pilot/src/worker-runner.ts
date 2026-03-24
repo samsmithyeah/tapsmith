@@ -163,7 +163,7 @@ async function handleInit(msg: InitMessage): Promise<void> {
   send({ type: 'ready', workerId })
 }
 
-async function handleRunFile(filePath: string): Promise<void> {
+async function handleRunFile(filePath: string, projectUseOptions?: import('./worker-protocol.js').RunFileUseOptions, projectName?: string): Promise<void> {
   if (!config || !device) {
     throw new Error(`Worker ${workerId}: Not initialized`)
   }
@@ -191,7 +191,7 @@ async function handleRunFile(filePath: string): Promise<void> {
     },
   }
 
-  const suiteResult = await runFileWithRecovery(filePath, screenshotDir, reporterProxy)
+  const suiteResult = await runFileWithRecovery(filePath, screenshotDir, reporterProxy, projectUseOptions, projectName)
 
   const results = collectResults(suiteResult)
 
@@ -208,6 +208,8 @@ async function runFileWithRecovery(
   filePath: string,
   screenshotDir: string | undefined,
   reporterProxy: { onTestEnd(result: import('./runner.js').TestResult): void },
+  projectUseOptions?: import('./worker-protocol.js').RunFileUseOptions,
+  projectName?: string,
 ): Promise<import('./runner.js').SuiteResult> {
   if (!config || !device) {
     throw new Error(`Worker ${workerId}: Not initialized`)
@@ -227,6 +229,8 @@ async function runFileWithRecovery(
           )
         },
         abortFileOnError: isRecoverableInfrastructureError,
+        projectUseOptions,
+        projectName,
       })
       const infrastructureFailure = findRecoverableInfrastructureFailure(collectResults(suite))
       if (!infrastructureFailure) {
@@ -314,7 +318,7 @@ process.on('message', async (msg: MainToWorkerMessage) => {
         await handleInit(msg)
         break
       case 'run-file':
-        await handleRunFile(msg.filePath)
+        await handleRunFile(msg.filePath, msg.projectUseOptions, msg.projectName)
         break
       case 'shutdown':
         handleShutdown()

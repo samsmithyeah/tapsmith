@@ -128,6 +128,45 @@ export interface PilotConfig {
    * trace: { mode: 'retain-on-failure', screenshots: true, snapshots: true }
    */
   trace?: TraceMode | Partial<TraceConfig>;
+
+  /**
+   * Named test groups with dependency ordering, mirroring Playwright's projects.
+   * Setup projects run first; dependent projects run after their dependencies complete.
+   *
+   * @example
+   * projects: [
+   *   { name: 'setup', testMatch: ['auth.setup.ts'] },
+   *   { name: 'authenticated', dependencies: ['setup'], use: { appState: './auth.tar.gz' } },
+   * ]
+   */
+  projects?: ProjectConfig[];
+}
+
+// ─── Per-scope option overrides ───
+
+/** Options that can be overridden per-describe via `test.use()` or per-project via `projects[].use`. */
+export type UseOptions = Partial<Pick<PilotConfig, 'timeout' | 'screenshot' | 'retries' | 'trace'>> & {
+  /**
+   * Path to a saved app state archive (created by `device.saveAppState()`).
+   * When set, the runner restores this state before running tests in the scope,
+   * mirroring Playwright's `storageState` pattern for reusable auth.
+   */
+  appState?: string;
+}
+
+// ─── Projects ───
+
+export interface ProjectConfig {
+  /** Unique project name, used for dependency references and reporter output. */
+  name: string;
+  /** Glob patterns for test file discovery. Inherits global `testMatch` if unset. */
+  testMatch?: string[];
+  /** Glob patterns to exclude from test file discovery. */
+  testIgnore?: string[];
+  /** Projects that must complete successfully before this project runs. */
+  dependencies?: string[];
+  /** Per-project option overrides applied as a base layer under file-level `test.use()`. */
+  use?: UseOptions;
 }
 
 const DEFAULT_CONFIG: PilotConfig = {

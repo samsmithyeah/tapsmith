@@ -56,6 +56,10 @@ service PilotService {
   rpc UnlockDevice(UnlockDeviceRequest) returns (ActionResponse);
   rpc RestartApp(RestartAppRequest) returns (ActionResponse);
 
+  // ─── App State Snapshot (PILOT-115) ───
+  rpc SaveAppState(SaveAppStateRequest) returns (ActionResponse);
+  rpc RestoreAppState(RestoreAppStateRequest) returns (ActionResponse);
+
   // ─── Trace Support (PILOT-85) ───
   rpc GetLogcat(GetLogcatRequest) returns (GetLogcatResponse);
 
@@ -469,6 +473,20 @@ message RestartAppRequest {
   string package_name = 2;
   bool wait_for_idle = 3;
   uint64 idle_timeout_ms = 4; // timeout for waitForIdle (0 = use default 10s)
+}
+
+// ─── App State Snapshot (PILOT-115) ───
+
+message SaveAppStateRequest {
+  string request_id = 1;
+  string package_name = 2;
+  string path = 3;             // local filesystem path to save the archive to
+}
+
+message RestoreAppStateRequest {
+  string request_id = 1;
+  string package_name = 2;
+  string path = 3;             // local filesystem path of the archive to restore
 }
 
 // ─── Trace Support (PILOT-85) ───

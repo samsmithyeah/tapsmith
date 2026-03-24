@@ -13,7 +13,7 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as os from 'node:os';
-import type { PilotConfig } from './config.js';
+import type { PilotConfig, UseOptions } from './config.js';
 import type { Device } from './device.js';
 import type { PilotReporter } from './reporter.js';
 import { flushSoftErrors } from './expect.js';
@@ -38,6 +38,8 @@ export interface TestResult {
   tracePath?: string;
   /** Index of the worker that ran this test (only set in parallel mode). */
   workerIndex?: number;
+  /** Project name this test belongs to (only set when projects are configured). */
+  project?: string;
 }
 
 export interface SuiteResult {
@@ -55,8 +57,9 @@ export interface TestFixtures {
 
 // ─── Per-scope option overrides ───
 
-/** Options that can be overridden per-describe via `test.use()`. */
-export type UseOptions = Partial<Pick<PilotConfig, 'timeout' | 'screenshot' | 'retries' | 'trace'>>
+// UseOptions is defined in config.ts (where PilotConfig lives) to avoid circular deps.
+// Re-exported here for backward compatibility.
+export type { UseOptions } from './config.js';
 
 // ─── Internal registration types ───
 
@@ -254,6 +257,10 @@ export interface RunOptions {
   workerFixtures?: Record<string, unknown>;
   /** Test file path — used by trace packager for testFile metadata and source inclusion. */
   testFilePath?: string;
+  /** Project-level use options applied as a base layer under file-level test.use(). */
+  projectUseOptions?: UseOptions;
+  /** Project name — stamped on test results for reporter grouping. */
+  projectName?: string;
 }
 
 async function captureFailureScreenshot(
@@ -307,7 +314,8 @@ async function runSuiteContext(
   // Apply test.use() overrides for this scope (cascading from parent).
   // `timeout` is handled separately via the device — it should only affect
   // assertion/action auto-wait, not the test-level safety timeout.
-  const { timeout: scopeTimeout, ...configOverrides } = ctx.useOptions ?? {};
+  // `appState` is handled below (restore before hooks).
+  const { timeout: scopeTimeout, appState: scopeAppState, ...configOverrides } = ctx.useOptions ?? {};
   const opts: RunOptions = Object.keys(configOverrides).length > 0
     ? { ...parentOpts, config: { ...parentOpts.config, ...configOverrides } }
     : parentOpts;
@@ -326,6 +334,19 @@ async function runSuiteContext(
   // try/finally ensures device timeout is restored even if a hook or
   // abortFileOnError throws. Body intentionally not re-indented.
   try {
+
+  // Restore or clear app state if test.use({ appState }) was specified for this scope.
+  // Mirrors Playwright's storageState: tests start already authenticated.
+  // - appState: './path.tar.gz' → restore saved state
+  // - appState: '' → clear app data (fresh unauthenticated state)
+  if (scopeAppState !== undefined && opts.device && opts.config.package) {
+    if (scopeAppState) {
+      await opts.device.restoreAppState(opts.config.package, scopeAppState);
+    } else {
+      await opts.device.clearAppData(opts.config.package);
+    }
+    await opts.device.restartApp(opts.config.package);
+  }
 
   // Determine if any test/suite in this context uses `.only`
   const hasOnlyTests = ctx.tests.some((t) => t.only);
@@ -354,6 +375,7 @@ async function runSuiteContext(
         fullName,
         status: 'skipped',
         durationMs: 0,
+        project: opts.projectName,
       };
       result.tests.push(skippedResult);
       opts.reporter?.onTestEnd?.(skippedResult);
@@ -588,6 +610,8 @@ async function runSuiteContext(
               outputDir,
               sourceFiles,
               networkEntries,
+              project: opts.projectName,
+              appState: scopeAppState || undefined,
             });
           } catch {
             // Trace packaging is best-effort
@@ -605,6 +629,7 @@ async function runSuiteContext(
       error,
       screenshotPath,
       tracePath,
+      project: opts.projectName,
     };
     result.tests.push(testResult);
     opts.reporter?.onTestEnd?.(testResult);
@@ -704,6 +729,12 @@ export async function runTestFile(
   await import(filePath);
 
   const rootCtx = popContext();
+
+  // Apply project-level use options as a base layer under file-level test.use()
+  if (opts.projectUseOptions) {
+    rootCtx.useOptions = { ...opts.projectUseOptions, ...rootCtx.useOptions };
+  }
+
   const registry = getFixtureRegistry();
 
   // Resolve worker-scoped fixtures once for the entire file

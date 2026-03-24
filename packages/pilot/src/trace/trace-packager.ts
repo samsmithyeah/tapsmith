@@ -36,6 +36,10 @@ export interface PackageOptions {
   sourceFiles?: string[]
   /** Captured network entries to include. */
   networkEntries?: NetworkEntry[]
+  /** Project name this test belongs to. */
+  project?: string
+  /** Path to the app state archive restored before this test. */
+  appState?: string
 }
 
 /**
@@ -83,6 +87,8 @@ export function packageTrace(
     actionCount: collector.currentActionIndex,
     screenshotCount: collector.screenshots.length,
     error: options.error,
+    project: options.project,
+    appState: options.appState,
   }
   zipData['metadata.json'] = new TextEncoder().encode(
     JSON.stringify(metadata, null, 2),
@@ -148,7 +154,8 @@ export function packageTrace(
   // Write to output directory
   fs.mkdirSync(options.outputDir, { recursive: true })
   const safeName = safeFileName(options.testName)
-  const zipPath = path.join(options.outputDir, `trace-${safeName}-${options.startTime}.zip`)
+  const projectPrefix = options.project ? `${safeFileName(options.project)}-` : ''
+  const zipPath = path.join(options.outputDir, `trace-${projectPrefix}${safeName}-${options.startTime}.zip`)
   fs.writeFileSync(zipPath, zipped)
 
   // Clean up temporary screenshot files

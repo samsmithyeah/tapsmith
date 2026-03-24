@@ -98,6 +98,22 @@ impl PilotServiceImpl {
         screenshot::capture_for_error(serial.as_deref()).await
     }
 
+    async fn action_error(
+        &self,
+        request_id: String,
+        error_type: &str,
+        error_message: String,
+    ) -> Response<proto::ActionResponse> {
+        let screenshot = self.error_screenshot().await;
+        Response::new(proto::ActionResponse {
+            request_id,
+            success: false,
+            error_type: error_type.to_string(),
+            error_message,
+            screenshot,
+        })
+    }
+
     /// Clean up network proxy state: revert device proxy settings, remove CA
     /// cert, and stop the proxy. Called during graceful shutdown to ensure the
     /// device isn't left with a dangling proxy configuration.
@@ -2077,6 +2093,272 @@ impl proto::pilot_service_server::PilotService for PilotServiceImpl {
             request_id,
             logcat,
             error_message: String::new(),
+        }))
+    }
+
+    // ─── App State Snapshot (PILOT-115) ───
+
+    #[instrument(skip_all, fields(request_id))]
+    async fn save_app_state(
+        &self,
+        request: Request<proto::SaveAppStateRequest>,
+    ) -> Result<Response<proto::ActionResponse>, Status> {
+        let req = request.into_inner();
+        let request_id = Self::request_id(&req.request_id);
+        let serial = self.active_serial().await?;
+
+        Self::validate_package_name(&req.package_name)?;
+        if req.path.is_empty() {
+            return Err(Status::invalid_argument("path is required"));
+        }
+
+        let pkg = &req.package_name;
+        let local_path = &req.path;
+        let device_tmp = format!("/data/local/tmp/pilot-app-state-{}.tar.gz", Uuid::new_v4());
+        let data_dir = format!("/data/data/{pkg}");
+        let tar_timeout = Duration::from_secs(300);
+
+        // 1. Force-stop the app to avoid data corruption
+        if let Err(e) = adb::shell(&serial, &format!("am force-stop {pkg}")).await {
+            warn!(%pkg, "Failed to force-stop app before save: {e}");
+        }
+
+        // 2. Determine access strategy: root or run-as
+        let is_root = adb::shell_lenient(&serial, "id")
+            .await
+            .map(|out| out.contains("uid=0"))
+            .unwrap_or(false);
+
+        // 3. Create tar.gz archive on device
+        let tar_result = if is_root {
+            adb::shell_with_timeout(
+                &serial,
+                &format!("tar czf {device_tmp} -C {data_dir} ."),
+                tar_timeout,
+            )
+            .await
+        } else {
+            // run-as fallback for debuggable apps on physical devices
+            adb::shell_with_timeout(
+                &serial,
+                &format!("run-as {pkg} tar czf {device_tmp} -C {data_dir} ."),
+                tar_timeout,
+            )
+            .await
+        };
+
+        if let Err(e) = tar_result {
+            let _ = adb::shell_lenient(&serial, &format!("rm -f {device_tmp}")).await;
+            return Ok(self
+                .action_error(
+                    request_id,
+                    "APP_STATE_SAVE_FAILED",
+                    format!("Failed to archive app data: {e}"),
+                )
+                .await);
+        }
+
+        // 4. Pull archive to host
+        if let Err(e) = adb::pull_file(&serial, &device_tmp, local_path).await {
+            let _ = adb::shell_lenient(&serial, &format!("rm -f {device_tmp}")).await;
+            return Ok(self
+                .action_error(
+                    request_id,
+                    "APP_STATE_SAVE_FAILED",
+                    format!("Failed to pull app state archive: {e}"),
+                )
+                .await);
+        }
+
+        // 5. Clean up temp file on device
+        let _ = adb::shell_lenient(&serial, &format!("rm -f {device_tmp}")).await;
+
+        info!(%pkg, %local_path, "App state saved");
+        Ok(Response::new(proto::ActionResponse {
+            request_id,
+            success: true,
+            error_type: String::new(),
+            error_message: String::new(),
+            screenshot: Vec::new(),
+        }))
+    }
+
+    #[instrument(skip_all, fields(request_id))]
+    async fn restore_app_state(
+        &self,
+        request: Request<proto::RestoreAppStateRequest>,
+    ) -> Result<Response<proto::ActionResponse>, Status> {
+        let req = request.into_inner();
+        let request_id = Self::request_id(&req.request_id);
+        let serial = self.active_serial().await?;
+
+        Self::validate_package_name(&req.package_name)?;
+        if req.path.is_empty() {
+            return Err(Status::invalid_argument("path is required"));
+        }
+
+        let pkg = &req.package_name;
+        let local_path = &req.path;
+        let device_tmp = format!("/data/local/tmp/pilot-app-state-{}.tar.gz", Uuid::new_v4());
+        let data_dir = format!("/data/data/{pkg}");
+        let tar_timeout = Duration::from_secs(300);
+
+        // Verify local archive exists
+        if !std::path::Path::new(local_path).exists() {
+            return Err(Status::invalid_argument(format!(
+                "App state archive not found: {local_path}"
+            )));
+        }
+
+        // 1. Force-stop the app
+        if let Err(e) = adb::shell(&serial, &format!("am force-stop {pkg}")).await {
+            warn!(%pkg, "Failed to force-stop app before restore: {e}");
+        }
+
+        // 2. Clear app data — creates clean data dir with correct base permissions
+        match adb::shell(&serial, &format!("pm clear {pkg}")).await {
+            Ok(output) if !output.trim().starts_with("Success") => {
+                return Ok(self
+                    .action_error(
+                        request_id,
+                        "APP_STATE_RESTORE_FAILED",
+                        format!("pm clear failed: {}", output.trim()),
+                    )
+                    .await);
+            }
+            Err(e) => {
+                return Ok(self
+                    .action_error(
+                        request_id,
+                        "APP_STATE_RESTORE_FAILED",
+                        format!("Failed to clear app data: {e}"),
+                    )
+                    .await);
+            }
+            _ => {}
+        }
+
+        // 3. Push archive to device
+        if let Err(e) = adb::push_file(&serial, local_path, &device_tmp).await {
+            let _ = adb::shell_lenient(&serial, &format!("rm -f {device_tmp}")).await;
+            return Ok(self
+                .action_error(
+                    request_id,
+                    "APP_STATE_RESTORE_FAILED",
+                    format!("Failed to push app state archive: {e}"),
+                )
+                .await);
+        }
+
+        // 4. Determine access strategy
+        let is_root = adb::shell_lenient(&serial, "id")
+            .await
+            .map(|out| out.contains("uid=0"))
+            .unwrap_or(false);
+
+        // 5. Extract archive into app data dir
+        let tar_result = if is_root {
+            adb::shell_with_timeout(
+                &serial,
+                &format!("tar xzf {device_tmp} -C {data_dir}"),
+                tar_timeout,
+            )
+            .await
+        } else {
+            adb::shell_with_timeout(
+                &serial,
+                &format!("run-as {pkg} tar xzf {device_tmp} -C {data_dir}"),
+                tar_timeout,
+            )
+            .await
+        };
+
+        if let Err(e) = tar_result {
+            let _ = adb::shell_lenient(&serial, &format!("rm -f {device_tmp}")).await;
+            return Ok(self
+                .action_error(
+                    request_id,
+                    "APP_STATE_RESTORE_FAILED",
+                    format!("Failed to extract app state archive: {e}"),
+                )
+                .await);
+        }
+
+        // 6. Fix ownership and SELinux context (root only)
+        if is_root {
+            // Get the app's UID from the data directory
+            let uid_output =
+                match adb::shell_lenient(&serial, &format!("stat -c '%u' {data_dir}")).await {
+                    Ok(output) => output,
+                    Err(e) => {
+                        let _ = adb::shell_lenient(&serial, &format!("rm -f {device_tmp}")).await;
+                        return Ok(self
+                            .action_error(
+                                request_id,
+                                "APP_STATE_RESTORE_FAILED",
+                                format!("Failed to determine app UID via stat: {e}"),
+                            )
+                            .await);
+                    }
+                };
+            let uid = uid_output.trim().to_string();
+
+            if uid.is_empty() {
+                let _ = adb::shell_lenient(&serial, &format!("rm -f {device_tmp}")).await;
+                return Ok(self
+                    .action_error(
+                        request_id,
+                        "APP_STATE_RESTORE_FAILED",
+                        "Failed to determine app UID: stat returned empty output".to_string(),
+                    )
+                    .await);
+            }
+
+            if let Err(e) = adb::shell_with_timeout(
+                &serial,
+                &format!("chown -R {uid}:{uid} {data_dir}"),
+                Duration::from_secs(60),
+            )
+            .await
+            {
+                let _ = adb::shell_lenient(&serial, &format!("rm -f {device_tmp}")).await;
+                return Ok(self
+                    .action_error(
+                        request_id,
+                        "APP_STATE_RESTORE_FAILED",
+                        format!("Failed to fix ownership on restored app state: {e}"),
+                    )
+                    .await);
+            }
+
+            if let Err(e) = adb::shell_with_timeout(
+                &serial,
+                &format!("restorecon -R {data_dir}"),
+                Duration::from_secs(60),
+            )
+            .await
+            {
+                let _ = adb::shell_lenient(&serial, &format!("rm -f {device_tmp}")).await;
+                return Ok(self
+                    .action_error(
+                        request_id,
+                        "APP_STATE_RESTORE_FAILED",
+                        format!("Failed to fix SELinux context on restored app state: {e}"),
+                    )
+                    .await);
+            }
+        }
+
+        // 7. Clean up temp file
+        let _ = adb::shell_lenient(&serial, &format!("rm -f {device_tmp}")).await;
+
+        info!(%pkg, %local_path, "App state restored");
+        Ok(Response::new(proto::ActionResponse {
+            request_id,
+            success: true,
+            error_type: String::new(),
+            error_message: String::new(),
+            screenshot: Vec::new(),
         }))
     }
 }

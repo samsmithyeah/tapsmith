@@ -263,17 +263,19 @@ async function discoverTestFiles(
   patterns: string[],
   rootDir: string,
   explicitFiles?: string[],
+  extraIgnore?: string[],
 ): Promise<string[]> {
   if (explicitFiles && explicitFiles.length > 0) {
     return explicitFiles.map((f) => path.resolve(rootDir, f));
   }
 
+  const ignore = ['**/node_modules/**', '**/dist/**', ...(extraIgnore ?? [])];
   const files: string[] = [];
   for (const pattern of patterns) {
     const matches = await glob(pattern, {
       cwd: rootDir,
       absolute: true,
-      ignore: ['**/node_modules/**', '**/dist/**'],
+      ignore,
     });
     files.push(...matches);
   }
@@ -556,17 +558,89 @@ async function main(): Promise<void> {
     config.trace = args.trace as PilotConfig['trace'];
   }
 
-  // Discover test files
-  let testFiles = await discoverTestFiles(config.testMatch, config.rootDir, args.files);
+  // ─── Project resolution & test file discovery ───
+  const { resolveProjects, topologicalSort, collectTransitiveDeps, findProjectForFile } = await import('./project.js');
+  const hasProjects = config.projects && config.projects.length > 0;
+  const hasExplicitFiles = args.files && args.files.length > 0;
+
+  let projects: import('./project.js').ResolvedProject[];
+  let projectWaves: import('./project.js').ResolvedProject[][];
+
+  if (hasProjects && !hasExplicitFiles) {
+    // Full project mode — discover all files per project
+    projects = resolveProjects(config);
+    projectWaves = topologicalSort(projects);
+    for (const project of projects) {
+      project.testFiles = await discoverTestFiles(project.testMatch, config.rootDir, undefined, project.testIgnore);
+    }
+  } else if (hasProjects && hasExplicitFiles) {
+    // Explicit files with projects — auto-run dependencies
+    const allProjects = resolveProjects(config);
+    const explicitPaths = args.files.map((f: string) => path.resolve(config.rootDir, f));
+
+    // Find which projects the explicit files belong to
+    const targetProjectNames = new Set<string>();
+    for (const filePath of explicitPaths) {
+      const projectName = findProjectForFile(filePath, allProjects, config.rootDir);
+      if (projectName) {
+        targetProjectNames.add(projectName);
+      }
+    }
+
+    // Collect transitive dependencies
+    const requiredNames = collectTransitiveDeps(targetProjectNames, allProjects);
+
+    // Filter to only required projects
+    projects = allProjects.filter((p) => requiredNames.has(p.name));
+    projectWaves = topologicalSort(projects);
+
+    // Discover files: dependency projects get their full testMatch, target projects get only explicit files
+    for (const project of projects) {
+      if (targetProjectNames.has(project.name)) {
+        // Only run the explicit files that belong to this project
+        project.testFiles = explicitPaths.filter(
+          (f: string) => findProjectForFile(f, [project], config.rootDir) === project.name,
+        );
+      } else {
+        // Dependency project — run all its files
+        project.testFiles = await discoverTestFiles(project.testMatch, config.rootDir, undefined, project.testIgnore);
+      }
+    }
+  } else {
+    // No projects configured — single default project
+    const defaultProject: import('./project.js').ResolvedProject = {
+      name: 'default', testMatch: config.testMatch, testIgnore: [], dependencies: [], testFiles: [],
+    };
+    defaultProject.testFiles = await discoverTestFiles(config.testMatch, config.rootDir, args.files);
+    projects = [defaultProject];
+    projectWaves = [[defaultProject]];
+  }
+
+  // Flat list for backward-compatible code paths (reporters, tsx check, etc.)
+  let testFiles = projects.flatMap((p) => p.testFiles);
+  // Deduplicate (a file could match multiple projects' globs)
+  testFiles = [...new Set(testFiles)].sort();
+
   if (testFiles.length === 0) {
     console.error(red('No test files found.'));
     process.exit(1);
   }
 
-  // Apply sharding — deterministic split across CI machines
+  // Apply sharding — deterministic split within each project. Projects that
+  // are dependencies of other projects run in full on every shard (like setup).
   if (config.shard) {
     const { current, total } = config.shard;
-    testFiles = testFiles.filter((_, i) => i % total === current - 1);
+    if (hasProjects) {
+      // Find projects that are depended on by others — these must not be sharded
+      const depTargets = new Set(projects.flatMap((p) => p.dependencies));
+      for (const project of projects) {
+        if (depTargets.has(project.name)) continue; // run in full on every shard
+        project.testFiles = project.testFiles.filter((_, i) => i % total === current - 1);
+      }
+      testFiles = projects.flatMap((p) => p.testFiles);
+    } else {
+      testFiles = testFiles.filter((_, i) => i % total === current - 1);
+    }
     if (testFiles.length === 0) {
       console.log(dim(`Shard ${current}/${total}: no test files in this shard.`));
       process.exit(0);
@@ -604,9 +678,13 @@ async function main(): Promise<void> {
   reporter.onRunStart(config, testFiles.length);
 
   // ─── Parallel mode ───
-  // Fall back to sequential when there's only one test file — no point
-  // spinning up the full dispatcher/worker infrastructure for a single file.
-  if (config.workers > 1 && testFiles.length > 1) {
+  // Fall back to sequential when parallelism wouldn't help — either there's
+  // only one test file, or all files are in sequential waves (e.g. setup → dependent).
+  const maxFilesInAnyWave = Math.max(...projectWaves.map((wave) =>
+    wave.reduce((sum, p) => sum + p.testFiles.length, 0),
+  ));
+  const effectiveWorkers = Math.min(config.workers, maxFilesInAnyWave);
+  if (effectiveWorkers > 1) {
     // The dispatcher manages its own daemons — one per worker — each with
     // exclusive ADB access to its assigned device. No discovery daemon needed.
     const { runParallel } = await import('./dispatcher.js');
@@ -615,6 +693,8 @@ async function main(): Promise<void> {
       reporter,
       testFiles,
       workers: config.workers,
+      projects: hasProjects ? projects : undefined,
+      projectWaves: hasProjects ? projectWaves : undefined,
     });
 
     await reporter.onRunEnd(fullResult);
@@ -767,48 +847,93 @@ async function main(): Promise<void> {
         ? path.resolve(config.rootDir, config.outputDir, 'screenshots')
         : undefined;
 
-    for (let i = 0; i < testFiles.length; i++) {
-      const file = testFiles[i];
+    let fileIndex = 0;
+    const failedProjects = new Set<string>();
+    const projectsWithFiles = projects.filter((p) => p.testFiles.length > 0);
+    const showProjectHeaders = projectsWithFiles.length > 1;
 
-      if (i > 0 && config.package) {
-        try {
-          await launchConfiguredApp({
-            label: `Device ${config.device}`,
+    for (const wave of projectWaves) {
+      for (const project of wave) {
+        // Skip projects whose dependencies failed
+        const blockedBy = project.dependencies.find((d) => failedProjects.has(d));
+        if (blockedBy) {
+          console.log(dim(`Skipping project "${project.name}" — dependency "${blockedBy}" failed`));
+          // Mark all tests in this project as skipped
+          for (const file of project.testFiles) {
+            reporter.onTestFileStart(file);
+            const skippedResult: TestResult = {
+              name: path.basename(file),
+              fullName: path.basename(file),
+              status: 'skipped',
+              durationMs: 0,
+              project: project.name,
+            };
+            allResults.push(skippedResult);
+            reporter.onTestFileEnd(file, [skippedResult]);
+          }
+          failedProjects.add(project.name);
+          continue;
+        }
+
+        let projectFailed = false;
+
+        if (showProjectHeaders && project.testFiles.length > 0) {
+          process.stdout.write(`\n${dim(`  ── Project: ${project.name} ──`)}\n`);
+        }
+
+        for (const file of project.testFiles) {
+          if (fileIndex > 0 && config.package) {
+            try {
+              await launchConfiguredApp({
+                label: `Device ${config.device}`,
+                config,
+                device,
+                client,
+                agentApkPath: resolvedAgentApk,
+                agentTestApkPath: resolvedAgentTestApk,
+                deviceSerial: config.device,
+              }, `reset before ${path.basename(file)}`);
+
+              const pong = await client.ping();
+              if (!pong.agentConnected) {
+                console.error(red('Agent disconnected after app reset. Aborting.'));
+                sequentialExitCode = 1;
+                return;
+              }
+            } catch (err) {
+              console.error(red(`Failed to reset app between test files: ${err}`));
+              sequentialExitCode = 1;
+              return;
+            }
+          }
+
+          reporter.onTestFileStart(file);
+
+          const suiteResult = await runTestFile(file, {
             config,
             device,
-            client,
-            agentApkPath: resolvedAgentApk,
-            agentTestApkPath: resolvedAgentTestApk,
-            deviceSerial: config.device,
-          }, `reset before ${path.basename(file)}`);
+            screenshotDir,
+            reporter,
+            projectUseOptions: project.use,
+            projectName: project.name !== 'default' ? project.name : undefined,
+          });
 
-          const pong = await client.ping();
-          if (!pong.agentConnected) {
-            console.error(red('Agent disconnected after app reset. Aborting.'));
-            sequentialExitCode = 1;
-            return;
+          const fileResults = collectResults(suiteResult);
+          allResults.push(...fileResults);
+          allSuites.push(suiteResult);
+
+          reporter.onTestFileEnd(file, fileResults);
+          fileIndex++;
+
+          if (fileResults.some((r) => r.status === 'failed')) {
+            projectFailed = true;
           }
-        } catch (err) {
-          console.error(red(`Failed to reset app between test files: ${err}`));
-          sequentialExitCode = 1;
-          return;
+        }
+
+        if (projectFailed) {
+          failedProjects.add(project.name);
         }
       }
-
-      reporter.onTestFileStart(file);
-
-      const suiteResult = await runTestFile(file, {
-        config,
-        device,
-        screenshotDir,
-        reporter,
-      });
-
-      const fileResults = collectResults(suiteResult);
-      allResults.push(...fileResults);
-      allSuites.push(suiteResult);
-
-      reporter.onTestFileEnd(file, fileResults);
     }
 
     const totalDurationMs = Date.now() - sequentialStart;

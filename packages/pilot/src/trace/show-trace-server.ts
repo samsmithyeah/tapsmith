@@ -178,6 +178,8 @@ function buildFallbackViewer(): string {
       html += '<dt>File</dt><dd>' + esc(meta.testFile) + '</dd>'
       html += '<dt>Duration</dt><dd>' + meta.testDuration + 'ms</dd>'
       html += '<dt>Device</dt><dd>' + esc(meta.device.serial) + (meta.device.model ? ' (' + esc(meta.device.model) + ')' : '') + '</dd>'
+      if (meta.project) html += '<dt>Project</dt><dd>' + esc(meta.project) + '</dd>'
+      if (meta.appState) html += '<dt>App State</dt><dd>' + esc(meta.appState) + '</dd>'
       html += '<dt>Actions</dt><dd>' + meta.actionCount + '</dd>'
       html += '<dt>Screenshots</dt><dd>' + meta.screenshotCount + '</dd>'
       if (meta.error) html += '<dt>Error</dt><dd style="color:#e74c3c">' + esc(meta.error) + '</dd>'

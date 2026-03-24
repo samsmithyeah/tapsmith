@@ -20,16 +20,19 @@ import {
   formatError,
   formatSummaryLine,
   workerTag,
+  projectTag,
 } from './base.js'
 
 export class LineReporter implements PilotReporter {
   private _completed = 0
   private _failed: TestResult[] = []
   private _isTTY = process.stdout.isTTY ?? false
+  private _showProjectTags = false
 
-  onRunStart(_config: PilotConfig, fileCount: number): void {
+  onRunStart(config: PilotConfig, fileCount: number): void {
     this._completed = 0
     this._failed = []
+    this._showProjectTags = config.workers > 1 && (config.projects?.length ?? 0) > 1
     process.stdout.write(`\nRunning tests from ${fileCount} file(s)\n\n`)
   }
 
@@ -43,7 +46,8 @@ export class LineReporter implements PilotReporter {
         // Clear current line first
         process.stdout.write('\x1b[2K\r')
       }
-      process.stdout.write(`  ${statusIcon('failed')} ${workerTag(test.workerIndex)}${test.fullName} ${dim(`(${formatDuration(test.durationMs)})`)}\n`)
+      const project = this._showProjectTags ? projectTag(test.project) : ''
+      process.stdout.write(`  ${statusIcon('failed')} ${workerTag(test.workerIndex)}${project}${test.fullName} ${dim(`(${formatDuration(test.durationMs)})`)}\n`)
       if (test.error) {
         process.stdout.write(formatError(test.error) + '\n')
       }
@@ -55,7 +59,8 @@ export class LineReporter implements PilotReporter {
       const icon = statusIcon(test.status)
       const duration = dim(`(${formatDuration(test.durationMs)})`)
       const worker = workerTag(test.workerIndex)
-      const line = `  ${icon} [${this._completed}] ${worker}${test.fullName} ${duration}`
+      const project = this._showProjectTags ? projectTag(test.project) : ''
+      const line = `  ${icon} [${this._completed}] ${worker}${project}${test.fullName} ${duration}`
       // Truncate to terminal width
       const maxWidth = process.stdout.columns ?? 80
       const truncated = line.length > maxWidth ? line.slice(0, maxWidth - 1) + '…' : line
@@ -79,7 +84,8 @@ export class LineReporter implements PilotReporter {
     if (this._failed.length > 0) {
       process.stdout.write(bold(red('Failures:\n\n')))
       for (const test of this._failed) {
-        process.stdout.write(`  ${red('✗')} ${workerTag(test.workerIndex)}${test.fullName}\n`)
+        const project = this._showProjectTags ? projectTag(test.project) : ''
+        process.stdout.write(`  ${red('✗')} ${workerTag(test.workerIndex)}${project}${test.fullName}\n`)
         if (test.error) {
           process.stdout.write(formatError(test.error) + '\n\n')
         }

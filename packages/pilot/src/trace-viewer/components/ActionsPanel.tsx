@@ -181,6 +181,14 @@ export function ActionsPanel({ events, actionEvents, selectedIndex, pinnedIndex,
             <span class="metadata-value">{metadata.screenshotCount}</span>
             <span class="metadata-label">Pilot</span>
             <span class="metadata-value">v{metadata.pilotVersion}</span>
+            {metadata.project && <>
+              <span class="metadata-label">Project</span>
+              <span class="metadata-value">{metadata.project}</span>
+            </>}
+            {metadata.appState && <>
+              <span class="metadata-label">App State</span>
+              <span class="metadata-value">{metadata.appState}</span>
+            </>}
             {metadata.error && <>
               <span class="metadata-label">Error</span>
               <span class="metadata-value" style={{ color: 'var(--color-error)' }}>{metadata.error}</span>

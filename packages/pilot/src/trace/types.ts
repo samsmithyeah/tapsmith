@@ -207,6 +207,10 @@ export interface TraceMetadata {
   screenshotCount: number
   /** Error message if the test failed. */
   error?: string
+  /** Project name this test belongs to (when projects are configured). */
+  project?: string
+  /** Path to the app state archive restored before this test. */
+  appState?: string
 }
 
 export interface TraceDeviceInfo {
