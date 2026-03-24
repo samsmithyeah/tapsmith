@@ -1,5 +1,5 @@
 import { render } from 'preact'
-import { useState, useCallback, useMemo, useRef } from 'preact/hooks'
+import { useState, useCallback, useMemo, useRef, useEffect } from 'preact/hooks'
 import type { ServerMessage, ClientMessage } from './ui-protocol.js'
 import type { AnyTraceEvent, ActionTraceEvent, AssertionTraceEvent, TraceMetadata, NetworkEntry } from '../trace/types.js'
 import { useWebSocket } from './hooks/use-websocket.js'
@@ -47,6 +47,18 @@ function emptyTraceData(filePath?: string): TestTraceData {
 
 // ─── App ───
 
+/** Per-worker status from the server. */
+interface WorkerInfo {
+  workerId: number
+  deviceSerial: string
+  status: 'idle' | 'running' | 'done' | 'initializing' | 'error'
+  currentFile?: string
+  currentTest?: string
+  passed: number
+  failed: number
+  skipped: number
+}
+
 function App() {
   const [connected, setConnected] = useState(false)
   const [isRunning, setIsRunning] = useState(false)
@@ -55,6 +67,11 @@ function App() {
     const stored = localStorage.getItem('pilot-ui-theme')
     return (stored === 'light' || stored === 'dark' || stored === 'system') ? stored : 'system'
   })
+
+  // Multi-worker state
+  const [workers, setWorkers] = useState<WorkerInfo[]>([])
+  /** Maps test fullName → workerId that ran it. */
+  const testWorkerMapRef = useRef<Map<string, number>>(new Map())
 
   // Per-test trace data, keyed by test fullName
   const [testTraces, setTestTraces] = useState<Map<string, TestTraceData>>(new Map())
@@ -172,9 +189,15 @@ function App() {
         setPinnedIndex(0)
         setHoveredIndex(null)
         setShowLiveDevice(true)
+        if (!msg.filePath && !msg.testFilter) {
+          // Full run — clear worker mappings
+          testWorkerMapRef.current.clear()
+        }
         break
       case 'run-end':
         setIsRunning(false)
+        // Clear any tests/suites/files stuck in 'running' (e.g. after stop).
+        tree.resetRunningStatuses()
         break
       case 'test-start':
         // Update ref immediately (no batching delay)
@@ -182,6 +205,10 @@ function App() {
         setActiveTestName(msg.fullName)
         setPinnedIndex(0)
         setHoveredIndex(null)
+        // Track which worker ran this test
+        if (msg.workerId != null) {
+          testWorkerMapRef.current.set(msg.fullName, msg.workerId)
+        }
         // Mark this test (and its parent describe/file) as running
         tree.updateTestStatus(msg.fullName, msg.filePath, 'running')
         // Auto-select this test in the explorer
@@ -195,6 +222,9 @@ function App() {
         })
         break
       case 'test-status':
+        if (msg.workerId != null) {
+          testWorkerMapRef.current.set(msg.fullName, msg.workerId)
+        }
         tree.updateTestStatus(msg.fullName, msg.filePath, msg.status, msg.duration, msg.error)
         break
       case 'file-status':
@@ -298,6 +328,32 @@ function App() {
       case 'device-info':
         setDeviceSerial(msg.serial)
         break
+      case 'workers-info':
+        setWorkers(msg.workers.map((w) => ({
+          ...w,
+          status: 'idle' as const,
+          passed: 0,
+          failed: 0,
+          skipped: 0,
+        })))
+        break
+      case 'worker-status':
+        setWorkers((prev) => {
+          const idx = prev.findIndex((w) => w.workerId === msg.workerId)
+          if (idx === -1) return prev
+          const next = [...prev]
+          next[idx] = {
+            ...next[idx],
+            status: msg.status,
+            currentFile: msg.currentFile,
+            currentTest: msg.currentTest,
+            passed: msg.passed,
+            failed: msg.failed,
+            skipped: msg.skipped,
+          }
+          return next
+        })
+        break
       case 'error':
         console.error('[Pilot UI]', msg.message)
         break
@@ -342,6 +398,17 @@ function App() {
     })
   }, [])
 
+  // Auto-switch device mirror to the worker that ran the viewed test.
+  const lastSentWorkerRef = useRef<number | undefined>(undefined)
+  useEffect(() => {
+    if (!viewedTestName || workers.length < 2) return
+    const wid = testWorkerMapRef.current.get(viewedTestName)
+    if (wid != null && wid !== lastSentWorkerRef.current) {
+      lastSentWorkerRef.current = wid
+      send({ type: 'select-worker', workerId: wid })
+    }
+  }, [viewedTestName, workers.length, send])
+
   const handleActionPin = useCallback((index: number) => {
     setPinnedIndex(index)
     setShowLiveDevice(false)
@@ -362,6 +429,7 @@ function App() {
           hasProjectDeps={hasProjectDeps}
           runDepsFirst={runDepsFirst}
           onToggleRunDeps={handleToggleRunDeps}
+          workers={workers}
         />
       }
       testExplorer={
@@ -728,6 +796,38 @@ html, body, #app {
 .rc-stop { color: var(--color-error); }
 .rc-watch-all.active { color: var(--color-accent); border-color: var(--color-accent); background: rgba(79,193,255,0.1); }
 .rc-deps-toggle.active { color: var(--color-accent); border-color: var(--color-accent); background: rgba(79,193,255,0.1); }
+
+.rc-worker-count {
+  font-size: 10px;
+  color: var(--color-text-muted);
+  margin-left: 4px;
+  padding: 1px 5px;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  font-family: var(--font-mono);
+}
+
+.rc-workers { display: flex; align-items: center; gap: 3px; margin-left: 8px; padding-left: 8px; border-left: 1px solid var(--border); }
+
+.rc-worker-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 3px 7px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--color-text-muted);
+  font-size: 11px;
+  font-family: var(--font-ui);
+}
+
+.rc-worker-dot { font-size: 10px; }
+.rc-worker-dot.worker-running { color: var(--color-accent); animation: pulse 1s infinite; }
+.rc-worker-dot.worker-done { color: var(--color-success); }
+.rc-worker-dot.worker-init { color: var(--color-warning); }
+.rc-worker-dot.worker-error { color: var(--color-error); }
+
+.rc-worker-id { font-family: var(--font-mono); font-size: 10px; }
 
 .rc-counts { display: flex; gap: 8px; font-size: 12px; }
 .rc-count.passed { color: var(--color-success); }

@@ -69,6 +69,11 @@ export function useTestTree() {
     setFiles((prev) => updateWatchInTree(prev, filePath, enabled))
   }, [])
 
+  /** Reset any 'running' nodes back to 'idle' (e.g. after a stopped run). */
+  const resetRunningStatuses = useCallback(() => {
+    setFiles((prev) => prev.map(resetRunningInTree))
+  }, [])
+
   // Filter the tree based on name and status
   const filteredFiles = useMemo(() => {
     if (!nameFilter && statusFilter === 'all') return files
@@ -109,6 +114,7 @@ export function useTestTree() {
     updateTestStatus,
     updateFileStatus,
     updateWatchEnabled,
+    resetRunningStatuses,
   }
 }
 
@@ -235,6 +241,20 @@ function updateWatchInTree(
     }
     return node
   })
+}
+
+/**
+ * Recursively reset any 'running' node (test, suite, file, project)
+ * back to 'idle'. Used when a run is stopped mid-flight.
+ */
+function resetRunningInTree(node: TestTreeNode): TestTreeNode {
+  const status = node.status === 'running' ? 'idle' as const : node.status
+  if (!node.children) {
+    return status !== node.status ? { ...node, status } : node
+  }
+  const children = node.children.map(resetRunningInTree)
+  const changed = status !== node.status || children.some((c, i) => c !== node.children![i])
+  return changed ? { ...node, status, children } : node
 }
 
 function filterTree(

@@ -610,13 +610,8 @@ async function main(): Promise<void> {
       // UI mode has its own watch — ignore --watch
       args.watch = false;
     }
-    // UI mode currently supports a single device
-    if (config.workers > 1) {
-      if (args.tsxReexec) {
-        process.stderr.write(`${YELLOW}UI mode currently uses a single device. Ignoring --workers.${RESET}\n`);
-      }
-      config.workers = 1;
-    }
+    // UI mode supports parallel workers when multiple devices are available.
+    // config.workers is left as-is; the UI server handles multi-device setup.
   }
 
   // ─── Project resolution & test file discovery ───
@@ -739,27 +734,30 @@ async function main(): Promise<void> {
   reporter.onRunStart(config, testFiles.length);
 
   // ─── Parallel mode ───
+  // UI and watch modes handle their own execution — skip the dispatcher path.
   // Fall back to sequential when parallelism wouldn't help — either there's
   // only one test file, or all files are in sequential waves (e.g. setup → dependent).
-  const maxFilesInAnyWave = Math.max(...projectWaves.map((wave) =>
-    wave.reduce((sum, p) => sum + p.testFiles.length, 0),
-  ));
-  const effectiveWorkers = Math.min(config.workers, maxFilesInAnyWave);
-  if (effectiveWorkers > 1) {
-    // The dispatcher manages its own daemons — one per worker — each with
-    // exclusive ADB access to its assigned device. No discovery daemon needed.
-    const { runParallel } = await import('./dispatcher.js');
-    const fullResult = await runParallel({
-      config,
-      reporter,
-      testFiles,
-      workers: config.workers,
-      projects: hasProjects ? projects : undefined,
-      projectWaves: hasProjects ? projectWaves : undefined,
-    });
+  if (!args.ui && !args.watch) {
+    const maxFilesInAnyWave = Math.max(...projectWaves.map((wave) =>
+      wave.reduce((sum, p) => sum + p.testFiles.length, 0),
+    ));
+    const effectiveWorkers = Math.min(config.workers, maxFilesInAnyWave);
+    if (effectiveWorkers > 1) {
+      // The dispatcher manages its own daemons — one per worker — each with
+      // exclusive ADB access to its assigned device. No discovery daemon needed.
+      const { runParallel } = await import('./dispatcher.js');
+      const fullResult = await runParallel({
+        config,
+        reporter,
+        testFiles,
+        workers: config.workers,
+        projects: hasProjects ? projects : undefined,
+        projectWaves: hasProjects ? projectWaves : undefined,
+      });
 
-    await reporter.onRunEnd(fullResult);
-    process.exit(fullResult.status === 'failed' ? 1 : 0);
+      await reporter.onRunEnd(fullResult);
+      process.exit(fullResult.status === 'failed' ? 1 : 0);
+    }
   }
 
   // ─── Sequential mode (workers: 1, default) ───
@@ -901,6 +899,7 @@ async function main(): Promise<void> {
     // ─── UI mode ───
     // If --ui is set, start the interactive UI server. It keeps the
     // daemon, emulator, and agent alive and serves a Preact SPA.
+    // When workers > 1, the UI server manages its own daemons and workers.
     if (args.ui) {
       const { startUIServer } = await import('./ui-mode/ui-server.js');
 
@@ -908,6 +907,25 @@ async function main(): Promise<void> {
         config.screenshot !== 'never'
           ? path.resolve(config.rootDir, config.outputDir, 'screenshots')
           : undefined;
+
+      // Collect additional device serials for multi-worker mode.
+      // The CLI already set up the first device above; we find more.
+      let uiDeviceSerials: string[] | undefined;
+      if (config.workers > 1) {
+        const allConnected = listConnectedDeviceSerials();
+        // Put the already-configured device first, then add others
+        const others = allConnected.filter((s) => s !== config.device);
+        uiDeviceSerials = [config.device!, ...others].filter(Boolean);
+
+        if (uiDeviceSerials.length < 2) {
+          if (args.tsxReexec) {
+            process.stderr.write(
+              `${YELLOW}Only ${uiDeviceSerials.length} device(s) available. UI mode needs 2+ devices for parallel. Using single-worker mode.${RESET}\n`,
+            );
+          }
+          uiDeviceSerials = undefined;
+        }
+      }
 
       const uiServer = await startUIServer({
         config,
@@ -920,6 +938,8 @@ async function main(): Promise<void> {
         launchedEmulators,
         projects: hasProjects ? projects : undefined,
         projectWaves: hasProjects ? projectWaves : undefined,
+        workers: uiDeviceSerials ? config.workers : undefined,
+        deviceSerials: uiDeviceSerials,
       }, {
         port: args.uiPort,
       });

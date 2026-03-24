@@ -65,6 +65,8 @@ export interface TestStartMessage {
   type: 'test-start'
   fullName: string
   filePath: string
+  /** Worker that is running this test (multi-worker mode only). */
+  workerId?: number
 }
 
 export interface TestStatusMessage {
@@ -76,6 +78,8 @@ export interface TestStatusMessage {
   duration?: number
   error?: string
   tracePath?: string
+  /** Worker that ran this test (multi-worker mode only). */
+  workerId?: number
 }
 
 export interface FileStatusMessage {
@@ -117,10 +121,18 @@ export interface WorkerStatusMessage {
   deviceModel?: string
   currentFile?: string
   currentTest?: string
-  status: 'idle' | 'running' | 'done'
+  status: 'idle' | 'running' | 'done' | 'initializing' | 'error'
   passed: number
   failed: number
   skipped: number
+}
+
+export interface WorkersInfoMessage {
+  type: 'workers-info'
+  workers: Array<{
+    workerId: number
+    deviceSerial: string
+  }>
 }
 
 export interface DeviceInfoMessage {
@@ -161,6 +173,7 @@ export type ServerMessage =
   | HierarchyUpdateMessage
   | WatchEventMessage
   | WorkerStatusMessage
+  | WorkersInfoMessage
   | DeviceInfoMessage
   | SourceMessage
   | NetworkMessage
@@ -220,6 +233,12 @@ export interface SetFilterCommand {
   status?: 'all' | 'passed' | 'failed' | 'skipped'
 }
 
+export interface SelectWorkerCommand {
+  type: 'select-worker'
+  /** Worker ID whose device to mirror. */
+  workerId: number
+}
+
 /** Union of all client → server JSON messages. */
 export type ClientMessage =
   | RunTestCommand
@@ -231,6 +250,7 @@ export type ClientMessage =
   | RequestHierarchyCommand
   | TapCoordinatesCommand
   | SetFilterCommand
+  | SelectWorkerCommand
 
 // ─── Binary frame helpers ───
 
@@ -359,3 +379,116 @@ export interface UIDiscoverErrorMessage {
 export type UIDiscoverChildMessage =
   | UIDiscoverResultMessage
   | UIDiscoverErrorMessage
+
+// ─── UI Worker IPC (persistent worker ↔ UI server) ───
+
+/** Server → UI worker: initialize with device, daemon, config. */
+export interface UIWorkerInitMessage {
+  type: 'init'
+  workerId: number
+  deviceSerial: string
+  daemonPort: number
+  config: import('../worker-protocol.js').SerializedConfig
+  screenshotDir?: string
+  freshEmulator?: boolean
+}
+
+/** Server → UI worker: run a test file. */
+export interface UIWorkerRunFileMessage {
+  type: 'run-file'
+  filePath: string
+  projectUseOptions?: import('../worker-protocol.js').RunFileUseOptions
+  projectName?: string
+  testFilter?: string
+}
+
+/** Server → UI worker: shut down gracefully. */
+export interface UIWorkerShutdownMessage {
+  type: 'shutdown'
+}
+
+export type UIWorkerMessage =
+  | UIWorkerInitMessage
+  | UIWorkerRunFileMessage
+  | UIWorkerShutdownMessage
+
+/** UI worker → server: worker is ready. */
+export interface UIWorkerReadyMessage {
+  type: 'ready'
+  workerId: number
+}
+
+/** UI worker → server: progress during initialization. */
+export interface UIWorkerProgressMessage {
+  type: 'progress'
+  workerId: number
+  message: string
+}
+
+/** UI worker → server: test starting. */
+export interface UIWorkerTestStartMessage {
+  type: 'test-start'
+  workerId: number
+  fullName: string
+  filePath: string
+}
+
+/** UI worker → server: test completed. */
+export interface UIWorkerTestEndMessage {
+  type: 'test-end'
+  workerId: number
+  result: import('../worker-protocol.js').SerializedTestResult
+}
+
+/** UI worker → server: real-time trace event. */
+export interface UIWorkerTraceEventMessage {
+  type: 'trace-event'
+  workerId: number
+  event: AnyTraceEvent
+  screenshotBefore?: string
+  screenshotAfter?: string
+  hierarchyBefore?: string
+  hierarchyAfter?: string
+}
+
+/** UI worker → server: test source code. */
+export interface UIWorkerSourceMessage {
+  type: 'source'
+  workerId: number
+  fileName: string
+  content: string
+}
+
+/** UI worker → server: network entries. */
+export interface UIWorkerNetworkMessage {
+  type: 'network'
+  workerId: number
+  entries: import('../trace/types.js').NetworkEntry[]
+}
+
+/** UI worker → server: file execution completed. */
+export interface UIWorkerFileDoneMessage {
+  type: 'file-done'
+  workerId: number
+  filePath: string
+  results: import('../worker-protocol.js').SerializedTestResult[]
+  suite: import('../worker-protocol.js').SerializedSuiteResult
+}
+
+/** UI worker → server: error. */
+export interface UIWorkerErrorMessage {
+  type: 'error'
+  workerId: number
+  error: { message: string; stack?: string }
+}
+
+export type UIWorkerChildMessage =
+  | UIWorkerReadyMessage
+  | UIWorkerProgressMessage
+  | UIWorkerTestStartMessage
+  | UIWorkerTestEndMessage
+  | UIWorkerTraceEventMessage
+  | UIWorkerSourceMessage
+  | UIWorkerNetworkMessage
+  | UIWorkerFileDoneMessage
+  | UIWorkerErrorMessage

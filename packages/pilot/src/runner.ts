@@ -266,6 +266,13 @@ export interface RunOptions {
   testFilter?: string;
   /** Called with mapped network entries after capture stops. Used by UI mode for live streaming. */
   onNetworkEntries?: (entries: import('./trace/types.js').NetworkEntry[]) => void;
+  /**
+   * Append a unique query parameter to the dynamic import URL so Node.js
+   * treats it as a new module. Required by persistent processes (UI workers)
+   * that re-run the same file — without this, the ESM cache returns the
+   * stale first import and no tests are registered.
+   */
+  bustImportCache?: boolean;
 }
 
 async function captureFailureScreenshot(
@@ -897,9 +904,10 @@ export async function runTestFile(
 
   // Import the test file — this registers tests/suites via side effects
   // and may call test.extend() to register fixtures.
-  // Note: Node.js caches ESM imports, so the same file path cannot be
-  // re-imported in the same process. Each worker runs each file at most once.
-  await import(filePath);
+  // Node.js caches ESM imports by URL. Persistent processes (UI workers)
+  // that re-run the same file must bust the cache with a unique query.
+  const importUrl = opts.bustImportCache ? `${filePath}?t=${Date.now()}` : filePath;
+  await import(importUrl);
 
   const rootCtx = popContext();
 

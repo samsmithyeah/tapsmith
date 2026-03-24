@@ -5,17 +5,21 @@
  * for real-time communication. Manages test discovery, execution (via forked
  * child processes), device screen polling, and watch mode.
  *
+ * Supports both single-worker (existing: forks ui-run.ts per file) and
+ * multi-worker (new: persistent ui-worker.ts processes with work-stealing)
+ * execution modes.
+ *
  * @see PILOT-87
  */
 
 import * as http from 'node:http'
 import * as fs from 'node:fs'
 import * as path from 'node:path'
-import { fork, type ChildProcess } from 'node:child_process'
+import { fork, spawn, type ChildProcess } from 'node:child_process'
 import { watch as chokidarWatch, type FSWatcher } from 'chokidar'
 import { WebSocketServer, type WebSocket } from 'ws'
 import type { PilotConfig } from '../config.js'
-import type { PilotGrpcClient } from '../grpc-client.js'
+import { PilotGrpcClient } from '../grpc-client.js'
 import type { Device } from '../device.js'
 import type { ResolvedProject } from '../project.js'
 import { collectTransitiveDeps } from '../project.js'
@@ -35,6 +39,8 @@ import type {
   UIRunChildMessage,
   UIDiscoverMessage,
   UIDiscoverChildMessage,
+  UIWorkerChildMessage,
+  UIWorkerMessage,
 } from './ui-protocol.js'
 import { encodeScreenFrame } from './ui-protocol.js'
 import { RunQueue } from '../watch-queue.js'
@@ -43,24 +49,58 @@ import { RunQueue } from '../watch-queue.js'
 
 const SPA_HTML_PATH = path.resolve(__dirname, 'index.html')
 
+const DIM = '\x1b[2m'
+const YELLOW = '\x1b[33m'
+const RESET = '\x1b[0m'
+
 // ─── Types ───
 
 export interface UIServerContext {
   config: PilotConfig
-  device: Device
-  client: PilotGrpcClient
-  deviceSerial: string
-  daemonAddress: string
+  /** Single-worker mode device/client (required when workers <= 1). */
+  device?: Device
+  client?: PilotGrpcClient
+  deviceSerial?: string
+  daemonAddress?: string
   testFiles: string[]
   screenshotDir?: string
   launchedEmulators: LaunchedEmulator[]
   projects?: ResolvedProject[]
   /** Dependency-ordered project waves from topologicalSort(). */
   projectWaves?: ResolvedProject[][]
+  /** Number of parallel workers. When > 1, uses multi-worker mode. */
+  workers?: number
+  /** Device serials for multi-worker mode. */
+  deviceSerials?: string[]
 }
 
 export interface UIServerOptions {
   port?: number
+}
+
+interface TaggedFile {
+  filePath: string
+  projectUseOptions?: RunFileUseOptions
+  projectName?: string
+  testFilter?: string
+}
+
+interface UIWorkerHandle {
+  id: number
+  process: ChildProcess
+  deviceSerial: string
+  daemonPort: number
+  agentPort: number
+  daemonProcess?: ChildProcess
+  /** gRPC client for screen polling from this worker's daemon. */
+  screenClient?: PilotGrpcClient
+  busy: boolean
+  currentFile?: TaggedFile
+  currentTest?: string
+  retired?: boolean
+  passed: number
+  failed: number
+  skipped: number
 }
 
 // ─── UI Server ───
@@ -78,6 +118,17 @@ export async function startUIServer(
   let screenPollActive = false
   let watcher: FSWatcher | null = null
   const watchedFiles = new Set<string>()
+
+  // ─── Multi-worker state ───
+  const multiWorker = (ctx.workers ?? 1) > 1 && (ctx.deviceSerials?.length ?? 0) > 1
+  const uiWorkers: UIWorkerHandle[] = []
+  let workersInitialized = false
+  /** Which worker's device to mirror. Defaults to 0. */
+  let selectedWorkerId = 0
+  /** Set to true while a parallel run is in progress, to signal stop. */
+  let parallelRunAborted = false
+  /** Callback to resolve the active dispatch promise on abort. */
+  let abortDispatch: (() => void) | null = null
 
   // Detect whether meaningful projects are configured (not just a synthetic 'default')
   const hasRealProjects = ctx.projects != null
@@ -116,6 +167,12 @@ export async function startUIServer(
   const useTypeScript = !fs.existsSync(jsScript) && fs.existsSync(tsScript)
   const resolvedRunScript = useTypeScript ? tsScript : jsScript
 
+  const jsWorkerScript = path.resolve(__dirname, 'ui-worker.js')
+  const tsWorkerScript = path.resolve(__dirname, 'ui-worker.ts')
+  const resolvedWorkerScript = !fs.existsSync(jsWorkerScript) && fs.existsSync(tsWorkerScript)
+    ? tsWorkerScript
+    : jsWorkerScript
+
   const jsDiscoverScript = path.resolve(__dirname, 'ui-discover.js')
   const tsDiscoverScript = path.resolve(__dirname, 'ui-discover.ts')
   const resolvedDiscoverScript = !fs.existsSync(jsDiscoverScript) && fs.existsSync(tsDiscoverScript)
@@ -123,7 +180,7 @@ export async function startUIServer(
     : jsDiscoverScript
 
   let tsxBin: string | undefined
-  if (useTypeScript || resolvedDiscoverScript.endsWith('.ts')) {
+  if (useTypeScript || resolvedDiscoverScript.endsWith('.ts') || resolvedWorkerScript.endsWith('.ts')) {
     const pilotPkgDir = path.resolve(__dirname, '..')
     const localTsx = path.join(pilotPkgDir, 'node_modules', '.bin', 'tsx')
     tsxBin = fs.existsSync(localTsx) ? localTsx : 'tsx'
@@ -234,9 +291,9 @@ export async function startUIServer(
     broadcast({ type: 'test-tree', files: testTree })
   }
 
-  // ─── Test Execution ───
+  // ─── Test Execution (shared) ───
 
-  function updateTestStatus(fullName: string, filePath: string, status: TestTreeNode['status'], duration?: number, error?: string, tracePath?: string): void {
+  function updateTestStatus(fullName: string, filePath: string, status: TestTreeNode['status'], duration?: number, error?: string, tracePath?: string, workerId?: number): void {
     broadcast({
       type: 'test-status',
       fullName,
@@ -245,14 +302,38 @@ export async function startUIServer(
       duration,
       error,
       tracePath,
+      workerId,
     })
   }
 
-  async function runFile(filePath: string, testFilter?: string): Promise<void> {
-    if (isRunning) {
-      // Queue it up if already running
-      return
+  /**
+   * Walk the test tree and broadcast 'skipped' status for every test under
+   * a project whose dependency failed, so the UI shows them correctly.
+   */
+  function markProjectTestsSkipped(projectName: string): void {
+    function markChildren(nodes: TestTreeNode[]): void {
+      for (const node of nodes) {
+        if (node.type === 'test') {
+          updateTestStatus(node.fullName, node.filePath, 'skipped')
+        }
+        if (node.children) markChildren(node.children)
+      }
     }
+
+    for (const node of testTree) {
+      if (node.type === 'project' && node.name === projectName && node.children) {
+        markChildren(node.children)
+        return
+      }
+    }
+  }
+
+  // ═══════════════════════════════════════════════════════════════════
+  // ─── Single-worker execution (existing — forks ui-run.ts per file)
+  // ═══════════════════════════════════════════════════════════════════
+
+  async function runFileSingle(filePath: string, testFilter?: string): Promise<void> {
+    if (isRunning) return
 
     isRunning = true
     const project = fileToProject.get(filePath)
@@ -261,8 +342,6 @@ export async function startUIServer(
 
     broadcast({ type: 'file-status', filePath, status: 'running' })
     broadcast({ type: 'run-start', fileCount: 1, filePath, testFilter })
-
-    // Speed up screen polling during execution
     screenPollActive = true
 
     try {
@@ -284,26 +363,16 @@ export async function startUIServer(
       })
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err)
-      broadcast({
-        type: 'error',
-        message: `Failed to run ${path.basename(filePath)}: ${msg}`,
-      })
+      broadcast({ type: 'error', message: `Failed to run ${path.basename(filePath)}: ${msg}` })
       broadcast({ type: 'file-status', filePath, status: 'done' })
-      broadcast({
-        type: 'run-end',
-        status: 'failed',
-        duration: 0,
-        passed: 0,
-        failed: 1,
-        skipped: 0,
-      })
+      broadcast({ type: 'run-end', status: 'failed', duration: 0, passed: 0, failed: 1, skipped: 0 })
     } finally {
       isRunning = false
       screenPollActive = false
     }
   }
 
-  async function runAllFiles(): Promise<void> {
+  async function runAllFilesSingle(): Promise<void> {
     if (isRunning) return
     isRunning = true
     screenPollActive = true
@@ -317,23 +386,19 @@ export async function startUIServer(
 
     try {
       if (hasRealProjects && ctx.projectWaves) {
-        // Wave-based execution respecting project dependencies
         const failedProjects = new Set<string>()
 
         for (const wave of ctx.projectWaves) {
           for (const project of wave) {
             const blockedBy = project.dependencies.find((d) => failedProjects.has(d))
             if (blockedBy) {
-              broadcast({
-                type: 'error',
-                message: `Skipping project "${project.name}" — dependency "${blockedBy}" failed`,
-              })
+              broadcast({ type: 'error', message: `Skipping project "${project.name}" — dependency "${blockedBy}" failed` })
               markProjectTestsSkipped(project.name)
               failedProjects.add(project.name)
               continue
             }
 
-            const { passed, failed, skipped, duration, anyFailed } = await runProjectFiles(project)
+            const { passed, failed, skipped, duration, anyFailed } = await runProjectFilesSingle(project)
             totalPassed += passed
             totalFailed += failed
             totalSkipped += skipped
@@ -342,7 +407,6 @@ export async function startUIServer(
           }
         }
       } else {
-        // No projects — sequential
         for (const file of ctx.testFiles) {
           const project = fileToProject.get(file)
           const useOptions = project?.use as RunFileUseOptions | undefined
@@ -352,7 +416,6 @@ export async function startUIServer(
 
           try {
             const { results, suite } = await runFileInChild(file, useOptions, projectName)
-
             totalPassed += results.filter((r) => r.status === 'passed').length
             totalFailed += results.filter((r) => r.status === 'failed').length
             totalSkipped += results.filter((r) => r.status === 'skipped').length
@@ -381,8 +444,7 @@ export async function startUIServer(
     }
   }
 
-  /** Run all files belonging to a single project, returning aggregate counts. */
-  async function runProjectFiles(project: ResolvedProject): Promise<{
+  async function runProjectFilesSingle(project: ResolvedProject): Promise<{
     passed: number; failed: number; skipped: number; duration: number; anyFailed: boolean
   }> {
     let passed = 0, failed = 0, skipped = 0, duration = 0, anyFailed = false
@@ -412,8 +474,7 @@ export async function startUIServer(
     return { passed, failed, skipped, duration, anyFailed }
   }
 
-  /** Run a single project with its transitive dependencies in wave order. */
-  async function runProject(projectName: string): Promise<void> {
+  async function runProjectSingle(projectName: string): Promise<void> {
     if (isRunning) return
     if (!ctx.projects || !ctx.projectWaves) return
 
@@ -423,7 +484,6 @@ export async function startUIServer(
     isRunning = true
     screenPollActive = true
 
-    // Collect transitive deps and filter waves
     const requiredNames = collectTransitiveDeps(new Set([projectName]), ctx.projects)
     const filteredWaves = ctx.projectWaves
       .map((wave) => wave.filter((p) => requiredNames.has(p.name)))
@@ -440,16 +500,13 @@ export async function startUIServer(
         for (const project of wave) {
           const blockedBy = project.dependencies.find((d) => failedProjects.has(d))
           if (blockedBy) {
-            broadcast({
-              type: 'error',
-              message: `Skipping project "${project.name}" — dependency "${blockedBy}" failed`,
-            })
+            broadcast({ type: 'error', message: `Skipping project "${project.name}" — dependency "${blockedBy}" failed` })
             markProjectTestsSkipped(project.name)
             failedProjects.add(project.name)
             continue
           }
 
-          const { passed, failed, skipped, duration, anyFailed } = await runProjectFiles(project)
+          const { passed, failed, skipped, duration, anyFailed } = await runProjectFilesSingle(project)
           totalPassed += passed
           totalFailed += failed
           totalSkipped += skipped
@@ -469,28 +526,6 @@ export async function startUIServer(
     } finally {
       isRunning = false
       screenPollActive = false
-    }
-  }
-
-  /**
-   * Walk the test tree and broadcast 'skipped' status for every test under
-   * a project whose dependency failed, so the UI shows them correctly.
-   */
-  function markProjectTestsSkipped(projectName: string): void {
-    function markChildren(nodes: TestTreeNode[]): void {
-      for (const node of nodes) {
-        if (node.type === 'test') {
-          updateTestStatus(node.fullName, node.filePath, 'skipped')
-        }
-        if (node.children) markChildren(node.children)
-      }
-    }
-
-    for (const node of testTree) {
-      if (node.type === 'project' && node.name === projectName && node.children) {
-        markChildren(node.children)
-        return
-      }
     }
   }
 
@@ -532,9 +567,6 @@ export async function startUIServer(
           }
           case 'test-end': {
             const result = deserializeTestResult(response.result)
-            // When running a single test, don't broadcast status for tests
-            // that were merely filtered out — their previous status (e.g.
-            // passed/failed from an earlier run) should persist.
             if (testFilter && result.status === 'skipped' && result.fullName !== testFilter) {
               break
             }
@@ -607,8 +639,8 @@ export async function startUIServer(
 
       const msg: UIRunMessage = {
         type: 'run',
-        daemonAddress: ctx.daemonAddress,
-        deviceSerial: ctx.deviceSerial,
+        daemonAddress: ctx.daemonAddress!,
+        deviceSerial: ctx.deviceSerial!,
         filePath,
         config: serializedConfig,
         screenshotDir: ctx.screenshotDir,
@@ -621,22 +653,17 @@ export async function startUIServer(
     })
   }
 
-  /**
-   * Run a file (or single test) with its project's dependency projects first.
-   * Falls back to plain runFile when there are no deps or no project context.
-   */
-  async function runFileWithDeps(filePath: string, testFilter?: string): Promise<void> {
+  async function runFileWithDepsSingle(filePath: string, testFilter?: string): Promise<void> {
     if (isRunning) return
 
     const project = fileToProject.get(filePath)
     if (!project || project.dependencies.length === 0 || !ctx.projects || !ctx.projectWaves) {
-      return runFile(filePath, testFilter)
+      return runFileSingle(filePath, testFilter)
     }
 
     isRunning = true
     screenPollActive = true
 
-    // Collect only the dependency projects (not the target project itself)
     const depNames = collectTransitiveDeps(new Set(project.dependencies), ctx.projects)
     depNames.delete(project.name)
 
@@ -651,7 +678,6 @@ export async function startUIServer(
     const failedProjects = new Set<string>()
 
     try {
-      // Run dependency waves first
       for (const wave of depWaves) {
         for (const depProject of wave) {
           const blockedBy = depProject.dependencies.find((d) => failedProjects.has(d))
@@ -662,7 +688,7 @@ export async function startUIServer(
             continue
           }
 
-          const r = await runProjectFiles(depProject)
+          const r = await runProjectFilesSingle(depProject)
           totalPassed += r.passed
           totalFailed += r.failed
           totalSkipped += r.skipped
@@ -671,21 +697,18 @@ export async function startUIServer(
         }
       }
 
-      // Check if any direct dependency failed
       const blockedBy = project.dependencies.find((d) => failedProjects.has(d))
       if (blockedBy) {
         broadcast({ type: 'error', message: `Skipping "${path.basename(filePath)}" — dependency "${blockedBy}" failed` })
-        // Mark target file's tests as skipped via file-status cycle
         broadcast({ type: 'file-status', filePath, status: 'done' })
       } else {
-        // Run the target file/test
         const useOptions = project.use as RunFileUseOptions | undefined
-        const projectName = project.name !== 'default' ? project.name : undefined
+        const pName = project.name !== 'default' ? project.name : undefined
 
         broadcast({ type: 'file-status', filePath, status: 'running' })
 
         try {
-          const { results, suite } = await runFileInChild(filePath, useOptions, projectName, testFilter)
+          const { results, suite } = await runFileInChild(filePath, useOptions, pName, testFilter)
           totalPassed += results.filter((r) => r.status === 'passed').length
           totalFailed += results.filter((r) => r.status === 'failed').length
           totalSkipped += results.filter((r) => r.status === 'skipped').length
@@ -713,6 +736,788 @@ export async function startUIServer(
     }
   }
 
+  // ═══════════════════════════════════════════════════════════════════
+  // ─── Multi-worker execution (persistent ui-worker.ts processes)
+  // ═══════════════════════════════════════════════════════════════════
+
+  /** Initialize persistent workers. Called once during server startup. */
+  async function initializeWorkers(): Promise<void> {
+    if (!ctx.deviceSerials || ctx.deviceSerials.length === 0) return
+
+    const baseDaemonPort = Number.parseInt(
+      (ctx.daemonAddress ?? ctx.config.daemonAddress).split(':').pop() ?? '50051',
+      10,
+    )
+    const baseAgentPort = 18700
+    const rawBin = process.env.PILOT_DAEMON_BIN ?? ctx.config.daemonBin ?? 'pilot-core'
+    const daemonBin = rawBin.includes(path.sep) || rawBin.startsWith('.')
+      ? path.resolve(ctx.config.rootDir, rawBin)
+      : rawBin
+
+    const numWorkers = Math.min(ctx.workers ?? 2, ctx.deviceSerials.length)
+
+    console.log(`${DIM}Initializing ${numWorkers} UI worker(s)...${RESET}`)
+
+    const initPromises: Promise<UIWorkerHandle | null>[] = []
+
+    for (let i = 0; i < numWorkers; i++) {
+      const deviceSerial = ctx.deviceSerials[i]
+      const daemonPort = baseDaemonPort + 100 + i
+      const agentPort = baseAgentPort + 100 + i
+
+      initPromises.push(
+        initializeOneWorker(i, deviceSerial, daemonPort, agentPort, daemonBin),
+      )
+    }
+
+    const results = await Promise.allSettled(initPromises)
+    for (let i = 0; i < results.length; i++) {
+      const result = results[i]
+      if (result.status === 'fulfilled' && result.value) {
+        uiWorkers.push(result.value)
+      } else {
+        const reason = result.status === 'rejected' ? result.reason : 'null result'
+        const serial = ctx.deviceSerials![i]
+        console.error(
+          `${YELLOW}Skipping device ${serial}: ${reason instanceof Error ? reason.message : reason}.${RESET}`,
+        )
+      }
+    }
+
+    if (uiWorkers.length === 0) {
+      console.error(`${YELLOW}No workers initialized. Falling back to single-worker mode.${RESET}`)
+      return
+    }
+
+    workersInitialized = true
+    console.log(`${DIM}${uiWorkers.length} UI worker(s) ready.${RESET}`)
+  }
+
+  async function initializeOneWorker(
+    id: number,
+    deviceSerial: string,
+    daemonPort: number,
+    agentPort: number,
+    daemonBin: string,
+  ): Promise<UIWorkerHandle> {
+    // Spawn daemon
+    const daemonProcess = spawn(
+      daemonBin,
+      ['--port', String(daemonPort), '--agent-port', String(agentPort)],
+      { detached: true, stdio: 'ignore' },
+    )
+    daemonProcess.unref()
+    daemonProcess.on('error', () => { /* handled by waitForReady */ })
+
+    const daemonClient = new PilotGrpcClient(`localhost:${daemonPort}`)
+    const ready = await daemonClient.waitForReady(10_000)
+    if (!ready) {
+      try { daemonProcess.kill() } catch { /* already dead */ }
+      daemonClient.close()
+      throw new Error(`daemon on port ${daemonPort} did not become ready`)
+    }
+
+    // Fork ui-worker.ts
+    const child = fork(resolvedWorkerScript, [], {
+      stdio: ['ignore', 'inherit', 'inherit', 'ipc'],
+      ...(tsxBin ? { execPath: tsxBin } : {}),
+      env: {
+        ...process.env,
+        NODE_PATH: path.resolve(__dirname, '..', '..'),
+        PILOT_WORKER_ID: String(id),
+      },
+    })
+    child.setMaxListeners(20)
+
+    const worker: UIWorkerHandle = {
+      id,
+      process: child,
+      deviceSerial,
+      daemonPort,
+      agentPort,
+      daemonProcess,
+      screenClient: daemonClient,
+      busy: false,
+      passed: 0,
+      failed: 0,
+      skipped: 0,
+    }
+
+    // Wait for worker to be ready
+    await new Promise<void>((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        reject(new Error(`worker ${id} timed out during initialization (90s)`))
+      }, 90_000)
+
+      const onExit = (code: number | null) => {
+        clearTimeout(timeout)
+        cleanup()
+        reject(new Error(`worker ${id} exited with code ${code} during initialization`))
+      }
+
+      const onMessage = (msg: UIWorkerChildMessage) => {
+        if (msg.type === 'ready' && msg.workerId === id) {
+          clearTimeout(timeout)
+          cleanup()
+          resolve()
+        } else if (msg.type === 'progress' && msg.workerId === id) {
+          console.log(`${DIM}  Worker ${id} (${deviceSerial}): ${msg.message}${RESET}`)
+          broadcastWorkerStatus(worker, 'initializing')
+        } else if (msg.type === 'error' && msg.workerId === id) {
+          clearTimeout(timeout)
+          cleanup()
+          reject(new Error(msg.error.message))
+        }
+      }
+
+      const cleanup = () => {
+        child.removeListener('exit', onExit)
+        child.removeListener('message', onMessage)
+      }
+
+      child.on('exit', onExit)
+      child.on('message', onMessage)
+
+      const initMsg: UIWorkerMessage = {
+        type: 'init',
+        workerId: id,
+        deviceSerial,
+        daemonPort,
+        config: serializedConfig,
+        screenshotDir: ctx.screenshotDir,
+      }
+      child.send(initMsg)
+    })
+
+    broadcastWorkerStatus(worker, 'idle')
+    return worker
+  }
+
+  function broadcastWorkerStatus(worker: UIWorkerHandle, status: 'idle' | 'running' | 'done' | 'initializing' | 'error'): void {
+    broadcast({
+      type: 'worker-status',
+      workerId: worker.id,
+      deviceSerial: worker.deviceSerial,
+      currentFile: worker.currentFile?.filePath ? path.basename(worker.currentFile.filePath) : undefined,
+      currentTest: worker.currentTest,
+      status,
+      passed: worker.passed,
+      failed: worker.failed,
+      skipped: worker.skipped,
+    })
+  }
+
+  /**
+   * Dispatch files across workers using work-stealing.
+   * Returns aggregate counts.
+   */
+  async function dispatchFilesParallel(files: TaggedFile[]): Promise<{
+    passed: number; failed: number; skipped: number; duration: number; anyFailed: boolean
+  }> {
+    const fileQueue = [...files]
+    let passed = 0, failed = 0, skipped = 0, duration = 0, anyFailed = false
+
+    const activeWorkers = uiWorkers.filter((w) => !w.retired)
+    if (activeWorkers.length === 0) {
+      throw new Error('No active workers available')
+    }
+
+    await new Promise<void>((resolve, reject) => {
+      let settled = false
+
+      function settleResolve(): void {
+        if (settled) return
+        settled = true
+        abortDispatch = null
+        resolve()
+      }
+
+      // Allow stopParallelRun to unblock this promise directly.
+      abortDispatch = settleResolve
+
+      function maybeResolve(): void {
+        if (settled) return
+        if (parallelRunAborted) {
+          settleResolve()
+          return
+        }
+        if (fileQueue.length > 0) return
+        if (activeWorkers.every((w) => w.retired || !w.busy)) {
+          settleResolve()
+        }
+      }
+
+      function dispatchNext(worker: UIWorkerHandle): void {
+        if (worker.retired || parallelRunAborted) return
+
+        const next = fileQueue.shift()
+        if (!next) {
+          worker.busy = false
+          worker.currentFile = undefined
+          worker.currentTest = undefined
+          broadcastWorkerStatus(worker, 'idle')
+          maybeResolve()
+          return
+        }
+
+        worker.busy = true
+        worker.currentFile = next
+        worker.currentTest = undefined
+        broadcastWorkerStatus(worker, 'running')
+        broadcast({ type: 'file-status', filePath: next.filePath, status: 'running' })
+
+        const msg: UIWorkerMessage = {
+          type: 'run-file',
+          filePath: next.filePath,
+          projectUseOptions: next.projectUseOptions,
+          projectName: next.projectName,
+          testFilter: next.testFilter,
+        }
+        worker.process.send(msg)
+      }
+
+      function retireWorker(worker: UIWorkerHandle, reason: string): void {
+        if (worker.retired) return
+        worker.retired = true
+        const inFlightFile = worker.currentFile
+        worker.currentFile = undefined
+        worker.busy = false
+        broadcastWorkerStatus(worker, 'error')
+
+        if (inFlightFile) {
+          fileQueue.unshift(inFlightFile)
+          console.error(`${YELLOW}Worker ${worker.id} (${worker.deviceSerial}) became unavailable: ${reason}. Requeueing ${path.basename(inFlightFile.filePath)}.${RESET}`)
+        }
+
+        const remaining = activeWorkers.filter((w) => !w.retired)
+        if (remaining.length === 0) {
+          settled = true
+          abortDispatch = null
+          reject(new Error(`All workers became unavailable. Last failure: ${reason}`))
+          return
+        }
+
+        const idleWorker = remaining.find((w) => !w.busy)
+        if (idleWorker) dispatchNext(idleWorker)
+        maybeResolve()
+      }
+
+      // Attach listeners and dispatch
+      for (const worker of activeWorkers) {
+        worker.process.removeAllListeners('message')
+        worker.process.removeAllListeners('exit')
+
+        worker.process.on('message', (msg: UIWorkerChildMessage) => {
+          if (settled || worker.retired) return
+
+          switch (msg.type) {
+            case 'test-start': {
+              worker.currentTest = msg.fullName
+              broadcastWorkerStatus(worker, 'running')
+              broadcast({
+                type: 'test-start',
+                fullName: msg.fullName,
+                filePath: msg.filePath,
+                workerId: worker.id,
+              })
+              break
+            }
+            case 'test-end': {
+              const result = deserializeTestResult(msg.result)
+              const tf = worker.currentFile?.testFilter
+              if (tf && result.status === 'skipped' && result.fullName !== tf) {
+                break
+              }
+              updateTestStatus(
+                result.fullName,
+                worker.currentFile?.filePath ?? '',
+                result.status as TestTreeNode['status'],
+                result.durationMs,
+                result.error?.message,
+                result.tracePath,
+                worker.id,
+              )
+              if (result.status === 'passed') worker.passed++
+              else if (result.status === 'failed') worker.failed++
+              else if (result.status === 'skipped') worker.skipped++
+              break
+            }
+            case 'trace-event': {
+              broadcast({
+                type: 'trace-event',
+                testFullName: worker.currentTest ?? '',
+                event: msg.event,
+                screenshotBefore: msg.screenshotBefore,
+                screenshotAfter: msg.screenshotAfter,
+                hierarchyBefore: msg.hierarchyBefore,
+                hierarchyAfter: msg.hierarchyAfter,
+              })
+              break
+            }
+            case 'source': {
+              broadcast({ type: 'source', fileName: msg.fileName, content: msg.content })
+              break
+            }
+            case 'network': {
+              broadcast({ type: 'network', entries: msg.entries })
+              break
+            }
+            case 'file-done': {
+              const results = msg.results.map(deserializeTestResult)
+              const suite = deserializeSuiteResult(msg.suite)
+
+              passed += results.filter((r) => r.status === 'passed').length
+              failed += results.filter((r) => r.status === 'failed').length
+              skipped += results.filter((r) => r.status === 'skipped').length
+              duration += suite.durationMs
+              if (results.some((r) => r.status === 'failed')) anyFailed = true
+
+              broadcast({ type: 'file-status', filePath: msg.filePath, status: 'done' })
+              worker.currentFile = undefined
+              worker.currentTest = undefined
+              broadcastWorkerStatus(worker, 'running')
+
+              dispatchNext(worker)
+              break
+            }
+            case 'error': {
+              retireWorker(worker, msg.error.message)
+              break
+            }
+          }
+        })
+
+        worker.process.on('exit', (code) => {
+          if (settled) return
+          if (worker.retired) {
+            // Worker was killed externally (e.g. stop-run) — check if
+            // all workers are now done so the dispatch promise can settle.
+            maybeResolve()
+            return
+          }
+          retireWorker(worker, `exited unexpectedly with code ${code}`)
+        })
+
+        dispatchNext(worker)
+      }
+    })
+
+    return { passed, failed, skipped, duration, anyFailed }
+  }
+
+  async function runAllFilesParallel(): Promise<void> {
+    if (isRunning) return
+    isRunning = true
+    screenPollActive = true
+    parallelRunAborted = false
+
+    // Reset worker counters
+    for (const w of uiWorkers) {
+      w.passed = 0
+      w.failed = 0
+      w.skipped = 0
+    }
+
+    broadcast({ type: 'run-start', fileCount: ctx.testFiles.length })
+
+    let totalPassed = 0, totalFailed = 0, totalSkipped = 0, totalDuration = 0
+
+    try {
+      if (hasRealProjects && ctx.projectWaves) {
+        const failedProjects = new Set<string>()
+
+        for (const wave of ctx.projectWaves) {
+          if (parallelRunAborted) break
+
+          const waveFiles: TaggedFile[] = []
+          for (const project of wave) {
+            const blockedBy = project.dependencies.find((d) => failedProjects.has(d))
+            if (blockedBy) {
+              broadcast({ type: 'error', message: `Skipping project "${project.name}" — dependency "${blockedBy}" failed` })
+              markProjectTestsSkipped(project.name)
+              failedProjects.add(project.name)
+              continue
+            }
+
+            for (const file of project.testFiles) {
+              waveFiles.push({
+                filePath: file,
+                projectUseOptions: project.use as RunFileUseOptions | undefined,
+                projectName: project.name !== 'default' ? project.name : undefined,
+              })
+            }
+          }
+
+          if (waveFiles.length > 0) {
+            const r = await dispatchFilesParallel(waveFiles)
+            totalPassed += r.passed
+            totalFailed += r.failed
+            totalSkipped += r.skipped
+            totalDuration += r.duration
+
+            // Track per-project failures
+            for (const project of wave) {
+              if (failedProjects.has(project.name)) continue
+              // Check if any test in this project failed
+              // We rely on the test tree status updates to track this
+            }
+            if (r.anyFailed) {
+              // Mark all projects in this wave that had failures
+              for (const project of wave) {
+                if (failedProjects.has(project.name)) continue
+                failedProjects.add(project.name)
+              }
+            }
+          }
+        }
+      } else {
+        const allFiles: TaggedFile[] = ctx.testFiles.map((f) => {
+          const project = fileToProject.get(f)
+          return {
+            filePath: f,
+            projectUseOptions: project?.use as RunFileUseOptions | undefined,
+            projectName: project && project.name !== 'default' ? project.name : undefined,
+          }
+        })
+
+        const r = await dispatchFilesParallel(allFiles)
+        totalPassed = r.passed
+        totalFailed = r.failed
+        totalSkipped = r.skipped
+        totalDuration = r.duration
+      }
+
+      broadcast({
+        type: 'run-end',
+        status: totalFailed > 0 || parallelRunAborted ? 'failed' : 'passed',
+        duration: totalDuration,
+        passed: totalPassed,
+        failed: totalFailed,
+        skipped: totalSkipped,
+      })
+    } catch (err) {
+      const errMsg = err instanceof Error ? err.message : String(err)
+      broadcast({ type: 'error', message: errMsg })
+      broadcast({
+        type: 'run-end',
+        status: 'failed',
+        duration: totalDuration,
+        passed: totalPassed,
+        failed: totalFailed + 1,
+        skipped: totalSkipped,
+      })
+    } finally {
+      isRunning = false
+      screenPollActive = false
+      for (const w of uiWorkers) {
+        if (!w.retired) broadcastWorkerStatus(w, 'idle')
+      }
+    }
+  }
+
+  async function runFileParallel(filePath: string, testFilter?: string): Promise<void> {
+    if (isRunning) return
+    isRunning = true
+    screenPollActive = true
+    parallelRunAborted = false
+
+    broadcast({ type: 'run-start', fileCount: 1, filePath, testFilter })
+
+    const project = fileToProject.get(filePath)
+    const file: TaggedFile = {
+      filePath,
+      projectUseOptions: project?.use as RunFileUseOptions | undefined,
+      projectName: project && project.name !== 'default' ? project.name : undefined,
+      testFilter,
+    }
+
+    try {
+      const r = await dispatchFilesParallel([file])
+
+      broadcast({
+        type: 'run-end',
+        status: r.failed > 0 ? 'failed' : 'passed',
+        duration: r.duration,
+        passed: r.passed,
+        failed: r.failed,
+        skipped: r.skipped,
+      })
+    } catch (err) {
+      const errMsg = err instanceof Error ? err.message : String(err)
+      broadcast({ type: 'error', message: `Failed to run ${path.basename(filePath)}: ${errMsg}` })
+      broadcast({ type: 'file-status', filePath, status: 'done' })
+      broadcast({ type: 'run-end', status: 'failed', duration: 0, passed: 0, failed: 1, skipped: 0 })
+    } finally {
+      isRunning = false
+      screenPollActive = false
+    }
+  }
+
+  /** Kill all workers and respawn them lazily on next run. */
+  function stopParallelRun(): void {
+    parallelRunAborted = true
+
+    for (const worker of uiWorkers) {
+      if (worker.busy) {
+        try { worker.process.kill() } catch { /* already dead */ }
+        worker.retired = true
+        worker.busy = false
+        worker.currentFile = undefined
+        worker.currentTest = undefined
+        broadcastWorkerStatus(worker, 'idle')
+      }
+    }
+
+    // Unblock any pending dispatch promise so isRunning resets.
+    if (abortDispatch) {
+      abortDispatch()
+      abortDispatch = null
+    }
+  }
+
+  /** Respawn any retired workers before starting a new run. */
+  async function ensureWorkersReady(): Promise<void> {
+    if (!multiWorker || !ctx.deviceSerials) return
+
+    const baseDaemonPort = Number.parseInt(
+      (ctx.daemonAddress ?? ctx.config.daemonAddress).split(':').pop() ?? '50051',
+      10,
+    )
+    const baseAgentPort = 18700
+    const rawBin = process.env.PILOT_DAEMON_BIN ?? ctx.config.daemonBin ?? 'pilot-core'
+    const daemonBin = rawBin.includes(path.sep) || rawBin.startsWith('.')
+      ? path.resolve(ctx.config.rootDir, rawBin)
+      : rawBin
+
+    const respawnPromises: Promise<void>[] = []
+
+    for (let i = 0; i < uiWorkers.length; i++) {
+      const worker = uiWorkers[i]
+      if (!worker.retired) continue
+
+      const daemonPort = baseDaemonPort + 100 + worker.id
+      const agentPort = baseAgentPort + 100 + worker.id
+
+      respawnPromises.push((async () => {
+        try {
+          // Clean up old daemon
+          try { worker.daemonProcess?.kill() } catch { /* already dead */ }
+          worker.screenClient?.close()
+
+          const newWorker = await initializeOneWorker(
+            worker.id, worker.deviceSerial, daemonPort, agentPort, daemonBin,
+          )
+          // Replace in array
+          uiWorkers[i] = newWorker
+        } catch (err) {
+          console.error(
+            `${YELLOW}Failed to respawn worker ${worker.id}: ${err instanceof Error ? err.message : err}${RESET}`,
+          )
+        }
+      })())
+    }
+
+    if (respawnPromises.length > 0) {
+      console.log(`${DIM}Respawning ${respawnPromises.length} worker(s)...${RESET}`)
+      await Promise.allSettled(respawnPromises)
+    }
+  }
+
+  // ═══════════════════════════════════════════════════════════════════
+  // ─── Dispatch (routes to single or parallel)
+  // ═══════════════════════════════════════════════════════════════════
+
+  const useParallel = () => multiWorker && workersInitialized && uiWorkers.length > 1
+
+  async function runFile(filePath: string, testFilter?: string): Promise<void> {
+    if (useParallel()) {
+      await ensureWorkersReady()
+      return runFileParallel(filePath, testFilter)
+    }
+    return runFileSingle(filePath, testFilter)
+  }
+
+  async function runAllFiles(): Promise<void> {
+    if (useParallel()) {
+      await ensureWorkersReady()
+      return runAllFilesParallel()
+    }
+    return runAllFilesSingle()
+  }
+
+  async function runProject(projectName: string): Promise<void> {
+    // Project runs with deps use the same wave-based approach in parallel
+    if (useParallel()) {
+      if (!ctx.projects || !ctx.projectWaves) return
+      if (isRunning) return
+
+      const target = ctx.projects.find((p) => p.name === projectName)
+      if (!target) return
+
+      isRunning = true
+      screenPollActive = true
+      parallelRunAborted = false
+
+      await ensureWorkersReady()
+
+      const requiredNames = collectTransitiveDeps(new Set([projectName]), ctx.projects)
+      const filteredWaves = ctx.projectWaves
+        .map((wave) => wave.filter((p) => requiredNames.has(p.name)))
+        .filter((wave) => wave.length > 0)
+
+      const allFiles = filteredWaves.flatMap((w) => w.flatMap((p) => p.testFiles))
+      broadcast({ type: 'run-start', fileCount: allFiles.length })
+
+      let totalPassed = 0, totalFailed = 0, totalSkipped = 0, totalDuration = 0
+      const failedProjects = new Set<string>()
+
+      try {
+        for (const wave of filteredWaves) {
+          if (parallelRunAborted) break
+
+          const waveFiles: TaggedFile[] = []
+          for (const project of wave) {
+            const blockedBy = project.dependencies.find((d) => failedProjects.has(d))
+            if (blockedBy) {
+              broadcast({ type: 'error', message: `Skipping project "${project.name}" — dependency "${blockedBy}" failed` })
+              markProjectTestsSkipped(project.name)
+              failedProjects.add(project.name)
+              continue
+            }
+            for (const file of project.testFiles) {
+              waveFiles.push({
+                filePath: file,
+                projectUseOptions: project.use as RunFileUseOptions | undefined,
+                projectName: project.name !== 'default' ? project.name : undefined,
+              })
+            }
+          }
+
+          if (waveFiles.length > 0) {
+            const r = await dispatchFilesParallel(waveFiles)
+            totalPassed += r.passed
+            totalFailed += r.failed
+            totalSkipped += r.skipped
+            totalDuration += r.duration
+            if (r.anyFailed) {
+              for (const project of wave) {
+                if (!failedProjects.has(project.name)) failedProjects.add(project.name)
+              }
+            }
+          }
+        }
+
+        broadcast({
+          type: 'run-end',
+          status: totalFailed > 0 ? 'failed' : 'passed',
+          duration: totalDuration,
+          passed: totalPassed,
+          failed: totalFailed,
+          skipped: totalSkipped,
+        })
+      } finally {
+        isRunning = false
+        screenPollActive = false
+      }
+      return
+    }
+    return runProjectSingle(projectName)
+  }
+
+  async function runFileWithDeps(filePath: string, testFilter?: string): Promise<void> {
+    if (useParallel()) {
+      // In parallel mode, run deps as waves then target file
+      const project = fileToProject.get(filePath)
+      if (!project || project.dependencies.length === 0 || !ctx.projects || !ctx.projectWaves) {
+        return runFile(filePath, testFilter)
+      }
+
+      if (isRunning) return
+      isRunning = true
+      screenPollActive = true
+      parallelRunAborted = false
+
+      await ensureWorkersReady()
+
+      const depNames = collectTransitiveDeps(new Set(project.dependencies), ctx.projects)
+      depNames.delete(project.name)
+      const depWaves = ctx.projectWaves
+        .map((wave) => wave.filter((p) => depNames.has(p.name)))
+        .filter((wave) => wave.length > 0)
+
+      const depFileCount = depWaves.reduce((n, w) => n + w.reduce((m, p) => m + p.testFiles.length, 0), 0)
+      broadcast({ type: 'run-start', fileCount: depFileCount + 1, filePath, testFilter })
+
+      let totalPassed = 0, totalFailed = 0, totalSkipped = 0, totalDuration = 0
+      const failedProjects = new Set<string>()
+
+      try {
+        for (const wave of depWaves) {
+          if (parallelRunAborted) break
+          const waveFiles: TaggedFile[] = []
+          for (const depProject of wave) {
+            const blockedBy = depProject.dependencies.find((d) => failedProjects.has(d))
+            if (blockedBy) {
+              broadcast({ type: 'error', message: `Skipping project "${depProject.name}" — dependency "${blockedBy}" failed` })
+              markProjectTestsSkipped(depProject.name)
+              failedProjects.add(depProject.name)
+              continue
+            }
+            for (const f of depProject.testFiles) {
+              waveFiles.push({
+                filePath: f,
+                projectUseOptions: depProject.use as RunFileUseOptions | undefined,
+                projectName: depProject.name !== 'default' ? depProject.name : undefined,
+              })
+            }
+          }
+          if (waveFiles.length > 0) {
+            const r = await dispatchFilesParallel(waveFiles)
+            totalPassed += r.passed
+            totalFailed += r.failed
+            totalSkipped += r.skipped
+            totalDuration += r.duration
+            if (r.anyFailed) {
+              for (const dp of wave) failedProjects.add(dp.name)
+            }
+          }
+        }
+
+        const blockedBy = project.dependencies.find((d) => failedProjects.has(d))
+        if (blockedBy) {
+          broadcast({ type: 'error', message: `Skipping "${path.basename(filePath)}" — dependency "${blockedBy}" failed` })
+          broadcast({ type: 'file-status', filePath, status: 'done' })
+        } else {
+          const targetFile: TaggedFile = {
+            filePath,
+            projectUseOptions: project.use as RunFileUseOptions | undefined,
+            projectName: project.name !== 'default' ? project.name : undefined,
+            testFilter,
+          }
+          const r = await dispatchFilesParallel([targetFile])
+          totalPassed += r.passed
+          totalFailed += r.failed
+          totalSkipped += r.skipped
+          totalDuration += r.duration
+        }
+
+        broadcast({
+          type: 'run-end',
+          status: totalFailed > 0 ? 'failed' : 'passed',
+          duration: totalDuration,
+          passed: totalPassed,
+          failed: totalFailed,
+          skipped: totalSkipped,
+        })
+      } finally {
+        isRunning = false
+        screenPollActive = false
+      }
+      return
+    }
+    return runFileWithDepsSingle(filePath, testFilter)
+  }
+
   // ─── Screen Polling ───
 
   async function pollScreen(): Promise<void> {
@@ -722,12 +1527,22 @@ export async function startUIServer(
     }
 
     try {
-      const response = await ctx.client.takeScreenshot()
+      // In multi-worker mode, poll from the selected worker's daemon.
+      // In single-worker mode, poll from the main client.
+      const pollClient = multiWorker && workersInitialized
+        ? uiWorkers.find((w) => w.id === selectedWorkerId && !w.retired)?.screenClient
+        : ctx.client
+
+      if (!pollClient) {
+        scheduleScreenPoll()
+        return
+      }
+
+      const response = await pollClient.takeScreenshot()
       if (response.success && response.data) {
         const data = Buffer.isBuffer(response.data)
           ? response.data
           : Buffer.from(response.data)
-        // Get screen dimensions (we default to common mobile size)
         const width = 1080
         const height = 1920
         const frame = encodeScreenFrame(screenSeq++, width, height, data)
@@ -777,7 +1592,6 @@ export async function startUIServer(
     if (request.type === 'all') {
       runAllFiles().catch(() => {})
     } else {
-      // Run the first changed file
       const file = request.files[0]
       if (file) runFile(file).catch(() => {})
     }
@@ -802,7 +1616,9 @@ export async function startUIServer(
         runProject(msg.projectName).catch(() => {})
         break
       case 'stop-run':
-        if (activeChild) {
+        if (useParallel()) {
+          stopParallelRun()
+        } else if (activeChild) {
           try { activeChild.kill() } catch { /* already dead */ }
         }
         break
@@ -818,18 +1634,34 @@ export async function startUIServer(
           else startWatching(msg.filePath)
         }
         break
-      case 'request-hierarchy':
-        ctx.client.getUiHierarchy().then((response) => {
+      case 'request-hierarchy': {
+        const hierClient = multiWorker && workersInitialized
+          ? uiWorkers.find((w) => w.id === selectedWorkerId && !w.retired)?.screenClient
+          : ctx.client
+        hierClient?.getUiHierarchy().then((response) => {
           if (response.hierarchyXml) {
             broadcast({ type: 'hierarchy-update', xml: response.hierarchyXml })
           }
         }).catch(() => {})
         break
+      }
       case 'tap-coordinates':
-        // Interactive tap: scale normalized coordinates to device screen.
-        // This is a best-effort feature — if no raw coordinate tap exists
-        // on the gRPC client, we log a message.
         console.log(`[Pilot UI] Tap at (${msg.x.toFixed(2)}, ${msg.y.toFixed(2)}) — coordinate tap not yet implemented`)
+        break
+      case 'select-worker':
+        selectedWorkerId = msg.workerId
+        // Send device info for the new selection
+        {
+          const worker = uiWorkers.find((w) => w.id === msg.workerId)
+          if (worker) {
+            broadcast({
+              type: 'device-info',
+              serial: worker.deviceSerial,
+              model: undefined,
+              isEmulator: worker.deviceSerial.startsWith('emulator-'),
+            })
+          }
+        }
         break
       case 'set-filter':
         // Filtering is client-side — no action needed
@@ -868,12 +1700,45 @@ export async function startUIServer(
 
     // Send current state to new client
     ws.send(JSON.stringify({ type: 'test-tree', files: testTree } satisfies ServerMessage))
-    ws.send(JSON.stringify({
-      type: 'device-info',
-      serial: ctx.deviceSerial,
-      model: undefined,
-      isEmulator: ctx.deviceSerial.startsWith('emulator-'),
-    } satisfies ServerMessage))
+
+    if (multiWorker && workersInitialized) {
+      // Send workers info
+      ws.send(JSON.stringify({
+        type: 'workers-info',
+        workers: uiWorkers.map((w) => ({ workerId: w.id, deviceSerial: w.deviceSerial })),
+      } satisfies ServerMessage))
+
+      // Send device info for selected worker
+      const selectedWorker = uiWorkers.find((w) => w.id === selectedWorkerId)
+      if (selectedWorker) {
+        ws.send(JSON.stringify({
+          type: 'device-info',
+          serial: selectedWorker.deviceSerial,
+          model: undefined,
+          isEmulator: selectedWorker.deviceSerial.startsWith('emulator-'),
+        } satisfies ServerMessage))
+      }
+
+      // Send current worker statuses
+      for (const w of uiWorkers) {
+        ws.send(JSON.stringify({
+          type: 'worker-status',
+          workerId: w.id,
+          deviceSerial: w.deviceSerial,
+          status: w.retired ? 'error' : w.busy ? 'running' : 'idle',
+          passed: w.passed,
+          failed: w.failed,
+          skipped: w.skipped,
+        } satisfies ServerMessage))
+      }
+    } else if (ctx.deviceSerial) {
+      ws.send(JSON.stringify({
+        type: 'device-info',
+        serial: ctx.deviceSerial,
+        model: undefined,
+        isEmulator: ctx.deviceSerial.startsWith('emulator-'),
+      } satisfies ServerMessage))
+    }
 
     ws.on('message', (data) => {
       try {
@@ -904,8 +1769,15 @@ export async function startUIServer(
     server.on('error', reject)
   })
 
-  // Discover tests and start screen polling
+  // Discover tests
   await discoverAllFiles()
+
+  // Initialize multi-worker if configured
+  if (multiWorker) {
+    await initializeWorkers()
+  }
+
+  // Start screen polling
   scheduleScreenPoll()
 
   // Open browser
@@ -917,31 +1789,55 @@ export async function startUIServer(
     console.log(`Pilot UI: ${viewerUrl}`)
   }
 
-  console.log(`\x1b[1mPilot UI mode\x1b[0m running at ${viewerUrl}`)
-  console.log(`\x1b[2mDevice: ${ctx.deviceSerial} | ${ctx.testFiles.length} test file(s)\x1b[0m`)
+  const workerLabel = multiWorker && workersInitialized
+    ? `${uiWorkers.length} worker(s) across ${uiWorkers.map((w) => w.deviceSerial).join(', ')}`
+    : `Device: ${ctx.deviceSerial ?? 'unknown'}`
 
-  // Send device info
-  broadcast({
-    type: 'device-info',
-    serial: ctx.deviceSerial,
-    model: undefined,
-    isEmulator: ctx.deviceSerial.startsWith('emulator-'),
-  })
+  console.log(`\x1b[1mPilot UI mode\x1b[0m running at ${viewerUrl}`)
+  console.log(`\x1b[2m${workerLabel} | ${ctx.testFiles.length} test file(s)\x1b[0m`)
+
+  // Send device info (single-worker)
+  if (!multiWorker && ctx.deviceSerial) {
+    broadcast({
+      type: 'device-info',
+      serial: ctx.deviceSerial,
+      model: undefined,
+      isEmulator: ctx.deviceSerial.startsWith('emulator-'),
+    })
+  }
 
   return {
     port: actualPort,
     close: () => {
       if (screenPollTimer) clearTimeout(screenPollTimer)
-      if (activeChild) {
-        try { activeChild.kill() } catch { /* already dead */ }
+
+      // Clean up workers
+      if (multiWorker) {
+        for (const worker of uiWorkers) {
+          try {
+            if (worker.process.connected) {
+              worker.process.send({ type: 'shutdown' } satisfies UIWorkerMessage)
+              setTimeout(() => {
+                try { worker.process.kill() } catch { /* already dead */ }
+              }, 3_000)
+            }
+          } catch { /* already dead */ }
+          try { worker.daemonProcess?.kill() } catch { /* already dead */ }
+          worker.screenClient?.close()
+        }
+      } else {
+        if (activeChild) {
+          try { activeChild.kill() } catch { /* already dead */ }
+        }
+        ctx.device?.close()
+        ctx.client?.close()
       }
+
       if (watcher) watcher.close()
       for (const ws of clients) ws.close()
       wss.close()
       server.close()
 
-      ctx.device.close()
-      ctx.client.close()
       preserveEmulatorsForReuse(ctx.launchedEmulators)
     },
   }
