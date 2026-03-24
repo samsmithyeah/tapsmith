@@ -96,6 +96,9 @@ export class ListReporter implements PilotReporter {
           const project = this._showProjectTags ? projectTag(test.project) : ''
           process.stdout.write(`  ${red('✗')} ${worker}${project}${test.fullName}\n`)
           process.stdout.write(formatError(test.error) + '\n')
+          if (test.screenshotPath) {
+            process.stdout.write(`        ${dim(`Screenshot: ${test.screenshotPath}`)}\n`)
+          }
           if (test.tracePath) {
             process.stdout.write(`        ${dim(`Trace: npx pilot show-trace ${test.tracePath}`)}\n`)
           }

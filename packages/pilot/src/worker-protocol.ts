@@ -144,6 +144,7 @@ export interface SerializedTestResult {
   durationMs: number
   error?: { message: string; stack?: string }
   screenshotPath?: string
+  tracePath?: string
   workerIndex: number
   project?: string
 }
@@ -167,6 +168,7 @@ export function serializeTestResult(result: TestResult, workerIndex: number): Se
       ? { message: result.error.message, stack: result.error.stack }
       : undefined,
     screenshotPath: result.screenshotPath,
+    tracePath: result.tracePath,
     workerIndex,
     project: result.project,
   }
@@ -191,6 +193,7 @@ export function deserializeTestResult(s: SerializedTestResult): TestResult & { w
       ? Object.assign(new Error(s.error.message), { stack: s.error.stack })
       : undefined,
     screenshotPath: s.screenshotPath,
+    tracePath: s.tracePath,
     workerIndex: s.workerIndex,
     project: s.project,
   }

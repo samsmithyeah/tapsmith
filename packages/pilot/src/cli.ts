@@ -371,6 +371,7 @@ interface CliArgs {
   workers?: number;
   shard?: { current: number; total: number };
   trace?: string;
+  watch: boolean;
   forceInstall: boolean;
   version: boolean;
   help: boolean;
@@ -381,6 +382,7 @@ function parseArgs(argv: string[]): CliArgs {
   const args: CliArgs = {
     command: '',
     files: [],
+    watch: false,
     version: false,
     help: false,
     forceInstall: false,
@@ -424,6 +426,8 @@ function parseArgs(argv: string[]): CliArgs {
       args.trace = rest[++i] ?? 'on';
     } else if (arg?.startsWith('--trace=')) {
       args.trace = arg.slice('--trace='.length);
+    } else if (arg === '--watch' || arg === '-w') {
+      args.watch = true;
     } else if (arg === '--force-install') {
       args.forceInstall = true;
     } else if (arg === '--__tsx-reexec') {
@@ -446,6 +450,7 @@ ${bold('pilot')} — Mobile app testing framework
 
 ${bold('Usage:')}
   pilot test [files...]           Run test files
+  pilot test --watch              Watch test files and re-run on change
   pilot test --device <serial>    Target specific device
   pilot test --workers <n>        Run tests in parallel across n devices
   pilot test --shard=x/y          Run shard x of y (for CI)
@@ -457,6 +462,7 @@ ${bold('Usage:')}
   pilot --help                    Show this help
 
 ${bold('Options:')}
+  -w, --watch              Watch test files and re-run on change
   -d, --device <serial>    Target a specific device by serial
   -j, --workers <n>        Number of parallel workers (default: 1)
   --shard=x/y              Split tests across CI machines (e.g. --shard=1/4)
@@ -556,6 +562,21 @@ async function main(): Promise<void> {
   }
   if (args.trace) {
     config.trace = args.trace as PilotConfig['trace'];
+  }
+
+  // Validate watch mode constraints
+  if (args.watch) {
+    if (args.shard) {
+      console.error(red('--watch cannot be combined with --shard'));
+      process.exit(1);
+    }
+    if (config.workers > 1) {
+      // Guard with tsxReexec to avoid printing twice (before and after tsx re-exec)
+      if (args.tsxReexec) {
+        process.stderr.write(`${YELLOW}Watch mode uses a single device. Ignoring --workers.${RESET}\n`);
+      }
+      config.workers = 1;
+    }
   }
 
   // ─── Project resolution & test file discovery ───
@@ -835,6 +856,33 @@ async function main(): Promise<void> {
         sequentialExitCode = 1;
         return;
       }
+    }
+
+    // ─── Watch mode ───
+    // If --watch is set, hand off to the watch coordinator. It keeps the
+    // daemon, emulator, and agent alive and re-runs tests on file changes.
+    // The watch coordinator handles its own cleanup and never returns.
+    if (args.watch) {
+      const { runWatchMode } = await import('./watch.js');
+
+      const watchScreenshotDir =
+        config.screenshot !== 'never'
+          ? path.resolve(config.rootDir, config.outputDir, 'screenshots')
+          : undefined;
+
+      await runWatchMode({
+        config,
+        device,
+        client,
+        deviceSerial: config.device!,
+        daemonAddress: config.daemonAddress,
+        testFiles,
+        screenshotDir: watchScreenshotDir,
+        launchedEmulators,
+        projects: hasProjects ? projects : undefined,
+        projectWaves: hasProjects ? projectWaves : undefined,
+      });
+      // runWatchMode never returns — exits via cleanup()
     }
 
     // Run tests
