@@ -9,7 +9,6 @@ import { Layout } from './components/Layout.js';
 import { TestExplorer } from './components/TestExplorer.js';
 import { RunControls, type Theme } from './components/RunControls.js';
 import { DeviceMirror } from './components/DeviceMirror.js';
-
 // Trace viewer components — reused for live trace display
 import { ActionsPanel } from '../trace-viewer/components/ActionsPanel.js';
 import { ScreenshotPanel } from '../trace-viewer/components/ScreenshotPanel.js';
@@ -23,6 +22,13 @@ function base64ToBlobUrl(base64: string): string {
   const arr = new Uint8Array(bytes.length);
   for (let i = 0; i < bytes.length; i++) arr[i] = bytes.charCodeAt(i);
   return URL.createObjectURL(new Blob([arr], { type: 'image/png' }));
+}
+
+/** Revoke all blob URLs in a trace's screenshot map to free memory. */
+function revokeTraceScreenshots(data: TestTraceData): void {
+  for (const blobUrl of data.screenshots.values()) {
+    try { URL.revokeObjectURL(blobUrl); } catch { /* already revoked */ }
+  }
 }
 
 const EMPTY_MAP = new Map<string, string>();
@@ -74,6 +80,13 @@ function App() {
   const [workers, setWorkers] = useState<WorkerInfo[]>([]);
   /** Maps test fullName → workerId that ran it. */
   const testWorkerMapRef = useRef<Map<string, number>>(new Map());
+  /**
+   * Auto-follow control for multi-worker mode.
+   * - 'auto': follow the latest test start (single-worker behavior)
+   * - 'worker:N': only follow tests from worker N
+   * - 'manual': user clicked a test — stop auto-following
+   */
+  const autoFollowRef = useRef<'auto' | `worker:${number}` | 'manual'>('auto');
 
   // Per-test trace data, keyed by test fullName
   const [testTraces, setTestTraces] = useState<Map<string, TestTraceData>>(new Map());
@@ -94,6 +107,26 @@ function App() {
     return localStorage.getItem('pilot-ui-run-deps') === 'true';
   });
   const runDepsRef = useRef(runDepsFirst);
+
+  // Run duration timer
+  const [runElapsed, setRunElapsed] = useState(0);
+  const runStartRef = useRef<number>(0);
+  const runTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  const startRunTimer = useCallback(() => {
+    runStartRef.current = Date.now();
+    setRunElapsed(0);
+    runTimerRef.current = setInterval(() => {
+      setRunElapsed(Date.now() - runStartRef.current);
+    }, 100);
+  }, []);
+
+  const stopRunTimer = useCallback(() => {
+    if (runTimerRef.current) {
+      clearInterval(runTimerRef.current);
+      runTimerRef.current = null;
+    }
+  }, []);
 
   const tree = useTestTree();
   const { canvasRef, handleBinaryFrame } = useScreenMirror();
@@ -179,13 +212,16 @@ function App() {
         break;
       case 'run-start':
         setIsRunning(true);
+        startRunTimer();
         // Scope trace clearing: single test > single file > all.
         // This preserves traces from other tests/files so clicking back
         // on them still shows their actions and status.
         if (msg.testFilter) {
           // Running a single test — only clear that test's trace
           setTestTraces((prev) => {
-            if (!prev.has(msg.testFilter!)) return prev;
+            const old = prev.get(msg.testFilter!);
+            if (!old) return prev;
+            revokeTraceScreenshots(old);
             const next = new Map(prev);
             next.delete(msg.testFilter!);
             return next;
@@ -195,13 +231,20 @@ function App() {
           setTestTraces((prev) => {
             const next = new Map<string, TestTraceData>();
             for (const [name, data] of prev) {
-              if (data.filePath !== msg.filePath) next.set(name, data);
+              if (data.filePath !== msg.filePath) {
+                next.set(name, data);
+              } else {
+                revokeTraceScreenshots(data);
+              }
             }
             return next;
           });
         } else {
-          // Running all files
-          setTestTraces(new Map());
+          // Running all files — revoke all blob URLs
+          setTestTraces((prev) => {
+            for (const data of prev.values()) revokeTraceScreenshots(data);
+            return new Map();
+          });
         }
         activeTestRef.current = null;
         setActiveTestName(null);
@@ -213,26 +256,48 @@ function App() {
           // Full run — clear worker mappings
           testWorkerMapRef.current.clear();
         }
+        autoFollowRef.current = 'auto';
         break;
       case 'run-end':
         setIsRunning(false);
+        stopRunTimer();
         // Clear any tests/suites/files stuck in 'running' (e.g. after stop).
         tree.resetRunningStatuses();
         break;
-      case 'test-start':
-        // Update ref immediately (no batching delay)
-        activeTestRef.current = msg.fullName;
-        setActiveTestName(msg.fullName);
-        setPinnedIndex(0);
-        setHoveredIndex(null);
+      case 'test-start': {
         // Track which worker ran this test
         if (msg.workerId != null) {
           testWorkerMapRef.current.set(msg.fullName, msg.workerId);
         }
         // Mark this test (and its parent describe/file) as running
         tree.updateTestStatus(msg.fullName, msg.filePath, 'running');
-        // Auto-select this test in the explorer
-        tree.setSelectedTestId(`${msg.filePath}::${msg.fullName}`);
+
+        // Decide whether to auto-select this test.
+        // In single-worker mode, always follow. In multi-worker mode, only
+        // follow if the user hasn't manually selected something, and lock
+        // onto the first worker we see so the view doesn't jump around.
+        const isMultiWorker = workers.length > 1;
+        const follow = autoFollowRef.current;
+        let shouldFollow = false;
+        if (follow === 'manual') {
+          shouldFollow = false;
+        } else if (!isMultiWorker || follow === 'auto') {
+          shouldFollow = true;
+          // In multi-worker, lock onto this worker so we stick with it
+          if (isMultiWorker && msg.workerId != null) {
+            autoFollowRef.current = `worker:${msg.workerId}`;
+          }
+        } else if (msg.workerId != null && follow === `worker:${msg.workerId}`) {
+          shouldFollow = true;
+        }
+
+        if (shouldFollow) {
+          activeTestRef.current = msg.fullName;
+          setActiveTestName(msg.fullName);
+          setPinnedIndex(0);
+          setHoveredIndex(null);
+          tree.setSelectedTestId(`${msg.filePath}::${msg.fullName}`);
+        }
         // Ensure trace data exists for this test
         setTestTraces((prev) => {
           if (prev.has(msg.fullName)) return prev;
@@ -241,6 +306,7 @@ function App() {
           return next;
         });
         break;
+      }
       case 'test-status':
         if (msg.workerId != null) {
           testWorkerMapRef.current.set(msg.fullName, msg.workerId);
@@ -486,6 +552,7 @@ function App() {
       URL.revokeObjectURL(url);
     } catch (err) {
       console.error('[Pilot UI] Failed to download trace:', err);
+      alert(`Failed to download trace: ${err instanceof Error ? err.message : err}`);
     }
   }, [viewedTestName, currentTrace]);
 
@@ -505,6 +572,7 @@ function App() {
           runDepsFirst={runDepsFirst}
           onToggleRunDeps={handleToggleRunDeps}
           workers={workers}
+          runElapsed={runElapsed}
         />
       }
       testExplorer={
@@ -516,7 +584,10 @@ function App() {
           statusFilter={tree.statusFilter}
           counts={tree.counts}
           onToggleExpanded={tree.toggleExpanded}
-          onSelectTest={tree.setSelectedTestId}
+          onSelectTest={useCallback((id: string | null) => {
+            if (id != null) autoFollowRef.current = 'manual';
+            tree.setSelectedTestId(id);
+          }, [tree])}
           onSetNameFilter={tree.setNameFilter}
           onSetStatusFilter={tree.setStatusFilter}
           onSend={handleSend}
@@ -534,15 +605,24 @@ function App() {
         ) : null
       }
       actionsPanel={
-        <ActionsPanel
-          events={traceEvents}
-          actionEvents={actionEvents}
-          selectedIndex={selectedIndex}
-          pinnedIndex={pinnedIndex}
-          onHover={setHoveredIndex}
-          onPin={handleActionPin}
-          metadata={metadata}
-        />
+        actionEvents.length > 0 || isRunning ? (
+          <ActionsPanel
+            events={traceEvents}
+            actionEvents={actionEvents}
+            selectedIndex={selectedIndex}
+            pinnedIndex={pinnedIndex}
+            onHover={setHoveredIndex}
+            onPin={handleActionPin}
+            metadata={metadata}
+          />
+        ) : (
+          <div class="ui-empty-state">
+            <div class="ui-empty-icon">{'\u25b6'}</div>
+            <div class="ui-empty-title">No actions yet</div>
+            <div class="ui-empty-hint">Run tests to see actions here</div>
+            <div class="ui-empty-shortcut">Press <kbd>R</kbd> to run all</div>
+          </div>
+        )
       }
       screenshotPanel={
         <div class="ui-screen-area">
@@ -777,13 +857,33 @@ html, body, #app {
 }
 
 .ui-resize-handle {
-  flex: 0 0 4px;
+  flex: 0 0 6px;
   background: transparent;
   transition: background 0.15s;
+  position: relative;
 }
-.ui-resize-handle:hover { background: var(--color-accent); }
+.ui-resize-handle:hover { background: color-mix(in srgb, var(--color-accent) 30%, transparent); }
+.ui-resize-handle:active { background: var(--color-accent); }
+.ui-resize-handle:hover::after {
+  content: '\u2022\u2022\u2022';
+  position: absolute;
+  color: var(--color-accent);
+  font-size: 8px;
+  letter-spacing: -1px;
+  pointer-events: none;
+}
 .ui-resize-col { cursor: col-resize; }
+.ui-resize-col:hover::after {
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%) rotate(90deg);
+}
 .ui-resize-row { cursor: row-resize; }
+.ui-resize-row:hover::after {
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+}
 
 /* ─── Screen area (Live Device / Action tabs) ─── */
 
@@ -883,10 +983,7 @@ html, body, #app {
 .rc-download { color: var(--color-text-muted); }
 
 
-.rc-counts { display: flex; gap: 8px; font-size: 12px; }
-.rc-count.passed { color: var(--color-success); }
-.rc-count.failed { color: var(--color-error); }
-.rc-count.skipped { color: var(--color-skipped); }
+.rc-counts { display: flex; gap: 6px; font-size: 12px; }
 
 .rc-connection {
   display: flex;
@@ -902,6 +999,17 @@ html, body, #app {
 }
 .rc-device-label { font-family: var(--font-mono); font-weight: 600; color: var(--color-text-secondary); }
 .rc-device-serial { color: var(--color-text-muted); }
+.rc-respawn-btn {
+  border: none;
+  background: none;
+  color: transparent;
+  cursor: pointer;
+  font-size: 12px;
+  padding: 0 2px;
+  width: 16px;
+}
+.rc-respawn-btn:hover { color: var(--color-accent); }
+.rc-device:hover .rc-respawn-btn { color: var(--color-text-muted); }
 .rc-dot {
   width: 7px;
   height: 7px;
@@ -925,7 +1033,7 @@ html, body, #app {
   cursor: pointer;
   outline: none;
 }
-.rc-theme-select:focus { border-color: var(--color-accent); }
+.rc-theme-select:focus { border-color: var(--color-accent); box-shadow: 0 0 0 2px rgba(79, 193, 255, 0.15); }
 
 /* ─── Test Explorer ─── */
 
@@ -945,7 +1053,7 @@ html, body, #app {
   outline: none;
   margin-bottom: 6px;
 }
-.te-search:focus { border-color: var(--color-accent); }
+.te-search:focus { border-color: var(--color-accent); box-shadow: 0 0 0 2px rgba(79, 193, 255, 0.15); }
 .te-search::placeholder { color: var(--color-text-faint); }
 
 .te-status-filters { display: flex; gap: 3px; }
@@ -980,10 +1088,17 @@ html, body, #app {
   padding: 3px 8px;
   cursor: pointer;
   user-select: none;
-  transition: background 0.1s;
+  transition: background 0.15s, border-left-color 0.15s;
+  border-left: 2px solid transparent;
 }
 .te-node:hover { background: var(--bg-hover); }
 .te-node.selected { background: var(--bg-selected); }
+.te-node.te-status-running { border-left-color: var(--color-accent); }
+.te-node.te-status-flash-failed { animation: flash-fail 0.6s ease-out; }
+@keyframes flash-fail {
+  0% { background: rgba(241, 76, 76, 0.3); }
+  100% { background: transparent; }
+}
 .te-node.te-node-project { margin-top: 4px; padding-top: 6px; padding-bottom: 6px; border-top: 1px solid var(--border); }
 .te-node-group:first-child > .te-node.te-node-project { margin-top: 0; border-top: none; }
 
@@ -1089,7 +1204,7 @@ html, body, #app {
 .actions-header-tab.active { color: var(--color-text-primary); border-bottom-color: var(--color-accent); }
 .actions-filter { padding: 6px 8px; border-bottom: 1px solid var(--color-border); flex-shrink: 0; }
 .actions-filter input { width: 100%; padding: 4px 8px; background: var(--color-bg); border: 1px solid var(--color-border); border-radius: 3px; color: var(--color-text-secondary); font-size: 12px; outline: none; }
-.actions-filter input:focus { border-color: var(--color-accent); }
+.actions-filter input:focus { border-color: var(--color-accent); box-shadow: 0 0 0 2px rgba(79, 193, 255, 0.15); }
 .actions-list { flex: 1; overflow-y: auto; }
 
 .action-item { padding: 5px 10px; cursor: pointer; border-left: 2px solid transparent; display: flex; align-items: center; gap: 8px; min-height: 30px; }
@@ -1182,23 +1297,121 @@ html, body, #app {
 
 /* ─── Scrollbar ─── */
 
+
+/* ─── Empty State ─── */
+
+.ui-empty-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  gap: 8px;
+  color: var(--color-text-faint);
+  user-select: none;
+}
+.ui-empty-icon {
+  font-size: 28px;
+  color: var(--color-text-faintest);
+  margin-bottom: 4px;
+}
+.ui-empty-title {
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--color-text-muted);
+}
+.ui-empty-hint {
+  font-size: 12px;
+}
+.ui-empty-shortcut {
+  font-size: 11px;
+  margin-top: 4px;
+}
+.ui-empty-shortcut kbd {
+  display: inline-block;
+  padding: 1px 5px;
+  border: 1px solid var(--border-light);
+  border-radius: 3px;
+  background: var(--bg-tertiary);
+  color: var(--color-text-muted);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 1.4;
+  box-shadow: 0 1px 0 var(--border);
+}
+
+/* ─── Count Pills ─── */
+
+.rc-count {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  border-radius: 10px;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1;
+}
+.rc-count.passed {
+  background: rgba(78, 201, 176, 0.15);
+  color: var(--color-success);
+}
+.rc-count.failed {
+  background: rgba(241, 76, 76, 0.15);
+  color: var(--color-error);
+}
+.rc-count.skipped {
+  background: rgba(136, 136, 136, 0.15);
+  color: var(--color-skipped);
+}
+
+/* ─── Run Duration ─── */
+
+.rc-elapsed {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--color-text-muted);
+  min-width: 48px;
+  text-align: right;
+  tabular-nums: true;
+  font-variant-numeric: tabular-nums;
+}
+
+/* ─── Kbd shortcut hints ─── */
+
+.rc-kbd {
+  display: inline-block;
+  padding: 0 4px;
+  margin-left: 4px;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  background: var(--bg-primary);
+  color: var(--color-text-faint);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  line-height: 1.5;
+  box-shadow: 0 1px 0 var(--border);
+}
+
+/* ─── Scrollbar ─── */
+
 ::-webkit-scrollbar { width: 8px; height: 8px; }
 ::-webkit-scrollbar-track { background: transparent; }
 ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
 ::-webkit-scrollbar-thumb:hover { background: var(--border-light); }
 `;
-document.head.appendChild(style)
+document.head.appendChild(style);
 
-// ─── Theme ───
+// ─── Theme (apply before first render) ───
 
-;(() => {
+function applyInitialTheme(): void {
   const stored = localStorage.getItem('pilot-ui-theme');
   const theme = (stored === 'light' || stored === 'dark' || stored === 'system') ? stored : 'system';
   const resolved = theme === 'system'
     ? (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light')
     : theme;
   document.documentElement.setAttribute('data-theme', resolved);
-})();
+}
+applyInitialTheme();
 
 // ─── Render ───
 

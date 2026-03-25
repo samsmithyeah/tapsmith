@@ -481,6 +481,7 @@ export class TraceCollector {
    */
   cleanup(): void {
     this.stopConsoleCapture();
+    this._pendingCaptures.clear();
     // Remove temp directory and its contents
     try {
       fs.rmSync(this._tempDir, { recursive: true, force: true });

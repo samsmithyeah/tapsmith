@@ -243,6 +243,11 @@ export interface SelectWorkerCommand {
   workerId: number
 }
 
+export interface RespawnWorkerCommand {
+  type: 'respawn-worker'
+  workerId: number
+}
+
 /** Union of all client → server JSON messages. */
 export type ClientMessage =
   | RunTestCommand
@@ -256,6 +261,7 @@ export type ClientMessage =
   | TapCoordinatesCommand
   | SetFilterCommand
   | SelectWorkerCommand
+  | RespawnWorkerCommand
 
 // ─── Binary frame helpers ───
 

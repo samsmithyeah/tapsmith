@@ -5,7 +5,7 @@
  * per-node play buttons, watch toggles, and filtering.
  */
 
-import { useCallback } from 'preact/hooks';
+import { useCallback, useEffect, useRef, useState } from 'preact/hooks';
 import { ArrowLeft, Check, Circle, CircleSlash, Eye, Play, X } from 'lucide-preact';
 import type { TestTreeNode, ClientMessage } from '../ui-protocol.js';
 
@@ -108,6 +108,21 @@ function TreeNode({ node, depth, expandedNodes, selectedTestId, onToggleExpanded
   const isSelected = selectedTestId === node.id;
   const hasChildren = node.children && node.children.length > 0;
 
+  // Status flash animation (failures only — green flashes are distracting)
+  const prevStatusRef = useRef(node.status);
+  const [flashClass, setFlashClass] = useState('');
+
+  useEffect(() => {
+    const prev = prevStatusRef.current;
+    prevStatusRef.current = node.status;
+    if (prev === 'running' && node.status === 'failed') {
+      setFlashClass('te-status-flash-failed');
+      const timer = setTimeout(() => setFlashClass(''), 600);
+      return () => clearTimeout(timer);
+    }
+    setFlashClass('');
+  }, [node.status]);
+
   const handleRun = useCallback((e: Event) => {
     e.stopPropagation();
     if (node.type === 'project') {
@@ -131,10 +146,12 @@ function TreeNode({ node, depth, expandedNodes, selectedTestId, onToggleExpanded
     onSelectTest(node.id);
   }, [node.id, hasChildren, onToggleExpanded, onSelectTest]);
 
+  const runningClass = node.status === 'running' ? 'te-status-running' : '';
+
   return (
     <div class="te-node-group">
       <div
-        class={`te-node ${isSelected ? 'selected' : ''} te-node-${node.type}`}
+        class={`te-node ${isSelected ? 'selected' : ''} te-node-${node.type} ${runningClass} ${flashClass}`}
         style={{ paddingLeft: `${12 + depth * 16}px` }}
         onClick={handleClick}
       >

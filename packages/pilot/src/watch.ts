@@ -192,7 +192,6 @@ export async function runWatchMode(ctx: WatchModeContext): Promise<void> {
       ['--port', String(daemonPort), '--agent-port', String(agentPort)],
       { detached: true, stdio: 'ignore' },
     );
-    daemonProcess.unref();
     daemonProcess.on('error', () => { /* handled by waitForReady */ });
 
     const daemonClient = new PilotGrpcClient(`localhost:${daemonPort}`);
@@ -202,6 +201,8 @@ export async function runWatchMode(ctx: WatchModeContext): Promise<void> {
       try { daemonProcess.kill(); } catch { /* already dead */ }
       throw new Error(`daemon on port ${daemonPort} did not become ready`);
     }
+    // Only detach after confirmed ready so kill() works during init failure
+    daemonProcess.unref();
 
     const child = fork(resolvedWorkerScript, [], {
       stdio: ['ignore', 'inherit', 'inherit', 'ipc'],

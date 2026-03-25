@@ -33,6 +33,8 @@ interface RunControlsProps {
   onToggleRunDeps: () => void
   /** Workers in multi-worker mode. Empty array for single-worker. */
   workers: WorkerInfo[]
+  /** Elapsed run time in ms. */
+  runElapsed: number
 }
 
 const ICON_SIZE = 14;
@@ -53,7 +55,16 @@ function workerTooltip(w: WorkerInfo): string {
   return lines.join('\n');
 }
 
-export function RunControls({ connected, isRunning, isWatching, deviceSerial, counts, theme, onThemeChange, onSend, hasProjectDeps, runDepsFirst, onToggleRunDeps, workers }: RunControlsProps) {
+function formatElapsed(ms: number): string {
+  if (ms < 1000) return '0.0s';
+  const s = ms / 1000;
+  if (s < 60) return `${s.toFixed(1)}s`;
+  const m = Math.floor(s / 60);
+  const rem = s % 60;
+  return `${m}m ${rem.toFixed(0)}s`;
+}
+
+export function RunControls({ connected, isRunning, isWatching, deviceSerial, counts, theme, onThemeChange, onSend, hasProjectDeps, runDepsFirst, onToggleRunDeps, workers, runElapsed }: RunControlsProps) {
   const hasWorkers = workers.length > 1;
 
   return (
@@ -72,7 +83,7 @@ export function RunControls({ connected, isRunning, isWatching, deviceSerial, co
           disabled={isRunning || !connected}
           title="Run all tests (r)"
         >
-          <Play size={ICON_SIZE} /> Run All
+          <Play size={ICON_SIZE} /> Run All <span class="rc-kbd">R</span>
         </button>
         {counts.failed > 0 && (
           <button
@@ -81,7 +92,7 @@ export function RunControls({ connected, isRunning, isWatching, deviceSerial, co
             disabled={isRunning || !connected}
             title="Re-run failed tests (f)"
           >
-            <RefreshCw size={ICON_SIZE} /> Rerun Failed
+            <RefreshCw size={ICON_SIZE} /> Rerun Failed <span class="rc-kbd">F</span>
           </button>
         )}
         {isRunning && (
@@ -90,7 +101,7 @@ export function RunControls({ connected, isRunning, isWatching, deviceSerial, co
             onClick={() => onSend({ type: 'stop-run' })}
             title="Stop current run (Esc)"
           >
-            <Square size={ICON_SIZE} /> Stop
+            <Square size={ICON_SIZE} /> Stop <span class="rc-kbd">Esc</span>
           </button>
         )}
         <button
@@ -99,7 +110,7 @@ export function RunControls({ connected, isRunning, isWatching, deviceSerial, co
           disabled={!connected}
           title={isWatching ? 'Disable watch mode (w)' : 'Watch all files for changes (w)'}
         >
-          <Eye size={ICON_SIZE} /> Watch
+          <Eye size={ICON_SIZE} /> Watch <span class="rc-kbd">W</span>
         </button>
         {hasProjectDeps && (
           <button
@@ -115,6 +126,9 @@ export function RunControls({ connected, isRunning, isWatching, deviceSerial, co
       </div>
 
       <div class="rc-right">
+        {isRunning && (
+          <span class="rc-elapsed">{formatElapsed(runElapsed)}</span>
+        )}
         {counts.total > 0 && (
           <div class="rc-counts">
             {counts.passed > 0 && <span class="rc-count passed">{counts.passed} passed</span>}
@@ -135,6 +149,13 @@ export function RunControls({ connected, isRunning, isWatching, deviceSerial, co
                   <span key={w.workerId} class="rc-device" title={workerTooltip(w)}>
                     <span class={`rc-dot ${DOT_CLASS[w.status]}`} />
                     {w.deviceSerial}
+                    {w.status === 'error' || w.status === 'idle' ? (
+                      <button
+                        class="rc-respawn-btn"
+                        onClick={(e) => { e.stopPropagation(); onSend({ type: 'respawn-worker', workerId: w.workerId }); }}
+                        title={`Respawn worker ${w.workerId}`}
+                      >{'\u21BB'}</button>
+                    ) : null}
                   </span>
                 ))
               : (

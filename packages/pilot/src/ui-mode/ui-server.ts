@@ -808,7 +808,6 @@ export async function startUIServer(
       ['--port', String(daemonPort), '--agent-port', String(agentPort)],
       { detached: true, stdio: 'ignore' },
     );
-    daemonProcess.unref();
     daemonProcess.on('error', () => { /* handled by waitForReady */ });
 
     const daemonClient = new PilotGrpcClient(`localhost:${daemonPort}`);
@@ -818,6 +817,8 @@ export async function startUIServer(
       daemonClient.close();
       throw new Error(`daemon on port ${daemonPort} did not become ready`);
     }
+    // Only detach after confirmed ready so kill() works during init failure
+    daemonProcess.unref();
 
     // Fork ui-worker.ts
     const child = fork(resolvedWorkerScript, [], {
@@ -1699,6 +1700,23 @@ export async function startUIServer(
           }
         }
         break;
+      case 'respawn-worker': {
+        const worker = uiWorkers.find((w) => w.id === msg.workerId);
+        if (worker && !worker.retired) {
+          worker.retired = true;
+          worker.busy = false;
+          try { if (worker.process.connected) worker.process.send({ type: 'shutdown' }); } catch { /* dead */ }
+          console.log(`${DIM}Worker ${worker.id} marked for respawn by user${RESET}`);
+          broadcastWorkerStatus(worker, 'error');
+          ensureWorkersReady().then(() => {
+            const respawned = uiWorkers.find((w) => w.id === msg.workerId);
+            if (respawned && !respawned.retired) {
+              broadcastWorkerStatus(respawned, 'idle');
+            }
+          }).catch(() => {});
+        }
+        break;
+      }
       case 'set-filter':
         // Filtering is client-side — no action needed
         break;
@@ -1723,17 +1741,20 @@ export async function startUIServer(
       return;
     }
 
-    // Serve trace ZIP files for download
+    // Serve trace ZIP files for download.
+    // Security: only serve .zip files that reside within the project's output directory.
     if (url.pathname.startsWith('/trace/')) {
       const tracePath = decodeURIComponent(url.pathname.slice('/trace/'.length));
+      if (!tracePath.endsWith('.zip')) {
+        res.writeHead(404);
+        res.end('Trace not found');
+        return;
+      }
+      // tracePath may be absolute (from packageTrace) or relative
       const resolvedTrace = path.resolve(tracePath);
-      const resolvedOutputDir = path.resolve(ctx.config.outputDir);
-      if (
-        !resolvedTrace ||
-        !resolvedTrace.startsWith(resolvedOutputDir + path.sep) ||
-        !resolvedTrace.endsWith('.zip') ||
-        !fs.existsSync(resolvedTrace)
-      ) {
+      const resolvedOutputDir = path.resolve(ctx.config.rootDir, ctx.config.outputDir);
+      const relative = path.relative(resolvedOutputDir, resolvedTrace);
+      if (relative.startsWith('..') || path.isAbsolute(relative) || !fs.existsSync(resolvedTrace)) {
         res.writeHead(404);
         res.end('Trace not found');
         return;
