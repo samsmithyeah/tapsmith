@@ -1,5 +1,5 @@
-import { useState, useRef, useCallback } from 'preact/hooks'
-import type { ActionTraceEvent, AssertionTraceEvent } from '../../trace/types.js'
+import { useState, useRef, useCallback } from 'preact/hooks';
+import type { ActionTraceEvent, AssertionTraceEvent } from '../../trace/types.js';
 
 // ─── Injected Styles ───
 
@@ -11,15 +11,15 @@ const SCREENSHOT_STYLES = `
   .bounds-rect { position: absolute; border: 2px solid var(--color-accent); background: rgba(79,193,255,0.15); border-radius: 2px; }
   .bounds-rect-hierarchy { position: absolute; border: 2px solid var(--color-success); background: rgba(78,201,176,0.15); border-radius: 2px; }
   .bounds-point { position: absolute; width: 16px; height: 16px; margin-left: -8px; margin-top: -8px; border-radius: 50%; background: rgba(255,80,80,0.5); border: 2px solid #ff5050; box-shadow: 0 0 8px rgba(255,80,80,0.4); }
-`
+`;
 
-let stylesInjected = false
+let stylesInjected = false;
 function injectStyles() {
-  if (stylesInjected) return
-  stylesInjected = true
-  const el = document.createElement('style')
-  el.textContent = SCREENSHOT_STYLES
-  document.head.appendChild(el)
+  if (stylesInjected) return;
+  stylesInjected = true;
+  const el = document.createElement('style');
+  el.textContent = SCREENSHOT_STYLES;
+  document.head.appendChild(el);
 }
 
 // ─── Types ───
@@ -39,38 +39,38 @@ interface NaturalSize {
 }
 
 export function ScreenshotPanel({ event, screenshots, highlightBounds, onScreenshotClick }: Props) {
-  injectStyles()
+  injectStyles();
 
-  const [tab, setTab] = useState<ScreenshotTab>('after')
-  const [scale, setScale] = useState(1)
-  const [naturalSize, setNaturalSize] = useState<NaturalSize | null>(null)
-  const imgRef = useRef<HTMLImageElement>(null)
+  const [tab, setTab] = useState<ScreenshotTab>('after');
+  const [scale, setScale] = useState(1);
+  const [naturalSize, setNaturalSize] = useState<NaturalSize | null>(null);
+  const imgRef = useRef<HTMLImageElement>(null);
 
   const handleWheel = useCallback((e: WheelEvent) => {
-    e.preventDefault()
+    e.preventDefault();
     setScale(prev => {
-      const delta = e.deltaY > 0 ? -0.1 : 0.1
-      return Math.max(0.5, Math.min(5, prev + delta))
-    })
-  }, [])
+      const delta = e.deltaY > 0 ? -0.1 : 0.1;
+      return Math.max(0.5, Math.min(5, prev + delta));
+    });
+  }, []);
 
   const handleImageLoad = useCallback(() => {
-    const img = imgRef.current
+    const img = imgRef.current;
     if (img) {
-      setNaturalSize({ width: img.naturalWidth, height: img.naturalHeight })
+      setNaturalSize({ width: img.naturalWidth, height: img.naturalHeight });
     }
-  }, [])
+  }, []);
 
   const handleImageClick = useCallback((e: MouseEvent) => {
-    if (!onScreenshotClick || !imgRef.current || !naturalSize) return
-    const img = imgRef.current
-    const rect = img.getBoundingClientRect()
-    const clickX = e.clientX - rect.left
-    const clickY = e.clientY - rect.top
-    const naturalX = Math.round(clickX * (naturalSize.width / rect.width))
-    const naturalY = Math.round(clickY * (naturalSize.height / rect.height))
-    onScreenshotClick({ x: naturalX, y: naturalY })
-  }, [onScreenshotClick, naturalSize])
+    if (!onScreenshotClick || !imgRef.current || !naturalSize) return;
+    const img = imgRef.current;
+    const rect = img.getBoundingClientRect();
+    const clickX = e.clientX - rect.left;
+    const clickY = e.clientY - rect.top;
+    const naturalX = Math.round(clickX * (naturalSize.width / rect.width));
+    const naturalY = Math.round(clickY * (naturalSize.height / rect.height));
+    onScreenshotClick({ x: naturalX, y: naturalY });
+  }, [onScreenshotClick, naturalSize]);
 
   if (!event) {
     return (
@@ -79,30 +79,31 @@ export function ScreenshotPanel({ event, screenshots, highlightBounds, onScreens
           <div class="screenshot-empty">Select an action to view screenshots</div>
         </div>
       </div>
-    )
+    );
   }
 
-  const pad = String(event.actionIndex).padStart(3, '0')
-  const beforeUrl = screenshots.get(`screenshots/action-${pad}-before.png`)
-  const afterUrl = screenshots.get(`screenshots/action-${pad}-after.png`)
+  const pad = String(event.actionIndex).padStart(3, '0');
+  const beforeUrl = screenshots.get(`screenshots/action-${pad}-before.png`);
+  const afterUrl = screenshots.get(`screenshots/action-${pad}-after.png`);
 
-  const hasBefore = !!beforeUrl
-  const hasAfter = !!afterUrl
+  const hasBefore = !!beforeUrl;
+  const hasAfter = !!afterUrl;
 
   // Auto-select best available tab
-  let currentUrl: string | undefined
-  if (tab === 'before') currentUrl = beforeUrl
-  else if (tab === 'after') currentUrl = afterUrl ?? beforeUrl
-  else currentUrl = beforeUrl // 'action' tab shows before with overlay
+  let currentUrl: string | undefined;
+  if (tab === 'before') currentUrl = beforeUrl;
+  else if (tab === 'after') currentUrl = afterUrl ?? beforeUrl;
+  else currentUrl = beforeUrl; // 'action' tab shows before with overlay
 
   // If selected tab has no screenshot, fall back
   if (!currentUrl) {
-    currentUrl = afterUrl ?? beforeUrl
+    currentUrl = afterUrl ?? beforeUrl;
   }
 
-  const showOverlay = tab === 'action' && event.type === 'action'
-  const bounds = event.type === 'action' ? event.bounds : undefined
-  const point = event.type === 'action' ? event.point : undefined
+  const bounds = (event.type === 'action' || event.type === 'assertion') ? event.bounds : undefined;
+  const point = event.type === 'action' ? event.point : undefined;
+  // Show bounds overlay whenever bounds exist, on any tab
+  const showOverlay = !!bounds || (tab === 'action' && !!point);
 
   return (
     <div class="screenshot-panel">
@@ -154,7 +155,7 @@ export function ScreenshotPanel({ event, screenshots, highlightBounds, onScreens
         )}
       </div>
     </div>
-  )
+  );
 }
 
 // ─── Bounds Overlay ───
@@ -168,10 +169,10 @@ interface BoundsOverlayProps {
 }
 
 function BoundsOverlay({ bounds, point, naturalSize, renderedWidth, renderedHeight }: BoundsOverlayProps) {
-  if (!bounds && !point) return null
+  if (!bounds && !point) return null;
 
-  const scaleX = renderedWidth / naturalSize.width
-  const scaleY = renderedHeight / naturalSize.height
+  const scaleX = renderedWidth / naturalSize.width;
+  const scaleY = renderedHeight / naturalSize.height;
 
   return (
     <div
@@ -202,7 +203,7 @@ function BoundsOverlay({ bounds, point, naturalSize, renderedWidth, renderedHeig
         />
       )}
     </div>
-  )
+  );
 }
 
 // ─── Hierarchy Highlight Overlay ───
@@ -215,8 +216,8 @@ interface HierarchyHighlightProps {
 }
 
 function HierarchyHighlightOverlay({ bounds, naturalSize, renderedWidth, renderedHeight }: HierarchyHighlightProps) {
-  const scaleX = renderedWidth / naturalSize.width
-  const scaleY = renderedHeight / naturalSize.height
+  const scaleX = renderedWidth / naturalSize.width;
+  const scaleY = renderedHeight / naturalSize.height;
 
   return (
     <div
@@ -236,5 +237,5 @@ function HierarchyHighlightOverlay({ bounds, naturalSize, renderedWidth, rendere
         }}
       />
     </div>
-  )
+  );
 }

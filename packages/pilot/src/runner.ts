@@ -21,7 +21,8 @@ import { FixtureRegistry, resolveFixtures, type FixtureDefinitions, type Builtin
 import { resolveTraceConfig } from './trace/types.js';
 import { shouldRecord, shouldRetain } from './trace/trace-mode.js';
 import { packageTrace } from './trace/trace-packager.js';
-import type { TraceCollector } from './trace/trace-collector.js';
+import { TraceCollector, setActiveTraceCollector, withActiveTraceCollector } from './trace/trace-collector.js';
+import type { AnyTraceEvent } from './trace/types.js';
 
 // ─── Result types ───
 
@@ -261,6 +262,19 @@ export interface RunOptions {
   projectUseOptions?: UseOptions;
   /** Project name — stamped on test results for reporter grouping. */
   projectName?: string;
+  /** Run only the test whose fullName matches this value. All other tests are skipped. */
+  testFilter?: string;
+  /** Called with mapped network entries after capture stops. Used by UI mode for live streaming. */
+  onNetworkEntries?: (entries: import('./trace/types.js').NetworkEntry[]) => void;
+  /**
+   * Append a unique query parameter to the dynamic import URL so Node.js
+   * treats it as a new module. Required by persistent processes (UI workers)
+   * that re-run the same file — without this, the ESM cache returns the
+   * stale first import and no tests are registered.
+   */
+  bustImportCache?: boolean;
+  /** When aborted, skip remaining tests but still run afterEach/afterAll hooks. */
+  abortSignal?: AbortSignal;
 }
 
 async function captureFailureScreenshot(
@@ -301,6 +315,44 @@ async function invokeHook(fn: HookFn, device?: Device): Promise<void> {
     await (fn as (fixtures: TestFixtures) => void | Promise<void>)({ device });
   } else {
     await (fn as () => void | Promise<void>)();
+  }
+}
+
+/**
+ * Replay saved beforeAll trace events through a test's event callback.
+ * Reads screenshots from the beforeAll collector's temp dir so they appear
+ * in the UI for every test, not just the first.
+ */
+function replayBeforeAllEvents(
+  testCollector: TraceCollector,
+  events: readonly AnyTraceEvent[],
+  beforeAllCollector: TraceCollector | null,
+  hierarchies: Map<number, { before?: string; after?: string }>,
+): void {
+  const cb = testCollector.getEventCallback();
+  if (!cb) return;
+  const screenshotDir = beforeAllCollector
+    ? path.join(beforeAllCollector.tempDir, 'screenshots')
+    : null;
+
+  for (const event of events) {
+    if ((event.type === 'action' || event.type === 'assertion') && screenshotDir) {
+      const pad = String(event.actionIndex).padStart(3, '0');
+      const beforePath = path.join(screenshotDir, `action-${pad}-before.png`);
+      const afterPath = path.join(screenshotDir, `action-${pad}-after.png`);
+      const captures: {
+        before?: Buffer; after?: Buffer;
+        hierarchyBefore?: string; hierarchyAfter?: string;
+      } = {};
+      try { if (fs.existsSync(beforePath)) captures.before = fs.readFileSync(beforePath); } catch { /* best-effort */ }
+      try { if (fs.existsSync(afterPath)) captures.after = fs.readFileSync(afterPath); } catch { /* best-effort */ }
+      const hier = hierarchies.get(event.actionIndex);
+      if (hier?.before) captures.hierarchyBefore = hier.before;
+      if (hier?.after) captures.hierarchyAfter = hier.after;
+      cb(event, captures);
+    } else {
+      cb(event);
+    }
   }
 }
 
@@ -353,9 +405,74 @@ async function runSuiteContext(
   const hasOnlySuites = ctx.suites.some((s) => s.only);
   const hasOnly = hasOnlyTests || hasOnlySuites;
 
-  // Run beforeAll hooks
-  for (const hook of ctx.beforeAll) {
-    await invokeHook(hook, opts.device);
+  // Run beforeAll hooks with tracing. We create a standalone collector
+  // (via setActiveTraceCollector) that Device._traceCollector falls back to.
+  // This is simpler than managing the Tracing-managed collector lifecycle.
+  //
+  // After beforeAll completes, we save the recorded events so they can be
+  // replayed into each test's trace. This ensures beforeAll actions are
+  // visible for every test in the suite (UI mode + trace viewer).
+  let beforeAllCollector: TraceCollector | null = null;
+  let beforeAllFirstFullName: string | undefined;
+  if (ctx.beforeAll.length > 0 && opts.device) {
+    const traceConfig = resolveTraceConfig(opts.config.trace);
+    if (shouldRecord(traceConfig.mode, 0)) {
+      // Pick the test to tag beforeAll trace events with. When running a
+      // single test (testFilter), use that test so we don't mark an
+      // unrelated test as 'running' in the UI.
+      const targetTest = opts.testFilter
+        ? ctx.tests.find((t) => {
+            const fn = parentPrefix ? `${parentPrefix} > ${t.name}` : t.name;
+            return fn === opts.testFilter;
+          })
+        : ctx.tests.find((t) => !t.skip);
+      if (targetTest && opts.beforeEachTest) {
+        beforeAllFirstFullName = parentPrefix ? `${parentPrefix} > ${targetTest.name}` : targetTest.name;
+        await opts.beforeEachTest(beforeAllFirstFullName);
+      }
+      const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pilot-trace-ba-'));
+      // Trigger _startManaged to fire the monkey-patch (ui-run.ts sets up
+      // the event callback), then transfer the callback to a standalone
+      // collector and clear the managed one.
+      const managedCollector = opts.device.tracing._startManaged(traceConfig, tempDir);
+      beforeAllCollector = new TraceCollector(traceConfig, tempDir);
+      const cb = managedCollector.getEventCallback();
+      if (cb) beforeAllCollector.setEventCallback(cb);
+      opts.device.tracing._stopManaged();
+
+      beforeAllCollector.startGroup('beforeAll Hooks');
+    }
+  }
+  if (beforeAllCollector) {
+    await withActiveTraceCollector(beforeAllCollector, async () => {
+      for (const hook of ctx.beforeAll) {
+        await invokeHook(hook, opts.device);
+      }
+    });
+    beforeAllCollector.endGroup();
+  } else {
+    for (const hook of ctx.beforeAll) {
+      await invokeHook(hook, opts.device);
+    }
+  }
+
+  // Save beforeAll events for replay into each test's trace.
+  const savedBeforeAllEvents = beforeAllCollector ? beforeAllCollector.events.slice() : [];
+  const beforeAllActionCount = beforeAllCollector ? beforeAllCollector.currentActionIndex : 0;
+  // Build hierarchy lookup for replay (hierarchies are in-memory, not on disk)
+  const beforeAllHierarchies = new Map<number, { before?: string; after?: string }>();
+  if (beforeAllCollector) {
+    for (const h of beforeAllCollector.hierarchies) {
+      const match = h.archivePath.match(/action-(\d+)-(before|after)\.xml/);
+      if (match) {
+        const idx = parseInt(match[1]);
+        const position = match[2];
+        const entry = beforeAllHierarchies.get(idx) ?? {};
+        if (position === 'before') entry.before = h.xml;
+        else entry.after = h.xml;
+        beforeAllHierarchies.set(idx, entry);
+      }
+    }
   }
 
   // All beforeEach hooks (inherited + local)
@@ -366,8 +483,13 @@ async function runSuiteContext(
   for (const entry of ctx.tests) {
     const fullName = parentPrefix ? `${parentPrefix} > ${entry.name}` : entry.name;
 
-    // Determine if this test should be skipped
-    const shouldSkip = entry.skip || (hasOnly && !entry.only);
+    // Determine if this test should be skipped.
+    // testFilter matches either an exact test name or a describe prefix.
+    const filteredOut = opts.testFilter
+      && fullName !== opts.testFilter
+      && !fullName.startsWith(opts.testFilter + ' > ');
+    const shouldSkip = entry.skip || (hasOnly && !entry.only) || filteredOut
+      || opts.abortSignal?.aborted;
 
     if (shouldSkip) {
       const skippedResult: TestResult = {
@@ -400,6 +522,12 @@ async function runSuiteContext(
     if (recording && opts.device) {
       const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pilot-trace-'));
       traceCollector = opts.device.tracing._startManaged(traceConfig, tempDir);
+      setActiveTraceCollector(traceCollector);
+
+      // Offset action index so per-test actions don't collide with beforeAll
+      if (beforeAllActionCount > 0) {
+        traceCollector.setActionIndexOffset(beforeAllActionCount);
+      }
 
       // Start network capture if configured
       if (traceConfig.network) {
@@ -414,11 +542,20 @@ async function runSuiteContext(
 
     try {
       const testBody = async () => {
-        // Run beforeEach hooks
-        traceCollector?.startGroup('Before Hooks');
+        // Notify before tracing starts so UI mode can tag events to this test
         if (opts.beforeEachTest) {
           await opts.beforeEachTest(fullName);
         }
+
+        // Replay beforeAll events into this test's trace stream.
+        // For the first test (which received beforeAll's live-streamed events),
+        // skip replay to avoid duplicates.
+        if (fullName !== beforeAllFirstFullName && savedBeforeAllEvents.length > 0 && traceCollector) {
+          replayBeforeAllEvents(traceCollector, savedBeforeAllEvents, beforeAllCollector, beforeAllHierarchies);
+        }
+
+        // Run beforeEach hooks
+        traceCollector?.startGroup('beforeEach Hooks');
 
         for (const hook of allBeforeEach) {
           await invokeHook(hook, opts.device);
@@ -471,6 +608,9 @@ async function runSuiteContext(
       status = 'failed';
       error = err instanceof Error ? err : new Error(String(err));
 
+      // Fail any in-flight traced action/assertion so it appears in the trace
+      traceCollector?.failPendingOperation(error.message);
+
       // Screenshot on failure
       if (opts.config.screenshot !== 'never') {
         screenshotPath = await captureFailureScreenshot(
@@ -482,7 +622,7 @@ async function runSuiteContext(
     } finally {
       // Run afterEach hooks (always)
       if (allAfterEach.length > 0) {
-        traceCollector?.startGroup('After Hooks');
+        traceCollector?.startGroup('afterEach Hooks');
         for (const hook of allAfterEach) {
           try {
             await invokeHook(hook, opts.device);
@@ -543,6 +683,7 @@ async function runSuiteContext(
       }
 
       const collector = opts.device.tracing._stopManaged();
+      setActiveTraceCollector(null);
 
       // Map network entries, associating each with the closest preceding action
       let networkEntries: import('./trace/types.js').NetworkEntry[] | undefined;
@@ -580,6 +721,10 @@ async function runSuiteContext(
           requestBody: e.requestBody,
           responseBody: e.responseBody,
         }));
+
+        if (networkEntries && opts.onNetworkEntries) {
+          opts.onNetworkEntries(networkEntries);
+        }
       }
       if (collector) {
         const retain = shouldRetain(traceConfig.mode, status === 'passed', attempt);
@@ -641,7 +786,8 @@ async function runSuiteContext(
 
   // Run child suites
   for (const suiteEntry of ctx.suites) {
-    const shouldSkip = suiteEntry.skip || (hasOnly && !suiteEntry.only && !hasOnlyTests);
+    const shouldSkip = suiteEntry.skip || (hasOnly && !suiteEntry.only && !hasOnlyTests)
+      || opts.abortSignal?.aborted;
 
     if (shouldSkip) {
       // Mark all tests in skipped suite as skipped (we still need to discover them)
@@ -662,13 +808,67 @@ async function runSuiteContext(
     result.suites.push(childResult);
   }
 
-  // Run afterAll hooks
-  for (const hook of ctx.afterAll) {
-    try {
-      await invokeHook(hook, opts.device);
-    } catch {
-      // afterAll errors are logged but don't fail individual tests
+  // Run afterAll hooks with tracing (same pattern as beforeAll).
+  // Events are streamed to the UI tagged with the last test that ran.
+  if (ctx.afterAll.length > 0 && opts.device) {
+    const traceConfig = resolveTraceConfig(opts.config.trace);
+    if (shouldRecord(traceConfig.mode, 0)) {
+      // Find the last test that actually ran (not skipped/filtered) to tag events.
+      // Must account for testFilter and .only so we don't tag with a test that didn't run.
+      const lastRunTest = [...ctx.tests].reverse().find((t) => {
+        if (t.skip) return false;
+        if (hasOnly && !t.only) return false;
+        if (opts.testFilter) {
+          const fn = parentPrefix ? `${parentPrefix} > ${t.name}` : t.name;
+          if (fn !== opts.testFilter && !fn.startsWith(opts.testFilter + ' > ')) return false;
+        }
+        return true;
+      });
+      if (lastRunTest && opts.beforeEachTest) {
+        const lastFullName = parentPrefix ? `${parentPrefix} > ${lastRunTest.name}` : lastRunTest.name;
+        await opts.beforeEachTest(lastFullName);
+      }
+      const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pilot-trace-aa-'));
+      const managedCollector = opts.device.tracing._startManaged(traceConfig, tempDir);
+      const afterAllCollector = new TraceCollector(traceConfig, tempDir);
+      const cb = managedCollector.getEventCallback();
+      if (cb) afterAllCollector.setEventCallback(cb);
+      opts.device.tracing._stopManaged();
+
+      afterAllCollector.startGroup('afterAll Hooks');
+      await withActiveTraceCollector(afterAllCollector, async () => {
+        for (const hook of ctx.afterAll) {
+          try {
+            await invokeHook(hook, opts.device);
+          } catch {
+            // afterAll errors are logged but don't fail individual tests
+          }
+        }
+      });
+      afterAllCollector.endGroup();
+      afterAllCollector.cleanup();
+    } else {
+      for (const hook of ctx.afterAll) {
+        try {
+          await invokeHook(hook, opts.device);
+        } catch {
+          // afterAll errors are logged but don't fail individual tests
+        }
+      }
     }
+  } else {
+    for (const hook of ctx.afterAll) {
+      try {
+        await invokeHook(hook, opts.device);
+      } catch {
+        // afterAll errors are logged but don't fail individual tests
+      }
+    }
+  }
+
+  // Clean up beforeAll trace temp dir (screenshots are no longer needed)
+  if (beforeAllCollector) {
+    beforeAllCollector.cleanup();
   }
 
   } finally {
@@ -724,9 +924,10 @@ export async function runTestFile(
 
   // Import the test file — this registers tests/suites via side effects
   // and may call test.extend() to register fixtures.
-  // Note: Node.js caches ESM imports, so the same file path cannot be
-  // re-imported in the same process. Each worker runs each file at most once.
-  await import(filePath);
+  // Node.js caches ESM imports by URL. Persistent processes (UI workers)
+  // that re-run the same file must bust the cache with a unique query.
+  const importUrl = opts.bustImportCache ? `${filePath}?t=${Date.now()}` : filePath;
+  await import(importUrl);
 
   const rootCtx = popContext();
 
@@ -760,6 +961,60 @@ export async function runTestFile(
       await workerTeardown();
     }
   }
+}
+
+// ─── Test discovery (UI mode) ───
+
+export interface DiscoveredTest {
+  name: string
+  fullName: string
+  only: boolean
+  skip: boolean
+}
+
+export interface DiscoveredSuite {
+  name: string
+  tests: DiscoveredTest[]
+  suites: DiscoveredSuite[]
+}
+
+/**
+ * Import a test file and collect its test/suite tree without executing
+ * any test bodies. Used by UI mode for test discovery.
+ */
+export async function discoverTestFile(filePath: string): Promise<DiscoveredSuite> {
+  contextStack = [];
+  activeFixtureRegistry = new FixtureRegistry();
+  pushContext();
+
+  // Bust ESM cache so re-discovery in persistent processes (UI workers)
+  // picks up file changes instead of returning stale cached modules.
+  const importUrl = `${filePath}?t=${Date.now()}`;
+  await import(importUrl);
+
+  const rootCtx = popContext();
+  return discoverSuiteContext(rootCtx, '');
+}
+
+function discoverSuiteContext(ctx: SuiteContext, parentPrefix: string): DiscoveredSuite {
+  const tests: DiscoveredTest[] = ctx.tests.map((t) => ({
+    name: t.name,
+    fullName: parentPrefix ? `${parentPrefix} > ${t.name}` : t.name,
+    only: t.only,
+    skip: t.skip,
+  }));
+
+  const suites: DiscoveredSuite[] = [];
+  for (const entry of ctx.suites) {
+    const suitePrefix = parentPrefix ? `${parentPrefix} > ${entry.name}` : entry.name;
+    // Execute the describe callback to register nested tests/suites
+    pushContext();
+    entry.fn();
+    const childCtx = popContext();
+    suites.push(discoverSuiteContext(childCtx, suitePrefix));
+  }
+
+  return { name: parentPrefix, tests, suites };
 }
 
 /** @internal — exposed for unit testing only. */

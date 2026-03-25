@@ -5,11 +5,11 @@
  * streaming zip construction to avoid holding all screenshots in memory.
  */
 
-import * as fs from 'node:fs'
-import * as path from 'node:path'
-import { zipSync, type Zippable } from 'fflate'
-import type { TraceCollector, HierarchyCapture } from './trace-collector.js'
-import type { TraceMetadata, TraceDeviceInfo, NetworkEntry } from './types.js'
+import * as fs from 'node:fs';
+import * as path from 'node:path';
+import { zipSync, type Zippable } from 'fflate';
+import type { TraceCollector, HierarchyCapture } from './trace-collector.js';
+import type { TraceMetadata, TraceDeviceInfo, NetworkEntry } from './types.js';
 
 export interface PackageOptions {
   /** Test file path. */
@@ -49,7 +49,7 @@ function safeFileName(name: string): string {
   return name
     .replace(/[^a-zA-Z0-9_-]/g, '_')
     .replace(/_+/g, '_')
-    .slice(0, 100)
+    .slice(0, 100);
 }
 
 /**
@@ -61,11 +61,11 @@ export function packageTrace(
   collector: TraceCollector,
   options: PackageOptions,
 ): string {
-  const zipData: Zippable = {}
+  const zipData: Zippable = {};
 
   // 1. trace.json — NDJSON event log
-  const ndjson = collector.toNDJSON()
-  zipData['trace.json'] = new TextEncoder().encode(ndjson)
+  const ndjson = collector.toNDJSON();
+  zipData['trace.json'] = new TextEncoder().encode(ndjson);
 
   // 2. metadata.json
   const metadata: TraceMetadata = {
@@ -89,16 +89,16 @@ export function packageTrace(
     error: options.error,
     project: options.project,
     appState: options.appState,
-  }
+  };
   zipData['metadata.json'] = new TextEncoder().encode(
     JSON.stringify(metadata, null, 2),
-  )
+  );
 
   // 3. Screenshots
   for (const screenshot of collector.screenshots) {
     try {
-      const data = fs.readFileSync(screenshot.diskPath)
-      zipData[screenshot.archivePath] = new Uint8Array(data)
+      const data = fs.readFileSync(screenshot.diskPath);
+      zipData[screenshot.archivePath] = new Uint8Array(data);
     } catch {
       // Skip missing screenshots
     }
@@ -106,16 +106,16 @@ export function packageTrace(
 
   // 4. Hierarchy XML snapshots
   for (const hierarchy of collector.hierarchies as HierarchyCapture[]) {
-    zipData[hierarchy.archivePath] = new TextEncoder().encode(hierarchy.xml)
+    zipData[hierarchy.archivePath] = new TextEncoder().encode(hierarchy.xml);
   }
 
   // 5. Source files (optional)
   if (collector.config.sources && options.sourceFiles) {
     for (const sourcePath of options.sourceFiles) {
       try {
-        const content = fs.readFileSync(sourcePath, 'utf-8')
-        const basename = path.basename(sourcePath)
-        zipData[`sources/${basename}`] = new TextEncoder().encode(content)
+        const content = fs.readFileSync(sourcePath, 'utf-8');
+        const basename = path.basename(sourcePath);
+        zipData[`sources/${basename}`] = new TextEncoder().encode(content);
       } catch {
         // Skip unreadable source files
       }
@@ -127,45 +127,45 @@ export function packageTrace(
     // Write body files into the archive and set paths
     for (const entry of options.networkEntries) {
       if (entry.requestBody && entry.requestBody.length > 0) {
-        const bodyPath = `network/req-${entry.index}.bin`
-        zipData[bodyPath] = new Uint8Array(entry.requestBody)
-        entry.requestBodyPath = bodyPath
+        const bodyPath = `network/req-${entry.index}.bin`;
+        zipData[bodyPath] = new Uint8Array(entry.requestBody);
+        entry.requestBodyPath = bodyPath;
       }
       if (entry.responseBody && entry.responseBody.length > 0) {
-        const bodyPath = `network/res-${entry.index}.bin`
-        zipData[bodyPath] = new Uint8Array(entry.responseBody)
-        entry.responseBodyPath = bodyPath
+        const bodyPath = `network/res-${entry.index}.bin`;
+        zipData[bodyPath] = new Uint8Array(entry.responseBody);
+        entry.responseBodyPath = bodyPath;
       }
     }
 
     // Serialize entries without transient body fields
     const networkNdjson = options.networkEntries
       .map((e) => {
-        const { requestBody: _rb, responseBody: _rsb, ...rest } = e
-        return JSON.stringify(rest)
+        const { requestBody: _rb, responseBody: _rsb, ...rest } = e;
+        return JSON.stringify(rest);
       })
-      .join('\n') + '\n'
-    zipData['network.json'] = new TextEncoder().encode(networkNdjson)
+      .join('\n') + '\n';
+    zipData['network.json'] = new TextEncoder().encode(networkNdjson);
   }
 
   // Build zip
-  const zipped = zipSync(zipData, { level: 6 })
+  const zipped = zipSync(zipData, { level: 6 });
 
   // Write to output directory
-  fs.mkdirSync(options.outputDir, { recursive: true })
-  const safeName = safeFileName(options.testName)
-  const projectPrefix = options.project ? `${safeFileName(options.project)}-` : ''
-  const zipPath = path.join(options.outputDir, `trace-${projectPrefix}${safeName}-${options.startTime}.zip`)
-  fs.writeFileSync(zipPath, zipped)
+  fs.mkdirSync(options.outputDir, { recursive: true });
+  const safeName = safeFileName(options.testName);
+  const projectPrefix = options.project ? `${safeFileName(options.project)}-` : '';
+  const zipPath = path.join(options.outputDir, `trace-${projectPrefix}${safeName}-${options.startTime}.zip`);
+  fs.writeFileSync(zipPath, zipped);
 
   // Clean up temporary screenshot files
   for (const screenshot of collector.screenshots) {
     try {
-      fs.unlinkSync(screenshot.diskPath)
+      fs.unlinkSync(screenshot.diskPath);
     } catch {
       // best-effort
     }
   }
 
-  return zipPath
+  return zipPath;
 }

@@ -6,12 +6,12 @@
  * common flow so neither class duplicates it.
  */
 
-import type { TraceCollector } from './trace-collector.js'
-import { extractSourceLocation } from './trace-collector.js'
-import type { ActionCategory } from './types.js'
-import type { ActionResponse, ElementInfo } from '../grpc-client.js'
-import type { Selector } from '../selectors.js'
-import { selectorToProto } from '../selectors.js'
+import type { TraceCollector } from './trace-collector.js';
+import { extractSourceLocation } from './trace-collector.js';
+import type { ActionCategory } from './types.js';
+import type { ActionResponse, ElementInfo } from '../grpc-client.js';
+import type { Selector } from '../selectors.js';
+import { selectorToProto } from '../selectors.js';
 
 // ─── Trace context ───
 
@@ -35,76 +35,104 @@ export async function tracedAction(
 ): Promise<void> {
   // No trace context — just run the action directly
   if (!ctx) {
-    const res = await fn()
+    const res = await fn();
     if (!res.success) {
-      throw new Error(res.errorMessage || fallbackMsg)
+      throw new Error(res.errorMessage || fallbackMsg);
     }
-    return
+    return;
   }
 
-  const sourceLocation = extractSourceLocation(new Error().stack ?? '')
-  const selectorStr = selector ? JSON.stringify(selectorToProto(selector)) : undefined
-  const log: string[] = []
+  const sourceLocation = extractSourceLocation(new Error().stack ?? '');
+  const selectorStr = selector ? JSON.stringify(selectorToProto(selector)) : undefined;
+  const log: string[] = [];
 
   // Best-effort element bounds lookup for trace overlay
-  let bounds: { left: number; top: number; right: number; bottom: number } | undefined
-  let point: { x: number; y: number } | undefined
+  let bounds: { left: number; top: number; right: number; bottom: number } | undefined;
+  let point: { x: number; y: number } | undefined;
   if (selector && ctx.findElement) {
-    const lookupStart = Date.now()
+    const lookupStart = Date.now();
     try {
-      const res = await ctx.findElement(selector, 2000)
+      const res = await ctx.findElement(selector, 2000);
       if (res.found && res.element?.bounds) {
-        bounds = res.element.bounds
-        log.push(`Element found at [${bounds.left},${bounds.top}][${bounds.right},${bounds.bottom}] (${Date.now() - lookupStart}ms)`)
+        bounds = res.element.bounds;
+        log.push(`Element found at [${bounds.left},${bounds.top}][${bounds.right},${bounds.bottom}] (${Date.now() - lookupStart}ms)`);
         if (category === 'tap') {
           point = {
             x: (bounds.left + bounds.right) / 2,
             y: (bounds.top + bounds.bottom) / 2,
-          }
-          log.push(`Tap target: (${point.x}, ${point.y})`)
+          };
+          log.push(`Tap target: (${point.x}, ${point.y})`);
         }
       } else {
-        log.push(`Element lookup returned no match (${Date.now() - lookupStart}ms)`)
+        log.push(`Element lookup returned no match (${Date.now() - lookupStart}ms)`);
       }
     } catch {
-      log.push(`Element lookup failed (${Date.now() - lookupStart}ms)`)
+      log.push(`Element lookup failed (${Date.now() - lookupStart}ms)`);
     }
   }
 
-  log.push('Capturing before screenshot + hierarchy')
+  log.push('Capturing before screenshot + hierarchy');
 
   const { actionIndex, captures: beforeCaptures } = await ctx.collector.captureBeforeAction(
     ctx.takeScreenshot, ctx.captureHierarchy,
-  )
+  );
 
-  const start = Date.now()
-  let success = true
-  let error: string | undefined
-  let errorStack: string | undefined
-  let caughtErr: unknown
+  const start = Date.now();
+  let success = true;
+  let error: string | undefined;
+  let errorStack: string | undefined;
+  let caughtErr: unknown;
+
+  // Local flag set by the fail handler — immune to interleaving from other actions
+  let failedByTimeout = false;
+
+  // Register pending operation so the runner can emit a failed event on timeout
+  ctx.collector.setPendingOperation((timeoutError: string) => {
+    failedByTimeout = true;
+    ctx.collector.addActionEvent({
+      category, action, selector: selectorStr, inputValue: extra?.inputValue,
+      duration: Date.now() - start, success: false, error: timeoutError,
+      bounds, point, log: [...log, `Timed out: ${timeoutError}`],
+      hasScreenshotBefore: !!beforeCaptures.screenshotBefore,
+      hasScreenshotAfter: false,
+      hasHierarchyBefore: !!beforeCaptures.hierarchyBefore,
+      hasHierarchyAfter: false,
+      sourceLocation,
+    });
+  });
 
   try {
-    const res = await fn()
+    const res = await fn();
     if (!res.success) {
-      success = false
-      error = res.errorMessage || fallbackMsg
-      throw new Error(error)
+      success = false;
+      error = res.errorMessage || fallbackMsg;
+      throw new Error(error);
     }
   } catch (err) {
-    success = false
-    if (err instanceof Error) { error = err.message; errorStack = err.stack }
-    else { error = String(err) }
-    log.push(`Action failed: ${error} (${Date.now() - start}ms)`)
-    caughtErr = err
+    success = false;
+    if (err instanceof Error) { error = err.message; errorStack = err.stack; }
+    else { error = String(err); }
+    log.push(`Action failed: ${error} (${Date.now() - start}ms)`);
+    caughtErr = err;
+  }
+
+  ctx.collector.clearPendingOperation();
+
+  // If the runner's timeout already emitted a failed event, skip the normal emit
+  if (failedByTimeout) {
+    if (caughtErr !== undefined) {
+      throw caughtErr instanceof Error ? caughtErr : new Error(String(caughtErr));
+    }
+    return;
   }
 
   if (success) {
-    log.push(`Action completed successfully (${Date.now() - start}ms)`)
+    log.push(`Action completed successfully (${Date.now() - start}ms)`);
   }
 
   const afterCaptures = await ctx.collector.captureAfterAction(
     actionIndex, ctx.takeScreenshot, ctx.captureHierarchy,
-  )
+  );
   ctx.collector.addActionEvent({
     category, action, selector: selectorStr, inputValue: extra?.inputValue,
     duration: Date.now() - start, success, error, errorStack,
@@ -114,9 +142,9 @@ export async function tracedAction(
     hasHierarchyBefore: !!beforeCaptures.hierarchyBefore,
     hasHierarchyAfter: !!afterCaptures.hierarchyAfter,
     sourceLocation,
-  })
+  });
 
   if (caughtErr !== undefined) {
-    throw caughtErr instanceof Error ? caughtErr : new Error(String(caughtErr))
+    throw caughtErr instanceof Error ? caughtErr : new Error(String(caughtErr));
   }
 }

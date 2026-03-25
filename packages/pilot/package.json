@@ -8,8 +8,9 @@
     "pilot": "dist/cli.js"
   },
   "scripts": {
-    "build": "tsc && npm run build:trace-viewer",
+    "build": "tsc && npm run build:trace-viewer && npm run build:ui-mode",
     "build:trace-viewer": "vite build",
+    "build:ui-mode": "vite build --config vite.config.ui-mode.ts",
     "lint": "eslint src/ --ignore-pattern src/trace-viewer/",
     "knip": "knip",
     "test": "vitest run",
@@ -44,13 +45,16 @@
     "glob": "^11.0.0",
     "minimatch": "^10.2.4",
     "open": "^10.2.0",
-    "tsx": "^4.21.0"
+    "tsx": "^4.21.0",
+    "ws": "^8.20.0"
   },
   "devDependencies": {
     "@prefresh/vite": "^2.4.12",
     "@types/node": "^22.0.0",
+    "@types/ws": "^8.18.1",
     "eslint": "^9.0.0",
     "knip": "^5.86.0",
+    "lucide-preact": "^1.6.0",
     "preact": "^10.29.0",
     "typescript": "^5.7.0",
     "typescript-eslint": "^8.0.0",

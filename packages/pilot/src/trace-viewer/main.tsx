@@ -1,13 +1,13 @@
-import { render } from 'preact'
-import { useState, useEffect, useCallback, useRef } from 'preact/hooks'
-import { unzipSync, strFromU8 } from 'fflate'
-import type { AnyTraceEvent, ActionTraceEvent, AssertionTraceEvent, TraceMetadata, NetworkEntry } from '../trace/types.js'
-import { ActionsPanel } from './components/ActionsPanel.js'
-import { ScreenshotPanel } from './components/ScreenshotPanel.js'
-import { DetailTabs } from './components/DetailTabs.js'
-import { TimelineFilmstrip } from './components/TimelineFilmstrip.js'
-import { ResizeHandle } from './components/ResizeHandle.js'
-import { TopBar, type Theme } from './components/TopBar.js'
+import { render } from 'preact';
+import { useState, useEffect, useCallback, useRef } from 'preact/hooks';
+import { unzipSync, strFromU8 } from 'fflate';
+import type { AnyTraceEvent, ActionTraceEvent, AssertionTraceEvent, TraceMetadata, NetworkEntry } from '../trace/types.js';
+import { ActionsPanel } from './components/ActionsPanel.js';
+import { ScreenshotPanel } from './components/ScreenshotPanel.js';
+import { DetailTabs } from './components/DetailTabs.js';
+import { TimelineFilmstrip } from './components/TimelineFilmstrip.js';
+import { ResizeHandle } from './components/ResizeHandle.js';
+import { TopBar, type Theme } from './components/TopBar.js';
 
 // ─── Types ───
 
@@ -24,64 +24,64 @@ export interface TraceData {
 // ─── Zip Loader ───
 
 async function loadTraceFromUrl(url: string): Promise<TraceData> {
-  const resp = await fetch(url)
-  if (!resp.ok) throw new Error(`Failed to load trace: HTTP ${resp.status}`)
-  const buf = new Uint8Array(await resp.arrayBuffer())
-  return parseTraceZip(buf)
+  const resp = await fetch(url);
+  if (!resp.ok) throw new Error(`Failed to load trace: HTTP ${resp.status}`);
+  const buf = new Uint8Array(await resp.arrayBuffer());
+  return parseTraceZip(buf);
 }
 
 async function loadTraceFromFile(file: File): Promise<TraceData> {
-  const buf = new Uint8Array(await file.arrayBuffer())
-  return parseTraceZip(buf)
+  const buf = new Uint8Array(await file.arrayBuffer());
+  return parseTraceZip(buf);
 }
 
 function parseTraceZip(buf: Uint8Array): TraceData {
-  const files = unzipSync(buf)
-  const decoder = new TextDecoder()
+  const files = unzipSync(buf);
+  const decoder = new TextDecoder();
 
-  const metadataRaw = files['metadata.json']
-  if (!metadataRaw) throw new Error('Invalid trace: missing metadata.json')
-  const metadata: TraceMetadata = JSON.parse(decoder.decode(metadataRaw))
+  const metadataRaw = files['metadata.json'];
+  if (!metadataRaw) throw new Error('Invalid trace: missing metadata.json');
+  const metadata: TraceMetadata = JSON.parse(decoder.decode(metadataRaw));
 
-  const traceRaw = files['trace.json']
+  const traceRaw = files['trace.json'];
   const events: AnyTraceEvent[] = traceRaw
     ? decoder.decode(traceRaw).trim().split('\n').filter(Boolean).map(line => JSON.parse(line))
-    : []
+    : [];
 
-  const screenshots = new Map<string, string>()
+  const screenshots = new Map<string, string>();
   for (const [name, data] of Object.entries(files)) {
     if (name.startsWith('screenshots/') && name.endsWith('.png')) {
-      screenshots.set(name, URL.createObjectURL(new Blob([data], { type: 'image/png' })))
+      screenshots.set(name, URL.createObjectURL(new Blob([data], { type: 'image/png' })));
     }
   }
 
-  const hierarchies = new Map<string, string>()
+  const hierarchies = new Map<string, string>();
   for (const [name, data] of Object.entries(files)) {
     if (name.startsWith('hierarchy/') && name.endsWith('.xml')) {
-      hierarchies.set(name, decoder.decode(data))
+      hierarchies.set(name, decoder.decode(data));
     }
   }
 
-  const sources = new Map<string, string>()
+  const sources = new Map<string, string>();
   for (const [name, data] of Object.entries(files)) {
     if (name.startsWith('sources/')) {
-      sources.set(name.replace('sources/', ''), decoder.decode(data))
+      sources.set(name.replace('sources/', ''), decoder.decode(data));
     }
   }
 
-  const networkRaw = files['network.json']
+  const networkRaw = files['network.json'];
   const network: NetworkEntry[] = networkRaw
     ? decoder.decode(networkRaw).trim().split('\n').filter(Boolean).map(line => JSON.parse(line))
-    : []
+    : [];
 
-  const networkBodies = new Map<string, string>()
+  const networkBodies = new Map<string, string>();
   for (const [name, data] of Object.entries(files)) {
     if (name.startsWith('network/')) {
-      networkBodies.set(name, decoder.decode(data))
+      networkBodies.set(name, decoder.decode(data));
     }
   }
 
-  return { metadata, events, screenshots, hierarchies, sources, network, networkBodies }
+  return { metadata, events, screenshots, hierarchies, sources, network, networkBodies };
 }
 
 // ─── App ───
@@ -89,110 +89,110 @@ function parseTraceZip(buf: Uint8Array): TraceData {
 // ─── Theme ───
 
 function getResolvedTheme(theme: Theme): 'light' | 'dark' {
-  if (theme !== 'system') return theme
-  return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'
+  if (theme !== 'system') return theme;
+  return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
 }
 
 function applyTheme(theme: Theme) {
-  const resolved = getResolvedTheme(theme)
-  document.documentElement.setAttribute('data-theme', resolved)
+  const resolved = getResolvedTheme(theme);
+  document.documentElement.setAttribute('data-theme', resolved);
 }
 
 function App() {
-  const [trace, setTrace] = useState<TraceData | null>(null)
-  const [error, setError] = useState<string | null>(null)
-  const [loading, setLoading] = useState(false)
-  const [pinnedIndex, setPinnedIndex] = useState(0)
-  const [hoveredIndex, setHoveredIndex] = useState<number | null>(null)
-  const [hierarchyHighlight, setHierarchyHighlight] = useState<{ left: number; top: number; right: number; bottom: number } | null>(null)
+  const [trace, setTrace] = useState<TraceData | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [pinnedIndex, setPinnedIndex] = useState(0);
+  const [hoveredIndex, setHoveredIndex] = useState<number | null>(null);
+  const [hierarchyHighlight, setHierarchyHighlight] = useState<{ left: number; top: number; right: number; bottom: number } | null>(null);
   const [theme, setTheme] = useState<Theme>(() => {
-    const stored = localStorage.getItem('pilot-trace-theme')
-    return (stored === 'light' || stored === 'dark' || stored === 'system') ? stored : 'system'
-  })
-  const selectedIndex = hoveredIndex ?? pinnedIndex
+    const stored = localStorage.getItem('pilot-trace-theme');
+    return (stored === 'light' || stored === 'dark' || stored === 'system') ? stored : 'system';
+  });
+  const selectedIndex = hoveredIndex ?? pinnedIndex;
 
   // Apply theme on mount and changes
   useEffect(() => {
-    applyTheme(theme)
-    localStorage.setItem('pilot-trace-theme', theme)
-  }, [theme])
+    applyTheme(theme);
+    localStorage.setItem('pilot-trace-theme', theme);
+  }, [theme]);
 
   // Listen for system theme changes when in system mode
   useEffect(() => {
-    const mq = window.matchMedia('(prefers-color-scheme: dark)')
-    const handler = () => { if (theme === 'system') applyTheme('system') }
-    mq.addEventListener('change', handler)
-    return () => mq.removeEventListener('change', handler)
-  }, [theme])
+    const mq = window.matchMedia('(prefers-color-scheme: dark)');
+    const handler = () => { if (theme === 'system') applyTheme('system'); };
+    mq.addEventListener('change', handler);
+    return () => mq.removeEventListener('change', handler);
+  }, [theme]);
 
   useEffect(() => {
-    const params = new URLSearchParams(location.search)
-    const traceUrl = params.get('trace')
+    const params = new URLSearchParams(location.search);
+    const traceUrl = params.get('trace');
     if (traceUrl) {
-      setLoading(true)
+      setLoading(true);
       loadTraceFromUrl(traceUrl)
         .then(data => {
-          setTrace(data)
-          setLoading(false)
-          const actionParam = params.get('action')
-          if (actionParam) setPinnedIndex(parseInt(actionParam, 10))
+          setTrace(data);
+          setLoading(false);
+          const actionParam = params.get('action');
+          if (actionParam) setPinnedIndex(parseInt(actionParam, 10));
         })
-        .catch(err => { setError(err.message); setLoading(false) })
+        .catch(err => { setError(err.message); setLoading(false); });
     }
-  }, [])
+  }, []);
 
   useEffect(() => {
     if (trace) {
-      const url = new URL(location.href)
-      url.searchParams.set('action', String(selectedIndex))
-      history.replaceState(null, '', url.toString())
-      setHierarchyHighlight(null)
+      const url = new URL(location.href);
+      url.searchParams.set('action', String(selectedIndex));
+      history.replaceState(null, '', url.toString());
+      setHierarchyHighlight(null);
     }
-  }, [selectedIndex, trace])
+  }, [selectedIndex, trace]);
 
   const actionEvents = trace?.events.filter(
     (e): e is ActionTraceEvent | AssertionTraceEvent =>
       e.type === 'action' || e.type === 'assertion'
-  ) ?? []
+  ) ?? [];
 
   const handleKeyDown = useCallback((e: KeyboardEvent) => {
     if (e.key === 'ArrowDown' || e.key === 'j') {
-      e.preventDefault()
-      setPinnedIndex(i => Math.min(i + 1, actionEvents.length - 1))
-      setHoveredIndex(null)
+      e.preventDefault();
+      setPinnedIndex(i => Math.min(i + 1, actionEvents.length - 1));
+      setHoveredIndex(null);
     } else if (e.key === 'ArrowUp' || e.key === 'k') {
-      e.preventDefault()
-      setPinnedIndex(i => Math.max(i - 1, 0))
-      setHoveredIndex(null)
+      e.preventDefault();
+      setPinnedIndex(i => Math.max(i - 1, 0));
+      setHoveredIndex(null);
     }
-  }, [actionEvents.length])
+  }, [actionEvents.length]);
 
   useEffect(() => {
-    if (!trace) return
-    window.addEventListener('keydown', handleKeyDown)
-    return () => window.removeEventListener('keydown', handleKeyDown)
-  }, [trace, handleKeyDown])
+    if (!trace) return;
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [trace, handleKeyDown]);
 
   const handleFileDrop = (e: DragEvent) => {
-    e.preventDefault()
-    const file = e.dataTransfer?.files[0]
+    e.preventDefault();
+    const file = e.dataTransfer?.files[0];
     if (file) {
-      setLoading(true); setError(null)
+      setLoading(true); setError(null);
       loadTraceFromFile(file)
-        .then(data => { setTrace(data); setLoading(false) })
-        .catch(err => { setError(err.message); setLoading(false) })
+        .then(data => { setTrace(data); setLoading(false); })
+        .catch(err => { setError(err.message); setLoading(false); });
     }
-  }
+  };
 
   const handleFileInput = (e: Event) => {
-    const file = (e.target as HTMLInputElement).files?.[0]
+    const file = (e.target as HTMLInputElement).files?.[0];
     if (file) {
-      setLoading(true); setError(null)
+      setLoading(true); setError(null);
       loadTraceFromFile(file)
-        .then(data => { setTrace(data); setLoading(false) })
-        .catch(err => { setError(err.message); setLoading(false) })
+        .then(data => { setTrace(data); setLoading(false); })
+        .catch(err => { setError(err.message); setLoading(false); });
     }
-  }
+  };
 
   if (loading) {
     return (
@@ -200,7 +200,7 @@ function App() {
         <TopBar metadata={null} theme={theme} onThemeChange={setTheme} />
         <div class="empty-screen"><div class="spinner" /><p>Loading trace...</p></div>
       </div>
-    )
+    );
   }
 
   if (error) {
@@ -213,7 +213,7 @@ function App() {
           <label class="file-picker-btn">Choose a trace file<input type="file" accept=".zip" onChange={handleFileInput} /></label>
         </div>
       </div>
-    )
+    );
   }
 
   if (!trace) {
@@ -231,22 +231,22 @@ function App() {
           </div>
         </div>
       </div>
-    )
+    );
   }
 
   // Resizable panel sizes (must be before conditional returns — rules of hooks)
-  const [leftWidth, setLeftWidth] = useState(300)
-  const [bottomHeight, setBottomHeight] = useState(220)
+  const [leftWidth, setLeftWidth] = useState(300);
+  const [bottomHeight, setBottomHeight] = useState(220);
 
   const handleLeftResize = useCallback((delta: number) => {
-    setLeftWidth(w => Math.max(180, Math.min(600, w + delta)))
-  }, [])
+    setLeftWidth(w => Math.max(180, Math.min(600, w + delta)));
+  }, []);
 
   const handleBottomResize = useCallback((delta: number) => {
-    setBottomHeight(h => Math.max(80, Math.min(500, h - delta)))
-  }, [])
+    setBottomHeight(h => Math.max(80, Math.min(500, h - delta)));
+  }, []);
 
-  const selectedEvent = actionEvents[selectedIndex]
+  const selectedEvent = actionEvents[selectedIndex];
 
   return (
     <div class="viewer">
@@ -294,12 +294,12 @@ function App() {
         />
       </div>
     </div>
-  )
+  );
 }
 
 // ─── Styles ───
 
-const style = document.createElement('style')
+const style = document.createElement('style');
 style.textContent = `
   /* ─── Theme variables ─── */
   :root, [data-theme="dark"] {
@@ -438,7 +438,7 @@ style.textContent = `
   .action-icon.scroll { color: var(--color-keyword); }
   .action-icon.nav { color: var(--color-function); }
   .action-icon.assert { color: var(--color-number); }
-  .action-icon.assert.failed { color: var(--color-error); }
+  .action-icon.assert.failed, .action-icon.failed { color: var(--color-error); }
   .action-name { font-size: 12px; color: var(--color-text-primary); white-space: nowrap; }
   .action-selector-text { color: var(--color-text-muted); font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; min-width: 0; }
   .action-duration { color: var(--color-text-faintest); font-size: 11px; flex-shrink: 0; margin-left: auto; padding-left: 8px; }
@@ -508,23 +508,30 @@ style.textContent = `
   .hierarchy-search input:focus { border-color: var(--color-accent); }
 
   /* Errors tab */
-  .error-block { background: var(--color-error-bg); border: 1px solid var(--color-error-border); border-radius: 4px; padding: 10px; margin-bottom: 8px; }
+  .error-block { display: flex; flex-direction: column; gap: 8px; }
+  .error-entry { background: var(--color-error-bg); border: 1px solid var(--color-error-border); border-radius: 4px; padding: 10px; }
+  .error-entry-selected { border-color: var(--color-error); }
+  .error-entry-label { font-size: 11px; color: var(--color-text-muted); margin-bottom: 4px; font-family: 'SF Mono', 'Cascadia Code', Consolas, monospace; }
   .error-message { color: var(--color-error); font-weight: 500; margin-bottom: 6px; font-size: 12px; }
   .error-stack { font-family: 'SF Mono', 'Cascadia Code', Consolas, monospace; font-size: 11px; color: var(--color-text-muted); white-space: pre-wrap; word-break: break-all; }
+  .test-error-banner { display: flex; align-items: center; gap: 6px; padding: 6px 12px; background: var(--color-error-bg); border-bottom: 1px solid var(--color-error-border); cursor: pointer; font-size: 12px; color: var(--color-error); flex-shrink: 0; }
+  .test-error-banner:hover { background: var(--color-error-border); }
+  .test-error-banner-icon { font-weight: 700; flex-shrink: 0; }
+  .test-error-banner-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .no-content { color: var(--color-text-faintest); font-size: 12px; }
-`
+`;
 document.head.appendChild(style)
 
 // Apply theme on initial load (before React hydrates)
 ;(() => {
-  const stored = localStorage.getItem('pilot-trace-theme')
-  const theme = (stored === 'light' || stored === 'dark' || stored === 'system') ? stored : 'system'
+  const stored = localStorage.getItem('pilot-trace-theme');
+  const theme = (stored === 'light' || stored === 'dark' || stored === 'system') ? stored : 'system';
   const resolved = theme === 'system'
     ? (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light')
-    : theme
-  document.documentElement.setAttribute('data-theme', resolved)
-})()
+    : theme;
+  document.documentElement.setAttribute('data-theme', resolved);
+})();
 
 // ─── Render ───
 
-render(<App />, document.getElementById('app')!)
+render(<App />, document.getElementById('app')!);

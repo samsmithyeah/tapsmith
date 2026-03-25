@@ -10,13 +10,13 @@
  *   await device.tracing.stop({ path: 'trace.zip' })
  */
 
-import type { TraceConfig } from './types.js'
-import { resolveTraceConfig } from './types.js'
-import { TraceCollector } from './trace-collector.js'
-import { packageTrace, type PackageOptions } from './trace-packager.js'
-import * as fs from 'node:fs'
-import * as path from 'node:path'
-import * as os from 'node:os'
+import type { TraceConfig } from './types.js';
+import { resolveTraceConfig } from './types.js';
+import { TraceCollector } from './trace-collector.js';
+import { packageTrace, type PackageOptions } from './trace-packager.js';
+import * as fs from 'node:fs';
+import * as path from 'node:path';
+import * as os from 'node:os';
 
 // ─── Types ───
 
@@ -39,29 +39,29 @@ export interface TracingStopOptions {
 // ─── Tracing class ───
 
 export class Tracing {
-  private _collector: TraceCollector | null = null
-  private _startTime = 0
-  private _title?: string
-  private _getScreenshot: () => Promise<Buffer | undefined>
-  private _getHierarchy: () => Promise<string | undefined>
+  private _collector: TraceCollector | null = null;
+  private _startTime = 0;
+  private _title?: string;
+  private _getScreenshot: () => Promise<Buffer | undefined>;
+  private _getHierarchy: () => Promise<string | undefined>;
 
   /** @internal */
   constructor(
     getScreenshot: () => Promise<Buffer | undefined>,
     getHierarchy: () => Promise<string | undefined>,
   ) {
-    this._getScreenshot = getScreenshot
-    this._getHierarchy = getHierarchy
+    this._getScreenshot = getScreenshot;
+    this._getHierarchy = getHierarchy;
   }
 
   /** Whether tracing is currently active. */
   get isActive(): boolean {
-    return this._collector !== null
+    return this._collector !== null;
   }
 
   /** @internal — Get the current collector (used by device action wrappers). */
   get _currentCollector(): TraceCollector | null {
-    return this._collector
+    return this._collector;
   }
 
   /**
@@ -70,7 +70,7 @@ export class Tracing {
    */
   async start(options?: TracingStartOptions): Promise<void> {
     if (this._collector) {
-      throw new Error('Tracing is already started. Call stop() before starting again.')
+      throw new Error('Tracing is already started. Call stop() before starting again.');
     }
 
     const config: TraceConfig = resolveTraceConfig({
@@ -79,13 +79,13 @@ export class Tracing {
       snapshots: options?.snapshots ?? true,
       sources: options?.sources ?? true,
       attachments: true,
-    })
+    });
 
-    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pilot-trace-'))
-    this._collector = new TraceCollector(config, tempDir)
-    this._collector.startConsoleCapture()
-    this._startTime = Date.now()
-    this._title = options?.title
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pilot-trace-'));
+    this._collector = new TraceCollector(config, tempDir);
+    this._collector.startConsoleCapture();
+    this._startTime = Date.now();
+    this._title = options?.title;
   }
 
   /**
@@ -93,20 +93,20 @@ export class Tracing {
    */
   async stop(options?: TracingStopOptions): Promise<string | undefined> {
     if (!this._collector) {
-      throw new Error('Tracing is not started. Call start() first.')
+      throw new Error('Tracing is not started. Call start() first.');
     }
 
-    const collector = this._collector
-    collector.stopConsoleCapture()
-    this._collector = null
+    const collector = this._collector;
+    collector.stopConsoleCapture();
+    this._collector = null;
 
     if (!options?.path) {
-      collector.cleanup()
-      return undefined
+      collector.cleanup();
+      return undefined;
     }
 
-    const outputDir = path.dirname(options.path)
-    const version = await getVersion()
+    const outputDir = path.dirname(options.path);
+    const version = await getVersion();
 
     const packageOptions: PackageOptions = {
       testFile: '',
@@ -121,17 +121,17 @@ export class Tracing {
       },
       pilotVersion: version,
       outputDir,
-    }
+    };
 
-    const zipPath = packageTrace(collector, packageOptions)
+    const zipPath = packageTrace(collector, packageOptions);
 
     // Rename to the requested path if different
     if (zipPath !== options.path) {
-      fs.renameSync(zipPath, options.path)
-      return options.path
+      fs.renameSync(zipPath, options.path);
+      return options.path;
     }
 
-    return zipPath
+    return zipPath;
   }
 
   /**
@@ -141,32 +141,32 @@ export class Tracing {
   async startChunk(options?: TracingStartOptions): Promise<void> {
     if (this._collector) {
       // Stop current recording (discard data)
-      this._collector.stopConsoleCapture()
-      this._collector.cleanup()
+      this._collector.stopConsoleCapture();
+      this._collector.cleanup();
     }
 
-    await this.start(options)
+    await this.start(options);
   }
 
   /**
    * Stop the current chunk and write it to disk.
    */
   async stopChunk(options?: TracingStopOptions): Promise<string | undefined> {
-    return this.stop(options)
+    return this.stop(options);
   }
 
   /**
    * Start a named group for organizing actions in the trace viewer.
    */
   group(name: string): void {
-    this._collector?.startGroup(name)
+    this._collector?.startGroup(name);
   }
 
   /**
    * End the current group.
    */
   groupEnd(): void {
-    this._collector?.endGroup()
+    this._collector?.endGroup();
   }
 
   // ── Internal helpers ──
@@ -174,43 +174,43 @@ export class Tracing {
   /** @internal — Create a collector for runner-managed tracing. */
   _startManaged(config: TraceConfig, tempDir: string): TraceCollector {
     if (this._collector) {
-      this._collector.stopConsoleCapture()
-      this._collector.cleanup()
+      this._collector.stopConsoleCapture();
+      this._collector.cleanup();
     }
 
-    this._collector = new TraceCollector(config, tempDir)
-    this._collector.startConsoleCapture()
-    this._startTime = Date.now()
-    return this._collector
+    this._collector = new TraceCollector(config, tempDir);
+    this._collector.startConsoleCapture();
+    this._startTime = Date.now();
+    return this._collector;
   }
 
   /** @internal — Stop managed tracing and return the collector for packaging. */
   _stopManaged(): TraceCollector | null {
-    const collector = this._collector
+    const collector = this._collector;
     if (collector) {
-      collector.stopConsoleCapture()
+      collector.stopConsoleCapture();
     }
-    this._collector = null
-    return collector
+    this._collector = null;
+    return collector;
   }
 
   /** @internal */
   get _screenshotFn(): () => Promise<Buffer | undefined> {
-    return this._getScreenshot
+    return this._getScreenshot;
   }
 
   /** @internal */
   get _hierarchyFn(): () => Promise<string | undefined> {
-    return this._getHierarchy
+    return this._getHierarchy;
   }
 }
 
 async function getVersion(): Promise<string> {
   try {
-    const pkgPath = path.resolve(__dirname, '../../package.json')
-    const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf-8'))
-    return pkg.version ?? '0.0.0'
+    const pkgPath = path.resolve(__dirname, '../../package.json');
+    const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf-8'));
+    return pkg.version ?? '0.0.0';
   } catch {
-    return '0.0.0'
+    return '0.0.0';
   }
 }

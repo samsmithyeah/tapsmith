@@ -372,6 +372,8 @@ interface CliArgs {
   shard?: { current: number; total: number };
   trace?: string;
   watch: boolean;
+  ui: boolean;
+  uiPort?: number;
   forceInstall: boolean;
   version: boolean;
   help: boolean;
@@ -383,6 +385,7 @@ function parseArgs(argv: string[]): CliArgs {
     command: '',
     files: [],
     watch: false,
+    ui: false,
     version: false,
     help: false,
     forceInstall: false,
@@ -428,6 +431,22 @@ function parseArgs(argv: string[]): CliArgs {
       args.trace = arg.slice('--trace='.length);
     } else if (arg === '--watch' || arg === '-w') {
       args.watch = true;
+    } else if (arg === '--ui') {
+      args.ui = true;
+    } else if (arg === '--ui-port') {
+      const val = parseInt(rest[++i], 10);
+      if (isNaN(val) || val < 0) {
+        console.error(red('--ui-port must be a non-negative integer'));
+        process.exit(1);
+      }
+      args.uiPort = val;
+    } else if (arg?.startsWith('--ui-port=')) {
+      const val = parseInt(arg.slice('--ui-port='.length), 10);
+      if (isNaN(val) || val < 0) {
+        console.error(red('--ui-port must be a non-negative integer'));
+        process.exit(1);
+      }
+      args.uiPort = val;
     } else if (arg === '--force-install') {
       args.forceInstall = true;
     } else if (arg === '--__tsx-reexec') {
@@ -451,6 +470,8 @@ ${bold('pilot')} — Mobile app testing framework
 ${bold('Usage:')}
   pilot test [files...]           Run test files
   pilot test --watch              Watch test files and re-run on change
+  pilot test --ui                 Open interactive UI mode
+  pilot test --ui --ui-port 8080  UI mode on specific port
   pilot test --device <serial>    Target specific device
   pilot test --workers <n>        Run tests in parallel across n devices
   pilot test --shard=x/y          Run shard x of y (for CI)
@@ -490,57 +511,57 @@ async function main(): Promise<void> {
   }
 
   if (args.command === 'show-report') {
-    const reportDir = args.files[0] ?? 'pilot-report'
-    const reportPath = path.resolve(process.cwd(), reportDir, 'index.html')
+    const reportDir = args.files[0] ?? 'pilot-report';
+    const reportPath = path.resolve(process.cwd(), reportDir, 'index.html');
     if (!fs.existsSync(reportPath)) {
-      console.error(red(`No report found at ${reportPath}`))
-      process.exit(1)
+      console.error(red(`No report found at ${reportPath}`));
+      process.exit(1);
     }
-    const cmd = process.platform === 'darwin' ? 'open' : process.platform === 'win32' ? 'start' : 'xdg-open'
-    spawn(cmd, [reportPath], { detached: true, stdio: 'ignore' }).unref()
-    return
+    const cmd = process.platform === 'darwin' ? 'open' : process.platform === 'win32' ? 'start' : 'xdg-open';
+    spawn(cmd, [reportPath], { detached: true, stdio: 'ignore' }).unref();
+    return;
   }
 
   if (args.command === 'show-trace') {
-    const traceFile = args.files[0]
+    const traceFile = args.files[0];
     if (!traceFile) {
-      console.error(red('Usage: pilot show-trace <trace.zip>'))
-      process.exit(1)
+      console.error(red('Usage: pilot show-trace <trace.zip>'));
+      process.exit(1);
     }
-    const { showTrace } = await import('./trace/show-trace-server.js')
+    const { showTrace } = await import('./trace/show-trace-server.js');
     try {
-      const server = await showTrace({ tracePath: traceFile })
-      console.log(dim(`Trace viewer running at http://127.0.0.1:${server.port}/`))
-      console.log(dim('Press Ctrl+C to stop.'))
+      const server = await showTrace({ tracePath: traceFile });
+      console.log(dim(`Trace viewer running at http://127.0.0.1:${server.port}/`));
+      console.log(dim('Press Ctrl+C to stop.'));
       // Keep alive until Ctrl+C
       process.on('SIGINT', () => {
-        server.close()
-        process.exit(0)
-      })
+        server.close();
+        process.exit(0);
+      });
       // Prevent Node from exiting
-      await new Promise(() => {})
+      await new Promise(() => {});
     } catch (err) {
-      console.error(red(`${err instanceof Error ? err.message : String(err)}`))
-      process.exit(1)
+      console.error(red(`${err instanceof Error ? err.message : String(err)}`));
+      process.exit(1);
     }
-    return
+    return;
   }
 
   if (args.command === 'merge-reports') {
-    const blobDir = args.files[0] ?? 'blob-report'
-    const resolvedDir = path.resolve(process.cwd(), blobDir)
+    const blobDir = args.files[0] ?? 'blob-report';
+    const resolvedDir = path.resolve(process.cwd(), blobDir);
     if (!fs.existsSync(resolvedDir)) {
-      console.error(red(`No blob directory found at ${resolvedDir}`))
-      process.exit(1)
+      console.error(red(`No blob directory found at ${resolvedDir}`));
+      process.exit(1);
     }
-    const { mergeBlobs } = await import('./reporters/blob.js')
-    const config = await loadConfig()
-    const result = mergeBlobs(resolvedDir)
-    const reporters = await createReporters(config.reporter ?? 'list')
-    const dispatcher = new ReporterDispatcher(reporters)
-    dispatcher.onRunStart(config, 0)
-    await dispatcher.onRunEnd(result)
-    return
+    const { mergeBlobs } = await import('./reporters/blob.js');
+    const config = await loadConfig();
+    const result = mergeBlobs(resolvedDir);
+    const reporters = await createReporters(config.reporter ?? 'list');
+    const dispatcher = new ReporterDispatcher(reporters);
+    dispatcher.onRunStart(config, 0);
+    await dispatcher.onRunEnd(result);
+    return;
   }
 
   if (args.command !== 'test') {
@@ -570,13 +591,22 @@ async function main(): Promise<void> {
       console.error(red('--watch cannot be combined with --shard'));
       process.exit(1);
     }
-    if (config.workers > 1) {
-      // Guard with tsxReexec to avoid printing twice (before and after tsx re-exec)
-      if (args.tsxReexec) {
-        process.stderr.write(`${YELLOW}Watch mode uses a single device. Ignoring --workers.${RESET}\n`);
-      }
-      config.workers = 1;
+    // Watch mode supports parallel workers when multiple devices are available.
+    // config.workers is left as-is; the watch coordinator handles multi-device setup.
+  }
+
+  // Validate UI mode constraints
+  if (args.ui) {
+    if (args.shard) {
+      console.error(red('--ui cannot be combined with --shard'));
+      process.exit(1);
     }
+    if (args.watch) {
+      // UI mode has its own watch — ignore --watch
+      args.watch = false;
+    }
+    // UI mode supports parallel workers when multiple devices are available.
+    // config.workers is left as-is; the UI server handles multi-device setup.
   }
 
   // ─── Project resolution & test file discovery ───
@@ -696,30 +726,37 @@ async function main(): Promise<void> {
   }
   const reporter = new ReporterDispatcher(reporters);
 
-  reporter.onRunStart(config, testFiles.length);
+  if (args.ui) {
+    console.log(`\nLaunching Pilot UI mode...\n`);
+  } else {
+    reporter.onRunStart(config, testFiles.length);
+  }
 
   // ─── Parallel mode ───
+  // UI and watch modes handle their own execution — skip the dispatcher path.
   // Fall back to sequential when parallelism wouldn't help — either there's
   // only one test file, or all files are in sequential waves (e.g. setup → dependent).
-  const maxFilesInAnyWave = Math.max(...projectWaves.map((wave) =>
-    wave.reduce((sum, p) => sum + p.testFiles.length, 0),
-  ));
-  const effectiveWorkers = Math.min(config.workers, maxFilesInAnyWave);
-  if (effectiveWorkers > 1) {
-    // The dispatcher manages its own daemons — one per worker — each with
-    // exclusive ADB access to its assigned device. No discovery daemon needed.
-    const { runParallel } = await import('./dispatcher.js');
-    const fullResult = await runParallel({
-      config,
-      reporter,
-      testFiles,
-      workers: config.workers,
-      projects: hasProjects ? projects : undefined,
-      projectWaves: hasProjects ? projectWaves : undefined,
-    });
+  if (!args.ui && !args.watch) {
+    const maxFilesInAnyWave = Math.max(...projectWaves.map((wave) =>
+      wave.reduce((sum, p) => sum + p.testFiles.length, 0),
+    ));
+    const effectiveWorkers = Math.min(config.workers, maxFilesInAnyWave);
+    if (effectiveWorkers > 1) {
+      // The dispatcher manages its own daemons — one per worker — each with
+      // exclusive ADB access to its assigned device. No discovery daemon needed.
+      const { runParallel } = await import('./dispatcher.js');
+      const fullResult = await runParallel({
+        config,
+        reporter,
+        testFiles,
+        workers: config.workers,
+        projects: hasProjects ? projects : undefined,
+        projectWaves: hasProjects ? projectWaves : undefined,
+      });
 
-    await reporter.onRunEnd(fullResult);
-    process.exit(fullResult.status === 'failed' ? 1 : 0);
+      await reporter.onRunEnd(fullResult);
+      process.exit(fullResult.status === 'failed' ? 1 : 0);
+    }
   }
 
   // ─── Sequential mode (workers: 1, default) ───
@@ -800,11 +837,11 @@ async function main(): Promise<void> {
 
     // If tracing with network capture, ensure adb root BEFORE starting agent
     // so that the adbd restart doesn't disrupt UIAutomator2's accessibility service.
-    const traceConfig = resolveTraceConfig(config.trace)
+    const traceConfig = resolveTraceConfig(config.trace);
     if (traceConfig.mode !== 'off' && traceConfig.network && config.device) {
-      const restarted = ensureAdbRoot(config.device)
+      const restarted = ensureAdbRoot(config.device);
       if (restarted) {
-        console.log(dim('Enabled adb root for network capture.'))
+        console.log(dim('Enabled adb root for network capture.'));
       }
     }
 
@@ -858,6 +895,73 @@ async function main(): Promise<void> {
       }
     }
 
+    // ─── UI mode ───
+    // If --ui is set, start the interactive UI server. It keeps the
+    // daemon, emulator, and agent alive and serves a Preact SPA.
+    // When workers > 1, the UI server manages its own daemons and workers.
+    if (args.ui) {
+      const { startUIServer } = await import('./ui-mode/ui-server.js');
+
+      const uiScreenshotDir =
+        config.screenshot !== 'never'
+          ? path.resolve(config.rootDir, config.outputDir, 'screenshots')
+          : undefined;
+
+      // Collect additional device serials for multi-worker mode.
+      // The CLI already set up the first device above; we find more.
+      // If launchEmulators is enabled, provision additional emulators to
+      // match the requested worker count (same as the dispatcher does).
+      let uiDeviceSerials: string[] | undefined;
+      if (config.workers > 1) {
+        const allConnected = listConnectedDeviceSerials();
+        // Put the already-configured device first, then add others
+        const others = allConnected.filter((s) => s !== config.device);
+        uiDeviceSerials = [config.device!, ...others].filter(Boolean);
+
+        if (uiDeviceSerials.length < config.workers && config.launchEmulators) {
+          const provision = await provisionEmulators({
+            existingSerials: uiDeviceSerials,
+            occupiedSerials: allConnected,
+            workers: config.workers,
+            avd: config.avd,
+          });
+          launchedEmulators = [...launchedEmulators, ...provision.launched];
+          uiDeviceSerials = provision.allSerials;
+        }
+
+        if (uiDeviceSerials.length < 2) {
+          if (args.tsxReexec) {
+            process.stderr.write(
+              `${YELLOW}Only ${uiDeviceSerials.length} device(s) available. UI mode needs 2+ devices for parallel. Using single-worker mode.${RESET}\n`,
+            );
+          }
+          uiDeviceSerials = undefined;
+        }
+      }
+
+      const uiServer = await startUIServer({
+        config,
+        device,
+        client,
+        deviceSerial: config.device!,
+        daemonAddress: config.daemonAddress,
+        testFiles,
+        screenshotDir: uiScreenshotDir,
+        launchedEmulators,
+        projects: hasProjects ? projects : undefined,
+        projectWaves: hasProjects ? projectWaves : undefined,
+        workers: uiDeviceSerials ? config.workers : undefined,
+        deviceSerials: uiDeviceSerials,
+      }, {
+        port: args.uiPort,
+      });
+
+      // Keep alive until user exits
+      process.on('SIGINT', () => { uiServer.close(); process.exit(0); });
+      process.on('SIGTERM', () => { uiServer.close(); process.exit(0); });
+      await new Promise<void>(() => { /* never resolves */ });
+    }
+
     // ─── Watch mode ───
     // If --watch is set, hand off to the watch coordinator. It keeps the
     // daemon, emulator, and agent alive and re-runs tests on file changes.
@@ -870,6 +974,34 @@ async function main(): Promise<void> {
           ? path.resolve(config.rootDir, config.outputDir, 'screenshots')
           : undefined;
 
+      // Collect additional device serials for multi-worker watch mode.
+      let watchDeviceSerials: string[] | undefined;
+      if (config.workers > 1) {
+        const allConnected = listConnectedDeviceSerials();
+        const others = allConnected.filter((s) => s !== config.device);
+        watchDeviceSerials = [config.device!, ...others].filter(Boolean);
+
+        if (watchDeviceSerials.length < config.workers && config.launchEmulators) {
+          const provision = await provisionEmulators({
+            existingSerials: watchDeviceSerials,
+            occupiedSerials: allConnected,
+            workers: config.workers,
+            avd: config.avd,
+          });
+          launchedEmulators = [...launchedEmulators, ...provision.launched];
+          watchDeviceSerials = provision.allSerials;
+        }
+
+        if (watchDeviceSerials.length < 2) {
+          if (args.tsxReexec) {
+            process.stderr.write(
+              `${YELLOW}Only ${watchDeviceSerials.length} device(s) available. Watch mode needs 2+ devices for parallel. Using single-worker mode.${RESET}\n`,
+            );
+          }
+          watchDeviceSerials = undefined;
+        }
+      }
+
       await runWatchMode({
         config,
         device,
@@ -881,6 +1013,8 @@ async function main(): Promise<void> {
         launchedEmulators,
         projects: hasProjects ? projects : undefined,
         projectWaves: hasProjects ? projectWaves : undefined,
+        workers: watchDeviceSerials ? config.workers : undefined,
+        deviceSerials: watchDeviceSerials,
       });
       // runWatchMode never returns — exits via cleanup()
     }

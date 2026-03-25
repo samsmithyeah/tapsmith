@@ -1,0 +1,332 @@
+/**
+ * Test tree state management hook for UI mode.
+ *
+ * Manages the hierarchical test tree, expansion state, filtering,
+ * and status updates from the server.
+ */
+
+import { useState, useCallback, useMemo } from 'preact/hooks';
+import type { TestTreeNode, TestNodeStatus } from '../ui-protocol.js';
+
+export function useTestTree() {
+  const [files, setFiles] = useState<TestTreeNode[]>([]);
+  const [expandedNodes, setExpandedNodes] = useState<Set<string>>(new Set());
+  const [selectedTestId, setSelectedTestId] = useState<string | null>(null);
+  const [nameFilter, setNameFilter] = useState('');
+  const [statusFilter, setStatusFilter] = useState<'all' | 'passed' | 'failed' | 'skipped'>('all');
+
+  const setTestTree = useCallback((newFiles: TestTreeNode[]) => {
+    setFiles(newFiles);
+    // Expand project nodes only — files and below start collapsed
+    const expanded = new Set<string>();
+    for (const node of newFiles) {
+      if (node.type === 'project') expanded.add(node.id);
+    }
+    setExpandedNodes(expanded);
+  }, []);
+
+  /** Expand all nodes in the tree. */
+  const expandAll = useCallback(() => {
+    setExpandedNodes((prev) => {
+      const next = new Set(prev);
+      function walk(nodes: TestTreeNode[]) {
+        for (const node of nodes) {
+          if (node.children && node.children.length > 0) {
+            next.add(node.id);
+            walk(node.children);
+          }
+        }
+      }
+      walk(files);
+      return next;
+    });
+  }, [files]);
+
+  /** Collapse all nodes in the tree. */
+  const collapseAll = useCallback(() => {
+    setExpandedNodes(new Set());
+  }, []);
+
+  /** Expand the path from root to a specific test node. */
+  const expandPathTo = useCallback((fullName: string, filePath: string) => {
+    setExpandedNodes((prev) => {
+      const next = new Set(prev);
+      function walk(nodes: TestTreeNode[]): boolean {
+        for (const node of nodes) {
+          if (node.type === 'test' && node.fullName === fullName && node.filePath === filePath) {
+            return true;
+          }
+          if (node.children) {
+            if (walk(node.children)) {
+              next.add(node.id);
+              return true;
+            }
+          }
+        }
+        return false;
+      }
+      walk(files);
+      return next;
+    });
+  }, [files]);
+
+  const toggleExpanded = useCallback((nodeId: string) => {
+    setExpandedNodes((prev) => {
+      const next = new Set(prev);
+      if (next.has(nodeId)) {
+        next.delete(nodeId);
+      } else {
+        next.add(nodeId);
+      }
+      return next;
+    });
+  }, []);
+
+  const updateTestStatus = useCallback((
+    fullName: string,
+    filePath: string,
+    status: TestNodeStatus,
+    duration?: number,
+    error?: string,
+  ) => {
+    setFiles((prev) => updateNodeInTree(prev, fullName, filePath, status, duration, error));
+  }, []);
+
+  const updateFileStatus = useCallback((filePath: string, status: 'running' | 'done') => {
+    setFiles((prev) => updateFileStatusInTree(prev, filePath, status));
+  }, []);
+
+  const updateWatchEnabled = useCallback((filePath: string, enabled: boolean) => {
+    setFiles((prev) => updateWatchInTree(prev, filePath, enabled));
+  }, []);
+
+  /** Reset any 'running' nodes back to 'idle' (e.g. after a stopped run). */
+  const resetRunningStatuses = useCallback(() => {
+    setFiles((prev) => prev.map(resetRunningInTree));
+  }, []);
+
+  // Filter the tree based on name and status
+  const filteredFiles = useMemo(() => {
+    if (!nameFilter && statusFilter === 'all') return files;
+    return filterTree(files, nameFilter.toLowerCase(), statusFilter);
+  }, [files, nameFilter, statusFilter]);
+
+  // Compute summary counts
+  const counts = useMemo(() => {
+    let passed = 0, failed = 0, skipped = 0, total = 0;
+    function walk(nodes: TestTreeNode[]) {
+      for (const node of nodes) {
+        if (node.type === 'test') {
+          total++;
+          if (node.status === 'passed') passed++;
+          else if (node.status === 'failed') failed++;
+          else if (node.status === 'skipped') skipped++;
+        }
+        if (node.children) walk(node.children);
+      }
+    }
+    walk(files);
+    return { passed, failed, skipped, total };
+  }, [files]);
+
+  const hasWatchedFiles = useMemo(() => {
+    function walk(nodes: TestTreeNode[]): boolean {
+      for (const n of nodes) {
+        if (n.watchEnabled) return true;
+        if (n.children && walk(n.children)) return true;
+      }
+      return false;
+    }
+    return walk(files);
+  }, [files]);
+
+  return {
+    files: filteredFiles,
+    allFiles: files,
+    hasWatchedFiles,
+    expandedNodes,
+    selectedTestId,
+    nameFilter,
+    statusFilter,
+    counts,
+    setTestTree,
+    toggleExpanded,
+    expandAll,
+    collapseAll,
+    expandPathTo,
+    setSelectedTestId,
+    setNameFilter,
+    setStatusFilter,
+    updateTestStatus,
+    updateFileStatus,
+    updateWatchEnabled,
+    resetRunningStatuses,
+  };
+}
+
+// ─── Helpers ───
+
+function updateNodeInTree(
+  nodes: TestTreeNode[],
+  fullName: string,
+  filePath: string,
+  status: TestNodeStatus,
+  duration?: number,
+  error?: string,
+): TestTreeNode[] {
+  return nodes.map((node) => {
+    // Project nodes contain files with various paths — always recurse.
+    // Other nodes skip if filePath doesn't match.
+    if (node.type !== 'project' && node.filePath !== filePath) return node;
+
+    if (node.type === 'test' && node.fullName === fullName) {
+      return { ...node, status, duration, error };
+    }
+
+    if (node.children) {
+      const updatedChildren = updateNodeInTree(node.children, fullName, filePath, status, duration, error);
+      if (updatedChildren !== node.children) {
+        // Derive parent status from children
+        const childStatuses = flattenStatuses(updatedChildren);
+        const hasRunning = childStatuses.includes('running');
+        const hasIdle = childStatuses.includes('idle');
+        const hasFailed = childStatuses.includes('failed');
+        const hasPassed = childStatuses.includes('passed');
+        const allIdle = childStatuses.every((s) => s === 'skipped' || s === 'idle');
+        const parentStatus = hasRunning ? 'running'
+          // Still running with idle children means more tests are expected —
+          // keep 'running' so the parent doesn't flash to passed/failed mid-run.
+          : (node.status === 'running' && hasIdle) ? 'running'
+          : hasFailed ? 'failed'
+          : hasPassed ? 'passed'
+          : allIdle ? node.status
+          : node.status;
+        return { ...node, children: updatedChildren, status: parentStatus };
+      }
+    }
+
+    return node;
+  });
+}
+
+function flattenStatuses(nodes: TestTreeNode[]): TestNodeStatus[] {
+  const statuses: TestNodeStatus[] = [];
+  for (const node of nodes) {
+    if (node.type === 'test') {
+      statuses.push(node.status);
+    }
+    if (node.children) {
+      statuses.push(...flattenStatuses(node.children));
+    }
+  }
+  return statuses;
+}
+
+/**
+ * Recursively re-derive all parent node statuses from leaf test statuses.
+ * Called when a run finishes to clear stale 'running' from describe/file nodes.
+ */
+function rederiveTree(node: TestTreeNode): TestTreeNode {
+  if (node.type === 'test' || !node.children) return node;
+  const children = node.children.map(rederiveTree);
+  const childStatuses = flattenStatuses(children);
+  const hasFailed = childStatuses.includes('failed');
+  const hasPassed = childStatuses.includes('passed');
+  const status: TestNodeStatus = hasFailed ? 'failed'
+    : hasPassed ? 'passed'
+    : node.status === 'running' ? 'idle'
+    : node.status;
+  return { ...node, children, status };
+}
+
+/**
+ * Recursively update a file node's status, handling project → file nesting.
+ * Re-derives parent (project/suite) statuses after the update.
+ */
+function updateFileStatusInTree(
+  nodes: TestTreeNode[],
+  filePath: string,
+  status: 'running' | 'done',
+): TestTreeNode[] {
+  return nodes.map((node) => {
+    // Direct match — file node
+    if (node.type === 'file' && node.filePath === filePath) {
+      if (status === 'running') return { ...node, status: 'running' as const };
+      return rederiveTree(node);
+    }
+
+    // Recurse into project (or suite) children
+    if (node.children) {
+      const updatedChildren = updateFileStatusInTree(node.children, filePath, status);
+      if (updatedChildren.some((c, i) => c !== node.children![i])) {
+        return rederiveTree({ ...node, children: updatedChildren });
+      }
+    }
+
+    return node;
+  });
+}
+
+/**
+ * Recursively update a file node's watchEnabled flag, handling project nesting.
+ */
+function updateWatchInTree(
+  nodes: TestTreeNode[],
+  filePath: string,
+  enabled: boolean,
+): TestTreeNode[] {
+  return nodes.map((node) => {
+    if (node.type === 'file' && node.filePath === filePath) {
+      return { ...node, watchEnabled: enabled };
+    }
+    if (node.children) {
+      const updatedChildren = updateWatchInTree(node.children, filePath, enabled);
+      if (updatedChildren.some((c, i) => c !== node.children![i])) {
+        return { ...node, children: updatedChildren };
+      }
+    }
+    return node;
+  });
+}
+
+/**
+ * Recursively reset any 'running' node (test, suite, file, project)
+ * back to 'idle'. Used when a run is stopped mid-flight.
+ */
+function resetRunningInTree(node: TestTreeNode): TestTreeNode {
+  const status = node.status === 'running' ? 'idle' as const : node.status;
+  if (!node.children) {
+    return status !== node.status ? { ...node, status } : node;
+  }
+  const children = node.children.map(resetRunningInTree);
+  const changed = status !== node.status || children.some((c, i) => c !== node.children![i]);
+  return changed ? { ...node, status, children } : node;
+}
+
+function filterTree(
+  nodes: TestTreeNode[],
+  nameFilter: string,
+  statusFilter: string,
+): TestTreeNode[] {
+  return nodes
+    .map((node) => {
+      if (node.type === 'test') {
+        const matchesName = !nameFilter || node.fullName.toLowerCase().includes(nameFilter);
+        const matchesStatus = statusFilter === 'all' || node.status === statusFilter;
+        return matchesName && matchesStatus ? node : null;
+      }
+
+      // For files and suites, recurse into children
+      const filteredChildren = node.children
+        ? filterTree(node.children, nameFilter, statusFilter)
+        : [];
+
+      // Keep this node if it has matching children
+      if (filteredChildren.length > 0) {
+        return { ...node, children: filteredChildren };
+      }
+
+      return null;
+    })
+    .filter((node): node is TestTreeNode => node !== null);
+}

@@ -122,6 +122,8 @@ export interface AssertionTraceEvent extends TraceEvent {
   attempts: number
   /** Error message if the assertion failed. */
   error?: string
+  /** Element bounds at the time of the assertion (for screenshot overlay). */
+  bounds?: { left: number; top: number; right: number; bottom: number }
   /** Source location. */
   sourceLocation?: SourceLocation
   /** Whether a "before" screenshot was captured. */
@@ -190,7 +192,7 @@ export interface TraceMetadata {
   /** Fully qualified test name. */
   testName: string
   /** Test status. */
-  testStatus: 'passed' | 'failed' | 'skipped'
+  testStatus: 'passed' | 'failed' | 'skipped' | 'running'
   /** Test duration in ms. */
   testDuration: number
   /** Test start timestamp (ms since epoch). */
@@ -265,15 +267,15 @@ export function resolveTraceConfig(
     sources: true,
     attachments: true,
     network: true,
-  }
+  };
 
-  if (input === undefined) return defaults
+  if (input === undefined) return defaults;
 
   if (typeof input === 'string') {
-    return { ...defaults, mode: input }
+    return { ...defaults, mode: input };
   }
 
-  return { ...defaults, ...input }
+  return { ...defaults, ...input };
 }
 
 // ─── Network Types (Phase 6) ───

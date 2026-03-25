@@ -7,11 +7,11 @@
  * @see PILOT-71
  */
 
-import * as fs from 'node:fs'
-import * as path from 'node:path'
-import type { PilotReporter, FullResult } from '../reporter.js'
-import type { PilotConfig } from '../config.js'
-import type { SuiteResult } from '../runner.js'
+import * as fs from 'node:fs';
+import * as path from 'node:path';
+import type { PilotReporter, FullResult } from '../reporter.js';
+import type { PilotConfig } from '../config.js';
+import type { SuiteResult } from '../runner.js';
 
 interface JsonTestEntry {
   name: string
@@ -50,17 +50,17 @@ interface JsonReport {
 }
 
 export class JsonReporter implements PilotReporter {
-  private _outputFile: string
-  private _config?: PilotConfig
-  private _startTime = new Date()
+  private _outputFile: string;
+  private _config?: PilotConfig;
+  private _startTime = new Date();
 
   constructor(options: Record<string, unknown> = {}) {
-    this._outputFile = (options.outputFile as string) ?? 'pilot-results/results.json'
+    this._outputFile = (options.outputFile as string) ?? 'pilot-results/results.json';
   }
 
   onRunStart(config: PilotConfig, _fileCount: number): void {
-    this._config = config
-    this._startTime = new Date()
+    this._config = config;
+    this._startTime = new Date();
   }
 
   async onRunEnd(result: FullResult): Promise<void> {
@@ -80,11 +80,11 @@ export class JsonReporter implements PilotReporter {
         startTime: this._startTime.toISOString(),
       },
       suites: result.suites.map((s) => serializeSuite(s)),
-    }
+    };
 
-    const outputPath = path.resolve(this._config?.rootDir ?? process.cwd(), this._outputFile)
-    fs.mkdirSync(path.dirname(outputPath), { recursive: true })
-    fs.writeFileSync(outputPath, JSON.stringify(report, null, 2) + '\n')
+    const outputPath = path.resolve(this._config?.rootDir ?? process.cwd(), this._outputFile);
+    fs.mkdirSync(path.dirname(outputPath), { recursive: true });
+    fs.writeFileSync(outputPath, JSON.stringify(report, null, 2) + '\n');
   }
 }
 
@@ -103,5 +103,5 @@ function serializeSuite(suite: SuiteResult): JsonSuiteEntry {
       project: t.project,
     })),
     suites: suite.suites.map((s) => serializeSuite(s)),
-  }
+  };
 }
