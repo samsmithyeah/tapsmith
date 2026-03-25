@@ -122,6 +122,10 @@ function App() {
   }, []);
 
   const tree = useTestTree();
+  // Ref to tree methods so handleMessage doesn't depend on the tree object
+  // (which is recreated each render), preventing useCallback churn.
+  const treeRef = useRef(tree);
+  treeRef.current = tree;
   const { canvasRef, handleBinaryFrame } = useScreenMirror();
   const { registerCanvas, unregisterCanvas, handleBinaryFrame: handleMultiBinaryFrame } = useMultiScreenMirror();
 
@@ -202,7 +206,7 @@ function App() {
   const handleMessage = useCallback((msg: ServerMessage) => {
     switch (msg.type) {
       case 'test-tree':
-        tree.setTestTree(msg.files);
+        treeRef.current.setTestTree(msg.files);
         break;
       case 'run-start':
         setIsRunning(true);
@@ -256,7 +260,7 @@ function App() {
         setIsStopping(false);
         stopRunTimer();
         // Clear any tests/suites/files stuck in 'running' (e.g. after stop).
-        tree.resetRunningStatuses();
+        treeRef.current.resetRunningStatuses();
         break;
       case 'test-start': {
         // Track which worker ran this test
@@ -264,7 +268,7 @@ function App() {
           testWorkerMapRef.current.set(msg.fullName, msg.workerId);
         }
         // Mark this test (and its parent describe/file) as running
-        tree.updateTestStatus(msg.fullName, msg.filePath, 'running');
+        treeRef.current.updateTestStatus(msg.fullName, msg.filePath, 'running');
 
         // Track the active test for trace data accumulation, but don't
         // auto-select in the tree — only failures trigger auto-selection.
@@ -272,9 +276,13 @@ function App() {
         setActiveTestName(msg.fullName);
         setPinnedIndex(0);
         setHoveredIndex(null);
-        // Ensure trace data exists for this test, snapshotting its source file
+        // Ensure trace data exists for this test, snapshotting its source file.
+        // If trace data already exists (e.g. retry after infrastructure error
+        // recovery), clear it so stale events from the failed attempt don't
+        // accumulate alongside the retry's events.
         setTestTraces((prev) => {
-          if (prev.has(msg.fullName)) return prev;
+          const existing = prev.get(msg.fullName);
+          if (existing) revokeTraceScreenshots(existing);
           const next = new Map(prev);
           const data = emptyTraceData(msg.filePath);
           // Match pending source by test file basename
@@ -292,7 +300,7 @@ function App() {
         if (msg.workerId != null) {
           testWorkerMapRef.current.set(msg.fullName, msg.workerId);
         }
-        tree.updateTestStatus(msg.fullName, msg.filePath, msg.status, msg.duration, msg.error);
+        treeRef.current.updateTestStatus(msg.fullName, msg.filePath, msg.status, msg.duration, msg.error);
         if (msg.tracePath) {
           setTestTraces((prev) => {
             const data = prev.get(msg.fullName);
@@ -304,8 +312,8 @@ function App() {
         }
         // Auto-expand tree path to failing test, select it, and pin the failing action
         if (msg.status === 'failed') {
-          tree.expandPathTo(msg.fullName, msg.filePath);
-          tree.setSelectedTestId(`${msg.filePath}::${msg.fullName}`);
+          treeRef.current.expandPathTo(msg.fullName, msg.filePath);
+          treeRef.current.setSelectedTestId(`${msg.filePath}::${msg.fullName}`);
           autoFollowRef.current = 'manual';
           activeTestRef.current = msg.fullName;
           setActiveTestName(msg.fullName);
@@ -324,7 +332,7 @@ function App() {
         }
         break;
       case 'file-status':
-        tree.updateFileStatus(msg.filePath, msg.status);
+        treeRef.current.updateFileStatus(msg.filePath, msg.status);
         break;
       case 'trace-event': {
         const testName = msg.testFullName || activeTestRef.current;
@@ -412,9 +420,9 @@ function App() {
       }
       case 'watch-event':
         if (msg.event === 'watch-enabled') {
-          tree.updateWatchEnabled(msg.filePath, true);
+          treeRef.current.updateWatchEnabled(msg.filePath, true);
         } else if (msg.event === 'watch-disabled') {
-          tree.updateWatchEnabled(msg.filePath, false);
+          treeRef.current.updateWatchEnabled(msg.filePath, false);
         }
         break;
       case 'device-info':
@@ -450,7 +458,7 @@ function App() {
         console.error('[Pilot UI]', msg.message);
         break;
     }
-  }, [tree]);
+  }, []);
 
   const handleConnectionChange = useCallback((isConnected: boolean) => {
     setConnected(isConnected);
@@ -1288,6 +1296,7 @@ html, body, #app {
   align-items: center;
   gap: 4px;
   padding: 3px 8px;
+  min-height: 26px;
   cursor: pointer;
   user-select: none;
   transition: background 0.15s, border-left-color 0.15s;

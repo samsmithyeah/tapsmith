@@ -22,6 +22,7 @@ export function useWebSocket(options: UseWebSocketOptions) {
   useEffect(() => {
     let reconnectTimer: ReturnType<typeof setTimeout>;
     let ws: WebSocket;
+    let mounted = true;
 
     function connect() {
       const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
@@ -50,8 +51,10 @@ export function useWebSocket(options: UseWebSocketOptions) {
       ws.onclose = () => {
         optionsRef.current.onConnectionChange(false);
         wsRef.current = null;
-        // Reconnect after a short delay
-        reconnectTimer = setTimeout(connect, 1000);
+        // Only reconnect if the component is still mounted
+        if (mounted) {
+          reconnectTimer = setTimeout(connect, 1000);
+        }
       };
 
       ws.onerror = () => {
@@ -62,6 +65,7 @@ export function useWebSocket(options: UseWebSocketOptions) {
     connect();
 
     return () => {
+      mounted = false;
       clearTimeout(reconnectTimer);
       if (ws) ws.close();
     };

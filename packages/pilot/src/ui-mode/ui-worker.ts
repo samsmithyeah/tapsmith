@@ -249,7 +249,8 @@ async function handleRunFile(
     },
   };
 
-  // Hook into trace streaming
+  // Hook into trace streaming — patch once and restore after each run
+  // to prevent closure accumulation in persistent workers.
   const dev = device;
   const origStartManaged = dev.tracing._startManaged.bind(dev.tracing);
   dev.tracing._startManaged = (...args: Parameters<typeof dev.tracing._startManaged>) => {
@@ -260,14 +261,19 @@ async function handleRunFile(
 
   currentAbortController = new AbortController();
 
-  const suiteResult = await runFileWithRecovery(
-    filePath, reporterProxy, projectUseOptions, projectName, testFilter,
-    currentAbortController.signal,
-  );
+  let suiteResult;
+  try {
+    suiteResult = await runFileWithRecovery(
+      filePath, reporterProxy, projectUseOptions, projectName, testFilter,
+      currentAbortController.signal,
+    );
+  } finally {
+    // Restore original to prevent accumulating wrappers across runs
+    dev.tracing._startManaged = origStartManaged;
+    currentAbortController = undefined;
+  }
 
   const results = collectResults(suiteResult);
-
-  currentAbortController = undefined;
 
   send({
     type: 'file-done',

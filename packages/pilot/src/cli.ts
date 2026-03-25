@@ -726,7 +726,11 @@ async function main(): Promise<void> {
   }
   const reporter = new ReporterDispatcher(reporters);
 
-  reporter.onRunStart(config, testFiles.length);
+  if (args.ui) {
+    console.log(`\nLaunching Pilot UI mode...\n`);
+  } else {
+    reporter.onRunStart(config, testFiles.length);
+  }
 
   // ─── Parallel mode ───
   // UI and watch modes handle their own execution — skip the dispatcher path.

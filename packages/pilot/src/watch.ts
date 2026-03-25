@@ -274,95 +274,109 @@ export async function runWatchMode(ctx: WatchModeContext): Promise<void> {
     const allSuites: SuiteResult[] = [];
     const activeWorkers = watchWorkers.filter((w) => !w.retired);
 
-    await new Promise<void>((resolve, reject) => {
-      let settled = false;
+    // Track per-dispatch listeners so we can remove them without
+    // clobbering unrelated listeners from other dispatch rounds.
+    const cleanups: Array<() => void> = [];
 
-      function settle(): void {
-        if (settled) return;
-        settled = true;
-        resolve();
-      }
+    try {
+      await new Promise<void>((resolve, reject) => {
+        let settled = false;
 
-      function maybeResolve(): void {
-        if (settled) return;
-        if (fileQueue.length > 0) return;
-        if (activeWorkers.every((w) => w.retired || !w.busy)) settle();
-      }
-
-      function dispatchNext(worker: WatchWorkerHandle): void {
-        if (worker.retired) return;
-        const next = fileQueue.shift();
-        if (!next) {
-          worker.busy = false;
-          maybeResolve();
-          return;
-        }
-        worker.busy = true;
-        reporter.onTestFileStart?.(next.filePath);
-        worker.process.send({
-          type: 'run-file',
-          filePath: next.filePath,
-          projectUseOptions: next.projectUseOptions,
-          projectName: next.projectName,
-        } satisfies UIWorkerMessage);
-      }
-
-      function retireWorker(worker: WatchWorkerHandle, reason: string): void {
-        if (worker.retired) return;
-        worker.retired = true;
-        worker.busy = false;
-        process.stderr.write(`${YELLOW}Worker ${worker.id} (${worker.deviceSerial}): ${reason}${RESET}\n`);
-
-        const remaining = activeWorkers.filter((w) => !w.retired);
-        if (remaining.length === 0) {
+        function settle(): void {
+          if (settled) return;
           settled = true;
-          reject(new Error(`All workers became unavailable. Last: ${reason}`));
-          return;
+          resolve();
         }
-        const idle = remaining.find((w) => !w.busy);
-        if (idle) dispatchNext(idle);
-        maybeResolve();
-      }
 
-      for (const worker of activeWorkers) {
-        worker.process.removeAllListeners('message');
-        worker.process.removeAllListeners('exit');
+        function maybeResolve(): void {
+          if (settled) return;
+          if (fileQueue.length > 0) return;
+          if (activeWorkers.every((w) => w.retired || !w.busy)) settle();
+        }
 
-        worker.process.on('message', (msg: UIWorkerChildMessage) => {
-          if (settled || worker.retired) return;
-
-          switch (msg.type) {
-            case 'test-end': {
-              const result = deserializeTestResult(msg.result);
-              reporter.onTestEnd?.(result);
-              break;
-            }
-            case 'file-done': {
-              const results = msg.results.map(deserializeTestResult);
-              const suite = deserializeSuiteResult(msg.suite);
-              allResults.push(...results);
-              allSuites.push(suite);
-              reporter.onTestFileEnd?.(msg.filePath, results);
-              dispatchNext(worker);
-              break;
-            }
-            case 'error':
-              retireWorker(worker, msg.error.message);
-              break;
-          }
-        });
-
-        worker.process.on('exit', (code) => {
-          if (!settled && !worker.retired) {
-            retireWorker(worker, `exited with code ${code}`);
-          } else if (!settled) {
+        function dispatchNext(worker: WatchWorkerHandle): void {
+          if (worker.retired) return;
+          const next = fileQueue.shift();
+          if (!next) {
+            worker.busy = false;
             maybeResolve();
+            return;
           }
-        });
+          worker.busy = true;
+          reporter.onTestFileStart?.(next.filePath);
+          worker.process.send({
+            type: 'run-file',
+            filePath: next.filePath,
+            projectUseOptions: next.projectUseOptions,
+            projectName: next.projectName,
+          } satisfies UIWorkerMessage);
+        }
 
-        dispatchNext(worker);
-      }
-    });
+        function retireWorker(worker: WatchWorkerHandle, reason: string): void {
+          if (worker.retired) return;
+          worker.retired = true;
+          worker.busy = false;
+          process.stderr.write(`${YELLOW}Worker ${worker.id} (${worker.deviceSerial}): ${reason}${RESET}\n`);
+
+          const remaining = activeWorkers.filter((w) => !w.retired);
+          if (remaining.length === 0) {
+            settled = true;
+            reject(new Error(`All workers became unavailable. Last: ${reason}`));
+            return;
+          }
+          const idle = remaining.find((w) => !w.busy);
+          if (idle) dispatchNext(idle);
+          maybeResolve();
+        }
+
+        for (const worker of activeWorkers) {
+          const onMessage = (msg: UIWorkerChildMessage) => {
+            if (settled || worker.retired) return;
+
+            switch (msg.type) {
+              case 'test-end': {
+                const result = deserializeTestResult(msg.result);
+                reporter.onTestEnd?.(result);
+                break;
+              }
+              case 'file-done': {
+                const results = msg.results.map(deserializeTestResult);
+                const suite = deserializeSuiteResult(msg.suite);
+                allResults.push(...results);
+                allSuites.push(suite);
+                reporter.onTestFileEnd?.(msg.filePath, results);
+                dispatchNext(worker);
+                break;
+              }
+              case 'error':
+                retireWorker(worker, msg.error.message);
+                break;
+            }
+          };
+
+          const onExit = (code: number | null) => {
+            if (!settled && !worker.retired) {
+              retireWorker(worker, `exited with code ${code}`);
+            } else if (!settled) {
+              maybeResolve();
+            }
+          };
+
+          worker.process.on('message', onMessage);
+          worker.process.on('exit', onExit);
+          cleanups.push(
+            () => worker.process.removeListener('message', onMessage),
+            () => worker.process.removeListener('exit', onExit),
+          );
+
+          dispatchNext(worker);
+        }
+      });
+    } finally {
+      // Remove dispatch-scoped listeners to prevent stale handlers from
+      // dropping messages if a new dispatch starts while one is winding down.
+      for (const fn of cleanups) fn();
+    }
 
     return { results: allResults, suites: allSuites };
   }

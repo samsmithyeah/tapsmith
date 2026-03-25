@@ -283,7 +283,7 @@ function StatusIcon({ status }: { status: TestTreeNode['status'] }) {
     case 'skipped':
       return <span class="te-status-icon skipped"><CircleSlash size={STATUS_SIZE} /></span>;
     case 'running':
-      return <span class="te-status-icon running">{'\u25CB'}</span>;
+      return <span class="te-status-icon running"><Circle size={STATUS_SIZE} /></span>;
     default:
       return <span class="te-status-icon idle"><Circle size={STATUS_SIZE} /></span>;
   }

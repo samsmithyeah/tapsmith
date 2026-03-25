@@ -1705,11 +1705,17 @@ export async function startUIServer(
         break;
       case 'run-failed': {
         const files = [...failedFiles];
-        if (files.length > 0) {
+        if (files.length > 0 && !isRunning) {
           failedFiles.clear();
-          if (useParallel() && files.length > 1) {
-            ;(async () => {
+          ;(async () => {
+            if (useParallel() && files.length > 1) {
+              isRunning = true;
+              screenPollActive = true;
+              parallelRunAborted = false;
               await ensureWorkersReady();
+
+              broadcast({ type: 'run-start', fileCount: files.length });
+
               const taggedFiles: TaggedFile[] = files.map((f) => {
                 const project = fileToProject.get(f);
                 return {
@@ -1718,13 +1724,30 @@ export async function startUIServer(
                   projectName: project && project.name !== 'default' ? project.name : undefined,
                 };
               });
-              await dispatchFilesParallel(taggedFiles);
-            })().catch(() => {});
-          } else {
-            ;(async () => {
+
+              try {
+                const r = await dispatchFilesParallel(taggedFiles);
+                broadcast({
+                  type: 'run-end',
+                  status: r.failed > 0 ? 'failed' : 'passed',
+                  duration: r.duration,
+                  passed: r.passed,
+                  failed: r.failed,
+                  skipped: r.skipped,
+                });
+              } catch (err) {
+                const errMsg = err instanceof Error ? err.message : String(err);
+                broadcast({ type: 'error', message: `Failed to run failed tests: ${errMsg}` });
+                broadcast({ type: 'run-end', status: 'failed', duration: 0, passed: 0, failed: 1, skipped: 0 });
+              } finally {
+                isRunning = false;
+                screenPollActive = false;
+              }
+            } else {
+              // Single-worker: run files sequentially via runFile (each manages isRunning)
               for (const f of files) await runFile(f);
-            })().catch(() => {});
-          }
+            }
+          })().catch(() => {});
         }
         break;
       }
@@ -1971,8 +1994,8 @@ export async function startUIServer(
     ? `${uiWorkers.length} worker(s) across ${uiWorkers.map((w) => w.deviceSerial).join(', ')}`
     : `Device: ${ctx.deviceSerial ?? 'unknown'}`;
 
-  console.log(`\x1b[1mPilot UI mode\x1b[0m running at ${viewerUrl}`);
   console.log(`\x1b[2m${workerLabel} | ${ctx.testFiles.length} test file(s)\x1b[0m`);
+  console.log(`\x1b[1mPilot UI mode running at ${viewerUrl}\x1b[0m`);
 
   // Send device info (single-worker)
   if (!multiWorker && ctx.deviceSerial) {

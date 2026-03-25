@@ -813,8 +813,17 @@ async function runSuiteContext(
   if (ctx.afterAll.length > 0 && opts.device) {
     const traceConfig = resolveTraceConfig(opts.config.trace);
     if (shouldRecord(traceConfig.mode, 0)) {
-      // Find the last test that actually ran (not skipped) to tag events
-      const lastRunTest = [...ctx.tests].reverse().find((t) => !t.skip);
+      // Find the last test that actually ran (not skipped/filtered) to tag events.
+      // Must account for testFilter and .only so we don't tag with a test that didn't run.
+      const lastRunTest = [...ctx.tests].reverse().find((t) => {
+        if (t.skip) return false;
+        if (hasOnly && !t.only) return false;
+        if (opts.testFilter) {
+          const fn = parentPrefix ? `${parentPrefix} > ${t.name}` : t.name;
+          if (fn !== opts.testFilter && !fn.startsWith(opts.testFilter + ' > ')) return false;
+        }
+        return true;
+      });
       if (lastRunTest && opts.beforeEachTest) {
         const lastFullName = parentPrefix ? `${parentPrefix} > ${lastRunTest.name}` : lastRunTest.name;
         await opts.beforeEachTest(lastFullName);
@@ -978,7 +987,10 @@ export async function discoverTestFile(filePath: string): Promise<DiscoveredSuit
   activeFixtureRegistry = new FixtureRegistry();
   pushContext();
 
-  await import(filePath);
+  // Bust ESM cache so re-discovery in persistent processes (UI workers)
+  // picks up file changes instead of returning stale cached modules.
+  const importUrl = `${filePath}?t=${Date.now()}`;
+  await import(importUrl);
 
   const rootCtx = popContext();
   return discoverSuiteContext(rootCtx, '');
