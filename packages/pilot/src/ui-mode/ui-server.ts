@@ -1690,13 +1690,17 @@ export async function startUIServer(
 
   // ─── Command Handler ───
 
+  const knownTestFiles = new Set(ctx.testFiles);
+
   function handleCommand(msg: ClientMessage): void {
     switch (msg.type) {
       case 'run-test':
+        if (!knownTestFiles.has(msg.filePath)) break;
         if (msg.runDeps) runFileWithDeps(msg.filePath, msg.fullName).catch(() => {});
         else runFile(msg.filePath, msg.fullName).catch(() => {});
         break;
       case 'run-file':
+        if (!knownTestFiles.has(msg.filePath)) break;
         if (msg.runDeps) runFileWithDeps(msg.filePath).catch(() => {});
         else runFile(msg.filePath).catch(() => {});
         break;
