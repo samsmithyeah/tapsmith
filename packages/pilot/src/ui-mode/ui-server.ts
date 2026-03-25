@@ -130,8 +130,6 @@ export async function startUIServer(
   let screenViewMode: 'all' | number = 'all';
   /** Set to true while a parallel run is in progress, to signal stop. */
   let parallelRunAborted = false;
-  /** Callback to resolve the active dispatch promise on abort. */
-  let _abortDispatch: (() => void) | null = null;
 
   // Detect whether meaningful projects are configured (not just a synthetic 'default')
   const hasRealProjects = ctx.projects != null
@@ -997,7 +995,6 @@ export async function startUIServer(
       function settleResolve(): void {
         if (settled) return;
         settled = true;
-        _abortDispatch = null;
         // Clean up dispatch-specific listeners
         for (const { worker, messageHandler, exitHandler } of dispatchListeners) {
           worker.process.removeListener('message', messageHandler);
@@ -1005,9 +1002,6 @@ export async function startUIServer(
         }
         resolve();
       }
-
-      // Allow stopParallelRun to unblock this promise directly (fallback).
-      _abortDispatch = settleResolve;
 
       function maybeResolve(): void {
         if (settled) return;
@@ -1069,7 +1063,6 @@ export async function startUIServer(
         const remaining = activeWorkers.filter((w) => !w.retired);
         if (remaining.length === 0) {
           settled = true;
-          _abortDispatch = null;
           reject(new Error(`All workers became unavailable. Last failure: ${reason}`));
           return;
         }
@@ -1349,8 +1342,8 @@ export async function startUIServer(
       }
     }
 
-    // Don't call _abortDispatch — let file-done messages settle naturally
-    // so workers transition to !busy and the dispatch promise resolves cleanly.
+    // Don't force-resolve the dispatch promise — let file-done messages settle
+    // naturally so workers transition to !busy and the promise resolves cleanly.
   }
 
   /** Respawn any retired workers before starting a new run. */
