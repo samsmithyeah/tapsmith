@@ -421,10 +421,16 @@ export interface UIWorkerShutdownMessage {
   type: 'shutdown'
 }
 
+/** Server → UI worker: abort the current run (let current test finish, skip rest). */
+export interface UIWorkerAbortMessage {
+  type: 'abort'
+}
+
 export type UIWorkerMessage =
   | UIWorkerInitMessage
   | UIWorkerRunFileMessage
   | UIWorkerShutdownMessage
+  | UIWorkerAbortMessage
 
 /** UI worker → server: worker is ready. */
 export interface UIWorkerReadyMessage {

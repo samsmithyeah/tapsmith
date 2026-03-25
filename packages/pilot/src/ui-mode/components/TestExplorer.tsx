@@ -24,12 +24,13 @@ interface TestExplorerProps {
   onSetNameFilter: (filter: string) => void
   onSetStatusFilter: (filter: 'all' | 'passed' | 'failed' | 'skipped') => void
   onSend: (msg: ClientMessage) => void
+  isRunning: boolean
 }
 
 export function TestExplorer(props: TestExplorerProps) {
   const {
     files, expandedNodes, selectedTestId, nameFilter, statusFilter,
-    counts, onToggleExpanded, onSelectTest, onSetNameFilter, onSetStatusFilter, onSend,
+    counts, onToggleExpanded, onSelectTest, onSetNameFilter, onSetStatusFilter, onSend, isRunning,
   } = props;
 
   return (
@@ -60,6 +61,7 @@ export function TestExplorer(props: TestExplorerProps) {
             onToggleExpanded={onToggleExpanded}
             onSelectTest={onSelectTest}
             onSend={onSend}
+            isRunning={isRunning}
           />
         ))}
         {files.length === 0 && (
@@ -101,9 +103,10 @@ interface TreeNodeProps {
   onToggleExpanded: (nodeId: string) => void
   onSelectTest: (testId: string | null) => void
   onSend: (msg: ClientMessage) => void
+  isRunning: boolean
 }
 
-function TreeNode({ node, depth, expandedNodes, selectedTestId, onToggleExpanded, onSelectTest, onSend }: TreeNodeProps) {
+function TreeNode({ node, depth, expandedNodes, selectedTestId, onToggleExpanded, onSelectTest, onSend, isRunning }: TreeNodeProps) {
   const isExpanded = expandedNodes.has(node.id);
   const isSelected = selectedTestId === node.id;
   const hasChildren = node.children && node.children.length > 0;
@@ -177,9 +180,11 @@ function TreeNode({ node, depth, expandedNodes, selectedTestId, onToggleExpanded
         )}
 
         <div class="te-actions">
-          <button class="te-action-btn te-run-btn" onClick={handleRun} title="Run">
-            <Play size={ICON_SIZE} />
-          </button>
+          {!isRunning && (
+            <button class="te-action-btn te-run-btn" onClick={handleRun} title="Run">
+              <Play size={ICON_SIZE} />
+            </button>
+          )}
           {node.type === 'file' && (
             <button
               class={`te-action-btn te-watch-btn ${node.watchEnabled ? 'active' : ''}`}
@@ -201,6 +206,7 @@ function TreeNode({ node, depth, expandedNodes, selectedTestId, onToggleExpanded
           onToggleExpanded={onToggleExpanded}
           onSelectTest={onSelectTest}
           onSend={onSend}
+          isRunning={isRunning}
         />
       ))}
     </div>

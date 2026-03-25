@@ -39,6 +39,7 @@ let config: PilotConfig | undefined;
 let assignedSerial: string | undefined;
 let screenshotDir: string | undefined;
 let ipcOpen = true;
+let currentAbortController: AbortController | undefined;
 
 // ─── Helpers ───
 
@@ -257,11 +258,16 @@ async function handleRunFile(
     return collector;
   };
 
+  currentAbortController = new AbortController();
+
   const suiteResult = await runFileWithRecovery(
     filePath, reporterProxy, projectUseOptions, projectName, testFilter,
+    currentAbortController.signal,
   );
 
   const results = collectResults(suiteResult);
+
+  currentAbortController = undefined;
 
   send({
     type: 'file-done',
@@ -278,6 +284,7 @@ async function runFileWithRecovery(
   projectUseOptions?: import('../worker-protocol.js').RunFileUseOptions,
   projectName?: string,
   testFilter?: string,
+  abortSignal?: AbortSignal,
 ): Promise<import('../runner.js').SuiteResult> {
   if (!config || !device) {
     throw new Error(`UI Worker ${workerId}: Not initialized`);
@@ -291,6 +298,7 @@ async function runFileWithRecovery(
         screenshotDir,
         reporter: reporterProxy,
         bustImportCache: true,
+        abortSignal,
         beforeEachTest: async (fullName: string) => {
           send({ type: 'test-start', workerId, fullName, filePath });
           await ensureSessionReady(sessionContext(undefined), `before test ${fullName}`);
@@ -363,6 +371,9 @@ process.on('message', async (msg: UIWorkerMessage) => {
         break;
       case 'run-file':
         await handleRunFile(msg.filePath, msg.projectUseOptions, msg.projectName, msg.testFilter);
+        break;
+      case 'abort':
+        currentAbortController?.abort();
         break;
       case 'shutdown':
         handleShutdown();

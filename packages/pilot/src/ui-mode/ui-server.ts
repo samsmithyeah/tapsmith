@@ -1004,13 +1004,16 @@ export async function startUIServer(
         resolve();
       }
 
-      // Allow stopParallelRun to unblock this promise directly.
+      // Allow stopParallelRun to unblock this promise directly (fallback).
       abortDispatch = settleResolve;
 
       function maybeResolve(): void {
         if (settled) return;
         if (parallelRunAborted) {
-          settleResolve();
+          // Wait for all busy workers to finish their in-flight test
+          if (activeWorkers.every((w) => w.retired || !w.busy)) {
+            settleResolve();
+          }
           return;
         }
         if (fileQueue.length > 0) return;
@@ -1150,9 +1153,16 @@ export async function startUIServer(
               broadcast({ type: 'file-status', filePath: msg.filePath, status: 'done' });
               worker.currentFile = undefined;
               worker.currentTest = undefined;
-              broadcastWorkerStatus(worker, 'running');
 
-              dispatchNext(worker);
+              if (parallelRunAborted) {
+                // Abort: mark worker idle without dispatching next file
+                worker.busy = false;
+                broadcastWorkerStatus(worker, 'idle');
+                maybeResolve();
+              } else {
+                broadcastWorkerStatus(worker, 'running');
+                dispatchNext(worker);
+              }
               break;
             }
             case 'error': {
@@ -1326,26 +1336,19 @@ export async function startUIServer(
     }
   }
 
-  /** Kill all workers and respawn them lazily on next run. */
+  /** Signal all busy workers to abort gracefully (finish current test, skip rest). */
   function stopParallelRun(): void {
     parallelRunAborted = true;
 
     for (const worker of uiWorkers) {
       if (worker.busy) {
-        try { worker.process.kill(); } catch { /* already dead */ }
-        worker.retired = true;
-        worker.busy = false;
-        worker.currentFile = undefined;
-        worker.currentTest = undefined;
-        broadcastWorkerStatus(worker, 'idle');
+        // Send graceful abort — worker stays alive, no respawn needed
+        try { worker.process.send({ type: 'abort' } satisfies import('./ui-protocol.js').UIWorkerAbortMessage); } catch { /* IPC closed */ }
       }
     }
 
-    // Unblock any pending dispatch promise so isRunning resets.
-    if (abortDispatch) {
-      abortDispatch();
-      abortDispatch = null;
-    }
+    // Don't call abortDispatch — let file-done messages settle naturally
+    // so workers transition to !busy and the dispatch promise resolves cleanly.
   }
 
   /** Respawn any retired workers before starting a new run. */

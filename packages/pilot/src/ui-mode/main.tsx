@@ -71,6 +71,7 @@ interface WorkerInfo {
 function App() {
   const [connected, setConnected] = useState(false);
   const [isRunning, setIsRunning] = useState(false);
+  const [isStopping, setIsStopping] = useState(false);
   const [deviceSerial, setDeviceSerial] = useState('');
   const [theme, setTheme] = useState<Theme>(() => {
     const stored = localStorage.getItem('pilot-ui-theme');
@@ -265,6 +266,7 @@ function App() {
         break;
       case 'run-end':
         setIsRunning(false);
+        setIsStopping(false);
         stopRunTimer();
         // Clear any tests/suites/files stuck in 'running' (e.g. after stop).
         tree.resetRunningStatuses();
@@ -535,6 +537,7 @@ function App() {
           break;
         case 'Escape':
           send({ type: 'stop-run' });
+          setIsStopping(true);
           break;
         case 'w':
           send({ type: 'toggle-watch', filePath: 'all' });
@@ -571,12 +574,14 @@ function App() {
         <RunControls
           connected={connected}
           isRunning={isRunning}
+          isStopping={isStopping}
           isWatching={tree.hasWatchedFiles}
           deviceSerial={deviceSerial}
           counts={tree.counts}
           theme={theme}
           onThemeChange={handleThemeChange}
           onSend={handleSend}
+          onStop={() => { send({ type: 'stop-run' }); setIsStopping(true); }}
           hasProjectDeps={hasProjectDeps}
           runDepsFirst={runDepsFirst}
           onToggleRunDeps={handleToggleRunDeps}
@@ -600,6 +605,7 @@ function App() {
           onSetNameFilter={tree.setNameFilter}
           onSetStatusFilter={tree.setStatusFilter}
           onSend={handleSend}
+          isRunning={isRunning}
         />
       }
       filmstrip={

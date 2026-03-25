@@ -273,6 +273,8 @@ export interface RunOptions {
    * stale first import and no tests are registered.
    */
   bustImportCache?: boolean;
+  /** When aborted, skip remaining tests but still run afterEach/afterAll hooks. */
+  abortSignal?: AbortSignal;
 }
 
 async function captureFailureScreenshot(
@@ -486,7 +488,8 @@ async function runSuiteContext(
     const filteredOut = opts.testFilter
       && fullName !== opts.testFilter
       && !fullName.startsWith(opts.testFilter + ' > ');
-    const shouldSkip = entry.skip || (hasOnly && !entry.only) || filteredOut;
+    const shouldSkip = entry.skip || (hasOnly && !entry.only) || filteredOut
+      || opts.abortSignal?.aborted;
 
     if (shouldSkip) {
       const skippedResult: TestResult = {
@@ -783,7 +786,8 @@ async function runSuiteContext(
 
   // Run child suites
   for (const suiteEntry of ctx.suites) {
-    const shouldSkip = suiteEntry.skip || (hasOnly && !suiteEntry.only && !hasOnlyTests);
+    const shouldSkip = suiteEntry.skip || (hasOnly && !suiteEntry.only && !hasOnlyTests)
+      || opts.abortSignal?.aborted;
 
     if (shouldSkip) {
       // Mark all tests in skipped suite as skipped (we still need to discover them)

@@ -22,12 +22,14 @@ interface WorkerInfo {
 interface RunControlsProps {
   connected: boolean
   isRunning: boolean
+  isStopping: boolean
   isWatching: boolean
   deviceSerial: string
   counts: { passed: number; failed: number; skipped: number; total: number }
   theme: Theme
   onThemeChange: (theme: Theme) => void
   onSend: (msg: ClientMessage) => void
+  onStop: () => void
   /** Whether any project has dependencies (controls visibility of the deps toggle). */
   hasProjectDeps: boolean
   runDepsFirst: boolean
@@ -128,8 +130,19 @@ function WorkerDevice({ w, onSend }: { w: WorkerInfo; onSend: (msg: ClientMessag
 
 // ─── RunControls ───
 
-export function RunControls({ connected, isRunning, isWatching, deviceSerial, counts, theme, onThemeChange, onSend, hasProjectDeps, runDepsFirst, onToggleRunDeps, workers, runElapsed }: RunControlsProps) {
+export function RunControls({ connected, isRunning, isStopping, isWatching, deviceSerial, counts, theme, onThemeChange, onSend, onStop, hasProjectDeps, runDepsFirst, onToggleRunDeps, workers, runElapsed }: RunControlsProps) {
   const hasWorkers = workers.length > 1;
+
+  // Delay showing "Stopping…" text so quick stops don't flicker
+  const [showStoppingText, setShowStoppingText] = useState(false);
+  useEffect(() => {
+    if (!isStopping) {
+      setShowStoppingText(false);
+      return;
+    }
+    const timer = setTimeout(() => setShowStoppingText(true), 200);
+    return () => clearTimeout(timer);
+  }, [isStopping]);
 
   return (
     <div class="run-controls">
@@ -162,10 +175,11 @@ export function RunControls({ connected, isRunning, isWatching, deviceSerial, co
         {isRunning && (
           <button
             class="rc-btn rc-stop"
-            onClick={() => onSend({ type: 'stop-run' })}
+            onClick={onStop}
+            disabled={isStopping}
             title="Stop current run (Esc)"
           >
-            <Square size={ICON_SIZE} /> Stop <span class="rc-kbd">Esc</span>
+            <Square size={ICON_SIZE} /> {showStoppingText ? 'Stopping\u2026' : 'Stop'} <span class="rc-kbd">Esc</span>
           </button>
         )}
         <button
