@@ -112,6 +112,7 @@ export async function startUIServer(
   const clients = new Set<WebSocket>()
   let testTree: TestTreeNode[] = []
   let isRunning = false
+  const failedFiles = new Set<string>()
   let activeChild: ChildProcess | null = null
   let screenPollTimer: ReturnType<typeof setTimeout> | null = null
   let screenSeq = 0
@@ -294,6 +295,7 @@ export async function startUIServer(
   // ─── Test Execution (shared) ───
 
   function updateTestStatus(fullName: string, filePath: string, status: TestTreeNode['status'], duration?: number, error?: string, tracePath?: string, workerId?: number): void {
+    if (status === 'failed') failedFiles.add(filePath)
     broadcast({
       type: 'test-status',
       fullName,
@@ -1612,6 +1614,16 @@ export async function startUIServer(
       case 'run-all':
         runAllFiles().catch(() => {})
         break
+      case 'run-failed': {
+        const files = [...failedFiles]
+        if (files.length > 0) {
+          failedFiles.clear()
+          ;(async () => {
+            for (const f of files) await runFile(f)
+          })().catch(() => {})
+        }
+        break
+      }
       case 'run-project':
         runProject(msg.projectName).catch(() => {})
         break
@@ -1684,6 +1696,24 @@ export async function startUIServer(
     if (url.pathname === '/' || url.pathname === '/index.html') {
       res.writeHead(200, { 'Content-Type': 'text/html' })
       res.end(spaHtml)
+      return
+    }
+
+    // Serve trace ZIP files for download
+    if (url.pathname.startsWith('/trace/')) {
+      const tracePath = decodeURIComponent(url.pathname.slice('/trace/'.length))
+      if (!tracePath || !fs.existsSync(tracePath) || !tracePath.endsWith('.zip')) {
+        res.writeHead(404)
+        res.end('Trace not found')
+        return
+      }
+      const stat = fs.statSync(tracePath)
+      res.writeHead(200, {
+        'Content-Type': 'application/zip',
+        'Content-Length': stat.size,
+        'Content-Disposition': `attachment; filename="${path.basename(tracePath)}"`,
+      })
+      fs.createReadStream(tracePath).pipe(res)
       return
     }
 

@@ -6,7 +6,11 @@
  */
 
 import { useCallback } from 'preact/hooks'
+import { ArrowLeft, Check, Circle, CircleSlash, Eye, Play, X } from 'lucide-preact'
 import type { TestTreeNode, ClientMessage } from '../ui-protocol.js'
+
+const ICON_SIZE = 13
+const STATUS_SIZE = 12
 
 interface TestExplorerProps {
   files: TestTreeNode[]
@@ -147,7 +151,7 @@ function TreeNode({ node, depth, expandedNodes, selectedTestId, onToggleExpanded
 
         {node.type === 'project' && node.dependencies && node.dependencies.length > 0 && (
           <span class="te-deps" title={`Depends on: ${node.dependencies.join(', ')}`}>
-            {'\u2190'} {node.dependencies.join(', ')}
+            <ArrowLeft size={10} /> {node.dependencies.join(', ')}
           </span>
         )}
 
@@ -157,7 +161,7 @@ function TreeNode({ node, depth, expandedNodes, selectedTestId, onToggleExpanded
 
         <div class="te-actions">
           <button class="te-action-btn te-run-btn" onClick={handleRun} title="Run">
-            {'\u25B6'}
+            <Play size={ICON_SIZE} />
           </button>
           {node.type === 'file' && (
             <button
@@ -165,7 +169,7 @@ function TreeNode({ node, depth, expandedNodes, selectedTestId, onToggleExpanded
               onClick={handleWatch}
               title="Watch"
             >
-              {'\u25C9'}
+              <Eye size={ICON_SIZE} />
             </button>
           )}
         </div>
@@ -191,15 +195,15 @@ function TreeNode({ node, depth, expandedNodes, selectedTestId, onToggleExpanded
 function StatusIcon({ status }: { status: TestTreeNode['status'] }) {
   switch (status) {
     case 'passed':
-      return <span class="te-status-icon passed">{'\u2713'}</span>
+      return <span class="te-status-icon passed"><Check size={STATUS_SIZE} /></span>
     case 'failed':
-      return <span class="te-status-icon failed">{'\u2717'}</span>
+      return <span class="te-status-icon failed"><X size={STATUS_SIZE} /></span>
     case 'skipped':
-      return <span class="te-status-icon skipped">{'\u2298'}</span>
+      return <span class="te-status-icon skipped"><CircleSlash size={STATUS_SIZE} /></span>
     case 'running':
       return <span class="te-status-icon running">{'\u25CB'}</span>
     default:
-      return <span class="te-status-icon idle">{'\u25CB'}</span>
+      return <span class="te-status-icon idle"><Circle size={STATUS_SIZE} /></span>
   }
 }
 

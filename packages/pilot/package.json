@@ -55,6 +55,7 @@
     "@types/ws": "^8.18.1",
     "eslint": "^9.0.0",
     "knip": "^5.86.0",
+    "lucide-preact": "^1.6.0",
     "preact": "^10.29.0",
     "typescript": "^5.7.0",
     "typescript-eslint": "^8.0.0",

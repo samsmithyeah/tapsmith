@@ -43,8 +43,12 @@ export function TimelineFilmstrip({ events, screenshots, metadata, selectedIndex
     selectedRef.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'center' })
   }, [selectedIndex])
 
-  const statusClass = metadata.testStatus === 'passed' ? 'passed' : 'failed'
-  const statusIcon = metadata.testStatus === 'passed' ? '\u2713' : '\u2717'
+  const statusClass = metadata.testStatus === 'passed' ? 'passed'
+    : metadata.testStatus === 'failed' ? 'failed'
+    : 'running'
+  const statusIcon = metadata.testStatus === 'passed' ? '\u2713'
+    : metadata.testStatus === 'failed' ? '\u2717'
+    : '\u25CB'
 
   const firstTimestamp = events.length > 0 ? events[0].timestamp : 0
 
@@ -52,8 +56,9 @@ export function TimelineFilmstrip({ events, screenshots, metadata, selectedIndex
     <div class="timeline">
       <div class="timeline-meta">
         <span class={`test-status ${statusClass}`}>{statusIcon} {metadata.testName}</span>
-        {' \u00b7 '}
-        {metadata.testDuration}ms
+        {metadata.testStatus !== 'running' && (
+          <span>{' \u00b7 '}{metadata.testDuration}ms</span>
+        )}
         {' \u00b7 '}
         {metadata.device.serial}
       </div>

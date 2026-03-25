@@ -98,9 +98,21 @@ export function useTestTree() {
     return { passed, failed, skipped, total }
   }, [files])
 
+  const hasWatchedFiles = useMemo(() => {
+    function walk(nodes: TestTreeNode[]): boolean {
+      for (const n of nodes) {
+        if (n.watchEnabled) return true
+        if (n.children && walk(n.children)) return true
+      }
+      return false
+    }
+    return walk(files)
+  }, [files])
+
   return {
     files: filteredFiles,
     allFiles: files,
+    hasWatchedFiles,
     expandedNodes,
     selectedTestId,
     nameFilter,

@@ -192,7 +192,7 @@ export interface TraceMetadata {
   /** Fully qualified test name. */
   testName: string
   /** Test status. */
-  testStatus: 'passed' | 'failed' | 'skipped'
+  testStatus: 'passed' | 'failed' | 'skipped' | 'running'
   /** Test duration in ms. */
   testDuration: number
   /** Test start timestamp (ms since epoch). */

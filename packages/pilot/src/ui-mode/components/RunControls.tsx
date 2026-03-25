@@ -2,6 +2,7 @@
  * RunControls — top bar with run/stop buttons, connection status, and worker indicators.
  */
 
+import { Eye, Link, Play, RefreshCw, Square } from 'lucide-preact'
 import type { ClientMessage } from '../ui-protocol.js'
 
 export type Theme = 'system' | 'light' | 'dark'
@@ -34,20 +35,22 @@ interface RunControlsProps {
   workers: WorkerInfo[]
 }
 
-const STATUS_SYMBOLS: Record<WorkerInfo['status'], string> = {
-  idle: '\u25CB',         // ○
-  running: '\u25CF',      // ●
-  done: '\u2713',         // ✓
-  initializing: '\u25D4', // ◔
-  error: '\u2717',        // ✗
+const ICON_SIZE = 14
+
+const DOT_CLASS: Record<WorkerInfo['status'], string> = {
+  idle: 'idle',
+  running: 'running',
+  done: 'done',
+  initializing: 'initializing',
+  error: 'error',
 }
 
-const STATUS_CLASS: Record<WorkerInfo['status'], string> = {
-  idle: '',
-  running: 'worker-running',
-  done: 'worker-done',
-  initializing: 'worker-init',
-  error: 'worker-error',
+function workerTooltip(w: WorkerInfo): string {
+  const lines = [`W${w.workerId} — ${w.deviceSerial}`, `Status: ${w.status}`]
+  if (w.currentFile) lines.push(`File: ${w.currentFile}`)
+  if (w.currentTest) lines.push(`Test: ${w.currentTest}`)
+  lines.push(`${w.passed}P ${w.failed}F ${w.skipped}S`)
+  return lines.join('\n')
 }
 
 export function RunControls({ connected, isRunning, isWatching, deviceSerial, counts, theme, onThemeChange, onSend, hasProjectDeps, runDepsFirst, onToggleRunDeps, workers }: RunControlsProps) {
@@ -59,9 +62,6 @@ export function RunControls({ connected, isRunning, isWatching, deviceSerial, co
         <div class="rc-logo">
           <span class="rc-logo-text">Pilot</span>
           <span class="rc-mode">UI Mode</span>
-          {hasWorkers && (
-            <span class="rc-worker-count">{workers.length}w</span>
-          )}
         </div>
       </div>
 
@@ -70,55 +70,47 @@ export function RunControls({ connected, isRunning, isWatching, deviceSerial, co
           class="rc-btn rc-run-all"
           onClick={() => onSend({ type: 'run-all' })}
           disabled={isRunning || !connected}
-          title="Run all tests"
+          title="Run all tests (r)"
         >
-          {'\u25B6'} Run All
+          <Play size={ICON_SIZE} /> Run All
         </button>
+        {counts.failed > 0 && (
+          <button
+            class="rc-btn rc-run-failed"
+            onClick={() => onSend({ type: 'run-failed' })}
+            disabled={isRunning || !connected}
+            title="Re-run failed tests (f)"
+          >
+            <RefreshCw size={ICON_SIZE} /> Rerun Failed
+          </button>
+        )}
         {isRunning && (
           <button
             class="rc-btn rc-stop"
             onClick={() => onSend({ type: 'stop-run' })}
-            title="Stop current run"
+            title="Stop current run (Esc)"
           >
-            {'\u25A0'} Stop
+            <Square size={ICON_SIZE} /> Stop
           </button>
         )}
         <button
-          class={`rc-btn rc-watch-all ${isWatching ? 'active' : ''}`}
+          class={`rc-btn rc-toggle ${isWatching ? 'active' : ''}`}
           onClick={() => onSend({ type: 'toggle-watch', filePath: 'all' })}
           disabled={!connected}
-          title={isWatching ? 'Disable watch mode' : 'Watch all files for changes'}
+          title={isWatching ? 'Disable watch mode (w)' : 'Watch all files for changes (w)'}
         >
-          {'\u25C9'} Watch{isWatching ? ' On' : ''}
+          <Eye size={ICON_SIZE} /> Watch
         </button>
         {hasProjectDeps && (
           <button
-            class={`rc-btn rc-deps-toggle ${runDepsFirst ? 'active' : ''}`}
+            class={`rc-btn rc-toggle ${runDepsFirst ? 'active' : ''}`}
             onClick={onToggleRunDeps}
             title={runDepsFirst
               ? 'Dependencies run automatically before tests — click to disable'
               : 'Run dependency projects before tests — click to enable'}
           >
-            {'\u26D3'} Deps{runDepsFirst ? ' On' : ''}
+            <Link size={ICON_SIZE} /> Run deps
           </button>
-        )}
-
-        {/* Worker status indicators */}
-        {hasWorkers && (
-          <div class="rc-workers">
-            {workers.map((w) => (
-              <span
-                key={w.workerId}
-                class={`rc-worker-pill ${STATUS_CLASS[w.status]}`}
-                title={`Worker ${w.workerId} (${w.deviceSerial})\nStatus: ${w.status}${w.currentFile ? `\nFile: ${w.currentFile}` : ''}${w.currentTest ? `\nTest: ${w.currentTest}` : ''}\n${w.passed}P ${w.failed}F ${w.skipped}S`}
-              >
-                <span class={`rc-worker-dot ${STATUS_CLASS[w.status]}`}>
-                  {STATUS_SYMBOLS[w.status]}
-                </span>
-                <span class="rc-worker-id">W{w.workerId}</span>
-              </span>
-            ))}
-          </div>
         )}
       </div>
 
@@ -130,6 +122,28 @@ export function RunControls({ connected, isRunning, isWatching, deviceSerial, co
             {counts.skipped > 0 && <span class="rc-count skipped">{counts.skipped} skipped</span>}
           </div>
         )}
+        <div class="rc-connection">
+          {!connected
+            ? (
+              <span class="rc-device">
+                <span class="rc-dot error" />
+                Disconnected
+              </span>
+            )
+            : hasWorkers
+              ? workers.map((w) => (
+                  <span key={w.workerId} class="rc-device" title={workerTooltip(w)}>
+                    <span class={`rc-dot ${DOT_CLASS[w.status]}`} />
+                    {w.deviceSerial}
+                  </span>
+                ))
+              : (
+                <span class="rc-device" title={deviceSerial}>
+                  <span class="rc-dot done" />
+                  {deviceSerial || 'Connected'}
+                </span>
+              )}
+        </div>
         <select
           class="rc-theme-select"
           value={theme}
@@ -139,10 +153,6 @@ export function RunControls({ connected, isRunning, isWatching, deviceSerial, co
           <option value="light">Light</option>
           <option value="dark">Dark</option>
         </select>
-        <div class={`rc-connection ${connected ? 'connected' : 'disconnected'}`}>
-          <span class="rc-dot" />
-          {deviceSerial || (connected ? 'Connected' : 'Disconnected')}
-        </div>
       </div>
     </div>
   )

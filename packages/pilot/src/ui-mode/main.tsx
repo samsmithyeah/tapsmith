@@ -1,6 +1,6 @@
 import { render } from 'preact'
 import { useState, useCallback, useMemo, useRef, useEffect } from 'preact/hooks'
-import type { ServerMessage, ClientMessage } from './ui-protocol.js'
+import type { ServerMessage, ClientMessage, TestTreeNode } from './ui-protocol.js'
 import type { AnyTraceEvent, ActionTraceEvent, AssertionTraceEvent, TraceMetadata, NetworkEntry } from '../trace/types.js'
 import { useWebSocket } from './hooks/use-websocket.js'
 import { useScreenMirror } from './hooks/use-screen-mirror.js'
@@ -39,6 +39,8 @@ interface TestTraceData {
   network: NetworkEntry[]
   /** File this test belongs to — used to scope clearing on re-runs. */
   filePath?: string
+  /** Path to the trace ZIP on the server (set when test completes). */
+  tracePath?: string
 }
 
 function emptyTraceData(filePath?: string): TestTraceData {
@@ -124,21 +126,39 @@ function App() {
   const hierarchies = currentTrace?.hierarchies ?? EMPTY_MAP
   const networkEntries = currentTrace?.network ?? EMPTY_NETWORK
 
-  // Stub metadata for trace viewer components
+  // Find the viewed test node in the tree for duration/status
+  const viewedTestNode = useMemo(() => {
+    if (!tree.selectedTestId) return undefined
+    function find(nodes: TestTreeNode[]): TestTreeNode | undefined {
+      for (const n of nodes) {
+        if (n.id === tree.selectedTestId) return n
+        if (n.children) {
+          const found = find(n.children)
+          if (found) return found
+        }
+      }
+    }
+    return find(tree.allFiles)
+  }, [tree.selectedTestId, tree.allFiles])
+
+  // Metadata for trace viewer components
   const metadata = useMemo<TraceMetadata>(() => ({
     version: 1,
     pilotVersion: '',
     testFile: '',
     testName: viewedTestName ?? (isRunning ? 'Running...' : ''),
-    testStatus: 'passed',
-    testDuration: 0,
+    testStatus: viewedTestNode?.status === 'failed' ? 'failed'
+      : viewedTestNode?.status === 'running' ? 'running'
+      : viewedTestNode?.status === 'skipped' ? 'skipped'
+      : 'passed',
+    testDuration: viewedTestNode?.duration ?? 0,
     startTime: 0,
-    endTime: 0,
+    endTime: viewedTestNode?.duration ?? 0,
     device: { serial: deviceSerial, isEmulator: deviceSerial.startsWith('emulator-') },
     traceConfig: { screenshots: true, snapshots: true, sources: true, network: true },
     actionCount: actionEvents.length,
     screenshotCount: screenshots.size,
-  }), [viewedTestName, isRunning, actionEvents.length, screenshots.size, deviceSerial])
+  }), [viewedTestName, viewedTestNode, isRunning, actionEvents.length, screenshots.size, deviceSerial])
 
   const selectedEvent = actionEvents[selectedIndex]
 
@@ -226,6 +246,15 @@ function App() {
           testWorkerMapRef.current.set(msg.fullName, msg.workerId)
         }
         tree.updateTestStatus(msg.fullName, msg.filePath, msg.status, msg.duration, msg.error)
+        if (msg.tracePath) {
+          setTestTraces((prev) => {
+            const data = prev.get(msg.fullName)
+            if (!data) return prev
+            const next = new Map(prev)
+            next.set(msg.fullName, { ...data, tracePath: msg.tracePath })
+            return next
+          })
+        }
         break
       case 'file-status':
         tree.updateFileStatus(msg.filePath, msg.status)
@@ -414,13 +443,59 @@ function App() {
     setShowLiveDevice(false)
   }, [])
 
+  // ─── Keyboard shortcuts ───
+
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      // Ignore when typing in an input/textarea
+      const tag = (e.target as HTMLElement)?.tagName
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return
+
+      switch (e.key) {
+        case 'r':
+          send({ type: 'run-all' })
+          break
+        case 'f':
+          send({ type: 'run-failed' })
+          break
+        case 'Escape':
+          send({ type: 'stop-run' })
+          break
+        case 'w':
+          send({ type: 'toggle-watch', filePath: 'all' })
+          break
+      }
+    }
+    window.addEventListener('keydown', handler)
+    return () => window.removeEventListener('keydown', handler)
+  }, [send])
+
+  // ─── Download trace ───
+
+  const handleDownloadTrace = useCallback(async () => {
+    if (!viewedTestName || !currentTrace?.tracePath) return
+    try {
+      const resp = await fetch(`/trace/${encodeURIComponent(currentTrace.tracePath)}`)
+      if (!resp.ok) throw new Error(`HTTP ${resp.status}`)
+      const blob = await resp.blob()
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = `trace-${viewedTestName.replace(/[^a-zA-Z0-9]+/g, '-')}.zip`
+      a.click()
+      URL.revokeObjectURL(url)
+    } catch (err) {
+      console.error('[Pilot UI] Failed to download trace:', err)
+    }
+  }, [viewedTestName, currentTrace])
+
   return (
     <Layout
       topBar={
         <RunControls
           connected={connected}
           isRunning={isRunning}
-          isWatching={tree.allFiles.some((f) => f.watchEnabled)}
+          isWatching={tree.hasWatchedFiles}
           deviceSerial={deviceSerial}
           counts={tree.counts}
           theme={theme}
@@ -486,13 +561,21 @@ function App() {
             >
               Action
             </button>
+            {currentTrace?.tracePath && (
+              <button
+                class="ui-screen-tab ui-download-btn"
+                onClick={handleDownloadTrace}
+                title="Download trace for this test"
+              >
+                {'\u2913'} Trace
+              </button>
+            )}
           </div>
           <div class="ui-screen-content">
             {showLiveDevice ? (
               <DeviceMirror
                 canvasRef={canvasRef}
                 connected={connected}
-                onSend={handleSend}
               />
             ) : (
               <ScreenshotPanel
@@ -736,6 +819,7 @@ html, body, #app {
   border-bottom-color: var(--color-accent);
 }
 .ui-screen-tab:disabled { opacity: 0.4; cursor: not-allowed; }
+.ui-download-btn { margin-left: auto; color: var(--color-text-faint); font-size: 11px; }
 
 .ui-screen-content {
   flex: 1;
@@ -794,40 +878,10 @@ html, body, #app {
 
 .rc-run-all { color: var(--color-success); }
 .rc-stop { color: var(--color-error); }
-.rc-watch-all.active { color: var(--color-accent); border-color: var(--color-accent); background: rgba(79,193,255,0.1); }
-.rc-deps-toggle.active { color: var(--color-accent); border-color: var(--color-accent); background: rgba(79,193,255,0.1); }
+.rc-toggle.active { color: #fff; border-color: var(--color-accent); background: var(--color-accent); box-shadow: 0 0 6px rgba(79,193,255,0.3); }
+.rc-run-failed { color: var(--color-warning); }
+.rc-download { color: var(--color-text-muted); }
 
-.rc-worker-count {
-  font-size: 10px;
-  color: var(--color-text-muted);
-  margin-left: 4px;
-  padding: 1px 5px;
-  border: 1px solid var(--border);
-  border-radius: 3px;
-  font-family: var(--font-mono);
-}
-
-.rc-workers { display: flex; align-items: center; gap: 3px; margin-left: 8px; padding-left: 8px; border-left: 1px solid var(--border); }
-
-.rc-worker-pill {
-  display: inline-flex;
-  align-items: center;
-  gap: 3px;
-  padding: 3px 7px;
-  border: 1px solid var(--border);
-  border-radius: 4px;
-  color: var(--color-text-muted);
-  font-size: 11px;
-  font-family: var(--font-ui);
-}
-
-.rc-worker-dot { font-size: 10px; }
-.rc-worker-dot.worker-running { color: var(--color-accent); animation: pulse 1s infinite; }
-.rc-worker-dot.worker-done { color: var(--color-success); }
-.rc-worker-dot.worker-init { color: var(--color-warning); }
-.rc-worker-dot.worker-error { color: var(--color-error); }
-
-.rc-worker-id { font-family: var(--font-mono); font-size: 10px; }
 
 .rc-counts { display: flex; gap: 8px; font-size: 12px; }
 .rc-count.passed { color: var(--color-success); }
@@ -837,17 +891,28 @@ html, body, #app {
 .rc-connection {
   display: flex;
   align-items: center;
-  gap: 5px;
+  gap: 10px;
   font-size: 11px;
   color: var(--color-text-muted);
 }
+.rc-device {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.rc-device-label { font-family: var(--font-mono); font-weight: 600; color: var(--color-text-secondary); }
+.rc-device-serial { color: var(--color-text-muted); }
 .rc-dot {
   width: 7px;
   height: 7px;
   border-radius: 50%;
-  background: var(--color-error);
+  flex-shrink: 0;
 }
-.rc-connection.connected .rc-dot { background: var(--color-success); }
+.rc-dot.idle { background: var(--color-success); }
+.rc-dot.running { background: var(--color-accent); animation: pulse 1s infinite; }
+.rc-dot.done { background: var(--color-success); }
+.rc-dot.initializing { background: var(--color-warning); }
+.rc-dot.error { background: var(--color-error); }
 
 .rc-theme-select {
   padding: 3px 6px;
@@ -953,6 +1018,7 @@ html, body, #app {
 .te-status-icon.idle { color: var(--color-text-faint); }
 
 @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.3; } }
+@keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
 
 .te-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; }
 .te-node-file .te-name { font-weight: 600; }
@@ -962,9 +1028,10 @@ html, body, #app {
 
 .te-duration { font-size: 10px; color: var(--color-text-faint); font-family: var(--font-mono); flex-shrink: 0; }
 
-.te-actions { display: flex; gap: 2px; opacity: 0; transition: opacity 0.15s; flex-shrink: 0; }
-.te-node:hover .te-actions { opacity: 1; }
-.te-actions:has(.te-watch-btn.active) { opacity: 1; }
+.te-actions { display: flex; gap: 2px; flex-shrink: 0; }
+.te-action-btn { opacity: 0; transition: opacity 0.15s; }
+.te-node:hover .te-action-btn { opacity: 1; }
+.te-watch-btn.active { opacity: 1; }
 
 .te-action-btn {
   width: 20px; height: 20px;
@@ -1111,6 +1178,7 @@ html, body, #app {
 .timeline-meta .test-status { font-weight: 600; }
 .timeline-meta .passed { color: var(--color-success); }
 .timeline-meta .failed { color: var(--color-error); }
+.timeline-meta .running { color: var(--color-accent); animation: pulse 1s infinite; }
 
 /* ─── Scrollbar ─── */
 

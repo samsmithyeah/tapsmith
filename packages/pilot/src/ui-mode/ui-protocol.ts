@@ -205,6 +205,10 @@ export interface RunProjectCommand {
   projectName: string
 }
 
+export interface RunFailedCommand {
+  type: 'run-failed'
+}
+
 export interface StopRunCommand {
   type: 'stop-run'
 }
@@ -244,6 +248,7 @@ export type ClientMessage =
   | RunTestCommand
   | RunFileCommand
   | RunAllCommand
+  | RunFailedCommand
   | RunProjectCommand
   | StopRunCommand
   | ToggleWatchCommand
