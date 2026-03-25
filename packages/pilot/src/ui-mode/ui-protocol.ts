@@ -152,6 +152,7 @@ export interface SourceMessage {
 
 export interface NetworkMessage {
   type: 'network'
+  testFullName: string
   entries: import('../trace/types.js').NetworkEntry[]
 }
 
@@ -203,6 +204,8 @@ export interface RunAllCommand {
 export interface RunProjectCommand {
   type: 'run-project'
   projectName: string
+  /** When true, run dependency projects before this project. */
+  runDeps?: boolean
 }
 
 export interface RunFailedCommand {

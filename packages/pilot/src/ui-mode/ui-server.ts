@@ -531,6 +531,67 @@ export async function startUIServer(
     }
   }
 
+  async function runProjectOnly(projectName: string): Promise<void> {
+    if (!ctx.projects) return;
+    const target = ctx.projects.find((p) => p.name === projectName);
+    if (!target) return;
+
+    if (useParallel()) {
+      if (isRunning) return;
+      isRunning = true;
+      screenPollActive = true;
+      parallelRunAborted = false;
+
+      await ensureWorkersReady();
+
+      const files: TaggedFile[] = target.testFiles.map((f) => ({
+        filePath: f,
+        projectUseOptions: target.use as RunFileUseOptions | undefined,
+        projectName: target.name !== 'default' ? target.name : undefined,
+      }));
+
+      broadcast({ type: 'run-start', fileCount: files.length });
+
+      try {
+        const r = await dispatchFilesParallel(files);
+        broadcast({
+          type: 'run-end',
+          status: r.anyFailed ? 'failed' : 'passed',
+          duration: r.duration,
+          passed: r.passed,
+          failed: r.failed,
+          skipped: r.skipped,
+        });
+      } finally {
+        isRunning = false;
+        screenPollActive = false;
+      }
+      return;
+    }
+
+    // Single-worker mode
+    if (isRunning) return;
+    isRunning = true;
+    screenPollActive = true;
+
+    broadcast({ type: 'run-start', fileCount: target.testFiles.length });
+
+    try {
+      const r = await runProjectFilesSingle(target);
+      broadcast({
+        type: 'run-end',
+        status: r.anyFailed ? 'failed' : 'passed',
+        duration: r.duration,
+        passed: r.passed,
+        failed: r.failed,
+        skipped: r.skipped,
+      });
+    } finally {
+      isRunning = false;
+      screenPollActive = false;
+    }
+  }
+
   function runFileInChild(
     filePath: string,
     projectUseOptions?: RunFileUseOptions,
@@ -605,6 +666,7 @@ export async function startUIServer(
           case 'network': {
             broadcast({
               type: 'network',
+              testFullName: currentTestFullName,
               entries: response.entries,
             });
             break;
@@ -1066,7 +1128,7 @@ export async function startUIServer(
               break;
             }
             case 'network': {
-              broadcast({ type: 'network', entries: msg.entries });
+              broadcast({ type: 'network', testFullName: worker.currentTest ?? '', entries: msg.entries });
               break;
             }
             case 'file-done': {
@@ -1650,7 +1712,8 @@ export async function startUIServer(
         break;
       }
       case 'run-project':
-        runProject(msg.projectName).catch(() => {});
+        if (msg.runDeps) runProject(msg.projectName).catch(() => {});
+        else runProjectOnly(msg.projectName).catch(() => {});
         break;
       case 'stop-run':
         if (useParallel()) {

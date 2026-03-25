@@ -412,8 +412,7 @@ function App() {
         pendingSourcesRef.current.set(msg.fileName, msg.content);
         break;
       case 'network': {
-        // Attach network entries to the active test
-        const testName = activeTestRef.current;
+        const testName = msg.testFullName || activeTestRef.current;
         if (!testName) break;
         setTestTraces((prev) => {
           const { data, map } = getOrCreateTrace(testName, prev);
@@ -487,7 +486,7 @@ function App() {
   const handleSend = useCallback((msg: ClientMessage) => {
     // Inject runDeps flag when the toggle is on. Use the ref for the latest
     // value regardless of React batching (same pattern as activeTestRef).
-    if (runDepsRef.current && (msg.type === 'run-file' || msg.type === 'run-test')) {
+    if (runDepsRef.current && (msg.type === 'run-file' || msg.type === 'run-test' || msg.type === 'run-project')) {
       send({ ...msg, runDeps: true });
     } else {
       send(msg);
