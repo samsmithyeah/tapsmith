@@ -42,6 +42,7 @@ interface TestTraceData {
   actionEvents: (ActionTraceEvent | AssertionTraceEvent)[]
   screenshots: Map<string, string>
   hierarchies: Map<string, string>
+  sources: Map<string, string>
   network: NetworkEntry[]
   /** File this test belongs to — used to scope clearing on re-runs. */
   filePath?: string
@@ -50,7 +51,7 @@ interface TestTraceData {
 }
 
 function emptyTraceData(filePath?: string): TestTraceData {
-  return { events: [], actionEvents: [], screenshots: new Map(), hierarchies: new Map(), network: [], filePath };
+  return { events: [], actionEvents: [], screenshots: new Map(), hierarchies: new Map(), sources: new Map(), network: [], filePath };
 }
 
 // ─── App ───
@@ -94,7 +95,9 @@ function App() {
   // handler always reads the latest value regardless of React batching.
   const activeTestRef = useRef<string | null>(null);
   const [activeTestName, setActiveTestName] = useState<string | null>(null);
-  const [sources, setSources] = useState<Map<string, string>>(new Map());
+  // Pending source files keyed by filename — accumulated from 'source' messages
+  // and snapshotted into per-test trace data when 'test-start' fires.
+  const pendingSourcesRef = useRef<Map<string, string>>(new Map());
   const [pinnedIndex, setPinnedIndex] = useState(0);
   const [hoveredIndex, setHoveredIndex] = useState<number | null>(null);
   const selectedIndex = hoveredIndex ?? pinnedIndex;
@@ -157,6 +160,7 @@ function App() {
   const actionEvents = currentTrace?.actionEvents ?? EMPTY_ACTION_EVENTS;
   const screenshots = currentTrace?.screenshots ?? EMPTY_MAP;
   const hierarchies = currentTrace?.hierarchies ?? EMPTY_MAP;
+  const sources = currentTrace?.sources ?? EMPTY_MAP;
   const networkEntries = currentTrace?.network ?? EMPTY_NETWORK;
 
   // Find the viewed test node in the tree for duration/status
@@ -191,6 +195,7 @@ function App() {
     traceConfig: { screenshots: true, snapshots: true, sources: true, network: true },
     actionCount: actionEvents.length,
     screenshotCount: screenshots.size,
+    error: viewedTestNode?.error,
   }), [viewedTestName, viewedTestNode, isRunning, actionEvents.length, screenshots.size, deviceSerial]);
 
   const selectedEvent = actionEvents[selectedIndex];
@@ -248,7 +253,7 @@ function App() {
         }
         activeTestRef.current = null;
         setActiveTestName(null);
-        setSources(new Map());
+        pendingSourcesRef.current = new Map();
         setPinnedIndex(0);
         setHoveredIndex(null);
         setShowLiveDevice(true);
@@ -298,11 +303,18 @@ function App() {
           setHoveredIndex(null);
           tree.setSelectedTestId(`${msg.filePath}::${msg.fullName}`);
         }
-        // Ensure trace data exists for this test
+        // Ensure trace data exists for this test, snapshotting its source file
         setTestTraces((prev) => {
           if (prev.has(msg.fullName)) return prev;
           const next = new Map(prev);
-          next.set(msg.fullName, emptyTraceData(msg.filePath));
+          const data = emptyTraceData(msg.filePath);
+          // Match pending source by test file basename
+          const basename = msg.filePath.split('/').pop() ?? '';
+          const sourceContent = pendingSourcesRef.current.get(basename);
+          if (sourceContent) {
+            data.sources = new Map([[basename, sourceContent]]);
+          }
+          next.set(msg.fullName, data);
           return next;
         });
         break;
@@ -383,7 +395,7 @@ function App() {
           }
 
           const next = new Map(map);
-          next.set(testName, { events, actionEvents, screenshots, hierarchies, network: data.network, filePath: data.filePath });
+          next.set(testName, { events, actionEvents, screenshots, hierarchies, sources: data.sources, network: data.network, filePath: data.filePath });
           return next;
         });
 
@@ -395,11 +407,9 @@ function App() {
         break;
       }
       case 'source':
-        setSources((prev) => {
-          const next = new Map(prev);
-          next.set(msg.fileName, msg.content);
-          return next;
-        });
+        // Buffer source files — they arrive before test-start, so we snapshot
+        // them into per-test trace data when each test begins.
+        pendingSourcesRef.current.set(msg.fileName, msg.content);
         break;
       case 'network': {
         // Attach network entries to the active test
@@ -983,7 +993,10 @@ html, body, #app {
 .rc-download { color: var(--color-text-muted); }
 
 
-.rc-counts { display: flex; gap: 6px; font-size: 12px; }
+.rc-counts { display: flex; gap: 8px; font-size: 12px; }
+.rc-count.passed { color: var(--color-success); }
+.rc-count.failed { color: var(--color-error); }
+.rc-count.skipped { color: var(--color-skipped); }
 
 .rc-connection {
   display: flex;
@@ -1220,7 +1233,7 @@ html, body, #app {
 .action-icon.scroll { color: var(--color-keyword); }
 .action-icon.nav { color: var(--color-function); }
 .action-icon.assert { color: var(--color-number); }
-.action-icon.assert.failed { color: var(--color-error); }
+.action-icon.assert.failed, .action-icon.failed { color: var(--color-error); }
 .action-name { font-size: 12px; color: var(--color-text-primary); white-space: nowrap; }
 .action-selector-text { color: var(--color-text-muted); font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; min-width: 0; }
 .action-duration { color: var(--color-text-faintest); font-size: 11px; flex-shrink: 0; margin-left: auto; padding-left: 8px; }
@@ -1274,9 +1287,16 @@ html, body, #app {
 .source-line-content { flex: 1; }
 .source-line.highlight { background: var(--color-highlight); }
 
-.error-block { background: var(--color-error-bg); border: 1px solid var(--color-error-border); border-radius: 4px; padding: 10px; margin-bottom: 8px; }
+.error-block { display: flex; flex-direction: column; gap: 8px; }
+.error-entry { background: var(--color-error-bg); border: 1px solid var(--color-error-border); border-radius: 4px; padding: 10px; }
+.error-entry-selected { border-color: var(--color-error); }
+.error-entry-label { font-size: 11px; color: var(--color-text-muted); margin-bottom: 4px; font-family: var(--font-mono); }
 .error-message { color: var(--color-error); font-weight: 500; margin-bottom: 6px; font-size: 12px; }
 .error-stack { font-family: var(--font-mono); font-size: 11px; color: var(--color-text-muted); white-space: pre-wrap; word-break: break-all; }
+.test-error-banner { display: flex; align-items: center; gap: 6px; padding: 6px 12px; background: var(--color-error-bg); border-bottom: 1px solid var(--color-error-border); cursor: pointer; font-size: 12px; color: var(--color-error); flex-shrink: 0; }
+.test-error-banner:hover { background: var(--color-error-border); }
+.test-error-banner-icon { font-weight: 700; flex-shrink: 0; }
+.test-error-banner-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .no-content { color: var(--color-text-faintest); font-size: 12px; }
 
 /* Timeline */
@@ -1340,29 +1360,6 @@ html, body, #app {
   box-shadow: 0 1px 0 var(--border);
 }
 
-/* ─── Count Pills ─── */
-
-.rc-count {
-  display: inline-flex;
-  align-items: center;
-  padding: 2px 8px;
-  border-radius: 10px;
-  font-size: 11px;
-  font-weight: 600;
-  line-height: 1;
-}
-.rc-count.passed {
-  background: rgba(78, 201, 176, 0.15);
-  color: var(--color-success);
-}
-.rc-count.failed {
-  background: rgba(241, 76, 76, 0.15);
-  color: var(--color-error);
-}
-.rc-count.skipped {
-  background: rgba(136, 136, 136, 0.15);
-  color: var(--color-skipped);
-}
 
 /* ─── Run Duration ─── */
 

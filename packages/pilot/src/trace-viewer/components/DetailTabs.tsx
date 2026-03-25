@@ -18,12 +18,24 @@ interface Props {
 type DetailTab = 'call' | 'log' | 'console' | 'source' | 'hierarchy' | 'errors' | 'network'
 
 export function DetailTabs({ event, events, hierarchies, sources, metadata, networkEntries, networkBodies, onHierarchyNodeSelect }: Props) {
+  const testError = metadata.error;
   const [tab, setTab] = useState<DetailTab>('call');
 
-  const hasError = event && (
+  const hasActionError = event && (
     (event.type === 'action' && !event.success) ||
     (event.type === 'assertion' && !event.passed)
   );
+  const hasError = hasActionError || !!testError;
+
+  // Auto-switch to errors tab when test fails and no specific action is selected
+  const prevTestError = useRef(testError);
+  useEffect(() => {
+    if (testError && !prevTestError.current && !event) {
+      setTab('errors');
+    }
+    prevTestError.current = testError;
+  }, [testError, event]);
+
   const hasSources = sources.size > 0;
   const hasHierarchy = hierarchies.size > 0;
 
@@ -52,6 +64,12 @@ export function DetailTabs({ event, events, hierarchies, sources, metadata, netw
           <div class={`detail-tab${tab === 'errors' ? ' active' : ''}${hasError ? ' has-error' : ''}`} onClick={() => setTab('errors')}>Errors</div>
         )}
       </div>
+      {testError && tab !== 'errors' && (
+        <div class="test-error-banner" onClick={() => setTab('errors')}>
+          <span class="test-error-banner-icon">✕</span>
+          <span class="test-error-banner-text">{testError}</span>
+        </div>
+      )}
       <div class={`detail-content${tab === 'hierarchy' ? ' detail-content-flush' : ''}`}>
         {tab === 'call' && <CallTab event={event} />}
         {tab === 'log' && <LogTab event={event} />}
@@ -59,7 +77,7 @@ export function DetailTabs({ event, events, hierarchies, sources, metadata, netw
         {tab === 'source' && <SourceTab event={event} sources={sources} />}
         {tab === 'hierarchy' && <HierarchyTabWrapper event={event} hierarchies={hierarchies} onNodeSelect={onHierarchyNodeSelect} />}
         {tab === 'network' && <NetworkTab entries={networkEntries} bodies={networkBodies} />}
-        {tab === 'errors' && <ErrorsTab event={event} />}
+        {tab === 'errors' && <ErrorsTab event={event} events={events} testError={testError} />}
       </div>
     </div>
   );
@@ -378,26 +396,49 @@ function HierarchyTabWrapper({ event, hierarchies, onNodeSelect }: {
 
 // ─── Errors Tab ───
 
-function ErrorsTab({ event }: { event: ActionTraceEvent | AssertionTraceEvent | undefined }) {
-  if (!event) return null;
+function ErrorsTab({ event, events, testError }: {
+  event: ActionTraceEvent | AssertionTraceEvent | undefined
+  events: AnyTraceEvent[]
+  testError?: string
+}) {
+  // Collect all failed actions/assertions from the trace
+  const failedEvents = events.filter((e): e is ActionTraceEvent | AssertionTraceEvent =>
+    (e.type === 'action' && !(e as ActionTraceEvent).success) ||
+    (e.type === 'assertion' && !(e as AssertionTraceEvent).passed),
+  );
 
-  const error = event.type === 'action' ? event.error : event.error;
-  const stack = event.type === 'action' ? event.errorStack : undefined;
-
-  if (!error) return <div class="no-content">No errors</div>;
+  if (failedEvents.length === 0 && !testError) return <div class="no-content">No errors</div>;
 
   return (
     <div class="error-block">
-      <div class="error-message">{error}</div>
-      {stack && <pre class="error-stack">{stack}</pre>}
-      {event.type === 'assertion' && !event.passed && (
-        <div style={{ marginTop: '8px', fontSize: '12px' }}>
-          {event.expected !== undefined && (
-            <div><span style={{ color: 'var(--color-text-muted)' }}>Expected: </span><span style={{ color: 'var(--color-success)' }}>{event.expected}</span></div>
-          )}
-          {event.actual !== undefined && (
-            <div><span style={{ color: 'var(--color-text-muted)' }}>Actual: </span><span style={{ color: 'var(--color-error)' }}>{event.actual}</span></div>
-          )}
+      {failedEvents.map((ev, i) => {
+        const isSelected = event && ev.actionIndex === event.actionIndex && ev.type === event.type;
+        const label = ev.type === 'action'
+          ? `${ev.action}${ev.selector ? ` ${ev.selector}` : ''}`
+          : `expect ${ev.assertion}${ev.selector ? ` ${ev.selector}` : ''}`;
+        const error = ev.type === 'action' ? ev.error : ev.error;
+        const stack = ev.type === 'action' ? ev.errorStack : undefined;
+
+        return (
+          <div key={i} class={`error-entry${isSelected ? ' error-entry-selected' : ''}`}>
+            <div class="error-entry-label">{label}</div>
+            {error && <div class="error-message">{error}</div>}
+            {stack && <pre class="error-stack">{stack}</pre>}
+            {ev.type === 'assertion' && ev.expected !== undefined && (
+              <div style={{ marginTop: '4px', fontSize: '12px' }}>
+                <div><span style={{ color: 'var(--color-text-muted)' }}>Expected: </span><span style={{ color: 'var(--color-success)' }}>{ev.expected}</span></div>
+                {ev.actual !== undefined && (
+                  <div><span style={{ color: 'var(--color-text-muted)' }}>Actual: </span><span style={{ color: 'var(--color-error)' }}>{ev.actual}</span></div>
+                )}
+              </div>
+            )}
+          </div>
+        );
+      })}
+      {testError && (
+        <div class="error-entry error-entry-test">
+          <div class="error-entry-label">Test Error</div>
+          <div class="error-message">{testError}</div>
         </div>
       )}
     </div>

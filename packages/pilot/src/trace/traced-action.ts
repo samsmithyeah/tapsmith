@@ -83,6 +83,24 @@ export async function tracedAction(
   let errorStack: string | undefined;
   let caughtErr: unknown;
 
+  // Local flag set by the fail handler — immune to interleaving from other actions
+  let failedByTimeout = false;
+
+  // Register pending operation so the runner can emit a failed event on timeout
+  ctx.collector.setPendingOperation((timeoutError: string) => {
+    failedByTimeout = true;
+    ctx.collector.addActionEvent({
+      category, action, selector: selectorStr, inputValue: extra?.inputValue,
+      duration: Date.now() - start, success: false, error: timeoutError,
+      bounds, point, log: [...log, `Timed out: ${timeoutError}`],
+      hasScreenshotBefore: !!beforeCaptures.screenshotBefore,
+      hasScreenshotAfter: false,
+      hasHierarchyBefore: !!beforeCaptures.hierarchyBefore,
+      hasHierarchyAfter: false,
+      sourceLocation,
+    });
+  });
+
   try {
     const res = await fn();
     if (!res.success) {
@@ -96,6 +114,16 @@ export async function tracedAction(
     else { error = String(err); }
     log.push(`Action failed: ${error} (${Date.now() - start}ms)`);
     caughtErr = err;
+  }
+
+  ctx.collector.clearPendingOperation();
+
+  // If the runner's timeout already emitted a failed event, skip the normal emit
+  if (failedByTimeout) {
+    if (caughtErr !== undefined) {
+      throw caughtErr instanceof Error ? caughtErr : new Error(String(caughtErr));
+    }
+    return;
   }
 
   if (success) {

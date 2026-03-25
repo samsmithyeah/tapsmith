@@ -94,16 +94,6 @@ export class Device {
   }
 
   /** @internal — Run an action RPC and throw on failure. */
-  private async _action(
-    fn: () => Promise<ActionResponse>,
-    fallbackMsg: string,
-  ): Promise<void> {
-    const res = await fn();
-    if (!res.success) {
-      throw new Error(res.errorMessage || fallbackMsg);
-    }
-  }
-
   /**
    * @internal — Wrap an action with trace recording (before/after screenshots + hierarchy).
    */
@@ -290,10 +280,9 @@ export class Device {
   ): Promise<void> {
     const packageName = typeof packageOrOptions === 'string' ? packageOrOptions : undefined;
     const options = typeof packageOrOptions === 'string' ? maybeOptions : packageOrOptions;
-    return this._action(
+    return this._tracedAction('restartApp', 'device', undefined,
       () => this._client.restartApp(this.requirePackageName(packageName), options?.waitForIdle ?? true),
-      'Restart app failed',
-    );
+      'Restart app failed');
   }
 
   async launchApp(packageName: string, options?: LaunchAppOptions): Promise<void> {
@@ -319,10 +308,9 @@ export class Device {
   }
 
   async terminateApp(packageName: string): Promise<void> {
-    return this._action(
+    return this._tracedAction('terminateApp', 'device', undefined,
       () => this._client.terminateApp(packageName),
-      'Terminate app failed',
-    );
+      'Terminate app failed');
   }
 
   async getAppState(packageName: string): Promise<AppState> {
@@ -339,45 +327,39 @@ export class Device {
   }
 
   async saveAppState(packageName: string, path: string): Promise<void> {
-    return this._action(
+    return this._tracedAction('saveAppState', 'device', undefined,
       () => this._client.saveAppState(this.requirePackageName(packageName), path),
-      'Save app state failed',
-    );
+      'Save app state failed');
   }
 
   async restoreAppState(packageName: string, path: string): Promise<void> {
-    return this._action(
+    return this._tracedAction('restoreAppState', 'device', undefined,
       () => this._client.restoreAppState(this.requirePackageName(packageName), path),
-      'Restore app state failed',
-    );
+      'Restore app state failed');
   }
 
   async clearAppData(packageName: string): Promise<void> {
-    return this._action(
+    return this._tracedAction('clearAppData', 'device', undefined,
       () => this._client.clearAppData(packageName),
-      'Clear app data failed',
-    );
+      'Clear app data failed');
   }
 
   async grantPermission(packageName: string, permission: string): Promise<void> {
-    return this._action(
+    return this._tracedAction('grantPermission', 'device', undefined,
       () => this._client.grantPermission(packageName, permission),
-      'Grant permission failed',
-    );
+      'Grant permission failed');
   }
 
   async revokePermission(packageName: string, permission: string): Promise<void> {
-    return this._action(
+    return this._tracedAction('revokePermission', 'device', undefined,
       () => this._client.revokePermission(packageName, permission),
-      'Revoke permission failed',
-    );
+      'Revoke permission failed');
   }
 
   async setClipboard(text: string): Promise<void> {
-    return this._action(
+    return this._tracedAction('setClipboard', 'device', undefined,
       () => this._client.setClipboard(text),
-      'Set clipboard failed',
-    );
+      'Set clipboard failed');
   }
 
   async getClipboard(): Promise<string> {
@@ -386,10 +368,9 @@ export class Device {
   }
 
   async setOrientation(orientation: Orientation): Promise<void> {
-    return this._action(
+    return this._tracedAction('setOrientation', 'device', undefined,
       () => this._client.setOrientation(orientation),
-      'Set orientation failed',
-    );
+      'Set orientation failed');
   }
 
   async getOrientation(): Promise<Orientation> {
@@ -403,24 +384,21 @@ export class Device {
   }
 
   async hideKeyboard(): Promise<void> {
-    return this._action(
+    return this._tracedAction('hideKeyboard', 'device', undefined,
       () => this._client.hideKeyboard(),
-      'Hide keyboard failed',
-    );
+      'Hide keyboard failed');
   }
 
   async wake(): Promise<void> {
-    return this._action(
+    return this._tracedAction('wake', 'device', undefined,
       () => this._client.wakeDevice(),
-      'Wake device failed',
-    );
+      'Wake device failed');
   }
 
   async unlock(): Promise<void> {
-    return this._action(
+    return this._tracedAction('unlock', 'device', undefined,
       () => this._client.unlockDevice(),
-      'Unlock device failed',
-    );
+      'Unlock device failed');
   }
 
   async pressHome(): Promise<void> {
@@ -428,17 +406,15 @@ export class Device {
   }
 
   async openNotifications(): Promise<void> {
-    return this._action(
+    return this._tracedAction('openNotifications', 'device', undefined,
       () => this._client.openNotifications(),
-      'Open notifications failed',
-    );
+      'Open notifications failed');
   }
 
   async openQuickSettings(): Promise<void> {
-    return this._action(
+    return this._tracedAction('openQuickSettings', 'device', undefined,
       () => this._client.openQuickSettings(),
-      'Open quick settings failed',
-    );
+      'Open quick settings failed');
   }
 
   async pressRecentApps(): Promise<void> {
@@ -446,10 +422,9 @@ export class Device {
   }
 
   async setColorScheme(scheme: ColorScheme): Promise<void> {
-    return this._action(
+    return this._tracedAction('setColorScheme', 'device', undefined,
       () => this._client.setColorScheme(scheme),
-      'Set color scheme failed',
-    );
+      'Set color scheme failed');
   }
 
   async getColorScheme(): Promise<ColorScheme> {

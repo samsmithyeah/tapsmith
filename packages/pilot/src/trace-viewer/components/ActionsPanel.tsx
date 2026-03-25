@@ -37,6 +37,9 @@ function getIcon(event: ActionTraceEvent | AssertionTraceEvent): [string, string
     const passed = event.passed;
     return [passed ? '\u2713' : '\u2717', passed ? 'assert' : 'assert failed'];
   }
+  if (!event.success) {
+    return ['\u2717', 'failed'];  // ✗
+  }
   return ACTION_ICONS[event.action] ?? ['\u2022', 'tap'];
 }
 

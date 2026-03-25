@@ -605,6 +605,9 @@ async function runSuiteContext(
       status = 'failed';
       error = err instanceof Error ? err : new Error(String(err));
 
+      // Fail any in-flight traced action/assertion so it appears in the trace
+      traceCollector?.failPendingOperation(error.message);
+
       // Screenshot on failure
       if (opts.config.screenshot !== 'never') {
         screenshotPath = await captureFailureScreenshot(

@@ -438,7 +438,7 @@ style.textContent = `
   .action-icon.scroll { color: var(--color-keyword); }
   .action-icon.nav { color: var(--color-function); }
   .action-icon.assert { color: var(--color-number); }
-  .action-icon.assert.failed { color: var(--color-error); }
+  .action-icon.assert.failed, .action-icon.failed { color: var(--color-error); }
   .action-name { font-size: 12px; color: var(--color-text-primary); white-space: nowrap; }
   .action-selector-text { color: var(--color-text-muted); font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; min-width: 0; }
   .action-duration { color: var(--color-text-faintest); font-size: 11px; flex-shrink: 0; margin-left: auto; padding-left: 8px; }
@@ -508,9 +508,16 @@ style.textContent = `
   .hierarchy-search input:focus { border-color: var(--color-accent); }
 
   /* Errors tab */
-  .error-block { background: var(--color-error-bg); border: 1px solid var(--color-error-border); border-radius: 4px; padding: 10px; margin-bottom: 8px; }
+  .error-block { display: flex; flex-direction: column; gap: 8px; }
+  .error-entry { background: var(--color-error-bg); border: 1px solid var(--color-error-border); border-radius: 4px; padding: 10px; }
+  .error-entry-selected { border-color: var(--color-error); }
+  .error-entry-label { font-size: 11px; color: var(--color-text-muted); margin-bottom: 4px; font-family: 'SF Mono', 'Cascadia Code', Consolas, monospace; }
   .error-message { color: var(--color-error); font-weight: 500; margin-bottom: 6px; font-size: 12px; }
   .error-stack { font-family: 'SF Mono', 'Cascadia Code', Consolas, monospace; font-size: 11px; color: var(--color-text-muted); white-space: pre-wrap; word-break: break-all; }
+  .test-error-banner { display: flex; align-items: center; gap: 6px; padding: 6px 12px; background: var(--color-error-bg); border-bottom: 1px solid var(--color-error-border); cursor: pointer; font-size: 12px; color: var(--color-error); flex-shrink: 0; }
+  .test-error-banner:hover { background: var(--color-error-border); }
+  .test-error-banner-icon { font-weight: 700; flex-shrink: 0; }
+  .test-error-banner-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .no-content { color: var(--color-text-faintest); font-size: 12px; }
 `;
 document.head.appendChild(style)

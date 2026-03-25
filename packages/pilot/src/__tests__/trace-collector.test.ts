@@ -3,7 +3,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as os from 'node:os';
 import { TraceCollector, extractSourceLocation } from '../trace/trace-collector.js';
-import type { TraceConfig, ActionTraceEvent, ConsoleTraceEvent, GroupTraceEvent } from '../trace/types.js';
+import type { TraceConfig, ActionTraceEvent, AssertionTraceEvent, ConsoleTraceEvent, GroupTraceEvent } from '../trace/types.js';
 
 describe('TraceCollector', () => {
   let tempDir: string;
@@ -150,6 +150,104 @@ describe('TraceCollector', () => {
     for (const line of lines) {
       expect(() => JSON.parse(line)).not.toThrow();
     }
+  });
+
+  // ── Pending operation (timeout detection) ──
+
+  it('failPendingOperation emits a failed action event for in-flight action', () => {
+    const collector = new TraceCollector(config, tempDir);
+
+    collector.setPendingOperation((error) => {
+      collector.addActionEvent({
+        category: 'tap',
+        action: 'tap',
+        selector: '{"text":"Submit"}',
+        duration: 5000,
+        success: false,
+        error,
+        hasScreenshotBefore: true,
+        hasScreenshotAfter: false,
+        hasHierarchyBefore: false,
+        hasHierarchyAfter: false,
+      });
+    });
+
+    collector.failPendingOperation('Test timed out after 10000ms');
+
+    expect(collector.events).toHaveLength(1);
+    const ev = collector.events[0] as ActionTraceEvent;
+    expect(ev.type).toBe('action');
+    expect(ev.action).toBe('tap');
+    expect(ev.success).toBe(false);
+    expect(ev.error).toBe('Test timed out after 10000ms');
+    expect(ev.hasScreenshotBefore).toBe(true);
+    expect(ev.hasScreenshotAfter).toBe(false);
+  });
+
+  it('failPendingOperation emits a failed assertion event for in-flight assertion', () => {
+    const collector = new TraceCollector(config, tempDir);
+
+    collector.setPendingOperation((error) => {
+      collector.addAssertionEvent({
+        assertion: 'toBeVisible',
+        selector: '{"text":"OK"}',
+        passed: false,
+        soft: false,
+        negated: false,
+        duration: 5000,
+        attempts: 20,
+        error,
+      });
+    });
+
+    collector.failPendingOperation('Test timed out after 10000ms');
+
+    expect(collector.events).toHaveLength(1);
+    const ev = collector.events[0] as AssertionTraceEvent;
+    expect(ev.type).toBe('assertion');
+    expect(ev.assertion).toBe('toBeVisible');
+    expect(ev.passed).toBe(false);
+    expect(ev.error).toBe('Test timed out after 10000ms');
+  });
+
+  it('failPendingOperation is a no-op when no pending operation', () => {
+    const collector = new TraceCollector(config, tempDir);
+    collector.failPendingOperation('Test timed out');
+    expect(collector.events).toHaveLength(0);
+  });
+
+  it('clearPendingOperation prevents subsequent failPendingOperation from firing', () => {
+    const collector = new TraceCollector(config, tempDir);
+
+    collector.setPendingOperation(() => {
+      collector.addActionEvent({
+        category: 'tap', action: 'tap', duration: 0, success: false,
+        error: 'timeout', hasScreenshotBefore: false, hasScreenshotAfter: false,
+        hasHierarchyBefore: false, hasHierarchyAfter: false,
+      });
+    });
+
+    collector.clearPendingOperation();
+    collector.failPendingOperation('timeout');
+    expect(collector.events).toHaveLength(0);
+  });
+
+  it('failPendingOperation only fires once (idempotent)', () => {
+    const collector = new TraceCollector(config, tempDir);
+
+    collector.setPendingOperation((error) => {
+      collector.addActionEvent({
+        category: 'tap', action: 'tap', duration: 0, success: false,
+        error, hasScreenshotBefore: false, hasScreenshotAfter: false,
+        hasHierarchyBefore: false, hasHierarchyAfter: false,
+      });
+    });
+
+    collector.failPendingOperation('first timeout');
+    collector.failPendingOperation('second timeout');
+
+    expect(collector.events).toHaveLength(1);
+    expect((collector.events[0] as ActionTraceEvent).error).toBe('first timeout');
   });
 
   it('intercepts and records console output', () => {

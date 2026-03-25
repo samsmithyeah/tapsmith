@@ -276,12 +276,43 @@ function wrapAssertionWithTrace(
     let error: string | undefined;
     let caughtErr: unknown;
 
+    // Local flag set by the fail handler — immune to interleaving from other actions
+    let failedByTimeout = false;
+
+    // Register pending operation so the runner can emit a failed event on timeout
+    trace.collector.setPendingOperation((timeoutError: string) => {
+      failedByTimeout = true;
+      trace.collector.addAssertionEvent({
+        assertion: (negated ? "not." : "") + name,
+        selector: selectorStr,
+        passed: false,
+        soft: false,
+        negated,
+        duration: Date.now() - start,
+        attempts: Math.max(1, Math.round((Date.now() - start) / POLL_INTERVAL_MS)),
+        error: timeoutError,
+        sourceLocation,
+        hasScreenshotBefore: !!beforeCaptures.screenshotBefore,
+        hasScreenshotAfter: false,
+        hasHierarchyBefore: !!beforeCaptures.hierarchyBefore,
+        hasHierarchyAfter: false,
+      } as Parameters<typeof trace.collector.addAssertionEvent>[0]);
+    });
+
     try {
       await fn(...args);
     } catch (err) {
       passed = false;
       error = err instanceof Error ? err.message : String(err);
       caughtErr = err;
+    }
+
+    trace.collector.clearPendingOperation();
+
+    // If the runner's timeout already emitted a failed event, skip the normal emit
+    if (failedByTimeout) {
+      if (caughtErr !== undefined) throw caughtErr;
+      return;
     }
 
     // After capture (success or failure)

@@ -151,6 +151,8 @@ export class TraceCollector {
     debug: typeof console.debug
   };
   private _consoleIntercepted = false;
+  /** Handler to emit a failed event for the in-flight action/assertion on timeout. */
+  private _pendingOperationHandler: ((error: string) => void) | null = null;
 
   constructor(config: TraceConfig, tempDir: string) {
     this.config = config;
@@ -250,6 +252,34 @@ export class TraceCollector {
     console.error = this._originalConsole.error;
     console.info = this._originalConsole.info;
     console.debug = this._originalConsole.debug;
+  }
+
+  // ── Pending operation (timeout detection) ──
+
+  /**
+   * Register a fail handler for the currently in-flight action or assertion.
+   * Called by tracedAction / wrapAssertionWithTrace before executing the user's fn().
+   */
+  setPendingOperation(failHandler: (error: string) => void): void {
+    this._pendingOperationHandler = failHandler;
+  }
+
+  /**
+   * Clear the pending operation after it completes normally.
+   */
+  clearPendingOperation(): void {
+    this._pendingOperationHandler = null;
+  }
+
+  /**
+   * Emit a failed event for the currently in-flight action/assertion.
+   * Called by the runner when a test times out, so the stuck action appears in the trace.
+   */
+  failPendingOperation(error: string): void {
+    if (!this._pendingOperationHandler) return;
+    const handler = this._pendingOperationHandler;
+    this._pendingOperationHandler = null;
+    handler(error);
   }
 
   // ── Action recording ──
@@ -482,6 +512,7 @@ export class TraceCollector {
   cleanup(): void {
     this.stopConsoleCapture();
     this._pendingCaptures.clear();
+    this._pendingOperationHandler = null;
     // Remove temp directory and its contents
     try {
       fs.rmSync(this._tempDir, { recursive: true, force: true });
