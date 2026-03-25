@@ -4,8 +4,9 @@
  * Left: Test Explorer
  * Content area:
  *   Top strip: Timeline filmstrip
- *   Middle: Actions panel (left) + Screenshot/Device panel (right)
+ *   Middle: Actions panel (left) + Screenshot panel (right)
  *   Bottom: Detail tabs (Source, Call, Log, Console, Network, Hierarchy, Errors)
+ * Right: Device pane (always-visible live device mirror)
  */
 
 import { useState, useCallback } from 'preact/hooks';
@@ -18,12 +19,14 @@ interface LayoutProps {
   actionsPanel: ComponentChildren
   screenshotPanel: ComponentChildren
   detailTabs: ComponentChildren
+  devicePane?: ComponentChildren
 }
 
-export function Layout({ topBar, testExplorer, filmstrip, actionsPanel, screenshotPanel, detailTabs }: LayoutProps) {
+export function Layout({ topBar, testExplorer, filmstrip, actionsPanel, screenshotPanel, detailTabs, devicePane }: LayoutProps) {
   const [explorerWidth, setExplorerWidth] = useState(260);
   const [actionsWidth, setActionsWidth] = useState(380);
   const [detailHeight, setDetailHeight] = useState(250);
+  const [deviceWidth, setDeviceWidth] = useState(300);
 
   const makeColResize = useCallback((
     getter: () => number,
@@ -62,6 +65,11 @@ export function Layout({ topBar, testExplorer, filmstrip, actionsPanel, screensh
     [actionsWidth, makeColResize],
   );
 
+  const handleDeviceResize = useCallback(
+    (e: MouseEvent) => makeColResize(() => deviceWidth, setDeviceWidth, 200, Infinity, true)(e),
+    [deviceWidth, makeColResize],
+  );
+
   const handleDetailResize = useCallback((e: MouseEvent) => {
     e.preventDefault();
     const startY = e.clientY;
@@ -97,7 +105,7 @@ export function Layout({ topBar, testExplorer, filmstrip, actionsPanel, screensh
           {/* Timeline filmstrip */}
           <div class="ui-filmstrip">{filmstrip}</div>
 
-          {/* Middle: Actions + Screenshot/Device */}
+          {/* Middle: Actions + Screenshot */}
           <div class="ui-middle">
             <div class="ui-actions" style={{ width: `${actionsWidth}px`, minWidth: `${actionsWidth}px` }}>
               {actionsPanel}
@@ -114,6 +122,16 @@ export function Layout({ topBar, testExplorer, filmstrip, actionsPanel, screensh
             {detailTabs}
           </div>
         </div>
+
+        {/* Right: Device pane */}
+        {devicePane && (
+          <>
+            <div class="ui-resize-handle ui-resize-col" onMouseDown={handleDeviceResize} />
+            <div class="ui-device-pane" style={{ width: `${deviceWidth}px`, minWidth: `${deviceWidth}px` }}>
+              {devicePane}
+            </div>
+          </>
+        )}
       </div>
     </div>
   );

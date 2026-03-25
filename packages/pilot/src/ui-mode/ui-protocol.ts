@@ -10,6 +10,20 @@
 
 import type { AnyTraceEvent } from '../trace/types.js';
 
+// ─── Shared Types ───
+
+/** Per-worker status used by UI components. */
+export interface WorkerInfo {
+  workerId: number
+  deviceSerial: string
+  status: 'idle' | 'running' | 'done' | 'initializing' | 'error'
+  currentFile?: string
+  currentTest?: string
+  passed: number
+  failed: number
+  skipped: number
+}
+
 // ─── Test Tree ───
 
 export interface TestTreeNode {
@@ -246,6 +260,12 @@ export interface SelectWorkerCommand {
   workerId: number
 }
 
+export interface SelectWorkerViewCommand {
+  type: 'select-worker-view'
+  /** 'all' to poll all workers simultaneously, or a specific worker ID. */
+  mode: 'all' | number
+}
+
 export interface RespawnWorkerCommand {
   type: 'respawn-worker'
   workerId: number
@@ -264,6 +284,7 @@ export type ClientMessage =
   | TapCoordinatesCommand
   | SetFilterCommand
   | SelectWorkerCommand
+  | SelectWorkerViewCommand
   | RespawnWorkerCommand
 
 // ─── Binary frame helpers ───
@@ -271,26 +292,30 @@ export type ClientMessage =
 /**
  * Screen frames are sent as binary WebSocket messages:
  *   bytes 0-3:  uint32 BE frame sequence number
- *   bytes 4-7:  uint16 BE width, uint16 BE height
- *   bytes 8+:   raw PNG data
+ *   bytes 4-5:  uint16 BE worker ID (0 for single-worker mode)
+ *   bytes 6-9:  uint16 BE width, uint16 BE height
+ *   bytes 10+:  raw PNG data
  */
-export const SCREEN_FRAME_HEADER_SIZE = 8;
+export const SCREEN_FRAME_HEADER_SIZE = 10;
 
 export function encodeScreenFrame(
   seq: number,
+  workerId: number,
   width: number,
   height: number,
   png: Buffer,
 ): Buffer {
   const header = Buffer.alloc(SCREEN_FRAME_HEADER_SIZE);
   header.writeUInt32BE(seq, 0);
-  header.writeUInt16BE(width, 4);
-  header.writeUInt16BE(height, 6);
+  header.writeUInt16BE(workerId, 4);
+  header.writeUInt16BE(width, 6);
+  header.writeUInt16BE(height, 8);
   return Buffer.concat([header, png]);
 }
 
 export function decodeScreenFrameHeader(data: ArrayBuffer): {
   seq: number
+  workerId: number
   width: number
   height: number
   pngOffset: number
@@ -298,8 +323,9 @@ export function decodeScreenFrameHeader(data: ArrayBuffer): {
   const view = new DataView(data);
   return {
     seq: view.getUint32(0),
-    width: view.getUint16(4),
-    height: view.getUint16(6),
+    workerId: view.getUint16(4),
+    width: view.getUint16(6),
+    height: view.getUint16(8),
     pngOffset: SCREEN_FRAME_HEADER_SIZE,
   };
 }

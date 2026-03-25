@@ -4,20 +4,9 @@
 
 import { useCallback, useEffect, useRef, useState } from 'preact/hooks';
 import { RefreshCw } from 'lucide-preact';
-import type { ClientMessage } from '../ui-protocol.js';
+import type { ClientMessage, WorkerInfo } from '../ui-protocol.js';
 
 export type Theme = 'system' | 'light' | 'dark'
-
-interface WorkerInfo {
-  workerId: number
-  deviceSerial: string
-  status: 'idle' | 'running' | 'done' | 'initializing' | 'error'
-  currentFile?: string
-  currentTest?: string
-  passed: number
-  failed: number
-  skipped: number
-}
 
 interface RunControlsProps {
   connected: boolean

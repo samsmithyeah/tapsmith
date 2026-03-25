@@ -126,6 +126,8 @@ export async function startUIServer(
   let workersInitialized = false;
   /** Which worker's device to mirror. Defaults to 0. */
   let selectedWorkerId = 0;
+  /** Screen view mode: 'all' polls all workers, number polls a specific worker. */
+  let screenViewMode: 'all' | number = 'all';
   /** Set to true while a parallel run is in progress, to signal stop. */
   let parallelRunAborted = false;
   /** Callback to resolve the active dispatch promise on abort. */
@@ -1596,6 +1598,21 @@ export async function startUIServer(
 
   // ─── Screen Polling ───
 
+  /** Poll a single device and broadcast its frame. */
+  async function pollSingleWorker(workerId: number, client: import('../grpc-client.js').PilotGrpcClient): Promise<void> {
+    const response = await client.takeScreenshot();
+    if (response.success && response.data) {
+      const data = Buffer.isBuffer(response.data)
+        ? response.data
+        : Buffer.from(response.data);
+      // Read dimensions from the PNG IHDR chunk (bytes 16-23: width + height as big-endian uint32)
+      const width = data.length >= 24 ? data.readUInt32BE(16) : 1080;
+      const height = data.length >= 24 ? data.readUInt32BE(20) : 1920;
+      const frame = encodeScreenFrame(screenSeq++, workerId, width, height, data);
+      broadcastBinary(frame);
+    }
+  }
+
   async function pollScreen(): Promise<void> {
     if (clients.size === 0) {
       scheduleScreenPoll();
@@ -1603,27 +1620,24 @@ export async function startUIServer(
     }
 
     try {
-      // In multi-worker mode, poll from the selected worker's daemon.
-      // In single-worker mode, poll from the main client.
-      const pollClient = multiWorker && workersInitialized
-        ? uiWorkers.find((w) => w.id === selectedWorkerId && !w.retired)?.screenClient
-        : ctx.client;
+      if (multiWorker && workersInitialized && screenViewMode === 'all') {
+        // Poll ALL non-retired workers in parallel
+        const activeWorkers = uiWorkers.filter((w) => !w.retired && w.screenClient);
+        await Promise.allSettled(
+          activeWorkers.map((w) => pollSingleWorker(w.id, w.screenClient!)),
+        );
+      } else {
+        // Single-worker mode or specific worker selected
+        const pollClient = multiWorker && workersInitialized
+          ? uiWorkers.find((w) => w.id === selectedWorkerId && !w.retired)?.screenClient
+          : ctx.client;
 
-      if (!pollClient) {
-        scheduleScreenPoll();
-        return;
-      }
+        if (!pollClient) {
+          scheduleScreenPoll();
+          return;
+        }
 
-      const response = await pollClient.takeScreenshot();
-      if (response.success && response.data) {
-        const data = Buffer.isBuffer(response.data)
-          ? response.data
-          : Buffer.from(response.data);
-        // Read dimensions from the PNG IHDR chunk (bytes 16-23: width + height as big-endian uint32)
-        const width = data.length >= 24 ? data.readUInt32BE(16) : 1080;
-        const height = data.length >= 24 ? data.readUInt32BE(20) : 1920;
-        const frame = encodeScreenFrame(screenSeq++, width, height, data);
-        broadcastBinary(frame);
+        await pollSingleWorker(selectedWorkerId, pollClient);
       }
     } catch {
       // Device may be busy — skip frame
@@ -1753,9 +1767,25 @@ export async function startUIServer(
         break;
       case 'select-worker':
         selectedWorkerId = msg.workerId;
+        screenViewMode = msg.workerId;
         // Send device info for the new selection
         {
           const worker = uiWorkers.find((w) => w.id === msg.workerId);
+          if (worker) {
+            broadcast({
+              type: 'device-info',
+              serial: worker.deviceSerial,
+              model: undefined,
+              isEmulator: worker.deviceSerial.startsWith('emulator-'),
+            });
+          }
+        }
+        break;
+      case 'select-worker-view':
+        screenViewMode = msg.mode;
+        if (typeof msg.mode === 'number') {
+          selectedWorkerId = msg.mode;
+          const worker = uiWorkers.find((w) => w.id === msg.mode);
           if (worker) {
             broadcast({
               type: 'device-info',

@@ -1,14 +1,14 @@
 import { render } from 'preact';
 import { useState, useCallback, useMemo, useRef, useEffect } from 'preact/hooks';
-import type { ServerMessage, ClientMessage, TestTreeNode } from './ui-protocol.js';
+import type { ServerMessage, ClientMessage, TestTreeNode, WorkerInfo } from './ui-protocol.js';
 import type { AnyTraceEvent, ActionTraceEvent, AssertionTraceEvent, TraceMetadata, NetworkEntry } from '../trace/types.js';
 import { useWebSocket } from './hooks/use-websocket.js';
-import { useScreenMirror } from './hooks/use-screen-mirror.js';
+import { useScreenMirror, useMultiScreenMirror } from './hooks/use-screen-mirror.js';
 import { useTestTree } from './hooks/use-test-tree.js';
 import { Layout } from './components/Layout.js';
 import { TestExplorer } from './components/TestExplorer.js';
 import { RunControls, type Theme } from './components/RunControls.js';
-import { DeviceMirror } from './components/DeviceMirror.js';
+import { DevicePane } from './components/DevicePane.js';
 // Trace viewer components — reused for live trace display
 import { ActionsPanel } from '../trace-viewer/components/ActionsPanel.js';
 import { ScreenshotPanel } from '../trace-viewer/components/ScreenshotPanel.js';
@@ -56,18 +56,6 @@ function emptyTraceData(filePath?: string): TestTraceData {
 
 // ─── App ───
 
-/** Per-worker status from the server. */
-interface WorkerInfo {
-  workerId: number
-  deviceSerial: string
-  status: 'idle' | 'running' | 'done' | 'initializing' | 'error'
-  currentFile?: string
-  currentTest?: string
-  passed: number
-  failed: number
-  skipped: number
-}
-
 function App() {
   const [connected, setConnected] = useState(false);
   const [isRunning, setIsRunning] = useState(false);
@@ -103,8 +91,9 @@ function App() {
   const [hoveredIndex, setHoveredIndex] = useState<number | null>(null);
   const selectedIndex = hoveredIndex ?? pinnedIndex;
 
-  // Whether to show live device vs action screenshots
-  const [showLiveDevice, setShowLiveDevice] = useState(true);
+  // Device pane state
+  const [selectedWorkerId, setSelectedWorkerId] = useState(0);
+  const [deviceViewMode, setDeviceViewMode] = useState<'all' | number>('all');
 
   // "Run deps first" toggle — persisted in localStorage
   const [runDepsFirst, setRunDepsFirst] = useState(() => {
@@ -134,6 +123,7 @@ function App() {
 
   const tree = useTestTree();
   const { canvasRef, handleBinaryFrame } = useScreenMirror();
+  const { registerCanvas, unregisterCanvas, handleBinaryFrame: handleMultiBinaryFrame } = useMultiScreenMirror();
 
   // Whether any project has dependencies (controls visibility of the toggle)
   const hasProjectDeps = useMemo(() => {
@@ -255,7 +245,6 @@ function App() {
         pendingSourcesRef.current = new Map();
         setPinnedIndex(0);
         setHoveredIndex(null);
-        setShowLiveDevice(true);
         if (!msg.filePath && !msg.testFilter) {
           // Full run — clear worker mappings
           testWorkerMapRef.current.clear();
@@ -402,7 +391,6 @@ function App() {
         // Auto-pin to latest action for the active test
         if ((ev.type === 'action' || ev.type === 'assertion') && testName === activeTestRef.current) {
           setPinnedIndex(ev.actionIndex);
-          setShowLiveDevice(false);
         }
         break;
       }
@@ -468,9 +456,23 @@ function App() {
     setConnected(isConnected);
   }, []);
 
+  // Route binary frames to the appropriate mirror hook based on view mode.
+  // Only use multi-mirror when in 'all' mode AND multiple workers exist.
+  const deviceViewModeRef = useRef(deviceViewMode);
+  deviceViewModeRef.current = deviceViewMode;
+  const workersLenRef = useRef(workers.length);
+  workersLenRef.current = workers.length;
+  const handleScreenFrame = useCallback((data: ArrayBuffer) => {
+    if (deviceViewModeRef.current === 'all' && workersLenRef.current > 1) {
+      handleMultiBinaryFrame(data);
+    } else {
+      handleBinaryFrame(data);
+    }
+  }, [handleBinaryFrame, handleMultiBinaryFrame]);
+
   const { send } = useWebSocket({
     onMessage: handleMessage,
-    onBinaryMessage: handleBinaryFrame,
+    onBinaryMessage: handleScreenFrame,
     onConnectionChange: handleConnectionChange,
   });
 
@@ -509,13 +511,23 @@ function App() {
     const wid = testWorkerMapRef.current.get(viewedTestName);
     if (wid != null && wid !== lastSentWorkerRef.current) {
       lastSentWorkerRef.current = wid;
-      send({ type: 'select-worker', workerId: wid });
+      setSelectedWorkerId(wid);
+      if (deviceViewMode !== 'all') setDeviceViewMode(wid);
+      send({ type: 'select-worker-view', mode: deviceViewMode === 'all' ? 'all' : wid });
     }
-  }, [viewedTestName, workers.length, send]);
+  }, [viewedTestName, workers.length, send, deviceViewMode]);
+
+  const handleSelectDeviceView = useCallback((mode: 'all' | number) => {
+    setDeviceViewMode(mode);
+    if (typeof mode === 'number') {
+      setSelectedWorkerId(mode);
+      lastSentWorkerRef.current = mode;
+    }
+    send({ type: 'select-worker-view', mode });
+  }, [send]);
 
   const handleActionPin = useCallback((index: number) => {
     setPinnedIndex(index);
-    setShowLiveDevice(false);
   }, []);
 
   // ─── Keyboard shortcuts ───
@@ -642,45 +654,36 @@ function App() {
       }
       screenshotPanel={
         <div class="ui-screen-area">
-          {/* Tab bar to switch between live device and action screenshots */}
-          <div class="ui-screen-tabs">
-            <button
-              class={`ui-screen-tab ${showLiveDevice ? 'active' : ''}`}
-              onClick={() => setShowLiveDevice(true)}
-            >
-              Live Device
-            </button>
-            <button
-              class={`ui-screen-tab ${!showLiveDevice ? 'active' : ''}`}
-              onClick={() => setShowLiveDevice(false)}
-              disabled={actionEvents.length === 0}
-            >
-              Action
-            </button>
-            {currentTrace?.tracePath && (
+          {currentTrace?.tracePath && (
+            <div class="ui-screen-header">
               <button
-                class="ui-screen-tab ui-download-btn"
+                class="ui-download-btn"
                 onClick={handleDownloadTrace}
                 title="Download trace for this test"
               >
                 {'\u2913'} Trace
               </button>
-            )}
-          </div>
+            </div>
+          )}
           <div class="ui-screen-content">
-            {showLiveDevice ? (
-              <DeviceMirror
-                canvasRef={canvasRef}
-                connected={connected}
-              />
-            ) : (
-              <ScreenshotPanel
-                event={selectedEvent}
-                screenshots={screenshots}
-              />
-            )}
+            <ScreenshotPanel
+              event={selectedEvent}
+              screenshots={screenshots}
+            />
           </div>
         </div>
+      }
+      devicePane={
+        <DevicePane
+          canvasRef={canvasRef}
+          connected={connected}
+          workers={workers}
+          selectedWorkerId={selectedWorkerId}
+          deviceViewMode={deviceViewMode}
+          onSelectDeviceView={handleSelectDeviceView}
+          registerCanvas={registerCanvas}
+          unregisterCanvas={unregisterCanvas}
+        />
       }
       detailTabs={
         <DetailTabs
@@ -901,7 +904,7 @@ html, body, #app {
   transform: translate(-50%, -50%);
 }
 
-/* ─── Screen area (Live Device / Action tabs) ─── */
+/* ─── Screen area (Action screenshots) ─── */
 
 .ui-screen-area {
   display: flex;
@@ -910,32 +913,27 @@ html, body, #app {
   min-height: 0;
 }
 
-.ui-screen-tabs {
+.ui-screen-header {
   display: flex;
-  padding: 4px 8px 0;
-  gap: 2px;
+  align-items: center;
+  justify-content: flex-end;
+  padding: 2px 8px;
   border-bottom: 1px solid var(--border);
   background: var(--bg-secondary);
+  flex-shrink: 0;
 }
 
-.ui-screen-tab {
-  padding: 5px 14px;
-  border: none;
-  border-bottom: 2px solid transparent;
+.ui-download-btn {
+  padding: 3px 8px;
+  border: 1px solid var(--border);
+  border-radius: 3px;
   background: transparent;
-  color: var(--color-text-muted);
+  color: var(--color-text-faint);
+  font-size: 11px;
   cursor: pointer;
-  font-size: 12px;
   font-family: var(--font-ui);
-  transition: color 0.15s, border-color 0.15s;
 }
-.ui-screen-tab:hover { color: var(--color-text); }
-.ui-screen-tab.active {
-  color: var(--color-accent);
-  border-bottom-color: var(--color-accent);
-}
-.ui-screen-tab:disabled { opacity: 0.4; cursor: not-allowed; }
-.ui-download-btn { margin-left: auto; color: var(--color-text-faint); font-size: 11px; }
+.ui-download-btn:hover { color: var(--color-text); background: var(--bg-hover); }
 
 .ui-screen-content {
   flex: 1;
@@ -943,6 +941,129 @@ html, body, #app {
   overflow: hidden;
   display: flex;
   flex-direction: column;
+}
+
+/* ─── Device Pane ─── */
+
+.ui-device-pane {
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border-left: 1px solid var(--border);
+  background: var(--bg-secondary);
+}
+
+.device-pane {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+
+.device-pane-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--border);
+  font-size: 11px;
+  color: var(--color-text-muted);
+  flex-shrink: 0;
+}
+
+.device-pane-header-title {
+  font-weight: 600;
+  color: var(--color-text);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.device-pane-serial {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--color-text-faint);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.device-pane-workers {
+  display: flex;
+  gap: 4px;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+  flex-wrap: wrap;
+}
+
+.device-pane-worker {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 8px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg-tertiary);
+  color: var(--color-text-muted);
+  cursor: pointer;
+  font-size: 11px;
+  font-family: var(--font-ui);
+  transition: background 0.15s, border-color 0.15s;
+}
+.device-pane-worker:hover { background: var(--bg-hover); color: var(--color-text); }
+.device-pane-worker.active { border-color: var(--color-accent); color: var(--color-accent); background: var(--bg-selected); }
+
+.device-pane-body {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+  container-type: inline-size;
+}
+
+.device-pane-grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 8px;
+  padding: 8px;
+  overflow-y: auto;
+  height: 100%;
+}
+
+@container (min-width: 400px) {
+  .device-pane-grid { grid-template-columns: 1fr 1fr; }
+}
+
+@container (min-width: 800px) {
+  .device-pane-grid { grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); }
+}
+
+.device-pane-grid-item {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-height: 120px;
+}
+
+.device-pane-grid-label {
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--color-text-muted);
+  padding: 0 2px;
+}
+
+.device-pane-grid-item .dm-viewport {
+  flex: 1;
+  min-height: 0;
+  align-items: flex-start;
+}
+
+.device-pane-grid-item .dm-canvas {
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+  border-radius: 4px;
+  border: 1px solid var(--border);
+  background: #000;
 }
 
 /* ─── Run Controls (Top Bar) ─── */
@@ -1153,6 +1274,9 @@ html, body, #app {
 .te-toolbar-btn:disabled { opacity: 0.35; cursor: default; }
 .te-toolbar-btn.active { color: var(--color-accent); background: var(--bg-hover); }
 .te-toolbar-btn.active:hover:not(:disabled) { color: var(--color-accent); }
+@keyframes te-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.3; } }
+.te-toolbar-btn.stopping { color: var(--color-warning, #e5a100); }
+.te-toolbar-btn.stopping svg { animation: te-pulse 1.2s ease-in-out infinite; }
 .te-toolbar-sep { width: 1px; height: 14px; background: var(--border); margin: 0 2px; align-self: center; }
 
 .te-tree { flex: 1; overflow-y: auto; padding: 4px 0; }
@@ -1258,9 +1382,28 @@ html, body, #app {
 .dm-overlay {
   position: absolute; inset: 0;
   display: flex; align-items: center; justify-content: center;
-  background: rgba(0, 0, 0, 0.6); border-radius: 6px; z-index: 1;
+  background: var(--bg-tertiary); border-radius: 6px; z-index: 1;
 }
-.dm-overlay-text { color: var(--color-text-muted); font-size: 14px; }
+
+.dm-placeholder {
+  display: flex; flex-direction: column; align-items: center; gap: 12px;
+  color: var(--color-text-faint);
+}
+
+.dm-phone-icon { width: 42px; height: 72px; color: var(--color-text-faintest); }
+
+.dm-placeholder-text { font-size: 13px; font-weight: 600; color: var(--color-text-muted); }
+.dm-placeholder-hint { font-size: 11px; color: var(--color-text-faint); }
+
+.dm-placeholder-dots { display: flex; gap: 6px; }
+.dm-dot {
+  width: 5px; height: 5px; border-radius: 50%;
+  background: var(--color-text-faintest);
+  animation: dm-bounce 1.4s ease-in-out infinite;
+}
+.dm-dot:nth-child(2) { animation-delay: 0.2s; }
+.dm-dot:nth-child(3) { animation-delay: 0.4s; }
+@keyframes dm-bounce { 0%, 80%, 100% { opacity: 0.3; } 40% { opacity: 1; } }
 
 .dm-controls { display: flex; gap: 6px; }
 

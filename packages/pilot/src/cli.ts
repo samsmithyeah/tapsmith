@@ -905,12 +905,25 @@ async function main(): Promise<void> {
 
       // Collect additional device serials for multi-worker mode.
       // The CLI already set up the first device above; we find more.
+      // If launchEmulators is enabled, provision additional emulators to
+      // match the requested worker count (same as the dispatcher does).
       let uiDeviceSerials: string[] | undefined;
       if (config.workers > 1) {
         const allConnected = listConnectedDeviceSerials();
         // Put the already-configured device first, then add others
         const others = allConnected.filter((s) => s !== config.device);
         uiDeviceSerials = [config.device!, ...others].filter(Boolean);
+
+        if (uiDeviceSerials.length < config.workers && config.launchEmulators) {
+          const provision = await provisionEmulators({
+            existingSerials: uiDeviceSerials,
+            occupiedSerials: allConnected,
+            workers: config.workers,
+            avd: config.avd,
+          });
+          launchedEmulators = [...launchedEmulators, ...provision.launched];
+          uiDeviceSerials = provision.allSerials;
+        }
 
         if (uiDeviceSerials.length < 2) {
           if (args.tsxReexec) {
@@ -963,6 +976,17 @@ async function main(): Promise<void> {
         const allConnected = listConnectedDeviceSerials();
         const others = allConnected.filter((s) => s !== config.device);
         watchDeviceSerials = [config.device!, ...others].filter(Boolean);
+
+        if (watchDeviceSerials.length < config.workers && config.launchEmulators) {
+          const provision = await provisionEmulators({
+            existingSerials: watchDeviceSerials,
+            occupiedSerials: allConnected,
+            workers: config.workers,
+            avd: config.avd,
+          });
+          launchedEmulators = [...launchedEmulators, ...provision.launched];
+          watchDeviceSerials = provision.allSerials;
+        }
 
         if (watchDeviceSerials.length < 2) {
           if (args.tsxReexec) {

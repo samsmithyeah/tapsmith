@@ -73,16 +73,14 @@ export function TestExplorer(props: TestExplorerProps) {
           >
             <Play size={TOOLBAR_ICON_SIZE} />
           </button>
-          {isRunning && (
-            <button
-              class="te-toolbar-btn"
-              onClick={onStop}
-              disabled={isStopping}
-              title="Stop current run"
-            >
-              <Square size={TOOLBAR_ICON_SIZE} />
-            </button>
-          )}
+          <button
+            class={`te-toolbar-btn${isStopping ? ' stopping' : ''}`}
+            onClick={onStop}
+            disabled={!isRunning || isStopping}
+            title={isStopping ? 'Stopping…' : 'Stop current run'}
+          >
+            <Square size={TOOLBAR_ICON_SIZE} />
+          </button>
           <button
             class={`te-toolbar-btn ${isWatching ? 'active' : ''}`}
             onClick={() => onSend({ type: 'toggle-watch', filePath: 'all' })}
