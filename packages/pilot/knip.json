@@ -1,6 +1,6 @@
 {
   "$schema": "https://unpkg.com/knip@5/schema.json",
-  "entry": ["src/worker-runner.ts"],
+  "entry": ["src/worker-runner.ts", "src/ui-mode/ui-run.ts", "src/ui-mode/ui-worker.ts", "src/ui-mode/ui-discover.ts"],
   "ignoreDependencies": ["tsx"],
   "ignoreExportsUsedInFile": true
 }

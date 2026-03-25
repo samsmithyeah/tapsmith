@@ -5,8 +5,8 @@
  * and dispatches incoming messages to the appropriate state handlers.
  */
 
-import { useEffect, useRef, useCallback } from 'preact/hooks'
-import type { ServerMessage, ClientMessage } from '../ui-protocol.js'
+import { useEffect, useRef, useCallback } from 'preact/hooks';
+import type { ServerMessage, ClientMessage } from '../ui-protocol.js';
 
 export interface UseWebSocketOptions {
   onMessage: (msg: ServerMessage) => void
@@ -15,64 +15,64 @@ export interface UseWebSocketOptions {
 }
 
 export function useWebSocket(options: UseWebSocketOptions) {
-  const wsRef = useRef<WebSocket | null>(null)
-  const optionsRef = useRef(options)
-  optionsRef.current = options
+  const wsRef = useRef<WebSocket | null>(null);
+  const optionsRef = useRef(options);
+  optionsRef.current = options;
 
   useEffect(() => {
-    let reconnectTimer: ReturnType<typeof setTimeout>
-    let ws: WebSocket
+    let reconnectTimer: ReturnType<typeof setTimeout>;
+    let ws: WebSocket;
 
     function connect() {
-      const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:'
-      ws = new WebSocket(`${protocol}//${location.host}`)
-      wsRef.current = ws
+      const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
+      ws = new WebSocket(`${protocol}//${location.host}`);
+      wsRef.current = ws;
 
-      ws.binaryType = 'arraybuffer'
+      ws.binaryType = 'arraybuffer';
 
       ws.onopen = () => {
-        optionsRef.current.onConnectionChange(true)
-      }
+        optionsRef.current.onConnectionChange(true);
+      };
 
       ws.onmessage = (event) => {
         if (event.data instanceof ArrayBuffer) {
-          optionsRef.current.onBinaryMessage(event.data)
+          optionsRef.current.onBinaryMessage(event.data);
         } else {
           try {
-            const msg: ServerMessage = JSON.parse(event.data)
-            optionsRef.current.onMessage(msg)
+            const msg: ServerMessage = JSON.parse(event.data);
+            optionsRef.current.onMessage(msg);
           } catch {
             // Ignore malformed messages
           }
         }
-      }
+      };
 
       ws.onclose = () => {
-        optionsRef.current.onConnectionChange(false)
-        wsRef.current = null
+        optionsRef.current.onConnectionChange(false);
+        wsRef.current = null;
         // Reconnect after a short delay
-        reconnectTimer = setTimeout(connect, 1000)
-      }
+        reconnectTimer = setTimeout(connect, 1000);
+      };
 
       ws.onerror = () => {
-        ws.close()
-      }
+        ws.close();
+      };
     }
 
-    connect()
+    connect();
 
     return () => {
-      clearTimeout(reconnectTimer)
-      if (ws) ws.close()
-    }
-  }, [])
+      clearTimeout(reconnectTimer);
+      if (ws) ws.close();
+    };
+  }, []);
 
   const send = useCallback((msg: ClientMessage) => {
-    const ws = wsRef.current
+    const ws = wsRef.current;
     if (ws && ws.readyState === WebSocket.OPEN) {
-      ws.send(JSON.stringify(msg))
+      ws.send(JSON.stringify(msg));
     }
-  }, [])
+  }, []);
 
-  return { send }
+  return { send };
 }

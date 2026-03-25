@@ -1,8 +1,8 @@
-import { useState, useRef, useEffect } from 'preact/hooks'
-import type { ActionTraceEvent, AssertionTraceEvent, AnyTraceEvent, ConsoleTraceEvent, TraceMetadata, NetworkEntry } from '../../trace/types.js'
-import { HierarchyTree } from './HierarchyTree.js'
-import type { Bounds } from './HierarchyTree.js'
-import { NetworkTab } from './NetworkTab.js'
+import { useState, useRef, useEffect } from 'preact/hooks';
+import type { ActionTraceEvent, AssertionTraceEvent, AnyTraceEvent, ConsoleTraceEvent, TraceMetadata, NetworkEntry } from '../../trace/types.js';
+import { HierarchyTree } from './HierarchyTree.js';
+import type { Bounds } from './HierarchyTree.js';
+import { NetworkTab } from './NetworkTab.js';
 
 interface Props {
   event: ActionTraceEvent | AssertionTraceEvent | undefined
@@ -18,18 +18,18 @@ interface Props {
 type DetailTab = 'call' | 'log' | 'console' | 'source' | 'hierarchy' | 'errors' | 'network'
 
 export function DetailTabs({ event, events, hierarchies, sources, metadata, networkEntries, networkBodies, onHierarchyNodeSelect }: Props) {
-  const [tab, setTab] = useState<DetailTab>('call')
+  const [tab, setTab] = useState<DetailTab>('call');
 
   const hasError = event && (
     (event.type === 'action' && !event.success) ||
     (event.type === 'assertion' && !event.passed)
-  )
-  const hasSources = sources.size > 0
-  const hasHierarchy = hierarchies.size > 0
+  );
+  const hasSources = sources.size > 0;
+  const hasHierarchy = hierarchies.size > 0;
 
-  const consoleEvents = events.filter((e): e is ConsoleTraceEvent => e.type === 'console')
-  const hasConsole = consoleEvents.length > 0
-  const hasNetwork = networkEntries.length > 0
+  const consoleEvents = events.filter((e): e is ConsoleTraceEvent => e.type === 'console');
+  const hasConsole = consoleEvents.length > 0;
+  const hasNetwork = networkEntries.length > 0;
 
   return (
     <div class="detail-panel">
@@ -62,13 +62,13 @@ export function DetailTabs({ event, events, hierarchies, sources, metadata, netw
         {tab === 'errors' && <ErrorsTab event={event} />}
       </div>
     </div>
-  )
+  );
 }
 
 // ─── Call Tab ───
 
 function CallTab({ event }: { event: ActionTraceEvent | AssertionTraceEvent | undefined }) {
-  if (!event) return <div class="no-content">No action selected</div>
+  if (!event) return <div class="no-content">No action selected</div>;
 
   if (event.type === 'action') {
     return (
@@ -102,7 +102,7 @@ function CallTab({ event }: { event: ActionTraceEvent | AssertionTraceEvent | un
           <span class="call-value error">{event.error}</span>
         </>}
       </div>
-    )
+    );
   }
 
   return (
@@ -132,18 +132,18 @@ function CallTab({ event }: { event: ActionTraceEvent | AssertionTraceEvent | un
         <span class="call-value error">{event.error}</span>
       </>}
     </div>
-  )
+  );
 }
 
 // ─── Log Tab (internal action log) ───
 
 function LogTab({ event }: { event: ActionTraceEvent | AssertionTraceEvent | undefined }) {
-  if (!event) return <div class="no-content">No action selected</div>
+  if (!event) return <div class="no-content">No action selected</div>;
 
-  const log = event.type === 'action' ? event.log : undefined
+  const log = event.type === 'action' ? event.log : undefined;
 
   if (!log || log.length === 0) {
-    return <div class="no-content">No internal log for this action</div>
+    return <div class="no-content">No internal log for this action</div>;
   }
 
   return (
@@ -154,19 +154,19 @@ function LogTab({ event }: { event: ActionTraceEvent | AssertionTraceEvent | und
         </div>
       ))}
     </div>
-  )
+  );
 }
 
 // ─── Console Tab ───
 
 function ConsoleTab({ event, events: consoleEvents }: { event: ActionTraceEvent | AssertionTraceEvent | undefined; events: ConsoleTraceEvent[] }) {
-  if (consoleEvents.length === 0) return <div class="no-content">No console output recorded</div>
+  if (consoleEvents.length === 0) return <div class="no-content">No console output recorded</div>;
 
   const relevant = event
     ? consoleEvents.filter(e => Math.abs(e.actionIndex - event.actionIndex) <= 1)
-    : consoleEvents
+    : consoleEvents;
 
-  if (relevant.length === 0) return <div class="no-content">No console output for this action</div>
+  if (relevant.length === 0) return <div class="no-content">No console output for this action</div>;
 
   return (
     <div>
@@ -178,7 +178,7 @@ function ConsoleTab({ event, events: consoleEvents }: { event: ActionTraceEvent 
         </div>
       ))}
     </div>
-  )
+  );
 }
 
 // ─── Source Tab ───
@@ -192,108 +192,108 @@ const KEYWORDS = new Set([
   'import', 'from', 'export', 'const', 'let', 'var', 'async', 'await',
   'function', 'return', 'if', 'else', 'try', 'catch', 'throw', 'new',
   'typeof', 'describe', 'test', 'expect', 'beforeEach', 'afterEach',
-])
+]);
 
 function tokenizeLine(line: string, inBlockComment: boolean): { tokens: SourceToken[]; inBlockComment: boolean } {
-  const tokens: SourceToken[] = []
-  let remaining = line
-  let blockComment = inBlockComment
+  const tokens: SourceToken[] = [];
+  let remaining = line;
+  let blockComment = inBlockComment;
 
   // If we're inside a block comment from a previous line, consume until we find */
   if (blockComment) {
-    const endIdx = remaining.indexOf('*/')
+    const endIdx = remaining.indexOf('*/');
     if (endIdx === -1) {
-      tokens.push({ text: remaining, type: 'comment' })
-      return { tokens, inBlockComment: true }
+      tokens.push({ text: remaining, type: 'comment' });
+      return { tokens, inBlockComment: true };
     }
-    tokens.push({ text: remaining.slice(0, endIdx + 2), type: 'comment' })
-    remaining = remaining.slice(endIdx + 2)
-    blockComment = false
+    tokens.push({ text: remaining.slice(0, endIdx + 2), type: 'comment' });
+    remaining = remaining.slice(endIdx + 2);
+    blockComment = false;
   }
 
   while (remaining.length > 0) {
     // Line comment
     if (remaining.startsWith('//')) {
-      tokens.push({ text: remaining, type: 'comment' })
-      remaining = ''
-      break
+      tokens.push({ text: remaining, type: 'comment' });
+      remaining = '';
+      break;
     }
 
     // Block comment start
     if (remaining.startsWith('/*')) {
-      const endIdx = remaining.indexOf('*/', 2)
+      const endIdx = remaining.indexOf('*/', 2);
       if (endIdx === -1) {
-        tokens.push({ text: remaining, type: 'comment' })
-        remaining = ''
-        blockComment = true
-        break
+        tokens.push({ text: remaining, type: 'comment' });
+        remaining = '';
+        blockComment = true;
+        break;
       }
-      tokens.push({ text: remaining.slice(0, endIdx + 2), type: 'comment' })
-      remaining = remaining.slice(endIdx + 2)
-      continue
+      tokens.push({ text: remaining.slice(0, endIdx + 2), type: 'comment' });
+      remaining = remaining.slice(endIdx + 2);
+      continue;
     }
 
     // Single-quoted string
     if (remaining[0] === "'") {
-      const match = remaining.match(/^'(?:[^'\\]|\\.)*'/)
+      const match = remaining.match(/^'(?:[^'\\]|\\.)*'/);
       if (match) {
-        tokens.push({ text: match[0], type: 'string' })
-        remaining = remaining.slice(match[0].length)
-        continue
+        tokens.push({ text: match[0], type: 'string' });
+        remaining = remaining.slice(match[0].length);
+        continue;
       }
     }
 
     // Double-quoted string
     if (remaining[0] === '"') {
-      const match = remaining.match(/^"(?:[^"\\]|\\.)*"/)
+      const match = remaining.match(/^"(?:[^"\\]|\\.)*"/);
       if (match) {
-        tokens.push({ text: match[0], type: 'string' })
-        remaining = remaining.slice(match[0].length)
-        continue
+        tokens.push({ text: match[0], type: 'string' });
+        remaining = remaining.slice(match[0].length);
+        continue;
       }
     }
 
     // Template literal (basic - no nesting)
     if (remaining[0] === '`') {
-      const match = remaining.match(/^`(?:[^`\\]|\\.)*`/)
+      const match = remaining.match(/^`(?:[^`\\]|\\.)*`/);
       if (match) {
-        tokens.push({ text: match[0], type: 'string' })
-        remaining = remaining.slice(match[0].length)
-        continue
+        tokens.push({ text: match[0], type: 'string' });
+        remaining = remaining.slice(match[0].length);
+        continue;
       }
     }
 
     // Number
-    const numMatch = remaining.match(/^(?:0[xX][0-9a-fA-F]+|0[bB][01]+|0[oO][0-7]+|\d+\.?\d*(?:[eE][+-]?\d+)?)(?!\w)/)
+    const numMatch = remaining.match(/^(?:0[xX][0-9a-fA-F]+|0[bB][01]+|0[oO][0-7]+|\d+\.?\d*(?:[eE][+-]?\d+)?)(?!\w)/);
     if (numMatch && (tokens.length === 0 || /[^a-zA-Z_$]$/.test(tokens[tokens.length - 1].text))) {
-      tokens.push({ text: numMatch[0], type: 'number' })
-      remaining = remaining.slice(numMatch[0].length)
-      continue
+      tokens.push({ text: numMatch[0], type: 'number' });
+      remaining = remaining.slice(numMatch[0].length);
+      continue;
     }
 
     // Keyword or identifier
-    const wordMatch = remaining.match(/^[a-zA-Z_$][a-zA-Z0-9_$]*/)
+    const wordMatch = remaining.match(/^[a-zA-Z_$][a-zA-Z0-9_$]*/);
     if (wordMatch) {
-      const word = wordMatch[0]
-      const type = KEYWORDS.has(word) ? 'keyword' : 'plain'
-      tokens.push({ text: word, type })
-      remaining = remaining.slice(word.length)
-      continue
+      const word = wordMatch[0];
+      const type = KEYWORDS.has(word) ? 'keyword' : 'plain';
+      tokens.push({ text: word, type });
+      remaining = remaining.slice(word.length);
+      continue;
     }
 
     // Any other character
     // Collect consecutive non-special characters as plain text
-    const plainMatch = remaining.match(/^[^a-zA-Z_$'"`/0-9]+/)
+    const plainMatch = remaining.match(/^[^a-zA-Z_$'"`/0-9]+/);
     if (plainMatch) {
-      tokens.push({ text: plainMatch[0], type: 'plain' })
-      remaining = remaining.slice(plainMatch[0].length)
+      tokens.push({ text: plainMatch[0], type: 'plain' });
+      remaining = remaining.slice(plainMatch[0].length);
     } else {
-      tokens.push({ text: remaining[0], type: 'plain' })
-      remaining = remaining.slice(1)
+      tokens.push({ text: remaining[0], type: 'plain' });
+      remaining = remaining.slice(1);
     }
   }
 
-  return { tokens, inBlockComment: blockComment }
+  return { tokens, inBlockComment: blockComment };
 }
 
 const TOKEN_COLORS: Record<SourceToken['type'], string | undefined> = {
@@ -302,31 +302,31 @@ const TOKEN_COLORS: Record<SourceToken['type'], string | undefined> = {
   comment: 'var(--color-text-faint)',
   number: 'var(--color-number)',
   plain: undefined,
-}
+};
 
 function SourceTab({ event, sources }: { event: ActionTraceEvent | AssertionTraceEvent | undefined; sources: Map<string, string> }) {
-  const highlightRef = useRef<HTMLDivElement>(null)
+  const highlightRef = useRef<HTMLDivElement>(null);
 
-  if (sources.size === 0) return <div class="no-content">No source files in trace</div>
+  if (sources.size === 0) return <div class="no-content">No source files in trace</div>;
 
-  const [filename, content] = [...sources.entries()][0]
-  const loc = event?.sourceLocation
-  const highlightLine = loc?.line
+  const [filename, content] = [...sources.entries()][0];
+  const loc = event?.sourceLocation;
+  const highlightLine = loc?.line;
 
-  const lines = content.split('\n')
+  const lines = content.split('\n');
 
   // Tokenize all lines, tracking block comment state across lines
-  let inBlockComment = false
-  const tokenizedLines: SourceToken[][] = []
+  let inBlockComment = false;
+  const tokenizedLines: SourceToken[][] = [];
   for (const line of lines) {
-    const result = tokenizeLine(line, inBlockComment)
-    tokenizedLines.push(result.tokens)
-    inBlockComment = result.inBlockComment
+    const result = tokenizeLine(line, inBlockComment);
+    tokenizedLines.push(result.tokens);
+    inBlockComment = result.inBlockComment;
   }
 
   useEffect(() => {
-    highlightRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' })
-  }, [highlightLine])
+    highlightRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  }, [highlightLine]);
 
   return (
     <div>
@@ -343,10 +343,10 @@ function SourceTab({ event, sources }: { event: ActionTraceEvent | AssertionTrac
               {tokens.length === 0
                 ? '\u200b'
                 : tokens.map((token, j) => {
-                    const color = TOKEN_COLORS[token.type]
+                    const color = TOKEN_COLORS[token.type];
                     return color
                       ? <span key={j} style={{ color }}>{token.text}</span>
-                      : <span key={j}>{token.text}</span>
+                      : <span key={j}>{token.text}</span>;
                   })
               }
             </span>
@@ -354,7 +354,7 @@ function SourceTab({ event, sources }: { event: ActionTraceEvent | AssertionTrac
         ))}
       </div>
     </div>
-  )
+  );
 }
 
 // ─── Hierarchy Tab ───
@@ -364,27 +364,27 @@ function HierarchyTabWrapper({ event, hierarchies, onNodeSelect }: {
   hierarchies: Map<string, string>
   onNodeSelect?: (bounds: Bounds | null) => void
 }) {
-  if (!event || hierarchies.size === 0) return <div class="no-content">No view hierarchy available</div>
+  if (!event || hierarchies.size === 0) return <div class="no-content">No view hierarchy available</div>;
 
-  const pad = String(event.actionIndex).padStart(3, '0')
-  const afterKey = `hierarchy/action-${pad}-after.xml`
-  const beforeKey = `hierarchy/action-${pad}-before.xml`
-  const xml = hierarchies.get(afterKey) ?? hierarchies.get(beforeKey)
+  const pad = String(event.actionIndex).padStart(3, '0');
+  const afterKey = `hierarchy/action-${pad}-after.xml`;
+  const beforeKey = `hierarchy/action-${pad}-before.xml`;
+  const xml = hierarchies.get(afterKey) ?? hierarchies.get(beforeKey);
 
-  if (!xml) return <div class="no-content">No hierarchy snapshot for this action</div>
+  if (!xml) return <div class="no-content">No hierarchy snapshot for this action</div>;
 
-  return <HierarchyTree xml={xml} onNodeSelect={onNodeSelect} />
+  return <HierarchyTree xml={xml} onNodeSelect={onNodeSelect} />;
 }
 
 // ─── Errors Tab ───
 
 function ErrorsTab({ event }: { event: ActionTraceEvent | AssertionTraceEvent | undefined }) {
-  if (!event) return null
+  if (!event) return null;
 
-  const error = event.type === 'action' ? event.error : event.error
-  const stack = event.type === 'action' ? event.errorStack : undefined
+  const error = event.type === 'action' ? event.error : event.error;
+  const stack = event.type === 'action' ? event.errorStack : undefined;
 
-  if (!error) return <div class="no-content">No errors</div>
+  if (!error) return <div class="no-content">No errors</div>;
 
   return (
     <div class="error-block">
@@ -401,5 +401,5 @@ function ErrorsTab({ event }: { event: ActionTraceEvent | AssertionTraceEvent | 
         </div>
       )}
     </div>
-  )
+  );
 }

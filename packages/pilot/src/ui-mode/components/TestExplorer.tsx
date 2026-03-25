@@ -5,12 +5,12 @@
  * per-node play buttons, watch toggles, and filtering.
  */
 
-import { useCallback } from 'preact/hooks'
-import { ArrowLeft, Check, Circle, CircleSlash, Eye, Play, X } from 'lucide-preact'
-import type { TestTreeNode, ClientMessage } from '../ui-protocol.js'
+import { useCallback } from 'preact/hooks';
+import { ArrowLeft, Check, Circle, CircleSlash, Eye, Play, X } from 'lucide-preact';
+import type { TestTreeNode, ClientMessage } from '../ui-protocol.js';
 
-const ICON_SIZE = 13
-const STATUS_SIZE = 12
+const ICON_SIZE = 13;
+const STATUS_SIZE = 12;
 
 interface TestExplorerProps {
   files: TestTreeNode[]
@@ -30,7 +30,7 @@ export function TestExplorer(props: TestExplorerProps) {
   const {
     files, expandedNodes, selectedTestId, nameFilter, statusFilter,
     counts, onToggleExpanded, onSelectTest, onSetNameFilter, onSetStatusFilter, onSend,
-  } = props
+  } = props;
 
   return (
     <div class="test-explorer">
@@ -67,7 +67,7 @@ export function TestExplorer(props: TestExplorerProps) {
         )}
       </div>
     </div>
-  )
+  );
 }
 
 // ─── Status filter button ───
@@ -88,7 +88,7 @@ function StatusButton({ label, value, count, active, onClick }: StatusButtonProp
     >
       {label} {count > 0 && <span class="te-count">{count}</span>}
     </button>
-  )
+  );
 }
 
 // ─── Tree node ───
@@ -104,32 +104,32 @@ interface TreeNodeProps {
 }
 
 function TreeNode({ node, depth, expandedNodes, selectedTestId, onToggleExpanded, onSelectTest, onSend }: TreeNodeProps) {
-  const isExpanded = expandedNodes.has(node.id)
-  const isSelected = selectedTestId === node.id
-  const hasChildren = node.children && node.children.length > 0
+  const isExpanded = expandedNodes.has(node.id);
+  const isSelected = selectedTestId === node.id;
+  const hasChildren = node.children && node.children.length > 0;
 
   const handleRun = useCallback((e: Event) => {
-    e.stopPropagation()
+    e.stopPropagation();
     if (node.type === 'project') {
-      onSend({ type: 'run-project', projectName: node.name })
+      onSend({ type: 'run-project', projectName: node.name });
     } else if (node.type === 'file') {
-      onSend({ type: 'run-file', filePath: node.filePath })
+      onSend({ type: 'run-file', filePath: node.filePath });
     } else {
-      onSend({ type: 'run-test', fullName: node.fullName, filePath: node.filePath })
+      onSend({ type: 'run-test', fullName: node.fullName, filePath: node.filePath });
     }
-  }, [node, onSend])
+  }, [node, onSend]);
 
   const handleWatch = useCallback((e: Event) => {
-    e.stopPropagation()
-    onSend({ type: 'toggle-watch', filePath: node.filePath })
-  }, [node, onSend])
+    e.stopPropagation();
+    onSend({ type: 'toggle-watch', filePath: node.filePath });
+  }, [node, onSend]);
 
   const handleClick = useCallback(() => {
     if (hasChildren) {
-      onToggleExpanded(node.id)
+      onToggleExpanded(node.id);
     }
-    onSelectTest(node.id)
-  }, [node.id, hasChildren, onToggleExpanded, onSelectTest])
+    onSelectTest(node.id);
+  }, [node.id, hasChildren, onToggleExpanded, onSelectTest]);
 
   return (
     <div class="te-node-group">
@@ -187,7 +187,7 @@ function TreeNode({ node, depth, expandedNodes, selectedTestId, onToggleExpanded
         />
       ))}
     </div>
-  )
+  );
 }
 
 // ─── Status icon ───
@@ -195,21 +195,21 @@ function TreeNode({ node, depth, expandedNodes, selectedTestId, onToggleExpanded
 function StatusIcon({ status }: { status: TestTreeNode['status'] }) {
   switch (status) {
     case 'passed':
-      return <span class="te-status-icon passed"><Check size={STATUS_SIZE} /></span>
+      return <span class="te-status-icon passed"><Check size={STATUS_SIZE} /></span>;
     case 'failed':
-      return <span class="te-status-icon failed"><X size={STATUS_SIZE} /></span>
+      return <span class="te-status-icon failed"><X size={STATUS_SIZE} /></span>;
     case 'skipped':
-      return <span class="te-status-icon skipped"><CircleSlash size={STATUS_SIZE} /></span>
+      return <span class="te-status-icon skipped"><CircleSlash size={STATUS_SIZE} /></span>;
     case 'running':
-      return <span class="te-status-icon running">{'\u25CB'}</span>
+      return <span class="te-status-icon running">{'\u25CB'}</span>;
     default:
-      return <span class="te-status-icon idle"><Circle size={STATUS_SIZE} /></span>
+      return <span class="te-status-icon idle"><Circle size={STATUS_SIZE} /></span>;
   }
 }
 
 // ─── Helpers ───
 
 function formatDuration(ms: number): string {
-  if (ms < 1000) return `${ms}ms`
-  return `${(ms / 1000).toFixed(1)}s`
+  if (ms < 1000) return `${ms}ms`;
+  return `${(ms / 1000).toFixed(1)}s`;
 }

@@ -1,5 +1,5 @@
-import { useState, useMemo } from 'preact/hooks'
-import type { NetworkEntry } from '../../trace/types.js'
+import { useState, useMemo } from 'preact/hooks';
+import type { NetworkEntry } from '../../trace/types.js';
 
 // ─── Injected Styles ───
 
@@ -46,15 +46,15 @@ const NETWORK_STYLES = `
   .net-empty { color: var(--color-text-faintest); font-size: 12px; padding: 24px; text-align: center; }
   .net-empty-note { color: var(--color-text-faintest); font-size: 11px; margin-top: 6px; }
   .net-table-wrapper { flex: 1; overflow-y: auto; }
-`
+`;
 
-let stylesInjected = false
+let stylesInjected = false;
 function injectStyles() {
-  if (stylesInjected) return
-  stylesInjected = true
-  const el = document.createElement('style')
-  el.textContent = NETWORK_STYLES
-  document.head.appendChild(el)
+  if (stylesInjected) return;
+  stylesInjected = true;
+  const el = document.createElement('style');
+  el.textContent = NETWORK_STYLES;
+  document.head.appendChild(el);
 }
 
 // ─── Types ───
@@ -72,15 +72,15 @@ type SortDirection = 'asc' | 'desc'
 // ─── Helpers ───
 
 function statusClass(status: number): string {
-  if (status >= 500) return 'net-status-5xx'
-  if (status >= 400) return 'net-status-4xx'
-  if (status >= 300) return 'net-status-3xx'
-  return 'net-status-2xx'
+  if (status >= 500) return 'net-status-5xx';
+  if (status >= 400) return 'net-status-4xx';
+  if (status >= 300) return 'net-status-3xx';
+  return 'net-status-2xx';
 }
 
 function shortenContentType(contentType: string): string {
-  if (!contentType) return ''
-  const ct = contentType.split(';')[0].trim()
+  if (!contentType) return '';
+  const ct = contentType.split(';')[0].trim();
   const mapping: Record<string, string> = {
     'application/json': 'json',
     'text/html': 'html',
@@ -97,93 +97,93 @@ function shortenContentType(contentType: string): string {
     'application/octet-stream': 'binary',
     'application/x-www-form-urlencoded': 'form',
     'multipart/form-data': 'multipart',
-  }
-  return mapping[ct] ?? ct.replace(/^application\//, '').replace(/^text\//, '')
+  };
+  return mapping[ct] ?? ct.replace(/^application\//, '').replace(/^text\//, '');
 }
 
 function truncateUrl(url: string, maxLen: number): string {
-  if (url.length <= maxLen) return url
-  return url.slice(0, maxLen - 1) + '\u2026'
+  if (url.length <= maxLen) return url;
+  return url.slice(0, maxLen - 1) + '\u2026';
 }
 
 function formatSize(bytes: number): string {
-  if (bytes === 0) return '0 B'
-  if (bytes < 1024) return `${bytes} B`
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
-  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
+  if (bytes === 0) return '0 B';
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
 function isJsonContentType(contentType: string): boolean {
-  return contentType.toLowerCase().includes('json')
+  return contentType.toLowerCase().includes('json');
 }
 
 function formatBody(body: string, contentType: string): string {
-  if (!isJsonContentType(contentType)) return body
+  if (!isJsonContentType(contentType)) return body;
   try {
-    return JSON.stringify(JSON.parse(body), null, 2)
+    return JSON.stringify(JSON.parse(body), null, 2);
   } catch {
-    return body
+    return body;
   }
 }
 
 function matchesStatusFilter(status: number, filter: StatusFilter): boolean {
-  if (filter === 'all') return true
-  const prefix = Math.floor(status / 100)
-  const filterPrefix = parseInt(filter[0], 10)
-  return prefix === filterPrefix
+  if (filter === 'all') return true;
+  const prefix = Math.floor(status / 100);
+  const filterPrefix = parseInt(filter[0], 10);
+  return prefix === filterPrefix;
 }
 
 // ─── Component ───
 
 export function NetworkTab({ entries, bodies }: Props) {
-  injectStyles()
+  injectStyles();
 
-  const [urlFilter, setUrlFilter] = useState('')
-  const [statusFilter, setStatusFilter] = useState<StatusFilter>('all')
-  const [sortColumn, setSortColumn] = useState<SortColumn>('method')
-  const [sortDirection, setSortDirection] = useState<SortDirection>('asc')
-  const [expandedIndex, setExpandedIndex] = useState<number | null>(null)
+  const [urlFilter, setUrlFilter] = useState('');
+  const [statusFilter, setStatusFilter] = useState<StatusFilter>('all');
+  const [sortColumn, setSortColumn] = useState<SortColumn>('method');
+  const [sortDirection, setSortDirection] = useState<SortDirection>('asc');
+  const [expandedIndex, setExpandedIndex] = useState<number | null>(null);
 
   const filteredAndSorted = useMemo(() => {
     let result = entries.filter(e => {
-      if (urlFilter && !e.url.toLowerCase().includes(urlFilter.toLowerCase())) return false
-      if (!matchesStatusFilter(e.status, statusFilter)) return false
-      return true
-    })
+      if (urlFilter && !e.url.toLowerCase().includes(urlFilter.toLowerCase())) return false;
+      if (!matchesStatusFilter(e.status, statusFilter)) return false;
+      return true;
+    });
 
     result = [...result].sort((a, b) => {
-      let cmp = 0
+      let cmp = 0;
       switch (sortColumn) {
-        case 'method': cmp = a.method.localeCompare(b.method); break
-        case 'url': cmp = a.url.localeCompare(b.url); break
-        case 'status': cmp = a.status - b.status; break
-        case 'type': cmp = shortenContentType(a.contentType).localeCompare(shortenContentType(b.contentType)); break
-        case 'duration': cmp = a.duration - b.duration; break
-        case 'size': cmp = a.responseSize - b.responseSize; break
+        case 'method': cmp = a.method.localeCompare(b.method); break;
+        case 'url': cmp = a.url.localeCompare(b.url); break;
+        case 'status': cmp = a.status - b.status; break;
+        case 'type': cmp = shortenContentType(a.contentType).localeCompare(shortenContentType(b.contentType)); break;
+        case 'duration': cmp = a.duration - b.duration; break;
+        case 'size': cmp = a.responseSize - b.responseSize; break;
       }
-      return sortDirection === 'asc' ? cmp : -cmp
-    })
+      return sortDirection === 'asc' ? cmp : -cmp;
+    });
 
-    return result
-  }, [entries, urlFilter, statusFilter, sortColumn, sortDirection])
+    return result;
+  }, [entries, urlFilter, statusFilter, sortColumn, sortDirection]);
 
   const handleSort = (col: SortColumn) => {
     if (sortColumn === col) {
-      setSortDirection(d => d === 'asc' ? 'desc' : 'asc')
+      setSortDirection(d => d === 'asc' ? 'desc' : 'asc');
     } else {
-      setSortColumn(col)
-      setSortDirection('asc')
+      setSortColumn(col);
+      setSortDirection('asc');
     }
-  }
+  };
 
   const handleRowClick = (index: number) => {
-    setExpandedIndex(expandedIndex === index ? null : index)
-  }
+    setExpandedIndex(expandedIndex === index ? null : index);
+  };
 
   const sortIndicator = (col: SortColumn) => {
-    if (sortColumn !== col) return null
-    return <span class="net-sort-indicator">{sortDirection === 'asc' ? '\u25B2' : '\u25BC'}</span>
-  }
+    if (sortColumn !== col) return null;
+    return <span class="net-sort-indicator">{sortDirection === 'asc' ? '\u25B2' : '\u25BC'}</span>;
+  };
 
   if (entries.length === 0) {
     return (
@@ -191,10 +191,10 @@ export function NetworkTab({ entries, bodies }: Props) {
         No network requests captured
         <div class="net-empty-note">Enable network capture in your trace config to record HTTP requests.</div>
       </div>
-    )
+    );
   }
 
-  const STATUS_FILTERS: StatusFilter[] = ['all', '2xx', '3xx', '4xx', '5xx']
+  const STATUS_FILTERS: StatusFilter[] = ['all', '2xx', '3xx', '4xx', '5xx'];
 
   return (
     <div class="net-container">
@@ -233,9 +233,9 @@ export function NetworkTab({ entries, bodies }: Props) {
           </thead>
           <tbody>
             {filteredAndSorted.map(entry => {
-              const isExpanded = expandedIndex === entry.index
-              const requestBody = entry.requestBodyPath ? bodies.get(entry.requestBodyPath) : undefined
-              const responseBody = entry.responseBodyPath ? bodies.get(entry.responseBodyPath) : undefined
+              const isExpanded = expandedIndex === entry.index;
+              const requestBody = entry.requestBodyPath ? bodies.get(entry.requestBodyPath) : undefined;
+              const responseBody = entry.responseBodyPath ? bodies.get(entry.responseBodyPath) : undefined;
 
               return (
                 <>
@@ -310,11 +310,11 @@ export function NetworkTab({ entries, bodies }: Props) {
                     </tr>
                   )}
                 </>
-              )
+              );
             })}
           </tbody>
         </table>
       </div>
     </div>
-  )
+  );
 }

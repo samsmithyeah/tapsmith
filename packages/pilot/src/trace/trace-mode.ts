@@ -5,7 +5,7 @@
  * test based on the configured trace mode, retry count, and test result.
  */
 
-import type { TraceMode } from './types.js'
+import type { TraceMode } from './types.js';
 
 /**
  * Whether tracing should be active (recording) for this test attempt.
@@ -16,17 +16,17 @@ import type { TraceMode } from './types.js'
 export function shouldRecord(mode: TraceMode, attempt: number): boolean {
   switch (mode) {
     case 'off':
-      return false
+      return false;
     case 'on':
     case 'retain-on-failure':
     case 'retain-on-first-failure':
-      return true
+      return true;
     case 'on-first-retry':
-      return attempt === 1
+      return attempt === 1;
     case 'on-all-retries':
-      return attempt > 0
+      return attempt > 0;
     default:
-      return false
+      return false;
   }
 }
 
@@ -44,17 +44,17 @@ export function shouldRetain(
 ): boolean {
   switch (mode) {
     case 'off':
-      return false
+      return false;
     case 'on':
     case 'on-first-retry':
     case 'on-all-retries':
       // These modes always keep traces when recording is active
-      return true
+      return true;
     case 'retain-on-failure':
-      return !passed
+      return !passed;
     case 'retain-on-first-failure':
-      return !passed && attempt === 0
+      return !passed && attempt === 0;
     default:
-      return false
+      return false;
   }
 }

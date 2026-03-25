@@ -9,18 +9,18 @@
  * @see PILOT-120
  */
 
-import * as path from 'node:path'
-import { PilotGrpcClient } from './grpc-client.js'
-import { Device } from './device.js'
-import { runTestFile, collectResults } from './runner.js'
-import type { PilotConfig } from './config.js'
-import { ensureSessionReady, launchConfiguredApp, type SessionPreflightContext } from './session-preflight.js'
+import * as path from 'node:path';
+import { PilotGrpcClient } from './grpc-client.js';
+import { Device } from './device.js';
+import { runTestFile, collectResults } from './runner.js';
+import type { PilotConfig } from './config.js';
+import { ensureSessionReady, launchConfiguredApp, type SessionPreflightContext } from './session-preflight.js';
 import {
   serializeTestResult,
   serializeSuiteResult,
   type SerializedConfig,
   type RunFileUseOptions,
-} from './worker-protocol.js'
+} from './worker-protocol.js';
 
 // ─── IPC protocol ───
 
@@ -76,21 +76,21 @@ function configFromSerialized(s: SerializedConfig, daemonAddress: string): Pilot
     workers: 1,
     launchEmulators: false,
     trace: s.trace as PilotConfig['trace'],
-  }
+  };
 }
 
 // ─── Helpers ───
 
-let ipcOpen = true
+let ipcOpen = true;
 
 function send(msg: WatchRunChildMessage): void {
-  if (!ipcOpen || !process.send) return
+  if (!ipcOpen || !process.send) return;
   try {
-    process.send(msg)
+    process.send(msg);
   } catch {
     // IPC channel may be closed if the parent was killed (e.g. Ctrl+C).
     // Swallow the error — the child is about to exit anyway.
-    ipcOpen = false
+    ipcOpen = false;
   }
 }
 
@@ -106,34 +106,34 @@ function buildSessionContext(
     device,
     client,
     deviceSerial,
-  }
+  };
 }
 
 // ─── Main handler ───
 
 async function handleRun(msg: WatchRunMessage): Promise<void> {
-  const config = configFromSerialized(msg.config, msg.daemonAddress)
-  config.device = msg.deviceSerial
+  const config = configFromSerialized(msg.config, msg.daemonAddress);
+  config.device = msg.deviceSerial;
 
-  const client = new PilotGrpcClient(msg.daemonAddress)
-  const ready = await client.waitForReady(5_000)
+  const client = new PilotGrpcClient(msg.daemonAddress);
+  const ready = await client.waitForReady(5_000);
   if (!ready) {
-    throw new Error(`Failed to connect to daemon at ${msg.daemonAddress}`)
+    throw new Error(`Failed to connect to daemon at ${msg.daemonAddress}`);
   }
 
-  const device = new Device(client, config)
-  await device.setDevice(msg.deviceSerial)
+  const device = new Device(client, config);
+  await device.setDevice(msg.deviceSerial);
 
-  const ctx = buildSessionContext(config, device, client, msg.deviceSerial)
+  const ctx = buildSessionContext(config, device, client, msg.deviceSerial);
 
   // Reset app for clean state
   if (config.package) {
-    await launchConfiguredApp(ctx, `watch reset for ${path.basename(msg.filePath)}`)
+    await launchConfiguredApp(ctx, `watch reset for ${path.basename(msg.filePath)}`);
   } else {
-    await ensureSessionReady(ctx, `watch preflight for ${path.basename(msg.filePath)}`)
+    await ensureSessionReady(ctx, `watch preflight for ${path.basename(msg.filePath)}`);
   }
 
-  const screenshotDir = msg.screenshotDir
+  const screenshotDir = msg.screenshotDir;
 
   // Reporter proxy: stream test results to parent
   const reporterProxy = {
@@ -141,9 +141,9 @@ async function handleRun(msg: WatchRunMessage): Promise<void> {
       send({
         type: 'test-end',
         result: serializeTestResult(result, 0),
-      })
+      });
     },
-  }
+  };
 
   const suiteResult = await runTestFile(msg.filePath, {
     config,
@@ -152,18 +152,18 @@ async function handleRun(msg: WatchRunMessage): Promise<void> {
     reporter: reporterProxy,
     projectUseOptions: msg.projectUseOptions,
     projectName: msg.projectName,
-  })
+  });
 
-  const results = collectResults(suiteResult)
+  const results = collectResults(suiteResult);
 
   send({
     type: 'file-done',
     filePath: msg.filePath,
     results: results.map((r) => serializeTestResult(r, 0)),
     suite: serializeSuiteResult(suiteResult, 0),
-  })
+  });
 
-  client.close()
+  client.close();
 }
 
 // ─── IPC message handler ───
@@ -171,15 +171,15 @@ async function handleRun(msg: WatchRunMessage): Promise<void> {
 process.on('message', async (msg: WatchRunMessage) => {
   try {
     if (msg.type === 'run') {
-      await handleRun(msg)
-      process.exit(0)
+      await handleRun(msg);
+      process.exit(0);
     }
   } catch (err) {
-    const error = err instanceof Error ? err : new Error(String(err))
+    const error = err instanceof Error ? err : new Error(String(err));
     send({
       type: 'error',
       error: { message: error.message, stack: error.stack },
-    })
-    process.exit(1)
+    });
+    process.exit(1);
   }
-})
+});

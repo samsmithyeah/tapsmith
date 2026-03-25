@@ -8,7 +8,7 @@
  * @see PILOT-108
  */
 
-import type { Device } from './device.js'
+import type { Device } from './device.js';
 
 // ─── Types ───
 
@@ -57,7 +57,7 @@ export interface BuiltinFixtures {
  * by the runner to resolve fixtures at the appropriate scope.
  */
 export class FixtureRegistry {
-  private _fixtures: Map<string, ResolvedFixture> = new Map()
+  private _fixtures: Map<string, ResolvedFixture> = new Map();
 
   /** Register fixture definitions from a `test.extend()` call. */
   register<T extends Record<string, unknown>>(
@@ -65,53 +65,53 @@ export class FixtureRegistry {
   ): void {
     for (const [name, def] of Object.entries(definitions)) {
       if (Array.isArray(def)) {
-        const [fn, opts] = def as [FixtureFn<unknown, Record<string, unknown>>, { scope: FixtureScope }]
-        this._fixtures.set(name, { fn, scope: opts.scope })
+        const [fn, opts] = def as [FixtureFn<unknown, Record<string, unknown>>, { scope: FixtureScope }];
+        this._fixtures.set(name, { fn, scope: opts.scope });
       } else {
         this._fixtures.set(name, {
           fn: def as FixtureFn<unknown, Record<string, unknown>>,
           scope: 'test',
-        })
+        });
       }
     }
   }
 
   /** Get a fixture definition by name. */
   get(name: string): ResolvedFixture | undefined {
-    return this._fixtures.get(name)
+    return this._fixtures.get(name);
   }
 
   /** Get all fixture names. */
   names(): string[] {
-    return [...this._fixtures.keys()]
+    return [...this._fixtures.keys()];
   }
 
   /** Get all fixtures with the given scope. */
   byScope(scope: FixtureScope): Map<string, ResolvedFixture> {
-    const result = new Map<string, ResolvedFixture>()
+    const result = new Map<string, ResolvedFixture>();
     for (const [name, fixture] of this._fixtures) {
       if (fixture.scope === scope) {
-        result.set(name, fixture)
+        result.set(name, fixture);
       }
     }
-    return result
+    return result;
   }
 
   /** Whether any fixtures are registered. */
   get isEmpty(): boolean {
-    return this._fixtures.size === 0
+    return this._fixtures.size === 0;
   }
 
   /** Create a copy of this registry with additional fixtures merged in. */
   merge(other: FixtureRegistry): FixtureRegistry {
-    const merged = new FixtureRegistry()
+    const merged = new FixtureRegistry();
     for (const [name, fixture] of this._fixtures) {
-      merged._fixtures.set(name, fixture)
+      merged._fixtures.set(name, fixture);
     }
     for (const [name, fixture] of other._fixtures) {
-      merged._fixtures.set(name, fixture)
+      merged._fixtures.set(name, fixture);
     }
-    return merged
+    return merged;
   }
 }
 
@@ -132,49 +132,49 @@ export async function resolveFixtures(
   scope: FixtureScope,
   baseFixtures: Record<string, unknown>,
 ): Promise<{ fixtures: Record<string, unknown>; teardown: () => Promise<void> }> {
-  const fixtures: Record<string, unknown> = { ...baseFixtures }
-  const teardowns: (() => Promise<void>)[] = []
+  const fixtures: Record<string, unknown> = { ...baseFixtures };
+  const teardowns: (() => Promise<void>)[] = [];
 
-  const scopedFixtures = registry.byScope(scope)
+  const scopedFixtures = registry.byScope(scope);
 
   for (const [name, def] of scopedFixtures) {
     // Create the use/teardown promise pair
-    let resolveUse: (value: unknown) => void
-    let resolveTeardown: () => void
-    let fixtureError: unknown
+    let resolveUse: (value: unknown) => void;
+    let resolveTeardown: () => void;
+    let fixtureError: unknown;
 
     const usePromise = new Promise<unknown>((resolve) => {
-      resolveUse = resolve
-    })
+      resolveUse = resolve;
+    });
     const teardownPromise = new Promise<void>((resolve) => {
-      resolveTeardown = resolve
-    })
+      resolveTeardown = resolve;
+    });
 
     // Run the fixture function in the background
     const fixturePromise = def.fn(fixtures, async (value: unknown) => {
-      resolveUse!(value)
+      resolveUse!(value);
       // Wait for teardown signal
-      await teardownPromise
+      await teardownPromise;
     }).catch((err) => {
-      fixtureError = err
+      fixtureError = err;
       // Resolve use in case the fixture errored before calling use()
-      resolveUse!(undefined)
-    })
+      resolveUse!(undefined);
+    });
 
     // Wait for the fixture to provide its value
-    const value = await usePromise
+    const value = await usePromise;
 
     if (fixtureError) {
-      throw fixtureError
+      throw fixtureError;
     }
 
-    fixtures[name] = value
+    fixtures[name] = value;
 
     // Queue teardown (run in reverse order)
     teardowns.unshift(async () => {
-      resolveTeardown!()
-      await fixturePromise
-    })
+      resolveTeardown!();
+      await fixturePromise;
+    });
   }
 
   return {
@@ -182,13 +182,13 @@ export async function resolveFixtures(
     teardown: async () => {
       for (const fn of teardowns) {
         try {
-          await fn()
+          await fn();
         } catch (err) {
           // Teardown errors should not mask test errors, but log for diagnosability
-          const msg = err instanceof Error ? err.message : String(err)
-          process.stderr.write(`[pilot] fixture teardown error: ${msg}\n`)
+          const msg = err instanceof Error ? err.message : String(err);
+          process.stderr.write(`[pilot] fixture teardown error: ${msg}\n`);
         }
       }
     },
-  }
+  };
 }

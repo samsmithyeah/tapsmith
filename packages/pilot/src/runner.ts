@@ -21,7 +21,7 @@ import { FixtureRegistry, resolveFixtures, type FixtureDefinitions, type Builtin
 import { resolveTraceConfig } from './trace/types.js';
 import { shouldRecord, shouldRetain } from './trace/trace-mode.js';
 import { packageTrace } from './trace/trace-packager.js';
-import { TraceCollector, setActiveTraceCollector } from './trace/trace-collector.js';
+import { TraceCollector, setActiveTraceCollector, withActiveTraceCollector } from './trace/trace-collector.js';
 import type { AnyTraceEvent } from './trace/types.js';
 
 // ─── Result types ───
@@ -438,16 +438,20 @@ async function runSuiteContext(
       if (cb) beforeAllCollector.setEventCallback(cb);
       opts.device.tracing._stopManaged();
 
-      setActiveTraceCollector(beforeAllCollector);
       beforeAllCollector.startGroup('beforeAll Hooks');
     }
   }
-  for (const hook of ctx.beforeAll) {
-    await invokeHook(hook, opts.device);
-  }
   if (beforeAllCollector) {
+    await withActiveTraceCollector(beforeAllCollector, async () => {
+      for (const hook of ctx.beforeAll) {
+        await invokeHook(hook, opts.device);
+      }
+    });
     beforeAllCollector.endGroup();
-    setActiveTraceCollector(null);
+  } else {
+    for (const hook of ctx.beforeAll) {
+      await invokeHook(hook, opts.device);
+    }
   }
 
   // Save beforeAll events for replay into each test's trace.
@@ -815,17 +819,17 @@ async function runSuiteContext(
       if (cb) afterAllCollector.setEventCallback(cb);
       opts.device.tracing._stopManaged();
 
-      setActiveTraceCollector(afterAllCollector);
       afterAllCollector.startGroup('afterAll Hooks');
-      for (const hook of ctx.afterAll) {
-        try {
-          await invokeHook(hook, opts.device);
-        } catch {
-          // afterAll errors are logged but don't fail individual tests
+      await withActiveTraceCollector(afterAllCollector, async () => {
+        for (const hook of ctx.afterAll) {
+          try {
+            await invokeHook(hook, opts.device);
+          } catch {
+            // afterAll errors are logged but don't fail individual tests
+          }
         }
-      }
+      });
       afterAllCollector.endGroup();
-      setActiveTraceCollector(null);
       afterAllCollector.cleanup();
     } else {
       for (const hook of ctx.afterAll) {

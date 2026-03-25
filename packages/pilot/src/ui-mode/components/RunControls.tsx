@@ -2,8 +2,8 @@
  * RunControls — top bar with run/stop buttons, connection status, and worker indicators.
  */
 
-import { Eye, Link, Play, RefreshCw, Square } from 'lucide-preact'
-import type { ClientMessage } from '../ui-protocol.js'
+import { Eye, Link, Play, RefreshCw, Square } from 'lucide-preact';
+import type { ClientMessage } from '../ui-protocol.js';
 
 export type Theme = 'system' | 'light' | 'dark'
 
@@ -35,7 +35,7 @@ interface RunControlsProps {
   workers: WorkerInfo[]
 }
 
-const ICON_SIZE = 14
+const ICON_SIZE = 14;
 
 const DOT_CLASS: Record<WorkerInfo['status'], string> = {
   idle: 'idle',
@@ -43,18 +43,18 @@ const DOT_CLASS: Record<WorkerInfo['status'], string> = {
   done: 'done',
   initializing: 'initializing',
   error: 'error',
-}
+};
 
 function workerTooltip(w: WorkerInfo): string {
-  const lines = [`W${w.workerId} — ${w.deviceSerial}`, `Status: ${w.status}`]
-  if (w.currentFile) lines.push(`File: ${w.currentFile}`)
-  if (w.currentTest) lines.push(`Test: ${w.currentTest}`)
-  lines.push(`${w.passed}P ${w.failed}F ${w.skipped}S`)
-  return lines.join('\n')
+  const lines = [`W${w.workerId} — ${w.deviceSerial}`, `Status: ${w.status}`];
+  if (w.currentFile) lines.push(`File: ${w.currentFile}`);
+  if (w.currentTest) lines.push(`Test: ${w.currentTest}`);
+  lines.push(`${w.passed}P ${w.failed}F ${w.skipped}S`);
+  return lines.join('\n');
 }
 
 export function RunControls({ connected, isRunning, isWatching, deviceSerial, counts, theme, onThemeChange, onSend, hasProjectDeps, runDepsFirst, onToggleRunDeps, workers }: RunControlsProps) {
-  const hasWorkers = workers.length > 1
+  const hasWorkers = workers.length > 1;
 
   return (
     <div class="run-controls">
@@ -155,5 +155,5 @@ export function RunControls({ connected, isRunning, isWatching, deviceSerial, co
         </select>
       </div>
     </div>
-  )
+  );
 }

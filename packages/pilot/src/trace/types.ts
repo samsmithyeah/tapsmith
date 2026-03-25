@@ -267,15 +267,15 @@ export function resolveTraceConfig(
     sources: true,
     attachments: true,
     network: true,
-  }
+  };
 
-  if (input === undefined) return defaults
+  if (input === undefined) return defaults;
 
   if (typeof input === 'string') {
-    return { ...defaults, mode: input }
+    return { ...defaults, mode: input };
   }
 
-  return { ...defaults, ...input }
+  return { ...defaults, ...input };
 }
 
 // ─── Network Types (Phase 6) ───

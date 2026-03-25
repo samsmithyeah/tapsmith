@@ -378,8 +378,8 @@ export class ElementHandle {
 
   /** Resolve this handle to an ElementInfo. Throws if not found within timeout. */
   async find(): Promise<ElementInfo> {
-    const start = Date.now()
-    let result: ElementInfo
+    const start = Date.now();
+    let result: ElementInfo;
     if (this._hasModifiers()) {
       result = await this._resolveOne();
     } else {
@@ -390,36 +390,36 @@ export class ElementHandle {
             `Element not found: ${this._describe()}`,
         );
       }
-      result = res.element
+      result = res.element;
     }
-    await this._traceQuery('find', `Found: ${result.text || result.className}`, Date.now() - start, result.bounds)
+    await this._traceQuery('find', `Found: ${result.text || result.className}`, Date.now() - start, result.bounds);
     return result;
   }
 
   /** Returns true if the element exists in the current UI. */
   async exists(): Promise<boolean> {
-    const start = Date.now()
-    let found: boolean
+    const start = Date.now();
+    let found: boolean;
     if (this._hasModifiers()) {
       try {
         await this._resolveOne();
-        found = true
+        found = true;
       } catch {
-        found = false
+        found = false;
       }
     } else {
       const res = await this._client.findElement(this._selector, this._timeoutMs);
       found = res.found;
     }
-    await this._traceQuery('exists', `Exists: ${found}`, Date.now() - start)
+    await this._traceQuery('exists', `Exists: ${found}`, Date.now() - start);
     return found;
   }
 
   /** Return the number of elements matching the selector (PILOT-14). */
   async count(): Promise<number> {
-    const start = Date.now()
+    const start = Date.now();
     const elements = await this._resolveAll();
-    await this._traceQuery('count', `Count: ${elements.length}`, Date.now() - start)
+    await this._traceQuery('count', `Count: ${elements.length}`, Date.now() - start);
     return elements.length;
   }
 
@@ -430,10 +430,10 @@ export class ElementHandle {
    * and performing actions will not re-query `findElements` for each handle.
    */
   async all(): Promise<ElementHandle[]> {
-    const start = Date.now()
+    const start = Date.now();
     const resolvedElementsPromise = this._resolveAll();
     const elements = await resolvedElementsPromise;
-    await this._traceQuery('all', `Found ${elements.length} element(s)`, Date.now() - start)
+    await this._traceQuery('all', `Found ${elements.length} element(s)`, Date.now() - start);
     return elements.map((_, i) =>
       new ElementHandle(this._client, this._selector, this._timeoutMs, {
         ...this._options,
@@ -461,13 +461,12 @@ export class ElementHandle {
    * screenshot capture (the "after" shot showing current device state).
    */
   private async _traceQuery(action: string, result: string, durationMs: number, bounds?: ElementInfo['bounds']): Promise<void> {
-    const trace = this._traceCapture
-    if (!trace) return
-    const sourceLocation = extractSourceLocation(new Error().stack ?? '')
-    const actionIndex = trace.collector.currentActionIndex
+    const trace = this._traceCapture;
+    if (!trace) return;
+    const sourceLocation = extractSourceLocation(new Error().stack ?? '');
     const { captures: beforeCaptures } = await trace.collector.captureBeforeAction(
       trace.takeScreenshot, trace.captureHierarchy,
-    )
+    );
     trace.collector.addActionEvent({
       category: 'other',
       action,
@@ -481,7 +480,7 @@ export class ElementHandle {
       hasHierarchyBefore: !!beforeCaptures.hierarchyBefore,
       hasHierarchyAfter: false,
       log: [result],
-    })
+    });
   }
 
   /** @internal — Wrap an action with trace recording. */

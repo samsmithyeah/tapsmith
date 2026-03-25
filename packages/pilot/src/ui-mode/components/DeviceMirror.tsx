@@ -5,7 +5,7 @@
  * <canvas> element.
  */
 
-import type { RefObject } from 'preact'
+import type { RefObject } from 'preact';
 
 interface DeviceMirrorProps {
   canvasRef: RefObject<HTMLCanvasElement>
@@ -27,5 +27,5 @@ export function DeviceMirror({ canvasRef, connected }: DeviceMirrorProps) {
         />
       </div>
     </div>
-  )
+  );
 }

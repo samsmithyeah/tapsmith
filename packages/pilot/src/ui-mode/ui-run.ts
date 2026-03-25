@@ -9,36 +9,36 @@
  * @see PILOT-87
  */
 
-import * as path from 'node:path'
-import * as fs from 'node:fs'
-import { PilotGrpcClient } from '../grpc-client.js'
-import { Device } from '../device.js'
-import { runTestFile, collectResults } from '../runner.js'
-import type { PilotConfig } from '../config.js'
-import { ensureSessionReady, launchConfiguredApp, type SessionPreflightContext } from '../session-preflight.js'
+import * as path from 'node:path';
+import * as fs from 'node:fs';
+import { PilotGrpcClient } from '../grpc-client.js';
+import { Device } from '../device.js';
+import { runTestFile, collectResults } from '../runner.js';
+import type { PilotConfig } from '../config.js';
+import { ensureSessionReady, launchConfiguredApp, type SessionPreflightContext } from '../session-preflight.js';
 import {
   serializeTestResult,
   serializeSuiteResult,
   type SerializedConfig,
   type RunFileUseOptions,
-} from '../worker-protocol.js'
+} from '../worker-protocol.js';
 import type {
   UIRunMessage,
   UIRunChildMessage,
   UIRunTraceEventMessage,
-} from './ui-protocol.js'
-import type { AnyTraceEvent } from '../trace/types.js'
+} from './ui-protocol.js';
+import type { AnyTraceEvent } from '../trace/types.js';
 
 // ─── Helpers ───
 
-let ipcOpen = true
+let ipcOpen = true;
 
 function send(msg: UIRunChildMessage): void {
-  if (!ipcOpen || !process.send) return
+  if (!ipcOpen || !process.send) return;
   try {
-    process.send(msg)
+    process.send(msg);
   } catch {
-    ipcOpen = false
+    ipcOpen = false;
   }
 }
 
@@ -59,7 +59,7 @@ function configFromSerialized(s: SerializedConfig, daemonAddress: string): Pilot
     workers: 1,
     launchEmulators: false,
     trace: s.trace as PilotConfig['trace'],
-  }
+  };
 }
 
 function buildSessionContext(
@@ -74,7 +74,7 @@ function buildSessionContext(
     device,
     client,
     deviceSerial,
-  }
+  };
 }
 
 // ─── Trace event streaming ───
@@ -84,8 +84,8 @@ function buildSessionContext(
  * via IPC. Called after the trace collector is created in the runner.
  */
 function setupTraceStreaming(device: Device): void {
-  const collector = device.tracing._currentCollector
-  if (!collector) return
+  const collector = device.tracing._currentCollector;
+  if (!collector) return;
 
   collector.setEventCallback((event: AnyTraceEvent, screenshots) => {
     const msg: UIRunTraceEventMessage = {
@@ -95,46 +95,46 @@ function setupTraceStreaming(device: Device): void {
       screenshotAfter: screenshots?.after?.toString('base64'),
       hierarchyBefore: screenshots?.hierarchyBefore,
       hierarchyAfter: screenshots?.hierarchyAfter,
-    }
-    send(msg)
-  })
+    };
+    send(msg);
+  });
 }
 
 // ─── Main handler ───
 
 async function handleRun(msg: UIRunMessage): Promise<void> {
-  const config = configFromSerialized(msg.config, msg.daemonAddress)
-  config.device = msg.deviceSerial
+  const config = configFromSerialized(msg.config, msg.daemonAddress);
+  config.device = msg.deviceSerial;
 
   // Force trace on for UI mode so we get real-time trace events
   if (!config.trace || config.trace === 'off') {
-    config.trace = 'on'
+    config.trace = 'on';
   }
 
-  const client = new PilotGrpcClient(msg.daemonAddress)
-  const ready = await client.waitForReady(5_000)
+  const client = new PilotGrpcClient(msg.daemonAddress);
+  const ready = await client.waitForReady(5_000);
   if (!ready) {
-    throw new Error(`Failed to connect to daemon at ${msg.daemonAddress}`)
+    throw new Error(`Failed to connect to daemon at ${msg.daemonAddress}`);
   }
 
-  const device = new Device(client, config)
-  await device.setDevice(msg.deviceSerial)
+  const device = new Device(client, config);
+  await device.setDevice(msg.deviceSerial);
 
-  const ctx = buildSessionContext(config, device, client, msg.deviceSerial)
+  const ctx = buildSessionContext(config, device, client, msg.deviceSerial);
 
   // Reset app for clean state
   if (config.package) {
-    await launchConfiguredApp(ctx, `UI run for ${path.basename(msg.filePath)}`)
+    await launchConfiguredApp(ctx, `UI run for ${path.basename(msg.filePath)}`);
   } else {
-    await ensureSessionReady(ctx, `UI preflight for ${path.basename(msg.filePath)}`)
+    await ensureSessionReady(ctx, `UI preflight for ${path.basename(msg.filePath)}`);
   }
 
-  const screenshotDir = msg.screenshotDir
+  const screenshotDir = msg.screenshotDir;
 
   // Send test source file so the Source tab can display it
   try {
-    const sourceContent = fs.readFileSync(msg.filePath, 'utf-8')
-    send({ type: 'source', fileName: path.basename(msg.filePath), content: sourceContent })
+    const sourceContent = fs.readFileSync(msg.filePath, 'utf-8');
+    send({ type: 'source', fileName: path.basename(msg.filePath), content: sourceContent });
   } catch {
     // best-effort
   }
@@ -145,18 +145,18 @@ async function handleRun(msg: UIRunMessage): Promise<void> {
       send({
         type: 'test-end',
         result: serializeTestResult(result, 0),
-      })
+      });
     },
-  }
+  };
 
   // Hook into the device to stream trace events once the runner starts tracing
-  const origStartManaged = device.tracing._startManaged.bind(device.tracing)
+  const origStartManaged = device.tracing._startManaged.bind(device.tracing);
   device.tracing._startManaged = (...args: Parameters<typeof device.tracing._startManaged>) => {
-    const collector = origStartManaged(...args)
+    const collector = origStartManaged(...args);
     // Set up trace streaming after the collector is created
-    setupTraceStreaming(device)
-    return collector
-  }
+    setupTraceStreaming(device);
+    return collector;
+  };
 
   const suiteResult = await runTestFile(msg.filePath, {
     config,
@@ -164,7 +164,7 @@ async function handleRun(msg: UIRunMessage): Promise<void> {
     screenshotDir,
     reporter: reporterProxy,
     beforeEachTest: async (fullName: string) => {
-      send({ type: 'test-start', fullName, filePath: msg.filePath })
+      send({ type: 'test-start', fullName, filePath: msg.filePath });
     },
     projectUseOptions: msg.projectUseOptions,
     projectName: msg.projectName,
@@ -175,21 +175,21 @@ async function handleRun(msg: UIRunMessage): Promise<void> {
         ...e,
         requestBody: undefined,
         responseBody: undefined,
-      }))
-      send({ type: 'network', entries: safe })
+      }));
+      send({ type: 'network', entries: safe });
     },
-  })
+  });
 
-  const results = collectResults(suiteResult)
+  const results = collectResults(suiteResult);
 
   send({
     type: 'file-done',
     filePath: msg.filePath,
     results: results.map((r) => serializeTestResult(r, 0)),
     suite: serializeSuiteResult(suiteResult, 0),
-  })
+  });
 
-  client.close()
+  client.close();
 }
 
 // ─── IPC message handler ───
@@ -197,15 +197,15 @@ async function handleRun(msg: UIRunMessage): Promise<void> {
 process.on('message', async (msg: UIRunMessage) => {
   try {
     if (msg.type === 'run') {
-      await handleRun(msg)
-      process.exit(0)
+      await handleRun(msg);
+      process.exit(0);
     }
   } catch (err) {
-    const error = err instanceof Error ? err : new Error(String(err))
+    const error = err instanceof Error ? err : new Error(String(err));
     send({
       type: 'error',
       error: { message: error.message, stack: error.stack },
-    })
-    process.exit(1)
+    });
+    process.exit(1);
   }
-})
+});

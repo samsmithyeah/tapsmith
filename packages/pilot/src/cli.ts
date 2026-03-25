@@ -511,57 +511,57 @@ async function main(): Promise<void> {
   }
 
   if (args.command === 'show-report') {
-    const reportDir = args.files[0] ?? 'pilot-report'
-    const reportPath = path.resolve(process.cwd(), reportDir, 'index.html')
+    const reportDir = args.files[0] ?? 'pilot-report';
+    const reportPath = path.resolve(process.cwd(), reportDir, 'index.html');
     if (!fs.existsSync(reportPath)) {
-      console.error(red(`No report found at ${reportPath}`))
-      process.exit(1)
+      console.error(red(`No report found at ${reportPath}`));
+      process.exit(1);
     }
-    const cmd = process.platform === 'darwin' ? 'open' : process.platform === 'win32' ? 'start' : 'xdg-open'
-    spawn(cmd, [reportPath], { detached: true, stdio: 'ignore' }).unref()
-    return
+    const cmd = process.platform === 'darwin' ? 'open' : process.platform === 'win32' ? 'start' : 'xdg-open';
+    spawn(cmd, [reportPath], { detached: true, stdio: 'ignore' }).unref();
+    return;
   }
 
   if (args.command === 'show-trace') {
-    const traceFile = args.files[0]
+    const traceFile = args.files[0];
     if (!traceFile) {
-      console.error(red('Usage: pilot show-trace <trace.zip>'))
-      process.exit(1)
+      console.error(red('Usage: pilot show-trace <trace.zip>'));
+      process.exit(1);
     }
-    const { showTrace } = await import('./trace/show-trace-server.js')
+    const { showTrace } = await import('./trace/show-trace-server.js');
     try {
-      const server = await showTrace({ tracePath: traceFile })
-      console.log(dim(`Trace viewer running at http://127.0.0.1:${server.port}/`))
-      console.log(dim('Press Ctrl+C to stop.'))
+      const server = await showTrace({ tracePath: traceFile });
+      console.log(dim(`Trace viewer running at http://127.0.0.1:${server.port}/`));
+      console.log(dim('Press Ctrl+C to stop.'));
       // Keep alive until Ctrl+C
       process.on('SIGINT', () => {
-        server.close()
-        process.exit(0)
-      })
+        server.close();
+        process.exit(0);
+      });
       // Prevent Node from exiting
-      await new Promise(() => {})
+      await new Promise(() => {});
     } catch (err) {
-      console.error(red(`${err instanceof Error ? err.message : String(err)}`))
-      process.exit(1)
+      console.error(red(`${err instanceof Error ? err.message : String(err)}`));
+      process.exit(1);
     }
-    return
+    return;
   }
 
   if (args.command === 'merge-reports') {
-    const blobDir = args.files[0] ?? 'blob-report'
-    const resolvedDir = path.resolve(process.cwd(), blobDir)
+    const blobDir = args.files[0] ?? 'blob-report';
+    const resolvedDir = path.resolve(process.cwd(), blobDir);
     if (!fs.existsSync(resolvedDir)) {
-      console.error(red(`No blob directory found at ${resolvedDir}`))
-      process.exit(1)
+      console.error(red(`No blob directory found at ${resolvedDir}`));
+      process.exit(1);
     }
-    const { mergeBlobs } = await import('./reporters/blob.js')
-    const config = await loadConfig()
-    const result = mergeBlobs(resolvedDir)
-    const reporters = await createReporters(config.reporter ?? 'list')
-    const dispatcher = new ReporterDispatcher(reporters)
-    dispatcher.onRunStart(config, 0)
-    await dispatcher.onRunEnd(result)
-    return
+    const { mergeBlobs } = await import('./reporters/blob.js');
+    const config = await loadConfig();
+    const result = mergeBlobs(resolvedDir);
+    const reporters = await createReporters(config.reporter ?? 'list');
+    const dispatcher = new ReporterDispatcher(reporters);
+    dispatcher.onRunStart(config, 0);
+    await dispatcher.onRunEnd(result);
+    return;
   }
 
   if (args.command !== 'test') {
@@ -833,11 +833,11 @@ async function main(): Promise<void> {
 
     // If tracing with network capture, ensure adb root BEFORE starting agent
     // so that the adbd restart doesn't disrupt UIAutomator2's accessibility service.
-    const traceConfig = resolveTraceConfig(config.trace)
+    const traceConfig = resolveTraceConfig(config.trace);
     if (traceConfig.mode !== 'off' && traceConfig.network && config.device) {
-      const restarted = ensureAdbRoot(config.device)
+      const restarted = ensureAdbRoot(config.device);
       if (restarted) {
-        console.log(dim('Enabled adb root for network capture.'))
+        console.log(dim('Enabled adb root for network capture.'));
       }
     }
 

@@ -8,39 +8,39 @@
  * @see PILOT-106
  */
 
-import * as path from 'node:path'
-import { PilotGrpcClient } from './grpc-client.js'
-import { Device } from './device.js'
-import { runTestFile, collectResults } from './runner.js'
-import type { PilotConfig } from './config.js'
-import { isPackageInstalled, waitForPackageIndexed } from './emulator.js'
+import * as path from 'node:path';
+import { PilotGrpcClient } from './grpc-client.js';
+import { Device } from './device.js';
+import { runTestFile, collectResults } from './runner.js';
+import type { PilotConfig } from './config.js';
+import { isPackageInstalled, waitForPackageIndexed } from './emulator.js';
 import type {
   MainToWorkerMessage,
   WorkerToMainMessage,
   InitMessage,
   SerializedConfig,
-} from './worker-protocol.js'
+} from './worker-protocol.js';
 import {
   serializeTestResult,
   serializeSuiteResult,
   isRecoverableInfrastructureError,
-} from './worker-protocol.js'
-import { ensureSessionReady, launchConfiguredApp, type SessionPreflightContext } from './session-preflight.js'
+} from './worker-protocol.js';
+import { ensureSessionReady, launchConfiguredApp, type SessionPreflightContext } from './session-preflight.js';
 
-let workerId = -1
-let device: Device | undefined
-let client: PilotGrpcClient | undefined
-let config: PilotConfig | undefined
-let assignedSerial: string | undefined
+let workerId = -1;
+let device: Device | undefined;
+let client: PilotGrpcClient | undefined;
+let config: PilotConfig | undefined;
+let assignedSerial: string | undefined;
 
 function send(msg: WorkerToMainMessage): void {
   if (process.send) {
-    process.send(msg)
+    process.send(msg);
   }
 }
 
 function sendProgress(message: string): void {
-  send({ type: 'progress', workerId, message })
+  send({ type: 'progress', workerId, message });
 }
 
 function configFromSerialized(s: SerializedConfig, daemonAddress: string): PilotConfig {
@@ -60,38 +60,38 @@ function configFromSerialized(s: SerializedConfig, daemonAddress: string): Pilot
     workers: 1,
     launchEmulators: false,
     trace: s.trace as PilotConfig['trace'],
-  }
+  };
 }
 
 async function handleInit(msg: InitMessage): Promise<void> {
-  workerId = msg.workerId
-  const daemonAddress = `localhost:${msg.daemonPort}`
-  sendProgress(`connecting to daemon on ${daemonAddress}`)
+  workerId = msg.workerId;
+  const daemonAddress = `localhost:${msg.daemonPort}`;
+  sendProgress(`connecting to daemon on ${daemonAddress}`);
 
-  config = configFromSerialized(msg.config, daemonAddress)
+  config = configFromSerialized(msg.config, daemonAddress);
 
   // Connect to our dedicated daemon
-  client = new PilotGrpcClient(daemonAddress)
-  const ready = await client.waitForReady(10_000)
+  client = new PilotGrpcClient(daemonAddress);
+  const ready = await client.waitForReady(10_000);
   if (!ready) {
-    throw new Error(`Worker ${workerId}: Failed to connect to daemon at ${daemonAddress}`)
+    throw new Error(`Worker ${workerId}: Failed to connect to daemon at ${daemonAddress}`);
   }
 
-  device = new Device(client, config)
+  device = new Device(client, config);
 
   // Set the assigned device
-  assignedSerial = msg.deviceSerial
-  config.device = msg.deviceSerial
+  assignedSerial = msg.deviceSerial;
+  config.device = msg.deviceSerial;
   if (msg.deviceSerial) {
-    sendProgress(`selecting device ${msg.deviceSerial}`)
-    await device.setDevice(msg.deviceSerial)
+    sendProgress(`selecting device ${msg.deviceSerial}`);
+    await device.setDevice(msg.deviceSerial);
   }
 
   // Wake and unlock device screen
   try {
-    sendProgress('waking and unlocking device')
-    await device.wake()
-    await device.unlock()
+    sendProgress('waking and unlocking device');
+    await device.wake();
+    await device.unlock();
   } catch {
     // Non-fatal
   }
@@ -100,17 +100,17 @@ async function handleInit(msg: InitMessage): Promise<void> {
   if (config.apk) {
     const alreadyInstalled = config.package
       && msg.deviceSerial
-      && isPackageInstalled(msg.deviceSerial, config.package)
+      && isPackageInstalled(msg.deviceSerial, config.package);
 
     if (alreadyInstalled) {
-      sendProgress(`app ${config.package} already installed, skipping APK install`)
+      sendProgress(`app ${config.package} already installed, skipping APK install`);
     } else {
-      const resolvedApk = path.resolve(config.rootDir, config.apk)
-      sendProgress(`installing app APK ${path.basename(resolvedApk)}`)
-      await device.installApk(resolvedApk)
+      const resolvedApk = path.resolve(config.rootDir, config.apk);
+      sendProgress(`installing app APK ${path.basename(resolvedApk)}`);
+      await device.installApk(resolvedApk);
       // Wait for package manager to index the new app
       if (config.package && msg.deviceSerial) {
-        await waitForPackageIndexed(msg.deviceSerial, config.package)
+        await waitForPackageIndexed(msg.deviceSerial, config.package);
       }
     }
   }
@@ -118,67 +118,67 @@ async function handleInit(msg: InitMessage): Promise<void> {
   // Start agent
   const resolvedAgentApk = config.agentApk
     ? path.resolve(config.rootDir, config.agentApk)
-    : undefined
+    : undefined;
   const resolvedAgentTestApk = config.agentTestApk
     ? path.resolve(config.rootDir, config.agentTestApk)
-    : undefined
-  sendProgress('starting Pilot agent')
-  await device.startAgent('', resolvedAgentApk, resolvedAgentTestApk)
+    : undefined;
+  sendProgress('starting Pilot agent');
+  await device.startAgent('', resolvedAgentApk, resolvedAgentTestApk);
 
   try {
     if (config.package) {
-      sendProgress(`launching ${config.package}`)
+      sendProgress(`launching ${config.package}`);
       await launchConfiguredApp(
         sessionContext(msg.deviceSerial, resolvedAgentApk, resolvedAgentTestApk),
         'worker initialization',
-      )
+      );
     } else {
-      sendProgress('validating session readiness')
+      sendProgress('validating session readiness');
       await ensureSessionReady(
         sessionContext(msg.deviceSerial, resolvedAgentApk, resolvedAgentTestApk),
         'worker initialization',
-      )
+      );
     }
   } catch (err) {
     throw new Error(
       `Worker ${workerId} (${msg.deviceSerial}): ${err instanceof Error ? err.message : err}`,
-    )
+    );
   }
 
   // Warm up freshly launched emulators by cycling the app once. The first
   // launch on a cold emulator triggers JIT compilation and DEX optimization
   // that makes the first few tests unreasonably slow or timeout.
   if (msg.freshEmulator && config.package) {
-    sendProgress('warming up fresh emulator')
-    await device.waitForIdle()
-    await device.terminateApp(config.package)
+    sendProgress('warming up fresh emulator');
+    await device.waitForIdle();
+    await device.terminateApp(config.package);
     await launchConfiguredApp(
       sessionContext(msg.deviceSerial, resolvedAgentApk, resolvedAgentTestApk),
       'warmup',
-    )
-    await device.waitForIdle()
+    );
+    await device.waitForIdle();
   }
 
-  sendProgress('ready')
-  send({ type: 'ready', workerId })
+  sendProgress('ready');
+  send({ type: 'ready', workerId });
 }
 
 async function handleRunFile(filePath: string, projectUseOptions?: import('./worker-protocol.js').RunFileUseOptions, projectName?: string): Promise<void> {
   if (!config || !device) {
-    throw new Error(`Worker ${workerId}: Not initialized`)
+    throw new Error(`Worker ${workerId}: Not initialized`);
   }
 
-  send({ type: 'file-start', workerId, filePath })
+  send({ type: 'file-start', workerId, filePath });
 
   // Reset app between files for isolation
   if (config.package) {
-    await launchConfiguredApp(sessionContext(undefined), `file reset for ${path.basename(filePath)}`)
+    await launchConfiguredApp(sessionContext(undefined), `file reset for ${path.basename(filePath)}`);
   }
 
   const screenshotDir =
     config.screenshot !== 'never'
       ? path.resolve(config.rootDir, config.outputDir, 'screenshots')
-      : undefined
+      : undefined;
 
   // Create a reporter proxy that sends events back to main process
   const reporterProxy = {
@@ -187,13 +187,13 @@ async function handleRunFile(filePath: string, projectUseOptions?: import('./wor
         type: 'test-end',
         workerId,
         result: serializeTestResult(result, workerId),
-      })
+      });
     },
-  }
+  };
 
-  const suiteResult = await runFileWithRecovery(filePath, screenshotDir, reporterProxy, projectUseOptions, projectName)
+  const suiteResult = await runFileWithRecovery(filePath, screenshotDir, reporterProxy, projectUseOptions, projectName);
 
-  const results = collectResults(suiteResult)
+  const results = collectResults(suiteResult);
 
   send({
     type: 'file-done',
@@ -201,7 +201,7 @@ async function handleRunFile(filePath: string, projectUseOptions?: import('./wor
     filePath,
     suite: serializeSuiteResult(suiteResult, workerId),
     results: results.map((r) => serializeTestResult(r, workerId)),
-  })
+  });
 }
 
 async function runFileWithRecovery(
@@ -212,7 +212,7 @@ async function runFileWithRecovery(
   projectName?: string,
 ): Promise<import('./runner.js').SuiteResult> {
   if (!config || !device) {
-    throw new Error(`Worker ${workerId}: Not initialized`)
+    throw new Error(`Worker ${workerId}: Not initialized`);
   }
 
   for (let attempt = 1; attempt <= 2; attempt++) {
@@ -226,38 +226,38 @@ async function runFileWithRecovery(
           await ensureSessionReady(
             sessionContext(undefined),
             `before test ${fullName}`,
-          )
+          );
         },
         abortFileOnError: isRecoverableInfrastructureError,
         projectUseOptions,
         projectName,
-      })
-      const infrastructureFailure = findRecoverableInfrastructureFailure(collectResults(suite))
+      });
+      const infrastructureFailure = findRecoverableInfrastructureFailure(collectResults(suite));
       if (!infrastructureFailure) {
-        return suite
+        return suite;
       }
       if (attempt === 2) {
-        throw infrastructureFailure
+        throw infrastructureFailure;
       }
-      await recoverFileSession(filePath, infrastructureFailure)
-      continue
+      await recoverFileSession(filePath, infrastructureFailure);
+      continue;
     } catch (err) {
       if (!isRecoverableInfrastructureError(err) || attempt === 2) {
-        throw err
+        throw err;
       }
 
-      await recoverFileSession(filePath, err)
+      await recoverFileSession(filePath, err);
     }
   }
 
-  throw new Error(`Worker ${workerId}: exhausted recovery attempts for ${path.basename(filePath)}`)
+  throw new Error(`Worker ${workerId}: exhausted recovery attempts for ${path.basename(filePath)}`);
 }
 
 function handleShutdown(): void {
   if (device) {
-    device.close()
+    device.close();
   }
-  process.exit(0)
+  process.exit(0);
 }
 
 function sessionContext(
@@ -266,13 +266,13 @@ function sessionContext(
   agentTestApkPath?: string,
 ): SessionPreflightContext {
   if (!device || !client || !config) {
-    throw new Error(`Worker ${workerId}: Not initialized`)
+    throw new Error(`Worker ${workerId}: Not initialized`);
   }
 
-  const serial = deviceSerial ?? assignedSerial
+  const serial = deviceSerial ?? assignedSerial;
   const label = serial
     ? `Worker ${workerId} (${serial})`
-    : `Worker ${workerId}`
+    : `Worker ${workerId}`;
 
   return {
     label,
@@ -282,30 +282,30 @@ function sessionContext(
     agentApkPath,
     agentTestApkPath,
     deviceSerial: serial,
-  }
+  };
 }
 
 function findRecoverableInfrastructureFailure(
   results: Array<import('./runner.js').TestResult>,
 ): Error | undefined {
   for (const result of results) {
-    if (result.status !== 'failed' || !result.error) continue
-    if (!isRecoverableInfrastructureError(result.error)) continue
-    return new Error(`${result.fullName}: ${result.error.message}`)
+    if (result.status !== 'failed' || !result.error) continue;
+    if (!isRecoverableInfrastructureError(result.error)) continue;
+    return new Error(`${result.fullName}: ${result.error.message}`);
   }
 
-  return undefined
+  return undefined;
 }
 
 async function recoverFileSession(filePath: string, err: unknown): Promise<void> {
   process.stderr.write(
     `Worker ${workerId}: Recovering session after infrastructure error in ${path.basename(filePath)}: ${err instanceof Error ? err.message : err}\n`,
-  )
+  );
 
   if (config?.package) {
-    await launchConfiguredApp(sessionContext(undefined), `recovery for ${path.basename(filePath)}`)
+    await launchConfiguredApp(sessionContext(undefined), `recovery for ${path.basename(filePath)}`);
   } else {
-    await ensureSessionReady(sessionContext(undefined), `recovery for ${path.basename(filePath)}`)
+    await ensureSessionReady(sessionContext(undefined), `recovery for ${path.basename(filePath)}`);
   }
 }
 
@@ -315,22 +315,22 @@ process.on('message', async (msg: MainToWorkerMessage) => {
   try {
     switch (msg.type) {
       case 'init':
-        await handleInit(msg)
-        break
+        await handleInit(msg);
+        break;
       case 'run-file':
-        await handleRunFile(msg.filePath, msg.projectUseOptions, msg.projectName)
-        break
+        await handleRunFile(msg.filePath, msg.projectUseOptions, msg.projectName);
+        break;
       case 'shutdown':
-        handleShutdown()
-        break
+        handleShutdown();
+        break;
     }
   } catch (err) {
-    const error = err instanceof Error ? err : new Error(String(err))
-    process.stderr.write(`Worker ${workerId} error: ${error.message}\n`)
+    const error = err instanceof Error ? err : new Error(String(err));
+    process.stderr.write(`Worker ${workerId} error: ${error.message}\n`);
     send({
       type: 'error',
       workerId,
       error: { message: error.message, stack: error.stack },
-    })
+    });
   }
-})
+});

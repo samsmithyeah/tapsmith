@@ -5,8 +5,8 @@
  * dependency constraints and shared `use` options.
  */
 
-import { minimatch } from 'minimatch'
-import type { PilotConfig, ProjectConfig, UseOptions } from './config.js'
+import { minimatch } from 'minimatch';
+import type { PilotConfig, ProjectConfig, UseOptions } from './config.js';
 
 // ─── Types ───
 
@@ -37,21 +37,21 @@ export function resolveProjects(config: PilotConfig): ResolvedProject[] {
       dependencies: [],
       use: undefined,
       testFiles: [],
-    }]
+    }];
   }
 
-  const projects = config.projects
-  const names = new Set<string>()
+  const projects = config.projects;
+  const names = new Set<string>();
 
   // Validate unique names
   for (const p of projects) {
     if (!p.name) {
-      throw new Error('Every project must have a name')
+      throw new Error('Every project must have a name');
     }
     if (names.has(p.name)) {
-      throw new Error(`Duplicate project name: "${p.name}"`)
+      throw new Error(`Duplicate project name: "${p.name}"`);
     }
-    names.add(p.name)
+    names.add(p.name);
   }
 
   // Validate dependency references
@@ -61,16 +61,16 @@ export function resolveProjects(config: PilotConfig): ResolvedProject[] {
         throw new Error(
           `Project "${p.name}" depends on "${dep}", which does not exist. ` +
           `Available projects: ${[...names].join(', ')}`,
-        )
+        );
       }
       if (dep === p.name) {
-        throw new Error(`Project "${p.name}" cannot depend on itself`)
+        throw new Error(`Project "${p.name}" cannot depend on itself`);
       }
     }
   }
 
   // Validate no cycles
-  detectCycles(projects)
+  detectCycles(projects);
 
   return projects.map((p) => ({
     name: p.name,
@@ -79,7 +79,7 @@ export function resolveProjects(config: PilotConfig): ResolvedProject[] {
     dependencies: p.dependencies ?? [],
     use: p.use,
     testFiles: [],
-  }))
+  }));
 }
 
 // ─── Topological sort ───
@@ -92,24 +92,24 @@ export function resolveProjects(config: PilotConfig): ResolvedProject[] {
  * Wave 0 = no dependencies, wave 1 = depends only on wave 0, etc.
  */
 export function topologicalSort(projects: ResolvedProject[]): ResolvedProject[][] {
-  const byName = new Map(projects.map((p) => [p.name, p]))
-  const inDegree = new Map(projects.map((p) => [p.name, 0]))
+  const byName = new Map(projects.map((p) => [p.name, p]));
+  const inDegree = new Map(projects.map((p) => [p.name, 0]));
 
   for (const p of projects) {
     for (const _dep of p.dependencies) {
-      inDegree.set(p.name, (inDegree.get(p.name) ?? 0) + 1)
+      inDegree.set(p.name, (inDegree.get(p.name) ?? 0) + 1);
     }
   }
 
-  const waves: ResolvedProject[][] = []
-  const remaining = new Set(projects.map((p) => p.name))
+  const waves: ResolvedProject[][] = [];
+  const remaining = new Set(projects.map((p) => p.name));
 
   while (remaining.size > 0) {
-    const wave: ResolvedProject[] = []
+    const wave: ResolvedProject[] = [];
 
     for (const name of remaining) {
       if ((inDegree.get(name) ?? 0) === 0) {
-        wave.push(byName.get(name)!)
+        wave.push(byName.get(name)!);
       }
     }
 
@@ -117,24 +117,24 @@ export function topologicalSort(projects: ResolvedProject[]): ResolvedProject[][
       // Should not happen if detectCycles passed, but guard anyway
       throw new Error(
         `Circular dependency detected among projects: ${[...remaining].join(', ')}`,
-      )
+      );
     }
 
     for (const p of wave) {
-      remaining.delete(p.name)
+      remaining.delete(p.name);
 
       // Decrease in-degree for dependents
       for (const other of projects) {
         if (other.dependencies.includes(p.name)) {
-          inDegree.set(other.name, (inDegree.get(other.name) ?? 0) - 1)
+          inDegree.set(other.name, (inDegree.get(other.name) ?? 0) - 1);
         }
       }
     }
 
-    waves.push(wave)
+    waves.push(wave);
   }
 
-  return waves
+  return waves;
 }
 
 // ─── Dependency collection ───
@@ -147,25 +147,25 @@ export function collectTransitiveDeps(
   projectNames: Set<string>,
   allProjects: ResolvedProject[],
 ): Set<string> {
-  const byName = new Map(allProjects.map((p) => [p.name, p]))
-  const result = new Set<string>()
+  const byName = new Map(allProjects.map((p) => [p.name, p]));
+  const result = new Set<string>();
 
   function collect(name: string): void {
-    if (result.has(name)) return
-    result.add(name)
-    const project = byName.get(name)
+    if (result.has(name)) return;
+    result.add(name);
+    const project = byName.get(name);
     if (project) {
       for (const dep of project.dependencies) {
-        collect(dep)
+        collect(dep);
       }
     }
   }
 
   for (const name of projectNames) {
-    collect(name)
+    collect(name);
   }
 
-  return result
+  return result;
 }
 
 /**
@@ -179,46 +179,46 @@ export function findProjectForFile(
 ): string | undefined {
   const relative = filePath.startsWith(rootDir)
     ? filePath.slice(rootDir.length).replace(/^\//, '')
-    : filePath
+    : filePath;
 
   for (const project of projects) {
-    const matchesInclude = project.testMatch.some((pattern) => minimatch(relative, pattern))
-    const matchesIgnore = project.testIgnore.some((pattern) => minimatch(relative, pattern))
+    const matchesInclude = project.testMatch.some((pattern) => minimatch(relative, pattern));
+    const matchesIgnore = project.testIgnore.some((pattern) => minimatch(relative, pattern));
     if (matchesInclude && !matchesIgnore) {
-      return project.name
+      return project.name;
     }
   }
-  return undefined
+  return undefined;
 }
 
 // ─── Cycle detection ───
 
 function detectCycles(projects: ProjectConfig[]): void {
-  const visited = new Set<string>()
-  const stack = new Set<string>()
-  const depMap = new Map(projects.map((p) => [p.name, p.dependencies ?? []]))
+  const visited = new Set<string>();
+  const stack = new Set<string>();
+  const depMap = new Map(projects.map((p) => [p.name, p.dependencies ?? []]));
 
   function dfs(name: string, path: string[]): void {
     if (stack.has(name)) {
-      const cycleStart = path.indexOf(name)
-      const cycle = [...path.slice(cycleStart), name].join(' → ')
-      throw new Error(`Circular dependency detected: ${cycle}`)
+      const cycleStart = path.indexOf(name);
+      const cycle = [...path.slice(cycleStart), name].join(' → ');
+      throw new Error(`Circular dependency detected: ${cycle}`);
     }
-    if (visited.has(name)) return
+    if (visited.has(name)) return;
 
-    stack.add(name)
-    path.push(name)
+    stack.add(name);
+    path.push(name);
 
     for (const dep of depMap.get(name) ?? []) {
-      dfs(dep, path)
+      dfs(dep, path);
     }
 
-    stack.delete(name)
-    path.pop()
-    visited.add(name)
+    stack.delete(name);
+    path.pop();
+    visited.add(name);
   }
 
   for (const p of projects) {
-    dfs(p.name, [])
+    dfs(p.name, []);
   }
 }

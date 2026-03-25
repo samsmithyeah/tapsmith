@@ -1,34 +1,34 @@
-import { render } from 'preact'
-import { useState, useCallback, useMemo, useRef, useEffect } from 'preact/hooks'
-import type { ServerMessage, ClientMessage, TestTreeNode } from './ui-protocol.js'
-import type { AnyTraceEvent, ActionTraceEvent, AssertionTraceEvent, TraceMetadata, NetworkEntry } from '../trace/types.js'
-import { useWebSocket } from './hooks/use-websocket.js'
-import { useScreenMirror } from './hooks/use-screen-mirror.js'
-import { useTestTree } from './hooks/use-test-tree.js'
-import { Layout } from './components/Layout.js'
-import { TestExplorer } from './components/TestExplorer.js'
-import { RunControls, type Theme } from './components/RunControls.js'
-import { DeviceMirror } from './components/DeviceMirror.js'
+import { render } from 'preact';
+import { useState, useCallback, useMemo, useRef, useEffect } from 'preact/hooks';
+import type { ServerMessage, ClientMessage, TestTreeNode } from './ui-protocol.js';
+import type { AnyTraceEvent, ActionTraceEvent, AssertionTraceEvent, TraceMetadata, NetworkEntry } from '../trace/types.js';
+import { useWebSocket } from './hooks/use-websocket.js';
+import { useScreenMirror } from './hooks/use-screen-mirror.js';
+import { useTestTree } from './hooks/use-test-tree.js';
+import { Layout } from './components/Layout.js';
+import { TestExplorer } from './components/TestExplorer.js';
+import { RunControls, type Theme } from './components/RunControls.js';
+import { DeviceMirror } from './components/DeviceMirror.js';
 
 // Trace viewer components — reused for live trace display
-import { ActionsPanel } from '../trace-viewer/components/ActionsPanel.js'
-import { ScreenshotPanel } from '../trace-viewer/components/ScreenshotPanel.js'
-import { DetailTabs } from '../trace-viewer/components/DetailTabs.js'
-import { TimelineFilmstrip } from '../trace-viewer/components/TimelineFilmstrip.js'
+import { ActionsPanel } from '../trace-viewer/components/ActionsPanel.js';
+import { ScreenshotPanel } from '../trace-viewer/components/ScreenshotPanel.js';
+import { DetailTabs } from '../trace-viewer/components/DetailTabs.js';
+import { TimelineFilmstrip } from '../trace-viewer/components/TimelineFilmstrip.js';
 
 // ─── Helpers ───
 
 function base64ToBlobUrl(base64: string): string {
-  const bytes = atob(base64)
-  const arr = new Uint8Array(bytes.length)
-  for (let i = 0; i < bytes.length; i++) arr[i] = bytes.charCodeAt(i)
-  return URL.createObjectURL(new Blob([arr], { type: 'image/png' }))
+  const bytes = atob(base64);
+  const arr = new Uint8Array(bytes.length);
+  for (let i = 0; i < bytes.length; i++) arr[i] = bytes.charCodeAt(i);
+  return URL.createObjectURL(new Blob([arr], { type: 'image/png' }));
 }
 
-const EMPTY_MAP = new Map<string, string>()
-const EMPTY_EVENTS: AnyTraceEvent[] = []
-const EMPTY_ACTION_EVENTS: (ActionTraceEvent | AssertionTraceEvent)[] = []
-const EMPTY_NETWORK: NetworkEntry[] = []
+const EMPTY_MAP = new Map<string, string>();
+const EMPTY_EVENTS: AnyTraceEvent[] = [];
+const EMPTY_ACTION_EVENTS: (ActionTraceEvent | AssertionTraceEvent)[] = [];
+const EMPTY_NETWORK: NetworkEntry[] = [];
 
 /** Per-test trace data accumulated during execution. */
 interface TestTraceData {
@@ -44,7 +44,7 @@ interface TestTraceData {
 }
 
 function emptyTraceData(filePath?: string): TestTraceData {
-  return { events: [], actionEvents: [], screenshots: new Map(), hierarchies: new Map(), network: [], filePath }
+  return { events: [], actionEvents: [], screenshots: new Map(), hierarchies: new Map(), network: [], filePath };
 }
 
 // ─── App ───
@@ -62,48 +62,48 @@ interface WorkerInfo {
 }
 
 function App() {
-  const [connected, setConnected] = useState(false)
-  const [isRunning, setIsRunning] = useState(false)
-  const [deviceSerial, setDeviceSerial] = useState('')
+  const [connected, setConnected] = useState(false);
+  const [isRunning, setIsRunning] = useState(false);
+  const [deviceSerial, setDeviceSerial] = useState('');
   const [theme, setTheme] = useState<Theme>(() => {
-    const stored = localStorage.getItem('pilot-ui-theme')
-    return (stored === 'light' || stored === 'dark' || stored === 'system') ? stored : 'system'
-  })
+    const stored = localStorage.getItem('pilot-ui-theme');
+    return (stored === 'light' || stored === 'dark' || stored === 'system') ? stored : 'system';
+  });
 
   // Multi-worker state
-  const [workers, setWorkers] = useState<WorkerInfo[]>([])
+  const [workers, setWorkers] = useState<WorkerInfo[]>([]);
   /** Maps test fullName → workerId that ran it. */
-  const testWorkerMapRef = useRef<Map<string, number>>(new Map())
+  const testWorkerMapRef = useRef<Map<string, number>>(new Map());
 
   // Per-test trace data, keyed by test fullName
-  const [testTraces, setTestTraces] = useState<Map<string, TestTraceData>>(new Map())
+  const [testTraces, setTestTraces] = useState<Map<string, TestTraceData>>(new Map());
   // Ref tracks the currently-running test — a ref (not state) so the message
   // handler always reads the latest value regardless of React batching.
-  const activeTestRef = useRef<string | null>(null)
-  const [activeTestName, setActiveTestName] = useState<string | null>(null)
-  const [sources, setSources] = useState<Map<string, string>>(new Map())
-  const [pinnedIndex, setPinnedIndex] = useState(0)
-  const [hoveredIndex, setHoveredIndex] = useState<number | null>(null)
-  const selectedIndex = hoveredIndex ?? pinnedIndex
+  const activeTestRef = useRef<string | null>(null);
+  const [activeTestName, setActiveTestName] = useState<string | null>(null);
+  const [sources, setSources] = useState<Map<string, string>>(new Map());
+  const [pinnedIndex, setPinnedIndex] = useState(0);
+  const [hoveredIndex, setHoveredIndex] = useState<number | null>(null);
+  const selectedIndex = hoveredIndex ?? pinnedIndex;
 
   // Whether to show live device vs action screenshots
-  const [showLiveDevice, setShowLiveDevice] = useState(true)
+  const [showLiveDevice, setShowLiveDevice] = useState(true);
 
   // "Run deps first" toggle — persisted in localStorage
   const [runDepsFirst, setRunDepsFirst] = useState(() => {
-    return localStorage.getItem('pilot-ui-run-deps') === 'true'
-  })
-  const runDepsRef = useRef(runDepsFirst)
+    return localStorage.getItem('pilot-ui-run-deps') === 'true';
+  });
+  const runDepsRef = useRef(runDepsFirst);
 
-  const tree = useTestTree()
-  const { canvasRef, handleBinaryFrame } = useScreenMirror()
+  const tree = useTestTree();
+  const { canvasRef, handleBinaryFrame } = useScreenMirror();
 
   // Whether any project has dependencies (controls visibility of the toggle)
   const hasProjectDeps = useMemo(() => {
     return tree.allFiles.some((node) =>
       node.type === 'project' && node.dependencies && node.dependencies.length > 0,
-    )
-  }, [tree.allFiles])
+    );
+  }, [tree.allFiles]);
 
   // Get the currently viewed test's trace data.
   // Prefer the test selected in the explorer; fall back to the actively running test.
@@ -111,35 +111,35 @@ function App() {
     // If a test node is selected in the tree, use its fullName
     if (tree.selectedTestId) {
       // selectedTestId is in the format "filePath::fullName" for tests
-      const sep = tree.selectedTestId.indexOf('::')
+      const sep = tree.selectedTestId.indexOf('::');
       if (sep !== -1) {
-        return tree.selectedTestId.slice(sep + 2)
+        return tree.selectedTestId.slice(sep + 2);
       }
     }
-    return activeTestName
-  }, [tree.selectedTestId, activeTestName])
+    return activeTestName;
+  }, [tree.selectedTestId, activeTestName]);
 
-  const currentTrace = viewedTestName ? testTraces.get(viewedTestName) : undefined
-  const traceEvents = currentTrace?.events ?? EMPTY_EVENTS
-  const actionEvents = currentTrace?.actionEvents ?? EMPTY_ACTION_EVENTS
-  const screenshots = currentTrace?.screenshots ?? EMPTY_MAP
-  const hierarchies = currentTrace?.hierarchies ?? EMPTY_MAP
-  const networkEntries = currentTrace?.network ?? EMPTY_NETWORK
+  const currentTrace = viewedTestName ? testTraces.get(viewedTestName) : undefined;
+  const traceEvents = currentTrace?.events ?? EMPTY_EVENTS;
+  const actionEvents = currentTrace?.actionEvents ?? EMPTY_ACTION_EVENTS;
+  const screenshots = currentTrace?.screenshots ?? EMPTY_MAP;
+  const hierarchies = currentTrace?.hierarchies ?? EMPTY_MAP;
+  const networkEntries = currentTrace?.network ?? EMPTY_NETWORK;
 
   // Find the viewed test node in the tree for duration/status
   const viewedTestNode = useMemo(() => {
-    if (!tree.selectedTestId) return undefined
+    if (!tree.selectedTestId) return undefined;
     function find(nodes: TestTreeNode[]): TestTreeNode | undefined {
       for (const n of nodes) {
-        if (n.id === tree.selectedTestId) return n
+        if (n.id === tree.selectedTestId) return n;
         if (n.children) {
-          const found = find(n.children)
-          if (found) return found
+          const found = find(n.children);
+          if (found) return found;
         }
       }
     }
-    return find(tree.allFiles)
-  }, [tree.selectedTestId, tree.allFiles])
+    return find(tree.allFiles);
+  }, [tree.selectedTestId, tree.allFiles]);
 
   // Metadata for trace viewer components
   const metadata = useMemo<TraceMetadata>(() => ({
@@ -158,205 +158,205 @@ function App() {
     traceConfig: { screenshots: true, snapshots: true, sources: true, network: true },
     actionCount: actionEvents.length,
     screenshotCount: screenshots.size,
-  }), [viewedTestName, viewedTestNode, isRunning, actionEvents.length, screenshots.size, deviceSerial])
+  }), [viewedTestName, viewedTestNode, isRunning, actionEvents.length, screenshots.size, deviceSerial]);
 
-  const selectedEvent = actionEvents[selectedIndex]
+  const selectedEvent = actionEvents[selectedIndex];
 
   /** Get or create trace data for a test. */
   function getOrCreateTrace(testFullName: string, traces: Map<string, TestTraceData>): { data: TestTraceData; map: Map<string, TestTraceData> } {
-    const existing = traces.get(testFullName)
-    if (existing) return { data: existing, map: traces }
-    const data = emptyTraceData()
-    const map = new Map(traces)
-    map.set(testFullName, data)
-    return { data, map }
+    const existing = traces.get(testFullName);
+    if (existing) return { data: existing, map: traces };
+    const data = emptyTraceData();
+    const map = new Map(traces);
+    map.set(testFullName, data);
+    return { data, map };
   }
 
   const handleMessage = useCallback((msg: ServerMessage) => {
     switch (msg.type) {
       case 'test-tree':
-        tree.setTestTree(msg.files)
-        break
+        tree.setTestTree(msg.files);
+        break;
       case 'run-start':
-        setIsRunning(true)
+        setIsRunning(true);
         // Scope trace clearing: single test > single file > all.
         // This preserves traces from other tests/files so clicking back
         // on them still shows their actions and status.
         if (msg.testFilter) {
           // Running a single test — only clear that test's trace
           setTestTraces((prev) => {
-            if (!prev.has(msg.testFilter!)) return prev
-            const next = new Map(prev)
-            next.delete(msg.testFilter!)
-            return next
-          })
+            if (!prev.has(msg.testFilter!)) return prev;
+            const next = new Map(prev);
+            next.delete(msg.testFilter!);
+            return next;
+          });
         } else if (msg.filePath) {
           // Running a whole file — clear all traces for that file
           setTestTraces((prev) => {
-            const next = new Map<string, TestTraceData>()
+            const next = new Map<string, TestTraceData>();
             for (const [name, data] of prev) {
-              if (data.filePath !== msg.filePath) next.set(name, data)
+              if (data.filePath !== msg.filePath) next.set(name, data);
             }
-            return next
-          })
+            return next;
+          });
         } else {
           // Running all files
-          setTestTraces(new Map())
+          setTestTraces(new Map());
         }
-        activeTestRef.current = null
-        setActiveTestName(null)
-        setSources(new Map())
-        setPinnedIndex(0)
-        setHoveredIndex(null)
-        setShowLiveDevice(true)
+        activeTestRef.current = null;
+        setActiveTestName(null);
+        setSources(new Map());
+        setPinnedIndex(0);
+        setHoveredIndex(null);
+        setShowLiveDevice(true);
         if (!msg.filePath && !msg.testFilter) {
           // Full run — clear worker mappings
-          testWorkerMapRef.current.clear()
+          testWorkerMapRef.current.clear();
         }
-        break
+        break;
       case 'run-end':
-        setIsRunning(false)
+        setIsRunning(false);
         // Clear any tests/suites/files stuck in 'running' (e.g. after stop).
-        tree.resetRunningStatuses()
-        break
+        tree.resetRunningStatuses();
+        break;
       case 'test-start':
         // Update ref immediately (no batching delay)
-        activeTestRef.current = msg.fullName
-        setActiveTestName(msg.fullName)
-        setPinnedIndex(0)
-        setHoveredIndex(null)
+        activeTestRef.current = msg.fullName;
+        setActiveTestName(msg.fullName);
+        setPinnedIndex(0);
+        setHoveredIndex(null);
         // Track which worker ran this test
         if (msg.workerId != null) {
-          testWorkerMapRef.current.set(msg.fullName, msg.workerId)
+          testWorkerMapRef.current.set(msg.fullName, msg.workerId);
         }
         // Mark this test (and its parent describe/file) as running
-        tree.updateTestStatus(msg.fullName, msg.filePath, 'running')
+        tree.updateTestStatus(msg.fullName, msg.filePath, 'running');
         // Auto-select this test in the explorer
-        tree.setSelectedTestId(`${msg.filePath}::${msg.fullName}`)
+        tree.setSelectedTestId(`${msg.filePath}::${msg.fullName}`);
         // Ensure trace data exists for this test
         setTestTraces((prev) => {
-          if (prev.has(msg.fullName)) return prev
-          const next = new Map(prev)
-          next.set(msg.fullName, emptyTraceData(msg.filePath))
-          return next
-        })
-        break
+          if (prev.has(msg.fullName)) return prev;
+          const next = new Map(prev);
+          next.set(msg.fullName, emptyTraceData(msg.filePath));
+          return next;
+        });
+        break;
       case 'test-status':
         if (msg.workerId != null) {
-          testWorkerMapRef.current.set(msg.fullName, msg.workerId)
+          testWorkerMapRef.current.set(msg.fullName, msg.workerId);
         }
-        tree.updateTestStatus(msg.fullName, msg.filePath, msg.status, msg.duration, msg.error)
+        tree.updateTestStatus(msg.fullName, msg.filePath, msg.status, msg.duration, msg.error);
         if (msg.tracePath) {
           setTestTraces((prev) => {
-            const data = prev.get(msg.fullName)
-            if (!data) return prev
-            const next = new Map(prev)
-            next.set(msg.fullName, { ...data, tracePath: msg.tracePath })
-            return next
-          })
+            const data = prev.get(msg.fullName);
+            if (!data) return prev;
+            const next = new Map(prev);
+            next.set(msg.fullName, { ...data, tracePath: msg.tracePath });
+            return next;
+          });
         }
-        break
+        break;
       case 'file-status':
-        tree.updateFileStatus(msg.filePath, msg.status)
-        break
+        tree.updateFileStatus(msg.filePath, msg.status);
+        break;
       case 'trace-event': {
-        const testName = msg.testFullName || activeTestRef.current
-        if (!testName) break
-        const ev = msg.event
+        const testName = msg.testFullName || activeTestRef.current;
+        if (!testName) break;
+        const ev = msg.event;
 
         setTestTraces((prev) => {
-          const { data, map } = getOrCreateTrace(testName, prev)
+          const { data, map } = getOrCreateTrace(testName, prev);
 
           // Append event. For assertions without bounds, inherit from the
           // most recent action that had bounds (e.g. find() → toBe() chain).
-          let eventToStore = ev
+          let eventToStore = ev;
           if ((ev.type === 'assertion' && !ev.bounds) || (ev.type === 'action' && !ev.bounds)) {
             const prevWithBounds = [...data.actionEvents].reverse().find((e) =>
               (e.type === 'action' || e.type === 'assertion') && e.bounds
-            )
+            );
             if (prevWithBounds?.bounds) {
-              eventToStore = { ...ev, bounds: prevWithBounds.bounds }
+              eventToStore = { ...ev, bounds: prevWithBounds.bounds };
             }
           }
-          const events = [...data.events, eventToStore]
+          const events = [...data.events, eventToStore];
           const actionEvents = (eventToStore.type === 'action' || eventToStore.type === 'assertion')
             ? [...data.actionEvents, eventToStore as ActionTraceEvent | AssertionTraceEvent]
-            : data.actionEvents
+            : data.actionEvents;
 
           // Store screenshots/hierarchies
-          const screenshots = new Map(data.screenshots)
-          const hierarchies = new Map(data.hierarchies)
+          const screenshots = new Map(data.screenshots);
+          const hierarchies = new Map(data.hierarchies);
           if (ev.type === 'action' || ev.type === 'assertion') {
-            const pad = String(ev.actionIndex).padStart(3, '0')
+            const pad = String(ev.actionIndex).padStart(3, '0');
             if (msg.screenshotBefore) {
-              screenshots.set(`screenshots/action-${pad}-before.png`, base64ToBlobUrl(msg.screenshotBefore))
+              screenshots.set(`screenshots/action-${pad}-before.png`, base64ToBlobUrl(msg.screenshotBefore));
             }
             if (msg.screenshotAfter) {
-              screenshots.set(`screenshots/action-${pad}-after.png`, base64ToBlobUrl(msg.screenshotAfter))
+              screenshots.set(`screenshots/action-${pad}-after.png`, base64ToBlobUrl(msg.screenshotAfter));
             }
             // For actions without screenshots (e.g. generic toBe assertions),
             // inherit the most recent screenshot so clicking them still shows
             // the device state.
             if (!msg.screenshotBefore && !msg.screenshotAfter) {
-              const prevIdx = ev.actionIndex - 1
+              const prevIdx = ev.actionIndex - 1;
               if (prevIdx >= 0) {
-                const prevPad = String(prevIdx).padStart(3, '0')
+                const prevPad = String(prevIdx).padStart(3, '0');
                 const prevAfter = screenshots.get(`screenshots/action-${prevPad}-after.png`)
-                  ?? screenshots.get(`screenshots/action-${prevPad}-before.png`)
+                  ?? screenshots.get(`screenshots/action-${prevPad}-before.png`);
                 if (prevAfter) {
-                  screenshots.set(`screenshots/action-${pad}-before.png`, prevAfter)
+                  screenshots.set(`screenshots/action-${pad}-before.png`, prevAfter);
                 }
               }
             }
             if (msg.hierarchyBefore) {
-              hierarchies.set(`hierarchy/action-${pad}-before.xml`, msg.hierarchyBefore)
+              hierarchies.set(`hierarchy/action-${pad}-before.xml`, msg.hierarchyBefore);
             }
             if (msg.hierarchyAfter) {
-              hierarchies.set(`hierarchy/action-${pad}-after.xml`, msg.hierarchyAfter)
+              hierarchies.set(`hierarchy/action-${pad}-after.xml`, msg.hierarchyAfter);
             }
           }
 
-          const next = new Map(map)
-          next.set(testName, { events, actionEvents, screenshots, hierarchies, network: data.network, filePath: data.filePath })
-          return next
-        })
+          const next = new Map(map);
+          next.set(testName, { events, actionEvents, screenshots, hierarchies, network: data.network, filePath: data.filePath });
+          return next;
+        });
 
         // Auto-pin to latest action for the active test
         if ((ev.type === 'action' || ev.type === 'assertion') && testName === activeTestRef.current) {
-          setPinnedIndex(ev.actionIndex)
-          setShowLiveDevice(false)
+          setPinnedIndex(ev.actionIndex);
+          setShowLiveDevice(false);
         }
-        break
+        break;
       }
       case 'source':
         setSources((prev) => {
-          const next = new Map(prev)
-          next.set(msg.fileName, msg.content)
-          return next
-        })
-        break
+          const next = new Map(prev);
+          next.set(msg.fileName, msg.content);
+          return next;
+        });
+        break;
       case 'network': {
         // Attach network entries to the active test
-        const testName = activeTestRef.current
-        if (!testName) break
+        const testName = activeTestRef.current;
+        if (!testName) break;
         setTestTraces((prev) => {
-          const { data, map } = getOrCreateTrace(testName, prev)
-          const next = new Map(map)
-          next.set(testName, { ...data, network: msg.entries })
-          return next
-        })
-        break
+          const { data, map } = getOrCreateTrace(testName, prev);
+          const next = new Map(map);
+          next.set(testName, { ...data, network: msg.entries });
+          return next;
+        });
+        break;
       }
       case 'watch-event':
         if (msg.event === 'watch-enabled') {
-          tree.updateWatchEnabled(msg.filePath, true)
+          tree.updateWatchEnabled(msg.filePath, true);
         } else if (msg.event === 'watch-disabled') {
-          tree.updateWatchEnabled(msg.filePath, false)
+          tree.updateWatchEnabled(msg.filePath, false);
         }
-        break
+        break;
       case 'device-info':
-        setDeviceSerial(msg.serial)
-        break
+        setDeviceSerial(msg.serial);
+        break;
       case 'workers-info':
         setWorkers(msg.workers.map((w) => ({
           ...w,
@@ -364,13 +364,13 @@ function App() {
           passed: 0,
           failed: 0,
           skipped: 0,
-        })))
-        break
+        })));
+        break;
       case 'worker-status':
         setWorkers((prev) => {
-          const idx = prev.findIndex((w) => w.workerId === msg.workerId)
-          if (idx === -1) return prev
-          const next = [...prev]
+          const idx = prev.findIndex((w) => w.workerId === msg.workerId);
+          if (idx === -1) return prev;
+          const next = [...prev];
           next[idx] = {
             ...next[idx],
             status: msg.status,
@@ -379,115 +379,115 @@ function App() {
             passed: msg.passed,
             failed: msg.failed,
             skipped: msg.skipped,
-          }
-          return next
-        })
-        break
+          };
+          return next;
+        });
+        break;
       case 'error':
-        console.error('[Pilot UI]', msg.message)
-        break
+        console.error('[Pilot UI]', msg.message);
+        break;
     }
-  }, [tree])
+  }, [tree]);
 
   const handleConnectionChange = useCallback((isConnected: boolean) => {
-    setConnected(isConnected)
-  }, [])
+    setConnected(isConnected);
+  }, []);
 
   const { send } = useWebSocket({
     onMessage: handleMessage,
     onBinaryMessage: handleBinaryFrame,
     onConnectionChange: handleConnectionChange,
-  })
+  });
 
   const handleThemeChange = useCallback((newTheme: Theme) => {
-    setTheme(newTheme)
-    localStorage.setItem('pilot-ui-theme', newTheme)
+    setTheme(newTheme);
+    localStorage.setItem('pilot-ui-theme', newTheme);
     const resolved = newTheme === 'system'
       ? (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light')
-      : newTheme
-    document.documentElement.setAttribute('data-theme', resolved)
-  }, [])
+      : newTheme;
+    document.documentElement.setAttribute('data-theme', resolved);
+  }, []);
 
   const handleSend = useCallback((msg: ClientMessage) => {
     // Inject runDeps flag when the toggle is on. Use the ref for the latest
     // value regardless of React batching (same pattern as activeTestRef).
     if (runDepsRef.current && (msg.type === 'run-file' || msg.type === 'run-test')) {
-      send({ ...msg, runDeps: true })
+      send({ ...msg, runDeps: true });
     } else {
-      send(msg)
+      send(msg);
     }
-  }, [send])
+  }, [send]);
 
   const handleToggleRunDeps = useCallback(() => {
     setRunDepsFirst((prev) => {
-      const next = !prev
-      runDepsRef.current = next
-      localStorage.setItem('pilot-ui-run-deps', String(next))
-      return next
-    })
-  }, [])
+      const next = !prev;
+      runDepsRef.current = next;
+      localStorage.setItem('pilot-ui-run-deps', String(next));
+      return next;
+    });
+  }, []);
 
   // Auto-switch device mirror to the worker that ran the viewed test.
-  const lastSentWorkerRef = useRef<number | undefined>(undefined)
+  const lastSentWorkerRef = useRef<number | undefined>(undefined);
   useEffect(() => {
-    if (!viewedTestName || workers.length < 2) return
-    const wid = testWorkerMapRef.current.get(viewedTestName)
+    if (!viewedTestName || workers.length < 2) return;
+    const wid = testWorkerMapRef.current.get(viewedTestName);
     if (wid != null && wid !== lastSentWorkerRef.current) {
-      lastSentWorkerRef.current = wid
-      send({ type: 'select-worker', workerId: wid })
+      lastSentWorkerRef.current = wid;
+      send({ type: 'select-worker', workerId: wid });
     }
-  }, [viewedTestName, workers.length, send])
+  }, [viewedTestName, workers.length, send]);
 
   const handleActionPin = useCallback((index: number) => {
-    setPinnedIndex(index)
-    setShowLiveDevice(false)
-  }, [])
+    setPinnedIndex(index);
+    setShowLiveDevice(false);
+  }, []);
 
   // ─── Keyboard shortcuts ───
 
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       // Ignore when typing in an input/textarea
-      const tag = (e.target as HTMLElement)?.tagName
-      if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return
+      const tag = (e.target as HTMLElement)?.tagName;
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
 
       switch (e.key) {
         case 'r':
-          send({ type: 'run-all' })
-          break
+          send({ type: 'run-all' });
+          break;
         case 'f':
-          send({ type: 'run-failed' })
-          break
+          send({ type: 'run-failed' });
+          break;
         case 'Escape':
-          send({ type: 'stop-run' })
-          break
+          send({ type: 'stop-run' });
+          break;
         case 'w':
-          send({ type: 'toggle-watch', filePath: 'all' })
-          break
+          send({ type: 'toggle-watch', filePath: 'all' });
+          break;
       }
-    }
-    window.addEventListener('keydown', handler)
-    return () => window.removeEventListener('keydown', handler)
-  }, [send])
+    };
+    window.addEventListener('keydown', handler);
+    return () => window.removeEventListener('keydown', handler);
+  }, [send]);
 
   // ─── Download trace ───
 
   const handleDownloadTrace = useCallback(async () => {
-    if (!viewedTestName || !currentTrace?.tracePath) return
+    if (!viewedTestName || !currentTrace?.tracePath) return;
     try {
-      const resp = await fetch(`/trace/${encodeURIComponent(currentTrace.tracePath)}`)
-      if (!resp.ok) throw new Error(`HTTP ${resp.status}`)
-      const blob = await resp.blob()
-      const url = URL.createObjectURL(blob)
-      const a = document.createElement('a')
-      a.href = url
-      a.download = `trace-${viewedTestName.replace(/[^a-zA-Z0-9]+/g, '-')}.zip`
-      a.click()
-      URL.revokeObjectURL(url)
+      const resp = await fetch(`/trace/${encodeURIComponent(currentTrace.tracePath)}`);
+      if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+      const blob = await resp.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `trace-${viewedTestName.replace(/[^a-zA-Z0-9]+/g, '-')}.zip`;
+      a.click();
+      URL.revokeObjectURL(url);
     } catch (err) {
-      console.error('[Pilot UI] Failed to download trace:', err)
+      console.error('[Pilot UI] Failed to download trace:', err);
     }
-  }, [viewedTestName, currentTrace])
+  }, [viewedTestName, currentTrace]);
 
   return (
     <Layout
@@ -598,12 +598,12 @@ function App() {
         />
       }
     />
-  )
+  );
 }
 
 // ─── Styles ───
 
-const style = document.createElement('style')
+const style = document.createElement('style');
 style.textContent = `
 /* ─── Reset & Base ─── */
 
@@ -1186,20 +1186,20 @@ html, body, #app {
 ::-webkit-scrollbar-track { background: transparent; }
 ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
 ::-webkit-scrollbar-thumb:hover { background: var(--border-light); }
-`
+`;
 document.head.appendChild(style)
 
 // ─── Theme ───
 
 ;(() => {
-  const stored = localStorage.getItem('pilot-ui-theme')
-  const theme = (stored === 'light' || stored === 'dark' || stored === 'system') ? stored : 'system'
+  const stored = localStorage.getItem('pilot-ui-theme');
+  const theme = (stored === 'light' || stored === 'dark' || stored === 'system') ? stored : 'system';
   const resolved = theme === 'system'
     ? (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light')
-    : theme
-  document.documentElement.setAttribute('data-theme', resolved)
-})()
+    : theme;
+  document.documentElement.setAttribute('data-theme', resolved);
+})();
 
 // ─── Render ───
 
-render(<App />, document.getElementById('app')!)
+render(<App />, document.getElementById('app')!);

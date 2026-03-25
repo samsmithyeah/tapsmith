@@ -8,74 +8,74 @@
  * @see PILOT-70
  */
 
-import * as fs from 'node:fs'
-import * as path from 'node:path'
-import type { PilotReporter, FullResult } from '../reporter.js'
-import type { PilotConfig } from '../config.js'
+import * as fs from 'node:fs';
+import * as path from 'node:path';
+import type { PilotReporter, FullResult } from '../reporter.js';
+import type { PilotConfig } from '../config.js';
 type OpenMode = 'always' | 'never' | 'on-failure'
 
 export class HtmlReporter implements PilotReporter {
-  private _outputFolder: string
-  private _open: OpenMode
-  private _config?: PilotConfig
-  private _startTime = new Date()
+  private _outputFolder: string;
+  private _open: OpenMode;
+  private _config?: PilotConfig;
+  private _startTime = new Date();
 
   constructor(options: Record<string, unknown> = {}) {
-    this._outputFolder = (options.outputFolder as string) ?? 'pilot-report'
-    this._open = (options.open as OpenMode) ?? 'on-failure'
+    this._outputFolder = (options.outputFolder as string) ?? 'pilot-report';
+    this._open = (options.open as OpenMode) ?? 'on-failure';
   }
 
   onRunStart(config: PilotConfig, _fileCount: number): void {
-    this._config = config
-    this._startTime = new Date()
+    this._config = config;
+    this._startTime = new Date();
   }
 
   async onRunEnd(result: FullResult): Promise<void> {
-    const rootDir = this._config?.rootDir ?? process.cwd()
-    const outputDir = path.resolve(rootDir, this._outputFolder)
-    fs.mkdirSync(outputDir, { recursive: true })
+    const rootDir = this._config?.rootDir ?? process.cwd();
+    const outputDir = path.resolve(rootDir, this._outputFolder);
+    fs.mkdirSync(outputDir, { recursive: true });
 
     // Copy screenshots to report folder
-    const screenshotMap = new Map<string, string>()
+    const screenshotMap = new Map<string, string>();
     for (const test of result.tests) {
       if (test.screenshotPath && fs.existsSync(test.screenshotPath)) {
-        const basename = path.basename(test.screenshotPath)
-        const dest = path.join(outputDir, basename)
-        fs.copyFileSync(test.screenshotPath, dest)
-        screenshotMap.set(test.screenshotPath, basename)
+        const basename = path.basename(test.screenshotPath);
+        const dest = path.join(outputDir, basename);
+        fs.copyFileSync(test.screenshotPath, dest);
+        screenshotMap.set(test.screenshotPath, basename);
       }
     }
 
     // Copy trace zips to report folder
-    const traceMap = new Map<string, string>()
+    const traceMap = new Map<string, string>();
     for (const test of result.tests) {
       if (test.tracePath && fs.existsSync(test.tracePath)) {
-        const basename = path.basename(test.tracePath)
-        const dest = path.join(outputDir, basename)
-        fs.copyFileSync(test.tracePath, dest)
-        traceMap.set(test.tracePath, basename)
+        const basename = path.basename(test.tracePath);
+        const dest = path.join(outputDir, basename);
+        fs.copyFileSync(test.tracePath, dest);
+        traceMap.set(test.tracePath, basename);
       }
     }
 
-    const html = generateHtml(result, this._startTime, screenshotMap, traceMap)
-    const indexPath = path.join(outputDir, 'index.html')
-    fs.writeFileSync(indexPath, html)
+    const html = generateHtml(result, this._startTime, screenshotMap, traceMap);
+    const indexPath = path.join(outputDir, 'index.html');
+    fs.writeFileSync(indexPath, html);
 
-    const hasFailed = result.tests.some((t) => t.status === 'failed')
+    const hasFailed = result.tests.some((t) => t.status === 'failed');
     const shouldOpen =
-      this._open === 'always' || (this._open === 'on-failure' && hasFailed)
+      this._open === 'always' || (this._open === 'on-failure' && hasFailed);
 
     if (shouldOpen) {
       try {
-        const { spawn } = await import('node:child_process')
-        const cmd = process.platform === 'darwin' ? 'open' : process.platform === 'win32' ? 'start' : 'xdg-open'
-        spawn(cmd, [indexPath], { detached: true, stdio: 'ignore' }).unref()
+        const { spawn } = await import('node:child_process');
+        const cmd = process.platform === 'darwin' ? 'open' : process.platform === 'win32' ? 'start' : 'xdg-open';
+        spawn(cmd, [indexPath], { detached: true, stdio: 'ignore' }).unref();
       } catch {
         // Best-effort open
       }
     }
 
-    process.stderr.write(`HTML report written to ${indexPath}\n`)
+    process.stderr.write(`HTML report written to ${indexPath}\n`);
   }
 }
 
@@ -85,14 +85,14 @@ function generateHtml(
   screenshotMap: Map<string, string>,
   traceMap: Map<string, string>,
 ): string {
-  const passed = result.tests.filter((t) => t.status === 'passed').length
-  const failed = result.tests.filter((t) => t.status === 'failed').length
-  const skipped = result.tests.filter((t) => t.status === 'skipped').length
-  const duration = (result.duration / 1000).toFixed(2)
+  const passed = result.tests.filter((t) => t.status === 'passed').length;
+  const failed = result.tests.filter((t) => t.status === 'failed').length;
+  const skipped = result.tests.filter((t) => t.status === 'skipped').length;
+  const duration = (result.duration / 1000).toFixed(2);
 
   const testRows = result.tests.map((t) => {
-    const screenshotFile = t.screenshotPath ? screenshotMap.get(t.screenshotPath) : null
-    const traceFile = t.tracePath ? traceMap.get(t.tracePath) : null
+    const screenshotFile = t.screenshotPath ? screenshotMap.get(t.screenshotPath) : null;
+    const traceFile = t.tracePath ? traceMap.get(t.tracePath) : null;
     return {
       name: escapeHtml(t.fullName),
       status: t.status,
@@ -103,10 +103,10 @@ function generateHtml(
       screenshot: screenshotFile,
       trace: traceFile,
       project: t.project || null,
-    }
-  })
+    };
+  });
 
-  const testDataJson = JSON.stringify(testRows)
+  const testDataJson = JSON.stringify(testRows);
 
   return `<!DOCTYPE html>
 <html lang="en">
@@ -280,7 +280,7 @@ document.getElementById('search').addEventListener('input', function(e) {
 render('all', '');
 </script>
 </body>
-</html>`
+</html>`;
 }
 
 function escapeHtml(s: string): string {
@@ -288,7 +288,7 @@ function escapeHtml(s: string): string {
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
+    .replace(/"/g, '&quot;');
 }
 
 interface HtmlSnippetLine {
@@ -300,45 +300,45 @@ interface HtmlSnippetLine {
 function extractCodeSnippetForHtml(
   error: Error,
 ): { file: string; lines: HtmlSnippetLine[] } | null {
-  if (!error.stack) return null
+  if (!error.stack) return null;
 
-  const frames = error.stack.split('\n').slice(1)
+  const frames = error.stack.split('\n').slice(1);
   const userFrame = frames.find(
     (l) => !l.includes('/packages/pilot/') && !l.includes('node:internal/') && l.includes(':'),
-  )
-  if (!userFrame) return null
+  );
+  if (!userFrame) return null;
 
-  const match = userFrame.trim().match(/\(?([^()]+):(\d+):\d+\)?$/)
-  if (!match) return null
+  const match = userFrame.trim().match(/\(?([^()]+):(\d+):\d+\)?$/);
+  if (!match) return null;
 
-  const filePath = match[1]
-  const lineNum = parseInt(match[2], 10)
-  if (isNaN(lineNum)) return null
+  const filePath = match[1];
+  const lineNum = parseInt(match[2], 10);
+  if (isNaN(lineNum)) return null;
 
   try {
-    if (!fs.existsSync(filePath)) return null
-    const source = fs.readFileSync(filePath, 'utf-8')
-    const sourceLines = source.split('\n')
+    if (!fs.existsSync(filePath)) return null;
+    const source = fs.readFileSync(filePath, 'utf-8');
+    const sourceLines = source.split('\n');
 
-    const contextSize = 2
-    const start = Math.max(0, lineNum - 1 - contextSize)
-    const end = Math.min(sourceLines.length, lineNum + contextSize)
+    const contextSize = 2;
+    const start = Math.max(0, lineNum - 1 - contextSize);
+    const end = Math.min(sourceLines.length, lineNum + contextSize);
 
-    const lines: HtmlSnippetLine[] = []
+    const lines: HtmlSnippetLine[] = [];
     for (let i = start; i < end; i++) {
       lines.push({
         lineNumber: i + 1,
         text: escapeHtml(sourceLines[i]),
         highlight: i + 1 === lineNum,
-      })
+      });
     }
 
     // Show a relative path for the header
-    const cwd = process.cwd()
-    const relFile = filePath.startsWith(cwd) ? filePath.slice(cwd.length + 1) : filePath
+    const cwd = process.cwd();
+    const relFile = filePath.startsWith(cwd) ? filePath.slice(cwd.length + 1) : filePath;
 
-    return { file: escapeHtml(`${relFile}:${lineNum}`), lines }
+    return { file: escapeHtml(`${relFile}:${lineNum}`), lines };
   } catch {
-    return null
+    return null;
   }
 }

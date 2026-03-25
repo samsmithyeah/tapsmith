@@ -8,7 +8,7 @@
  * @see PILOT-87
  */
 
-import type { AnyTraceEvent } from '../trace/types.js'
+import type { AnyTraceEvent } from '../trace/types.js';
 
 // ─── Test Tree ───
 
@@ -265,7 +265,7 @@ export type ClientMessage =
  *   bytes 4-7:  uint16 BE width, uint16 BE height
  *   bytes 8+:   raw PNG data
  */
-export const SCREEN_FRAME_HEADER_SIZE = 8
+export const SCREEN_FRAME_HEADER_SIZE = 8;
 
 export function encodeScreenFrame(
   seq: number,
@@ -273,11 +273,11 @@ export function encodeScreenFrame(
   height: number,
   png: Buffer,
 ): Buffer {
-  const header = Buffer.alloc(SCREEN_FRAME_HEADER_SIZE)
-  header.writeUInt32BE(seq, 0)
-  header.writeUInt16BE(width, 4)
-  header.writeUInt16BE(height, 6)
-  return Buffer.concat([header, png])
+  const header = Buffer.alloc(SCREEN_FRAME_HEADER_SIZE);
+  header.writeUInt32BE(seq, 0);
+  header.writeUInt16BE(width, 4);
+  header.writeUInt16BE(height, 6);
+  return Buffer.concat([header, png]);
 }
 
 export function decodeScreenFrameHeader(data: ArrayBuffer): {
@@ -286,13 +286,13 @@ export function decodeScreenFrameHeader(data: ArrayBuffer): {
   height: number
   pngOffset: number
 } {
-  const view = new DataView(data)
+  const view = new DataView(data);
   return {
     seq: view.getUint32(0),
     width: view.getUint16(4),
     height: view.getUint16(6),
     pngOffset: SCREEN_FRAME_HEADER_SIZE,
-  }
+  };
 }
 
 // ─── IPC protocol (child process ↔ UI server) ───

@@ -5,11 +5,11 @@
  * Opens the default browser automatically.
  */
 
-import * as http from 'node:http'
-import * as fs from 'node:fs'
-import * as path from 'node:path'
+import * as http from 'node:http';
+import * as fs from 'node:fs';
+import * as path from 'node:path';
 
-const VIEWER_HTML_PATH = path.resolve(__dirname, '../trace-viewer/index.html')
+const VIEWER_HTML_PATH = path.resolve(__dirname, '../trace-viewer/index.html');
 
 
 export interface ShowTraceOptions {
@@ -23,95 +23,95 @@ export interface ShowTraceOptions {
  * Start the trace viewer server, open the browser, and return a cleanup function.
  */
 export async function showTrace(options: ShowTraceOptions): Promise<{ port: number; close: () => void }> {
-  const { tracePath, port: preferredPort } = options
-  const resolvedTrace = path.resolve(tracePath)
+  const { tracePath, port: preferredPort } = options;
+  const resolvedTrace = path.resolve(tracePath);
 
   if (!fs.existsSync(resolvedTrace)) {
-    throw new Error(`Trace file not found: ${resolvedTrace}`)
+    throw new Error(`Trace file not found: ${resolvedTrace}`);
   }
 
   if (!resolvedTrace.endsWith('.zip')) {
-    throw new Error(`Expected a .zip file, got: ${resolvedTrace}`)
+    throw new Error(`Expected a .zip file, got: ${resolvedTrace}`);
   }
 
   // Check if bundled viewer exists
-  let viewerHtml: string
+  let viewerHtml: string;
   if (fs.existsSync(VIEWER_HTML_PATH)) {
-    viewerHtml = fs.readFileSync(VIEWER_HTML_PATH, 'utf-8')
+    viewerHtml = fs.readFileSync(VIEWER_HTML_PATH, 'utf-8');
   } else {
     // Fallback: minimal viewer that loads the zip
-    viewerHtml = buildFallbackViewer()
+    viewerHtml = buildFallbackViewer();
   }
 
   const server = http.createServer((req, res) => {
-    const url = new URL(req.url ?? '/', `http://localhost`)
+    const url = new URL(req.url ?? '/', `http://localhost`);
 
     // Serve the viewer HTML
     if (url.pathname === '/' || url.pathname === '/index.html') {
-      res.writeHead(200, { 'Content-Type': 'text/html' })
-      res.end(viewerHtml)
-      return
+      res.writeHead(200, { 'Content-Type': 'text/html' });
+      res.end(viewerHtml);
+      return;
     }
 
     // Serve vendored fflate browser ESM bundle from node_modules
     if (url.pathname === '/vendor/fflate.js') {
-      const fflatePath = path.resolve(__dirname, '../node_modules/fflate/esm/browser.js')
+      const fflatePath = path.resolve(__dirname, '../node_modules/fflate/esm/browser.js');
       if (!fs.existsSync(fflatePath)) {
-        res.writeHead(404)
-        res.end('fflate bundle not found')
-        return
+        res.writeHead(404);
+        res.end('fflate bundle not found');
+        return;
       }
-      const stat = fs.statSync(fflatePath)
+      const stat = fs.statSync(fflatePath);
       res.writeHead(200, {
         'Content-Type': 'application/javascript',
         'Content-Length': stat.size,
-      })
-      fs.createReadStream(fflatePath).pipe(res)
-      return
+      });
+      fs.createReadStream(fflatePath).pipe(res);
+      return;
     }
 
     // Serve the trace zip
     if (url.pathname === '/trace.zip') {
-      const stat = fs.statSync(resolvedTrace)
+      const stat = fs.statSync(resolvedTrace);
       res.writeHead(200, {
         'Content-Type': 'application/zip',
         'Content-Length': stat.size,
         'Access-Control-Allow-Origin': '*',
-      })
-      fs.createReadStream(resolvedTrace).pipe(res)
-      return
+      });
+      fs.createReadStream(resolvedTrace).pipe(res);
+      return;
     }
 
-    res.writeHead(404)
-    res.end('Not found')
-  })
+    res.writeHead(404);
+    res.end('Not found');
+  });
 
   const actualPort = await new Promise<number>((resolve, reject) => {
-    const tryPort = preferredPort ?? 0
+    const tryPort = preferredPort ?? 0;
     server.listen(tryPort, '127.0.0.1', () => {
-      const addr = server.address()
+      const addr = server.address();
       if (typeof addr === 'object' && addr) {
-        resolve(addr.port)
+        resolve(addr.port);
       } else {
-        reject(new Error('Failed to bind'))
+        reject(new Error('Failed to bind'));
       }
-    })
-    server.on('error', reject)
-  })
+    });
+    server.on('error', reject);
+  });
 
   // Open browser
-  const viewerUrl = `http://127.0.0.1:${actualPort}/?trace=/trace.zip`
+  const viewerUrl = `http://127.0.0.1:${actualPort}/?trace=/trace.zip`;
   try {
-    const open = await import('open')
-    await open.default(viewerUrl)
+    const open = await import('open');
+    await open.default(viewerUrl);
   } catch {
-    console.log(`Open: ${viewerUrl}`)
+    console.log(`Open: ${viewerUrl}`);
   }
 
   return {
     port: actualPort,
     close: () => server.close(),
-  }
+  };
 }
 
 function buildFallbackViewer(): string {
@@ -238,5 +238,5 @@ function buildFallbackViewer(): string {
     })
   </script>
 </body>
-</html>`
+</html>`;
 }

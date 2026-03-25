@@ -6,7 +6,7 @@
  * @see PILOT-106
  */
 
-import type { TestResult, SuiteResult } from './runner.js'
+import type { TestResult, SuiteResult } from './runner.js';
 
 // ─── Main → Worker messages ───
 
@@ -107,7 +107,7 @@ export const RECOVERABLE_INFRASTRUCTURE_PATTERNS = [
   '14 UNAVAILABLE',
   'No connection established',
   'ECONNREFUSED',
-] as const
+] as const;
 
 /**
  * Check whether an error represents a recoverable infrastructure failure
@@ -115,8 +115,8 @@ export const RECOVERABLE_INFRASTRUCTURE_PATTERNS = [
  * test assertion failure.
  */
 export function isRecoverableInfrastructureError(err: unknown): boolean {
-  const message = err instanceof Error ? err.message : String(err)
-  return RECOVERABLE_INFRASTRUCTURE_PATTERNS.some((pattern) => message.includes(pattern))
+  const message = err instanceof Error ? err.message : String(err);
+  return RECOVERABLE_INFRASTRUCTURE_PATTERNS.some((pattern) => message.includes(pattern));
 }
 
 // ─── Serialized types (safe for IPC / structured clone) ───
@@ -171,7 +171,7 @@ export function serializeTestResult(result: TestResult, workerIndex: number): Se
     tracePath: result.tracePath,
     workerIndex,
     project: result.project,
-  }
+  };
 }
 
 export function serializeSuiteResult(suite: SuiteResult, workerIndex: number): SerializedSuiteResult {
@@ -180,7 +180,7 @@ export function serializeSuiteResult(suite: SuiteResult, workerIndex: number): S
     tests: suite.tests.map((t) => serializeTestResult(t, workerIndex)),
     suites: suite.suites.map((s) => serializeSuiteResult(s, workerIndex)),
     durationMs: suite.durationMs,
-  }
+  };
 }
 
 export function deserializeTestResult(s: SerializedTestResult): TestResult & { workerIndex: number } {
@@ -196,7 +196,7 @@ export function deserializeTestResult(s: SerializedTestResult): TestResult & { w
     tracePath: s.tracePath,
     workerIndex: s.workerIndex,
     project: s.project,
-  }
+  };
 }
 
 export function deserializeSuiteResult(s: SerializedSuiteResult): SuiteResult {
@@ -205,5 +205,5 @@ export function deserializeSuiteResult(s: SerializedSuiteResult): SuiteResult {
     tests: s.tests.map(deserializeTestResult),
     suites: s.suites.map(deserializeSuiteResult),
     durationMs: s.durationMs,
-  }
+  };
 }

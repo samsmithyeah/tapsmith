@@ -12,25 +12,25 @@
  * @see PILOT-87
  */
 
-import * as http from 'node:http'
-import * as fs from 'node:fs'
-import * as path from 'node:path'
-import { fork, spawn, type ChildProcess } from 'node:child_process'
-import { watch as chokidarWatch, type FSWatcher } from 'chokidar'
-import { WebSocketServer, type WebSocket } from 'ws'
-import type { PilotConfig } from '../config.js'
-import { PilotGrpcClient } from '../grpc-client.js'
-import type { Device } from '../device.js'
-import type { ResolvedProject } from '../project.js'
-import { collectTransitiveDeps } from '../project.js'
-import type { LaunchedEmulator } from '../emulator.js'
-import { preserveEmulatorsForReuse } from '../emulator.js'
+import * as http from 'node:http';
+import * as fs from 'node:fs';
+import * as path from 'node:path';
+import { fork, spawn, type ChildProcess } from 'node:child_process';
+import { watch as chokidarWatch, type FSWatcher } from 'chokidar';
+import { WebSocketServer, type WebSocket } from 'ws';
+import type { PilotConfig } from '../config.js';
+import { PilotGrpcClient } from '../grpc-client.js';
+import type { Device } from '../device.js';
+import type { ResolvedProject } from '../project.js';
+import { collectTransitiveDeps } from '../project.js';
+import type { LaunchedEmulator } from '../emulator.js';
+import { preserveEmulatorsForReuse } from '../emulator.js';
 import {
   deserializeTestResult,
   deserializeSuiteResult,
   type SerializedConfig,
   type RunFileUseOptions,
-} from '../worker-protocol.js'
+} from '../worker-protocol.js';
 import type {
   ServerMessage,
   ClientMessage,
@@ -41,17 +41,17 @@ import type {
   UIDiscoverChildMessage,
   UIWorkerChildMessage,
   UIWorkerMessage,
-} from './ui-protocol.js'
-import { encodeScreenFrame } from './ui-protocol.js'
-import { RunQueue } from '../watch-queue.js'
+} from './ui-protocol.js';
+import { encodeScreenFrame } from './ui-protocol.js';
+import { RunQueue } from '../watch-queue.js';
 
 // ─── SPA paths ───
 
-const SPA_HTML_PATH = path.resolve(__dirname, 'index.html')
+const SPA_HTML_PATH = path.resolve(__dirname, 'index.html');
 
-const DIM = '\x1b[2m'
-const YELLOW = '\x1b[33m'
-const RESET = '\x1b[0m'
+const DIM = '\x1b[2m';
+const YELLOW = '\x1b[33m';
+const RESET = '\x1b[0m';
 
 // ─── Types ───
 
@@ -109,39 +109,39 @@ export async function startUIServer(
   ctx: UIServerContext,
   options: UIServerOptions = {},
 ): Promise<{ port: number; close: () => void }> {
-  const clients = new Set<WebSocket>()
-  let testTree: TestTreeNode[] = []
-  let isRunning = false
-  const failedFiles = new Set<string>()
-  let activeChild: ChildProcess | null = null
-  let screenPollTimer: ReturnType<typeof setTimeout> | null = null
-  let screenSeq = 0
-  let screenPollActive = false
-  let watcher: FSWatcher | null = null
-  const watchedFiles = new Set<string>()
+  const clients = new Set<WebSocket>();
+  let testTree: TestTreeNode[] = [];
+  let isRunning = false;
+  const failedFiles = new Set<string>();
+  let activeChild: ChildProcess | null = null;
+  let screenPollTimer: ReturnType<typeof setTimeout> | null = null;
+  let screenSeq = 0;
+  let screenPollActive = false;
+  let watcher: FSWatcher | null = null;
+  const watchedFiles = new Set<string>();
 
   // ─── Multi-worker state ───
-  const multiWorker = (ctx.workers ?? 1) > 1 && (ctx.deviceSerials?.length ?? 0) > 1
-  const uiWorkers: UIWorkerHandle[] = []
-  let workersInitialized = false
+  const multiWorker = (ctx.workers ?? 1) > 1 && (ctx.deviceSerials?.length ?? 0) > 1;
+  const uiWorkers: UIWorkerHandle[] = [];
+  let workersInitialized = false;
   /** Which worker's device to mirror. Defaults to 0. */
-  let selectedWorkerId = 0
+  let selectedWorkerId = 0;
   /** Set to true while a parallel run is in progress, to signal stop. */
-  let parallelRunAborted = false
+  let parallelRunAborted = false;
   /** Callback to resolve the active dispatch promise on abort. */
-  let abortDispatch: (() => void) | null = null
+  let abortDispatch: (() => void) | null = null;
 
   // Detect whether meaningful projects are configured (not just a synthetic 'default')
   const hasRealProjects = ctx.projects != null
     && ctx.projects.length > 0
-    && !(ctx.projects.length === 1 && ctx.projects[0].name === 'default')
+    && !(ctx.projects.length === 1 && ctx.projects[0].name === 'default');
 
   // Build file → project lookup
-  const fileToProject = new Map<string, ResolvedProject>()
+  const fileToProject = new Map<string, ResolvedProject>();
   if (ctx.projects) {
     for (const project of ctx.projects) {
       for (const file of project.testFiles) {
-        fileToProject.set(file, project)
+        fileToProject.set(file, project);
       }
     }
   }
@@ -160,40 +160,40 @@ export async function startUIServer(
     trace: typeof ctx.config.trace === 'string' || typeof ctx.config.trace === 'object'
       ? ctx.config.trace
       : 'on',
-  }
+  };
 
   // Resolve tsx binary for forking TypeScript files
-  const jsScript = path.resolve(__dirname, 'ui-run.js')
-  const tsScript = path.resolve(__dirname, 'ui-run.ts')
-  const useTypeScript = !fs.existsSync(jsScript) && fs.existsSync(tsScript)
-  const resolvedRunScript = useTypeScript ? tsScript : jsScript
+  const jsScript = path.resolve(__dirname, 'ui-run.js');
+  const tsScript = path.resolve(__dirname, 'ui-run.ts');
+  const useTypeScript = !fs.existsSync(jsScript) && fs.existsSync(tsScript);
+  const resolvedRunScript = useTypeScript ? tsScript : jsScript;
 
-  const jsWorkerScript = path.resolve(__dirname, 'ui-worker.js')
-  const tsWorkerScript = path.resolve(__dirname, 'ui-worker.ts')
+  const jsWorkerScript = path.resolve(__dirname, 'ui-worker.js');
+  const tsWorkerScript = path.resolve(__dirname, 'ui-worker.ts');
   const resolvedWorkerScript = !fs.existsSync(jsWorkerScript) && fs.existsSync(tsWorkerScript)
     ? tsWorkerScript
-    : jsWorkerScript
+    : jsWorkerScript;
 
-  const jsDiscoverScript = path.resolve(__dirname, 'ui-discover.js')
-  const tsDiscoverScript = path.resolve(__dirname, 'ui-discover.ts')
+  const jsDiscoverScript = path.resolve(__dirname, 'ui-discover.js');
+  const tsDiscoverScript = path.resolve(__dirname, 'ui-discover.ts');
   const resolvedDiscoverScript = !fs.existsSync(jsDiscoverScript) && fs.existsSync(tsDiscoverScript)
     ? tsDiscoverScript
-    : jsDiscoverScript
+    : jsDiscoverScript;
 
-  let tsxBin: string | undefined
+  let tsxBin: string | undefined;
   if (useTypeScript || resolvedDiscoverScript.endsWith('.ts') || resolvedWorkerScript.endsWith('.ts')) {
-    const pilotPkgDir = path.resolve(__dirname, '..')
-    const localTsx = path.join(pilotPkgDir, 'node_modules', '.bin', 'tsx')
-    tsxBin = fs.existsSync(localTsx) ? localTsx : 'tsx'
+    const pilotPkgDir = path.resolve(__dirname, '..');
+    const localTsx = path.join(pilotPkgDir, 'node_modules', '.bin', 'tsx');
+    tsxBin = fs.existsSync(localTsx) ? localTsx : 'tsx';
   }
 
   // ─── Broadcast ───
 
   function broadcast(msg: ServerMessage): void {
-    const data = JSON.stringify(msg)
+    const data = JSON.stringify(msg);
     for (const ws of clients) {
       if (ws.readyState === ws.OPEN) {
-        ws.send(data)
+        ws.send(data);
       }
     }
   }
@@ -201,7 +201,7 @@ export async function startUIServer(
   function broadcastBinary(data: Buffer): void {
     for (const ws of clients) {
       if (ws.readyState === ws.OPEN) {
-        ws.send(data)
+        ws.send(data);
       }
     }
   }
@@ -217,60 +217,60 @@ export async function startUIServer(
           ...process.env,
           NODE_PATH: path.resolve(__dirname, '..', '..'),
         },
-      })
+      });
 
-      let settled = false
+      let settled = false;
 
       child.on('message', (response: UIDiscoverChildMessage) => {
-        if (settled) return
-        settled = true
+        if (settled) return;
+        settled = true;
 
         if (response.type === 'discover-result') {
-          resolve(response.tree)
+          resolve(response.tree);
         } else {
-          console.error(`Discovery error for ${filePath}: ${response.error.message}`)
-          resolve(null)
+          console.error(`Discovery error for ${filePath}: ${response.error.message}`);
+          resolve(null);
         }
-      })
+      });
 
       child.on('exit', () => {
         if (!settled) {
-          settled = true
-          resolve(null)
+          settled = true;
+          resolve(null);
         }
-      })
+      });
 
       child.on('error', () => {
         if (!settled) {
-          settled = true
-          resolve(null)
+          settled = true;
+          resolve(null);
         }
-      })
+      });
 
-      const msg: UIDiscoverMessage = { type: 'discover', filePath }
-      child.send(msg)
-    })
+      const msg: UIDiscoverMessage = { type: 'discover', filePath };
+      child.send(msg);
+    });
   }
 
   async function discoverAllFiles(): Promise<void> {
     // Discover all files first
-    const fileNodes = new Map<string, TestTreeNode>()
+    const fileNodes = new Map<string, TestTreeNode>();
     for (const file of ctx.testFiles) {
-      const tree = await discoverFile(file)
+      const tree = await discoverFile(file);
       if (tree) {
-        fileNodes.set(file, tree)
+        fileNodes.set(file, tree);
       }
     }
 
     // Group into project nodes when projects are configured
     if (hasRealProjects && ctx.projects) {
-      const trees: TestTreeNode[] = []
+      const trees: TestTreeNode[] = [];
       for (const project of ctx.projects) {
         const projectFiles = project.testFiles
           .map((f) => fileNodes.get(f))
-          .filter((n): n is TestTreeNode => n != null)
+          .filter((n): n is TestTreeNode => n != null);
 
-        if (projectFiles.length === 0) continue
+        if (projectFiles.length === 0) continue;
 
         trees.push({
           id: `project::${project.name}`,
@@ -281,21 +281,21 @@ export async function startUIServer(
           status: 'idle',
           children: projectFiles,
           dependencies: project.dependencies.length > 0 ? project.dependencies : undefined,
-        })
+        });
       }
-      testTree = trees
+      testTree = trees;
     } else {
       // No meaningful projects — flat file list
-      testTree = [...fileNodes.values()]
+      testTree = [...fileNodes.values()];
     }
 
-    broadcast({ type: 'test-tree', files: testTree })
+    broadcast({ type: 'test-tree', files: testTree });
   }
 
   // ─── Test Execution (shared) ───
 
   function updateTestStatus(fullName: string, filePath: string, status: TestTreeNode['status'], duration?: number, error?: string, tracePath?: string, workerId?: number): void {
-    if (status === 'failed') failedFiles.add(filePath)
+    if (status === 'failed') failedFiles.add(filePath);
     broadcast({
       type: 'test-status',
       fullName,
@@ -305,7 +305,7 @@ export async function startUIServer(
       error,
       tracePath,
       workerId,
-    })
+    });
   }
 
   /**
@@ -316,16 +316,16 @@ export async function startUIServer(
     function markChildren(nodes: TestTreeNode[]): void {
       for (const node of nodes) {
         if (node.type === 'test') {
-          updateTestStatus(node.fullName, node.filePath, 'skipped')
+          updateTestStatus(node.fullName, node.filePath, 'skipped');
         }
-        if (node.children) markChildren(node.children)
+        if (node.children) markChildren(node.children);
       }
     }
 
     for (const node of testTree) {
       if (node.type === 'project' && node.name === projectName && node.children) {
-        markChildren(node.children)
-        return
+        markChildren(node.children);
+        return;
       }
     }
   }
@@ -335,26 +335,26 @@ export async function startUIServer(
   // ═══════════════════════════════════════════════════════════════════
 
   async function runFileSingle(filePath: string, testFilter?: string): Promise<void> {
-    if (isRunning) return
+    if (isRunning) return;
 
-    isRunning = true
-    const project = fileToProject.get(filePath)
-    const useOptions = project?.use as RunFileUseOptions | undefined
-    const projectName = project && project.name !== 'default' ? project.name : undefined
+    isRunning = true;
+    const project = fileToProject.get(filePath);
+    const useOptions = project?.use as RunFileUseOptions | undefined;
+    const projectName = project && project.name !== 'default' ? project.name : undefined;
 
-    broadcast({ type: 'file-status', filePath, status: 'running' })
-    broadcast({ type: 'run-start', fileCount: 1, filePath, testFilter })
-    screenPollActive = true
+    broadcast({ type: 'file-status', filePath, status: 'running' });
+    broadcast({ type: 'run-start', fileCount: 1, filePath, testFilter });
+    screenPollActive = true;
 
     try {
-      const { results, suite } = await runFileInChild(filePath, useOptions, projectName, testFilter)
+      const { results, suite } = await runFileInChild(filePath, useOptions, projectName, testFilter);
 
-      const passed = results.filter((r) => r.status === 'passed').length
-      const failed = results.filter((r) => r.status === 'failed').length
-      const skipped = results.filter((r) => r.status === 'skipped').length
-      const duration = suite.durationMs
+      const passed = results.filter((r) => r.status === 'passed').length;
+      const failed = results.filter((r) => r.status === 'failed').length;
+      const skipped = results.filter((r) => r.status === 'skipped').length;
+      const duration = suite.durationMs;
 
-      broadcast({ type: 'file-status', filePath, status: 'done' })
+      broadcast({ type: 'file-status', filePath, status: 'done' });
       broadcast({
         type: 'run-end',
         status: failed > 0 ? 'failed' : 'passed',
@@ -362,73 +362,73 @@ export async function startUIServer(
         passed,
         failed,
         skipped,
-      })
+      });
     } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err)
-      broadcast({ type: 'error', message: `Failed to run ${path.basename(filePath)}: ${msg}` })
-      broadcast({ type: 'file-status', filePath, status: 'done' })
-      broadcast({ type: 'run-end', status: 'failed', duration: 0, passed: 0, failed: 1, skipped: 0 })
+      const msg = err instanceof Error ? err.message : String(err);
+      broadcast({ type: 'error', message: `Failed to run ${path.basename(filePath)}: ${msg}` });
+      broadcast({ type: 'file-status', filePath, status: 'done' });
+      broadcast({ type: 'run-end', status: 'failed', duration: 0, passed: 0, failed: 1, skipped: 0 });
     } finally {
-      isRunning = false
-      screenPollActive = false
+      isRunning = false;
+      screenPollActive = false;
     }
   }
 
   async function runAllFilesSingle(): Promise<void> {
-    if (isRunning) return
-    isRunning = true
-    screenPollActive = true
+    if (isRunning) return;
+    isRunning = true;
+    screenPollActive = true;
 
-    broadcast({ type: 'run-start', fileCount: ctx.testFiles.length })
+    broadcast({ type: 'run-start', fileCount: ctx.testFiles.length });
 
-    let totalPassed = 0
-    let totalFailed = 0
-    let totalSkipped = 0
-    let totalDuration = 0
+    let totalPassed = 0;
+    let totalFailed = 0;
+    let totalSkipped = 0;
+    let totalDuration = 0;
 
     try {
       if (hasRealProjects && ctx.projectWaves) {
-        const failedProjects = new Set<string>()
+        const failedProjects = new Set<string>();
 
         for (const wave of ctx.projectWaves) {
           for (const project of wave) {
-            const blockedBy = project.dependencies.find((d) => failedProjects.has(d))
+            const blockedBy = project.dependencies.find((d) => failedProjects.has(d));
             if (blockedBy) {
-              broadcast({ type: 'error', message: `Skipping project "${project.name}" — dependency "${blockedBy}" failed` })
-              markProjectTestsSkipped(project.name)
-              failedProjects.add(project.name)
-              continue
+              broadcast({ type: 'error', message: `Skipping project "${project.name}" — dependency "${blockedBy}" failed` });
+              markProjectTestsSkipped(project.name);
+              failedProjects.add(project.name);
+              continue;
             }
 
-            const { passed, failed, skipped, duration, anyFailed } = await runProjectFilesSingle(project)
-            totalPassed += passed
-            totalFailed += failed
-            totalSkipped += skipped
-            totalDuration += duration
-            if (anyFailed) failedProjects.add(project.name)
+            const { passed, failed, skipped, duration, anyFailed } = await runProjectFilesSingle(project);
+            totalPassed += passed;
+            totalFailed += failed;
+            totalSkipped += skipped;
+            totalDuration += duration;
+            if (anyFailed) failedProjects.add(project.name);
           }
         }
       } else {
         for (const file of ctx.testFiles) {
-          const project = fileToProject.get(file)
-          const useOptions = project?.use as RunFileUseOptions | undefined
-          const projectName = project && project.name !== 'default' ? project.name : undefined
+          const project = fileToProject.get(file);
+          const useOptions = project?.use as RunFileUseOptions | undefined;
+          const projectName = project && project.name !== 'default' ? project.name : undefined;
 
-          broadcast({ type: 'file-status', filePath: file, status: 'running' })
+          broadcast({ type: 'file-status', filePath: file, status: 'running' });
 
           try {
-            const { results, suite } = await runFileInChild(file, useOptions, projectName)
-            totalPassed += results.filter((r) => r.status === 'passed').length
-            totalFailed += results.filter((r) => r.status === 'failed').length
-            totalSkipped += results.filter((r) => r.status === 'skipped').length
-            totalDuration += suite.durationMs
+            const { results, suite } = await runFileInChild(file, useOptions, projectName);
+            totalPassed += results.filter((r) => r.status === 'passed').length;
+            totalFailed += results.filter((r) => r.status === 'failed').length;
+            totalSkipped += results.filter((r) => r.status === 'skipped').length;
+            totalDuration += suite.durationMs;
           } catch (err) {
-            const errMsg = err instanceof Error ? err.message : String(err)
-            broadcast({ type: 'error', message: `Error in ${path.basename(file)}: ${errMsg}` })
-            totalFailed++
+            const errMsg = err instanceof Error ? err.message : String(err);
+            broadcast({ type: 'error', message: `Error in ${path.basename(file)}: ${errMsg}` });
+            totalFailed++;
           }
 
-          broadcast({ type: 'file-status', filePath: file, status: 'done' })
+          broadcast({ type: 'file-status', filePath: file, status: 'done' });
         }
       }
 
@@ -439,81 +439,81 @@ export async function startUIServer(
         passed: totalPassed,
         failed: totalFailed,
         skipped: totalSkipped,
-      })
+      });
     } finally {
-      isRunning = false
-      screenPollActive = false
+      isRunning = false;
+      screenPollActive = false;
     }
   }
 
   async function runProjectFilesSingle(project: ResolvedProject): Promise<{
     passed: number; failed: number; skipped: number; duration: number; anyFailed: boolean
   }> {
-    let passed = 0, failed = 0, skipped = 0, duration = 0, anyFailed = false
-    const useOptions = project.use as RunFileUseOptions | undefined
-    const projectName = project.name !== 'default' ? project.name : undefined
+    let passed = 0, failed = 0, skipped = 0, duration = 0, anyFailed = false;
+    const useOptions = project.use as RunFileUseOptions | undefined;
+    const projectName = project.name !== 'default' ? project.name : undefined;
 
     for (const file of project.testFiles) {
-      broadcast({ type: 'file-status', filePath: file, status: 'running' })
+      broadcast({ type: 'file-status', filePath: file, status: 'running' });
 
       try {
-        const { results, suite } = await runFileInChild(file, useOptions, projectName)
-        passed += results.filter((r) => r.status === 'passed').length
-        failed += results.filter((r) => r.status === 'failed').length
-        skipped += results.filter((r) => r.status === 'skipped').length
-        duration += suite.durationMs
-        if (results.some((r) => r.status === 'failed')) anyFailed = true
+        const { results, suite } = await runFileInChild(file, useOptions, projectName);
+        passed += results.filter((r) => r.status === 'passed').length;
+        failed += results.filter((r) => r.status === 'failed').length;
+        skipped += results.filter((r) => r.status === 'skipped').length;
+        duration += suite.durationMs;
+        if (results.some((r) => r.status === 'failed')) anyFailed = true;
       } catch (err) {
-        const errMsg = err instanceof Error ? err.message : String(err)
-        broadcast({ type: 'error', message: `Error in ${path.basename(file)}: ${errMsg}` })
-        failed++
-        anyFailed = true
+        const errMsg = err instanceof Error ? err.message : String(err);
+        broadcast({ type: 'error', message: `Error in ${path.basename(file)}: ${errMsg}` });
+        failed++;
+        anyFailed = true;
       }
 
-      broadcast({ type: 'file-status', filePath: file, status: 'done' })
+      broadcast({ type: 'file-status', filePath: file, status: 'done' });
     }
 
-    return { passed, failed, skipped, duration, anyFailed }
+    return { passed, failed, skipped, duration, anyFailed };
   }
 
   async function runProjectSingle(projectName: string): Promise<void> {
-    if (isRunning) return
-    if (!ctx.projects || !ctx.projectWaves) return
+    if (isRunning) return;
+    if (!ctx.projects || !ctx.projectWaves) return;
 
-    const target = ctx.projects.find((p) => p.name === projectName)
-    if (!target) return
+    const target = ctx.projects.find((p) => p.name === projectName);
+    if (!target) return;
 
-    isRunning = true
-    screenPollActive = true
+    isRunning = true;
+    screenPollActive = true;
 
-    const requiredNames = collectTransitiveDeps(new Set([projectName]), ctx.projects)
+    const requiredNames = collectTransitiveDeps(new Set([projectName]), ctx.projects);
     const filteredWaves = ctx.projectWaves
       .map((wave) => wave.filter((p) => requiredNames.has(p.name)))
-      .filter((wave) => wave.length > 0)
+      .filter((wave) => wave.length > 0);
 
-    const allFiles = filteredWaves.flatMap((w) => w.flatMap((p) => p.testFiles))
-    broadcast({ type: 'run-start', fileCount: allFiles.length })
+    const allFiles = filteredWaves.flatMap((w) => w.flatMap((p) => p.testFiles));
+    broadcast({ type: 'run-start', fileCount: allFiles.length });
 
-    let totalPassed = 0, totalFailed = 0, totalSkipped = 0, totalDuration = 0
-    const failedProjects = new Set<string>()
+    let totalPassed = 0, totalFailed = 0, totalSkipped = 0, totalDuration = 0;
+    const failedProjects = new Set<string>();
 
     try {
       for (const wave of filteredWaves) {
         for (const project of wave) {
-          const blockedBy = project.dependencies.find((d) => failedProjects.has(d))
+          const blockedBy = project.dependencies.find((d) => failedProjects.has(d));
           if (blockedBy) {
-            broadcast({ type: 'error', message: `Skipping project "${project.name}" — dependency "${blockedBy}" failed` })
-            markProjectTestsSkipped(project.name)
-            failedProjects.add(project.name)
-            continue
+            broadcast({ type: 'error', message: `Skipping project "${project.name}" — dependency "${blockedBy}" failed` });
+            markProjectTestsSkipped(project.name);
+            failedProjects.add(project.name);
+            continue;
           }
 
-          const { passed, failed, skipped, duration, anyFailed } = await runProjectFilesSingle(project)
-          totalPassed += passed
-          totalFailed += failed
-          totalSkipped += skipped
-          totalDuration += duration
-          if (anyFailed) failedProjects.add(project.name)
+          const { passed, failed, skipped, duration, anyFailed } = await runProjectFilesSingle(project);
+          totalPassed += passed;
+          totalFailed += failed;
+          totalSkipped += skipped;
+          totalDuration += duration;
+          if (anyFailed) failedProjects.add(project.name);
         }
       }
 
@@ -524,10 +524,10 @@ export async function startUIServer(
         passed: totalPassed,
         failed: totalFailed,
         skipped: totalSkipped,
-      })
+      });
     } finally {
-      isRunning = false
-      screenPollActive = false
+      isRunning = false;
+      screenPollActive = false;
     }
   }
 
@@ -548,29 +548,29 @@ export async function startUIServer(
           ...process.env,
           NODE_PATH: path.resolve(__dirname, '..', '..'),
         },
-      })
+      });
 
-      activeChild = child
-      let settled = false
-      let currentTestFullName = ''
+      activeChild = child;
+      let settled = false;
+      let currentTestFullName = '';
 
       child.on('message', (response: UIRunChildMessage) => {
-        if (settled) return
+        if (settled) return;
 
         switch (response.type) {
           case 'test-start': {
-            currentTestFullName = response.fullName
+            currentTestFullName = response.fullName;
             broadcast({
               type: 'test-start',
               fullName: response.fullName,
               filePath: response.filePath,
-            })
-            break
+            });
+            break;
           }
           case 'test-end': {
-            const result = deserializeTestResult(response.result)
+            const result = deserializeTestResult(response.result);
             if (testFilter && result.status === 'skipped' && result.fullName !== testFilter) {
-              break
+              break;
             }
             updateTestStatus(
               result.fullName,
@@ -579,8 +579,8 @@ export async function startUIServer(
               result.durationMs,
               result.error?.message,
               result.tracePath,
-            )
-            break
+            );
+            break;
           }
           case 'trace-event': {
             broadcast({
@@ -591,53 +591,53 @@ export async function startUIServer(
               screenshotAfter: response.screenshotAfter,
               hierarchyBefore: response.hierarchyBefore,
               hierarchyAfter: response.hierarchyAfter,
-            })
-            break
+            });
+            break;
           }
           case 'source': {
             broadcast({
               type: 'source',
               fileName: response.fileName,
               content: response.content,
-            })
-            break
+            });
+            break;
           }
           case 'network': {
             broadcast({
               type: 'network',
               entries: response.entries,
-            })
-            break
+            });
+            break;
           }
           case 'file-done': {
-            settled = true
-            const results = response.results.map(deserializeTestResult)
-            const suite = deserializeSuiteResult(response.suite)
-            resolve({ results, suite })
-            break
+            settled = true;
+            const results = response.results.map(deserializeTestResult);
+            const suite = deserializeSuiteResult(response.suite);
+            resolve({ results, suite });
+            break;
           }
           case 'error':
-            settled = true
-            reject(new Error(response.error.message))
-            break
+            settled = true;
+            reject(new Error(response.error.message));
+            break;
         }
-      })
+      });
 
       child.on('exit', (code) => {
-        activeChild = null
+        activeChild = null;
         if (!settled) {
-          settled = true
-          reject(new Error(`UI run worker exited with code ${code ?? 0} without sending results`))
+          settled = true;
+          reject(new Error(`UI run worker exited with code ${code ?? 0} without sending results`));
         }
-      })
+      });
 
       child.on('error', (err) => {
-        activeChild = null
+        activeChild = null;
         if (!settled) {
-          settled = true
-          reject(err)
+          settled = true;
+          reject(err);
         }
-      })
+      });
 
       const msg: UIRunMessage = {
         type: 'run',
@@ -649,79 +649,79 @@ export async function startUIServer(
         projectUseOptions,
         projectName,
         testFilter,
-      }
+      };
 
-      child.send(msg)
-    })
+      child.send(msg);
+    });
   }
 
   async function runFileWithDepsSingle(filePath: string, testFilter?: string): Promise<void> {
-    if (isRunning) return
+    if (isRunning) return;
 
-    const project = fileToProject.get(filePath)
+    const project = fileToProject.get(filePath);
     if (!project || project.dependencies.length === 0 || !ctx.projects || !ctx.projectWaves) {
-      return runFileSingle(filePath, testFilter)
+      return runFileSingle(filePath, testFilter);
     }
 
-    isRunning = true
-    screenPollActive = true
+    isRunning = true;
+    screenPollActive = true;
 
-    const depNames = collectTransitiveDeps(new Set(project.dependencies), ctx.projects)
-    depNames.delete(project.name)
+    const depNames = collectTransitiveDeps(new Set(project.dependencies), ctx.projects);
+    depNames.delete(project.name);
 
     const depWaves = ctx.projectWaves
       .map((wave) => wave.filter((p) => depNames.has(p.name)))
-      .filter((wave) => wave.length > 0)
+      .filter((wave) => wave.length > 0);
 
-    const depFileCount = depWaves.reduce((n, w) => n + w.reduce((m, p) => m + p.testFiles.length, 0), 0)
-    broadcast({ type: 'run-start', fileCount: depFileCount + 1, filePath, testFilter })
+    const depFileCount = depWaves.reduce((n, w) => n + w.reduce((m, p) => m + p.testFiles.length, 0), 0);
+    broadcast({ type: 'run-start', fileCount: depFileCount + 1, filePath, testFilter });
 
-    let totalPassed = 0, totalFailed = 0, totalSkipped = 0, totalDuration = 0
-    const failedProjects = new Set<string>()
+    let totalPassed = 0, totalFailed = 0, totalSkipped = 0, totalDuration = 0;
+    const failedProjects = new Set<string>();
 
     try {
       for (const wave of depWaves) {
         for (const depProject of wave) {
-          const blockedBy = depProject.dependencies.find((d) => failedProjects.has(d))
+          const blockedBy = depProject.dependencies.find((d) => failedProjects.has(d));
           if (blockedBy) {
-            broadcast({ type: 'error', message: `Skipping project "${depProject.name}" — dependency "${blockedBy}" failed` })
-            markProjectTestsSkipped(depProject.name)
-            failedProjects.add(depProject.name)
-            continue
+            broadcast({ type: 'error', message: `Skipping project "${depProject.name}" — dependency "${blockedBy}" failed` });
+            markProjectTestsSkipped(depProject.name);
+            failedProjects.add(depProject.name);
+            continue;
           }
 
-          const r = await runProjectFilesSingle(depProject)
-          totalPassed += r.passed
-          totalFailed += r.failed
-          totalSkipped += r.skipped
-          totalDuration += r.duration
-          if (r.anyFailed) failedProjects.add(depProject.name)
+          const r = await runProjectFilesSingle(depProject);
+          totalPassed += r.passed;
+          totalFailed += r.failed;
+          totalSkipped += r.skipped;
+          totalDuration += r.duration;
+          if (r.anyFailed) failedProjects.add(depProject.name);
         }
       }
 
-      const blockedBy = project.dependencies.find((d) => failedProjects.has(d))
+      const blockedBy = project.dependencies.find((d) => failedProjects.has(d));
       if (blockedBy) {
-        broadcast({ type: 'error', message: `Skipping "${path.basename(filePath)}" — dependency "${blockedBy}" failed` })
-        broadcast({ type: 'file-status', filePath, status: 'done' })
+        broadcast({ type: 'error', message: `Skipping "${path.basename(filePath)}" — dependency "${blockedBy}" failed` });
+        broadcast({ type: 'file-status', filePath, status: 'done' });
       } else {
-        const useOptions = project.use as RunFileUseOptions | undefined
-        const pName = project.name !== 'default' ? project.name : undefined
+        const useOptions = project.use as RunFileUseOptions | undefined;
+        const pName = project.name !== 'default' ? project.name : undefined;
 
-        broadcast({ type: 'file-status', filePath, status: 'running' })
+        broadcast({ type: 'file-status', filePath, status: 'running' });
 
         try {
-          const { results, suite } = await runFileInChild(filePath, useOptions, pName, testFilter)
-          totalPassed += results.filter((r) => r.status === 'passed').length
-          totalFailed += results.filter((r) => r.status === 'failed').length
-          totalSkipped += results.filter((r) => r.status === 'skipped').length
-          totalDuration += suite.durationMs
+          const { results, suite } = await runFileInChild(filePath, useOptions, pName, testFilter);
+          totalPassed += results.filter((r) => r.status === 'passed').length;
+          totalFailed += results.filter((r) => r.status === 'failed').length;
+          totalSkipped += results.filter((r) => r.status === 'skipped').length;
+          totalDuration += suite.durationMs;
         } catch (err) {
-          const errMsg = err instanceof Error ? err.message : String(err)
-          broadcast({ type: 'error', message: `Failed to run ${path.basename(filePath)}: ${errMsg}` })
-          totalFailed++
+          const errMsg = err instanceof Error ? err.message : String(err);
+          broadcast({ type: 'error', message: `Failed to run ${path.basename(filePath)}: ${errMsg}` });
+          totalFailed++;
         }
 
-        broadcast({ type: 'file-status', filePath, status: 'done' })
+        broadcast({ type: 'file-status', filePath, status: 'done' });
       }
 
       broadcast({
@@ -731,10 +731,10 @@ export async function startUIServer(
         passed: totalPassed,
         failed: totalFailed,
         skipped: totalSkipped,
-      })
+      });
     } finally {
-      isRunning = false
-      screenPollActive = false
+      isRunning = false;
+      screenPollActive = false;
     }
   }
 
@@ -744,55 +744,55 @@ export async function startUIServer(
 
   /** Initialize persistent workers. Called once during server startup. */
   async function initializeWorkers(): Promise<void> {
-    if (!ctx.deviceSerials || ctx.deviceSerials.length === 0) return
+    if (!ctx.deviceSerials || ctx.deviceSerials.length === 0) return;
 
     const baseDaemonPort = Number.parseInt(
       (ctx.daemonAddress ?? ctx.config.daemonAddress).split(':').pop() ?? '50051',
       10,
-    )
-    const baseAgentPort = 18700
-    const rawBin = process.env.PILOT_DAEMON_BIN ?? ctx.config.daemonBin ?? 'pilot-core'
+    );
+    const baseAgentPort = 18700;
+    const rawBin = process.env.PILOT_DAEMON_BIN ?? ctx.config.daemonBin ?? 'pilot-core';
     const daemonBin = rawBin.includes(path.sep) || rawBin.startsWith('.')
       ? path.resolve(ctx.config.rootDir, rawBin)
-      : rawBin
+      : rawBin;
 
-    const numWorkers = Math.min(ctx.workers ?? 2, ctx.deviceSerials.length)
+    const numWorkers = Math.min(ctx.workers ?? 2, ctx.deviceSerials.length);
 
-    console.log(`${DIM}Initializing ${numWorkers} UI worker(s)...${RESET}`)
+    console.log(`${DIM}Initializing ${numWorkers} UI worker(s)...${RESET}`);
 
-    const initPromises: Promise<UIWorkerHandle | null>[] = []
+    const initPromises: Promise<UIWorkerHandle | null>[] = [];
 
     for (let i = 0; i < numWorkers; i++) {
-      const deviceSerial = ctx.deviceSerials[i]
-      const daemonPort = baseDaemonPort + 100 + i
-      const agentPort = baseAgentPort + 100 + i
+      const deviceSerial = ctx.deviceSerials[i];
+      const daemonPort = baseDaemonPort + 100 + i;
+      const agentPort = baseAgentPort + 100 + i;
 
       initPromises.push(
         initializeOneWorker(i, deviceSerial, daemonPort, agentPort, daemonBin),
-      )
+      );
     }
 
-    const results = await Promise.allSettled(initPromises)
+    const results = await Promise.allSettled(initPromises);
     for (let i = 0; i < results.length; i++) {
-      const result = results[i]
+      const result = results[i];
       if (result.status === 'fulfilled' && result.value) {
-        uiWorkers.push(result.value)
+        uiWorkers.push(result.value);
       } else {
-        const reason = result.status === 'rejected' ? result.reason : 'null result'
-        const serial = ctx.deviceSerials![i]
+        const reason = result.status === 'rejected' ? result.reason : 'null result';
+        const serial = ctx.deviceSerials![i];
         console.error(
           `${YELLOW}Skipping device ${serial}: ${reason instanceof Error ? reason.message : reason}.${RESET}`,
-        )
+        );
       }
     }
 
     if (uiWorkers.length === 0) {
-      console.error(`${YELLOW}No workers initialized. Falling back to single-worker mode.${RESET}`)
-      return
+      console.error(`${YELLOW}No workers initialized. Falling back to single-worker mode.${RESET}`);
+      return;
     }
 
-    workersInitialized = true
-    console.log(`${DIM}${uiWorkers.length} UI worker(s) ready.${RESET}`)
+    workersInitialized = true;
+    console.log(`${DIM}${uiWorkers.length} UI worker(s) ready.${RESET}`);
   }
 
   async function initializeOneWorker(
@@ -807,16 +807,16 @@ export async function startUIServer(
       daemonBin,
       ['--port', String(daemonPort), '--agent-port', String(agentPort)],
       { detached: true, stdio: 'ignore' },
-    )
-    daemonProcess.unref()
-    daemonProcess.on('error', () => { /* handled by waitForReady */ })
+    );
+    daemonProcess.unref();
+    daemonProcess.on('error', () => { /* handled by waitForReady */ });
 
-    const daemonClient = new PilotGrpcClient(`localhost:${daemonPort}`)
-    const ready = await daemonClient.waitForReady(10_000)
+    const daemonClient = new PilotGrpcClient(`localhost:${daemonPort}`);
+    const ready = await daemonClient.waitForReady(10_000);
     if (!ready) {
-      try { daemonProcess.kill() } catch { /* already dead */ }
-      daemonClient.close()
-      throw new Error(`daemon on port ${daemonPort} did not become ready`)
+      try { daemonProcess.kill(); } catch { /* already dead */ }
+      daemonClient.close();
+      throw new Error(`daemon on port ${daemonPort} did not become ready`);
     }
 
     // Fork ui-worker.ts
@@ -828,8 +828,8 @@ export async function startUIServer(
         NODE_PATH: path.resolve(__dirname, '..', '..'),
         PILOT_WORKER_ID: String(id),
       },
-    })
-    child.setMaxListeners(20)
+    });
+    child.setMaxListeners(20);
 
     const worker: UIWorkerHandle = {
       id,
@@ -843,42 +843,42 @@ export async function startUIServer(
       passed: 0,
       failed: 0,
       skipped: 0,
-    }
+    };
 
     // Wait for worker to be ready
     await new Promise<void>((resolve, reject) => {
       const timeout = setTimeout(() => {
-        reject(new Error(`worker ${id} timed out during initialization (90s)`))
-      }, 90_000)
+        reject(new Error(`worker ${id} timed out during initialization (90s)`));
+      }, 90_000);
 
       const onExit = (code: number | null) => {
-        clearTimeout(timeout)
-        cleanup()
-        reject(new Error(`worker ${id} exited with code ${code} during initialization`))
-      }
+        clearTimeout(timeout);
+        cleanup();
+        reject(new Error(`worker ${id} exited with code ${code} during initialization`));
+      };
 
       const onMessage = (msg: UIWorkerChildMessage) => {
         if (msg.type === 'ready' && msg.workerId === id) {
-          clearTimeout(timeout)
-          cleanup()
-          resolve()
+          clearTimeout(timeout);
+          cleanup();
+          resolve();
         } else if (msg.type === 'progress' && msg.workerId === id) {
-          console.log(`${DIM}  Worker ${id} (${deviceSerial}): ${msg.message}${RESET}`)
-          broadcastWorkerStatus(worker, 'initializing')
+          console.log(`${DIM}  Worker ${id} (${deviceSerial}): ${msg.message}${RESET}`);
+          broadcastWorkerStatus(worker, 'initializing');
         } else if (msg.type === 'error' && msg.workerId === id) {
-          clearTimeout(timeout)
-          cleanup()
-          reject(new Error(msg.error.message))
+          clearTimeout(timeout);
+          cleanup();
+          reject(new Error(msg.error.message));
         }
-      }
+      };
 
       const cleanup = () => {
-        child.removeListener('exit', onExit)
-        child.removeListener('message', onMessage)
-      }
+        child.removeListener('exit', onExit);
+        child.removeListener('message', onMessage);
+      };
 
-      child.on('exit', onExit)
-      child.on('message', onMessage)
+      child.on('exit', onExit);
+      child.on('message', onMessage);
 
       const initMsg: UIWorkerMessage = {
         type: 'init',
@@ -887,12 +887,12 @@ export async function startUIServer(
         daemonPort,
         config: serializedConfig,
         screenshotDir: ctx.screenshotDir,
-      }
-      child.send(initMsg)
-    })
+      };
+      child.send(initMsg);
+    });
 
-    broadcastWorkerStatus(worker, 'idle')
-    return worker
+    broadcastWorkerStatus(worker, 'idle');
+    return worker;
   }
 
   function broadcastWorkerStatus(worker: UIWorkerHandle, status: 'idle' | 'running' | 'done' | 'initializing' | 'error'): void {
@@ -906,7 +906,7 @@ export async function startUIServer(
       passed: worker.passed,
       failed: worker.failed,
       skipped: worker.skipped,
-    })
+    });
   }
 
   /**
@@ -914,59 +914,66 @@ export async function startUIServer(
    * Returns aggregate counts.
    */
   async function dispatchFilesParallel(files: TaggedFile[]): Promise<{
-    passed: number; failed: number; skipped: number; duration: number; anyFailed: boolean
+    passed: number; failed: number; skipped: number; duration: number; anyFailed: boolean; failedProjectNames: Set<string>
   }> {
-    const fileQueue = [...files]
-    let passed = 0, failed = 0, skipped = 0, duration = 0, anyFailed = false
+    const fileQueue = [...files];
+    let passed = 0, failed = 0, skipped = 0, duration = 0, anyFailed = false;
+    const failedProjectsInDispatch = new Set<string>();
 
-    const activeWorkers = uiWorkers.filter((w) => !w.retired)
+    const activeWorkers = uiWorkers.filter((w) => !w.retired);
     if (activeWorkers.length === 0) {
-      throw new Error('No active workers available')
+      throw new Error('No active workers available');
     }
 
     await new Promise<void>((resolve, reject) => {
-      let settled = false
+      let settled = false;
+      const dispatchListeners: Array<{ worker: UIWorkerHandle; messageHandler: (msg: UIWorkerChildMessage) => void; exitHandler: (code: number | null) => void }> = [];
 
       function settleResolve(): void {
-        if (settled) return
-        settled = true
-        abortDispatch = null
-        resolve()
+        if (settled) return;
+        settled = true;
+        abortDispatch = null;
+        // Clean up dispatch-specific listeners
+        for (const { worker, messageHandler, exitHandler } of dispatchListeners) {
+          worker.process.removeListener('message', messageHandler);
+          worker.process.removeListener('exit', exitHandler);
+        }
+        resolve();
       }
 
       // Allow stopParallelRun to unblock this promise directly.
-      abortDispatch = settleResolve
+      abortDispatch = settleResolve;
 
       function maybeResolve(): void {
-        if (settled) return
+        if (settled) return;
         if (parallelRunAborted) {
-          settleResolve()
-          return
+          settleResolve();
+          return;
         }
-        if (fileQueue.length > 0) return
+        if (fileQueue.length > 0) return;
         if (activeWorkers.every((w) => w.retired || !w.busy)) {
-          settleResolve()
+          settleResolve();
         }
       }
 
       function dispatchNext(worker: UIWorkerHandle): void {
-        if (worker.retired || parallelRunAborted) return
+        if (worker.retired || parallelRunAborted) return;
 
-        const next = fileQueue.shift()
+        const next = fileQueue.shift();
         if (!next) {
-          worker.busy = false
-          worker.currentFile = undefined
-          worker.currentTest = undefined
-          broadcastWorkerStatus(worker, 'idle')
-          maybeResolve()
-          return
+          worker.busy = false;
+          worker.currentFile = undefined;
+          worker.currentTest = undefined;
+          broadcastWorkerStatus(worker, 'idle');
+          maybeResolve();
+          return;
         }
 
-        worker.busy = true
-        worker.currentFile = next
-        worker.currentTest = undefined
-        broadcastWorkerStatus(worker, 'running')
-        broadcast({ type: 'file-status', filePath: next.filePath, status: 'running' })
+        worker.busy = true;
+        worker.currentFile = next;
+        worker.currentTest = undefined;
+        broadcastWorkerStatus(worker, 'running');
+        broadcast({ type: 'file-status', filePath: next.filePath, status: 'running' });
 
         const msg: UIWorkerMessage = {
           type: 'run-file',
@@ -974,61 +981,58 @@ export async function startUIServer(
           projectUseOptions: next.projectUseOptions,
           projectName: next.projectName,
           testFilter: next.testFilter,
-        }
-        worker.process.send(msg)
+        };
+        worker.process.send(msg);
       }
 
       function retireWorker(worker: UIWorkerHandle, reason: string): void {
-        if (worker.retired) return
-        worker.retired = true
-        const inFlightFile = worker.currentFile
-        worker.currentFile = undefined
-        worker.busy = false
-        broadcastWorkerStatus(worker, 'error')
+        if (worker.retired) return;
+        worker.retired = true;
+        const inFlightFile = worker.currentFile;
+        worker.currentFile = undefined;
+        worker.busy = false;
+        broadcastWorkerStatus(worker, 'error');
 
         if (inFlightFile) {
-          fileQueue.unshift(inFlightFile)
-          console.error(`${YELLOW}Worker ${worker.id} (${worker.deviceSerial}) became unavailable: ${reason}. Requeueing ${path.basename(inFlightFile.filePath)}.${RESET}`)
+          fileQueue.unshift(inFlightFile);
+          console.error(`${YELLOW}Worker ${worker.id} (${worker.deviceSerial}) became unavailable: ${reason}. Requeueing ${path.basename(inFlightFile.filePath)}.${RESET}`);
         }
 
-        const remaining = activeWorkers.filter((w) => !w.retired)
+        const remaining = activeWorkers.filter((w) => !w.retired);
         if (remaining.length === 0) {
-          settled = true
-          abortDispatch = null
-          reject(new Error(`All workers became unavailable. Last failure: ${reason}`))
-          return
+          settled = true;
+          abortDispatch = null;
+          reject(new Error(`All workers became unavailable. Last failure: ${reason}`));
+          return;
         }
 
-        const idleWorker = remaining.find((w) => !w.busy)
-        if (idleWorker) dispatchNext(idleWorker)
-        maybeResolve()
+        const idleWorker = remaining.find((w) => !w.busy);
+        if (idleWorker) dispatchNext(idleWorker);
+        maybeResolve();
       }
 
       // Attach listeners and dispatch
       for (const worker of activeWorkers) {
-        worker.process.removeAllListeners('message')
-        worker.process.removeAllListeners('exit')
-
-        worker.process.on('message', (msg: UIWorkerChildMessage) => {
-          if (settled || worker.retired) return
+        const messageHandler = (msg: UIWorkerChildMessage): void => {
+          if (settled || worker.retired) return;
 
           switch (msg.type) {
             case 'test-start': {
-              worker.currentTest = msg.fullName
-              broadcastWorkerStatus(worker, 'running')
+              worker.currentTest = msg.fullName;
+              broadcastWorkerStatus(worker, 'running');
               broadcast({
                 type: 'test-start',
                 fullName: msg.fullName,
                 filePath: msg.filePath,
                 workerId: worker.id,
-              })
-              break
+              });
+              break;
             }
             case 'test-end': {
-              const result = deserializeTestResult(msg.result)
-              const tf = worker.currentFile?.testFilter
+              const result = deserializeTestResult(msg.result);
+              const tf = worker.currentFile?.testFilter;
               if (tf && result.status === 'skipped' && result.fullName !== tf) {
-                break
+                break;
               }
               updateTestStatus(
                 result.fullName,
@@ -1038,11 +1042,11 @@ export async function startUIServer(
                 result.error?.message,
                 result.tracePath,
                 worker.id,
-              )
-              if (result.status === 'passed') worker.passed++
-              else if (result.status === 'failed') worker.failed++
-              else if (result.status === 'skipped') worker.skipped++
-              break
+              );
+              if (result.status === 'passed') worker.passed++;
+              else if (result.status === 'failed') worker.failed++;
+              else if (result.status === 'skipped') worker.skipped++;
+              break;
             }
             case 'trace-event': {
               broadcast({
@@ -1053,92 +1057,100 @@ export async function startUIServer(
                 screenshotAfter: msg.screenshotAfter,
                 hierarchyBefore: msg.hierarchyBefore,
                 hierarchyAfter: msg.hierarchyAfter,
-              })
-              break
+              });
+              break;
             }
             case 'source': {
-              broadcast({ type: 'source', fileName: msg.fileName, content: msg.content })
-              break
+              broadcast({ type: 'source', fileName: msg.fileName, content: msg.content });
+              break;
             }
             case 'network': {
-              broadcast({ type: 'network', entries: msg.entries })
-              break
+              broadcast({ type: 'network', entries: msg.entries });
+              break;
             }
             case 'file-done': {
-              const results = msg.results.map(deserializeTestResult)
-              const suite = deserializeSuiteResult(msg.suite)
+              const results = msg.results.map(deserializeTestResult);
+              const suite = deserializeSuiteResult(msg.suite);
 
-              passed += results.filter((r) => r.status === 'passed').length
-              failed += results.filter((r) => r.status === 'failed').length
-              skipped += results.filter((r) => r.status === 'skipped').length
-              duration += suite.durationMs
-              if (results.some((r) => r.status === 'failed')) anyFailed = true
+              passed += results.filter((r) => r.status === 'passed').length;
+              failed += results.filter((r) => r.status === 'failed').length;
+              skipped += results.filter((r) => r.status === 'skipped').length;
+              duration += suite.durationMs;
+              if (results.some((r) => r.status === 'failed')) {
+                anyFailed = true;
+                // Track which project this file belongs to
+                if (worker.currentFile?.projectName) {
+                  failedProjectsInDispatch.add(worker.currentFile.projectName);
+                }
+              }
 
-              broadcast({ type: 'file-status', filePath: msg.filePath, status: 'done' })
-              worker.currentFile = undefined
-              worker.currentTest = undefined
-              broadcastWorkerStatus(worker, 'running')
+              broadcast({ type: 'file-status', filePath: msg.filePath, status: 'done' });
+              worker.currentFile = undefined;
+              worker.currentTest = undefined;
+              broadcastWorkerStatus(worker, 'running');
 
-              dispatchNext(worker)
-              break
+              dispatchNext(worker);
+              break;
             }
             case 'error': {
-              retireWorker(worker, msg.error.message)
-              break
+              retireWorker(worker, msg.error.message);
+              break;
             }
           }
-        })
+        };
 
-        worker.process.on('exit', (code) => {
-          if (settled) return
+        const exitHandler = (code: number | null): void => {
+          if (settled) return;
           if (worker.retired) {
-            // Worker was killed externally (e.g. stop-run) — check if
-            // all workers are now done so the dispatch promise can settle.
-            maybeResolve()
-            return
+            maybeResolve();
+            return;
           }
-          retireWorker(worker, `exited unexpectedly with code ${code}`)
-        })
+          retireWorker(worker, `exited unexpectedly with code ${code}`);
+        };
 
-        dispatchNext(worker)
+        dispatchListeners.push({ worker, messageHandler, exitHandler });
+        worker.process.on('message', messageHandler);
+        worker.process.on('exit', exitHandler);
+
+        dispatchNext(worker);
       }
-    })
+    });
 
-    return { passed, failed, skipped, duration, anyFailed }
+    return { passed, failed, skipped, duration, anyFailed, failedProjectNames: failedProjectsInDispatch };
   }
 
   async function runAllFilesParallel(): Promise<void> {
-    if (isRunning) return
-    isRunning = true
-    screenPollActive = true
-    parallelRunAborted = false
+    if (isRunning) return;
+    isRunning = true;
+    screenPollActive = true;
+    parallelRunAborted = false;
 
     // Reset worker counters
     for (const w of uiWorkers) {
-      w.passed = 0
-      w.failed = 0
-      w.skipped = 0
+      w.passed = 0;
+      w.failed = 0;
+      w.skipped = 0;
     }
 
-    broadcast({ type: 'run-start', fileCount: ctx.testFiles.length })
+    broadcast({ type: 'run-start', fileCount: ctx.testFiles.length });
 
-    let totalPassed = 0, totalFailed = 0, totalSkipped = 0, totalDuration = 0
+    let totalPassed = 0, totalFailed = 0, totalSkipped = 0, totalDuration = 0;
 
     try {
       if (hasRealProjects && ctx.projectWaves) {
-        const failedProjects = new Set<string>()
+        const failedProjects = new Set<string>();
 
         for (const wave of ctx.projectWaves) {
-          if (parallelRunAborted) break
+          if (parallelRunAborted) break;
 
-          const waveFiles: TaggedFile[] = []
+          const waveFiles: TaggedFile[] = [];
           for (const project of wave) {
-            const blockedBy = project.dependencies.find((d) => failedProjects.has(d))
+            const blockedBy = project.dependencies.find((d) => failedProjects.has(d));
             if (blockedBy) {
-              broadcast({ type: 'error', message: `Skipping project "${project.name}" — dependency "${blockedBy}" failed` })
-              markProjectTestsSkipped(project.name)
-              failedProjects.add(project.name)
-              continue
+              broadcast({ type: 'error', message: `Skipping project "${project.name}" — dependency "${blockedBy}" failed` });
+              markProjectTestsSkipped(project.name);
+              failedProjects.add(project.name);
+              continue;
             }
 
             for (const file of project.testFiles) {
@@ -1146,47 +1158,43 @@ export async function startUIServer(
                 filePath: file,
                 projectUseOptions: project.use as RunFileUseOptions | undefined,
                 projectName: project.name !== 'default' ? project.name : undefined,
-              })
+              });
             }
           }
 
           if (waveFiles.length > 0) {
-            const r = await dispatchFilesParallel(waveFiles)
-            totalPassed += r.passed
-            totalFailed += r.failed
-            totalSkipped += r.skipped
-            totalDuration += r.duration
+            const r = await dispatchFilesParallel(waveFiles);
+            totalPassed += r.passed;
+            totalFailed += r.failed;
+            totalSkipped += r.skipped;
+            totalDuration += r.duration;
 
-            // Track per-project failures
-            for (const project of wave) {
-              if (failedProjects.has(project.name)) continue
-              // Check if any test in this project failed
-              // We rely on the test tree status updates to track this
-            }
+            // Track per-project failures using actual per-file results
             if (r.anyFailed) {
-              // Mark all projects in this wave that had failures
               for (const project of wave) {
-                if (failedProjects.has(project.name)) continue
-                failedProjects.add(project.name)
+                if (failedProjects.has(project.name)) continue;
+                if (r.failedProjectNames.has(project.name)) {
+                  failedProjects.add(project.name);
+                }
               }
             }
           }
         }
       } else {
         const allFiles: TaggedFile[] = ctx.testFiles.map((f) => {
-          const project = fileToProject.get(f)
+          const project = fileToProject.get(f);
           return {
             filePath: f,
             projectUseOptions: project?.use as RunFileUseOptions | undefined,
             projectName: project && project.name !== 'default' ? project.name : undefined,
-          }
-        })
+          };
+        });
 
-        const r = await dispatchFilesParallel(allFiles)
-        totalPassed = r.passed
-        totalFailed = r.failed
-        totalSkipped = r.skipped
-        totalDuration = r.duration
+        const r = await dispatchFilesParallel(allFiles);
+        totalPassed = r.passed;
+        totalFailed = r.failed;
+        totalSkipped = r.skipped;
+        totalDuration = r.duration;
       }
 
       broadcast({
@@ -1196,10 +1204,10 @@ export async function startUIServer(
         passed: totalPassed,
         failed: totalFailed,
         skipped: totalSkipped,
-      })
+      });
     } catch (err) {
-      const errMsg = err instanceof Error ? err.message : String(err)
-      broadcast({ type: 'error', message: errMsg })
+      const errMsg = err instanceof Error ? err.message : String(err);
+      broadcast({ type: 'error', message: errMsg });
       broadcast({
         type: 'run-end',
         status: 'failed',
@@ -1207,34 +1215,34 @@ export async function startUIServer(
         passed: totalPassed,
         failed: totalFailed + 1,
         skipped: totalSkipped,
-      })
+      });
     } finally {
-      isRunning = false
-      screenPollActive = false
+      isRunning = false;
+      screenPollActive = false;
       for (const w of uiWorkers) {
-        if (!w.retired) broadcastWorkerStatus(w, 'idle')
+        if (!w.retired) broadcastWorkerStatus(w, 'idle');
       }
     }
   }
 
   async function runFileParallel(filePath: string, testFilter?: string): Promise<void> {
-    if (isRunning) return
-    isRunning = true
-    screenPollActive = true
-    parallelRunAborted = false
+    if (isRunning) return;
+    isRunning = true;
+    screenPollActive = true;
+    parallelRunAborted = false;
 
-    broadcast({ type: 'run-start', fileCount: 1, filePath, testFilter })
+    broadcast({ type: 'run-start', fileCount: 1, filePath, testFilter });
 
-    const project = fileToProject.get(filePath)
+    const project = fileToProject.get(filePath);
     const file: TaggedFile = {
       filePath,
       projectUseOptions: project?.use as RunFileUseOptions | undefined,
       projectName: project && project.name !== 'default' ? project.name : undefined,
       testFilter,
-    }
+    };
 
     try {
-      const r = await dispatchFilesParallel([file])
+      const r = await dispatchFilesParallel([file]);
 
       broadcast({
         type: 'run-end',
@@ -1243,85 +1251,85 @@ export async function startUIServer(
         passed: r.passed,
         failed: r.failed,
         skipped: r.skipped,
-      })
+      });
     } catch (err) {
-      const errMsg = err instanceof Error ? err.message : String(err)
-      broadcast({ type: 'error', message: `Failed to run ${path.basename(filePath)}: ${errMsg}` })
-      broadcast({ type: 'file-status', filePath, status: 'done' })
-      broadcast({ type: 'run-end', status: 'failed', duration: 0, passed: 0, failed: 1, skipped: 0 })
+      const errMsg = err instanceof Error ? err.message : String(err);
+      broadcast({ type: 'error', message: `Failed to run ${path.basename(filePath)}: ${errMsg}` });
+      broadcast({ type: 'file-status', filePath, status: 'done' });
+      broadcast({ type: 'run-end', status: 'failed', duration: 0, passed: 0, failed: 1, skipped: 0 });
     } finally {
-      isRunning = false
-      screenPollActive = false
+      isRunning = false;
+      screenPollActive = false;
     }
   }
 
   /** Kill all workers and respawn them lazily on next run. */
   function stopParallelRun(): void {
-    parallelRunAborted = true
+    parallelRunAborted = true;
 
     for (const worker of uiWorkers) {
       if (worker.busy) {
-        try { worker.process.kill() } catch { /* already dead */ }
-        worker.retired = true
-        worker.busy = false
-        worker.currentFile = undefined
-        worker.currentTest = undefined
-        broadcastWorkerStatus(worker, 'idle')
+        try { worker.process.kill(); } catch { /* already dead */ }
+        worker.retired = true;
+        worker.busy = false;
+        worker.currentFile = undefined;
+        worker.currentTest = undefined;
+        broadcastWorkerStatus(worker, 'idle');
       }
     }
 
     // Unblock any pending dispatch promise so isRunning resets.
     if (abortDispatch) {
-      abortDispatch()
-      abortDispatch = null
+      abortDispatch();
+      abortDispatch = null;
     }
   }
 
   /** Respawn any retired workers before starting a new run. */
   async function ensureWorkersReady(): Promise<void> {
-    if (!multiWorker || !ctx.deviceSerials) return
+    if (!multiWorker || !ctx.deviceSerials) return;
 
     const baseDaemonPort = Number.parseInt(
       (ctx.daemonAddress ?? ctx.config.daemonAddress).split(':').pop() ?? '50051',
       10,
-    )
-    const baseAgentPort = 18700
-    const rawBin = process.env.PILOT_DAEMON_BIN ?? ctx.config.daemonBin ?? 'pilot-core'
+    );
+    const baseAgentPort = 18700;
+    const rawBin = process.env.PILOT_DAEMON_BIN ?? ctx.config.daemonBin ?? 'pilot-core';
     const daemonBin = rawBin.includes(path.sep) || rawBin.startsWith('.')
       ? path.resolve(ctx.config.rootDir, rawBin)
-      : rawBin
+      : rawBin;
 
-    const respawnPromises: Promise<void>[] = []
+    const respawnPromises: Promise<void>[] = [];
 
     for (let i = 0; i < uiWorkers.length; i++) {
-      const worker = uiWorkers[i]
-      if (!worker.retired) continue
+      const worker = uiWorkers[i];
+      if (!worker.retired) continue;
 
-      const daemonPort = baseDaemonPort + 100 + worker.id
-      const agentPort = baseAgentPort + 100 + worker.id
+      const daemonPort = baseDaemonPort + 100 + worker.id;
+      const agentPort = baseAgentPort + 100 + worker.id;
 
       respawnPromises.push((async () => {
         try {
           // Clean up old daemon
-          try { worker.daemonProcess?.kill() } catch { /* already dead */ }
-          worker.screenClient?.close()
+          try { worker.daemonProcess?.kill(); } catch { /* already dead */ }
+          worker.screenClient?.close();
 
           const newWorker = await initializeOneWorker(
             worker.id, worker.deviceSerial, daemonPort, agentPort, daemonBin,
-          )
+          );
           // Replace in array
-          uiWorkers[i] = newWorker
+          uiWorkers[i] = newWorker;
         } catch (err) {
           console.error(
             `${YELLOW}Failed to respawn worker ${worker.id}: ${err instanceof Error ? err.message : err}${RESET}`,
-          )
+          );
         }
-      })())
+      })());
     }
 
     if (respawnPromises.length > 0) {
-      console.log(`${DIM}Respawning ${respawnPromises.length} worker(s)...${RESET}`)
-      await Promise.allSettled(respawnPromises)
+      console.log(`${DIM}Respawning ${respawnPromises.length} worker(s)...${RESET}`);
+      await Promise.allSettled(respawnPromises);
     }
   }
 
@@ -1329,81 +1337,81 @@ export async function startUIServer(
   // ─── Dispatch (routes to single or parallel)
   // ═══════════════════════════════════════════════════════════════════
 
-  const useParallel = () => multiWorker && workersInitialized && uiWorkers.length > 1
+  const useParallel = () => multiWorker && workersInitialized && uiWorkers.length > 1;
 
   async function runFile(filePath: string, testFilter?: string): Promise<void> {
     if (useParallel()) {
-      await ensureWorkersReady()
-      return runFileParallel(filePath, testFilter)
+      await ensureWorkersReady();
+      return runFileParallel(filePath, testFilter);
     }
-    return runFileSingle(filePath, testFilter)
+    return runFileSingle(filePath, testFilter);
   }
 
   async function runAllFiles(): Promise<void> {
     if (useParallel()) {
-      await ensureWorkersReady()
-      return runAllFilesParallel()
+      await ensureWorkersReady();
+      return runAllFilesParallel();
     }
-    return runAllFilesSingle()
+    return runAllFilesSingle();
   }
 
   async function runProject(projectName: string): Promise<void> {
     // Project runs with deps use the same wave-based approach in parallel
     if (useParallel()) {
-      if (!ctx.projects || !ctx.projectWaves) return
-      if (isRunning) return
+      if (!ctx.projects || !ctx.projectWaves) return;
+      if (isRunning) return;
 
-      const target = ctx.projects.find((p) => p.name === projectName)
-      if (!target) return
+      const target = ctx.projects.find((p) => p.name === projectName);
+      if (!target) return;
 
-      isRunning = true
-      screenPollActive = true
-      parallelRunAborted = false
+      isRunning = true;
+      screenPollActive = true;
+      parallelRunAborted = false;
 
-      await ensureWorkersReady()
+      await ensureWorkersReady();
 
-      const requiredNames = collectTransitiveDeps(new Set([projectName]), ctx.projects)
+      const requiredNames = collectTransitiveDeps(new Set([projectName]), ctx.projects);
       const filteredWaves = ctx.projectWaves
         .map((wave) => wave.filter((p) => requiredNames.has(p.name)))
-        .filter((wave) => wave.length > 0)
+        .filter((wave) => wave.length > 0);
 
-      const allFiles = filteredWaves.flatMap((w) => w.flatMap((p) => p.testFiles))
-      broadcast({ type: 'run-start', fileCount: allFiles.length })
+      const allFiles = filteredWaves.flatMap((w) => w.flatMap((p) => p.testFiles));
+      broadcast({ type: 'run-start', fileCount: allFiles.length });
 
-      let totalPassed = 0, totalFailed = 0, totalSkipped = 0, totalDuration = 0
-      const failedProjects = new Set<string>()
+      let totalPassed = 0, totalFailed = 0, totalSkipped = 0, totalDuration = 0;
+      const failedProjects = new Set<string>();
 
       try {
         for (const wave of filteredWaves) {
-          if (parallelRunAborted) break
+          if (parallelRunAborted) break;
 
-          const waveFiles: TaggedFile[] = []
+          const waveFiles: TaggedFile[] = [];
           for (const project of wave) {
-            const blockedBy = project.dependencies.find((d) => failedProjects.has(d))
+            const blockedBy = project.dependencies.find((d) => failedProjects.has(d));
             if (blockedBy) {
-              broadcast({ type: 'error', message: `Skipping project "${project.name}" — dependency "${blockedBy}" failed` })
-              markProjectTestsSkipped(project.name)
-              failedProjects.add(project.name)
-              continue
+              broadcast({ type: 'error', message: `Skipping project "${project.name}" — dependency "${blockedBy}" failed` });
+              markProjectTestsSkipped(project.name);
+              failedProjects.add(project.name);
+              continue;
             }
             for (const file of project.testFiles) {
               waveFiles.push({
                 filePath: file,
                 projectUseOptions: project.use as RunFileUseOptions | undefined,
                 projectName: project.name !== 'default' ? project.name : undefined,
-              })
+              });
             }
           }
 
           if (waveFiles.length > 0) {
-            const r = await dispatchFilesParallel(waveFiles)
-            totalPassed += r.passed
-            totalFailed += r.failed
-            totalSkipped += r.skipped
-            totalDuration += r.duration
+            const r = await dispatchFilesParallel(waveFiles);
+            totalPassed += r.passed;
+            totalFailed += r.failed;
+            totalSkipped += r.skipped;
+            totalDuration += r.duration;
             if (r.anyFailed) {
               for (const project of wave) {
-                if (!failedProjects.has(project.name)) failedProjects.add(project.name)
+                if (!failedProjects.has(project.name)) failedProjects.add(project.name);
               }
             }
           }
@@ -1416,91 +1424,91 @@ export async function startUIServer(
           passed: totalPassed,
           failed: totalFailed,
           skipped: totalSkipped,
-        })
+        });
       } finally {
-        isRunning = false
-        screenPollActive = false
+        isRunning = false;
+        screenPollActive = false;
       }
-      return
+      return;
     }
-    return runProjectSingle(projectName)
+    return runProjectSingle(projectName);
   }
 
   async function runFileWithDeps(filePath: string, testFilter?: string): Promise<void> {
     if (useParallel()) {
       // In parallel mode, run deps as waves then target file
-      const project = fileToProject.get(filePath)
+      const project = fileToProject.get(filePath);
       if (!project || project.dependencies.length === 0 || !ctx.projects || !ctx.projectWaves) {
-        return runFile(filePath, testFilter)
+        return runFile(filePath, testFilter);
       }
 
-      if (isRunning) return
-      isRunning = true
-      screenPollActive = true
-      parallelRunAborted = false
+      if (isRunning) return;
+      isRunning = true;
+      screenPollActive = true;
+      parallelRunAborted = false;
 
-      await ensureWorkersReady()
+      await ensureWorkersReady();
 
-      const depNames = collectTransitiveDeps(new Set(project.dependencies), ctx.projects)
-      depNames.delete(project.name)
+      const depNames = collectTransitiveDeps(new Set(project.dependencies), ctx.projects);
+      depNames.delete(project.name);
       const depWaves = ctx.projectWaves
         .map((wave) => wave.filter((p) => depNames.has(p.name)))
-        .filter((wave) => wave.length > 0)
+        .filter((wave) => wave.length > 0);
 
-      const depFileCount = depWaves.reduce((n, w) => n + w.reduce((m, p) => m + p.testFiles.length, 0), 0)
-      broadcast({ type: 'run-start', fileCount: depFileCount + 1, filePath, testFilter })
+      const depFileCount = depWaves.reduce((n, w) => n + w.reduce((m, p) => m + p.testFiles.length, 0), 0);
+      broadcast({ type: 'run-start', fileCount: depFileCount + 1, filePath, testFilter });
 
-      let totalPassed = 0, totalFailed = 0, totalSkipped = 0, totalDuration = 0
-      const failedProjects = new Set<string>()
+      let totalPassed = 0, totalFailed = 0, totalSkipped = 0, totalDuration = 0;
+      const failedProjects = new Set<string>();
 
       try {
         for (const wave of depWaves) {
-          if (parallelRunAborted) break
-          const waveFiles: TaggedFile[] = []
+          if (parallelRunAborted) break;
+          const waveFiles: TaggedFile[] = [];
           for (const depProject of wave) {
-            const blockedBy = depProject.dependencies.find((d) => failedProjects.has(d))
+            const blockedBy = depProject.dependencies.find((d) => failedProjects.has(d));
             if (blockedBy) {
-              broadcast({ type: 'error', message: `Skipping project "${depProject.name}" — dependency "${blockedBy}" failed` })
-              markProjectTestsSkipped(depProject.name)
-              failedProjects.add(depProject.name)
-              continue
+              broadcast({ type: 'error', message: `Skipping project "${depProject.name}" — dependency "${blockedBy}" failed` });
+              markProjectTestsSkipped(depProject.name);
+              failedProjects.add(depProject.name);
+              continue;
             }
             for (const f of depProject.testFiles) {
               waveFiles.push({
                 filePath: f,
                 projectUseOptions: depProject.use as RunFileUseOptions | undefined,
                 projectName: depProject.name !== 'default' ? depProject.name : undefined,
-              })
+              });
             }
           }
           if (waveFiles.length > 0) {
-            const r = await dispatchFilesParallel(waveFiles)
-            totalPassed += r.passed
-            totalFailed += r.failed
-            totalSkipped += r.skipped
-            totalDuration += r.duration
+            const r = await dispatchFilesParallel(waveFiles);
+            totalPassed += r.passed;
+            totalFailed += r.failed;
+            totalSkipped += r.skipped;
+            totalDuration += r.duration;
             if (r.anyFailed) {
-              for (const dp of wave) failedProjects.add(dp.name)
+              for (const dp of wave) failedProjects.add(dp.name);
             }
           }
         }
 
-        const blockedBy = project.dependencies.find((d) => failedProjects.has(d))
+        const blockedBy = project.dependencies.find((d) => failedProjects.has(d));
         if (blockedBy) {
-          broadcast({ type: 'error', message: `Skipping "${path.basename(filePath)}" — dependency "${blockedBy}" failed` })
-          broadcast({ type: 'file-status', filePath, status: 'done' })
+          broadcast({ type: 'error', message: `Skipping "${path.basename(filePath)}" — dependency "${blockedBy}" failed` });
+          broadcast({ type: 'file-status', filePath, status: 'done' });
         } else {
           const targetFile: TaggedFile = {
             filePath,
             projectUseOptions: project.use as RunFileUseOptions | undefined,
             projectName: project.name !== 'default' ? project.name : undefined,
             testFilter,
-          }
-          const r = await dispatchFilesParallel([targetFile])
-          totalPassed += r.passed
-          totalFailed += r.failed
-          totalSkipped += r.skipped
-          totalDuration += r.duration
+          };
+          const r = await dispatchFilesParallel([targetFile]);
+          totalPassed += r.passed;
+          totalFailed += r.failed;
+          totalSkipped += r.skipped;
+          totalDuration += r.duration;
         }
 
         broadcast({
@@ -1510,22 +1518,22 @@ export async function startUIServer(
           passed: totalPassed,
           failed: totalFailed,
           skipped: totalSkipped,
-        })
+        });
       } finally {
-        isRunning = false
-        screenPollActive = false
+        isRunning = false;
+        screenPollActive = false;
       }
-      return
+      return;
     }
-    return runFileWithDepsSingle(filePath, testFilter)
+    return runFileWithDepsSingle(filePath, testFilter);
   }
 
   // ─── Screen Polling ───
 
   async function pollScreen(): Promise<void> {
     if (clients.size === 0) {
-      scheduleScreenPoll()
-      return
+      scheduleScreenPoll();
+      return;
     }
 
     try {
@@ -1533,220 +1541,243 @@ export async function startUIServer(
       // In single-worker mode, poll from the main client.
       const pollClient = multiWorker && workersInitialized
         ? uiWorkers.find((w) => w.id === selectedWorkerId && !w.retired)?.screenClient
-        : ctx.client
+        : ctx.client;
 
       if (!pollClient) {
-        scheduleScreenPoll()
-        return
+        scheduleScreenPoll();
+        return;
       }
 
-      const response = await pollClient.takeScreenshot()
+      const response = await pollClient.takeScreenshot();
       if (response.success && response.data) {
         const data = Buffer.isBuffer(response.data)
           ? response.data
-          : Buffer.from(response.data)
-        const width = 1080
-        const height = 1920
-        const frame = encodeScreenFrame(screenSeq++, width, height, data)
-        broadcastBinary(frame)
+          : Buffer.from(response.data);
+        // Read dimensions from the PNG IHDR chunk (bytes 16-23: width + height as big-endian uint32)
+        const width = data.length >= 24 ? data.readUInt32BE(16) : 1080;
+        const height = data.length >= 24 ? data.readUInt32BE(20) : 1920;
+        const frame = encodeScreenFrame(screenSeq++, width, height, data);
+        broadcastBinary(frame);
       }
     } catch {
       // Device may be busy — skip frame
     }
 
-    scheduleScreenPoll()
+    scheduleScreenPoll();
   }
 
   function scheduleScreenPoll(): void {
-    if (screenPollTimer) clearTimeout(screenPollTimer)
-    const interval = screenPollActive ? 150 : 500
-    screenPollTimer = setTimeout(pollScreen, interval)
+    if (screenPollTimer) clearTimeout(screenPollTimer);
+    const interval = screenPollActive ? 150 : 500;
+    screenPollTimer = setTimeout(pollScreen, interval);
   }
 
   // ─── Watch Mode ───
 
   function startWatching(filePath: string): void {
-    if (watchedFiles.has(filePath)) return
-    watchedFiles.add(filePath)
+    if (watchedFiles.has(filePath)) return;
+    watchedFiles.add(filePath);
 
     if (!watcher) {
-      watcher = chokidarWatch([], { ignoreInitial: true })
+      watcher = chokidarWatch([], { ignoreInitial: true });
       watcher.on('change', (changedPath) => {
         if (watchedFiles.has(changedPath)) {
-          broadcast({ type: 'watch-event', filePath: changedPath, event: 'changed' })
-          watchQueue.scheduleFiles([changedPath])
+          broadcast({ type: 'watch-event', filePath: changedPath, event: 'changed' });
+          watchQueue.scheduleFiles([changedPath]);
         }
-      })
+      });
     }
 
-    watcher.add(filePath)
-    broadcast({ type: 'watch-event', filePath, event: 'watch-enabled' })
+    watcher.add(filePath);
+    broadcast({ type: 'watch-event', filePath, event: 'watch-enabled' });
   }
 
   function stopWatching(filePath: string): void {
-    if (!watchedFiles.has(filePath)) return
-    watchedFiles.delete(filePath)
-    watcher?.unwatch(filePath)
-    broadcast({ type: 'watch-event', filePath, event: 'watch-disabled' })
+    if (!watchedFiles.has(filePath)) return;
+    watchedFiles.delete(filePath);
+    watcher?.unwatch(filePath);
+    broadcast({ type: 'watch-event', filePath, event: 'watch-disabled' });
   }
 
   const watchQueue = new RunQueue(300, (request) => {
     if (request.type === 'all') {
-      runAllFiles().catch(() => {})
+      runAllFiles().catch(() => {});
     } else {
-      const file = request.files[0]
-      if (file) runFile(file).catch(() => {})
+      const file = request.files[0];
+      if (file) runFile(file).catch(() => {});
     }
-  })
+  });
 
   // ─── Command Handler ───
 
   function handleCommand(msg: ClientMessage): void {
     switch (msg.type) {
       case 'run-test':
-        if (msg.runDeps) runFileWithDeps(msg.filePath, msg.fullName).catch(() => {})
-        else runFile(msg.filePath, msg.fullName).catch(() => {})
-        break
+        if (msg.runDeps) runFileWithDeps(msg.filePath, msg.fullName).catch(() => {});
+        else runFile(msg.filePath, msg.fullName).catch(() => {});
+        break;
       case 'run-file':
-        if (msg.runDeps) runFileWithDeps(msg.filePath).catch(() => {})
-        else runFile(msg.filePath).catch(() => {})
-        break
+        if (msg.runDeps) runFileWithDeps(msg.filePath).catch(() => {});
+        else runFile(msg.filePath).catch(() => {});
+        break;
       case 'run-all':
-        runAllFiles().catch(() => {})
-        break
+        runAllFiles().catch(() => {});
+        break;
       case 'run-failed': {
-        const files = [...failedFiles]
+        const files = [...failedFiles];
         if (files.length > 0) {
-          failedFiles.clear()
-          ;(async () => {
-            for (const f of files) await runFile(f)
-          })().catch(() => {})
+          failedFiles.clear();
+          if (useParallel() && files.length > 1) {
+            ;(async () => {
+              await ensureWorkersReady();
+              const taggedFiles: TaggedFile[] = files.map((f) => {
+                const project = fileToProject.get(f);
+                return {
+                  filePath: f,
+                  projectUseOptions: project?.use as RunFileUseOptions | undefined,
+                  projectName: project && project.name !== 'default' ? project.name : undefined,
+                };
+              });
+              await dispatchFilesParallel(taggedFiles);
+            })().catch(() => {});
+          } else {
+            ;(async () => {
+              for (const f of files) await runFile(f);
+            })().catch(() => {});
+          }
         }
-        break
+        break;
       }
       case 'run-project':
-        runProject(msg.projectName).catch(() => {})
-        break
+        runProject(msg.projectName).catch(() => {});
+        break;
       case 'stop-run':
         if (useParallel()) {
-          stopParallelRun()
+          stopParallelRun();
         } else if (activeChild) {
-          try { activeChild.kill() } catch { /* already dead */ }
+          try { activeChild.kill(); } catch { /* already dead */ }
         }
-        break
+        break;
       case 'toggle-watch':
         if (msg.filePath === 'all') {
-          const allWatched = ctx.testFiles.every((f) => watchedFiles.has(f))
+          const allWatched = ctx.testFiles.every((f) => watchedFiles.has(f));
           for (const f of ctx.testFiles) {
-            if (allWatched) stopWatching(f)
-            else startWatching(f)
+            if (allWatched) stopWatching(f);
+            else startWatching(f);
           }
         } else {
-          if (watchedFiles.has(msg.filePath)) stopWatching(msg.filePath)
-          else startWatching(msg.filePath)
+          if (watchedFiles.has(msg.filePath)) stopWatching(msg.filePath);
+          else startWatching(msg.filePath);
         }
-        break
+        break;
       case 'request-hierarchy': {
         const hierClient = multiWorker && workersInitialized
           ? uiWorkers.find((w) => w.id === selectedWorkerId && !w.retired)?.screenClient
-          : ctx.client
+          : ctx.client;
         hierClient?.getUiHierarchy().then((response) => {
           if (response.hierarchyXml) {
-            broadcast({ type: 'hierarchy-update', xml: response.hierarchyXml })
+            broadcast({ type: 'hierarchy-update', xml: response.hierarchyXml });
           }
-        }).catch(() => {})
-        break
+        }).catch(() => {});
+        break;
       }
       case 'tap-coordinates':
-        console.log(`[Pilot UI] Tap at (${msg.x.toFixed(2)}, ${msg.y.toFixed(2)}) — coordinate tap not yet implemented`)
-        break
+        console.log(`[Pilot UI] Tap at (${msg.x.toFixed(2)}, ${msg.y.toFixed(2)}) — coordinate tap not yet implemented`);
+        break;
       case 'select-worker':
-        selectedWorkerId = msg.workerId
+        selectedWorkerId = msg.workerId;
         // Send device info for the new selection
         {
-          const worker = uiWorkers.find((w) => w.id === msg.workerId)
+          const worker = uiWorkers.find((w) => w.id === msg.workerId);
           if (worker) {
             broadcast({
               type: 'device-info',
               serial: worker.deviceSerial,
               model: undefined,
               isEmulator: worker.deviceSerial.startsWith('emulator-'),
-            })
+            });
           }
         }
-        break
+        break;
       case 'set-filter':
         // Filtering is client-side — no action needed
-        break
+        break;
     }
   }
 
   // ─── HTTP Server ───
 
-  let spaHtml: string
+  let spaHtml: string;
   if (fs.existsSync(SPA_HTML_PATH)) {
-    spaHtml = fs.readFileSync(SPA_HTML_PATH, 'utf-8')
+    spaHtml = fs.readFileSync(SPA_HTML_PATH, 'utf-8');
   } else {
-    spaHtml = buildFallbackHtml()
+    spaHtml = buildFallbackHtml();
   }
 
   const server = http.createServer((req, res) => {
-    const url = new URL(req.url ?? '/', 'http://localhost')
+    const url = new URL(req.url ?? '/', 'http://localhost');
 
     if (url.pathname === '/' || url.pathname === '/index.html') {
-      res.writeHead(200, { 'Content-Type': 'text/html' })
-      res.end(spaHtml)
-      return
+      res.writeHead(200, { 'Content-Type': 'text/html' });
+      res.end(spaHtml);
+      return;
     }
 
     // Serve trace ZIP files for download
     if (url.pathname.startsWith('/trace/')) {
-      const tracePath = decodeURIComponent(url.pathname.slice('/trace/'.length))
-      if (!tracePath || !fs.existsSync(tracePath) || !tracePath.endsWith('.zip')) {
-        res.writeHead(404)
-        res.end('Trace not found')
-        return
+      const tracePath = decodeURIComponent(url.pathname.slice('/trace/'.length));
+      const resolvedTrace = path.resolve(tracePath);
+      const resolvedOutputDir = path.resolve(ctx.config.outputDir);
+      if (
+        !resolvedTrace ||
+        !resolvedTrace.startsWith(resolvedOutputDir + path.sep) ||
+        !resolvedTrace.endsWith('.zip') ||
+        !fs.existsSync(resolvedTrace)
+      ) {
+        res.writeHead(404);
+        res.end('Trace not found');
+        return;
       }
-      const stat = fs.statSync(tracePath)
+      const stat = fs.statSync(resolvedTrace);
       res.writeHead(200, {
         'Content-Type': 'application/zip',
         'Content-Length': stat.size,
-        'Content-Disposition': `attachment; filename="${path.basename(tracePath)}"`,
-      })
-      fs.createReadStream(tracePath).pipe(res)
-      return
+        'Content-Disposition': `attachment; filename="${path.basename(resolvedTrace)}"`,
+      });
+      fs.createReadStream(resolvedTrace).pipe(res);
+      return;
     }
 
-    res.writeHead(404)
-    res.end('Not found')
-  })
+    res.writeHead(404);
+    res.end('Not found');
+  });
 
   // ─── WebSocket Server ───
 
-  const wss = new WebSocketServer({ server })
+  const wss = new WebSocketServer({ server });
 
   wss.on('connection', (ws) => {
-    clients.add(ws)
+    clients.add(ws);
 
     // Send current state to new client
-    ws.send(JSON.stringify({ type: 'test-tree', files: testTree } satisfies ServerMessage))
+    ws.send(JSON.stringify({ type: 'test-tree', files: testTree } satisfies ServerMessage));
 
     if (multiWorker && workersInitialized) {
       // Send workers info
       ws.send(JSON.stringify({
         type: 'workers-info',
         workers: uiWorkers.map((w) => ({ workerId: w.id, deviceSerial: w.deviceSerial })),
-      } satisfies ServerMessage))
+      } satisfies ServerMessage));
 
       // Send device info for selected worker
-      const selectedWorker = uiWorkers.find((w) => w.id === selectedWorkerId)
+      const selectedWorker = uiWorkers.find((w) => w.id === selectedWorkerId);
       if (selectedWorker) {
         ws.send(JSON.stringify({
           type: 'device-info',
           serial: selectedWorker.deviceSerial,
           model: undefined,
           isEmulator: selectedWorker.deviceSerial.startsWith('emulator-'),
-        } satisfies ServerMessage))
+        } satisfies ServerMessage));
       }
 
       // Send current worker statuses
@@ -1759,7 +1790,7 @@ export async function startUIServer(
           passed: w.passed,
           failed: w.failed,
           skipped: w.skipped,
-        } satisfies ServerMessage))
+        } satisfies ServerMessage));
       }
     } else if (ctx.deviceSerial) {
       ws.send(JSON.stringify({
@@ -1767,64 +1798,64 @@ export async function startUIServer(
         serial: ctx.deviceSerial,
         model: undefined,
         isEmulator: ctx.deviceSerial.startsWith('emulator-'),
-      } satisfies ServerMessage))
+      } satisfies ServerMessage));
     }
 
     ws.on('message', (data) => {
       try {
-        const msg: ClientMessage = JSON.parse(data.toString())
-        handleCommand(msg)
+        const msg: ClientMessage = JSON.parse(data.toString());
+        handleCommand(msg);
       } catch {
         // Ignore malformed messages
       }
-    })
+    });
 
     ws.on('close', () => {
-      clients.delete(ws)
-    })
-  })
+      clients.delete(ws);
+    });
+  });
 
   // ─── Start ───
 
   const actualPort = await new Promise<number>((resolve, reject) => {
-    const tryPort = options.port ?? 0
+    const tryPort = options.port ?? 0;
     server.listen(tryPort, '127.0.0.1', () => {
-      const addr = server.address()
+      const addr = server.address();
       if (typeof addr === 'object' && addr) {
-        resolve(addr.port)
+        resolve(addr.port);
       } else {
-        reject(new Error('Failed to bind UI server'))
+        reject(new Error('Failed to bind UI server'));
       }
-    })
-    server.on('error', reject)
-  })
+    });
+    server.on('error', reject);
+  });
 
   // Discover tests
-  await discoverAllFiles()
+  await discoverAllFiles();
 
   // Initialize multi-worker if configured
   if (multiWorker) {
-    await initializeWorkers()
+    await initializeWorkers();
   }
 
   // Start screen polling
-  scheduleScreenPoll()
+  scheduleScreenPoll();
 
   // Open browser
-  const viewerUrl = `http://127.0.0.1:${actualPort}/`
+  const viewerUrl = `http://127.0.0.1:${actualPort}/`;
   try {
-    const open = await import('open')
-    await open.default(viewerUrl)
+    const open = await import('open');
+    await open.default(viewerUrl);
   } catch {
-    console.log(`Pilot UI: ${viewerUrl}`)
+    console.log(`Pilot UI: ${viewerUrl}`);
   }
 
   const workerLabel = multiWorker && workersInitialized
     ? `${uiWorkers.length} worker(s) across ${uiWorkers.map((w) => w.deviceSerial).join(', ')}`
-    : `Device: ${ctx.deviceSerial ?? 'unknown'}`
+    : `Device: ${ctx.deviceSerial ?? 'unknown'}`;
 
-  console.log(`\x1b[1mPilot UI mode\x1b[0m running at ${viewerUrl}`)
-  console.log(`\x1b[2m${workerLabel} | ${ctx.testFiles.length} test file(s)\x1b[0m`)
+  console.log(`\x1b[1mPilot UI mode\x1b[0m running at ${viewerUrl}`);
+  console.log(`\x1b[2m${workerLabel} | ${ctx.testFiles.length} test file(s)\x1b[0m`);
 
   // Send device info (single-worker)
   if (!multiWorker && ctx.deviceSerial) {
@@ -1833,44 +1864,44 @@ export async function startUIServer(
       serial: ctx.deviceSerial,
       model: undefined,
       isEmulator: ctx.deviceSerial.startsWith('emulator-'),
-    })
+    });
   }
 
   return {
     port: actualPort,
     close: () => {
-      if (screenPollTimer) clearTimeout(screenPollTimer)
+      if (screenPollTimer) clearTimeout(screenPollTimer);
 
       // Clean up workers
       if (multiWorker) {
         for (const worker of uiWorkers) {
           try {
             if (worker.process.connected) {
-              worker.process.send({ type: 'shutdown' } satisfies UIWorkerMessage)
+              worker.process.send({ type: 'shutdown' } satisfies UIWorkerMessage);
               setTimeout(() => {
-                try { worker.process.kill() } catch { /* already dead */ }
-              }, 3_000)
+                try { worker.process.kill(); } catch { /* already dead */ }
+              }, 3_000);
             }
           } catch { /* already dead */ }
-          try { worker.daemonProcess?.kill() } catch { /* already dead */ }
-          worker.screenClient?.close()
+          try { worker.daemonProcess?.kill(); } catch { /* already dead */ }
+          worker.screenClient?.close();
         }
       } else {
         if (activeChild) {
-          try { activeChild.kill() } catch { /* already dead */ }
+          try { activeChild.kill(); } catch { /* already dead */ }
         }
-        ctx.device?.close()
-        ctx.client?.close()
+        ctx.device?.close();
+        ctx.client?.close();
       }
 
-      if (watcher) watcher.close()
-      for (const ws of clients) ws.close()
-      wss.close()
-      server.close()
+      if (watcher) watcher.close();
+      for (const ws of clients) ws.close();
+      wss.close();
+      server.close();
 
-      preserveEmulatorsForReuse(ctx.launchedEmulators)
+      preserveEmulatorsForReuse(ctx.launchedEmulators);
     },
-  }
+  };
 }
 
 // ─── Fallback HTML ───
@@ -1892,5 +1923,5 @@ function buildFallbackHtml(): string {
   <p class="info">The UI mode bundle was not found. Run <code>npm run build:ui-mode</code> to build it.</p>
   <p class="info">In development, run <code>npx vite --config vite.config.ui-mode.ts</code> for hot-reload.</p>
 </body>
-</html>`
+</html>`;
 }

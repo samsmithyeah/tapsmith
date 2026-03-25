@@ -1,4 +1,4 @@
-import type { TraceMetadata } from '../../trace/types.js'
+import type { TraceMetadata } from '../../trace/types.js';
 
 // ─── Types ───
 
@@ -12,11 +12,11 @@ interface Props {
 
 // ─── Styles ───
 
-let stylesInjected = false
+let stylesInjected = false;
 function injectStyles() {
-  if (stylesInjected) return
-  stylesInjected = true
-  const el = document.createElement('style')
+  if (stylesInjected) return;
+  stylesInjected = true;
+  const el = document.createElement('style');
   el.textContent = `
     .top-bar {
       display: flex;
@@ -123,22 +123,22 @@ function injectStyles() {
     .top-bar-theme-select:focus {
       border-color: var(--color-accent);
     }
-  `
-  document.head.appendChild(el)
+  `;
+  document.head.appendChild(el);
 }
 
 // ─── Helpers ───
 
 function formatTestPath(metadata: TraceMetadata): preact.JSX.Element {
-  const file = metadata.testFile
+  const file = metadata.testFile;
   // Show just filename (not full path)
-  const fileName = file.split('/').pop() ?? file
+  const fileName = file.split('/').pop() ?? file;
 
   // Split testName by " > " (describe blocks + test name)
-  const parts = metadata.testName.split(' > ')
+  const parts = metadata.testName.split(' > ');
 
-  const statusIcon = metadata.testStatus === 'passed' ? '\u2713' : '\u2717'
-  const statusClass = metadata.testStatus === 'passed' ? 'passed' : 'failed'
+  const statusIcon = metadata.testStatus === 'passed' ? '\u2713' : '\u2717';
+  const statusClass = metadata.testStatus === 'passed' ? 'passed' : 'failed';
 
   return (
     <span>
@@ -152,13 +152,13 @@ function formatTestPath(metadata: TraceMetadata): preact.JSX.Element {
         </span>
       ))}
     </span>
-  )
+  );
 }
 
 // ─── Component ───
 
 export function TopBar({ metadata, theme, onThemeChange }: Props) {
-  injectStyles()
+  injectStyles();
 
   return (
     <div class="top-bar">
@@ -189,5 +189,5 @@ export function TopBar({ metadata, theme, onThemeChange }: Props) {
         </select>
       </div>
     </div>
-  )
+  );
 }

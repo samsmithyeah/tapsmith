@@ -8,8 +8,8 @@
  *   Bottom: Detail tabs (Source, Call, Log, Console, Network, Hierarchy, Errors)
  */
 
-import { useState, useCallback } from 'preact/hooks'
-import type { ComponentChildren } from 'preact'
+import { useState, useCallback } from 'preact/hooks';
+import type { ComponentChildren } from 'preact';
 
 interface LayoutProps {
   topBar: ComponentChildren
@@ -21,9 +21,9 @@ interface LayoutProps {
 }
 
 export function Layout({ topBar, testExplorer, filmstrip, actionsPanel, screenshotPanel, detailTabs }: LayoutProps) {
-  const [explorerWidth, setExplorerWidth] = useState(260)
-  const [actionsWidth, setActionsWidth] = useState(380)
-  const [detailHeight, setDetailHeight] = useState(250)
+  const [explorerWidth, setExplorerWidth] = useState(260);
+  const [actionsWidth, setActionsWidth] = useState(380);
+  const [detailHeight, setDetailHeight] = useState(250);
 
   const makeColResize = useCallback((
     getter: () => number,
@@ -32,55 +32,55 @@ export function Layout({ topBar, testExplorer, filmstrip, actionsPanel, screensh
     max: number,
     invert?: boolean,
   ) => (e: MouseEvent) => {
-    e.preventDefault()
-    const startX = e.clientX
-    const startWidth = getter()
+    e.preventDefault();
+    const startX = e.clientX;
+    const startWidth = getter();
 
     const onMove = (ev: MouseEvent) => {
-      const delta = invert ? (startX - ev.clientX) : (ev.clientX - startX)
-      setter(Math.max(min, Math.min(max, startWidth + delta)))
-    }
+      const delta = invert ? (startX - ev.clientX) : (ev.clientX - startX);
+      setter(Math.max(min, Math.min(max, startWidth + delta)));
+    };
     const onUp = () => {
-      document.removeEventListener('mousemove', onMove)
-      document.removeEventListener('mouseup', onUp)
-      document.body.style.cursor = ''
-      document.body.style.userSelect = ''
-    }
-    document.body.style.cursor = 'col-resize'
-    document.body.style.userSelect = 'none'
-    document.addEventListener('mousemove', onMove)
-    document.addEventListener('mouseup', onUp)
-  }, [])
+      document.removeEventListener('mousemove', onMove);
+      document.removeEventListener('mouseup', onUp);
+      document.body.style.cursor = '';
+      document.body.style.userSelect = '';
+    };
+    document.body.style.cursor = 'col-resize';
+    document.body.style.userSelect = 'none';
+    document.addEventListener('mousemove', onMove);
+    document.addEventListener('mouseup', onUp);
+  }, []);
 
   const handleExplorerResize = useCallback(
     (e: MouseEvent) => makeColResize(() => explorerWidth, setExplorerWidth, 180, 450)(e),
     [explorerWidth, makeColResize],
-  )
+  );
 
   const handleActionsResize = useCallback(
     (e: MouseEvent) => makeColResize(() => actionsWidth, setActionsWidth, 250, 600)(e),
     [actionsWidth, makeColResize],
-  )
+  );
 
   const handleDetailResize = useCallback((e: MouseEvent) => {
-    e.preventDefault()
-    const startY = e.clientY
-    const startHeight = detailHeight
+    e.preventDefault();
+    const startY = e.clientY;
+    const startHeight = detailHeight;
     const onMove = (ev: MouseEvent) => {
-      const delta = startY - ev.clientY
-      setDetailHeight(Math.max(100, Math.min(500, startHeight + delta)))
-    }
+      const delta = startY - ev.clientY;
+      setDetailHeight(Math.max(100, Math.min(500, startHeight + delta)));
+    };
     const onUp = () => {
-      document.removeEventListener('mousemove', onMove)
-      document.removeEventListener('mouseup', onUp)
-      document.body.style.cursor = ''
-      document.body.style.userSelect = ''
-    }
-    document.body.style.cursor = 'row-resize'
-    document.body.style.userSelect = 'none'
-    document.addEventListener('mousemove', onMove)
-    document.addEventListener('mouseup', onUp)
-  }, [detailHeight])
+      document.removeEventListener('mousemove', onMove);
+      document.removeEventListener('mouseup', onUp);
+      document.body.style.cursor = '';
+      document.body.style.userSelect = '';
+    };
+    document.body.style.cursor = 'row-resize';
+    document.body.style.userSelect = 'none';
+    document.addEventListener('mousemove', onMove);
+    document.addEventListener('mouseup', onUp);
+  }, [detailHeight]);
 
   return (
     <div class="ui-layout">
@@ -116,5 +116,5 @@ export function Layout({ topBar, testExplorer, filmstrip, actionsPanel, screensh
         </div>
       </div>
     </div>
-  )
+  );
 }
