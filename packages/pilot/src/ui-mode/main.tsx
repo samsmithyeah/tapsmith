@@ -1004,24 +1004,49 @@ html, body, #app {
   font-size: 11px;
   color: var(--color-text-muted);
 }
+.rc-divider {
+  width: 1px;
+  height: 16px;
+  background: var(--border);
+  flex-shrink: 0;
+}
 .rc-device {
   display: flex;
   align-items: center;
   gap: 4px;
 }
-.rc-device-label { font-family: var(--font-mono); font-weight: 600; color: var(--color-text-secondary); }
-.rc-device-serial { color: var(--color-text-muted); }
-.rc-respawn-btn {
-  border: none;
-  background: none;
-  color: transparent;
-  cursor: pointer;
-  font-size: 12px;
-  padding: 0 2px;
-  width: 16px;
+.rc-device-actionable {
+  cursor: context-menu;
 }
-.rc-respawn-btn:hover { color: var(--color-accent); }
-.rc-device:hover .rc-respawn-btn { color: var(--color-text-muted); }
+.rc-context-menu {
+  position: fixed;
+  z-index: 1000;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-light);
+  border-radius: 6px;
+  padding: 4px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
+  min-width: 160px;
+}
+.rc-context-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 6px 10px;
+  border: none;
+  border-radius: 4px;
+  background: none;
+  color: var(--color-text-secondary);
+  font-size: 12px;
+  font-family: var(--font-ui);
+  cursor: pointer;
+  text-align: left;
+}
+.rc-context-item:hover {
+  background: var(--bg-hover);
+  color: var(--color-text-primary);
+}
 .rc-dot {
   width: 7px;
   height: 7px;

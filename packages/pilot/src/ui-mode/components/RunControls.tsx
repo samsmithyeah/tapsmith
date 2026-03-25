@@ -2,6 +2,7 @@
  * RunControls — top bar with run/stop buttons, connection status, and worker indicators.
  */
 
+import { useCallback, useEffect, useRef, useState } from 'preact/hooks';
 import { Eye, Link, Play, RefreshCw, Square } from 'lucide-preact';
 import type { ClientMessage } from '../ui-protocol.js';
 
@@ -63,6 +64,69 @@ function formatElapsed(ms: number): string {
   const rem = s % 60;
   return `${m}m ${rem.toFixed(0)}s`;
 }
+
+// ─── Worker context menu ───
+
+interface ContextMenuState {
+  workerId: number;
+  x: number;
+  y: number;
+}
+
+function WorkerDevice({ w, onSend }: { w: WorkerInfo; onSend: (msg: ClientMessage) => void }) {
+  const [menu, setMenu] = useState<ContextMenuState | null>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
+
+  const canRespawn = w.status === 'error' || w.status === 'idle';
+
+  const handleContextMenu = useCallback((e: MouseEvent) => {
+    if (!canRespawn) return;
+    e.preventDefault();
+    setMenu({ workerId: w.workerId, x: e.clientX, y: e.clientY });
+  }, [w.workerId, canRespawn]);
+
+  const handleRespawn = useCallback(() => {
+    onSend({ type: 'respawn-worker', workerId: w.workerId });
+    setMenu(null);
+  }, [w.workerId, onSend]);
+
+  // Close on outside click or Escape
+  useEffect(() => {
+    if (!menu) return;
+    const handleClick = (e: MouseEvent) => {
+      if (menuRef.current && !menuRef.current.contains(e.target as Node)) setMenu(null);
+    };
+    const handleKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setMenu(null);
+    };
+    document.addEventListener('mousedown', handleClick);
+    document.addEventListener('keydown', handleKey);
+    return () => {
+      document.removeEventListener('mousedown', handleClick);
+      document.removeEventListener('keydown', handleKey);
+    };
+  }, [menu]);
+
+  return (
+    <span
+      class={`rc-device ${canRespawn ? 'rc-device-actionable' : ''}`}
+      title={workerTooltip(w)}
+      onContextMenu={handleContextMenu}
+    >
+      <span class={`rc-dot ${DOT_CLASS[w.status]}`} />
+      {w.deviceSerial}
+      {menu && (
+        <div ref={menuRef} class="rc-context-menu" style={{ left: `${menu.x}px`, top: `${menu.y}px` }}>
+          <button class="rc-context-item" onClick={handleRespawn}>
+            {'\u21BB'} Respawn worker {w.workerId}
+          </button>
+        </div>
+      )}
+    </span>
+  );
+}
+
+// ─── RunControls ───
 
 export function RunControls({ connected, isRunning, isWatching, deviceSerial, counts, theme, onThemeChange, onSend, hasProjectDeps, runDepsFirst, onToggleRunDeps, workers, runElapsed }: RunControlsProps) {
   const hasWorkers = workers.length > 1;
@@ -136,6 +200,7 @@ export function RunControls({ connected, isRunning, isWatching, deviceSerial, co
             {counts.skipped > 0 && <span class="rc-count skipped">{counts.skipped} skipped</span>}
           </div>
         )}
+        <span class="rc-divider" />
         <div class="rc-connection">
           {!connected
             ? (
@@ -146,18 +211,8 @@ export function RunControls({ connected, isRunning, isWatching, deviceSerial, co
             )
             : hasWorkers
               ? workers.map((w) => (
-                  <span key={w.workerId} class="rc-device" title={workerTooltip(w)}>
-                    <span class={`rc-dot ${DOT_CLASS[w.status]}`} />
-                    {w.deviceSerial}
-                    {w.status === 'error' || w.status === 'idle' ? (
-                      <button
-                        class="rc-respawn-btn"
-                        onClick={(e) => { e.stopPropagation(); onSend({ type: 'respawn-worker', workerId: w.workerId }); }}
-                        title={`Respawn worker ${w.workerId}`}
-                      >{'\u21BB'}</button>
-                    ) : null}
-                  </span>
-                ))
+                <WorkerDevice key={w.workerId} w={w} onSend={onSend} />
+              ))
               : (
                 <span class="rc-device" title={deviceSerial}>
                   <span class="rc-dot done" />
@@ -165,6 +220,7 @@ export function RunControls({ connected, isRunning, isWatching, deviceSerial, co
                 </span>
               )}
         </div>
+        <span class="rc-divider" />
         <select
           class="rc-theme-select"
           value={theme}
