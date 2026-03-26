@@ -639,4 +639,59 @@ export class ElementHandle {
     const info = this._hasModifiers() ? await this._resolveOne() : await this.find();
     return info.text;
   }
+
+  // ── Scrolling ──
+
+  /**
+   * Scroll the viewport until this element is visible on screen.
+   *
+   * Repeatedly swipes in the given direction, checking visibility between
+   * each attempt. Useful for reaching elements that are off-screen in a
+   * scrollable container (e.g. a long list of navigation cards).
+   *
+   * @param options.direction - Swipe direction: `"up"` (scroll down), `"down"` (scroll up). Default `"up"`.
+   * @param options.maxScrolls - Maximum number of swipe attempts before throwing. Default `5`.
+   * @param options.speed - Swipe speed in pixels/second. Default `2000`.
+   */
+  async scrollIntoView(options?: {
+    direction?: string;
+    maxScrolls?: number;
+    speed?: number;
+  }): Promise<void> {
+    const direction = options?.direction ?? 'up';
+    const maxScrolls = options?.maxScrolls ?? 5;
+    const speed = options?.speed ?? 2000;
+
+    // Quick visibility probe: use a short timeout so we don't block the loop
+    // waiting for an element that's simply off-screen.
+    const probeTimeoutMs = 1000;
+
+    for (let i = 0; i <= maxScrolls; i++) {
+      try {
+        const res = await this._client.findElement(this._selector, probeTimeoutMs);
+        if (res.found && res.element?.visible) {
+          await this._traceQuery(
+            'scrollIntoView',
+            `Visible after ${i} scroll(s)`,
+            0,
+            res.element.bounds,
+          );
+          return;
+        }
+      } catch {
+        // Element not in tree yet — keep scrolling
+      }
+
+      if (i < maxScrolls) {
+        const swipeRes = await this._client.swipe(direction, { speed, distance: 0.6 });
+        if (!swipeRes.success) {
+          throw new Error(swipeRes.errorMessage || 'Swipe failed during scrollIntoView');
+        }
+      }
+    }
+
+    throw new Error(
+      `scrollIntoView: ${this._describe()} was not visible after ${maxScrolls} scroll(s) in direction "${direction}"`,
+    );
+  }
 }

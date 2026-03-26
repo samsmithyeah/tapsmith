@@ -511,7 +511,11 @@ async function runSuiteContext(
     let tracePath: string | undefined;
     // 2x the assertion timeout: a test may have multiple actions, each with
     // their own timeout. The test-level timeout is a safety net against hangs.
-    const testTimeoutMs = opts.config.timeout * 2;
+    // Safety timeout for the test body (hooks run outside this).
+    // 3x the assertion timeout gives headroom for tests with multiple
+    // device operations (clearAppData, launchApp, openDeepLink, etc.)
+    // that each include their own internal waits.
+    const testTimeoutMs = opts.config.timeout * 3;
 
     // Trace recording — start if configured
     const traceConfig = resolveTraceConfig(opts.config.trace);
@@ -541,43 +545,61 @@ async function runSuiteContext(
     }
 
     try {
-      const testBody = async () => {
-        // Notify before tracing starts so UI mode can tag events to this test
-        if (opts.beforeEachTest) {
-          await opts.beforeEachTest(fullName);
+      // ── Setup phase (not subject to test timeout) ──
+      // Hooks and fixture resolution run outside the test timeout so that
+      // slow operations like restartApp() under heavy load don't eat into
+      // the budget for the actual test assertions.
+
+      // Notify before tracing starts so UI mode can tag events to this test
+      if (opts.beforeEachTest) {
+        await opts.beforeEachTest(fullName);
+      }
+
+      // Replay beforeAll events into this test's trace stream.
+      // For the first test (which received beforeAll's live-streamed events),
+      // skip replay to avoid duplicates.
+      if (fullName !== beforeAllFirstFullName && savedBeforeAllEvents.length > 0 && traceCollector) {
+        replayBeforeAllEvents(traceCollector, savedBeforeAllEvents, beforeAllCollector, beforeAllHierarchies);
+      }
+
+      // Wait for the device to be idle before each test. This ensures
+      // previous test actions (toasts, animations, async operations) have
+      // settled before hooks and assertions start, preventing flakiness
+      // under load (e.g. parallel workers sharing host CPU).
+      if (opts.device) {
+        try {
+          await opts.device.waitForIdle();
+        } catch {
+          // Best effort — don't fail the test if idle wait times out
         }
+      }
 
-        // Replay beforeAll events into this test's trace stream.
-        // For the first test (which received beforeAll's live-streamed events),
-        // skip replay to avoid duplicates.
-        if (fullName !== beforeAllFirstFullName && savedBeforeAllEvents.length > 0 && traceCollector) {
-          replayBeforeAllEvents(traceCollector, savedBeforeAllEvents, beforeAllCollector, beforeAllHierarchies);
-        }
+      // Run beforeEach hooks
+      traceCollector?.startGroup('beforeEach Hooks');
 
-        // Run beforeEach hooks
-        traceCollector?.startGroup('beforeEach Hooks');
+      for (const hook of allBeforeEach) {
+        await invokeHook(hook, opts.device);
+      }
+      traceCollector?.endGroup();
 
-        for (const hook of allBeforeEach) {
-          await invokeHook(hook, opts.device);
-        }
-        traceCollector?.endGroup();
+      // Build fixture context: base (device) + worker-scoped + test-scoped
+      const registry = getFixtureRegistry();
+      const baseFixtures: Record<string, unknown> = {
+        ...(opts.device ? { device: opts.device } : {}),
+        ...(opts.workerFixtures ?? {}),
+      };
 
-        // Build fixture context: base (device) + worker-scoped + test-scoped
-        const registry = getFixtureRegistry();
-        const baseFixtures: Record<string, unknown> = {
-          ...(opts.device ? { device: opts.device } : {}),
-          ...(opts.workerFixtures ?? {}),
-        };
+      let testFixtureTeardown: (() => Promise<void>) | undefined;
+      let allFixtures = baseFixtures;
 
-        let testFixtureTeardown: (() => Promise<void>) | undefined;
-        let allFixtures = baseFixtures;
+      if (!registry.isEmpty) {
+        const resolved = await resolveFixtures(registry, 'test', baseFixtures);
+        allFixtures = resolved.fixtures;
+        testFixtureTeardown = resolved.teardown;
+      }
 
-        if (!registry.isEmpty) {
-          const resolved = await resolveFixtures(registry, 'test', baseFixtures);
-          allFixtures = resolved.fixtures;
-          testFixtureTeardown = resolved.teardown;
-        }
-
+      // ── Test body (subject to test timeout) ──
+      const testFn = async () => {
         traceCollector?.startGroup('Test');
         try {
           // Call with fixtures if the test function expects arguments
@@ -594,10 +616,12 @@ async function runSuiteContext(
         }
       };
 
-      // Wrap test execution with a timeout to prevent tests from hanging forever
+      // Wrap only the test body with a timeout — hooks run outside this
+      // so slow setup (restartApp, navigation) under load doesn't cause
+      // spurious timeouts.
       let testTimer: ReturnType<typeof setTimeout>;
       await Promise.race([
-        testBody().finally(() => clearTimeout(testTimer)),
+        testFn().finally(() => clearTimeout(testTimer)),
         new Promise<never>((_, reject) => {
           testTimer = setTimeout(() => reject(new Error(
             `Test timed out after ${testTimeoutMs}ms`
@@ -729,6 +753,8 @@ async function runSuiteContext(
       if (collector) {
         const retain = shouldRetain(traceConfig.mode, status === 'passed', attempt);
         if (retain) {
+          // Flush any pending after-action captures before packaging
+          await collector.flushPendingCaptures();
           try {
             const outputDir = path.resolve(
               opts.config.rootDir,

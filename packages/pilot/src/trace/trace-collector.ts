@@ -153,6 +153,8 @@ export class TraceCollector {
   private _consoleIntercepted = false;
   /** Handler to emit a failed event for the in-flight action/assertion on timeout. */
   private _pendingOperationHandler: ((error: string) => void) | null = null;
+  /** Pending after-action capture promises that must complete before trace packaging. */
+  private _pendingAfterCaptures: Promise<void>[] = [];
 
   constructor(config: TraceConfig, tempDir: string) {
     this.config = config;
@@ -402,6 +404,23 @@ export class TraceCollector {
 
     await Promise.all(tasks);
     return captures;
+  }
+
+  /**
+   * Track a pending after-action capture promise. These are awaited before
+   * the trace is packaged to ensure all screenshots/hierarchies are written.
+   */
+  trackPendingCapture(promise: Promise<void>): void {
+    this._pendingAfterCaptures.push(promise);
+  }
+
+  /**
+   * Wait for all pending after-action captures to complete.
+   * Called before packaging the trace to ensure all data is flushed.
+   */
+  async flushPendingCaptures(): Promise<void> {
+    await Promise.allSettled(this._pendingAfterCaptures);
+    this._pendingAfterCaptures = [];
   }
 
   /**

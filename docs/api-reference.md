@@ -776,6 +776,27 @@ Scroll this element in the given direction.
 await device.element(role("list")).scroll("down", { distance: 300 });
 ```
 
+#### `elementHandle.scrollIntoView(options?: { direction?: string; maxScrolls?: number; speed?: number }): Promise<void>`
+
+Scroll the viewport until this element is visible on screen. Useful for reaching elements that are below the fold in a scrollable container.
+
+Swipes in the given direction, checking visibility between each attempt. Throws if the element is not visible after `maxScrolls` attempts.
+
+| Option | Default | Description |
+|---|---|---|
+| `direction` | `"up"` | Swipe direction (`"up"` scrolls content up, `"down"` scrolls content down) |
+| `maxScrolls` | `5` | Maximum swipe attempts before throwing |
+| `speed` | `2000` | Swipe speed in pixels/second |
+
+```typescript
+// Scroll down until the "Settings" card is visible, then tap it
+await device.element(contentDesc("Settings")).scrollIntoView();
+await device.element(contentDesc("Settings")).tap();
+
+// Scroll up (reverse direction)
+await device.element(text("Top Section")).scrollIntoView({ direction: "down" });
+```
+
 #### `elementHandle.dragTo(target: ElementHandle): Promise<void>`
 
 Drag this element to a target element.

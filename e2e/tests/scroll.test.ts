@@ -3,7 +3,7 @@ import { ScrollScreen } from "../screens/scroll.screen.js"
 
 describe("Scroll screen", () => {
   beforeAll(async ({ device }) => {
-    await device.swipe("up")
+    await device.element(contentDesc("Scroll")).scrollIntoView()
     await device.tap(contentDesc("Scroll"))
   })
 

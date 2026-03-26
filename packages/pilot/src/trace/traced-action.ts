@@ -52,7 +52,7 @@ export async function tracedAction(
   if (selector && ctx.findElement) {
     const lookupStart = Date.now();
     try {
-      const res = await ctx.findElement(selector, 2000);
+      const res = await ctx.findElement(selector, 500);
       if (res.found && res.element?.bounds) {
         bounds = res.element.bounds;
         log.push(`Element found at [${bounds.left},${bounds.top}][${bounds.right},${bounds.bottom}] (${Date.now() - lookupStart}ms)`);
@@ -130,19 +130,37 @@ export async function tracedAction(
     log.push(`Action completed successfully (${Date.now() - start}ms)`);
   }
 
-  const afterCaptures = await ctx.collector.captureAfterAction(
+  // Fire-and-forget the after-action capture so the test can proceed
+  // immediately. This avoids consuming the visibility window of transient
+  // UI elements (toasts, animations) with screenshot overhead.
+  // The collector tracks pending captures and awaits them before packaging.
+  const afterCapturePromise = ctx.collector.captureAfterAction(
     actionIndex, ctx.takeScreenshot, ctx.captureHierarchy,
-  );
-  ctx.collector.addActionEvent({
-    category, action, selector: selectorStr, inputValue: extra?.inputValue,
-    duration: Date.now() - start, success, error, errorStack,
-    bounds, point, log,
-    hasScreenshotBefore: !!beforeCaptures.screenshotBefore,
-    hasScreenshotAfter: !!afterCaptures.screenshotAfter,
-    hasHierarchyBefore: !!beforeCaptures.hierarchyBefore,
-    hasHierarchyAfter: !!afterCaptures.hierarchyAfter,
-    sourceLocation,
+  ).then((afterCaptures) => {
+    ctx.collector.addActionEvent({
+      category, action, selector: selectorStr, inputValue: extra?.inputValue,
+      duration: Date.now() - start, success, error, errorStack,
+      bounds, point, log,
+      hasScreenshotBefore: !!beforeCaptures.screenshotBefore,
+      hasScreenshotAfter: !!afterCaptures.screenshotAfter,
+      hasHierarchyBefore: !!beforeCaptures.hierarchyBefore,
+      hasHierarchyAfter: !!afterCaptures.hierarchyAfter,
+      sourceLocation,
+    });
+  }).catch(() => {
+    // Best-effort: emit event without after-captures
+    ctx.collector.addActionEvent({
+      category, action, selector: selectorStr, inputValue: extra?.inputValue,
+      duration: Date.now() - start, success, error, errorStack,
+      bounds, point, log: [...log, 'After-action capture failed'],
+      hasScreenshotBefore: !!beforeCaptures.screenshotBefore,
+      hasScreenshotAfter: false,
+      hasHierarchyBefore: !!beforeCaptures.hierarchyBefore,
+      hasHierarchyAfter: false,
+      sourceLocation,
+    });
   });
+  ctx.collector.trackPendingCapture(afterCapturePromise);
 
   if (caughtErr !== undefined) {
     throw caughtErr instanceof Error ? caughtErr : new Error(String(caughtErr));
