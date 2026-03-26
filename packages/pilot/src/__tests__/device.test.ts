@@ -60,6 +60,7 @@ function makeMockClient(overrides: Partial<PilotGrpcClient> = {}): PilotGrpcClie
     restartApp: vi.fn(async () => successResponse()),
     saveAppState: vi.fn(async () => successResponse()),
     restoreAppState: vi.fn(async () => successResponse()),
+    waitForIdle: vi.fn(async () => successResponse()),
     ...overrides,
   } as unknown as PilotGrpcClient;
 }

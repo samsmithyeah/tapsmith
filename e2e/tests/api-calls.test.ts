@@ -12,7 +12,7 @@ import { ApiCallsScreen } from "../screens/api-calls.screen.js"
 describe("API Calls screen", () => {
   beforeEach(async ({ device }) => {
     await device.restartApp()
-    await device.swipe("up")
+    await device.element(contentDesc("API Calls")).scrollIntoView()
     await device.tap(contentDesc("API Calls"))
     const screen = new ApiCallsScreen(device)
     await expect(screen.heading).toBeVisible()

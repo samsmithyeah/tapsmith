@@ -10,6 +10,7 @@ function makeContext(overrides: Partial<Parameters<typeof ensureSessionReady>[0]
     currentPackage: vi.fn(async () => 'com.example.app'),
     tap: vi.fn(async () => undefined),
     pressBack: vi.fn(async () => undefined),
+    clearAppData: vi.fn(async () => undefined),
   };
 
   const client = {
@@ -69,6 +70,7 @@ describe('session-preflight', () => {
     await expect(launchConfiguredApp(ctx, 'file reset')).resolves.toBeUndefined();
 
     expect(ctx.device.terminateApp).toHaveBeenCalledWith('com.example.app');
+    expect(ctx.device.clearAppData).toHaveBeenCalledWith('com.example.app');
     expect(ctx.device.launchApp).toHaveBeenCalledWith('com.example.app', {
       activity: '.MainActivity',
       waitForIdle: false,

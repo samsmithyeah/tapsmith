@@ -4,7 +4,7 @@ import type { LaunchAppOptions, PilotGrpcClient } from './grpc-client.js';
 import { text } from './selectors.js';
 import { detectBlockingSystemDialog, dismissSystemDialogsViaAdb } from './emulator.js';
 
-type SessionDevice = Pick<Device, 'startAgent' | 'terminateApp' | 'launchApp' | 'waitForIdle' | 'currentPackage' | 'tap' | 'pressBack'>
+type SessionDevice = Pick<Device, 'startAgent' | 'terminateApp' | 'launchApp' | 'waitForIdle' | 'currentPackage' | 'tap' | 'pressBack' | 'clearAppData'>
 type SessionClient = Pick<PilotGrpcClient, 'ping' | 'getUiHierarchy'>
 
 export interface SessionPreflightContext {
@@ -61,6 +61,12 @@ export async function launchConfiguredApp(
   } catch {
     // App may not be running yet
   }
+
+  // Clear app data before launching to ensure proper isolation between test
+  // files. Without this, state from a previous file (e.g. auth tokens in
+  // AsyncStorage) leaks into the next file. Projects that need persisted
+  // state use test.use({ appState }) which restores after this reset.
+  await ctx.device.clearAppData(ctx.config.package);
 
   await ctx.device.launchApp(ctx.config.package, launchOptions(ctx.config));
   await ensureSessionReady(ctx, phase);

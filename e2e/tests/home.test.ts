@@ -31,7 +31,7 @@ describe("Home screen", () => {
 
   test("can scroll to see more cards", async ({ device }) => {
     const home = new HomeScreen(device)
-    await device.swipe("up")
+    await home.scrollCard.scrollIntoView()
     await expect(home.slowLoadCard).toBeVisible()
     await expect(home.scrollCard).toBeVisible()
   })

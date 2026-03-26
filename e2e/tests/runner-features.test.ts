@@ -9,7 +9,7 @@ import { SlowLoadScreen } from "../screens/slow-load.screen.js"
 
 describe("test.use() timeout override", () => {
   beforeAll(async ({ device }) => {
-    await device.swipe("up")
+    await device.element(contentDesc("Slow Load")).scrollIntoView()
     await device.tap(contentDesc("Slow Load"))
   })
 

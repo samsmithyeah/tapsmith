@@ -1,21 +1,16 @@
-import { beforeAll, contentDesc, describe, expect, test, text } from "pilot"
+import { beforeEach, contentDesc, describe, expect, test, text } from "pilot"
 import { DialogsScreen } from "../screens/dialogs.screen.js"
 
 describe("Dialogs screen", () => {
-  beforeAll(async ({ device }) => {
+  // Restart app before each test to ensure clean state. Transient UI
+  // elements like toasts can leak between tests under heavy load.
+  beforeEach(async ({ device }) => {
+    await device.restartApp()
     await device.tap(contentDesc("Dialogs"))
-  })
-
-  test("shows heading", async ({ device }) => {
     await expect(device.element(text("Dialogs & Overlays"))).toBeVisible()
   })
 
   // ─── Toast ───
-
-  test("show toast button is visible", async ({ device }) => {
-    const screen = new DialogsScreen(device)
-    await expect(screen.showToastButton).toBeVisible()
-  })
 
   test("tapping show toast displays a toast", async ({ device }) => {
     const screen = new DialogsScreen(device)
@@ -33,7 +28,6 @@ describe("Dialogs screen", () => {
 
   test("can show and dismiss snackbar", async ({ device }) => {
     const screen = new DialogsScreen(device)
-    await device.waitForIdle()
     await screen.showSnackbarButton.tap()
     await expect(screen.snackbarMessage).toBeVisible()
     await expect(screen.snackbarDismiss).toBeVisible()
