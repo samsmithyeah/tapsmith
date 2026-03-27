@@ -2,6 +2,8 @@ use anyhow::{bail, Result};
 use tracing::{debug, info};
 
 use crate::adb;
+use crate::ios;
+use crate::platform::Platform;
 
 /// Connection state of a tracked device.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -14,13 +16,14 @@ pub enum ConnectionState {
     Disconnected,
 }
 
-/// Information about a connected Android device.
+/// Information about a connected device (Android or iOS).
 #[derive(Debug, Clone)]
 pub struct DeviceInfo {
     pub serial: String,
     pub model: String,
     pub is_emulator: bool,
     pub state: ConnectionState,
+    pub platform: Platform,
 }
 
 /// Manages the set of known devices and tracks the active device.
@@ -38,50 +41,83 @@ impl DeviceManager {
         }
     }
 
-    /// Refresh the list of devices from ADB.
+    /// Refresh the list of devices from ADB and iOS simulators/devices.
     pub async fn refresh(&mut self) -> Result<&[DeviceInfo]> {
-        let adb_devices = adb::list_devices().await?;
+        // Collect all current device serials from both platforms
+        let mut current_serials: Vec<String> = Vec::new();
+
+        // ─── Android devices via ADB ───
+        if let Ok(adb_devices) = adb::list_devices().await {
+            for adb_dev in &adb_devices {
+                if !adb_dev.is_online() {
+                    continue;
+                }
+                current_serials.push(adb_dev.serial.clone());
+
+                if let Some(existing) = self.devices.iter_mut().find(|d| d.serial == adb_dev.serial)
+                {
+                    if existing.state == ConnectionState::Disconnected {
+                        existing.state = if self.active_serial.as_deref() == Some(&adb_dev.serial) {
+                            ConnectionState::Active
+                        } else {
+                            ConnectionState::Discovered
+                        };
+                        debug!(serial = %existing.serial, "Device reconnected");
+                    }
+                } else {
+                    let model = adb::get_device_model(&adb_dev.serial)
+                        .await
+                        .unwrap_or_else(|_| "unknown".to_string());
+
+                    self.devices.push(DeviceInfo {
+                        serial: adb_dev.serial.clone(),
+                        model,
+                        is_emulator: adb_dev.is_emulator(),
+                        state: ConnectionState::Discovered,
+                        platform: Platform::Android,
+                    });
+                    debug!(serial = %adb_dev.serial, "New Android device discovered");
+                }
+            }
+        }
+
+        // ─── iOS devices via xcrun simctl / devicectl ───
+        if let Ok(ios_devices) = ios::device::list_all_devices().await {
+            for ios_dev in &ios_devices {
+                if ios_dev.is_simulator && !ios_dev.is_booted() {
+                    continue; // Only show booted simulators
+                }
+                current_serials.push(ios_dev.udid.clone());
+
+                if let Some(existing) = self.devices.iter_mut().find(|d| d.serial == ios_dev.udid) {
+                    if existing.state == ConnectionState::Disconnected {
+                        existing.state = if self.active_serial.as_deref() == Some(&ios_dev.udid) {
+                            ConnectionState::Active
+                        } else {
+                            ConnectionState::Discovered
+                        };
+                        debug!(serial = %existing.serial, "iOS device reconnected");
+                    }
+                } else {
+                    self.devices.push(DeviceInfo {
+                        serial: ios_dev.udid.clone(),
+                        model: ios_dev.name.clone(),
+                        is_emulator: ios_dev.is_simulator,
+                        state: ConnectionState::Discovered,
+                        platform: Platform::Ios,
+                    });
+                    debug!(serial = %ios_dev.udid, name = %ios_dev.name, "New iOS device discovered");
+                }
+            }
+        }
 
         // Mark devices no longer present as disconnected
         for device in &mut self.devices {
-            if !adb_devices
-                .iter()
-                .any(|d| d.serial == device.serial && d.is_online())
-            {
+            if !current_serials.contains(&device.serial) {
                 if device.state == ConnectionState::Active {
                     info!(serial = %device.serial, "Active device disconnected");
                 }
                 device.state = ConnectionState::Disconnected;
-            }
-        }
-
-        // Add or update devices from ADB
-        for adb_dev in &adb_devices {
-            if !adb_dev.is_online() {
-                continue;
-            }
-
-            if let Some(existing) = self.devices.iter_mut().find(|d| d.serial == adb_dev.serial) {
-                if existing.state == ConnectionState::Disconnected {
-                    existing.state = if self.active_serial.as_deref() == Some(&adb_dev.serial) {
-                        ConnectionState::Active
-                    } else {
-                        ConnectionState::Discovered
-                    };
-                    debug!(serial = %existing.serial, "Device reconnected");
-                }
-            } else {
-                let model = adb::get_device_model(&adb_dev.serial)
-                    .await
-                    .unwrap_or_else(|_| "unknown".to_string());
-
-                self.devices.push(DeviceInfo {
-                    serial: adb_dev.serial.clone(),
-                    model,
-                    is_emulator: adb_dev.is_emulator(),
-                    state: ConnectionState::Discovered,
-                });
-                debug!(serial = %adb_dev.serial, "New device discovered");
             }
         }
 
@@ -186,6 +222,7 @@ mod tests {
             model: "TestModel".to_string(),
             is_emulator: serial.starts_with("emulator-"),
             state,
+            platform: Platform::Android,
         }
     }
 

@@ -4,16 +4,17 @@ import type { LaunchAppOptions, PilotGrpcClient } from './grpc-client.js';
 import { text } from './selectors.js';
 import { detectBlockingSystemDialog, dismissSystemDialogsViaAdb } from './emulator.js';
 
-type SessionDevice = Pick<Device, 'startAgent' | 'terminateApp' | 'launchApp' | 'waitForIdle' | 'currentPackage' | 'tap' | 'pressBack' | 'clearAppData'>
+type SessionDevice = Pick<Device, 'startAgent' | 'terminateApp' | 'launchApp' | 'restartApp' | 'waitForIdle' | 'currentPackage' | 'tap' | 'pressBack' | 'clearAppData'>
 type SessionClient = Pick<PilotGrpcClient, 'ping' | 'getUiHierarchy'>
 
 export interface SessionPreflightContext {
   label: string
-  config: Pick<PilotConfig, 'package' | 'activity'>
+  config: Pick<PilotConfig, 'package' | 'activity' | 'platform'>
   device: SessionDevice
   client: SessionClient
   agentApkPath?: string
   agentTestApkPath?: string
+  iosXctestrunPath?: string
   /** ADB serial for this device — enables ADB-level recovery when agent is unavailable */
   deviceSerial?: string
 }
@@ -56,6 +57,14 @@ export async function launchConfiguredApp(
     return;
   }
 
+  if (ctx.config.platform === 'ios') {
+    // On iOS, restart the app for file-level isolation.
+    // Use restartApp which does a full agent restart — terminate the
+    // app, kill the XCUITest runner, relaunch, and start a fresh agent.
+    await ctx.device.restartApp(ctx.config.package);
+    return;
+  }
+
   try {
     await ctx.device.terminateApp(ctx.config.package);
   } catch {
@@ -69,6 +78,7 @@ export async function launchConfiguredApp(
   await ctx.device.clearAppData(ctx.config.package);
 
   await ctx.device.launchApp(ctx.config.package, launchOptions(ctx.config));
+
   await ensureSessionReady(ctx, phase);
 }
 
@@ -76,6 +86,13 @@ async function verifySession(ctx: SessionPreflightContext): Promise<void> {
   const pong = await ctx.client.ping();
   if (!pong.agentConnected) {
     throw new Error('agent is not connected');
+  }
+
+  if (ctx.config.platform === 'ios') {
+    // On iOS, a successful ping is sufficient. Skip the expensive hierarchy
+    // dump (Android-specific UIAutomator2 readiness check) and the
+    // foreground package check (iOS doesn't expose this reliably).
+    return;
   }
 
   await ctx.device.waitForIdle(DEFAULT_READY_TIMEOUT_MS);
@@ -106,14 +123,14 @@ async function verifySession(ctx: SessionPreflightContext): Promise<void> {
 }
 
 async function recoverSession(ctx: SessionPreflightContext): Promise<void> {
-  // First try ADB-level dismissal — works even when the agent is dead
-  if (ctx.deviceSerial) {
+  // First try ADB-level dismissal — works even when the agent is dead (Android only)
+  if (ctx.deviceSerial && ctx.config.platform !== 'ios') {
     dismissSystemDialogsViaAdb(ctx.deviceSerial);
   }
 
   // Then try agent-level dismissal if the agent is reachable
   await dismissBlockingSystemUi(ctx);
-  await ctx.device.startAgent('', ctx.agentApkPath, ctx.agentTestApkPath);
+  await ctx.device.startAgent(ctx.config.package ?? '', ctx.agentApkPath, ctx.agentTestApkPath, ctx.iosXctestrunPath);
   if (!ctx.config.package) return;
 
   try {

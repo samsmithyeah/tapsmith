@@ -73,6 +73,10 @@ function configFromSerialized(s: SerializedConfig, daemonAddress: string): Pilot
     workers: 1,
     launchEmulators: false,
     trace: s.trace as PilotConfig['trace'],
+    platform: s.platform,
+    app: s.app,
+    iosXctestrun: s.iosXctestrun,
+    simulator: s.simulator,
   };
 }
 
@@ -176,7 +180,7 @@ async function handleInit(msg: UIWorkerInitMessage): Promise<void> {
     ? path.resolve(config.rootDir, config.agentTestApk)
     : undefined;
   sendProgress('starting Pilot agent');
-  await device.startAgent('', resolvedAgentApk, resolvedAgentTestApk);
+  await device.startAgent(config.package ?? '', resolvedAgentApk, resolvedAgentTestApk, config.iosXctestrun);
 
   try {
     if (config.package) {

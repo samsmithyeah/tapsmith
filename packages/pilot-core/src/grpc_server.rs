@@ -5,14 +5,16 @@ use anyhow::Result;
 use serde_json::{json, Value};
 use tokio::sync::RwLock;
 use tonic::{Request, Response, Status};
-use tracing::{error, info, instrument, warn};
+use tracing::{debug, error, info, instrument, warn};
 use uuid::Uuid;
 
 use crate::adb;
 use crate::agent_comms::{AgentCommand, AgentConnection, AgentResponse};
 use crate::device::DeviceManager;
+use crate::ios;
 use crate::mitm_ca::MitmAuthority;
 use crate::network_proxy::NetworkProxy;
+use crate::platform::Platform;
 use crate::proto;
 use crate::screenshot;
 
@@ -26,6 +28,15 @@ pub struct PilotServiceImpl {
     proxy_reverse_port: Arc<RwLock<Option<u16>>>,
     /// On-device path of the installed CA cert (for cleanup).
     proxy_ca_cert_path: Arc<RwLock<Option<String>>>,
+    /// iOS agent launch config (stored for restart on launchApp).
+    ios_agent_config: Arc<RwLock<Option<IosAgentConfig>>>,
+}
+
+/// Stored iOS agent launch config for restart.
+#[derive(Clone)]
+struct IosAgentConfig {
+    xctestrun_path: String,
+    target_package: String,
 }
 
 impl PilotServiceImpl {
@@ -40,6 +51,7 @@ impl PilotServiceImpl {
             proxy_device_serial: Arc::new(RwLock::new(None)),
             proxy_reverse_port: Arc::new(RwLock::new(None)),
             proxy_ca_cert_path: Arc::new(RwLock::new(None)),
+            ios_agent_config: Arc::new(RwLock::new(None)),
         }
     }
 
@@ -88,14 +100,25 @@ impl PilotServiceImpl {
             .map_err(|e| Status::internal(e.to_string()))
     }
 
-    async fn error_screenshot(&self) -> Vec<u8> {
-        let serial = self
-            .device_manager
+    /// Get the platform of the active device.
+    async fn active_platform(&self) -> Platform {
+        self.device_manager
             .read()
             .await
-            .active_serial()
-            .map(String::from);
-        screenshot::capture_for_error(serial.as_deref()).await
+            .active_device()
+            .map(|d| d.platform)
+            .unwrap_or(Platform::Android)
+    }
+
+    async fn error_screenshot(&self) -> Vec<u8> {
+        let dm = self.device_manager.read().await;
+        let serial = dm.active_serial().map(String::from);
+        let platform = dm
+            .active_device()
+            .map(|d| d.platform)
+            .unwrap_or(Platform::Android);
+        drop(dm);
+        screenshot::capture_for_error(serial.as_deref(), platform).await
     }
 
     async fn action_error(
@@ -799,8 +822,9 @@ impl proto::pilot_service_server::PilotService for PilotServiceImpl {
         let request_id = Self::request_id(&req.request_id);
 
         let serial = self.active_serial().await?;
+        let platform = self.active_platform().await;
 
-        match screenshot::capture(&serial).await {
+        match screenshot::capture(&serial, platform).await {
             Ok(data) => Ok(Response::new(proto::ScreenshotResponse {
                 request_id,
                 success: true,
@@ -927,6 +951,7 @@ impl proto::pilot_service_server::PilotService for PilotServiceImpl {
                 model: d.model.clone(),
                 state: format!("{:?}", d.state),
                 is_emulator: d.is_emulator,
+                platform: d.platform.as_str().to_string(),
             })
             .collect();
 
@@ -978,79 +1003,127 @@ impl proto::pilot_service_server::PilotService for PilotServiceImpl {
         let request_id = Self::request_id(&req.request_id);
 
         let serial = self.active_serial().await?;
+        let platform = self.active_platform().await;
 
-        info!(serial = %serial, "Starting agent connection");
+        info!(serial = %serial, %platform, "Starting agent connection");
 
-        // Auto-install agent APKs if not already on device
-        let agent_installed = adb::is_package_installed(&serial, "dev.pilot.agent")
-            .await
-            .unwrap_or(false);
+        info!(ios_xctestrun_path = %req.ios_xctestrun_path, "StartAgent fields");
 
-        if !agent_installed {
-            if req.agent_apk_path.is_empty() || req.agent_test_apk_path.is_empty() {
-                return Ok(Response::new(proto::ActionResponse {
-                    request_id,
-                    success: false,
-                    error_type: "AGENT_NOT_INSTALLED".to_string(),
-                    error_message: "Pilot agent is not installed on the device. \
-                        Set agentApk and agentTestApk in your pilot config, \
-                        or install manually with: adb install <path-to-agent.apk>"
-                        .to_string(),
-                    screenshot: Vec::new(),
-                }));
+        match platform {
+            Platform::Ios => {
+                // ─── iOS: launch XCUITest agent ───
+                if req.ios_xctestrun_path.is_empty() {
+                    return Ok(Response::new(proto::ActionResponse {
+                        request_id,
+                        success: false,
+                        error_type: "AGENT_NOT_CONFIGURED".to_string(),
+                        error_message: "iOS agent not configured. \
+                            Set iosXctestrun in your pilot config."
+                            .to_string(),
+                        screenshot: Vec::new(),
+                    }));
+                }
+
+                if let Err(e) = ios::agent_launch::start_agent(
+                    &serial,
+                    &req.ios_xctestrun_path,
+                    &req.target_package,
+                )
+                .await
+                {
+                    error!(error = %e, "Failed to start iOS agent");
+                    return Ok(Response::new(proto::ActionResponse {
+                        request_id,
+                        success: false,
+                        error_type: "AGENT_START_FAILED".to_string(),
+                        error_message: e.to_string(),
+                        screenshot: Vec::new(),
+                    }));
+                }
+
+                // Store config for potential agent restart in launchApp
+                *self.ios_agent_config.write().await = Some(IosAgentConfig {
+                    xctestrun_path: req.ios_xctestrun_path.clone(),
+                    target_package: req.target_package.clone(),
+                });
             }
+            Platform::Android => {
+                // ─── Android: install APKs and launch instrumentation ───
+                let agent_installed = adb::is_package_installed(&serial, "dev.pilot.agent")
+                    .await
+                    .unwrap_or(false);
 
-            info!("Agent not installed, installing APKs...");
-            if let Err(e) = adb::install_apk(&serial, &req.agent_apk_path).await {
-                return Ok(Response::new(proto::ActionResponse {
-                    request_id,
-                    success: false,
-                    error_type: "AGENT_INSTALL_FAILED".to_string(),
-                    error_message: format!("Failed to install agent APK: {e}"),
-                    screenshot: Vec::new(),
-                }));
+                if !agent_installed {
+                    if req.agent_apk_path.is_empty() || req.agent_test_apk_path.is_empty() {
+                        return Ok(Response::new(proto::ActionResponse {
+                            request_id,
+                            success: false,
+                            error_type: "AGENT_NOT_INSTALLED".to_string(),
+                            error_message: "Pilot agent is not installed on the device. \
+                                Set agentApk and agentTestApk in your pilot config, \
+                                or install manually with: adb install <path-to-agent.apk>"
+                                .to_string(),
+                            screenshot: Vec::new(),
+                        }));
+                    }
+
+                    info!("Agent not installed, installing APKs...");
+                    if let Err(e) = adb::install_apk(&serial, &req.agent_apk_path).await {
+                        return Ok(Response::new(proto::ActionResponse {
+                            request_id,
+                            success: false,
+                            error_type: "AGENT_INSTALL_FAILED".to_string(),
+                            error_message: format!("Failed to install agent APK: {e}"),
+                            screenshot: Vec::new(),
+                        }));
+                    }
+                    if let Err(e) = adb::install_apk(&serial, &req.agent_test_apk_path).await {
+                        return Ok(Response::new(proto::ActionResponse {
+                            request_id,
+                            success: false,
+                            error_type: "AGENT_INSTALL_FAILED".to_string(),
+                            error_message: format!("Failed to install agent test APK: {e}"),
+                            screenshot: Vec::new(),
+                        }));
+                    }
+                    info!("Agent APKs installed successfully");
+                }
+
+                // Launch the agent instrumentation
+                let instrument_cmd = if req.target_package.is_empty() {
+                    "am instrument -w dev.pilot.agent/.PilotAgent".to_string()
+                } else {
+                    format!(
+                        "am instrument -w -e targetPackage {} dev.pilot.agent/.PilotAgent",
+                        req.target_package
+                    )
+                };
+
+                // Launch in background on device
+                let bg_cmd = format!("nohup {} > /dev/null 2>&1 &", instrument_cmd);
+                if let Err(e) = adb::shell(&serial, &bg_cmd).await {
+                    error!(error = %e, "Failed to start agent instrumentation");
+                    return Ok(Response::new(proto::ActionResponse {
+                        request_id,
+                        success: false,
+                        error_type: "AGENT_START_FAILED".to_string(),
+                        error_message: e.to_string(),
+                        screenshot: Vec::new(),
+                    }));
+                }
+
+                // Give the agent a moment to start
+                tokio::time::sleep(Duration::from_secs(2)).await;
             }
-            if let Err(e) = adb::install_apk(&serial, &req.agent_test_apk_path).await {
-                return Ok(Response::new(proto::ActionResponse {
-                    request_id,
-                    success: false,
-                    error_type: "AGENT_INSTALL_FAILED".to_string(),
-                    error_message: format!("Failed to install agent test APK: {e}"),
-                    screenshot: Vec::new(),
-                }));
-            }
-            info!("Agent APKs installed successfully");
         }
 
-        // Launch the agent instrumentation
-        let instrument_cmd = if req.target_package.is_empty() {
-            "am instrument -w dev.pilot.agent/.PilotAgent".to_string()
-        } else {
-            format!(
-                "am instrument -w -e targetPackage {} dev.pilot.agent/.PilotAgent",
-                req.target_package
-            )
-        };
-
-        // Launch in background on device
-        let bg_cmd = format!("nohup {} > /dev/null 2>&1 &", instrument_cmd);
-        if let Err(e) = adb::shell(&serial, &bg_cmd).await {
-            error!(error = %e, "Failed to start agent instrumentation");
-            return Ok(Response::new(proto::ActionResponse {
-                request_id,
-                success: false,
-                error_type: "AGENT_START_FAILED".to_string(),
-                error_message: e.to_string(),
-                screenshot: Vec::new(),
-            }));
-        }
-
-        // Give the agent a moment to start
-        tokio::time::sleep(Duration::from_secs(2)).await;
-
-        // Connect to the agent
+        // Connect to the agent (iOS: direct TCP, Android: via ADB port forward)
         let mut agent = self.agent.write().await;
-        match agent.connect(&serial).await {
+        let connect_result = match platform {
+            Platform::Ios => agent.connect_ios(&serial).await,
+            Platform::Android => agent.connect(&serial).await,
+        };
+        match connect_result {
             Ok(()) => Ok(Response::new(proto::ActionResponse {
                 request_id,
                 success: true,
@@ -1060,7 +1133,8 @@ impl proto::pilot_service_server::PilotService for PilotServiceImpl {
             })),
             Err(e) => {
                 error!(error = %e, "Failed to connect to agent");
-                let screenshot = screenshot::capture_for_error(Some(&serial)).await;
+                let platform = self.active_platform().await;
+                let screenshot = screenshot::capture_for_error(Some(&serial), platform).await;
                 Ok(Response::new(proto::ActionResponse {
                     request_id,
                     success: false,
@@ -1347,61 +1421,171 @@ impl proto::pilot_service_server::PilotService for PilotServiceImpl {
         let req = request.into_inner();
         let request_id = Self::request_id(&req.request_id);
         let serial = self.active_serial().await?;
+        let platform = self.active_platform().await;
 
         Self::validate_package_name(&req.package_name)?;
-        if !req.activity.is_empty() {
-            Self::validate_activity(&req.activity)?;
-        }
 
-        // Clear data first if requested — fail fast if this doesn't succeed,
-        // since launching with stale data would violate the caller's expectation.
-        if req.clear_data {
-            match adb::shell(&serial, &format!("pm clear {}", req.package_name)).await {
-                Ok(output) if !output.trim().starts_with("Success") => {
-                    error!(output = %output.trim(), "pm clear did not report success");
-                    let screenshot = self.error_screenshot().await;
-                    return Ok(Response::new(proto::ActionResponse {
-                        request_id,
-                        success: false,
-                        error_type: "CLEAR_DATA_FAILED".to_string(),
-                        error_message: format!("Failed to clear app data: {}", output.trim()),
-                        screenshot,
-                    }));
+        match platform {
+            Platform::Ios => {
+                // iOS: restart the XCUITest agent to get a fresh app.
+                // On iOS, terminating the target app kills the XCUITest
+                // runner, so we must restart the entire agent session.
+                if req.clear_data {
+                    // Clear the data container (AsyncStorage, caches, etc.)
+                    // without uninstalling the app.
+                    match ios::device::get_app_container(&serial, &req.package_name).await {
+                        Ok(ref container) => {
+                            if let Err(e) = ios::device::clear_container(container).await {
+                                warn!(error = %e, "Failed to clear app container");
+                            }
+                        }
+                        Err(e) => {
+                            debug!(error = %e, "Could not get app container");
+                        }
+                    }
                 }
-                Err(e) => {
-                    error!(error = %e, "Failed to clear app data before launch");
-                    let screenshot = self.error_screenshot().await;
-                    return Ok(Response::new(proto::ActionResponse {
-                        request_id,
-                        success: false,
-                        error_type: "CLEAR_DATA_FAILED".to_string(),
-                        error_message: format!("Failed to clear app data: {e}"),
-                        screenshot,
-                    }));
+
+                // Restart the XCUITest agent (which also restarts the app)
+                let config = self.ios_agent_config.read().await.clone();
+                if let Some(config) = config {
+                    // Kill old agent, terminate app, relaunch app, start fresh agent.
+                    info!("Restarting iOS agent for launchApp");
+                    ios::agent_launch::kill_existing_agents_on(&serial).await;
+                    let _ = ios::device::terminate_app(&serial, &req.package_name).await;
+                    tokio::time::sleep(Duration::from_millis(500)).await;
+                    let _ = ios::device::launch_app(&serial, &req.package_name).await;
+                    tokio::time::sleep(Duration::from_millis(500)).await;
+                    if let Err(e) = ios::agent_launch::start_agent_fresh(
+                        &serial,
+                        &config.xctestrun_path,
+                        &config.target_package,
+                    )
+                    .await
+                    {
+                        let screenshot = self.error_screenshot().await;
+                        return Ok(Response::new(proto::ActionResponse {
+                            request_id,
+                            success: false,
+                            error_type: "LAUNCH_FAILED".to_string(),
+                            error_message: format!("Failed to restart iOS agent: {e}"),
+                            screenshot,
+                        }));
+                    }
+                    // Reconnect to the new agent
+                    let mut agent = self.agent.write().await;
+                    if let Err(e) = agent.connect_ios(&serial).await {
+                        let screenshot = self.error_screenshot().await;
+                        return Ok(Response::new(proto::ActionResponse {
+                            request_id,
+                            success: false,
+                            error_type: "AGENT_CONNECTION_FAILED".to_string(),
+                            error_message: format!("Failed to reconnect to agent: {e}"),
+                            screenshot,
+                        }));
+                    }
+                    drop(agent);
+                    // Ensure the target app is in the foreground. The XCUITest
+                    // runner app may have taken focus during startup, and
+                    // app.activate() in the runner may not reliably bring the
+                    // target app back on Xcode 26.
+                    let _ = ios::device::launch_app(&serial, &req.package_name).await;
+                    tokio::time::sleep(Duration::from_millis(300)).await;
+                } else {
+                    // No stored config — just try simctl launch
+                    if let Err(e) = ios::device::launch_app(&serial, &req.package_name).await {
+                        let screenshot = self.error_screenshot().await;
+                        return Ok(Response::new(proto::ActionResponse {
+                            request_id,
+                            success: false,
+                            error_type: "LAUNCH_FAILED".to_string(),
+                            error_message: e.to_string(),
+                            screenshot,
+                        }));
+                    }
                 }
-                Ok(_) => {} // Success
+
+                if req.wait_for_idle {
+                    let timeout_ms = if req.idle_timeout_ms > 0 {
+                        req.idle_timeout_ms
+                    } else {
+                        10000
+                    };
+                    let _ = self
+                        .send_agent_command_with_timeout(
+                            &AgentCommand::WaitForIdle {
+                                timeout_ms: Some(timeout_ms),
+                            },
+                            timeout_ms,
+                        )
+                        .await;
+                }
+
+                Ok(Response::new(proto::ActionResponse {
+                    request_id,
+                    success: true,
+                    error_type: String::new(),
+                    error_message: String::new(),
+                    screenshot: Vec::new(),
+                }))
             }
-        }
+            Platform::Android => {
+                if !req.activity.is_empty() {
+                    Self::validate_activity(&req.activity)?;
+                }
 
-        if req.activity.is_empty() {
-            self.launch_package(
-                &serial,
-                request_id,
-                &req.package_name,
-                req.wait_for_idle,
-                req.idle_timeout_ms,
-            )
-            .await
-        } else {
-            let cmd = format!("am start -n {}/{}", req.package_name, req.activity);
-            self.launch_and_idle(
-                &serial,
-                request_id,
-                &cmd,
-                req.wait_for_idle,
-                req.idle_timeout_ms,
-            )
-            .await
+                // Clear data first if requested
+                if req.clear_data {
+                    match adb::shell(&serial, &format!("pm clear {}", req.package_name)).await {
+                        Ok(output) if !output.trim().starts_with("Success") => {
+                            error!(output = %output.trim(), "pm clear did not report success");
+                            let screenshot = self.error_screenshot().await;
+                            return Ok(Response::new(proto::ActionResponse {
+                                request_id,
+                                success: false,
+                                error_type: "CLEAR_DATA_FAILED".to_string(),
+                                error_message: format!(
+                                    "Failed to clear app data: {}",
+                                    output.trim()
+                                ),
+                                screenshot,
+                            }));
+                        }
+                        Err(e) => {
+                            error!(error = %e, "Failed to clear app data before launch");
+                            let screenshot = self.error_screenshot().await;
+                            return Ok(Response::new(proto::ActionResponse {
+                                request_id,
+                                success: false,
+                                error_type: "CLEAR_DATA_FAILED".to_string(),
+                                error_message: format!("Failed to clear app data: {e}"),
+                                screenshot,
+                            }));
+                        }
+                        Ok(_) => {} // Success
+                    }
+                }
+
+                if req.activity.is_empty() {
+                    self.launch_package(
+                        &serial,
+                        request_id,
+                        &req.package_name,
+                        req.wait_for_idle,
+                        req.idle_timeout_ms,
+                    )
+                    .await
+                } else {
+                    let cmd = format!("am start -n {}/{}", req.package_name, req.activity);
+                    self.launch_and_idle(
+                        &serial,
+                        request_id,
+                        &cmd,
+                        req.wait_for_idle,
+                        req.idle_timeout_ms,
+                    )
+                    .await
+                }
+            }
         }
     }
 
@@ -1417,17 +1601,33 @@ impl proto::pilot_service_server::PilotService for PilotServiceImpl {
             return Err(Status::invalid_argument("uri is required"));
         }
 
-        // The URI is passed inside single quotes to `am start`, so only a single
-        // quote itself could break out of the shell string. Other metacharacters
-        // ($, |, ;, `) are treated as literals within single-quoted strings.
-        if req.uri.contains('\'') {
-            return Err(Status::invalid_argument(
-                "uri contains an invalid character: single quote (') is not allowed",
-            ));
+        let platform = self.active_platform().await;
+        match platform {
+            Platform::Ios => {
+                let serial = self.active_serial().await?;
+                match ios::device::open_url(&serial, &req.uri).await {
+                    Ok(()) => Ok(Response::new(proto::ActionResponse {
+                        request_id,
+                        success: true,
+                        error_type: String::new(),
+                        error_message: String::new(),
+                        screenshot: Vec::new(),
+                    })),
+                    Err(e) => Ok(self
+                        .action_error(request_id, "ACTION_FAILED", e.to_string())
+                        .await),
+                }
+            }
+            Platform::Android => {
+                if req.uri.contains('\'') {
+                    return Err(Status::invalid_argument(
+                        "uri contains an invalid character: single quote (') is not allowed",
+                    ));
+                }
+                let cmd = format!("am start -a android.intent.action.VIEW -d '{}'", req.uri);
+                self.adb_action(request_id, &cmd).await
+            }
         }
-
-        let cmd = format!("am start -a android.intent.action.VIEW -d '{}'", req.uri);
-        self.adb_action(request_id, &cmd).await
     }
 
     #[instrument(skip_all, fields(request_id))]
@@ -1458,11 +1658,18 @@ impl proto::pilot_service_server::PilotService for PilotServiceImpl {
         let req = request.into_inner();
         let request_id = Self::request_id(&req.request_id);
 
-        let activity = self
-            .get_current_component()
-            .await?
-            .map(|(_, act)| act)
-            .unwrap_or_default();
+        let platform = self.active_platform().await;
+        let activity = match platform {
+            Platform::Ios => {
+                // Android-only concept — iOS doesn't have activities
+                String::new()
+            }
+            Platform::Android => self
+                .get_current_component()
+                .await?
+                .map(|(_, act)| act)
+                .unwrap_or_default(),
+        };
 
         Ok(Response::new(proto::GetCurrentActivityResponse {
             request_id,
@@ -1481,29 +1688,110 @@ impl proto::pilot_service_server::PilotService for PilotServiceImpl {
 
         Self::validate_package_name(&req.package_name)?;
 
-        // Force-stop the app to kill the process and reset all in-memory state.
-        // Unlike clearAppData(), this preserves persistent storage (SharedPrefs,
-        // databases, files) while still getting a clean React/JS state on relaunch.
-        if let Err(e) = adb::shell(&serial, &format!("am force-stop {}", req.package_name)).await {
-            error!(error = %e, "Failed to force-stop app");
-            let screenshot = self.error_screenshot().await;
-            return Ok(Response::new(proto::ActionResponse {
-                request_id,
-                success: false,
-                error_type: "FORCE_STOP_FAILED".to_string(),
-                error_message: format!("Failed to stop app: {e}"),
-                screenshot,
-            }));
-        }
+        let platform = self.active_platform().await;
+        match platform {
+            Platform::Ios => {
+                // Full agent restart: terminate app, kill the XCUITest
+                // runner, relaunch app, start a fresh agent and reconnect.
+                // This is slower (~8s) but reliable — the accessibility
+                // bridge is fully re-established.
+                let config = self.ios_agent_config.read().await.clone();
+                if let Some(config) = config {
+                    info!("Restarting iOS agent for restartApp");
+                    ios::agent_launch::kill_existing_agents_on(&serial).await;
+                    let _ = ios::device::terminate_app(&serial, &req.package_name).await;
+                    tokio::time::sleep(Duration::from_millis(500)).await;
+                    let _ = ios::device::launch_app(&serial, &req.package_name).await;
+                    tokio::time::sleep(Duration::from_millis(500)).await;
+                    if let Err(e) = ios::agent_launch::start_agent_fresh(
+                        &serial,
+                        &config.xctestrun_path,
+                        &config.target_package,
+                    )
+                    .await
+                    {
+                        let screenshot = self.error_screenshot().await;
+                        return Ok(Response::new(proto::ActionResponse {
+                            request_id,
+                            success: false,
+                            error_type: "LAUNCH_FAILED".to_string(),
+                            error_message: format!("Failed to restart iOS agent: {e}"),
+                            screenshot,
+                        }));
+                    }
+                    let mut agent = self.agent.write().await;
+                    if let Err(e) = agent.connect_ios(&serial).await {
+                        let screenshot = self.error_screenshot().await;
+                        return Ok(Response::new(proto::ActionResponse {
+                            request_id,
+                            success: false,
+                            error_type: "AGENT_CONNECTION_FAILED".to_string(),
+                            error_message: format!("Failed to reconnect to agent: {e}"),
+                            screenshot,
+                        }));
+                    }
+                    drop(agent);
+                    // Ensure the target app is in the foreground
+                    let _ = ios::device::launch_app(&serial, &req.package_name).await;
+                    tokio::time::sleep(Duration::from_millis(300)).await;
+                } else {
+                    let _ = ios::device::terminate_app(&serial, &req.package_name).await;
+                    if let Err(e) = ios::device::launch_app(&serial, &req.package_name).await {
+                        let screenshot = self.error_screenshot().await;
+                        return Ok(Response::new(proto::ActionResponse {
+                            request_id,
+                            success: false,
+                            error_type: "LAUNCH_FAILED".to_string(),
+                            error_message: e.to_string(),
+                            screenshot,
+                        }));
+                    }
+                }
 
-        self.launch_package(
-            &serial,
-            request_id,
-            &req.package_name,
-            req.wait_for_idle,
-            req.idle_timeout_ms,
-        )
-        .await
+                if req.wait_for_idle {
+                    let timeout_ms = if req.idle_timeout_ms > 0 {
+                        req.idle_timeout_ms
+                    } else {
+                        10000
+                    };
+                    let _ = self
+                        .send_agent_command_with_timeout(
+                            &AgentCommand::WaitForIdle {
+                                timeout_ms: Some(timeout_ms),
+                            },
+                            timeout_ms,
+                        )
+                        .await;
+                }
+
+                Ok(Self::success_action_response(request_id))
+            }
+            Platform::Android => {
+                // Force-stop the app to kill the process and reset all in-memory state.
+                if let Err(e) =
+                    adb::shell(&serial, &format!("am force-stop {}", req.package_name)).await
+                {
+                    error!(error = %e, "Failed to force-stop app");
+                    let screenshot = self.error_screenshot().await;
+                    return Ok(Response::new(proto::ActionResponse {
+                        request_id,
+                        success: false,
+                        error_type: "FORCE_STOP_FAILED".to_string(),
+                        error_message: format!("Failed to stop app: {e}"),
+                        screenshot,
+                    }));
+                }
+
+                self.launch_package(
+                    &serial,
+                    request_id,
+                    &req.package_name,
+                    req.wait_for_idle,
+                    req.idle_timeout_ms,
+                )
+                .await
+            }
+        }
     }
 
     #[instrument(skip_all, fields(request_id))]
@@ -1516,8 +1804,28 @@ impl proto::pilot_service_server::PilotService for PilotServiceImpl {
 
         Self::validate_package_name(&req.package_name)?;
 
-        let cmd = format!("am force-stop {}", req.package_name);
-        self.adb_action(request_id, &cmd).await
+        let platform = self.active_platform().await;
+        match platform {
+            Platform::Ios => {
+                let serial = self.active_serial().await?;
+                match ios::device::terminate_app(&serial, &req.package_name).await {
+                    Ok(()) => Ok(Response::new(proto::ActionResponse {
+                        request_id,
+                        success: true,
+                        error_type: String::new(),
+                        error_message: String::new(),
+                        screenshot: Vec::new(),
+                    })),
+                    Err(e) => Ok(self
+                        .action_error(request_id, "ACTION_FAILED", e.to_string())
+                        .await),
+                }
+            }
+            Platform::Android => {
+                let cmd = format!("am force-stop {}", req.package_name);
+                self.adb_action(request_id, &cmd).await
+            }
+        }
     }
 
     #[instrument(skip_all, fields(request_id))]
@@ -1527,53 +1835,76 @@ impl proto::pilot_service_server::PilotService for PilotServiceImpl {
     ) -> Result<Response<proto::GetAppStateResponse>, Status> {
         let req = request.into_inner();
         let request_id = Self::request_id(&req.request_id);
-        let serial = self.active_serial().await?;
 
         Self::validate_package_name(&req.package_name)?;
 
-        // Check if app is installed
-        let installed =
-            adb::shell_lenient(&serial, &format!("pm list packages {}", req.package_name))
+        let platform = self.active_platform().await;
+        match platform {
+            Platform::Ios => {
+                // Route through the XCUITest agent which can query app state
+                let command = AgentCommand::GetAppState {
+                    package: req.package_name.clone(),
+                };
+                let result = self.send_agent_command(&command).await?;
+                let state = result
+                    .data
+                    .get("state")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("stopped")
+                    .to_string();
+                Ok(Response::new(proto::GetAppStateResponse {
+                    request_id,
+                    state,
+                }))
+            }
+            Platform::Android => {
+                let serial = self.active_serial().await?;
+
+                // Check if app is installed
+                let installed =
+                    adb::shell_lenient(&serial, &format!("pm list packages {}", req.package_name))
+                        .await
+                        .map_err(|e| Status::internal(e.to_string()))?;
+
+                if !installed.contains(&req.package_name) {
+                    return Ok(Response::new(proto::GetAppStateResponse {
+                        request_id,
+                        state: "not_installed".to_string(),
+                    }));
+                }
+
+                // Check if app process is running and in foreground
+                let resumed = adb::shell_lenient(
+                    &serial,
+                    "dumpsys activity activities | grep -E 'mResumedActivity|ResumedActivity|topResumedActivity'",
+                )
                 .await
                 .map_err(|e| Status::internal(e.to_string()))?;
 
-        if !installed.contains(&req.package_name) {
-            return Ok(Response::new(proto::GetAppStateResponse {
-                request_id,
-                state: "not_installed".to_string(),
-            }));
+                if resumed.contains(&req.package_name) {
+                    return Ok(Response::new(proto::GetAppStateResponse {
+                        request_id,
+                        state: "foreground".to_string(),
+                    }));
+                }
+
+                // Check if process exists at all
+                let procs = adb::shell_lenient(&serial, &format!("pidof {}", req.package_name))
+                    .await
+                    .map_err(|e| Status::internal(e.to_string()))?;
+
+                let state = if procs.trim().is_empty() {
+                    "stopped"
+                } else {
+                    "background"
+                };
+
+                Ok(Response::new(proto::GetAppStateResponse {
+                    request_id,
+                    state: state.to_string(),
+                }))
+            }
         }
-
-        // Check if app process is running and in foreground
-        let resumed = adb::shell_lenient(
-            &serial,
-            "dumpsys activity activities | grep -E 'mResumedActivity|ResumedActivity|topResumedActivity'",
-        )
-        .await
-        .map_err(|e| Status::internal(e.to_string()))?;
-
-        if resumed.contains(&req.package_name) {
-            return Ok(Response::new(proto::GetAppStateResponse {
-                request_id,
-                state: "foreground".to_string(),
-            }));
-        }
-
-        // Check if process exists at all
-        let procs = adb::shell_lenient(&serial, &format!("pidof {}", req.package_name))
-            .await
-            .map_err(|e| Status::internal(e.to_string()))?;
-
-        let state = if procs.trim().is_empty() {
-            "stopped"
-        } else {
-            "background"
-        };
-
-        Ok(Response::new(proto::GetAppStateResponse {
-            request_id,
-            state: state.to_string(),
-        }))
     }
 
     #[instrument(skip_all, fields(request_id))]
@@ -1586,8 +1917,38 @@ impl proto::pilot_service_server::PilotService for PilotServiceImpl {
 
         Self::validate_package_name(&req.package_name)?;
 
-        let cmd = format!("pm clear {}", req.package_name);
-        self.adb_action(request_id, &cmd).await
+        let platform = self.active_platform().await;
+        match platform {
+            Platform::Ios => {
+                let serial = self.active_serial().await?;
+                // Clear the data container (AsyncStorage, UserDefaults, caches)
+                // but do NOT terminate the app — launchApp handles that and
+                // properly re-establishes the XCUITest accessibility bridge.
+                // Clearing data while the app is running is fine because the
+                // app will be relaunched anyway.
+                match ios::device::get_app_container(&serial, &req.package_name).await {
+                    Ok(ref container) => {
+                        if let Err(e) = ios::device::clear_container(container).await {
+                            warn!(error = %e, "Failed to clear app container, continuing anyway");
+                        }
+                    }
+                    Err(e) => {
+                        debug!(error = %e, "Could not get app container (app may not be installed)");
+                    }
+                }
+                Ok(Response::new(proto::ActionResponse {
+                    request_id,
+                    success: true,
+                    error_type: String::new(),
+                    error_message: String::new(),
+                    screenshot: Vec::new(),
+                }))
+            }
+            Platform::Android => {
+                let cmd = format!("pm clear {}", req.package_name);
+                self.adb_action(request_id, &cmd).await
+            }
+        }
     }
 
     #[instrument(skip_all, fields(request_id))]
@@ -1599,10 +1960,33 @@ impl proto::pilot_service_server::PilotService for PilotServiceImpl {
         let request_id = Self::request_id(&req.request_id);
 
         Self::validate_package_name(&req.package_name)?;
-        Self::validate_permission(&req.permission)?;
 
-        let cmd = format!("pm grant {} {}", req.package_name, req.permission);
-        self.adb_action(request_id, &cmd).await
+        let platform = self.active_platform().await;
+        match platform {
+            Platform::Ios => {
+                let serial = self.active_serial().await?;
+                // iOS uses service names: camera, photos, location, microphone, etc.
+                match ios::device::grant_permission(&serial, &req.package_name, &req.permission)
+                    .await
+                {
+                    Ok(()) => Ok(Response::new(proto::ActionResponse {
+                        request_id,
+                        success: true,
+                        error_type: String::new(),
+                        error_message: String::new(),
+                        screenshot: Vec::new(),
+                    })),
+                    Err(e) => Ok(self
+                        .action_error(request_id, "ACTION_FAILED", e.to_string())
+                        .await),
+                }
+            }
+            Platform::Android => {
+                Self::validate_permission(&req.permission)?;
+                let cmd = format!("pm grant {} {}", req.package_name, req.permission);
+                self.adb_action(request_id, &cmd).await
+            }
+        }
     }
 
     #[instrument(skip_all, fields(request_id))]
@@ -1614,10 +1998,32 @@ impl proto::pilot_service_server::PilotService for PilotServiceImpl {
         let request_id = Self::request_id(&req.request_id);
 
         Self::validate_package_name(&req.package_name)?;
-        Self::validate_permission(&req.permission)?;
 
-        let cmd = format!("pm revoke {} {}", req.package_name, req.permission);
-        self.adb_action(request_id, &cmd).await
+        let platform = self.active_platform().await;
+        match platform {
+            Platform::Ios => {
+                let serial = self.active_serial().await?;
+                match ios::device::revoke_permission(&serial, &req.package_name, &req.permission)
+                    .await
+                {
+                    Ok(()) => Ok(Response::new(proto::ActionResponse {
+                        request_id,
+                        success: true,
+                        error_type: String::new(),
+                        error_message: String::new(),
+                        screenshot: Vec::new(),
+                    })),
+                    Err(e) => Ok(self
+                        .action_error(request_id, "ACTION_FAILED", e.to_string())
+                        .await),
+                }
+            }
+            Platform::Android => {
+                Self::validate_permission(&req.permission)?;
+                let cmd = format!("pm revoke {} {}", req.package_name, req.permission);
+                self.adb_action(request_id, &cmd).await
+            }
+        }
     }
 
     #[instrument(skip_all, fields(request_id))]
@@ -1670,25 +2076,36 @@ impl proto::pilot_service_server::PilotService for PilotServiceImpl {
     ) -> Result<Response<proto::ActionResponse>, Status> {
         let req = request.into_inner();
         let request_id = Self::request_id(&req.request_id);
-        let serial = self.active_serial().await?;
 
-        let rotation = match req.orientation.as_str() {
-            "portrait" => "0",
-            "landscape" => "1",
-            other => {
-                return Err(Status::invalid_argument(format!(
-                    "orientation must be 'portrait' or 'landscape', got '{other}'"
-                )));
+        let platform = self.active_platform().await;
+        match platform {
+            Platform::Ios => {
+                let command = AgentCommand::SetOrientation {
+                    orientation: req.orientation.clone(),
+                };
+                let result = self.send_agent_command(&command).await;
+                self.make_action_response(request_id, result).await
             }
-        };
-
-        // Disable auto-rotate and set rotation
-        if let Err(e) = adb::shell(&serial, "settings put system accelerometer_rotation 0").await {
-            error!(error = %e, "Failed to disable auto-rotate");
+            Platform::Android => {
+                let serial = self.active_serial().await?;
+                let rotation = match req.orientation.as_str() {
+                    "portrait" => "0",
+                    "landscape" => "1",
+                    other => {
+                        return Err(Status::invalid_argument(format!(
+                            "orientation must be 'portrait' or 'landscape', got '{other}'"
+                        )));
+                    }
+                };
+                if let Err(e) =
+                    adb::shell(&serial, "settings put system accelerometer_rotation 0").await
+                {
+                    error!(error = %e, "Failed to disable auto-rotate");
+                }
+                let cmd = format!("settings put system user_rotation {rotation}");
+                self.adb_action(request_id, &cmd).await
+            }
         }
-
-        let cmd = format!("settings put system user_rotation {rotation}");
-        self.adb_action(request_id, &cmd).await
     }
 
     #[instrument(skip_all, fields(request_id))]
@@ -1698,21 +2115,38 @@ impl proto::pilot_service_server::PilotService for PilotServiceImpl {
     ) -> Result<Response<proto::GetOrientationResponse>, Status> {
         let req = request.into_inner();
         let request_id = Self::request_id(&req.request_id);
-        let serial = self.active_serial().await?;
 
-        let output = adb::shell(&serial, "settings get system user_rotation")
-            .await
-            .map_err(|e| Status::internal(e.to_string()))?;
-
-        let orientation = match output.trim() {
-            "1" | "3" => "landscape",
-            _ => "portrait",
-        };
-
-        Ok(Response::new(proto::GetOrientationResponse {
-            request_id,
-            orientation: orientation.to_string(),
-        }))
+        let platform = self.active_platform().await;
+        match platform {
+            Platform::Ios => {
+                let command = AgentCommand::GetOrientation {};
+                let result = self.send_agent_command(&command).await?;
+                let orientation = result
+                    .data
+                    .get("orientation")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("portrait")
+                    .to_string();
+                Ok(Response::new(proto::GetOrientationResponse {
+                    request_id,
+                    orientation,
+                }))
+            }
+            Platform::Android => {
+                let serial = self.active_serial().await?;
+                let output = adb::shell(&serial, "settings get system user_rotation")
+                    .await
+                    .map_err(|e| Status::internal(e.to_string()))?;
+                let orientation = match output.trim() {
+                    "1" | "3" => "landscape",
+                    _ => "portrait",
+                };
+                Ok(Response::new(proto::GetOrientationResponse {
+                    request_id,
+                    orientation: orientation.to_string(),
+                }))
+            }
+        }
     }
 
     #[instrument(skip_all, fields(request_id))]
@@ -1722,18 +2156,34 @@ impl proto::pilot_service_server::PilotService for PilotServiceImpl {
     ) -> Result<Response<proto::IsKeyboardShownResponse>, Status> {
         let req = request.into_inner();
         let request_id = Self::request_id(&req.request_id);
-        let serial = self.active_serial().await?;
 
-        let output = adb::shell_lenient(&serial, "dumpsys input_method | grep mInputShown")
-            .await
-            .map_err(|e| Status::internal(e.to_string()))?;
-
-        let shown = output.contains("mInputShown=true");
-
-        Ok(Response::new(proto::IsKeyboardShownResponse {
-            request_id,
-            shown,
-        }))
+        let platform = self.active_platform().await;
+        match platform {
+            Platform::Ios => {
+                let command = AgentCommand::IsKeyboardShown {};
+                let result = self.send_agent_command(&command).await?;
+                let shown = result
+                    .data
+                    .get("shown")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
+                Ok(Response::new(proto::IsKeyboardShownResponse {
+                    request_id,
+                    shown,
+                }))
+            }
+            Platform::Android => {
+                let serial = self.active_serial().await?;
+                let output = adb::shell_lenient(&serial, "dumpsys input_method | grep mInputShown")
+                    .await
+                    .map_err(|e| Status::internal(e.to_string()))?;
+                let shown = output.contains("mInputShown=true");
+                Ok(Response::new(proto::IsKeyboardShownResponse {
+                    request_id,
+                    shown,
+                }))
+            }
+        }
     }
 
     #[instrument(skip_all, fields(request_id))]
@@ -1743,8 +2193,19 @@ impl proto::pilot_service_server::PilotService for PilotServiceImpl {
     ) -> Result<Response<proto::ActionResponse>, Status> {
         let req = request.into_inner();
         let request_id = Self::request_id(&req.request_id);
-        self.adb_action(request_id, "input keyevent KEYCODE_ESCAPE")
-            .await
+
+        let platform = self.active_platform().await;
+        match platform {
+            Platform::Ios => {
+                let command = AgentCommand::HideKeyboard {};
+                let result = self.send_agent_command(&command).await;
+                self.make_action_response(request_id, result).await
+            }
+            Platform::Android => {
+                self.adb_action(request_id, "input keyevent KEYCODE_ESCAPE")
+                    .await
+            }
+        }
     }
 
     #[instrument(skip_all, fields(request_id))]
@@ -1754,8 +2215,16 @@ impl proto::pilot_service_server::PilotService for PilotServiceImpl {
     ) -> Result<Response<proto::ActionResponse>, Status> {
         let req = request.into_inner();
         let request_id = Self::request_id(&req.request_id);
-        self.adb_action(request_id, "cmd statusbar expand-notifications")
-            .await
+
+        let platform = self.active_platform().await;
+        match platform {
+            // iOS has no notification shade — success no-op
+            Platform::Ios => Ok(Self::success_action_response(request_id)),
+            Platform::Android => {
+                self.adb_action(request_id, "cmd statusbar expand-notifications")
+                    .await
+            }
+        }
     }
 
     #[instrument(skip_all, fields(request_id))]
@@ -1765,8 +2234,16 @@ impl proto::pilot_service_server::PilotService for PilotServiceImpl {
     ) -> Result<Response<proto::ActionResponse>, Status> {
         let req = request.into_inner();
         let request_id = Self::request_id(&req.request_id);
-        self.adb_action(request_id, "cmd statusbar expand-settings")
-            .await
+
+        let platform = self.active_platform().await;
+        match platform {
+            // iOS has no quick settings — success no-op
+            Platform::Ios => Ok(Self::success_action_response(request_id)),
+            Platform::Android => {
+                self.adb_action(request_id, "cmd statusbar expand-settings")
+                    .await
+            }
+        }
     }
 
     #[instrument(skip_all, fields(request_id))]
@@ -1777,18 +2254,39 @@ impl proto::pilot_service_server::PilotService for PilotServiceImpl {
         let req = request.into_inner();
         let request_id = Self::request_id(&req.request_id);
 
-        let mode = match req.scheme.as_str() {
-            "dark" => "yes",
-            "light" => "no",
-            other => {
-                return Err(Status::invalid_argument(format!(
-                    "scheme must be 'dark' or 'light', got '{other}'"
-                )));
+        let platform = self.active_platform().await;
+        match platform {
+            Platform::Ios => {
+                let serial = self.active_serial().await?;
+                match req.scheme.as_str() {
+                    "dark" | "light" => {}
+                    other => {
+                        return Err(Status::invalid_argument(format!(
+                            "scheme must be 'dark' or 'light', got '{other}'"
+                        )));
+                    }
+                }
+                match ios::device::set_appearance(&serial, &req.scheme).await {
+                    Ok(()) => Ok(Self::success_action_response(request_id)),
+                    Err(e) => Ok(self
+                        .action_error(request_id, "ACTION_FAILED", e.to_string())
+                        .await),
+                }
             }
-        };
-
-        let cmd = format!("cmd uimode night {mode}");
-        self.adb_action(request_id, &cmd).await
+            Platform::Android => {
+                let mode = match req.scheme.as_str() {
+                    "dark" => "yes",
+                    "light" => "no",
+                    other => {
+                        return Err(Status::invalid_argument(format!(
+                            "scheme must be 'dark' or 'light', got '{other}'"
+                        )));
+                    }
+                };
+                let cmd = format!("cmd uimode night {mode}");
+                self.adb_action(request_id, &cmd).await
+            }
+        }
     }
 
     #[instrument(skip_all, fields(request_id))]
@@ -1798,22 +2296,40 @@ impl proto::pilot_service_server::PilotService for PilotServiceImpl {
     ) -> Result<Response<proto::GetColorSchemeResponse>, Status> {
         let req = request.into_inner();
         let request_id = Self::request_id(&req.request_id);
-        let serial = self.active_serial().await?;
 
-        let output = adb::shell_lenient(&serial, "cmd uimode night")
-            .await
-            .map_err(|e| Status::internal(e.to_string()))?;
-
-        let scheme = if output.contains("Night mode: yes") {
-            "dark"
-        } else {
-            "light"
-        };
-
-        Ok(Response::new(proto::GetColorSchemeResponse {
-            request_id,
-            scheme: scheme.to_string(),
-        }))
+        let platform = self.active_platform().await;
+        match platform {
+            Platform::Ios => {
+                // Route through agent — it can read UITraitCollection.current
+                let command = AgentCommand::GetColorScheme {};
+                let result = self.send_agent_command(&command).await?;
+                let scheme = result
+                    .data
+                    .get("scheme")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("light")
+                    .to_string();
+                Ok(Response::new(proto::GetColorSchemeResponse {
+                    request_id,
+                    scheme,
+                }))
+            }
+            Platform::Android => {
+                let serial = self.active_serial().await?;
+                let output = adb::shell_lenient(&serial, "cmd uimode night")
+                    .await
+                    .map_err(|e| Status::internal(e.to_string()))?;
+                let scheme = if output.contains("Night mode: yes") {
+                    "dark"
+                } else {
+                    "light"
+                };
+                Ok(Response::new(proto::GetColorSchemeResponse {
+                    request_id,
+                    scheme: scheme.to_string(),
+                }))
+            }
+        }
     }
 
     #[instrument(skip_all, fields(request_id))]
@@ -1823,8 +2339,16 @@ impl proto::pilot_service_server::PilotService for PilotServiceImpl {
     ) -> Result<Response<proto::ActionResponse>, Status> {
         let req = request.into_inner();
         let request_id = Self::request_id(&req.request_id);
-        self.adb_action(request_id, "input keyevent KEYCODE_WAKEUP")
-            .await
+
+        let platform = self.active_platform().await;
+        match platform {
+            // iOS simulator is always awake
+            Platform::Ios => Ok(Self::success_action_response(request_id)),
+            Platform::Android => {
+                self.adb_action(request_id, "input keyevent KEYCODE_WAKEUP")
+                    .await
+            }
+        }
     }
 
     #[instrument(skip_all, fields(request_id))]
@@ -1834,26 +2358,24 @@ impl proto::pilot_service_server::PilotService for PilotServiceImpl {
     ) -> Result<Response<proto::ActionResponse>, Status> {
         let req = request.into_inner();
         let request_id = Self::request_id(&req.request_id);
-        let serial = self.active_serial().await?;
 
-        // Wake the screen first
-        let _ = adb::shell_lenient(&serial, "input keyevent KEYCODE_WAKEUP").await;
-        tokio::time::sleep(Duration::from_millis(500)).await;
-
-        // Dismiss non-secure lock screen (KEYCODE_MENU)
-        let _ = adb::shell_lenient(&serial, "input keyevent 82").await;
-        tokio::time::sleep(Duration::from_millis(500)).await;
-
-        // Swipe up as fallback for swipe-to-unlock screens
-        let _ = adb::shell_lenient(&serial, "input swipe 540 1800 540 800 300").await;
-
-        Ok(Response::new(proto::ActionResponse {
-            request_id,
-            success: true,
-            error_type: String::new(),
-            error_message: String::new(),
-            screenshot: Vec::new(),
-        }))
+        let platform = self.active_platform().await;
+        match platform {
+            // iOS simulator has no lock screen
+            Platform::Ios => Ok(Self::success_action_response(request_id)),
+            Platform::Android => {
+                let serial = self.active_serial().await?;
+                // Wake the screen first
+                let _ = adb::shell_lenient(&serial, "input keyevent KEYCODE_WAKEUP").await;
+                tokio::time::sleep(Duration::from_millis(500)).await;
+                // Dismiss non-secure lock screen (KEYCODE_MENU)
+                let _ = adb::shell_lenient(&serial, "input keyevent 82").await;
+                tokio::time::sleep(Duration::from_millis(500)).await;
+                // Swipe up as fallback for swipe-to-unlock screens
+                let _ = adb::shell_lenient(&serial, "input swipe 540 1800 540 800 300").await;
+                Ok(Self::success_action_response(request_id))
+            }
+        }
     }
 
     // ─── Network Capture (PILOT-164) ───
@@ -2114,73 +2636,122 @@ impl proto::pilot_service_server::PilotService for PilotServiceImpl {
 
         let pkg = &req.package_name;
         let local_path = &req.path;
-        let device_tmp = format!("/data/local/tmp/pilot-app-state-{}.tar.gz", Uuid::new_v4());
-        let data_dir = format!("/data/data/{pkg}");
-        let tar_timeout = Duration::from_secs(300);
 
-        // 1. Force-stop the app to avoid data corruption
-        if let Err(e) = adb::shell(&serial, &format!("am force-stop {pkg}")).await {
-            warn!(%pkg, "Failed to force-stop app before save: {e}");
+        let platform = self.active_platform().await;
+        match platform {
+            Platform::Ios => {
+                // iOS simulator: app container is on the host filesystem.
+                // Use simctl to find it, then tar it directly.
+                let container = match ios::device::get_app_container(&serial, pkg).await {
+                    Ok(path) => path,
+                    Err(e) => {
+                        return Ok(self
+                            .action_error(
+                                request_id,
+                                "APP_STATE_SAVE_FAILED",
+                                format!("Failed to locate app container: {e}"),
+                            )
+                            .await);
+                    }
+                };
+
+                // Terminate the app to flush data
+                let _ = ios::device::terminate_app(&serial, pkg).await;
+
+                // Create tar.gz archive of the data container
+                let output = tokio::process::Command::new("tar")
+                    .args(["czf", local_path, "-C", &container, "."])
+                    .output()
+                    .await;
+
+                match output {
+                    Ok(out) if out.status.success() => {
+                        info!(%pkg, %local_path, "iOS app state saved");
+                        Ok(Self::success_action_response(request_id))
+                    }
+                    Ok(out) => {
+                        let stderr = String::from_utf8_lossy(&out.stderr);
+                        Ok(self
+                            .action_error(
+                                request_id,
+                                "APP_STATE_SAVE_FAILED",
+                                format!("tar failed: {stderr}"),
+                            )
+                            .await)
+                    }
+                    Err(e) => Ok(self
+                        .action_error(
+                            request_id,
+                            "APP_STATE_SAVE_FAILED",
+                            format!("Failed to run tar: {e}"),
+                        )
+                        .await),
+                }
+            }
+            Platform::Android => {
+                let device_tmp =
+                    format!("/data/local/tmp/pilot-app-state-{}.tar.gz", Uuid::new_v4());
+                let data_dir = format!("/data/data/{pkg}");
+                let tar_timeout = Duration::from_secs(300);
+
+                // 1. Force-stop the app to avoid data corruption
+                if let Err(e) = adb::shell(&serial, &format!("am force-stop {pkg}")).await {
+                    warn!(%pkg, "Failed to force-stop app before save: {e}");
+                }
+
+                // 2. Determine access strategy: root or run-as
+                let is_root = adb::shell_lenient(&serial, "id")
+                    .await
+                    .map(|out| out.contains("uid=0"))
+                    .unwrap_or(false);
+
+                // 3. Create tar.gz archive on device
+                let tar_result = if is_root {
+                    adb::shell_with_timeout(
+                        &serial,
+                        &format!("tar czf {device_tmp} -C {data_dir} ."),
+                        tar_timeout,
+                    )
+                    .await
+                } else {
+                    adb::shell_with_timeout(
+                        &serial,
+                        &format!("run-as {pkg} tar czf {device_tmp} -C {data_dir} ."),
+                        tar_timeout,
+                    )
+                    .await
+                };
+
+                if let Err(e) = tar_result {
+                    let _ = adb::shell_lenient(&serial, &format!("rm -f {device_tmp}")).await;
+                    return Ok(self
+                        .action_error(
+                            request_id,
+                            "APP_STATE_SAVE_FAILED",
+                            format!("Failed to archive app data: {e}"),
+                        )
+                        .await);
+                }
+
+                // 4. Pull archive to host
+                if let Err(e) = adb::pull_file(&serial, &device_tmp, local_path).await {
+                    let _ = adb::shell_lenient(&serial, &format!("rm -f {device_tmp}")).await;
+                    return Ok(self
+                        .action_error(
+                            request_id,
+                            "APP_STATE_SAVE_FAILED",
+                            format!("Failed to pull app state archive: {e}"),
+                        )
+                        .await);
+                }
+
+                // 5. Clean up temp file on device
+                let _ = adb::shell_lenient(&serial, &format!("rm -f {device_tmp}")).await;
+
+                info!(%pkg, %local_path, "App state saved");
+                Ok(Self::success_action_response(request_id))
+            }
         }
-
-        // 2. Determine access strategy: root or run-as
-        let is_root = adb::shell_lenient(&serial, "id")
-            .await
-            .map(|out| out.contains("uid=0"))
-            .unwrap_or(false);
-
-        // 3. Create tar.gz archive on device
-        let tar_result = if is_root {
-            adb::shell_with_timeout(
-                &serial,
-                &format!("tar czf {device_tmp} -C {data_dir} ."),
-                tar_timeout,
-            )
-            .await
-        } else {
-            // run-as fallback for debuggable apps on physical devices
-            adb::shell_with_timeout(
-                &serial,
-                &format!("run-as {pkg} tar czf {device_tmp} -C {data_dir} ."),
-                tar_timeout,
-            )
-            .await
-        };
-
-        if let Err(e) = tar_result {
-            let _ = adb::shell_lenient(&serial, &format!("rm -f {device_tmp}")).await;
-            return Ok(self
-                .action_error(
-                    request_id,
-                    "APP_STATE_SAVE_FAILED",
-                    format!("Failed to archive app data: {e}"),
-                )
-                .await);
-        }
-
-        // 4. Pull archive to host
-        if let Err(e) = adb::pull_file(&serial, &device_tmp, local_path).await {
-            let _ = adb::shell_lenient(&serial, &format!("rm -f {device_tmp}")).await;
-            return Ok(self
-                .action_error(
-                    request_id,
-                    "APP_STATE_SAVE_FAILED",
-                    format!("Failed to pull app state archive: {e}"),
-                )
-                .await);
-        }
-
-        // 5. Clean up temp file on device
-        let _ = adb::shell_lenient(&serial, &format!("rm -f {device_tmp}")).await;
-
-        info!(%pkg, %local_path, "App state saved");
-        Ok(Response::new(proto::ActionResponse {
-            request_id,
-            success: true,
-            error_type: String::new(),
-            error_message: String::new(),
-            screenshot: Vec::new(),
-        }))
     }
 
     #[instrument(skip_all, fields(request_id))]
@@ -2199,9 +2770,6 @@ impl proto::pilot_service_server::PilotService for PilotServiceImpl {
 
         let pkg = &req.package_name;
         let local_path = &req.path;
-        let device_tmp = format!("/data/local/tmp/pilot-app-state-{}.tar.gz", Uuid::new_v4());
-        let data_dir = format!("/data/data/{pkg}");
-        let tar_timeout = Duration::from_secs(300);
 
         // Verify local archive exists
         if !std::path::Path::new(local_path).exists() {
@@ -2210,156 +2778,213 @@ impl proto::pilot_service_server::PilotService for PilotServiceImpl {
             )));
         }
 
-        // 1. Force-stop the app
-        if let Err(e) = adb::shell(&serial, &format!("am force-stop {pkg}")).await {
-            warn!(%pkg, "Failed to force-stop app before restore: {e}");
-        }
-
-        // 2. Clear app data — creates clean data dir with correct base permissions
-        match adb::shell(&serial, &format!("pm clear {pkg}")).await {
-            Ok(output) if !output.trim().starts_with("Success") => {
-                return Ok(self
-                    .action_error(
-                        request_id,
-                        "APP_STATE_RESTORE_FAILED",
-                        format!("pm clear failed: {}", output.trim()),
-                    )
-                    .await);
-            }
-            Err(e) => {
-                return Ok(self
-                    .action_error(
-                        request_id,
-                        "APP_STATE_RESTORE_FAILED",
-                        format!("Failed to clear app data: {e}"),
-                    )
-                    .await);
-            }
-            _ => {}
-        }
-
-        // 3. Push archive to device
-        if let Err(e) = adb::push_file(&serial, local_path, &device_tmp).await {
-            let _ = adb::shell_lenient(&serial, &format!("rm -f {device_tmp}")).await;
-            return Ok(self
-                .action_error(
-                    request_id,
-                    "APP_STATE_RESTORE_FAILED",
-                    format!("Failed to push app state archive: {e}"),
-                )
-                .await);
-        }
-
-        // 4. Determine access strategy
-        let is_root = adb::shell_lenient(&serial, "id")
-            .await
-            .map(|out| out.contains("uid=0"))
-            .unwrap_or(false);
-
-        // 5. Extract archive into app data dir
-        let tar_result = if is_root {
-            adb::shell_with_timeout(
-                &serial,
-                &format!("tar xzf {device_tmp} -C {data_dir}"),
-                tar_timeout,
-            )
-            .await
-        } else {
-            adb::shell_with_timeout(
-                &serial,
-                &format!("run-as {pkg} tar xzf {device_tmp} -C {data_dir}"),
-                tar_timeout,
-            )
-            .await
-        };
-
-        if let Err(e) = tar_result {
-            let _ = adb::shell_lenient(&serial, &format!("rm -f {device_tmp}")).await;
-            return Ok(self
-                .action_error(
-                    request_id,
-                    "APP_STATE_RESTORE_FAILED",
-                    format!("Failed to extract app state archive: {e}"),
-                )
-                .await);
-        }
-
-        // 6. Fix ownership and SELinux context (root only)
-        if is_root {
-            // Get the app's UID from the data directory
-            let uid_output =
-                match adb::shell_lenient(&serial, &format!("stat -c '%u' {data_dir}")).await {
-                    Ok(output) => output,
+        let platform = self.active_platform().await;
+        match platform {
+            Platform::Ios => {
+                // iOS simulator: extract archive directly into the app container
+                let container = match ios::device::get_app_container(&serial, pkg).await {
+                    Ok(path) => path,
                     Err(e) => {
+                        return Ok(self
+                            .action_error(
+                                request_id,
+                                "APP_STATE_RESTORE_FAILED",
+                                format!("Failed to locate app container: {e}"),
+                            )
+                            .await);
+                    }
+                };
+
+                // Terminate the app before restoring
+                let _ = ios::device::terminate_app(&serial, pkg).await;
+
+                // Extract archive into the data container
+                let output = tokio::process::Command::new("tar")
+                    .args(["xzf", local_path, "-C", &container])
+                    .output()
+                    .await;
+
+                match output {
+                    Ok(out) if out.status.success() => {
+                        info!(%pkg, %local_path, "iOS app state restored");
+                        Ok(Self::success_action_response(request_id))
+                    }
+                    Ok(out) => {
+                        let stderr = String::from_utf8_lossy(&out.stderr);
+                        Ok(self
+                            .action_error(
+                                request_id,
+                                "APP_STATE_RESTORE_FAILED",
+                                format!("tar extract failed: {stderr}"),
+                            )
+                            .await)
+                    }
+                    Err(e) => Ok(self
+                        .action_error(
+                            request_id,
+                            "APP_STATE_RESTORE_FAILED",
+                            format!("Failed to run tar: {e}"),
+                        )
+                        .await),
+                }
+            }
+            Platform::Android => {
+                let device_tmp =
+                    format!("/data/local/tmp/pilot-app-state-{}.tar.gz", Uuid::new_v4());
+                let data_dir = format!("/data/data/{pkg}");
+                let tar_timeout = Duration::from_secs(300);
+
+                // 1. Force-stop the app
+                if let Err(e) = adb::shell(&serial, &format!("am force-stop {pkg}")).await {
+                    warn!(%pkg, "Failed to force-stop app before restore: {e}");
+                }
+
+                // 2. Clear app data — creates clean data dir with correct base permissions
+                match adb::shell(&serial, &format!("pm clear {pkg}")).await {
+                    Ok(output) if !output.trim().starts_with("Success") => {
+                        return Ok(self
+                            .action_error(
+                                request_id,
+                                "APP_STATE_RESTORE_FAILED",
+                                format!("pm clear failed: {}", output.trim()),
+                            )
+                            .await);
+                    }
+                    Err(e) => {
+                        return Ok(self
+                            .action_error(
+                                request_id,
+                                "APP_STATE_RESTORE_FAILED",
+                                format!("Failed to clear app data: {e}"),
+                            )
+                            .await);
+                    }
+                    _ => {}
+                }
+
+                // 3. Push archive to device
+                if let Err(e) = adb::push_file(&serial, local_path, &device_tmp).await {
+                    let _ = adb::shell_lenient(&serial, &format!("rm -f {device_tmp}")).await;
+                    return Ok(self
+                        .action_error(
+                            request_id,
+                            "APP_STATE_RESTORE_FAILED",
+                            format!("Failed to push app state archive: {e}"),
+                        )
+                        .await);
+                }
+
+                // 4. Determine access strategy
+                let is_root = adb::shell_lenient(&serial, "id")
+                    .await
+                    .map(|out| out.contains("uid=0"))
+                    .unwrap_or(false);
+
+                // 5. Extract archive into app data dir
+                let tar_result = if is_root {
+                    adb::shell_with_timeout(
+                        &serial,
+                        &format!("tar xzf {device_tmp} -C {data_dir}"),
+                        tar_timeout,
+                    )
+                    .await
+                } else {
+                    adb::shell_with_timeout(
+                        &serial,
+                        &format!("run-as {pkg} tar xzf {device_tmp} -C {data_dir}"),
+                        tar_timeout,
+                    )
+                    .await
+                };
+
+                if let Err(e) = tar_result {
+                    let _ = adb::shell_lenient(&serial, &format!("rm -f {device_tmp}")).await;
+                    return Ok(self
+                        .action_error(
+                            request_id,
+                            "APP_STATE_RESTORE_FAILED",
+                            format!("Failed to extract app state archive: {e}"),
+                        )
+                        .await);
+                }
+
+                // 6. Fix ownership and SELinux context (root only)
+                if is_root {
+                    let uid_output = match adb::shell_lenient(
+                        &serial,
+                        &format!("stat -c '%u' {data_dir}"),
+                    )
+                    .await
+                    {
+                        Ok(output) => output,
+                        Err(e) => {
+                            let _ =
+                                adb::shell_lenient(&serial, &format!("rm -f {device_tmp}")).await;
+                            return Ok(self
+                                .action_error(
+                                    request_id,
+                                    "APP_STATE_RESTORE_FAILED",
+                                    format!("Failed to determine app UID via stat: {e}"),
+                                )
+                                .await);
+                        }
+                    };
+                    let uid = uid_output.trim().to_string();
+
+                    if uid.is_empty() {
                         let _ = adb::shell_lenient(&serial, &format!("rm -f {device_tmp}")).await;
                         return Ok(self
                             .action_error(
                                 request_id,
                                 "APP_STATE_RESTORE_FAILED",
-                                format!("Failed to determine app UID via stat: {e}"),
+                                "Failed to determine app UID: stat returned empty output"
+                                    .to_string(),
                             )
                             .await);
                     }
-                };
-            let uid = uid_output.trim().to_string();
 
-            if uid.is_empty() {
-                let _ = adb::shell_lenient(&serial, &format!("rm -f {device_tmp}")).await;
-                return Ok(self
-                    .action_error(
-                        request_id,
-                        "APP_STATE_RESTORE_FAILED",
-                        "Failed to determine app UID: stat returned empty output".to_string(),
+                    if let Err(e) = adb::shell_with_timeout(
+                        &serial,
+                        &format!("chown -R {uid}:{uid} {data_dir}"),
+                        Duration::from_secs(60),
                     )
-                    .await);
-            }
+                    .await
+                    {
+                        let _ = adb::shell_lenient(&serial, &format!("rm -f {device_tmp}")).await;
+                        return Ok(self
+                            .action_error(
+                                request_id,
+                                "APP_STATE_RESTORE_FAILED",
+                                format!("Failed to fix ownership on restored app state: {e}"),
+                            )
+                            .await);
+                    }
 
-            if let Err(e) = adb::shell_with_timeout(
-                &serial,
-                &format!("chown -R {uid}:{uid} {data_dir}"),
-                Duration::from_secs(60),
-            )
-            .await
-            {
-                let _ = adb::shell_lenient(&serial, &format!("rm -f {device_tmp}")).await;
-                return Ok(self
-                    .action_error(
-                        request_id,
-                        "APP_STATE_RESTORE_FAILED",
-                        format!("Failed to fix ownership on restored app state: {e}"),
+                    if let Err(e) = adb::shell_with_timeout(
+                        &serial,
+                        &format!("restorecon -R {data_dir}"),
+                        Duration::from_secs(60),
                     )
-                    .await);
-            }
+                    .await
+                    {
+                        let _ = adb::shell_lenient(&serial, &format!("rm -f {device_tmp}")).await;
+                        return Ok(self
+                            .action_error(
+                                request_id,
+                                "APP_STATE_RESTORE_FAILED",
+                                format!("Failed to fix SELinux context on restored app state: {e}"),
+                            )
+                            .await);
+                    }
+                }
 
-            if let Err(e) = adb::shell_with_timeout(
-                &serial,
-                &format!("restorecon -R {data_dir}"),
-                Duration::from_secs(60),
-            )
-            .await
-            {
+                // 7. Clean up temp file
                 let _ = adb::shell_lenient(&serial, &format!("rm -f {device_tmp}")).await;
-                return Ok(self
-                    .action_error(
-                        request_id,
-                        "APP_STATE_RESTORE_FAILED",
-                        format!("Failed to fix SELinux context on restored app state: {e}"),
-                    )
-                    .await);
+
+                info!(%pkg, %local_path, "App state restored");
+                Ok(Self::success_action_response(request_id))
             }
         }
-
-        // 7. Clean up temp file
-        let _ = adb::shell_lenient(&serial, &format!("rm -f {device_tmp}")).await;
-
-        info!(%pkg, %local_path, "App state restored");
-        Ok(Response::new(proto::ActionResponse {
-            request_id,
-            success: true,
-            error_type: String::new(),
-            error_message: String::new(),
-            screenshot: Vec::new(),
-        }))
     }
 }
 

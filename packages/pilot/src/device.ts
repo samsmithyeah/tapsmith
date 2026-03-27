@@ -253,8 +253,9 @@ export class Device {
     targetPackage: string,
     agentApkPath?: string,
     agentTestApkPath?: string,
+    iosXctestrunPath?: string,
   ): Promise<void> {
-    const res = await this._client.startAgent(targetPackage, agentApkPath, agentTestApkPath);
+    const res = await this._client.startAgent(targetPackage, agentApkPath, agentTestApkPath, iosXctestrunPath);
     if (!res.success) {
       throw new Error(res.errorMessage || 'Start agent failed');
     }

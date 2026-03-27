@@ -104,6 +104,10 @@ export async function runWatchMode(ctx: WatchModeContext): Promise<void> {
     trace: typeof ctx.config.trace === 'string' || typeof ctx.config.trace === 'object'
       ? ctx.config.trace
       : undefined,
+    platform: ctx.config.platform,
+    app: ctx.config.app,
+    iosXctestrun: ctx.config.iosXctestrun,
+    simulator: ctx.config.simulator,
   };
 
   // Resolve tsx binary for forking TypeScript files

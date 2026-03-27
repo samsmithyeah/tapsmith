@@ -1,0 +1,165 @@
+import Foundation
+import Network
+
+/// TCP socket server that listens for JSON commands from the host daemon.
+///
+/// Protocol: newline-delimited JSON. Each line is a complete JSON object.
+/// Request:  {"id": "uuid", "method": "methodName", "params": {...}}
+/// Response: {"id": "uuid", "result": {...}} or {"id": "uuid", "error": {...}}
+///
+/// Mirrors the Android agent's SocketServer.kt but uses Network.framework
+/// (NWListener) instead of Java ServerSocket.
+class SocketServer {
+    private let port: UInt16
+    private let commandHandler: CommandHandler
+    private var listener: NWListener?
+    private let queue = DispatchQueue(label: "dev.pilot.agent.socket", qos: .userInitiated)
+
+    @Volatile private var running = false
+
+    init(port: UInt16, commandHandler: CommandHandler) {
+        self.port = port
+        self.commandHandler = commandHandler
+    }
+
+    /// Start the server. This blocks the calling thread.
+    func start() {
+        running = true
+
+        let params = NWParameters.tcp
+        params.allowLocalEndpointReuse = true
+
+        // Disable Nagle's algorithm for low latency
+        if let tcpOptions = params.defaultProtocolStack.internetProtocol as? NWProtocolTCP.Options {
+            tcpOptions.noDelay = true
+        }
+
+        do {
+            listener = try NWListener(using: params, on: NWEndpoint.Port(rawValue: port)!)
+        } catch {
+            NSLog("[PilotSocket] Failed to create listener: \(error)")
+            return
+        }
+
+        listener?.newConnectionHandler = { [weak self] connection in
+            guard let self = self, self.running else {
+                connection.cancel()
+                return
+            }
+            NSLog("[PilotSocket] Client connected")
+            self.handleConnection(connection)
+        }
+
+        listener?.stateUpdateHandler = { state in
+            switch state {
+            case .ready:
+                NSLog("[PilotSocket] Listening on port \(self.port)")
+            case .failed(let error):
+                NSLog("[PilotSocket] Listener failed: \(error)")
+            case .cancelled:
+                NSLog("[PilotSocket] Listener cancelled")
+            default:
+                break
+            }
+        }
+
+        listener?.start(queue: queue)
+
+        // Block the calling thread to keep the server alive
+        let semaphore = DispatchSemaphore(value: 0)
+        while running {
+            _ = semaphore.wait(timeout: .now() + .seconds(1))
+        }
+    }
+
+    /// Stop the server.
+    func stop() {
+        running = false
+        listener?.cancel()
+        listener = nil
+    }
+
+    private func handleConnection(_ connection: NWConnection) {
+        connection.start(queue: queue)
+        receiveLines(connection: connection, buffer: Data())
+    }
+
+    /// Recursively receive data and process complete lines (newline-delimited JSON).
+    private func receiveLines(connection: NWConnection, buffer: Data) {
+        connection.receive(minimumIncompleteLength: 1, maximumLength: 65536) { [weak self] data, _, isComplete, error in
+            guard let self = self, self.running else {
+                connection.cancel()
+                return
+            }
+
+            if let error = error {
+                NSLog("[PilotSocket] Read error: \(error)")
+                connection.cancel()
+                return
+            }
+
+            var currentBuffer = buffer
+            if let data = data {
+                currentBuffer.append(data)
+            }
+
+            // Process all complete lines in the buffer
+            while let newlineIndex = currentBuffer.firstIndex(of: UInt8(ascii: "\n")) {
+                let lineData = currentBuffer[currentBuffer.startIndex..<newlineIndex]
+                currentBuffer = Data(currentBuffer[currentBuffer.index(after: newlineIndex)...])
+
+                guard let line = String(data: lineData, encoding: .utf8), !line.trimmingCharacters(in: .whitespaces).isEmpty else {
+                    continue
+                }
+
+                NSLog("[PilotSocket] Received: \(line.prefix(200))")
+
+                let response = self.commandHandler.handle(rawJson: line)
+
+                NSLog("[PilotSocket] Responding: \(response.prefix(200))")
+
+                let responseData = (response + "\n").data(using: .utf8)!
+                connection.send(content: responseData, completion: .contentProcessed { error in
+                    if let error = error {
+                        NSLog("[PilotSocket] Write error: \(error)")
+                        connection.cancel()
+                    }
+                })
+            }
+
+            if isComplete {
+                NSLog("[PilotSocket] Client disconnected")
+                connection.cancel()
+                return
+            }
+
+            // Continue reading
+            self.receiveLines(connection: connection, buffer: currentBuffer)
+        }
+    }
+}
+
+// MARK: - Volatile property wrapper (equivalent to Kotlin's @Volatile)
+
+@propertyWrapper
+struct Volatile<Value> {
+    private var value: Value
+    private let lock = NSLock()
+
+    init(wrappedValue: Value) {
+        self.value = wrappedValue
+    }
+
+    var wrappedValue: Value {
+        get {
+            lock.lock()
+            defer { lock.unlock() }
+            return value
+        }
+        set {
+            lock.lock()
+            defer { lock.unlock() }
+            value = newValue
+        }
+    }
+}

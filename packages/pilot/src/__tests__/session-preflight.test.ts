@@ -11,6 +11,7 @@ function makeContext(overrides: Partial<Parameters<typeof ensureSessionReady>[0]
     tap: vi.fn(async () => undefined),
     pressBack: vi.fn(async () => undefined),
     clearAppData: vi.fn(async () => undefined),
+    restartApp: vi.fn(async () => undefined),
   };
 
   const client = {

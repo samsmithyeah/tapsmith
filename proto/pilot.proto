@@ -248,6 +248,7 @@ message DeviceInfo {
   string model = 2;
   string state = 3;
   bool is_emulator = 4;
+  string platform = 5;  // "android" or "ios"
 }
 
 message ListDevicesResponse {
@@ -263,8 +264,9 @@ message SetDeviceRequest {
 message StartAgentRequest {
   string request_id = 1;
   string target_package = 2;
-  string agent_apk_path = 3;       // host path to agent APK (auto-install)
-  string agent_test_apk_path = 4;  // host path to agent test APK (auto-install)
+  string agent_apk_path = 3;       // host path to agent APK (auto-install, Android)
+  string agent_test_apk_path = 4;  // host path to agent test APK (auto-install, Android)
+  string ios_xctestrun_path = 5;   // host path to .xctestrun file (iOS)
 }
 
 message PingRequest {}

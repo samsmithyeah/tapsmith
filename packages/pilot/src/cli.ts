@@ -296,6 +296,28 @@ async function ensureSequentialTargetDevice(
     return { selectedSerial: config.device, launched: [] };
   }
 
+  // ─── iOS: use simulator instead of ADB device ───
+  if (config.platform === 'ios') {
+    const { listBootedSimulators, provisionSimulator } = await import('./ios-simulator.js');
+    const simulatorName = config.simulator ?? 'iPhone 17';
+
+    // Check for already-booted simulators
+    const booted = listBootedSimulators();
+    const matching = booted.find((s) => s.name === simulatorName || s.udid === simulatorName);
+    if (matching) {
+      return { selectedSerial: matching.udid, launched: [] };
+    }
+
+    // Boot the simulator
+    try {
+      const udid = provisionSimulator(simulatorName, config.app);
+      return { selectedSerial: udid, launched: [] };
+    } catch (e) {
+      console.error(red(`Failed to provision iOS simulator: ${(e as Error).message}`));
+      process.exit(1);
+    }
+  }
+
   const clearedOfflineEmulators = clearOfflineEmulatorTransports();
   for (const serial of clearedOfflineEmulators) {
     process.stderr.write(
@@ -374,6 +396,7 @@ interface CliArgs {
   watch: boolean;
   ui: boolean;
   uiPort?: number;
+  config?: string;
   forceInstall: boolean;
   version: boolean;
   help: boolean;
@@ -447,6 +470,10 @@ function parseArgs(argv: string[]): CliArgs {
         process.exit(1);
       }
       args.uiPort = val;
+    } else if (arg === '--config' || arg === '-c') {
+      args.config = rest[++i];
+    } else if (arg?.startsWith('--config=')) {
+      args.config = arg.slice('--config='.length);
     } else if (arg === '--force-install') {
       args.forceInstall = true;
     } else if (arg === '--__tsx-reexec') {
@@ -555,7 +582,7 @@ async function main(): Promise<void> {
       process.exit(1);
     }
     const { mergeBlobs } = await import('./reporters/blob.js');
-    const config = await loadConfig();
+    const config = await loadConfig(undefined, args.config);
     const result = mergeBlobs(resolvedDir);
     const reporters = await createReporters(config.reporter ?? 'list');
     const dispatcher = new ReporterDispatcher(reporters);
@@ -571,7 +598,7 @@ async function main(): Promise<void> {
   }
 
   // Load config
-  const config = await loadConfig();
+  const config = await loadConfig(undefined, args.config);
   if (args.device) {
     config.device = args.device;
   }
@@ -782,8 +809,10 @@ async function main(): Promise<void> {
 
     config.device = target.selectedSerial;
 
-    // Pre-flight: verify device is responsive before doing anything slow
-    await checkDeviceHealth(config.device);
+    // Pre-flight: verify device is responsive before doing anything slow (Android only)
+    if (config.platform !== 'ios') {
+      await checkDeviceHealth(config.device);
+    }
 
     // Connect to daemon
     client = await ensureDaemonRunning(config.daemonAddress, config.daemonBin);
@@ -798,39 +827,66 @@ async function main(): Promise<void> {
       return;
     }
 
-    // Wake and unlock device screen
-    try {
-      await device.wake();
-      await device.unlock();
-      console.log(dim('Device screen unlocked.'));
-    } catch {
-      // Non-fatal — device might already be awake/unlocked
-    }
-
-    // Install app under test if APK path is configured and not already installed.
-    if (config.apk) {
-      const isInstalled = config.package
-        && config.device
-        && isPackageInstalled(config.device, config.package);
-
-      if (isInstalled && !args.forceInstall) {
-        console.log(dim(`App ${config.package} already installed, skipping APK install. Use --force-install to reinstall.`));
-      } else {
-        const resolvedApk = path.resolve(config.rootDir, config.apk);
+    if (config.platform === 'ios') {
+      // iOS: install and launch .app on simulator before starting the agent.
+      // The app must be running BEFORE the XCUITest agent starts so that
+      // XCUITest can establish its accessibility bridge to the target app.
+      if (config.app && config.device) {
         try {
-          if (isInstalled) {
-            console.log(dim(`Reinstalling app APK: ${path.basename(resolvedApk)}`));
-          }
-          await device.installApk(resolvedApk);
-          // Wait for package manager to index the new app
-          if (config.package && config.device) {
-            await waitForPackageIndexed(config.device, config.package);
-          }
-          console.log(dim(`Installed app APK: ${path.basename(resolvedApk)}`));
+          const { installApp } = await import('./ios-simulator.js');
+          const resolvedApp = path.resolve(config.rootDir, config.app);
+          installApp(config.device, resolvedApp);
+          console.log(dim(`Installed ${path.basename(resolvedApp)} on iOS simulator.`));
         } catch (err) {
-          console.error(red(`Failed to install app APK: ${err}`));
+          console.error(red(`Failed to install iOS app: ${err}`));
           sequentialExitCode = 1;
           return;
+        }
+      }
+      if (config.package && config.device) {
+        try {
+          const { execFileSync } = await import('node:child_process');
+          execFileSync('xcrun', ['simctl', 'launch', config.device, config.package]);
+          console.log(dim(`Launched ${config.package} on iOS simulator.`));
+        } catch {
+          // App may already be running
+        }
+      }
+    } else {
+      // Android: Wake and unlock device screen
+      try {
+        await device.wake();
+        await device.unlock();
+        console.log(dim('Device screen unlocked.'));
+      } catch {
+        // Non-fatal — device might already be awake/unlocked
+      }
+
+      // Install app under test if APK path is configured and not already installed.
+      if (config.apk) {
+        const isInstalled = config.package
+          && config.device
+          && isPackageInstalled(config.device, config.package);
+
+        if (isInstalled && !args.forceInstall) {
+          console.log(dim(`App ${config.package} already installed, skipping APK install. Use --force-install to reinstall.`));
+        } else {
+          const resolvedApk = path.resolve(config.rootDir, config.apk);
+          try {
+            if (isInstalled) {
+              console.log(dim(`Reinstalling app APK: ${path.basename(resolvedApk)}`));
+            }
+            await device.installApk(resolvedApk);
+            // Wait for package manager to index the new app
+            if (config.package && config.device) {
+              await waitForPackageIndexed(config.device, config.package);
+            }
+            console.log(dim(`Installed app APK: ${path.basename(resolvedApk)}`));
+          } catch (err) {
+            console.error(red(`Failed to install app APK: ${err}`));
+            sequentialExitCode = 1;
+            return;
+          }
         }
       }
     }
@@ -838,7 +894,7 @@ async function main(): Promise<void> {
     // If tracing with network capture, ensure adb root BEFORE starting agent
     // so that the adbd restart doesn't disrupt UIAutomator2's accessibility service.
     const traceConfig = resolveTraceConfig(config.trace);
-    if (traceConfig.mode !== 'off' && traceConfig.network && config.device) {
+    if (config.platform !== 'ios' && traceConfig.mode !== 'off' && traceConfig.network && config.device) {
       const restarted = ensureAdbRoot(config.device);
       if (restarted) {
         console.log(dim('Enabled adb root for network capture.'));
@@ -852,21 +908,31 @@ async function main(): Promise<void> {
     const resolvedAgentTestApk = config.agentTestApk
       ? path.resolve(config.rootDir, config.agentTestApk)
       : undefined;
+    const resolvedIosXctestrun = config.iosXctestrun
+      ? path.resolve(config.rootDir, config.iosXctestrun)
+      : undefined;
     try {
+      if (config.platform === 'ios') {
+        console.log(dim(`Starting iOS agent (xctestrun: ${resolvedIosXctestrun ? 'set' : 'NOT SET'})`));
+      }
       await device.startAgent(
-        '',
+        config.package ?? '',
         resolvedAgentApk,
         resolvedAgentTestApk,
+        resolvedIosXctestrun,
       );
-      await ensureSessionReady({
-        label: `Device ${config.device}`,
-        config,
-        device,
-        client,
-        agentApkPath: resolvedAgentApk,
-        agentTestApkPath: resolvedAgentTestApk,
-        deviceSerial: config.device,
-      }, 'startup');
+      if (config.platform !== 'ios') {
+        await ensureSessionReady({
+          label: `Device ${config.device}`,
+          config,
+          device,
+          client,
+          agentApkPath: resolvedAgentApk,
+          agentTestApkPath: resolvedAgentTestApk,
+          iosXctestrunPath: resolvedIosXctestrun,
+          deviceSerial: config.device,
+        }, 'startup');
+      }
       console.log(dim('Agent connected.'));
     } catch (err) {
       console.error(red(`Failed to start agent: ${err}`));
@@ -885,6 +951,7 @@ async function main(): Promise<void> {
           client,
           agentApkPath: resolvedAgentApk,
           agentTestApkPath: resolvedAgentTestApk,
+          iosXctestrunPath: resolvedIosXctestrun,
           deviceSerial: config.device,
         }, 'startup');
         console.log(dim(`Launched ${config.package}`));

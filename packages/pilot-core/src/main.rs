@@ -2,8 +2,10 @@ mod adb;
 mod agent_comms;
 mod device;
 mod grpc_server;
+mod ios;
 mod mitm_ca;
 mod network_proxy;
+mod platform;
 mod screenshot;
 
 use std::net::SocketAddr;
@@ -102,10 +104,20 @@ async fn main() -> Result<()> {
         )
         .init();
 
-    // Verify ADB is available
+    // Verify ADB is available (Android)
     match adb::find_adb().await {
         Ok(path) => info!(path = %path.display(), "Found ADB"),
-        Err(e) => warn!("ADB not found on PATH: {e}. Device operations will fail."),
+        Err(e) => {
+            warn!("ADB not found on PATH: {e}. Android device operations will not be available.")
+        }
+    }
+
+    // Verify xcrun is available (iOS)
+    match ios::device::find_xcrun().await {
+        Ok(path) => info!(path = %path.display(), "Found xcrun"),
+        Err(e) => {
+            warn!("xcrun not found on PATH: {e}. iOS device operations will not be available.")
+        }
     }
 
     let device_manager = Arc::new(RwLock::new(DeviceManager::new()));

@@ -2,21 +2,32 @@ use anyhow::Result;
 use tracing::debug;
 
 use crate::adb;
+use crate::ios;
+use crate::platform::Platform;
 
-/// Capture a screenshot from the given device via ADB, returning PNG bytes.
-pub async fn capture(serial: &str) -> Result<Vec<u8>> {
-    debug!(serial, "Capturing screenshot via ADB");
-    adb::screencap(serial).await
+/// Capture a screenshot from the given device, returning PNG bytes.
+/// Routes to ADB (Android) or simctl (iOS) based on platform.
+pub async fn capture(serial: &str, platform: Platform) -> Result<Vec<u8>> {
+    match platform {
+        Platform::Android => {
+            debug!(serial, "Capturing screenshot via ADB");
+            adb::screencap(serial).await
+        }
+        Platform::Ios => {
+            debug!(serial, "Capturing screenshot via simctl");
+            ios::screenshot::capture(serial).await
+        }
+    }
 }
 
 /// Attempt to capture a screenshot for inclusion in an error response.
 /// Returns empty bytes if the capture fails (best-effort).
-pub async fn capture_for_error(serial: Option<&str>) -> Vec<u8> {
+pub async fn capture_for_error(serial: Option<&str>, platform: Platform) -> Vec<u8> {
     let Some(serial) = serial else {
         return Vec::new();
     };
 
-    match capture(serial).await {
+    match capture(serial, platform).await {
         Ok(png) => png,
         Err(e) => {
             debug!("Failed to capture error screenshot: {e}");

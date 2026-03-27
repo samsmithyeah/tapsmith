@@ -114,6 +114,24 @@ pub enum AgentCommand {
         text: String,
     },
     GetClipboard {},
+    #[allow(dead_code)]
+    LaunchApp {
+        package: String,
+    },
+    #[allow(dead_code)]
+    TerminateApp {
+        package: String,
+    },
+    HideKeyboard {},
+    IsKeyboardShown {},
+    SetOrientation {
+        orientation: String,
+    },
+    GetOrientation {},
+    GetColorScheme {},
+    GetAppState {
+        package: String,
+    },
 }
 
 impl AgentCommand {
@@ -340,6 +358,20 @@ impl AgentCommand {
             }
             AgentCommand::SetClipboard { text } => ("setClipboard", json!({"text": text})),
             AgentCommand::GetClipboard {} => ("getClipboard", json!({})),
+            AgentCommand::LaunchApp { package } => ("launchApp", json!({ "bundleId": package })),
+            AgentCommand::TerminateApp { package } => {
+                ("terminateApp", json!({ "bundleId": package }))
+            }
+            AgentCommand::HideKeyboard {} => ("hideKeyboard", json!({})),
+            AgentCommand::IsKeyboardShown {} => ("isKeyboardShown", json!({})),
+            AgentCommand::SetOrientation { orientation } => {
+                ("setOrientation", json!({ "orientation": orientation }))
+            }
+            AgentCommand::GetOrientation {} => ("getOrientation", json!({})),
+            AgentCommand::GetColorScheme {} => ("getColorScheme", json!({})),
+            AgentCommand::GetAppState { package } => {
+                ("getAppState", json!({ "bundleId": package }))
+            }
         };
 
         json!({
@@ -391,6 +423,7 @@ pub struct AgentConnection {
     connected: bool,
     device_serial: Option<String>,
     host_port: u16,
+    is_ios: bool,
 }
 
 impl AgentConnection {
@@ -403,6 +436,7 @@ impl AgentConnection {
             connected: false,
             device_serial: None,
             host_port,
+            is_ios: false,
         }
     }
 
@@ -411,23 +445,45 @@ impl AgentConnection {
     }
 
     /// Establish port forwarding and verify the agent is reachable.
+    /// For Android, sets up ADB port forwarding.
+    /// For iOS simulators, no forwarding is needed (shared localhost).
     pub async fn connect(&mut self, serial: &str) -> Result<()> {
-        // Set up ADB port forwarding
-        adb::forward_port(serial, self.host_port, AGENT_DEVICE_PORT)
-            .await
-            .context("Failed to set up ADB port forwarding to agent")?;
+        self.connect_for_platform(serial, false).await
+    }
+
+    /// Connect to an iOS agent (skip ADB port forwarding).
+    pub async fn connect_ios(&mut self, serial: &str) -> Result<()> {
+        self.connect_for_platform(serial, true).await
+    }
+
+    async fn connect_for_platform(&mut self, serial: &str, ios: bool) -> Result<()> {
+        self.is_ios = ios;
+
+        if !ios {
+            // Android: Set up ADB port forwarding
+            adb::forward_port(serial, self.host_port, AGENT_DEVICE_PORT)
+                .await
+                .context("Failed to set up ADB port forwarding to agent")?;
+        }
+        // iOS simulator: agent listens on localhost directly, no forwarding needed
 
         // Try to connect and send a ping
         match self.ping_agent().await {
             Ok(_) => {
                 self.connected = true;
                 self.device_serial = Some(serial.to_string());
-                info!(serial, "Connected to on-device agent");
+                info!(
+                    serial,
+                    platform = if ios { "ios" } else { "android" },
+                    "Connected to on-device agent"
+                );
                 Ok(())
             }
             Err(e) => {
-                // Clean up the forwarding on failure
-                let _ = adb::remove_forward(serial, self.host_port).await;
+                if !ios {
+                    // Clean up the forwarding on failure
+                    let _ = adb::remove_forward(serial, self.host_port).await;
+                }
                 bail!("Agent is not responding on device {serial}: {e}. Is the agent app running?");
             }
         }
@@ -436,8 +492,10 @@ impl AgentConnection {
     /// Disconnect and clean up port forwarding.
     #[allow(dead_code)]
     pub async fn disconnect(&mut self) {
-        if let Some(ref serial) = self.device_serial {
-            let _ = adb::remove_forward(serial, self.host_port).await;
+        if !self.is_ios {
+            if let Some(ref serial) = self.device_serial {
+                let _ = adb::remove_forward(serial, self.host_port).await;
+            }
         }
         self.connected = false;
         self.device_serial = None;
@@ -562,9 +620,11 @@ impl AgentConnection {
         info!(serial, "Attempting to reconnect to agent");
         self.connected = false;
 
-        // Re-establish port forwarding
-        let _ = adb::remove_forward(serial, self.host_port).await;
-        adb::forward_port(serial, self.host_port, AGENT_DEVICE_PORT).await?;
+        // Re-establish ADB port forwarding (Android only; iOS uses localhost directly)
+        if !self.is_ios {
+            let _ = adb::remove_forward(serial, self.host_port).await;
+            adb::forward_port(serial, self.host_port, AGENT_DEVICE_PORT).await?;
+        }
 
         match self.ping_agent().await {
             Ok(_) => {

@@ -41,7 +41,6 @@ export default function HomeScreen() {
           <Pressable
             style={styles.card}
             accessibilityRole="button"
-            accessibilityLabel={screen.label}
           >
             <Text style={styles.cardTitle}>{screen.label}</Text>
             <Text style={styles.cardDescription}>{screen.description}</Text>

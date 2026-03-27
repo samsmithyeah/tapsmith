@@ -259,6 +259,10 @@ export async function runParallel(opts: DispatcherOptions): Promise<FullResult> 
       trace: typeof config.trace === 'string' || typeof config.trace === 'object'
         ? config.trace
         : undefined,
+      platform: config.platform,
+      app: config.app,
+      iosXctestrun: config.iosXctestrun,
+      simulator: config.simulator,
     };
 
     const launchedSerials = new Set(launchedEmulators.map((emu) => emu.serial));

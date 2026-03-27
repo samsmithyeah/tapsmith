@@ -134,6 +134,10 @@ export interface SerializedConfig {
   agentApk?: string
   agentTestApk?: string
   trace?: string | Record<string, unknown>
+  platform?: 'android' | 'ios'
+  app?: string
+  iosXctestrun?: string
+  simulator?: string
 }
 
 /** TestResult with Error serialized to plain object for IPC. */
