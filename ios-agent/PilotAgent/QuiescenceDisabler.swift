@@ -2,12 +2,6 @@ import XCTest
 import Foundation
 import ObjectiveC
 
-/// Private XCTest C function to set the application state (quiescence) timeout.
-/// Used by Appium/WebDriverAgent to control how long XCTest waits for idle.
-/// Setting this to 0 effectively disables quiescence waiting.
-@_silgen_name("_XCTSetApplicationStateTimeout")
-func _XCTSetApplicationStateTimeout(_ timeout: Double)
-
 /// Disables XCUITest's quiescence waiting and provides direct event synthesis.
 ///
 /// XCUITest normally blocks all actions (tap, type, swipe) until the app is
