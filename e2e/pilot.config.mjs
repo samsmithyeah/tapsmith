@@ -23,14 +23,13 @@ export default defineConfig({
     {
       name: "default",
       testMatch: ["**/*.test.ts"],
-      testIgnore: ["**/app-state.test.ts"],
-      dependencies: ["authentication"],
+      testIgnore: ["**/app-state.test.ts", "**/auth-gate.test.ts"],
     },
     {
       name: "authenticated",
       dependencies: ["authentication"],
       use: { appState: "./pilot-results/auth-state.tar.gz" },
-      testMatch: ["**/app-state.test.ts"],
+      testMatch: ["**/app-state.test.ts", "**/auth-gate.test.ts"],
     },
   ],
 });
