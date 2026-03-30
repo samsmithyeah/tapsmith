@@ -15,7 +15,7 @@ export default function RootLayout() {
         <Stack.Screen name="list" options={{ title: "List" }} />
         <Stack.Screen name="toggles" options={{ title: "Toggles" }} />
         <Stack.Screen name="spinner" options={{ title: "Spinner" }} />
-        <Stack.Screen name="gestures" options={{ title: "Gestures" }} />
+        <Stack.Screen name="gestures" options={{ title: "Gestures", gestureEnabled: false }} />
         <Stack.Screen name="dialogs" options={{ title: "Dialogs" }} />
         <Stack.Screen name="visibility" options={{ title: "Visibility" }} />
         <Stack.Screen name="accessibility" options={{ title: "Accessibility" }} />
