@@ -1,10 +1,9 @@
 import { beforeEach, contentDesc, describe, expect, test, text } from "pilot"
 import { AccessibilityScreen } from "../screens/accessibility.screen.js"
-import { resetTestApp } from "../support/reset-app.js"
 
 describe("Accessibility screen", () => {
   beforeEach(async ({ device }) => {
-    await resetTestApp(device)
+    await device.restartApp()
     const accessibilityCard = device.element(contentDesc("Accessibility"))
     await accessibilityCard.scrollIntoView()
     await accessibilityCard.tap()

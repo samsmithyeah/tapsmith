@@ -4,7 +4,7 @@ export class SpinnerScreen {
   constructor(private device: Device) {}
 
   get heading() { return this.device.element(text("Dropdowns")) }
-  get placeholder() { return this.device.element(text("Country: None")) }
+  get placeholder() { return this.device.element(text("Select...")) }
 
   // Dropdowns
   get countryDropdown() { return this.device.element(id("country-dropdown")) }

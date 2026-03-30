@@ -91,7 +91,6 @@ export default function VisibilityScreen() {
             onPress={() => handleDelete(item)}
             accessibilityRole="button"
             accessibilityLabel={`Delete ${item}`}
-            testID={`delete-${item}`}
           >
             <Text style={styles.deleteButton}>Delete</Text>
           </TouchableOpacity>

@@ -35,9 +35,7 @@ function Dropdown({ label, options, selected, onSelect, testID }: DropdownProps)
         accessibilityState={{ expanded: open }}
         testID={testID}
       >
-        <Text style={styles.dropdownText} testID={`${testID}-value`}>
-          {selected || "Select..."}
-        </Text>
+        <Text style={styles.dropdownText}>{selected || "Select..."}</Text>
         <Text style={styles.dropdownArrow}>{open ? "▲" : "▼"}</Text>
       </TouchableOpacity>
       {open && (

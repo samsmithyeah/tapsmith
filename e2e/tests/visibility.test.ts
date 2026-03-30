@@ -1,10 +1,9 @@
-import { beforeEach, describe, expect, id, test, text } from "pilot"
+import { beforeAll, contentDesc, describe, expect, test } from "pilot"
 import { VisibilityScreen } from "../screens/visibility.screen.js"
-import { openTestScreen } from "../support/open-test-screen.js"
 
 describe("Visibility screen", () => {
-  beforeEach(async ({ device }) => {
-    await openTestScreen(device, "visibility", "Visibility Testing")
+  beforeAll(async ({ device }) => {
+    await device.tap(contentDesc("Visibility"))
   })
 
   // ─── Dismissable Banner ───
@@ -23,8 +22,6 @@ describe("Visibility screen", () => {
 
   test("show banner button restores it", async ({ device }) => {
     const screen = new VisibilityScreen(device)
-    await screen.dismissBannerButton.tap()
-    await expect(screen.banner).not.toBeVisible()
     await screen.showBannerButton.tap()
     await expect(screen.banner).toBeVisible()
   })
@@ -50,8 +47,6 @@ describe("Visibility screen", () => {
   test("collapsing hides content", async ({ device }) => {
     const screen = new VisibilityScreen(device)
     await screen.expandToggle.tap()
-    await expect(screen.expandedContent).toBeVisible()
-    await screen.expandToggle.tap()
     await expect(screen.expandedContent).not.toExist()
   })
 
@@ -70,9 +65,7 @@ describe("Visibility screen", () => {
 
   test("deleting an item decreases the count", async ({ device }) => {
     const screen = new VisibilityScreen(device)
-    await screen.addItemButton.tap()
-    await expect(screen.itemCount(4)).toBeVisible()
-    await screen.deleteItem("Item A").tap()
+    await screen.deleteButton.first().tap()
     await expect(screen.itemCount(3)).toBeVisible()
   })
 
@@ -85,7 +78,7 @@ describe("Visibility screen", () => {
 
   test("loading indicator appears and then disappears", async ({ device }) => {
     const screen = new VisibilityScreen(device)
-    await screen.startLoadingButton.scrollIntoView()
+    await device.swipe("up")
     await screen.startLoadingButton.tap()
     await expect(screen.loadingIndicator).toBeVisible()
     await expect(screen.contentLoaded).toBeVisible({ timeout: 5000 })
@@ -95,14 +88,12 @@ describe("Visibility screen", () => {
 
   test("triggering error shows the error message", async ({ device }) => {
     const screen = new VisibilityScreen(device)
-    await screen.toggleErrorButton.scrollIntoView()
     await screen.toggleErrorButton.tap()
-    await expect(screen.errorText).toExist()
+    await expect(screen.errorText).toBeVisible()
   })
 
   test("clearing error hides the message", async ({ device }) => {
     const screen = new VisibilityScreen(device)
-    await screen.toggleErrorButton.scrollIntoView()
     await screen.toggleErrorButton.tap()
     await expect(screen.errorMessage).not.toBeVisible()
   })

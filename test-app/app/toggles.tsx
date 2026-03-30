@@ -77,7 +77,6 @@ export default function TogglesScreen() {
         accessibilityRole="checkbox"
         accessibilityLabel="I agree to terms"
         accessibilityState={{ checked: agreed }}
-        accessibilityValue={{ text: agreed ? "checked" : "unchecked" }}
         testID="agree-checkbox"
       >
         <View style={[styles.checkbox, agreed && styles.checkboxChecked]}>
@@ -92,7 +91,6 @@ export default function TogglesScreen() {
         accessibilityRole="checkbox"
         accessibilityLabel="Subscribe to newsletter"
         accessibilityState={{ checked: newsletter }}
-        accessibilityValue={{ text: newsletter ? "checked" : "unchecked" }}
         testID="newsletter-checkbox"
       >
         <View style={[styles.checkbox, newsletter && styles.checkboxChecked]}>
@@ -113,9 +111,6 @@ export default function TogglesScreen() {
           accessibilityRole="radio"
           accessibilityLabel={size.charAt(0).toUpperCase() + size.slice(1)}
           accessibilityState={{ checked: selectedSize === size }}
-          accessibilityValue={{
-            text: selectedSize === size ? "checked" : "unchecked",
-          }}
           testID={`radio-${size}`}
         >
           <View style={styles.radio}>
@@ -130,9 +125,6 @@ export default function TogglesScreen() {
       </Text>
       <Text style={styles.statusText} testID="status-text">
         {statusText}
-      </Text>
-      <Text style={styles.statusText} testID="agreement-status">
-        Agreement: {agreed ? "accepted" : "not accepted"}
       </Text>
       <Text style={styles.statusText} testID="selected-size">
         Size: {selectedSize}

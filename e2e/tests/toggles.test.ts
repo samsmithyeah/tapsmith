@@ -1,13 +1,10 @@
 import { beforeEach, contentDesc, describe, expect, test } from "pilot"
 import { TogglesScreen } from "../screens/toggles.screen.js"
-import { resetTestApp } from "../support/reset-app.js"
 
 describe("Toggles screen", () => {
   beforeEach(async ({ device }) => {
-    await resetTestApp(device)
-    const togglesCard = device.element(contentDesc("Toggles"))
-    await togglesCard.scrollIntoView()
-    await togglesCard.tap()
+    await device.restartApp()
+    await device.tap(contentDesc("Toggles"))
     const screen = new TogglesScreen(device)
     await expect(screen.switchesHeading).toBeVisible()
   })
@@ -49,10 +46,10 @@ describe("Toggles screen", () => {
   test("tapping checkbox toggles its state", async ({ device }) => {
     const screen = new TogglesScreen(device)
     await screen.agreeCheckbox.tap()
-    await expect(screen.agreementStatus).toHaveText("Agreement: accepted")
+    await expect(screen.agreeCheckbox).toBeChecked()
 
     await screen.agreeCheckbox.tap()
-    await expect(screen.agreementStatus).toHaveText("Agreement: not accepted")
+    await expect(screen.agreeCheckbox).not.toBeChecked()
   })
 
   // ─── Radio Buttons ───
@@ -67,8 +64,8 @@ describe("Toggles screen", () => {
 
   test("tapping small selects it", async ({ device }) => {
     const screen = new TogglesScreen(device)
-    await screen.radioSmall.scrollIntoView()
+    await device.swipe("up")
     await screen.radioSmall.tap()
-    await expect(screen.selectedSizeStatus).toHaveText("Size: small")
+    await expect(screen.radioSmall).toBeChecked()
   })
 })

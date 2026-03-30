@@ -1,7 +1,6 @@
 import path from "node:path"
-import { test, expect, text } from "pilot"
+import { test, expect, text, contentDesc } from "pilot"
 import { LoginScreen } from "../screens/login.screen.js"
-import { openTestScreen } from "../support/open-test-screen.js"
 
 const PKG = "dev.pilot.testapp"
 const STATE_PATH = path.join(process.cwd(), "pilot-results", "auth-state.tar.gz")
@@ -12,7 +11,7 @@ const STATE_PATH = path.join(process.cwd(), "pilot-results", "auth-state.tar.gz"
 test("authenticate and save app state", async ({ device }) => {
   await device.clearAppData(PKG)
   await device.launchApp(PKG)
-  await openTestScreen(device, "login", "Sign In")
+  await device.tap(contentDesc("Login Form"))
 
   const login = new LoginScreen(device)
   await login.emailField.clearAndType("test@example.com")

@@ -1,15 +1,12 @@
 import { beforeEach, contentDesc, describe, expect, test, text } from "pilot"
 import { DialogsScreen } from "../screens/dialogs.screen.js"
-import { resetTestApp } from "../support/reset-app.js"
 
 describe("Dialogs screen", () => {
   // Restart app before each test to ensure clean state. Transient UI
   // elements like toasts can leak between tests under heavy load.
   beforeEach(async ({ device }) => {
-    await resetTestApp(device)
-    const dialogsCard = device.element(contentDesc("Dialogs"))
-    await dialogsCard.scrollIntoView()
-    await dialogsCard.tap()
+    await device.restartApp()
+    await device.tap(contentDesc("Dialogs"))
     await expect(device.element(text("Dialogs & Overlays"))).toBeVisible()
   })
 

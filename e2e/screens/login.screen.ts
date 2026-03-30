@@ -7,5 +7,5 @@ export class LoginScreen {
   get emailField() { return this.device.element(role("textfield", "Email")) }
   get passwordField() { return this.device.element(role("textfield", "Password")) }
   get signInButton() { return this.device.element(role("button", "Sign in")) }
-  get forgotPasswordLink() { return this.device.element(role("link", "Forgot password")) }
+  get forgotPasswordLink() { return this.device.element(text("Forgot password?")) }
 }

@@ -1,14 +1,9 @@
-import { beforeEach, describe, expect, id, test, text } from "pilot"
+import { beforeAll, contentDesc, describe, expect, test } from "pilot"
 import { SpinnerScreen } from "../screens/spinner.screen.js"
-import { resetTestApp } from "../support/reset-app.js"
 
 describe("Spinner screen", () => {
-  beforeEach(async ({ device }) => {
-    await resetTestApp(device)
-    const spinnerCard = device.element(id("home-card-spinner"))
-    await spinnerCard.scrollIntoView()
-    await spinnerCard.tap()
-    await expect(device.element(text("Dropdowns"))).toBeVisible()
+  beforeAll(async ({ device }) => {
+    await device.tap(contentDesc("Spinner"))
   })
 
   // ─── Dropdowns ───
@@ -18,7 +13,7 @@ describe("Spinner screen", () => {
     await expect(screen.heading).toBeVisible()
   })
 
-  test("country dropdown is unselected initially", async ({ device }) => {
+  test("country dropdown shows placeholder initially", async ({ device }) => {
     const screen = new SpinnerScreen(device)
     await expect(screen.countryDropdown).toBeVisible()
     await expect(screen.placeholder).toBeVisible()

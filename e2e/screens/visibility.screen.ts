@@ -1,4 +1,4 @@
-import { type Device, contentDesc, id, text } from "pilot"
+import { type Device, id, text } from "pilot"
 
 export class VisibilityScreen {
   constructor(private device: Device) {}
@@ -14,7 +14,7 @@ export class VisibilityScreen {
 
   // Dynamic list
   get addItemButton() { return this.device.element(id("add-item")) }
-  deleteItem(item: string) { return this.device.element(contentDesc(`Delete ${item}`)) }
+  get deleteButton() { return this.device.element(text("Delete")) }
   itemCount(n: number) { return this.device.element(text(`${n} items`)) }
 
   // Loading state

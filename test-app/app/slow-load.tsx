@@ -86,7 +86,6 @@ export default function SlowLoadScreen() {
         onPress={() => fetchData(2000)}
         accessibilityRole="button"
         accessibilityLabel="Load data (2 seconds)"
-        accessible
         testID="load-2s"
       >
         <Text style={styles.buttonText}>Load Data (2s)</Text>
@@ -97,7 +96,6 @@ export default function SlowLoadScreen() {
         onPress={() => fetchData(5000)}
         accessibilityRole="button"
         accessibilityLabel="Load data (5 seconds)"
-        accessible
         testID="load-5s"
       >
         <Text style={styles.buttonText}>Load Data (5s)</Text>
@@ -108,7 +106,6 @@ export default function SlowLoadScreen() {
         onPress={() => fetchData(3000, true)}
         accessibilityRole="button"
         accessibilityLabel="Load data (will fail)"
-        accessible
         testID="load-fail"
       >
         <Text style={styles.buttonText}>Load Data (Fail)</Text>
@@ -155,7 +152,6 @@ export default function SlowLoadScreen() {
         onPress={incrementCounter}
         accessibilityRole="button"
         accessibilityLabel="Start counter"
-        accessible
         testID="start-counter"
       >
         <Text style={styles.buttonText}>Start Counter</Text>

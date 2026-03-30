@@ -1,5 +1,5 @@
 import { useState } from "react"
-import { ActivityIndicator, ScrollView, StyleSheet, Text, TouchableOpacity, View } from "react-native"
+import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, View } from "react-native"
 
 interface Post {
   id: number
@@ -25,7 +25,7 @@ export default function ApiCallsScreen() {
     setError("")
     setPosts([])
     try {
-      const res = await fetch("https://jsonplaceholder.typicode.com/posts?_limit=3")
+      const res = await fetch("http://jsonplaceholder.typicode.com/posts?_limit=3")
       if (!res.ok) throw new Error(`HTTP ${res.status}`)
       const data = await res.json()
       setPosts(data)
@@ -41,7 +41,7 @@ export default function ApiCallsScreen() {
     setError("")
     setUser(null)
     try {
-      const res = await fetch("https://jsonplaceholder.typicode.com/users/1")
+      const res = await fetch("http://jsonplaceholder.typicode.com/users/1")
       if (!res.ok) throw new Error(`HTTP ${res.status}`)
       const data = await res.json()
       setUser(data)
@@ -56,7 +56,7 @@ export default function ApiCallsScreen() {
     setLoading("404")
     setError("")
     try {
-      const res = await fetch("https://jsonplaceholder.typicode.com/posts/99999")
+      const res = await fetch("http://jsonplaceholder.typicode.com/posts/99999")
       if (!res.ok) throw new Error(`HTTP ${res.status}`)
     } catch (e) {
       setError(`Request failed: ${e instanceof Error ? e.message : e}`)
@@ -76,38 +76,32 @@ export default function ApiCallsScreen() {
 
       {/* Buttons */}
       <View style={styles.buttonRow}>
-        <TouchableOpacity
+        <Pressable
           style={styles.button}
           onPress={fetchPosts}
           accessibilityRole="button"
           accessibilityLabel="Fetch Posts"
-          accessible
-          testID="fetch-posts"
         >
           <Text style={styles.buttonText}>Fetch Posts</Text>
-        </TouchableOpacity>
+        </Pressable>
 
-        <TouchableOpacity
+        <Pressable
           style={styles.button}
           onPress={fetchUser}
           accessibilityRole="button"
           accessibilityLabel="Fetch User"
-          accessible
-          testID="fetch-user"
         >
           <Text style={styles.buttonText}>Fetch User</Text>
-        </TouchableOpacity>
+        </Pressable>
 
-        <TouchableOpacity
+        <Pressable
           style={[styles.button, styles.errorButton]}
           onPress={fetchNotFound}
           accessibilityRole="button"
           accessibilityLabel="Fetch 404"
-          accessible
-          testID="fetch-404"
         >
           <Text style={styles.buttonText}>Fetch 404</Text>
-        </TouchableOpacity>
+        </Pressable>
       </View>
 
       {/* Loading */}

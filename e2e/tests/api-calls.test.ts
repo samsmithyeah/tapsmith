@@ -6,17 +6,16 @@
  *
  *   npx pilot test tests/api-calls.test.ts --trace on
  */
-import { beforeEach, describe, expect, test } from "pilot"
+import { beforeEach, contentDesc, describe, expect, test } from "pilot"
 import { ApiCallsScreen } from "../screens/api-calls.screen.js"
-import { openTestScreen } from "../support/open-test-screen.js"
 
 describe("API Calls screen", () => {
   beforeEach(async ({ device }) => {
-    await openTestScreen(
-      device,
-      "api-calls",
-      "Makes real HTTP requests to jsonplaceholder.typicode.com",
-    )
+    await device.restartApp()
+    await device.element(contentDesc("API Calls")).scrollIntoView()
+    await device.tap(contentDesc("API Calls"))
+    const screen = new ApiCallsScreen(device)
+    await expect(screen.heading).toBeVisible()
   })
 
   test("fetches and displays posts", async ({ device }) => {

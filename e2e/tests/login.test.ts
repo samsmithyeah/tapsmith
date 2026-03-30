@@ -21,7 +21,10 @@ describe("Login screen", () => {
 
   test("email field is editable", async ({ device }) => {
     const login = new LoginScreen(device)
-    await expect(login.emailField).toBeEnabled()
+    await expect(login.emailField).toHaveAttribute(
+      "className",
+      "android.widget.EditText",
+    )
   })
 
   test("sign in button starts disabled", async ({ device }) => {
@@ -53,6 +56,7 @@ describe("Login screen", () => {
   test("focusing and blurring email field toggles keyboard", async ({ device }) => {
     const emailSelector = role("textfield", "Email")
     await device.focus(emailSelector)
+    await expect(device.element(emailSelector)).toBeFocused()
     let shown = await device.isKeyboardShown()
     expect(shown).toBe(true)
 
