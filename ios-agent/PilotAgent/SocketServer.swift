@@ -7,13 +7,18 @@ import Network
 /// Request:  {"id": "uuid", "method": "methodName", "params": {...}}
 /// Response: {"id": "uuid", "result": {...}} or {"id": "uuid", "error": {...}}
 ///
-/// Mirrors the Android agent's SocketServer.kt but uses Network.framework
-/// (NWListener) instead of Java ServerSocket.
+/// Commands are processed on the main thread via RunLoop to ensure XCUITest's
+/// accessibility operations (which require main RunLoop XPC callbacks) work
+/// correctly on Xcode 26.
 class SocketServer {
     private let port: UInt16
     private let commandHandler: CommandHandler
     private var listener: NWListener?
     private let queue = DispatchQueue(label: "dev.pilot.agent.socket", qos: .userInitiated)
+
+    /// Pending commands from the socket, to be processed on the main thread.
+    private var pendingCommands: [(String, NWConnection)] = []
+    private let commandLock = NSLock()
 
     @Volatile private var running = false
 
@@ -22,7 +27,8 @@ class SocketServer {
         self.commandHandler = commandHandler
     }
 
-    /// Start the server. This blocks the calling thread.
+    /// Start the server. This blocks the calling thread (main/test thread)
+    /// using RunLoop so XCUITest's XPC callbacks can be processed.
     func start() {
         running = true
 
@@ -65,10 +71,31 @@ class SocketServer {
 
         listener?.start(queue: queue)
 
-        // Block the calling thread to keep the server alive
-        let semaphore = DispatchSemaphore(value: 0)
+        // Main loop: pump the RunLoop and process any pending commands.
+        // XCUITest's accessibility operations require the main RunLoop to
+        // process XPC callbacks. We process commands HERE on the main thread
+        // rather than on the socket's background queue.
         while running {
-            _ = semaphore.wait(timeout: .now() + .seconds(1))
+            // Process one pending command if available
+            commandLock.lock()
+            let pending = pendingCommands.isEmpty ? nil : pendingCommands.removeFirst()
+            commandLock.unlock()
+
+            if let (line, connection) = pending {
+                let response = commandHandler.handle(rawJson: line)
+                let responseData = (response + "\n").data(using: .utf8)!
+                connection.send(content: responseData, completion: .contentProcessed { error in
+                    if let error = error {
+                        NSLog("[PilotSocket] Write error: \(error)")
+                        connection.cancel()
+                    }
+                })
+            }
+
+            // Run the RunLoop briefly to process XPC callbacks and GCD events.
+            // Short interval when commands are pending, longer when idle.
+            let interval = pending != nil ? 0.001 : 0.05
+            RunLoop.current.run(mode: .default, before: Date(timeIntervalSinceNow: interval))
         }
     }
 
@@ -84,7 +111,7 @@ class SocketServer {
         receiveLines(connection: connection, buffer: Data())
     }
 
-    /// Recursively receive data and process complete lines (newline-delimited JSON).
+    /// Recursively receive data and enqueue complete commands for main-thread processing.
     private func receiveLines(connection: NWConnection, buffer: Data) {
         connection.receive(minimumIncompleteLength: 1, maximumLength: 65536) { [weak self] data, _, isComplete, error in
             guard let self = self, self.running else {
@@ -114,17 +141,10 @@ class SocketServer {
 
                 NSLog("[PilotSocket] Received: \(line.prefix(200))")
 
-                let response = self.commandHandler.handle(rawJson: line)
-
-                NSLog("[PilotSocket] Responding: \(response.prefix(200))")
-
-                let responseData = (response + "\n").data(using: .utf8)!
-                connection.send(content: responseData, completion: .contentProcessed { error in
-                    if let error = error {
-                        NSLog("[PilotSocket] Write error: \(error)")
-                        connection.cancel()
-                    }
-                })
+                // Enqueue for main-thread processing
+                self.commandLock.lock()
+                self.pendingCommands.append((line, connection))
+                self.commandLock.unlock()
             }
 
             if isComplete {
