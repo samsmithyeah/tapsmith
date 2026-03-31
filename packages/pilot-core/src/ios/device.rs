@@ -342,7 +342,29 @@ pub async fn boot_simulator(udid: &str) -> Result<()> {
     }
 
     info!(udid, "Simulator booted");
+    configure_simulator(udid).await;
     Ok(())
+}
+
+/// Apply test-friendly defaults to the simulator (disable password autofill,
+/// keyboard autocorrect, etc.) so system dialogs don't interfere with tests.
+async fn configure_simulator(udid: &str) {
+    // Disable "Save Password?" dialog which blocks the UI during login tests.
+    let _ = Command::new("xcrun")
+        .args([
+            "simctl",
+            "spawn",
+            udid,
+            "defaults",
+            "write",
+            "-g",
+            "AutoFillPasswords",
+            "-bool",
+            "NO",
+        ])
+        .output()
+        .await;
+    debug!(udid, "Configured simulator defaults for testing");
 }
 
 /// Shutdown a simulator.

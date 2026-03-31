@@ -9,7 +9,7 @@ const STATE_PATH = path.join(process.cwd(), "pilot-results", "auth-state.tar.gz"
 // Mirrors Playwright's auth.setup.ts pattern.
 
 test("authenticate and save app state", async ({ device }) => {
-  await device.terminateApp(PKG)
+  await device.clearAppData(PKG)
   await device.launchApp(PKG)
   await device.tap(contentDesc("Login Form"))
 

@@ -342,7 +342,7 @@ export class Device {
       'Restore app state failed');
   }
 
-  /** Clear app data and stop the app. @platform android */
+  /** Clear app data (AsyncStorage, caches, etc.) and stop the app. */
   async clearAppData(packageName: string): Promise<void> {
     return this._tracedAction('clearAppData', 'device', undefined,
       () => this._client.clearAppData(packageName),

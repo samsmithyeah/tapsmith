@@ -13,7 +13,7 @@ export class DialogsScreen {
   get showSnackbarButton() { return this.device.element(id("show-snackbar-button")) }
   get snackbar() { return this.device.element(id("snackbar")) }
   get snackbarMessage() { return this.device.element(text("Message archived")) }
-  get snackbarDismiss() { return this.device.element(text("DISMISS")) }
+  get snackbarDismiss() { return this.device.element(role("button", "Dismiss")) }
 
   // Modal
   get showModalButton() { return this.device.element(id("show-modal-button")) }

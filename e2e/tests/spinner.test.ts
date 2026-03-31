@@ -13,10 +13,10 @@ describe("Spinner screen", () => {
     await expect(screen.heading).toBeVisible()
   })
 
-  test("country dropdown shows placeholder initially", async ({ device }) => {
+  test("country dropdown starts with no selection", async ({ device }) => {
     const screen = new SpinnerScreen(device)
     await expect(screen.countryDropdown).toBeVisible()
-    await expect(screen.placeholder).toBeVisible()
+    await expect(screen.selectedCountry).toHaveText("Country: None")
   })
 
   test("tapping country dropdown opens options and allows selection", async ({ device }) => {

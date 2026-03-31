@@ -410,7 +410,7 @@ beforeEach(async ({ device }) => {
 **Options:**
 - `waitForIdle?` — wait for the UI to settle after relaunch (default: `true`)
 
-### `device.clearAppData(packageName: string): Promise<void>` *(Android only)*
+### `device.clearAppData(packageName: string): Promise<void>`
 
 Clear all app data and cache, providing test isolation similar to Playwright's fresh browser context.
 
