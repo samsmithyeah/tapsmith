@@ -451,19 +451,16 @@ class CommandHandler {
             // If running in background, this brings it to foreground.
             let targetApp = rebindApp(bundleId: targetBundleId(fallback: params))
             targetApp.activate()
-            // Wait for the app to fully launch after activation.
-            Thread.sleep(forTimeInterval: 1.0)
-            // Dismiss any system dialogs (e.g., "Open in 'App'?" after clearAppData).
-            // The interruption monitor only fires on UI interactions, so we need
-            // to explicitly check for and dismiss springboard alerts.
+            // Brief wait for the app to settle.
+            Thread.sleep(forTimeInterval: 0.3)
+            // Quick check for system dialogs without blocking.
+            // Only check one button with a very short timeout to stay within
+            // the daemon's 4-second command timeout for launchApp.
             let springboard = XCUIApplication(bundleIdentifier: "com.apple.springboard")
-            for buttonLabel in ["Open", "Allow", "OK", "Continue"] {
-                let button = springboard.buttons[buttonLabel]
-                if button.waitForExistence(timeout: 0.5) {
-                    button.tap()
-                    Thread.sleep(forTimeInterval: 0.3)
-                    break
-                }
+            let openButton = springboard.buttons["Open"]
+            if openButton.exists {
+                openButton.tap()
+                Thread.sleep(forTimeInterval: 0.2)
             }
             return ["success": true]
 
