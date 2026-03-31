@@ -193,6 +193,17 @@ class SnapshotElementFinder {
 
     // MARK: - Concatenated label matching
 
+    /// Check if two strings match when trailing punctuation is ignored.
+    /// iOS's accessibilityLabel often strips trailing punctuation from display text
+    /// (e.g., "Forgot password?" → "Forgot password"). This matcher catches those cases.
+    private func matchesIgnoringTrailingPunctuation(_ a: String, _ b: String) -> Bool {
+        guard !a.isEmpty && !b.isEmpty else { return false }
+        let punct = CharacterSet.punctuationCharacters.union(.symbols)
+        let trimA = a.unicodeScalars.reversed().drop(while: { punct.contains($0) })
+        let trimB = b.unicodeScalars.reversed().drop(while: { punct.contains($0) })
+        return String(String.UnicodeScalarView(trimA.reversed())) == String(String.UnicodeScalarView(trimB.reversed()))
+    }
+
     /// Check if `childText` appears as a child's text within an iOS auto-concatenated label.
     ///
     /// iOS joins child text with ", " to form the parent's label. For example:
@@ -263,11 +274,19 @@ class SnapshotElementFinder {
         // label is "Login Form, Text inputs, buttons, focus/blur, keyboard",
         // and also lets `text("Text inputs, buttons, focus/blur, keyboard")`
         // match the second child's text.
+        //
+        // Also handles iOS stripping trailing punctuation from accessibilityLabel:
+        // React Native `accessibilityLabel="Forgot password"` + child Text
+        // "Forgot password?" → iOS label is "Forgot password" but test expects
+        // "Forgot password?". We match if one is a prefix of the other and
+        // the difference is only punctuation.
         if let text = selector.text {
             let exactMatch = label == text || title == text || value == text
             let containsAsChild = !exactMatch
                 && (containsChildText(label, childText: text) || containsChildText(title, childText: text))
-            if !exactMatch && !containsAsChild { return false }
+            let punctuationMatch = !exactMatch && !containsAsChild
+                && matchesIgnoringTrailingPunctuation(label, text)
+            if !exactMatch && !containsAsChild && !punctuationMatch { return false }
         }
 
         // TextContains selector
