@@ -1787,11 +1787,23 @@ impl proto::pilot_service_server::PilotService for PilotServiceImpl {
         let req = request.into_inner();
         let request_id = Self::request_id(&req.request_id);
 
-        let package_name = self
-            .get_current_component()
-            .await?
-            .map(|(pkg, _)| pkg)
-            .unwrap_or_default();
+        let platform = self.active_platform().await;
+        let package_name = match platform {
+            Platform::Ios => {
+                // On iOS, return the target package from agent config
+                self.ios_agent_config
+                    .read()
+                    .await
+                    .as_ref()
+                    .map(|c| c.target_package.clone())
+                    .unwrap_or_default()
+            }
+            Platform::Android => self
+                .get_current_component()
+                .await?
+                .map(|(pkg, _)| pkg)
+                .unwrap_or_default(),
+        };
 
         Ok(Response::new(proto::GetCurrentPackageResponse {
             request_id,
