@@ -74,7 +74,13 @@ export async function launchConfiguredApp(
     // full agent restart), avoiding the race condition where a separate
     // terminateApp + launchApp sequence can reconnect to a dying process.
     await ctx.device.clearAppData(ctx.config.package);
-    await ctx.device.restartApp(ctx.config.package);
+    try {
+      await ctx.device.restartApp(ctx.config.package);
+    } catch {
+      // restartApp can fail on iOS if the agent session is stale after
+      // clearAppData. The app will be relaunched by ensureSessionReady's
+      // recovery path, or by the test's own beforeAll/beforeEach.
+    }
     await ensureSessionReady(ctx, phase);
     return;
   }

@@ -10,6 +10,11 @@ import { beforeEach, contentDesc, describe, expect, test } from "pilot"
 import { ApiCallsScreen } from "../screens/api-calls.screen.js"
 
 describe("API Calls screen", () => {
+  // Each test restarts the app and makes real HTTP requests.
+  // iOS restartApp takes ~5s, leaving little room for network latency
+  // under the default 10s timeout.
+  test.use({ timeout: 15_000 })
+
   beforeEach(async ({ device }) => {
     await device.restartApp()
     await device.element(contentDesc("API Calls")).scrollIntoView()
