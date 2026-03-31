@@ -68,6 +68,10 @@ class SnapshotElementFinder {
         var matches: [([String: Any], CGRect)] = []
         findMatches(in: snapshotDict, selector: selector, results: &matches)
 
+        // Check once if keyboard is visible (for focus detection).
+        // Keyboard = elementType 56 (XCUIElement.ElementType.keyboard).
+        let keyboardVisibleInSnapshot = hasKeyboardInTree(snapshotDict)
+
         let screenSize = self.screenSize
 
         return matches.map { (nodeDict, frame) in
@@ -92,6 +96,7 @@ class SnapshotElementFinder {
             let isChecked = checkedState(
                 for: elType,
                 value: value,
+                label: label,
                 selected: isSelected
             )
             let snapshotFocused = (nodeDict["hasFocus"] as? Bool)
@@ -106,7 +111,19 @@ class SnapshotElementFinder {
             // This is deferred — the query object is created but not evaluated until
             // a property (like .isHittable) is accessed.
             cacheQueryElement(elementId: elementId, selector: selector)
-            let resolvedFocus = snapshotFocused ?? ((try? getElement(elementId).hasFocus) ?? false)
+            // The snapshot's hasFocus is unreliable on Xcode 26 — it reports false
+            // even when the element is the first responder with keyboard showing.
+            // For text fields, detect focus by checking if a keyboard is visible
+            // in the same snapshot. This avoids live XCUIElement property access
+            // which triggers quiescence waits on Xcode 26.
+            let resolvedFocus: Bool
+            if snapshotFocused == true {
+                resolvedFocus = true
+            } else if isTextFieldType(elType) {
+                resolvedFocus = keyboardVisibleInSnapshot
+            } else {
+                resolvedFocus = false
+            }
 
             // For text fields, prefer the "value" property (typed text) over "label"
             // (accessibility label). React Native TextInput has label="Email" and
@@ -220,6 +237,39 @@ class SnapshotElementFinder {
         return false
     }
 
+    /// Check if a keyboard is present in the snapshot tree.
+    private func hasKeyboardInTree(_ node: [String: Any]) -> Bool {
+        let elTypeRaw = parseUInt(node["elementType"]) ?? 0
+        if elTypeRaw == XCUIElement.ElementType.keyboard.rawValue { return true }
+        guard let children = node["children"] as? [[String: Any]] else { return false }
+        for child in children {
+            if hasKeyboardInTree(child) { return true }
+        }
+        return false
+    }
+
+    /// Check if an element type is a text input that can receive keyboard focus.
+    private func isTextFieldType(_ elType: XCUIElement.ElementType) -> Bool {
+        elType == .textField || elType == .secureTextField
+            || elType == .textView || elType == .searchField
+    }
+
+    /// Check if any descendant node's label matches the given text.
+    /// On iOS, when a parent has an explicit accessibilityLabel, child text
+    /// nodes are hidden from the parent's concatenated label. This lets
+    /// `text("Long pressed!")` match a parent whose child StaticText has that label.
+    private func hasDescendantWithLabel(_ node: [String: Any], text: String) -> Bool {
+        guard let children = node["children"] as? [[String: Any]] else { return false }
+        for child in children {
+            let childLabel = child["label"] as? String ?? ""
+            let childTitle = child["title"] as? String ?? ""
+            if childLabel == text || childTitle == text { return true }
+            if matchesIgnoringTrailingPunctuation(childLabel, text) { return true }
+            if hasDescendantWithLabel(child, text: text) { return true }
+        }
+        return false
+    }
+
     // MARK: - Key conversion
 
     /// Convert XCUIElement.AttributeName-keyed dicts to String-keyed dicts recursively.
@@ -286,7 +336,13 @@ class SnapshotElementFinder {
                 && (containsChildText(label, childText: text) || containsChildText(title, childText: text))
             let punctuationMatch = !exactMatch && !containsAsChild
                 && matchesIgnoringTrailingPunctuation(label, text)
-            if !exactMatch && !containsAsChild && !punctuationMatch { return false }
+            // When a parent has an explicit accessibilityLabel, iOS hides child
+            // text from the parent's label. Check descendant labels directly so
+            // that `text("Long pressed!")` can match when the text lives on a
+            // child node that isn't separately accessible.
+            let descendantMatch = !exactMatch && !containsAsChild && !punctuationMatch
+                && hasDescendantWithLabel(node, text: text)
+            if !exactMatch && !containsAsChild && !punctuationMatch && !descendantMatch { return false }
         }
 
         // TextContains selector
@@ -357,6 +413,7 @@ class SnapshotElementFinder {
             let isChecked = checkedState(
                 for: elType,
                 value: value,
+                label: label,
                 selected: isSelected
             )
             if isChecked != wantChecked { return false }
@@ -548,6 +605,7 @@ class SnapshotElementFinder {
         let isChecked = checkedState(
             for: elType,
             value: element.value as? String,
+            label: label,
             selected: isSelected
         )
 
@@ -586,6 +644,7 @@ class SnapshotElementFinder {
     private func checkedState(
         for elementType: XCUIElement.ElementType,
         value: String?,
+        label: String? = nil,
         selected: Bool
     ) -> Bool {
         let normalized = value?
@@ -598,6 +657,15 @@ class SnapshotElementFinder {
         case "0", "false", "off", "no", "not selected", "unchecked":
             return false
         default:
+            // React Native checkbox/radio on iOS produces compound values like
+            // "checkbox, checked", "checkbox, unchecked", "radio button, checked".
+            // Parse the state from the trailing component after the last comma.
+            if normalized.hasSuffix(", checked") || normalized.hasSuffix(", selected") {
+                return true
+            }
+            if normalized.hasSuffix(", unchecked") || normalized.hasSuffix(", not selected") {
+                return false
+            }
             switch elementType {
             case .switch, .toggle, .checkBox, .radioButton:
                 return selected
