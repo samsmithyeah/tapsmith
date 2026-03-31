@@ -254,22 +254,6 @@ class SnapshotElementFinder {
             || elType == .textView || elType == .searchField
     }
 
-    /// Check if any descendant node's label matches the given text.
-    /// On iOS, when a parent has an explicit accessibilityLabel, child text
-    /// nodes are hidden from the parent's concatenated label. This lets
-    /// `text("Long pressed!")` match a parent whose child StaticText has that label.
-    private func hasDescendantWithLabel(_ node: [String: Any], text: String) -> Bool {
-        guard let children = node["children"] as? [[String: Any]] else { return false }
-        for child in children {
-            let childLabel = child["label"] as? String ?? ""
-            let childTitle = child["title"] as? String ?? ""
-            if childLabel == text || childTitle == text { return true }
-            if matchesIgnoringTrailingPunctuation(childLabel, text) { return true }
-            if hasDescendantWithLabel(child, text: text) { return true }
-        }
-        return false
-    }
-
     // MARK: - Key conversion
 
     /// Convert XCUIElement.AttributeName-keyed dicts to String-keyed dicts recursively.
@@ -336,13 +320,7 @@ class SnapshotElementFinder {
                 && (containsChildText(label, childText: text) || containsChildText(title, childText: text))
             let punctuationMatch = !exactMatch && !containsAsChild
                 && matchesIgnoringTrailingPunctuation(label, text)
-            // When a parent has an explicit accessibilityLabel, iOS hides child
-            // text from the parent's label. Check descendant labels directly so
-            // that `text("Long pressed!")` can match when the text lives on a
-            // child node that isn't separately accessible.
-            let descendantMatch = !exactMatch && !containsAsChild && !punctuationMatch
-                && hasDescendantWithLabel(node, text: text)
-            if !exactMatch && !containsAsChild && !punctuationMatch && !descendantMatch { return false }
+            if !exactMatch && !containsAsChild && !punctuationMatch { return false }
         }
 
         // TextContains selector
