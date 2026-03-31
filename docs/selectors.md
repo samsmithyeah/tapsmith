@@ -13,6 +13,48 @@ Selectors that reflect what users see and what assistive technologies read are p
 | 3 (escape hatch) | `testId()`, `id()` | When no user-visible attribute works. |
 | 4 (discouraged) | `xpath()` | Last resort only. |
 
+## Cross-Platform Considerations
+
+Pilot supports both Android and iOS. Most selectors work identically on both platforms, but there is one important difference to be aware of when writing cross-platform tests.
+
+### Child text inside labeled containers
+
+On iOS, when a component has an explicit `accessibilityLabel`, child text elements are **hidden from the accessibility tree**. The parent becomes a single accessible element with only its label visible. On Android, child text remains individually queryable through UIAutomator.
+
+```tsx
+// React Native component
+<Pressable accessibilityLabel="Login Form" accessibilityRole="button">
+  <Text>Login Form</Text>
+  <Text>Text inputs, buttons, focus/blur, keyboard</Text>  {/* ← hidden on iOS */}
+</Pressable>
+```
+
+On Android, `text("Text inputs, buttons, focus/blur, keyboard")` finds the child `Text` element. On iOS, this text does not exist in the accessibility tree — only the parent with label `"Login Form"` is visible.
+
+**Recommended cross-platform patterns:**
+
+1. **Target the parent by role or label**, not the child text:
+   ```typescript
+   // Cross-platform: finds the parent element on both platforms
+   await device.tap(role("button", "Login Form"))
+   await device.tap(contentDesc("Login Form"))
+   ```
+
+2. **Use `testId()` for elements that must be individually addressable:**
+   ```typescript
+   // If you need to verify specific child text, add a testID to it
+   await expect(device.element(testId("login-description"))).toBeVisible()
+   ```
+
+3. **Use a separately accessible status element** for verifying state changes:
+   ```typescript
+   // Instead of checking child text inside a labeled container:
+   // ✗ await expect(device.element(text("Long pressed!"))).toBeVisible()
+   
+   // Check a dedicated status element with its own testID:
+   // ✓ await expect(device.element(id("last-gesture"))).toHaveText("Last gesture: Long press")
+   ```
+
 ## Priority 1 -- Accessible Selectors (Preferred)
 
 These selectors match what real users and assistive technologies see. They should be your default choice.
@@ -37,21 +79,21 @@ await device.tap(role("checkbox", "Remember me"));
 await device.tap(role("switch", "Dark mode"));
 ```
 
-Supported roles map to Android widget classes:
+Supported roles map to platform-native element types:
 
-| Role | Android classes |
-|---|---|
-| `button` | `Button`, `ImageButton`, Material/AppCompat variants |
-| `textfield` | `EditText` |
-| `checkbox` | `CheckBox` |
-| `switch` | `Switch` |
-| `radio` | `RadioButton` |
-| `image` | `ImageView` |
-| `text` | `TextView` |
-| `progressbar` | `ProgressBar` |
-| `slider` | `SeekBar` |
-| `combobox` | `Spinner` |
-| `togglebutton` | `ToggleButton` |
+| Role | Android classes | iOS types |
+|---|---|---|
+| `button` | `Button`, `ImageButton`, Material/AppCompat variants | `XCUIElementTypeButton`, `.other` with button trait |
+| `textfield` | `EditText` | `XCUIElementTypeTextField`, `XCUIElementTypeSecureTextField` |
+| `checkbox` | `CheckBox` | `XCUIElementTypeOther` (React Native) |
+| `switch` | `Switch` | `XCUIElementTypeSwitch` |
+| `radiobutton` | `RadioButton` | `XCUIElementTypeOther` (React Native) |
+| `image` | `ImageView` | `XCUIElementTypeImage` |
+| `text` | `TextView` | `XCUIElementTypeStaticText` |
+| `progressbar` | `ProgressBar` | `XCUIElementTypeProgressIndicator` |
+| `slider` | `SeekBar` | `XCUIElementTypeSlider` |
+| `combobox` | `Spinner` | `XCUIElementTypePopUpButton` |
+| `togglebutton` | `ToggleButton` | `XCUIElementTypeToggle` |
 
 ### `text(exactText)`
 

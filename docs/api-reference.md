@@ -267,7 +267,7 @@ await device.pressKey("HOME");
 await device.pressKey("VOLUME_UP");
 ```
 
-### `device.pressBack(): Promise<void>`
+### `device.pressBack(): Promise<void>` *(Android only)*
 
 Press the Android back button. Convenience method equivalent to `device.pressKey("BACK")`.
 
@@ -353,7 +353,7 @@ Returns the package name of the foreground app.
 const pkg = await device.currentPackage(); // "com.example.myapp"
 ```
 
-### `device.currentActivity(): Promise<string>`
+### `device.currentActivity(): Promise<string>` *(Android only)*
 
 Returns the current activity name.
 
@@ -377,7 +377,7 @@ Check the state of an app. Returns `"not_installed"`, `"stopped"`, `"background"
 const state = await device.getAppState("com.example.myapp");
 ```
 
-### `device.sendToBackground(): Promise<void>`
+### `device.sendToBackground(): Promise<void>` *(Android only)*
 
 Press the home button to send the current app to the background.
 
@@ -410,7 +410,7 @@ beforeEach(async ({ device }) => {
 **Options:**
 - `waitForIdle?` — wait for the UI to settle after relaunch (default: `true`)
 
-### `device.clearAppData(packageName: string): Promise<void>`
+### `device.clearAppData(packageName: string): Promise<void>` *(Android only)*
 
 Clear all app data and cache, providing test isolation similar to Playwright's fresh browser context.
 
@@ -438,7 +438,7 @@ Restore a previously saved app state archive. Clears the app's data first (`pm c
 await device.restoreAppState("com.example.myapp", "./auth-state.tar.gz");
 ```
 
-### `device.grantPermission(packageName: string, permission: string): Promise<void>`
+### `device.grantPermission(packageName: string, permission: string): Promise<void>` *(Android only)*
 
 Programmatically grant an Android runtime permission.
 
@@ -447,7 +447,7 @@ await device.grantPermission("com.example.myapp", "android.permission.CAMERA");
 await device.grantPermission("com.example.myapp", "android.permission.ACCESS_FINE_LOCATION");
 ```
 
-### `device.revokePermission(packageName: string, permission: string): Promise<void>`
+### `device.revokePermission(packageName: string, permission: string): Promise<void>` *(Android only)*
 
 Revoke a previously granted runtime permission.
 
@@ -522,7 +522,7 @@ Wake the screen and dismiss the lock screen. Works with non-secure lock screens 
 await device.unlock();
 ```
 
-### `device.pressHome(): Promise<void>`
+### `device.pressHome(): Promise<void>` *(Android only)*
 
 Press the home button. Convenience method equivalent to `device.pressKey("HOME")`.
 
@@ -530,7 +530,7 @@ Press the home button. Convenience method equivalent to `device.pressKey("HOME")
 await device.pressHome();
 ```
 
-### `device.openNotifications(): Promise<void>`
+### `device.openNotifications(): Promise<void>` *(Android only)*
 
 Pull down the notification shade.
 
@@ -538,7 +538,7 @@ Pull down the notification shade.
 await device.openNotifications();
 ```
 
-### `device.openQuickSettings(): Promise<void>`
+### `device.openQuickSettings(): Promise<void>` *(Android only)*
 
 Pull down the quick settings panel.
 
@@ -546,7 +546,7 @@ Pull down the quick settings panel.
 await device.openQuickSettings();
 ```
 
-### `device.pressRecentApps(): Promise<void>`
+### `device.pressRecentApps(): Promise<void>` *(Android only)*
 
 Open the recent apps screen. Convenience method equivalent to `device.pressKey("APP_SWITCH")`.
 
@@ -554,7 +554,7 @@ Open the recent apps screen. Convenience method equivalent to `device.pressKey("
 await device.pressRecentApps();
 ```
 
-### `device.setColorScheme(scheme: ColorScheme): Promise<void>`
+### `device.setColorScheme(scheme: ColorScheme): Promise<void>` *(Android only)*
 
 Set the system UI mode. Accepts `"dark"` or `"light"`.
 
