@@ -1028,22 +1028,64 @@ impl proto::pilot_service_server::PilotService for PilotServiceImpl {
         let req = request.into_inner();
         let request_id = Self::request_id(&req.request_id);
 
-        let serial = self.active_serial().await?;
         let platform = self.active_platform().await;
 
-        match screenshot::capture(&serial, platform).await {
-            Ok(data) => Ok(Response::new(proto::ScreenshotResponse {
-                request_id,
-                success: true,
-                data,
-                error_message: String::new(),
-            })),
-            Err(e) => Ok(Response::new(proto::ScreenshotResponse {
-                request_id,
-                success: false,
-                data: Vec::new(),
-                error_message: e.to_string(),
-            })),
+        // On iOS, route through the agent (XCUIScreen.main.screenshot()) which
+        // is much faster than spawning `xcrun simctl io screenshot` per call.
+        if platform == Platform::Ios {
+            let command = AgentCommand::Screenshot {};
+            // Use a short timeout — screenshots are best-effort for tracing
+            // and should not block for 30s if the agent is busy.
+            match self.send_agent_command_with_timeout(&command, 5000).await {
+                Ok(resp) if resp.success => {
+                    let b64_str = resp.data.get("data").and_then(|v| v.as_str()).unwrap_or("");
+                    use base64::Engine;
+                    match base64::engine::general_purpose::STANDARD.decode(b64_str) {
+                        Ok(data) => Ok(Response::new(proto::ScreenshotResponse {
+                            request_id,
+                            success: true,
+                            data,
+                            error_message: String::new(),
+                        })),
+                        Err(e) => Ok(Response::new(proto::ScreenshotResponse {
+                            request_id,
+                            success: false,
+                            data: Vec::new(),
+                            error_message: format!("Failed to decode screenshot data: {e}"),
+                        })),
+                    }
+                }
+                Ok(resp) => Ok(Response::new(proto::ScreenshotResponse {
+                    request_id,
+                    success: false,
+                    data: Vec::new(),
+                    error_message: resp
+                        .error
+                        .unwrap_or_else(|| "Screenshot failed".to_string()),
+                })),
+                Err(status) => Ok(Response::new(proto::ScreenshotResponse {
+                    request_id,
+                    success: false,
+                    data: Vec::new(),
+                    error_message: status.message().to_string(),
+                })),
+            }
+        } else {
+            let serial = self.active_serial().await?;
+            match screenshot::capture(&serial, platform).await {
+                Ok(data) => Ok(Response::new(proto::ScreenshotResponse {
+                    request_id,
+                    success: true,
+                    data,
+                    error_message: String::new(),
+                })),
+                Err(e) => Ok(Response::new(proto::ScreenshotResponse {
+                    request_id,
+                    success: false,
+                    data: Vec::new(),
+                    error_message: e.to_string(),
+                })),
+            }
         }
     }
 

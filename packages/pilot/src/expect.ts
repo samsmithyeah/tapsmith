@@ -265,12 +265,14 @@ function wrapAssertionWithTrace(
     const selectorStr = selectorDescription(handle);
     const start = Date.now();
 
-    // Before capture
-    const { actionIndex, captures: beforeCaptures } =
-      await trace.collector.captureBeforeAction(
-        trace.takeScreenshot,
-        trace.captureHierarchy,
-      );
+    // Reserve action index but skip before-captures for assertions.
+    // Assertions are read-only — the screen state hasn't changed since the
+    // previous capture, so the before-screenshot would be redundant.  This
+    // eliminates the ~300ms blocking overhead per assertion on iOS.
+    const { actionIndex } = await trace.collector.captureBeforeAction(
+      async () => undefined,
+      async () => undefined,
+    );
 
     let passed = true;
     let error: string | undefined;
@@ -292,9 +294,9 @@ function wrapAssertionWithTrace(
         attempts: Math.max(1, Math.round((Date.now() - start) / POLL_INTERVAL_MS)),
         error: timeoutError,
         sourceLocation,
-        hasScreenshotBefore: !!beforeCaptures.screenshotBefore,
+        hasScreenshotBefore: false,
         hasScreenshotAfter: false,
-        hasHierarchyBefore: !!beforeCaptures.hierarchyBefore,
+        hasHierarchyBefore: false,
         hasHierarchyAfter: false,
       } as Parameters<typeof trace.collector.addAssertionEvent>[0]);
     });
@@ -315,42 +317,52 @@ function wrapAssertionWithTrace(
       return;
     }
 
-    // After capture (success or failure)
+    // Snapshot duration before async capture so it reflects the actual
+    // assertion time, not assertion + screenshot overhead.
     const duration = Date.now() - start;
     const attempts = Math.max(1, Math.round(duration / POLL_INTERVAL_MS));
-    const afterCaptures = await trace.collector.captureAfterAction(
+
+    // Fire-and-forget the after-action capture so the test can proceed
+    // immediately — same pattern as tracedAction.
+    const afterCapturePromise = trace.collector.captureAfterAction(
       actionIndex,
       trace.takeScreenshot,
       trace.captureHierarchy,
-    );
-
-    // Best-effort element bounds lookup for screenshot overlay
-    let bounds: { left: number; top: number; right: number; bottom: number } | undefined;
-    try {
-      const res = await handle._client.findElement(handle._selector, 1000);
-      if (res.found && res.element?.bounds) {
-        bounds = res.element.bounds;
-      }
-    } catch {
-      // best-effort — element may not exist (e.g. not.toBeVisible)
-    }
-
-    trace.collector.addAssertionEvent({
-      assertion: (negated ? "not." : "") + name,
-      selector: selectorStr,
-      passed,
-      soft: false,
-      negated,
-      duration,
-      attempts,
-      error,
-      bounds,
-      sourceLocation,
-      hasScreenshotBefore: !!beforeCaptures.screenshotBefore,
-      hasScreenshotAfter: !!afterCaptures.screenshotAfter,
-      hasHierarchyBefore: !!beforeCaptures.hierarchyBefore,
-      hasHierarchyAfter: !!afterCaptures.hierarchyAfter,
-    } as Parameters<typeof trace.collector.addAssertionEvent>[0]);
+    ).then((afterCaptures) => {
+      trace.collector.addAssertionEvent({
+        assertion: (negated ? "not." : "") + name,
+        selector: selectorStr,
+        passed,
+        soft: false,
+        negated,
+        duration,
+        attempts,
+        error,
+        sourceLocation,
+        hasScreenshotBefore: false,
+        hasScreenshotAfter: !!afterCaptures.screenshotAfter,
+        hasHierarchyBefore: false,
+        hasHierarchyAfter: !!afterCaptures.hierarchyAfter,
+      } as Parameters<typeof trace.collector.addAssertionEvent>[0]);
+    }).catch(() => {
+      // Best-effort: emit event without after-captures
+      trace.collector.addAssertionEvent({
+        assertion: (negated ? "not." : "") + name,
+        selector: selectorStr,
+        passed,
+        soft: false,
+        negated,
+        duration,
+        attempts,
+        error,
+        sourceLocation,
+        hasScreenshotBefore: false,
+        hasScreenshotAfter: false,
+        hasHierarchyBefore: false,
+        hasHierarchyAfter: false,
+      } as Parameters<typeof trace.collector.addAssertionEvent>[0]);
+    });
+    trace.collector.trackPendingCapture(afterCapturePromise);
 
     if (caughtErr !== undefined) {
       throw caughtErr;

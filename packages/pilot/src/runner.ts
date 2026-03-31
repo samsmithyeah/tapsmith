@@ -554,8 +554,8 @@ async function runSuiteContext(
         traceCollector.setActionIndexOffset(beforeAllActionCount);
       }
 
-      // Start network capture if configured
-      if (traceConfig.network) {
+      // Start network capture if configured (Android only — iOS has no ADB proxy support)
+      if (traceConfig.network && opts.config.platform !== 'ios') {
         try {
           await opts.device._startNetworkCapture();
         } catch (err) {
@@ -714,7 +714,7 @@ async function runSuiteContext(
     if (traceCollector && opts.device) {
       // Stop network capture and collect raw entries
       let rawNetworkEntries: Awaited<ReturnType<typeof opts.device._stopNetworkCapture>>['entries'] | undefined;
-      if (traceConfig.network) {
+      if (traceConfig.network && opts.config.platform !== 'ios') {
         try {
           const res = await opts.device._stopNetworkCapture();
           if (res.success && res.entries.length > 0) {
