@@ -8,7 +8,7 @@ enum RoleMapping {
     static let roleToElementTypes: [String: [XCUIElement.ElementType]] = [
         "button": [.button],
         "textfield": [.textField, .secureTextField],
-        "checkbox": [.checkBox],
+        "checkbox": [.checkBox, .other],
         "switch": [.switch, .toggle],
         "image": [.image],
         "text": [.staticText],
@@ -19,7 +19,7 @@ enum RoleMapping {
         "scrollview": [.scrollView],
         "progressbar": [.progressIndicator],
         "seekbar": [.slider],
-        "radiobutton": [.radioButton],
+        "radiobutton": [.radioButton, .other],
         "spinner": [.picker, .activityIndicator],
         "toolbar": [.toolbar],
         "tab": [.tab, .tabBar],
