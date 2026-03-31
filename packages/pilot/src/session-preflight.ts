@@ -67,9 +67,15 @@ export async function launchConfiguredApp(
       return;
     }
 
-    // On iOS, clear data and relaunch for isolation between test files.
-    // clearAppData removes AsyncStorage (including React Navigation state),
-    // caches, and UserDefaults so the app starts fresh on the home screen.
+    // On iOS, terminate → clear data → relaunch for isolation between test
+    // files. The terminate is essential: without it, the running app keeps
+    // its in-memory navigation state despite cleared storage, causing the
+    // next file to start on the wrong screen.
+    try {
+      await ctx.device.terminateApp(ctx.config.package);
+    } catch {
+      // App may not be running yet
+    }
     await ctx.device.clearAppData(ctx.config.package);
     await ctx.device.launchApp(ctx.config.package);
     await ensureSessionReady(ctx, phase);
@@ -100,9 +106,19 @@ async function verifySession(ctx: SessionPreflightContext): Promise<void> {
   }
 
   if (ctx.config.platform === 'ios') {
-    // On iOS, a successful ping is sufficient. Skip the expensive hierarchy
-    // dump (Android-specific UIAutomator2 readiness check) and the
-    // foreground package check (iOS doesn't expose this reliably).
+    // On iOS, verify the app is responsive after launch by polling for a
+    // non-empty accessibility hierarchy. Without this, the next test file's
+    // beforeAll can race with app startup (React Native JS bundle loading).
+    const iosDeadline = Date.now() + DEFAULT_READY_TIMEOUT_MS;
+    while (Date.now() < iosDeadline) {
+      try {
+        const h = await ctx.client.getUiHierarchy();
+        if (h.hierarchyXml && h.hierarchyXml.trim().length > 0) return;
+      } catch {
+        // Agent may not be ready yet
+      }
+      await new Promise(resolve => setTimeout(resolve, HIERARCHY_POLL_INTERVAL_MS));
+    }
     return;
   }
 
