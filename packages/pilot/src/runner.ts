@@ -448,17 +448,33 @@ async function runSuiteContext(
       beforeAllCollector.startGroup('beforeAll Hooks');
     }
   }
-  if (beforeAllCollector) {
-    await withActiveTraceCollector(beforeAllCollector, async () => {
+  try {
+    if (beforeAllCollector) {
+      await withActiveTraceCollector(beforeAllCollector, async () => {
+        for (const hook of ctx.beforeAll) {
+          await invokeHook(hook, opts.device);
+        }
+      });
+      beforeAllCollector.endGroup();
+    } else {
       for (const hook of ctx.beforeAll) {
         await invokeHook(hook, opts.device);
       }
-    });
-    beforeAllCollector.endGroup();
-  } else {
-    for (const hook of ctx.beforeAll) {
-      await invokeHook(hook, opts.device);
     }
+  } catch (err) {
+    // beforeAll failed — mark all tests in this context as failed and bail out.
+    // This prevents a single beforeAll error from crashing the entire runner.
+    if (beforeAllCollector) {
+      beforeAllCollector.cleanup();
+    }
+    const beforeAllError = err instanceof Error ? err : new Error(String(err));
+    const failed = failAll(ctx, parentPrefix, beforeAllError, opts.projectName);
+    for (const tr of collectResults(failed)) {
+      result.tests.push(tr);
+      opts.reporter?.onTestEnd?.(tr);
+    }
+    result.durationMs = Date.now() - suiteStart;
+    return result;
   }
 
   // Save beforeAll events for replay into each test's trace.
@@ -925,6 +941,26 @@ function skipAll(ctx: SuiteContext, prefix: string): SuiteResult {
     const childCtx = popContext();
     const childPrefix = prefix ? `${prefix} > ${s.name}` : s.name;
     result.suites.push(skipAll(childCtx, childPrefix));
+  }
+  return result;
+}
+
+/**
+ * Mark all tests in a context as failed with the given error.
+ * Used when beforeAll hooks throw — individual tests never got a chance to run.
+ */
+function failAll(ctx: SuiteContext, prefix: string, error: Error, project?: string): SuiteResult {
+  const result: SuiteResult = { name: prefix, tests: [], suites: [], durationMs: 0 };
+  for (const t of ctx.tests) {
+    const fullName = prefix ? `${prefix} > ${t.name}` : t.name;
+    result.tests.push({ name: t.name, fullName, status: 'failed', durationMs: 0, error, project });
+  }
+  for (const s of ctx.suites) {
+    pushContext();
+    s.fn();
+    const childCtx = popContext();
+    const childPrefix = prefix ? `${prefix} > ${s.name}` : s.name;
+    result.suites.push(failAll(childCtx, childPrefix, error, project));
   }
   return result;
 }
