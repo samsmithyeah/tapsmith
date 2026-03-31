@@ -298,6 +298,23 @@ function App() {
             ? [...data.actionEvents, eventToStore as ActionTraceEvent | AssertionTraceEvent]
             : data.actionEvents;
 
+          // Handle supplemental capture-update events (deferred after-screenshots)
+          if (ev.type === 'capture-update') {
+            const screenshots = new Map(data.screenshots);
+            const hierarchies = new Map(data.hierarchies);
+            const pad = String(ev.actionIndex).padStart(3, '0');
+            if (msg.screenshotAfter) {
+              const key = `screenshots/action-${pad}-after.png`;
+              const old = screenshots.get(key);
+              if (old) try { URL.revokeObjectURL(old); } catch { /* already revoked */ }
+              screenshots.set(key, base64ToBlobUrl(msg.screenshotAfter));
+            }
+            if (msg.hierarchyAfter) {
+              hierarchies.set(`hierarchy/action-${pad}-after.xml`, msg.hierarchyAfter);
+            }
+            return map.set(testName, { ...data, screenshots, hierarchies });
+          }
+
           // Store screenshots/hierarchies
           const screenshots = new Map(data.screenshots);
           const hierarchies = new Map(data.hierarchies);

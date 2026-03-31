@@ -321,6 +321,13 @@ export interface NetworkEntry {
 
 // ─── Union type for all events ───
 
+/** Supplemental event carrying deferred after-capture data for UI mode live streaming. */
+export interface CaptureUpdateEvent {
+  type: 'capture-update'
+  actionIndex: number
+  timestamp: number
+}
+
 export type AnyTraceEvent =
   | ActionTraceEvent
   | AssertionTraceEvent
@@ -328,3 +335,4 @@ export type AnyTraceEvent =
   | ConsoleTraceEvent
   | AttachmentTraceEvent
   | ErrorTraceEvent
+  | CaptureUpdateEvent

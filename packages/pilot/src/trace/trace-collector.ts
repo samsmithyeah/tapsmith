@@ -403,6 +403,22 @@ export class TraceCollector {
     }
 
     await Promise.all(tasks);
+
+    // Emit supplemental capture data for UI mode live streaming.
+    // The action event was already emitted (for correct index ordering),
+    // so we re-fire _onEvent with a lightweight update carrying the
+    // after-capture buffers.
+    if (this._onEvent) {
+      const pending = this._pendingCaptures.get(actionIndex);
+      if (pending && (pending.after || pending.hierarchyAfter)) {
+        this._pendingCaptures.delete(actionIndex);
+        this._onEvent(
+          { type: 'capture-update', actionIndex, timestamp: Date.now() } as AnyTraceEvent,
+          pending,
+        );
+      }
+    }
+
     return captures;
   }
 
