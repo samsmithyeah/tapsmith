@@ -290,7 +290,11 @@ class CommandHandler {
             } else {
                 try actionExecutor.swipeScreen(direction: direction, speed: speed, distance: distance)
             }
-            touchBarrier()
+            // Swipe generates scroll momentum that continues for 500ms+.
+            // Use a longer settle than the standard 100ms touchBarrier so the
+            // next command's snapshot doesn't capture mid-momentum positions.
+            Thread.sleep(forTimeInterval: 0.4)
+            RunLoop.current.run(mode: .default, before: Date(timeIntervalSinceNow: 0.01))
             return ["success": true]
 
         case "scroll":
