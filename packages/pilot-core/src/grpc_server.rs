@@ -149,7 +149,7 @@ impl PilotServiceImpl {
                 &AgentCommand::LaunchApp {
                     package: package_name.to_string(),
                 },
-                4_000,
+                8_000,
             )
             .await
             .map_err(|status| status.message().to_string())?;
@@ -196,7 +196,7 @@ impl PilotServiceImpl {
                 &AgentCommand::LaunchApp {
                     package: package_name.to_string(),
                 },
-                4_000,
+                8_000,
             )
             .await
             .map_err(|status| status.message().to_string())?;

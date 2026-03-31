@@ -310,8 +310,50 @@ enum EventSynthesizer {
     }
 
     /// Long-press at a screen coordinate.
+    /// Unlike tap, this does NOT include an intermediate moveToPoint to avoid
+    /// React Native's Pressability system firing onPress on touch-up.
     static func longPress(at point: CGPoint, duration: TimeInterval) -> Bool {
-        return synthesizeTap(at: point, duration: duration)
+        guard let pathClass = objc_lookUpClass("XCPointerEventPath"),
+              let recordClass = objc_lookUpClass("XCSynthesizedEventRecord")
+        else { return false }
+
+        let pathObj = pathClass.alloc() as! NSObject
+        let initSel = NSSelectorFromString("initForTouchAtPoint:offset:")
+        guard pathObj.responds(to: initSel) else { return false }
+        let initImp = pathObj.method(for: initSel)
+        typealias InitMethod = @convention(c) (NSObject, Selector, CGPoint, TimeInterval) -> NSObject
+        let path = unsafeBitCast(initImp, to: InitMethod.self)(pathObj, initSel, point, 0.0)
+
+        // NO moveToPoint — just hold and release. The move event in
+        // synthesizeTap causes TouchableOpacity to fire onPress after
+        // onLongPress, which resets state in the test app.
+        let liftSel = NSSelectorFromString("liftUpAtOffset:")
+        if path.responds(to: liftSel) {
+            let liftImp = path.method(for: liftSel)
+            typealias LiftMethod = @convention(c) (NSObject, Selector, TimeInterval) -> Void
+            unsafeBitCast(liftImp, to: LiftMethod.self)(path, liftSel, duration)
+        }
+
+        let record: NSObject
+        let recordInitSel = NSSelectorFromString("initWithName:interfaceOrientation:")
+        let recordObj = recordClass.alloc() as! NSObject
+        if recordObj.responds(to: recordInitSel) {
+            let imp = recordObj.method(for: recordInitSel)
+            typealias RecordInitMethod = @convention(c) (NSObject, Selector, NSString, Int) -> NSObject
+            record = unsafeBitCast(imp, to: RecordInitMethod.self)(recordObj, recordInitSel, "pilot-longpress" as NSString, UIInterfaceOrientation.portrait.rawValue)
+        } else {
+            record = (recordClass as! NSObject.Type).init()
+        }
+
+        let addPathSel = NSSelectorFromString("addPointerEventPath:")
+        if record.responds(to: addPathSel) {
+            record.perform(addPathSel, with: path)
+        }
+
+        if dispatchViaDaemonSession(record) { return true }
+        if dispatchSync(record) { return true }
+        if dispatchViaDevice(record) { return true }
+        return false
     }
 
     /// Modifier flags for key press events.
@@ -425,8 +467,8 @@ enum EventSynthesizer {
             return false
         }
 
-        let semaphore = DispatchSemaphore(value: 0)
         var success = false
+        var done = false
 
         let imp = proxy.method(for: sendSel)
         typealias SendMethod = @convention(c) (NSObject, Selector, NSString, UInt64, @escaping @convention(block) (NSError?) -> Void) -> Void
@@ -436,11 +478,15 @@ enum EventSynthesizer {
             if let error = error {
                 NSLog("[EventSynth] _XCT_sendString error: %@", error.localizedDescription)
             }
-            semaphore.signal()
+            done = true
         }
 
-        let result = semaphore.wait(timeout: .now() + .seconds(30))
-        if result == .timedOut {
+        // Pump the RunLoop while waiting instead of blocking with a semaphore.
+        let deadline = Date(timeIntervalSinceNow: 30)
+        while !done && Date() < deadline {
+            RunLoop.current.run(mode: .default, before: Date(timeIntervalSinceNow: 0.01))
+        }
+        if !done {
             NSLog("[EventSynth] _XCT_sendString timed out")
             return false
         }
@@ -614,8 +660,8 @@ enum EventSynthesizer {
             return false
         }
 
-        let semaphore = DispatchSemaphore(value: 0)
         var success = false
+        var done = false
 
         // Call synthesizeEvent:completion: using unsafeBitCast
         let imp = synthesizer.method(for: dispatchSel)
@@ -626,10 +672,16 @@ enum EventSynthesizer {
                 NSLog("[EventSynth] Synthesis error: %@", error.localizedDescription)
             }
             success = result
-            semaphore.signal()
+            done = true
         }
 
-        _ = semaphore.wait(timeout: .now() + .seconds(10))
+        // Pump the RunLoop while waiting — do NOT block with a semaphore,
+        // because we're on the main thread and the completion callback may
+        // need the RunLoop to deliver XPC replies.
+        let deadline = Date(timeIntervalSinceNow: 10)
+        while !done && Date() < deadline {
+            RunLoop.current.run(mode: .default, before: Date(timeIntervalSinceNow: 0.01))
+        }
         return success
     }
 
@@ -663,8 +715,8 @@ enum EventSynthesizer {
             return false
         }
 
-        let semaphore = DispatchSemaphore(value: 0)
         var success = false
+        var done = false
 
         let imp = proxy.method(for: synthSel)
         typealias SynthMethod = @convention(c) (NSObject, Selector, NSObject, @escaping @convention(block) (NSError?) -> Void) -> Void
@@ -674,10 +726,17 @@ enum EventSynthesizer {
             if let error = error {
                 NSLog("[EventSynth] Daemon synthesis error: %@", error.localizedDescription)
             }
-            semaphore.signal()
+            done = true
         }
 
-        _ = semaphore.wait(timeout: .now() + .seconds(10))
+        // Pump the RunLoop while waiting — do NOT block with a semaphore,
+        // because we're on the main thread and the completion callback may
+        // need the RunLoop to deliver XPC replies.
+        let deadline = Date(timeIntervalSinceNow: 10)
+        while !done && Date() < deadline {
+            RunLoop.current.run(mode: .default, before: Date(timeIntervalSinceNow: 0.01))
+        }
         return success
     }
+
 }

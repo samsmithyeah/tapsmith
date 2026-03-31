@@ -189,6 +189,12 @@ class CommandHandler {
                     try actionExecutor.tap(xcElem)
                 }
             }
+            // Force-flush pending touch events: take a snapshot() which does
+            // a round-trip through the XCTest daemon. This acts as a barrier,
+            // ensuring all pending XPC events (including the synthesized touch)
+            // have been fully processed before we return. Without this, the
+            // next command's snapshot IPC can race with touch delivery.
+            touchBarrier()
             return ["success": true]
 
         case "doubleTap":
@@ -199,6 +205,7 @@ class CommandHandler {
                 let xcElem = try getXCUIElement(element.elementId)
                 try actionExecutor.doubleTap(xcElem)
             }
+            touchBarrier()
             return ["success": true]
 
         case "longPress":
@@ -216,6 +223,7 @@ class CommandHandler {
                     try actionExecutor.longPress(xcElem, durationMs: duration)
                 }
             }
+            touchBarrier()
             return ["success": true]
 
         // ─── Text Input ───
@@ -623,6 +631,24 @@ class CommandHandler {
             ],
         ]
         return jsonString(response) ?? "{\"id\":null,\"error\":{\"type\":\"INTERNAL_ERROR\",\"message\":\"Failed to serialize error response\"}}"
+    }
+
+    /// Settle time after synthesized gesture actions.
+    ///
+    /// Touch events travel: XCTest runner → testmanagerd (XPC) → IOKit →
+    /// Simulator → App process → UIKit → React Native gesture handler.
+    /// The `_XCT_synthesizeEvent` completion callback only confirms step 1.
+    /// The remaining propagation takes ~50-100ms through IOKit and the
+    /// simulator. Without this settle, the daemon's next command (typically
+    /// `findElement` from assertion polling) can snapshot the app state
+    /// before the gesture handler has fired, causing spurious failures.
+    ///
+    /// 100ms is measured on Apple Silicon / Xcode 26 as reliably sufficient
+    /// for single and multi-touch events. The RunLoop pump additionally
+    /// processes any pending XPC or GCD callbacks.
+    private func touchBarrier() {
+        Thread.sleep(forTimeInterval: 0.1)
+        RunLoop.current.run(mode: .default, before: Date(timeIntervalSinceNow: 0.01))
     }
 
     private func jsonString(_ dict: [String: Any]) -> String? {
