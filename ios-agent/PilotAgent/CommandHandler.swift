@@ -150,7 +150,7 @@ class CommandHandler {
                 do {
                     element = try snapshotFinder.findElement(selector)
                 } catch {
-                    if timeout > 1000 {
+                    if timeout >= 1000 {
                         // Element not in current snapshot — poll with wait engine
                         element = try waitEngine.waitForElement(selector, timeoutMs: timeout, elementFinder: elementFinder)
                     } else {
@@ -290,6 +290,7 @@ class CommandHandler {
             } else {
                 try actionExecutor.swipeScreen(direction: direction, speed: speed, distance: distance)
             }
+            touchBarrier()
             return ["success": true]
 
         case "scroll":

@@ -30,8 +30,11 @@ export interface BoundingBox {
 /** Timeout for quick visibility probes in scrollIntoView(). Short so the
  *  loop isn't blocked waiting for an element that's simply off-screen. */
 const SCROLL_PROBE_TIMEOUT_MS = 1000;
-/** Brief settle after swipe-based scrolling so taps do not race ScrollView deceleration. */
-const SCROLL_SETTLE_MS = 250;
+/** Settle time after swipe-based scrolling.  On iOS, ScrollView momentum
+ *  deceleration takes 300-500ms and the first tap during deceleration is
+ *  consumed to stop the scroll rather than being delivered to child views.
+ *  500ms is the measured safe minimum for iOS. */
+const SCROLL_SETTLE_MS = 500;
 
 // ─── Filter options for .filter() ───
 
@@ -672,6 +675,21 @@ export class ElementHandle {
       try {
         const res = await this._client.findElement(this._selector, SCROLL_PROBE_TIMEOUT_MS);
         if (res.found && res.element?.visible) {
+          // Wait for scroll momentum to fully stop.  On iOS, momentum
+          // deceleration continues after a swipe, and the first tap during
+          // deceleration is consumed by the ScrollView (stops the scroll)
+          // rather than being delivered to the child view.  Poll until the
+          // element's position is stable for two consecutive checks.
+          if (i > 0) {
+            let lastY = res.element.bounds?.top;
+            for (let s = 0; s < 10; s++) {
+              await new Promise((r) => setTimeout(r, 100));
+              const probe = await this._client.findElement(this._selector, 500);
+              const curY = probe.element?.bounds?.top;
+              if (curY !== undefined && curY === lastY) break;
+              lastY = curY;
+            }
+          }
           await this._traceQuery(
             'scrollIntoView',
             `Visible after ${i} scroll(s)`,
