@@ -222,6 +222,8 @@ export interface TraceDeviceInfo {
   screenResolution?: { width: number; height: number }
   isEmulator: boolean
   packageName?: string
+  /** Device pixel ratio (e.g. 3 for retina iOS). Bounds are in logical points; screenshots in pixels. */
+  devicePixelRatio?: number
 }
 
 export interface TraceConfigSnapshot {

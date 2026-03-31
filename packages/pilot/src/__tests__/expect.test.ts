@@ -1722,6 +1722,7 @@ describe("wrapAssertionWithTrace", () => {
 
   function makeMockCollector() {
     return {
+      config: { screenshots: false, snapshots: false, sources: false, attachments: false, network: false, mode: 'on' as const },
       captureBeforeAction: vi.fn(async () => ({
         actionIndex: 0,
         captures: {},

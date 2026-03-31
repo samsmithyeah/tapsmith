@@ -156,6 +156,7 @@ export interface DeviceInfoMessage {
   isEmulator: boolean
   screenWidth?: number
   screenHeight?: number
+  platform?: 'android' | 'ios'
 }
 
 export interface SourceMessage {

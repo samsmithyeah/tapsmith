@@ -322,46 +322,31 @@ function wrapAssertionWithTrace(
     const duration = Date.now() - start;
     const attempts = Math.max(1, Math.round(duration / POLL_INTERVAL_MS));
 
-    // Fire-and-forget the after-action capture so the test can proceed
-    // immediately — same pattern as tracedAction.
+    // Emit event immediately so _actionIndex increments before the runner
+    // emits group-end boundaries.
+    trace.collector.addAssertionEvent({
+      assertion: (negated ? "not." : "") + name,
+      selector: selectorStr,
+      passed,
+      soft: false,
+      negated,
+      duration,
+      attempts,
+      error,
+      sourceLocation,
+      hasScreenshotBefore: false,
+      hasScreenshotAfter: trace.collector.config.screenshots,
+      hasHierarchyBefore: false,
+      hasHierarchyAfter: trace.collector.config.snapshots,
+    } as Parameters<typeof trace.collector.addAssertionEvent>[0]);
+
+    // Fire-and-forget the after-capture — only writes files, event
+    // already emitted above.
     const afterCapturePromise = trace.collector.captureAfterAction(
       actionIndex,
       trace.takeScreenshot,
       trace.captureHierarchy,
-    ).then((afterCaptures) => {
-      trace.collector.addAssertionEvent({
-        assertion: (negated ? "not." : "") + name,
-        selector: selectorStr,
-        passed,
-        soft: false,
-        negated,
-        duration,
-        attempts,
-        error,
-        sourceLocation,
-        hasScreenshotBefore: false,
-        hasScreenshotAfter: !!afterCaptures.screenshotAfter,
-        hasHierarchyBefore: false,
-        hasHierarchyAfter: !!afterCaptures.hierarchyAfter,
-      } as Parameters<typeof trace.collector.addAssertionEvent>[0]);
-    }).catch(() => {
-      // Best-effort: emit event without after-captures
-      trace.collector.addAssertionEvent({
-        assertion: (negated ? "not." : "") + name,
-        selector: selectorStr,
-        passed,
-        soft: false,
-        negated,
-        duration,
-        attempts,
-        error,
-        sourceLocation,
-        hasScreenshotBefore: false,
-        hasScreenshotAfter: false,
-        hasHierarchyBefore: false,
-        hasHierarchyAfter: false,
-      } as Parameters<typeof trace.collector.addAssertionEvent>[0]);
-    });
+    ).then(() => {}, () => { /* best-effort */ });
     trace.collector.trackPendingCapture(afterCapturePromise);
 
     if (caughtErr !== undefined) {

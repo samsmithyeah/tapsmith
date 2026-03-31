@@ -1805,6 +1805,7 @@ export async function startUIServer(
               serial: worker.deviceSerial,
               model: undefined,
               isEmulator: worker.deviceSerial.startsWith('emulator-'),
+              platform: ctx.config.platform,
             });
           }
         }
@@ -1820,6 +1821,7 @@ export async function startUIServer(
               serial: worker.deviceSerial,
               model: undefined,
               isEmulator: worker.deviceSerial.startsWith('emulator-'),
+              platform: ctx.config.platform,
             });
           }
         }
@@ -1952,6 +1954,7 @@ export async function startUIServer(
         serial: ctx.deviceSerial,
         model: undefined,
         isEmulator: ctx.deviceSerial.startsWith('emulator-'),
+        platform: ctx.config.platform,
       } satisfies ServerMessage));
     }
 
@@ -2018,6 +2021,7 @@ export async function startUIServer(
       serial: ctx.deviceSerial,
       model: undefined,
       isEmulator: ctx.deviceSerial.startsWith('emulator-'),
+        platform: ctx.config.platform,
     });
   }
 

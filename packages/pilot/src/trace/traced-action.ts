@@ -140,36 +140,25 @@ export async function tracedAction(
   // actual action time, not action + screenshot overhead.
   const duration = Date.now() - start;
 
-  // Fire-and-forget the after-action capture so the test can proceed
-  // immediately. This avoids consuming the visibility window of transient
-  // UI elements (toasts, animations) with screenshot overhead.
-  // The collector tracks pending captures and awaits them before packaging.
+  // Emit event immediately so _actionIndex increments before the runner
+  // emits group-end boundaries.  The after-capture writes screenshot files
+  // in the background and is flushed before trace packaging.
+  ctx.collector.addActionEvent({
+    category, action, selector: selectorStr, inputValue: extra?.inputValue,
+    duration, success, error, errorStack,
+    bounds, point, log,
+    hasScreenshotBefore: !!beforeCaptures.screenshotBefore,
+    hasScreenshotAfter: ctx.collector.config.screenshots,
+    hasHierarchyBefore: !!beforeCaptures.hierarchyBefore,
+    hasHierarchyAfter: ctx.collector.config.snapshots,
+    sourceLocation,
+  });
+
+  // Fire-and-forget the after-action capture — only writes files, event
+  // already emitted above.
   const afterCapturePromise = ctx.collector.captureAfterAction(
     actionIndex, ctx.takeScreenshot, ctx.captureHierarchy,
-  ).then((afterCaptures) => {
-    ctx.collector.addActionEvent({
-      category, action, selector: selectorStr, inputValue: extra?.inputValue,
-      duration, success, error, errorStack,
-      bounds, point, log,
-      hasScreenshotBefore: !!beforeCaptures.screenshotBefore,
-      hasScreenshotAfter: !!afterCaptures.screenshotAfter,
-      hasHierarchyBefore: !!beforeCaptures.hierarchyBefore,
-      hasHierarchyAfter: !!afterCaptures.hierarchyAfter,
-      sourceLocation,
-    });
-  }).catch(() => {
-    // Best-effort: emit event without after-captures
-    ctx.collector.addActionEvent({
-      category, action, selector: selectorStr, inputValue: extra?.inputValue,
-      duration, success, error, errorStack,
-      bounds, point, log: [...log, 'After-action capture failed'],
-      hasScreenshotBefore: !!beforeCaptures.screenshotBefore,
-      hasScreenshotAfter: false,
-      hasHierarchyBefore: !!beforeCaptures.hierarchyBefore,
-      hasHierarchyAfter: false,
-      sourceLocation,
-    });
-  });
+  ).then(() => {}, () => { /* best-effort */ });
   ctx.collector.trackPendingCapture(afterCapturePromise);
 
   if (caughtErr !== undefined) {

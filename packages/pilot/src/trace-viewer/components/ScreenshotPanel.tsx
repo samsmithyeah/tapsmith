@@ -29,6 +29,8 @@ interface Props {
   screenshots: Map<string, string>
   highlightBounds?: { left: number; top: number; right: number; bottom: number } | null
   onScreenshotClick?: (point: { x: number; y: number }) => void
+  /** Device pixel ratio — bounds are in logical points, screenshots in pixels. */
+  devicePixelRatio?: number
 }
 
 type ScreenshotTab = 'before' | 'after' | 'action'
@@ -38,7 +40,7 @@ interface NaturalSize {
   height: number
 }
 
-export function ScreenshotPanel({ event, screenshots, highlightBounds, onScreenshotClick }: Props) {
+export function ScreenshotPanel({ event, screenshots, highlightBounds, onScreenshotClick, devicePixelRatio }: Props) {
   injectStyles();
 
   const [tab, setTab] = useState<ScreenshotTab>('after');
@@ -139,6 +141,7 @@ export function ScreenshotPanel({ event, screenshots, highlightBounds, onScreens
                 naturalSize={naturalSize}
                 renderedWidth={imgRef.current.clientWidth}
                 renderedHeight={imgRef.current.clientHeight}
+                devicePixelRatio={devicePixelRatio}
               />
             )}
             {highlightBounds && naturalSize && imgRef.current && (
@@ -147,6 +150,7 @@ export function ScreenshotPanel({ event, screenshots, highlightBounds, onScreens
                 naturalSize={naturalSize}
                 renderedWidth={imgRef.current.clientWidth}
                 renderedHeight={imgRef.current.clientHeight}
+                devicePixelRatio={devicePixelRatio}
               />
             )}
           </div>
@@ -166,13 +170,17 @@ interface BoundsOverlayProps {
   naturalSize: NaturalSize
   renderedWidth: number
   renderedHeight: number
+  devicePixelRatio?: number
 }
 
-function BoundsOverlay({ bounds, point, naturalSize, renderedWidth, renderedHeight }: BoundsOverlayProps) {
+function BoundsOverlay({ bounds, point, naturalSize, renderedWidth, renderedHeight, devicePixelRatio }: BoundsOverlayProps) {
   if (!bounds && !point) return null;
 
-  const scaleX = renderedWidth / naturalSize.width;
-  const scaleY = renderedHeight / naturalSize.height;
+  // Bounds are in logical points; screenshots are in pixels.
+  // Multiply by devicePixelRatio to convert points → pixels before scaling.
+  const dpr = devicePixelRatio ?? 1;
+  const scaleX = renderedWidth / naturalSize.width * dpr;
+  const scaleY = renderedHeight / naturalSize.height * dpr;
 
   return (
     <div
@@ -213,11 +221,13 @@ interface HierarchyHighlightProps {
   naturalSize: NaturalSize
   renderedWidth: number
   renderedHeight: number
+  devicePixelRatio?: number
 }
 
-function HierarchyHighlightOverlay({ bounds, naturalSize, renderedWidth, renderedHeight }: HierarchyHighlightProps) {
-  const scaleX = renderedWidth / naturalSize.width;
-  const scaleY = renderedHeight / naturalSize.height;
+function HierarchyHighlightOverlay({ bounds, naturalSize, renderedWidth, renderedHeight, devicePixelRatio }: HierarchyHighlightProps) {
+  const dpr = devicePixelRatio ?? 1;
+  const scaleX = renderedWidth / naturalSize.width * dpr;
+  const scaleY = renderedHeight / naturalSize.height * dpr;
 
   return (
     <div

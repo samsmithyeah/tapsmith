@@ -277,6 +277,7 @@ function App() {
           event={selectedEvent}
           screenshots={trace.screenshots}
           highlightBounds={hierarchyHighlight}
+          devicePixelRatio={trace.metadata.device.devicePixelRatio}
         />
       </div>
       {/* Bottom: Detail tabs */}

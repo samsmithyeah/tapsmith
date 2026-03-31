@@ -796,6 +796,7 @@ async function runSuiteContext(
               device: {
                 serial: opts.config.device ?? 'unknown',
                 isEmulator: (opts.config.device ?? '').startsWith('emulator-'),
+                devicePixelRatio: opts.config.platform === 'ios' ? 3 : undefined,
               },
               pilotVersion: version,
               error: error?.message,
