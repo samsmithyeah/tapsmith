@@ -877,7 +877,8 @@ export async function startUIServer(
     // Spawn daemon
     const daemonProcess = spawn(
       daemonBin,
-      ['--port', String(daemonPort), '--agent-port', String(agentPort)],
+      ['--port', String(daemonPort), '--agent-port', String(agentPort),
+        ...(ctx.config.platform ? ['--platform', ctx.config.platform] : [])],
       { detached: true, stdio: 'ignore' },
     );
     daemonProcess.on('error', () => { /* handled by waitForReady */ });

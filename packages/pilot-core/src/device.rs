@@ -31,13 +31,26 @@ pub struct DeviceInfo {
 pub struct DeviceManager {
     devices: Vec<DeviceInfo>,
     active_serial: Option<String>,
+    /// When set, only discover devices of this platform.
+    platform_filter: Option<Platform>,
 }
 
 impl DeviceManager {
+    #[cfg(test)]
     pub fn new() -> Self {
         Self {
             devices: Vec::new(),
             active_serial: None,
+            platform_filter: None,
+        }
+    }
+
+    /// Create a DeviceManager that only discovers devices of the given platform.
+    pub fn with_platform_filter(platform: Option<Platform>) -> Self {
+        Self {
+            devices: Vec::new(),
+            active_serial: None,
+            platform_filter: platform,
         }
     }
 
@@ -47,66 +60,75 @@ impl DeviceManager {
         let mut current_serials: Vec<String> = Vec::new();
 
         // ─── Android devices via ADB ───
-        if let Ok(adb_devices) = adb::list_devices().await {
-            for adb_dev in &adb_devices {
-                if !adb_dev.is_online() {
-                    continue;
-                }
-                current_serials.push(adb_dev.serial.clone());
-
-                if let Some(existing) = self.devices.iter_mut().find(|d| d.serial == adb_dev.serial)
-                {
-                    if existing.state == ConnectionState::Disconnected {
-                        existing.state = if self.active_serial.as_deref() == Some(&adb_dev.serial) {
-                            ConnectionState::Active
-                        } else {
-                            ConnectionState::Discovered
-                        };
-                        debug!(serial = %existing.serial, "Device reconnected");
+        if self.platform_filter != Some(Platform::Ios) {
+            if let Ok(adb_devices) = adb::list_devices().await {
+                for adb_dev in &adb_devices {
+                    if !adb_dev.is_online() {
+                        continue;
                     }
-                } else {
-                    let model = adb::get_device_model(&adb_dev.serial)
-                        .await
-                        .unwrap_or_else(|_| "unknown".to_string());
+                    current_serials.push(adb_dev.serial.clone());
 
-                    self.devices.push(DeviceInfo {
-                        serial: adb_dev.serial.clone(),
-                        model,
-                        is_emulator: adb_dev.is_emulator(),
-                        state: ConnectionState::Discovered,
-                        platform: Platform::Android,
-                    });
-                    debug!(serial = %adb_dev.serial, "New Android device discovered");
+                    if let Some(existing) =
+                        self.devices.iter_mut().find(|d| d.serial == adb_dev.serial)
+                    {
+                        if existing.state == ConnectionState::Disconnected {
+                            existing.state =
+                                if self.active_serial.as_deref() == Some(&adb_dev.serial) {
+                                    ConnectionState::Active
+                                } else {
+                                    ConnectionState::Discovered
+                                };
+                            debug!(serial = %existing.serial, "Device reconnected");
+                        }
+                    } else {
+                        let model = adb::get_device_model(&adb_dev.serial)
+                            .await
+                            .unwrap_or_else(|_| "unknown".to_string());
+
+                        self.devices.push(DeviceInfo {
+                            serial: adb_dev.serial.clone(),
+                            model,
+                            is_emulator: adb_dev.is_emulator(),
+                            state: ConnectionState::Discovered,
+                            platform: Platform::Android,
+                        });
+                        debug!(serial = %adb_dev.serial, "New Android device discovered");
+                    }
                 }
             }
         }
 
         // ─── iOS devices via xcrun simctl / devicectl ───
-        if let Ok(ios_devices) = ios::device::list_all_devices().await {
-            for ios_dev in &ios_devices {
-                if ios_dev.is_simulator && !ios_dev.is_booted() {
-                    continue; // Only show booted simulators
-                }
-                current_serials.push(ios_dev.udid.clone());
-
-                if let Some(existing) = self.devices.iter_mut().find(|d| d.serial == ios_dev.udid) {
-                    if existing.state == ConnectionState::Disconnected {
-                        existing.state = if self.active_serial.as_deref() == Some(&ios_dev.udid) {
-                            ConnectionState::Active
-                        } else {
-                            ConnectionState::Discovered
-                        };
-                        debug!(serial = %existing.serial, "iOS device reconnected");
+        if self.platform_filter != Some(Platform::Android) {
+            if let Ok(ios_devices) = ios::device::list_all_devices().await {
+                for ios_dev in &ios_devices {
+                    if ios_dev.is_simulator && !ios_dev.is_booted() {
+                        continue; // Only show booted simulators
                     }
-                } else {
-                    self.devices.push(DeviceInfo {
-                        serial: ios_dev.udid.clone(),
-                        model: ios_dev.name.clone(),
-                        is_emulator: ios_dev.is_simulator,
-                        state: ConnectionState::Discovered,
-                        platform: Platform::Ios,
-                    });
-                    debug!(serial = %ios_dev.udid, name = %ios_dev.name, "New iOS device discovered");
+                    current_serials.push(ios_dev.udid.clone());
+
+                    if let Some(existing) =
+                        self.devices.iter_mut().find(|d| d.serial == ios_dev.udid)
+                    {
+                        if existing.state == ConnectionState::Disconnected {
+                            existing.state = if self.active_serial.as_deref() == Some(&ios_dev.udid)
+                            {
+                                ConnectionState::Active
+                            } else {
+                                ConnectionState::Discovered
+                            };
+                            debug!(serial = %existing.serial, "iOS device reconnected");
+                        }
+                    } else {
+                        self.devices.push(DeviceInfo {
+                            serial: ios_dev.udid.clone(),
+                            model: ios_dev.name.clone(),
+                            is_emulator: ios_dev.is_simulator,
+                            state: ConnectionState::Discovered,
+                            platform: Platform::Ios,
+                        });
+                        debug!(serial = %ios_dev.udid, name = %ios_dev.name, "New iOS device discovered");
+                    }
                 }
             }
         }
