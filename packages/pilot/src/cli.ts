@@ -215,27 +215,36 @@ async function checkDeviceHealth(serial: string | undefined): Promise<void> {
 
 // ─── Daemon management ───
 
-async function ensureDaemonRunning(address: string, daemonBin?: string, platform?: string): Promise<PilotGrpcClient> {
-  const client = new PilotGrpcClient(address);
+/** Track the daemon process we spawned so we can kill it on exit. */
+let spawnedDaemonProcess: ReturnType<typeof spawn> | undefined;
 
-  // Try to connect to existing daemon
-  const ready = await client.waitForReady(2_000);
-  if (ready) {
-    try {
-      const pong = await client.ping();
-      console.log(dim(`Connected to Pilot daemon v${pong.version}`));
-      return client;
-    } catch {
-      // fall through to start daemon
+async function ensureDaemonRunning(address: string, daemonBin?: string, platform?: string): Promise<PilotGrpcClient> {
+  const port = address.split(':').pop() ?? '50051';
+
+  // Kill any stale daemon on this port so we always get a fresh one
+  // with the correct --platform flag. The daemon starts in <1s so
+  // the cost of a restart is negligible.
+  try {
+    const probe = new PilotGrpcClient(address);
+    const alive = await probe.waitForReady(1_000);
+    if (alive) {
+      probe.close();
+      // Find and kill the process listening on this port
+      const lsofOut = execFileSync('lsof', ['-ti', `tcp:${port}`], { encoding: 'utf-8' }).trim();
+      for (const pid of lsofOut.split('\n').filter(Boolean)) {
+        try { process.kill(Number(pid), 'SIGTERM'); } catch { /* already gone */ }
+      }
+      // Brief wait for the port to free up
+      await new Promise((r) => setTimeout(r, 500));
+    } else {
+      probe.close();
     }
+  } catch {
+    // No daemon running, nothing to kill
   }
 
-  // Try to start daemon
-  console.log(dim('Starting Pilot daemon...'));
-  client.close();
-
+  // Start a fresh daemon
   const resolvedBin = process.env.PILOT_DAEMON_BIN ?? daemonBin ?? 'pilot-core';
-  const port = address.split(':').pop() ?? '50051';
   const daemonArgs = ['--port', port];
   if (platform) daemonArgs.push('--platform', platform);
   const child = spawn(resolvedBin, daemonArgs, {
@@ -246,6 +255,7 @@ async function ensureDaemonRunning(address: string, daemonBin?: string, platform
     // Handled below via waitForReady timeout
   });
   child.unref();
+  spawnedDaemonProcess = child;
 
   // Wait for daemon to be ready
   const newClient = new PilotGrpcClient(address);
@@ -255,7 +265,7 @@ async function ensureDaemonRunning(address: string, daemonBin?: string, platform
     process.exit(1);
   }
 
-  console.log(dim('Pilot daemon started.'));
+  console.log(dim(`Connected to Pilot daemon v${(await newClient.ping()).version}`));
   return newClient;
 }
 
@@ -1067,8 +1077,15 @@ async function main(): Promise<void> {
       });
 
       // Keep alive until user exits
-      process.on('SIGINT', () => { uiServer.close(); process.exit(0); });
-      process.on('SIGTERM', () => { uiServer.close(); process.exit(0); });
+      const cleanupAndExit = () => {
+        uiServer.close();
+        if (spawnedDaemonProcess) {
+          try { spawnedDaemonProcess.kill(); } catch { /* already gone */ }
+        }
+        process.exit(0);
+      };
+      process.on('SIGINT', cleanupAndExit);
+      process.on('SIGTERM', cleanupAndExit);
       await new Promise<void>(() => { /* never resolves */ });
     }
 
@@ -1264,6 +1281,9 @@ async function main(): Promise<void> {
   } finally {
     device?.close();
     client?.close();
+    if (spawnedDaemonProcess) {
+      try { spawnedDaemonProcess.kill(); } catch { /* already gone */ }
+    }
     // Leave emulators running for reuse by the next run.
     preserveEmulatorsForReuse(launchedEmulators);
   }

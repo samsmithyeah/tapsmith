@@ -244,6 +244,8 @@ export class Device {
   }
 
   async setDevice(serial: string): Promise<void> {
+    // Refresh the daemon's device registry so newly-launched emulators are visible
+    await this._client.listDevices();
     const res = await this._client.setDevice(serial);
     if (!res.success) {
       throw new Error(res.errorMessage || 'Set device failed');
