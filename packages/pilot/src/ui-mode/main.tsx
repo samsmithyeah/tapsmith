@@ -380,6 +380,7 @@ function App() {
       case 'workers-info':
         setWorkers(msg.workers.map((w) => ({
           ...w,
+          displayName: w.displayName,
           status: 'idle' as const,
           passed: 0,
           failed: 0,

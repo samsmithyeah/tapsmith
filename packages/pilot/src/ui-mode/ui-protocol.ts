@@ -16,6 +16,8 @@ import type { AnyTraceEvent } from '../trace/types.js';
 export interface WorkerInfo {
   workerId: number
   deviceSerial: string
+  /** Friendly display name, e.g. "iPhone 16 #1" for iOS or the serial for Android. */
+  displayName: string
   status: 'idle' | 'running' | 'done' | 'initializing' | 'error'
   currentFile?: string
   currentTest?: string
@@ -146,6 +148,7 @@ export interface WorkersInfoMessage {
   workers: Array<{
     workerId: number
     deviceSerial: string
+    displayName: string
   }>
 }
 

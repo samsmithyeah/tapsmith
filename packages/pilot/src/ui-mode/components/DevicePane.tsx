@@ -107,10 +107,10 @@ export function DevicePane({
               key={w.workerId}
               class={`device-pane-worker ${deviceViewMode === w.workerId ? 'active' : ''}`}
               onClick={() => onSelectDeviceView(w.workerId)}
-              title={`${w.deviceSerial} — ${w.status}`}
+              title={`${w.displayName} (${w.deviceSerial}) — ${w.status}`}
             >
               <span class={`rc-dot ${connected ? DOT_CLASS[w.status] : 'error'}`} />
-              {w.deviceSerial}
+              {w.displayName}
             </button>
           ))}
         </div>
@@ -123,7 +123,7 @@ export function DevicePane({
               <WorkerCanvas
                 key={w.workerId}
                 workerId={w.workerId}
-                label={w.deviceSerial}
+                label={w.displayName}
                 connected={connected}
                 registerCanvas={registerCanvas}
                 unregisterCanvas={unregisterCanvas}

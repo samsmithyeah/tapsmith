@@ -24,7 +24,8 @@ import type { Device } from '../device.js';
 import type { ResolvedProject } from '../project.js';
 import { collectTransitiveDeps } from '../project.js';
 import type { LaunchedEmulator } from '../emulator.js';
-import { preserveEmulatorsForReuse } from '../emulator.js';
+import { preserveEmulatorsForReuse, getRunningAvdName } from '../emulator.js';
+import { listSimulators } from '../ios-simulator.js';
 import {
   deserializeTestResult,
   deserializeSuiteResult,
@@ -89,6 +90,8 @@ interface UIWorkerHandle {
   id: number
   process: ChildProcess
   deviceSerial: string
+  /** Friendly display name, e.g. "iPhone 16 #1" for iOS or the serial for Android. */
+  displayName: string
   daemonPort: number
   agentPort: number
   daemonProcess?: ChildProcess
@@ -863,6 +866,43 @@ export async function startUIServer(
       return;
     }
 
+    // Resolve friendly display names for workers.
+    // iOS: UUID → simulator name (e.g. "iPhone 16 #1")
+    // Android: serial → AVD name (e.g. "Pixel_7_Pro #1")
+    {
+      const resolveSerialToName = (serial: string): string => {
+        if (ctx.config.platform === 'ios') {
+          const simulators = listSimulators();
+          return simulators.find((s) => s.udid === serial)?.name ?? serial;
+        }
+        if (serial.startsWith('emulator-')) {
+          return getRunningAvdName(serial) ?? serial;
+        }
+        return serial;
+      };
+
+      // Resolve names for all workers.
+      const resolvedNames = uiWorkers.map((w) => resolveSerialToName(w.deviceSerial));
+
+      // Count occurrences of each name to decide whether to append #N.
+      const nameCounts = new Map<string, number>();
+      for (const name of resolvedNames) {
+        nameCounts.set(name, (nameCounts.get(name) ?? 0) + 1);
+      }
+      const nameIndex = new Map<string, number>();
+      for (let i = 0; i < uiWorkers.length; i++) {
+        const name = resolvedNames[i];
+        const count = nameCounts.get(name) ?? 1;
+        if (count > 1) {
+          const idx = (nameIndex.get(name) ?? 0) + 1;
+          nameIndex.set(name, idx);
+          uiWorkers[i].displayName = `${name} #${idx}`;
+        } else {
+          uiWorkers[i].displayName = name;
+        }
+      }
+    }
+
     workersInitialized = true;
     console.log(`${DIM}${uiWorkers.length} UI worker(s) ready.${RESET}`);
   }
@@ -909,6 +949,7 @@ export async function startUIServer(
       id,
       process: child,
       deviceSerial,
+      displayName: deviceSerial,
       daemonPort,
       agentPort,
       daemonProcess,
@@ -1389,6 +1430,8 @@ export async function startUIServer(
           const newWorker = await initializeOneWorker(
             worker.id, worker.deviceSerial, daemonPort, agentPort, daemonBin,
           );
+          // Preserve the friendly display name from before respawn.
+          newWorker.displayName = worker.displayName;
           // Replace in array
           uiWorkers[i] = newWorker;
         } catch (err) {
@@ -1923,7 +1966,7 @@ export async function startUIServer(
       // Send workers info
       ws.send(JSON.stringify({
         type: 'workers-info',
-        workers: uiWorkers.map((w) => ({ workerId: w.id, deviceSerial: w.deviceSerial })),
+        workers: uiWorkers.map((w) => ({ workerId: w.id, deviceSerial: w.deviceSerial, displayName: w.displayName })),
       } satisfies ServerMessage));
 
       // Send device info for selected worker

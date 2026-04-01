@@ -33,7 +33,7 @@ const DOT_CLASS: Record<WorkerInfo['status'], string> = {
 };
 
 function workerTooltip(w: WorkerInfo): string {
-  const lines = [`W${w.workerId} — ${w.deviceSerial}`, `Status: ${w.status}`];
+  const lines = [`${w.displayName} — ${w.deviceSerial}`, `Status: ${w.status}`];
   if (w.currentFile) lines.push(`File: ${w.currentFile}`);
   if (w.currentTest) lines.push(`Test: ${w.currentTest}`);
   lines.push(`${w.passed}P ${w.failed}F ${w.skipped}S`);
@@ -98,7 +98,7 @@ function WorkerDevice({ w, onSend }: { w: WorkerInfo; onSend: (msg: ClientMessag
       onContextMenu={handleContextMenu}
     >
       <span class={`rc-dot ${DOT_CLASS[w.status]}`} />
-      {w.deviceSerial}
+      {w.displayName}
       {menu && (
         <div ref={menuRef} class="rc-context-menu" style={{ left: `${menu.x}px`, top: `${menu.y}px` }}>
           <button class="rc-context-item" onClick={handleRespawn}>
