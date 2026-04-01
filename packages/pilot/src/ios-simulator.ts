@@ -16,6 +16,7 @@ export interface SimulatorInfo {
   state: string
   isAvailable: boolean
   runtime: string
+  deviceType: string
 }
 
 /**
@@ -35,6 +36,7 @@ export function listSimulators(): SimulatorInfo[] {
         name: string
         state: string
         isAvailable: boolean
+        deviceTypeIdentifier?: string
       }>>
     };
 
@@ -48,6 +50,7 @@ export function listSimulators(): SimulatorInfo[] {
             state: device.state,
             isAvailable: device.isAvailable,
             runtime,
+            deviceType: device.deviceTypeIdentifier ?? '',
           });
         }
       }
@@ -214,6 +217,17 @@ export interface ProvisionSimulatorsResult {
   clonedSimulators: ClonedSimulator[]
   /** UDIDs that were freshly booted or cloned — need longer init timeouts. */
   freshUdids: Set<string>
+}
+
+/**
+ * Create a new simulator from a device type and runtime, returning the new UDID.
+ */
+export function createSimulator(name: string, deviceType: string, runtime: string): string {
+  const output = execFileSync('xcrun', ['simctl', 'create', name, deviceType, runtime], {
+    encoding: 'utf-8',
+    timeout: 30_000,
+  });
+  return output.trim();
 }
 
 /**
@@ -502,14 +516,30 @@ export function provisionSimulators(opts: {
     return { allUdids: allUdids.slice(0, workers), clonedSimulators, freshUdids };
   }
 
+  // Determine the primary simulator's runtime so we only reuse/boot
+  // simulators on the same OS version. Mismatched runtimes cause
+  // xcodebuild test-without-building to fail.
+  const allSims = listSimulators();
+  const primarySim = existingUdids.length > 0
+    ? allSims.find((s) => s.udid === existingUdids[0])
+    : undefined;
+  const primaryRuntime = primarySim?.runtime;
+
   // Phase 0a: reuse healthy clones from previous runs (already booted)
   for (const udid of reusableUdids) {
     if (allUdids.length >= workers) break;
     if (existingSet.has(udid)) continue;
+    const sim = allSims.find((s) => s.udid === udid);
+    if (primaryRuntime && sim?.runtime !== primaryRuntime) {
+      // Runtime mismatch — delete the stale clone so it gets re-created
+      deleteSimulator(udid);
+      continue;
+    }
+    process.stderr.write(
+      `\x1b[2mReusing simulator ${udid} (${sim?.name ?? 'unknown'}) from previous run.\x1b[0m\n`,
+    );
     allUdids.push(udid);
     // Track as cloned so callers know to manage them
-    const sims = listSimulators();
-    const sim = sims.find((s) => s.udid === udid);
     if (sim) {
       clonedSimulators.push({ udid, name: sim.name, cloned: true });
     }
@@ -528,13 +558,20 @@ export function provisionSimulators(opts: {
     return { allUdids: allUdids.slice(0, workers), clonedSimulators, freshUdids };
   }
 
-  const all = listSimulators();
-  const matching = all.filter((s) => s.name === simulatorName && !existingSet.has(s.udid) && !allUdids.includes(s.udid));
+  const matching = allSims.filter((s) =>
+    s.name === simulatorName
+    && !existingSet.has(s.udid)
+    && !allUdids.includes(s.udid)
+    && (!primaryRuntime || s.runtime === primaryRuntime),
+  );
 
   // Phase 0b: collect already-booted simulators not yet assigned
   const alreadyBooted = matching.filter((s) => s.state === 'Booted');
   for (const sim of alreadyBooted) {
     if (allUdids.length >= workers) break;
+    process.stderr.write(
+      `\x1b[2mReusing simulator ${sim.udid} (${sim.name}) from previous run.\x1b[0m\n`,
+    );
     allUdids.push(sim.udid);
   }
 
@@ -562,52 +599,71 @@ export function provisionSimulators(opts: {
   // simctl clone requires a shutdown source. Prefer a shutdown one; if all
   // matching sims are booted, temporarily shut one down for cloning.
   const refreshed = listSimulators();
-  let source = refreshed.find((s) => s.name === simulatorName && s.state === 'Shutdown');
+  const runtimeMatch = (s: SimulatorInfo) =>
+    s.name === simulatorName && (!primaryRuntime || s.runtime === primaryRuntime);
+  let source = refreshed.find((s) => runtimeMatch(s) && s.state === 'Shutdown');
   let shutdownForClone = false;
   if (!source) {
     // All matching sims are booted — shut one down temporarily to use as clone source.
-    // Remove it from allUdids since it will be unavailable during cloning.
-    source = refreshed.find((s) => s.name === simulatorName);
-    if (source && source.state === 'Booted') {
-      shutdownSimulator(source.udid);
-      // Wait for the shutdown to take effect — simctl can return before
-      // the state fully propagates, causing clone to fail.
-      waitForSimulatorState(source.udid, 'Shutdown', 10_000);
+    // Never shut down sims in existingUdids — they may have an active agent session.
+    const candidate = refreshed.find((s) => runtimeMatch(s) && !existingSet.has(s.udid));
+    if (candidate && candidate.state === 'Booted') {
+      shutdownSimulator(candidate.udid);
+      waitForSimulatorState(candidate.udid, 'Shutdown', 10_000);
+      source = candidate;
       shutdownForClone = true;
-      // Remove from allUdids since it's temporarily down
-      const idx = allUdids.indexOf(source.udid);
+      const idx = allUdids.indexOf(candidate.udid);
       if (idx >= 0) allUdids.splice(idx, 1);
     }
   }
 
   if (!source) {
-    // No simulator to clone from — return what we have
-    return { allUdids, clonedSimulators, freshUdids };
-  }
-
-  try {
-    while (allUdids.length < workers) {
-      const cloneIndex = allUdids.length;
-      const cloneName = `${simulatorName} (Pilot Worker ${cloneIndex})`;
-      try {
-        const newUdid = cloneSimulator(source.udid, cloneName);
-        bootSimulator(newUdid);
-        allUdids.push(newUdid);
-        clonedSimulators.push({ udid: newUdid, name: cloneName, cloned: true });
-        freshUdids.add(newUdid);
-      } catch (err) {
-        process.stderr.write(
-          `Failed to clone simulator for worker ${cloneIndex}: ${err instanceof Error ? err.message : err}\n`,
-        );
-        break;
+    // No shutdown simulator available for cloning (the only matching sim is
+    // in active use). Create new simulators from scratch using the primary's
+    // device type and runtime — this doesn't require a shutdown source.
+    if (primarySim) {
+      while (allUdids.length < workers) {
+        const createIndex = allUdids.length;
+        const createName = `${simulatorName} (Pilot Worker ${createIndex})`;
+        try {
+          const newUdid = createSimulator(createName, primarySim.deviceType, primarySim.runtime);
+          bootSimulator(newUdid);
+          allUdids.push(newUdid);
+          clonedSimulators.push({ udid: newUdid, name: createName, cloned: true });
+          freshUdids.add(newUdid);
+        } catch (err) {
+          process.stderr.write(
+            `Failed to create simulator for worker ${createIndex}: ${err instanceof Error ? err.message : err}\n`,
+          );
+          break;
+        }
       }
     }
-  } finally {
-    // Re-boot the source if we shut it down for cloning, and re-add to pool
-    if (shutdownForClone) {
-      bootSimulator(source.udid);
-      if (!allUdids.includes(source.udid)) {
-        allUdids.unshift(source.udid);
+  } else {
+    try {
+      while (allUdids.length < workers) {
+        const cloneIndex = allUdids.length;
+        const cloneName = `${simulatorName} (Pilot Worker ${cloneIndex})`;
+        try {
+          const newUdid = cloneSimulator(source.udid, cloneName);
+          bootSimulator(newUdid);
+          allUdids.push(newUdid);
+          clonedSimulators.push({ udid: newUdid, name: cloneName, cloned: true });
+          freshUdids.add(newUdid);
+        } catch (err) {
+          process.stderr.write(
+            `Failed to clone simulator for worker ${cloneIndex}: ${err instanceof Error ? err.message : err}\n`,
+          );
+          break;
+        }
+      }
+    } finally {
+      // Re-boot the source if we shut it down for cloning, and re-add to pool
+      if (shutdownForClone) {
+        bootSimulator(source.udid);
+        if (!allUdids.includes(source.udid)) {
+          allUdids.unshift(source.udid);
+        }
       }
     }
   }

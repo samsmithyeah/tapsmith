@@ -305,6 +305,17 @@ async function ensureSequentialTargetDevice(
   config: Awaited<ReturnType<typeof loadConfig>>,
 ): Promise<{ selectedSerial?: string; launched: LaunchedEmulator[] }> {
   if (config.device) {
+    // If the device is an iOS simulator that's already booted, log reuse
+    if (config.platform === 'ios') {
+      const { listBootedSimulators } = await import('./ios-simulator.js');
+      const booted = listBootedSimulators();
+      const sim = booted.find((s) => s.udid === config.device);
+      if (sim) {
+        process.stderr.write(
+          `${DIM}Reusing simulator ${sim.udid} (${sim.name}) from previous run.${RESET}\n`,
+        );
+      }
+    }
     return { selectedSerial: config.device, launched: [] };
   }
 
@@ -325,6 +336,9 @@ async function ensureSequentialTargetDevice(
     const booted = listBootedSimulators();
     const matching = booted.find((s) => s.name === simulatorName || s.udid === simulatorName);
     if (matching) {
+      process.stderr.write(
+        `${DIM}Reusing simulator ${matching.udid} (${matching.name}) from previous run.${RESET}\n`,
+      );
       return { selectedSerial: matching.udid, launched: [] };
     }
 
@@ -1020,8 +1034,13 @@ async function main(): Promise<void> {
           // Only reuse simulators on the same runtime as the primary — mismatched
           // OS versions cause xcodebuild test-without-building to fail.
           const compatible = listCompatibleBootedSimulators(config.device!);
-          const others = compatible.filter((s) => s.udid !== config.device).map((s) => s.udid);
-          uiDeviceSerials = [config.device!, ...others].filter(Boolean);
+          const others = compatible.filter((s) => s.udid !== config.device);
+          for (const sim of others) {
+            process.stderr.write(
+              `${DIM}Reusing simulator ${sim.udid} (${sim.name}) from previous run.${RESET}\n`,
+            );
+          }
+          uiDeviceSerials = [config.device!, ...others.map((s) => s.udid)].filter(Boolean);
 
           if (uiDeviceSerials.length < config.workers && config.simulator) {
             const provision = provisionSimulators({
@@ -1112,8 +1131,13 @@ async function main(): Promise<void> {
             reusableUdids = staleResult.reusable;
           }
           const compatible = listCompatibleBootedSimulators(config.device!);
-          const others = compatible.filter((s) => s.udid !== config.device).map((s) => s.udid);
-          watchDeviceSerials = [config.device!, ...others].filter(Boolean);
+          const others = compatible.filter((s) => s.udid !== config.device);
+          for (const sim of others) {
+            process.stderr.write(
+              `${DIM}Reusing simulator ${sim.udid} (${sim.name}) from previous run.${RESET}\n`,
+            );
+          }
+          watchDeviceSerials = [config.device!, ...others.map((s) => s.udid)].filter(Boolean);
 
           if (watchDeviceSerials.length < config.workers && config.simulator) {
             const provision = provisionSimulators({
