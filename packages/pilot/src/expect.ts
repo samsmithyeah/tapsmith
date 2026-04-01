@@ -265,13 +265,11 @@ function wrapAssertionWithTrace(
     const selectorStr = selectorDescription(handle);
     const start = Date.now();
 
-    // Reserve action index but skip before-captures for assertions.
-    // Assertions are read-only — the screen state hasn't changed since the
-    // previous capture, so the before-screenshot would be redundant.  This
-    // eliminates the ~300ms blocking overhead per assertion on iOS.
-    await trace.collector.captureBeforeAction(
-      async () => undefined,
-      async () => undefined,
+    // Capture before-screenshot so the trace viewer shows the actual screen
+    // state when the assertion runs (not a stale screenshot from a prior action).
+    const { captures: beforeCaptures } = await trace.collector.captureBeforeAction(
+      trace.takeScreenshot,
+      trace.captureHierarchy,
     );
 
     let passed = true;
@@ -294,9 +292,9 @@ function wrapAssertionWithTrace(
         attempts: Math.max(1, Math.round((Date.now() - start) / POLL_INTERVAL_MS)),
         error: timeoutError,
         sourceLocation,
-        hasScreenshotBefore: false,
+        hasScreenshotBefore: !!beforeCaptures.screenshotBefore,
         hasScreenshotAfter: false,
-        hasHierarchyBefore: false,
+        hasHierarchyBefore: !!beforeCaptures.hierarchyBefore,
         hasHierarchyAfter: false,
       } as Parameters<typeof trace.collector.addAssertionEvent>[0]);
     });
@@ -335,9 +333,9 @@ function wrapAssertionWithTrace(
       attempts,
       error,
       sourceLocation,
-      hasScreenshotBefore: false,
+      hasScreenshotBefore: !!beforeCaptures.screenshotBefore,
       hasScreenshotAfter: false,
-      hasHierarchyBefore: false,
+      hasHierarchyBefore: !!beforeCaptures.hierarchyBefore,
       hasHierarchyAfter: false,
     } as Parameters<typeof trace.collector.addAssertionEvent>[0]);
 

@@ -108,8 +108,8 @@ export function ScreenshotPanel({ event, screenshots, highlightBounds, onScreens
 
   const bounds = (event.type === 'action' || event.type === 'assertion') ? event.bounds : undefined;
   const point = event.type === 'action' ? event.point : undefined;
-  // Show bounds overlay whenever bounds exist, on any tab
-  const showOverlay = !!bounds || (tab === 'action' && !!point);
+  // Show bounds + point overlay only on the "action" tab
+  const showOverlay = tab === 'action' && (!!bounds || !!point);
 
   return (
     <div class="screenshot-panel">

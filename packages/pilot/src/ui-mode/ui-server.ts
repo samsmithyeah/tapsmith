@@ -1934,6 +1934,7 @@ export async function startUIServer(
           serial: selectedWorker.deviceSerial,
           model: undefined,
           isEmulator: selectedWorker.deviceSerial.startsWith('emulator-'),
+          platform: ctx.config.platform,
         } satisfies ServerMessage));
       }
 
