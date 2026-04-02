@@ -191,14 +191,15 @@ function updateNodeInTree(
         const hasRunning = childStatuses.includes('running');
         const hasIdle = childStatuses.includes('idle');
         const hasFailed = childStatuses.includes('failed');
-        const hasPassed = childStatuses.includes('passed');
+        const allPassed = childStatuses.length > 0
+          && childStatuses.every((s) => s === 'passed' || s === 'skipped');
         const allIdle = childStatuses.every((s) => s === 'skipped' || s === 'idle');
         const parentStatus = hasRunning ? 'running'
           // Still running with idle children means more tests are expected —
           // keep 'running' so the parent doesn't flash to passed/failed mid-run.
           : (node.status === 'running' && hasIdle) ? 'running'
           : hasFailed ? 'failed'
-          : hasPassed ? 'passed'
+          : allPassed ? 'passed'
           : allIdle ? node.status
           : node.status;
         return { ...node, children: updatedChildren, status: parentStatus };
@@ -231,9 +232,10 @@ function rederiveTree(node: TestTreeNode): TestTreeNode {
   const children = node.children.map(rederiveTree);
   const childStatuses = flattenStatuses(children);
   const hasFailed = childStatuses.includes('failed');
-  const hasPassed = childStatuses.includes('passed');
+  const allPassed = childStatuses.length > 0
+    && childStatuses.every((s) => s === 'passed' || s === 'skipped');
   const status: TestNodeStatus = hasFailed ? 'failed'
-    : hasPassed ? 'passed'
+    : allPassed ? 'passed'
     : node.status === 'running' ? 'idle'
     : node.status;
   return { ...node, children, status };

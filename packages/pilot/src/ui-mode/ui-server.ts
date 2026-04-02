@@ -995,6 +995,9 @@ export async function startUIServer(
       },
     });
     child.setMaxListeners(20);
+    child.on('error', (err) => {
+      console.error(`${YELLOW}Worker ${id} process error: ${err.message}${RESET}`);
+    });
 
     const worker: UIWorkerHandle = {
       id,

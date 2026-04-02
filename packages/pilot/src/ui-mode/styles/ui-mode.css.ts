@@ -629,6 +629,7 @@ html, body, #app {
 .te-status-icon.passed { color: var(--color-success); }
 .te-status-icon.failed { color: var(--color-error); }
 .te-status-icon.skipped { color: var(--color-skipped); }
+.te-status-icon.pending { color: var(--color-accent); animation: pulse 1s infinite; }
 .te-status-icon.running { color: var(--color-accent); }
 .te-status-icon.running svg { animation: spin 1s linear infinite; }
 .te-status-icon.idle { color: var(--color-text-faint); }

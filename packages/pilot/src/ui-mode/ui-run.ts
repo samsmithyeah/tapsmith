@@ -32,13 +32,16 @@ import type { AnyTraceEvent } from '../trace/types.js';
 
 let ipcOpen = true;
 
-function send(msg: UIRunChildMessage): void {
-  if (!ipcOpen || !process.send) return;
-  try {
-    process.send(msg);
-  } catch {
-    ipcOpen = false;
-  }
+function send(msg: UIRunChildMessage): Promise<void> {
+  if (!ipcOpen || !process.send) return Promise.resolve();
+  return new Promise<void>((resolve) => {
+    try {
+      process.send!(msg, () => resolve());
+    } catch {
+      ipcOpen = false;
+      resolve();
+    }
+  });
 }
 
 function configFromSerialized(s: SerializedConfig, daemonAddress: string): PilotConfig {
@@ -187,7 +190,7 @@ async function handleRun(msg: UIRunMessage): Promise<void> {
 
   const results = collectResults(suiteResult);
 
-  send({
+  await send({
     type: 'file-done',
     filePath: msg.filePath,
     results: results.map((r) => serializeTestResult(r, 0)),
@@ -203,7 +206,9 @@ process.on('message', async (msg: UIRunMessage) => {
   try {
     if (msg.type === 'run') {
       await handleRun(msg);
-      process.exit(0);
+      // Disconnect IPC channel gracefully so all pending messages flush
+      // before the process exits (process.exit() can lose buffered IPC).
+      process.disconnect();
     }
   } catch (err) {
     const error = err instanceof Error ? err : new Error(String(err));

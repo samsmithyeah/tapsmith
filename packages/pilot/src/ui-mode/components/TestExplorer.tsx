@@ -5,13 +5,44 @@
  * per-node play buttons, watch toggles, and filtering.
  */
 
-import { useCallback, useEffect, useRef, useState } from 'preact/hooks';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'preact/hooks';
 import { ArrowLeft, Check, ChevronsDownUp, ChevronsUpDown, Circle, CircleSlash, Eye, Link, LoaderCircle, Play, Square, X } from 'lucide-preact';
 import type { TestTreeNode, ClientMessage } from '../ui-protocol.js';
 
 const ICON_SIZE = 13;
 const STATUS_SIZE = 12;
 const TOOLBAR_ICON_SIZE = 14;
+
+// ─── Pending helpers ───
+
+/** Build a map from node ID → parent ID by walking the tree. */
+function buildParentMap(roots: TestTreeNode[]): Map<string, string> {
+  const map = new Map<string, string>();
+  const walk = (node: TestTreeNode, parentId?: string) => {
+    if (parentId) map.set(node.id, parentId);
+    node.children?.forEach((c) => walk(c, node.id));
+  };
+  roots.forEach((r) => walk(r));
+  return map;
+}
+
+/** Collect a node and all its descendants. */
+function collectSubtreeIds(node: TestTreeNode, out: string[] = []): string[] {
+  out.push(node.id);
+  node.children?.forEach((c) => collectSubtreeIds(c, out));
+  return out;
+}
+
+/** Find a node by ID in the tree. */
+function findNode(roots: TestTreeNode[], id: string): TestTreeNode | undefined {
+  for (const root of roots) {
+    if (root.id === id) return root;
+    if (root.children) {
+      const found = findNode(root.children, id);
+      if (found) return found;
+    }
+  }
+}
 
 interface TestExplorerProps {
   files: TestTreeNode[]
@@ -44,6 +75,43 @@ export function TestExplorer(props: TestExplorerProps) {
     onToggleExpanded, onExpandAll, onCollapseAll, onSelectTest,
     onSetNameFilter, onSetStatusFilter, onSend, onStop, onToggleRunDeps,
   } = props;
+
+  const parentMap = useMemo(() => buildParentMap(files), [files]);
+  const [pendingIds, setPendingIds] = useState<Set<string>>(new Set());
+
+  // Clear pending IDs as nodes transition to running
+  useEffect(() => {
+    if (pendingIds.size === 0) return;
+    const stillPending = new Set<string>();
+    const check = (node: TestTreeNode) => {
+      if (pendingIds.has(node.id) && node.status === 'idle') stillPending.add(node.id);
+      node.children?.forEach(check);
+    };
+    files.forEach(check);
+    if (stillPending.size !== pendingIds.size) setPendingIds(stillPending);
+  }, [files, pendingIds]);
+
+  // Clear all pending when a run stops
+  useEffect(() => {
+    if (!isRunning && pendingIds.size > 0) setPendingIds(new Set());
+  }, [isRunning]); // eslint-disable-line
+
+  const handleSetPending = useCallback((nodeId: string) => {
+    const node = findNode(files, nodeId);
+    if (!node) return;
+    const ids = collectSubtreeIds(node);
+    // Walk up ancestors
+    let cur = parentMap.get(nodeId);
+    while (cur) {
+      ids.push(cur);
+      cur = parentMap.get(cur);
+    }
+    setPendingIds((prev) => {
+      const next = new Set(prev);
+      ids.forEach((id) => next.add(id));
+      return next;
+    });
+  }, [files, parentMap]);
 
   return (
     <div class="test-explorer">
@@ -121,6 +189,8 @@ export function TestExplorer(props: TestExplorerProps) {
             onSelectTest={onSelectTest}
             onSend={onSend}
             isRunning={isRunning}
+            pendingIds={pendingIds}
+            onSetPending={handleSetPending}
           />
         ))}
         {files.length === 0 && (
@@ -163,9 +233,11 @@ interface TreeNodeProps {
   onSelectTest: (testId: string | null) => void
   onSend: (msg: ClientMessage) => void
   isRunning: boolean
+  pendingIds: Set<string>
+  onSetPending: (nodeId: string) => void
 }
 
-function TreeNode({ node, depth, expandedNodes, selectedTestId, onToggleExpanded, onSelectTest, onSend, isRunning }: TreeNodeProps) {
+function TreeNode({ node, depth, expandedNodes, selectedTestId, onToggleExpanded, onSelectTest, onSend, isRunning, pendingIds, onSetPending }: TreeNodeProps) {
   const isExpanded = expandedNodes.has(node.id);
   const isSelected = selectedTestId === node.id;
   const hasChildren = node.children && node.children.length > 0;
@@ -185,8 +257,11 @@ function TreeNode({ node, depth, expandedNodes, selectedTestId, onToggleExpanded
     setFlashClass('');
   }, [node.status]);
 
+  const pending = pendingIds.has(node.id);
+
   const handleRun = useCallback((e: Event) => {
     e.stopPropagation();
+    onSetPending(node.id);
     if (node.type === 'project') {
       onSend({ type: 'run-project', projectName: node.name });
     } else if (node.type === 'file') {
@@ -194,7 +269,7 @@ function TreeNode({ node, depth, expandedNodes, selectedTestId, onToggleExpanded
     } else {
       onSend({ type: 'run-test', fullName: node.fullName, filePath: node.filePath });
     }
-  }, [node, onSend]);
+  }, [node, onSend, onSetPending]);
 
   const handleWatch = useCallback((e: Event) => {
     e.stopPropagation();
@@ -222,7 +297,7 @@ function TreeNode({ node, depth, expandedNodes, selectedTestId, onToggleExpanded
         )}
         {!hasChildren && <span class="te-chevron-spacer" />}
 
-        <StatusIcon status={node.status} />
+        <StatusIcon status={node.status} pending={pending} />
 
         <span class="te-name" title={node.fullName}>
           {node.type === 'project' ? `[${node.name}]` : node.name}
@@ -264,6 +339,8 @@ function TreeNode({ node, depth, expandedNodes, selectedTestId, onToggleExpanded
           onSelectTest={onSelectTest}
           onSend={onSend}
           isRunning={isRunning}
+          pendingIds={pendingIds}
+          onSetPending={onSetPending}
         />
       ))}
     </div>
@@ -272,7 +349,10 @@ function TreeNode({ node, depth, expandedNodes, selectedTestId, onToggleExpanded
 
 // ─── Status icon ───
 
-function StatusIcon({ status }: { status: TestTreeNode['status'] }) {
+function StatusIcon({ status, pending }: { status: TestTreeNode['status']; pending?: boolean }) {
+  if (pending && status === 'idle') {
+    return <span class="te-status-icon pending"><Circle size={STATUS_SIZE} /></span>;
+  }
   switch (status) {
     case 'passed':
       return <span class="te-status-icon passed"><Check size={STATUS_SIZE} /></span>;
