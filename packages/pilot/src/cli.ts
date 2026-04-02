@@ -1050,7 +1050,7 @@ async function main(): Promise<void> {
           // Only reuse simulators on the same runtime as the primary — mismatched
           // OS versions cause xcodebuild test-without-building to fail.
           const compatible = listCompatibleBootedSimulators(config.device!);
-          const others = compatible.filter((s) => s.udid !== config.device);
+          const others = compatible.filter((s) => s.udid !== config.device).slice(0, config.workers - 1);
           for (const sim of others) {
             process.stderr.write(
               `${DIM}Reusing simulator ${sim.udid} (${sim.name}) from previous run.${RESET}\n`,
@@ -1148,7 +1148,7 @@ async function main(): Promise<void> {
             reusableUdids = staleResult.reusable;
           }
           const compatible = listCompatibleBootedSimulators(config.device!);
-          const others = compatible.filter((s) => s.udid !== config.device);
+          const others = compatible.filter((s) => s.udid !== config.device).slice(0, config.workers - 1);
           for (const sim of others) {
             process.stderr.write(
               `${DIM}Reusing simulator ${sim.udid} (${sim.name}) from previous run.${RESET}\n`,
