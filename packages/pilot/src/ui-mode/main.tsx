@@ -99,6 +99,9 @@ function App() {
     return null;
   }, [tree.selectedTestId]);
 
+  const viewedTestNameRef = useRef(viewedTestName);
+  viewedTestNameRef.current = viewedTestName;
+
   const viewedTestFile = useMemo(() => {
     if (tree.selectedTestId) {
       const sep = tree.selectedTestId.indexOf('::');
@@ -108,14 +111,6 @@ function App() {
     }
     return '';
   }, [tree.selectedTestId]);
-
-  const currentTrace = viewedTestName ? testTraces.get(viewedTestName) : undefined;
-  const traceEvents = currentTrace?.events ?? EMPTY_EVENTS;
-  const actionEvents = currentTrace?.actionEvents ?? EMPTY_ACTION_EVENTS;
-  const screenshots = currentTrace?.screenshots ?? EMPTY_MAP;
-  const hierarchies = currentTrace?.hierarchies ?? EMPTY_MAP;
-  const sources = currentTrace?.sources ?? EMPTY_MAP;
-  const networkEntries = currentTrace?.network ?? EMPTY_NETWORK;
 
   // Find the viewed test node in the tree for duration/status
   const viewedTestNode = useMemo(() => {
@@ -131,6 +126,14 @@ function App() {
     }
     return find(tree.allFiles);
   }, [tree.selectedTestId, tree.allFiles]);
+
+  const currentTrace = viewedTestName && viewedTestNode?.type === 'test' ? testTraces.get(viewedTestName) : undefined;
+  const traceEvents = currentTrace?.events ?? EMPTY_EVENTS;
+  const actionEvents = currentTrace?.actionEvents ?? EMPTY_ACTION_EVENTS;
+  const screenshots = currentTrace?.screenshots ?? EMPTY_MAP;
+  const hierarchies = currentTrace?.hierarchies ?? EMPTY_MAP;
+  const sources = currentTrace?.sources ?? EMPTY_MAP;
+  const networkEntries = currentTrace?.network ?? EMPTY_NETWORK;
 
   // Metadata for trace viewer components
   const testDeviceSerial = useMemo(() => {
@@ -236,8 +239,11 @@ function App() {
         // auto-select in the tree — only failures trigger auto-selection.
         activeTestRef.current = msg.fullName;
 
-        setPinnedIndex(0);
-        setHoveredIndex(null);
+        // Only reset pin if the user is viewing this test (or no test selected)
+        if (!viewedTestNameRef.current || viewedTestNameRef.current === msg.fullName) {
+          setPinnedIndex(0);
+          setHoveredIndex(null);
+        }
         // Ensure trace data exists for this test, snapshotting its source file.
         // If trace data already exists (e.g. retry after infrastructure error
         // recovery), clear it so stale events from the failed attempt don't
@@ -366,8 +372,9 @@ function App() {
           return next;
         });
 
-        // Auto-pin to latest action for the active test
-        if ((ev.type === 'action' || ev.type === 'assertion') && testName === activeTestRef.current) {
+        // Auto-pin to latest action, but only when viewing the running test
+        if ((ev.type === 'action' || ev.type === 'assertion') && testName === activeTestRef.current
+          && (!viewedTestNameRef.current || viewedTestNameRef.current === testName)) {
           setPinnedIndex(ev.actionIndex);
         }
         break;
@@ -614,24 +621,16 @@ function App() {
         ) : null
       }
       actionsPanel={
-        actionEvents.length > 0 || isRunning ? (
-          <ActionsPanel
-            events={traceEvents}
-            actionEvents={actionEvents}
-            selectedIndex={selectedIndex}
-            pinnedIndex={pinnedIndex}
-            onHover={setHoveredIndex}
-            onPin={handleActionPin}
-            metadata={metadata}
-          />
-        ) : (
-          <div class="ui-empty-state">
-            <div class="ui-empty-icon">{'\u25b6'}</div>
-            <div class="ui-empty-title">No actions yet</div>
-            <div class="ui-empty-hint">Run tests to see actions here</div>
-            <div class="ui-empty-shortcut">Press <kbd>R</kbd> to run all</div>
-          </div>
-        )
+        <ActionsPanel
+          events={traceEvents}
+          actionEvents={actionEvents}
+          selectedIndex={selectedIndex}
+          pinnedIndex={pinnedIndex}
+          onHover={setHoveredIndex}
+          onPin={handleActionPin}
+          metadata={metadata}
+          showMetadata={viewedTestNode?.type === 'test'}
+        />
       }
       screenshotPanel={
         <div class="ui-screen-area">

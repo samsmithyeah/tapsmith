@@ -9,6 +9,7 @@ interface Props {
   onHover: (index: number | null) => void
   onPin: (index: number) => void
   metadata: TraceMetadata
+  showMetadata?: boolean
 }
 
 // Simple text-based icons — no emoji
@@ -64,10 +65,14 @@ function getSelectorDisplay(event: ActionTraceEvent | AssertionTraceEvent): stri
   }
 }
 
-export function ActionsPanel({ events, actionEvents, selectedIndex, pinnedIndex, onHover, onPin, metadata }: Props) {
+export function ActionsPanel({ events, actionEvents, selectedIndex, pinnedIndex, onHover, onPin, metadata, showMetadata }: Props) {
   const [tab, setTab] = useState<'actions' | 'metadata'>('actions');
   const [filter, setFilter] = useState('');
   const selectedRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!showMetadata && tab === 'metadata') setTab('actions');
+  }, [showMetadata, tab]);
 
   useEffect(() => {
     selectedRef.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
@@ -98,65 +103,74 @@ export function ActionsPanel({ events, actionEvents, selectedIndex, pinnedIndex,
     <div class="actions-panel">
       <div class="actions-header">
         <div class={`actions-header-tab${tab === 'actions' ? ' active' : ''}`} onClick={() => setTab('actions')}>Actions</div>
-        <div class={`actions-header-tab${tab === 'metadata' ? ' active' : ''}`} onClick={() => setTab('metadata')}>Metadata</div>
+        {showMetadata && <div class={`actions-header-tab${tab === 'metadata' ? ' active' : ''}`} onClick={() => setTab('metadata')}>Metadata</div>}
       </div>
 
       {tab === 'actions' && (
-        <>
-          <div class="actions-filter">
-            <input
-              type="text"
-              placeholder="Filter actions..."
-              value={filter}
-              onInput={e => setFilter((e.target as HTMLInputElement).value)}
-            />
-          </div>
-          <div class="actions-list">
-            {items.map((item, i) => {
-              if (item.kind === 'group-start') {
-                if (filterLower && !item.event.name.toLowerCase().includes(filterLower)) return null;
-                const isLifecycle = item.event.name === 'beforeAll Hooks' || item.event.name === 'beforeEach Hooks' || item.event.name === 'afterEach Hooks' || item.event.name === 'Test';
+        items.length > 0 ? (
+          <>
+            <div class="actions-filter">
+              <input
+                type="text"
+                placeholder="Filter actions..."
+                value={filter}
+                onInput={e => setFilter((e.target as HTMLInputElement).value)}
+              />
+            </div>
+            <div class="actions-list">
+              {items.map((item, i) => {
+                if (item.kind === 'group-start') {
+                  if (filterLower && !item.event.name.toLowerCase().includes(filterLower)) return null;
+                  const isLifecycle = item.event.name === 'beforeAll Hooks' || item.event.name === 'beforeEach Hooks' || item.event.name === 'afterEach Hooks' || item.event.name === 'Test';
+                  return (
+                    <div key={`g-${i}`} class={`group-item${isLifecycle ? ' lifecycle' : ''}`}>
+                      {isLifecycle ? '' : '\u25b8 '}{item.event.name}
+                    </div>
+                  );
+                }
+                if (item.kind === 'group-end') return null;
+
+                const event = item.event;
+                const label = getLabel(event);
+                const selector = getSelectorDisplay(event);
+                const matchesFilter = !filterLower ||
+                  label.toLowerCase().includes(filterLower) ||
+                  selector.toLowerCase().includes(filterLower);
+                if (!matchesFilter) return null;
+
+                const isSelected = item.actionIndex === selectedIndex;
+                const isPinned = item.actionIndex === pinnedIndex;
+                const isFailed = event.type === 'action' ? !event.success : !event.passed;
+                const [icon, iconClass] = getIcon(event);
+
                 return (
-                  <div key={`g-${i}`} class={`group-item${isLifecycle ? ' lifecycle' : ''}`}>
-                    {isLifecycle ? '' : '\u25b8 '}{item.event.name}
+                  <div
+                    key={`a-${item.actionIndex}`}
+                    ref={isSelected ? selectedRef : undefined}
+                    class={`action-item${isSelected ? ' selected' : ''}${isPinned ? ' pinned' : ''}${isFailed ? ' failed' : ''}`}
+                    onMouseEnter={() => onHover(item.actionIndex)}
+                    onMouseLeave={() => onHover(null)}
+                    onClick={() => onPin(item.actionIndex)}
+                  >
+                    <span class={`action-icon ${iconClass}`}>{icon}</span>
+                    <div class="action-details">
+                      <span class="action-name">{label}</span>
+                      {selector && <span class="action-selector-text">{selector}</span>}
+                    </div>
+                    <span class="action-duration">{event.duration}ms</span>
                   </div>
                 );
-              }
-              if (item.kind === 'group-end') return null;
-
-              const event = item.event;
-              const label = getLabel(event);
-              const selector = getSelectorDisplay(event);
-              const matchesFilter = !filterLower ||
-                label.toLowerCase().includes(filterLower) ||
-                selector.toLowerCase().includes(filterLower);
-              if (!matchesFilter) return null;
-
-              const isSelected = item.actionIndex === selectedIndex;
-              const isPinned = item.actionIndex === pinnedIndex;
-              const isFailed = event.type === 'action' ? !event.success : !event.passed;
-              const [icon, iconClass] = getIcon(event);
-
-              return (
-                <div
-                  key={`a-${item.actionIndex}`}
-                  ref={isSelected ? selectedRef : undefined}
-                  class={`action-item${isSelected ? ' selected' : ''}${isPinned ? ' pinned' : ''}${isFailed ? ' failed' : ''}`}
-                  onMouseEnter={() => onHover(item.actionIndex)}
-                  onMouseLeave={() => onHover(null)}
-                  onClick={() => onPin(item.actionIndex)}
-                >
-                  <span class={`action-icon ${iconClass}`}>{icon}</span>
-                  <div class="action-details">
-                    <span class="action-name">{label}</span>
-                    {selector && <span class="action-selector-text">{selector}</span>}
-                  </div>
-                  <span class="action-duration">{event.duration}ms</span>
-                </div>
-              );
-            })}
+              })}
+            </div>
+          </>
+        ) : (
+          <div class="ui-empty-state">
+            <div class="ui-empty-icon">{'\u25b6'}</div>
+            <div class="ui-empty-title">No actions yet</div>
+            <div class="ui-empty-hint">Run tests to see actions here</div>
+            <div class="ui-empty-shortcut">Press <kbd>R</kbd> to run all</div>
           </div>
-        </>
+        )
       )}
 
       {tab === 'metadata' && (
