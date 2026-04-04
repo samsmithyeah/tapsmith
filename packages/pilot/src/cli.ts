@@ -37,6 +37,7 @@ import {
   waitForDeviceStability,
   ensureAdbRoot,
 } from './emulator.js';
+import { isRecoverableInfrastructureError } from './worker-protocol.js';
 
 // ─── ANSI helpers ───
 
@@ -540,6 +541,75 @@ function parseArgs(argv: string[]): CliArgs {
   return args;
 }
 
+/**
+ * Provision additional device serials for multi-worker iOS/Android modes.
+ * Returns the full list of device serials (including the primary), or
+ * undefined if fewer than 2 devices are available.
+ */
+async function provisionMultiWorkerDevices(
+  config: Awaited<ReturnType<typeof loadConfig>>,
+  modeName: string,
+  opts?: { quiet?: boolean },
+): Promise<{ deviceSerials: string[] | undefined; launched: LaunchedEmulator[] }> {
+  let launched: LaunchedEmulator[] = [];
+  if (config.workers <= 1) return { deviceSerials: undefined, launched };
+
+  let serials: string[];
+  if (config.platform === 'ios') {
+    const { listCompatibleBootedSimulators, provisionSimulators, cleanupStaleSimulators } = await import('./ios-simulator.js');
+    let reusableUdids: string[] = [];
+    if (config.simulator) {
+      const staleResult = cleanupStaleSimulators(config.simulator);
+      reusableUdids = staleResult.reusable;
+    }
+    const compatible = listCompatibleBootedSimulators(config.device!);
+    const others = compatible.filter((s) => s.udid !== config.device).slice(0, config.workers - 1);
+    for (const sim of others) {
+      process.stderr.write(
+        `${DIM}Reusing simulator ${sim.udid} (${sim.name}) from previous run.${RESET}\n`,
+      );
+    }
+    serials = [config.device!, ...others.map((s) => s.udid)].filter(Boolean);
+
+    if (serials.length < config.workers && config.simulator) {
+      const provision = provisionSimulators({
+        simulatorName: config.simulator,
+        workers: config.workers,
+        existingUdids: serials,
+        appPath: config.app ? path.resolve(config.rootDir, config.app) : undefined,
+        reusableUdids,
+      });
+      serials = provision.allUdids;
+    }
+  } else {
+    const allConnected = listConnectedDeviceSerials();
+    const others = allConnected.filter((s) => s !== config.device);
+    serials = [config.device!, ...others].filter(Boolean);
+
+    if (serials.length < config.workers && config.launchEmulators) {
+      const provision = await provisionEmulators({
+        existingSerials: serials,
+        occupiedSerials: allConnected,
+        workers: config.workers,
+        avd: config.avd,
+      });
+      launched = provision.launched;
+      serials = provision.allSerials;
+    }
+  }
+
+  if (serials.length < 2) {
+    if (!opts?.quiet) {
+      process.stderr.write(
+        `${YELLOW}Only ${serials.length} device(s) available. ${modeName} needs 2+ devices for parallel. Using single-worker mode.${RESET}\n`,
+      );
+    }
+    return { deviceSerials: undefined, launched };
+  }
+
+  return { deviceSerials: serials, launched };
+}
+
 function printHelp(): void {
   console.log(`
 ${bold('pilot')} — Mobile app testing framework
@@ -566,6 +636,7 @@ ${bold('Options:')}
   --shard=x/y              Split tests across CI machines (e.g. --shard=1/4)
   --trace <mode>           Trace mode: off, on, on-first-retry, on-all-retries,
                            retain-on-failure, retain-on-first-failure
+  -c, --config <path>      Path to config file (default: pilot.config.ts)
   --force-install          Reinstall the APK even if already installed
   -v, --version            Print version
   -h, --help               Show this help
@@ -1034,66 +1105,9 @@ async function main(): Promise<void> {
           ? path.resolve(config.rootDir, config.outputDir, 'screenshots')
           : undefined;
 
-      // Collect additional device serials for multi-worker mode.
-      // The CLI already set up the first device above; we find more.
-      // If launchEmulators is enabled, provision additional emulators to
-      // match the requested worker count (same as the dispatcher does).
-      let uiDeviceSerials: string[] | undefined;
-      if (config.workers > 1) {
-        if (config.platform === 'ios') {
-          const { listCompatibleBootedSimulators, provisionSimulators, cleanupStaleSimulators } = await import('./ios-simulator.js');
-          let reusableUdids: string[] = [];
-          if (config.simulator) {
-            const staleResult = cleanupStaleSimulators(config.simulator);
-            reusableUdids = staleResult.reusable;
-          }
-          // Only reuse simulators on the same runtime as the primary — mismatched
-          // OS versions cause xcodebuild test-without-building to fail.
-          const compatible = listCompatibleBootedSimulators(config.device!);
-          const others = compatible.filter((s) => s.udid !== config.device).slice(0, config.workers - 1);
-          for (const sim of others) {
-            process.stderr.write(
-              `${DIM}Reusing simulator ${sim.udid} (${sim.name}) from previous run.${RESET}\n`,
-            );
-          }
-          uiDeviceSerials = [config.device!, ...others.map((s) => s.udid)].filter(Boolean);
-
-          if (uiDeviceSerials.length < config.workers && config.simulator) {
-            const provision = provisionSimulators({
-              simulatorName: config.simulator,
-              workers: config.workers,
-              existingUdids: uiDeviceSerials,
-              appPath: config.app ? path.resolve(config.rootDir, config.app) : undefined,
-              reusableUdids,
-            });
-            uiDeviceSerials = provision.allUdids;
-          }
-        } else {
-          const allConnected = listConnectedDeviceSerials();
-          const others = allConnected.filter((s) => s !== config.device);
-          uiDeviceSerials = [config.device!, ...others].filter(Boolean);
-
-          if (uiDeviceSerials.length < config.workers && config.launchEmulators) {
-            const provision = await provisionEmulators({
-              existingSerials: uiDeviceSerials,
-              occupiedSerials: allConnected,
-              workers: config.workers,
-              avd: config.avd,
-            });
-            launchedEmulators = [...launchedEmulators, ...provision.launched];
-            uiDeviceSerials = provision.allSerials;
-          }
-        }
-
-        if (uiDeviceSerials.length < 2) {
-          if (args.tsxReexec) {
-            process.stderr.write(
-              `${YELLOW}Only ${uiDeviceSerials.length} device(s) available. UI mode needs 2+ devices for parallel. Using single-worker mode.${RESET}\n`,
-            );
-          }
-          uiDeviceSerials = undefined;
-        }
-      }
+      const uiProvision = await provisionMultiWorkerDevices(config, 'UI mode', { quiet: !args.tsxReexec });
+      const uiDeviceSerials = uiProvision.deviceSerials;
+      launchedEmulators = [...launchedEmulators, ...uiProvision.launched];
 
       const uiServer = await startUIServer({
         config,
@@ -1137,60 +1151,9 @@ async function main(): Promise<void> {
           ? path.resolve(config.rootDir, config.outputDir, 'screenshots')
           : undefined;
 
-      // Collect additional device serials for multi-worker watch mode.
-      let watchDeviceSerials: string[] | undefined;
-      if (config.workers > 1) {
-        if (config.platform === 'ios') {
-          const { listCompatibleBootedSimulators, provisionSimulators, cleanupStaleSimulators } = await import('./ios-simulator.js');
-          let reusableUdids: string[] = [];
-          if (config.simulator) {
-            const staleResult = cleanupStaleSimulators(config.simulator);
-            reusableUdids = staleResult.reusable;
-          }
-          const compatible = listCompatibleBootedSimulators(config.device!);
-          const others = compatible.filter((s) => s.udid !== config.device).slice(0, config.workers - 1);
-          for (const sim of others) {
-            process.stderr.write(
-              `${DIM}Reusing simulator ${sim.udid} (${sim.name}) from previous run.${RESET}\n`,
-            );
-          }
-          watchDeviceSerials = [config.device!, ...others.map((s) => s.udid)].filter(Boolean);
-
-          if (watchDeviceSerials.length < config.workers && config.simulator) {
-            const provision = provisionSimulators({
-              simulatorName: config.simulator,
-              workers: config.workers,
-              existingUdids: watchDeviceSerials,
-              reusableUdids,
-            });
-            watchDeviceSerials = provision.allUdids;
-          }
-        } else {
-          const allConnected = listConnectedDeviceSerials();
-          const others = allConnected.filter((s) => s !== config.device);
-          watchDeviceSerials = [config.device!, ...others].filter(Boolean);
-
-          if (watchDeviceSerials.length < config.workers && config.launchEmulators) {
-            const provision = await provisionEmulators({
-              existingSerials: watchDeviceSerials,
-              occupiedSerials: allConnected,
-              workers: config.workers,
-              avd: config.avd,
-            });
-            launchedEmulators = [...launchedEmulators, ...provision.launched];
-            watchDeviceSerials = provision.allSerials;
-          }
-        }
-
-        if (watchDeviceSerials.length < 2) {
-          if (args.tsxReexec) {
-            process.stderr.write(
-              `${YELLOW}Only ${watchDeviceSerials.length} device(s) available. Watch mode needs 2+ devices for parallel. Using single-worker mode.${RESET}\n`,
-            );
-          }
-          watchDeviceSerials = undefined;
-        }
-      }
+      const watchProvision = await provisionMultiWorkerDevices(config, 'Watch mode', { quiet: !args.tsxReexec });
+      const watchDeviceSerials = watchProvision.deviceSerials;
+      launchedEmulators = [...launchedEmulators, ...watchProvision.launched];
 
       await runWatchMode({
         config,
@@ -1281,13 +1244,24 @@ async function main(): Promise<void> {
 
           reporter.onTestFileStart(file);
 
-          const suiteResult = await runTestFile(file, {
+          const suiteResult = await runTestFileWithRecovery(file, {
             config,
             device,
+            client,
             screenshotDir,
             reporter,
             projectUseOptions: project.use,
             projectName: project.name !== 'default' ? project.name : undefined,
+            sessionContext: {
+              label: `Device ${config.device}`,
+              config,
+              device,
+              client,
+              agentApkPath: resolvedAgentApk,
+              agentTestApkPath: resolvedAgentTestApk,
+              iosXctestrunPath: resolvedIosXctestrun,
+              deviceSerial: config.device,
+            },
           });
 
           const fileResults = collectResults(suiteResult);
@@ -1330,6 +1304,65 @@ async function main(): Promise<void> {
   }
 
   process.exit(sequentialExitCode);
+}
+
+// ─── Infrastructure error recovery for single-worker mode ───
+
+/**
+ * Run a test file with automatic retry on infrastructure errors (agent
+ * disconnection, gRPC unavailability, etc.). Mirrors the recovery logic
+ * in worker-runner.ts for multi-worker mode.
+ */
+async function runTestFileWithRecovery(
+  file: string,
+  opts: {
+    config: PilotConfig
+    device: Device
+    client: PilotGrpcClient
+    screenshotDir: string | undefined
+    reporter: ReporterDispatcher
+    projectUseOptions?: Record<string, unknown>
+    projectName?: string
+    sessionContext: import('./session-preflight.js').SessionPreflightContext
+  },
+): Promise<SuiteResult> {
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    try {
+      const suite = await runTestFile(file, {
+        config: opts.config,
+        device: opts.device,
+        screenshotDir: opts.screenshotDir,
+        reporter: opts.reporter,
+        abortFileOnError: isRecoverableInfrastructureError,
+        projectUseOptions: opts.projectUseOptions,
+        projectName: opts.projectName,
+      });
+      const fileResults = collectResults(suite);
+      const infraFailure = fileResults.find(
+        (r) => r.status === 'failed' && r.error && isRecoverableInfrastructureError(r.error),
+      );
+      if (!infraFailure) {
+        return suite;
+      }
+      if (attempt === 2) {
+        return suite;
+      }
+      process.stderr.write(
+        dim(`Recovering session after infrastructure error in ${path.basename(file)}: ${infraFailure.error?.message ?? 'unknown'}\n`),
+      );
+      await launchConfiguredApp(opts.sessionContext, `recovery for ${path.basename(file)}`, { allowSoftReset: false });
+    } catch (err) {
+      if (!isRecoverableInfrastructureError(err) || attempt === 2) {
+        throw err;
+      }
+      process.stderr.write(
+        dim(`Recovering session after infrastructure error in ${path.basename(file)}: ${err instanceof Error ? err.message : err}\n`),
+      );
+      await launchConfiguredApp(opts.sessionContext, `recovery for ${path.basename(file)}`, { allowSoftReset: false });
+    }
+  }
+  // Unreachable — loop always returns or throws
+  throw new Error(`Exhausted recovery attempts for ${path.basename(file)}`);
 }
 
 main().catch((err) => {

@@ -524,6 +524,76 @@ impl PilotServiceImpl {
         })
     }
 
+    /// Helper for methods where iOS is a no-op (returns success) and Android
+    /// runs a single ADB shell command.
+    async fn ios_noop_or_android_adb(
+        &self,
+        request_id: String,
+        android_cmd: &str,
+    ) -> Result<Response<proto::ActionResponse>, Status> {
+        let platform = self.require_platform().await?;
+        match platform {
+            Platform::Ios => Ok(Self::success_action_response(request_id)),
+            Platform::Android => self.adb_action(request_id, android_cmd).await,
+        }
+    }
+
+    /// Helper for grant/revoke permission which share identical structure:
+    /// iOS calls `ios::device::{action}_permission`, Android validates the
+    /// permission format then runs `pm {action}`.
+    async fn platform_permission_action(
+        &self,
+        request_id: String,
+        package_name: &str,
+        permission: &str,
+        action: &str,
+    ) -> Result<Response<proto::ActionResponse>, Status> {
+        let platform = self.require_platform().await?;
+        match platform {
+            Platform::Ios => {
+                let serial = self.active_serial().await?;
+                let result = match action {
+                    "grant" => {
+                        ios::device::grant_permission(&serial, package_name, permission).await
+                    }
+                    "revoke" => {
+                        ios::device::revoke_permission(&serial, package_name, permission).await
+                    }
+                    _ => unreachable!("platform_permission_action called with invalid action"),
+                };
+                match result {
+                    Ok(()) => Ok(Self::success_action_response(request_id)),
+                    Err(e) => Ok(self
+                        .action_error(request_id, "ACTION_FAILED", e.to_string())
+                        .await),
+                }
+            }
+            Platform::Android => {
+                Self::validate_permission(permission)?;
+                let cmd = format!("pm {action} {package_name} {permission}");
+                self.adb_action(request_id, &cmd).await
+            }
+        }
+    }
+
+    /// Helper for methods where iOS sends an agent command and Android runs an
+    /// ADB shell command.
+    async fn ios_agent_or_android_adb(
+        &self,
+        request_id: String,
+        ios_command: &AgentCommand,
+        android_cmd: &str,
+    ) -> Result<Response<proto::ActionResponse>, Status> {
+        let platform = self.require_platform().await?;
+        match platform {
+            Platform::Ios => {
+                let result = self.send_agent_command(ios_command).await;
+                self.make_action_response(request_id, result).await
+            }
+            Platform::Android => self.adb_action(request_id, android_cmd).await,
+        }
+    }
+
     async fn finish_launch(
         &self,
         request_id: String,
@@ -2139,32 +2209,9 @@ impl proto::pilot_service_server::PilotService for PilotServiceImpl {
 
         Self::validate_package_name(&req.package_name)?;
 
-        let platform = self.require_platform().await?;
-        match platform {
-            Platform::Ios => {
-                let serial = self.active_serial().await?;
-                // iOS uses service names: camera, photos, location, microphone, etc.
-                match ios::device::grant_permission(&serial, &req.package_name, &req.permission)
-                    .await
-                {
-                    Ok(()) => Ok(Response::new(proto::ActionResponse {
-                        request_id,
-                        success: true,
-                        error_type: String::new(),
-                        error_message: String::new(),
-                        screenshot: Vec::new(),
-                    })),
-                    Err(e) => Ok(self
-                        .action_error(request_id, "ACTION_FAILED", e.to_string())
-                        .await),
-                }
-            }
-            Platform::Android => {
-                Self::validate_permission(&req.permission)?;
-                let cmd = format!("pm grant {} {}", req.package_name, req.permission);
-                self.adb_action(request_id, &cmd).await
-            }
-        }
+        // iOS uses service names: camera, photos, location, microphone, etc.
+        self.platform_permission_action(request_id, &req.package_name, &req.permission, "grant")
+            .await
     }
 
     #[instrument(skip_all, fields(request_id))]
@@ -2177,31 +2224,8 @@ impl proto::pilot_service_server::PilotService for PilotServiceImpl {
 
         Self::validate_package_name(&req.package_name)?;
 
-        let platform = self.require_platform().await?;
-        match platform {
-            Platform::Ios => {
-                let serial = self.active_serial().await?;
-                match ios::device::revoke_permission(&serial, &req.package_name, &req.permission)
-                    .await
-                {
-                    Ok(()) => Ok(Response::new(proto::ActionResponse {
-                        request_id,
-                        success: true,
-                        error_type: String::new(),
-                        error_message: String::new(),
-                        screenshot: Vec::new(),
-                    })),
-                    Err(e) => Ok(self
-                        .action_error(request_id, "ACTION_FAILED", e.to_string())
-                        .await),
-                }
-            }
-            Platform::Android => {
-                Self::validate_permission(&req.permission)?;
-                let cmd = format!("pm revoke {} {}", req.package_name, req.permission);
-                self.adb_action(request_id, &cmd).await
-            }
-        }
+        self.platform_permission_action(request_id, &req.package_name, &req.permission, "revoke")
+            .await
     }
 
     #[instrument(skip_all, fields(request_id))]
@@ -2372,18 +2396,12 @@ impl proto::pilot_service_server::PilotService for PilotServiceImpl {
         let req = request.into_inner();
         let request_id = Self::request_id(&req.request_id);
 
-        let platform = self.require_platform().await?;
-        match platform {
-            Platform::Ios => {
-                let command = AgentCommand::HideKeyboard {};
-                let result = self.send_agent_command(&command).await;
-                self.make_action_response(request_id, result).await
-            }
-            Platform::Android => {
-                self.adb_action(request_id, "input keyevent KEYCODE_ESCAPE")
-                    .await
-            }
-        }
+        self.ios_agent_or_android_adb(
+            request_id,
+            &AgentCommand::HideKeyboard {},
+            "input keyevent KEYCODE_ESCAPE",
+        )
+        .await
     }
 
     #[instrument(skip_all, fields(request_id))]
@@ -2394,15 +2412,9 @@ impl proto::pilot_service_server::PilotService for PilotServiceImpl {
         let req = request.into_inner();
         let request_id = Self::request_id(&req.request_id);
 
-        let platform = self.require_platform().await?;
-        match platform {
-            // iOS has no notification shade — success no-op
-            Platform::Ios => Ok(Self::success_action_response(request_id)),
-            Platform::Android => {
-                self.adb_action(request_id, "cmd statusbar expand-notifications")
-                    .await
-            }
-        }
+        // iOS has no notification shade — success no-op
+        self.ios_noop_or_android_adb(request_id, "cmd statusbar expand-notifications")
+            .await
     }
 
     #[instrument(skip_all, fields(request_id))]
@@ -2413,15 +2425,9 @@ impl proto::pilot_service_server::PilotService for PilotServiceImpl {
         let req = request.into_inner();
         let request_id = Self::request_id(&req.request_id);
 
-        let platform = self.require_platform().await?;
-        match platform {
-            // iOS has no quick settings — success no-op
-            Platform::Ios => Ok(Self::success_action_response(request_id)),
-            Platform::Android => {
-                self.adb_action(request_id, "cmd statusbar expand-settings")
-                    .await
-            }
-        }
+        // iOS has no quick settings — success no-op
+        self.ios_noop_or_android_adb(request_id, "cmd statusbar expand-settings")
+            .await
     }
 
     #[instrument(skip_all, fields(request_id))]
@@ -2518,15 +2524,9 @@ impl proto::pilot_service_server::PilotService for PilotServiceImpl {
         let req = request.into_inner();
         let request_id = Self::request_id(&req.request_id);
 
-        let platform = self.require_platform().await?;
-        match platform {
-            // iOS simulator is always awake
-            Platform::Ios => Ok(Self::success_action_response(request_id)),
-            Platform::Android => {
-                self.adb_action(request_id, "input keyevent KEYCODE_WAKEUP")
-                    .await
-            }
-        }
+        // iOS simulator is always awake
+        self.ios_noop_or_android_adb(request_id, "input keyevent KEYCODE_WAKEUP")
+            .await
     }
 
     #[instrument(skip_all, fields(request_id))]

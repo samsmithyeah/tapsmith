@@ -235,28 +235,51 @@ async fn patch_xctestrun(
     let base = "TestConfigurations:0:TestTargets:0";
     let plist_buddy = "/usr/libexec/PlistBuddy";
 
-    // PlistBuddy "Add" fails if key exists, so we use it for new keys and
-    // accept non-zero exit (some keys may already exist from a previous run).
-    let commands = vec![
-        format!("Add :{base}:UITargetAppBundleIdentifier string {target_bundle_id}"),
-        format!("Add :{base}:EnvironmentVariables:PILOT_TARGET_BUNDLE_ID string {target_bundle_id}"),
-        format!("Add :{base}:EnvironmentVariables:PILOT_AGENT_PORT string {agent_port}"),
-        format!("Add :{base}:TestingEnvironmentVariables:PILOT_TARGET_BUNDLE_ID string {target_bundle_id}"),
-        format!("Add :{base}:TestingEnvironmentVariables:PILOT_AGENT_PORT string {agent_port}"),
-    ];
-    let mut commands = commands;
-    if attach_to_running_app {
-        commands.push(format!(
-            "Add :{base}:EnvironmentVariables:PILOT_ATTACH_TO_RUNNING_APP string 1"
-        ));
-        commands.push(format!(
-            "Add :{base}:TestingEnvironmentVariables:PILOT_ATTACH_TO_RUNNING_APP string 1"
-        ));
-    }
+    // PlistBuddy "Add" fails if the key already exists, which leaves stale
+    // values from a previous run. Use "Delete" then "Add" for each key so we
+    // always write the current values. Delete failures (key doesn't exist) are
+    // expected and harmless.
+    let keys: Vec<(String, String)> = {
+        let mut k = vec![
+            (
+                format!(":{base}:UITargetAppBundleIdentifier"),
+                format!("string {target_bundle_id}"),
+            ),
+            (
+                format!(":{base}:EnvironmentVariables:PILOT_TARGET_BUNDLE_ID"),
+                format!("string {target_bundle_id}"),
+            ),
+            (
+                format!(":{base}:EnvironmentVariables:PILOT_AGENT_PORT"),
+                format!("string {agent_port}"),
+            ),
+            (
+                format!(":{base}:TestingEnvironmentVariables:PILOT_TARGET_BUNDLE_ID"),
+                format!("string {target_bundle_id}"),
+            ),
+            (
+                format!(":{base}:TestingEnvironmentVariables:PILOT_AGENT_PORT"),
+                format!("string {agent_port}"),
+            ),
+        ];
+        if attach_to_running_app {
+            k.push((
+                format!(":{base}:EnvironmentVariables:PILOT_ATTACH_TO_RUNNING_APP"),
+                "string 1".to_string(),
+            ));
+            k.push((
+                format!(":{base}:TestingEnvironmentVariables:PILOT_ATTACH_TO_RUNNING_APP"),
+                "string 1".to_string(),
+            ));
+        }
+        k
+    };
 
     let mut cmd = std::process::Command::new(plist_buddy);
-    for c in &commands {
-        cmd.arg("-c").arg(c);
+    for (key, type_and_value) in &keys {
+        // Delete first (ignore failure if key doesn't exist), then Add.
+        cmd.arg("-c").arg(format!("Delete {key}"));
+        cmd.arg("-c").arg(format!("Add {key} {type_and_value}"));
     }
     cmd.arg(&patched_path);
 
@@ -264,8 +287,8 @@ async fn patch_xctestrun(
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        // PlistBuddy returns non-zero if any command fails (e.g. key already exists).
-        // Log but don't fail — the key may already be set from a previous run.
+        // PlistBuddy returns non-zero if any command fails (e.g. Delete on
+        // a key that doesn't exist yet). This is expected — log for debugging.
         debug!("PlistBuddy warnings (may be benign): {stderr}");
     }
 

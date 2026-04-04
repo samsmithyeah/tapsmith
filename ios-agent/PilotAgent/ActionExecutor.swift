@@ -102,21 +102,22 @@ class ActionExecutor {
         element.tap()
         Thread.sleep(forTimeInterval: 0.1)
 
-        // Select all text using keyboard shortcut
-        // On iOS, triple-tap selects all text in a text field
-        element.tap()
-        element.tap()
-        element.tap()
+        // Use Cmd+A via event synthesis to select all text, then delete.
+        // XCUIKeyboardKey rawValues can't be concatenated for modifier combos —
+        // we must use the EventSynthesizer's keyPress API instead.
+        if EventSynthesizer.keyPress(key: "a", modifiers: .command) {
+            Thread.sleep(forTimeInterval: 0.1)
+            if EventSynthesizer.keyPress(key: XCUIKeyboardKey.delete.rawValue) {
+                return
+            }
+        }
 
-        // Brief pause to let selection take effect
+        // Fallback: triple-tap to select all, then type backspace
+        element.tap()
+        element.tap()
+        element.tap()
         Thread.sleep(forTimeInterval: 0.1)
-
-        // Type empty string with select-all via XCUIElement
-        // Use cmd+A to select all, then delete
-        let selectAll = XCUIKeyboardKey.command.rawValue + "a"
-        element.typeText(selectAll)
-        Thread.sleep(forTimeInterval: 0.05)
-        element.typeText(XCUIKeyboardKey.delete.rawValue)
+        element.typeText("\u{8}") // backspace character
     }
 
     // MARK: - Swipe Actions

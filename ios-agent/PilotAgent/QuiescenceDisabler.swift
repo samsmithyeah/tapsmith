@@ -182,6 +182,17 @@ enum QuiescenceDisabler {
 /// private XCPointerEventPath/XCSynthesizedEventRecord methods from Swift.
 enum EventSynthesizer {
 
+    /// Detect the current interface orientation for event synthesis records.
+    /// Falls back to `.portrait` if the orientation can't be determined.
+    private static var currentOrientation: Int {
+        var orientation = UIInterfaceOrientation.portrait
+        if let scene = UIApplication.shared.connectedScenes
+            .compactMap({ $0 as? UIWindowScene }).first {
+            orientation = scene.interfaceOrientation
+        }
+        return orientation.rawValue
+    }
+
     /// Tap at a screen coordinate. Returns true if synthesis succeeded.
     static func tap(at point: CGPoint) -> Bool {
         return synthesizeTap(at: point, duration: 0.1)
@@ -231,7 +242,7 @@ enum EventSynthesizer {
         if recordObj.responds(to: recordInitSel) {
             let imp = recordObj.method(for: recordInitSel)
             typealias RMethod = @convention(c) (NSObject, Selector, NSString, Int) -> NSObject
-            record = unsafeBitCast(imp, to: RMethod.self)(recordObj, recordInitSel, "pilot-swipe" as NSString, UIInterfaceOrientation.portrait.rawValue)
+            record = unsafeBitCast(imp, to: RMethod.self)(recordObj, recordInitSel, "pilot-swipe" as NSString, currentOrientation)
         } else {
             record = (recordClass as! NSObject.Type).init()
         }
@@ -295,7 +306,7 @@ enum EventSynthesizer {
                 recordObj,
                 recordInitSel,
                 "pilot-drag" as NSString,
-                UIInterfaceOrientation.portrait.rawValue
+                currentOrientation
             )
         } else {
             record = (recordClass as! NSObject.Type).init()
@@ -340,7 +351,7 @@ enum EventSynthesizer {
         if recordObj.responds(to: recordInitSel) {
             let imp = recordObj.method(for: recordInitSel)
             typealias RecordInitMethod = @convention(c) (NSObject, Selector, NSString, Int) -> NSObject
-            record = unsafeBitCast(imp, to: RecordInitMethod.self)(recordObj, recordInitSel, "pilot-longpress" as NSString, UIInterfaceOrientation.portrait.rawValue)
+            record = unsafeBitCast(imp, to: RecordInitMethod.self)(recordObj, recordInitSel, "pilot-longpress" as NSString, currentOrientation)
         } else {
             record = (recordClass as! NSObject.Type).init()
         }
@@ -399,7 +410,7 @@ enum EventSynthesizer {
         if recordObj.responds(to: recordInitSel) {
             let rImp = recordObj.method(for: recordInitSel)
             typealias RMethod = @convention(c) (NSObject, Selector, NSString, Int) -> NSObject
-            record = unsafeBitCast(rImp, to: RMethod.self)(recordObj, recordInitSel, "pilot-key" as NSString, UIInterfaceOrientation.portrait.rawValue)
+            record = unsafeBitCast(rImp, to: RMethod.self)(recordObj, recordInitSel, "pilot-key" as NSString, currentOrientation)
         } else {
             record = (recordClass as! NSObject.Type).init()
         }
@@ -473,7 +484,10 @@ enum EventSynthesizer {
         let imp = proxy.method(for: sendSel)
         typealias SendMethod = @convention(c) (NSObject, Selector, NSString, UInt64, @escaping @convention(block) (NSError?) -> Void) -> Void
         let sendFunc = unsafeBitCast(imp, to: SendMethod.self)
-        sendFunc(proxy, sendSel, text as NSString, 30) { error in
+        // Use a moderate typing frequency. 30 chars/sec can drop characters
+        // in React Native apps where the JS bridge processes keystrokes async.
+        // 15 chars/sec (~67ms per keystroke) is reliable while still being fast.
+        sendFunc(proxy, sendSel, text as NSString, 15) { error in
             success = (error == nil)
             if let error = error {
                 NSLog("[EventSynth] _XCT_sendString error: %@", error.localizedDescription)
@@ -526,7 +540,7 @@ enum EventSynthesizer {
         if recordObj.responds(to: recordInitSel) {
             let rImp = recordObj.method(for: recordInitSel)
             typealias RMethod = @convention(c) (NSObject, Selector, NSString, Int) -> NSObject
-            record = unsafeBitCast(rImp, to: RMethod.self)(recordObj, recordInitSel, "pilot-type" as NSString, UIInterfaceOrientation.portrait.rawValue)
+            record = unsafeBitCast(rImp, to: RMethod.self)(recordObj, recordInitSel, "pilot-type" as NSString, currentOrientation)
         } else {
             record = (recordClass as! NSObject.Type).init()
         }
@@ -597,7 +611,7 @@ enum EventSynthesizer {
             let imp = recordObj.method(for: recordInitSel)
             typealias RecordInitMethod = @convention(c) (NSObject, Selector, NSString, Int) -> NSObject
             let initFunc = unsafeBitCast(imp, to: RecordInitMethod.self)
-            record = initFunc(recordObj, recordInitSel, "pilot-tap" as NSString, UIInterfaceOrientation.portrait.rawValue)
+            record = initFunc(recordObj, recordInitSel, "pilot-tap" as NSString, currentOrientation)
         } else {
             record = (recordClass as! NSObject.Type).init()
         }

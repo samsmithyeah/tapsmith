@@ -69,6 +69,12 @@ function ensureNetworkSetupAccess(): boolean {
   // One-time setup: create a sudoers rule for this specific user via osascript
   // admin dialog. The dialog accepts any admin account's credentials.
   const username = os.userInfo().username;
+  // Validate username contains only safe characters to prevent shell injection.
+  // macOS usernames are restricted to alphanumeric, underscore, hyphen, and dot.
+  if (!/^[a-zA-Z0-9_.-]+$/.test(username)) {
+    console.warn(`[pilot] Unexpected characters in username '${username}' — skipping network setup.`);
+    return false;
+  }
   console.log('[pilot] iOS network tracing requires one-time setup (a macOS admin password dialog will appear)...');
   try {
     const rule = `${username} ALL=(ALL) NOPASSWD: /usr/sbin/networksetup`;
