@@ -13,7 +13,6 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as os from 'node:os';
-import { execFileSync } from 'node:child_process';
 import type { PilotConfig, UseOptions } from './config.js';
 import type { Device } from './device.js';
 import type { PilotReporter } from './reporter.js';
@@ -24,121 +23,7 @@ import { shouldRecord, shouldRetain } from './trace/trace-mode.js';
 import { packageTrace } from './trace/trace-packager.js';
 import { TraceCollector, setActiveTraceCollector, withActiveTraceCollector } from './trace/trace-collector.js';
 import type { AnyTraceEvent } from './trace/types.js';
-
-// ─── macOS Proxy for iOS Network Capture ───
-
-/**
- * Detect the active macOS network service (e.g. "Wi-Fi", "Ethernet").
- */
-function detectActiveNetworkService(): string {
-  try {
-    const order = execFileSync('networksetup', ['-listnetworkserviceorder'], { encoding: 'utf8' });
-    let currentService: string | null = null;
-    for (const line of order.split('\n')) {
-      const trimmed = line.trim();
-      if (trimmed.startsWith('(') && !trimmed.includes('Hardware Port')) {
-        const match = trimmed.match(/^\(\d+\)\s+(.+)$/);
-        if (match) currentService = match[1];
-      }
-      if (currentService && trimmed.includes('Hardware Port')) {
-        const devMatch = trimmed.match(/Device:\s*(\w+)/);
-        if (devMatch?.[1]) {
-          try {
-            const ifout = execFileSync('ifconfig', [devMatch[1]], { encoding: 'utf8' });
-            if (ifout.includes('inet ') && ifout.includes('status: active')) return currentService;
-          } catch { /* interface not found */ }
-        }
-        currentService = null;
-      }
-    }
-  } catch { /* networksetup not available */ }
-  return 'Wi-Fi';
-}
-
-/**
- * Ensure NOPASSWD sudo access to networksetup for the current user.
- * Shows a macOS admin dialog the first time. Returns true if setup succeeded.
- */
-function ensureNetworkSetupAccess(): boolean {
-  // Already have access?
-  try {
-    execFileSync('sudo', ['-n', 'networksetup', '-getwebproxy', 'Wi-Fi'], { stdio: 'pipe' });
-    return true;
-  } catch { /* need to set up access */ }
-
-  // One-time setup: create a sudoers rule for this specific user via osascript
-  // admin dialog. The dialog accepts any admin account's credentials.
-  const username = os.userInfo().username;
-  // Validate username contains only safe characters to prevent shell injection.
-  // macOS usernames are restricted to alphanumeric, underscore, hyphen, and dot.
-  if (!/^[a-zA-Z0-9_.-]+$/.test(username)) {
-    console.warn(`[pilot] Unexpected characters in username '${username}' — skipping network setup.`);
-    return false;
-  }
-  console.log('[pilot] iOS network tracing requires one-time setup (a macOS admin password dialog will appear)...');
-  try {
-    const rule = `${username} ALL=(ALL) NOPASSWD: /usr/sbin/networksetup`;
-    const cmd = `echo '${rule}' > /etc/sudoers.d/zzz-pilot-networksetup && chmod 440 /etc/sudoers.d/zzz-pilot-networksetup`;
-    execFileSync('osascript', ['-e', `do shell script "${cmd}" with administrator privileges`], {
-      stdio: 'pipe',
-      timeout: 60_000,
-    });
-    // Verify it worked
-    try {
-      execFileSync('sudo', ['-n', 'networksetup', '-getwebproxy', 'Wi-Fi'], { stdio: 'pipe' });
-      console.log('[pilot] Setup complete — iOS network tracing will work automatically from now on.');
-      return true;
-    } catch { return false; }
-  } catch {
-    console.warn('[pilot] Setup cancelled — iOS network tracing disabled for this run.');
-    console.warn('[pilot] To set up manually, ask an admin to run:');
-    console.warn(`[pilot]   sudo sh -c 'echo "${username} ALL=(ALL) NOPASSWD: /usr/sbin/networksetup" > /etc/sudoers.d/zzz-pilot-networksetup && chmod 440 /etc/sudoers.d/zzz-pilot-networksetup'`);
-    return false;
-  }
-}
-
-let _activeProxyService: string | null = null;
-let _proxyExitHandlerInstalled = false;
-
-function installProxyExitHandler(): void {
-  if (_proxyExitHandlerInstalled) return;
-  _proxyExitHandlerInstalled = true;
-  const cleanup = () => {
-    if (_activeProxyService) {
-      try {
-        execFileSync('sudo', ['-n', 'networksetup', '-setwebproxystate', _activeProxyService, 'off'], { stdio: 'pipe' });
-        execFileSync('sudo', ['-n', 'networksetup', '-setsecurewebproxystate', _activeProxyService, 'off'], { stdio: 'pipe' });
-      } catch { /* best-effort */ }
-      _activeProxyService = null;
-    }
-  };
-  process.on('exit', cleanup);
-  process.on('SIGINT', () => { cleanup(); process.exit(130); });
-  process.on('SIGTERM', () => { cleanup(); process.exit(143); });
-}
-
-function setMacProxy(port: number): string | null {
-  if (!ensureNetworkSetupAccess()) return null;
-  const service = detectActiveNetworkService();
-  try {
-    execFileSync('sudo', ['-n', 'networksetup', '-setwebproxy', service, '127.0.0.1', String(port)], { stdio: 'pipe' });
-    execFileSync('sudo', ['-n', 'networksetup', '-setsecurewebproxy', service, '127.0.0.1', String(port)], { stdio: 'pipe' });
-  } catch {
-    console.warn('[pilot] Failed to set macOS proxy — network capture disabled.');
-    return null;
-  }
-  _activeProxyService = service;
-  installProxyExitHandler();
-  return service;
-}
-
-function clearMacProxy(service: string): void {
-  try {
-    execFileSync('sudo', ['-n', 'networksetup', '-setwebproxystate', service, 'off'], { stdio: 'pipe' });
-    execFileSync('sudo', ['-n', 'networksetup', '-setsecurewebproxystate', service, 'off'], { stdio: 'pipe' });
-  } catch { /* best-effort */ }
-  _activeProxyService = null;
-}
+import { setMacProxy, clearMacProxy } from './macos-proxy.js';
 
 // ─── Result types ───
 

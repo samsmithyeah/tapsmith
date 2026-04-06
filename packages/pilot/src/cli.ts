@@ -339,7 +339,11 @@ async function ensureSequentialTargetDevice(
   // ─── iOS: use simulator instead of ADB device ───
   if (config.platform === 'ios') {
     const { listBootedSimulators, provisionSimulator, cleanupStaleSimulators } = await import('./ios-simulator.js');
-    const simulatorName = config.simulator ?? 'iPhone 17';
+    if (!config.simulator) {
+      console.error(red('No simulator specified. Set `simulator` in your config (e.g. simulator: "iPhone 16").'));
+      process.exit(1);
+    }
+    const simulatorName = config.simulator;
 
     // Clean up stale clones from previous runs
     const staleResult = cleanupStaleSimulators(simulatorName);

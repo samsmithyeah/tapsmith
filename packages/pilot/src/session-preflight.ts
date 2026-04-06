@@ -85,6 +85,11 @@ export async function launchConfiguredApp(
     return;
   }
 
+  // Android uses separate terminate → clear → launch steps. Unlike iOS,
+  // Android's terminateApp reliably kills the process before clearAppData
+  // runs, and launchApp doesn't race with a dying process. iOS must use
+  // the atomic restartApp path (above) to avoid reconnecting to a stale
+  // process that's mid-teardown after clearAppData.
   try {
     await ctx.device.terminateApp(ctx.config.package);
   } catch {

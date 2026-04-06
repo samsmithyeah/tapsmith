@@ -458,3 +458,37 @@ describe('test.use()', () => {
     expect(flat.every((t) => t.status === 'passed')).toBe(true);
   });
 });
+
+// ─── beforeAll failure ───
+
+describe('beforeAll failure marks all tests as failed', () => {
+  it('marks flat tests as failed with the beforeAll error', async () => {
+    pushContext();
+    pilotBeforeAll(async () => { throw new Error('setup exploded'); });
+    pilotTest('test-a', async () => {});
+    pilotTest('test-b', async () => {});
+    const ctx = popContext();
+    const result = await runSuiteContext(ctx, '', [], [], makeOpts());
+    const flat = collectResults(result);
+    expect(flat).toHaveLength(2);
+    expect(flat[0].status).toBe('failed');
+    expect(flat[0].error?.message).toBe('setup exploded');
+    expect(flat[1].status).toBe('failed');
+    expect(flat[1].error?.message).toBe('setup exploded');
+  });
+
+  it('marks nested describe tests as failed', async () => {
+    pushContext();
+    pilotBeforeAll(async () => { throw new Error('boom'); });
+    pilotDescribe('inner', () => {
+      pilotTest('nested-test', async () => {});
+    });
+    const ctx = popContext();
+    const result = await runSuiteContext(ctx, 'root', [], [], makeOpts());
+    const flat = collectResults(result);
+    expect(flat).toHaveLength(1);
+    expect(flat[0].status).toBe('failed');
+    expect(flat[0].fullName).toBe('root > inner > nested-test');
+    expect(flat[0].error?.message).toBe('boom');
+  });
+});

@@ -114,11 +114,9 @@ pub enum AgentCommand {
         text: String,
     },
     GetClipboard {},
-    #[allow(dead_code)]
     LaunchApp {
         package: String,
     },
-    #[allow(dead_code)]
     TerminateApp {
         package: String,
     },

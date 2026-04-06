@@ -134,8 +134,8 @@ export function rebootSimulator(udid: string): void {
     const sim = sims.find((s) => s.udid === udid);
     if (!sim || sim.state === 'Shutdown') break;
     if (sim.state === 'Booted') break; // Already booted (shutdown was no-op)
-    // Still shutting down — wait
-    execFileSync('sleep', ['0.5']);
+    // Still shutting down — wait (busy-loop with Atomics for sub-second sync sleep)
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 500);
   }
 
   bootSimulator(udid);
@@ -145,7 +145,7 @@ export function rebootSimulator(udid: string): void {
   while (Date.now() < bootDeadline) {
     const result = probeSimulatorHealth(udid);
     if (result.healthy) return;
-    execFileSync('sleep', ['1']);
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 1000);
   }
 }
 
@@ -229,8 +229,7 @@ function waitForSimulatorState(udid: string, expectedState: string, timeoutMs: n
     const sims = listSimulators();
     const sim = sims.find((s) => s.udid === udid);
     if (sim?.state === expectedState) return;
-    // Synchronous sleep — acceptable in provisioning code
-    execFileSync('sleep', ['0.5'], { timeout: 2_000 });
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 500);
   }
 }
 
