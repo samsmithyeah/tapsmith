@@ -1054,9 +1054,13 @@ async function main(): Promise<void> {
       }
     }
 
-    // If tracing with network capture, ensure adb root BEFORE starting agent
-    // so that the adbd restart doesn't disrupt UIAutomator2's accessibility service.
+    // Pre-acquire sudo for iOS proxy or adb root for Android BEFORE starting
+    // agent so setup time isn't attributed to the first test.
     const traceConfig = resolveTraceConfig(config.trace);
+    if (config.platform === 'ios' && traceConfig.mode !== 'off' && traceConfig.network) {
+      const { ensureSudoAccess } = await import('./macos-proxy.js');
+      ensureSudoAccess();
+    }
     if (config.platform !== 'ios' && traceConfig.mode !== 'off' && traceConfig.network && config.device) {
       const restarted = ensureAdbRoot(config.device);
       if (restarted) {

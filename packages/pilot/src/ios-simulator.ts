@@ -75,6 +75,7 @@ export function listSimulators(): SimulatorInfo[] {
 export function getSimulatorScreenScale(udid: string): number {
   const sim = listSimulators().find((s) => s.udid === udid);
   if (sim && /iPad/i.test(sim.name)) return 2;
+  if (sim && /iPhone (6|7|8|SE|XR|11)(?!.*Plus|.*Max|.*Pro)/i.test(sim.name)) return 2;
   return 3;
 }
 

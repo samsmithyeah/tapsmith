@@ -1797,6 +1797,9 @@ impl proto::pilot_service_server::PilotService for PilotServiceImpl {
                 };
 
                 if req.clear_data {
+                    // Terminate the app first to avoid file access conflicts
+                    // when clearing the data container.
+                    let _ = ios::device::terminate_app(&serial, &req.package_name).await;
                     // Clear the data container (AsyncStorage, caches, etc.)
                     // without uninstalling the app.
                     match ios::device::get_app_container(&serial, &req.package_name).await {

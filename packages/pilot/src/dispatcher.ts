@@ -44,6 +44,8 @@ import {
   listCompatibleBootedSimulators,
   type ClonedSimulator,
 } from './ios-simulator.js';
+import { resolveTraceConfig } from './trace/types.js';
+import { ensureSudoAccess } from './macos-proxy.js';
 
 const DIM = '\x1b[2m';
 const YELLOW = '\x1b[33m';
@@ -330,6 +332,15 @@ export async function runParallel(opts: DispatcherOptions): Promise<FullResult> 
       const pilotPkgDir = path.resolve(__dirname, '..');
       const localTsx = path.join(pilotPkgDir, 'node_modules', '.bin', 'tsx');
       tsxBin = fs.existsSync(localTsx) ? localTsx : 'tsx';
+    }
+
+    // iOS: pre-acquire sudo access for network capture in the main process
+    // so workers don't each independently prompt for a password.
+    if (isIos) {
+      const traceConfig = resolveTraceConfig(config.trace);
+      if (traceConfig.mode !== 'off' && traceConfig.network) {
+        ensureSudoAccess();
+      }
     }
 
     // Serialize config for workers

@@ -53,13 +53,27 @@ class SnapshotElementFinder {
         // an empty tree before the accessibility connection is established.
         // Retry with short delays to let the tree populate.
         let resolvedDict: [XCUIElement.AttributeName: Any]
-        do {
-            let snapshot = try app.snapshot()
-            resolvedDict = snapshot.dictionaryRepresentation
-        } catch {
-            NSLog("[PilotSnapshot] Snapshot failed: \(error)")
-            throw AgentError.elementNotFound("Snapshot failed: \(error)")
+        var lastError: Error?
+        var snapshot: XCUIElementSnapshot?
+        for _ in 0..<5 {
+            do {
+                let s = try app.snapshot()
+                if !s.dictionaryRepresentation.isEmpty {
+                    snapshot = s
+                    break
+                }
+            } catch {
+                lastError = error
+            }
+            Thread.sleep(forTimeInterval: 0.2)
         }
+        guard let resolvedSnapshot = snapshot else {
+            let msg = lastError.map { "Snapshot failed after retries: \($0)" }
+                ?? "Snapshot returned empty tree after retries"
+            NSLog("[PilotSnapshot] \(msg)")
+            throw AgentError.elementNotFound(msg)
+        }
+        resolvedDict = resolvedSnapshot.dictionaryRepresentation
 
         // Convert to string-keyed dict for easier processing
         let snapshotDict = convertKeys(resolvedDict)
