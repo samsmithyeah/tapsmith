@@ -24,6 +24,7 @@ import { packageTrace } from './trace/trace-packager.js';
 import { TraceCollector, setActiveTraceCollector, withActiveTraceCollector } from './trace/trace-collector.js';
 import type { AnyTraceEvent } from './trace/types.js';
 import { setMacProxy, clearMacProxy } from './macos-proxy.js';
+import { getSimulatorScreenScale } from './ios-simulator.js';
 
 // ─── Result types ───
 
@@ -822,7 +823,9 @@ async function runSuiteContext(
               device: {
                 serial: opts.config.device ?? 'unknown',
                 isEmulator: (opts.config.device ?? '').startsWith('emulator-'),
-                devicePixelRatio: opts.config.platform === 'ios' ? 3 : undefined,
+                devicePixelRatio: opts.config.platform === 'ios' && opts.config.device
+                  ? getSimulatorScreenScale(opts.config.device)
+                  : undefined,
               },
               pilotVersion: version,
               error: error?.message,

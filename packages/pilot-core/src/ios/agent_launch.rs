@@ -281,20 +281,20 @@ async fn patch_xctestrun(
     };
 
     // First pass: delete all keys (failures are expected if keys don't exist yet)
-    let mut del_cmd = std::process::Command::new(plist_buddy);
+    let mut del_cmd = tokio::process::Command::new(plist_buddy);
     for (key, _) in &keys {
         del_cmd.arg("-c").arg(format!("Delete {key}"));
     }
     del_cmd.arg(&patched_path);
-    let _ = del_cmd.output();
+    let _ = del_cmd.output().await;
 
     // Second pass: add all keys (failures here are real errors)
-    let mut add_cmd = std::process::Command::new(plist_buddy);
+    let mut add_cmd = tokio::process::Command::new(plist_buddy);
     for (key, type_and_value) in &keys {
         add_cmd.arg("-c").arg(format!("Add {key} {type_and_value}"));
     }
     add_cmd.arg(&patched_path);
-    let output = add_cmd.output().context("Failed to run PlistBuddy")?;
+    let output = add_cmd.output().await.context("Failed to run PlistBuddy")?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);

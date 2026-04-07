@@ -161,6 +161,7 @@ export interface DeviceInfoMessage {
   screenHeight?: number
   platform?: 'android' | 'ios'
   pilotVersion?: string
+  devicePixelRatio?: number
 }
 
 export interface SourceMessage {

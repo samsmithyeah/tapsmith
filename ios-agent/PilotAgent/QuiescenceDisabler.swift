@@ -15,7 +15,69 @@ import ObjectiveC
 /// 3. Direct event synthesis: Bypass XCUIElement/XCUICoordinate entirely using
 ///    XCTest's private XCSynthesizedEventRecord + XCPointerEventPath APIs.
 ///    This is the same approach used by Maestro and Appium/WebDriverAgent.
+///
+/// ## Tested Xcode versions
+///
+/// The swizzled methods are private XCTest APIs that can change between Xcode
+/// releases. This code has been tested and confirmed working on:
+///
+/// - **Xcode 16.x** (iOS 18 simulators) — uses `waitForQuiescenceIncludingAnimationsIdle:`
+/// - **Xcode 26.x** (iOS 26 simulators) — added 2-param and 3-param variants of
+///   `waitForQuiescenceIncludingAnimationsIdle:isPreEvent:` and
+///   `waitForQuiescenceIncludingAnimationsIdle:usingActivity:isPreEvent:`
+///
+/// If Apple renames or removes these methods in a future Xcode, `disableViaRuntime()`
+/// will log warnings (look for "[Quiescence] WARNING") and `verifySwizzleTargetsExist()`
+/// will return false. Actions will still work via direct event synthesis (strategy 3)
+/// but may be slower due to quiescence timeouts.
 enum QuiescenceDisabler {
+
+    // MARK: - Health Check
+
+    /// Verify that the private XCTest methods we need to swizzle still exist.
+    /// Call at agent startup to detect Xcode updates that may have renamed or
+    /// removed the methods. Returns true if at least one quiescence-wait method
+    /// and the core event synthesis classes are present.
+    static func verifySwizzleTargetsExist() -> Bool {
+        var healthy = true
+
+        // Check quiescence methods on XCUIApplicationProcess
+        guard let processClass = NSClassFromString("XCUIApplicationProcess") else {
+            NSLog("[Quiescence] HEALTH CHECK FAILED: XCUIApplicationProcess class not found")
+            return false
+        }
+
+        let quiescenceSelectors = [
+            "waitForQuiescenceIncludingAnimationsIdle:isPreEvent:",
+            "waitForQuiescenceIncludingAnimationsIdle:usingActivity:isPreEvent:",
+            "waitForQuiescenceIncludingAnimationsIdle:",
+        ]
+
+        let foundAny = quiescenceSelectors.contains { selName in
+            class_getInstanceMethod(processClass, NSSelectorFromString(selName)) != nil
+        }
+
+        if !foundAny {
+            NSLog("[Quiescence] HEALTH CHECK WARNING: No known quiescence-wait methods found on XCUIApplicationProcess. "
+                + "This Xcode version may have renamed them — quiescence disabling may not work.")
+            healthy = false
+        }
+
+        // Check event synthesis classes
+        if objc_lookUpClass("XCPointerEventPath") == nil {
+            NSLog("[Quiescence] HEALTH CHECK WARNING: XCPointerEventPath class not found")
+            healthy = false
+        }
+        if objc_lookUpClass("XCSynthesizedEventRecord") == nil {
+            NSLog("[Quiescence] HEALTH CHECK WARNING: XCSynthesizedEventRecord class not found")
+            healthy = false
+        }
+
+        if healthy {
+            NSLog("[Quiescence] Health check passed — swizzle targets present")
+        }
+        return healthy
+    }
 
     // MARK: - Quiescence Disable
 

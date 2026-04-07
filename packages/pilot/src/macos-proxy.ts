@@ -159,7 +159,7 @@ export function clearMacProxy(service: string): void {
 
 const BOLD = '\x1b[1m'
 const RED = '\x1b[31m'
-const SUDOERS_FILE = '/etc/sudoers.d/pilot-networksetup'
+const SUDOERS_FILE = '/etc/sudoers.d/zzz-pilot-networksetup'
 
 /**
  * Build the sudoers rule content for the current user.
@@ -167,6 +167,9 @@ const SUDOERS_FILE = '/etc/sudoers.d/pilot-networksetup'
  */
 export function buildSudoersRule(): string {
   const user = process.env.USER ?? process.env.LOGNAME ?? execFileSync('whoami', { encoding: 'utf8' }).trim()
+  if (!/^[a-zA-Z0-9_.-]+$/.test(user)) {
+    throw new Error(`Refusing to write sudoers rule: username "${user}" contains unsafe characters`)
+  }
   const networksetup = '/usr/sbin/networksetup'
   return `# Allow Pilot to manage macOS proxy without a password\n${user} ALL=(root) NOPASSWD: ${networksetup}\n`
 }

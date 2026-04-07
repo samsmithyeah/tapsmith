@@ -327,6 +327,16 @@ describe('buildSudoersRule', () => {
       process.env.LOGNAME = originalLogname
     }
   })
+
+  it('rejects usernames with unsafe characters', () => {
+    const originalUser = process.env.USER
+    process.env.USER = 'bad; rm -rf /'
+    try {
+      expect(() => buildSudoersRule()).toThrow('unsafe characters')
+    } finally {
+      process.env.USER = originalUser
+    }
+  })
 })
 
 // ─── isProxySetupInstalled ───
@@ -435,7 +445,7 @@ describe('removeProxySetup', () => {
 
     expect(removeProxySetup()).toBe(true)
     expect(mockedExecFileSync).toHaveBeenCalledWith(
-      'sudo', ['rm', '-f', '/etc/sudoers.d/pilot-networksetup'],
+      'sudo', ['rm', '-f', '/etc/sudoers.d/zzz-pilot-networksetup'],
       expect.objectContaining({ stdio: 'inherit' }),
     )
 

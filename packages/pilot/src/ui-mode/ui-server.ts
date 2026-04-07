@@ -25,7 +25,7 @@ import type { ResolvedProject } from '../project.js';
 import { collectTransitiveDeps } from '../project.js';
 import type { LaunchedEmulator } from '../emulator.js';
 import { preserveEmulatorsForReuse, getRunningAvdName } from '../emulator.js';
-import { listSimulators } from '../ios-simulator.js';
+import { listSimulators, getSimulatorScreenScale } from '../ios-simulator.js';
 import {
   deserializeTestResult,
   deserializeSuiteResult,
@@ -63,6 +63,18 @@ const PILOT_VERSION = (() => {
 const DIM = '\x1b[2m';
 const YELLOW = '\x1b[33m';
 const RESET = '\x1b[0m';
+
+/** Cached screen-scale lookup keyed by UDID — avoids repeated simctl calls. */
+const dprCache = new Map<string, number>();
+function cachedScreenScale(udid: string, platform?: 'android' | 'ios'): number | undefined {
+  if (platform !== 'ios') return undefined;
+  let dpr = dprCache.get(udid);
+  if (dpr == null) {
+    dpr = getSimulatorScreenScale(udid);
+    dprCache.set(udid, dpr);
+  }
+  return dpr;
+}
 
 // ─── Types ───
 
@@ -1915,6 +1927,7 @@ export async function startUIServer(
               isEmulator: worker.deviceSerial.startsWith('emulator-'),
               platform: ctx.config.platform,
               pilotVersion: PILOT_VERSION,
+              devicePixelRatio: cachedScreenScale(worker.deviceSerial, ctx.config.platform),
             });
           }
         }
@@ -1932,6 +1945,7 @@ export async function startUIServer(
               isEmulator: worker.deviceSerial.startsWith('emulator-'),
               platform: ctx.config.platform,
               pilotVersion: PILOT_VERSION,
+              devicePixelRatio: cachedScreenScale(worker.deviceSerial, ctx.config.platform),
             });
           }
         }
@@ -2045,6 +2059,7 @@ export async function startUIServer(
           isEmulator: selectedWorker.deviceSerial.startsWith('emulator-'),
           platform: ctx.config.platform,
           pilotVersion: PILOT_VERSION,
+          devicePixelRatio: cachedScreenScale(selectedWorker.deviceSerial, ctx.config.platform),
         } satisfies ServerMessage));
       }
 
@@ -2068,6 +2083,7 @@ export async function startUIServer(
         isEmulator: ctx.deviceSerial.startsWith('emulator-'),
         platform: ctx.config.platform,
         pilotVersion: PILOT_VERSION,
+        devicePixelRatio: cachedScreenScale(ctx.deviceSerial, ctx.config.platform),
       } satisfies ServerMessage));
     }
 
@@ -2136,6 +2152,7 @@ export async function startUIServer(
       isEmulator: ctx.deviceSerial.startsWith('emulator-'),
       platform: ctx.config.platform,
       pilotVersion: PILOT_VERSION,
+      devicePixelRatio: cachedScreenScale(ctx.deviceSerial, ctx.config.platform),
     });
   }
 

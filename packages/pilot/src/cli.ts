@@ -19,7 +19,7 @@ import { createReporters, ReporterDispatcher, type FullResult } from './reporter
 import { ensureSessionReady, launchConfiguredApp } from './session-preflight.js';
 import { glob } from 'glob';
 import { resolveTraceConfig } from './trace/types.js';
-import { spawn, execFileSync } from 'node:child_process';
+import { spawn, execFileSync, spawnSync } from 'node:child_process';
 import {
   clearOfflineEmulatorTransports,
   preserveEmulatorsForReuse,
@@ -216,6 +216,22 @@ async function checkDeviceHealth(serial: string | undefined): Promise<void> {
 
 // ─── Daemon management ───
 
+/** Find PIDs listening on a TCP port. Works on macOS (lsof) and Linux (fuser). */
+function findPidsOnPort(port: string): number[] {
+  try {
+    if (process.platform === 'darwin') {
+      return execFileSync('lsof', ['-ti', `tcp:${port}`], { encoding: 'utf-8' })
+        .trim().split('\n').filter(Boolean).map(Number).filter(n => !isNaN(n));
+    }
+    // Linux: fuser writes PIDs to stderr
+    const result = spawnSync('fuser', [`${port}/tcp`], { encoding: 'utf-8' });
+    const output = (result.stderr || '').trim();
+    return output.split(/\s+/).filter(Boolean).map(Number).filter(n => !isNaN(n));
+  } catch {
+    return [];
+  }
+}
+
 /** Track the daemon process we spawned so we can kill it on exit. */
 let spawnedDaemonProcess: ReturnType<typeof spawn> | undefined;
 
@@ -231,9 +247,9 @@ async function ensureDaemonRunning(address: string, daemonBin?: string, platform
     if (alive) {
       probe.close();
       // Find and kill the process listening on this port
-      const lsofOut = execFileSync('lsof', ['-ti', `tcp:${port}`], { encoding: 'utf-8' }).trim();
-      for (const pid of lsofOut.split('\n').filter(Boolean)) {
-        try { process.kill(Number(pid), 'SIGTERM'); } catch { /* already gone */ }
+      const pids = findPidsOnPort(port);
+      for (const pid of pids) {
+        try { process.kill(pid, 'SIGTERM'); } catch { /* already gone */ }
       }
       // Brief wait for the port to free up
       await new Promise((r) => setTimeout(r, 500));

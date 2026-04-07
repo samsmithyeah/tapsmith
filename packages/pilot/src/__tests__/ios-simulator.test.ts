@@ -35,6 +35,7 @@ import {
   recordClonedSimulators,
   unrecordSimulators,
   provisionSimulators,
+  getSimulatorScreenScale,
 } from '../ios-simulator.js';
 import type { SimulatorInfo } from '../ios-simulator.js';
 
@@ -632,5 +633,24 @@ describe('provisionSimulators', () => {
 
     expect(deleteCalled).toBe(true);
     expect(result.allUdids).not.toContain('STALE');
+  });
+});
+
+// ─── getSimulatorScreenScale ───
+
+describe('getSimulatorScreenScale', () => {
+  it('returns 3 for iPhones', () => {
+    mockListSimulators([{ udid: 'PHONE-1', name: 'iPhone 16' }]);
+    expect(getSimulatorScreenScale('PHONE-1')).toBe(3);
+  });
+
+  it('returns 2 for iPads', () => {
+    mockListSimulators([{ udid: 'PAD-1', name: 'iPad Pro (13-inch)' }]);
+    expect(getSimulatorScreenScale('PAD-1')).toBe(2);
+  });
+
+  it('returns 3 for unknown UDIDs', () => {
+    mockListSimulators([]);
+    expect(getSimulatorScreenScale('UNKNOWN')).toBe(3);
   });
 });

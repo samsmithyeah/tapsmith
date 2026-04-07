@@ -41,6 +41,9 @@ class PilotAgentRunner: XCTestCase {
         // for 30+ seconds because XCUITest waits for the app to become "idle".
         // React Native apps are never idle (JS bridge timers always running).
         //
+        // Step 0: Verify swizzle targets exist before attempting to disable.
+        // Logs warnings if Xcode changed the private APIs we depend on.
+        let _ = QuiescenceDisabler.verifySwizzleTargetsExist()
         // Step 1: Runtime swizzle BEFORE activate() — affects the class itself.
         QuiescenceDisabler.disableViaRuntime()
         // Step 2: Nuclear option — swizzle ALL quiescence methods on EVERY

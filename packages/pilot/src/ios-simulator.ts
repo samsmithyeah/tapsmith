@@ -68,6 +68,17 @@ export function listSimulators(): SimulatorInfo[] {
 }
 
 /**
+ * Get the screen scale (device pixel ratio) for an iOS simulator.
+ * iPads are @2x, all modern iPhones are @3x.
+ * Falls back to 3 if the device is unknown.
+ */
+export function getSimulatorScreenScale(udid: string): number {
+  const sim = listSimulators().find((s) => s.udid === udid);
+  if (sim && /iPad/i.test(sim.name)) return 2;
+  return 3;
+}
+
+/**
  * List booted iOS simulators.
  */
 export function listBootedSimulators(): SimulatorInfo[] {

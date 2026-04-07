@@ -36,7 +36,7 @@ function App() {
   const [isRunning, setIsRunning] = useState(false);
   const [isStopping, setIsStopping] = useState(false);
   const [deviceSerial, setDeviceSerial] = useState('');
-  const [devicePlatform, setDevicePlatform] = useState<'android' | 'ios' | undefined>();
+  const [deviceDpr, setDeviceDpr] = useState<number | undefined>();
   const [pilotVersion, setPilotVersion] = useState('');
   const [theme, setTheme] = useState<Theme>(() => {
     const stored = localStorage.getItem('pilot-ui-theme');
@@ -404,7 +404,7 @@ function App() {
         break;
       case 'device-info':
         setDeviceSerial(msg.serial);
-        setDevicePlatform(msg.platform);
+        if (msg.devicePixelRatio != null) setDeviceDpr(msg.devicePixelRatio);
         if (msg.pilotVersion) setPilotVersion(msg.pilotVersion);
         break;
       case 'workers-info':
@@ -649,7 +649,7 @@ function App() {
             <ScreenshotPanel
               event={selectedEvent}
               screenshots={screenshots}
-              devicePixelRatio={devicePlatform === 'ios' ? 3 : undefined}
+              devicePixelRatio={deviceDpr}
             />
           </div>
         </div>
