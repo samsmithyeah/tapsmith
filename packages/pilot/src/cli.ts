@@ -630,6 +630,8 @@ ${bold('Usage:')}
   pilot show-trace <file.zip>     Open trace viewer in browser
   pilot show-report [dir]         Open HTML test report
   pilot merge-reports [dir]       Merge blob reports from sharded runs
+  pilot setup-proxy               Allow iOS proxy access without a password
+  pilot remove-proxy-setup        Revert to per-session password prompts
   pilot --version                 Print version
   pilot --help                    Show this help
 
@@ -714,6 +716,16 @@ async function main(): Promise<void> {
     dispatcher.onRunStart(config, 0);
     await dispatcher.onRunEnd(result);
     return;
+  }
+
+  if (args.command === 'setup-proxy') {
+    const { setupProxy } = await import('./macos-proxy.js');
+    process.exit(setupProxy() ? 0 : 1);
+  }
+
+  if (args.command === 'remove-proxy-setup') {
+    const { removeProxySetup } = await import('./macos-proxy.js');
+    process.exit(removeProxySetup() ? 0 : 1);
   }
 
   if (args.command !== 'test') {

@@ -11,6 +11,10 @@ import {
   ensureSudoAccess,
   setMacProxy,
   clearMacProxy,
+  buildSudoersRule,
+  setupProxy,
+  isProxySetupInstalled,
+  removeProxySetup,
   _resetState,
 } from '../macos-proxy.js'
 
@@ -94,12 +98,12 @@ describe('detectActiveNetworkService', () => {
 // ─── ensureSudoAccess ───
 
 describe('ensureSudoAccess', () => {
-  it('returns true immediately when sudo -n succeeds (cached credentials)', () => {
+  it('returns true immediately when sudo -n networksetup succeeds (cached or NOPASSWD)', () => {
     mockedExecFileSync.mockReturnValue('')
 
     expect(ensureSudoAccess()).toBe(true)
     expect(mockedExecFileSync).toHaveBeenCalledWith(
-      'sudo', ['-n', 'true'], { stdio: 'pipe' },
+      'sudo', ['-n', 'networksetup', '-listallnetworkservices'], { stdio: 'pipe' },
     )
   })
 
@@ -169,6 +173,7 @@ describe('ensureSudoAccess', () => {
     expect(output).toContain('system proxy')
     expect(output).toContain('HTTP traffic')
     expect(output).toContain('not stored')
+    expect(output).toContain('npx pilot setup-proxy')
 
     writeSpy.mockRestore()
   })
@@ -289,5 +294,162 @@ describe('clearMacProxy', () => {
     })
 
     expect(() => clearMacProxy('Wi-Fi')).not.toThrow()
+  })
+})
+
+// ─── buildSudoersRule ───
+
+describe('buildSudoersRule', () => {
+  it('generates a rule for the current user', () => {
+    const originalUser = process.env.USER
+    process.env.USER = 'testuser'
+    try {
+      const rule = buildSudoersRule()
+      expect(rule).toContain('testuser ALL=(root) NOPASSWD: /usr/sbin/networksetup')
+      expect(rule).toContain('# Allow Pilot')
+    } finally {
+      process.env.USER = originalUser
+    }
+  })
+
+  it('falls back to whoami when env vars are unset', () => {
+    const originalUser = process.env.USER
+    const originalLogname = process.env.LOGNAME
+    delete process.env.USER
+    delete process.env.LOGNAME
+    mockedExecFileSync.mockReturnValue('whoamiuser\n')
+    try {
+      const rule = buildSudoersRule()
+      expect(rule).toContain('whoamiuser ALL=(root) NOPASSWD:')
+      expect(mockedExecFileSync).toHaveBeenCalledWith('whoami', { encoding: 'utf8' })
+    } finally {
+      process.env.USER = originalUser
+      process.env.LOGNAME = originalLogname
+    }
+  })
+})
+
+// ─── isProxySetupInstalled ───
+
+describe('isProxySetupInstalled', () => {
+  it('returns true when sudo -n networksetup succeeds', () => {
+    mockedExecFileSync.mockReturnValue('')
+    expect(isProxySetupInstalled()).toBe(true)
+  })
+
+  it('returns false when sudo -n networksetup fails', () => {
+    mockedExecFileSync.mockImplementation(() => {
+      throw new Error('sudo: a password is required')
+    })
+    expect(isProxySetupInstalled()).toBe(false)
+  })
+})
+
+// ─── setupProxy ───
+
+describe('setupProxy', () => {
+  it('skips if already installed', () => {
+    const writeSpy = vi.spyOn(process.stderr, 'write').mockImplementation(() => true)
+    // sudo -n networksetup succeeds → already installed
+    mockedExecFileSync.mockReturnValue('')
+
+    expect(setupProxy()).toBe(true)
+    const output = writeSpy.mock.calls.map((c) => c[0]).join('')
+    expect(output).toContain('already configured')
+
+    writeSpy.mockRestore()
+  })
+
+  it('writes sudoers file and validates it', () => {
+    const writeSpy = vi.spyOn(process.stderr, 'write').mockImplementation(() => true)
+    const calls: Array<{ cmd: string; args: string[] }> = []
+    mockedExecFileSync.mockImplementation((cmd: string, args: string[]) => {
+      calls.push({ cmd, args: [...args] })
+      // isProxySetupInstalled check fails (not yet installed)
+      if (cmd === 'sudo' && args[0] === '-n' && args[1] === 'networksetup') {
+        throw new Error('sudo: a password is required')
+      }
+      return ''
+    })
+
+    expect(setupProxy()).toBe(true)
+
+    // Should have called tee, chmod, and visudo -c
+    expect(calls.find((c) => c.cmd === 'sudo' && c.args[0] === 'tee')).toBeTruthy()
+    expect(calls.find((c) => c.cmd === 'sudo' && c.args[0] === 'chmod')).toBeTruthy()
+    expect(calls.find((c) => c.cmd === 'sudo' && c.args[0] === 'visudo')).toBeTruthy()
+
+    writeSpy.mockRestore()
+  })
+
+  it('removes file if visudo validation fails', () => {
+    const writeSpy = vi.spyOn(process.stderr, 'write').mockImplementation(() => true)
+    const calls: Array<{ cmd: string; args: string[] }> = []
+    mockedExecFileSync.mockImplementation((cmd: string, args: string[]) => {
+      calls.push({ cmd, args: [...args] })
+      if (cmd === 'sudo' && args[0] === '-n' && args[1] === 'networksetup') {
+        throw new Error('sudo: a password is required')
+      }
+      if (cmd === 'sudo' && args[0] === 'visudo') {
+        throw new Error('visudo: parse error')
+      }
+      return ''
+    })
+
+    expect(setupProxy()).toBe(false)
+    expect(calls.find((c) => c.cmd === 'sudo' && c.args[0] === 'rm')).toBeTruthy()
+
+    const output = writeSpy.mock.calls.map((c) => c[0]).join('')
+    expect(output).toContain('validation failed')
+
+    writeSpy.mockRestore()
+  })
+
+  it('returns false when user cancels sudo prompt', () => {
+    const writeSpy = vi.spyOn(process.stderr, 'write').mockImplementation(() => true)
+    mockedExecFileSync.mockImplementation((cmd: string, args: string[]) => {
+      if (cmd === 'sudo' && args[0] === '-n') {
+        throw new Error('sudo: a password is required')
+      }
+      // tee fails (user cancelled)
+      if (cmd === 'sudo' && args[0] === 'tee') {
+        throw new Error('sudo cancelled')
+      }
+      return ''
+    })
+
+    expect(setupProxy()).toBe(false)
+    const output = writeSpy.mock.calls.map((c) => c[0]).join('')
+    expect(output).toContain('cancelled')
+
+    writeSpy.mockRestore()
+  })
+})
+
+// ─── removeProxySetup ───
+
+describe('removeProxySetup', () => {
+  it('removes the sudoers file', () => {
+    const writeSpy = vi.spyOn(process.stderr, 'write').mockImplementation(() => true)
+    mockedExecFileSync.mockReturnValue('')
+
+    expect(removeProxySetup()).toBe(true)
+    expect(mockedExecFileSync).toHaveBeenCalledWith(
+      'sudo', ['rm', '-f', '/etc/sudoers.d/pilot-networksetup'],
+      expect.objectContaining({ stdio: 'inherit' }),
+    )
+
+    writeSpy.mockRestore()
+  })
+
+  it('returns false when rm fails', () => {
+    const writeSpy = vi.spyOn(process.stderr, 'write').mockImplementation(() => true)
+    mockedExecFileSync.mockImplementation(() => {
+      throw new Error('sudo failed')
+    })
+
+    expect(removeProxySetup()).toBe(false)
+
+    writeSpy.mockRestore()
   })
 })
