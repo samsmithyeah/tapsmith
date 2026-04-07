@@ -112,7 +112,12 @@ export default function SlowLoadScreen() {
       </TouchableOpacity>
 
       {loading && (
-        <View style={styles.loadingContainer} accessibilityRole="progressbar" accessibilityValue={{ min: 0, max: 100, now: progress }} testID="loading-state">
+        <View
+          style={styles.loadingContainer}
+          accessibilityRole="progressbar"
+          accessibilityValue={{ min: 0, max: 100, now: progress }}
+          testID="loading-state"
+        >
           <ActivityIndicator size="large" color="#007AFF" />
           <Text style={styles.loadingText}>Loading... {progress}%</Text>
           <View style={styles.progressBar}>

@@ -37,6 +37,8 @@ if echo "$CHANGED_FILES" | grep -q '^test-app/'; then
   (cd test-app && npm run typecheck)
   echo "▸ Test app: lint"
   (cd test-app && npm run lint)
+  echo "▸ Test app: format check"
+  (cd test-app && npm run format:check)
 fi
 
 # ─── Android agent ───

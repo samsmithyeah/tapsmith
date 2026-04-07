@@ -124,7 +124,9 @@ export default function ApiCallsScreen() {
       {/* Posts */}
       {posts.length > 0 && (
         <View>
-          <Text style={styles.sectionHeading} accessibilityRole="header">Posts</Text>
+          <Text style={styles.sectionHeading} accessibilityRole="header">
+            Posts
+          </Text>
           {posts.map((post) => (
             <View key={post.id} style={styles.card}>
               <Text style={styles.cardTitle}>{post.title}</Text>
@@ -137,7 +139,9 @@ export default function ApiCallsScreen() {
       {/* User */}
       {user && (
         <View>
-          <Text style={styles.sectionHeading} accessibilityRole="header">User</Text>
+          <Text style={styles.sectionHeading} accessibilityRole="header">
+            User
+          </Text>
           <View style={styles.card}>
             <Text style={styles.cardTitle}>{user.name}</Text>
             <Text style={styles.cardBody}>{user.email}</Text>

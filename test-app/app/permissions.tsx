@@ -33,7 +33,11 @@ export default function PermissionsScreen() {
 
       <Text style={styles.description}>Test granting and revoking runtime permissions.</Text>
 
-      <View style={styles.permissionCard} accessible accessibilityLabel={`Camera permission: ${cameraStatus}`}>
+      <View
+        style={styles.permissionCard}
+        accessible
+        accessibilityLabel={`Camera permission: ${cameraStatus}`}
+      >
         <View style={styles.permissionInfo}>
           <Text style={styles.permissionName}>Camera</Text>
           <Text
@@ -58,7 +62,11 @@ export default function PermissionsScreen() {
         </TouchableOpacity>
       </View>
 
-      <View style={styles.permissionCard} accessible accessibilityLabel={`Location permission: ${locationStatus}`}>
+      <View
+        style={styles.permissionCard}
+        accessible
+        accessibilityLabel={`Location permission: ${locationStatus}`}
+      >
         <View style={styles.permissionInfo}>
           <Text style={styles.permissionName}>Location</Text>
           <Text
