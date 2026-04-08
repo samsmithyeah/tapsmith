@@ -46,7 +46,7 @@ import {
 } from './ios-simulator.js';
 import { resolveTraceConfig } from './trace/types.js';
 import { ensureSudoAccess } from './macos-proxy.js';
-import { freeStaleAgentPort } from './port-utils.js';
+import { freeStaleAgentPort, findPidsOnPort } from './port-utils.js';
 
 const DIM = '\x1b[2m';
 const YELLOW = '\x1b[33m';
@@ -169,6 +169,23 @@ export async function runParallel(opts: DispatcherOptions): Promise<FullResult> 
       ? ` Port ${firstDaemonPort} is already in use — another Pilot run may be active, or a stale daemon is running. Kill it with: lsof -ti tcp:${firstDaemonPort} | xargs kill`
       : ` Is pilot-core installed? (tried: ${daemonBin})`;
     throw new Error(`Failed to start worker daemon.${hint}`);
+  }
+
+  // Verify the daemon we connected to is actually OUR firstDaemon and not a
+  // stale pilot-core left over from a previous run squatting on the same port.
+  // If our spawn failed to bind silently (firstDaemon.on('error') swallows it),
+  // waitForReady would have happily connected to the squatter, and the entire
+  // run would proceed against an incoherent daemon — wrong simulators, wrong
+  // worker config, mysterious test failures. Fail fast with a clear hint
+  // instead of autonomously killing the squatter (it might belong to another
+  // concurrent Pilot run, which the slot allocator would handle by walking).
+  const listenerPids = findPidsOnPort(firstDaemonPort);
+  if (firstDaemon.pid !== undefined && !listenerPids.includes(firstDaemon.pid)) {
+    firstDaemon.kill();
+    const squatterHint = listenerPids.length > 0
+      ? ` Port ${firstDaemonPort} is held by PID ${listenerPids.join(',')} — likely a stale pilot-core daemon from a previous run. If no other Pilot run is active, kill it with: kill ${listenerPids.join(' ')}`
+      : ` Port ${firstDaemonPort} is held by an unknown process. Try: lsof -ti tcp:${firstDaemonPort} | xargs kill`;
+    throw new Error(`Failed to start worker daemon: spawned process bound to a different port (likely failed to bind).${squatterHint}`);
   }
 
   // Discover available devices
