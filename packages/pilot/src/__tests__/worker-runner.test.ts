@@ -26,6 +26,10 @@ describe('isRecoverableInfrastructureError', () => {
     expect(isRecoverableInfrastructureError(new Error('14 UNAVAILABLE: No connection established'))).toBe(true);
   });
 
+  it('returns true for gRPC DEADLINE_EXCEEDED errors (agent/daemon hung)', () => {
+    expect(isRecoverableInfrastructureError(new Error('4 DEADLINE_EXCEEDED: Deadline exceeded'))).toBe(true);
+  });
+
   it('returns true for ECONNREFUSED', () => {
     expect(isRecoverableInfrastructureError(new Error('connect ECONNREFUSED 127.0.0.1:50051'))).toBe(true);
   });
@@ -34,8 +38,8 @@ describe('isRecoverableInfrastructureError', () => {
     expect(isRecoverableInfrastructureError(new Error('Expected "Login" to be visible'))).toBe(false);
   });
 
-  it('returns true for test timeout errors (may be caused by hung agent)', () => {
-    expect(isRecoverableInfrastructureError(new Error('Test timed out after 60000ms'))).toBe(true);
+  it('returns false for test timeout errors (these are real test failures)', () => {
+    expect(isRecoverableInfrastructureError(new Error('Test timed out after 60000ms'))).toBe(false);
   });
 
   it('returns false for generic errors', () => {

@@ -109,7 +109,7 @@ export const RECOVERABLE_INFRASTRUCTURE_PATTERNS = [
   'Unable to lookup in current state',
   'server died',
   'xcodebuild exited with',
-  'Test timed out',
+  '4 DEADLINE_EXCEEDED',
   '14 UNAVAILABLE',
   'No connection established',
   'ECONNREFUSED',
