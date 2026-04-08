@@ -294,6 +294,49 @@ pub async fn set_appearance(udid: &str, mode: &str) -> Result<()> {
     Ok(())
 }
 
+/// Get the simulator clipboard text via `simctl pbpaste`.
+/// This avoids the iOS 16+ paste permission dialog that would be triggered
+/// by reading UIPasteboard on-device.
+#[instrument]
+pub async fn get_clipboard(udid: &str) -> Result<String> {
+    let output = Command::new("xcrun")
+        .args(["simctl", "pbpaste", udid])
+        .output()
+        .await
+        .context("Failed to run xcrun simctl pbpaste")?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        bail!("Failed to get clipboard on {udid}: {stderr}");
+    }
+
+    Ok(String::from_utf8_lossy(&output.stdout).to_string())
+}
+
+/// Set the simulator clipboard text via `simctl pbcopy`.
+/// This avoids the iOS 16+ paste permission dialog that would be triggered
+/// by writing to UIPasteboard on-device.
+#[instrument]
+pub async fn set_clipboard(udid: &str, text: &str) -> Result<()> {
+    let mut child = Command::new("xcrun")
+        .args(["simctl", "pbcopy", udid])
+        .stdin(std::process::Stdio::piped())
+        .spawn()
+        .context("Failed to run xcrun simctl pbcopy")?;
+
+    if let Some(mut stdin) = child.stdin.take() {
+        use tokio::io::AsyncWriteExt;
+        stdin.write_all(text.as_bytes()).await?;
+    }
+
+    let status = child.wait().await?;
+    if !status.success() {
+        bail!("Failed to set clipboard on {udid}");
+    }
+
+    Ok(())
+}
+
 /// Get device logs from a simulator (equivalent to Android logcat).
 #[allow(dead_code)]
 #[instrument]

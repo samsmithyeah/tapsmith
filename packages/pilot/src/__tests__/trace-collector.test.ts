@@ -85,16 +85,38 @@ describe('TraceCollector', () => {
     expect(ev.type).toBe('assertion');
   });
 
-  it('records group start/end events', () => {
+  it('drops empty groups silently', () => {
     const collector = new TraceCollector(config, tempDir);
     collector.startGroup('Login flow');
     collector.endGroup();
 
-    expect(collector.events).toHaveLength(2);
+    // Empty groups are dropped — group-start is deferred until a child
+    // event arrives, and endGroup discards it if nothing flushed.
+    expect(collector.events).toHaveLength(0);
+  });
+
+  it('records group start/end events when the group has children', () => {
+    const collector = new TraceCollector(config, tempDir);
+    collector.startGroup('Login flow');
+    collector.addActionEvent({
+      category: 'device',
+      action: 'tap',
+      duration: 10,
+      success: true,
+      log: [],
+      hasScreenshotBefore: false,
+      hasScreenshotAfter: false,
+      hasHierarchyBefore: false,
+      hasHierarchyAfter: false,
+    });
+    collector.endGroup();
+
+    expect(collector.events).toHaveLength(3);
     const start = collector.events[0] as GroupTraceEvent;
     expect(start.type).toBe('group-start');
     expect(start.name).toBe('Login flow');
-    const end = collector.events[1] as GroupTraceEvent;
+    expect(collector.events[1].type).toBe('action');
+    const end = collector.events[2] as GroupTraceEvent;
     expect(end.type).toBe('group-end');
     expect(end.name).toBe('Login flow');
   });

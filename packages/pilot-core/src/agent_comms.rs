@@ -17,6 +17,14 @@ const DEFAULT_AGENT_HOST_PORT: u16 = 18700;
 /// Default timeout for agent commands.
 const DEFAULT_COMMAND_TIMEOUT: Duration = Duration::from_secs(30);
 
+/// Headroom added to the read-side timeout so the daemon always outlasts the
+/// agent's own work clock. Without this, an agent command that uses up its
+/// full client-supplied timeout (e.g. FindElement(timeout_ms=100)) races the
+/// daemon's read timeout — the daemon may give up before the agent's "not
+/// found" response arrives, falsely marking the connection as dead and
+/// triggering an unnecessary reconnect on the next command.
+const READ_TIMEOUT_HEADROOM: Duration = Duration::from_secs(5);
+
 // ─── Agent Command Protocol ───
 //
 // Commands are serialized as: {"id": "uuid", "method": "methodName", "params": {...}}
@@ -520,18 +528,21 @@ impl AgentConnection {
             bail!("Not connected to agent. Call StartAgent or connect first.");
         }
 
-        // Attempt the command, reconnect once on connection failure
+        // Attempt the command. On failure, try once more with a fresh socket
+        // (each try_send_command opens a new TCP connection anyway). Do NOT
+        // mark `self.connected = false` on a single failed command — a
+        // transient hierarchy dump failure or empty response from the agent
+        // does not mean the agent process is dead, and flipping the cached
+        // connection flag would falsely poison every subsequent command (and
+        // trigger expensive recovery in the next test's session preflight).
+        // The flag stays true as long as the agent process exists; it only
+        // gets set to false on an explicit disconnect or a failed ping during
+        // an explicit reconnect attempt (now reserved for true outages).
         match self.try_send_command(command, timeout).await {
             Ok(resp) => Ok(resp),
             Err(e) => {
-                warn!("Agent command failed, attempting reconnect: {e}");
-
-                if let Some(serial) = self.device_serial.clone() {
-                    self.reconnect(&serial).await?;
-                    self.try_send_command(command, timeout).await
-                } else {
-                    Err(e)
-                }
+                warn!("Agent command failed, retrying once: {e}");
+                self.try_send_command(command, timeout).await
             }
         }
     }
@@ -565,11 +576,14 @@ impl AgentConnection {
             .context("Failed to write newline to agent socket")?;
         stream.flush().await?;
 
-        // Read the response (newline-delimited JSON)
+        // Read the response (newline-delimited JSON). Use the caller-supplied
+        // timeout plus headroom so the agent's own work clock always finishes
+        // first — see READ_TIMEOUT_HEADROOM for the rationale.
+        let read_timeout = timeout + READ_TIMEOUT_HEADROOM;
         let reader = BufReader::new(&mut stream);
         let mut line = String::new();
 
-        tokio::time::timeout(timeout, async {
+        tokio::time::timeout(read_timeout, async {
             let mut reader = reader;
             reader
                 .read_line(&mut line)
@@ -577,7 +591,7 @@ impl AgentConnection {
                 .context("Failed to read from agent socket")
         })
         .await
-        .map_err(|_| anyhow!("Agent command timed out after {timeout:?}"))??;
+        .map_err(|_| anyhow!("Agent command timed out after {read_timeout:?}"))??;
 
         let line = line.trim();
         if line.is_empty() {
@@ -618,6 +632,7 @@ impl AgentConnection {
         Ok(())
     }
 
+    #[allow(dead_code)]
     async fn reconnect(&mut self, serial: &str) -> Result<()> {
         info!(serial, "Attempting to reconnect to agent");
         self.connected = false;

@@ -82,6 +82,10 @@ export async function launchConfiguredApp(
       // recovery path, or by the test's own beforeAll/beforeEach.
     }
     await ensureSessionReady(ctx, phase);
+    // After launch, wait for the app to actually be ready (non-empty
+    // accessibility hierarchy). This guards the file-level race where
+    // beforeAll can fire before the React Native JS bundle has loaded.
+    await waitForIosAppReady(ctx);
     return;
   }
 
@@ -114,21 +118,14 @@ async function verifySession(ctx: SessionPreflightContext): Promise<void> {
   }
 
   if (ctx.config.platform === 'ios') {
-    // On iOS, verify the app is responsive after launch by polling for a
-    // non-empty accessibility hierarchy. Without this, the next test file's
-    // beforeAll can race with app startup (React Native JS bundle loading).
-    // Throw on failure so ensureSessionReady triggers recovery.
-    const iosDeadline = Date.now() + DEFAULT_READY_TIMEOUT_MS;
-    while (Date.now() < iosDeadline) {
-      try {
-        const h = await ctx.client.getUiHierarchy();
-        if (h.hierarchyXml && h.hierarchyXml.trim().length > 0) return;
-      } catch {
-        // Agent may not be ready yet
-      }
-      await new Promise(resolve => setTimeout(resolve, HIERARCHY_POLL_INTERVAL_MS));
-    }
-    throw new Error('iOS app not ready: accessibility hierarchy is empty after launch');
+    // On iOS, only verify the agent is reachable. We deliberately do NOT
+    // require the target app to be in the foreground here because tests
+    // may intentionally terminate the app (e.g. an explicit terminateApp
+    // test) and the next test will launch it again as needed. Forcing a
+    // foreground app here would trigger expensive recovery on every test
+    // that follows a terminate. Per-launch readiness is handled by
+    // launchConfiguredApp's own waitForIosAppReady call.
+    return;
   }
 
   await ctx.device.waitForIdle(DEFAULT_READY_TIMEOUT_MS);
@@ -156,6 +153,26 @@ async function verifySession(ctx: SessionPreflightContext): Promise<void> {
       await ctx.device.waitForIdle(DEFAULT_READY_TIMEOUT_MS);
     }
   }
+}
+
+/**
+ * Wait for an iOS app to be ready after launch by polling for a non-empty
+ * accessibility hierarchy. Used at the file level (after launchConfiguredApp)
+ * where we know the app should be in the foreground; not used per-test
+ * because tests may intentionally leave the app stopped.
+ */
+async function waitForIosAppReady(ctx: SessionPreflightContext): Promise<void> {
+  const deadline = Date.now() + DEFAULT_READY_TIMEOUT_MS;
+  while (Date.now() < deadline) {
+    try {
+      const h = await ctx.client.getUiHierarchy();
+      if (h.hierarchyXml && h.hierarchyXml.trim().length > 0) return;
+    } catch {
+      // Agent may not be ready yet
+    }
+    await new Promise((resolve) => setTimeout(resolve, HIERARCHY_POLL_INTERVAL_MS));
+  }
+  throw new Error('iOS app not ready: accessibility hierarchy is empty after launch');
 }
 
 async function recoverSession(ctx: SessionPreflightContext): Promise<void> {

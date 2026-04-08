@@ -2074,19 +2074,31 @@ impl proto::pilot_service_server::PilotService for PilotServiceImpl {
         let platform = self.require_platform().await?;
         match platform {
             Platform::Ios => {
-                let serial = self.active_serial().await?;
-                match ios::device::terminate_app(&serial, &req.package_name).await {
-                    Ok(()) => Ok(Response::new(proto::ActionResponse {
-                        request_id,
-                        success: true,
-                        error_type: String::new(),
-                        error_message: String::new(),
-                        screenshot: Vec::new(),
-                    })),
-                    Err(e) => Ok(self
-                        .action_error(request_id, "ACTION_FAILED", e.to_string())
-                        .await),
+                // Terminate through the XCUITest agent so the runner stays in
+                // sync with app state. This prevents the cascading fallback
+                // chain in reset_ios_app when the next test calls restartApp.
+                // Fall back to simctl terminate if the agent is unreachable.
+                let agent_result = self
+                    .send_agent_command_with_timeout(
+                        &AgentCommand::TerminateApp {
+                            package: req.package_name.clone(),
+                        },
+                        4_000,
+                    )
+                    .await;
+
+                if agent_result.is_err() {
+                    let serial = self.active_serial().await?;
+                    let _ = ios::device::terminate_app(&serial, &req.package_name).await;
                 }
+
+                Ok(Response::new(proto::ActionResponse {
+                    request_id,
+                    success: true,
+                    error_type: String::new(),
+                    error_message: String::new(),
+                    screenshot: Vec::new(),
+                }))
             }
             Platform::Android => {
                 let cmd = format!("am force-stop {}", req.package_name);
@@ -2254,12 +2266,26 @@ impl proto::pilot_service_server::PilotService for PilotServiceImpl {
     ) -> Result<Response<proto::ActionResponse>, Status> {
         let req = request.into_inner();
         let request_id = Self::request_id(&req.request_id);
+        let platform = self.require_platform().await?;
 
-        // Use the on-device agent for clipboard operations since it has access
-        // to Android's ClipboardManager via the instrumentation context.
-        let command = AgentCommand::SetClipboard { text: req.text };
-        let result = self.send_agent_command(&command).await;
-        self.make_action_response(request_id, result).await
+        match platform {
+            Platform::Ios => {
+                // Use simctl pbcopy to avoid the iOS 16+ paste permission dialog
+                // that would crash the XCUITest agent if it accessed UIPasteboard.
+                let serial = self.active_serial().await?;
+                ios::device::set_clipboard(&serial, &req.text)
+                    .await
+                    .map_err(|e| Status::internal(e.to_string()))?;
+                Ok(Self::success_action_response(request_id))
+            }
+            Platform::Android => {
+                // Use the on-device agent for clipboard operations since it has
+                // access to Android's ClipboardManager via the instrumentation context.
+                let command = AgentCommand::SetClipboard { text: req.text };
+                let result = self.send_agent_command(&command).await;
+                self.make_action_response(request_id, result).await
+            }
+        }
     }
 
     #[instrument(skip_all, fields(request_id))]
@@ -2269,20 +2295,31 @@ impl proto::pilot_service_server::PilotService for PilotServiceImpl {
     ) -> Result<Response<proto::GetClipboardResponse>, Status> {
         let req = request.into_inner();
         let request_id = Self::request_id(&req.request_id);
+        let platform = self.require_platform().await?;
 
-        // Use the on-device agent for clipboard operations
-        let command = AgentCommand::GetClipboard {};
-        let result = self
-            .send_agent_command(&command)
-            .await
-            .map_err(|e| Status::internal(e.to_string()))?;
-
-        let text = result
-            .data
-            .get("text")
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .to_string();
+        let text = match platform {
+            Platform::Ios => {
+                // Use simctl pbpaste to avoid the iOS 16+ paste permission dialog
+                // that would crash the XCUITest agent if it accessed UIPasteboard.
+                let serial = self.active_serial().await?;
+                ios::device::get_clipboard(&serial)
+                    .await
+                    .map_err(|e| Status::internal(e.to_string()))?
+            }
+            Platform::Android => {
+                let command = AgentCommand::GetClipboard {};
+                let result = self
+                    .send_agent_command(&command)
+                    .await
+                    .map_err(|e| Status::internal(e.to_string()))?;
+                result
+                    .data
+                    .get("text")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string()
+            }
+        };
 
         Ok(Response::new(proto::GetClipboardResponse {
             request_id,

@@ -134,6 +134,12 @@ export class TraceCollector {
   private _screenshots: ScreenshotCapture[] = [];
   private _hierarchies: HierarchyCapture[] = [];
   private _groupStack: string[] = [];
+  /**
+   * Pending group-start events that haven't been emitted yet — held back
+   * until a child event arrives so we can drop empty groups silently.
+   * Each entry is the group event waiting to be flushed.
+   */
+  private _pendingGroupStarts: GroupTraceEvent[] = [];
   private _tempDir: string;
   private _onEvent?: TraceEventCallback;
   /** Buffered screenshot/hierarchy data for the current action, forwarded via _onEvent. */
@@ -459,6 +465,7 @@ export class TraceCollector {
    * Emit a fully-formed action event.
    */
   addActionEvent(event: Omit<ActionTraceEvent, 'type' | 'actionIndex' | 'timestamp'>): void {
+    this._flushPendingGroups();
     const full = {
       ...event,
       type: 'action',
@@ -476,6 +483,7 @@ export class TraceCollector {
    * Emit an assertion event.
    */
   addAssertionEvent(event: Omit<AssertionTraceEvent, 'type' | 'actionIndex' | 'timestamp'>): void {
+    this._flushPendingGroups();
     const full = {
       ...event,
       type: 'assertion',
@@ -493,18 +501,27 @@ export class TraceCollector {
 
   startGroup(name: string): void {
     this._groupStack.push(name);
+    // Defer emission — only flush when a child event arrives. Empty
+    // groups are dropped silently in endGroup() so the trace viewer
+    // doesn't render hollow section headers.
     const event = {
       type: 'group-start',
       name,
       actionIndex: this._actionIndex,
       timestamp: Date.now(),
     } as GroupTraceEvent;
-    this._events.push(event);
-    this._onEvent?.(event);
+    this._pendingGroupStarts.push(event);
   }
 
   endGroup(): void {
     const name = this._groupStack.pop() ?? 'unknown';
+    // If the matching group-start is still pending, the group had no
+    // children — drop both events.
+    const pending = this._pendingGroupStarts[this._pendingGroupStarts.length - 1];
+    if (pending && pending.name === name) {
+      this._pendingGroupStarts.pop();
+      return;
+    }
     const event = {
       type: 'group-end',
       name,
@@ -515,9 +532,23 @@ export class TraceCollector {
     this._onEvent?.(event);
   }
 
+  /**
+   * Flush any deferred group-start events. Called immediately before
+   * emitting any child event so the start ordering is preserved.
+   */
+  private _flushPendingGroups(): void {
+    if (this._pendingGroupStarts.length === 0) return;
+    for (const event of this._pendingGroupStarts) {
+      this._events.push(event);
+      this._onEvent?.(event);
+    }
+    this._pendingGroupStarts.length = 0;
+  }
+
   // ── Console ──
 
   private _addConsoleEvent(level: ConsoleLevel, message: string, source: 'test' | 'device'): void {
+    this._flushPendingGroups();
     const event = {
       type: 'console',
       level,
@@ -537,6 +568,7 @@ export class TraceCollector {
   // ── Error ──
 
   addError(message: string, stack?: string): void {
+    this._flushPendingGroups();
     const event = {
       type: 'error' as const,
       message,

@@ -254,6 +254,17 @@ export interface RunOptions {
   device?: Device;
   screenshotDir?: string;
   reporter?: PilotReporter;
+  /**
+   * Notification fired before tracing/group starts so UI mode can tag
+   * subsequent trace events to this test. Must be lightweight (no device
+   * actions) — it runs outside the beforeEach trace group.
+   */
+  onTestStart?: (fullName: string) => Promise<void>;
+  /**
+   * Setup work that runs inside the beforeEach trace group. Use this for
+   * any device actions (e.g. session readiness checks) so they appear
+   * grouped in the trace viewer instead of as ungrouped top-level events.
+   */
   beforeEachTest?: (fullName: string) => Promise<void>;
   abortFileOnError?: (error: Error) => boolean;
   /** Pre-resolved worker-scoped fixture values (set by worker-runner). */
@@ -433,9 +444,9 @@ async function runSuiteContext(
             return fn === opts.testFilter;
           })
         : ctx.tests.find((t) => !t.skip);
-      if (targetTest && opts.beforeEachTest) {
+      if (targetTest && opts.onTestStart) {
         beforeAllFirstFullName = parentPrefix ? `${parentPrefix} > ${targetTest.name}` : targetTest.name;
-        await opts.beforeEachTest(beforeAllFirstFullName);
+        await opts.onTestStart(beforeAllFirstFullName);
       }
       const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pilot-trace-ba-'));
       // Trigger _startManaged to fire the monkey-patch (ui-run.ts sets up
@@ -578,9 +589,11 @@ async function runSuiteContext(
       // slow operations like restartApp() under heavy load don't eat into
       // the budget for the actual test assertions.
 
-      // Notify before tracing starts so UI mode can tag events to this test
-      if (opts.beforeEachTest) {
-        await opts.beforeEachTest(fullName);
+      // Notify UI mode (lightweight, no device actions) so subsequent trace
+      // events can be tagged to this test. Must run before the group starts
+      // so the test-start message arrives before any group-start events.
+      if (opts.onTestStart) {
+        await opts.onTestStart(fullName);
       }
 
       // Replay beforeAll events into this test's trace stream.
@@ -588,6 +601,22 @@ async function runSuiteContext(
       // skip replay to avoid duplicates.
       if (fullName !== beforeAllFirstFullName && savedBeforeAllEvents.length > 0 && traceCollector) {
         replayBeforeAllEvents(traceCollector, savedBeforeAllEvents, beforeAllCollector, beforeAllHierarchies);
+      }
+
+      // Open the beforeEach group before running setup work and hooks.
+      // Heavy setup (session readiness, idle waits, user beforeEach hooks)
+      // is captured inside this group so device actions don't appear as
+      // ungrouped top-level events in the trace viewer.
+      const hasBeforeEachWork =
+        !!opts.beforeEachTest || !!opts.device || allBeforeEach.length > 0;
+      if (hasBeforeEachWork) {
+        traceCollector?.startGroup('beforeEach Hooks');
+      }
+
+      // Setup work that may issue device actions (e.g. ensureSessionReady
+      // in UI worker mode). Runs inside the beforeEach group.
+      if (opts.beforeEachTest) {
+        await opts.beforeEachTest(fullName);
       }
 
       // Wait for the device to be idle before each test. This ensures
@@ -602,13 +631,12 @@ async function runSuiteContext(
         }
       }
 
-      // Run beforeEach hooks
-      traceCollector?.startGroup('beforeEach Hooks');
-
       for (const hook of allBeforeEach) {
         await invokeHook(hook, opts.device);
       }
-      traceCollector?.endGroup();
+      if (hasBeforeEachWork) {
+        traceCollector?.endGroup();
+      }
 
       // Build fixture context: base (device) + worker-scoped + test-scoped
       const registry = getFixtureRegistry();
@@ -901,9 +929,9 @@ async function runSuiteContext(
         }
         return true;
       });
-      if (lastRunTest && opts.beforeEachTest) {
+      if (lastRunTest && opts.onTestStart) {
         const lastFullName = parentPrefix ? `${parentPrefix} > ${lastRunTest.name}` : lastRunTest.name;
-        await opts.beforeEachTest(lastFullName);
+        await opts.onTestStart(lastFullName);
       }
       const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pilot-trace-aa-'));
       const managedCollector = opts.device.tracing._startManaged(traceConfig, tempDir);

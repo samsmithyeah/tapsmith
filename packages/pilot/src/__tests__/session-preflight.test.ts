@@ -258,7 +258,7 @@ describe('session-preflight', () => {
     expect(ctx.device.restartApp).toHaveBeenCalledWith('com.example.app');
   });
 
-  it('iOS verifySession polls hierarchy until non-empty', async () => {
+  it('iOS launchConfiguredApp polls hierarchy until non-empty', async () => {
     const ctx = makeContext({
       config: { package: 'com.example.app', activity: undefined, platform: 'ios' },
     });

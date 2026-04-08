@@ -332,8 +332,10 @@ async function runFileWithRecovery(
         reporter: reporterProxy,
         bustImportCache: true,
         abortSignal,
-        beforeEachTest: async (fullName: string) => {
+        onTestStart: async (fullName: string) => {
           send({ type: 'test-start', workerId, fullName, filePath });
+        },
+        beforeEachTest: async (fullName: string) => {
           await ensureSessionReady(sessionContext(undefined), `before test ${fullName}`);
         },
         abortFileOnError: isRecoverableInfrastructureError,
