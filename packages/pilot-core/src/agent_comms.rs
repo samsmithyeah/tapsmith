@@ -4,7 +4,7 @@ use anyhow::{anyhow, bail, Context, Result};
 use serde_json::{json, Value};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpStream;
-use tracing::{debug, info, warn};
+use tracing::{debug, info};
 
 use crate::adb;
 
@@ -528,23 +528,19 @@ impl AgentConnection {
             bail!("Not connected to agent. Call StartAgent or connect first.");
         }
 
-        // Attempt the command. On failure, try once more with a fresh socket
-        // (each try_send_command opens a new TCP connection anyway). Do NOT
-        // mark `self.connected = false` on a single failed command — a
-        // transient hierarchy dump failure or empty response from the agent
-        // does not mean the agent process is dead, and flipping the cached
-        // connection flag would falsely poison every subsequent command (and
-        // trigger expensive recovery in the next test's session preflight).
-        // The flag stays true as long as the agent process exists; it only
-        // gets set to false on an explicit disconnect or a failed ping during
-        // an explicit reconnect attempt (now reserved for true outages).
-        match self.try_send_command(command, timeout).await {
-            Ok(resp) => Ok(resp),
-            Err(e) => {
-                warn!("Agent command failed, retrying once: {e}");
-                self.try_send_command(command, timeout).await
-            }
-        }
+        // Send the command with a single attempt. We deliberately do NOT
+        // retry on failure: many failure modes (e.g. "Agent returned empty
+        // response" — agent processed the command but the response was
+        // dropped) mean the command already executed once on the agent, so
+        // retrying it would double-execute side-effectful commands like tap
+        // or openDeepLink. We also do NOT flip `self.connected = false` on a
+        // single failed command — a transient hierarchy dump failure does
+        // not mean the agent process is dead, and poisoning the cached
+        // connection flag would falsely trigger expensive recovery on the
+        // next test's session preflight. The flag only flips on an explicit
+        // disconnect; the trace collector swallows transient hierarchy/screen
+        // capture errors so a single dropped response is non-fatal.
+        self.try_send_command(command, timeout).await
     }
 
     async fn try_send_command(

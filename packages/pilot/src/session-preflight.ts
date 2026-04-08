@@ -4,7 +4,7 @@ import type { LaunchAppOptions, PilotGrpcClient } from './grpc-client.js';
 import { text } from './selectors.js';
 import { detectBlockingSystemDialog, dismissSystemDialogsViaAdb } from './emulator.js';
 
-type SessionDevice = Pick<Device, 'startAgent' | 'terminateApp' | 'launchApp' | 'restartApp' | 'waitForIdle' | 'currentPackage' | 'tap' | 'pressBack' | 'clearAppData' | 'openDeepLink'>
+type SessionDevice = Pick<Device, 'startAgent' | 'terminateApp' | 'launchApp' | 'restartApp' | 'waitForIdle' | 'currentPackage' | 'tap' | 'pressBack' | 'clearAppData' | 'openDeepLink' | 'getAppState'>
 type SessionClient = Pick<PilotGrpcClient, 'ping' | 'getUiHierarchy'>
 
 export interface SessionPreflightContext {
@@ -118,13 +118,24 @@ async function verifySession(ctx: SessionPreflightContext): Promise<void> {
   }
 
   if (ctx.config.platform === 'ios') {
-    // On iOS, only verify the agent is reachable. We deliberately do NOT
-    // require the target app to be in the foreground here because tests
-    // may intentionally terminate the app (e.g. an explicit terminateApp
-    // test) and the next test will launch it again as needed. Forcing a
-    // foreground app here would trigger expensive recovery on every test
-    // that follows a terminate. Per-launch readiness is handled by
-    // launchConfiguredApp's own waitForIosAppReady call.
+    // On iOS, ensure the configured app is in the foreground. If a previous
+    // test terminated, backgrounded, or otherwise displaced the app, relaunch
+    // it cheaply via launchApp (no clearData) so the next test starts on a
+    // sensible state. We deliberately do NOT poll the UI hierarchy here —
+    // that path was triggering expensive recovery on every test, see
+    // waitForIosAppReady (used only by launchConfiguredApp) for the
+    // post-launch readiness check.
+    if (ctx.config.package) {
+      try {
+        const state = await ctx.device.getAppState(ctx.config.package);
+        if (state !== 'foreground') {
+          await ctx.device.launchApp(ctx.config.package);
+        }
+      } catch {
+        // getAppState/launchApp failures are best-effort recovery; let the
+        // test itself surface a clearer error if the app is still broken.
+      }
+    }
     return;
   }
 
