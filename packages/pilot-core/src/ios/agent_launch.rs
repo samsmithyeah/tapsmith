@@ -106,6 +106,10 @@ async fn start_agent_impl(
 
     // Spawn tasks to drain stdout/stderr, collecting the last N lines for
     // error reporting if xcodebuild exits before the agent comes up.
+    // Note: we keep `child` in this scope (not moved into a wait task) so the
+    // timeout path below can kill it explicitly. Without this, a 150s timeout
+    // would leave xcodebuild orphaned until the next kill_existing_agents_on
+    // sweep — which may not happen for a long time, or ever, on a failed run.
     let mut child = child;
     let stdout = child.stdout.take();
     let stderr = child.stderr.take();
@@ -140,15 +144,6 @@ async fn start_agent_impl(
         }
     });
 
-    // Track xcodebuild exit so we can fail fast instead of polling for 150s.
-    let exit_status: Arc<Mutex<Option<std::process::ExitStatus>>> = Arc::new(Mutex::new(None));
-    let exit_writer = exit_status.clone();
-    tokio::spawn(async move {
-        if let Ok(status) = child.wait().await {
-            *exit_writer.lock().await = Some(status);
-        }
-    });
-
     // Wait for the agent to start accepting connections.
     // Freshly booted/cloned simulators can take 90+ seconds for xcodebuild to
     // install and launch the XCUITest runner, especially when multiple
@@ -156,25 +151,41 @@ async fn start_agent_impl(
     let deadline = tokio::time::Instant::now() + Duration::from_secs(150);
     loop {
         if tokio::time::Instant::now() > deadline {
+            // Kill xcodebuild explicitly so it doesn't outlive this function.
+            let _ = child.kill().await;
+            let tail = stderr_tail.lock().await;
+            let last_lines = tail.join("\n");
             bail!(
-                "Timed out waiting for iOS agent to start on simulator {udid}. \
-                 Check that the XCUITest bundle is built correctly."
+                "Timed out waiting for iOS agent to start on simulator {udid} after 150s. \
+                 Killed xcodebuild. Check that the XCUITest bundle is built correctly.\n\
+                 xcodebuild stderr (last lines):\n{last_lines}"
             );
         }
 
         // If xcodebuild exited, the agent won't come up — fail immediately.
-        if let Some(status) = *exit_status.lock().await {
-            let tail = stderr_tail.lock().await;
-            let last_lines = tail.join("\n");
-            bail!(
-                "xcodebuild exited with {status} before the iOS agent became \
-                 ready on simulator {udid}.\nxcodebuild stderr (last lines):\n{last_lines}"
-            );
+        // try_wait is non-blocking and reaps the process if it has exited.
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                let tail = stderr_tail.lock().await;
+                let last_lines = tail.join("\n");
+                bail!(
+                    "xcodebuild exited with {status} before the iOS agent became \
+                     ready on simulator {udid}.\nxcodebuild stderr (last lines):\n{last_lines}"
+                );
+            }
+            Ok(None) => {} // still running, continue probing
+            Err(e) => bail!("Failed to check xcodebuild status: {e}"),
         }
 
         match ping_agent(agent_port).await {
             Ok(_) => {
                 info!(udid, "iOS agent is ready");
+                // Hand the child off to a reaper task so the kernel can collect
+                // it once xcodebuild eventually exits — without this, dropping
+                // the Child without awaiting leaves a zombie until process exit.
+                tokio::spawn(async move {
+                    let _ = child.wait().await;
+                });
                 return Ok(());
             }
             Err(_) => {

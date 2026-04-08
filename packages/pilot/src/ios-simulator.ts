@@ -14,6 +14,7 @@ import { execFileSync } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
+import lockfile from 'proper-lockfile';
 
 export interface SimulatorInfo {
   udid: string
@@ -318,26 +319,85 @@ interface SimulatorManifestEntry {
 }
 
 function simulatorManifestPath(): string {
-  return path.join(os.tmpdir(), 'pilot-simulators.json');
+  // Per-user filename so multi-user systems sharing /tmp don't collide and
+  // so unrelated users' manifests can't interfere with each other's cleanup.
+  // os.userInfo().username is reliable on macOS, Linux, and Windows.
+  let username: string;
+  try {
+    username = os.userInfo().username;
+  } catch {
+    username = String(process.getuid?.() ?? 'shared');
+  }
+  // Sanitize: usernames are typically [a-zA-Z0-9_-], but be defensive.
+  const safe = username.replace(/[^a-zA-Z0-9_.-]/g, '_');
+  return path.join(os.tmpdir(), `pilot-simulators-${safe}.json`);
 }
 
-// Note: read/write is not atomic. Concurrent Pilot runs may race on this file.
-// In practice this is rare and the worst case is a stale entry cleaned up next run.
-function readSimulatorManifest(): SimulatorManifestEntry[] {
+// Ensure the manifest file exists so proper-lockfile has something to lock.
+// proper-lockfile requires the target file to exist; we create an empty
+// JSON array if it's missing.
+function ensureManifestFile(): string {
+  const file = simulatorManifestPath();
+  if (!fs.existsSync(file)) {
+    try {
+      fs.writeFileSync(file, '[]', { flag: 'wx' });
+    } catch {
+      // Lost the race with another process — that's fine, the file now exists.
+    }
+  }
+  return file;
+}
+
+// Atomic write via temp file + rename. POSIX rename is atomic, so concurrent
+// readers see either the old or the new file, never a partial write.
+function atomicWriteManifest(file: string, entries: SimulatorManifestEntry[]): void {
+  const tmp = `${file}.tmp.${process.pid}`;
+  fs.writeFileSync(tmp, JSON.stringify(entries, null, 2));
+  fs.renameSync(tmp, file);
+}
+
+// Run a read-modify-write operation under an exclusive file lock so concurrent
+// Pilot runs can't corrupt the manifest. proper-lockfile uses a `.lock` dir
+// next to the target file with retry/backoff and stale-lock detection.
+function withManifestLock<T>(
+  fn: (entries: SimulatorManifestEntry[]) => { result: T; updated?: SimulatorManifestEntry[] },
+): T {
+  const file = ensureManifestFile();
+  let release: (() => void) | undefined;
   try {
-    const raw = fs.readFileSync(simulatorManifestPath(), 'utf-8');
+    release = lockfile.lockSync(file, {
+      retries: { retries: 10, minTimeout: 50, maxTimeout: 500 },
+      stale: 10_000,
+    });
+  } catch {
+    // Couldn't acquire the lock — fall back to a best-effort unlocked operation.
+    // Worst case is a stale entry cleaned up next run, same as the prior behavior.
+    const entries = readManifestUnlocked(file);
+    const { result, updated } = fn(entries);
+    if (updated !== undefined) {
+      try { atomicWriteManifest(file, updated); } catch { /* best effort */ }
+    }
+    return result;
+  }
+  try {
+    const entries = readManifestUnlocked(file);
+    const { result, updated } = fn(entries);
+    if (updated !== undefined) {
+      atomicWriteManifest(file, updated);
+    }
+    return result;
+  } finally {
+    release();
+  }
+}
+
+function readManifestUnlocked(file: string): SimulatorManifestEntry[] {
+  try {
+    const raw = fs.readFileSync(file, 'utf-8');
     const entries = JSON.parse(raw);
     return Array.isArray(entries) ? entries : [];
   } catch {
     return [];
-  }
-}
-
-function writeSimulatorManifest(entries: SimulatorManifestEntry[]): void {
-  try {
-    fs.writeFileSync(simulatorManifestPath(), JSON.stringify(entries, null, 2));
-  } catch {
-    // Best effort — tmp dir might be read-only in exotic setups
   }
 }
 
@@ -348,17 +408,18 @@ export function recordClonedSimulators(
   clones: ClonedSimulator[],
   sourceName: string,
 ): void {
-  const existing = readSimulatorManifest();
-  const existingUdids = new Set(existing.map((e) => e.udid));
-  const newEntries: SimulatorManifestEntry[] = clones
-    .filter((c) => !existingUdids.has(c.udid))
-    .map((c) => ({
-      udid: c.udid,
-      name: c.name,
-      sourceName,
-      createdAt: new Date().toISOString(),
-    }));
-  writeSimulatorManifest([...existing, ...newEntries]);
+  withManifestLock((existing) => {
+    const existingUdids = new Set(existing.map((e) => e.udid));
+    const newEntries: SimulatorManifestEntry[] = clones
+      .filter((c) => !existingUdids.has(c.udid))
+      .map((c) => ({
+        udid: c.udid,
+        name: c.name,
+        sourceName,
+        createdAt: new Date().toISOString(),
+      }));
+    return { result: undefined, updated: [...existing, ...newEntries] };
+  });
 }
 
 /**
@@ -366,8 +427,10 @@ export function recordClonedSimulators(
  */
 export function unrecordSimulators(udids: string[]): void {
   const toRemove = new Set(udids);
-  const existing = readSimulatorManifest();
-  writeSimulatorManifest(existing.filter((e) => !toRemove.has(e.udid)));
+  withManifestLock((existing) => ({
+    result: undefined,
+    updated: existing.filter((e) => !toRemove.has(e.udid)),
+  }));
 }
 
 // ─── Health checks ───
@@ -451,35 +514,39 @@ export function cleanupStaleSimulators(
   const killed: string[] = [];
   const handledUdids = new Set<string>();
 
-  // Phase 1: manifest-based reclamation
-  const manifest = readSimulatorManifest();
-  const surviving: SimulatorManifestEntry[] = [];
+  // Phase 1: manifest-based reclamation. Hold the manifest lock across the
+  // entire read-modify-write so two concurrent Pilot runs don't both try to
+  // reclaim the same simulator. The lock is released before phase 2/3, which
+  // operate on simulators outside the manifest.
+  withManifestLock((manifest) => {
+    const surviving: SimulatorManifestEntry[] = [];
 
-  for (const entry of manifest) {
-    // Only reclaim clones matching the current simulator name
-    if (entry.sourceName !== simulatorName) {
-      surviving.push(entry);
+    for (const entry of manifest) {
+      // Only reclaim clones matching the current simulator name
+      if (entry.sourceName !== simulatorName) {
+        surviving.push(entry);
+        handledUdids.add(entry.udid);
+        continue;
+      }
+
+      const health = probeSimulatorHealth(entry.udid);
       handledUdids.add(entry.udid);
-      continue;
+
+      if (health.healthy) {
+        reusable.push(entry.udid);
+        surviving.push(entry);
+      } else if (health.reason === 'simulator no longer exists') {
+        // Already gone — just drop from manifest
+        killed.push(entry.udid);
+      } else {
+        // Exists but unhealthy — delete it
+        deleteSimulator(entry.udid);
+        killed.push(entry.udid);
+      }
     }
 
-    const health = probeSimulatorHealth(entry.udid);
-    handledUdids.add(entry.udid);
-
-    if (health.healthy) {
-      reusable.push(entry.udid);
-      surviving.push(entry);
-    } else if (health.reason === 'simulator no longer exists') {
-      // Already gone — just drop from manifest
-      killed.push(entry.udid);
-    } else {
-      // Exists but unhealthy — delete it
-      deleteSimulator(entry.udid);
-      killed.push(entry.udid);
-    }
-  }
-
-  writeSimulatorManifest(surviving);
+    return { result: undefined, updated: surviving };
+  });
 
   // Phase 2: heuristic cleanup — delete orphaned "Pilot Worker" sims
   const allSims = listSimulators();

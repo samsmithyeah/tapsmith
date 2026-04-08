@@ -9,11 +9,21 @@ vi.mock('node:os', async () => {
   const actual = await vi.importActual<typeof import('node:os')>('node:os');
   return { ...actual, tmpdir: vi.fn(() => '/tmp') };
 });
+// Stub proper-lockfile so manifest tests don't touch the real filesystem.
+// The locking is verified in production; here we just want the manifest
+// read/write logic to run as if the lock were held.
+vi.mock('proper-lockfile', () => ({
+  default: {
+    lockSync: vi.fn(() => () => { /* no-op release */ }),
+    unlockSync: vi.fn(),
+  },
+}));
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any -- overloaded execFileSync signatures make proper mock typing impractical
 const mockedExecFileSync = vi.mocked(childProcess.execFileSync) as any;
 const mockedReadFileSync = vi.mocked(fs.readFileSync);
 const mockedWriteFileSync = vi.mocked(fs.writeFileSync);
+const mockedExistsSync = vi.mocked(fs.existsSync);
 
 // Import after mocks are set up
 import {
@@ -80,8 +90,12 @@ function mockListSimulators(sims: Array<Partial<SimulatorInfo>>): void {
 
 beforeEach(() => {
   vi.resetAllMocks();
-  // Default: manifest doesn't exist
+  // Default: manifest doesn't exist (readFileSync throws), but pretend the
+  // file exists on disk so ensureManifestFile() skips its initialization
+  // write — keeping the first writeFileSync call as the actual data write
+  // so existing assertions on calls[0] still hold.
   mockedReadFileSync.mockImplementation(() => { throw new Error('ENOENT'); });
+  mockedExistsSync.mockReturnValue(true);
 });
 
 // ─── listSimulators ───
