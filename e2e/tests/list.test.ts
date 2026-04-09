@@ -1,16 +1,9 @@
-import {
-  beforeAll,
-  contentDesc,
-  describe,
-  expect,
-  test,
-  textContains,
-} from "pilot";
+import { beforeAll, describe, expect, test } from "pilot";
 import { ListScreen } from "../screens/list.screen.js";
 
 describe("List screen", () => {
   beforeAll(async ({ device }) => {
-    await device.tap(contentDesc("List"));
+    await device.getByDescription("List").tap();
   });
 
   // ─── Element Counting ───
@@ -45,7 +38,7 @@ describe("List screen", () => {
 
   test("filter({ hasNotText }) excludes matches", async ({ device }) => {
     const nonPremium = device
-      .element(textContains("Item"))
+      .getByText("Item")
       .filter({ hasNotText: "Premium" });
     const count = await nonPremium.count();
     expect(count).toBeGreaterThan(0);

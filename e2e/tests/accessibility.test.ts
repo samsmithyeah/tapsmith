@@ -1,17 +1,17 @@
-import { beforeEach, contentDesc, describe, expect, test, text } from "pilot"
+import { beforeEach, describe, expect, test } from "pilot"
 import { AccessibilityScreen } from "../screens/accessibility.screen.js"
 
 describe("Accessibility screen", () => {
   beforeEach(async ({ device }) => {
     await device.restartApp()
-    const accessibilityCard = device.element(contentDesc("Accessibility"))
+    const accessibilityCard = device.getByDescription("Accessibility")
     await accessibilityCard.scrollIntoView()
     await accessibilityCard.tap()
-    await expect(device.element(text("Accessibility Testing"))).toBeVisible()
+    await expect(device.getByText("Accessibility Testing", { exact: true })).toBeVisible()
   })
 
   test("shows heading", async ({ device }) => {
-    await expect(device.element(text("Accessibility Testing"))).toBeVisible()
+    await expect(device.getByText("Accessibility Testing", { exact: true })).toBeVisible()
   })
 
   // ─── Roles ───

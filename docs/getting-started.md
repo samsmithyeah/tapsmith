@@ -112,26 +112,26 @@ Pilot provisions additional simulator clones automatically for multi-worker iOS 
 Create a file at `tests/smoke.test.ts`:
 
 ```typescript
-import { test, expect, text, role } from "pilot";
+import { test, expect } from "pilot";
 
 test("app launches and shows welcome screen", async ({ device }) => {
   // Wait for the welcome text to appear
-  await expect(device.element(text("Welcome"))).toBeVisible();
+  await expect(device.getByText("Welcome")).toBeVisible();
 });
 
 test("can navigate to settings", async ({ device }) => {
   // Tap a button by its accessibility role and name
-  await device.tap(role("button", "Settings"));
+  await device.getByRole("button", { name: "Settings" }).tap();
 
   // Verify we arrived at the settings screen
-  await expect(device.element(text("Settings"))).toBeVisible();
+  await expect(device.getByText("Settings")).toBeVisible();
 });
 ```
 
 A few things to note:
 
 - Tests receive a `device` fixture automatically. This is your primary interface for interacting with the app.
-- `text()`, `role()`, and other selector functions create selectors that identify UI elements. See the [Selectors Guide](selectors.md) for the full list.
+- `getByText()`, `getByRole()`, and the other `getBy*` methods are Playwright-style locators that identify UI elements. See the [Selectors Guide](selectors.md) for the full list.
 - `expect()` creates assertions that auto-wait. `toBeVisible()` polls until the element appears or the timeout expires.
 
 ## Run Your Tests
@@ -206,7 +206,7 @@ When a test fails, Pilot prints the error message, a partial stack trace, and th
 You can use `describe` blocks and hooks to organize your tests:
 
 ```typescript
-import { test, describe, beforeEach, expect, text, role, id } from "pilot";
+import { test, describe, beforeEach, expect } from "pilot";
 
 describe("Login flow", () => {
   beforeEach(async () => {
@@ -214,17 +214,17 @@ describe("Login flow", () => {
   });
 
   test("successful login", async ({ device }) => {
-    await device.type(id("email_input"), "user@example.com");
-    await device.type(id("password_input"), "password123");
-    await device.tap(text("Sign In"));
-    await expect(device.element(text("Welcome back"))).toBeVisible();
+    await device.getByRole("textfield", { name: "Email" }).type("user@example.com");
+    await device.getByRole("textfield", { name: "Password" }).type("password123");
+    await device.getByRole("button", { name: "Sign In" }).tap();
+    await expect(device.getByText("Welcome back")).toBeVisible();
   });
 
   test("invalid credentials", async ({ device }) => {
-    await device.type(id("email_input"), "bad@example.com");
-    await device.type(id("password_input"), "wrong");
-    await device.tap(text("Sign In"));
-    await expect(device.element(text("Invalid credentials"))).toBeVisible();
+    await device.getByRole("textfield", { name: "Email" }).type("bad@example.com");
+    await device.getByRole("textfield", { name: "Password" }).type("wrong");
+    await device.getByRole("button", { name: "Sign In" }).tap();
+    await expect(device.getByText("Invalid credentials")).toBeVisible();
   });
 });
 ```

@@ -1,8 +1,12 @@
 /**
- * Selectors for locating UI elements on mobile devices.
+ * Selectors — internal representation of how to locate UI elements.
  *
- * Selectors are ordered by priority — prefer accessible selectors (role, text)
- * over implementation-detail selectors (testId, id, xpath).
+ * The public API is `device.getByText()`, `device.getByRole()`, etc. (see
+ * `device.ts`). Selector values are an implementation detail of how those
+ * methods communicate with the daemon over gRPC. Nothing in this file is
+ * part of the user-facing surface.
+ *
+ * @internal
  */
 
 // ─── Types ───
@@ -24,30 +28,25 @@ export type SelectorKind =
   | { type: 'xpath'; value: string };
 
 /**
- * A Selector identifies a UI element. Selectors can be scoped within a parent
- * selector to narrow the search.
+ * A Selector identifies a UI element. Internal representation only.
+ *
+ * @internal
  */
 export interface Selector {
   readonly kind: SelectorKind;
   readonly parent?: Selector;
-
-  /**
-   * Scope this selector within a parent. Returns a new Selector with the
-   * parent set.
-   */
-  within(parent: Selector): Selector;
 }
 
 // ─── Internal helpers ───
 
-function createSelector(kind: SelectorKind, parent?: Selector): Selector {
-  return {
-    kind,
-    parent,
-    within(parentSelector: Selector): Selector {
-      return createSelector(kind, parentSelector);
-    },
-  };
+/** @internal */
+export function makeSelector(kind: SelectorKind, parent?: Selector): Selector {
+  return { kind, parent };
+}
+
+/** @internal — Return a new selector scoped within `parent`. */
+export function withParent(child: Selector, parent: Selector): Selector {
+  return { kind: child.kind, parent };
 }
 
 // ─── Proto serialization ───
@@ -55,6 +54,8 @@ function createSelector(kind: SelectorKind, parent?: Selector): Selector {
 /**
  * Converts a Selector into the proto-compatible shape expected by the gRPC
  * layer. This is the only place that knows about the protobuf message layout.
+ *
+ * @internal
  */
 export function selectorToProto(selector: Selector): Record<string, unknown> {
   const proto: Record<string, unknown> = {};
@@ -99,49 +100,49 @@ export function selectorToProto(selector: Selector): Record<string, unknown> {
   return proto;
 }
 
-// ─── Builder functions (ordered by priority) ───
+// ─── Internal builders (used by Device/ElementHandle getBy* methods) ───
 
-/** Priority 1 — Match by accessibility role, optionally with an accessible name. */
-export function role(roleName: string, name?: string): Selector {
-  return createSelector({ type: 'role', value: { role: roleName, name: name ?? '' } });
+/** @internal */
+export function _role(roleName: string, name?: string): Selector {
+  return makeSelector({ type: 'role', value: { role: roleName, name: name ?? '' } });
 }
 
-/** Priority 1 — Match by exact text content. */
-export function text(exactText: string): Selector {
-  return createSelector({ type: 'text', value: exactText });
+/** @internal */
+export function _text(exactText: string): Selector {
+  return makeSelector({ type: 'text', value: exactText });
 }
 
-/** Priority 1 — Match when the element text contains the given substring. */
-export function textContains(partial: string): Selector {
-  return createSelector({ type: 'textContains', value: partial });
+/** @internal */
+export function _textContains(partial: string): Selector {
+  return makeSelector({ type: 'textContains', value: partial });
 }
 
-/** Priority 1 — Match by content description (accessibility label). */
-export function contentDesc(desc: string): Selector {
-  return createSelector({ type: 'contentDesc', value: desc });
+/** @internal */
+export function _contentDesc(desc: string): Selector {
+  return makeSelector({ type: 'contentDesc', value: desc });
 }
 
-/** Priority 2 — Match by hint text (placeholder). */
-export function hint(hintText: string): Selector {
-  return createSelector({ type: 'hint', value: hintText });
+/** @internal */
+export function _hint(hintText: string): Selector {
+  return makeSelector({ type: 'hint', value: hintText });
 }
 
-/** Priority 2 — Match by Android class name. */
-export function className(name: string): Selector {
-  return createSelector({ type: 'className', value: name });
+/** @internal */
+export function _className(name: string): Selector {
+  return makeSelector({ type: 'className', value: name });
 }
 
-/** Priority 3 — Match by test ID. */
-export function testId(id: string): Selector {
-  return createSelector({ type: 'testId', value: id });
+/** @internal */
+export function _testId(id: string): Selector {
+  return makeSelector({ type: 'testId', value: id });
 }
 
-/** Priority 3 — Match by Android resource ID. */
-export function id(resourceId: string): Selector {
-  return createSelector({ type: 'id', value: resourceId });
+/** @internal */
+export function _id(resourceId: string): Selector {
+  return makeSelector({ type: 'id', value: resourceId });
 }
 
-/** Priority 4 — Match by XPath expression. Use sparingly. */
-export function xpath(expr: string): Selector {
-  return createSelector({ type: 'xpath', value: expr });
+/** @internal */
+export function _xpath(expr: string): Selector {
+  return makeSelector({ type: 'xpath', value: expr });
 }

@@ -9,7 +9,7 @@ function makeContext(overrides: Partial<Parameters<typeof ensureSessionReady>[0]
     openDeepLink: vi.fn(async () => undefined),
     waitForIdle: vi.fn(async () => undefined),
     currentPackage: vi.fn(async () => 'com.example.app'),
-    tap: vi.fn(async () => undefined),
+    getByText: vi.fn(() => ({ tap: vi.fn(async () => undefined) }) as never),
     pressBack: vi.fn(async () => undefined),
     clearAppData: vi.fn(async () => undefined),
     restartApp: vi.fn(async () => undefined),

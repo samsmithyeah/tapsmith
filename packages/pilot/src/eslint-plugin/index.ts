@@ -5,20 +5,27 @@
  * tests.
  *
  * Rules:
- *   - prefer-role: Warns when className() is used for standard Android widgets
- *     that have well-known accessibility roles.
- *   - no-bare-xpath: Errors when xpath() is used without an explanatory
- *     comment on the same or preceding line.
- *   - prefer-accessible-selectors: Warns when testId() or id() is used
- *     instead of role/text/contentDesc selectors.
+ *   - prefer-role: Warns when `.locator({ className })` is used for standard
+ *     Android widgets that have well-known accessibility roles.
+ *   - no-bare-locator-xpath: Errors when `.locator({ xpath })` is used without
+ *     an explanatory comment on the same or preceding line.
+ *   - prefer-accessible-selectors: Warns when `.getByTestId()` or
+ *     `.locator({ id })` is used instead of `getByRole`, `getByText`,
+ *     `getByDescription`, etc.
  */
 
 // We define our own minimal types to avoid a hard dependency on @types/eslint.
 
 interface ASTNode {
   type: string;
-  callee?: { type: string; name?: string };
+  callee?: ASTNode;
+  object?: ASTNode;
+  property?: ASTNode;
+  computed?: boolean;
+  name?: string;
   arguments?: ASTNode[];
+  properties?: ASTNode[];
+  key?: ASTNode;
   value?: unknown;
   loc?: { start: { line: number }; end: { line: number } };
 }
@@ -52,7 +59,39 @@ interface RuleModule {
   create(context: RuleContext): Record<string, (node: ASTNode) => void>;
 }
 
-// ─── Standard widgets that should use role() instead of className() ───
+// ─── Helpers ───
+
+/** Returns true if `node` is a CallExpression of the form `<obj>.<methodName>(...)`. */
+function isMethodCall(node: ASTNode, methodName: string): boolean {
+  return (
+    node.type === 'CallExpression' &&
+    node.callee?.type === 'MemberExpression' &&
+    node.callee.computed !== true &&
+    node.callee.property?.type === 'Identifier' &&
+    node.callee.property.name === methodName
+  );
+}
+
+/** Look up a property in an ObjectExpression by its (Identifier or Literal) key. */
+function getObjectProperty(obj: ASTNode | undefined, key: string): ASTNode | undefined {
+  if (!obj || obj.type !== 'ObjectExpression' || !obj.properties) return undefined;
+  for (const prop of obj.properties) {
+    if (prop.type !== 'Property') continue;
+    const k = prop.key;
+    if (!k) continue;
+    if (k.type === 'Identifier' && k.name === key) return prop.value as ASTNode;
+    if (k.type === 'Literal' && k.value === key) return prop.value as ASTNode;
+  }
+  return undefined;
+}
+
+function literalString(node: ASTNode | undefined): string | undefined {
+  if (!node) return undefined;
+  if (node.type === 'Literal' && typeof node.value === 'string') return node.value;
+  return undefined;
+}
+
+// ─── Standard widgets that should use getByRole instead of locator({className}) ───
 
 const STANDARD_WIDGET_MAP: Record<string, string> = {
   'android.widget.Button': 'button',
@@ -76,84 +115,69 @@ const preferRole: RuleModule = {
     type: 'suggestion',
     docs: {
       description:
-        'Prefer role() selector over className() for standard Android widgets',
+        'Prefer getByRole() over locator({ className }) for standard Android widgets',
       recommended: true,
     },
     messages: {
       preferRole:
-        'Use role("{{role}}") instead of className("{{className}}"). Role-based selectors are more resilient to implementation changes.',
+        'Use getByRole("{{role}}") instead of locator({ className: "{{className}}" }). Role-based selectors are more resilient to implementation changes.',
     },
     schema: [],
   },
   create(context) {
     return {
       CallExpression(node: ASTNode) {
-        if (
-          node.callee?.type === 'Identifier' &&
-          node.callee.name === 'className' &&
-          node.arguments &&
-          node.arguments.length >= 1
-        ) {
-          const arg = node.arguments[0];
-          if (arg.type === 'Literal' && typeof arg.value === 'string') {
-            const role = STANDARD_WIDGET_MAP[arg.value];
-            if (role) {
-              context.report({
-                node,
-                messageId: 'preferRole',
-                data: { role, className: arg.value },
-              });
-            }
-          }
-        }
+        if (!isMethodCall(node, 'locator')) return;
+        const arg = node.arguments?.[0];
+        const classNameValue = literalString(getObjectProperty(arg, 'className'));
+        if (!classNameValue) return;
+        const role = STANDARD_WIDGET_MAP[classNameValue];
+        if (!role) return;
+        context.report({
+          node,
+          messageId: 'preferRole',
+          data: { role, className: classNameValue },
+        });
       },
     };
   },
 };
 
-// ─── no-bare-xpath ───
+// ─── no-bare-locator-xpath ───
 
-const noBareXpath: RuleModule = {
+const noBareLocatorXpath: RuleModule = {
   meta: {
     type: 'problem',
     docs: {
       description:
-        'Require an explanatory comment when using xpath() selectors',
+        'Require an explanatory comment when using locator({ xpath }) selectors',
       recommended: true,
     },
     messages: {
-      noBareXpath:
-        'xpath() selectors must have an explanatory comment on the same or preceding line. XPath selectors are fragile — document why this is necessary.',
+      noBareLocatorXpath:
+        'locator({ xpath }) must have an explanatory comment on the same or preceding line. XPath selectors are fragile and Android-only — document why this is necessary.',
     },
     schema: [],
   },
   create(context) {
     return {
       CallExpression(node: ASTNode) {
-        if (
-          node.callee?.type === 'Identifier' &&
-          node.callee.name === 'xpath'
-        ) {
-          const sourceCode = context.sourceCode ?? context.getSourceCode();
-          const comments = sourceCode.getCommentsBefore(node);
+        if (!isMethodCall(node, 'locator')) return;
+        const arg = node.arguments?.[0];
+        if (getObjectProperty(arg, 'xpath') === undefined) return;
 
-          // Check comments directly before the node
-          if (comments.length > 0) return;
+        const sourceCode = context.sourceCode ?? context.getSourceCode();
+        const comments = sourceCode.getCommentsBefore(node);
+        if (comments.length > 0) return;
 
-          // Also check for inline comments on the same line
-          const allComments = sourceCode.getAllComments();
-          const nodeLine = node.loc?.start.line;
-          const hasInlineComment = allComments.some(
-            (c) => c.loc?.start.line === nodeLine || c.loc?.end.line === nodeLine,
-          );
+        const allComments = sourceCode.getAllComments();
+        const nodeLine = node.loc?.start.line;
+        const hasInlineComment = allComments.some(
+          (c) => c.loc?.start.line === nodeLine || c.loc?.end.line === nodeLine,
+        );
+        if (hasInlineComment) return;
 
-          if (!hasInlineComment) {
-            context.report({
-              node,
-              messageId: 'noBareXpath',
-            });
-          }
-        }
+        context.report({ node, messageId: 'noBareLocatorXpath' });
       },
     };
   },
@@ -166,26 +190,28 @@ const preferAccessibleSelectors: RuleModule = {
     type: 'suggestion',
     docs: {
       description:
-        'Prefer accessible selectors (role, text, contentDesc) over testId/id',
+        'Prefer accessible getters (getByRole, getByText, getByDescription) over getByTestId / locator({ id })',
       recommended: true,
     },
     messages: {
-      preferAccessible:
-        'Prefer role(), text(), textContains(), or contentDesc() over {{name}}(). Accessible selectors make tests more resilient and verify accessibility.',
+      preferAccessibleTestId:
+        'Prefer getByRole(), getByText(), or getByDescription() over getByTestId(). Accessible getters make tests more resilient and verify accessibility.',
+      preferAccessibleId:
+        'Prefer getByRole(), getByText(), or getByDescription() over locator({ id }). Accessible getters make tests more resilient and verify accessibility.',
     },
     schema: [],
   },
   create(context) {
     return {
       CallExpression(node: ASTNode) {
-        if (node.callee?.type === 'Identifier') {
-          const name = node.callee.name;
-          if (name === 'testId' || name === 'id') {
-            context.report({
-              node,
-              messageId: 'preferAccessible',
-              data: { name },
-            });
+        if (isMethodCall(node, 'getByTestId')) {
+          context.report({ node, messageId: 'preferAccessibleTestId' });
+          return;
+        }
+        if (isMethodCall(node, 'locator')) {
+          const arg = node.arguments?.[0];
+          if (getObjectProperty(arg, 'id') !== undefined) {
+            context.report({ node, messageId: 'preferAccessibleId' });
           }
         }
       },
@@ -197,7 +223,7 @@ const preferAccessibleSelectors: RuleModule = {
 
 const rules: Record<string, RuleModule> = {
   'prefer-role': preferRole,
-  'no-bare-xpath': noBareXpath,
+  'no-bare-locator-xpath': noBareLocatorXpath,
   'prefer-accessible-selectors': preferAccessibleSelectors,
 };
 
@@ -205,7 +231,7 @@ const recommendedConfig = {
   plugins: ['pilot'] as const,
   rules: {
     'pilot/prefer-role': 'warn' as const,
-    'pilot/no-bare-xpath': 'error' as const,
+    'pilot/no-bare-locator-xpath': 'error' as const,
     'pilot/prefer-accessible-selectors': 'warn' as const,
   },
 };

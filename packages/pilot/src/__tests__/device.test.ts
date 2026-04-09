@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
 import { Device } from '../device.js';
-import { text, role } from '../selectors.js';
+import { selectorToProto } from '../selectors.js';
 import type { PilotGrpcClient, ActionResponse } from '../grpc-client.js';
 
 // ─── Mock helpers ───
@@ -65,212 +65,93 @@ function makeMockClient(overrides: Partial<PilotGrpcClient> = {}): PilotGrpcClie
   } as unknown as PilotGrpcClient;
 }
 
-// ─── doubleTap() ───
+// ─── getBy* locator factories ───
 
-describe('Device.doubleTap()', () => {
-  it('delegates to client.doubleTap with selector and default timeout', async () => {
-    const doubleTap = vi.fn(async () => successResponse());
-    const client = makeMockClient({ doubleTap });
+describe('Device locator factories', () => {
+  it('getByText() defaults to substring match (textContains)', () => {
+    const client = makeMockClient();
     const device = new Device(client);
-    const sel = text('Button');
-    await device.doubleTap(sel);
-    expect(doubleTap).toHaveBeenCalledWith(sel, 30_000);
+    const handle = device.getByText('Submit');
+    expect(selectorToProto(handle._selector)).toEqual({ textContains: 'Submit' });
   });
 
-  it('throws on failure', async () => {
-    const client = makeMockClient({
-      doubleTap: vi.fn(async () => failureResponse('Not found')),
+  it('getByText({exact: true}) uses exact text match', () => {
+    const client = makeMockClient();
+    const device = new Device(client);
+    const handle = device.getByText('Submit', { exact: true });
+    expect(selectorToProto(handle._selector)).toEqual({ text: 'Submit' });
+  });
+
+  it('getByRole() builds a role selector', () => {
+    const client = makeMockClient();
+    const device = new Device(client);
+    const handle = device.getByRole('button', { name: 'Save' });
+    expect(selectorToProto(handle._selector)).toEqual({
+      role: { role: 'button', name: 'Save' },
     });
-    const device = new Device(client);
-    await expect(device.doubleTap(text('X'))).rejects.toThrow('Not found');
   });
 
-  it('throws default message when errorMessage is empty', async () => {
-    const client = makeMockClient({
-      doubleTap: vi.fn(async () => failureResponse('')),
+  it('getByRole() defaults name to empty string', () => {
+    const client = makeMockClient();
+    const device = new Device(client);
+    const handle = device.getByRole('checkbox');
+    expect(selectorToProto(handle._selector)).toEqual({
+      role: { role: 'checkbox', name: '' },
     });
-    const device = new Device(client);
-    await expect(device.doubleTap(text('X'))).rejects.toThrow('Double tap failed');
-  });
-});
-
-// ─── drag() ───
-
-describe('Device.drag()', () => {
-  it('delegates to client.dragAndDrop with from/to selectors', async () => {
-    const dragAndDrop = vi.fn(async () => successResponse());
-    const client = makeMockClient({ dragAndDrop });
-    const device = new Device(client);
-    const from = text('Item');
-    const to = text('Zone');
-    await device.drag({ from, to });
-    expect(dragAndDrop).toHaveBeenCalledWith(from, to, 30_000);
   });
 
-  it('throws on failure', async () => {
-    const client = makeMockClient({
-      dragAndDrop: vi.fn(async () => failureResponse('')),
-    });
+  it('getByDescription() builds a contentDesc selector', () => {
+    const client = makeMockClient();
     const device = new Device(client);
-    await expect(device.drag({ from: text('A'), to: text('B') })).rejects.toThrow('Drag and drop failed');
-  });
-});
-
-// ─── pinchIn() / pinchOut() ───
-
-describe('Device.pinchIn()', () => {
-  it('delegates to client.pinchZoom with default scale 0.5', async () => {
-    const pinchZoom = vi.fn(async () => successResponse());
-    const client = makeMockClient({ pinchZoom });
-    const device = new Device(client);
-    const sel = text('Map');
-    await device.pinchIn(sel);
-    expect(pinchZoom).toHaveBeenCalledWith(sel, 0.5, 30_000);
+    const handle = device.getByDescription('Close');
+    expect(selectorToProto(handle._selector)).toEqual({ contentDesc: 'Close' });
   });
 
-  it('accepts custom scale', async () => {
-    const pinchZoom = vi.fn(async () => successResponse());
-    const client = makeMockClient({ pinchZoom });
+  it('getByPlaceholder() builds a hint selector', () => {
+    const client = makeMockClient();
     const device = new Device(client);
-    const sel = text('Map');
-    await device.pinchIn(sel, { scale: 0.3 });
-    expect(pinchZoom).toHaveBeenCalledWith(sel, 0.3, 30_000);
+    const handle = device.getByPlaceholder('Enter email');
+    expect(selectorToProto(handle._selector)).toEqual({ hint: 'Enter email' });
   });
 
-  it('throws on failure', async () => {
-    const client = makeMockClient({
-      pinchZoom: vi.fn(async () => failureResponse('')),
-    });
+  it('getByTestId() builds a testId selector', () => {
+    const client = makeMockClient();
     const device = new Device(client);
-    await expect(device.pinchIn(text('X'))).rejects.toThrow('Pinch in failed');
-  });
-});
-
-describe('Device.pinchOut()', () => {
-  it('delegates to client.pinchZoom with default scale 2.0', async () => {
-    const pinchZoom = vi.fn(async () => successResponse());
-    const client = makeMockClient({ pinchZoom });
-    const device = new Device(client);
-    const sel = text('Map');
-    await device.pinchOut(sel);
-    expect(pinchZoom).toHaveBeenCalledWith(sel, 2.0, 30_000);
+    const handle = device.getByTestId('submit-btn');
+    expect(selectorToProto(handle._selector)).toEqual({ testId: 'submit-btn' });
   });
 
-  it('accepts custom scale', async () => {
-    const pinchZoom = vi.fn(async () => successResponse());
-    const client = makeMockClient({ pinchZoom });
+  it('locator({id}) builds an id selector serialized as resourceId', () => {
+    const client = makeMockClient();
     const device = new Device(client);
-    const sel = text('Map');
-    await device.pinchOut(sel, { scale: 3.0 });
-    expect(pinchZoom).toHaveBeenCalledWith(sel, 3.0, 30_000);
+    const handle = device.locator({ id: 'com.app:id/btn' });
+    expect(selectorToProto(handle._selector)).toEqual({ resourceId: 'com.app:id/btn' });
   });
 
-  it('throws on failure', async () => {
-    const client = makeMockClient({
-      pinchZoom: vi.fn(async () => failureResponse('')),
-    });
+  it('locator({xpath}) builds an xpath selector', () => {
+    const client = makeMockClient();
     const device = new Device(client);
-    await expect(device.pinchOut(text('X'))).rejects.toThrow('Pinch out failed');
-  });
-});
-
-// ─── focus() / blur() ───
-
-describe('Device.focus()', () => {
-  it('delegates to client.focus', async () => {
-    const focus = vi.fn(async () => successResponse());
-    const client = makeMockClient({ focus });
-    const device = new Device(client);
-    const sel = role('textfield');
-    await device.focus(sel);
-    expect(focus).toHaveBeenCalledWith(sel, 30_000);
+    const handle = device.locator({ xpath: '//Button[@text="OK"]' });
+    expect(selectorToProto(handle._selector)).toEqual({ xpath: '//Button[@text="OK"]' });
   });
 
-  it('throws on failure', async () => {
-    const client = makeMockClient({
-      focus: vi.fn(async () => failureResponse('')),
-    });
+  it('locator({className}) builds a className selector', () => {
+    const client = makeMockClient();
     const device = new Device(client);
-    await expect(device.focus(text('X'))).rejects.toThrow('Focus failed');
-  });
-});
-
-describe('Device.blur()', () => {
-  it('delegates to client.blur', async () => {
-    const blur = vi.fn(async () => successResponse());
-    const client = makeMockClient({ blur });
-    const device = new Device(client);
-    const sel = role('textfield');
-    await device.blur(sel);
-    expect(blur).toHaveBeenCalledWith(sel, 30_000);
+    const handle = device.locator({ className: 'android.widget.Button' });
+    expect(selectorToProto(handle._selector)).toEqual({ className: 'android.widget.Button' });
   });
 
-  it('throws on failure', async () => {
-    const client = makeMockClient({
-      blur: vi.fn(async () => failureResponse('')),
-    });
+  it('locator() throws when no field is set', () => {
+    const client = makeMockClient();
     const device = new Device(client);
-    await expect(device.blur(text('X'))).rejects.toThrow('Blur failed');
-  });
-});
-
-// ─── selectOption() ───
-
-describe('Device.selectOption()', () => {
-  it('delegates to client.selectOption with string', async () => {
-    const selectOption = vi.fn(async () => successResponse());
-    const client = makeMockClient({ selectOption });
-    const device = new Device(client);
-    const sel = role('combobox');
-    await device.selectOption(sel, 'Option 2');
-    expect(selectOption).toHaveBeenCalledWith(sel, 'Option 2', 30_000);
+    expect(() => device.locator({})).toThrow(/exactly one/);
   });
 
-  it('delegates to client.selectOption with index', async () => {
-    const selectOption = vi.fn(async () => successResponse());
-    const client = makeMockClient({ selectOption });
+  it('locator() throws when multiple fields are set', () => {
+    const client = makeMockClient();
     const device = new Device(client);
-    const sel = role('combobox');
-    await device.selectOption(sel, { index: 1 });
-    expect(selectOption).toHaveBeenCalledWith(sel, { index: 1 }, 30_000);
-  });
-
-  it('throws on failure', async () => {
-    const client = makeMockClient({
-      selectOption: vi.fn(async () => failureResponse('')),
-    });
-    const device = new Device(client);
-    await expect(device.selectOption(text('X'), 'A')).rejects.toThrow('Select option failed');
-  });
-});
-
-// ─── highlight() ───
-
-describe('Device.highlight()', () => {
-  it('delegates to client.highlight', async () => {
-    const highlight = vi.fn(async () => successResponse());
-    const client = makeMockClient({ highlight });
-    const device = new Device(client);
-    const sel = text('Submit');
-    await device.highlight(sel);
-    expect(highlight).toHaveBeenCalledWith(sel, undefined, 30_000);
-  });
-
-  it('passes durationMs option', async () => {
-    const highlight = vi.fn(async () => successResponse());
-    const client = makeMockClient({ highlight });
-    const device = new Device(client);
-    const sel = text('Submit');
-    await device.highlight(sel, { durationMs: 2000 });
-    expect(highlight).toHaveBeenCalledWith(sel, 2000, 30_000);
-  });
-
-  it('throws on failure', async () => {
-    const client = makeMockClient({
-      highlight: vi.fn(async () => failureResponse('')),
-    });
-    const device = new Device(client);
-    await expect(device.highlight(text('X'))).rejects.toThrow('Highlight failed');
+    expect(() => device.locator({ id: 'a', xpath: '//b' })).toThrow(/exactly one/);
   });
 });
 

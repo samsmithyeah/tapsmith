@@ -1,9 +1,9 @@
-import { beforeAll, contentDesc, describe, expect, test } from "pilot"
+import { beforeAll, describe, expect, test } from "pilot"
 import { VisibilityScreen } from "../screens/visibility.screen.js"
 
 describe("Visibility screen", () => {
   beforeAll(async ({ device }) => {
-    await device.tap(contentDesc("Visibility"))
+    await device.getByDescription("Visibility").tap()
   })
 
   // ─── Dismissable Banner ───

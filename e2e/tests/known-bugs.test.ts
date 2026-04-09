@@ -2,7 +2,7 @@
  * Known bugs — tests that SHOULD pass but don't due to Pilot bugs.
  * Uncomment each test as the corresponding bug is fixed.
  */
-import { contentDesc, describe, expect, hint, id, role, test, testId, text, textContains } from "pilot"
+import { describe, expect, test } from "pilot"
 
 describe("Known bugs", () => {
   // ─── PILOT-131: testId() uses content-desc prefix instead of resource-id ───
@@ -10,8 +10,8 @@ describe("Known bugs", () => {
   // content-desc="testid:xxx" which never matches.
 
   // test("PILOT-131: testId() should find element by resource-id", async ({ device }) => {
-  //   await device.tap(contentDesc("Login Form"))
-  //   const el = await device.element(testId("email-input")).find()
+  //   await device.getByDescription("Login Form").tap()
+  //   const el = await device.getByTestId("email-input").find()
   //   expect(el.resourceId).toBe("email-input")
   // })
 
@@ -20,8 +20,8 @@ describe("Known bugs", () => {
   // the first element on screen instead of filtering by hint attribute.
 
   // test("PILOT-132: hint() should match by placeholder text", async ({ device }) => {
-  //   await device.tap(contentDesc("Login Form"))
-  //   const el = await device.element(hint("Enter your email")).find()
+  //   await device.getByDescription("Login Form").tap()
+  //   const el = await device.getByPlaceholder("Enter your email").find()
   //   expect(el.className).toBe("android.widget.EditText")
   //   expect(el.hint).toBe("Enter your email")
   // })
@@ -30,14 +30,14 @@ describe("Known bugs", () => {
   // Typing "hello" results in the field containing "hello" (with quotes).
 
   // test("PILOT-133: type() should not add quotes around text", async ({ device }) => {
-  //   await device.tap(contentDesc("Login Form"))
-  //   await device.element(id("email-input")).type("test@example.com")
-  //   await expect(device.element(id("email-input"))).toHaveValue("test@example.com")
+  //   await device.getByDescription("Login Form").tap()
+  //   await device.locator({ id: "email-input" }).type("test@example.com")
+  //   await expect(device.locator({ id: "email-input" })).toHaveValue("test@example.com")
   // })
 
   // test("PILOT-133: clearAndType() should not add quotes around text", async ({ device }) => {
-  //   await device.element(id("email-input")).clearAndType("new@example.com")
-  //   await expect(device.element(id("email-input"))).toHaveValue("new@example.com")
+  //   await device.locator({ id: "email-input" }).clearAndType("new@example.com")
+  //   await expect(device.locator({ id: "email-input" })).toHaveValue("new@example.com")
   // })
 
   // ─── PILOT-134: No test isolation between files ───
@@ -55,11 +55,11 @@ describe("Known bugs", () => {
   // but it checks once and fails immediately if the element is visible.
 
   // test("PILOT-149: not.toBeVisible() should poll until element disappears", async ({ device }) => {
-  //   await device.tap(contentDesc("Dialogs"))
-  //   await device.tap(id("show-toast-button"))
+  //   await device.getByDescription("Dialogs").tap()
+  //   await device.locator({ id: "show-toast-button" }).tap()
   //   // Toast auto-hides after 3 seconds
-  //   await expect(device.element(id("toast"))).toBeVisible()
-  //   await expect(device.element(id("toast"))).not.toBeVisible({ timeout: 10000 })
+  //   await expect(device.locator({ id: "toast" })).toBeVisible()
+  //   await expect(device.locator({ id: "toast" })).not.toBeVisible({ timeout: 10000 })
   // })
 
   // ─── PILOT-135: No scrollUntilVisible action ───
@@ -68,8 +68,8 @@ describe("Known bugs", () => {
 
   // test("PILOT-135: tap() should auto-scroll to off-screen elements", async ({ device }) => {
   //   // "Scroll" card is below the fold on home screen
-  //   await device.tap(contentDesc("Scroll"))
-  //   await expect(device.element(text("Scroll Testing"))).toBeVisible()
+  //   await device.getByDescription("Scroll").tap()
+  //   await expect(device.getByText("Scroll Testing", { exact: true })).toBeVisible()
   // })
 
   // ─── RN accessibilityRole not mapped to Android UIAutomator role ───
@@ -77,7 +77,7 @@ describe("Known bugs", () => {
   // the `role` attribute in the UIAutomator hierarchy on Android.
 
   // test("accessibilityRole should map to UIAutomator role", async ({ device }) => {
-  //   await expect(device.element(text("Test Screens"))).toHaveRole("header")
+  //   await expect(device.getByText("Test Screens", { exact: true })).toHaveRole("header")
   // })
 
   // ─── toContainText/toHaveText returns empty for parent elements ───
@@ -85,9 +85,9 @@ describe("Known bugs", () => {
   // the parent's text attribute is empty — the text is in child nodes.
 
   // test("toContainText should traverse child text nodes", async ({ device }) => {
-  //   await device.tap(contentDesc("Dialogs"))
-  //   await device.tap(id("show-toast-button"))
-  //   await expect(device.element(id("toast"))).toContainText("Item saved successfully!")
+  //   await device.getByDescription("Dialogs").tap()
+  //   await device.locator({ id: "show-toast-button" }).tap()
+  //   await expect(device.locator({ id: "toast" })).toContainText("Item saved successfully!")
   // })
 
   // ─── toBeEmpty reports placeholder as text after clear() ───
@@ -95,10 +95,10 @@ describe("Known bugs", () => {
   // as the element's text, so toBeEmpty() fails.
 
   // test("toBeEmpty should ignore placeholder text after clear", async ({ device }) => {
-  //   await device.tap(contentDesc("Login Form"))
-  //   await device.element(id("email-input")).type("hello")
-  //   await device.element(id("email-input")).clear()
-  //   await expect(device.element(id("email-input"))).toBeEmpty()
+  //   await device.getByDescription("Login Form").tap()
+  //   await device.locator({ id: "email-input" }).type("hello")
+  //   await device.locator({ id: "email-input" }).clear()
+  //   await expect(device.locator({ id: "email-input" })).toBeEmpty()
   // })
 
   test("placeholder — all known bugs are commented out above", async () => {

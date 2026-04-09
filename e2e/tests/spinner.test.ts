@@ -1,9 +1,9 @@
-import { beforeAll, contentDesc, describe, expect, test } from "pilot"
+import { beforeAll, describe, expect, test } from "pilot"
 import { SpinnerScreen } from "../screens/spinner.screen.js"
 
 describe("Spinner screen", () => {
   beforeAll(async ({ device }) => {
-    await device.tap(contentDesc("Spinner"))
+    await device.getByDescription("Spinner").tap()
   })
 
   // ─── Dropdowns ───

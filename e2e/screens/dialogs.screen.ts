@@ -1,24 +1,24 @@
-import { type Device, id, role, text } from "pilot"
+import { Device } from "pilot"
 
 export class DialogsScreen {
   constructor(private device: Device) {}
 
   // Toast
-  get showToastButton() { return this.device.element(id("show-toast-button")) }
-  get showErrorToastButton() { return this.device.element(id("show-error-toast-button")) }
-  get toastSuccess() { return this.device.element(text("Item saved successfully!")) }
-  get toastError() { return this.device.element(text("Something went wrong")) }
+  get showToastButton() { return this.device.locator({ id: "show-toast-button" }) }
+  get showErrorToastButton() { return this.device.locator({ id: "show-error-toast-button" }) }
+  get toastSuccess() { return this.device.getByText("Item saved successfully!", { exact: true }) }
+  get toastError() { return this.device.getByText("Something went wrong", { exact: true }) }
 
   // Snackbar
-  get showSnackbarButton() { return this.device.element(id("show-snackbar-button")) }
-  get snackbar() { return this.device.element(id("snackbar")) }
-  get snackbarMessage() { return this.device.element(text("Message archived")) }
-  get snackbarDismiss() { return this.device.element(role("button", "Dismiss")) }
+  get showSnackbarButton() { return this.device.locator({ id: "show-snackbar-button" }) }
+  get snackbar() { return this.device.locator({ id: "snackbar" }) }
+  get snackbarMessage() { return this.device.getByText("Message archived", { exact: true }) }
+  get snackbarDismiss() { return this.device.getByRole("button", { name: "Dismiss" }) }
 
   // Modal
-  get showModalButton() { return this.device.element(id("show-modal-button")) }
-  get modal() { return this.device.element(id("modal")) }
-  get modalTitle() { return this.device.element(text("Modal Title")) }
-  get cancelButton() { return this.device.element(role("button", "Cancel")) }
-  get confirmButton() { return this.device.element(role("button", "Confirm")) }
+  get showModalButton() { return this.device.locator({ id: "show-modal-button" }) }
+  get modal() { return this.device.locator({ id: "modal" }) }
+  get modalTitle() { return this.device.getByText("Modal Title", { exact: true }) }
+  get cancelButton() { return this.device.getByRole("button", { name: "Cancel" }) }
+  get confirmButton() { return this.device.getByRole("button", { name: "Confirm" }) }
 }

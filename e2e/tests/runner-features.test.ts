@@ -1,4 +1,4 @@
-import { beforeAll, contentDesc, describe, expect, test } from "pilot"
+import { beforeAll, describe, expect, test } from "pilot"
 import { SlowLoadScreen } from "../screens/slow-load.screen.js"
 
 // ─── test.use() ───
@@ -9,8 +9,8 @@ import { SlowLoadScreen } from "../screens/slow-load.screen.js"
 
 describe("test.use() timeout override", () => {
   beforeAll(async ({ device }) => {
-    await device.element(contentDesc("Slow Load")).scrollIntoView()
-    await device.tap(contentDesc("Slow Load"))
+    await device.getByDescription("Slow Load").scrollIntoView()
+    await device.getByDescription("Slow Load").tap()
   })
 
   describe("overridden timeout finds slow element", () => {

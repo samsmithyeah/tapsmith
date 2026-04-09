@@ -1,17 +1,17 @@
-import { type Device, text } from "pilot"
+import { Device } from "pilot"
 
 export class HomeScreen {
   constructor(private device: Device) {}
 
-  get header() { return this.device.element(text("Test Screens")) }
+  get header() { return this.device.getByText("Test Screens", { exact: true }) }
 
   // Navigation cards
-  get loginCard() { return this.device.element(text("Login Form")) }
-  get listCard() { return this.device.element(text("List")) }
-  get togglesCard() { return this.device.element(text("Toggles")) }
-  get spinnerCard() { return this.device.element(text("Spinner")) }
-  get gesturesCard() { return this.device.element(text("Gestures")) }
-  get dialogsCard() { return this.device.element(text("Dialogs")) }
-  get slowLoadCard() { return this.device.element(text("Slow Load")) }
-  get scrollCard() { return this.device.element(text("Scroll")) }
+  get loginCard() { return this.device.getByText("Login Form", { exact: true }) }
+  get listCard() { return this.device.getByText("List", { exact: true }) }
+  get togglesCard() { return this.device.getByText("Toggles", { exact: true }) }
+  get spinnerCard() { return this.device.getByText("Spinner", { exact: true }) }
+  get gesturesCard() { return this.device.getByText("Gestures", { exact: true }) }
+  get dialogsCard() { return this.device.getByText("Dialogs", { exact: true }) }
+  get slowLoadCard() { return this.device.getByText("Slow Load", { exact: true }) }
+  get scrollCard() { return this.device.getByText("Scroll", { exact: true }) }
 }
