@@ -344,3 +344,173 @@ async fn ping_agent(port: u16) -> Result<()> {
         bail!("Unexpected ping response: {response}")
     }
 }
+
+#[cfg(test)]
+#[cfg(target_os = "macos")]
+mod tests {
+    use super::*;
+
+    /// Minimal xctestrun fixture: only the keys patch_xctestrun touches must
+    /// exist in the parent path. Empty EnvironmentVariables/TestingEnvironmentVariables
+    /// dicts are required because PlistBuddy `Add` cannot create intermediate keys.
+    const FIXTURE_EMPTY: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>TestConfigurations</key>
+  <array>
+    <dict>
+      <key>TestTargets</key>
+      <array>
+        <dict>
+          <key>EnvironmentVariables</key>
+          <dict/>
+          <key>TestingEnvironmentVariables</key>
+          <dict/>
+        </dict>
+      </array>
+    </dict>
+  </array>
+</dict>
+</plist>
+"#;
+
+    /// Same as FIXTURE_EMPTY but pre-populated with stale values, to verify
+    /// the delete-then-add semantics.
+    const FIXTURE_WITH_STALE: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>TestConfigurations</key>
+  <array>
+    <dict>
+      <key>TestTargets</key>
+      <array>
+        <dict>
+          <key>UITargetAppBundleIdentifier</key>
+          <string>com.stale.bundle</string>
+          <key>EnvironmentVariables</key>
+          <dict>
+            <key>PILOT_AGENT_PORT</key>
+            <string>9999</string>
+            <key>PILOT_TARGET_BUNDLE_ID</key>
+            <string>com.stale.bundle</string>
+          </dict>
+          <key>TestingEnvironmentVariables</key>
+          <dict>
+            <key>PILOT_AGENT_PORT</key>
+            <string>9999</string>
+            <key>PILOT_TARGET_BUNDLE_ID</key>
+            <string>com.stale.bundle</string>
+          </dict>
+        </dict>
+      </array>
+    </dict>
+  </array>
+</dict>
+</plist>
+"#;
+
+    async fn write_fixture(contents: &str) -> (tempfile::TempDir, std::path::PathBuf) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("test.xctestrun");
+        tokio::fs::write(&path, contents).await.unwrap();
+        (dir, path)
+    }
+
+    #[tokio::test]
+    async fn patch_xctestrun_launch_mode_injects_bundle_id_and_port() {
+        let (_dir, path) = write_fixture(FIXTURE_EMPTY).await;
+
+        let patched_path = patch_xctestrun(path.to_str().unwrap(), "com.example.app", false, 18800)
+            .await
+            .expect("patch should succeed");
+
+        assert!(
+            patched_path.ends_with(".launch.port18800.patched.xctestrun"),
+            "unexpected patched path: {patched_path}"
+        );
+        let contents = tokio::fs::read_to_string(&patched_path).await.unwrap();
+        assert!(contents.contains("com.example.app"));
+        assert!(contents.contains("18800"));
+        assert!(contents.contains("PILOT_AGENT_PORT"));
+        assert!(contents.contains("PILOT_TARGET_BUNDLE_ID"));
+        assert!(contents.contains("UITargetAppBundleIdentifier"));
+        // Launch mode must NOT inject the attach flag.
+        assert!(!contents.contains("PILOT_ATTACH_TO_RUNNING_APP"));
+    }
+
+    #[tokio::test]
+    async fn patch_xctestrun_attach_mode_sets_attach_flag() {
+        let (_dir, path) = write_fixture(FIXTURE_EMPTY).await;
+
+        let patched_path = patch_xctestrun(path.to_str().unwrap(), "com.example.app", true, 19000)
+            .await
+            .expect("patch should succeed");
+
+        assert!(
+            patched_path.ends_with(".attach.port19000.patched.xctestrun"),
+            "unexpected patched path: {patched_path}"
+        );
+        let contents = tokio::fs::read_to_string(&patched_path).await.unwrap();
+        assert!(contents.contains("PILOT_ATTACH_TO_RUNNING_APP"));
+        assert!(contents.contains("19000"));
+    }
+
+    #[tokio::test]
+    async fn patch_xctestrun_replaces_existing_env_values() {
+        // Critical: a source plist that already contains stale values from a
+        // previous run must be cleanly overwritten by the delete-then-add
+        // sequence — otherwise the runner would keep the wrong port/bundle id.
+        let (_dir, path) = write_fixture(FIXTURE_WITH_STALE).await;
+
+        let patched_path =
+            patch_xctestrun(path.to_str().unwrap(), "com.fresh.bundle", false, 18800)
+                .await
+                .expect("patch should succeed");
+
+        let contents = tokio::fs::read_to_string(&patched_path).await.unwrap();
+        assert!(contents.contains("com.fresh.bundle"));
+        assert!(contents.contains("18800"));
+        // Stale values must be gone.
+        assert!(
+            !contents.contains("com.stale.bundle"),
+            "stale bundle id leaked into patched plist:\n{contents}"
+        );
+        assert!(
+            !contents.contains("9999"),
+            "stale port leaked into patched plist:\n{contents}"
+        );
+    }
+
+    #[tokio::test]
+    async fn patch_xctestrun_per_port_paths_do_not_collide() {
+        // Two parallel workers using the same source xctestrun must produce
+        // distinct patched files so they can't stomp on each other.
+        let (_dir, path) = write_fixture(FIXTURE_EMPTY).await;
+        let src = path.to_str().unwrap();
+
+        let p1 = patch_xctestrun(src, "com.example.app", false, 18800)
+            .await
+            .unwrap();
+        let p2 = patch_xctestrun(src, "com.example.app", false, 18801)
+            .await
+            .unwrap();
+        let p3 = patch_xctestrun(src, "com.example.app", true, 18800)
+            .await
+            .unwrap();
+        assert_ne!(p1, p2);
+        assert_ne!(p1, p3);
+        assert_ne!(p2, p3);
+    }
+
+    #[tokio::test]
+    async fn patch_xctestrun_missing_source_returns_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let bogus = dir.path().join("does-not-exist.xctestrun");
+
+        let result =
+            patch_xctestrun(bogus.to_str().unwrap(), "com.example.app", false, 18800).await;
+        assert!(result.is_err(), "expected error for missing source file");
+    }
+}

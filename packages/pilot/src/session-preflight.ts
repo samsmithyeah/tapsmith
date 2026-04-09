@@ -136,9 +136,13 @@ async function verifySession(ctx: SessionPreflightContext): Promise<void> {
         if (state !== 'foreground') {
           await ctx.device.launchApp(ctx.config.package);
         }
-      } catch {
+      } catch (err) {
         // getAppState/launchApp failures are best-effort recovery; let the
         // test itself surface a clearer error if the app is still broken.
+        // Surface to stderr so a real failure here is debuggable rather than
+        // silently masked until the next test fails for an unrelated reason.
+        const message = err instanceof Error ? err.message : String(err);
+        process.stderr.write(`[pilot] iOS verifySession recovery failed (continuing): ${message}\n`);
       }
     }
     return;

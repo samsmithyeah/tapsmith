@@ -3,10 +3,18 @@ name: iOS Agent
 on:
   push:
     branches: [main]
-    paths: ['ios-agent/**']
+    paths:
+      - 'ios-agent/**'
+      - 'packages/pilot-core/src/ios/**'
+      - 'packages/pilot-core/src/agent_comms.rs'
+      - '.github/workflows/ios.yml'
   pull_request:
     branches: [main]
-    paths: ['ios-agent/**']
+    paths:
+      - 'ios-agent/**'
+      - 'packages/pilot-core/src/ios/**'
+      - 'packages/pilot-core/src/agent_comms.rs'
+      - '.github/workflows/ios.yml'
 
 concurrency:
   group: ios-${{ github.head_ref || github.run_id }}
@@ -45,3 +53,16 @@ jobs:
           else
             echo "SwiftLint not installed, skipping"
           fi
+
+      # Run pilot-core's Rust tests on macOS so the macOS-gated iOS modules
+      # (patch_xctestrun, simctl/devicectl wrappers) actually get exercised in
+      # CI. The main ci.yml rust job runs on Linux and skips these tests.
+      - name: Install protoc
+        run: brew install protobuf
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: packages/pilot-core
+      - name: Cargo test (pilot-core, macOS)
+        working-directory: packages/pilot-core
+        run: cargo test

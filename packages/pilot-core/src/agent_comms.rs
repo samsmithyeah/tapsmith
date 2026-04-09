@@ -1091,4 +1091,90 @@ mod tests {
         assert!(resp.success);
         assert_eq!(resp.data, Value::Null);
     }
+
+    // ─── SendError categorization ───
+    //
+    // These tests pin the Connect-vs-PostSend split that send_command_with_timeout
+    // depends on. Misclassifying a Connect failure as PostSend would prevent the
+    // safe single-retry path from running; misclassifying PostSend as Connect
+    // would risk double-executing side-effectful commands like tap.
+
+    #[tokio::test]
+    async fn try_send_command_classifies_no_listener_as_connect_error() {
+        // Bind a TCP listener to grab a guaranteed-free port, then drop it so
+        // a connect attempt to that port fails immediately with ECONNREFUSED.
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        drop(listener);
+
+        let conn = AgentConnection::with_port(port);
+        let cmd = AgentCommand::Screenshot {};
+
+        let result = conn.try_send_command(&cmd, Duration::from_secs(1)).await;
+        match result {
+            Err(SendError::Connect(_)) => {} // expected — safe to retry
+            Err(SendError::PostSend(e)) => {
+                panic!("expected Connect, got PostSend: {e}")
+            }
+            Ok(_) => panic!("expected error, got Ok"),
+        }
+    }
+
+    #[tokio::test]
+    async fn try_send_command_classifies_immediate_close_as_post_send_error() {
+        // Bind a listener that accepts connections and immediately drops them.
+        // The TCP connect succeeds, so we're past the "Connect" phase — but the
+        // subsequent write/read fails (or returns empty), which must be
+        // categorized as PostSend so retry is suppressed.
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+
+        tokio::spawn(async move {
+            loop {
+                match listener.accept().await {
+                    Ok((stream, _)) => drop(stream), // close immediately
+                    Err(_) => break,
+                }
+            }
+        });
+
+        let conn = AgentConnection::with_port(port);
+        let cmd = AgentCommand::Screenshot {};
+
+        let result = conn.try_send_command(&cmd, Duration::from_secs(2)).await;
+        match result {
+            Err(SendError::PostSend(_)) => {} // expected — NOT safe to retry
+            Err(SendError::Connect(e)) => {
+                panic!("expected PostSend, got Connect: {e}")
+            }
+            Ok(_) => panic!("expected error, got Ok"),
+        }
+    }
+
+    #[tokio::test]
+    async fn send_command_requires_connected_flag() {
+        // Sanity check on the public entry point: it must reject sends when the
+        // connection has never been established, otherwise we'd waste a TCP
+        // connect attempt and cloud the error message users see.
+        let mut conn = AgentConnection::with_port(0);
+        let cmd = AgentCommand::Screenshot {};
+        let result = conn
+            .send_command_with_timeout(&cmd, Duration::from_secs(1))
+            .await;
+        assert!(result.is_err());
+        let msg = result.unwrap_err().to_string();
+        assert!(
+            msg.contains("Not connected"),
+            "expected 'Not connected' in error, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn send_error_into_anyhow_preserves_message() {
+        let connect: anyhow::Error = SendError::Connect(anyhow!("connect-side failure")).into();
+        assert!(connect.to_string().contains("connect-side failure"));
+
+        let post: anyhow::Error = SendError::PostSend(anyhow!("post-send failure")).into();
+        assert!(post.to_string().contains("post-send failure"));
+    }
 }

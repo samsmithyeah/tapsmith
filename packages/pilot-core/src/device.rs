@@ -1,5 +1,5 @@
 use anyhow::{bail, Result};
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 
 use crate::adb;
 use crate::ios;
@@ -100,35 +100,40 @@ impl DeviceManager {
 
         // ─── iOS devices via xcrun simctl / devicectl ───
         if self.platform_filter != Some(Platform::Android) {
-            if let Ok(ios_devices) = ios::device::list_all_devices().await {
-                for ios_dev in &ios_devices {
-                    if ios_dev.is_simulator && !ios_dev.is_booted() {
-                        continue; // Only show booted simulators
-                    }
-                    current_serials.push(ios_dev.udid.clone());
+            // Surface listing errors instead of silently swallowing — a broken
+            // simctl install or hung devicectl call would otherwise produce a
+            // mysteriously empty device list with no clue why.
+            let ios_devices = match ios::device::list_all_devices().await {
+                Ok(devices) => devices,
+                Err(e) => {
+                    warn!(error = %e, "Failed to list iOS devices via simctl/devicectl");
+                    Vec::new()
+                }
+            };
+            for ios_dev in &ios_devices {
+                if ios_dev.is_simulator && !ios_dev.is_booted() {
+                    continue; // Only show booted simulators
+                }
+                current_serials.push(ios_dev.udid.clone());
 
-                    if let Some(existing) =
-                        self.devices.iter_mut().find(|d| d.serial == ios_dev.udid)
-                    {
-                        if existing.state == ConnectionState::Disconnected {
-                            existing.state = if self.active_serial.as_deref() == Some(&ios_dev.udid)
-                            {
-                                ConnectionState::Active
-                            } else {
-                                ConnectionState::Discovered
-                            };
-                            debug!(serial = %existing.serial, "iOS device reconnected");
-                        }
-                    } else {
-                        self.devices.push(DeviceInfo {
-                            serial: ios_dev.udid.clone(),
-                            model: ios_dev.name.clone(),
-                            is_emulator: ios_dev.is_simulator,
-                            state: ConnectionState::Discovered,
-                            platform: Platform::Ios,
-                        });
-                        debug!(serial = %ios_dev.udid, name = %ios_dev.name, "New iOS device discovered");
+                if let Some(existing) = self.devices.iter_mut().find(|d| d.serial == ios_dev.udid) {
+                    if existing.state == ConnectionState::Disconnected {
+                        existing.state = if self.active_serial.as_deref() == Some(&ios_dev.udid) {
+                            ConnectionState::Active
+                        } else {
+                            ConnectionState::Discovered
+                        };
+                        debug!(serial = %existing.serial, "iOS device reconnected");
                     }
+                } else {
+                    self.devices.push(DeviceInfo {
+                        serial: ios_dev.udid.clone(),
+                        model: ios_dev.name.clone(),
+                        is_emulator: ios_dev.is_simulator,
+                        state: ConnectionState::Discovered,
+                        platform: Platform::Ios,
+                    });
+                    debug!(serial = %ios_dev.udid, name = %ios_dev.name, "New iOS device discovered");
                 }
             }
         }
