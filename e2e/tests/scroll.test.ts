@@ -1,10 +1,10 @@
-import { beforeAll, contentDesc, describe, expect, test } from "pilot"
+import { beforeAll, describe, expect, test } from "pilot"
 import { ScrollScreen } from "../screens/scroll.screen.js"
 
 describe("Scroll screen", () => {
   beforeAll(async ({ device }) => {
-    await device.element(contentDesc("Scroll")).scrollIntoView()
-    await device.tap(contentDesc("Scroll"))
+    await device.getByDescription("Scroll").scrollIntoView()
+    await device.getByDescription("Scroll").tap()
   })
 
   test("shows heading and description", async ({ device }) => {

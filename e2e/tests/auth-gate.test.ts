@@ -1,5 +1,5 @@
 import path from "node:path"
-import { describe, test, expect, text } from "pilot"
+import { describe, test, expect } from "pilot"
 
 const PKG = "dev.pilot.testapp"
 const STATE_PATH = path.join(process.cwd(), "pilot-results", "auth-state.tar.gz")
@@ -10,7 +10,7 @@ test("profile redirects to login when not authenticated", async ({ device }) => 
   await device.openDeepLink("pilottest:///profile")
 
   // Without auth, the profile screen should redirect to login
-  await expect(device.element(text("Sign In"))).toBeVisible()
+  await expect(device.getByText("Sign In", { exact: true })).toBeVisible()
 })
 
 // ─── Override: opt into restored auth for a single scope ───
@@ -22,8 +22,8 @@ describe("with restored auth", () => {
     await device.openDeepLink("pilottest:///profile")
 
     // appState restores auth, so the profile screen should be accessible
-    await expect(device.element(text("Profile"))).toBeVisible()
-    await expect(device.element(text("test@example.com"))).toBeVisible()
-    await expect(device.element(text("Authenticated"))).toBeVisible()
+    await expect(device.getByText("Profile", { exact: true })).toBeVisible()
+    await expect(device.getByText("test@example.com", { exact: true })).toBeVisible()
+    await expect(device.getByText("Authenticated", { exact: true })).toBeVisible()
   })
 })

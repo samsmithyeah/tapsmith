@@ -1,4 +1,4 @@
-import { beforeEach, contentDesc, describe, expect, test, text } from "pilot"
+import { beforeEach, describe, expect, test } from "pilot"
 import { DialogsScreen } from "../screens/dialogs.screen.js"
 
 describe("Dialogs screen", () => {
@@ -6,8 +6,8 @@ describe("Dialogs screen", () => {
   // elements like toasts can leak between tests under heavy load.
   beforeEach(async ({ device }) => {
     await device.restartApp()
-    await device.tap(contentDesc("Dialogs"))
-    await expect(device.element(text("Dialogs & Overlays"))).toBeVisible()
+    await device.getByDescription("Dialogs").tap()
+    await expect(device.getByText("Dialogs & Overlays", { exact: true })).toBeVisible()
   })
 
   // ─── Toast ───

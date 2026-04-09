@@ -1,10 +1,10 @@
-import { beforeAll, contentDesc, describe, expect, test, text } from "pilot"
+import { beforeAll, describe, expect, test } from "pilot"
 import { SlowLoadScreen } from "../screens/slow-load.screen.js"
 
 describe("Slow load screen", () => {
   beforeAll(async ({ device }) => {
-    await device.element(contentDesc("Slow Load")).scrollIntoView()
-    await device.tap(contentDesc("Slow Load"))
+    await device.getByDescription("Slow Load").scrollIntoView()
+    await device.getByDescription("Slow Load").tap()
   })
 
   test("shows heading and description", async ({ device }) => {
@@ -45,7 +45,7 @@ describe("Slow load screen", () => {
 
   test("counter starts at 0", async ({ device }) => {
     await device.swipe("up")
-    await expect(device.element(text("0"))).toBeVisible()
+    await expect(device.getByText("0", { exact: true })).toBeVisible()
   })
 
   // Counter tests deferred pending PILOT-149 (.not.toBeVisible polling fix)

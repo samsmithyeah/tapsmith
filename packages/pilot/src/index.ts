@@ -4,30 +4,19 @@
  * Public API re-exports.
  */
 
-// Selectors
-export {
-  role,
-  text,
-  textContains,
-  contentDesc,
-  hint,
-  className,
-  testId,
-  id,
-  xpath,
-  type Selector,
-  type SelectorKind,
-  type RoleSelectorValue,
-} from './selectors.js';
-
 // Device
-export { Device, type DragOptions, type PinchOptions } from './device.js';
+export { Device, type SwipeOptions } from './device.js';
 
 // Device management types
 export type { LaunchAppOptions, AppState, Orientation, ColorScheme } from './grpc-client.js';
 
 // ElementHandle
-export { ElementHandle, type FilterOptions, type BoundingBox } from './element-handle.js';
+export {
+  ElementHandle,
+  type FilterOptions,
+  type BoundingBox,
+  type LocatorOptions,
+} from './element-handle.js';
 
 // Assertions
 export { expect, flushSoftErrors, type PilotAssertions, type GenericAssertions, type PollOptions } from './expect.js';

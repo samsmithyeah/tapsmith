@@ -9,9 +9,16 @@
 import {
   type Selector,
   selectorToProto,
-  id as idSelector,
-  text as textSelector,
-  contentDesc as contentDescSelector,
+  withParent,
+  _id,
+  _text,
+  _textContains,
+  _contentDesc,
+  _hint,
+  _testId,
+  _role,
+  _className,
+  _xpath,
 } from './selectors.js';
 import type { PilotGrpcClient, ElementInfo, ActionResponse } from './grpc-client.js';
 import { type TraceCapture, extractSourceLocation } from './trace/trace-collector.js';
@@ -36,15 +43,32 @@ const SCROLL_PROBE_TIMEOUT_MS = 1000;
  *  500ms is the measured safe minimum for iOS. */
 const SCROLL_SETTLE_MS = 500;
 
+// ─── Locator options (escape hatch for non-accessible queries) ───
+
+/**
+ * Options for `device.locator()` and `ElementHandle.locator()`. Use only when
+ * an accessible getter (`getByRole`, `getByText`, `getByDescription`,
+ * `getByPlaceholder`, `getByTestId`) cannot identify the element. Exactly one
+ * field must be set.
+ */
+export interface LocatorOptions {
+  /** Native resource id (e.g. Android `R.id.foo` → `"foo"`). */
+  id?: string;
+  /** XPath expression. Android-only. Use sparingly. */
+  xpath?: string;
+  /** Native widget class name (e.g. `"android.widget.Button"`). */
+  className?: string;
+}
+
 // ─── Filter options for .filter() ───
 
 export interface FilterOptions {
   /** Keep elements whose text contains this string or matches this RegExp. */
   hasText?: string | RegExp;
-  /** Keep elements that have a descendant matching this selector. */
-  has?: Selector;
-  /** Exclude elements that have a descendant matching this selector. */
-  hasNot?: Selector;
+  /** Keep elements that have a descendant matching this locator. */
+  has?: ElementHandle;
+  /** Exclude elements that have a descendant matching this locator. */
+  hasNot?: ElementHandle;
   /** Exclude elements whose text contains this string or matches this RegExp. */
   hasNotText?: string | RegExp;
 }
@@ -66,6 +90,20 @@ interface ElementHandleOptions {
 }
 
 // ─── Helpers ───
+
+/** @internal — Convert public LocatorOptions into the internal Selector. */
+export function locatorOptionsToSelector(options: LocatorOptions): Selector {
+  const keys = (['id', 'xpath', 'className'] as const).filter((k) => options[k] !== undefined);
+  if (keys.length !== 1) {
+    throw new Error(
+      `locator() expects exactly one of { id, xpath, className }, got ${keys.length === 0 ? 'none' : keys.join(', ')}`,
+    );
+  }
+  const key = keys[0];
+  if (key === 'id') return _id(options.id!);
+  if (key === 'xpath') return _xpath(options.xpath!);
+  return _className(options.className!);
+}
 
 function boundsContain(
   parent?: { left: number; top: number; right: number; bottom: number },
@@ -107,22 +145,57 @@ export class ElementHandle {
     this._options = options ?? {};
   }
 
-  // ── Scoping ──
+  // ── Scoping (Playwright-style getBy* methods) ──
 
   /**
-   * Scope a child selector within this element.
-   *
-   * Cannot be called on modified handles (e.g. after `.first()`, `.filter()`, `.and()`).
-   * Use `.find()` to resolve the parent first if you need to scope within a specific element.
+   * Locate a descendant by visible text. Substring match by default; pass
+   * `{ exact: true }` for an exact match.
    */
-  element(childSelector: Selector): ElementHandle {
+  getByText(text: string, options?: { exact?: boolean }): ElementHandle {
+    return this._scoped(options?.exact ? _text(text) : _textContains(text));
+  }
+
+  /** Locate a descendant by accessibility role, optionally with an accessible name. */
+  getByRole(role: string, options?: { name?: string }): ElementHandle {
+    return this._scoped(_role(role, options?.name));
+  }
+
+  /**
+   * Locate a descendant by its accessibility description (Android
+   * `contentDescription`, iOS `accessibilityLabel`).
+   */
+  getByDescription(text: string): ElementHandle {
+    return this._scoped(_contentDesc(text));
+  }
+
+  /** Locate a descendant by placeholder text (Android hint, iOS placeholder). */
+  getByPlaceholder(text: string): ElementHandle {
+    return this._scoped(_hint(text));
+  }
+
+  /** Locate a descendant by its test ID. */
+  getByTestId(testId: string): ElementHandle {
+    return this._scoped(_testId(testId));
+  }
+
+  /**
+   * Escape hatch: locate a descendant by native id, xpath, or class name.
+   * Prefer accessible getters (`getByRole`, `getByText`, `getByDescription`)
+   * when possible.
+   */
+  locator(options: LocatorOptions): ElementHandle {
+    return this._scoped(locatorOptionsToSelector(options));
+  }
+
+  /** @internal */
+  private _scoped(child: Selector): ElementHandle {
     if (this._hasModifiers()) {
       throw new Error(
-        'element() cannot be called on a modified handle (e.g. after .first(), .filter(), .and()). ' +
-          'Resolve the parent with .find() first, then scope children using the resolved element\'s properties.',
+        'getBy*/locator() cannot be called on a modified handle (e.g. after .first(), .filter(), .and()). ' +
+          'Resolve the parent with .find() first, then scope from a fresh device-level locator.',
       );
     }
-    const scoped = childSelector.within(this._selector);
+    const scoped = withParent(child, this._selector);
     return new ElementHandle(this._client, scoped, this._timeoutMs, { traceCapture: this._options.traceCapture });
   }
 
@@ -292,7 +365,7 @@ export class ElementHandle {
     }
 
     if (filter.has !== undefined) {
-      const childSelector = filter.has.within(this._selector);
+      const childSelector = withParent(filter.has._selector, this._selector);
       const childRes = await this._client.findElements(childSelector, this._timeoutMs);
       const childElements = childRes.elements ?? [];
       result = result.filter((parent) =>
@@ -301,7 +374,7 @@ export class ElementHandle {
     }
 
     if (filter.hasNot !== undefined) {
-      const childSelector = filter.hasNot.within(this._selector);
+      const childSelector = withParent(filter.hasNot._selector, this._selector);
       const childRes = await this._client.findElements(childSelector, this._timeoutMs);
       const childElements = childRes.elements ?? [];
       result = result.filter(
@@ -364,9 +437,9 @@ export class ElementHandle {
    * Throws if the element has no unique identifying properties.
    */
   private _selectorForElement(info: ElementInfo): Selector {
-    if (info.resourceId) return idSelector(info.resourceId);
-    if (info.contentDescription) return contentDescSelector(info.contentDescription);
-    if (info.text) return textSelector(info.text);
+    if (info.resourceId) return _id(info.resourceId);
+    if (info.contentDescription) return _contentDesc(info.contentDescription);
+    if (info.text) return _text(info.text);
     throw new Error(
       'Cannot target element for action: element has no resourceId, contentDescription, or text. ' +
         'Add accessibility identifiers to your app to use positional/filtered actions.',

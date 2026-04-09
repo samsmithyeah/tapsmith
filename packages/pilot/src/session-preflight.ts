@@ -1,10 +1,9 @@
 import type { PilotConfig } from './config.js';
 import type { Device } from './device.js';
 import type { LaunchAppOptions, PilotGrpcClient } from './grpc-client.js';
-import { text } from './selectors.js';
 import { detectBlockingSystemDialog, dismissSystemDialogsViaAdb } from './emulator.js';
 
-type SessionDevice = Pick<Device, 'startAgent' | 'terminateApp' | 'launchApp' | 'restartApp' | 'waitForIdle' | 'currentPackage' | 'tap' | 'pressBack' | 'clearAppData' | 'openDeepLink' | 'getAppState'>
+type SessionDevice = Pick<Device, 'startAgent' | 'terminateApp' | 'launchApp' | 'restartApp' | 'waitForIdle' | 'currentPackage' | 'getByText' | 'pressBack' | 'clearAppData' | 'openDeepLink' | 'getAppState'>
 type SessionClient = Pick<PilotGrpcClient, 'ping' | 'getUiHierarchy'>
 
 export interface SessionPreflightContext {
@@ -248,9 +247,9 @@ async function dismissBlockingSystemUi(ctx: SessionPreflightContext): Promise<vo
 
   if (!detectBlockingSystemDialog(hierarchy)) return;
 
-  for (const selector of [text('Not Now'), text('Wait'), text('Close app'), text('OK')]) {
+  for (const label of ['Not Now', 'Wait', 'Close app', 'OK']) {
     try {
-      await ctx.device.tap(selector);
+      await ctx.device.getByText(label, { exact: true }).tap();
       await ctx.device.waitForIdle(1_000);
     } catch {
       // Best effort

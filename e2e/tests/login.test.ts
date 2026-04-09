@@ -1,9 +1,9 @@
-import { beforeAll, contentDesc, describe, expect, role, test } from "pilot"
+import { beforeAll, describe, expect, test } from "pilot"
 import { LoginScreen } from "../screens/login.screen.js"
 
 describe("Login screen", () => {
   beforeAll(async ({ device }) => {
-    await device.tap(contentDesc("Login Form"))
+    await device.getByDescription("Login Form").tap()
   })
 
   // ─── Layout & Visibility ───
@@ -51,13 +51,13 @@ describe("Login screen", () => {
   // ─── Focus & Keyboard ───
 
   test("focusing and blurring email field toggles keyboard", async ({ device }) => {
-    const emailSelector = role("textfield", "Email")
-    await device.focus(emailSelector)
-    await expect(device.element(emailSelector)).toBeFocused()
+    const emailField = device.getByRole("textfield", { name: "Email" })
+    await emailField.focus()
+    await expect(emailField).toBeFocused()
     let shown = await device.isKeyboardShown()
     expect(shown).toBe(true)
 
-    await device.blur(emailSelector)
+    await emailField.blur()
     await device.hideKeyboard()
     shown = await device.isKeyboardShown()
     expect(shown).toBe(false)

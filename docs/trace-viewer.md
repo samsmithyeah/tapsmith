@@ -36,7 +36,7 @@ test("checkout flow", async ({ device }) => {
   await device.tracing.start();
 
   device.tracing.group("Add to cart");
-  await device.tap(text("Add to Cart"));
+  await device.getByText("Add to Cart", { exact: true }).tap();
   device.tracing.groupEnd();
 
   await device.tracing.stop({ path: "traces/checkout.zip" });

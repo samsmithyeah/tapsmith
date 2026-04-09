@@ -1,7 +1,7 @@
 import { describe, it, expect as vitestExpect, vi, beforeEach, afterEach } from "vitest";
 import { expect as pilotExpect, flushSoftErrors } from "../expect.js";
 import { ElementHandle } from "../element-handle.js";
-import { text } from "../selectors.js";
+import { _text } from "../selectors.js";
 import type {
   PilotGrpcClient,
   FindElementResponse,
@@ -47,7 +47,7 @@ function makeMockClient(
 
 function makeHandle(
   client: PilotGrpcClient,
-  selector = text("Hello"),
+  selector = _text("Hello"),
   timeoutMs = 100,
 ): ElementHandle {
   return new ElementHandle(client, selector, timeoutMs);

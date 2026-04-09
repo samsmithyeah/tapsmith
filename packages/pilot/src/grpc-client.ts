@@ -143,7 +143,6 @@ export interface LaunchAppOptions {
 // ─── Swipe / scroll options exposed to the SDK ───
 
 export interface SwipeOptions {
-  selector?: Selector;
   speed?: number;
   distance?: number;
   timeoutMs?: number;
@@ -276,7 +275,6 @@ export class PilotGrpcClient {
       speed: options?.speed ?? 2000,
       distance: options?.distance ?? 0.6,
     };
-    if (options?.selector) request.startElement = this.selectorProto(options.selector);
     if (options?.timeoutMs != null) request.timeoutMs = options.timeoutMs;
     return this.call<ActionResponse>('swipe', request);
   }

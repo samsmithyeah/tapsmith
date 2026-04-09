@@ -1,7 +1,7 @@
 import { describe, it, expect as vitestExpect, vi } from "vitest";
 import { expect as pilotExpect } from "../expect.js";
 import { ElementHandle } from "../element-handle.js";
-import { text } from "../selectors.js";
+import { _text } from "../selectors.js";
 import type {
   PilotGrpcClient,
   FindElementResponse,
@@ -52,7 +52,7 @@ function makeMockClient(
 
 function makeHandle(
   client: PilotGrpcClient,
-  selector = text("Hello"),
+  selector = _text("Hello"),
   timeoutMs = 100,
 ): ElementHandle {
   return new ElementHandle(client, selector, timeoutMs);
@@ -1530,7 +1530,7 @@ describe("polling behavior", () => {
         errorMessage: "",
       };
     });
-    const handle = makeHandle(client, text("delayed"), 2000);
+    const handle = makeHandle(client, _text("delayed"), 2000);
     await pilotExpect(handle).toBeVisible({ timeout: 2000 });
     vitestExpect(callCount).toBeGreaterThanOrEqual(3);
   });
@@ -1547,7 +1547,7 @@ describe("polling behavior", () => {
         errorMessage: "",
       };
     });
-    const handle = makeHandle(client, text("retry"), 2000);
+    const handle = makeHandle(client, _text("retry"), 2000);
     await pilotExpect(handle).toBeVisible({ timeout: 2000 });
     vitestExpect(callCount).toBeGreaterThanOrEqual(3);
   });
@@ -1559,7 +1559,7 @@ describe("polling behavior", () => {
       element: makeElementInfo({ visible: true }),
       errorMessage: "",
     }));
-    const handle = makeHandle(client, text("test"), 500);
+    const handle = makeHandle(client, _text("test"), 500);
     // Should not throw - uses the 500ms handle timeout
     await pilotExpect(handle).toBeVisible();
   });
@@ -1575,7 +1575,7 @@ describe("polling behavior", () => {
         errorMessage: "",
       };
     });
-    const handle = makeHandle(client, text("toggle"), 2000);
+    const handle = makeHandle(client, _text("toggle"), 2000);
     await pilotExpect(handle).toBeChecked({ timeout: 2000 });
     vitestExpect(callCount).toBeGreaterThanOrEqual(3);
   });
@@ -1595,7 +1595,7 @@ describe("negated assertion polling", () => {
         errorMessage: "",
       };
     });
-    const handle = makeHandle(client, text("hidden"), 5000);
+    const handle = makeHandle(client, _text("hidden"), 5000);
     const start = Date.now();
     await pilotExpect(handle).not.toBeVisible({ timeout: 5000 });
     const elapsed = Date.now() - start;
@@ -1616,7 +1616,7 @@ describe("negated assertion polling", () => {
         errorMessage: "",
       };
     });
-    const handle = makeHandle(client, text("disappearing"), 2000);
+    const handle = makeHandle(client, _text("disappearing"), 2000);
     await pilotExpect(handle).not.toBeVisible({ timeout: 2000 });
     vitestExpect(callCount).toBeGreaterThanOrEqual(3);
   });
@@ -1628,7 +1628,7 @@ describe("negated assertion polling", () => {
       element: makeElementInfo({ visible: true }),
       errorMessage: "",
     }));
-    const handle = makeHandle(client, text("sticky"), 300);
+    const handle = makeHandle(client, _text("sticky"), 300);
     await vitestExpect(
       pilotExpect(handle).not.toBeVisible({ timeout: 300 }),
     ).rejects.toThrow("NOT to be visible");
@@ -1645,7 +1645,7 @@ describe("negated assertion polling", () => {
         errorMessage: "",
       };
     });
-    const handle = makeHandle(client, text("switch"), 5000);
+    const handle = makeHandle(client, _text("switch"), 5000);
     const start = Date.now();
     await pilotExpect(handle).not.toBeChecked({ timeout: 5000 });
     const elapsed = Date.now() - start;
@@ -1664,7 +1664,7 @@ describe("negated assertion polling", () => {
         errorMessage: "",
       };
     });
-    const handle = makeHandle(client, text("gone"), 5000);
+    const handle = makeHandle(client, _text("gone"), 5000);
     const start = Date.now();
     await pilotExpect(handle).not.toExist({ timeout: 5000 });
     const elapsed = Date.now() - start;
@@ -1715,7 +1715,7 @@ describe("wrapAssertionWithTrace", () => {
       takeScreenshot: async () => undefined,
       captureHierarchy: async () => undefined,
     };
-    return new ElementHandle(client, text("Traced"), 100, {
+    return new ElementHandle(client, _text("Traced"), 100, {
       traceCapture: traceCapture as unknown as import("../trace/trace-collector.js").TraceCapture,
     });
   }

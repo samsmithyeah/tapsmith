@@ -2,98 +2,77 @@
 
 Complete reference for all public APIs in the `pilot` package.
 
-## Selectors
+## Locators
 
-Selectors identify UI elements on the device. All selector functions return a `Selector` object that can be passed to device actions and assertions.
+Locators identify UI elements on the device. They are exposed as Playwright-style `getBy*` methods on `Device` and `ElementHandle`. Each method returns an `ElementHandle` — a lazy reference that resolves when an action or assertion runs against it.
 
-Every `Selector` has a `.within(parent)` method that returns a new selector scoped to descendants of the parent.
+See the [Selectors Guide](selectors.md) for a deeper discussion of when to use each one.
 
-### `role(roleName: string, name?: string): Selector`
+### `device.getByText(text: string, options?: { exact?: boolean }): ElementHandle`
 
-Match by accessibility role, optionally filtered by accessible name.
-
-```typescript
-role("button", "Submit")
-role("textfield", "Email")
-role("checkbox")
-```
-
-### `text(exactText: string): Selector`
-
-Match by exact visible text content.
+Locate an element by its visible text. **Substring match by default**, like Playwright. Pass `{ exact: true }` for an exact match.
 
 ```typescript
-text("Sign In")
-text("Welcome back")
+device.getByText("Welcome")                          // substring
+device.getByText("Sign In", { exact: true })         // exact
 ```
 
-### `textContains(partial: string): Selector`
+### `device.getByRole(role: string, options?: { name?: string }): ElementHandle`
 
-Match when the element's text contains the given substring.
+Locate an element by its accessibility role, optionally filtered by accessible name.
 
 ```typescript
-textContains("Welcome")
-textContains("3 items")
+device.getByRole("button", { name: "Submit" })
+device.getByRole("textfield", { name: "Email" })
+device.getByRole("checkbox")
 ```
 
-### `contentDesc(desc: string): Selector`
+### `device.getByDescription(text: string): ElementHandle`
 
-Match by accessibility content description.
+Locate an element by its accessibility description (Android `contentDescription`, iOS `accessibilityLabel`).
 
 ```typescript
-contentDesc("Close menu")
-contentDesc("Profile photo")
+device.getByDescription("Close menu")
+device.getByDescription("Profile photo")
 ```
 
-### `hint(hintText: string): Selector`
+### `device.getByPlaceholder(text: string): ElementHandle`
 
-Match by input hint text (placeholder).
+Locate an input by its placeholder / hint text.
 
 ```typescript
-hint("Enter your email")
-hint("Search")
+device.getByPlaceholder("Enter your email")
+device.getByPlaceholder("Search")
 ```
 
-### `className(name: string): Selector`
+### `device.getByTestId(testId: string): ElementHandle`
 
-Match by Android class name.
+Locate an element by its dedicated test identifier.
 
 ```typescript
-className("com.myapp.widget.ColorPicker")
+device.getByTestId("submit-button")
 ```
 
-### `testId(id: string): Selector`
+### `device.locator(options: LocatorOptions): ElementHandle`
 
-Match by test identifier.
+Escape hatch for native, non-accessible queries. Exactly one of `id`, `xpath`, or `className` must be set.
 
 ```typescript
-testId("submit-button")
+device.locator({ id: "com.myapp:id/email_input" })
+device.locator({ className: "com.myapp.widget.ColorPicker" })
+// XPath is Android-only. Always include a comment explaining why.
+device.locator({ xpath: "//android.widget.Button[@text='OK']" })
 ```
 
-### `id(resourceId: string): Selector`
+**LocatorOptions:**
 
-Match by Android resource ID.
+| Option | Type | Description |
+|---|---|---|
+| `id` | `string` | Native resource id (Android `R.id.foo` or iOS `accessibilityIdentifier`). |
+| `xpath` | `string` | XPath expression. Android-only. |
+| `className` | `string` | Native widget class name. |
 
-```typescript
-id("com.myapp:id/email_input")
-id("email_input")
-```
-
-### `xpath(expr: string): Selector`
-
-Match by XPath expression on the view hierarchy.
-
-```typescript
-xpath("//android.widget.Button[@text='OK']")
-```
-
-### `Selector.within(parent: Selector): Selector`
-
-Scope this selector within a parent element. Returns a new `Selector`.
-
-```typescript
-const deleteBtn = role("button", "Delete").within(testId("row-5"));
-```
+> The `getBy*` methods and `locator()` are also available on every `ElementHandle`. Calling them on a parent locator scopes the search to its descendants. See [ElementHandle Scoping](#scoping).
 
 ---
 
@@ -101,108 +80,11 @@ const deleteBtn = role("button", "Delete").within(testId("row-5"));
 
 The `Device` class is the primary interface for interacting with a mobile device. Test functions receive a `device` instance through the test fixtures.
 
-### `device.element(selector: Selector): ElementHandle`
-
-Returns a lazy `ElementHandle` for the given selector. The element is not resolved until an action or assertion is performed on it.
-
-```typescript
-const el = device.element(text("Hello"));
-await el.tap();
-```
-
-### `device.tap(selector: Selector): Promise<void>`
-
-Tap an element. Auto-waits for the element to be visible, enabled, and stable.
-
-```typescript
-await device.tap(text("Sign In"));
-await device.tap(role("button", "Submit"));
-```
-
-### `device.doubleTap(selector: Selector): Promise<void>`
-
-Double-tap an element. The mobile equivalent of double-click.
-
-```typescript
-await device.doubleTap(text("Zoom here"));
-```
-
-### `device.longPress(selector: Selector, durationMs?: number): Promise<void>`
-
-Long press an element. The duration defaults to the system long-press duration if not specified.
-
-```typescript
-await device.longPress(text("Item 1"));
-await device.longPress(text("Item 1"), 2000); // 2 seconds
-```
-
-### `device.type(selector: Selector, text: string): Promise<void>`
-
-Focus a text input and type text into it.
-
-```typescript
-await device.type(id("email_input"), "user@example.com");
-```
-
-### `device.clearAndType(selector: Selector, text: string): Promise<void>`
-
-Clear existing text in an input field, then type new text.
-
-```typescript
-await device.clearAndType(id("email_input"), "new@example.com");
-```
-
-### `device.drag(options: DragOptions): Promise<void>`
-
-Drag from one element to another.
-
-```typescript
-await device.drag({ from: text("Item 1"), to: text("Drop Zone") });
-```
-
-**DragOptions:**
-
-| Option | Type | Description |
-|---|---|---|
-| `from` | `Selector` | Source element to drag from |
-| `to` | `Selector` | Target element to drag to |
-
-### `device.selectOption(selector: Selector, option: string | { index: number }): Promise<void>`
-
-Select an option from a native spinner or dropdown.
-
-```typescript
-await device.selectOption(role("combobox"), "Option 2");
-await device.selectOption(role("combobox"), { index: 1 });
-```
-
-### `device.focus(selector: Selector): Promise<void>`
-
-Programmatically focus an element. For text fields, this shows the keyboard.
-
-```typescript
-await device.focus(role("textfield", "Email"));
-```
-
-### `device.blur(selector: Selector): Promise<void>`
-
-Remove focus from an element by tapping outside its bounds.
-
-```typescript
-await device.blur(role("textfield", "Email"));
-```
-
-### `device.highlight(selector: Selector, options?: { durationMs?: number }): Promise<void>`
-
-Highlight an element for debugging. Validates that the element exists and is accessible.
-
-```typescript
-await device.highlight(role("button", "Submit"));
-```
+In addition to the locator methods above, `Device` provides device-level actions that don't target a specific element.
 
 ### `device.swipe(direction: string, options?: SwipeOptions): Promise<void>`
 
-Perform a swipe gesture in the given direction.
+Perform a swipe gesture across the screen in the given direction.
 
 ```typescript
 await device.swipe("up");
@@ -216,46 +98,6 @@ await device.swipe("left", { speed: 500, distance: 0.5 });
 | `speed` | `number` | Swipe speed in pixels per second |
 | `distance` | `number` | Swipe distance as a fraction of screen size (0-1) |
 | `timeoutMs` | `number` | Override the default timeout |
-
-### `device.scroll(selector: Selector, direction: string, options?: ScrollOptions): Promise<void>`
-
-Scroll a scrollable container in the given direction.
-
-```typescript
-await device.scroll(role("list"), "down");
-await device.scroll(id("my_list"), "down", { distance: 300 });
-```
-
-**ScrollOptions:**
-
-| Option | Type | Description |
-|---|---|---|
-| `distance` | `number` | Scroll distance in pixels |
-| `timeoutMs` | `number` | Override the default timeout |
-
-### `device.pinchIn(selector: Selector, options?: PinchOptions): Promise<void>`
-
-Perform a pinch-in (zoom out) gesture on an element.
-
-```typescript
-await device.pinchIn(text("Map"));
-await device.pinchIn(text("Map"), { scale: 0.3 });
-```
-
-### `device.pinchOut(selector: Selector, options?: PinchOptions): Promise<void>`
-
-Perform a pinch-out (zoom in) gesture on an element.
-
-```typescript
-await device.pinchOut(text("Map"));
-await device.pinchOut(text("Map"), { scale: 3.0 });
-```
-
-**PinchOptions:**
-
-| Option | Type | Description |
-|---|---|---|
-| `scale` | `number` | Zoom scale factor. Defaults to 0.5 for pinchIn, 2.0 for pinchOut |
 
 ### `device.pressKey(key: string): Promise<void>`
 
@@ -402,8 +244,8 @@ Use this in `beforeEach` hooks when tests modify in-memory state and you need is
 ```typescript
 beforeEach(async ({ device }) => {
   await device.restartApp("com.example.myapp")
-  await device.tap(contentDesc("Settings"))
-  await expect(device.element(text("Settings"))).toBeVisible()
+  await device.getByDescription("Settings").tap()
+  await expect(device.getByText("Settings", { exact: true })).toBeVisible()
 })
 ```
 
@@ -579,20 +421,30 @@ Close the gRPC connection to the daemon.
 
 ## ElementHandle
 
-An `ElementHandle` is a lazy reference to a UI element. It is returned by `device.element()` and supports chaining, queries, actions, and positional selection.
+An `ElementHandle` is a lazy reference to a UI element. It is returned by every `device.getBy*()` and `device.locator()` call, and supports chaining, queries, actions, and positional selection.
 
 ### Scoping
 
-#### `elementHandle.element(childSelector: Selector): ElementHandle`
+`ElementHandle` exposes the same `getBy*` methods and `locator()` as `Device`. Calling any of them on an existing handle scopes the search to its descendants — exactly like Playwright's `locator.locator(...)`.
 
-Scope a child selector within this element. Returns a new `ElementHandle`.
+| Method | Description |
+|---|---|
+| `getByText(text, options?)` | Substring (default) or exact text match within the parent. |
+| `getByRole(role, options?)` | Accessibility role within the parent. |
+| `getByDescription(text)` | Accessibility description within the parent. |
+| `getByPlaceholder(text)` | Placeholder / hint text within the parent. |
+| `getByTestId(id)` | Test identifier within the parent. |
+| `locator(options)` | Native id / xpath / className within the parent. |
 
 Cannot be called on modified handles (e.g. after `.first()`, `.filter()`, `.and()`).
 
 ```typescript
-const list = device.element(role("list", "Shopping cart"));
-const item = list.element(text("Item 3"));
+const list = device.getByRole("list", { name: "Shopping cart" });
+const item = list.getByText("Item 3", { exact: true });
 await item.tap();
+
+// Tap a delete button inside a specific row
+await device.getByTestId("row-5").getByRole("button", { name: "Delete" }).tap();
 ```
 
 ### Positional Selection
@@ -602,7 +454,7 @@ await item.tap();
 Return a new handle targeting the first match. The handle is lazy -- it does not resolve until an action or assertion is performed.
 
 ```typescript
-await device.element(role("listitem")).first().tap();
+await device.getByRole("listitem").first().tap();
 ```
 
 #### `elementHandle.last(): ElementHandle`
@@ -610,7 +462,7 @@ await device.element(role("listitem")).first().tap();
 Return a new handle targeting the last match.
 
 ```typescript
-await device.element(role("listitem")).last().tap();
+await device.getByRole("listitem").last().tap();
 ```
 
 #### `elementHandle.nth(index: number): ElementHandle`
@@ -618,8 +470,8 @@ await device.element(role("listitem")).last().tap();
 Return a new handle targeting the match at the given 0-based index. Negative indices count from the end.
 
 ```typescript
-await device.element(role("listitem")).nth(2).tap();
-await device.element(role("listitem")).nth(-1).tap(); // last item
+await device.getByRole("listitem").nth(2).tap();
+await device.getByRole("listitem").nth(-1).tap(); // last item
 ```
 
 ### Filtering
@@ -629,7 +481,7 @@ await device.element(role("listitem")).nth(-1).tap(); // last item
 Narrow matches by additional criteria without changing the selector. Returns a new lazy handle.
 
 ```typescript
-const premiumItems = device.element(role("listitem")).filter({ hasText: "Premium" });
+const premiumItems = device.getByRole("listitem").filter({ hasText: "Premium" });
 const count = await premiumItems.count();
 ```
 
@@ -639,8 +491,8 @@ const count = await premiumItems.count();
 |---|---|---|
 | `hasText` | `string \| RegExp` | Keep elements whose text contains this string or matches this RegExp |
 | `hasNotText` | `string \| RegExp` | Exclude elements whose text contains this string or matches this RegExp |
-| `has` | `Selector` | Keep elements that have a descendant matching this selector |
-| `hasNot` | `Selector` | Exclude elements that have a descendant matching this selector |
+| `has` | `ElementHandle` | Keep elements that have a descendant matching this locator |
+| `hasNot` | `ElementHandle` | Exclude elements that have a descendant matching this locator |
 
 ### Combining Selectors
 
@@ -649,7 +501,7 @@ const count = await premiumItems.count();
 Return a handle matching elements that satisfy both this and the other handle's selector (intersection). AND binds tighter than OR.
 
 ```typescript
-const submitButton = device.element(role("button")).and(device.element(text("Submit")));
+const submitButton = device.getByRole("button").and(device.getByText("Submit", { exact: true }));
 await submitButton.tap();
 ```
 
@@ -658,7 +510,7 @@ await submitButton.tap();
 Return a handle matching elements that satisfy either this or the other handle's selector (union).
 
 ```typescript
-const acceptButton = device.element(text("OK")).or(device.element(text("Accept")));
+const acceptButton = device.getByText("OK", { exact: true }).or(device.getByText("Accept", { exact: true }));
 await acceptButton.tap();
 ```
 
@@ -695,7 +547,7 @@ The `ElementInfo` object contains:
 Returns `true` if the element exists in the current UI hierarchy.
 
 ```typescript
-const exists = await device.element(text("Optional banner")).exists();
+const exists = await device.getByText("Optional banner", { exact: true }).exists();
 ```
 
 #### `elementHandle.count(): Promise<number>`
@@ -703,7 +555,7 @@ const exists = await device.element(text("Optional banner")).exists();
 Return the number of elements matching the selector.
 
 ```typescript
-const itemCount = await device.element(role("listitem")).count();
+const itemCount = await device.getByRole("listitem").count();
 ```
 
 #### `elementHandle.all(): Promise<ElementHandle[]>`
@@ -711,7 +563,7 @@ const itemCount = await device.element(role("listitem")).count();
 Return an array of `ElementHandle` instances, one for each matching element. Useful for iterating over a list of elements.
 
 ```typescript
-const items = await device.element(role("listitem")).all();
+const items = await device.getByRole("listitem").all();
 for (const item of items) {
   const info = await item.find();
   console.log(info.text);
@@ -725,7 +577,7 @@ for (const item of items) {
 Tap this element.
 
 ```typescript
-await device.element(role("button", "Submit")).tap();
+await device.getByRole("button", { name: "Submit" }).tap();
 ```
 
 #### `elementHandle.doubleTap(): Promise<void>`
@@ -733,7 +585,7 @@ await device.element(role("button", "Submit")).tap();
 Double-tap this element.
 
 ```typescript
-await device.element(text("Zoom here")).doubleTap();
+await device.getByText("Zoom here", { exact: true }).doubleTap();
 ```
 
 #### `elementHandle.longPress(durationMs?: number): Promise<void>`
@@ -741,7 +593,7 @@ await device.element(text("Zoom here")).doubleTap();
 Long press this element.
 
 ```typescript
-await device.element(text("Item 1")).longPress(2000);
+await device.getByText("Item 1", { exact: true }).longPress(2000);
 ```
 
 #### `elementHandle.type(text: string): Promise<void>`
@@ -749,7 +601,7 @@ await device.element(text("Item 1")).longPress(2000);
 Type text into this element.
 
 ```typescript
-await device.element(hint("Email")).type("user@example.com");
+await device.getByPlaceholder("Email").type("user@example.com");
 ```
 
 #### `elementHandle.clearAndType(text: string): Promise<void>`
@@ -757,7 +609,7 @@ await device.element(hint("Email")).type("user@example.com");
 Clear existing text and type new text.
 
 ```typescript
-await device.element(id("search_box")).clearAndType("new query");
+await device.locator({ id: "search_box" }).clearAndType("new query");
 ```
 
 #### `elementHandle.clear(): Promise<void>`
@@ -765,7 +617,7 @@ await device.element(id("search_box")).clearAndType("new query");
 Clear the text content of this element.
 
 ```typescript
-await device.element(id("search_box")).clear();
+await device.locator({ id: "search_box" }).clear();
 ```
 
 #### `elementHandle.scroll(direction: string, options?: { distance?: number }): Promise<void>`
@@ -773,7 +625,7 @@ await device.element(id("search_box")).clear();
 Scroll this element in the given direction.
 
 ```typescript
-await device.element(role("list")).scroll("down", { distance: 300 });
+await device.getByRole("list").scroll("down", { distance: 300 });
 ```
 
 #### `elementHandle.scrollIntoView(options?: { direction?: string; maxScrolls?: number; speed?: number }): Promise<void>`
@@ -790,11 +642,11 @@ Swipes in the given direction, checking visibility between each attempt. Throws 
 
 ```typescript
 // Scroll down until the "Settings" card is visible, then tap it
-await device.element(contentDesc("Settings")).scrollIntoView();
-await device.element(contentDesc("Settings")).tap();
+await device.getByDescription("Settings").scrollIntoView();
+await device.getByDescription("Settings").tap();
 
 // Scroll up (reverse direction)
-await device.element(text("Top Section")).scrollIntoView({ direction: "down" });
+await device.getByText("Top Section", { exact: true }).scrollIntoView({ direction: "down" });
 ```
 
 #### `elementHandle.dragTo(target: ElementHandle): Promise<void>`
@@ -802,8 +654,8 @@ await device.element(text("Top Section")).scrollIntoView({ direction: "down" });
 Drag this element to a target element.
 
 ```typescript
-const source = device.element(text("Item 1"));
-const target = device.element(text("Drop Zone"));
+const source = device.getByText("Item 1", { exact: true });
+const target = device.getByText("Drop Zone", { exact: true });
 await source.dragTo(target);
 ```
 
@@ -812,8 +664,8 @@ await source.dragTo(target);
 Ensure a checkbox, switch, or radio button is in the desired state. Idempotent -- only taps if the current state differs from the desired state, and verifies the state changed after tapping.
 
 ```typescript
-await device.element(role("switch", "Dark Mode")).setChecked(true);
-await device.element(role("checkbox", "Remember me")).setChecked(false);
+await device.getByRole("switch", { name: "Dark Mode" }).setChecked(true);
+await device.getByRole("checkbox", { name: "Remember me" }).setChecked(false);
 ```
 
 #### `elementHandle.selectOption(option: string | { index: number }): Promise<void>`
@@ -821,8 +673,8 @@ await device.element(role("checkbox", "Remember me")).setChecked(false);
 Select an option from a native spinner or dropdown. Abstracts the tap-spinner, wait-for-popup, tap-option pattern into a single action.
 
 ```typescript
-await device.element(role("combobox")).selectOption("Option 2");
-await device.element(role("combobox")).selectOption({ index: 1 });
+await device.getByRole("combobox").selectOption("Option 2");
+await device.getByRole("combobox").selectOption({ index: 1 });
 ```
 
 #### `elementHandle.focus(): Promise<void>`
@@ -830,7 +682,7 @@ await device.element(role("combobox")).selectOption({ index: 1 });
 Programmatically focus this element. For text fields, this shows the keyboard.
 
 ```typescript
-await device.element(role("textfield", "Email")).focus();
+await device.getByRole("textfield", { name: "Email" }).focus();
 ```
 
 #### `elementHandle.blur(): Promise<void>`
@@ -838,7 +690,7 @@ await device.element(role("textfield", "Email")).focus();
 Remove focus from this element by tapping outside its bounds.
 
 ```typescript
-await device.element(role("textfield", "Email")).blur();
+await device.getByRole("textfield", { name: "Email" }).blur();
 ```
 
 #### `elementHandle.pinchIn(options?: { scale?: number }): Promise<void>`
@@ -846,8 +698,8 @@ await device.element(role("textfield", "Email")).blur();
 Perform a pinch-in (zoom out) gesture on this element.
 
 ```typescript
-await device.element(text("Map")).pinchIn();
-await device.element(text("Map")).pinchIn({ scale: 0.3 });
+await device.getByText("Map", { exact: true }).pinchIn();
+await device.getByText("Map", { exact: true }).pinchIn({ scale: 0.3 });
 ```
 
 #### `elementHandle.pinchOut(options?: { scale?: number }): Promise<void>`
@@ -855,8 +707,8 @@ await device.element(text("Map")).pinchIn({ scale: 0.3 });
 Perform a pinch-out (zoom in) gesture on this element.
 
 ```typescript
-await device.element(text("Map")).pinchOut();
-await device.element(text("Map")).pinchOut({ scale: 3.0 });
+await device.getByText("Map", { exact: true }).pinchOut();
+await device.getByText("Map", { exact: true }).pinchOut({ scale: 3.0 });
 ```
 
 #### `elementHandle.highlight(options?: { durationMs?: number }): Promise<void>`
@@ -864,7 +716,7 @@ await device.element(text("Map")).pinchOut({ scale: 3.0 });
 Highlight this element for debugging. Validates that the element exists and is accessible.
 
 ```typescript
-await device.element(role("button", "Submit")).highlight();
+await device.getByRole("button", { name: "Submit" }).highlight();
 ```
 
 #### `elementHandle.screenshot(): Promise<Buffer>`
@@ -872,7 +724,7 @@ await device.element(role("button", "Submit")).highlight();
 Capture a screenshot cropped to this element's bounding box. Returns a `Buffer` containing PNG image data.
 
 ```typescript
-const png = await device.element(role("image", "Profile")).screenshot();
+const png = await device.getByRole("image", { name: "Profile" }).screenshot();
 ```
 
 ### Info Accessors
@@ -882,7 +734,7 @@ const png = await device.element(role("image", "Profile")).screenshot();
 Get the visible text content of this element.
 
 ```typescript
-const label = await device.element(id("status_label")).getText();
+const label = await device.locator({ id: "status_label" }).getText();
 ```
 
 #### `elementHandle.isVisible(): Promise<boolean>`
@@ -890,7 +742,7 @@ const label = await device.element(id("status_label")).getText();
 Check whether this element is visible on screen.
 
 ```typescript
-const visible = await device.element(text("Error")).isVisible();
+const visible = await device.getByText("Error", { exact: true }).isVisible();
 ```
 
 #### `elementHandle.isEnabled(): Promise<boolean>`
@@ -898,7 +750,7 @@ const visible = await device.element(text("Error")).isVisible();
 Check whether this element is enabled (interactive).
 
 ```typescript
-const enabled = await device.element(role("button", "Submit")).isEnabled();
+const enabled = await device.getByRole("button", { name: "Submit" }).isEnabled();
 ```
 
 #### `elementHandle.isChecked(): Promise<boolean>`
@@ -906,7 +758,7 @@ const enabled = await device.element(role("button", "Submit")).isEnabled();
 Check whether this checkbox, switch, or radio button is in the checked state.
 
 ```typescript
-const checked = await device.element(role("switch", "Notifications")).isChecked();
+const checked = await device.getByRole("switch", { name: "Notifications" }).isChecked();
 ```
 
 #### `elementHandle.inputValue(): Promise<string>`
@@ -914,7 +766,7 @@ const checked = await device.element(role("switch", "Notifications")).isChecked(
 Get the current value of an input field. On Android, this returns the element's text property.
 
 ```typescript
-const value = await device.element(role("textfield", "Email")).inputValue();
+const value = await device.getByRole("textfield", { name: "Email" }).inputValue();
 ```
 
 #### `elementHandle.boundingBox(): Promise<BoundingBox | null>`
@@ -922,7 +774,7 @@ const value = await device.element(role("textfield", "Email")).inputValue();
 Get the element's position and dimensions. Returns `null` if the element has no bounds.
 
 ```typescript
-const box = await device.element(text("Header")).boundingBox();
+const box = await device.getByText("Header", { exact: true }).boundingBox();
 // Returns: { x: number, y: number, width: number, height: number }
 ```
 
@@ -937,7 +789,7 @@ The `expect()` function creates assertions for an `ElementHandle` or a plain val
 Create an assertion object for the given element handle.
 
 ```typescript
-await expect(device.element(text("Hello"))).toBeVisible();
+await expect(device.getByText("Hello", { exact: true })).toBeVisible();
 ```
 
 ### `expect(value: unknown): GenericAssertions`
@@ -955,8 +807,8 @@ expect([1, 2, 3]).toHaveLength(3);
 Create a soft assertion that records failures without stopping the test. Failures are collected and can be flushed at the end.
 
 ```typescript
-expect.soft(device.element(text("Header"))).toBeVisible();
-expect.soft(device.element(text("Footer"))).toBeVisible();
+expect.soft(device.getByText("Header", { exact: true })).toBeVisible();
+expect.soft(device.getByText("Footer", { exact: true })).toBeVisible();
 // Test continues even if assertions fail
 
 const errors = flushSoftErrors();
@@ -969,7 +821,7 @@ Poll an async function until the assertion passes or the timeout expires. Useful
 
 ```typescript
 await expect.poll(async () => {
-  const el = await device.element(role("listitem")).count();
+  const el = await device.getByRole("listitem").count();
   return el;
 }).toBe(5);
 
@@ -999,7 +851,7 @@ if (errors.length > 0) {
 Negate the following assertion.
 
 ```typescript
-await expect(device.element(text("Loading..."))).not.toBeVisible();
+await expect(device.getByText("Loading...", { exact: true })).not.toBeVisible();
 ```
 
 ### Locator Assertions
@@ -1016,11 +868,11 @@ All locator assertions accept an optional `options` object:
 Assert that the element is visible on screen. With `.not`, waits for the element to disappear.
 
 ```typescript
-await expect(device.element(text("Welcome"))).toBeVisible();
-await expect(device.element(text("Spinner"))).not.toBeVisible();
+await expect(device.getByText("Welcome", { exact: true })).toBeVisible();
+await expect(device.getByText("Spinner", { exact: true })).not.toBeVisible();
 
 // Custom timeout
-await expect(device.element(text("Welcome"))).toBeVisible({ timeout: 10000 });
+await expect(device.getByText("Welcome", { exact: true })).toBeVisible({ timeout: 10000 });
 ```
 
 #### `.toBeEnabled(options?): Promise<void>`
@@ -1028,8 +880,8 @@ await expect(device.element(text("Welcome"))).toBeVisible({ timeout: 10000 });
 Assert that the element is enabled (interactive).
 
 ```typescript
-await expect(device.element(role("button", "Submit"))).toBeEnabled();
-await expect(device.element(role("button", "Submit"))).not.toBeEnabled();
+await expect(device.getByRole("button", { name: "Submit" })).toBeEnabled();
+await expect(device.getByRole("button", { name: "Submit" })).not.toBeEnabled();
 ```
 
 #### `.toBeDisabled(options?): Promise<void>`
@@ -1037,7 +889,7 @@ await expect(device.element(role("button", "Submit"))).not.toBeEnabled();
 Assert that the element is disabled (not interactive). More expressive than `.not.toBeEnabled()`.
 
 ```typescript
-await expect(device.element(role("button", "Submit"))).toBeDisabled();
+await expect(device.getByRole("button", { name: "Submit" })).toBeDisabled();
 ```
 
 #### `.toBeChecked(options?): Promise<void>`
@@ -1045,8 +897,8 @@ await expect(device.element(role("button", "Submit"))).toBeDisabled();
 Assert that a checkbox, switch, or radio button is in the checked state.
 
 ```typescript
-await expect(device.element(role("switch", "Dark Mode"))).toBeChecked();
-await expect(device.element(role("checkbox"))).not.toBeChecked();
+await expect(device.getByRole("switch", { name: "Dark Mode" })).toBeChecked();
+await expect(device.getByRole("checkbox")).not.toBeChecked();
 ```
 
 #### `.toBeHidden(options?): Promise<void>`
@@ -1054,7 +906,7 @@ await expect(device.element(role("checkbox"))).not.toBeChecked();
 Assert that the element is not visible on screen (either not in the hierarchy or has visibility=false). More expressive than `.not.toBeVisible()`.
 
 ```typescript
-await expect(device.element(text("Loading..."))).toBeHidden();
+await expect(device.getByText("Loading...", { exact: true })).toBeHidden();
 ```
 
 #### `.toBeEmpty(options?): Promise<void>`
@@ -1062,7 +914,7 @@ await expect(device.element(text("Loading..."))).toBeHidden();
 Assert that the element has no text content or is an empty input field.
 
 ```typescript
-await expect(device.element(role("textfield", "Search"))).toBeEmpty();
+await expect(device.getByRole("textfield", { name: "Search" })).toBeEmpty();
 ```
 
 #### `.toBeFocused(options?): Promise<void>`
@@ -1070,8 +922,8 @@ await expect(device.element(role("textfield", "Search"))).toBeEmpty();
 Assert that the element currently has accessibility/input focus.
 
 ```typescript
-await device.element(role("textfield", "Email")).tap();
-await expect(device.element(role("textfield", "Email"))).toBeFocused();
+await device.getByRole("textfield", { name: "Email" }).tap();
+await expect(device.getByRole("textfield", { name: "Email" })).toBeFocused();
 ```
 
 #### `.toBeEditable(options?): Promise<void>`
@@ -1079,8 +931,8 @@ await expect(device.element(role("textfield", "Email"))).toBeFocused();
 Assert that the element is an editable input field (a text field that is enabled).
 
 ```typescript
-await expect(device.element(role("textfield", "Name"))).toBeEditable();
-await expect(device.element(role("textfield", "ID"))).not.toBeEditable(); // read-only
+await expect(device.getByRole("textfield", { name: "Name" })).toBeEditable();
+await expect(device.getByRole("textfield", { name: "ID" })).not.toBeEditable(); // read-only
 ```
 
 #### `.toBeInViewport(options?): Promise<void>`
@@ -1088,8 +940,8 @@ await expect(device.element(role("textfield", "ID"))).not.toBeEditable(); // rea
 Assert that the element is currently within the visible screen area. Different from `toBeVisible()` which checks the visibility property -- this checks if the element's bounds intersect with the screen bounds.
 
 ```typescript
-await expect(device.element(text("Footer"))).toBeInViewport();
-await expect(device.element(text("Footer"))).toBeInViewport({ ratio: 0.5 }); // at least 50% visible
+await expect(device.getByText("Footer", { exact: true })).toBeInViewport();
+await expect(device.getByText("Footer", { exact: true })).toBeInViewport({ ratio: 0.5 }); // at least 50% visible
 ```
 
 #### `.toHaveText(expected: string, options?): Promise<void>`
@@ -1097,7 +949,7 @@ await expect(device.element(text("Footer"))).toBeInViewport({ ratio: 0.5 }); // 
 Assert that the element's text content matches the expected string exactly.
 
 ```typescript
-await expect(device.element(id("counter"))).toHaveText("42");
+await expect(device.locator({ id: "counter" })).toHaveText("42");
 ```
 
 #### `.toContainText(expected: string | RegExp, options?): Promise<void>`
@@ -1105,8 +957,8 @@ await expect(device.element(id("counter"))).toHaveText("42");
 Assert that the element's text contains the given substring or matches a regex. Unlike `toHaveText()` which requires an exact match, this allows partial matching.
 
 ```typescript
-await expect(device.element(testId("status"))).toContainText("Success");
-await expect(device.element(testId("status"))).toContainText(/\d+ items/);
+await expect(device.getByTestId("status")).toContainText("Success");
+await expect(device.getByTestId("status")).toContainText(/\d+ items/);
 ```
 
 #### `.toHaveCount(count: number, options?): Promise<void>`
@@ -1114,8 +966,8 @@ await expect(device.element(testId("status"))).toContainText(/\d+ items/);
 Assert that the selector resolves to exactly N elements.
 
 ```typescript
-await expect(device.element(role("listitem"))).toHaveCount(5);
-await expect(device.element(text("Error"))).toHaveCount(0);
+await expect(device.getByRole("listitem")).toHaveCount(5);
+await expect(device.getByText("Error", { exact: true })).toHaveCount(0);
 ```
 
 #### `.toHaveAttribute(name: string, value: unknown, options?): Promise<void>`
@@ -1123,8 +975,8 @@ await expect(device.element(text("Error"))).toHaveCount(0);
 Assert that the element has a specific property/attribute value. For Android, this maps to view properties like `className`, `resourceId`, `contentDescription`, `enabled`, `clickable`, `focusable`, `scrollable`, `selected`, etc.
 
 ```typescript
-await expect(device.element(text("Item"))).toHaveAttribute("selected", true);
-await expect(device.element(text("Item"))).toHaveAttribute("className", "android.widget.TextView");
+await expect(device.getByText("Item", { exact: true })).toHaveAttribute("selected", true);
+await expect(device.getByText("Item", { exact: true })).toHaveAttribute("className", "android.widget.TextView");
 ```
 
 #### `.toHaveAccessibleName(name: string | RegExp, options?): Promise<void>`
@@ -1132,8 +984,8 @@ await expect(device.element(text("Item"))).toHaveAttribute("className", "android
 Assert that the element has the given accessible name. On Android, this is the `contentDescription` if set, otherwise the `text` property.
 
 ```typescript
-await expect(device.element(role("button"))).toHaveAccessibleName("Submit form");
-await expect(device.element(role("image"))).toHaveAccessibleName(/Profile/);
+await expect(device.getByRole("button")).toHaveAccessibleName("Submit form");
+await expect(device.getByRole("image")).toHaveAccessibleName(/Profile/);
 ```
 
 #### `.toHaveAccessibleDescription(description: string | RegExp, options?): Promise<void>`
@@ -1141,7 +993,7 @@ await expect(device.element(role("image"))).toHaveAccessibleName(/Profile/);
 Assert that the element has the given accessible description. On Android, this maps to the `hint` property.
 
 ```typescript
-await expect(device.element(role("image"))).toHaveAccessibleDescription("Profile photo");
+await expect(device.getByRole("image")).toHaveAccessibleDescription("Profile photo");
 ```
 
 #### `.toHaveRole(role: string, options?): Promise<void>`
@@ -1149,8 +1001,8 @@ await expect(device.element(role("image"))).toHaveAccessibleDescription("Profile
 Assert that the element has a specific accessibility role.
 
 ```typescript
-await expect(device.element(text("Submit"))).toHaveRole("button");
-await expect(device.element(testId("toggle"))).toHaveRole("switch");
+await expect(device.getByText("Submit", { exact: true })).toHaveRole("button");
+await expect(device.getByTestId("toggle")).toHaveRole("switch");
 ```
 
 #### `.toHaveValue(value: string, options?): Promise<void>`
@@ -1158,8 +1010,8 @@ await expect(device.element(testId("toggle"))).toHaveRole("switch");
 Assert that an input field contains a specific value.
 
 ```typescript
-await device.element(role("textfield", "Email")).type("test@example.com");
-await expect(device.element(role("textfield", "Email"))).toHaveValue("test@example.com");
+await device.getByRole("textfield", { name: "Email" }).type("test@example.com");
+await expect(device.getByRole("textfield", { name: "Email" })).toHaveValue("test@example.com");
 ```
 
 #### `.toExist(options?): Promise<void>`
@@ -1167,8 +1019,8 @@ await expect(device.element(role("textfield", "Email"))).toHaveValue("test@examp
 Assert that the element exists in the UI hierarchy (regardless of visibility).
 
 ```typescript
-await expect(device.element(testId("hidden-input"))).toExist();
-await expect(device.element(text("Deleted item"))).not.toExist();
+await expect(device.getByTestId("hidden-input")).toExist();
+await expect(device.getByText("Deleted item", { exact: true })).not.toExist();
 ```
 
 ### Generic Value Assertions
@@ -1220,7 +1072,7 @@ Register a test. The test function receives a `fixtures` object containing a `de
 
 ```typescript
 test("user can log in", async ({ device }) => {
-  await device.tap(text("Sign In"));
+  await device.getByText("Sign In", { exact: true }).tap();
 });
 ```
 
@@ -1441,9 +1293,9 @@ Group actions in the trace viewer for better organization.
 
 ```typescript
 device.tracing.group('Login flow');
-await device.tap(text('Username'));
-await device.type(text('Username'), 'admin');
-await device.tap(role('button', 'Sign In'));
+await device.getByText('Username', { exact: true }).tap();
+await device.getByText('Username', { exact: true }).type('admin');
+await device.getByRole('button', { name: 'Sign In' }).tap();
 device.tracing.groupEnd();
 ```
 

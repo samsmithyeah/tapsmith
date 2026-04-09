@@ -6,34 +6,41 @@
  * timeout.
  */
 
-import type { Selector } from './selectors.js';
+import {
+  type Selector,
+  _text,
+  _textContains,
+  _role,
+  _contentDesc,
+  _hint,
+  _testId,
+} from './selectors.js';
 import {
   PilotGrpcClient,
   type ActionResponse,
-  type SwipeOptions,
-  type ScrollOptions,
   type ScreenshotResponse,
   type LaunchAppOptions,
   type AppState,
   type Orientation,
   type ColorScheme,
 } from './grpc-client.js';
-import { ElementHandle } from './element-handle.js';
+import { ElementHandle, locatorOptionsToSelector, type LocatorOptions } from './element-handle.js';
 import type { PilotConfig } from './config.js';
 import { Tracing } from './trace/tracing.js';
 import { type TraceCollector, getActiveTraceCollector } from './trace/trace-collector.js';
 import type { ActionCategory } from './trace/types.js';
 import { tracedAction } from './trace/traced-action.js';
 
-// ─── Types for element actions (PILOT-2) ───
+// ─── Types for device-level actions ───
 
-export interface DragOptions {
-  from: Selector;
-  to: Selector;
-}
-
-export interface PinchOptions {
-  scale?: number;
+/** Options for `device.swipe()`. */
+export interface SwipeOptions {
+  /** Swipe speed in pixels/second. Default `2000`. */
+  speed?: number;
+  /** Fraction of the screen to swipe across, 0–1. Default `0.6`. */
+  distance?: number;
+  /** Per-action timeout. Defaults to the device default. */
+  timeoutMs?: number;
 }
 
 export class Device {
@@ -115,14 +122,50 @@ export class Device {
     return tracedAction(ctx, action, category, selector, fn, fallbackMsg, extra);
   }
 
-  // ── Element handle ──
+  // ── Locators (Playwright-style getBy* methods) ──
 
   /**
-   * Returns an ElementHandle for the given selector. The element is not
-   * resolved immediately — it is looked up lazily when an action or assertion
-   * is performed.
+   * Locate an element by visible text. Substring match by default; pass
+   * `{ exact: true }` for an exact match.
    */
-  element(selector: Selector): ElementHandle {
+  getByText(text: string, options?: { exact?: boolean }): ElementHandle {
+    return this._handle(options?.exact ? _text(text) : _textContains(text));
+  }
+
+  /** Locate an element by accessibility role, optionally with an accessible name. */
+  getByRole(role: string, options?: { name?: string }): ElementHandle {
+    return this._handle(_role(role, options?.name));
+  }
+
+  /**
+   * Locate an element by its accessibility description (Android
+   * `contentDescription`, iOS `accessibilityLabel`).
+   */
+  getByDescription(text: string): ElementHandle {
+    return this._handle(_contentDesc(text));
+  }
+
+  /** Locate an element by placeholder text (Android hint, iOS placeholder). */
+  getByPlaceholder(text: string): ElementHandle {
+    return this._handle(_hint(text));
+  }
+
+  /** Locate an element by its test ID. */
+  getByTestId(testId: string): ElementHandle {
+    return this._handle(_testId(testId));
+  }
+
+  /**
+   * Escape hatch: locate an element by native id, xpath, or class name.
+   * Prefer accessible getters (`getByRole`, `getByText`, `getByDescription`)
+   * when possible.
+   */
+  locator(options: LocatorOptions): ElementHandle {
+    return this._handle(locatorOptionsToSelector(options));
+  }
+
+  /** @internal */
+  private _handle(selector: Selector): ElementHandle {
     const traceCapture = this._traceCollector ? {
       collector: this._traceCollector,
       takeScreenshot: () => this._takeScreenshotBuffer(),
@@ -131,40 +174,12 @@ export class Device {
     return new ElementHandle(this._client, selector, this._defaultTimeoutMs, { traceCapture });
   }
 
-  // ── Actions ──
-
-  async tap(selector: Selector): Promise<void> {
-    return this._tracedAction('tap', 'tap', selector,
-      () => this._client.tap(selector, this._defaultTimeoutMs), 'Tap failed');
-  }
-
-  async longPress(selector: Selector, durationMs?: number): Promise<void> {
-    return this._tracedAction('longPress', 'tap', selector,
-      () => this._client.longPress(selector, durationMs, this._defaultTimeoutMs), 'Long press failed');
-  }
-
-  async type(selector: Selector, text: string): Promise<void> {
-    return this._tracedAction('type', 'type', selector,
-      () => this._client.typeText(selector, text, this._defaultTimeoutMs), 'Type text failed',
-      { inputValue: text });
-  }
-
-  async clearAndType(selector: Selector, text: string): Promise<void> {
-    return this._tracedAction('clearAndType', 'type', selector,
-      () => this._client.clearAndType(selector, text, this._defaultTimeoutMs), 'Clear and type failed',
-      { inputValue: text });
-  }
+  // ── Device-level actions ──
 
   async swipe(direction: string, options?: SwipeOptions): Promise<void> {
-    return this._tracedAction('swipe', 'swipe', options?.selector,
+    return this._tracedAction('swipe', 'swipe', undefined,
       () => this._client.swipe(direction, { ...options, timeoutMs: options?.timeoutMs ?? this._defaultTimeoutMs }),
       'Swipe failed');
-  }
-
-  async scroll(selector: Selector, direction: string, options?: ScrollOptions): Promise<void> {
-    return this._tracedAction('scroll', 'scroll', selector,
-      () => this._client.scroll(selector, direction, { ...options, timeoutMs: options?.timeoutMs ?? this._defaultTimeoutMs }),
-      'Scroll failed');
   }
 
   async pressKey(key: string): Promise<void> {
@@ -175,48 +190,6 @@ export class Device {
   /** Press the hardware back button. @platform android */
   async pressBack(): Promise<void> {
     return this.pressKey('BACK');
-  }
-
-  async doubleTap(selector: Selector): Promise<void> {
-    return this._tracedAction('doubleTap', 'tap', selector,
-      () => this._client.doubleTap(selector, this._defaultTimeoutMs), 'Double tap failed');
-  }
-
-  async drag(options: DragOptions): Promise<void> {
-    return this._tracedAction('drag', 'tap', options.from,
-      () => this._client.dragAndDrop(options.from, options.to, this._defaultTimeoutMs), 'Drag and drop failed');
-  }
-
-  async pinchIn(selector: Selector, options?: PinchOptions): Promise<void> {
-    const scale = options?.scale ?? 0.5;
-    return this._tracedAction('pinchIn', 'tap', selector,
-      () => this._client.pinchZoom(selector, scale, this._defaultTimeoutMs), 'Pinch in failed');
-  }
-
-  async pinchOut(selector: Selector, options?: PinchOptions): Promise<void> {
-    const scale = options?.scale ?? 2.0;
-    return this._tracedAction('pinchOut', 'tap', selector,
-      () => this._client.pinchZoom(selector, scale, this._defaultTimeoutMs), 'Pinch out failed');
-  }
-
-  async focus(selector: Selector): Promise<void> {
-    return this._tracedAction('focus', 'tap', selector,
-      () => this._client.focus(selector, this._defaultTimeoutMs), 'Focus failed');
-  }
-
-  async blur(selector: Selector): Promise<void> {
-    return this._tracedAction('blur', 'tap', selector,
-      () => this._client.blur(selector, this._defaultTimeoutMs), 'Blur failed');
-  }
-
-  async selectOption(selector: Selector, option: string | { index: number }): Promise<void> {
-    return this._tracedAction('selectOption', 'tap', selector,
-      () => this._client.selectOption(selector, option, this._defaultTimeoutMs), 'Select option failed');
-  }
-
-  async highlight(selector: Selector, options?: { durationMs?: number }): Promise<void> {
-    return this._tracedAction('highlight', 'other', selector,
-      () => this._client.highlight(selector, options?.durationMs, this._defaultTimeoutMs), 'Highlight failed');
   }
 
   // ── Utilities ──

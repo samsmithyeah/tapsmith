@@ -6,7 +6,7 @@
  *
  *   npx pilot test tests/api-calls.test.ts --trace on
  */
-import { beforeEach, contentDesc, describe, expect, test } from "pilot"
+import { beforeEach, describe, expect, test } from "pilot"
 import { ApiCallsScreen } from "../screens/api-calls.screen.js"
 
 describe("API Calls screen", () => {
@@ -17,8 +17,8 @@ describe("API Calls screen", () => {
 
   beforeEach(async ({ device }) => {
     await device.restartApp()
-    await device.element(contentDesc("API Calls")).scrollIntoView()
-    await device.tap(contentDesc("API Calls"))
+    await device.getByDescription("API Calls").scrollIntoView()
+    await device.getByDescription("API Calls").tap()
     const screen = new ApiCallsScreen(device)
     await expect(screen.heading).toBeVisible()
   })

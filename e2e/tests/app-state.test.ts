@@ -1,4 +1,4 @@
-import { describe, test, expect, text } from "pilot"
+import { describe, test, expect } from "pilot"
 
 // ─── Authenticated tests ───
 // This file runs as part of the "authenticated" project, which has
@@ -12,17 +12,17 @@ test("profile screen is accessible without logging in", async ({ device }) => {
 
   // Without restored auth, this would redirect to login.
   // With restored app state, we land directly on the profile.
-  await expect(device.element(text("Profile"))).toBeVisible()
-  await expect(device.element(text("test@example.com"))).toBeVisible()
-  await expect(device.element(text("Authenticated"))).toBeVisible()
+  await expect(device.getByText("Profile", { exact: true })).toBeVisible()
+  await expect(device.getByText("test@example.com", { exact: true })).toBeVisible()
+  await expect(device.getByText("Authenticated", { exact: true })).toBeVisible()
 })
 
 test("login screen shows authenticated state", async ({ device }) => {
   await device.openDeepLink("pilottest:///login")
 
   // Should show the logged-in view, not the sign-in form
-  await expect(device.element(text("Login successful!"))).toBeVisible()
-  await expect(device.element(text("Welcome, test@example.com"))).toBeVisible()
+  await expect(device.getByText("Login successful!", { exact: true })).toBeVisible()
+  await expect(device.getByText("Welcome, test@example.com", { exact: true })).toBeVisible()
 })
 
 // ─── Override: opt out of restored auth for a single scope ───
@@ -35,6 +35,6 @@ describe("without auth", () => {
     await device.openDeepLink("pilottest:///profile")
 
     // appState: '' clears app data, so the profile gate should redirect to login
-    await expect(device.element(text("Sign In"))).toBeVisible()
+    await expect(device.getByText("Sign In", { exact: true })).toBeVisible()
   })
 })

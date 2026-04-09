@@ -1,23 +1,23 @@
-import { type Device, role, text } from "pilot"
+import { Device } from "pilot"
 
 export class TogglesScreen {
   constructor(private device: Device) {}
 
   // Section headings
-  get switchesHeading() { return this.device.element(text("Switches")) }
+  get switchesHeading() { return this.device.getByText("Switches", { exact: true }) }
 
   // Switches
-  get darkModeSwitch() { return this.device.element(role("switch", "Dark Mode")) }
-  get notificationsSwitch() { return this.device.element(role("switch", "Notifications")) }
+  get darkModeSwitch() { return this.device.getByRole("switch", { name: "Dark Mode" }) }
+  get notificationsSwitch() { return this.device.getByRole("switch", { name: "Notifications" }) }
 
   // Checkboxes
-  get agreeCheckbox() { return this.device.element(role("checkbox", "I agree to terms")) }
+  get agreeCheckbox() { return this.device.getByRole("checkbox", { name: "I agree to terms" }) }
 
   // Radio buttons
-  get radioSmall() { return this.device.element(role("radiobutton", "Small")) }
-  get radioMedium() { return this.device.element(role("radiobutton", "Medium")) }
-  get radioLarge() { return this.device.element(role("radiobutton", "Large")) }
-  get smallLabel() { return this.device.element(text("Small")) }
-  get mediumLabel() { return this.device.element(text("Medium")) }
-  get largeLabel() { return this.device.element(text("Large")) }
+  get radioSmall() { return this.device.getByRole("radiobutton", { name: "Small" }) }
+  get radioMedium() { return this.device.getByRole("radiobutton", { name: "Medium" }) }
+  get radioLarge() { return this.device.getByRole("radiobutton", { name: "Large" }) }
+  get smallLabel() { return this.device.getByText("Small", { exact: true }) }
+  get mediumLabel() { return this.device.getByText("Medium", { exact: true }) }
+  get largeLabel() { return this.device.getByText("Large", { exact: true }) }
 }
