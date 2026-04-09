@@ -20,7 +20,7 @@ export type { TraceMode, TraceConfig };
 
 export interface PilotConfig {
   /**
-   * Target platform. Auto-detected from `apk` (Android) or `app` (iOS) if not set.
+   * Target platform. Required for iOS; defaults to Android behavior when unset.
    */
   platform?: Platform;
 
