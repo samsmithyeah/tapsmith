@@ -1,9 +1,38 @@
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
 use tokio::net::TcpStream;
 use tokio::process::Command;
 use tracing::{debug, info, instrument};
+
+/// Stable per-udid DerivedData location for `xcodebuild test-without-building`.
+///
+/// Without `-derivedDataPath`, every invocation allocates a fresh random
+/// DerivedData hash and dumps a multi-GB `.xcresult` bundle there that
+/// nothing ever cleans up. Pinning to a stable per-udid location lets
+/// subsequent runs reuse (and overwrite) the same directory. Per-udid keying
+/// preserves isolation for parallel execution against multiple simulators.
+fn derived_data_path_for(udid: &str) -> PathBuf {
+    std::env::temp_dir().join("pilot-ios-derived").join(udid)
+}
+
+/// Wipe any prior xcresult bundles before launching xcodebuild.
+///
+/// xcodebuild always writes a *new* timestamped `Test-*.xcresult` into
+/// `Logs/Test/` on each run, so without this we'd accumulate ~1.8GB per
+/// invocation inside the pinned DerivedData dir. Removing the dir caps
+/// total disk usage to one bundle per simulator.
+///
+/// A missing path is a no-op (not an error) — first run won't have one.
+async fn clear_prior_xcresults(derived_data_path: &Path) -> Result<()> {
+    let test_logs = derived_data_path.join("Logs").join("Test");
+    match tokio::fs::remove_dir_all(&test_logs).await {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(e).with_context(|| format!("Failed to clear {test_logs:?}")),
+    }
+}
 
 /// Launch the PilotAgent XCUITest runner on an iOS simulator.
 ///
@@ -87,6 +116,16 @@ async fn start_agent_impl(
     .await
     .context("Failed to patch xctestrun file")?;
 
+    // Pin xcodebuild's output directory and wipe any prior xcresults so
+    // disk usage stays bounded across runs. See helper docs for details.
+    let derived_data_path = derived_data_path_for(udid);
+    if let Err(e) = tokio::fs::create_dir_all(&derived_data_path).await {
+        debug!("Failed to create derivedDataPath {derived_data_path:?}: {e}");
+    }
+    if let Err(e) = clear_prior_xcresults(&derived_data_path).await {
+        debug!("{e:#}");
+    }
+
     // Launch xcodebuild test-without-building in background
     let mut cmd = Command::new("xcodebuild");
     cmd.args([
@@ -95,6 +134,8 @@ async fn start_agent_impl(
         &patched_xctestrun,
         "-destination",
         &format!("id={udid}"),
+        "-derivedDataPath",
+        &derived_data_path.to_string_lossy(),
     ]);
 
     // Capture stdout/stderr so we can diagnose failures.
@@ -512,5 +553,64 @@ mod tests {
         let result =
             patch_xctestrun(bogus.to_str().unwrap(), "com.example.app", false, 18800).await;
         assert!(result.is_err(), "expected error for missing source file");
+    }
+
+    #[test]
+    fn derived_data_path_is_stable_per_udid() {
+        // Same udid → same path on repeated calls (so xcodebuild reuses
+        // the same DerivedData dir instead of leaking a fresh one each run).
+        let p1 = derived_data_path_for("ABC-123");
+        let p2 = derived_data_path_for("ABC-123");
+        assert_eq!(p1, p2);
+    }
+
+    #[test]
+    fn derived_data_path_is_distinct_per_udid() {
+        // Different simulators → different paths so parallel workers don't
+        // race on a shared DerivedData directory.
+        let p1 = derived_data_path_for("ABC-123");
+        let p2 = derived_data_path_for("DEF-456");
+        assert_ne!(p1, p2);
+    }
+
+    #[test]
+    fn derived_data_path_lives_under_temp() {
+        // Stays out of the user's $HOME so it's auto-cleaned by the OS and
+        // can't pollute Xcode's standard DerivedData dir.
+        let p = derived_data_path_for("ABC-123");
+        assert!(
+            p.starts_with(std::env::temp_dir()),
+            "expected path under temp_dir, got {p:?}"
+        );
+        assert!(p.ends_with("ABC-123"));
+    }
+
+    #[tokio::test]
+    async fn clear_prior_xcresults_removes_existing_bundle() {
+        let dir = tempfile::tempdir().unwrap();
+        let test_logs = dir.path().join("Logs").join("Test");
+        let bundle = test_logs.join("Test-PilotAgentUITests-2026.04.09_12-00-00.xcresult");
+        tokio::fs::create_dir_all(&bundle).await.unwrap();
+        tokio::fs::write(bundle.join("Info.plist"), "fake")
+            .await
+            .unwrap();
+        assert!(bundle.exists());
+
+        clear_prior_xcresults(dir.path()).await.unwrap();
+
+        assert!(
+            !test_logs.exists(),
+            "Logs/Test should be removed but still exists"
+        );
+    }
+
+    #[tokio::test]
+    async fn clear_prior_xcresults_is_noop_when_missing() {
+        // First-ever run won't have a prior Logs/Test dir; this must not
+        // surface as an error or the agent launch path would fail.
+        let dir = tempfile::tempdir().unwrap();
+        clear_prior_xcresults(dir.path())
+            .await
+            .expect("missing path should be a no-op");
     }
 }
