@@ -466,6 +466,24 @@ describe('allocateBucketWorkers()', () => {
     expect(alloc.get('c')).toBe(1);
   });
 
+  it('distributes remainder when fairShare rounding leaves workers unallocated', () => {
+    // 3 equal buckets, budget=5: fairShare = floor(5*1/3) = 1 per bucket.
+    // Each starts at 1 (minimum), so proportional loop makes no progress.
+    // The 2 remaining workers should be distributed round-robin.
+    const buckets = bucketizeProjects([
+      makeProject('a', 10),
+      makeProject('b', 10),
+      makeProject('c', 10),
+    ]);
+    const alloc = allocateBucketWorkers(5, buckets);
+    const total = (alloc.get('a') ?? 0) + (alloc.get('b') ?? 0) + (alloc.get('c') ?? 0);
+    expect(total).toBe(5);
+    // Each bucket gets at least 1, and the 2 extras go to the first two
+    expect(alloc.get('a')).toBe(2);
+    expect(alloc.get('b')).toBe(2);
+    expect(alloc.get('c')).toBe(1);
+  });
+
   it('works with all-explicit allocation (no implicit consumption)', () => {
     const buckets = bucketizeProjects([
       makeProject('a', 5, 2),

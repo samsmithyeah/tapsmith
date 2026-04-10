@@ -115,9 +115,15 @@ export async function launchConfiguredApp(
   // then let ensureSessionReady discover the dead agent, its recoverSession
   // path does a redundant terminateApp + launchApp cycle that can restore
   // the Activity's saved instance state Bundle (e.g. React Navigation route).
-  await ctx.device.startAgent(
-    ctx.config.package, ctx.agentApkPath, ctx.agentTestApkPath, ctx.iosXctestrunPath,
-  );
+  // Best-effort: if the agent restart fails here (e.g. missing APK),
+  // ensureSessionReady's recovery path will retry with a clearer error.
+  try {
+    await ctx.device.startAgent(
+      ctx.config.package, ctx.agentApkPath, ctx.agentTestApkPath, ctx.iosXctestrunPath,
+    );
+  } catch {
+    // Will be recovered by ensureSessionReady below
+  }
 
   await ctx.device.launchApp(ctx.config.package, launchOptions(ctx.config));
 

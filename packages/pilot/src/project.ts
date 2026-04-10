@@ -135,7 +135,17 @@ export function allocateBucketWorkers(
           madeProgress = true;
         }
       }
-      if (!madeProgress) break;
+      if (!madeProgress) {
+        // Distribute leftover workers round-robin by file count. This
+        // handles the rounding gap where Math.floor(fairShare) sums to
+        // less than totalBudget.
+        for (const r of ranked) {
+          if (remaining === 0) break;
+          result.set(r.signature, (result.get(r.signature) ?? 1) + 1);
+          remaining--;
+        }
+        break;
+      }
     }
   }
 
