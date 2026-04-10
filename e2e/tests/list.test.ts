@@ -22,8 +22,8 @@ describe("List screen", () => {
 
   test("first() selects the first matching element", async ({ device }) => {
     const screen = new ListScreen(device);
-    const info = await screen.itemByText("Item 1").find();
-    expect(info.text).toBe("Item 1");
+    const info = screen.allItems.first();
+    await expect(info).toHaveText("Item 1");
   });
 
   test("nth() selects item at specific index", async ({ device }) => {

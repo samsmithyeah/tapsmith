@@ -1130,6 +1130,28 @@ describe("custom config", () => {
 | `trace`      | `TraceMode \| Partial<TraceConfig>`         | Trace recording configuration                |
 | `appState`   | `string`                                    | Path to saved app state archive to restore   |
 
+The following device-shaping fields may **only** be set on a project's
+`use` block (not via `test.use()`), since the device is bound to the
+worker before any test runs:
+
+| Option            | Type                                  | Description                              |
+| ----------------- | ------------------------------------- | ---------------------------------------- |
+| `platform`        | `'android' \| 'ios'`                  | Target platform for this project         |
+| `device`          | `string`                              | Explicit device serial / iOS UDID        |
+| `avd`             | `string`                              | Android AVD name to launch               |
+| `simulator`       | `string`                              | iOS simulator name or UDID               |
+| `apk`             | `string`                              | Path to Android APK under test           |
+| `app`             | `string`                              | Path to iOS .app bundle under test       |
+| `package`         | `string`                              | Android package name / iOS bundle ID     |
+| `activity`        | `string`                              | Optional Android launcher activity       |
+| `agentApk`        | `string`                              | Override path to the Android agent APK   |
+| `agentTestApk`    | `string`                              | Override path to the Android agent test APK |
+| `iosXctestrun`    | `string`                              | Override path to the iOS .xctestrun file |
+| `deviceStrategy`  | `'prefer-connected' \| 'avd-only'`    | Device selection strategy (Android)      |
+| `launchEmulators` | `boolean`                             | Auto-launch emulators (Android)          |
+| `resetAppDeepLink`| `string`                              | Soft-reset deep link between files       |
+| `resetAppWaitMs`  | `number`                              | Wait after the reset deep link           |
+
 **Reusable auth state** — mirrors Playwright's `storageState`:
 
 ```typescript
@@ -1214,7 +1236,7 @@ See the [Configuration](configuration.md) guide for all options.
 
 ### Projects
 
-Projects group test files with shared options and dependency ordering, mirroring Playwright's project concept. Setup projects run first; dependent projects run after their dependencies complete.
+Projects group test files with shared options and dependency ordering, mirroring Playwright's project concept. Each project can target its own device by overriding device-shaping fields under `use:`. Setup projects run first; dependent projects run after their dependencies complete.
 
 ```typescript
 import { defineConfig } from "pilot";
@@ -1236,14 +1258,52 @@ export default defineConfig({
 });
 ```
 
+**Per-device targeting (Android + iOS):**
+
+```typescript
+import { defineConfig } from "pilot";
+
+export default defineConfig({
+  package: "com.example.app",
+  projects: [
+    {
+      name: "Pixel 6",
+      use: {
+        platform: "android",
+        avd: "Pixel_6_API_34",
+        apk: "./android/app-debug.apk",
+        launchEmulators: true,
+      },
+    },
+    {
+      name: "iPhone 16",
+      use: {
+        platform: "ios",
+        simulator: "iPhone 16",
+        app: "./ios/MyApp.app",
+        iosXctestrun: "./ios-agent/PilotAgent.xctestrun",
+      },
+    },
+  ],
+});
+```
+
+Run with `pilot test --workers 2` to execute both projects in parallel
+(one worker per device target). Run with `--workers 1` to run them
+sequentially with a device switch between projects. Both `--ui` and
+`--watch` honor per-project devices and route file execution to the
+correct device.
+
 **`ProjectConfig`**
 
 | Field | Type | Description |
 |---|---|---|
 | `name` | `string` | Unique project name |
 | `testMatch` | `string[]` | Glob patterns for test files (inherits global if unset) |
+| `testIgnore` | `string[]` | Glob patterns to exclude from test discovery |
 | `dependencies` | `string[]` | Projects that must complete first |
-| `use` | `UseOptions` | Per-project option overrides (applied under file-level `test.use()`) |
+| `use` | `UseOptions` | Per-project option overrides (applied under file-level `test.use()`). Includes the device-shaping fields documented above. |
+| `workers` | `number` | Number of parallel workers (devices) for this project. Additive — does not consume from the global `workers` budget. When unset, the project shares the global budget proportionally to file count. |
 
 ### `loadConfig(dir?: string): Promise<PilotConfig>`
 

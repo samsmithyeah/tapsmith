@@ -256,6 +256,11 @@ async function handleRunFile(
     throw new Error(`UI Worker ${workerId}: Not initialized`);
   }
 
+  // Ensure the device is awake — the screen may have auto-locked while
+  // watch mode was idle waiting for file changes.
+  await device.wake();
+  await device.unlock();
+
   // Reset app between files
   if (config.package) {
     await launchConfiguredApp(sessionContext(undefined), `file reset for ${path.basename(filePath)}`);

@@ -85,10 +85,105 @@ const EXISTING_DEVICE_INIT_TIMEOUT_MS = 90_000;
 const LAUNCHED_EMULATOR_INIT_TIMEOUT_MS = 180_000;
 
 /**
+ * How many ports each bucket reserves. Big enough to cover any reasonable
+ * worker count without colliding with the next bucket's range.
+ */
+const PORTS_PER_BUCKET = 50;
+
+/**
+ * Split projects by device signature and run each bucket as an independent
+ * parallel execution. Buckets execute concurrently — Android and iOS test
+ * suites can run side-by-side, each with their own daemons and devices.
+ */
+async function runMultiBucket(opts: DispatcherOptions): Promise<FullResult> {
+  const projects = opts.projects ?? [];
+  const bucketsBySig = new Map<string, import('./project.js').ResolvedProject[]>();
+  for (const p of projects) {
+    const arr = bucketsBySig.get(p.deviceSignature) ?? [];
+    arr.push(p);
+    bucketsBySig.set(p.deviceSignature, arr);
+  }
+
+  const buckets = [...bucketsBySig.values()];
+
+  // Allocate workers per bucket, honoring explicit `project.workers`
+  // overrides via the shared allocator.
+  const { allocateBucketWorkers } = await import('./project.js');
+  const bucketEntries = buckets.map((bucketProjects, i) => ({
+    signature: `${i}-${bucketProjects[0].deviceSignature}`,
+    projects: bucketProjects,
+  }));
+  const allocation = allocateBucketWorkers(opts.workers, bucketEntries);
+  const bucketWorkers = bucketEntries.map((b) => allocation.get(b.signature) ?? 0);
+
+  process.stderr.write(
+    `${DIM}Running ${buckets.length} device bucket(s) in parallel: ${
+      buckets.map((b, i) => `${b[0].deviceSignature.split('|').slice(0, 2).join(' ')} (${bucketWorkers[i]}w)`).join(', ')
+    }${RESET}\n`,
+  );
+
+  const bucketPromises = buckets.map(async (bucketProjects, idx) => {
+    const workersForBucket = bucketWorkers[idx];
+    if (workersForBucket === 0) {
+      return null;
+    }
+
+    const bucketFiles = bucketProjects.flatMap((p) => p.testFiles);
+    const bucketSignature = bucketProjects[0].deviceSignature;
+    const bucketEffective = bucketProjects[0].effectiveConfig;
+
+    // Filter the global wave list to only this bucket's projects, preserving
+    // dependency order. Dependencies that cross bucket boundaries are not
+    // supported — each bucket has its own independent dependency graph.
+    const bucketWaves = (opts.projectWaves ?? [])
+      .map((wave) => wave.filter((p) => p.deviceSignature === bucketSignature))
+      .filter((wave) => wave.length > 0);
+
+    const bucketOpts: DispatcherOptions = {
+      ...opts,
+      config: bucketEffective,
+      testFiles: bucketFiles,
+      workers: workersForBucket,
+      projects: bucketProjects,
+      projectWaves: bucketWaves,
+    };
+
+    return await runParallel(bucketOpts, idx * PORTS_PER_BUCKET);
+  });
+
+  const results = (await Promise.all(bucketPromises)).filter(
+    (r): r is FullResult => r !== null,
+  );
+
+  // Merge results across buckets
+  const merged: FullResult = {
+    status: results.some((r) => r.status === 'failed') ? 'failed' : 'passed',
+    duration: Math.max(...results.map((r) => r.duration), 0),
+    setupDuration: Math.max(...results.map((r) => r.setupDuration ?? 0), 0),
+    tests: results.flatMap((r) => r.tests),
+    suites: results.flatMap((r) => r.suites),
+  };
+  return merged;
+}
+
+/**
  * Run test files in parallel across multiple workers/devices.
+ *
+ * When `opts.projects` contains multiple distinct device signatures,
+ * runParallel forks one execution per bucket, each with its own port
+ * range, and runs them concurrently. Results are merged.
+ *
  * Returns a FullResult aggregating all worker results.
  */
-export async function runParallel(opts: DispatcherOptions): Promise<FullResult> {
+export async function runParallel(opts: DispatcherOptions, _portOffset = 0): Promise<FullResult> {
+  // ─── Multi-bucket dispatch: split projects by deviceSignature ───
+  if (opts.projects && opts.projects.length > 0 && _portOffset === 0) {
+    const signatures = new Set(opts.projects.map((p) => p.deviceSignature));
+    if (signatures.size > 1) {
+      return runMultiBucket(opts);
+    }
+  }
+
   const { config, reporter, testFiles } = opts;
   const isIos = config.platform === 'ios';
   const deviceStrategy = resolveDeviceStrategy(config);
@@ -136,8 +231,8 @@ export async function runParallel(opts: DispatcherOptions): Promise<FullResult> 
     ? path.resolve(config.rootDir, rawBin)
     : rawBin;
 
-  const firstDaemonPort = baseDaemonPort + 1;
-  const firstAgentPort = baseAgentPort + 1;
+  const firstDaemonPort = baseDaemonPort + 1 + _portOffset;
+  const firstAgentPort = baseAgentPort + 1 + _portOffset;
 
   // Free the first agent host port from any leftover stale process before
   // spawning firstDaemon. The common offender is a leftover iOS `PilotAgent`
@@ -405,8 +500,8 @@ export async function runParallel(opts: DispatcherOptions): Promise<FullResult> 
     // agent port (firstAgentPort) was freed before that spawn.
     const availableWorkerSlots: Array<{ workerId: number; daemonPort: number; agentPort: number }> = [];
     for (let wid = 0; availableWorkerSlots.length < maxUsefulWorkers && availableWorkerSlots.length < deviceSerials.length && wid < maxUsefulWorkers + 10; wid++) {
-      const port = baseDaemonPort + 1 + wid;
-      const agentPort = baseAgentPort + 1 + wid;
+      const port = baseDaemonPort + 1 + _portOffset + wid;
+      const agentPort = baseAgentPort + 1 + _portOffset + wid;
       if (wid === 0) {
         availableWorkerSlots.push({ workerId: availableWorkerSlots.length, daemonPort: port, agentPort });
         continue;

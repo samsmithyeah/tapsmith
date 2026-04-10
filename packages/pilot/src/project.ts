@@ -6,7 +6,7 @@
  */
 
 import { minimatch } from 'minimatch';
-import type { PilotConfig, ProjectConfig, UseOptions } from './config.js';
+import { effectiveConfigForProject, type PilotConfig, type ProjectConfig, type UseOptions } from './config.js';
 
 // ─── Types ───
 
@@ -18,6 +18,178 @@ export interface ResolvedProject {
   use?: UseOptions
   /** Populated by the CLI after file discovery. */
   testFiles: string[]
+  /** Effective config (root config merged with `use`). Populated by resolveProjects. */
+  effectiveConfig: PilotConfig
+  /**
+   * Stable identifier for the device this project targets. Projects with the
+   * same signature can share a worker pool; differing signatures require
+   * separate device provisioning. Populated by resolveProjects.
+   */
+  deviceSignature: string
+  /**
+   * Explicit per-project worker count. When set, this project's bucket
+   * gets exactly this many devices and bypasses the proportional split.
+   */
+  workers?: number
+}
+
+// ─── Device signature ───
+
+/**
+ * Build a stable signature describing the device a project targets.
+ * Projects with identical signatures can share workers and devices.
+ */
+export function deviceSignature(config: PilotConfig): string {
+  const platform = config.platform ?? 'android';
+  if (platform === 'ios') {
+    return [
+      'ios',
+      config.simulator ?? '',
+      config.device ?? '',
+      config.package ?? '',
+      config.app ?? '',
+      config.iosXctestrun ?? '',
+    ].join('|');
+  }
+  return [
+    'android',
+    config.avd ?? '',
+    config.device ?? '',
+    config.package ?? '',
+    config.apk ?? '',
+    config.deviceStrategy ?? '',
+    config.launchEmulators ? '1' : '0',
+  ].join('|');
+}
+
+// ─── Worker allocation ───
+
+/**
+ * Allocate the global `workers` budget across project buckets.
+ *
+ * Rules:
+ * 1. Buckets containing any project with explicit `project.workers` get
+ *    `max(explicit values across the bucket's projects)`. These do not
+ *    consume from the global budget — they are additive.
+ * 2. The global `workers` budget is then split among the remaining buckets
+ *    proportionally to file count, with at least 1 per bucket that has files.
+ * 3. Any bucket with zero test files gets 0 workers.
+ */
+export function allocateBucketWorkers(
+  totalBudget: number,
+  bucketEntries: Array<{ signature: string; projects: ResolvedProject[] }>,
+): Map<string, number> {
+  const result = new Map<string, number>();
+
+  const active = bucketEntries.filter(
+    (b) => b.projects.reduce((sum, p) => sum + p.testFiles.length, 0) > 0,
+  );
+  for (const inactive of bucketEntries.filter((b) => !active.includes(b))) {
+    result.set(inactive.signature, 0);
+  }
+  if (active.length === 0) return result;
+
+  const explicit: typeof active = [];
+  const implicit: typeof active = [];
+  for (const b of active) {
+    const explicitValues = b.projects
+      .map((p) => p.workers)
+      .filter((w): w is number => typeof w === 'number' && w > 0);
+    if (explicitValues.length > 0) {
+      result.set(b.signature, Math.max(...explicitValues));
+      explicit.push(b);
+    } else {
+      implicit.push(b);
+    }
+  }
+
+  if (implicit.length === 0) return result;
+
+  const implicitFiles = implicit.reduce(
+    (sum, b) => sum + b.projects.reduce((s, p) => s + p.testFiles.length, 0),
+    0,
+  );
+
+  for (const b of implicit) {
+    result.set(b.signature, 1);
+  }
+  let remaining = Math.max(0, totalBudget - implicit.length);
+
+  if (remaining > 0 && implicitFiles > 0) {
+    const ranked = implicit
+      .map((b) => ({
+        signature: b.signature,
+        files: b.projects.reduce((s, p) => s + p.testFiles.length, 0),
+      }))
+      .sort((a, b) => b.files - a.files);
+
+    while (remaining > 0) {
+      let madeProgress = false;
+      for (const r of ranked) {
+        if (remaining === 0) break;
+        const fairShare = Math.floor((totalBudget * r.files) / implicitFiles);
+        const current = result.get(r.signature) ?? 1;
+        if (current < fairShare) {
+          result.set(r.signature, current + 1);
+          remaining--;
+          madeProgress = true;
+        }
+      }
+      if (!madeProgress) break;
+    }
+  }
+
+  return result;
+}
+
+/**
+ * Group resolved projects by their device signature, preserving first-seen
+ * order. Each entry contains the signature and the projects sharing it.
+ */
+export function bucketizeProjects(
+  projects: ResolvedProject[],
+): Array<{ signature: string; projects: ResolvedProject[] }> {
+  const m = new Map<string, ResolvedProject[]>();
+  for (const p of projects) {
+    const arr = m.get(p.deviceSignature) ?? [];
+    arr.push(p);
+    m.set(p.deviceSignature, arr);
+  }
+  return [...m.entries()].map(([signature, projects]) => ({ signature, projects }));
+}
+
+// ─── Per-project use validation ───
+
+function validateProjectUse(name: string, use: UseOptions | undefined): void {
+  if (!use) return;
+
+  const platform = use.platform;
+  if (platform === 'ios') {
+    if (use.avd != null) {
+      throw new Error(`Project "${name}" sets platform: 'ios' but also \`avd\` (Android-only). Remove \`avd\` or change platform.`);
+    }
+    if (use.apk != null) {
+      throw new Error(`Project "${name}" sets platform: 'ios' but also \`apk\` (Android-only). Use \`app\` for iOS.`);
+    }
+    if (use.agentApk != null || use.agentTestApk != null) {
+      throw new Error(`Project "${name}" sets platform: 'ios' but also \`agentApk\`/\`agentTestApk\` (Android-only).`);
+    }
+  } else if (platform === 'android') {
+    if (use.simulator != null) {
+      throw new Error(`Project "${name}" sets platform: 'android' but also \`simulator\` (iOS-only). Remove \`simulator\` or change platform.`);
+    }
+    if (use.app != null) {
+      throw new Error(`Project "${name}" sets platform: 'android' but also \`app\` (iOS-only). Use \`apk\` for Android.`);
+    }
+    if (use.iosXctestrun != null) {
+      throw new Error(`Project "${name}" sets platform: 'android' but also \`iosXctestrun\` (iOS-only).`);
+    }
+  } else {
+    // Platform unset — fall back to detecting via mutually-exclusive fields
+    if ((use.avd != null || use.apk != null) && (use.simulator != null || use.app != null || use.iosXctestrun != null)) {
+      throw new Error(`Project "${name}" mixes Android (\`avd\`/\`apk\`) and iOS (\`simulator\`/\`app\`) fields. Set \`platform\` and use only one set.`);
+    }
+  }
 }
 
 // ─── Resolution ───
@@ -37,6 +209,8 @@ export function resolveProjects(config: PilotConfig): ResolvedProject[] {
       dependencies: [],
       use: undefined,
       testFiles: [],
+      effectiveConfig: config,
+      deviceSignature: deviceSignature(config),
     }];
   }
 
@@ -72,14 +246,25 @@ export function resolveProjects(config: PilotConfig): ResolvedProject[] {
   // Validate no cycles
   detectCycles(projects);
 
-  return projects.map((p) => ({
-    name: p.name,
-    testMatch: p.testMatch ?? config.testMatch,
-    testIgnore: p.testIgnore ?? [],
-    dependencies: p.dependencies ?? [],
-    use: p.use,
-    testFiles: [],
-  }));
+  // Validate per-project device-shaping fields
+  for (const p of projects) {
+    validateProjectUse(p.name, p.use);
+  }
+
+  return projects.map((p) => {
+    const effective = effectiveConfigForProject(config, p);
+    return {
+      name: p.name,
+      testMatch: p.testMatch ?? config.testMatch,
+      testIgnore: p.testIgnore ?? [],
+      dependencies: p.dependencies ?? [],
+      use: p.use,
+      testFiles: [],
+      effectiveConfig: effective,
+      deviceSignature: deviceSignature(effective),
+      workers: p.workers,
+    };
+  });
 }
 
 // ─── Topological sort ───

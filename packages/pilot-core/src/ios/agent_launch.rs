@@ -282,7 +282,11 @@ async fn patch_xctestrun(
     } else {
         "launch"
     };
-    let patched_path = format!("{xctestrun_path}.{mode}.port{agent_port}.patched.xctestrun");
+    // Normalize the source path: strip any `.{mode}.port{N}.patched.xctestrun`
+    // suffixes left behind by previous runs so we don't keep accreting suffixes
+    // until the filename overflows the 255-byte limit.
+    let source_root = strip_patched_suffixes(xctestrun_path);
+    let patched_path = format!("{source_root}.{mode}.port{agent_port}.patched.xctestrun");
 
     // Copy original to patched location
     tokio::fs::copy(xctestrun_path, &patched_path)
@@ -355,6 +359,39 @@ async fn patch_xctestrun(
 
     info!("Patched xctestrun at {patched_path}");
     Ok(patched_path)
+}
+
+/// Strip any `.{mode}.port{N}.patched.xctestrun` suffixes that previous runs
+/// may have appended, returning the original source path (or the input
+/// unchanged if it doesn't look patched). Conservative: only matches the exact
+/// suffix pattern Pilot itself generates.
+fn strip_patched_suffixes(path: &str) -> String {
+    let mut current = path.to_string();
+    loop {
+        let Some(stripped) = current.strip_suffix(".patched.xctestrun") else {
+            return current;
+        };
+        // Match `.launch.portNNNN` or `.attach.portNNNN`
+        let Some(dot_idx) = stripped.rfind('.') else {
+            return current;
+        };
+        let port_segment = &stripped[dot_idx + 1..];
+        if !port_segment.starts_with("port")
+            || port_segment.len() <= 4
+            || !port_segment[4..].chars().all(|c| c.is_ascii_digit())
+        {
+            return current;
+        }
+        let without_port = &stripped[..dot_idx];
+        let Some(mode_idx) = without_port.rfind('.') else {
+            return current;
+        };
+        let mode_segment = &without_port[mode_idx + 1..];
+        if mode_segment != "launch" && mode_segment != "attach" {
+            return current;
+        }
+        current = without_port[..mode_idx].to_string();
+    }
 }
 
 /// Ping the iOS agent to check if it's running.
@@ -553,6 +590,41 @@ mod tests {
         let result =
             patch_xctestrun(bogus.to_str().unwrap(), "com.example.app", false, 18800).await;
         assert!(result.is_err(), "expected error for missing source file");
+    }
+
+    #[test]
+    fn strip_patched_suffixes_handles_clean_path() {
+        let p = "/tmp/Foo.xctestrun";
+        assert_eq!(strip_patched_suffixes(p), p);
+    }
+
+    #[test]
+    fn strip_patched_suffixes_strips_single_suffix() {
+        assert_eq!(
+            strip_patched_suffixes("/tmp/Foo.xctestrun.launch.port18800.patched.xctestrun"),
+            "/tmp/Foo.xctestrun"
+        );
+        assert_eq!(
+            strip_patched_suffixes("/tmp/Foo.xctestrun.attach.port19000.patched.xctestrun"),
+            "/tmp/Foo.xctestrun"
+        );
+    }
+
+    #[test]
+    fn strip_patched_suffixes_strips_chained_suffixes() {
+        let chained =
+            "/tmp/Foo.xctestrun.launch.port18800.patched.xctestrun.launch.port18802.patched.xctestrun";
+        assert_eq!(strip_patched_suffixes(chained), "/tmp/Foo.xctestrun");
+    }
+
+    #[test]
+    fn strip_patched_suffixes_leaves_unrecognized_alone() {
+        // Wrong mode word — must not strip.
+        let p = "/tmp/Foo.xctestrun.weird.port18800.patched.xctestrun";
+        assert_eq!(strip_patched_suffixes(p), p);
+        // Non-numeric port — must not strip.
+        let q = "/tmp/Foo.xctestrun.launch.portABC.patched.xctestrun";
+        assert_eq!(strip_patched_suffixes(q), q);
     }
 
     #[test]

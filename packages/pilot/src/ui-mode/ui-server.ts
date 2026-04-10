@@ -95,6 +95,14 @@ export interface UIServerContext {
   workers?: number
   /** Device serials for multi-worker mode. */
   deviceSerials?: string[]
+  /**
+   * Per-bucket maps for multi-device-target projects. When set, each
+   * device serial is paired with its bucket's serialized config and
+   * worker dispatch routes files to workers in the matching bucket.
+   */
+  configByDevice?: Map<string, SerializedConfig>
+  bucketByDevice?: Map<string, string>
+  bucketByProject?: Map<string, string>
 }
 
 export interface UIServerOptions {
@@ -126,6 +134,8 @@ interface UIWorkerHandle {
   passed: number
   failed: number
   skipped: number
+  /** Bucket signature this worker is bound to (when multi-bucket UI is in use). */
+  bucketSignature?: string
 }
 
 // ─── UI Server ───
@@ -161,7 +171,11 @@ export async function startUIServer(
     && ctx.projects.length > 0
     && !(ctx.projects.length === 1 && ctx.projects[0].name === 'default');
 
-  // Build file → project lookup
+  // Build file → project lookup. Note: when the same file matches multiple
+  // projects (e.g. an Android and an iOS project both using `**\/*.test.ts`),
+  // the last project wins here. Callers that need the project explicitly —
+  // for example because the user clicked a test under a specific project tree
+  // node — should pass `projectName` and use `projectForFile()` instead.
   const fileToProject = new Map<string, ResolvedProject>();
   if (ctx.projects) {
     for (const project of ctx.projects) {
@@ -169,6 +183,17 @@ export async function startUIServer(
         fileToProject.set(file, project);
       }
     }
+  }
+
+  /** Resolve a project for a file, preferring an explicit project name when
+   * supplied. This is the right call when the same file may live under
+   * multiple projects (multi-device configs). */
+  function projectForFile(filePath: string, projectName?: string): ResolvedProject | undefined {
+    if (projectName && ctx.projects) {
+      const byName = ctx.projects.find((p) => p.name === projectName);
+      if (byName) return byName;
+    }
+    return fileToProject.get(filePath);
   }
 
   const serializedConfig: SerializedConfig = {
@@ -301,6 +326,17 @@ export async function startUIServer(
     });
   }
 
+  /** Deep-clone a discovered tree node, prefixing every id so the same file
+   * appearing under multiple projects gets independent expansion / status
+   * state on the client. */
+  function cloneNodeWithIdPrefix(node: TestTreeNode, prefix: string): TestTreeNode {
+    return {
+      ...node,
+      id: `${prefix}${node.id}`,
+      children: node.children?.map((c) => cloneNodeWithIdPrefix(c, prefix)),
+    };
+  }
+
   async function discoverAllFiles(): Promise<void> {
     // Discover all files first
     const fileNodes = new Map<string, TestTreeNode>();
@@ -315,9 +351,13 @@ export async function startUIServer(
     if (hasRealProjects && ctx.projects) {
       const trees: TestTreeNode[] = [];
       for (const project of ctx.projects) {
+        const idPrefix = `project::${project.name}::`;
         const projectFiles = project.testFiles
           .map((f) => fileNodes.get(f))
-          .filter((n): n is TestTreeNode => n != null);
+          .filter((n): n is TestTreeNode => n != null)
+          // Deep-clone so each project owns its own nodes (unique ids,
+          // independent expansion state, scoped status updates).
+          .map((n) => cloneNodeWithIdPrefix(n, idPrefix));
 
         if (projectFiles.length === 0) continue;
 
@@ -343,7 +383,16 @@ export async function startUIServer(
 
   // ─── Test Execution (shared) ───
 
-  function updateTestStatus(fullName: string, filePath: string, status: TestTreeNode['status'], duration?: number, error?: string, tracePath?: string, workerId?: number): void {
+  function updateTestStatus(
+    fullName: string,
+    filePath: string,
+    status: TestTreeNode['status'],
+    duration?: number,
+    error?: string,
+    tracePath?: string,
+    workerId?: number,
+    projectName?: string,
+  ): void {
     if (status === 'failed') failedFiles.add(filePath);
     broadcast({
       type: 'test-status',
@@ -354,7 +403,15 @@ export async function startUIServer(
       error,
       tracePath,
       workerId,
+      projectName,
     });
+  }
+
+  /** Broadcast a file-status update, optionally scoped to a project so the
+   * client only updates that project's copy of the file node (multi-device
+   * configs share the same file across projects). */
+  function broadcastFileStatus(filePath: string, status: 'running' | 'done', projectName?: string): void {
+    broadcast({ type: 'file-status', filePath, status, projectName });
   }
 
   /**
@@ -365,7 +422,7 @@ export async function startUIServer(
     function markChildren(nodes: TestTreeNode[]): void {
       for (const node of nodes) {
         if (node.type === 'test') {
-          updateTestStatus(node.fullName, node.filePath, 'skipped');
+          updateTestStatus(node.fullName, node.filePath, 'skipped', undefined, undefined, undefined, undefined, projectName);
         }
         if (node.children) markChildren(node.children);
       }
@@ -383,16 +440,16 @@ export async function startUIServer(
   // ─── Single-worker execution (existing — forks ui-run.ts per file)
   // ═══════════════════════════════════════════════════════════════════
 
-  async function runFileSingle(filePath: string, testFilter?: string): Promise<void> {
+  async function runFileSingle(filePath: string, testFilter?: string, explicitProjectName?: string): Promise<void> {
     if (isRunning) return;
 
     isRunning = true;
-    const project = fileToProject.get(filePath);
+    const project = projectForFile(filePath, explicitProjectName);
     const useOptions = project?.use as RunFileUseOptions | undefined;
     const projectName = project && project.name !== 'default' ? project.name : undefined;
 
-    broadcast({ type: 'file-status', filePath, status: 'running' });
-    broadcast({ type: 'run-start', fileCount: 1, filePath, testFilter });
+    broadcastFileStatus(filePath, 'running', projectName);
+    broadcast({ type: 'run-start', fileCount: 1, filePath, testFilter, projectName });
     screenPollActive = true;
 
     try {
@@ -403,7 +460,7 @@ export async function startUIServer(
       const skipped = results.filter((r) => r.status === 'skipped').length;
       const duration = suite.durationMs;
 
-      broadcast({ type: 'file-status', filePath, status: 'done' });
+      broadcastFileStatus(filePath, 'done', projectName);
       broadcast({
         type: 'run-end',
         status: failed > 0 ? 'failed' : 'passed',
@@ -415,7 +472,7 @@ export async function startUIServer(
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       broadcast({ type: 'error', message: `Failed to run ${path.basename(filePath)}: ${msg}` });
-      broadcast({ type: 'file-status', filePath, status: 'done' });
+      broadcastFileStatus(filePath, 'done', projectName);
       broadcast({ type: 'run-end', status: 'failed', duration: 0, passed: 0, failed: 1, skipped: 0 });
     } finally {
       isRunning = false;
@@ -463,7 +520,7 @@ export async function startUIServer(
           const useOptions = project?.use as RunFileUseOptions | undefined;
           const projectName = project && project.name !== 'default' ? project.name : undefined;
 
-          broadcast({ type: 'file-status', filePath: file, status: 'running' });
+          broadcastFileStatus(file, 'running', projectName);
 
           try {
             const { results, suite } = await runFileInChild(file, useOptions, projectName);
@@ -477,7 +534,7 @@ export async function startUIServer(
             totalFailed++;
           }
 
-          broadcast({ type: 'file-status', filePath: file, status: 'done' });
+          broadcastFileStatus(file, 'done', projectName);
         }
       }
 
@@ -503,7 +560,7 @@ export async function startUIServer(
     const projectName = project.name !== 'default' ? project.name : undefined;
 
     for (const file of project.testFiles) {
-      broadcast({ type: 'file-status', filePath: file, status: 'running' });
+      broadcastFileStatus(file, 'running', projectName);
 
       try {
         const { results, suite } = await runFileInChild(file, useOptions, projectName);
@@ -519,7 +576,7 @@ export async function startUIServer(
         anyFailed = true;
       }
 
-      broadcast({ type: 'file-status', filePath: file, status: 'done' });
+      broadcastFileStatus(file, 'done', projectName);
     }
 
     return { passed, failed, skipped, duration, anyFailed };
@@ -674,6 +731,7 @@ export async function startUIServer(
               type: 'test-start',
               fullName: response.fullName,
               filePath: response.filePath,
+              projectName,
             });
             break;
           }
@@ -689,6 +747,8 @@ export async function startUIServer(
               result.durationMs,
               result.error?.message,
               result.tracePath,
+              undefined,
+              projectName,
             );
             break;
           }
@@ -696,6 +756,7 @@ export async function startUIServer(
             broadcast({
               type: 'trace-event',
               testFullName: currentTestFullName,
+              projectName,
               event: response.event,
               screenshotBefore: response.screenshotBefore,
               screenshotAfter: response.screenshotAfter,
@@ -716,6 +777,7 @@ export async function startUIServer(
             broadcast({
               type: 'network',
               testFullName: currentTestFullName,
+              projectName,
               entries: response.entries,
             });
             break;
@@ -766,12 +828,12 @@ export async function startUIServer(
     });
   }
 
-  async function runFileWithDepsSingle(filePath: string, testFilter?: string): Promise<void> {
+  async function runFileWithDepsSingle(filePath: string, testFilter?: string, explicitProjectName?: string): Promise<void> {
     if (isRunning) return;
 
-    const project = fileToProject.get(filePath);
+    const project = projectForFile(filePath, explicitProjectName);
     if (!project || project.dependencies.length === 0 || !ctx.projects || !ctx.projectWaves) {
-      return runFileSingle(filePath, testFilter);
+      return runFileSingle(filePath, testFilter, explicitProjectName);
     }
 
     isRunning = true;
@@ -785,7 +847,13 @@ export async function startUIServer(
       .filter((wave) => wave.length > 0);
 
     const depFileCount = depWaves.reduce((n, w) => n + w.reduce((m, p) => m + p.testFiles.length, 0), 0);
-    broadcast({ type: 'run-start', fileCount: depFileCount + 1, filePath, testFilter });
+    broadcast({
+      type: 'run-start',
+      fileCount: depFileCount + 1,
+      filePath,
+      testFilter,
+      projectName: project.name !== 'default' ? project.name : undefined,
+    });
 
     let totalPassed = 0, totalFailed = 0, totalSkipped = 0, totalDuration = 0;
     const failedProjects = new Set<string>();
@@ -810,15 +878,15 @@ export async function startUIServer(
         }
       }
 
+      const pName = project.name !== 'default' ? project.name : undefined;
       const blockedBy = project.dependencies.find((d) => failedProjects.has(d));
       if (blockedBy) {
         broadcast({ type: 'error', message: `Skipping "${path.basename(filePath)}" — dependency "${blockedBy}" failed` });
-        broadcast({ type: 'file-status', filePath, status: 'done' });
+        broadcastFileStatus(filePath, 'done', pName);
       } else {
         const useOptions = project.use as RunFileUseOptions | undefined;
-        const pName = project.name !== 'default' ? project.name : undefined;
 
-        broadcast({ type: 'file-status', filePath, status: 'running' });
+        broadcastFileStatus(filePath, 'running', pName);
 
         try {
           const { results, suite } = await runFileInChild(filePath, useOptions, pName, testFilter);
@@ -832,7 +900,7 @@ export async function startUIServer(
           totalFailed++;
         }
 
-        broadcast({ type: 'file-status', filePath, status: 'done' });
+        broadcastFileStatus(filePath, 'done', pName);
       }
 
       broadcast({
@@ -945,10 +1013,17 @@ export async function startUIServer(
     // iOS: UUID → simulator name (e.g. "iPhone 16 #1")
     // Android: serial → AVD name (e.g. "Pixel_7_Pro #1")
     {
+      // Cache simulator list — listSimulators() forks `xcrun simctl` which is
+      // slow; we only need it once per init.
+      let simulatorsCache: ReturnType<typeof listSimulators> | undefined;
       const resolveSerialToName = (serial: string): string => {
-        if (ctx.config.platform === 'ios') {
-          const simulators = listSimulators();
-          return simulators.find((s) => s.udid === serial)?.name ?? serial;
+        // In multi-bucket mode the root config's platform may not match this
+        // worker's actual device, so prefer the per-worker config when set.
+        const workerPlatform =
+          ctx.configByDevice?.get(serial)?.platform ?? ctx.config.platform;
+        if (workerPlatform === 'ios') {
+          if (!simulatorsCache) simulatorsCache = listSimulators();
+          return simulatorsCache.find((s) => s.udid === serial)?.name ?? serial;
         }
         if (serial.startsWith('emulator-')) {
           return getRunningAvdName(serial) ?? serial;
@@ -1002,16 +1077,17 @@ export async function startUIServer(
       await new Promise((r) => setTimeout(r, 500));
     }
 
-    // Remove stale ADB port forwards on the agent port. A previous
-    // Android instance may have set up `adb forward tcp:<agentPort>`
-    // which hijacks traffic meant for the iOS XCUITest agent, causing
-    // the iOS daemon to receive Android screenshots instead.
+    // Remove stale ADB port forwards whose HOST side is this worker's agent
+    // port. A previous Android instance may have set up `adb forward
+    // tcp:<agentPort>` which hijacks traffic meant for the iOS XCUITest
+    // agent. Match `local === tcp:<agentPort>` exactly so we don't try to
+    // remove forwards whose remote side merely happens to be the same port
+    // (which would print "listener 'tcp:<port>' not found").
     try {
       const fwdList = execFileSync('adb', ['forward', '--list'], { encoding: 'utf-8' }).trim();
       for (const line of fwdList.split('\n')) {
-        if (!line.includes(`tcp:${agentPort}`)) continue;
-        const serial = line.split(' ')[0];
-        if (!serial) continue;
+        const [serial, local] = line.split(/\s+/);
+        if (!serial || local !== `tcp:${agentPort}`) continue;
         try {
           execFileSync('adb', ['-s', serial, 'forward', '--remove', `tcp:${agentPort}`]);
         } catch { /* already gone */ }
@@ -1020,11 +1096,16 @@ export async function startUIServer(
       // ADB not available or no forwards — safe to ignore
     }
 
+    // Resolve per-worker config (multi-bucket) or fall back to the
+    // server-wide serializedConfig built from ctx.config.
+    const workerConfig = ctx.configByDevice?.get(deviceSerial) ?? serializedConfig;
+    const workerBucketSig = ctx.bucketByDevice?.get(deviceSerial);
+
     // Spawn daemon
     const daemonProcess = spawn(
       daemonBin,
       ['--port', String(daemonPort), '--agent-port', String(agentPort),
-        ...(ctx.config.platform ? ['--platform', ctx.config.platform] : [])],
+        ...(workerConfig.platform ? ['--platform', workerConfig.platform] : [])],
       { stdio: 'ignore' },
     );
     daemonProcess.on('error', () => { /* handled by waitForReady */ });
@@ -1067,6 +1148,7 @@ export async function startUIServer(
       passed: 0,
       failed: 0,
       skipped: 0,
+      bucketSignature: workerBucketSig,
     };
 
     // Wait for worker to be ready
@@ -1109,7 +1191,7 @@ export async function startUIServer(
         workerId: id,
         deviceSerial,
         daemonPort,
-        config: serializedConfig,
+        config: workerConfig,
         screenshotDir: ctx.screenshotDir,
       };
       child.send(initMsg);
@@ -1182,7 +1264,22 @@ export async function startUIServer(
       function dispatchNext(worker: UIWorkerHandle): void {
         if (worker.retired || parallelRunAborted) return;
 
-        const next = fileQueue.shift();
+        // Multi-bucket: take the first file in the queue whose project's
+        // bucket matches this worker. Files for other buckets are skipped
+        // and remain in the queue for sibling workers to claim.
+        let next: TaggedFile | undefined;
+        if (worker.bucketSignature && ctx.bucketByProject) {
+          const matchIdx = fileQueue.findIndex((f) => {
+            if (!f.projectName) return true;
+            const sig = ctx.bucketByProject!.get(f.projectName);
+            return !sig || sig === worker.bucketSignature;
+          });
+          if (matchIdx >= 0) {
+            next = fileQueue.splice(matchIdx, 1)[0];
+          }
+        } else {
+          next = fileQueue.shift();
+        }
         if (!next) {
           worker.busy = false;
           worker.currentFile = undefined;
@@ -1196,7 +1293,7 @@ export async function startUIServer(
         worker.currentFile = next;
         worker.currentTest = undefined;
         broadcastWorkerStatus(worker, 'running');
-        broadcast({ type: 'file-status', filePath: next.filePath, status: 'running' });
+        broadcastFileStatus(next.filePath, 'running', next.projectName);
 
         const msg: UIWorkerMessage = {
           type: 'run-file',
@@ -1247,6 +1344,7 @@ export async function startUIServer(
                 fullName: msg.fullName,
                 filePath: msg.filePath,
                 workerId: worker.id,
+                projectName: worker.currentFile?.projectName,
               });
               break;
             }
@@ -1264,6 +1362,7 @@ export async function startUIServer(
                 result.error?.message,
                 result.tracePath,
                 worker.id,
+                worker.currentFile?.projectName,
               );
               if (result.status === 'passed') worker.passed++;
               else if (result.status === 'failed') worker.failed++;
@@ -1274,6 +1373,7 @@ export async function startUIServer(
               broadcast({
                 type: 'trace-event',
                 testFullName: worker.currentTest ?? '',
+                projectName: worker.currentFile?.projectName,
                 event: msg.event,
                 screenshotBefore: msg.screenshotBefore,
                 screenshotAfter: msg.screenshotAfter,
@@ -1287,7 +1387,7 @@ export async function startUIServer(
               break;
             }
             case 'network': {
-              broadcast({ type: 'network', testFullName: worker.currentTest ?? '', entries: msg.entries });
+              broadcast({ type: 'network', testFullName: worker.currentTest ?? '', projectName: worker.currentFile?.projectName, entries: msg.entries });
               break;
             }
             case 'file-done': {
@@ -1306,7 +1406,7 @@ export async function startUIServer(
                 }
               }
 
-              broadcast({ type: 'file-status', filePath: msg.filePath, status: 'done' });
+              broadcastFileStatus(msg.filePath, 'done', worker.currentFile?.projectName);
               worker.currentFile = undefined;
               worker.currentTest = undefined;
 
@@ -1454,19 +1554,20 @@ export async function startUIServer(
     }
   }
 
-  async function runFileParallel(filePath: string, testFilter?: string): Promise<void> {
+  async function runFileParallel(filePath: string, testFilter?: string, explicitProjectName?: string): Promise<void> {
     if (isRunning) return;
     isRunning = true;
     screenPollActive = true;
     parallelRunAborted = false;
 
-    broadcast({ type: 'run-start', fileCount: 1, filePath, testFilter });
+    const project = projectForFile(filePath, explicitProjectName);
+    const projectName = project && project.name !== 'default' ? project.name : undefined;
+    broadcast({ type: 'run-start', fileCount: 1, filePath, testFilter, projectName });
 
-    const project = fileToProject.get(filePath);
     const file: TaggedFile = {
       filePath,
       projectUseOptions: project?.use as RunFileUseOptions | undefined,
-      projectName: project && project.name !== 'default' ? project.name : undefined,
+      projectName,
       testFilter,
     };
 
@@ -1484,7 +1585,7 @@ export async function startUIServer(
     } catch (err) {
       const errMsg = err instanceof Error ? err.message : String(err);
       broadcast({ type: 'error', message: `Failed to run ${path.basename(filePath)}: ${errMsg}` });
-      broadcast({ type: 'file-status', filePath, status: 'done' });
+      broadcastFileStatus(filePath, 'done', file.projectName);
       broadcast({ type: 'run-end', status: 'failed', duration: 0, passed: 0, failed: 1, skipped: 0 });
     } finally {
       isRunning = false;
@@ -1563,12 +1664,12 @@ export async function startUIServer(
 
   const useParallel = () => multiWorker && workersInitialized && uiWorkers.length > 1;
 
-  async function runFile(filePath: string, testFilter?: string): Promise<void> {
+  async function runFile(filePath: string, testFilter?: string, explicitProjectName?: string): Promise<void> {
     if (useParallel()) {
       await ensureWorkersReady();
-      return runFileParallel(filePath, testFilter);
+      return runFileParallel(filePath, testFilter, explicitProjectName);
     }
-    return runFileSingle(filePath, testFilter);
+    return runFileSingle(filePath, testFilter, explicitProjectName);
   }
 
   async function runAllFiles(): Promise<void> {
@@ -1658,12 +1759,12 @@ export async function startUIServer(
     return runProjectSingle(projectName);
   }
 
-  async function runFileWithDeps(filePath: string, testFilter?: string): Promise<void> {
+  async function runFileWithDeps(filePath: string, testFilter?: string, explicitProjectName?: string): Promise<void> {
     if (useParallel()) {
       // In parallel mode, run deps as waves then target file
-      const project = fileToProject.get(filePath);
+      const project = projectForFile(filePath, explicitProjectName);
       if (!project || project.dependencies.length === 0 || !ctx.projects || !ctx.projectWaves) {
-        return runFile(filePath, testFilter);
+        return runFile(filePath, testFilter, explicitProjectName);
       }
 
       if (isRunning) return;
@@ -1680,7 +1781,13 @@ export async function startUIServer(
         .filter((wave) => wave.length > 0);
 
       const depFileCount = depWaves.reduce((n, w) => n + w.reduce((m, p) => m + p.testFiles.length, 0), 0);
-      broadcast({ type: 'run-start', fileCount: depFileCount + 1, filePath, testFilter });
+      broadcast({
+        type: 'run-start',
+        fileCount: depFileCount + 1,
+        filePath,
+        testFilter,
+        projectName: project.name !== 'default' ? project.name : undefined,
+      });
 
       let totalPassed = 0, totalFailed = 0, totalSkipped = 0, totalDuration = 0;
       const failedProjects = new Set<string>();
@@ -1718,9 +1825,10 @@ export async function startUIServer(
         }
 
         const blockedBy = project.dependencies.find((d) => failedProjects.has(d));
+        const projectNameForBroadcast = project.name !== 'default' ? project.name : undefined;
         if (blockedBy) {
           broadcast({ type: 'error', message: `Skipping "${path.basename(filePath)}" — dependency "${blockedBy}" failed` });
-          broadcast({ type: 'file-status', filePath, status: 'done' });
+          broadcastFileStatus(filePath, 'done', projectNameForBroadcast);
         } else {
           const targetFile: TaggedFile = {
             filePath,
@@ -1749,7 +1857,7 @@ export async function startUIServer(
       }
       return;
     }
-    return runFileWithDepsSingle(filePath, testFilter);
+    return runFileWithDepsSingle(filePath, testFilter, explicitProjectName);
   }
 
   // ─── Screen Polling ───
@@ -1850,13 +1958,13 @@ export async function startUIServer(
     switch (msg.type) {
       case 'run-test':
         if (!ctx.testFiles.includes(msg.filePath)) break;
-        if (msg.runDeps) runFileWithDeps(msg.filePath, msg.fullName).catch(broadcastError);
-        else runFile(msg.filePath, msg.fullName).catch(broadcastError);
+        if (msg.runDeps) runFileWithDeps(msg.filePath, msg.fullName, msg.projectName).catch(broadcastError);
+        else runFile(msg.filePath, msg.fullName, msg.projectName).catch(broadcastError);
         break;
       case 'run-file':
         if (!ctx.testFiles.includes(msg.filePath)) break;
-        if (msg.runDeps) runFileWithDeps(msg.filePath).catch(broadcastError);
-        else runFile(msg.filePath).catch(broadcastError);
+        if (msg.runDeps) runFileWithDeps(msg.filePath, undefined, msg.projectName).catch(broadcastError);
+        else runFile(msg.filePath, undefined, msg.projectName).catch(broadcastError);
         break;
       case 'run-all':
         runAllFiles().catch(broadcastError);

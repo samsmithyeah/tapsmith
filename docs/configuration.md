@@ -307,6 +307,94 @@ export default defineConfig({
 });
 ```
 
+### Projects with Per-Device Targeting
+
+Mirroring Playwright's `projects` concept, you can define named groups of test
+files that each target their own device. This is the canonical way to run the
+same suite against Android and iOS in a single `pilot test` invocation.
+
+```typescript
+import { defineConfig } from "pilot";
+
+export default defineConfig({
+  // Top-level fields are inherited by every project as defaults.
+  package: "com.example.app",
+  timeout: 30_000,
+
+  projects: [
+    {
+      name: "Pixel 6",
+      use: {
+        platform: "android",
+        avd: "Pixel_6_API_34",
+        apk: "./android/app-debug.apk",
+        launchEmulators: true,
+      },
+    },
+    {
+      name: "iPhone 16",
+      use: {
+        platform: "ios",
+        simulator: "iPhone 16",
+        app: "./ios/MyApp.app",
+        iosXctestrun: "./ios-agent/PilotAgent.xctestrun",
+      },
+    },
+  ],
+});
+```
+
+Each project provisions its own device, daemon, and agent. There are two ways
+to control parallelism:
+
+**Global budget** (Playwright-style): the top-level `workers` field is split
+across projects proportionally to file count, with at least 1 per project.
+
+```typescript
+export default defineConfig({
+  workers: 4,
+  projects: [
+    { name: "Pixel 6", use: { /* ... */ } },
+    { name: "iPhone 16", use: { /* ... */ } },
+  ],
+});
+```
+
+**Explicit per-project workers** (recommended for multi-device configs):
+each project sets its own `workers` count. These are **additive** — they do
+not consume from the global budget — so you can mix explicit and unset
+projects in the same config.
+
+```typescript
+export default defineConfig({
+  projects: [
+    { name: "Pixel 6",   workers: 2, use: { /* ... */ } },
+    { name: "iPhone 16", workers: 1, use: { /* ... */ } },
+  ],
+});
+```
+
+With `pilot test`, the Android project runs on 2 devices and the iOS project
+runs on 1 — concurrently. The total worker count (3) is computed automatically.
+
+If the total comes out to 1 (e.g. global `workers: 1` and no per-project
+overrides), Pilot runs the projects sequentially, tearing down and
+re-provisioning the device between each — useful when you only have one
+machine and want to exercise both platforms in CI.
+
+The same configuration also works with `--ui` and `--watch`. UI mode shows
+each project's tests grouped under its name, and routes file execution to
+the matching device. Watch mode re-runs only the affected project's files
+on its own device when you edit a test.
+
+Inside a project, the `use` field accepts the same device-shaping fields
+as the top-level config (`platform`, `avd`, `simulator`, `app`, `apk`,
+`package`, `iosXctestrun`, `launchEmulators`, etc.) plus the existing
+`timeout`, `screenshot`, `retries`, `trace`, and `appState` overrides.
+
+> **Note:** A single project must not mix Android (`avd`/`apk`) and iOS
+> (`simulator`/`app`) fields. Pilot validates this at startup.
+
 ### Sharded Runs
 
 Use sharding when you want to split a suite across multiple CI jobs:

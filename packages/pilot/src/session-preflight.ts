@@ -110,6 +110,15 @@ export async function launchConfiguredApp(
   // state use test.use({ appState }) which restores after this reset.
   await ctx.device.clearAppData(ctx.config.package);
 
+  // Restart the agent BEFORE launching the app. The terminate + clearAppData
+  // sequence above kills the agent process. If we launch the app first and
+  // then let ensureSessionReady discover the dead agent, its recoverSession
+  // path does a redundant terminateApp + launchApp cycle that can restore
+  // the Activity's saved instance state Bundle (e.g. React Navigation route).
+  await ctx.device.startAgent(
+    ctx.config.package, ctx.agentApkPath, ctx.agentTestApkPath, ctx.iosXctestrunPath,
+  );
+
   await ctx.device.launchApp(ctx.config.package, launchOptions(ctx.config));
 
   await ensureSessionReady(ctx, phase);

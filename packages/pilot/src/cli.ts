@@ -246,15 +246,17 @@ async function ensureDaemonRunning(address: string, daemonBin?: string, platform
     // No daemon running, nothing to kill
   }
 
-  // Remove stale ADB port forwards on the default agent port (18700).
-  // A previous Android instance may have set up a forward that hijacks
-  // traffic meant for the iOS XCUITest agent.
+  // Remove stale ADB port forwards whose HOST side is the default agent port
+  // (18700). A previous Android instance may have left a forward that hijacks
+  // traffic meant for the iOS XCUITest agent. Each line is "<serial> <local>
+  // <remote>" — match `local === tcp:18700` exactly so we don't try to remove
+  // forwards whose remote side happens to be 18700 but whose host port is not
+  // (which would print "listener 'tcp:18700' not found").
   try {
     const fwdList = execFileSync('adb', ['forward', '--list'], { encoding: 'utf-8' }).trim();
     for (const line of fwdList.split('\n')) {
-      if (!line.includes('tcp:18700')) continue;
-      const serial = line.split(' ')[0];
-      if (!serial) continue;
+      const [serial, local] = line.split(/\s+/);
+      if (!serial || local !== 'tcp:18700') continue;
       try {
         execFileSync('adb', ['-s', serial, 'forward', '--remove', 'tcp:18700']);
       } catch { /* already gone */ }
@@ -293,6 +295,219 @@ async function ensureDaemonRunning(address: string, daemonBin?: string, platform
 
   console.log(dim(`Connected to Pilot daemon v${(await newClient.ping()).version}`));
   return newClient;
+}
+
+// ─── Sequential per-project device setup ───
+
+interface SequentialDeviceState {
+  effectiveConfig: PilotConfig
+  client: PilotGrpcClient
+  device: Device
+  deviceSerial: string
+  launchedEmulators: LaunchedEmulator[]
+  resolvedAgentApk?: string
+  resolvedAgentTestApk?: string
+  resolvedIosXctestrun?: string
+  signature: string
+}
+
+/**
+ * Provision a device, start the daemon + agent, install + launch the app
+ * for a given effective config. Used by sequential mode to set up the
+ * initial device and to switch devices between projects whose
+ * `deviceSignature` differs.
+ */
+async function setupSequentialDevice(
+  cfg: PilotConfig,
+  forceInstall: boolean,
+  signature: string,
+): Promise<SequentialDeviceState> {
+  const target = await ensureSequentialTargetDevice(cfg);
+  const launchedEmulators = target.launched;
+
+  if (!target.selectedSerial) {
+    throw new Error(
+      'No online devices found. Connect a device, start an emulator, or set `launchEmulators: true` with `avd` in your config.',
+    );
+  }
+
+  cfg.device = target.selectedSerial;
+
+  // Pre-flight: verify device is responsive before doing anything slow (Android only)
+  if (cfg.platform !== 'ios') {
+    await checkDeviceHealth(cfg.device);
+  }
+
+  const client = await ensureDaemonRunning(cfg.daemonAddress, cfg.daemonBin, cfg.platform);
+  const device = new Device(client, cfg);
+
+  try {
+    await device.setDevice(cfg.device);
+    console.log(dim(`Using device: ${cfg.device}`));
+  } catch (err) {
+    throw new Error(`Failed to set device: ${err}`);
+  }
+
+  const deviceJustLaunched = launchedEmulators.some((e) => e.serial === cfg.device);
+
+  if (cfg.platform === 'ios') {
+    if (cfg.app && cfg.device) {
+      try {
+        const { installApp, isAppInstalled } = await import('./ios-simulator.js');
+        const resolvedApp = path.resolve(cfg.rootDir, cfg.app);
+        const alreadyInstalled = !deviceJustLaunched
+          && cfg.package
+          && isAppInstalled(cfg.device, cfg.package);
+
+        if (alreadyInstalled && !forceInstall) {
+          console.log(dim(`App ${cfg.package} already installed, skipping iOS app install. Use --force-install to reinstall.`));
+        } else {
+          if (alreadyInstalled) {
+            console.log(dim(`Reinstalling iOS app: ${path.basename(resolvedApp)}`));
+          }
+          installApp(cfg.device, resolvedApp);
+          console.log(dim(`Installed ${path.basename(resolvedApp)} on iOS simulator.`));
+        }
+      } catch (err) {
+        throw new Error(`Failed to install iOS app: ${err}`);
+      }
+    }
+    if (cfg.package && cfg.device) {
+      try {
+        execFileSync('xcrun', ['simctl', 'launch', cfg.device, cfg.package]);
+        console.log(dim(`Launched ${cfg.package} on iOS simulator.`));
+      } catch {
+        // App may already be running
+      }
+    }
+  } else {
+    try {
+      await device.wake();
+      await device.unlock();
+      console.log(dim('Device screen unlocked.'));
+    } catch {
+      // Non-fatal — device might already be awake/unlocked
+    }
+
+    if (cfg.apk) {
+      const isInstalled = !deviceJustLaunched
+        && cfg.package
+        && cfg.device
+        && isPackageInstalled(cfg.device, cfg.package);
+
+      if (isInstalled && !forceInstall) {
+        console.log(dim(`App ${cfg.package} already installed, skipping APK install. Use --force-install to reinstall.`));
+      } else {
+        const resolvedApk = path.resolve(cfg.rootDir, cfg.apk);
+        try {
+          if (isInstalled) {
+            console.log(dim(`Reinstalling app APK: ${path.basename(resolvedApk)}`));
+          }
+          await device.installApk(resolvedApk);
+          if (cfg.package && cfg.device) {
+            await waitForPackageIndexed(cfg.device, cfg.package);
+          }
+          console.log(dim(`Installed app APK: ${path.basename(resolvedApk)}`));
+        } catch (err) {
+          throw new Error(`Failed to install app APK: ${err}`);
+        }
+      }
+    }
+  }
+
+  const traceConfig = resolveTraceConfig(cfg.trace);
+  if (cfg.platform === 'ios' && traceConfig.mode !== 'off' && traceConfig.network) {
+    const { ensureSudoAccess } = await import('./macos-proxy.js');
+    ensureSudoAccess();
+  }
+  if (cfg.platform !== 'ios' && traceConfig.mode !== 'off' && traceConfig.network && cfg.device) {
+    const restarted = ensureAdbRoot(cfg.device);
+    if (restarted) {
+      console.log(dim('Enabled adb root for network capture.'));
+    }
+  }
+
+  const resolvedAgentApk = cfg.agentApk
+    ? path.resolve(cfg.rootDir, cfg.agentApk)
+    : undefined;
+  const resolvedAgentTestApk = cfg.agentTestApk
+    ? path.resolve(cfg.rootDir, cfg.agentTestApk)
+    : undefined;
+  const resolvedIosXctestrun = cfg.iosXctestrun
+    ? path.resolve(cfg.rootDir, cfg.iosXctestrun)
+    : undefined;
+
+  try {
+    if (cfg.platform === 'ios') {
+      console.log(dim(`Starting iOS agent (xctestrun: ${resolvedIosXctestrun ? 'set' : 'NOT SET'})`));
+    }
+    await device.startAgent(
+      cfg.package ?? '',
+      resolvedAgentApk,
+      resolvedAgentTestApk,
+      resolvedIosXctestrun,
+    );
+    if (cfg.platform !== 'ios') {
+      await ensureSessionReady({
+        label: `Device ${cfg.device}`,
+        config: cfg,
+        device,
+        client,
+        agentApkPath: resolvedAgentApk,
+        agentTestApkPath: resolvedAgentTestApk,
+        iosXctestrunPath: resolvedIosXctestrun,
+        deviceSerial: cfg.device,
+      }, 'startup');
+    }
+    console.log(dim('Agent connected.'));
+  } catch (err) {
+    throw new Error(`Failed to start agent: ${err}`);
+  }
+
+  if (cfg.package) {
+    try {
+      await launchConfiguredApp({
+        label: `Device ${cfg.device}`,
+        config: cfg,
+        device,
+        client,
+        agentApkPath: resolvedAgentApk,
+        agentTestApkPath: resolvedAgentTestApk,
+        iosXctestrunPath: resolvedIosXctestrun,
+        deviceSerial: cfg.device,
+      }, 'startup');
+      console.log(dim(`Launched ${cfg.package}`));
+    } catch (err) {
+      throw new Error(`Failed to launch app: ${err}`);
+    }
+  }
+
+  return {
+    effectiveConfig: cfg,
+    client,
+    device,
+    deviceSerial: cfg.device,
+    launchedEmulators,
+    resolvedAgentApk,
+    resolvedAgentTestApk,
+    resolvedIosXctestrun,
+    signature,
+  };
+}
+
+/**
+ * Tear down a sequential device state when switching projects to a
+ * different device. Closes the gRPC client and Device, kills the
+ * spawned daemon process, and preserves any launched emulators for reuse.
+ */
+function teardownSequentialDevice(state: SequentialDeviceState): void {
+  try { state.device.close(); } catch { /* already closed */ }
+  try { state.client.close(); } catch { /* already closed */ }
+  if (spawnedDaemonProcess) {
+    try { spawnedDaemonProcess.kill(); } catch { /* already gone */ }
+    spawnedDaemonProcess = undefined;
+  }
+  preserveEmulatorsForReuse(state.launchedEmulators);
 }
 
 // ─── Test file discovery ───
@@ -638,6 +853,182 @@ async function provisionMultiWorkerDevices(
   return { deviceSerials: serials, launched };
 }
 
+interface PerProjectProvisionResult {
+  deviceSerials: string[]
+  configByDevice: Map<string, import('./worker-protocol.js').SerializedConfig>
+  bucketByDevice: Map<string, string>
+  bucketByProject: Map<string, string>
+  launched: LaunchedEmulator[]
+}
+
+/**
+ * Build a SerializedConfig from a PilotConfig (a per-bucket effective config).
+ */
+function buildSerializedConfig(cfg: PilotConfig): import('./worker-protocol.js').SerializedConfig {
+  return {
+    timeout: cfg.timeout,
+    retries: cfg.retries,
+    screenshot: cfg.screenshot,
+    rootDir: cfg.rootDir,
+    outputDir: cfg.outputDir,
+    apk: cfg.apk,
+    activity: cfg.activity,
+    package: cfg.package,
+    agentApk: cfg.agentApk,
+    agentTestApk: cfg.agentTestApk,
+    trace: typeof cfg.trace === 'string' || typeof cfg.trace === 'object'
+      ? cfg.trace
+      : undefined,
+    platform: cfg.platform,
+    app: cfg.app,
+    iosXctestrun: cfg.iosXctestrun,
+    simulator: cfg.simulator,
+    resetAppDeepLink: cfg.resetAppDeepLink,
+    resetAppWaitMs: cfg.resetAppWaitMs,
+  };
+}
+
+/**
+ * Provision devices for a single bucket using its effective config and a
+ * fixed worker count. Returns the device serials successfully provisioned
+ * (may be fewer than requested if hardware constraints prevent it).
+ */
+async function provisionDevicesForBucket(
+  effectiveConfig: PilotConfig,
+  desiredWorkers: number,
+): Promise<{ serials: string[]; launched: LaunchedEmulator[] }> {
+  if (desiredWorkers <= 0) return { serials: [], launched: [] };
+
+  if (effectiveConfig.platform === 'ios') {
+    if (!effectiveConfig.simulator) {
+      throw new Error('iOS bucket has no `simulator` set in its `use:` block.');
+    }
+    const { provisionSimulators, listBootedSimulators, cleanupStaleSimulators } =
+      await import('./ios-simulator.js');
+
+    const stale = cleanupStaleSimulators(effectiveConfig.simulator);
+    const reusableUdids = stale.reusable;
+
+    // Find any already-booted matching simulators (no primary required)
+    const booted = listBootedSimulators().filter(
+      (s) => s.name === effectiveConfig.simulator || s.udid === effectiveConfig.simulator,
+    );
+    const existing = booted.map((s) => s.udid).slice(0, desiredWorkers);
+
+    if (existing.length >= desiredWorkers) {
+      return { serials: existing, launched: [] };
+    }
+
+    const provision = provisionSimulators({
+      simulatorName: effectiveConfig.simulator,
+      workers: desiredWorkers,
+      existingUdids: existing,
+      appPath: effectiveConfig.app
+        ? path.resolve(effectiveConfig.rootDir, effectiveConfig.app)
+        : undefined,
+      reusableUdids,
+    });
+    return { serials: provision.allUdids, launched: [] };
+  }
+
+  // Android
+  const allConnected = listConnectedDeviceSerials();
+  const deviceStrategy = resolveDeviceStrategy(effectiveConfig);
+  const prefiltered = prefilterDevicesForStrategy(
+    allConnected,
+    deviceStrategy,
+    effectiveConfig.avd,
+  );
+  const healthy = filterHealthyDevices(prefiltered.candidateSerials);
+  const selected = selectDevicesForStrategy(
+    healthy.healthySerials,
+    deviceStrategy,
+    effectiveConfig.avd,
+  );
+  let serials = selected.selectedSerials.slice(0, desiredWorkers);
+
+  if (serials.length >= desiredWorkers) {
+    return { serials, launched: [] };
+  }
+
+  if (!effectiveConfig.launchEmulators) {
+    return { serials, launched: [] };
+  }
+
+  const provision = await provisionEmulators({
+    existingSerials: serials,
+    occupiedSerials: allConnected,
+    workers: desiredWorkers,
+    avd: effectiveConfig.avd,
+  });
+  const healthyLaunched = filterHealthyDevices(provision.allSerials);
+  const selectedAfter = selectDevicesForStrategy(
+    healthyLaunched.healthySerials,
+    deviceStrategy,
+    effectiveConfig.avd,
+  );
+  serials = selectedAfter.selectedSerials.slice(0, desiredWorkers);
+  return { serials, launched: provision.launched };
+}
+
+/**
+ * Provision devices per project bucket. Each bucket (set of projects sharing
+ * a deviceSignature) gets its own devices and serialized config. Used by
+ * UI mode and watch mode to support multi-device-target projects.
+ */
+async function provisionPerProjectDevices(
+  rootConfig: PilotConfig,
+  projects: import('./project.js').ResolvedProject[],
+): Promise<PerProjectProvisionResult> {
+  const result: PerProjectProvisionResult = {
+    deviceSerials: [],
+    configByDevice: new Map(),
+    bucketByDevice: new Map(),
+    bucketByProject: new Map(),
+    launched: [],
+  };
+
+  const { allocateBucketWorkers, bucketizeProjects } = await import('./project.js');
+  const bucketEntries = bucketizeProjects(projects);
+  for (const b of bucketEntries) {
+    for (const p of b.projects) {
+      result.bucketByProject.set(p.name, b.signature);
+    }
+  }
+
+  // Allocate workers across buckets
+  const allocation = allocateBucketWorkers(rootConfig.workers, bucketEntries);
+
+  for (const { signature, projects: bucketProjects } of bucketEntries) {
+    const desiredWorkers = allocation.get(signature) ?? 0;
+    if (desiredWorkers === 0) continue;
+
+    const bucketEffective = bucketProjects[0].effectiveConfig;
+    const provisioned = await provisionDevicesForBucket(bucketEffective, desiredWorkers);
+
+    if (provisioned.serials.length === 0) {
+      throw new Error(
+        `Failed to provision any devices for bucket "${signature.split('|').slice(0, 2).join(' ')}".`,
+      );
+    }
+    if (provisioned.serials.length < desiredWorkers) {
+      process.stderr.write(
+        `${YELLOW}Bucket "${bucketProjects.map((p) => p.name).join(',')}" requested ${desiredWorkers} workers but only ${provisioned.serials.length} device(s) could be provisioned.${RESET}\n`,
+      );
+    }
+
+    result.launched.push(...provisioned.launched);
+    const bucketSerialized = buildSerializedConfig(bucketEffective);
+    for (const serial of provisioned.serials) {
+      result.deviceSerials.push(serial);
+      result.configByDevice.set(serial, bucketSerialized);
+      result.bucketByDevice.set(serial, signature);
+    }
+  }
+
+  return result;
+}
+
 function printHelp(): void {
   console.log(`
 ${bold('pilot')} — Mobile app testing framework
@@ -847,8 +1238,15 @@ async function main(): Promise<void> {
     }
   } else {
     // No projects configured — single default project
+    const { deviceSignature: makeDeviceSignature } = await import('./project.js');
     const defaultProject: import('./project.js').ResolvedProject = {
-      name: 'default', testMatch: config.testMatch, testIgnore: [], dependencies: [], testFiles: [],
+      name: 'default',
+      testMatch: config.testMatch,
+      testIgnore: [],
+      dependencies: [],
+      testFiles: [],
+      effectiveConfig: config,
+      deviceSignature: makeDeviceSignature(config),
     };
     defaultProject.testFiles = await discoverTestFiles(config.testMatch, config.rootDir, args.files);
     projects = [defaultProject];
@@ -916,6 +1314,8 @@ async function main(): Promise<void> {
 
   if (args.ui) {
     console.log(`\nLaunching Pilot UI mode...\n`);
+  } else if (args.watch) {
+    console.log(`\nStarting watch mode for ${testFiles.length} test file(s)...\n`);
   } else {
     reporter.onRunStart(config, testFiles.length);
   }
@@ -928,7 +1328,16 @@ async function main(): Promise<void> {
     const maxFilesInAnyWave = Math.max(...projectWaves.map((wave) =>
       wave.reduce((sum, p) => sum + p.testFiles.length, 0),
     ));
-    const effectiveWorkers = Math.min(config.workers, maxFilesInAnyWave);
+
+    // Compute the total worker budget by allocating across buckets. This
+    // honors per-project `workers` overrides — even when the global
+    // `workers` is 1, explicit per-project values can push the total
+    // above 1 and trigger parallel mode.
+    const { allocateBucketWorkers, bucketizeProjects } = await import('./project.js');
+    const allocation = allocateBucketWorkers(config.workers, bucketizeProjects(projects));
+    const totalWorkers = [...allocation.values()].reduce((s, n) => s + n, 0);
+    const effectiveWorkers = Math.min(totalWorkers, maxFilesInAnyWave);
+
     if (effectiveWorkers > 1) {
       // The dispatcher manages its own daemons — one per worker — each with
       // exclusive ADB access to its assigned device. No discovery daemon needed.
@@ -937,7 +1346,7 @@ async function main(): Promise<void> {
         config,
         reporter,
         testFiles,
-        workers: config.workers,
+        workers: totalWorkers,
         projects: hasProjects ? projects : undefined,
         projectWaves: hasProjects ? projectWaves : undefined,
       });
@@ -951,200 +1360,64 @@ async function main(): Promise<void> {
   let launchedEmulators: LaunchedEmulator[] = [];
   let client: PilotGrpcClient | undefined;
   let device: Device | undefined;
+  let currentSequentialState: SequentialDeviceState | undefined;
+  let resolvedAgentApk: string | undefined;
+  let resolvedAgentTestApk: string | undefined;
+  let resolvedIosXctestrun: string | undefined;
   let sequentialExitCode = 1;
   const sequentialStart = Date.now();
 
+  // Detect heterogeneous device-targeting projects. When projects share a
+  // single signature, sequential mode runs unchanged. When they differ,
+  // we tear down + re-provision between projects.
+  const uniqueSignatures = new Set(projects.map((p) => p.deviceSignature));
+  const isMultiBucketSequential = uniqueSignatures.size > 1;
+  // Hint about --workers only when:
+  //   - plain `pilot test` (UI/watch already provision per bucket)
+  //   - the user did not pass --workers explicitly
+  //   - config.workers is 1 (so we'd otherwise tear down + re-provision between buckets)
+  //   - NO project has an explicit `workers:` value (otherwise parallelism is already happening)
+  const anyExplicitWorkers = projects.some((p) => typeof p.workers === 'number' && p.workers > 0);
+  if (
+    isMultiBucketSequential
+    && config.workers === 1
+    && args.workers === undefined
+    && !args.ui
+    && !args.watch
+    && !anyExplicitWorkers
+  ) {
+    process.stderr.write(
+      dim(`Multiple device targets detected (${uniqueSignatures.size}). Tip: pass --workers ${uniqueSignatures.size} to run them in parallel.\n`),
+    );
+  }
+
+  // Pick the first project's effective config as the initial setup target.
+  // For single-bucket runs this is identical to the root config.
+  const initialProject = projects.find((p) => p.testFiles.length > 0) ?? projects[0];
+  const initialEffectiveConfig = initialProject.effectiveConfig;
+
   try {
-    const target = await ensureSequentialTargetDevice(config);
-    launchedEmulators = target.launched;
-
-    if (!target.selectedSerial) {
-      console.error(
-        red(
-          'No online devices found. Connect a device, start an emulator, or set `launchEmulators: true` with `avd` in your config.',
-        ),
-      );
-      sequentialExitCode = 1;
-      return;
-    }
-
-    config.device = target.selectedSerial;
-
-    // Pre-flight: verify device is responsive before doing anything slow (Android only)
-    if (config.platform !== 'ios') {
-      await checkDeviceHealth(config.device);
-    }
-
-    // Connect to daemon
-    client = await ensureDaemonRunning(config.daemonAddress, config.daemonBin, config.platform);
-    device = new Device(client, config);
-
     try {
-      await device.setDevice(config.device);
-      console.log(dim(`Using device: ${config.device}`));
-    } catch (err) {
-      console.error(red(`Failed to set device: ${err}`));
-      sequentialExitCode = 1;
-      return;
-    }
-
-    // The selected device was just launched in this session if it appears in
-    // launchedEmulators. Freshly-launched devices may have a stale snapshot of
-    // the app under test pre-baked in (the package is "installed" but the bytes
-    // are out of date), so force a reinstall regardless of the skip-install
-    // optimization.
-    const deviceJustLaunched = launchedEmulators.some((e) => e.serial === config.device);
-
-    if (config.platform === 'ios') {
-      // iOS: install and launch .app on simulator before starting the agent.
-      // The app must be running BEFORE the XCUITest agent starts so that
-      // XCUITest can establish its accessibility bridge to the target app.
-      if (config.app && config.device) {
-        try {
-          const { installApp, isAppInstalled } = await import('./ios-simulator.js');
-          const resolvedApp = path.resolve(config.rootDir, config.app);
-          const alreadyInstalled = !deviceJustLaunched
-            && config.package
-            && isAppInstalled(config.device, config.package);
-
-          if (alreadyInstalled && !args.forceInstall) {
-            console.log(dim(`App ${config.package} already installed, skipping iOS app install. Use --force-install to reinstall.`));
-          } else {
-            if (alreadyInstalled) {
-              console.log(dim(`Reinstalling iOS app: ${path.basename(resolvedApp)}`));
-            }
-            installApp(config.device, resolvedApp);
-            console.log(dim(`Installed ${path.basename(resolvedApp)} on iOS simulator.`));
-          }
-        } catch (err) {
-          console.error(red(`Failed to install iOS app: ${err}`));
-          sequentialExitCode = 1;
-          return;
-        }
-      }
-      if (config.package && config.device) {
-        try {
-          const { execFileSync } = await import('node:child_process');
-          execFileSync('xcrun', ['simctl', 'launch', config.device, config.package]);
-          console.log(dim(`Launched ${config.package} on iOS simulator.`));
-        } catch {
-          // App may already be running
-        }
-      }
-    } else {
-      // Android: Wake and unlock device screen
-      try {
-        await device.wake();
-        await device.unlock();
-        console.log(dim('Device screen unlocked.'));
-      } catch {
-        // Non-fatal — device might already be awake/unlocked
-      }
-
-      // Install app under test if APK path is configured and not already installed.
-      if (config.apk) {
-        const isInstalled = !deviceJustLaunched
-          && config.package
-          && config.device
-          && isPackageInstalled(config.device, config.package);
-
-        if (isInstalled && !args.forceInstall) {
-          console.log(dim(`App ${config.package} already installed, skipping APK install. Use --force-install to reinstall.`));
-        } else {
-          const resolvedApk = path.resolve(config.rootDir, config.apk);
-          try {
-            if (isInstalled) {
-              console.log(dim(`Reinstalling app APK: ${path.basename(resolvedApk)}`));
-            }
-            await device.installApk(resolvedApk);
-            // Wait for package manager to index the new app
-            if (config.package && config.device) {
-              await waitForPackageIndexed(config.device, config.package);
-            }
-            console.log(dim(`Installed app APK: ${path.basename(resolvedApk)}`));
-          } catch (err) {
-            console.error(red(`Failed to install app APK: ${err}`));
-            sequentialExitCode = 1;
-            return;
-          }
-        }
-      }
-    }
-
-    // Pre-acquire sudo for iOS proxy or adb root for Android BEFORE starting
-    // agent so setup time isn't attributed to the first test.
-    const traceConfig = resolveTraceConfig(config.trace);
-    if (config.platform === 'ios' && traceConfig.mode !== 'off' && traceConfig.network) {
-      const { ensureSudoAccess } = await import('./macos-proxy.js');
-      ensureSudoAccess();
-    }
-    if (config.platform !== 'ios' && traceConfig.mode !== 'off' && traceConfig.network && config.device) {
-      const restarted = ensureAdbRoot(config.device);
-      if (restarted) {
-        console.log(dim('Enabled adb root for network capture.'));
-      }
-    }
-
-    // Start agent (with auto-install if APK paths configured)
-    const resolvedAgentApk = config.agentApk
-      ? path.resolve(config.rootDir, config.agentApk)
-      : undefined;
-    const resolvedAgentTestApk = config.agentTestApk
-      ? path.resolve(config.rootDir, config.agentTestApk)
-      : undefined;
-    const resolvedIosXctestrun = config.iosXctestrun
-      ? path.resolve(config.rootDir, config.iosXctestrun)
-      : undefined;
-    try {
-      if (config.platform === 'ios') {
-        console.log(dim(`Starting iOS agent (xctestrun: ${resolvedIosXctestrun ? 'set' : 'NOT SET'})`));
-      }
-      await device.startAgent(
-        config.package ?? '',
-        resolvedAgentApk,
-        resolvedAgentTestApk,
-        resolvedIosXctestrun,
+      currentSequentialState = await setupSequentialDevice(
+        initialEffectiveConfig,
+        args.forceInstall,
+        initialProject.deviceSignature,
       );
-      if (config.platform !== 'ios') {
-        await ensureSessionReady({
-          label: `Device ${config.device}`,
-          config,
-          device,
-          client,
-          agentApkPath: resolvedAgentApk,
-          agentTestApkPath: resolvedAgentTestApk,
-          iosXctestrunPath: resolvedIosXctestrun,
-          deviceSerial: config.device,
-        }, 'startup');
-      }
-      console.log(dim('Agent connected.'));
     } catch (err) {
-      console.error(red(`Failed to start agent: ${err}`));
+      console.error(red((err as Error).message));
       sequentialExitCode = 1;
       return;
     }
 
-    // Launch the app under test — force-stop first to ensure it starts fresh
-    // on the main activity regardless of any previous state.
-    if (config.package) {
-      try {
-        await launchConfiguredApp({
-          label: `Device ${config.device}`,
-          config,
-          device,
-          client,
-          agentApkPath: resolvedAgentApk,
-          agentTestApkPath: resolvedAgentTestApk,
-          iosXctestrunPath: resolvedIosXctestrun,
-          deviceSerial: config.device,
-        }, 'startup');
-        console.log(dim(`Launched ${config.package}`));
-      } catch (err) {
-        console.error(red(`Failed to launch app: ${err}`));
-        sequentialExitCode = 1;
-        return;
-      }
-    }
+    client = currentSequentialState.client;
+    device = currentSequentialState.device;
+    launchedEmulators = currentSequentialState.launchedEmulators;
+    resolvedAgentApk = currentSequentialState.resolvedAgentApk;
+    resolvedAgentTestApk = currentSequentialState.resolvedAgentTestApk;
+    resolvedIosXctestrun = currentSequentialState.resolvedIosXctestrun;
+    // Mirror the chosen device serial onto the root config so any code path
+    // still reading from `config.device` (UI/watch handoff) sees it.
+    config.device = currentSequentialState.deviceSerial;
 
     // ─── UI mode ───
     // If --ui is set, start the interactive UI server. It keeps the
@@ -1158,9 +1431,27 @@ async function main(): Promise<void> {
           ? path.resolve(config.rootDir, config.outputDir, 'screenshots')
           : undefined;
 
-      const uiProvision = await provisionMultiWorkerDevices(config, 'UI mode', { quiet: !args.tsxReexec });
-      const uiDeviceSerials = uiProvision.deviceSerials;
-      launchedEmulators = [...launchedEmulators, ...uiProvision.launched];
+      let uiDeviceSerials: string[] | undefined;
+      let uiConfigByDevice: Map<string, import('./worker-protocol.js').SerializedConfig> | undefined;
+      let uiBucketByDevice: Map<string, string> | undefined;
+      let uiBucketByProject: Map<string, string> | undefined;
+      let uiWorkersOverride: number | undefined;
+
+      if (isMultiBucketSequential) {
+        // Multi-device-target projects: provision per-bucket devices.
+        const perBucket = await provisionPerProjectDevices(config, projects);
+        uiDeviceSerials = perBucket.deviceSerials;
+        uiConfigByDevice = perBucket.configByDevice;
+        uiBucketByDevice = perBucket.bucketByDevice;
+        uiBucketByProject = perBucket.bucketByProject;
+        uiWorkersOverride = perBucket.deviceSerials.length;
+        launchedEmulators = [...launchedEmulators, ...perBucket.launched];
+      } else {
+        const uiProvision = await provisionMultiWorkerDevices(config, 'UI mode', { quiet: !args.tsxReexec });
+        uiDeviceSerials = uiProvision.deviceSerials;
+        launchedEmulators = [...launchedEmulators, ...uiProvision.launched];
+        if (uiDeviceSerials) uiWorkersOverride = config.workers;
+      }
 
       const uiServer = await startUIServer({
         config,
@@ -1173,8 +1464,11 @@ async function main(): Promise<void> {
         launchedEmulators,
         projects: hasProjects ? projects : undefined,
         projectWaves: hasProjects ? projectWaves : undefined,
-        workers: uiDeviceSerials ? config.workers : undefined,
+        workers: uiWorkersOverride,
         deviceSerials: uiDeviceSerials,
+        configByDevice: uiConfigByDevice,
+        bucketByDevice: uiBucketByDevice,
+        bucketByProject: uiBucketByProject,
       }, {
         port: args.uiPort,
       });
@@ -1204,9 +1498,26 @@ async function main(): Promise<void> {
           ? path.resolve(config.rootDir, config.outputDir, 'screenshots')
           : undefined;
 
-      const watchProvision = await provisionMultiWorkerDevices(config, 'Watch mode', { quiet: !args.tsxReexec });
-      const watchDeviceSerials = watchProvision.deviceSerials;
-      launchedEmulators = [...launchedEmulators, ...watchProvision.launched];
+      let watchDeviceSerials: string[] | undefined;
+      let watchConfigByDevice: Map<string, import('./worker-protocol.js').SerializedConfig> | undefined;
+      let watchBucketByDevice: Map<string, string> | undefined;
+      let watchBucketByProject: Map<string, string> | undefined;
+      let watchWorkersOverride: number | undefined;
+
+      if (isMultiBucketSequential) {
+        const perBucket = await provisionPerProjectDevices(config, projects);
+        watchDeviceSerials = perBucket.deviceSerials;
+        watchConfigByDevice = perBucket.configByDevice;
+        watchBucketByDevice = perBucket.bucketByDevice;
+        watchBucketByProject = perBucket.bucketByProject;
+        watchWorkersOverride = perBucket.deviceSerials.length;
+        launchedEmulators = [...launchedEmulators, ...perBucket.launched];
+      } else {
+        const watchProvision = await provisionMultiWorkerDevices(config, 'Watch mode', { quiet: !args.tsxReexec });
+        watchDeviceSerials = watchProvision.deviceSerials;
+        launchedEmulators = [...launchedEmulators, ...watchProvision.launched];
+        if (watchDeviceSerials) watchWorkersOverride = config.workers;
+      }
 
       await runWatchMode({
         config,
@@ -1219,8 +1530,11 @@ async function main(): Promise<void> {
         launchedEmulators,
         projects: hasProjects ? projects : undefined,
         projectWaves: hasProjects ? projectWaves : undefined,
-        workers: watchDeviceSerials ? config.workers : undefined,
+        workers: watchWorkersOverride,
         deviceSerials: watchDeviceSerials,
+        configByDevice: watchConfigByDevice,
+        bucketByDevice: watchBucketByDevice,
+        bucketByProject: watchBucketByProject,
       });
       // runWatchMode never returns — exits via cleanup()
     }
@@ -1265,24 +1579,62 @@ async function main(): Promise<void> {
 
         let projectFailed = false;
 
+        // ─── Per-project device switching ───
+        // When this project's device signature differs from the currently
+        // bound device, tear down the previous state and provision the
+        // new device before running its files.
+        if (project.testFiles.length > 0 && currentSequentialState
+          && currentSequentialState.signature !== project.deviceSignature) {
+          process.stdout.write(
+            dim(`\nSwitching device for project "${project.name}" (target: ${project.deviceSignature.split('|').slice(0, 2).join(' ')})\n`),
+          );
+          teardownSequentialDevice(currentSequentialState);
+          // Reset emulator tracking — the new state owns its own list
+          launchedEmulators = [];
+          try {
+            currentSequentialState = await setupSequentialDevice(
+              project.effectiveConfig,
+              args.forceInstall,
+              project.deviceSignature,
+            );
+          } catch (err) {
+            console.error(red(`Failed to set up device for project "${project.name}": ${(err as Error).message}`));
+            sequentialExitCode = 1;
+            return;
+          }
+          client = currentSequentialState.client;
+          device = currentSequentialState.device;
+          launchedEmulators = currentSequentialState.launchedEmulators;
+          resolvedAgentApk = currentSequentialState.resolvedAgentApk;
+          resolvedAgentTestApk = currentSequentialState.resolvedAgentTestApk;
+          resolvedIosXctestrun = currentSequentialState.resolvedIosXctestrun;
+          // After switching, the launchConfiguredApp on first file is not
+          // needed because setupSequentialDevice already launched the app.
+          fileIndex = 0;
+        }
+
         if (showProjectHeaders && project.testFiles.length > 0) {
           process.stdout.write(`\n${dim(`  ── Project: ${project.name} ──`)}\n`);
         }
 
+        // Effective config for this project — only differs from root config
+        // when projects override device-shaping fields via `use:`.
+        const projectConfig = currentSequentialState?.effectiveConfig ?? config;
+
         for (const file of project.testFiles) {
-          if (fileIndex > 0 && config.package) {
+          if (fileIndex > 0 && projectConfig.package) {
             try {
               await launchConfiguredApp({
-                label: `Device ${config.device}`,
-                config,
-                device,
-                client,
+                label: `Device ${projectConfig.device}`,
+                config: projectConfig,
+                device: device!,
+                client: client!,
                 agentApkPath: resolvedAgentApk,
                 agentTestApkPath: resolvedAgentTestApk,
-                deviceSerial: config.device,
+                deviceSerial: projectConfig.device,
               }, `reset before ${path.basename(file)}`);
 
-              const pong = await client.ping();
+              const pong = await client!.ping();
               if (!pong.agentConnected) {
                 console.error(red('Agent disconnected after app reset. Aborting.'));
                 sequentialExitCode = 1;
@@ -1298,22 +1650,22 @@ async function main(): Promise<void> {
           reporter.onTestFileStart(file);
 
           const suiteResult = await runTestFileWithRecovery(file, {
-            config,
-            device,
-            client,
+            config: projectConfig,
+            device: device!,
+            client: client!,
             screenshotDir,
             reporter,
             projectUseOptions: project.use,
             projectName: project.name !== 'default' ? project.name : undefined,
             sessionContext: {
-              label: `Device ${config.device}`,
-              config,
-              device,
-              client,
+              label: `Device ${projectConfig.device}`,
+              config: projectConfig,
+              device: device!,
+              client: client!,
               agentApkPath: resolvedAgentApk,
               agentTestApkPath: resolvedAgentTestApk,
               iosXctestrunPath: resolvedIosXctestrun,
-              deviceSerial: config.device,
+              deviceSerial: projectConfig.device,
             },
           });
 

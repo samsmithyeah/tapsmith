@@ -175,14 +175,60 @@ export interface PilotConfig {
 
 // ─── Per-scope option overrides ───
 
-/** Options that can be overridden per-describe via `test.use()` or per-project via `projects[].use`. */
-export type UseOptions = Partial<Pick<PilotConfig, 'timeout' | 'screenshot' | 'retries' | 'trace'>> & {
+/**
+ * Options that can be overridden per-describe via `test.use()` or per-project
+ * via `projects[].use`.
+ *
+ * Device-shaping fields (`platform`, `avd`, `simulator`, `app`, `apk`, etc.)
+ * may only be overridden at the project level — they have no effect from
+ * `test.use()` since the device is bound to the worker before any test runs.
+ */
+export type UseOptions = Partial<Pick<PilotConfig,
+  | 'timeout'
+  | 'screenshot'
+  | 'retries'
+  | 'trace'
+  | 'platform'
+  | 'device'
+  | 'avd'
+  | 'simulator'
+  | 'apk'
+  | 'app'
+  | 'package'
+  | 'activity'
+  | 'agentApk'
+  | 'agentTestApk'
+  | 'iosXctestrun'
+  | 'deviceStrategy'
+  | 'launchEmulators'
+  | 'resetAppDeepLink'
+  | 'resetAppWaitMs'
+>> & {
   /**
    * Path to a saved app state archive (created by `device.saveAppState()`).
    * When set, the runner restores this state before running tests in the scope,
    * mirroring Playwright's `storageState` pattern for reusable auth.
    */
   appState?: string;
+}
+
+/**
+ * Merge a project's `use` options over the root config to produce the
+ * effective configuration for running that project's tests. Undefined
+ * project values are skipped so they don't clobber root defaults.
+ */
+export function effectiveConfigForProject(
+  config: PilotConfig,
+  project: { use?: UseOptions } | undefined,
+): PilotConfig {
+  if (!project?.use) return config;
+  const merged = { ...config } as unknown as Record<string, unknown>;
+  for (const [key, value] of Object.entries(project.use)) {
+    if (value !== undefined) {
+      merged[key] = value;
+    }
+  }
+  return merged as unknown as PilotConfig;
 }
 
 // ─── Projects ───
@@ -198,6 +244,19 @@ export interface ProjectConfig {
   dependencies?: string[];
   /** Per-project option overrides applied as a base layer under file-level `test.use()`. */
   use?: UseOptions;
+  /**
+   * Number of parallel workers (devices) for this project. When unset,
+   * the global `workers` budget is split proportionally across projects
+   * that don't specify a count. Explicit values are additive — they don't
+   * consume from the global budget.
+   *
+   * @example
+   * projects: [
+   *   { name: 'android', workers: 2, use: { platform: 'android', avd: 'Pixel_6' } },
+   *   { name: 'ios',     workers: 1, use: { platform: 'ios', simulator: 'iPhone 16' } },
+   * ]
+   */
+  workers?: number;
 }
 
 const DEFAULT_CONFIG: PilotConfig = {

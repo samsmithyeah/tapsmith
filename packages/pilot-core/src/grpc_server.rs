@@ -718,7 +718,8 @@ impl PilotServiceImpl {
                     }));
                 };
 
-                let fallback_cmd = format!("am start -n {package_name}/{activity}");
+                let fallback_cmd =
+                    format!("am start -S --activity-clear-task -n {package_name}/{activity}");
                 match adb::shell(serial, &fallback_cmd).await {
                     Ok(_) => {
                         self.finish_launch(request_id, wait_for_idle, idle_timeout_ms)
@@ -1883,7 +1884,16 @@ impl proto::pilot_service_server::PilotService for PilotServiceImpl {
                     )
                     .await
                 } else {
-                    let cmd = format!("am start -n {}/{}", req.package_name, req.activity);
+                    // -S force-stops the app before launching, ensuring no
+                    // residual savedInstanceState Bundle survives from a
+                    // previous Activity. Without it, React Navigation /
+                    // Expo Router can restore stale navigation state from
+                    // the Bundle even after pm clear wiped AsyncStorage.
+                    // --activity-clear-task ensures a fresh task stack.
+                    let cmd = format!(
+                        "am start -S --activity-clear-task -n {}/{}",
+                        req.package_name, req.activity,
+                    );
                     self.launch_and_idle(
                         &serial,
                         request_id,

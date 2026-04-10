@@ -130,6 +130,11 @@ async function handleRun(msg: WatchRunMessage): Promise<void> {
   const device = new Device(client, config);
   await device.setDevice(msg.deviceSerial);
 
+  // Ensure the device is awake — the screen may have auto-locked while
+  // watch mode was idle waiting for file changes.
+  await device.wake();
+  await device.unlock();
+
   const ctx = buildSessionContext(config, device, client, msg.deviceSerial);
 
   // Reset app for clean state

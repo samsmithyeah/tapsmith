@@ -47,8 +47,9 @@ export function useTestTree() {
     setExpandedNodes(new Set());
   }, []);
 
-  /** Expand the path from root to a specific test node. */
-  const expandPathTo = useCallback((fullName: string, filePath: string) => {
+  /** Expand the path from root to a specific test node. When `projectName`
+   * is provided, only expand within that project's subtree. */
+  const expandPathTo = useCallback((fullName: string, filePath: string, projectName?: string) => {
     setExpandedNodes((prev) => {
       const next = new Set(prev);
       function walk(nodes: TestTreeNode[]): boolean {
@@ -65,7 +66,10 @@ export function useTestTree() {
         }
         return false;
       }
-      walk(files);
+      const roots = projectName
+        ? files.filter((n) => n.type === 'project' && n.name === projectName)
+        : files;
+      walk(roots);
       return next;
     });
   }, [files]);
@@ -88,12 +92,13 @@ export function useTestTree() {
     status: TestNodeStatus,
     duration?: number,
     error?: string,
+    projectName?: string,
   ) => {
-    setFiles((prev) => updateNodeInTree(prev, fullName, filePath, status, duration, error));
+    setFiles((prev) => updateNodeInTree(prev, fullName, filePath, status, duration, error, projectName));
   }, []);
 
-  const updateFileStatus = useCallback((filePath: string, status: 'running' | 'done') => {
-    setFiles((prev) => updateFileStatusInTree(prev, filePath, status));
+  const updateFileStatus = useCallback((filePath: string, status: 'running' | 'done', projectName?: string) => {
+    setFiles((prev) => updateFileStatusInTree(prev, filePath, status, projectName));
   }, []);
 
   const updateWatchEnabled = useCallback((filePath: string, enabled: boolean) => {
@@ -173,8 +178,16 @@ function updateNodeInTree(
   status: TestNodeStatus,
   duration?: number,
   error?: string,
+  projectName?: string,
 ): TestTreeNode[] {
   return nodes.map((node) => {
+    // When a projectName is provided, only descend into the matching project.
+    // Other project nodes are left untouched so the same file living in
+    // multiple projects doesn't get its status mirrored across all of them.
+    if (node.type === 'project' && projectName && node.name !== projectName) {
+      return node;
+    }
+
     // Project nodes contain files with various paths — always recurse.
     // Other nodes skip if filePath doesn't match.
     if (node.type !== 'project' && node.filePath !== filePath) return node;
@@ -184,7 +197,7 @@ function updateNodeInTree(
     }
 
     if (node.children) {
-      const updatedChildren = updateNodeInTree(node.children, fullName, filePath, status, duration, error);
+      const updatedChildren = updateNodeInTree(node.children, fullName, filePath, status, duration, error, projectName);
       if (updatedChildren !== node.children) {
         // Derive parent status from children
         const childStatuses = flattenStatuses(updatedChildren);
@@ -249,8 +262,14 @@ function updateFileStatusInTree(
   nodes: TestTreeNode[],
   filePath: string,
   status: 'running' | 'done',
+  projectName?: string,
 ): TestTreeNode[] {
   return nodes.map((node) => {
+    // When a projectName is provided, only descend into the matching project.
+    if (node.type === 'project' && projectName && node.name !== projectName) {
+      return node;
+    }
+
     // Direct match — file node
     if (node.type === 'file' && node.filePath === filePath) {
       if (status === 'running') return { ...node, status: 'running' as const };
@@ -259,7 +278,7 @@ function updateFileStatusInTree(
 
     // Recurse into project (or suite) children
     if (node.children) {
-      const updatedChildren = updateFileStatusInTree(node.children, filePath, status);
+      const updatedChildren = updateFileStatusInTree(node.children, filePath, status, projectName);
       if (updatedChildren.some((c, i) => c !== node.children![i])) {
         return rederiveTree({ ...node, children: updatedChildren });
       }

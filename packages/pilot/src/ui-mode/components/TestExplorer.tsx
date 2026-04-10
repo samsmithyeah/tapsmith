@@ -227,6 +227,10 @@ function StatusButton({ label, value, count, active, onClick }: StatusButtonProp
 interface TreeNodeProps {
   node: TestTreeNode
   depth: number
+  /** Name of the nearest ancestor project node, if any. Threaded down so
+   * file/test runs can include `projectName` and route to the right device
+   * when the same file is shared across multiple projects. */
+  parentProjectName?: string
   expandedNodes: Set<string>
   selectedTestId: string | null
   onToggleExpanded: (nodeId: string) => void
@@ -237,7 +241,7 @@ interface TreeNodeProps {
   onSetPending: (nodeId: string) => void
 }
 
-function TreeNode({ node, depth, expandedNodes, selectedTestId, onToggleExpanded, onSelectTest, onSend, isRunning, pendingIds, onSetPending }: TreeNodeProps) {
+function TreeNode({ node, depth, parentProjectName, expandedNodes, selectedTestId, onToggleExpanded, onSelectTest, onSend, isRunning, pendingIds, onSetPending }: TreeNodeProps) {
   const isExpanded = expandedNodes.has(node.id);
   const isSelected = selectedTestId === node.id;
   const hasChildren = node.children && node.children.length > 0;
@@ -265,11 +269,11 @@ function TreeNode({ node, depth, expandedNodes, selectedTestId, onToggleExpanded
     if (node.type === 'project') {
       onSend({ type: 'run-project', projectName: node.name });
     } else if (node.type === 'file') {
-      onSend({ type: 'run-file', filePath: node.filePath });
+      onSend({ type: 'run-file', filePath: node.filePath, projectName: parentProjectName });
     } else {
-      onSend({ type: 'run-test', fullName: node.fullName, filePath: node.filePath });
+      onSend({ type: 'run-test', fullName: node.fullName, filePath: node.filePath, projectName: parentProjectName });
     }
-  }, [node, onSend, onSetPending]);
+  }, [node, parentProjectName, onSend, onSetPending]);
 
   const handleWatch = useCallback((e: Event) => {
     e.stopPropagation();
@@ -333,6 +337,7 @@ function TreeNode({ node, depth, expandedNodes, selectedTestId, onToggleExpanded
           key={child.id}
           node={child}
           depth={depth + 1}
+          parentProjectName={node.type === 'project' ? node.name : parentProjectName}
           expandedNodes={expandedNodes}
           selectedTestId={selectedTestId}
           onToggleExpanded={onToggleExpanded}

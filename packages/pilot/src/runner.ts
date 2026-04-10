@@ -477,11 +477,52 @@ async function runSuiteContext(
   } catch (err) {
     // beforeAll failed — mark all tests in this context as failed and bail out.
     // This prevents a single beforeAll error from crashing the entire runner.
+    const beforeAllError = err instanceof Error ? err : new Error(String(err));
+
+    // Capture a screenshot so the user can see the device state at the time
+    // of failure — otherwise beforeAll errors are text-only with no visual
+    // context for debugging.
+    let beforeAllScreenshot: string | undefined;
+    if (opts.config.screenshot !== 'never') {
+      const label = parentPrefix ? `beforeAll_${parentPrefix}` : 'beforeAll';
+      beforeAllScreenshot = await captureFailureScreenshot(opts.device, opts.screenshotDir, label);
+    }
+
+    // Package whatever the beforeAll collector recorded into a trace ZIP.
+    // The trace captures every action that ran before the failure — invaluable
+    // for debugging why beforeAll couldn't find an element or timed out.
+    let beforeAllTrace: string | undefined;
     if (beforeAllCollector) {
+      try {
+        beforeAllCollector.endGroup();
+        const outputDir = path.resolve(opts.config.rootDir, opts.config.outputDir, 'traces');
+        const label = parentPrefix || 'beforeAll';
+        beforeAllTrace = packageTrace(beforeAllCollector, {
+          testFile: opts.testFilePath ?? '',
+          testName: label,
+          testStatus: 'failed',
+          testDuration: Date.now() - suiteStart,
+          startTime: suiteStart,
+          endTime: Date.now(),
+          device: {
+            serial: opts.config.device ?? 'unknown',
+            isEmulator: (opts.config.device ?? '').startsWith('emulator-'),
+            devicePixelRatio: opts.config.platform === 'ios' && opts.config.device
+              ? getSimulatorScreenScale(opts.config.device)
+              : undefined,
+          },
+          pilotVersion: getPackageVersion(),
+          error: beforeAllError.message,
+          outputDir,
+          project: opts.projectName,
+        });
+      } catch {
+        // Trace packaging is best-effort
+      }
       beforeAllCollector.cleanup();
     }
-    const beforeAllError = err instanceof Error ? err : new Error(String(err));
-    const failed = failAll(ctx, parentPrefix, beforeAllError, opts.projectName);
+
+    const failed = failAll(ctx, parentPrefix, beforeAllError, opts.projectName, beforeAllScreenshot, beforeAllTrace);
     for (const tr of collectResults(failed)) {
       result.tests.push(tr);
       opts.reporter?.onTestEnd?.(tr);
@@ -1007,18 +1048,18 @@ function skipAll(ctx: SuiteContext, prefix: string): SuiteResult {
  * Mark all tests in a context as failed with the given error.
  * Used when beforeAll hooks throw — individual tests never got a chance to run.
  */
-function failAll(ctx: SuiteContext, prefix: string, error: Error, project?: string): SuiteResult {
+function failAll(ctx: SuiteContext, prefix: string, error: Error, project?: string, screenshotPath?: string, tracePath?: string): SuiteResult {
   const result: SuiteResult = { name: prefix, tests: [], suites: [], durationMs: 0 };
   for (const t of ctx.tests) {
     const fullName = prefix ? `${prefix} > ${t.name}` : t.name;
-    result.tests.push({ name: t.name, fullName, status: 'failed', durationMs: 0, error, project });
+    result.tests.push({ name: t.name, fullName, status: 'failed', durationMs: 0, error, project, screenshotPath, tracePath });
   }
   for (const s of ctx.suites) {
     pushContext();
     s.fn();
     const childCtx = popContext();
     const childPrefix = prefix ? `${prefix} > ${s.name}` : s.name;
-    result.suites.push(failAll(childCtx, childPrefix, error, project));
+    result.suites.push(failAll(childCtx, childPrefix, error, project, screenshotPath, tracePath));
   }
   return result;
 }

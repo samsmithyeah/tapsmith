@@ -66,6 +66,10 @@ export interface RunStartMessage {
   filePath?: string
   /** When running a single test, the test fullName. Used to scope trace clearing. */
   testFilter?: string
+  /** When running a single file/test in a multi-project config, the project
+   * the file belongs to. Lets the client scope trace clearing to just that
+   * project's copy and leave sibling projects' traces intact. */
+  projectName?: string
 }
 
 export interface RunEndMessage {
@@ -83,6 +87,10 @@ export interface TestStartMessage {
   filePath: string
   /** Worker that is running this test (multi-worker mode only). */
   workerId?: number
+  /** Project this test belongs to. When set, the SPA scopes the update to
+   * the matching project node — required when the same file is shared
+   * across projects (multi-device configs). */
+  projectName?: string
 }
 
 export interface TestStatusMessage {
@@ -96,18 +104,29 @@ export interface TestStatusMessage {
   tracePath?: string
   /** Worker that ran this test (multi-worker mode only). */
   workerId?: number
+  /** Project this test belongs to. When set, the SPA scopes the update to
+   * the matching project node — required when the same file is shared
+   * across projects (multi-device configs). */
+  projectName?: string
 }
 
 export interface FileStatusMessage {
   type: 'file-status'
   filePath: string
   status: 'running' | 'done'
+  /** Project this file belongs to. When set, the SPA scopes the update to
+   * the matching project node. */
+  projectName?: string
 }
 
 export interface TraceEventMessage {
   type: 'trace-event'
   /** The full name of the test this event belongs to. */
   testFullName: string
+  /** Project the test belongs to. Used to scope trace storage so the same
+   * test running under multiple projects (multi-device configs) doesn't
+   * collide on a single trace map entry. */
+  projectName?: string
   event: AnyTraceEvent
   /** Base64-encoded PNG screenshot taken before the action. */
   screenshotBefore?: string
@@ -173,6 +192,9 @@ export interface SourceMessage {
 export interface NetworkMessage {
   type: 'network'
   testFullName: string
+  /** Project the test belongs to. Used to scope trace storage in multi-device
+   * configs so the same test under multiple projects doesn't collide. */
+  projectName?: string
   entries: import('../trace/types.js').NetworkEntry[]
 }
 
@@ -206,6 +228,10 @@ export interface RunTestCommand {
   type: 'run-test'
   fullName: string
   filePath: string
+  /** Project the test belongs to. Required when the same file is shared
+   * across multiple projects (e.g. one Android and one iOS project both
+   * matching `**\/*.test.ts`) so the server can route to the correct device. */
+  projectName?: string
   /** When true, run dependency projects before this test. */
   runDeps?: boolean
 }
@@ -213,6 +239,9 @@ export interface RunTestCommand {
 export interface RunFileCommand {
   type: 'run-file'
   filePath: string
+  /** Project the file belongs to. Required when the same file is shared
+   * across multiple projects so the server can route to the correct device. */
+  projectName?: string
   /** When true, run dependency projects before this file. */
   runDeps?: boolean
 }

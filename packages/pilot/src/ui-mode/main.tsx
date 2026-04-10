@@ -87,13 +87,41 @@ function App() {
     );
   }, [tree.allFiles]);
 
+  // Tree node ids look like "<filePath>::<fullName>" or, when running a
+  // multi-project config, "project::<projectName>::<filePath>::<fullName>".
+  // Strip the project prefix before splitting so file/test extraction works
+  // for both shapes.
+  const stripProjectPrefix = (id: string): string => {
+    if (!id.startsWith('project::')) return id;
+    // Skip past "project::<name>::"
+    const afterProject = id.slice('project::'.length);
+    const sep = afterProject.indexOf('::');
+    return sep === -1 ? afterProject : afterProject.slice(sep + 2);
+  };
+
+  // Extract the project name from a tree node id, or undefined if the id has
+  // no project prefix.
+  const extractProject = (id: string): string | undefined => {
+    if (!id.startsWith('project::')) return undefined;
+    const afterProject = id.slice('project::'.length);
+    const sep = afterProject.indexOf('::');
+    return sep === -1 ? afterProject : afterProject.slice(0, sep);
+  };
+
+  // Composite key for trace storage. Trace data is stored per (project, test)
+  // so the same test running under multiple projects (multi-device configs)
+  // doesn't collide on a single map entry.
+  const traceKey = (projectName: string | undefined, fullName: string): string =>
+    `${projectName ?? ''}::${fullName}`;
+
   // Get the currently viewed test's trace data.
   // Only show trace data when a test is explicitly selected in the tree.
   const viewedTestName = useMemo(() => {
     if (tree.selectedTestId) {
-      const sep = tree.selectedTestId.indexOf('::');
+      const stripped = stripProjectPrefix(tree.selectedTestId);
+      const sep = stripped.indexOf('::');
       if (sep !== -1) {
-        return tree.selectedTestId.slice(sep + 2);
+        return stripped.slice(sep + 2);
       }
     }
     return null;
@@ -104,9 +132,10 @@ function App() {
 
   const viewedTestFile = useMemo(() => {
     if (tree.selectedTestId) {
-      const sep = tree.selectedTestId.indexOf('::');
+      const stripped = stripProjectPrefix(tree.selectedTestId);
+      const sep = stripped.indexOf('::');
       if (sep !== -1) {
-        return tree.selectedTestId.slice(0, sep);
+        return stripped.slice(0, sep);
       }
     }
     return '';
@@ -127,7 +156,12 @@ function App() {
     return find(tree.allFiles);
   }, [tree.selectedTestId, tree.allFiles]);
 
-  const currentTrace = viewedTestName && viewedTestNode?.type === 'test' ? testTraces.get(viewedTestName) : undefined;
+  const viewedTestProject = useMemo(
+    () => (tree.selectedTestId ? extractProject(tree.selectedTestId) : undefined),
+    [tree.selectedTestId],
+  );
+  const viewedTraceKey = viewedTestName ? traceKey(viewedTestProject, viewedTestName) : null;
+  const currentTrace = viewedTraceKey && viewedTestNode?.type === 'test' ? testTraces.get(viewedTraceKey) : undefined;
   const traceEvents = currentTrace?.events ?? EMPTY_EVENTS;
   const actionEvents = currentTrace?.actionEvents ?? EMPTY_ACTION_EVENTS;
   const screenshots = currentTrace?.screenshots ?? EMPTY_MAP;
@@ -137,14 +171,14 @@ function App() {
 
   // Metadata for trace viewer components
   const testDeviceSerial = useMemo(() => {
-    if (viewedTestName) {
-      const workerId = testWorkerMapRef.current.get(viewedTestName);
+    if (viewedTraceKey) {
+      const workerId = testWorkerMapRef.current.get(viewedTraceKey);
       if (workerId != null && workers[workerId]) {
         return workers[workerId].displayName || workers[workerId].deviceSerial;
       }
     }
     return deviceSerial;
-  }, [viewedTestName, workers, deviceSerial]);
+  }, [viewedTraceKey, workers, deviceSerial]);
 
   const metadata = useMemo<TraceMetadata>(() => ({
     version: 1,
@@ -180,24 +214,31 @@ function App() {
         // This preserves traces from other tests/files so clicking back
         // on them still shows their actions and status.
         if (msg.testFilter) {
-          // Running a single test — only clear that test's trace
+          // Running a single test — clear only the trace for this exact
+          // (project, test) tuple. Without the project scope we'd wipe the
+          // sibling project's copy of the same test from a previous run.
           setTestTraces((prev) => {
-            const old = prev.get(msg.testFilter!);
+            const targetKey = traceKey(msg.projectName, msg.testFilter!);
+            const old = prev.get(targetKey);
             if (!old) return prev;
             revokeTraceScreenshots(old);
             const next = new Map(prev);
-            next.delete(msg.testFilter!);
+            next.delete(targetKey);
             return next;
           });
         } else if (msg.filePath) {
-          // Running a whole file — clear all traces for that file
+          // Running a whole file — clear traces for that file, scoped to the
+          // current project when one is set so the other project's traces
+          // for the same file path stay intact.
           setTestTraces((prev) => {
             const next = new Map<string, TestTraceData>();
-            for (const [name, data] of prev) {
-              if (data.filePath !== msg.filePath) {
-                next.set(name, data);
-              } else {
+            for (const [k, data] of prev) {
+              const matchesFile = data.filePath === msg.filePath;
+              const matchesProject = !msg.projectName || k.startsWith(`${msg.projectName}::`);
+              if (matchesFile && matchesProject) {
                 revokeTraceScreenshots(data);
+              } else {
+                next.set(k, data);
               }
             }
             return next;
@@ -228,16 +269,19 @@ function App() {
         treeRef.current.resetRunningStatuses();
         break;
       case 'test-start': {
+        const key = traceKey(msg.projectName, msg.fullName);
         // Track which worker ran this test
         if (msg.workerId != null) {
-          testWorkerMapRef.current.set(msg.fullName, msg.workerId);
+          testWorkerMapRef.current.set(key, msg.workerId);
         }
-        // Mark this test (and its parent describe/file) as running
-        treeRef.current.updateTestStatus(msg.fullName, msg.filePath, 'running');
+        // Mark this test (and its parent describe/file) as running — scoped
+        // to the project running it so a sibling project's copy of the same
+        // file doesn't pulse blue too.
+        treeRef.current.updateTestStatus(msg.fullName, msg.filePath, 'running', undefined, undefined, msg.projectName);
 
         // Track the active test for trace data accumulation, but don't
         // auto-select in the tree — only failures trigger auto-selection.
-        activeTestRef.current = msg.fullName;
+        activeTestRef.current = key;
 
         // Only reset pin if the user is viewing this test (or no test selected)
         if (!viewedTestNameRef.current || viewedTestNameRef.current === msg.fullName) {
@@ -249,7 +293,7 @@ function App() {
         // recovery), clear it so stale events from the failed attempt don't
         // accumulate alongside the retry's events.
         setTestTraces((prev) => {
-          const existing = prev.get(msg.fullName);
+          const existing = prev.get(key);
           if (existing) revokeTraceScreenshots(existing);
           const next = new Map(prev);
           const data = emptyTraceData(msg.filePath);
@@ -259,35 +303,39 @@ function App() {
           if (sourceContent) {
             data.sources = new Map([[basename, sourceContent]]);
           }
-          next.set(msg.fullName, data);
+          next.set(key, data);
           return next;
         });
         break;
       }
-      case 'test-status':
+      case 'test-status': {
+        const statusKey = traceKey(msg.projectName, msg.fullName);
         if (msg.workerId != null) {
-          testWorkerMapRef.current.set(msg.fullName, msg.workerId);
+          testWorkerMapRef.current.set(statusKey, msg.workerId);
         }
-        treeRef.current.updateTestStatus(msg.fullName, msg.filePath, msg.status, msg.duration, msg.error);
+        treeRef.current.updateTestStatus(msg.fullName, msg.filePath, msg.status, msg.duration, msg.error, msg.projectName);
         if (msg.tracePath) {
           setTestTraces((prev) => {
-            const data = prev.get(msg.fullName);
+            const data = prev.get(statusKey);
             if (!data) return prev;
             const next = new Map(prev);
-            next.set(msg.fullName, { ...data, tracePath: msg.tracePath });
+            next.set(statusKey, { ...data, tracePath: msg.tracePath });
             return next;
           });
         }
         // Auto-expand tree path to failing test, select it, and pin the failing action
         if (msg.status === 'failed') {
-          treeRef.current.expandPathTo(msg.fullName, msg.filePath);
-          treeRef.current.setSelectedTestId(`${msg.filePath}::${msg.fullName}`);
+          treeRef.current.expandPathTo(msg.fullName, msg.filePath, msg.projectName);
+          // Tree IDs are scoped per-project (e.g. "project::android::") when
+          // running multi-device configs, so use the same prefix here.
+          const idPrefix = msg.projectName ? `project::${msg.projectName}::` : '';
+          treeRef.current.setSelectedTestId(`${idPrefix}${msg.filePath}::${msg.fullName}`);
           autoFollowRef.current = 'manual';
-          activeTestRef.current = msg.fullName;
-  
+          activeTestRef.current = statusKey;
+
           // Find the last failed action and pin it
           setTestTraces((prev) => {
-            const trace = prev.get(msg.fullName);
+            const trace = prev.get(statusKey);
             if (trace) {
               const failIdx = trace.actionEvents.findLastIndex((e) => e.status === 'failed');
               if (failIdx !== -1) {
@@ -299,16 +347,21 @@ function App() {
           });
         }
         break;
+      }
       case 'file-status':
-        treeRef.current.updateFileStatus(msg.filePath, msg.status);
+        treeRef.current.updateFileStatus(msg.filePath, msg.status, msg.projectName);
         break;
       case 'trace-event': {
-        const testName = msg.testFullName || activeTestRef.current;
+        const testName = msg.testFullName || (activeTestRef.current ?? '').split('::').slice(1).join('::');
         if (!testName) break;
+        const key = msg.testFullName
+          ? traceKey(msg.projectName, msg.testFullName)
+          : (activeTestRef.current ?? '');
+        if (!key) break;
         const ev = msg.event;
 
         setTestTraces((prev) => {
-          const { data, map } = getOrCreateTrace(testName, prev);
+          const { data, map } = getOrCreateTrace(key, prev);
 
           // Append event. For assertions without bounds, inherit from the
           // most recent action that had bounds (e.g. find() → toBe() chain).
@@ -368,12 +421,12 @@ function App() {
           }
 
           const next = new Map(map);
-          next.set(testName, { events, actionEvents, screenshots, hierarchies, sources: data.sources, network: data.network, filePath: data.filePath });
+          next.set(key, { events, actionEvents, screenshots, hierarchies, sources: data.sources, network: data.network, filePath: data.filePath });
           return next;
         });
 
         // Auto-pin to latest action, but only when viewing the running test
-        if ((ev.type === 'action' || ev.type === 'assertion') && testName === activeTestRef.current
+        if ((ev.type === 'action' || ev.type === 'assertion') && key === activeTestRef.current
           && (!viewedTestNameRef.current || viewedTestNameRef.current === testName)) {
           setPinnedIndex(ev.actionIndex);
         }
@@ -385,12 +438,14 @@ function App() {
         pendingSourcesRef.current.set(msg.fileName, msg.content);
         break;
       case 'network': {
-        const testName = msg.testFullName || activeTestRef.current;
-        if (!testName) break;
+        const key = msg.testFullName
+          ? traceKey(msg.projectName, msg.testFullName)
+          : (activeTestRef.current ?? '');
+        if (!key) break;
         setTestTraces((prev) => {
-          const { data, map } = getOrCreateTrace(testName, prev);
+          const { data, map } = getOrCreateTrace(key, prev);
           const next = new Map(map);
-          next.set(testName, { ...data, network: msg.entries });
+          next.set(key, { ...data, network: msg.entries });
           return next;
         });
         break;
@@ -495,15 +550,15 @@ function App() {
   // Auto-switch device mirror to the worker that ran the viewed test.
   const lastSentWorkerRef = useRef<number | undefined>(undefined);
   useEffect(() => {
-    if (!viewedTestName || workers.length < 2) return;
-    const wid = testWorkerMapRef.current.get(viewedTestName);
+    if (!viewedTraceKey || workers.length < 2) return;
+    const wid = testWorkerMapRef.current.get(viewedTraceKey);
     if (wid != null && wid !== lastSentWorkerRef.current) {
       lastSentWorkerRef.current = wid;
       setSelectedWorkerId(wid);
       if (deviceViewMode !== 'all') setDeviceViewMode(wid);
       send({ type: 'select-worker-view', mode: deviceViewMode === 'all' ? 'all' : wid });
     }
-  }, [viewedTestName, workers.length, send, deviceViewMode]);
+  }, [viewedTraceKey, workers.length, send, deviceViewMode]);
 
   const handleSelectDeviceView = useCallback((mode: 'all' | number) => {
     setDeviceViewMode(mode);

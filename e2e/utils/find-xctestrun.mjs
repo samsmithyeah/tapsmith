@@ -17,7 +17,13 @@ export function findLatestXctestrun() {
     homedir(),
     "Library/Developer/Xcode/DerivedData/PilotAgent-*/Build/Products/*.xctestrun",
   )
-  const matches = globSync(pattern, { absolute: true })
+  // Exclude `.patched.xctestrun` files left behind by previous Pilot runs.
+  // Without this filter, mtime sorting eventually picks a patched file as the
+  // "source" and the daemon keeps appending suffixes until the filename
+  // exceeds 255 bytes and tokio::fs::copy fails.
+  const matches = globSync(pattern, { absolute: true }).filter(
+    (p) => !p.endsWith(".patched.xctestrun"),
+  )
   if (matches.length === 0) {
     throw new Error(
       `No xctestrun found at ${pattern}\n\n` +
