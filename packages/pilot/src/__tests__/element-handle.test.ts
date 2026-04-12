@@ -282,13 +282,19 @@ describe('exists()', () => {
 // ─── Action methods ───
 
 describe('tap()', () => {
-  it('delegates to client.tap with selector and timeout', async () => {
+  it('waits for enabled then delegates to client.tap with remaining timeout', async () => {
     const tap = vi.fn(async () => successResponse());
     const client = makeMockClient({ tap });
     const sel = _text('Button');
     const handle = new ElementHandle(client, sel, 4000);
     await handle.tap();
-    expect(tap).toHaveBeenCalledWith(sel, 4000);
+    // findElement is called once by _waitForEnabled to check enabled state
+    expect(client.findElement).toHaveBeenCalled();
+    expect(tap).toHaveBeenCalledWith(sel, expect.any(Number));
+    // Remaining timeout should be close to 4000 (minus the findElement round-trip)
+    const remaining = (tap.mock.calls[0] as unknown as [unknown, number])[1];
+    expect(remaining).toBeLessThanOrEqual(4000);
+    expect(remaining).toBeGreaterThan(3000);
   });
 
   it('throws on failure', async () => {
@@ -306,16 +312,62 @@ describe('tap()', () => {
     const handle = new ElementHandle(client, _text('X'), 5000);
     await expect(handle.tap()).rejects.toThrow('Tap failed');
   });
+
+  it('waits for a disabled element to become enabled before tapping', async () => {
+    let callCount = 0;
+    const findElement = vi.fn(async () => {
+      callCount++;
+      return {
+        requestId: '1',
+        found: true,
+        element: makeElementInfo({ enabled: callCount >= 3 }),
+        errorMessage: '',
+      };
+    });
+    const tap = vi.fn(async () => successResponse());
+    const client = makeMockClient({ findElement, tap });
+    const handle = new ElementHandle(client, _text('Submit'), 5000);
+    await handle.tap();
+    expect(callCount).toBeGreaterThanOrEqual(3);
+    expect(tap).toHaveBeenCalled();
+  });
+
+  it('throws "disabled" when element is found but stays disabled', async () => {
+    const findElement = vi.fn(async () => ({
+      requestId: '1',
+      found: true,
+      element: makeElementInfo({ enabled: false }),
+      errorMessage: '',
+    }));
+    const client = makeMockClient({ findElement });
+    const handle = new ElementHandle(client, _text('Submit'), 500);
+    await expect(handle.tap()).rejects.toThrow(/is disabled/);
+  });
+
+  it('throws "not found" when element never appears', async () => {
+    const findElement = vi.fn(async () => ({
+      requestId: '1',
+      found: false,
+      element: undefined as unknown as ElementInfo,
+      errorMessage: 'not found',
+    }));
+    const client = makeMockClient({ findElement });
+    const handle = new ElementHandle(client, _text('Ghost'), 500);
+    await expect(handle.tap()).rejects.toThrow(/was not found/);
+  });
 });
 
 describe('longPress()', () => {
-  it('delegates to client.longPress', async () => {
+  it('waits for enabled then delegates to client.longPress', async () => {
     const longPress = vi.fn(async () => successResponse());
     const client = makeMockClient({ longPress });
     const sel = _text('Item');
     const handle = new ElementHandle(client, sel, 5000);
     await handle.longPress(1000);
-    expect(longPress).toHaveBeenCalledWith(sel, 1000, 5000);
+    expect(longPress).toHaveBeenCalledWith(sel, 1000, expect.any(Number));
+    const remaining = (longPress.mock.calls[0] as unknown as [unknown, unknown, number])[2];
+    expect(remaining).toBeLessThanOrEqual(5000);
+    expect(remaining).toBeGreaterThan(4000);
   });
 
   it('throws on failure', async () => {

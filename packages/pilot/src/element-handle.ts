@@ -447,6 +447,41 @@ export class ElementHandle {
   }
 
   /**
+   * @internal — Poll until the target element is enabled, matching Playwright's
+   * behavior of auto-waiting before actionable operations (tap, longPress).
+   * Returns the remaining timeout (milliseconds) so the caller can share a
+   * single deadline for the overall operation.
+   * Throws if the element is not found or still disabled after the timeout.
+   */
+  private async _waitForEnabled(): Promise<number> {
+    const deadline = Date.now() + this._timeoutMs;
+    const POLL_MS = 250;
+    let everFound = false;
+    while (true) {
+      try {
+        const el = this._hasModifiers()
+          ? await this._resolveOne()
+          : (await this._client.findElement(this._selector, Math.min(POLL_MS, Math.max(0, deadline - Date.now())))).element;
+        if (el) {
+          everFound = true;
+          if (el.enabled) return Math.max(0, deadline - Date.now());
+        }
+      } catch {
+        // Element not found yet — keep polling
+      }
+      if (Date.now() >= deadline) {
+        const desc = this._describe();
+        throw new Error(
+          everFound
+            ? `Element ${desc} is disabled after waiting ${this._timeoutMs}ms`
+            : `Element ${desc} was not found after waiting ${this._timeoutMs}ms`,
+        );
+      }
+      await new Promise((r) => setTimeout(r, POLL_MS));
+    }
+  }
+
+  /**
    * @internal — Get the selector to use for an action. For modified handles,
    * resolves the specific element first and returns a targeting selector.
    */
@@ -584,13 +619,15 @@ export class ElementHandle {
   }
 
   async tap(): Promise<void> {
+    const remaining = await this._waitForEnabled();
     const sel = await this._actionSelector();
-    return this._tracedAction('tap', 'tap', () => this._client.tap(sel, this._timeoutMs), 'Tap failed');
+    return this._tracedAction('tap', 'tap', () => this._client.tap(sel, remaining), 'Tap failed');
   }
 
   async longPress(durationMs?: number): Promise<void> {
+    const remaining = await this._waitForEnabled();
     const sel = await this._actionSelector();
-    return this._tracedAction('longPress', 'tap', () => this._client.longPress(sel, durationMs, this._timeoutMs), 'Long press failed');
+    return this._tracedAction('longPress', 'tap', () => this._client.longPress(sel, durationMs, remaining), 'Long press failed');
   }
 
   async type(text: string): Promise<void> {

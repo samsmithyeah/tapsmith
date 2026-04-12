@@ -48,12 +48,31 @@ export default defineConfig({
   trace: "retain-on-failure",
   daemonBin: "../packages/pilot-core/target/release/pilot-core",
   projects: [
+    // ─── Android ───
+    {
+      name: "android:auth-setup",
+      testMatch: ["**/auth.setup.ts"],
+      use: { ...ANDROID_USE, timeout: 30_000 },
+    },
     {
       name: "android",
       workers: 2,
       testMatch: ["**/*.test.ts"],
       testIgnore: ["**/app-state.test.ts", "**/auth-gate.test.ts"],
       use: ANDROID_USE,
+    },
+    {
+      name: "android:authenticated",
+      dependencies: ["android:auth-setup"],
+      testMatch: ["**/app-state.test.ts", "**/auth-gate.test.ts"],
+      use: { ...ANDROID_USE, appState: "./pilot-results/auth-state-android-auth-setup.tar.gz" },
+    },
+
+    // ─── iOS ───
+    {
+      name: "ios:auth-setup",
+      testMatch: ["**/auth.setup.ts"],
+      use: { ...IOS_USE, timeout: 30_000 },
     },
     {
       name: "ios",
@@ -65,6 +84,12 @@ export default defineConfig({
         "**/*.android.test.ts",
       ],
       use: IOS_USE,
+    },
+    {
+      name: "ios:authenticated",
+      dependencies: ["ios:auth-setup"],
+      testMatch: ["**/app-state.test.ts", "**/auth-gate.test.ts"],
+      use: { ...IOS_USE, appState: "./pilot-results/auth-state-ios-auth-setup.tar.gz" },
     },
   ],
 })

@@ -56,6 +56,8 @@ export interface SuiteResult {
 
 export interface TestFixtures {
   device: Device;
+  /** Name of the project running this test, if projects are configured. */
+  projectName?: string;
 }
 
 // ─── Per-scope option overrides ───
@@ -323,9 +325,9 @@ async function captureFailureScreenshot(
 // not count parameters with default values or rest parameters, so hooks like
 // `async ({ device } = {}) => …` would be mis-classified as zero-arg. In
 // practice this is fine because hooks are simple `async ({ device }) => …`.
-async function invokeHook(fn: HookFn, device?: Device): Promise<void> {
+async function invokeHook(fn: HookFn, device?: Device, projectName?: string): Promise<void> {
   if (fn.length > 0 && device) {
-    await (fn as (fixtures: TestFixtures) => void | Promise<void>)({ device });
+    await (fn as (fixtures: TestFixtures) => void | Promise<void>)({ device, projectName });
   } else {
     await (fn as () => void | Promise<void>)();
   }
@@ -465,13 +467,13 @@ async function runSuiteContext(
     if (beforeAllCollector) {
       await withActiveTraceCollector(beforeAllCollector, async () => {
         for (const hook of ctx.beforeAll) {
-          await invokeHook(hook, opts.device);
+          await invokeHook(hook, opts.device, opts.projectName);
         }
       });
       beforeAllCollector.endGroup();
     } else {
       for (const hook of ctx.beforeAll) {
-        await invokeHook(hook, opts.device);
+        await invokeHook(hook, opts.device, opts.projectName);
       }
     }
   } catch (err) {
@@ -673,7 +675,7 @@ async function runSuiteContext(
       }
 
       for (const hook of allBeforeEach) {
-        await invokeHook(hook, opts.device);
+        await invokeHook(hook, opts.device, opts.projectName);
       }
       if (hasBeforeEachWork) {
         traceCollector?.endGroup();
@@ -683,6 +685,7 @@ async function runSuiteContext(
       const registry = getFixtureRegistry();
       const baseFixtures: Record<string, unknown> = {
         ...(opts.device ? { device: opts.device } : {}),
+        ...(opts.projectName != null ? { projectName: opts.projectName } : {}),
         ...(opts.workerFixtures ?? {}),
       };
 
@@ -746,7 +749,7 @@ async function runSuiteContext(
         traceCollector?.startGroup('afterEach Hooks');
         for (const hook of allAfterEach) {
           try {
-            await invokeHook(hook, opts.device);
+            await invokeHook(hook, opts.device, opts.projectName);
           } catch {
             // afterEach errors should not mask test errors
           }
@@ -985,7 +988,7 @@ async function runSuiteContext(
       await withActiveTraceCollector(afterAllCollector, async () => {
         for (const hook of ctx.afterAll) {
           try {
-            await invokeHook(hook, opts.device);
+            await invokeHook(hook, opts.device, opts.projectName);
           } catch {
             // afterAll errors are logged but don't fail individual tests
           }
@@ -996,7 +999,7 @@ async function runSuiteContext(
     } else {
       for (const hook of ctx.afterAll) {
         try {
-          await invokeHook(hook, opts.device);
+          await invokeHook(hook, opts.device, opts.projectName);
         } catch {
           // afterAll errors are logged but don't fail individual tests
         }
@@ -1005,7 +1008,7 @@ async function runSuiteContext(
   } else {
     for (const hook of ctx.afterAll) {
       try {
-        await invokeHook(hook, opts.device);
+        await invokeHook(hook, opts.device, opts.projectName);
       } catch {
         // afterAll errors are logged but don't fail individual tests
       }
@@ -1105,7 +1108,10 @@ export async function runTestFile(
   const registry = getFixtureRegistry();
 
   // Resolve worker-scoped fixtures once for the entire file
-  const baseFixtures: Record<string, unknown> = opts.device ? { device: opts.device } : {};
+  const baseFixtures: Record<string, unknown> = {
+    ...(opts.device ? { device: opts.device } : {}),
+    ...(opts.projectName != null ? { projectName: opts.projectName } : {}),
+  };
   let workerFixtures: Record<string, unknown> = opts.workerFixtures ?? {};
   let workerTeardown: (() => Promise<void>) | undefined;
 

@@ -76,6 +76,15 @@ function cachedScreenScale(udid: string, platform?: 'android' | 'ios'): number |
   return dpr;
 }
 
+/**
+ * Resolve a worker's actual platform. In multi-bucket mode the root config's
+ * platform may not match a worker's device (e.g. an iOS worker in a config
+ * whose top-level platform is android), so prefer the per-device config.
+ */
+function resolveDevicePlatform(ctx: UIServerContext, udid: string): 'android' | 'ios' | undefined {
+  return ctx.configByDevice?.get(udid)?.platform ?? ctx.config.platform;
+}
+
 // ─── Types ───
 
 export interface UIServerContext {
@@ -2066,9 +2075,9 @@ export async function startUIServer(
               serial: worker.displayName || worker.deviceSerial,
               model: undefined,
               isEmulator: worker.deviceSerial.startsWith('emulator-'),
-              platform: ctx.config.platform,
+              platform: resolveDevicePlatform(ctx, worker.deviceSerial),
               pilotVersion: PILOT_VERSION,
-              devicePixelRatio: cachedScreenScale(worker.deviceSerial, ctx.config.platform),
+              devicePixelRatio: cachedScreenScale(worker.deviceSerial, resolveDevicePlatform(ctx, worker.deviceSerial)),
             });
           }
         }
@@ -2084,9 +2093,9 @@ export async function startUIServer(
               serial: worker.displayName || worker.deviceSerial,
               model: undefined,
               isEmulator: worker.deviceSerial.startsWith('emulator-'),
-              platform: ctx.config.platform,
+              platform: resolveDevicePlatform(ctx, worker.deviceSerial),
               pilotVersion: PILOT_VERSION,
-              devicePixelRatio: cachedScreenScale(worker.deviceSerial, ctx.config.platform),
+              devicePixelRatio: cachedScreenScale(worker.deviceSerial, resolveDevicePlatform(ctx, worker.deviceSerial)),
             });
           }
         }
@@ -2187,7 +2196,16 @@ export async function startUIServer(
       // Send workers info
       ws.send(JSON.stringify({
         type: 'workers-info',
-        workers: uiWorkers.map((w) => ({ workerId: w.id, deviceSerial: w.deviceSerial, displayName: w.displayName })),
+        workers: uiWorkers.map((w) => {
+          const platform = resolveDevicePlatform(ctx, w.deviceSerial);
+          return {
+            workerId: w.id,
+            deviceSerial: w.deviceSerial,
+            displayName: w.displayName,
+            platform,
+            devicePixelRatio: cachedScreenScale(w.deviceSerial, platform),
+          };
+        }),
       } satisfies ServerMessage));
 
       // Send device info for selected worker
@@ -2198,9 +2216,9 @@ export async function startUIServer(
           serial: selectedWorker.displayName || selectedWorker.deviceSerial,
           model: undefined,
           isEmulator: selectedWorker.deviceSerial.startsWith('emulator-'),
-          platform: ctx.config.platform,
+          platform: resolveDevicePlatform(ctx, selectedWorker.deviceSerial),
           pilotVersion: PILOT_VERSION,
-          devicePixelRatio: cachedScreenScale(selectedWorker.deviceSerial, ctx.config.platform),
+          devicePixelRatio: cachedScreenScale(selectedWorker.deviceSerial, resolveDevicePlatform(ctx, selectedWorker.deviceSerial)),
         } satisfies ServerMessage));
       }
 

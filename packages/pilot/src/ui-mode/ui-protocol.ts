@@ -24,6 +24,9 @@ export interface WorkerInfo {
   passed: number
   failed: number
   skipped: number
+  platform?: 'android' | 'ios'
+  /** Logical-point → pixel scale. iOS only; unset for Android (= 1). */
+  devicePixelRatio?: number
 }
 
 // ─── Test Tree ───
@@ -168,6 +171,8 @@ export interface WorkersInfoMessage {
     workerId: number
     deviceSerial: string
     displayName: string
+    platform?: 'android' | 'ios'
+    devicePixelRatio?: number
   }>
 }
 

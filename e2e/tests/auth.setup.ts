@@ -3,12 +3,16 @@ import { test, expect } from "pilot"
 import { LoginScreen } from "../screens/login.screen.js"
 
 const PKG = "dev.pilot.testapp"
-const STATE_PATH = path.join(process.cwd(), "pilot-results", "auth-state.tar.gz")
 
 // ─── Auth setup: log in once and save state ───
 // Mirrors Playwright's auth.setup.ts pattern.
+// When running under a named project (e.g. "android:auth-setup"),
+// the state file is per-project so multiple platforms can run in parallel.
 
-test("authenticate and save app state", async ({ device }) => {
+test("authenticate and save app state", async ({ device, projectName }) => {
+  const suffix = projectName ? `-${projectName.replace(/[^a-zA-Z0-9]/g, "-")}` : ""
+  const statePath = path.join(process.cwd(), "pilot-results", `auth-state${suffix}.tar.gz`)
+
   // Session preflight already cleared data and launched the app fresh.
   await device.getByDescription("Login Form").tap()
 
@@ -22,5 +26,5 @@ test("authenticate and save app state", async ({ device }) => {
   await expect(device.getByText("Login successful!", { exact: true })).toBeVisible()
 
   // Save authenticated state — like Playwright's storageState()
-  await device.saveAppState(PKG, STATE_PATH)
+  await device.saveAppState(PKG, statePath)
 })

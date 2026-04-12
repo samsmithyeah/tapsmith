@@ -27,7 +27,7 @@ export default defineConfig({
     {
       name: "authenticated",
       dependencies: ["authentication"],
-      use: { appState: "./pilot-results/auth-state.tar.gz" },
+      use: { appState: "./pilot-results/auth-state-authentication.tar.gz" },
       testMatch: ["**/app-state.test.ts", "**/auth-gate.test.ts"],
     },
   ],

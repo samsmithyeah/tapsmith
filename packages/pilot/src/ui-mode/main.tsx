@@ -180,6 +180,20 @@ function App() {
     return deviceSerial;
   }, [viewedTraceKey, workers, deviceSerial]);
 
+  // DPR for the worker that ran the viewed test — not the currently selected
+  // device-mirror tab. Multi-worker mode mixes platforms (iOS @2/3x +
+  // Android @1x), so a single global value would mis-scale bounds whenever
+  // the viewed trace and the visible mirror belong to different workers.
+  const viewedTestDpr = useMemo(() => {
+    if (viewedTraceKey) {
+      const workerId = testWorkerMapRef.current.get(viewedTraceKey);
+      if (workerId != null && workers[workerId]) {
+        return workers[workerId].devicePixelRatio;
+      }
+    }
+    return deviceDpr;
+  }, [viewedTraceKey, workers, deviceDpr]);
+
   const metadata = useMemo<TraceMetadata>(() => ({
     version: 1,
     pilotVersion,
@@ -459,7 +473,7 @@ function App() {
         break;
       case 'device-info':
         setDeviceSerial(msg.serial);
-        if (msg.devicePixelRatio != null) setDeviceDpr(msg.devicePixelRatio);
+        setDeviceDpr(msg.devicePixelRatio);
         if (msg.pilotVersion) setPilotVersion(msg.pilotVersion);
         break;
       case 'workers-info':
@@ -548,17 +562,22 @@ function App() {
   }, []);
 
   // Auto-switch device mirror to the worker that ran the viewed test.
+  // Only fires when the viewed test changes — manual mirror selections must
+  // not be clobbered, so deviceViewMode is read via ref instead of as a dep.
   const lastSentWorkerRef = useRef<number | undefined>(undefined);
+  const deviceViewModeRefForAutoSwitch = useRef(deviceViewMode);
+  deviceViewModeRefForAutoSwitch.current = deviceViewMode;
   useEffect(() => {
     if (!viewedTraceKey || workers.length < 2) return;
     const wid = testWorkerMapRef.current.get(viewedTraceKey);
     if (wid != null && wid !== lastSentWorkerRef.current) {
       lastSentWorkerRef.current = wid;
       setSelectedWorkerId(wid);
-      if (deviceViewMode !== 'all') setDeviceViewMode(wid);
-      send({ type: 'select-worker-view', mode: deviceViewMode === 'all' ? 'all' : wid });
+      const mode = deviceViewModeRefForAutoSwitch.current;
+      if (mode !== 'all') setDeviceViewMode(wid);
+      send({ type: 'select-worker-view', mode: mode === 'all' ? 'all' : wid });
     }
-  }, [viewedTraceKey, workers.length, send, deviceViewMode]);
+  }, [viewedTraceKey, workers.length, send]);
 
   const handleSelectDeviceView = useCallback((mode: 'all' | number) => {
     setDeviceViewMode(mode);
@@ -704,7 +723,7 @@ function App() {
             <ScreenshotPanel
               event={selectedEvent}
               screenshots={screenshots}
-              devicePixelRatio={deviceDpr}
+              devicePixelRatio={viewedTestDpr}
             />
           </div>
         </div>
