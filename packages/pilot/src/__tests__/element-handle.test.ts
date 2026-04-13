@@ -371,6 +371,19 @@ describe('tap()', () => {
     expect(tap).toHaveBeenCalledWith(expect.anything(), 0);
   });
 
+  it('propagates non-"not found" errors from findElement instead of masking them as timeout', async () => {
+    // Regression: the old catch-all swallowed gRPC failures and surfaced
+    // them as "Element X was not found after waiting Nms", obscuring the
+    // real cause (e.g. daemon crashed, network down). Only no-match errors
+    // should keep the poll loop alive; everything else must propagate.
+    const findElement = vi.fn(async () => {
+      throw new Error('14 UNAVAILABLE: No connection established');
+    });
+    const client = makeMockClient({ findElement });
+    const handle = new ElementHandle(client, _text('Anything'), 5000);
+    await expect(handle.tap()).rejects.toThrow(/UNAVAILABLE/);
+  });
+
   it('floors the action budget when the element becomes enabled near the deadline', async () => {
     // Use fake timers so the test doesn't burn ~2s of real wall time. The
     // mock's setTimeout and _waitForEnabled's Date.now()/setTimeout both run

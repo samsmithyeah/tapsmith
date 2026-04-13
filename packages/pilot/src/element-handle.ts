@@ -118,6 +118,22 @@ function boundsContain(
   );
 }
 
+/**
+ * Test whether an error thrown from `_resolveOne` / `_resolveAll` is a
+ * "no match yet" signal that auto-wait loops should swallow and retry,
+ * vs. a genuine infrastructure failure (gRPC error, daemon crash, etc.)
+ * that must propagate so the user sees the real cause.
+ *
+ * Keeps the list of pollable-error message prefixes in sync with the
+ * throw sites in `_resolveOne` and anything `_resolveAll` surfaces for
+ * empty/out-of-range matches.
+ */
+function isPollableNotFoundError(err: unknown): boolean {
+  if (!(err instanceof Error)) return false;
+  const msg = err.message;
+  return msg.startsWith('Element not found:') || msg.startsWith('nth(');
+}
+
 export class ElementHandle {
   /** @internal */
   readonly _client: PilotGrpcClient;
@@ -487,8 +503,13 @@ export class ElementHandle {
             return Math.min(timeoutMs, Math.max(remaining, MIN_ACTION_BUDGET_MS));
           }
         }
-      } catch {
-        // Element not found yet — keep polling
+      } catch (err) {
+        // Only swallow "element not found" style errors from _resolveOne
+        // (which throws for empty matches, nth-out-of-range, and filter
+        // mismatches). Any other error — notably gRPC failures like a
+        // crashed daemon — must propagate so the user sees the real
+        // cause instead of a misleading "Element not found after Nms".
+        if (!isPollableNotFoundError(err)) throw err;
       }
       if (Date.now() >= deadline) {
         const desc = this._describe();

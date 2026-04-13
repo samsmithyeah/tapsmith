@@ -1276,6 +1276,14 @@ export async function startUIServer(
         // Multi-bucket: take the first file in the queue whose project's
         // bucket matches this worker. Files for other buckets are skipped
         // and remain in the queue for sibling workers to claim.
+        //
+        // Deliberate leniency: untagged files (!f.projectName) and files
+        // whose project isn't in the bucketByProject map fall through to
+        // any worker. In multi-bucket runs the CLI always tags files with
+        // their project, so these cases shouldn't happen — but if they did,
+        // dropping them entirely would leave the queue stuck forever. Better
+        // to run on a possibly-wrong worker than to hang. If this ever turns
+        // into a real bug we can tighten to an explicit error.
         let next: TaggedFile | undefined;
         if (worker.bucketSignature && ctx.bucketByProject) {
           const matchIdx = fileQueue.findIndex((f) => {
