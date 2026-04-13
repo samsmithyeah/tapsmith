@@ -96,6 +96,39 @@ const EXISTING_DEVICE_INIT_TIMEOUT_MS = 90_000;
 const LAUNCHED_EMULATOR_INIT_TIMEOUT_MS = 180_000;
 
 /**
+ * Module-level Ctrl-C coordination. Multi-bucket runs have two concurrent
+ * `runParallel` invocations, each registering its own SIGINT handler. They
+ * share this flag so:
+ *   - the "Interrupted. Shutting down..." message is printed exactly once
+ *   - each bucket's handler can skip its own noise-suppression logic
+ *   - the process exits ONCE, after all handlers have had a chance to run
+ *     their cleanup (emulators, simulators, daemons, workers).
+ *
+ * We defer the actual `process.exit` via `setImmediate` so any other SIGINT
+ * handlers registered for the same event get a chance to finish before the
+ * process terminates. Synchronous `process.exit` inside the first handler
+ * would leak the second bucket's devices.
+ */
+let dispatcherIsShuttingDown = false;
+let shutdownExitScheduled = false;
+function scheduleShutdownExit(signal?: NodeJS.Signals): void {
+  if (shutdownExitScheduled) return;
+  shutdownExitScheduled = true;
+  const code = signal === 'SIGTERM' ? 143 : 130;
+  setImmediate(() => process.exit(code));
+}
+
+/**
+ * True when a SIGINT/SIGTERM handler fired inside any runParallel
+ * invocation. The top-level CLI catch reads this to suppress the
+ * "Fatal error: All workers became unavailable" message when the real
+ * cause was a user-initiated shutdown.
+ */
+export function isDispatcherShuttingDown(): boolean {
+  return dispatcherIsShuttingDown;
+}
+
+/**
  * Add a base offset to a deserialized test result's workerIndex so concurrent
  * buckets produce globally-unique worker IDs. No-op when base is undefined/0.
  */
@@ -504,8 +537,19 @@ export async function runParallel(opts: DispatcherOptions, _portOffset = 0): Pro
   let firstDaemonAssigned = false;
 
   // Register signal handlers to ensure cleanup on SIGINT/SIGTERM.
-  // Without this, Ctrl-C leaves orphaned daemons and emulators.
-  const emergencyCleanup = () => {
+  // Without this, Ctrl-C leaves orphaned daemons and emulators. Multi-bucket
+  // runs install one handler per bucket; they coordinate via the module-
+  // level `dispatcherIsShuttingDown` flag so the "Interrupted" message
+  // prints exactly once and the process exits exactly once — but only
+  // AFTER every bucket's cleanup has had a chance to run (see
+  // scheduleShutdownExit). Local cleanup below is idempotent so re-entry
+  // from a second SIGINT is safe.
+  const emergencyCleanup = (signal?: NodeJS.Signals) => {
+    const firstEntry = !dispatcherIsShuttingDown;
+    dispatcherIsShuttingDown = true;
+    if (firstEntry) {
+      process.stderr.write(`\n${DIM}Interrupted. Shutting down...${RESET}\n`);
+    }
     for (const worker of workers) {
       try { worker.process?.kill(); } catch { /* already dead */ }
       try { worker.daemonProcess?.kill(); } catch { /* already dead */ }
@@ -519,9 +563,10 @@ export async function runParallel(opts: DispatcherOptions, _portOffset = 0): Pro
     if (clonedSimulators.length > 0) {
       forceCleanupSimulators(clonedSimulators);
     }
+    scheduleShutdownExit(signal);
   };
-  process.on('SIGINT', emergencyCleanup);
-  process.on('SIGTERM', emergencyCleanup);
+  process.on('SIGINT', () => emergencyCleanup('SIGINT'));
+  process.on('SIGTERM', () => emergencyCleanup('SIGTERM'));
 
   try {
     // Fork worker processes.
@@ -750,6 +795,13 @@ export async function runParallel(opts: DispatcherOptions, _portOffset = 0): Pro
 
         function retireWorker(worker: WorkerHandle, reason: string): void {
           if (worker.retired) return;
+          // On Ctrl-C we killed these workers ourselves — don't spam the
+          // user with "became unavailable" warnings that are a consequence
+          // of our own cleanup. emergencyCleanup will force-exit shortly.
+          if (dispatcherIsShuttingDown) {
+            worker.retired = true;
+            return;
+          }
 
           worker.retired = true;
           const inFlightFile = worker.currentFile;
@@ -831,6 +883,7 @@ export async function runParallel(opts: DispatcherOptions, _portOffset = 0): Pro
           });
 
           worker.process.on('exit', (code) => {
+            if (dispatcherIsShuttingDown) return;
             if (code !== 0 && !hasError && !worker.retired) {
               retireWorker(worker, `exited unexpectedly with code ${code}`);
             }

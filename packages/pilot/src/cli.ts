@@ -1803,7 +1803,16 @@ async function runTestFileWithRecovery(
   throw new Error(`Exhausted recovery attempts for ${path.basename(file)}`);
 }
 
-main().catch((err) => {
+main().catch(async (err) => {
+  // If a SIGINT/SIGTERM handler is already in the middle of shutting down
+  // the dispatcher, swallow the resulting "All workers became unavailable"
+  // rejection — it's a consequence of our own cleanup, not a real failure.
+  // The dispatcher's scheduleShutdownExit will exit the process with the
+  // correct signal code momentarily.
+  try {
+    const { isDispatcherShuttingDown } = await import('./dispatcher.js');
+    if (isDispatcherShuttingDown()) return;
+  } catch { /* dispatcher not loaded — fall through */ }
   console.error(red(`Fatal error: ${err}`));
   process.exit(1);
 });
