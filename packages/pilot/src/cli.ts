@@ -417,7 +417,13 @@ async function setupSequentialDevice(
 
   const traceConfig = resolveTraceConfig(cfg.trace);
   // PILOT-182: iOS network capture no longer needs sudo — the daemon uses
-  // a macOS Network Extension redirector for per-simulator isolation.
+  // a macOS Network Extension redirector for per-simulator isolation. If
+  // the legacy sudoers file is still on disk from an older Pilot version,
+  // print a one-time deprecation notice.
+  if (cfg.platform === 'ios') {
+    const { notifyLegacySudoersIfPresent } = await import('./legacy-cleanup.js');
+    notifyLegacySudoersIfPresent();
+  }
   if (cfg.platform !== 'ios' && traceConfig.mode !== 'off' && traceConfig.network && cfg.device) {
     const restarted = ensureAdbRoot(cfg.device);
     if (restarted) {

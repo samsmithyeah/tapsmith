@@ -392,6 +392,22 @@ enum ReadOutcome<T> {
     Error,
 }
 
+/// Search for the `\r\n\r\n` header terminator in `buf`, scanning only the
+/// new bytes since the last call. Returns the byte offset of the first
+/// terminator (end of the terminator, i.e. start of the body) if found.
+///
+/// Avoids O(N²) header search for large buffers that grow over many reads:
+/// callers advance `scan_cursor` to `buf.len()` after each call, and we
+/// start 3 bytes earlier on the next call to handle the case where
+/// `\r\n\r` was at the tail of the previous read and `\n` arrives next.
+fn find_header_terminator(buf: &[u8], scan_cursor: usize) -> Option<usize> {
+    let start = scan_cursor.saturating_sub(3);
+    buf[start..]
+        .windows(4)
+        .position(|w| w == b"\r\n\r\n")
+        .map(|pos| start + pos + 4)
+}
+
 /// Read a full HTTP/1.x request (headers + body) from a client stream,
 /// returning structured request data plus the raw bytes for forwarding.
 async fn read_request<R>(client: &mut R, hostname: &str) -> ReadOutcome<ParsedRequest>
@@ -400,14 +416,16 @@ where
 {
     let mut buf = Vec::new();
     let mut tmp = vec![0u8; 8192];
-    loop {
+    let mut scan_cursor = 0usize;
+    let header_end = loop {
         match tokio::time::timeout(CLIENT_READ_TIMEOUT, client.read(&mut tmp)).await {
             Ok(Ok(0)) => return ReadOutcome::ConnectionClosed,
             Ok(Ok(n)) => {
                 buf.extend_from_slice(&tmp[..n]);
-                if buf.windows(4).any(|w| w == b"\r\n\r\n") {
-                    break;
+                if let Some(h) = find_header_terminator(&buf, scan_cursor) {
+                    break h;
                 }
+                scan_cursor = buf.len();
                 if buf.len() > 65536 {
                     debug!("MITM request headers too large for {hostname}");
                     return ReadOutcome::Error;
@@ -422,7 +440,7 @@ where
                 return ReadOutcome::Error;
             }
         }
-    }
+    };
 
     let first_line_end = buf.iter().position(|&b| b == b'\n').unwrap_or(0);
     let first_line_str = String::from_utf8_lossy(&buf[..first_line_end]);
@@ -435,7 +453,9 @@ where
 
     let method = parts[0].to_string();
     let path = parts[1].to_string();
-    let (headers, header_end) = parse_headers(&buf);
+    // `parse_headers` returns the same header_end we already computed; we
+    // recompute here to get the structured Vec<(String, String)>.
+    let (headers, _) = parse_headers(&buf[..header_end]);
 
     // Read request body if Content-Length is set (capped to prevent OOM).
     let content_length: usize = get_header(&headers, "content-length")
@@ -468,21 +488,109 @@ where
     })
 }
 
-/// Read a full HTTP/1.x response from an upstream stream. Uses
-/// [`response_complete`] to detect the end of Content-Length, chunked, or
-/// no-body responses; also breaks on upstream EOF or `MAX_PROXY_BODY`.
+/// Post-header body-framing state for a response-in-progress read. Set once
+/// when the header terminator is first seen, then used to decide completion
+/// on subsequent reads in O(1) for fixed-length bodies (the common case).
+enum BodyFraming {
+    /// Content-Length body; read until `buf.len() >= total_needed`.
+    FixedLength { total_needed: usize },
+    /// Transfer-Encoding: chunked; read until the terminator is observed.
+    Chunked {
+        header_end: usize,
+        chunked_scan_cursor: usize,
+    },
+    /// 1xx / 204 / 304 — no body expected.
+    NoBody,
+    /// No Content-Length and not chunked — read until upstream closes (EOF
+    /// from the read loop handles this; no completion check needed).
+    UntilClose,
+}
+
+/// Read a full HTTP/1.x response from an upstream stream. Parses the header
+/// terminator + framing exactly once (when headers are first complete),
+/// then checks completion on each subsequent read in O(1) for Content-Length
+/// responses. Chunked responses still scan a growing-cursor window each
+/// read, but never re-scan already-searched bytes.
 async fn read_response<R>(upstream: &mut R, hostname: &str) -> ReadOutcome<ParsedResponse>
 where
     R: AsyncRead + Unpin,
 {
     let mut buf = Vec::new();
     let mut tmp = vec![0u8; 8192];
+    let mut scan_cursor = 0usize;
+    // Set once the header terminator is seen.
+    let mut framing: Option<BodyFraming> = None;
+    // Cached header_end for building ParsedResponse at the end.
+    let mut cached_header_end: usize = 0;
+    // Cached parsed headers (set alongside framing).
+    let mut cached_headers: Vec<(String, String)> = Vec::new();
+    let mut cached_status: i32 = 0;
+
     loop {
         match tokio::time::timeout(UPSTREAM_READ_TIMEOUT, upstream.read(&mut tmp)).await {
             Ok(Ok(0)) => break,
             Ok(Ok(n)) => {
                 buf.extend_from_slice(&tmp[..n]);
-                if response_complete(&buf) {
+
+                // Phase A: still looking for the header terminator.
+                if framing.is_none() {
+                    if let Some(header_end) = find_header_terminator(&buf, scan_cursor) {
+                        cached_header_end = header_end;
+                        let (headers, _) = parse_headers(&buf[..header_end]);
+                        let status = parse_status_code(&buf);
+                        cached_status = status;
+
+                        let is_chunked = headers.iter().any(|(k, v)| {
+                            k.eq_ignore_ascii_case("transfer-encoding")
+                                && v.to_lowercase().contains("chunked")
+                        });
+                        let content_length: Option<usize> = headers
+                            .iter()
+                            .find(|(k, _)| k.eq_ignore_ascii_case("content-length"))
+                            .and_then(|(_, v)| v.trim().parse::<usize>().ok());
+
+                        cached_headers = headers;
+
+                        framing = Some(if matches!(status, 100..=199 | 204 | 304) {
+                            BodyFraming::NoBody
+                        } else if is_chunked {
+                            BodyFraming::Chunked {
+                                header_end,
+                                chunked_scan_cursor: header_end,
+                            }
+                        } else if let Some(cl) = content_length {
+                            BodyFraming::FixedLength {
+                                total_needed: header_end.saturating_add(cl),
+                            }
+                        } else {
+                            BodyFraming::UntilClose
+                        });
+                    } else {
+                        scan_cursor = buf.len();
+                    }
+                }
+
+                // Phase B: check completion based on cached framing. O(1) for
+                // fixed-length; cursor-windowed scan for chunked; never for
+                // UntilClose (which terminates on upstream EOF = Ok(0) above).
+                let complete = match framing.as_mut() {
+                    None => false,
+                    Some(BodyFraming::NoBody) => true,
+                    Some(BodyFraming::FixedLength { total_needed }) => buf.len() >= *total_needed,
+                    Some(BodyFraming::Chunked {
+                        header_end,
+                        chunked_scan_cursor,
+                    }) => {
+                        let he = *header_end;
+                        let start = (*chunked_scan_cursor).saturating_sub(4).max(he);
+                        let done = buf[start..].windows(5).any(|w| w == b"\r\n0\r\n")
+                            && buf.ends_with(b"\r\n\r\n");
+                        *chunked_scan_cursor = buf.len();
+                        done
+                    }
+                    Some(BodyFraming::UntilClose) => false,
+                };
+                if complete {
                     break;
                 }
                 if buf.len() > MAX_PROXY_BODY {
@@ -504,8 +612,17 @@ where
         return ReadOutcome::ConnectionClosed;
     }
 
-    let status_code = parse_status_code(&buf);
-    let (headers, header_end) = parse_headers(&buf);
+    // If framing was never set (loop ended before the header terminator
+    // arrived — e.g. upstream closed mid-header), fall back to a one-shot
+    // full-buffer parse.
+    let (headers, header_end, status_code) = if framing.is_some() {
+        (cached_headers, cached_header_end, cached_status)
+    } else {
+        let (h, he) = parse_headers(&buf);
+        let s = parse_status_code(&buf);
+        (h, he, s)
+    };
+
     let body = if header_end < buf.len() {
         buf[header_end..].to_vec()
     } else {
@@ -518,6 +635,66 @@ where
         body,
         raw_bytes: buf,
     })
+}
+
+/// Re-serialize a [`ParsedRequest`] back to HTTP/1.1 wire format. Called
+/// after a `NetworkHandler::on_request` hook mutates `method` / `path` /
+/// `headers` / `body`, so that the `raw_bytes` forwarded upstream stays in
+/// sync with the structured fields. The no-handler hot path never calls
+/// this — the original upstream bytes are forwarded verbatim.
+fn reencode_request(req: &ParsedRequest) -> Vec<u8> {
+    let mut out = Vec::with_capacity(req.raw_bytes.len().max(256));
+    out.extend_from_slice(req.method.as_bytes());
+    out.push(b' ');
+    out.extend_from_slice(req.path.as_bytes());
+    out.extend_from_slice(b" HTTP/1.1\r\n");
+    for (k, v) in &req.headers {
+        out.extend_from_slice(k.as_bytes());
+        out.extend_from_slice(b": ");
+        out.extend_from_slice(v.as_bytes());
+        out.extend_from_slice(b"\r\n");
+    }
+    out.extend_from_slice(b"\r\n");
+    out.extend_from_slice(&req.body);
+    out
+}
+
+/// Re-serialize a [`ParsedResponse`] back to HTTP/1.1 wire format. Called
+/// after a `NetworkHandler::on_response` hook mutates `status_code` /
+/// `headers` / `body`, or when a handler returns a synthetic response that
+/// left `raw_bytes` empty, so the bytes written back to the client stay in
+/// sync with the structured fields.
+fn reencode_response(resp: &ParsedResponse) -> Vec<u8> {
+    let reason = match resp.status_code {
+        100 => "Continue",
+        101 => "Switching Protocols",
+        200 => "OK",
+        201 => "Created",
+        202 => "Accepted",
+        204 => "No Content",
+        301 => "Moved Permanently",
+        302 => "Found",
+        304 => "Not Modified",
+        400 => "Bad Request",
+        401 => "Unauthorized",
+        403 => "Forbidden",
+        404 => "Not Found",
+        500 => "Internal Server Error",
+        502 => "Bad Gateway",
+        503 => "Service Unavailable",
+        _ => "OK",
+    };
+    let mut out = Vec::with_capacity(resp.raw_bytes.len().max(256));
+    out.extend_from_slice(format!("HTTP/1.1 {} {reason}\r\n", resp.status_code).as_bytes());
+    for (k, v) in &resp.headers {
+        out.extend_from_slice(k.as_bytes());
+        out.extend_from_slice(b": ");
+        out.extend_from_slice(v.as_bytes());
+        out.extend_from_slice(b"\r\n");
+    }
+    out.extend_from_slice(b"\r\n");
+    out.extend_from_slice(&resp.body);
+    out
 }
 
 /// Push a [`CapturedEntry`] into the shared state, truncating bodies to
@@ -593,9 +770,11 @@ async fn handle_mitm_http<C, U>(
     // Snapshot the handler once per connection. A handler is configured
     // before capture starts and doesn't change during a live connection, so
     // there's no need to re-lock on every request iteration. Today this is
-    // always None and the two hook call-sites below are no-ops at runtime,
-    // but the code paths exist so the future modification feature is a pure
-    // drop-in replacement of `None` with `Some(handler)`.
+    // always None and the hook call-sites below are no-ops at runtime,
+    // but the full hook plumbing (including `raw_bytes` regeneration after
+    // mutation) is in place so the future modification feature drops in
+    // cleanly — a handler that mutates `req.headers`/`req.body` is actually
+    // observed on the wire, not silently dropped.
     let handler = state.lock().await.handler.clone();
 
     loop {
@@ -608,8 +787,15 @@ async fn handle_mitm_http<C, U>(
 
         // Request hook: optionally transform the request, and optionally
         // short-circuit with a synthetic response (no upstream call at all).
+        // After the hook runs we re-serialize `raw_bytes` from the (possibly
+        // mutated) structured fields so downstream writes see the new shape.
         if let Some(h) = handler.as_ref() {
-            if let Some(synth) = h.on_request(&mut req).await {
+            let maybe_synth = h.on_request(&mut req).await;
+            req.raw_bytes = reencode_request(&req);
+            if let Some(mut synth) = maybe_synth {
+                if synth.raw_bytes.is_empty() {
+                    synth.raw_bytes = reencode_response(&synth);
+                }
                 if client_stream.write_all(&synth.raw_bytes).await.is_err() {
                     return;
                 }
@@ -634,8 +820,11 @@ async fn handle_mitm_http<C, U>(
         };
 
         // Response hook: optionally transform the response before forwarding.
+        // Same `raw_bytes` regeneration rule — keep wire bytes in sync with
+        // the structured fields after any mutation.
         if let Some(h) = handler.as_ref() {
             h.on_response(&req, &mut resp).await;
+            resp.raw_bytes = reencode_response(&resp);
         }
 
         if client_stream.write_all(&resp.raw_bytes).await.is_err() {
@@ -1005,11 +1194,14 @@ async fn dial_upstream(dst_host: &str, dst_port: u16) -> Option<TcpStream> {
 /// (Cloudflare, Fastly, CDN-hosted APIs, ...) — they'd either reject the
 /// connection with HandshakeFailure or return a cert for a different name.
 ///
-/// So we peek one byte to distinguish TLS from plain HTTP, then for TLS we
-/// use [`tokio_rustls::LazyConfigAcceptor`] to lazily parse the client's
-/// `ClientHello`, extract the **real hostname from the SNI extension**, and
-/// use that as the upstream `ServerName` + the per-host MITM cert CN. The
-/// client's TLS handshake is then resumed against the minted cert via
+/// So we peek the first 3 bytes of the client stream. A TLS record starts
+/// with `0x16 0x03 0x0?` (Handshake ContentType + SSL 3.0 / TLS 1.x major
+/// version + minor version 0..=4), which can't appear at the start of a
+/// valid HTTP request (whose first byte is always an ASCII method letter >
+/// `0x40`). If the prefix matches, we run [`tokio_rustls::LazyConfigAcceptor`]
+/// to lazily parse the client's `ClientHello`, extract the **real hostname
+/// from the SNI extension**, and use that as the upstream `ServerName` +
+/// the per-host MITM cert CN. The client handshake is then resumed via
 /// [`tokio_rustls::StartHandshake::into_stream`]. Plain HTTP flows pass
 /// through to [`handle_mitm_http`] directly (no SNI needed).
 #[cfg(target_os = "macos")]
@@ -1022,16 +1214,21 @@ pub(crate) async fn handle_transparent_tcp<S>(
 ) where
     S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
-    let mut first_byte = [0u8; 1];
-    if let Err(e) = client.read_exact(&mut first_byte).await {
+    let mut peek = [0u8; 3];
+    if let Err(e) = client.read_exact(&mut peek).await {
         debug!(%dst_host, dst_port, "transparent-TCP peek failed: {e}");
         return;
     }
-    let chained = PrefixedStream::new(first_byte.to_vec(), client);
+    // Validate the full 3-byte TLS record prefix:
+    //   peek[0] = 0x16 → TLS ContentType.Handshake
+    //   peek[1] = 0x03 → SSL/TLS major version 3
+    //   peek[2] ∈ 0..=4 → minor version (SSL 3.0 / TLS 1.0–1.3)
+    // Any other prefix is treated as plain HTTP (HTTP method letters are
+    // all > 0x40, so this can't collide with a real HTTP/1.x request).
+    let is_tls = peek[0] == 0x16 && peek[1] == 0x03 && peek[2] <= 0x04;
+    let chained = PrefixedStream::new(peek.to_vec(), client);
 
-    // 0x16 is the TLS record type for a Handshake record — every TLS
-    // ClientHello starts with this byte. Anything else is plain HTTP.
-    if first_byte[0] == 0x16 {
+    if is_tls {
         handle_transparent_tls(chained, dst_host, dst_port, state, mitm_ca).await;
     } else {
         let Some(upstream_tcp) = dial_upstream(&dst_host, dst_port).await else {

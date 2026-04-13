@@ -122,7 +122,16 @@ mod tests {
     const UDID_B: &str = "6C21330D-1440-40AC-8E5E-F23F9164C6B6";
 
     /// Minimal `ps -axo pid,ppid,command` snapshot featuring two booted
-    /// simulators, a host-side xcodebuild test runner, and noise.
+    /// simulators, a host-side xcodebuild test runner for a third, and noise.
+    ///
+    /// Realistic properties:
+    /// - Processes whose exec path is under `CoreSimulator/Devices/<UDID>/data/`
+    ///   are always children of that same simulator's `launchd_sim` (macOS
+    ///   doesn't launch binaries from one simulator's container under another
+    ///   simulator's process tree in the wild).
+    /// - `PilotAgentUITests-Runner` is an xcodebuild-launched XCTest host
+    ///   bundle, so its parent is `xcodebuild`/`testmanagerd`, NOT the
+    ///   simulator's `launchd_sim`. This is the case Strategy 2 exists for.
     const PS_SNAPSHOT: &str = "\
   PID  PPID COMMAND
     1     0 /sbin/launchd
@@ -133,25 +142,22 @@ mod tests {
 14700 14646 /Library/CoreSimulator/Volumes/iOS_22B83/Runtimes/iOS 18.2.simruntime/Contents/Resources/RuntimeRoot/usr/bin/python3
 18050 11320 /usr/bin/curl --max-time 5 https://httpbin.org/get -o /dev/null
  3491 28457 /Users/sam/Library/Developer/CoreSimulator/Devices/5A3A8684-CAFE-BABE-DEAD-BEEF00000000/data/Containers/Bundle/Application/0CD2681B/PilotAgentUITests-Runner.app/PilotAgentUITests-Runner
- 3492  3491 /Users/sam/Library/Developer/CoreSimulator/Devices/972FB67E-B94F-40EC-9388-7F3EFB761246/data/Containers/Bundle/Application/F9BAB21E/Helper
 28457  1000 /Applications/Xcode.app/Contents/Developer/usr/bin/xcodebuild test-without-building
   999   888 /usr/sbin/cfprefsd agent
 ";
 
     #[test]
     fn parses_descendants_of_launchd_sim() {
-        // For simulator A, launchd_sim is pid 11320. Its direct children are
-        // 14646 (PilotTestApp) and 18050 (curl). 14646 has a grandchild 14700.
-        // Row 3492 has a CoreSimulator/Devices/<UDID_A> marker but its ppid
-        // chain leads back to pid 3491 (a different simulator's runner), so
-        // it's only caught via Strategy 2. Expected pids for UDID_A:
-        //   11320 (launchd_sim)
-        //   14646 (PilotTestApp — in BFS + also matches marker)
-        //   14700 (BFS descendant)
-        //   18050 (curl — BFS descendant)
-        //    3492 (Strategy 2 marker match)
+        // For simulator A, `launchd_sim` is pid 11320. Its direct children
+        // are 14646 (PilotTestApp) and 18050 (curl from `simctl spawn`).
+        // 14646 has a grandchild 14700 (a python3 from the runtime root).
+        // Expected UDID_A PID set (in sorted order from the BTreeSet):
+        //   11320 (launchd_sim, BFS root)
+        //   14646 (PilotTestApp, BFS child; also marker-matches)
+        //   14700 (BFS grandchild)
+        //   18050 (curl, BFS child)
         let pids = parse_ps_output(PS_SNAPSHOT, UDID_A);
-        assert_eq!(pids, vec![3492, 11320, 14646, 14700, 18050]);
+        assert_eq!(pids, vec![11320, 14646, 14700, 18050]);
     }
 
     #[test]

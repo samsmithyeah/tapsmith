@@ -1,4 +1,4 @@
-//! PILOT-182 Phase 1.6 — iOS Network Extension redirector lifecycle.
+//! PILOT-182 — iOS Network Extension redirector lifecycle.
 //!
 //! Spawns the `Mitmproxy Redirector.app` launcher, accepts the control
 //! channel from the System Extension, sends a per-simulator PID
@@ -8,13 +8,10 @@
 //! `InterceptConf` if the simulator's process tree has changed.
 //!
 //! The lifecycle is anchored by the [`IosRedirect`] handle; dropping it
-//! aborts the refresh and accept tasks and unlinks the Unix socket file.
-//! The System Extension itself is a macOS system-wide singleton and is NOT
-//! torn down — other Pilot daemons (concurrent workers against other
-//! simulators) continue to use it independently.
-//!
-//! See `SPIKE_MEMO.md` in `/Users/sam/projects/pilot-182-spike/` for the
-//! full Phase 0 validation notes that inform this implementation.
+//! aborts the refresh, accept, and launcher-drain tasks and unlinks the
+//! Unix socket file. The System Extension itself is a macOS system-wide
+//! singleton and is NOT torn down — other Pilot daemons (concurrent workers
+//! against other simulators) continue to use it independently.
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -53,11 +50,18 @@ const NEW_FLOW_MAX_LEN: usize = 64 * 1024;
 /// listener after spawning the launcher binary.
 const CONTROL_CHANNEL_TIMEOUT: Duration = Duration::from_secs(10);
 
+/// How long to wait for a write to the SE control channel before giving up.
+/// Guards against hangs if the SE stops draining its side (crash, suspension,
+/// kernel quirk) — without this, the refresh task and the initial conf send
+/// on the startup fast path could block indefinitely.
+const CONTROL_CHANNEL_WRITE_TIMEOUT: Duration = Duration::from_secs(5);
+
 /// Handle to a running redirector session. Dropping it aborts the
 /// background tasks and unlinks the Unix socket file.
 pub struct IosRedirect {
     accept_handle: JoinHandle<()>,
     refresh_handle: JoinHandle<()>,
+    launcher_handle: JoinHandle<()>,
     listener_path: PathBuf,
 }
 
@@ -99,6 +103,19 @@ impl IosRedirect {
             debug!(%udid, pids = initial_pids.len(), "resolved initial simulator PID set");
         }
 
+        // The Unix socket MUST live in `/tmp`, not under the per-user
+        // `$TMPDIR` (`/var/folders/<xxx>/T/`). The macOS System Extension
+        // runs in a different security domain than the calling user's
+        // shell and cannot reach per-user TMPDIR paths — trying to bind
+        // there silently causes the SE to never connect, and we time out
+        // on the control channel accept. `mitmproxy_rs` upstream uses
+        // `/tmp/mitmproxy-<pid>` for the same reason.
+        //
+        // The pid suffix is still unique per worker daemon, so concurrent
+        // workers don't collide. The theoretical symlink-planting risk of
+        // a world-writable `/tmp` is not relevant to our threat model
+        // (developer machine, single user) — and `remove_file` before
+        // `bind` below closes the narrow pre-creation window.
         let listener_path =
             PathBuf::from(format!("/tmp/pilot-redirector-{}.sock", std::process::id()));
         if let Err(e) = std::fs::remove_file(&listener_path) {
@@ -121,11 +138,12 @@ impl IosRedirect {
 
         // The launcher binary is a short-lived process that tells the SE
         // where to dial, then exits with status 0. Its stdout/stderr are
-        // drained in a detached task for diagnostics. We do NOT wait for
-        // its exit here — we wait for the SE to connect back to our
-        // listener, which is the real signal that the session is alive.
+        // drained in a background task for diagnostics. We do NOT wait for
+        // its exit here — we wait for the SE to connect back to our listener,
+        // which is the real signal that the session is alive. The handle is
+        // tracked so `Drop` can abort it if we're torn down before it exits.
         let launcher_path = listener_path.clone();
-        tokio::spawn(async move {
+        let launcher_handle = tokio::spawn(async move {
             let out = Command::new(&redirector_bin)
                 .arg(&launcher_path)
                 .stdout(std::process::Stdio::piped())
@@ -181,6 +199,7 @@ impl IosRedirect {
         Ok(Self {
             accept_handle,
             refresh_handle,
+            launcher_handle,
             listener_path,
         })
     }
@@ -190,6 +209,7 @@ impl Drop for IosRedirect {
     fn drop(&mut self) {
         self.accept_handle.abort();
         self.refresh_handle.abort();
+        self.launcher_handle.abort();
         if let Err(e) = std::fs::remove_file(&self.listener_path) {
             if e.kind() != std::io::ErrorKind::NotFound {
                 debug!(
@@ -204,6 +224,12 @@ impl Drop for IosRedirect {
 /// Encode and write an `InterceptConf` with the given PIDs to the SE's
 /// control channel. The PIDs are sent as decimal-string actions, which the
 /// SE matches exactly against each flow's originating PID.
+///
+/// Wrapped in [`CONTROL_CHANNEL_WRITE_TIMEOUT`] — a stuck SE (crash,
+/// suspension, kernel quirk) must never block the caller indefinitely. The
+/// initial send from [`IosRedirect::start`] is on the startup fast path and
+/// the refresh-loop send runs every two seconds, so any hang would propagate
+/// directly into the test runner.
 async fn send_intercept_conf(
     control: &mut Framed<UnixStream, LengthDelimitedCodec>,
     pids: &[u32],
@@ -211,11 +237,15 @@ async fn send_intercept_conf(
     let conf = ipc::InterceptConf {
         actions: pids.iter().map(|p| p.to_string()).collect(),
     };
-    control
-        .send(Bytes::from(conf.encode_to_vec()))
-        .await
-        .context("writing InterceptConf to control channel")?;
-    Ok(())
+    let bytes = Bytes::from(conf.encode_to_vec());
+    match timeout(CONTROL_CHANNEL_WRITE_TIMEOUT, control.send(bytes)).await {
+        Ok(Ok(())) => Ok(()),
+        Ok(Err(e)) => Err(e).context("writing InterceptConf to control channel"),
+        Err(_) => bail!(
+            "timed out writing InterceptConf to SE control channel after {}s",
+            CONTROL_CHANNEL_WRITE_TIMEOUT.as_secs()
+        ),
+    }
 }
 
 /// Loop forever: every [`PID_REFRESH_INTERVAL`], re-resolve the simulator's
@@ -231,6 +261,9 @@ async fn pid_refresh_loop(
 ) {
     let mut last: HashSet<u32> = initial_pids.into_iter().collect();
     let mut interval = tokio::time::interval(PID_REFRESH_INTERVAL);
+    // Delay missed ticks rather than bunching them — a slow `ps` under load
+    // shouldn't cause a tight-loop burst of refreshes catching up.
+    interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     // Skip the immediate initial tick — the caller already sent the
     // initial InterceptConf.
     interval.tick().await;
@@ -397,12 +430,28 @@ fn resolve_redirector_path() -> Result<PathBuf> {
         }
     }
 
+    let home = dirs::home_dir().unwrap_or_default();
+    let cache_hint = home
+        .join(".pilot/redirector/Mitmproxy Redirector.app")
+        .display()
+        .to_string();
     bail!(
-        "Mitmproxy Redirector.app not found. Install prerequisites:\n\
+        "Mitmproxy Redirector.app not found. Pilot searched (in order):\n\
          \n\
-           1. brew install mitmproxy\n\
-           2. sudo mitmproxy --mode local:Safari   # one-time: unpacks redirector to /Applications/\n\
-           3. Approve the Network Extension in System Settings → General → Login Items & Extensions\n\
+           1. $PILOT_REDIRECTOR_APP (if set)\n\
+           2. /Applications/Mitmproxy Redirector.app\n\
+           3. {cache_hint}\n\
+           4. The mitmproxy brew cask tarball (not installed?)\n\
+         \n\
+         Install prerequisites:\n\
+           brew install mitmproxy\n\
+         Then one of:\n\
+           a) `sudo mitmproxy --mode local:Safari` (one-time, unpacks redirector to /Applications/)\n\
+           b) Re-run `pilot test` — Pilot will extract the redirector from the brew cask into {cache_hint}\n\
+         \n\
+         After the redirector is installed, approve its Network Extension in\n\
+         System Settings → General → Login Items & Extensions → Network Extensions,\n\
+         then re-run your command.\n\
          \n\
          Or set PILOT_REDIRECTOR_APP to the full path of an existing Mitmproxy Redirector binary."
     )
@@ -447,26 +496,86 @@ fn find_brew_tarball() -> Option<PathBuf> {
 /// the system `tar` binary (always present on macOS) to preserve the code
 /// signature's extended attributes, which a pure-Rust tar crate can't
 /// promise out of the box.
+///
+/// **Concurrency**: multiple pilot-core workers may race to extract at
+/// startup. We extract to a per-process temporary directory first and then
+/// atomically `rename` the `.app` bundle into place. If another worker won
+/// the race, our rename fails with EEXIST and we clean up — the winner's
+/// content is used by everyone. This avoids a half-written cache under a
+/// tar process kill or a racing writer.
 fn extract_brew_tarball(tar_path: &Path) -> Result<()> {
-    let cache_dir = dirs::home_dir()
-        .context("no home directory")?
-        .join(".pilot/redirector");
+    let home = dirs::home_dir().context("no home directory")?;
+    let cache_dir = home.join(".pilot/redirector");
+    let target_app = cache_dir.join("Mitmproxy Redirector.app");
+
+    // Fast path: another worker already extracted before us.
+    if target_app.exists() {
+        return Ok(());
+    }
+
     std::fs::create_dir_all(&cache_dir)
         .with_context(|| format!("creating {}", cache_dir.display()))?;
+
+    // Extract into a per-process sibling directory. Multiple workers can
+    // run simultaneously; their tmp dirs don't collide.
+    let tmp_dir = cache_dir.join(format!(".redirector.tmp.{}", std::process::id()));
+    if tmp_dir.exists() {
+        std::fs::remove_dir_all(&tmp_dir)
+            .with_context(|| format!("removing stale {}", tmp_dir.display()))?;
+    }
+    std::fs::create_dir_all(&tmp_dir).with_context(|| format!("creating {}", tmp_dir.display()))?;
+
+    // Cleanup guard — drop() removes the tmp dir on any early return.
+    struct TmpDirGuard<'a>(&'a Path);
+    impl Drop for TmpDirGuard<'_> {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(self.0);
+        }
+    }
+    let guard = TmpDirGuard(&tmp_dir);
 
     let status = std::process::Command::new("tar")
         .arg("-xf")
         .arg(tar_path)
         .arg("-C")
-        .arg(&cache_dir)
+        .arg(&tmp_dir)
         .status()
         .context("running tar")?;
     if !status.success() {
         bail!("tar -xf {} failed with {:?}", tar_path.display(), status);
     }
-    info!(
-        cache = %cache_dir.display(),
-        "extracted Mitmproxy Redirector.app from brew cask tarball"
-    );
+
+    let tmp_app = tmp_dir.join("Mitmproxy Redirector.app");
+    if !tmp_app.exists() {
+        bail!(
+            "tar extracted {} but {} was not created",
+            tar_path.display(),
+            tmp_app.display()
+        );
+    }
+
+    // Atomic rename into place. If the target already exists (another worker
+    // won the race), `rename` fails with EEXIST on macOS; that's fine, both
+    // workers end up using the winner's content (identical either way).
+    match std::fs::rename(&tmp_app, &target_app) {
+        Ok(_) => {
+            info!(
+                cache = %target_app.display(),
+                "extracted Mitmproxy Redirector.app from brew cask tarball"
+            );
+        }
+        Err(_) if target_app.exists() => {
+            debug!(
+                target = %target_app.display(),
+                "another worker extracted the redirector first — using theirs"
+            );
+        }
+        Err(e) => {
+            return Err(e).with_context(|| {
+                format!("renaming {} to {}", tmp_app.display(), target_app.display())
+            });
+        }
+    }
+    drop(guard); // explicit cleanup of any leftover tmp files
     Ok(())
 }

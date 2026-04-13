@@ -2715,12 +2715,10 @@ impl proto::pilot_service_server::PilotService for PilotServiceImpl {
             }
         }
 
-        // Clone the MITM CA for any per-platform post-start wiring (iOS
-        // redirector needs a handle to mint per-host certs for its flow
-        // bridge). The original `mitm_ca` is moved into `NetworkProxy::start`.
-        let mitm_ca_for_redirect = Arc::clone(&mitm_ca);
-        let _ = &mitm_ca_for_redirect; // not all targets use it
-        let proxy = NetworkProxy::start(mitm_ca)
+        // Pass a clone into `NetworkProxy::start` so the outer `mitm_ca`
+        // stays in scope for any per-platform post-start wiring (the iOS
+        // redirector needs it to mint per-host certs for its flow bridge).
+        let proxy = NetworkProxy::start(Arc::clone(&mitm_ca))
             .await
             .map_err(|e| Status::internal(format!("Failed to start proxy: {e}")))?;
         let host_port = proxy.port();
@@ -2737,7 +2735,7 @@ impl proto::pilot_service_server::PilotService for PilotServiceImpl {
                     match crate::ios_redirect::IosRedirect::start(
                         serial.clone(),
                         proxy.state_handle(),
-                        mitm_ca_for_redirect.clone(),
+                        Arc::clone(&mitm_ca),
                     )
                     .await
                     {

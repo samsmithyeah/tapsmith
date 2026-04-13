@@ -45,36 +45,11 @@ import {
   type ClonedSimulator,
 } from './ios-simulator.js';
 import { freeStaleAgentPort, findPidsOnPort } from './port-utils.js';
+import { notifyLegacySudoersIfPresent } from './legacy-cleanup.js';
 
 const DIM = '\x1b[2m';
 const YELLOW = '\x1b[33m';
 const RESET = '\x1b[0m';
-
-/**
- * Legacy sudoers file left behind by the pre-PILOT-182 macOS system-proxy
- * approach. Pilot no longer uses `networksetup` for iOS network capture —
- * iOS traffic routing is now handled by the macOS Network Extension
- * redirector inside pilot-core. If this file is still present on the
- * user's system, it's harmless dead weight; print a one-line deprecation
- * notice so they know they can remove it.
- */
-const LEGACY_SUDOERS_FILE = '/etc/sudoers.d/zzz-pilot-networksetup';
-let _legacySudoersNoticeShown = false;
-
-function notifyLegacySudoersIfPresent(): void {
-  if (_legacySudoersNoticeShown) return;
-  _legacySudoersNoticeShown = true;
-  try {
-    if (fs.existsSync(LEGACY_SUDOERS_FILE)) {
-      process.stderr.write(
-        `${YELLOW}[pilot]${RESET} ${DIM}Legacy sudoers file ${LEGACY_SUDOERS_FILE} is no longer used by Pilot.\n` +
-        `        Remove it with: ${RESET}sudo rm ${LEGACY_SUDOERS_FILE}${DIM}\n${RESET}`,
-      );
-    }
-  } catch {
-    // Best-effort — never block a test run over a deprecation hint.
-  }
-}
 
 interface TaggedFile {
   filePath: string
