@@ -1,5 +1,13 @@
 import { describe, it, expect } from 'vitest';
-import { defineConfig, resolveDeviceStrategy } from '../config.js';
+import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import {
+  defineConfig,
+  resolveDeviceStrategy,
+  isExplicitWorkers,
+  loadConfig,
+} from '../config.js';
 
 describe('defineConfig()', () => {
   it('returns defaults when called with no arguments', () => {
@@ -143,6 +151,95 @@ describe('defineConfig()', () => {
   it('allows explicit deviceStrategy override', () => {
     const config = defineConfig({ deviceStrategy: 'prefer-connected' });
     expect(config.deviceStrategy).toBe('prefer-connected');
+  });
+});
+
+describe('isExplicitWorkers() / loadConfig()', () => {
+  it('defineConfig({}) is not explicit about workers', () => {
+    expect(isExplicitWorkers(defineConfig())).toBe(false);
+  });
+
+  it('defineConfig({ workers: 2 }) is explicit about workers', () => {
+    expect(isExplicitWorkers(defineConfig({ workers: 2 }))).toBe(true);
+  });
+
+  async function withTempConfig<T>(
+    contents: string,
+    fileName: string,
+    fn: (dir: string) => Promise<T>,
+  ): Promise<T> {
+    const dir = mkdtempSync(join(tmpdir(), 'pilot-config-test-'));
+    try {
+      writeFileSync(join(dir, fileName), contents);
+      return await fn(dir);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }
+
+  it('loadConfig flags a raw object-literal config with workers as explicit', async () => {
+    // Catches the regression where users who export a plain object literal
+    // (not via defineConfig) lose explicit-workers detection because the
+    // Symbol-based flag is only stamped inside defineConfig.
+    const contents = 'export default { workers: 3 };\n';
+    await withTempConfig(contents, 'pilot.config.mjs', async (dir) => {
+      const config = await loadConfig(dir);
+      expect(config.workers).toBe(3);
+      expect(isExplicitWorkers(config)).toBe(true);
+    });
+  });
+
+  it('loadConfig does not flag a raw object-literal config without workers', async () => {
+    const contents = 'export default { timeout: 5000 };\n';
+    await withTempConfig(contents, 'pilot.config.mjs', async (dir) => {
+      const config = await loadConfig(dir);
+      expect(config.timeout).toBe(5000);
+      expect(isExplicitWorkers(config)).toBe(false);
+    });
+  });
+
+  // The fixtures below simulate what `defineConfig` produces without
+  // actually importing it — the dynamic import in loadConfig can't resolve
+  // the pilot package's .ts source from a temp-dir .mjs fixture. Since
+  // EXPLICIT_WORKERS is `Symbol.for('pilot.explicitWorkers')`, any module
+  // can stamp it via Symbol.for and loadConfig's check will see the same
+  // symbol. This tests the whole path that matters: "symbol survives the
+  // loadConfig spread, rawHasExplicitWorkers trusts it when present".
+
+  it('loadConfig preserves explicit-workers=true when defineConfig stamped the symbol', async () => {
+    const contents = `
+      const EXPLICIT_WORKERS = Symbol.for('pilot.explicitWorkers');
+      const config = { workers: 4 };
+      Object.defineProperty(config, EXPLICIT_WORKERS, { value: true, enumerable: false });
+      export default config;
+    `;
+    await withTempConfig(contents, 'pilot.config.mjs', async (dir) => {
+      const config = await loadConfig(dir);
+      expect(config.workers).toBe(4);
+      expect(isExplicitWorkers(config)).toBe(true);
+    });
+  });
+
+  it('loadConfig reports NOT explicit when defineConfig was called without a workers override', async () => {
+    // Regression: defineConfig({}) stamps the symbol to false AND populates
+    // workers=1 from the default merge. A naive "workers !== undefined"
+    // fallback would misclassify this as explicit and fire the spurious
+    // budget warning on every config that relies on per-project `workers:`
+    // overrides instead of a top-level one.
+    const contents = `
+      const EXPLICIT_WORKERS = Symbol.for('pilot.explicitWorkers');
+      // Simulate defineConfig({ timeout: 5000 }) — defaults merged in,
+      // symbol stamped to false because the user didn't set workers.
+      const config = { timeout: 5000, workers: 1 };
+      Object.defineProperty(config, EXPLICIT_WORKERS, { value: false, enumerable: false });
+      export default config;
+    `;
+    await withTempConfig(contents, 'pilot.config.mjs', async (dir) => {
+      const config = await loadConfig(dir);
+      expect(config.timeout).toBe(5000);
+      expect(config.workers).toBe(1);
+      expect(isExplicitWorkers(config)).toBe(false);
+    });
   });
 });
 

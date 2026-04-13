@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { RunQueue, mapKeyToAction, type RunRequest, type WatchAction } from '../watch-queue.js';
+import { reconcileFailedFiles } from '../watch.js';
 import type { WatchRunMessage, WatchRunChildMessage } from '../watch-run.js';
 
 // ─── Tests for mapKeyToAction ───
@@ -260,5 +261,49 @@ describe('watch-run IPC protocol', () => {
 
     expect(msg.type).toBe('error');
     expect(msg.error.message).toBe('daemon not reachable');
+  });
+});
+
+// ─── Tests for reconcileFailedFiles ───
+
+describe('reconcileFailedFiles', () => {
+  it('adds files that failed this run', () => {
+    const failedFiles = new Set<string>();
+    reconcileFailedFiles(failedFiles, ['a.test.ts', 'b.test.ts'], new Set(['a.test.ts']));
+    expect([...failedFiles]).toEqual(['a.test.ts']);
+  });
+
+  it('clears files that passed this run', () => {
+    const failedFiles = new Set<string>(['a.test.ts', 'b.test.ts']);
+    reconcileFailedFiles(failedFiles, ['a.test.ts'], new Set());
+    expect([...failedFiles]).toEqual(['b.test.ts']);
+  });
+
+  it('leaves files that did not run in this subset untouched', () => {
+    // Partial re-run: only a.test.ts ran. b.test.ts remains failed from a
+    // prior run even though it isn't in ranFiles.
+    const failedFiles = new Set<string>(['b.test.ts']);
+    reconcileFailedFiles(failedFiles, ['a.test.ts'], new Set());
+    expect([...failedFiles]).toEqual(['b.test.ts']);
+  });
+
+  it('preserves cross-wave fail when a file failed in one wave and passed in another', () => {
+    // Caller is responsible for unioning failedFilePaths across waves before
+    // calling this helper — simulate the union here.
+    const failedFiles = new Set<string>();
+    const ranFiles = ['shared.test.ts', 'android-only.test.ts', 'ios-only.test.ts'];
+    const failedUnion = new Set<string>(['shared.test.ts']); // failed on iOS only
+    reconcileFailedFiles(failedFiles, ranFiles, failedUnion);
+    expect(failedFiles.has('shared.test.ts')).toBe(true);
+    expect(failedFiles.has('android-only.test.ts')).toBe(false);
+    expect(failedFiles.has('ios-only.test.ts')).toBe(false);
+  });
+
+  it('does not clear a pre-existing fail for a file that was skipped (not ran)', () => {
+    // Regression: skipped-because-dependency-failed case. The project's
+    // files do not enter ranFiles, so their prior state persists.
+    const failedFiles = new Set<string>(['dependent.test.ts']);
+    reconcileFailedFiles(failedFiles, [], new Set());
+    expect([...failedFiles]).toEqual(['dependent.test.ts']);
   });
 });

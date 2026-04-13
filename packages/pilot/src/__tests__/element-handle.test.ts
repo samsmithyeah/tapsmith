@@ -355,6 +355,57 @@ describe('tap()', () => {
     const handle = new ElementHandle(client, _text('Ghost'), 500);
     await expect(handle.tap()).rejects.toThrow(/was not found/);
   });
+
+  it('with timeout 0 skips the enabled wait and still invokes tap', async () => {
+    const findElement = vi.fn(async () => ({
+      requestId: '1',
+      found: true,
+      element: makeElementInfo({ enabled: true }),
+      errorMessage: '',
+    }));
+    const tap = vi.fn(async () => successResponse());
+    const client = makeMockClient({ findElement, tap });
+    const handle = new ElementHandle(client, _text('Now'), 0);
+    await handle.tap();
+    expect(findElement).not.toHaveBeenCalled();
+    expect(tap).toHaveBeenCalledWith(expect.anything(), 0);
+  });
+
+  it('floors the action budget when the element becomes enabled near the deadline', async () => {
+    // Use fake timers so the test doesn't burn ~2s of real wall time. The
+    // mock's setTimeout and _waitForEnabled's Date.now()/setTimeout both run
+    // against the faked clock.
+    vi.useFakeTimers();
+    try {
+      const findElement = vi.fn(async () => {
+        // Burn almost the whole 2000ms budget before reporting enabled.
+        await new Promise((r) => setTimeout(r, 1900));
+        return {
+          requestId: '1',
+          found: true,
+          element: makeElementInfo({ enabled: true }),
+          errorMessage: '',
+        };
+      });
+      const tap = vi.fn(async () => successResponse());
+      const client = makeMockClient({ findElement, tap });
+      const handle = new ElementHandle(client, _text('Late'), 2000);
+
+      const tapPromise = handle.tap();
+      // Drain microtasks + advance the fake clock past the simulated 1900ms
+      // findElement delay so _waitForEnabled observes the enabled element
+      // with ~100ms remaining.
+      await vi.advanceTimersByTimeAsync(2000);
+      await tapPromise;
+
+      // Action budget must be >= 1000ms so client.tap has time to execute,
+      // even though only ~100ms of the shared deadline remains.
+      const actionBudget = (tap.mock.calls[0] as unknown as [unknown, number])[1];
+      expect(actionBudget).toBeGreaterThanOrEqual(1000);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });
 
 describe('longPress()', () => {

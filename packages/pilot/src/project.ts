@@ -71,9 +71,16 @@ export function deviceSignature(config: PilotConfig): string {
  * 1. Buckets containing any project with explicit `project.workers` get
  *    `max(explicit values across the bucket's projects)`. These do not
  *    consume from the global budget — they are additive.
- * 2. The global `workers` budget is then split among the remaining buckets
- *    proportionally to file count, with at least 1 per bucket that has files.
- * 3. Any bucket with zero test files gets 0 workers.
+ * 2. Every implicit bucket with test files gets at least 1 worker,
+ *    regardless of the global budget. This means the total allocation may
+ *    exceed `totalBudget` when there are more implicit buckets than the
+ *    budget allows — the alternative would be to silently drop entire
+ *    device buckets (and their files) from the run, which is worse.
+ *    Callers should treat `totalBudget` as a target, sum the returned
+ *    allocation, and warn the user when the effective total exceeds it.
+ * 3. Any remaining budget above `implicit.length` is distributed across
+ *    implicit buckets proportionally to file count.
+ * 4. Any bucket with zero test files gets 0 workers.
  */
 export function allocateBucketWorkers(
   totalBudget: number,

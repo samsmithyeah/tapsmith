@@ -473,7 +473,7 @@ function App() {
         break;
       case 'device-info':
         setDeviceSerial(msg.serial);
-        setDeviceDpr(msg.devicePixelRatio);
+        if (msg.devicePixelRatio != null) setDeviceDpr(msg.devicePixelRatio);
         if (msg.pilotVersion) setPilotVersion(msg.pilotVersion);
         break;
       case 'workers-info':

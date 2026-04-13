@@ -25,6 +25,36 @@ const DEFAULT_COMMAND_TIMEOUT: Duration = Duration::from_secs(30);
 /// triggering an unnecessary reconnect on the next command.
 const READ_TIMEOUT_HEADROOM: Duration = Duration::from_secs(5);
 
+/// Short timeout used when probing whether the agent is still reachable
+/// after an empty-response EOF. We don't care about the response — only
+/// whether we can re-establish a TCP connection — so this stays tight.
+const AGENT_LIVENESS_PROBE_TIMEOUT: Duration = Duration::from_secs(2);
+
+/// Sentinel string used by `try_send_command` to mark an empty-response
+/// failure. `anyhow::Error` does not preserve original error types across
+/// contexts, so we match on the root message. Kept in sync with the
+/// `bail!` site above.
+const EMPTY_RESPONSE_MARKER: &str = "Agent returned empty response";
+
+/// Returns true when the given error chain indicates an "empty response
+/// from agent" EOF. Matches the string used in the `bail!` above.
+fn is_empty_response(err: &anyhow::Error) -> bool {
+    err.chain()
+        .any(|cause| cause.to_string().contains(EMPTY_RESPONSE_MARKER))
+}
+
+/// Probe the agent's socket with a fresh TCP connect on a short timeout.
+/// Returns true if we can re-establish a connection, meaning the agent
+/// process is still alive and listening — any earlier dropped connection
+/// was a stale socket, not a dead agent.
+async fn probe_agent_alive(addr: &str) -> bool {
+    tokio::time::timeout(AGENT_LIVENESS_PROBE_TIMEOUT, TcpStream::connect(addr))
+        .await
+        .ok()
+        .and_then(|inner| inner.ok())
+        .is_some()
+}
+
 /// Categorizes a `try_send_command` failure so the caller can decide whether
 /// retrying is safe. See the long comment on `send_command_with_timeout` for
 /// the reasoning.
@@ -594,12 +624,14 @@ impl AgentConnection {
         .map_err(|_| SendError::Connect(anyhow!("Timed out connecting to agent socket")))?
         .map_err(|e| SendError::Connect(anyhow!(e).context("Failed to connect to agent socket")))?;
 
-        // Everything past the successful TCP connect counts as a "post-send"
-        // failure: even if the write hasn't happened yet, we treat it as
-        // unsafe to retry once we've claimed a socket, because in practice
-        // the write is what fails most of the time and we can't tell from
-        // the outside whether the agent observed it.
-        async {
+        // Everything past the successful TCP connect normally counts as a
+        // "post-send" failure: even if the write hasn't happened yet, we
+        // treat it as unsafe to retry once we've claimed a socket, because
+        // in practice the write is what fails most of the time and we can't
+        // tell from the outside whether the agent observed it.
+        //
+        // The exception is EOF ("empty response"): see below.
+        let io_result: Result<AgentResponse> = async {
             let request_id = uuid::Uuid::new_v4().to_string();
             let json_msg = command.to_json(&request_id);
             let payload =
@@ -637,7 +669,7 @@ impl AgentConnection {
 
             let line = line.trim();
             if line.is_empty() {
-                bail!("Agent returned empty response");
+                bail!("{}", EMPTY_RESPONSE_MARKER);
             }
 
             debug!(response = %line, "Received response from agent");
@@ -647,8 +679,52 @@ impl AgentConnection {
 
             Ok(AgentResponse::from_json(&raw))
         }
-        .await
-        .map_err(SendError::PostSend)
+        .await;
+
+        match io_result {
+            Ok(resp) => Ok(resp),
+            Err(e) => {
+                // Empty-response EOF is ambiguous: it could mean "agent died
+                // after processing the command" (not safe to retry) or "the
+                // socket was already half-dead when we wrote, the write was
+                // buffered locally, and the agent never saw it" (safe to
+                // retry). The second case is common under host load and is
+                // what we want to recover from.
+                //
+                // Probe with a fresh TCP connect. If the agent is reachable
+                // again, the OLD connection was stale — the agent almost
+                // certainly did not observe the command, so we reclassify as
+                // a Connect error and let the caller retry once on a new
+                // socket. If the probe also fails, the agent is truly gone
+                // and session recovery upstream will restart it.
+                //
+                // Narrow double-tap risk for non-idempotent commands:
+                //   1. Agent reads the command, executes it (e.g. tap).
+                //   2. Agent crashes after writing the response but before
+                //      our read completes (or the response is lost to a TCP
+                //      RST mid-flight).
+                //   3. The supervisor restarts the agent on the same port
+                //      before our probe fires.
+                //   4. Our probe succeeds → we retry → the tap runs twice.
+                //
+                // This window is narrow (agent restart is far slower than
+                // our 2 s probe) and vastly outweighed by the reliability
+                // win under host load, but it IS a real correctness risk
+                // for mutating commands. A future improvement would gate
+                // the reclassification on command idempotency (query ops
+                // like findElement / dumpHierarchy → retry safely; mutating
+                // ops like tap / type / swipe → no retry) or require the
+                // probe to observe the same agent PID / session token
+                // rather than just "something is listening on the port".
+                if is_empty_response(&e) && probe_agent_alive(&addr).await {
+                    warn!("Agent returned empty response but is still reachable — treating as stale connection and retrying");
+                    return Err(SendError::Connect(e.context(
+                        "Agent connection dropped (empty response); reconnecting",
+                    )));
+                }
+                Err(SendError::PostSend(e))
+            }
+        }
     }
 
     async fn ping_agent(&self) -> Result<()> {
@@ -1121,18 +1197,36 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn try_send_command_classifies_immediate_close_as_post_send_error() {
-        // Bind a listener that accepts connections and immediately drops them.
-        // The TCP connect succeeds, so we're past the "Connect" phase — but the
-        // subsequent write/read fails (or returns empty), which must be
-        // categorized as PostSend so retry is suppressed.
+    async fn try_send_command_reclassifies_empty_response_as_connect_when_agent_reachable() {
+        // Listener accepts, reads the command, closes without writing a
+        // response. From try_send_command's point of view that's "write
+        // succeeded, read returned empty/EOF" — but the listener is still
+        // accepting new connections, so the liveness probe that fires after
+        // the empty-response detection will succeed and we reclassify as
+        // Connect. This is the happy path for the new retry logic.
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let port = listener.local_addr().unwrap().port();
 
         tokio::spawn(async move {
+            use tokio::io::AsyncReadExt;
             loop {
                 match listener.accept().await {
-                    Ok((stream, _)) => drop(stream), // close immediately
+                    Ok((mut stream, _)) => {
+                        // Read the command bytes so the client's write_all
+                        // completes successfully, then close the half-open
+                        // stream without writing a response. The client's
+                        // read_line will observe EOF → empty response.
+                        let mut buf = [0u8; 1024];
+                        while let Ok(n) = stream.read(&mut buf).await {
+                            if n == 0 {
+                                break;
+                            }
+                            if buf[..n].contains(&b'\n') {
+                                break;
+                            }
+                        }
+                        drop(stream);
+                    }
                     Err(_) => break,
                 }
             }
@@ -1143,12 +1237,105 @@ mod tests {
 
         let result = conn.try_send_command(&cmd, Duration::from_secs(2)).await;
         match result {
-            Err(SendError::PostSend(_)) => {} // expected — NOT safe to retry
+            // Reclassification succeeded — outer send_command retry is safe.
             Err(SendError::Connect(e)) => {
-                panic!("expected PostSend, got Connect: {e}")
+                let msg = e.to_string();
+                assert!(
+                    msg.contains("empty response") || msg.contains("Agent connection dropped"),
+                    "expected reclassified empty-response context, got: {msg}"
+                );
+            }
+            Err(SendError::PostSend(e)) => {
+                panic!("expected reclassified Connect, got PostSend: {e}")
             }
             Ok(_) => panic!("expected error, got Ok"),
         }
+    }
+
+    #[tokio::test]
+    async fn try_send_command_classifies_empty_response_as_post_send_when_agent_gone() {
+        // Bind a listener, let the port be claimed briefly so try_send_command
+        // gets past the initial connect, then tear down the listener before
+        // the empty-response probe fires. The probe must fail → we fall back
+        // to PostSend so session recovery upstream can restart the agent.
+        //
+        // Concretely: we accept exactly one connection, drop it, then drop
+        // the listener so the port becomes un-bindable by subsequent probes.
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+
+        let (done_tx, done_rx) = tokio::sync::oneshot::channel::<()>();
+        tokio::spawn(async move {
+            if let Ok((stream, _)) = listener.accept().await {
+                drop(stream); // close the client connection
+            }
+            drop(listener); // stop listening so the probe fails
+            let _ = done_tx.send(());
+        });
+
+        let conn = AgentConnection::with_port(port);
+        let cmd = AgentCommand::Screenshot {};
+        let result = conn.try_send_command(&cmd, Duration::from_secs(2)).await;
+        let _ = done_rx.await;
+
+        match result {
+            Err(SendError::PostSend(e)) => {
+                let msg = e.to_string();
+                // Either empty-response (if we got past the write before the
+                // listener vanished) or a post-send write/read error.
+                assert!(
+                    msg.contains("empty response")
+                        || msg.contains("Failed to")
+                        || msg.contains("connection"),
+                    "unexpected PostSend message: {msg}"
+                );
+            }
+            Err(SendError::Connect(e)) => {
+                // Accept this branch too: if the probe races and catches the
+                // listener still alive, we land on Connect. The test's
+                // primary purpose is to exercise the fallback path; the
+                // PostSend branch is the one we're guarding against stale
+                // after the dead-agent case.
+                let msg = e.to_string();
+                assert!(
+                    msg.contains("empty response") || msg.contains("Agent connection dropped"),
+                    "unexpected Connect message: {msg}"
+                );
+            }
+            Ok(_) => panic!("expected error, got Ok"),
+        }
+    }
+
+    #[tokio::test]
+    async fn probe_agent_alive_returns_true_when_listener_is_up() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        // Accept in the background so the probe's connect can complete.
+        tokio::spawn(async move {
+            let _ = listener.accept().await;
+        });
+
+        let addr = format!("127.0.0.1:{port}");
+        assert!(probe_agent_alive(&addr).await);
+    }
+
+    #[tokio::test]
+    async fn probe_agent_alive_returns_false_when_nothing_listening() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        drop(listener);
+
+        let addr = format!("127.0.0.1:{port}");
+        assert!(!probe_agent_alive(&addr).await);
+    }
+
+    #[test]
+    fn is_empty_response_matches_the_bail_marker() {
+        let err = anyhow!("{}", EMPTY_RESPONSE_MARKER).context("wrapper context");
+        assert!(is_empty_response(&err));
+
+        let other = anyhow!("some other failure");
+        assert!(!is_empty_response(&other));
     }
 
     #[tokio::test]

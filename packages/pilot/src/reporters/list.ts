@@ -34,9 +34,10 @@ export class ListReporter implements PilotReporter {
     this._totalTests = 0;
     this._parallel = config.workers > 1;
     this._multipleWorkers = config.workers > 1;
-    // In parallel mode, show inline [project] tags since results interleave.
-    // In sequential mode, the CLI prints section headers per project instead.
-    this._showProjectTags = config.workers > 1 && (config.projects?.length ?? 0) > 1;
+    // Show inline [project] tags whenever multiple projects exist — the same
+    // file path can run on Android and iOS, and without the tag there's no
+    // way to tell which platform a given line belongs to.
+    this._showProjectTags = (config.projects?.length ?? 0) > 1;
     process.stdout.write(`\nRunning tests from ${fileCount} file(s)\n\n`);
   }
 

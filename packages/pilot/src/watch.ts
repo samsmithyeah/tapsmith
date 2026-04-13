@@ -76,6 +76,34 @@ export interface WatchModeContext {
   bucketByProject?: Map<string, string>
 }
 
+/**
+ * Update `failedFiles` from the files that actually ran in a single watch-run
+ * and the subset that failed. Exported for unit testing — used by
+ * `executeWaveRunParallel` after all waves complete.
+ *
+ * Invariant: a file that was **not** in `ranFiles` is untouched. This matters
+ * for two cases:
+ *   (a) a file that got skipped because its project's dependency failed — its
+ *       prior failed-state must persist until it actually re-runs;
+ *   (b) a file that isn't part of the current subset at all (e.g. a single
+ *       changed file re-run) — unrelated files' fail state is preserved.
+ *
+ * Cross-wave semantics: when the same file runs in multiple projects in the
+ * same overall run (e.g. Android + iOS), a fail in either wave is sticky —
+ * the call site passes the union of failed paths across all waves, so a pass
+ * on one platform cannot clear a fail on another.
+ */
+export function reconcileFailedFiles(
+  failedFiles: Set<string>,
+  ranFiles: Iterable<string>,
+  failedFilePaths: ReadonlySet<string>,
+): void {
+  for (const f of ranFiles) {
+    if (failedFilePaths.has(f)) failedFiles.add(f);
+    else failedFiles.delete(f);
+  }
+}
+
 // ─── Watch mode coordinator ───
 
 export async function runWatchMode(ctx: WatchModeContext): Promise<void> {
@@ -585,6 +613,11 @@ export async function runWatchMode(ctx: WatchModeContext): Promise<void> {
   ): Promise<void> {
     if (ctx.projectWaves && ctx.projects) {
       const failedProjects = new Set<string>();
+      // Files that ran (across all waves) and files that failed (across all
+      // waves). Used to reconcile state.failedFiles once at the end so a
+      // pass in wave A cannot clobber a fail in wave B.
+      const filesRanThisRun = new Set<string>();
+      const filesFailedThisRun = new Set<string>();
 
       for (const wave of ctx.projectWaves) {
         const waveFiles: TaggedFile[] = [];
@@ -599,6 +632,11 @@ export async function runWatchMode(ctx: WatchModeContext): Promise<void> {
               reporter.onTestEnd?.(result);
             }
             failedProjects.add(project.name);
+            // Intentionally not adding these files to `filesRanThisRun`: they
+            // were skipped because their dependency failed, not because they
+            // passed. We must not reconcile their `state.failedFiles` entry.
+            // A file that was already marked failed stays marked failed until
+            // it actually re-runs and we have fresh signal on it.
             continue;
           }
           for (const file of project.testFiles) {
@@ -614,7 +652,8 @@ export async function runWatchMode(ctx: WatchModeContext): Promise<void> {
           const { results, suites, failedFilePaths } = await dispatchParallel(waveFiles, reporter);
           allResults.push(...results);
           allSuites.push(...suites);
-          for (const f of failedFilePaths) state.failedFiles.add(f);
+          for (const entry of waveFiles) filesRanThisRun.add(entry.filePath);
+          for (const f of failedFilePaths) filesFailedThisRun.add(f);
           // Track project-level failures
           for (const project of wave) {
             if (failedProjects.has(project.name)) continue;
@@ -624,6 +663,8 @@ export async function runWatchMode(ctx: WatchModeContext): Promise<void> {
           }
         }
       }
+
+      reconcileFailedFiles(state.failedFiles, filesRanThisRun, filesFailedThisRun);
     } else {
       // No projects — dispatch all files at once
       const files: TaggedFile[] = [...state.knownFiles].map((f) => ({ filePath: f }));

@@ -11,7 +11,7 @@
 
 import * as path from 'node:path';
 import * as fs from 'node:fs';
-import { loadConfig, resolveDeviceStrategy, type PilotConfig } from './config.js';
+import { loadConfig, resolveDeviceStrategy, EXPLICIT_WORKERS, isExplicitWorkers, type PilotConfig } from './config.js';
 import { PilotGrpcClient } from './grpc-client.js';
 import { Device } from './device.js';
 import { runTestFile, collectResults, type TestResult, type SuiteResult } from './runner.js';
@@ -999,9 +999,13 @@ async function provisionPerProjectDevices(
   // Allocate workers across buckets
   const allocation = allocateBucketWorkers(rootConfig.workers, bucketEntries);
 
-  for (const { signature, projects: bucketProjects } of bucketEntries) {
+  // Provision each bucket's devices in parallel — Android emulators and
+  // iOS simulators both have multi-second cold-start costs, and there's
+  // no cross-bucket dependency. Preserves per-bucket ordering in the
+  // aggregated result by collecting into position-indexed slots.
+  const tasks = bucketEntries.map(async ({ signature, projects: bucketProjects }) => {
     const desiredWorkers = allocation.get(signature) ?? 0;
-    if (desiredWorkers === 0) continue;
+    if (desiredWorkers === 0) return null;
 
     const bucketEffective = bucketProjects[0].effectiveConfig;
     const provisioned = await provisionDevicesForBucket(bucketEffective, desiredWorkers);
@@ -1017,6 +1021,14 @@ async function provisionPerProjectDevices(
       );
     }
 
+    return { signature, bucketEffective, provisioned };
+  });
+
+  const outcomes = await Promise.all(tasks);
+
+  for (const outcome of outcomes) {
+    if (!outcome) continue;
+    const { signature, bucketEffective, provisioned } = outcome;
     result.launched.push(...provisioned.launched);
     const bucketSerialized = buildSerializedConfig(bucketEffective);
     for (const serial of provisioned.serials) {
@@ -1156,6 +1168,12 @@ async function main(): Promise<void> {
   }
   if (args.workers !== undefined) {
     config.workers = args.workers;
+    Object.defineProperty(config, EXPLICIT_WORKERS, {
+      value: true,
+      enumerable: false,
+      writable: true,
+      configurable: true,
+    });
   }
   if (args.shard) {
     config.shard = args.shard;
@@ -1312,6 +1330,33 @@ async function main(): Promise<void> {
   }
   const reporter = new ReporterDispatcher(reporters);
 
+  // Compute the effective parallelism BEFORE handing config to the reporter,
+  // so reporters can correctly suppress file headings / show project tags
+  // when buckets or per-project `workers:` push the actual concurrency above
+  // the global `config.workers` value.
+  const { allocateBucketWorkers, bucketizeProjects } = await import('./project.js');
+  const allocation = allocateBucketWorkers(config.workers, bucketizeProjects(projects));
+  const totalWorkers = [...allocation.values()].reduce((s, n) => s + n, 0);
+  const maxFilesInAnyWave = Math.max(...projectWaves.map((wave) =>
+    wave.reduce((sum, p) => sum + p.testFiles.length, 0),
+  ));
+  const effectiveWorkers = Math.min(totalWorkers, maxFilesInAnyWave);
+
+  // Only warn when the user explicitly asked for fewer workers than we
+  // ended up running — either via --workers or `workers:` in the config
+  // file. Don't fire on the implicit default of 1.
+  if (isExplicitWorkers(config) && totalWorkers > config.workers) {
+    process.stderr.write(
+      `Note: requested workers=${config.workers} but running ${totalWorkers} (one per device bucket is the minimum). ` +
+        `Raise the workers budget to speed things up, or set per-project \`workers\` to control the total.\n`,
+    );
+  }
+
+  // Reflect the effective parallelism on the config so reporters see the
+  // real worker count. Downstream dispatcher paths pass `workers` explicitly,
+  // so this mutation is safe.
+  config.workers = totalWorkers;
+
   if (args.ui) {
     console.log(`\nLaunching Pilot UI mode...\n`);
   } else if (args.watch) {
@@ -1325,18 +1370,6 @@ async function main(): Promise<void> {
   // Fall back to sequential when parallelism wouldn't help — either there's
   // only one test file, or all files are in sequential waves (e.g. setup → dependent).
   if (!args.ui && !args.watch) {
-    const maxFilesInAnyWave = Math.max(...projectWaves.map((wave) =>
-      wave.reduce((sum, p) => sum + p.testFiles.length, 0),
-    ));
-
-    // Compute the total worker budget by allocating across buckets. This
-    // honors per-project `workers` overrides — even when the global
-    // `workers` is 1, explicit per-project values can push the total
-    // above 1 and trigger parallel mode.
-    const { allocateBucketWorkers, bucketizeProjects } = await import('./project.js');
-    const allocation = allocateBucketWorkers(config.workers, bucketizeProjects(projects));
-    const totalWorkers = [...allocation.values()].reduce((s, n) => s + n, 0);
-    const effectiveWorkers = Math.min(totalWorkers, maxFilesInAnyWave);
 
     if (effectiveWorkers > 1) {
       // The dispatcher manages its own daemons — one per worker — each with
