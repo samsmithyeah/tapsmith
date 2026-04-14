@@ -430,9 +430,26 @@ async fn pid_refresh_loop(
             total = next.len(),
             "updating InterceptConf"
         );
+        // Retry once before giving up. A single transient SE write error
+        // (e.g. the SE briefly unscheduled, a dropped IPC byte) used to kill
+        // the refresh loop silently — the daemon would still report capture
+        // as active, but new test-app PIDs would never enter the filter and
+        // their traffic would be invisible. Now we retry, and if both
+        // attempts fail we log loud at error! so the user grepping for
+        // capture issues finds a clear signal. PILOT-182 review #4 finding S4.
         if let Err(e) = send_intercept_conf(&mut control, &pids).await {
-            warn!(%udid, "InterceptConf update failed: {e}");
-            return;
+            let first_err = format!("{e:#}");
+            warn!(%udid, "InterceptConf update failed (will retry once): {first_err}");
+            if let Err(e2) = send_intercept_conf(&mut control, &pids).await {
+                error!(
+                    %udid,
+                    "InterceptConf update failed twice — refresh loop giving up. \
+                     iOS network capture will silently miss any test-app PIDs that \
+                     spawn after this point. First error: {first_err}. Retry error: {e2:#}"
+                );
+                return;
+            }
+            info!(%udid, "InterceptConf update succeeded on retry");
         }
         last = next;
     }
@@ -737,9 +754,11 @@ fn extract_brew_tarball(tar_path: &Path) -> Result<()> {
         );
     }
 
-    // Atomic rename into place. If the target already exists (another worker
-    // won the race), `rename` fails with EEXIST on macOS; that's fine, both
-    // workers end up using the winner's content (identical either way).
+    // Atomic rename into place. On macOS, `rename` over a non-empty
+    // directory target fails with `ENOTEMPTY` (not `EEXIST` — that's the
+    // file-target case). Either way, if another worker won the race the
+    // target now exists and contains the winner's content, so we treat
+    // any `Err` whose `target_app.exists()` is true as a successful loss.
     match std::fs::rename(&tmp_app, &target_app) {
         Ok(_) => {
             info!(

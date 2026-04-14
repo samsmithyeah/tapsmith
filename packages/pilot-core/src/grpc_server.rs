@@ -2780,7 +2780,6 @@ impl proto::pilot_service_server::PilotService for PilotServiceImpl {
                         error_message: "iOS network capture requires macOS".to_string(),
                     }));
                 }
-                let _ = host_port; // hint to Linux: don't complain about unused var
             }
             Platform::Android => {
                 // Use `adb reverse` to make the proxy reachable as 127.0.0.1:{port} on

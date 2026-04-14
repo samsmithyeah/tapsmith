@@ -410,6 +410,14 @@ fn find_header_terminator(buf: &[u8], scan_cursor: usize) -> Option<usize> {
 
 /// Read a full HTTP/1.x request (headers + body) from a client stream,
 /// returning structured request data plus the raw bytes for forwarding.
+///
+/// Body framing follows RFC 7230:
+///   - `Transfer-Encoding: chunked` takes precedence over `Content-Length`
+///     and is parsed strictly via [`read_chunked_body`].
+///   - `Content-Length: N` reads exactly `N` body bytes via `read_exact`.
+///     If `N > MAX_PROXY_BODY`, the connection is rejected (closing) rather
+///     than silently truncating, which would desync the connection.
+///   - Neither header → no body (matches GET/HEAD/OPTIONS/DELETE without body).
 async fn read_request<R>(client: &mut R, hostname: &str) -> ReadOutcome<ParsedRequest>
 where
     R: AsyncRead + Unpin,
@@ -457,20 +465,53 @@ where
     // recompute here to get the structured Vec<(String, String)>.
     let (headers, _) = parse_headers(&buf[..header_end]);
 
-    // Read request body if Content-Length is set (capped to prevent OOM).
-    let content_length: usize = get_header(&headers, "content-length")
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(0)
-        .min(MAX_PROXY_BODY);
-    let body_so_far = buf.len().saturating_sub(header_end);
-    if content_length > body_so_far {
-        let remaining = content_length - body_so_far;
-        let mut body_buf = vec![0u8; remaining];
-        if let Err(e) = client.read_exact(&mut body_buf).await {
-            debug!("MITM reading request body for {hostname}: {e}");
+    // RFC 7230: Transfer-Encoding: chunked takes precedence over Content-Length.
+    let is_chunked = headers.iter().any(|(k, v)| {
+        k.eq_ignore_ascii_case("transfer-encoding") && v.to_lowercase().contains("chunked")
+    });
+
+    if is_chunked {
+        if let Err(e) = read_chunked_body(client, &mut buf, header_end, hostname).await {
+            debug!("MITM chunked request body read failed for {hostname}: {e}");
             return ReadOutcome::Error;
         }
-        buf.extend_from_slice(&body_buf);
+    } else {
+        // Content-Length path.
+        let declared_length: Option<usize> =
+            get_header(&headers, "content-length").and_then(|v| v.trim().parse::<usize>().ok());
+        if let Some(cl) = declared_length {
+            // Reject oversized declared bodies up-front rather than truncating —
+            // silent truncation desyncs the connection (PILOT-182 review #4
+            // finding S1: upstream waits for the missing bytes, the leftover
+            // bytes in the client's socket buffer get parsed as the next
+            // request, and the connection hangs).
+            if cl > MAX_PROXY_BODY {
+                debug!(
+                    "MITM rejecting request with oversized Content-Length for {hostname}: \
+                     {cl} > {MAX_PROXY_BODY}"
+                );
+                return ReadOutcome::Error;
+            }
+            let body_so_far = buf.len().saturating_sub(header_end);
+            if cl > body_so_far {
+                let remaining = cl - body_so_far;
+                let mut body_buf = vec![0u8; remaining];
+                match tokio::time::timeout(CLIENT_READ_TIMEOUT, client.read_exact(&mut body_buf))
+                    .await
+                {
+                    Ok(Ok(_)) => buf.extend_from_slice(&body_buf),
+                    Ok(Err(e)) => {
+                        debug!("MITM reading request body for {hostname}: {e}");
+                        return ReadOutcome::Error;
+                    }
+                    Err(_) => {
+                        debug!("MITM client body read timed out for {hostname}");
+                        return ReadOutcome::Error;
+                    }
+                }
+            }
+        }
+        // No Content-Length and no chunked → no body (the common GET case).
     }
 
     let body = if header_end < buf.len() {
@@ -486,6 +527,136 @@ where
         body,
         raw_bytes: buf,
     })
+}
+
+/// Strict HTTP/1.1 chunked body parser used by [`read_request`]. Reads chunks
+/// from `client` and appends them to `buf` until the terminating `0\r\n\r\n`
+/// (with optional trailers) is consumed.
+///
+/// Why strict parsing and not the scan-based approach used by `read_response`:
+///   1. Requests can be pipelined on a keep-alive connection. Over-reading
+///      past the chunked terminator would consume the next request's bytes
+///      and lose them.
+///   2. The `\r\n0\r\n` substring scan in `read_response` is heuristic —
+///      `0\r\n` can legitimately appear inside a data chunk. Strict parsing
+///      reads chunk-size headers and exact-size data payloads, so it can't
+///      false-match on intra-chunk bytes.
+///
+/// Chunked grammar (RFC 7230 §4.1):
+///     chunked-body  = *chunk last-chunk trailer-section CRLF
+///     chunk         = chunk-size [ chunk-ext ] CRLF chunk-data CRLF
+///     last-chunk    = "0" [ chunk-ext ] CRLF
+///     trailer-section = *( header-field CRLF )
+///
+/// Aborts with `Err` on: connection closed mid-message, chunk size > remaining
+/// `MAX_PROXY_BODY` budget, malformed chunk-size line, or read timeout.
+async fn read_chunked_body<R>(
+    client: &mut R,
+    buf: &mut Vec<u8>,
+    header_end: usize,
+    hostname: &str,
+) -> Result<(), &'static str>
+where
+    R: AsyncRead + Unpin,
+{
+    let mut cursor = header_end;
+
+    /// Helper: ensure buf contains the byte at `index` by reading more if
+    /// needed. Returns Err if the stream closes or the buffer would exceed
+    /// MAX_PROXY_BODY.
+    async fn ensure_at_least<R>(
+        client: &mut R,
+        buf: &mut Vec<u8>,
+        target_len: usize,
+        hostname: &str,
+    ) -> Result<(), &'static str>
+    where
+        R: AsyncRead + Unpin,
+    {
+        if target_len > MAX_PROXY_BODY {
+            debug!("chunked body exceeds MAX_PROXY_BODY for {hostname}");
+            return Err("body too large");
+        }
+        while buf.len() < target_len {
+            let need = target_len - buf.len();
+            let mut chunk = vec![0u8; need.min(8192)];
+            match tokio::time::timeout(CLIENT_READ_TIMEOUT, client.read(&mut chunk)).await {
+                Ok(Ok(0)) => return Err("client closed mid-chunked-body"),
+                Ok(Ok(n)) => buf.extend_from_slice(&chunk[..n]),
+                Ok(Err(_)) => return Err("read error mid-chunked-body"),
+                Err(_) => return Err("chunked body read timed out"),
+            }
+        }
+        Ok(())
+    }
+
+    /// Helper: ensure buf contains a complete `\r\n`-terminated line starting
+    /// at `cursor`. Returns the index of the byte AFTER the terminator.
+    async fn read_line<R>(
+        client: &mut R,
+        buf: &mut Vec<u8>,
+        cursor: usize,
+        hostname: &str,
+    ) -> Result<usize, &'static str>
+    where
+        R: AsyncRead + Unpin,
+    {
+        loop {
+            if let Some(p) = buf[cursor..].windows(2).position(|w| w == b"\r\n") {
+                return Ok(cursor + p + 2);
+            }
+            // Need more bytes — read one more chunk.
+            if buf.len() > MAX_PROXY_BODY {
+                debug!("chunked control line too long for {hostname}");
+                return Err("chunked control line too long");
+            }
+            let mut chunk = [0u8; 256];
+            match tokio::time::timeout(CLIENT_READ_TIMEOUT, client.read(&mut chunk)).await {
+                Ok(Ok(0)) => return Err("client closed mid-chunked-control-line"),
+                Ok(Ok(n)) => buf.extend_from_slice(&chunk[..n]),
+                Ok(Err(_)) => return Err("read error mid-chunked-control-line"),
+                Err(_) => return Err("chunked control line read timed out"),
+            }
+        }
+    }
+
+    loop {
+        // Read the chunk-size line.
+        let line_end = read_line(client, buf, cursor, hostname).await?;
+        let size_line = &buf[cursor..line_end - 2]; // exclude trailing CRLF
+        let size_str = std::str::from_utf8(size_line).map_err(|_| "non-utf8 chunk size")?;
+        // Discard chunk-extensions (anything after ';').
+        let size_str = size_str.split(';').next().unwrap_or("").trim();
+        let chunk_size = usize::from_str_radix(size_str, 16).map_err(|_| "invalid chunk size")?;
+        cursor = line_end;
+
+        if chunk_size == 0 {
+            // Last chunk. Read trailers (zero or more header lines), each
+            // terminated by CRLF, ending with an empty CRLF.
+            loop {
+                let trailer_end = read_line(client, buf, cursor, hostname).await?;
+                if trailer_end == cursor + 2 {
+                    // Empty line — end of trailers, end of chunked body.
+                    cursor = trailer_end;
+                    break;
+                }
+                cursor = trailer_end;
+            }
+            // Mark end of body; let the caller observe `buf` past `cursor`
+            // as zero (no over-read).
+            let _ = cursor;
+            return Ok(());
+        }
+
+        // Read `chunk_size` data bytes + the trailing CRLF.
+        let need_until = cursor + chunk_size + 2;
+        ensure_at_least(client, buf, need_until, hostname).await?;
+        // Sanity-check the trailing CRLF is actually CRLF.
+        if &buf[need_until - 2..need_until] != b"\r\n" {
+            return Err("chunk data not terminated by CRLF");
+        }
+        cursor = need_until;
+    }
 }
 
 /// Post-header body-framing state for a response-in-progress read. Set once
@@ -559,6 +730,16 @@ where
                                 chunked_scan_cursor: header_end,
                             }
                         } else if let Some(cl) = content_length {
+                            // Reject oversized declared bodies up-front rather
+                            // than truncating — silent truncation desyncs the
+                            // connection (PILOT-182 review #4 finding S1).
+                            if cl > MAX_PROXY_BODY {
+                                debug!(
+                                    "MITM rejecting response with oversized Content-Length \
+                                     for {hostname}: {cl} > {MAX_PROXY_BODY}"
+                                );
+                                return ReadOutcome::Error;
+                            }
                             BodyFraming::FixedLength {
                                 total_needed: header_end.saturating_add(cl),
                             }
@@ -1877,5 +2058,148 @@ mod tests {
         let s = std::str::from_utf8(&out).unwrap();
         assert!(s.contains("Content-Type: text/plain\r\n"));
         assert!(!s.contains("Bad Name"));
+    }
+
+    // ─── read_request: round-trip tests via tokio::io::duplex ───
+
+    async fn read_request_outcome(client_bytes: &[u8]) -> ReadOutcome<ParsedRequest> {
+        use tokio::io::AsyncWriteExt;
+        let (mut client_side, server_side) = tokio::io::duplex(65536);
+        client_side.write_all(client_bytes).await.unwrap();
+        client_side.shutdown().await.unwrap();
+        drop(client_side);
+        let mut server = server_side;
+        read_request(&mut server, "example.com").await
+    }
+
+    async fn read_request_once(client_bytes: &[u8]) -> ParsedRequest {
+        match read_request_outcome(client_bytes).await {
+            ReadOutcome::Ok(req) => req,
+            ReadOutcome::ConnectionClosed => panic!("unexpected ConnectionClosed"),
+            ReadOutcome::Error => panic!("unexpected Error"),
+        }
+    }
+
+    #[tokio::test]
+    async fn read_request_get_no_body() {
+        let wire = b"GET /api HTTP/1.1\r\nHost: example.com\r\n\r\n";
+        let req = read_request_once(wire).await;
+        assert_eq!(req.method, "GET");
+        assert_eq!(req.path, "/api");
+        assert!(req.body.is_empty());
+    }
+
+    #[tokio::test]
+    async fn read_request_post_content_length() {
+        let wire = b"POST /api HTTP/1.1\r\n\
+                     Host: example.com\r\n\
+                     Content-Length: 5\r\n\
+                     \r\n\
+                     hello";
+        let req = read_request_once(wire).await;
+        assert_eq!(req.method, "POST");
+        assert_eq!(req.body, b"hello");
+    }
+
+    #[tokio::test]
+    async fn read_request_oversized_content_length_rejected() {
+        // Declared Content-Length above MAX_PROXY_BODY (10 MB) — the request
+        // must be rejected up-front rather than the connection being silently
+        // desynced by truncated forwarding. Regression test for PILOT-182
+        // review #4 finding S1.
+        let wire = b"POST /upload HTTP/1.1\r\n\
+                     Host: example.com\r\n\
+                     Content-Length: 100000000\r\n\
+                     \r\n";
+        let outcome = read_request_outcome(wire).await;
+        assert!(
+            matches!(outcome, ReadOutcome::Error),
+            "expected Error for oversized Content-Length",
+        );
+    }
+
+    #[tokio::test]
+    async fn read_request_chunked_simple() {
+        // Regression test for PILOT-182 review #4 finding S2: chunked request
+        // bodies were silently dropped and forwarded as garbage.
+        let wire = b"POST /api HTTP/1.1\r\n\
+                     Host: example.com\r\n\
+                     Transfer-Encoding: chunked\r\n\
+                     \r\n\
+                     5\r\nhello\r\n\
+                     6\r\n world\r\n\
+                     0\r\n\r\n";
+        let req = read_request_once(wire).await;
+        assert_eq!(req.method, "POST");
+        assert_eq!(req.path, "/api");
+        // The body retains the full chunked encoding bytes (we forward the
+        // wire format, not a dechunked payload).
+        assert_eq!(req.body, b"5\r\nhello\r\n6\r\n world\r\n0\r\n\r\n");
+    }
+
+    #[tokio::test]
+    async fn read_request_chunked_empty_body() {
+        let wire = b"POST /api HTTP/1.1\r\n\
+                     Transfer-Encoding: chunked\r\n\
+                     \r\n\
+                     0\r\n\r\n";
+        let req = read_request_once(wire).await;
+        assert_eq!(req.body, b"0\r\n\r\n");
+    }
+
+    #[tokio::test]
+    async fn read_request_chunked_with_trailers() {
+        let wire = b"POST /api HTTP/1.1\r\n\
+                     Transfer-Encoding: chunked\r\n\
+                     Trailer: X-Checksum\r\n\
+                     \r\n\
+                     5\r\nhello\r\n\
+                     0\r\n\
+                     X-Checksum: abc123\r\n\
+                     \r\n";
+        let req = read_request_once(wire).await;
+        assert_eq!(req.method, "POST");
+        // Trailers are part of the body bytes (we forward verbatim).
+        assert!(req.body.ends_with(b"X-Checksum: abc123\r\n\r\n"));
+    }
+
+    #[tokio::test]
+    async fn read_request_chunked_truncated_returns_error() {
+        // Chunk advertises 10 bytes but only 3 follow before EOF.
+        let wire = b"POST /api HTTP/1.1\r\n\
+                     Transfer-Encoding: chunked\r\n\
+                     \r\n\
+                     a\r\nabc";
+        let outcome = read_request_outcome(wire).await;
+        assert!(matches!(outcome, ReadOutcome::Error));
+    }
+
+    #[tokio::test]
+    async fn read_request_chunked_invalid_size_returns_error() {
+        // "zz" is not valid hex.
+        let wire = b"POST /api HTTP/1.1\r\n\
+                     Transfer-Encoding: chunked\r\n\
+                     \r\n\
+                     zz\r\nfoo\r\n0\r\n\r\n";
+        let outcome = read_request_outcome(wire).await;
+        assert!(matches!(outcome, ReadOutcome::Error));
+    }
+
+    #[tokio::test]
+    async fn read_response_oversized_content_length_rejected() {
+        // Same protection on the response side. Without this, an upstream
+        // that advertises a huge Content-Length would cause read_response
+        // to truncate at MAX_PROXY_BODY and leave the connection desynced.
+        let wire = b"HTTP/1.1 200 OK\r\n\
+                     Content-Length: 100000000\r\n\
+                     \r\n";
+        use tokio::io::AsyncWriteExt;
+        let (mut client_side, server_side) = tokio::io::duplex(8192);
+        client_side.write_all(wire).await.unwrap();
+        client_side.shutdown().await.unwrap();
+        drop(client_side);
+        let mut server = server_side;
+        let outcome = read_response(&mut server, "example.com").await;
+        assert!(matches!(outcome, ReadOutcome::Error));
     }
 }
