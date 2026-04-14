@@ -16,34 +16,54 @@ The CA is installed into the simulator's trust store automatically via `xcrun si
 
 **Prerequisite:** macOS with [Homebrew](https://brew.sh).
 
-1. **Install mitmproxy.** This puts the redirector `.app` in place:
+The fastest path is to use Pilot's interactive setup command, which checks your environment, extracts the redirector automatically, and walks you through approving the macOS Network Extension:
 
+```sh
+brew install mitmproxy
+npx pilot setup-ios
+```
+
+`pilot setup-ios` reports each step with a ✓ / ✗ status, opens System Settings directly to the correct pane if approval is still needed, and polls until the Network Extension flips to `[activated enabled]`. On a fresh machine you'll see:
+
+1. `✓ mitmproxy is installed`
+2. `⚠ Network Extension is registered but not yet approved` (or `○ not yet registered` on a brand-new install)
+3. Pilot opens **System Settings → General → Login Items & Extensions → Network Extensions**
+4. Click **(i)** next to the `Network Extensions` row, toggle **Mitmproxy Redirector** on, enter your password
+5. Pilot detects the state change and prints `✓ iOS network capture is ready.`
+
+From this point on, `npx pilot test` with iOS network capture enabled (the default when tracing is on) silently spawns the redirector and routes traffic through Pilot's MITM proxy.
+
+### If the Network Extension isn't registered yet
+
+On a truly fresh machine the Network Extension is registered the first time Pilot spawns the redirector (which happens automatically on your first `pilot test` run with tracing). If `pilot setup-ios` reports `○ not yet registered`, do the following:
+
+1. Run any iOS test once to trigger the registration prompt:
    ```sh
-   brew install mitmproxy
+   npx pilot test tests/some-ios-test.ts --trace on
    ```
+   (Or any test with tracing enabled.)
+2. macOS will show a **"System Extension Blocked"** dialog. Click through to System Settings.
+3. Approve the extension in **System Settings → General → Login Items & Extensions → Network Extensions**.
+4. Re-run `npx pilot setup-ios` to verify, or just re-run your tests.
 
-2. **Unpack the redirector.** Mitmproxy lazily unpacks the redirector from its cask tarball into `/Applications/Mitmproxy Redirector.app` on the first run. Trigger the unpack:
+### Manual fallback
 
-   ```sh
-   sudo mitmproxy --mode local:Safari
-   ```
+If you prefer to do the setup by hand (or if `pilot setup-ios` doesn't work for some reason):
 
-   Press `q` to quit mitmproxy after it launches. (You only need to do this once per machine; the redirector persists.) The `sudo` is only required because `/Applications` is not writable by admin users directly on macOS Tahoe — mitmproxy writes as root.
+```sh
+brew install mitmproxy
+sudo mitmproxy --mode local:Safari   # press `q` to quit once it launches
+```
 
-3. **Approve the System Extension.** The first time the redirector is launched, macOS prompts to allow its Network Extension:
+Then open **System Settings → General → Login Items & Extensions → Network Extensions**, click the **(i)** info button, and toggle **Mitmproxy Redirector** on.
 
-   - Open **System Settings → General → Login Items & Extensions**
-   - Scroll to **Network Extensions**, click the **(i)** info button
-   - Toggle **Mitmproxy Redirector** on (you'll be asked for your password)
-   - Verify:
+Verify with:
 
-     ```sh
-     systemextensionsctl list
-     ```
+```sh
+systemextensionsctl list
+```
 
-     You should see a row ending in `[activated enabled]` for `org.mitmproxy.macos-redirector.network-extension`.
-
-That's it. From this point on, running `npx pilot test` with iOS network capture enabled (the default when tracing is on) will silently spawn the redirector and route traffic through Pilot's MITM proxy.
+You should see a row ending in `[activated enabled]` for `org.mitmproxy.macos-redirector.network-extension`.
 
 ## Configuration
 

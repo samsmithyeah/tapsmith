@@ -1061,6 +1061,7 @@ ${bold('Usage:')}
   pilot show-trace <file.zip>     Open trace viewer in browser
   pilot show-report [dir]         Open HTML test report
   pilot merge-reports [dir]       Merge blob reports from sharded runs
+  pilot setup-ios                 First-run setup for iOS network capture (macOS only)
   pilot --version                 Print version
   pilot --help                    Show this help
 
@@ -1144,6 +1145,12 @@ async function main(): Promise<void> {
     const dispatcher = new ReporterDispatcher(reporters);
     dispatcher.onRunStart(config, 0);
     await dispatcher.onRunEnd(result);
+    return;
+  }
+
+  if (args.command === 'setup-ios') {
+    const { runSetupIos } = await import('./setup-ios.js');
+    await runSetupIos();
     return;
   }
 

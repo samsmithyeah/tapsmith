@@ -56,6 +56,58 @@ const CONTROL_CHANNEL_TIMEOUT: Duration = Duration::from_secs(10);
 /// on the startup fast path could block indefinitely.
 const CONTROL_CHANNEL_WRITE_TIMEOUT: Duration = Duration::from_secs(5);
 
+/// Bundle ID of the mitmproxy System Extension we depend on. Used to grep
+/// `systemextensionsctl list` output for the current registration state.
+const REDIRECTOR_SE_BUNDLE_ID: &str = "org.mitmproxy.macos-redirector.network-extension";
+
+/// State of the Mitmproxy Redirector macOS System Extension on the current
+/// machine, as reported by `systemextensionsctl list`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SeStatus {
+    /// `[activated enabled]` — the SE is installed, approved, and ready.
+    Enabled,
+    /// The SE is installed but not yet approved by the user
+    /// (`[activated waiting for user]`).
+    WaitingForUser,
+    /// The SE has never been registered on this machine (no matching row
+    /// in `systemextensionsctl list`).
+    NotRegistered,
+    /// `systemextensionsctl` isn't available, failed, or returned output we
+    /// don't recognise. Callers should proceed without fast-failing.
+    Unknown,
+}
+
+/// Shell out to `systemextensionsctl list` and parse the current state of
+/// the Mitmproxy Redirector Network Extension. Runs synchronously via
+/// `tokio::process::Command` — the subprocess is cheap (<10ms).
+async fn check_se_status() -> SeStatus {
+    let output = match Command::new("systemextensionsctl")
+        .arg("list")
+        .output()
+        .await
+    {
+        Ok(o) => o,
+        Err(_) => return SeStatus::Unknown,
+    };
+    if !output.status.success() {
+        return SeStatus::Unknown;
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let Some(line) = stdout.lines().find(|l| l.contains(REDIRECTOR_SE_BUNDLE_ID)) else {
+        return SeStatus::NotRegistered;
+    };
+    if line.contains("[activated enabled]") {
+        SeStatus::Enabled
+    } else if line.contains("waiting for user") || line.contains("user approval pending") {
+        SeStatus::WaitingForUser
+    } else {
+        // Terminated-for-installation, activated-pending-user-approval,
+        // and other transient states — treat as Unknown and let the
+        // control-channel accept timeout decide.
+        SeStatus::Unknown
+    }
+}
+
 /// Handle to a running redirector session. Dropping it aborts the
 /// background tasks and unlinks the Unix socket file.
 pub struct IosRedirect {
@@ -130,6 +182,46 @@ impl IosRedirect {
 
         let redirector_bin =
             resolve_redirector_path().context("locating Mitmproxy Redirector.app")?;
+
+        // Fast-fail if the Network Extension is registered but not yet
+        // approved by the user. Without this check we'd still spawn the
+        // launcher, the SE wouldn't load, and we'd sit in a 10s control-
+        // channel accept timeout before reporting a generic "timed out"
+        // error. Checking up front turns that into an actionable message
+        // and saves the 10s wait every single test run until the user
+        // approves the extension.
+        match check_se_status().await {
+            SeStatus::Enabled => {
+                debug!("Mitmproxy Redirector SE is [activated enabled]");
+            }
+            SeStatus::WaitingForUser => {
+                bail!(
+                    "Mitmproxy Redirector Network Extension is installed but not approved.\n\
+                     \n\
+                     Approve it in: System Settings → General → Login Items & Extensions → Network Extensions → Mitmproxy Redirector\n\
+                     \n\
+                     Or run: npx pilot setup-ios"
+                );
+            }
+            SeStatus::NotRegistered => {
+                // First-run case: the SE has never been registered. Spawning
+                // the launcher will trigger macOS's "System Extension Blocked"
+                // approval prompt. If the user dismisses it, our control
+                // channel accept will time out with a clear error.
+                info!(
+                    "Mitmproxy Redirector Network Extension not yet registered — \
+                     first launcher run will prompt macOS to register it"
+                );
+            }
+            SeStatus::Unknown => {
+                warn!(
+                    "Could not determine Mitmproxy Redirector Network Extension \
+                     status (systemextensionsctl unavailable or unrecognised \
+                     output) — proceeding without fast-fail"
+                );
+            }
+        }
+
         info!(
             redirector = %redirector_bin.display(),
             listener = %listener_path.display(),
