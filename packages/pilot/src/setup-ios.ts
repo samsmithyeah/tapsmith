@@ -78,18 +78,36 @@ function isMitmproxyInstalledViaBrew(): boolean {
 }
 
 /**
- * Best-effort: open System Settings to the Login Items & Extensions pane so
- * the user can approve the Mitmproxy Redirector Network Extension without
- * hunting for it.
+ * Open System Settings to the Login Items & Extensions pane so the user
+ * can approve the Mitmproxy Redirector Network Extension without hunting
+ * for it. Returns true on success, false if even the retry failed.
+ *
+ * The retry is defensive: when System Settings isn't currently running,
+ * Launch Services sometimes returns `-600 procNotFound` on the first
+ * `open URL` call because the `x-apple.systempreferences:` URL handler
+ * hasn't been re-registered yet. A short sleep and retry reliably
+ * unsticks it.
  */
-function openLoginItemsExtensions(): void {
+function openLoginItemsExtensions(): boolean {
+  const tryOpen = (): boolean => {
+    try {
+      execFileSync('open', [SETTINGS_DEEP_LINK], {
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
+      return true;
+    } catch {
+      return false;
+    }
+  };
+  if (tryOpen()) return true;
+  // Give Launch Services a moment to register the URL handler, then retry.
   try {
-    execFileSync('open', [SETTINGS_DEEP_LINK], {
-      stdio: ['ignore', 'pipe', 'pipe'],
-    });
+    execFileSync('sleep', ['0.6'], { stdio: 'ignore' });
   } catch {
-    // Non-fatal — the setup command still prints the click path.
+    // If even `sleep` is missing we're on a very strange machine —
+    // just proceed with the retry.
   }
+  return tryOpen();
 }
 
 function sleep(ms: number): Promise<void> {
@@ -161,7 +179,11 @@ export async function runSetupIos(): Promise<void> {
     console.log(`      ${bold('System Settings → General → Login Items & Extensions → Network Extensions')}`);
     console.log();
     console.log(dim('   Opening System Settings to the right pane...'));
-    openLoginItemsExtensions();
+    if (!openLoginItemsExtensions()) {
+      console.log(
+        dim('   (Could not auto-open — please navigate manually using the path above.)'),
+      );
+    }
     console.log();
     console.log(dim(`   Waiting for approval (up to ${APPROVAL_POLL_TIMEOUT_MS / 1000}s)...`));
 

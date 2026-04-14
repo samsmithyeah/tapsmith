@@ -27,6 +27,22 @@ import { getSimulatorScreenScale } from './ios-simulator.js';
 
 // ─── Result types ───
 
+/**
+ * Warnings emitted by the daemon's `start_network_capture` that the
+ * runner has already printed once this process. Keeps repeating
+ * "Network capture disabled: …" from polluting the per-test output in
+ * a run where the underlying cause (e.g. SE not approved) is the same
+ * for every test.
+ */
+const _printedCaptureWarnings = new Set<string>();
+
+function _warnCaptureOnce(prefix: string, msg: string): void {
+  const key = `${prefix}:${msg}`;
+  if (_printedCaptureWarnings.has(key)) return;
+  _printedCaptureWarnings.add(key);
+  console.warn(`[pilot] ${prefix}: ${msg}`);
+}
+
 export type TestStatus = 'passed' | 'failed' | 'skipped';
 
 export interface TestResult {
@@ -612,12 +628,26 @@ async function runSuiteContext(
       // Start network capture if configured. PILOT-182: iOS traffic
       // routing is now fully owned by pilot-core via the macOS Network
       // Extension redirector, so there's no CLI-side proxy setup.
+      //
+      // The daemon may surface a non-fatal warning (e.g. "SE not approved
+      // — run pilot setup-ios") via the `errorMessage` field even when
+      // `success` is true and the proxy port was allocated. We log it
+      // loudly (once per run — same failure applies to every test) so
+      // users whose trace has no network entries know exactly why and
+      // exactly what to do.
       if (traceConfig.network) {
         try {
-          await opts.device._startNetworkCapture();
+          const res = await opts.device._startNetworkCapture();
+          if (!res.success && res.errorMessage) {
+            _warnCaptureOnce('Network capture disabled', res.errorMessage);
+          } else if (res.errorMessage) {
+            _warnCaptureOnce('Network capture warning', res.errorMessage);
+          }
         } catch (err) {
-          // Network capture is best-effort — log so failures aren't invisible
-          console.warn(`[pilot] Network capture failed to start: ${err instanceof Error ? err.message : err}`);
+          _warnCaptureOnce(
+            'Network capture failed to start',
+            err instanceof Error ? err.message : String(err),
+          );
         }
       }
     }
