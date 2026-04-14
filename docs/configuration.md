@@ -27,7 +27,7 @@ For emulator-managed runs, the recommended path is `launchEmulators + avd`.
 |---|---|---|---|
 | `platform` | `"android" \| "ios"` | auto-detected | Target platform. Auto-detected from `apk` (Android) or `app` (iOS). |
 | `apk` | `string` | `undefined` | Path to the APK under test (Android). |
-| `app` | `string` | `undefined` | Path to the .app bundle under test (iOS simulator). |
+| `app` | `string` | `undefined` | Path to the .app bundle under test (iOS). For simulators, build a simulator-slice `.app`. For physical devices, the `.app` must be code-signed with a profile matching the device — see [iOS physical devices](./ios-physical-devices.md). |
 | `package` | `string` | `undefined` | Package name (Android) or bundle identifier (iOS) of the app under test. When set, Pilot launches the app before tests. |
 | `activity` | `string` | `undefined` | Optional activity name to launch (Android only). Usually not needed; Pilot will try the default launcher activity automatically. |
 | `timeout` | `number` | `30000` | Default timeout in milliseconds for actions and assertions. |
@@ -42,8 +42,8 @@ For emulator-managed runs, the recommended path is `launchEmulators + avd`.
 | `outputDir` | `string` | `"pilot-results"` | Directory for screenshots and other artifacts. |
 | `agentApk` | `string` | `undefined` | Path to the Pilot agent APK (Android). |
 | `agentTestApk` | `string` | `undefined` | Path to the Pilot agent test APK (Android). |
-| `iosXctestrun` | `string` | `undefined` | Path to the iOS agent `.xctestrun` file. |
-| `simulator` | `string` | `undefined` | iOS simulator name or UDID. Run `xcrun simctl list devices` to see available simulators. |
+| `iosXctestrun` | `string` | `undefined` | Path to the iOS agent `.xctestrun` file. **Simulator and device builds are NOT interchangeable** — build one with `xcodebuild -destination 'platform=iOS Simulator,…'` for simulators, or `pilot build-ios-agent` for physical devices. Use one project per target with its own `iosXctestrun`. |
+| `simulator` | `string` | `undefined` | iOS simulator name or UDID. Run `xcrun simctl list devices` to see available simulators. For physical iOS devices, use `device` with the UDID instead — see [iOS physical devices](./ios-physical-devices.md). |
 | `reporter` | `ReporterConfig` | auto-detected | Reporter output configuration. Defaults to `list` locally and `dot` in CI. |
 | `workers` | `number` | `1` | Number of parallel workers. Each worker needs its own device/emulator/simulator. |
 | `shard` | `{ current: number; total: number }` | `undefined` | Shard specification for splitting a run across multiple machines. Usually set via `--shard=x/y`. |

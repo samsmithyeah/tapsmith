@@ -6,6 +6,8 @@ use tokio::net::TcpStream;
 use tokio::process::Command;
 use tracing::{debug, info, instrument};
 
+use super::iproxy::{kill_stray_iproxy, IproxyHandle};
+
 /// Stable per-udid DerivedData location for `xcodebuild test-without-building`.
 ///
 /// Without `-derivedDataPath`, every invocation allocates a fresh random
@@ -34,7 +36,7 @@ async fn clear_prior_xcresults(derived_data_path: &Path) -> Result<()> {
     }
 }
 
-/// Launch the PilotAgent XCUITest runner on an iOS simulator.
+/// Launch the PilotAgent XCUITest runner on an iOS simulator or physical device.
 ///
 /// This is the iOS equivalent of Android's `am instrument -w dev.pilot.agent/.PilotAgent`.
 /// It runs `xcodebuild test-without-building` with the prebuilt .xctestrun file.
@@ -42,13 +44,20 @@ async fn clear_prior_xcresults(derived_data_path: &Path) -> Result<()> {
 /// Environment variables and the target app bundle ID must be injected into the
 /// `.xctestrun` plist (not the xcodebuild process env) because XCUITest reads its
 /// configuration exclusively from that file.
+///
+/// Returns `Some(IproxyHandle)` for physical devices — the caller must store
+/// the handle for the lifetime of the agent so the USB tunnel stays alive.
+/// For simulators (and for the fast-path case where an existing agent is
+/// already responding) returns `None` and the caller keeps any existing
+/// tracking state unchanged.
 #[instrument(skip(xctestrun_path, target_bundle_id))]
 pub async fn start_agent(
     udid: &str,
     xctestrun_path: &str,
     target_bundle_id: &str,
     agent_port: u16,
-) -> Result<()> {
+    is_physical: bool,
+) -> Result<Option<IproxyHandle>> {
     start_agent_impl(
         udid,
         xctestrun_path,
@@ -56,6 +65,7 @@ pub async fn start_agent(
         false,
         false,
         agent_port,
+        is_physical,
     )
     .await
 }
@@ -68,7 +78,8 @@ pub async fn start_agent_fresh(
     xctestrun_path: &str,
     target_bundle_id: &str,
     agent_port: u16,
-) -> Result<()> {
+    is_physical: bool,
+) -> Result<Option<IproxyHandle>> {
     start_agent_impl(
         udid,
         xctestrun_path,
@@ -76,6 +87,7 @@ pub async fn start_agent_fresh(
         true,
         true,
         agent_port,
+        is_physical,
     )
     .await
 }
@@ -87,21 +99,30 @@ async fn start_agent_impl(
     force: bool,
     attach_to_running_app: bool,
     agent_port: u16,
-) -> Result<()> {
+    is_physical: bool,
+) -> Result<Option<IproxyHandle>> {
     // Check if agent is already running by trying to connect
     if !force && ping_agent(agent_port).await.is_ok() {
         info!("iOS agent is already running");
-        return Ok(());
+        // For physical devices, pingable-on-localhost means the caller's
+        // iproxy tunnel is still up; no new handle is returned and the
+        // caller's existing stored state remains authoritative.
+        return Ok(None);
     }
 
-    // Kill any stale xcodebuild processes targeting this simulator before
+    // Kill any stale xcodebuild processes targeting this device/simulator before
     // starting a new one. Without this, leftover processes from a previous
     // run can hold the port or interfere with the new agent launch.
     kill_existing_agents_on(udid).await;
+    if is_physical {
+        // Sweep stale iproxy tunnels keyed to this UDID/port so the host
+        // port is free before we spawn a fresh one.
+        kill_stray_iproxy(udid, agent_port, agent_port).await;
+    }
 
     info!(
         udid,
-        xctestrun_path, agent_port, "Starting iOS agent via xcodebuild"
+        xctestrun_path, agent_port, is_physical, "Starting iOS agent via xcodebuild"
     );
 
     // Patch the xctestrun file to inject target bundle ID and env vars.
@@ -125,6 +146,21 @@ async fn start_agent_impl(
     if let Err(e) = clear_prior_xcresults(&derived_data_path).await {
         debug!("{e:#}");
     }
+
+    // For physical devices, start the USB tunnel BEFORE xcodebuild so a
+    // missing libimobiledevice / wrong UDID / stale port fails fast in ~250ms
+    // instead of after the ~60s xcodebuild warmup. The tunnel forwards the
+    // host's `agent_port` to the same port on the device, where the XCUITest
+    // runner will bind its socket once it finishes launching.
+    let iproxy_handle = if is_physical {
+        Some(
+            IproxyHandle::start(udid.to_string(), agent_port, agent_port)
+                .await
+                .context("Failed to start iproxy USB tunnel for physical iOS device")?,
+        )
+    } else {
+        None
+    };
 
     // Launch xcodebuild test-without-building in background
     let mut cmd = Command::new("xcodebuild");
@@ -188,16 +224,23 @@ async fn start_agent_impl(
     // Wait for the agent to start accepting connections.
     // Freshly booted/cloned simulators can take 90+ seconds for xcodebuild to
     // install and launch the XCUITest runner, especially when multiple
-    // xcodebuild processes compete for resources in parallel mode.
+    // xcodebuild processes compete for resources in parallel mode. Physical
+    // devices on first run may also trigger a Developer Disk Image mount which
+    // adds ~30s to the first-ever invocation — 150s still covers it.
     let deadline = tokio::time::Instant::now() + Duration::from_secs(150);
     loop {
         if tokio::time::Instant::now() > deadline {
             // Kill xcodebuild explicitly so it doesn't outlive this function.
             let _ = child.kill().await;
+            // Drop the iproxy handle (if any) so the host port is freed before
+            // returning. `drop(iproxy_handle)` is explicit rather than letting
+            // scope-drop do it so reviewers can see the cleanup point.
+            drop(iproxy_handle);
             let tail = stderr_tail.lock().await;
             let last_lines = tail.join("\n");
+            let target_kind = if is_physical { "device" } else { "simulator" };
             bail!(
-                "Timed out waiting for iOS agent to start on simulator {udid} after 150s. \
+                "Timed out waiting for iOS agent to start on {target_kind} {udid} after 150s. \
                  Killed xcodebuild. Check that the XCUITest bundle is built correctly.\n\
                  xcodebuild stderr (last lines):\n{last_lines}"
             );
@@ -207,15 +250,20 @@ async fn start_agent_impl(
         // try_wait is non-blocking and reaps the process if it has exited.
         match child.try_wait() {
             Ok(Some(status)) => {
+                drop(iproxy_handle);
                 let tail = stderr_tail.lock().await;
                 let last_lines = tail.join("\n");
+                let target_kind = if is_physical { "device" } else { "simulator" };
                 bail!(
                     "xcodebuild exited with {status} before the iOS agent became \
-                     ready on simulator {udid}.\nxcodebuild stderr (last lines):\n{last_lines}"
+                     ready on {target_kind} {udid}.\nxcodebuild stderr (last lines):\n{last_lines}"
                 );
             }
             Ok(None) => {} // still running, continue probing
-            Err(e) => bail!("Failed to check xcodebuild status: {e}"),
+            Err(e) => {
+                drop(iproxy_handle);
+                bail!("Failed to check xcodebuild status: {e}");
+            }
         }
 
         match ping_agent(agent_port).await {
@@ -227,7 +275,7 @@ async fn start_agent_impl(
                 tokio::spawn(async move {
                     let _ = child.wait().await;
                 });
-                return Ok(());
+                return Ok(iproxy_handle);
             }
             Err(_) => {
                 debug!("Agent not ready yet, retrying...");

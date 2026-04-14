@@ -351,33 +351,63 @@ async function setupSequentialDevice(
   const deviceJustLaunched = launchedEmulators.some((e) => e.serial === cfg.device);
 
   if (cfg.platform === 'ios') {
+    // Determine whether this UDID targets a physical device or a simulator.
+    // The branch drives every downstream decision in this block: simctl for
+    // simulators, devicectl for physical. Without this, install/launch would
+    // silently fail on a real iPhone.
+    const { isPhysicalDevice } = await import('./ios-devicectl.js');
+    const targetIsPhysical = cfg.device ? isPhysicalDevice(cfg.device) : false;
+
     if (cfg.app && cfg.device) {
       try {
-        const { installApp, isAppInstalled } = await import('./ios-simulator.js');
         const resolvedApp = path.resolve(cfg.rootDir, cfg.app);
-        const alreadyInstalled = !deviceJustLaunched
-          && cfg.package
-          && isAppInstalled(cfg.device, cfg.package);
-
-        if (alreadyInstalled && !forceInstall) {
-          console.log(dim(`App ${cfg.package} already installed, skipping iOS app install. Use --force-install to reinstall.`));
-        } else {
-          if (alreadyInstalled) {
-            console.log(dim(`Reinstalling iOS app: ${path.basename(resolvedApp)}`));
+        if (targetIsPhysical) {
+          const { installAppOnDevice, isAppInstalledOnDevice } = await import('./ios-devicectl.js');
+          const alreadyInstalled = !deviceJustLaunched
+            && cfg.package
+            && (await isAppInstalledOnDevice(cfg.device, cfg.package));
+          if (alreadyInstalled && !forceInstall) {
+            console.log(dim(`App ${cfg.package} already installed on device, skipping install. Use --force-install to reinstall.`));
+          } else {
+            if (alreadyInstalled) {
+              console.log(dim(`Reinstalling iOS app on device: ${path.basename(resolvedApp)}`));
+            }
+            await installAppOnDevice(cfg.device, resolvedApp);
+            console.log(dim(`Installed ${path.basename(resolvedApp)} on iOS device ${cfg.device}.`));
           }
-          installApp(cfg.device, resolvedApp);
-          console.log(dim(`Installed ${path.basename(resolvedApp)} on iOS simulator.`));
+        } else {
+          const { installApp, isAppInstalled } = await import('./ios-simulator.js');
+          const alreadyInstalled = !deviceJustLaunched
+            && cfg.package
+            && isAppInstalled(cfg.device, cfg.package);
+          if (alreadyInstalled && !forceInstall) {
+            console.log(dim(`App ${cfg.package} already installed, skipping iOS app install. Use --force-install to reinstall.`));
+          } else {
+            if (alreadyInstalled) {
+              console.log(dim(`Reinstalling iOS app: ${path.basename(resolvedApp)}`));
+            }
+            installApp(cfg.device, resolvedApp);
+            console.log(dim(`Installed ${path.basename(resolvedApp)} on iOS simulator.`));
+          }
         }
       } catch (err) {
         throw new Error(`Failed to install iOS app: ${err}`);
       }
     }
     if (cfg.package && cfg.device) {
-      try {
-        execFileSync('xcrun', ['simctl', 'launch', cfg.device, cfg.package]);
-        console.log(dim(`Launched ${cfg.package} on iOS simulator.`));
-      } catch {
-        // App may already be running
+      // For simulators we fire a best-effort simctl launch so the app is in
+      // the foreground when the XCUITest runner attaches, which avoids a
+      // brief black-screen flicker. For physical devices we skip this step
+      // entirely: `simctl launch` doesn't work on real hardware, and the
+      // XCUITest runner's own `app.launch()` (inside the Swift agent) will
+      // bring the app forward during the subsequent agent startup.
+      if (!targetIsPhysical) {
+        try {
+          execFileSync('xcrun', ['simctl', 'launch', cfg.device, cfg.package]);
+          console.log(dim(`Launched ${cfg.package} on iOS simulator.`));
+        } catch {
+          // App may already be running
+        }
       }
     }
   } else {
@@ -775,6 +805,17 @@ function parseArgs(argv: string[]): CliArgs {
       args.tsxReexec = true;
     } else if (!arg.startsWith('-') && !args.command) {
       args.command = arg;
+      // Subcommands with their own argument parsers: stop consuming here
+      // so downstream flags (e.g. `build-ios-agent --verbose --team-id X`)
+      // aren't rejected by the top-level parser. The subcommand handler
+      // re-parses from process.argv after the command name.
+      if (
+        arg === 'build-ios-agent'
+        || arg === 'configure-ios-network'
+        || arg === 'refresh-ios-network'
+      ) {
+        break;
+      }
     } else if (!arg.startsWith('-')) {
       args.files.push(arg);
     } else {
@@ -1062,6 +1103,10 @@ ${bold('Usage:')}
   pilot show-report [dir]         Open HTML test report
   pilot merge-reports [dir]       Merge blob reports from sharded runs
   pilot setup-ios                 First-run setup for iOS network capture (macOS only)
+  pilot setup-ios-device          Preflight checklist for physical iOS device testing
+  pilot build-ios-agent           Build the signed PilotAgent runner for physical iOS devices
+  pilot configure-ios-network <udid>   Generate a network capture profile (.mobileconfig) for a physical iOS device
+  pilot refresh-ios-network <udid>     Regenerate the network capture profile after a host Wi-Fi change
   pilot --version                 Print version
   pilot --help                    Show this help
 
@@ -1089,7 +1134,20 @@ async function main(): Promise<void> {
     return;
   }
 
-  if (args.help || !args.command) {
+  // Subcommands that print their own command-specific help on --help.
+  // Other commands (e.g. `pilot test --help`) fall back to the top-level
+  // help below.
+  const subcommandsWithOwnHelp = new Set<string>([
+    'build-ios-agent',
+    'configure-ios-network',
+    'refresh-ios-network',
+  ]);
+
+  if (args.help && !(args.command && subcommandsWithOwnHelp.has(args.command))) {
+    printHelp();
+    return;
+  }
+  if (!args.command) {
     printHelp();
     return;
   }
@@ -1151,6 +1209,37 @@ async function main(): Promise<void> {
   if (args.command === 'setup-ios') {
     const { runSetupIos } = await import('./setup-ios.js');
     await runSetupIos();
+    return;
+  }
+
+  if (args.command === 'setup-ios-device') {
+    const { runSetupIosDevice } = await import('./setup-ios-device.js');
+    await runSetupIosDevice();
+    return;
+  }
+
+  if (args.command === 'configure-ios-network') {
+    const { runConfigureIosNetwork } = await import('./configure-ios-network.js');
+    const forwardedArgv = process.argv.slice(process.argv.indexOf('configure-ios-network') + 1)
+      .filter((a) => a !== '--__tsx-reexec');
+    await runConfigureIosNetwork(forwardedArgv);
+    return;
+  }
+
+  if (args.command === 'refresh-ios-network') {
+    const { runRefreshIosNetwork } = await import('./configure-ios-network.js');
+    const forwardedArgv = process.argv.slice(process.argv.indexOf('refresh-ios-network') + 1)
+      .filter((a) => a !== '--__tsx-reexec');
+    await runRefreshIosNetwork(forwardedArgv);
+    return;
+  }
+
+  if (args.command === 'build-ios-agent') {
+    const { runBuildIosAgent } = await import('./build-ios-agent.js');
+    // Everything after the subcommand name is forwarded; drop the verb.
+    const forwardedArgv = process.argv.slice(process.argv.indexOf('build-ios-agent') + 1)
+      .filter((a) => a !== '--__tsx-reexec');
+    await runBuildIosAgent(forwardedArgv);
     return;
   }
 

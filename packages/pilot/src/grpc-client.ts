@@ -625,6 +625,28 @@ export class PilotGrpcClient {
     }, 30_000);
   }
 
+  // ── Physical iOS device network profile (PILOT-185) ──
+
+  async generateIosNetworkProfile(args: {
+    udid: string
+    ssid?: string
+    deviceName?: string
+  }): Promise<{
+    success: boolean
+    errorMessage: string
+    profilePath: string
+    hostIp: string
+    port: number
+    ssid: string
+  }> {
+    return this.call('generateIosNetworkProfile', {
+      requestId: requestId(),
+      udid: args.udid,
+      ssid: args.ssid ?? '',
+      deviceName: args.deviceName ?? '',
+    });
+  }
+
   // ── App State Snapshot (PILOT-115) ──
 
   async saveAppState(packageName: string, path: string): Promise<ActionResponse> {

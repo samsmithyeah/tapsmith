@@ -66,6 +66,12 @@ service PilotService {
   // ─── Network Capture (PILOT-164) ───
   rpc StartNetworkCapture(StartNetworkCaptureRequest) returns (StartNetworkCaptureResponse);
   rpc StopNetworkCapture(StopNetworkCaptureRequest) returns (StopNetworkCaptureResponse);
+
+  // ─── Physical iOS device network capture (PILOT-185) ───
+  // Generates a `.mobileconfig` profile that the user installs on a
+  // physical iOS device to route Wi-Fi traffic through Pilot's MITM proxy
+  // on a deterministic per-UDID host port.
+  rpc GenerateIosNetworkProfile(GenerateIosNetworkProfileRequest) returns (GenerateIosNetworkProfileResponse);
 }
 
 // ─── Common Types ───
@@ -544,4 +550,32 @@ message StopNetworkCaptureResponse {
   bool success = 2;
   repeated CapturedNetworkEntry entries = 3;
   string error_message = 4;
+}
+
+// ─── Physical iOS device network capture (PILOT-185) ───
+
+message GenerateIosNetworkProfileRequest {
+  string request_id = 1;
+  // Target device UDID. Must match a physical device returned by ListDevices.
+  string udid = 2;
+  // Optional Wi-Fi SSID to include in the mobileconfig. Empty = auto-detect
+  // the host's current Wi-Fi network.
+  string ssid = 3;
+  // Optional human-readable name for the device (used in PayloadDisplayName).
+  // Defaults to the device's name from devicectl if empty.
+  string device_name = 4;
+}
+
+message GenerateIosNetworkProfileResponse {
+  string request_id = 1;
+  bool success = 2;
+  string error_message = 3;
+  // Absolute path to the generated .mobileconfig file.
+  string profile_path = 4;
+  // Host IP the profile points at.
+  string host_ip = 5;
+  // Deterministic TCP port assigned for this UDID.
+  uint32 port = 6;
+  // SSID captured in the profile.
+  string ssid = 7;
 }

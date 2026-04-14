@@ -125,6 +125,8 @@ emulator-managed path is `workers + launchEmulators + avd`.
 - [API Reference](docs/api-reference.md)
 - [Configuration](docs/configuration.md)
 - [CI Setup](docs/ci-setup.md)
+- [iOS physical devices](docs/ios-physical-devices.md)
+- [iOS network capture](docs/ios-network-capture.md)
 
 ## License
 

@@ -8,7 +8,7 @@ type SessionClient = Pick<PilotGrpcClient, 'ping' | 'getUiHierarchy'>
 
 export interface SessionPreflightContext {
   label: string
-  config: Pick<PilotConfig, 'package' | 'activity' | 'platform' | 'resetAppDeepLink' | 'resetAppWaitMs'>
+  config: Pick<PilotConfig, 'package' | 'activity' | 'platform' | 'resetAppDeepLink' | 'resetAppWaitMs' | 'device'>
   device: SessionDevice
   client: SessionClient
   agentApkPath?: string
@@ -66,13 +66,20 @@ export async function launchConfiguredApp(
       return;
     }
 
-    // On iOS, clear data then restart for isolation between test files.
-    // clearAppData removes AsyncStorage (including React Navigation state).
-    // restartApp handles terminate → relaunch atomically through the daemon
-    // with fallback mechanisms (in-runner relaunch → simctl relaunch →
+    // On iOS simulators, clear data then restart for isolation between test
+    // files. clearAppData removes AsyncStorage (including React Navigation
+    // state). restartApp handles terminate → relaunch atomically through the
+    // daemon with fallback mechanisms (in-runner relaunch → simctl relaunch →
     // full agent restart), avoiding the race condition where a separate
     // terminateApp + launchApp sequence can reconnect to a dying process.
-    await ctx.device.clearAppData(ctx.config.package);
+    //
+    // Physical iOS devices can't use clearAppData (no filesystem-level app
+    // container access), so we only restartApp. Tests that need persisted-
+    // state isolation should use resetAppDeepLink.
+    const isPhysicalIos = !!ctx.config.device;
+    if (!isPhysicalIos) {
+      await ctx.device.clearAppData(ctx.config.package);
+    }
     try {
       await ctx.device.restartApp(ctx.config.package);
     } catch (err) {

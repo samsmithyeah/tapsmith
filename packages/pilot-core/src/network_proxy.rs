@@ -118,13 +118,33 @@ pub struct NetworkProxy {
 }
 
 impl NetworkProxy {
-    /// Start the proxy on an ephemeral port. Returns immediately.
+    /// Start the proxy on an ephemeral loopback port (the default for
+    /// simulators and Android devices, which reach the proxy via transparent
+    /// redirection or `adb reverse`).
+    ///
     /// The `mitm_ca` is used to generate per-host TLS certificates for HTTPS
     /// interception.
     pub async fn start(mitm_ca: Arc<MitmAuthority>) -> Result<Self> {
-        let listener = TcpListener::bind("127.0.0.1:0")
+        Self::start_on(mitm_ca, "127.0.0.1:0".parse().expect("valid ipv4 addr")).await
+    }
+
+    /// Start the proxy on a specific bind address and port.
+    ///
+    /// Physical iOS devices (PILOT-185) cannot reach `127.0.0.1` on the host
+    /// — they have their own loopback. Instead, a mobileconfig installs a
+    /// Wi-Fi HTTP proxy pointing at the host's local LAN IP + a deterministic
+    /// per-UDID port. Binding on `0.0.0.0:<port>` makes the proxy reachable
+    /// over the LAN so the device's HTTP proxy directs traffic into it.
+    ///
+    /// Loopback binds are still preferred anywhere the caller doesn't need
+    /// LAN exposure — an open `0.0.0.0` listener would let any host on the
+    /// local network reach the MITM proxy, which is not what simulator tests
+    /// want. The shim helper `start` above picks `127.0.0.1:0` on behalf of
+    /// callers that don't care.
+    pub async fn start_on(mitm_ca: Arc<MitmAuthority>, bind_addr: SocketAddr) -> Result<Self> {
+        let listener = TcpListener::bind(bind_addr)
             .await
-            .context("Failed to bind proxy port")?;
+            .with_context(|| format!("Failed to bind proxy port at {bind_addr}"))?;
         let port = listener.local_addr()?.port();
 
         let mut root_store = rustls::RootCertStore::empty();

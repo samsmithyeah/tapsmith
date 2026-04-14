@@ -8,3 +8,6 @@ DerivedData/
 # Swift Package Manager
 .build/
 .swiftpm/
+
+# pilot build-ios-agent output (signed device runner + xctestrun)
+.build-device/

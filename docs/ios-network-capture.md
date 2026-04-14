@@ -1,6 +1,8 @@
 # iOS network capture
 
-Pilot can record the HTTP/HTTPS traffic the app under test makes during iOS tests, with full request/response bodies, headers, timing, and per-test attribution in the trace viewer's Network tab. On iOS simulators this works out of the box (with a one-time setup step). Physical iOS devices are not yet supported.
+Pilot can record the HTTP/HTTPS traffic the app under test makes during iOS tests, with full request/response bodies, headers, timing, and per-test attribution in the trace viewer's Network tab. Both **iOS simulators** and **physical iOS devices** are supported on macOS.
+
+Simulators go through a macOS Network Extension (no on-device configuration needed — see [simulator setup](#first-run-setup) below). Physical devices use a Wi-Fi proxy configuration profile (a `.mobileconfig` that Pilot generates per device) — see the [physical device section](#physical-ios-devices) below.
 
 ## How it works
 
@@ -140,7 +142,76 @@ Verify the fix is in place: run with debug logs and look for `pilot_core::ios_re
 
 ### Physical iOS device network capture
 
-Not supported yet. The NE redirector only intercepts traffic originating on the host (which is where simulators run). Physical devices need a different mechanism (a Wi-Fi proxy config profile pointing at the host's local IP, or a USB tunnel via `iproxy`) which is planned follow-up work.
+See the [Physical iOS devices](#physical-ios-devices) section below — physical devices use a different setup flow (`pilot configure-ios-network`) because they can't share the macOS Network Extension that simulators use.
+
+## Physical iOS devices
+
+Physical iPhones/iPads have their own network stack — the macOS Network Extension redirector used for simulators only intercepts host-originated traffic, so it can't route a real device. Pilot therefore uses a different mechanism for physical devices: a per-device **configuration profile** (`.mobileconfig`) that installs a Wi-Fi HTTP proxy on the device pointing at the host Mac's LAN IP, plus the Pilot MITM CA.
+
+### How it works (physical)
+
+1. `pilot configure-ios-network <udid>` generates a `.mobileconfig` containing two payloads:
+   - `com.apple.wifi.managed` — targets your current Wi-Fi SSID with `ProxyType: Manual`, `ProxyServer: <host-ip>`, `ProxyServerPort: <deterministic-port>`. The port is `9000 + CRC32(udid) % 1000`, so it's stable per device and multiple devices can run in parallel without colliding.
+   - `com.apple.security.root` — the Pilot CA, for HTTPS trust.
+2. You install the profile on the device once (AirDrop / email / Messages) and trust the CA in **Settings → General → About → Certificate Trust Settings**.
+3. When `pilot test` targets that device, the daemon binds its MITM proxy on `0.0.0.0:<deterministic-port>` so the device can reach it over Wi-Fi. Traffic flows through the same MITM engine as the simulator path, producing identical `NetworkEntry` records in the trace.
+
+### First-run setup (physical)
+
+Prerequisites — run `pilot setup-ios-device` to check these automatically:
+
+- Xcode 15+ with command-line tools
+- `libimobiledevice` installed (`brew install libimobiledevice`)
+- A signed PilotAgent built for iOS device (`pilot build-ios-agent`)
+- Your device plugged in via USB, paired with Xcode, Developer Mode enabled
+
+Then, for each physical device you want to test against:
+
+```sh
+# 1. Verify environment + see the device's UDID
+pilot setup-ios-device
+
+# 2. Generate the mobileconfig (auto-detects host Wi-Fi IP, SSID, device name)
+pilot configure-ios-network <UDID>
+```
+
+Follow the on-screen walkthrough to install the profile on the device:
+
+1. AirDrop the generated `~/.pilot/devices/<UDID>.mobileconfig` to the iPhone (or email it).
+2. On the device, open **Settings → General → VPN & Device Management**, tap the "Pilot Network Capture" profile, then "Install" → enter passcode → "Install".
+3. Trust the CA: **Settings → General → About → Certificate Trust Settings → Pilot MITM CA → full trust**.
+
+From then on, `pilot test` against that UDID with tracing enabled will capture traffic.
+
+### Running parallel physical devices
+
+The deterministic per-UDID port means multiple physical devices on the same Wi-Fi network each get their own host port without collision. Run `pilot configure-ios-network` once per device; each installs a profile with a distinct port, and parallel worker buckets dispatch independently.
+
+### When the host's Wi-Fi IP changes
+
+The mobileconfig embeds the host's LAN IP at generation time. If you move between Wi-Fi networks (or DHCP reassigns your IP), the installed profile goes stale and the device will hit connection-refused when it tries the proxy. Regenerate:
+
+```sh
+pilot refresh-ios-network <UDID>
+```
+
+Then remove the old profile on the device (**Settings → General → VPN & Device Management → Pilot Network Capture → Remove Profile**) and install the new one.
+
+Pilot also detects this at test time: if the daemon notices that the host's current Wi-Fi IP doesn't match the IP recorded in `~/.pilot/devices/<UDID>.meta.json`, it prints a warning in the trace with the `refresh-ios-network` command to run.
+
+### Troubleshooting (physical)
+
+**"No Pilot network profile found for device …"** — you haven't generated the mobileconfig yet. Run `pilot configure-ios-network <UDID>`.
+
+**"Host Wi-Fi IP changed since mobileconfig was generated"** — see [When the host's Wi-Fi IP changes](#when-the-hosts-wi-fi-ip-changes).
+
+**The device isn't routing traffic through the proxy** — check that the device is actually on the SSID the mobileconfig targets (not cellular or a different Wi-Fi). Also confirm the profile is installed and CA trust is enabled.
+
+**HTTPS requests fail with certificate errors** — the Pilot CA isn't trusted on the device. Go to **Settings → General → About → Certificate Trust Settings** and enable full trust for "Pilot MITM CA".
+
+**A VPN app is installed on the device** — VPN apps bypass Wi-Fi HTTP proxy. Disable the VPN for the duration of testing. This is a known limitation.
+
+**Device signing expired (free Apple Developer account)** — free accounts rotate profiles every 7 days. Rerun `pilot build-ios-agent` to refresh the signed runner.
 
 ## Security and privacy
 

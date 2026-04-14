@@ -29,6 +29,9 @@ when configured with `launchEmulators` and `avd`.
 Pilot manages iOS simulators automatically. Set the `simulator` config option to
 choose which simulator to boot (defaults to `iPhone 17`).
 
+For **physical iOS devices**, additional prerequisites apply (libimobiledevice,
+Apple Developer account, device pairing). See [iOS physical devices](./ios-physical-devices.md) for the full walkthrough.
+
 ## Installation
 
 ```bash

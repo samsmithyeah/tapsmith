@@ -35,6 +35,10 @@ pub struct PilotServiceImpl {
     ios_redirect: Arc<RwLock<Option<crate::ios_redirect::IosRedirect>>>,
     /// iOS agent launch config (stored for restart on launchApp).
     ios_agent_config: Arc<RwLock<Option<IosAgentConfig>>>,
+    /// iproxy USB tunnel for the physical iOS device, if any. Held for the
+    /// lifetime of the XCUITest runner session; dropped when a new agent is
+    /// started or the session is torn down.
+    ios_iproxy: Arc<RwLock<Option<crate::ios::iproxy::IproxyHandle>>>,
 }
 
 /// Stored iOS agent launch config for restart.
@@ -60,7 +64,21 @@ impl PilotServiceImpl {
             #[cfg(target_os = "macos")]
             ios_redirect: Arc::new(RwLock::new(None)),
             ios_agent_config: Arc::new(RwLock::new(None)),
+            ios_iproxy: Arc::new(RwLock::new(None)),
         }
+    }
+
+    /// Returns `true` when the currently-selected device is a physical iOS
+    /// device (i.e. iOS platform + `is_emulator == false`). Falls back to
+    /// `false` when no device is selected or when the device manager cannot
+    /// be queried — the existing simulator-oriented code paths remain the
+    /// safe default.
+    async fn is_active_ios_physical(&self) -> bool {
+        let dm = self.device_manager.read().await;
+        matches!(
+            dm.active_device(),
+            Some(d) if d.platform == Platform::Ios && !d.is_emulator
+        )
     }
 
     fn request_id(provided: &str) -> String {
@@ -240,23 +258,39 @@ impl PilotServiceImpl {
             .clone()
             .ok_or_else(|| "iOS agent is not configured".to_string())?;
 
+        let is_physical = self.is_active_ios_physical().await;
+
         ios::agent_launch::kill_existing_agents_on(serial).await;
-        let _ = ios::device::terminate_app(serial, package_name).await;
-        tokio::time::sleep(Duration::from_millis(100)).await;
-        ios::device::launch_app(serial, package_name)
-            .await
-            .map_err(|e| format!("Failed to relaunch app via simctl before agent restart: {e}"))?;
-        tokio::time::sleep(Duration::from_millis(100)).await;
+        // On physical devices we skip the simctl-mediated pre-relaunch because
+        // simctl does not work on real hardware. The XCUITest runner's own
+        // `app.launch()` (inside the re-started agent) provides an equivalent
+        // fresh launch — slower but correct.
+        if !is_physical {
+            let _ = ios::device::terminate_app(serial, package_name).await;
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            ios::device::launch_app(serial, package_name)
+                .await
+                .map_err(|e| {
+                    format!("Failed to relaunch app via simctl before agent restart: {e}")
+                })?;
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
 
         let agent_port = self.agent.read().await.port();
-        ios::agent_launch::start_agent_fresh(
+        let new_iproxy = ios::agent_launch::start_agent_fresh(
             serial,
             &config.xctestrun_path,
             &config.target_package,
             agent_port,
+            is_physical,
         )
         .await
         .map_err(|e| format!("Failed to restart iOS agent: {e}"))?;
+        if let Some(handle) = new_iproxy {
+            // Drop the old handle (closing its tunnel) before storing the new one
+            // so the host port is never owned by two iproxy instances at once.
+            *self.ios_iproxy.write().await = Some(handle);
+        }
 
         self.agent
             .write()
@@ -276,6 +310,8 @@ impl PilotServiceImpl {
         wait_for_idle: bool,
         idle_timeout_ms: u64,
     ) -> Result<(), String> {
+        let is_physical = self.is_active_ios_physical().await;
+
         let t0 = std::time::Instant::now();
         match self
             .relaunch_ios_app_via_agent(package_name, wait_for_idle, idle_timeout_ms)
@@ -294,9 +330,18 @@ impl PilotServiceImpl {
                     package_name,
                     error = %err,
                     elapsed_ms = t0.elapsed().as_millis() as u64,
-                    "in-runner iOS relaunch failed; trying simctl relaunch"
+                    "in-runner iOS relaunch failed; trying next fallback"
                 );
             }
+        }
+
+        // Physical devices skip the simctl fallback entirely — simctl targets
+        // Simulator runtimes, not real hardware. Jump straight to the full
+        // agent restart path, which works for both target kinds.
+        if is_physical {
+            return self
+                .restart_ios_agent_for_app(serial, package_name, wait_for_idle, idle_timeout_ms)
+                .await;
         }
 
         let t1 = std::time::Instant::now();
@@ -579,6 +624,23 @@ impl PilotServiceImpl {
         let platform = self.require_platform().await?;
         match platform {
             Platform::Ios => {
+                if self.is_active_ios_physical().await {
+                    // `xcrun simctl privacy` only targets simulators. Physical
+                    // devices require user interaction (or MDM) to change
+                    // permission state. Surface a clear error with a workaround
+                    // pointing to the in-app permission dialog + UIInterruptionMonitor.
+                    return Ok(self
+                        .action_error(
+                            request_id,
+                            "UNSUPPORTED_ON_PHYSICAL_DEVICE",
+                            format!(
+                                "device.{action}Permission is not supported on physical iOS devices. \
+                                 Workaround: trigger the in-app permission dialog during the test and \
+                                 let the XCUITest UIInterruptionMonitor tap through it automatically."
+                            ),
+                        )
+                        .await);
+                }
                 let serial = self.active_serial().await?;
                 let result = match action {
                     "grant" => {
@@ -1398,27 +1460,46 @@ impl proto::pilot_service_server::PilotService for PilotServiceImpl {
                     }));
                 }
 
+                let is_physical = self.is_active_ios_physical().await;
+
                 // Apply test-friendly defaults every time the agent starts,
                 // not just on first boot — reused simulators may have stale config.
-                ios::device::configure_simulator(&serial).await;
+                // Skipped entirely on physical devices: the simctl spawns
+                // would fail, and the device's defaults are user-owned anyway.
+                if !is_physical {
+                    ios::device::configure_simulator(&serial).await;
+                }
+
+                // Drop any prior iproxy tunnel BEFORE start_agent so the
+                // existing host port is free when start_agent tries to bind
+                // a fresh tunnel. Without this, a re-started agent on the
+                // same physical device would fight its own leftover tunnel.
+                *self.ios_iproxy.write().await = None;
 
                 let agent_port = self.agent.read().await.port();
-                if let Err(e) = ios::agent_launch::start_agent(
+                let iproxy_handle = match ios::agent_launch::start_agent(
                     &serial,
                     &req.ios_xctestrun_path,
                     &req.target_package,
                     agent_port,
+                    is_physical,
                 )
                 .await
                 {
-                    error!(error = %e, "Failed to start iOS agent");
-                    return Ok(Response::new(proto::ActionResponse {
-                        request_id,
-                        success: false,
-                        error_type: "AGENT_START_FAILED".to_string(),
-                        error_message: e.to_string(),
-                        screenshot: Vec::new(),
-                    }));
+                    Ok(handle) => handle,
+                    Err(e) => {
+                        error!(error = %e, "Failed to start iOS agent");
+                        return Ok(Response::new(proto::ActionResponse {
+                            request_id,
+                            success: false,
+                            error_type: "AGENT_START_FAILED".to_string(),
+                            error_message: e.to_string(),
+                            screenshot: Vec::new(),
+                        }));
+                    }
+                };
+                if let Some(handle) = iproxy_handle {
+                    *self.ios_iproxy.write().await = Some(handle);
                 }
 
                 // Store config for potential agent restart in launchApp
@@ -1816,21 +1897,40 @@ impl proto::pilot_service_server::PilotService for PilotServiceImpl {
                 } else {
                     10000
                 };
+                let is_physical = self.is_active_ios_physical().await;
 
                 if req.clear_data {
-                    // Terminate the app first to avoid file access conflicts
-                    // when clearing the data container.
-                    let _ = ios::device::terminate_app(&serial, &req.package_name).await;
-                    // Clear the data container (AsyncStorage, caches, etc.)
-                    // without uninstalling the app.
-                    match ios::device::get_app_container(&serial, &req.package_name).await {
-                        Ok(ref container) => {
-                            if let Err(e) = ios::device::clear_container(container).await {
-                                warn!(error = %e, "Failed to clear app container");
+                    if is_physical {
+                        // Physical devices have no host-accessible app container
+                        // filesystem — `get_app_container` / `clear_container`
+                        // are simulator-only hacks. Instead, we rely on the
+                        // agent-mediated relaunch below to provide a fresh
+                        // launch; to actually wipe persistent state on a
+                        // physical device the user must reinstall the app
+                        // (future work: wire reinstall via devicectl into
+                        // clear_data).
+                        warn!(
+                            package = %req.package_name,
+                            "clear_data on physical iOS device is best-effort: \
+                             persistent AsyncStorage/caches are not wiped. \
+                             Reinstall the app via `pilot test --force-install` \
+                             for a clean slate."
+                        );
+                    } else {
+                        // Terminate the app first to avoid file access conflicts
+                        // when clearing the data container.
+                        let _ = ios::device::terminate_app(&serial, &req.package_name).await;
+                        // Clear the data container (AsyncStorage, caches, etc.)
+                        // without uninstalling the app.
+                        match ios::device::get_app_container(&serial, &req.package_name).await {
+                            Ok(ref container) => {
+                                if let Err(e) = ios::device::clear_container(container).await {
+                                    warn!(error = %e, "Failed to clear app container");
+                                }
                             }
-                        }
-                        Err(e) => {
-                            debug!(error = %e, "Could not get app container");
+                            Err(e) => {
+                                debug!(error = %e, "Could not get app container");
+                            }
                         }
                     }
                 }
@@ -1942,6 +2042,25 @@ impl proto::pilot_service_server::PilotService for PilotServiceImpl {
         let platform = self.require_platform().await?;
         match platform {
             Platform::Ios => {
+                // Physical iOS devices have no host-side "openurl" mechanism —
+                // neither `xcrun simctl openurl` (simulator-only) nor any
+                // devicectl equivalent. The only robust path would be a
+                // Safari-driven fallback inside the XCUITest agent, which is
+                // tracked as a v2 follow-up. Return a clear actionable error
+                // instead of silently succeeding.
+                if self.is_active_ios_physical().await {
+                    return Ok(self
+                        .action_error(
+                            request_id,
+                            "UNSUPPORTED_ON_PHYSICAL_DEVICE",
+                            "device.openDeepLink is not yet supported on physical iOS \
+                             devices. Workarounds: add a test-only button in your app \
+                             that calls `UIApplication.shared.open(url)`, or open the \
+                             URL manually via Safari on the device before the test runs."
+                                .to_string(),
+                        )
+                        .await);
+                }
                 let serial = self.active_serial().await?;
                 match ios::device::open_url(&serial, &req.uri).await {
                     Ok(()) => Ok(Response::new(proto::ActionResponse {
@@ -2120,12 +2239,25 @@ impl proto::pilot_service_server::PilotService for PilotServiceImpl {
                 // Fall back to simctl on transport error AND on agent-reported
                 // failure (Ok(resp) where !resp.success). The agent can return
                 // a structured failure (e.g. app already gone, XCUI error) that
-                // would otherwise be silently swallowed.
+                // would otherwise be silently swallowed. Physical devices have
+                // no simctl fallback — if the agent fails, the app state is
+                // indeterminate and we surface the error rather than pretending
+                // it worked.
                 let needs_fallback = match &agent_result {
                     Err(_) => true,
                     Ok(resp) => !resp.success,
                 };
                 if needs_fallback {
+                    if self.is_active_ios_physical().await {
+                        let msg = match &agent_result {
+                            Err(status) => status.message().to_string(),
+                            Ok(resp) => resp
+                                .error
+                                .clone()
+                                .unwrap_or_else(|| "terminate_app agent path failed".to_string()),
+                        };
+                        return Ok(self.action_error(request_id, "TERMINATE_FAILED", msg).await);
+                    }
                     let serial = self.active_serial().await?;
                     let _ = ios::device::terminate_app(&serial, &req.package_name).await;
                 }
@@ -2237,6 +2369,24 @@ impl proto::pilot_service_server::PilotService for PilotServiceImpl {
         let platform = self.require_platform().await?;
         match platform {
             Platform::Ios => {
+                if self.is_active_ios_physical().await {
+                    // Physical devices have no host-accessible app container
+                    // filesystem, so `get_app_container` / `clear_container`
+                    // are meaningless. The only way to reset persistent state
+                    // on a real device is to reinstall the app bundle. We
+                    // surface a clear actionable error rather than silently
+                    // succeeding while leaving state behind.
+                    return Ok(self
+                        .action_error(
+                            request_id,
+                            "UNSUPPORTED_ON_PHYSICAL_DEVICE",
+                            "device.clearAppData is not supported on physical iOS devices. \
+                             Reinstall the app (pass `--force-install` to `pilot test`) \
+                             to wipe persistent state."
+                                .to_string(),
+                        )
+                        .await);
+                }
                 let serial = self.active_serial().await?;
                 // Clear the data container (AsyncStorage, UserDefaults, caches)
                 // but do NOT terminate the app — launchApp handles that and
@@ -2308,6 +2458,23 @@ impl proto::pilot_service_server::PilotService for PilotServiceImpl {
 
         match platform {
             Platform::Ios => {
+                if self.is_active_ios_physical().await {
+                    // Physical devices have no `simctl pbcopy` path. Going
+                    // through UIPasteboard from the XCUITest runner hits
+                    // the iOS 16+ paste permission dialog which has crashed
+                    // the runner historically. Surfacing a clear error is
+                    // preferable to a silent crash or stuck dialog.
+                    return Ok(self
+                        .action_error(
+                            request_id,
+                            "UNSUPPORTED_ON_PHYSICAL_DEVICE",
+                            "device.setClipboard is not yet supported on physical iOS devices. \
+                             Workaround: seed clipboard contents from within the app under test, \
+                             or use a test-only debug hook."
+                                .to_string(),
+                        )
+                        .await);
+                }
                 // Use simctl pbcopy to avoid the iOS 16+ paste permission dialog
                 // that would crash the XCUITest agent if it accessed UIPasteboard.
                 let serial = self.active_serial().await?;
@@ -2337,6 +2504,13 @@ impl proto::pilot_service_server::PilotService for PilotServiceImpl {
 
         let text = match platform {
             Platform::Ios => {
+                if self.is_active_ios_physical().await {
+                    return Err(Status::unimplemented(
+                        "device.getClipboard is not yet supported on physical iOS devices. \
+                         Workaround: read the clipboard from within the app under test via \
+                         a test-only debug hook.",
+                    ));
+                }
                 // Use simctl pbpaste to avoid the iOS 16+ paste permission dialog
                 // that would crash the XCUITest agent if it accessed UIPasteboard.
                 let serial = self.active_serial().await?;
@@ -2535,7 +2709,6 @@ impl proto::pilot_service_server::PilotService for PilotServiceImpl {
         let platform = self.require_platform().await?;
         match platform {
             Platform::Ios => {
-                let serial = self.active_serial().await?;
                 match req.scheme.as_str() {
                     "dark" | "light" => {}
                     other => {
@@ -2544,6 +2717,22 @@ impl proto::pilot_service_server::PilotService for PilotServiceImpl {
                         )));
                     }
                 }
+                if self.is_active_ios_physical().await {
+                    // `xcrun simctl ui appearance` is simulator-only. Physical
+                    // devices require the user to toggle light/dark mode in
+                    // Settings; there is no programmatic path.
+                    return Ok(self
+                        .action_error(
+                            request_id,
+                            "UNSUPPORTED_ON_PHYSICAL_DEVICE",
+                            "device.setColorScheme is not supported on physical iOS devices. \
+                             Workaround: set the system appearance on the device manually \
+                             (Settings → Display & Brightness) before running the test."
+                                .to_string(),
+                        )
+                        .await);
+                }
+                let serial = self.active_serial().await?;
                 match ios::device::set_appearance(&serial, &req.scheme).await {
                     Ok(()) => Ok(Self::success_action_response(request_id)),
                     Err(e) => Ok(self
@@ -2680,37 +2869,70 @@ impl proto::pilot_service_server::PilotService for PilotServiceImpl {
         let ca_pem_path = mitm_ca.ca_pem_path().to_string_lossy().to_string();
         let mut warning: Option<String> = None;
 
-        match platform {
-            Platform::Ios => {
-                // Network capture on iOS only works for simulators (they share the
-                // host network so macOS system proxy routes their traffic through
-                // the MITM proxy). Physical iOS devices have their own network
-                // stack and no programmatic proxy API.
-                let is_simulator = self
-                    .device_manager
-                    .read()
-                    .await
-                    .active_device()
-                    .map(|d| d.is_emulator)
-                    .unwrap_or(true);
-                if !is_simulator {
-                    return Ok(Response::new(proto::StartNetworkCaptureResponse {
-                        request_id,
-                        success: false,
-                        proxy_port: 0,
-                        error_message:
-                            "Network capture is not supported on physical iOS devices — only simulators"
-                                .to_string(),
-                    }));
-                }
+        let is_ios_physical = self.is_active_ios_physical().await;
 
-                // Install CA cert on the iOS simulator's trust store
+        match platform {
+            Platform::Ios if !is_ios_physical => {
+                // Simulator path — install CA into the simulator's trust store.
                 if let Err(e) = ios::device::install_ca_cert(&serial, &ca_pem_path).await {
                     let msg = format!(
                         "Failed to install CA cert on simulator: {e} — HTTPS traffic will not be captured"
                     );
                     error!("{msg}");
                     warning = Some(msg);
+                }
+            }
+            Platform::Ios => {
+                // Physical device path (PILOT-185) — the CA is trusted via the
+                // mobileconfig the user installed on the device, so there's
+                // nothing to install from the host. We just verify the
+                // mobileconfig exists and warn loudly if it's missing, since
+                // without it the device has no route into our proxy and no
+                // trust for our CA.
+                #[cfg(target_os = "macos")]
+                {
+                    if !ios::physical_device_proxy::mobileconfig_exists(&serial).await {
+                        return Ok(Response::new(proto::StartNetworkCaptureResponse {
+                            request_id,
+                            success: false,
+                            proxy_port: 0,
+                            error_message: format!(
+                                "No Pilot network profile found for device {serial}. \
+                                 Run `pilot configure-ios-network {serial}` first, then \
+                                 install the generated .mobileconfig on the device."
+                            ),
+                        }));
+                    }
+                    // Warn if the host's Wi-Fi IP has drifted from what the
+                    // mobileconfig was generated against.
+                    if let Ok(Some(meta)) =
+                        ios::physical_device_proxy::read_mobileconfig_meta(&serial).await
+                    {
+                        if let Ok(current_ip) =
+                            ios::physical_device_proxy::resolve_host_wifi_ip().await
+                        {
+                            if ios::physical_device_proxy::is_mobileconfig_stale(&meta, current_ip)
+                                .await
+                            {
+                                let msg = format!(
+                                    "Host Wi-Fi IP changed since mobileconfig was generated ({} → {}). \
+                                     Run `pilot refresh-ios-network {serial}` and reinstall the profile.",
+                                    meta.host_ip, current_ip
+                                );
+                                warn!("{msg}");
+                                warning = Some(msg);
+                            }
+                        }
+                    }
+                }
+                #[cfg(not(target_os = "macos"))]
+                {
+                    return Ok(Response::new(proto::StartNetworkCaptureResponse {
+                        request_id,
+                        success: false,
+                        proxy_port: 0,
+                        error_message: "Physical iOS network capture requires macOS".to_string(),
+                    }));
                 }
             }
             Platform::Android => {
@@ -2730,16 +2952,43 @@ impl proto::pilot_service_server::PilotService for PilotServiceImpl {
             }
         }
 
-        // Pass a clone into `NetworkProxy::start` so the outer `mitm_ca`
-        // stays in scope for any per-platform post-start wiring (the iOS
-        // redirector needs it to mint per-host certs for its flow bridge).
-        let proxy = NetworkProxy::start(Arc::clone(&mitm_ca))
-            .await
-            .map_err(|e| Status::internal(format!("Failed to start proxy: {e}")))?;
+        // Pick the proxy bind address based on device type. Simulators and
+        // Android both want loopback (they reach the proxy via transparent
+        // redirection or adb reverse). Physical iOS devices need a LAN-
+        // reachable listener on a deterministic per-UDID port so their
+        // installed mobileconfig can route traffic here.
+        let proxy = if is_ios_physical {
+            #[cfg(target_os = "macos")]
+            {
+                let port = ios::physical_device_proxy::deterministic_port(&serial);
+                let bind = std::net::SocketAddr::new(
+                    std::net::IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED),
+                    port,
+                );
+                NetworkProxy::start_on(Arc::clone(&mitm_ca), bind)
+                    .await
+                    .map_err(|e| {
+                        Status::internal(format!("Failed to start proxy on {bind}: {e}"))
+                    })?
+            }
+            #[cfg(not(target_os = "macos"))]
+            {
+                return Ok(Response::new(proto::StartNetworkCaptureResponse {
+                    request_id,
+                    success: false,
+                    proxy_port: 0,
+                    error_message: "Physical iOS network capture requires macOS".to_string(),
+                }));
+            }
+        } else {
+            NetworkProxy::start(Arc::clone(&mitm_ca))
+                .await
+                .map_err(|e| Status::internal(format!("Failed to start proxy: {e}")))?
+        };
         let host_port = proxy.port();
 
         match platform {
-            Platform::Ios => {
+            Platform::Ios if !is_ios_physical => {
                 // PILOT-182: route the simulator's traffic into the MITM
                 // proxy via the macOS Network Extension redirector instead
                 // of a global system proxy. Per-PID filtering gives each
@@ -2791,6 +3040,19 @@ impl proto::pilot_service_server::PilotService for PilotServiceImpl {
                         error_message: "iOS network capture requires macOS".to_string(),
                     }));
                 }
+            }
+            Platform::Ios => {
+                // PILOT-185 physical-device path — the device already has the
+                // mobileconfig installed, so its outbound HTTP traffic is
+                // directed at us via the standard HTTP proxy protocol. The
+                // existing `handle_connection` path inside NetworkProxy
+                // transparently handles CONNECT / GET-with-absolute-URL
+                // requests from the device, so no redirector is needed.
+                info!(
+                    %serial,
+                    host_port,
+                    "Physical iOS proxy listening for device HTTP_PROXY traffic"
+                );
             }
             Platform::Android => {
                 // Use `adb reverse` to make the proxy reachable as 127.0.0.1:{port} on
@@ -2853,11 +3115,17 @@ impl proto::pilot_service_server::PilotService for PilotServiceImpl {
         if let Some(serial) = &serial {
             match platform {
                 Some(Platform::Ios) => {
-                    // PILOT-182: drop the redirector session handle BEFORE
-                    // `proxy.stop()`. Drop closes the control channel, which
-                    // tells the SE to remove this worker's per-PID filter;
-                    // the accept + refresh tasks abort and the Unix socket
-                    // file is unlinked. No host state lingers.
+                    // PILOT-182 simulators: drop the redirector session handle
+                    // BEFORE `proxy.stop()`. Drop closes the control channel,
+                    // which tells the SE to remove this worker's per-PID
+                    // filter; the accept + refresh tasks abort and the Unix
+                    // socket file is unlinked. No host state lingers.
+                    //
+                    // PILOT-185 physical devices: the ios_redirect slot is
+                    // always None on that path, so the take() below is a
+                    // no-op — the device's own HTTP proxy setting (installed
+                    // via mobileconfig) is the routing mechanism and it
+                    // persists across runs by design.
                     #[cfg(target_os = "macos")]
                     {
                         if let Some(redirect) = self.ios_redirect.write().await.take() {
@@ -2918,6 +3186,193 @@ impl proto::pilot_service_server::PilotService for PilotServiceImpl {
             entries,
             error_message: String::new(),
         }))
+    }
+
+    // ─── Physical iOS network profile (PILOT-185) ───
+
+    async fn generate_ios_network_profile(
+        &self,
+        request: Request<proto::GenerateIosNetworkProfileRequest>,
+    ) -> Result<Response<proto::GenerateIosNetworkProfileResponse>, Status> {
+        let req = request.into_inner();
+        let request_id = Self::request_id(&req.request_id);
+
+        #[cfg(not(target_os = "macos"))]
+        {
+            return Ok(Response::new(proto::GenerateIosNetworkProfileResponse {
+                request_id,
+                success: false,
+                error_message: "Physical iOS network profile generation is macOS-only".to_string(),
+                profile_path: String::new(),
+                host_ip: String::new(),
+                port: 0,
+                ssid: String::new(),
+            }));
+        }
+
+        #[cfg(target_os = "macos")]
+        {
+            if req.udid.is_empty() {
+                return Err(Status::invalid_argument("udid is required"));
+            }
+
+            // Look up the device to confirm it's a physical iOS device we know
+            // about AND grab its human-readable name for the payload label.
+            let physical_devices = match ios::device::list_physical_devices().await {
+                Ok(list) => list,
+                Err(e) => {
+                    return Ok(Response::new(proto::GenerateIosNetworkProfileResponse {
+                        request_id,
+                        success: false,
+                        error_message: format!("Failed to list physical iOS devices: {e}"),
+                        profile_path: String::new(),
+                        host_ip: String::new(),
+                        port: 0,
+                        ssid: String::new(),
+                    }));
+                }
+            };
+            let Some(device) = physical_devices.iter().find(|d| d.udid == req.udid) else {
+                return Ok(Response::new(proto::GenerateIosNetworkProfileResponse {
+                    request_id,
+                    success: false,
+                    error_message: format!(
+                        "No physical iOS device with UDID '{}' is connected. \
+                         Plug the device in and re-run.",
+                        req.udid
+                    ),
+                    profile_path: String::new(),
+                    host_ip: String::new(),
+                    port: 0,
+                    ssid: String::new(),
+                }));
+            };
+
+            let host_ip = match ios::physical_device_proxy::resolve_host_wifi_ip().await {
+                Ok(ip) => ip,
+                Err(e) => {
+                    return Ok(Response::new(proto::GenerateIosNetworkProfileResponse {
+                        request_id,
+                        success: false,
+                        error_message: format!("Failed to resolve host Wi-Fi IP: {e}"),
+                        profile_path: String::new(),
+                        host_ip: String::new(),
+                        port: 0,
+                        ssid: String::new(),
+                    }));
+                }
+            };
+
+            let ssid = if req.ssid.is_empty() {
+                match ios::physical_device_proxy::current_wifi_ssid().await {
+                    Some(s) => s,
+                    None => {
+                        return Ok(Response::new(proto::GenerateIosNetworkProfileResponse {
+                            request_id,
+                            success: false,
+                            error_message:
+                                "Could not determine current Wi-Fi SSID. Pass --ssid explicitly."
+                                    .to_string(),
+                            profile_path: String::new(),
+                            host_ip: String::new(),
+                            port: 0,
+                            ssid: String::new(),
+                        }));
+                    }
+                }
+            } else {
+                req.ssid.clone()
+            };
+
+            let port = ios::physical_device_proxy::deterministic_port(&req.udid);
+            let device_name = if req.device_name.is_empty() {
+                device.name.clone()
+            } else {
+                req.device_name.clone()
+            };
+
+            let mitm_ca = match MitmAuthority::load_or_create() {
+                Ok(ca) => ca,
+                Err(e) => {
+                    return Ok(Response::new(proto::GenerateIosNetworkProfileResponse {
+                        request_id,
+                        success: false,
+                        error_message: format!("Failed to load Pilot MITM CA: {e}"),
+                        profile_path: String::new(),
+                        host_ip: String::new(),
+                        port: 0,
+                        ssid: String::new(),
+                    }));
+                }
+            };
+            let ca_pem = match tokio::fs::read_to_string(mitm_ca.ca_pem_path()).await {
+                Ok(s) => s,
+                Err(e) => {
+                    return Ok(Response::new(proto::GenerateIosNetworkProfileResponse {
+                        request_id,
+                        success: false,
+                        error_message: format!(
+                            "Failed to read Pilot CA from {:?}: {e}",
+                            mitm_ca.ca_pem_path()
+                        ),
+                        profile_path: String::new(),
+                        host_ip: String::new(),
+                        port: 0,
+                        ssid: String::new(),
+                    }));
+                }
+            };
+
+            let inputs = ios::physical_device_proxy::MobileconfigInputs {
+                udid: req.udid.clone(),
+                device_name,
+                ssid: ssid.clone(),
+                host_ip,
+                port,
+                ca_pem,
+            };
+
+            let bytes = match ios::physical_device_proxy::generate_mobileconfig(&inputs) {
+                Ok(b) => b,
+                Err(e) => {
+                    return Ok(Response::new(proto::GenerateIosNetworkProfileResponse {
+                        request_id,
+                        success: false,
+                        error_message: format!("Failed to generate mobileconfig: {e}"),
+                        profile_path: String::new(),
+                        host_ip: String::new(),
+                        port: 0,
+                        ssid: String::new(),
+                    }));
+                }
+            };
+
+            let profile_path =
+                match ios::physical_device_proxy::write_mobileconfig(&inputs, &bytes).await {
+                    Ok(path) => path,
+                    Err(e) => {
+                        return Ok(Response::new(proto::GenerateIosNetworkProfileResponse {
+                            request_id,
+                            success: false,
+                            error_message: format!("Failed to write mobileconfig: {e}"),
+                            profile_path: String::new(),
+                            host_ip: String::new(),
+                            port: 0,
+                            ssid: String::new(),
+                        }));
+                    }
+                };
+
+            Ok(Response::new(proto::GenerateIosNetworkProfileResponse {
+                request_id,
+                success: true,
+                error_message: String::new(),
+                profile_path: profile_path.to_string_lossy().to_string(),
+                host_ip: host_ip.to_string(),
+                port: u32::from(port),
+                ssid,
+            }))
+        }
     }
 
     async fn get_logcat(
@@ -3028,6 +3483,18 @@ impl proto::pilot_service_server::PilotService for PilotServiceImpl {
         let platform = self.require_platform().await?;
         match platform {
             Platform::Ios => {
+                if self.is_active_ios_physical().await {
+                    return Ok(self
+                        .action_error(
+                            request_id,
+                            "UNSUPPORTED_ON_PHYSICAL_DEVICE",
+                            "device.saveAppState is not supported on physical iOS devices. \
+                             Physical devices do not expose their app container filesystem to \
+                             the host. Use simulator-based setup projects for reusable auth state."
+                                .to_string(),
+                        )
+                        .await);
+                }
                 // iOS simulator: app container is on the host filesystem.
                 // Use simctl to find it, then tar it directly.
                 let container = match ios::device::get_app_container(&serial, pkg).await {
@@ -3169,6 +3636,18 @@ impl proto::pilot_service_server::PilotService for PilotServiceImpl {
         let platform = self.require_platform().await?;
         match platform {
             Platform::Ios => {
+                if self.is_active_ios_physical().await {
+                    return Ok(self
+                        .action_error(
+                            request_id,
+                            "UNSUPPORTED_ON_PHYSICAL_DEVICE",
+                            "device.restoreAppState is not supported on physical iOS devices. \
+                             Physical devices do not expose their app container filesystem to \
+                             the host. Use simulator-based setup projects for reusable auth state."
+                                .to_string(),
+                        )
+                        .await);
+                }
                 // iOS simulator: extract archive directly into the app container
                 let container = match ios::device::get_app_container(&serial, pkg).await {
                     Ok(path) => path,

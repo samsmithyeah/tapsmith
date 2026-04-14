@@ -48,11 +48,16 @@ Requires `protobuf-compiler` installed for tonic-build.
 ### iOS agent (`ios-agent/`)
 ```bash
 cd ios-agent && ./create-xcode-project.sh    # first time only
+# Simulator build (unsigned, builds once per iOS version):
 xcodebuild build-for-testing \
   -project PilotAgent.xcodeproj \
   -scheme PilotAgentUITests \
   -destination 'platform=iOS Simulator,name=iPhone 16'
+# Physical device build (signed via the Pilot CLI, one-time per device/profile):
+npx pilot build-ios-agent                    # auto-detects team ID from Xcode
 ```
+
+See `docs/ios-physical-devices.md` for the full physical-device walkthrough.
 
 ### Proto (`proto/`)
 ```bash
