@@ -859,15 +859,24 @@ where
                     }) => {
                         let he = *header_end;
                         let start = (*chunked_scan_cursor).saturating_sub(4).max(he);
-                        // Chunked terminator is a `0\r\n` final-size chunk followed
-                        // by zero or more trailers and a final `\r\n`. The `0\r\n`
-                        // marker can appear either at the start of the body (an
-                        // empty-body chunked response such as a 200 to a HEAD-ish
-                        // poll endpoint) OR preceded by the final `\r\n` of the
-                        // previous data chunk (the common case). The starts_with
-                        // check is load-bearing — `windows(5)` on `b"\r\n0\r\n"`
-                        // alone misses the empty-body case because there's no
-                        // leading `\r\n` before the `0`.
+                        // TODO(PILOT-186): replace this heuristic with the
+                        // strict chunked parser already used on the request
+                        // side (`read_chunked_body`). The scan below can
+                        // false-positive on binary bodies that contain the
+                        // literal bytes `\r\n0\r\n` followed by `\r\n\r\n` —
+                        // rare in practice for JSON/HTML/compressed content,
+                        // but a correctness hazard worth fixing.
+                        //
+                        // Chunked terminator is a `0\r\n` final-size chunk
+                        // followed by zero or more trailers and a final
+                        // `\r\n`. The `0\r\n` marker can appear either at the
+                        // start of the body (an empty-body chunked response
+                        // such as a 200 to a HEAD-ish poll endpoint) OR
+                        // preceded by the final `\r\n` of the previous data
+                        // chunk (the common case). The `starts_with` check
+                        // is load-bearing — `windows(5)` on `b"\r\n0\r\n"`
+                        // alone misses the empty-body case because there's
+                        // no leading `\r\n` before the `0`.
                         let body = &buf[he..];
                         let has_zero_chunk = body.starts_with(b"0\r\n")
                             || buf[start..].windows(5).any(|w| w == b"\r\n0\r\n");
@@ -880,8 +889,21 @@ where
                 if complete {
                     break;
                 }
+                // Reject oversized responses rather than breaking out with
+                // a truncated buffer. Returning `Ok` with partial data would
+                // write a short message to the client and leave the upstream
+                // connection holding unread bytes — the next `read_response`
+                // iteration would then read those bytes as if they were a
+                // new response header, desyncing the keep-alive connection
+                // and corrupting the trace. Parallel to `read_request`'s
+                // oversized-Content-Length reject (PILOT-182 review #4 S1).
                 if buf.len() > MAX_PROXY_BODY {
-                    break;
+                    debug!(
+                        "MITM response body exceeded MAX_PROXY_BODY for {hostname} \
+                         ({} bytes) — closing upstream",
+                        buf.len()
+                    );
+                    return ReadOutcome::Error;
                 }
             }
             Ok(Err(e)) => {
