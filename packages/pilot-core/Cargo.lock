@@ -364,6 +364,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "389ca41296e6190b48053de0321d02a77f32f8a5d2461dd38762c0593805c6d6"
 dependencies = [
  "futures-core",
+ "futures-sink",
  "futures-task",
  "pin-project-lite",
  "slab",
@@ -839,9 +840,11 @@ name = "pilot-core"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "async-trait",
  "base64",
  "bytes",
  "dirs",
+ "futures-util",
  "http-body-util",
  "hyper",
  "hyper-util",
@@ -857,6 +860,7 @@ dependencies = [
  "time",
  "tokio",
  "tokio-rustls",
+ "tokio-util",
  "tonic",
  "tonic-build",
  "tracing",

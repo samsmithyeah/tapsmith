@@ -1209,26 +1209,21 @@ mod tests {
 
         tokio::spawn(async move {
             use tokio::io::AsyncReadExt;
-            loop {
-                match listener.accept().await {
-                    Ok((mut stream, _)) => {
-                        // Read the command bytes so the client's write_all
-                        // completes successfully, then close the half-open
-                        // stream without writing a response. The client's
-                        // read_line will observe EOF → empty response.
-                        let mut buf = [0u8; 1024];
-                        while let Ok(n) = stream.read(&mut buf).await {
-                            if n == 0 {
-                                break;
-                            }
-                            if buf[..n].contains(&b'\n') {
-                                break;
-                            }
-                        }
-                        drop(stream);
+            while let Ok((mut stream, _)) = listener.accept().await {
+                // Read the command bytes so the client's write_all
+                // completes successfully, then close the half-open
+                // stream without writing a response. The client's
+                // read_line will observe EOF → empty response.
+                let mut buf = [0u8; 1024];
+                while let Ok(n) = stream.read(&mut buf).await {
+                    if n == 0 {
+                        break;
                     }
-                    Err(_) => break,
+                    if buf[..n].contains(&b'\n') {
+                        break;
+                    }
                 }
+                drop(stream);
             }
         });
 

@@ -23,10 +23,25 @@ import { shouldRecord, shouldRetain } from './trace/trace-mode.js';
 import { packageTrace } from './trace/trace-packager.js';
 import { TraceCollector, setActiveTraceCollector, withActiveTraceCollector } from './trace/trace-collector.js';
 import type { AnyTraceEvent } from './trace/types.js';
-import { setMacProxy, clearMacProxy } from './macos-proxy.js';
 import { getSimulatorScreenScale } from './ios-simulator.js';
 
 // ─── Result types ───
+
+/**
+ * Warnings emitted by the daemon's `start_network_capture` that the
+ * runner has already printed once this process. Keeps repeating
+ * "Network capture disabled: …" from polluting the per-test output in
+ * a run where the underlying cause (e.g. SE not approved) is the same
+ * for every test.
+ */
+const _printedCaptureWarnings = new Set<string>();
+
+function _warnCaptureOnce(prefix: string, msg: string): void {
+  const key = `${prefix}:${msg}`;
+  if (_printedCaptureWarnings.has(key)) return;
+  _printedCaptureWarnings.add(key);
+  console.warn(`[pilot] ${prefix}: ${msg}`);
+}
 
 export type TestStatus = 'passed' | 'failed' | 'skipped';
 
@@ -599,7 +614,6 @@ async function runSuiteContext(
     const attempt = 0; // TODO: wire up retry count when retries are implemented
     const recording = shouldRecord(traceConfig.mode, attempt);
     let traceCollector: TraceCollector | null = null;
-    let iosProxyService: string | null = null;
 
     if (recording && opts.device) {
       const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pilot-trace-'));
@@ -611,17 +625,29 @@ async function runSuiteContext(
         traceCollector.setActionIndexOffset(beforeAllActionCount);
       }
 
-      // Start network capture if configured
+      // Start network capture if configured. PILOT-182: iOS traffic
+      // routing is now fully owned by pilot-core via the macOS Network
+      // Extension redirector, so there's no CLI-side proxy setup.
+      //
+      // The daemon may surface a non-fatal warning (e.g. "SE not approved
+      // — run pilot setup-ios") via the `errorMessage` field even when
+      // `success` is true and the proxy port was allocated. We log it
+      // loudly (once per run — same failure applies to every test) so
+      // users whose trace has no network entries know exactly why and
+      // exactly what to do.
       if (traceConfig.network) {
         try {
-          const { proxyPort } = await opts.device._startNetworkCapture();
-          // iOS: configure macOS system proxy (simulators share host network)
-          if (opts.config.platform === 'ios' && proxyPort > 0) {
-            iosProxyService = setMacProxy(proxyPort);
+          const res = await opts.device._startNetworkCapture();
+          if (!res.success && res.errorMessage) {
+            _warnCaptureOnce('Network capture disabled', res.errorMessage);
+          } else if (res.errorMessage) {
+            _warnCaptureOnce('Network capture warning', res.errorMessage);
           }
         } catch (err) {
-          // Network capture is best-effort — log so failures aren't invisible
-          console.warn(`[pilot] Network capture failed to start: ${err instanceof Error ? err.message : err}`);
+          _warnCaptureOnce(
+            'Network capture failed to start',
+            err instanceof Error ? err.message : String(err),
+          );
         }
       }
     }
@@ -791,12 +817,6 @@ async function runSuiteContext(
 
     // Finalize trace recording
     if (traceCollector && opts.device) {
-      // Clear macOS proxy before stopping capture
-      if (iosProxyService) {
-        clearMacProxy(iosProxyService);
-        iosProxyService = null;
-      }
-
       // Stop network capture and collect raw entries
       let rawNetworkEntries: Awaited<ReturnType<typeof opts.device._stopNetworkCapture>>['entries'] | undefined;
       if (traceConfig.network) {

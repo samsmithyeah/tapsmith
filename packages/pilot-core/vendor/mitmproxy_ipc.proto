@@ -1,0 +1,66 @@
+// Vendored from mitmproxy/mitmproxy_rs commit fbb40a9c9ed6 (MIT).
+// Source: https://github.com/mitmproxy/mitmproxy_rs/blob/main/src/ipc/mitmproxy_ipc.proto
+// Do not edit by hand — refresh from upstream when bumping the redirector version.
+
+syntax = "proto3";
+
+package mitmproxy_ipc;
+
+// Note: The protobuf definition is shared between the Rust and Swift parts.
+// We are not using prost-build because providing protoc is a hassle on many platforms.
+// See .github/workflows/autofix.yml for how to update the respective files,
+// or file a PR and let CI handle it.
+
+// Packet with associated tunnel info (Windows pipe to mitmproxy)
+message PacketWithMeta {
+  bytes data = 1;
+  TunnelInfo tunnel_info = 2;
+}
+message TunnelInfo {
+  optional uint32 pid = 1;
+  optional string process_name = 2;
+}
+
+// Packet or intercept spec (Windows pipe to redirector)
+message FromProxy {
+  oneof message {
+    Packet packet = 1;
+    InterceptConf intercept_conf = 2;
+  }
+}
+// Packet (macOS UDP Stream)
+// ⚠️ Bump network extension version on changes, https://github.com/mitmproxy/mitmproxy_rs/pull/227.
+message Packet {
+  bytes data = 1;
+}
+// Intercept conf (macOS Control Stream)
+// ⚠️ Bump network extension version on changes, https://github.com/mitmproxy/mitmproxy_rs/pull/227.
+message InterceptConf {
+  repeated string actions = 1;
+}
+// New flow (macOS TCP/UDP Stream)
+// ⚠️ Bump network extension version on changes, https://github.com/mitmproxy/mitmproxy_rs/pull/227.
+message NewFlow {
+  oneof message {
+    TcpFlow tcp = 1;
+    UdpFlow udp = 2;
+  }
+}
+// ⚠️ Bump network extension version on changes, https://github.com/mitmproxy/mitmproxy_rs/pull/227.
+message TcpFlow {
+  Address remote_address = 1;
+  TunnelInfo tunnel_info = 2;
+}
+// ⚠️ Bump network extension version on changes, https://github.com/mitmproxy/mitmproxy_rs/pull/227.
+message UdpFlow {
+  optional Address local_address = 1;
+  TunnelInfo tunnel_info = 3;
+}
+message UdpPacket {
+  bytes data = 1;
+  Address remote_address = 2;
+}
+message Address {
+  string host = 1;
+  uint32 port = 2;
+}

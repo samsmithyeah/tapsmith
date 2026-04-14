@@ -3,6 +3,8 @@ mod agent_comms;
 mod device;
 mod grpc_server;
 mod ios;
+#[cfg(target_os = "macos")]
+mod ios_redirect;
 mod mitm_ca;
 mod network_proxy;
 mod platform;
@@ -23,6 +25,13 @@ use crate::platform::Platform;
 
 pub mod proto {
     tonic::include_proto!("pilot");
+}
+
+/// Vendored mitmproxy_rs IPC schema used by the iOS redirector bridge.
+/// See `packages/pilot-core/vendor/mitmproxy_ipc.proto` for the source.
+#[cfg(target_os = "macos")]
+pub mod ipc {
+    tonic::include_proto!("mitmproxy_ipc");
 }
 
 #[derive(Debug)]

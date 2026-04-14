@@ -99,6 +99,49 @@ jobs:
       - name: Build release
         run: cargo build --release
 
+  rust-macos:
+    # Compiles pilot-core on macOS so the macOS-gated iOS network capture
+    # path (src/ios_redirect.rs, transparent-TCP MITM, vendored mitmproxy
+    # IPC proto) is exercised by CI. The Linux rust job above can't catch
+    # cfg(target_os = "macos") regressions on its own.
+    name: Rust (macOS)
+    runs-on: macos-latest
+    defaults:
+      run:
+        working-directory: packages/pilot-core
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      - name: Install protobuf compiler
+        run: brew install protobuf
+
+      - name: Cache Cargo registry and target
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            packages/pilot-core/target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('packages/pilot-core/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+
+      - name: Check formatting
+        run: cargo fmt -- --check
+
+      - name: Clippy
+        run: cargo clippy -- -D warnings
+
+      - name: Test
+        run: cargo test
+
+      - name: Build release
+        run: cargo build --release
+
   android:
     name: Android
     runs-on: ubuntu-latest

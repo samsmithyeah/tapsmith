@@ -44,9 +44,8 @@ import {
   listCompatibleBootedSimulators,
   type ClonedSimulator,
 } from './ios-simulator.js';
-import { resolveTraceConfig } from './trace/types.js';
-import { ensureSudoAccess } from './macos-proxy.js';
 import { freeStaleAgentPort, findPidsOnPort } from './port-utils.js';
+import { notifyLegacySudoersIfPresent } from './legacy-cleanup.js';
 
 const DIM = '\x1b[2m';
 const YELLOW = '\x1b[33m';
@@ -586,13 +585,12 @@ export async function runParallel(opts: DispatcherOptions, _portOffset = 0): Pro
       tsxBin = fs.existsSync(localTsx) ? localTsx : 'tsx';
     }
 
-    // iOS: pre-acquire sudo access for network capture in the main process
-    // so workers don't each independently prompt for a password.
+    // iOS network capture lifecycle is now fully owned by pilot-core via
+    // the macOS Network Extension redirector (PILOT-182). No host-side
+    // sudo, no `networksetup`, no per-worker collision. One-time legacy
+    // cleanup: warn if the old sudoers rule is still installed.
     if (isIos) {
-      const traceConfig = resolveTraceConfig(config.trace);
-      if (traceConfig.mode !== 'off' && traceConfig.network) {
-        ensureSudoAccess();
-      }
+      notifyLegacySudoersIfPresent();
     }
 
     // Serialize config for workers

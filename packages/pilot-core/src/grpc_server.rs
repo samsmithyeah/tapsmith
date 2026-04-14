@@ -30,8 +30,9 @@ pub struct PilotServiceImpl {
     proxy_reverse_port: Arc<RwLock<Option<u16>>>,
     /// On-device path of the installed CA cert (for cleanup, Android only).
     proxy_ca_cert_path: Arc<RwLock<Option<String>>>,
-    /// macOS network service name used for proxy (for cleanup, iOS only).
-    proxy_network_service: Arc<RwLock<Option<String>>>,
+    /// iOS Network Extension redirector session (for cleanup, iOS simulators only).
+    #[cfg(target_os = "macos")]
+    ios_redirect: Arc<RwLock<Option<crate::ios_redirect::IosRedirect>>>,
     /// iOS agent launch config (stored for restart on launchApp).
     ios_agent_config: Arc<RwLock<Option<IosAgentConfig>>>,
 }
@@ -56,7 +57,8 @@ impl PilotServiceImpl {
             proxy_platform: Arc::new(RwLock::new(None)),
             proxy_reverse_port: Arc::new(RwLock::new(None)),
             proxy_ca_cert_path: Arc::new(RwLock::new(None)),
-            proxy_network_service: Arc::new(RwLock::new(None)),
+            #[cfg(target_os = "macos")]
+            ios_redirect: Arc::new(RwLock::new(None)),
             ios_agent_config: Arc::new(RwLock::new(None)),
         }
     }
@@ -373,12 +375,25 @@ impl PilotServiceImpl {
     /// cert, and stop the proxy. Called during graceful shutdown to ensure the
     /// device isn't left with a dangling proxy configuration.
     pub async fn cleanup_network_proxy(&self) {
+        // Take the iOS redirect handle out of its slot now so we can
+        // deterministically drop it BEFORE `proxy.stop()` runs below.
+        // Dropping the handle closes the SE control channel (removing
+        // this worker's PID filter), aborts the accept/refresh/launcher
+        // tasks, and aborts any in-flight per-flow handlers. Without
+        // this ordering, those background tasks would keep dispatching
+        // new flows into the proxy state we're about to tear down.
+        //
+        // Note: `let _ios_redirect = ...` would drop at end-of-scope
+        // (after `proxy.stop()`) because Rust drops locals in reverse
+        // declaration order. We rely on an explicit `drop()` call below
+        // to get the right ordering.
+        #[cfg(target_os = "macos")]
+        let ios_redirect = self.ios_redirect.write().await.take();
         let proxy = self.network_proxy.write().await.take();
         let serial = self.proxy_device_serial.write().await.take();
         let platform = self.proxy_platform.write().await.take();
         let reverse_port = self.proxy_reverse_port.write().await.take();
         let ca_cert_path = self.proxy_ca_cert_path.write().await.take();
-        let _network_service = self.proxy_network_service.write().await.take();
 
         if let Some(serial) = &serial {
             match platform {
@@ -403,6 +418,11 @@ impl PilotServiceImpl {
                 }
             }
         }
+
+        // Explicit drop BEFORE `proxy.stop()` — see comment above. On
+        // non-macOS this no-ops because `ios_redirect` doesn't exist.
+        #[cfg(target_os = "macos")]
+        drop(ios_redirect);
 
         if let Some(proxy) = proxy {
             let _ = proxy.stop().await;
@@ -2710,17 +2730,67 @@ impl proto::pilot_service_server::PilotService for PilotServiceImpl {
             }
         }
 
-        let proxy = NetworkProxy::start(mitm_ca)
+        // Pass a clone into `NetworkProxy::start` so the outer `mitm_ca`
+        // stays in scope for any per-platform post-start wiring (the iOS
+        // redirector needs it to mint per-host certs for its flow bridge).
+        let proxy = NetworkProxy::start(Arc::clone(&mitm_ca))
             .await
             .map_err(|e| Status::internal(format!("Failed to start proxy: {e}")))?;
         let host_port = proxy.port();
 
         match platform {
             Platform::Ios => {
-                // iOS simulators share the host network — the proxy is accessible
-                // at 127.0.0.1:{host_port}. The CLI configures the macOS system
-                // proxy via `networksetup` (one-time admin setup).
-                info!(%serial, host_port, "iOS proxy started — CLI will configure macOS system proxy");
+                // PILOT-182: route the simulator's traffic into the MITM
+                // proxy via the macOS Network Extension redirector instead
+                // of a global system proxy. Per-PID filtering gives each
+                // worker daemon full isolation from other concurrent
+                // workers (and from the user's host traffic).
+                //
+                // If the redirector fails to start (SE not approved, brew
+                // missing, launcher binary unreachable, …), there is NO
+                // path for traffic to reach the proxy — capture is
+                // effectively dead. Early-return `success: false` so the
+                // runner prints "Network capture disabled" instead of the
+                // misleading "warning". The local `proxy` is dropped at
+                // end of scope, releasing the TCP listener.
+                #[cfg(target_os = "macos")]
+                {
+                    match crate::ios_redirect::IosRedirect::start(
+                        serial.clone(),
+                        proxy.state_handle(),
+                        Arc::clone(&mitm_ca),
+                    )
+                    .await
+                    {
+                        Ok(redirect) => {
+                            *self.ios_redirect.write().await = Some(redirect);
+                            info!(
+                                %serial, host_port,
+                                "iOS redirector session established"
+                            );
+                        }
+                        Err(e) => {
+                            let msg =
+                                format!("Failed to start iOS Network Extension redirector: {e}");
+                            error!("{msg}");
+                            return Ok(Response::new(proto::StartNetworkCaptureResponse {
+                                request_id,
+                                success: false,
+                                proxy_port: 0,
+                                error_message: msg,
+                            }));
+                        }
+                    }
+                }
+                #[cfg(not(target_os = "macos"))]
+                {
+                    return Ok(Response::new(proto::StartNetworkCaptureResponse {
+                        request_id,
+                        success: false,
+                        proxy_port: 0,
+                        error_message: "iOS network capture requires macOS".to_string(),
+                    }));
+                }
             }
             Platform::Android => {
                 // Use `adb reverse` to make the proxy reachable as 127.0.0.1:{port} on
@@ -2780,12 +2850,22 @@ impl proto::pilot_service_server::PilotService for PilotServiceImpl {
         let platform = self.proxy_platform.write().await.take();
         let reverse_port = self.proxy_reverse_port.write().await.take();
         let ca_cert_path = self.proxy_ca_cert_path.write().await.take();
-        let _network_service = self.proxy_network_service.write().await.take();
         if let Some(serial) = &serial {
             match platform {
                 Some(Platform::Ios) => {
-                    // macOS proxy cleanup is handled by the CLI.
-                    info!(%serial, "iOS proxy stopped — CLI handles macOS proxy cleanup");
+                    // PILOT-182: drop the redirector session handle BEFORE
+                    // `proxy.stop()`. Drop closes the control channel, which
+                    // tells the SE to remove this worker's per-PID filter;
+                    // the accept + refresh tasks abort and the Unix socket
+                    // file is unlinked. No host state lingers.
+                    #[cfg(target_os = "macos")]
+                    {
+                        if let Some(redirect) = self.ios_redirect.write().await.take() {
+                            drop(redirect);
+                            debug!(%serial, "iOS redirector session torn down");
+                        }
+                    }
+                    info!(%serial, "iOS proxy stopped");
                 }
                 _ => {
                     info!(%serial, "Reverting Android device HTTP proxy");

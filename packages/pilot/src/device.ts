@@ -419,10 +419,26 @@ export class Device {
     return res.scheme as ColorScheme;
   }
 
-  /** @internal — Start network capture (used by the runner). Returns proxy port. */
-  async _startNetworkCapture(): Promise<{ proxyPort: number }> {
+  /**
+   * @internal — Start network capture (used by the runner).
+   *
+   * Returns the ephemeral proxy port and any non-fatal warning the daemon
+   * surfaced (e.g. iOS NE redirector setup failed because the SE isn't
+   * approved, CA install was best-effort). The runner logs `errorMessage`
+   * as a visible warning so users aren't left wondering why their trace
+   * has no network entries.
+   */
+  async _startNetworkCapture(): Promise<{
+    proxyPort: number
+    success: boolean
+    errorMessage: string
+  }> {
     const res = await this._client.startNetworkCapture();
-    return { proxyPort: res.proxyPort };
+    return {
+      proxyPort: res.proxyPort,
+      success: res.success,
+      errorMessage: res.errorMessage,
+    };
   }
 
   /** @internal — Stop network capture and return entries (used by the runner). */

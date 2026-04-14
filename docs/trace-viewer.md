@@ -134,9 +134,15 @@ trace: {
 
 ### How it works
 
-When network capture is enabled, the Rust daemon starts an HTTP proxy and configures the device to route traffic through it via ADB. The proxy intercepts requests and responses, recording method, URL, headers, status code, timing, and body data.
+When network capture is enabled, the Rust daemon starts a local MITM proxy and routes the device's traffic through it. Each request and response is recorded with method, URL, headers, status code, timing, and body data.
 
-**HTTPS support:** The proxy auto-generates a CA certificate and installs it on the device so it can decrypt TLS traffic. This happens transparently -- no manual certificate setup is needed.
+**Android** — the daemon uses `adb reverse` to forward the proxy port to the device and configures the device's HTTP proxy setting via `adb shell settings put global http_proxy`.
+
+**iOS simulator** — the daemon spawns the `Mitmproxy Redirector.app` launcher (from a local `brew install mitmproxy`), which triggers the macOS Network Extension that ships with mitmproxy. The NE intercepts TCP flows from the simulator's process tree on a per-PID basis and redirects them into Pilot's MITM proxy over a per-worker Unix socket. Parallel iOS workers each get their own isolated session. See [iOS network capture](./ios-network-capture.md) for first-run setup (one-time System Extension approval) and troubleshooting.
+
+**iOS physical device** — not yet supported; follow-up work.
+
+**HTTPS support:** The proxy auto-generates a CA certificate and installs it on the device so it can decrypt TLS traffic. For simulators this happens transparently via `xcrun simctl keychain add-root-cert`; for Android it is pushed via `adb`. The client's TLS ClientHello SNI is extracted at MITM time so the upstream TLS handshake uses the real hostname (critical for CDN-hosted endpoints).
 
 ### Network tab in the trace viewer
 

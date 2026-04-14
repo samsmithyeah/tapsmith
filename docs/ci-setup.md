@@ -109,6 +109,15 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      # Required for iOS network capture — see "iOS network capture on CI" below.
+      - name: Install mitmproxy (for iOS network capture redirector)
+        if: ${{ true }} # omit this step if you disable network capture in the trace config
+        run: |
+          brew install mitmproxy
+          sudo mitmproxy --mode local:Safari <<< 'q' || true
+          # The redirector System Extension needs pre-approval on self-hosted runners;
+          # GitHub-hosted macOS runners accept new SEs automatically on first launch.
+
       - name: Build app for simulator
         run: |
           xcodebuild build-for-testing \
@@ -133,6 +142,17 @@ jobs:
 - **macOS runner** is required for iOS simulators. GitHub provides `macos-latest` with Xcode pre-installed.
 - Pilot boots and manages simulators automatically -- no manual `xcrun simctl` setup needed.
 - Build your app for the iOS Simulator target (not a physical device) using `build-for-testing` or your existing build pipeline.
+
+### iOS network capture on CI
+
+iOS network capture (trace + `network.json` in the trace viewer) routes simulator traffic through Pilot's MITM proxy via a macOS **Network Extension** redirector that is bundled with [mitmproxy](https://mitmproxy.org). You need two one-time prerequisites on the CI runner for this to work:
+
+1. **`brew install mitmproxy`** — Pilot discovers the redirector at `/Applications/Mitmproxy Redirector.app` (mitmproxy's installer unpacks it there) or via `$PILOT_REDIRECTOR_APP`. Alternatively, it will extract the redirector from mitmproxy's brew cask tarball into `~/.pilot/redirector/` on first use.
+2. **System Extension approval** — the redirector's Network Extension must be approved on first launch. On **GitHub-hosted macOS runners**, SEs are accepted automatically on first launch, so no action is needed. On **self-hosted runners**, run `sudo systemextensionsctl developer on` once to bypass interactive approval, or pre-approve the extension manually.
+
+If your tests do not need network capture, disable it in your pilot config (`trace: { network: false }`) and skip the mitmproxy install step above.
+
+See [iOS network capture](./ios-network-capture.md) for the full first-run walkthrough and troubleshooting.
 
 ## General CI Tips
 
@@ -247,7 +267,7 @@ After downloading the artifact, open the trace locally:
 npx pilot show-trace pilot-results/traces/trace-login_test.zip
 ```
 
-Network capture works in CI as well -- HTTP/HTTPS requests made by the app are recorded in the trace and visible in the Network tab of the trace viewer. No additional CI configuration is needed.
+Network capture works in CI as well -- HTTP/HTTPS requests made by the app are recorded in the trace and visible in the Network tab of the trace viewer. **Android** runs need no extra setup; **iOS** runs need `brew install mitmproxy` and (on self-hosted runners) a pre-approved System Extension — see [iOS network capture on CI](#ios-network-capture-on-ci) above.
 
 ### Caching
 
