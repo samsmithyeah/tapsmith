@@ -19,6 +19,8 @@
  */
 
 import { execFileSync } from 'node:child_process';
+import * as fs from 'node:fs';
+import * as path from 'node:path';
 import { listPhysicalDevices, type PhysicalDeviceInfo } from './ios-devicectl.js';
 import { parseCodesignIdentities, readXcodeRegisteredTeams } from './build-ios-agent.js';
 
@@ -244,6 +246,54 @@ export function checkFirewallStealthMode(): CheckResult {
   };
 }
 
+/**
+ * Check whether the signed PilotAgent runner has been built for physical
+ * devices. This is a cheap cache lookup under `ios-agent/.build-device`
+ * that saves the user from having to remember to run `pilot build-ios-agent`
+ * separately. Advisory because the check isn't strictly required — users
+ * can run `pilot build-ios-agent` any time — but surfacing its state here
+ * means one less step in the "next steps" list when it's already done.
+ */
+export function checkIosAgentBuilt(): CheckResult {
+  // Search for an iphoneos xctestrun under the monorepo's standard
+  // ios-agent/.build-device path, starting from cwd and walking up to
+  // find a repo root. We don't know where the user runs setup from, so
+  // we try a few reasonable candidates.
+  const candidates = [
+    path.resolve(process.cwd(), 'ios-agent/.build-device/Build/Products'),
+    path.resolve(process.cwd(), '../ios-agent/.build-device/Build/Products'),
+    path.resolve(process.cwd(), '../../ios-agent/.build-device/Build/Products'),
+  ];
+  for (const dir of candidates) {
+    if (!fs.existsSync(dir)) continue;
+    try {
+      const entries = fs.readdirSync(dir);
+      const xctestrun = entries.find(
+        (e) => e.endsWith('.xctestrun') && e.includes('iphoneos') && !e.endsWith('.patched.xctestrun'),
+      );
+      if (xctestrun) {
+        return {
+          label: 'Signed iOS agent runner',
+          ok: true,
+          detail: `${path.basename(dir)}/${xctestrun}`,
+        };
+      }
+    } catch {
+      // Unreadable dir — skip.
+    }
+  }
+  return {
+    label: 'Signed iOS agent runner',
+    ok: false,
+    advisory: true,
+    fix: [
+      'Not built yet. Run this once (takes 60–120s first run, <10s incremental):',
+      '  pilot build-ios-agent',
+      '(advisory — you can build it at any time before `pilot test`)',
+    ],
+  };
+}
+
 /** Check connected physical devices and their pairing / DDI / Developer Mode state. */
 export function checkDeviceConnection(): { ok: boolean; devices: PhysicalDeviceInfo[]; label: string; fix?: string[] } {
   const devices = listPhysicalDevices();
@@ -328,6 +378,7 @@ export async function runSetupIosDevice(): Promise<void> {
   results.push(checkIproxy());
   results.push(checkSigningIdentities());
   results.push(checkFirewallStealthMode());
+  results.push(checkIosAgentBuilt());
   for (const r of results) printCheck(r);
   console.log();
 
@@ -343,43 +394,57 @@ export async function runSetupIosDevice(): Promise<void> {
   }
   console.log();
 
-  // Advisory checks (e.g. firewall stealth mode) don't block the overall
-  // preflight — they print a ⚠ hint but `pilot test` still works for the
-  // basic device path. We intentionally don't require
-  // `ddiServicesAvailable` here either; it's an unreliable "is Xcode
-  // currently holding a DDI lease?" signal that false-alarms on healthy
-  // idle devices (Pilot's `startAgent` flow mounts the DDI on demand).
-  const allOk = results.every((r) => r.ok || r.advisory === true) && deviceCheck.ok
+  // Hard-fail criteria: any non-advisory check failed, or no device paired.
+  // Advisory checks (firewall stealth mode, agent not yet built) print a
+  // ⚠ hint but don't block — the user can address them at their own pace.
+  // We intentionally don't require `ddiServicesAvailable` either; it's an
+  // unreliable "is Xcode currently holding a DDI lease?" signal that
+  // false-alarms on healthy idle devices (Pilot's `startAgent` flow mounts
+  // the DDI on demand).
+  const hardFailures = results.filter((r) => !r.ok && r.advisory !== true);
+  const hardOk = hardFailures.length === 0 && deviceCheck.ok
     && deviceCheck.devices.every((d) => d.isPaired);
 
-  if (allOk) {
-    console.log(green('✓ All checks passed. You\'re ready to run tests on a physical device.'));
+  if (!hardOk) {
+    console.log(red('✗ Some checks failed. Address the issues above and re-run.'));
     console.log();
-    console.log('  Next steps:');
-    console.log(`    1) ${bold('pilot build-ios-agent')}`);
-    console.log(dim('       Builds the signed XCUITest runner for your device'));
-    console.log(`    2) Add to ${bold('pilot.config.ts')}:`);
-    console.log(dim("       { platform: 'ios', device: '<UDID>', iosXctestrun: '<path from step 1>', app: '<signed .app>' }"));
-    console.log(`    3) ${bold('pilot test')}`);
-    console.log();
-    console.log(yellow('  One-time per device: trust the developer certificate.'));
-    console.log(dim('    After the first pilot test run, open on the phone:'));
-    console.log(dim('      Settings → General → VPN & Device Management → Developer App → your team → Trust'));
-    console.log(dim('    You only need to do this once per (device, Apple Developer team) pair.'));
-    console.log(dim('    Paid Apple Developer Program accounts may skip this step — Xcode'));
-    console.log(dim('    auto-trusts the team when you register the device for development.'));
-    console.log();
-    console.log(yellow('  Disable auto-lock while testing.'));
-    console.log(dim('    Settings → Display & Brightness → Auto-Lock → Never'));
-    console.log(dim('    Locked screens block XCUITest: tests will hang or fail to find elements.'));
-    console.log(dim('    Re-enable after your test session.'));
-    console.log();
-    return;
+    process.exit(1);
   }
 
-  console.log(yellow('⚠ Some checks failed. Address the issues above and re-run:'));
-  console.log(`    ${bold('pilot setup-ios-device')}`);
+  // Happy path — summarise what's verified vs. what the user still has to
+  // do themselves, and don't blur the two. Anything we can't check from
+  // the Mac (dev-cert trust on the device, auto-lock setting, app bundle
+  // paths, test config file) is clearly labelled as "do this once".
+  const advisoryFailures = results.filter((r) => !r.ok && r.advisory === true);
+  if (advisoryFailures.length === 0) {
+    console.log(green('✓ Everything we can check from the host looks good.'));
+  } else {
+    console.log(
+      green('✓ Required checks passed.') +
+      ' ' +
+      dim(`(${advisoryFailures.length} advisory hint${advisoryFailures.length === 1 ? '' : 's'} above — not blocking)`),
+    );
+  }
   console.log();
-  // Exit non-zero so CI and shell scripts notice.
-  process.exit(1);
+
+  console.log(bold('Manual steps Pilot can\'t verify from the host:'));
+  console.log();
+  console.log(`  ${yellow('•')} ${bold('Trust the developer certificate on the device.')}`);
+  console.log(`    First time only, after the first ${bold('pilot test')} run.`);
+  console.log(`    On the phone: ${bold('Settings → General → VPN & Device Management')}`);
+  console.log(`    → ${bold('Apple Development: <your name>')} → ${bold('Trust')}.`);
+  console.log(`    ${dim('Paid Apple Developer Program accounts often skip this — Xcode')}`);
+  console.log(`    ${dim('auto-trusts the team when you register the device.')}`);
+  console.log();
+  console.log(`  ${yellow('•')} ${bold('Turn off Auto-Lock on the device while testing.')}`);
+  console.log(`    ${bold('Settings → Display & Brightness → Auto-Lock → Never')}`);
+  console.log(`    ${dim('A locked screen blocks XCUITest — tests hang or fail to find elements.')}`);
+  console.log(`    ${dim('Restore your normal setting after the test session.')}`);
+  console.log();
+  console.log(bold('To run a test:'));
+  console.log(`  ${dim('1.')} Point your pilot config at the device UDID above and the signed`);
+  console.log(`     ${bold('iosXctestrun')} under ${bold('ios-agent/.build-device')}. Example:`);
+  console.log(dim('       { platform: \'ios\', device: \'<UDID>\', iosXctestrun: \'<path>\', app: \'<signed .app>\' }'));
+  console.log(`  ${dim('2.')} ${bold('pilot test --config <your-config>')}`);
+  console.log();
 }
