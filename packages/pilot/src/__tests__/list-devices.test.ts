@@ -37,10 +37,11 @@ describe('buildDeviceRows', () => {
     expect(rows[0]!.notes).toEqual([]);
   });
 
-  it('labels a physical iPhone as ios-device and enriches from devicectl', () => {
+  it('labels a USB-attached physical iPhone as ios-device and enriches from devicectl', () => {
     const rows = buildDeviceRows(
       [daemonDevice({ serial: 'PHYS-UDID', model: "Sam's iPhone", platform: 'ios', isEmulator: false, state: 'Discovered' })],
       [physicalDevice({ udid: 'PHYS-UDID', name: "Sam's iPhone", osVersion: '26.2.1' })],
+      new Set(['PHYS-UDID']),
     );
     expect(rows[0]!.platform).toBe('ios-device');
     expect(rows[0]!.state).toBe('booted');
@@ -51,6 +52,7 @@ describe('buildDeviceRows', () => {
     const rows = buildDeviceRows(
       [daemonDevice({ serial: 'UDID', platform: 'ios', isEmulator: false })],
       [physicalDevice({ udid: 'UDID', osVersion: '26.2.1', isPaired: false })],
+      new Set(['UDID']),
     );
     expect(rows[0]!.notes).toEqual(['iOS 26.2.1', 'not paired']);
   });
@@ -59,20 +61,34 @@ describe('buildDeviceRows', () => {
     const rows = buildDeviceRows(
       [daemonDevice({ serial: 'UDID', platform: 'ios', isEmulator: false })],
       [physicalDevice({ udid: 'UDID', osVersion: '26.2.1', developerModeStatus: 'disabled' })],
+      new Set(['UDID']),
     );
     expect(rows[0]!.notes).toContain('developer mode off');
   });
 
-  it('flags a Wi-Fi-only physical device so `pilot test` isn\'t blamed for USB-only paths', () => {
-    // CoreDevice keeps wirelessly-paired devices listed even when unplugged,
-    // but Pilot's agent tunnel (iproxy + xcodebuild) is USB-only. Better to
-    // surface that in the listing than let `pilot test --device <udid>`
-    // fail mid-run with a confusing tunnel error.
+  it('flags a devicectl-visible device that isn\'t actually attached via USB', () => {
+    // CoreDevice keeps Wi-Fi-paired devices listed forever; devicectl's
+    // own transportType reports `localNetwork` even for cabled devices
+    // once Wi-Fi pairing exists. `idevice_id -l` (libimobiledevice) is
+    // the ground-truth signal for "is there a USB data connection right
+    // now?", and Pilot's agent tunnel is USB-only.
     const rows = buildDeviceRows(
       [daemonDevice({ serial: 'UDID', platform: 'ios', isEmulator: false })],
       [physicalDevice({ udid: 'UDID', osVersion: '26.2.1', transportType: 'localNetwork' })],
+      new Set(), // not in USB set
     );
-    expect(rows[0]!.notes).toContain('wireless only (connect via USB to run tests)');
+    expect(rows[0]!.notes).toContain('not attached via USB');
+  });
+
+  it('does NOT flag as wireless when USB attached', () => {
+    const rows = buildDeviceRows(
+      [daemonDevice({ serial: 'UDID', platform: 'ios', isEmulator: false })],
+      // devicectl reports localNetwork even for cabled devices — the
+      // USB set is the source of truth, not the transport type.
+      [physicalDevice({ udid: 'UDID', osVersion: '26.2.1', transportType: 'localNetwork' })],
+      new Set(['UDID']),
+    );
+    expect(rows[0]!.notes).not.toContain('not attached via USB');
   });
 
   it('does NOT flag DDI-not-mounted — the listing is passive', () => {

@@ -137,6 +137,37 @@ export function isPhysicalDevice(udid: string): boolean {
   return listPhysicalDevices().some((d) => d.udid === udid);
 }
 
+/**
+ * Return the set of iOS device UDIDs that are currently attached via USB,
+ * as reported by `idevice_id -l` (libimobiledevice). Pilot's agent tunnel
+ * uses iproxy which is a USB-only transport, so this is the ground-truth
+ * signal for "can `pilot test` drive this device right now?".
+ *
+ * devicectl's `transportType` is NOT a reliable proxy for this: CoreDevice
+ * reports `localNetwork` even for cabled devices once Wi-Fi pairing exists.
+ *
+ * Returns an empty set if libimobiledevice isn't installed, which matches
+ * how the preflight handles missing-dependency scenarios (`setup-ios-device`
+ * will surface the missing tool with a fix-it hint).
+ */
+export function listUsbAttachedIosDevices(): Set<string> {
+  try {
+    const out = execFileSync('idevice_id', ['-l'], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+      timeout: 5_000,
+    });
+    return new Set(
+      out
+        .split(/\r?\n/)
+        .map((line) => line.trim())
+        .filter((line) => line.length > 0),
+    );
+  } catch {
+    return new Set();
+  }
+}
+
 // ─── App lifecycle ───
 
 /**

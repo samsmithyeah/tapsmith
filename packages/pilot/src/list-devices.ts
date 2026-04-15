@@ -16,7 +16,11 @@
 import { execFileSync, spawn } from 'node:child_process';
 import { findDaemonBin } from './daemon-bin.js';
 import { PilotGrpcClient, type DeviceInfoProto } from './grpc-client.js';
-import { listPhysicalDevices, type PhysicalDeviceInfo } from './ios-devicectl.js';
+import {
+  listPhysicalDevices,
+  listUsbAttachedIosDevices,
+  type PhysicalDeviceInfo,
+} from './ios-devicectl.js';
 
 const DIM = '\x1b[2m';
 const BOLD = '\x1b[1m';
@@ -43,24 +47,33 @@ interface DeviceRow {
 
 /**
  * Build rows for display from the daemon's merged device list plus the
- * devicectl cross-reference for iOS physical devices. Exported so tests
- * can cover the enrichment logic without a live daemon.
+ * devicectl cross-reference for iOS physical devices and the libimobiledevice
+ * USB attachment set. Exported so tests can cover the enrichment logic
+ * without a live daemon.
+ *
+ * @param usbAttached Set of UDIDs currently attached over USB (per
+ *   `idevice_id -l`). Used only to flag iOS physical devices that
+ *   devicectl knows about but which aren't actually cabled — Pilot's
+ *   agent tunnel is USB-only, so `pilot test --device <udid>` against
+ *   one would fail at tunnel setup.
  */
 export function buildDeviceRows(
   daemonDevices: DeviceInfoProto[],
   devicectlDevices: PhysicalDeviceInfo[],
+  usbAttached: Set<string> = new Set(),
 ): DeviceRow[] {
   const byUdid = new Map<string, PhysicalDeviceInfo>();
   for (const d of devicectlDevices) byUdid.set(d.udid, d);
 
   return daemonDevices.map<DeviceRow>((device) => {
     const physical = byUdid.get(device.serial);
+    const isUsbAttached = usbAttached.has(device.serial);
     return {
       platform: platformLabel(device),
       serial: device.serial,
       name: device.model || '',
       state: stateLabel(device, physical),
-      notes: notesFor(physical),
+      notes: notesFor(device, physical, isUsbAttached),
     };
   });
 }
@@ -87,18 +100,24 @@ function stateLabel(device: DeviceInfoProto, physical: PhysicalDeviceInfo | unde
   return device.state || 'unknown';
 }
 
-function notesFor(physical: PhysicalDeviceInfo | undefined): string[] {
+function notesFor(
+  device: DeviceInfoProto,
+  physical: PhysicalDeviceInfo | undefined,
+  isUsbAttached: boolean,
+): string[] {
   if (!physical) return [];
   const notes: string[] = [];
   if (physical.osVersion) notes.push(`iOS ${physical.osVersion}`);
   if (!physical.isPaired) notes.push('not paired');
   if (physical.developerModeStatus === 'disabled') notes.push('developer mode off');
-  // CoreDevice keeps Wi-Fi-paired devices discoverable even when unplugged,
-  // but Pilot's test flow needs a USB tunnel (iproxy + xcodebuild wired
-  // attachment). Flag the device so `pilot test --device <udid>` against
-  // a wireless-only target is obviously going to fail at agent launch.
-  if (physical.transportType === 'localNetwork') {
-    notes.push('wireless only (connect via USB to run tests)');
+  // CoreDevice keeps Wi-Fi-paired devices discoverable forever. Pilot's
+  // agent tunnel is USB-only (iproxy → xcodebuild wired attachment), so
+  // we flag real-device entries that aren't currently cabled. The USB
+  // attachment set comes from `idevice_id -l`, which is the only
+  // reliable source — devicectl's own `transportType` field reports
+  // `localNetwork` even for cabled devices once Wi-Fi pairing exists.
+  if (!device.isEmulator && !isUsbAttached) {
+    notes.push('not attached via USB');
   }
   // `ddiServicesAvailable` only reflects whether CoreDevice is currently
   // holding a DDI assertion, not whether the device can mount one when
@@ -225,15 +244,21 @@ export async function runListDevices(): Promise<void> {
   // Physical iOS enrichment only runs on macOS — `xcrun devicectl` is
   // macOS-only. On other platforms we just show what the daemon returns.
   let physical: PhysicalDeviceInfo[] = [];
+  let usbAttached: Set<string> = new Set();
   if (process.platform === 'darwin' && canRunXcrun()) {
     try {
       physical = listPhysicalDevices();
     } catch {
       // Non-fatal — daemon list still prints even without the enrichment.
     }
+    try {
+      usbAttached = listUsbAttachedIosDevices();
+    } catch {
+      // Non-fatal — wireless/cabled flag just won't fire without libimobiledevice.
+    }
   }
 
-  const rows = buildDeviceRows(daemonDevices, physical);
+  const rows = buildDeviceRows(daemonDevices, physical, usbAttached);
   process.stdout.write('\n' + formatTable(rows) + '\n');
 }
 
