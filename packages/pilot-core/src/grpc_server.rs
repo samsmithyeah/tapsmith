@@ -1555,6 +1555,47 @@ impl proto::pilot_service_server::PilotService for PilotServiceImpl {
                 // same physical device would fight its own leftover tunnel.
                 *self.ios_iproxy.write().await = None;
 
+                // Pre-start the Wi-Fi MITM proxy for physical iOS devices so
+                // iOS OCSP queries issued during runner launch reach our
+                // passthrough path. Without this, the Wi-Fi proxy payload on
+                // the phone points at a dead port, Apple trust verification
+                // fails, and iOS rejects the fresh dev-signed runner with a
+                // misleading "invalid code signature, inadequate entitlements
+                // or its profile has not been explicitly trusted" umbrella.
+                // Idempotent: skipped if a proxy is already bound.
+                #[cfg(target_os = "macos")]
+                if is_physical && self.network_proxy.read().await.is_none() {
+                    let mitm_ca = match MitmAuthority::load_or_create() {
+                        Ok(ca) => Arc::new(ca),
+                        Err(e) => {
+                            error!(error = %e, "Failed to load MITM CA for pre-start proxy");
+                            return Ok(Response::new(proto::ActionResponse {
+                                request_id,
+                                success: false,
+                                error_type: "AGENT_START_FAILED".to_string(),
+                                error_message: format!(
+                                    "Failed to load MITM CA before starting agent: {e}"
+                                ),
+                                screenshot: Vec::new(),
+                            }));
+                        }
+                    };
+                    let port = ios::physical_device_proxy::deterministic_port(&serial);
+                    let bind = std::net::SocketAddr::new(
+                        std::net::IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED),
+                        port,
+                    );
+                    match NetworkProxy::start_on(mitm_ca, bind).await {
+                        Ok(proxy) => {
+                            info!("Pre-started Wi-Fi MITM proxy on {bind} for physical iOS OCSP passthrough");
+                            *self.network_proxy.write().await = Some(proxy);
+                        }
+                        Err(e) => {
+                            warn!(error = %e, bind = %bind, "Failed to pre-start Wi-Fi proxy for physical iOS — OCSP passthrough unavailable, runner launch may fail if Wi-Fi proxy is configured");
+                        }
+                    }
+                }
+
                 let agent_port = self.agent.read().await.port();
                 let iproxy_handle = match ios::agent_launch::start_agent(
                     &serial,
@@ -2992,12 +3033,23 @@ impl proto::pilot_service_server::PilotService for PilotServiceImpl {
         let request_id = Self::request_id(&req.request_id);
 
         let mut proxy_guard = self.network_proxy.write().await;
-        if proxy_guard.is_some() {
+        // If a proxy is already running (pre-started for physical iOS OCSP
+        // passthrough during start_agent), reuse it instead of erroring.
+        // Capture state is reset so this session starts clean.
+        if let Some(existing) = proxy_guard.as_ref() {
+            let existing_port = existing.port();
+            existing.reset_entries().await;
+            let serial = self.active_serial().await.unwrap_or_default();
+            info!(
+                serial = %serial,
+                port = existing_port,
+                "Reusing pre-started proxy for network capture"
+            );
             return Ok(Response::new(proto::StartNetworkCaptureResponse {
                 request_id,
-                success: false,
-                proxy_port: 0,
-                error_message: "Network capture is already running".to_string(),
+                success: true,
+                proxy_port: u32::from(existing_port),
+                error_message: String::new(),
             }));
         }
 

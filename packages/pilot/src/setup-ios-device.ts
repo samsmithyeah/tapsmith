@@ -196,56 +196,54 @@ export function checkSigningIdentities(): CheckResult {
 }
 
 /**
- * Check Xcode's Developer Tools security mode. When disabled, the first
- * `xcodebuild` invocation against a physical iOS device per macOS login
- * session pops a sudo password prompt mid-test — Xcode's CoreDevice
- * layer needs admin to mount the Developer Disk Image and primes the
- * sudo cache via `sudo -- /usr/bin/true`. The prompt arrives RIGHT
- * after Pilot's "Starting iOS agent…" line, which makes it look like
- * Pilot is asking for a password, but it's actually xcodebuild.
+ * Check whether `sudo /usr/bin/true` runs without a password prompt. Xcode
+ * 26's CoreDevice calls `sudo -- /usr/bin/true` to warm the sudo cache
+ * before mounting the Developer Disk Image, which pops a "Password:"
+ * prompt mid-`pilot test` — right after "Starting iOS agent…" — making
+ * it look like Pilot is asking for credentials when it's actually
+ * xcodebuild.
  *
- * The fix is a one-time `sudo DevToolsSecurity -enable` which adds the
- * user to the `_developer` group and grants persistent Developer Tools
- * access. Pilot can't run it for the user (it needs sudo itself), so
- * this is an advisory check that surfaces the fix command upfront.
+ * `/usr/bin/true` is a literal no-op (exit 0, no side effects), so a
+ * narrowly-scoped sudoers NOPASSWD rule on that single binary is safe
+ * and removes the prompt permanently across sessions, reboots, and
+ * every future `pilot test` run.
+ *
+ * Historical note: earlier versions suggested `DevToolsSecurity -enable`
+ * + `dseditgroup … _developer`. That path worked on older Xcode but is
+ * a no-op on Xcode 26 — CoreDevice asks for auth regardless of
+ * `_developer` membership.
  */
-export function checkDevToolsSecurity(): CheckResult {
-  let out: string;
+export function checkSudoTruePasswordless(): CheckResult {
   try {
-    out = execFileSync('DevToolsSecurity', ['-status'], {
-      encoding: 'utf8',
-      stdio: ['ignore', 'pipe', 'ignore'],
+    execFileSync('sudo', ['-n', '/usr/bin/true'], {
+      stdio: ['ignore', 'ignore', 'ignore'],
+      timeout: 2_000,
     });
+    return {
+      label: 'Passwordless xcodebuild DDI mount',
+      ok: true,
+      detail: 'sudoers rule is in place (no auth prompt during physical-device test runs)',
+    };
   } catch {
     return {
-      label: 'Xcode Developer Tools access',
-      ok: true,
-      detail: 'could not determine (non-fatal)',
+      label: 'Passwordless xcodebuild DDI mount',
+      ok: false,
+      advisory: true,
+      fix: [
+        'Not configured. The first `xcodebuild` against a physical device per',
+        'macOS login session will pop a "Password:" prompt mid-test — Xcode\'s',
+        'CoreDevice layer primes the sudo cache via `sudo -- /usr/bin/true`',
+        'before mounting the Developer Disk Image. Run this one-time to make',
+        'the prompt go away for good:',
+        '',
+        '  echo "$USER ALL=(ALL) NOPASSWD: /usr/bin/true" | sudo tee /etc/sudoers.d/pilot-xcode-ddi',
+        '  sudo chmod 440 /etc/sudoers.d/pilot-xcode-ddi',
+        '',
+        '/usr/bin/true has no side effects — xcodebuild only calls it to warm',
+        'the sudo cache — so NOPASSWD on that single binary is safe.',
+      ],
     };
   }
-  // The string is stable across macOS versions: "Developer mode is currently
-  // enabled." or "Developer mode is currently disabled."
-  if (/currently enabled/i.test(out)) {
-    return {
-      label: 'Xcode Developer Tools access',
-      ok: true,
-      detail: 'enabled (no auth prompt during physical-device test runs)',
-    };
-  }
-  return {
-    label: 'Xcode Developer Tools access',
-    ok: false,
-    advisory: true,
-    fix: [
-      'Disabled. The first `xcodebuild` against a physical device per login',
-      'session will pop a "Password:" prompt mid-test (Xcode\'s CoreDevice',
-      'mounts the Developer Disk Image via sudo). Run this one-time:',
-      '',
-      '  sudo DevToolsSecurity -enable',
-      '',
-      'After that, Pilot test runs against physical devices won\'t prompt.',
-    ],
-  };
 }
 
 /**
@@ -430,7 +428,7 @@ export async function runSetupIosDevice(): Promise<void> {
   results.push(checkDevicectl());
   results.push(checkIproxy());
   results.push(checkSigningIdentities());
-  results.push(checkDevToolsSecurity());
+  results.push(checkSudoTruePasswordless());
   results.push(checkFirewallStealthMode());
   results.push(checkIosAgentBuilt());
   for (const r of results) printCheck(r);

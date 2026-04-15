@@ -26,6 +26,7 @@ import { collectTransitiveDeps } from '../project.js';
 import type { LaunchedEmulator } from '../emulator.js';
 import { preserveEmulatorsForReuse, getRunningAvdName } from '../emulator.js';
 import { listSimulators, getSimulatorScreenScale } from '../ios-simulator.js';
+import { listPhysicalDevices } from '../ios-devicectl.js';
 import {
   deserializeTestResult,
   deserializeSuiteResult,
@@ -231,7 +232,13 @@ export async function startUIServer(
     const serial = ctx.deviceSerial;
     if (!serial) return undefined;
     if (ctx.config.platform === 'ios') {
-      return listSimulators().find((s) => s.udid === serial)?.name ?? serial;
+      const simName = listSimulators().find((s) => s.udid === serial)?.name;
+      if (simName) return simName;
+      // Physical devices aren't in simctl — check devicectl. This is what
+      // surfaces "Sam's iPhone" instead of a raw UDID in the UI header.
+      const physName = listPhysicalDevices().find((d) => d.udid === serial)?.name;
+      if (physName) return physName;
+      return serial;
     }
     if (serial.startsWith('emulator-')) {
       return getRunningAvdName(serial) ?? serial;
@@ -1025,6 +1032,7 @@ export async function startUIServer(
       // Cache simulator list — listSimulators() forks `xcrun simctl` which is
       // slow; we only need it once per init.
       let simulatorsCache: ReturnType<typeof listSimulators> | undefined;
+      let physicalDevicesCache: ReturnType<typeof listPhysicalDevices> | undefined;
       const resolveSerialToName = (serial: string): string => {
         // In multi-bucket mode the root config's platform may not match this
         // worker's actual device, so prefer the per-worker config when set.
@@ -1032,7 +1040,10 @@ export async function startUIServer(
           ctx.configByDevice?.get(serial)?.platform ?? ctx.config.platform;
         if (workerPlatform === 'ios') {
           if (!simulatorsCache) simulatorsCache = listSimulators();
-          return simulatorsCache.find((s) => s.udid === serial)?.name ?? serial;
+          const simName = simulatorsCache.find((s) => s.udid === serial)?.name;
+          if (simName) return simName;
+          if (!physicalDevicesCache) physicalDevicesCache = listPhysicalDevices();
+          return physicalDevicesCache.find((d) => d.udid === serial)?.name ?? serial;
         }
         if (serial.startsWith('emulator-')) {
           return getRunningAvdName(serial) ?? serial;

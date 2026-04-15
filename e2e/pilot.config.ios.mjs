@@ -1,6 +1,5 @@
 import "dotenv/config"
 import { defineConfig } from "pilot"
-import { findLatestXctestrun } from "./utils/find-xctestrun.mjs"
 
 export default defineConfig({
   platform: "ios",
@@ -13,7 +12,6 @@ export default defineConfig({
   trace: "retain-on-failure",
   simulator: process.env.PILOT_IOS_SIMULATOR || "iPhone 17",
   daemonBin: "../packages/pilot-core/target/release/pilot-core",
-  iosXctestrun: process.env.PILOT_IOS_XCTESTRUN || findLatestXctestrun(),
   projects: [
     {
       name: "authentication",

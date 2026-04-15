@@ -59,11 +59,44 @@ pilot setup-ios-device
 
 ## Running tests
 
-Add a project for the physical device to your `pilot.config.ts`:
+Pilot auto-detects two things for physical devices, so a minimal config is just `platform: 'ios'` + `app` + `package`:
 
 ```ts
 import { defineConfig } from 'pilot';
 
+export default defineConfig({
+  platform: 'ios',
+  app: './build/MyApp-Device.app',   // device-signed build of your app
+  package: 'com.example.myapp',
+});
+```
+
+What Pilot fills in for you:
+
+- **Device UDID** — when `device` is omitted and no `simulator` is set, Pilot auto-picks the single paired USB iOS device. If zero or more than one are connected, you get an actionable error.
+- **`iosXctestrun`** — when omitted, Pilot looks under `ios-agent/.build-device/Build/Products/` for the newest `*iphoneos*.xctestrun` (populated by `pilot build-ios-agent`).
+
+Both can be overridden if you need to:
+
+```ts
+export default defineConfig({
+  platform: 'ios',
+  app: './build/MyApp-Device.app',
+  package: 'com.example.myapp',
+  // Optional: pin a specific UDID (useful when multiple phones are plugged in).
+  // Also settable via the PILOT_IOS_DEVICE env var.
+  device: '00008140-00096C9014F3001C',
+  // Optional: pin a specific xctestrun (useful when you build into a
+  // non-default location or maintain multiple signed runners).
+  iosXctestrun: 'ios-agent/.build-device/Build/Products/PilotAgentUITests_PilotAgentUITests_iphoneos26.4-arm64.xctestrun',
+});
+```
+
+### Running simulator and device together
+
+Use projects to target both from a single `pilot test` invocation:
+
+```ts
 export default defineConfig({
   projects: [
     {
@@ -71,7 +104,6 @@ export default defineConfig({
       use: {
         platform: 'ios',
         simulator: 'iPhone 16',
-        iosXctestrun: 'ios-agent/.build-sim/…/PilotAgent.xctestrun',
         app: './build/MyApp.app',
         package: 'com.example.myapp',
       },
@@ -80,31 +112,30 @@ export default defineConfig({
       name: 'ios-phys',
       use: {
         platform: 'ios',
-        device: '00008140-00096C9014F3001C',  // device UDID from `pilot setup-ios-device`
-        iosXctestrun: 'ios-agent/.build-device/Build/Products/PilotAgentUITests_PilotAgentUITests_iphoneos26.4-arm64.xctestrun',
-        app: './build/MyApp-Device.app',     // device-signed build of your app
+        app: './build/MyApp-Device.app',
         package: 'com.example.myapp',
+        // device + iosXctestrun auto-detected
       },
     },
   ],
 });
 ```
 
-Key differences from the simulator project:
+Then:
+
+```sh
+pilot test                    # runs both projects
+pilot test --project ios-phys # just the physical device
+```
+
+Key differences between the two projects:
 
 | Field | Simulator | Physical device |
 |---|---|---|
-| `simulator` | Name or UDID | — (use `device`) |
-| `device` | — | UDID |
-| `iosXctestrun` | Simulator-slice xctestrun | Device-slice xctestrun (built via `pilot build-ios-agent`) |
+| `simulator` | Name or UDID | — |
+| `device` | — | Auto-detected (or UDID override) |
+| `iosXctestrun` | Simulator-slice xctestrun | Auto-detected under `ios-agent/.build-device/` |
 | `app` | Simulator-slice `.app` | Device-signed `.app` |
-
-Then run:
-
-```sh
-pilot test                 # runs both projects
-pilot test --project ios-phys    # just the physical device
-```
 
 ## Network capture (optional)
 
@@ -205,13 +236,16 @@ Run `pilot setup-ios-device` first — it surfaces most setup issues with action
 
 **"iproxy not found"** — `brew install libimobiledevice`.
 
-**`Password:` prompt mid-test, right after "Starting iOS agent…"** — Xcode's CoreDevice mounts the Developer Disk Image via `sudo -- /usr/bin/true` to prime the sudo cache, and the prompt only appears in the first `xcodebuild` invocation per macOS login session. Pilot itself doesn't call sudo. Eliminate the prompt permanently with one command:
+**`Password:` prompt mid-test, right after "Starting iOS agent…"** — Xcode 26's CoreDevice calls `sudo -- /usr/bin/true` before mounting the Developer Disk Image to prime the sudo cache. Pilot itself doesn't call sudo. Eliminate the prompt permanently by allowing that single binary without a password:
 
 ```sh
-sudo DevToolsSecurity -enable
+echo "$USER ALL=(ALL) NOPASSWD: /usr/bin/true" | sudo tee /etc/sudoers.d/pilot-xcode-ddi
+sudo chmod 440 /etc/sudoers.d/pilot-xcode-ddi
 ```
 
-That adds your user to the `_developer` group so all subsequent Xcode-driven operations skip the auth check. `pilot setup-ios-device` flags this with a ⚠ advisory and the same fix.
+`/usr/bin/true` is a literal no-op (exit 0, no side effects), so scoping NOPASSWD to it is safe. `pilot setup-ios-device` flags a missing rule with a ⚠ advisory and the same fix.
+
+(An earlier version of this doc suggested `sudo DevToolsSecurity -enable` — that works on older Xcode but is a no-op on Xcode 26, where CoreDevice re-asks for auth regardless of `_developer` group membership.)
 
 **"Device unpaired" in `pilot setup-ios-device`** — open Xcode → Window → Devices and Simulators, wait for the device, click "Use for Development".
 

@@ -34,6 +34,36 @@ const MAX_BODY_SIZE: usize = 1_048_576;
 /// upstream even though we only store a truncated copy in the capture.
 const MAX_PROXY_BODY: usize = 10 * 1024 * 1024;
 
+/// Hosts that must bypass MITM interception and forward as raw TCP to the
+/// upstream server. These are endpoints iOS uses to verify developer cert
+/// trust (OCSP / CRL / device enrollment). If we MITM them with our own CA,
+/// iOS rejects the response and refuses to launch freshly-signed test runners
+/// with "invalid code signature, inadequate entitlements or its profile has
+/// not been explicitly trusted by the user" — a confusing umbrella error that
+/// cost us hours of debugging the first time we hit it. Matched as exact
+/// suffixes (case-insensitive) against the CONNECT target hostname.
+const MITM_PASSTHROUGH_SUFFIXES: &[&str] = &[
+    // Apple OCSP / CRL / device trust verification
+    "ocsp.apple.com",
+    "ocsp2.apple.com",
+    "ocsp.digicert.com",
+    "crl.apple.com",
+    "crl3.digicert.com",
+    "crl4.digicert.com",
+    "ppq.apple.com",
+    "ppq.apple.com.akadns.net",
+    // Apple certificate status / validation infrastructure
+    "valid.apple.com",
+    "certs.apple.com",
+];
+
+fn is_mitm_passthrough_host(hostname: &str) -> bool {
+    let host = hostname.to_ascii_lowercase();
+    MITM_PASSTHROUGH_SUFFIXES
+        .iter()
+        .any(|suffix| host == *suffix || host.ends_with(&format!(".{suffix}")))
+}
+
 /// A captured network request/response pair.
 #[derive(Debug, Clone)]
 pub struct CapturedEntry {
@@ -210,6 +240,15 @@ impl NetworkProxy {
         self.state.clone()
     }
 
+    /// Clear any captured entries without stopping the proxy. Used when a
+    /// test session starts network capture on a proxy that was pre-started
+    /// for OCSP passthrough during agent launch — pre-start OCSP/CRL traffic
+    /// would otherwise leak into the captured entries of the first test.
+    pub async fn reset_entries(&self) {
+        let mut state = self.state.lock().await;
+        state.entries.clear();
+    }
+
     /// Stop the proxy and return all captured entries.
     pub async fn stop(self) -> Vec<CapturedEntry> {
         let _ = self.shutdown_tx.send(());
@@ -350,6 +389,16 @@ async fn handle_connect(
         .await
         .is_err()
     {
+        return;
+    }
+
+    // Passthrough: if this is a host iOS uses to verify developer cert trust
+    // (OCSP / CRL), forward raw TCP and skip MITM. Interfering with these
+    // blocks iOS from launching freshly-signed test runners.
+    if is_mitm_passthrough_host(&hostname) {
+        debug!("CONNECT passthrough (no MITM) for {hostname}");
+        let mut upstream = upstream_tcp;
+        let _ = tokio::io::copy_bidirectional(&mut client, &mut upstream).await;
         return;
     }
 

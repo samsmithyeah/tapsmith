@@ -472,9 +472,45 @@ async function setupSequentialDevice(
   const resolvedAgentTestApk = cfg.agentTestApk
     ? path.resolve(cfg.rootDir, cfg.agentTestApk)
     : undefined;
-  const resolvedIosXctestrun = cfg.iosXctestrun
+  let resolvedIosXctestrun = cfg.iosXctestrun
     ? path.resolve(cfg.rootDir, cfg.iosXctestrun)
     : undefined;
+  // iOS xctestrun auto-detect: if the user didn't set `iosXctestrun`,
+  // pick the newest built xctestrun for the target slice. Mirrors the way
+  // `simulator: "iPhone 16"` is enough to pick a device without hand-rolling
+  // JSON parsing in the config.
+  //   - Physical devices: look under `<rootDir>/ios-agent/.build-device/…`
+  //     (populated by `pilot build-ios-agent`).
+  //   - Simulators: look under `~/Library/Developer/Xcode/DerivedData/PilotAgent-*`
+  //     (populated by the simulator `xcodebuild build-for-testing` command).
+  if (!resolvedIosXctestrun && cfg.platform === 'ios') {
+    const { findDeviceXctestrun, findSimulatorXctestrun } =
+      await import('./ios-device-resolve.js');
+    if (targetIsPhysical) {
+      const found = findDeviceXctestrun(cfg.rootDir);
+      if (found) {
+        resolvedIosXctestrun = found;
+        console.log(dim(`Auto-detected iOS device xctestrun: ${path.relative(cfg.rootDir, found)}`));
+      } else {
+        throw new Error(
+          'No device xctestrun found under ios-agent/.build-device. ' +
+            'Run `pilot build-ios-agent` first, or set `iosXctestrun` explicitly.',
+        );
+      }
+    } else {
+      const found = findSimulatorXctestrun();
+      if (found) {
+        resolvedIosXctestrun = found;
+        console.log(dim(`Auto-detected iOS simulator xctestrun: ${found}`));
+      } else {
+        throw new Error(
+          'No simulator xctestrun found under ~/Library/Developer/Xcode/DerivedData/PilotAgent-*. ' +
+            'Build the simulator agent first (see docs/ios-physical-devices.md for the command) ' +
+            'or set `iosXctestrun` explicitly.',
+        );
+      }
+    }
+  }
 
   try {
     if (cfg.platform === 'ios') {
@@ -606,9 +642,24 @@ async function ensureSequentialTargetDevice(
   // ─── iOS: use simulator instead of ADB device ───
   if (config.platform === 'ios') {
     const { listBootedSimulators, provisionSimulator, cleanupStaleSimulators } = await import('./ios-simulator.js');
+    // If no simulator is configured, try to auto-resolve a single paired
+    // physical device. Mirrors how simulators are picked by name — the
+    // user should not have to hand-parse `devicectl` JSON in their config.
     if (!config.simulator) {
-      console.error(red('No simulator specified. Set `simulator` in your config (e.g. simulator: "iPhone 16").'));
-      process.exit(1);
+      try {
+        const { resolvePhysicalIosDevice } = await import('./ios-device-resolve.js');
+        const udid = resolvePhysicalIosDevice();
+        process.stderr.write(`${DIM}Auto-detected physical iOS device ${udid}.${RESET}\n`);
+        return { selectedSerial: udid, launched: [] };
+      } catch (e) {
+        console.error(
+          red(
+            `No simulator specified and physical device auto-detect failed: ${(e as Error).message}\n` +
+              `Set \`simulator\` (e.g. simulator: "iPhone 16") or \`device\` in your config.`,
+          ),
+        );
+        process.exit(1);
+      }
     }
     const simulatorName = config.simulator;
 
