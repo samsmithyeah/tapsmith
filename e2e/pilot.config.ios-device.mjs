@@ -49,10 +49,7 @@ export default defineConfig({
   app: "../test-app/ios/build/Build/Products/Release-iphoneos/PilotTestApp.app",
   package: "dev.pilot.testapp",
   timeout: 15_000,
-  // Physical iOS tests see intermittent ~20s element-resolution hangs
-  // during long runs that recover immediately on re-run (see
-  // docs/ios-physical-devices.md). Retry once to tolerate them.
-  retries: 1,
+  retries: 0,
   screenshot: "only-on-failure",
   workers: 1,
   trace: "retain-on-failure",

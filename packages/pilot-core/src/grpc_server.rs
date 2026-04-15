@@ -103,10 +103,28 @@ impl PilotServiceImpl {
     }
 
     async fn send_agent_command(&self, command: &AgentCommand) -> Result<AgentResponse, Status> {
+        let raw = self.agent.write().await.send_command(command).await;
+        self.recover_agent_on_timeout(command, raw).await
+    }
+
+    /// Raw agent command send — no auto-recovery wrapper. Used by the
+    /// recovery path itself (`probe_ios_agent_session` after a restart) to
+    /// avoid recursion if the recovery attempt's probe command also times
+    /// out.
+    async fn send_agent_command_raw(
+        &self,
+        command: &AgentCommand,
+        timeout_ms: u64,
+    ) -> Result<AgentResponse, Status> {
+        let timeout = if timeout_ms > 0 {
+            Duration::from_millis(timeout_ms)
+        } else {
+            Duration::from_secs(30)
+        };
         self.agent
             .write()
             .await
-            .send_command(command)
+            .send_command_with_timeout(command, timeout)
             .await
             .map_err(|e| Status::internal(e.to_string()))
     }
@@ -122,12 +140,68 @@ impl PilotServiceImpl {
             Duration::from_secs(30)
         };
 
-        self.agent
+        let raw = self
+            .agent
             .write()
             .await
             .send_command_with_timeout(command, timeout)
+            .await;
+        self.recover_agent_on_timeout(command, raw).await
+    }
+
+    /// If the agent command failed with a "timed out" error AND the active
+    /// device is a physical iOS device, the XCUITest runner's accessibility
+    /// connection has most likely wedged. Restart the agent in-place and
+    /// retry the command once. Transparent to callers — a successful retry
+    /// returns Ok, a failed retry surfaces the underlying error.
+    ///
+    /// Physical-iOS only: simulator runs are fast enough that a full agent
+    /// restart per stuck command would be a meaningful regression, and
+    /// Android has its own proven recovery path in session-preflight.
+    async fn recover_agent_on_timeout(
+        &self,
+        command: &AgentCommand,
+        result: anyhow::Result<AgentResponse>,
+    ) -> Result<AgentResponse, Status> {
+        let err = match result {
+            Ok(resp) => return Ok(resp),
+            Err(e) => e,
+        };
+        let msg = err.to_string();
+        let looks_like_timeout = msg.contains("timed out") || msg.contains("Timed out");
+        if !looks_like_timeout || !self.is_active_ios_physical().await {
+            return Err(Status::internal(msg));
+        }
+        let config = match self.ios_agent_config.read().await.clone() {
+            Some(c) => c,
+            None => return Err(Status::internal(msg)),
+        };
+        let serial = match self.active_serial().await {
+            Ok(s) => s,
+            Err(_) => return Err(Status::internal(msg)),
+        };
+        warn!(
+            error = %msg,
+            "iOS agent command timed out on physical device, restarting agent and retrying"
+        );
+        if let Err(e) = self
+            .restart_ios_agent_for_app(&serial, &config.target_package, false, 5_000)
             .await
-            .map_err(|e| Status::internal(e.to_string()))
+        {
+            return Err(Status::internal(format!(
+                "Agent timed out ({msg}); recovery also failed: {e}"
+            )));
+        }
+        self.agent
+            .write()
+            .await
+            .send_command(command)
+            .await
+            .map_err(|e| {
+                Status::internal(format!(
+                    "Agent timed out ({msg}); post-recovery retry also failed: {e}"
+                ))
+            })
     }
 
     async fn probe_ios_agent_session(
@@ -145,7 +219,7 @@ impl PilotServiceImpl {
             1_000
         };
         let idle = self
-            .send_agent_command_with_timeout(
+            .send_agent_command_raw(
                 &AgentCommand::WaitForIdle {
                     timeout_ms: Some(timeout_ms),
                 },
