@@ -822,6 +822,7 @@ function parseArgs(argv: string[]): CliArgs {
         arg === 'build-ios-agent'
         || arg === 'configure-ios-network'
         || arg === 'refresh-ios-network'
+        || arg === 'list-devices'
       ) {
         break;
       }
@@ -1112,6 +1113,7 @@ ${bold('Usage:')}
   pilot show-report [dir]         Open HTML test report
   pilot merge-reports [dir]       Merge blob reports from sharded runs
   pilot list-devices              List connected devices (Android, iOS sim, iOS physical)
+  pilot list-devices --json       Same, as JSON for scripting
   pilot setup-ios                 First-run setup for iOS network capture (macOS only)
   pilot setup-ios-device          Preflight checklist for physical iOS device testing
   pilot build-ios-agent           Build the signed PilotAgent runner for physical iOS devices
@@ -1218,7 +1220,9 @@ async function main(): Promise<void> {
 
   if (args.command === 'list-devices') {
     const { runListDevices } = await import('./list-devices.js');
-    await runListDevices();
+    const forwardedArgv = process.argv.slice(process.argv.indexOf('list-devices') + 1)
+      .filter((a) => a !== '--__tsx-reexec');
+    await runListDevices(forwardedArgv);
     return;
   }
 

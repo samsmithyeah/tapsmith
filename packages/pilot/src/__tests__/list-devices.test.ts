@@ -9,6 +9,7 @@ const daemonDevice = (overrides: Partial<DeviceInfoProto>): DeviceInfoProto => (
   state: '',
   isEmulator: false,
   platform: '',
+  osVersion: '',
   ...overrides,
 });
 
@@ -31,7 +32,6 @@ describe('buildDeviceRows — platform labelling', () => {
       [],
     );
     expect(rows[0]!.platform).toBe('ios-sim');
-    expect(rows[0]!.state).toBe('Booted');
   });
 
   it('labels a physical iPhone as ios-device', () => {
@@ -65,17 +65,27 @@ describe('buildDeviceRows — readiness', () => {
     );
     expect(rows[0]!.ready).toBe(true);
     expect(rows[0]!.blockers).toEqual([]);
-    expect(rows[0]!.info).toEqual(['iOS 26.2.1']);
+    expect(rows[0]!.osLabel).toBe('iOS 26.2.1');
   });
 
-  it('flags an iOS physical device not attached via USB as not ready', () => {
+  it('flags an iOS physical device not attached via USB with an imperative fix', () => {
     const rows = buildDeviceRows(
       [daemonDevice({ serial: 'UDID', platform: 'ios', isEmulator: false })],
       [physicalDevice({ udid: 'UDID', osVersion: '26.2.1' })],
       new Set(), // idevice_id -l empty → phone isn't cabled
     );
     expect(rows[0]!.ready).toBe(false);
-    expect(rows[0]!.blockers).toContain('not attached via USB');
+    expect(rows[0]!.blockers).toContain('Plug in via USB cable');
+  });
+
+  it('distinguishes a Wi-Fi-only iOS device from a fully-disconnected one', () => {
+    const rows = buildDeviceRows(
+      [daemonDevice({ serial: 'UDID', platform: 'ios', isEmulator: false })],
+      [physicalDevice({ udid: 'UDID', transportType: 'localNetwork' })],
+      new Set(), // not cabled, but devicectl still sees it
+    );
+    expect(rows[0]!.ready).toBe(false);
+    expect(rows[0]!.blockers.some((b) => b.includes('Wi-Fi only'))).toBe(true);
   });
 
   it('flags an unpaired iOS physical device', () => {
@@ -85,7 +95,7 @@ describe('buildDeviceRows — readiness', () => {
       new Set(['UDID']),
     );
     expect(rows[0]!.ready).toBe(false);
-    expect(rows[0]!.blockers.some((b) => b.includes('not paired'))).toBe(true);
+    expect(rows[0]!.blockers.some((b) => b.startsWith('Pair in Xcode'))).toBe(true);
   });
 
   it('flags an iOS device with Developer Mode off', () => {
@@ -95,7 +105,21 @@ describe('buildDeviceRows — readiness', () => {
       new Set(['UDID']),
     );
     expect(rows[0]!.ready).toBe(false);
-    expect(rows[0]!.blockers.some((b) => b.includes('developer mode off'))).toBe(true);
+    expect(rows[0]!.blockers.some((b) => b.startsWith('Enable Developer Mode'))).toBe(true);
+  });
+
+  it('does not false-alarm on ddiServicesAvailable=false (devicectl reports it unreliably)', () => {
+    // Real-world case: a plugged-in, paired, Developer-Mode-on iPhone
+    // whose DDI hasn't been mounted by Xcode this session still works
+    // fine for `pilot test` — pilot mounts the DDI itself. list-devices
+    // must not flag this as "need attention".
+    const rows = buildDeviceRows(
+      [daemonDevice({ serial: 'UDID', platform: 'ios', isEmulator: false })],
+      [physicalDevice({ udid: 'UDID', ddiServicesAvailable: false, osVersion: '26.2.1' })],
+      new Set(['UDID']),
+    );
+    expect(rows[0]!.ready).toBe(true);
+    expect(rows[0]!.blockers).toEqual([]);
   });
 
   it('iOS simulators are always ready (Pilot boots them on demand)', () => {
@@ -120,7 +144,7 @@ describe('buildDeviceRows — readiness', () => {
       [],
     );
     expect(rows[0]!.ready).toBe(false);
-    expect(rows[0]!.blockers.some((b) => b.includes('unauthorized'))).toBe(true);
+    expect(rows[0]!.blockers.some((b) => b.includes('USB debugging prompt'))).toBe(true);
   });
 
   it('flags an offline Android device', () => {
@@ -129,7 +153,23 @@ describe('buildDeviceRows — readiness', () => {
       [],
     );
     expect(rows[0]!.ready).toBe(false);
-    expect(rows[0]!.blockers.some((b) => b.includes('offline'))).toBe(true);
+    expect(rows[0]!.blockers.some((b) => b.includes('Reconnect cable'))).toBe(true);
+  });
+
+  it('builds a human-friendly Android OS label from the daemon-provided version', () => {
+    const rows = buildDeviceRows(
+      [daemonDevice({ serial: 'HT123', platform: 'android', state: 'device', osVersion: '14' })],
+      [],
+    );
+    expect(rows[0]!.osLabel).toBe('Android 14');
+  });
+
+  it('builds an iOS OS label for simulators from the daemon-provided runtime version', () => {
+    const rows = buildDeviceRows(
+      [daemonDevice({ serial: 'SIM', platform: 'ios', isEmulator: true, state: 'Booted', osVersion: '18.1' })],
+      [],
+    );
+    expect(rows[0]!.osLabel).toBe('iOS 18.1');
   });
 
   it('treats iOS physical devices as ready when devicectl enrichment is missing (non-macOS host)', () => {

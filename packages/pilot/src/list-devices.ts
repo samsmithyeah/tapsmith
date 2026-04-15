@@ -4,17 +4,18 @@
  * Queries the Pilot daemon for its merged device list (Android via ADB,
  * iOS simulators via simctl, iOS physical via devicectl) and enriches iOS
  * physical entries with extra state from `xcrun devicectl list devices`
- * (iOS version, pairing, Developer Mode, DDI availability) that the
- * daemon's proto currently doesn't surface. This is the single command
- * users can run to see what Pilot can target right now and whether any
- * device needs attention before `pilot test` will work.
+ * (iOS version, pairing, Developer Mode, DDI availability, USB transport)
+ * that the daemon doesn't surface. This is the single command users can
+ * run to see what Pilot can target right now and whether any device
+ * needs attention before `pilot test` will work.
  *
- * The output groups devices by readiness — a clear ✓/✗ column tells
- * users at a glance which devices are ready for `pilot test`, and
- * anything not ready has a one-line reason in the NOTES column.
+ * Output shape: NAME · PLATFORM · SERIAL · OS · STATUS. The STATUS cell
+ * is either "Ready" or a one-line imperative fix ("Plug in via USB
+ * cable"). Ready devices sort first. A `--json` flag emits the row model
+ * for scripting.
  *
- * Kept intentionally thin — no flags, no filtering. For per-device iOS
- * preflight with hints, `pilot setup-ios-device` does the heavy lifting.
+ * For per-device iOS preflight with richer hints, `pilot setup-ios-device`
+ * does the heavy lifting.
  */
 
 import { execFileSync, spawn } from 'node:child_process';
@@ -46,11 +47,13 @@ export interface DeviceRow {
   platform: string
   serial: string
   name: string
-  state: string
-  /** Reasons the device isn't ready (empty when `ready` is true). */
+  /** Human-friendly OS version label for the OS column ("iOS 18.1",
+   * "Android 14"). Empty when unknown. */
+  osLabel: string
+  /** Imperative one-liners describing how to make the device ready. Empty
+   * when `ready` is true. Ordered by fix priority (attach USB first, then
+   * pair, then Developer Mode, then DDI). */
   blockers: string[]
-  /** Informational details that aren't blockers (e.g. "iOS 26.2.1"). */
-  info: string[]
 }
 
 /**
@@ -82,9 +85,8 @@ export function buildDeviceRows(
       platform: platformLabel(device),
       serial: device.serial,
       name: device.model || '',
-      state: stateLabel(device, physical),
+      osLabel: osLabelFor(device, physical),
       blockers,
-      info: infoFor(physical),
     };
   });
 
@@ -107,22 +109,36 @@ function platformLabel(device: DeviceInfoProto): string {
   }
 }
 
-function stateLabel(device: DeviceInfoProto, physical: PhysicalDeviceInfo | undefined): string {
-  // Prefer the boot state from devicectl for physical iOS devices — the
-  // daemon's state is typically blank there. `unknown` falls through to
-  // whatever the daemon reported.
-  const bootState = physical?.bootState;
-  if (bootState && bootState !== 'unknown') {
-    return bootState;
+/**
+ * Build the OS column label. Prefers devicectl's version for physical iOS
+ * devices (the daemon doesn't have it), otherwise falls back to what the
+ * daemon returned (Android via getprop, iOS sim via parsed runtime).
+ */
+function osLabelFor(
+  device: DeviceInfoProto,
+  physical: PhysicalDeviceInfo | undefined,
+): string {
+  const version = physical?.osVersion || device.osVersion || '';
+  if (!version) return '';
+  switch (device.platform) {
+    case 'ios':
+      return `iOS ${version}`;
+    case 'android':
+      return `Android ${version}`;
+    default:
+      return version;
   }
-  return device.state || 'unknown';
 }
 
 /**
- * Reasons why `pilot test --device <serial>` would fail right now. Empty
- * list = ready. Physical iOS devices have the most interesting failure
- * modes; simulators and Android are almost always ready once the daemon
- * lists them.
+ * Imperative one-liners describing what the user needs to do to make the
+ * device ready. Empty list = ready. Ordered so the action that unblocks
+ * the rest comes first: USB attachment before pairing (you can't pair a
+ * phone that isn't plugged in), pairing before Developer Mode, Developer
+ * Mode before DDI.
+ *
+ * Physical iOS has the richest failure modes; iOS simulators and Android
+ * are usually ready once the daemon lists them.
  */
 function blockersFor(
   device: DeviceInfoProto,
@@ -137,11 +153,27 @@ function blockersFor(
     // judge readiness — assume it's ready and let `pilot test` surface
     // any problem at attachment time.
     if (physical) {
-      if (!physical.isPaired) blockers.push('not paired — pair in Xcode → Devices and Simulators');
-      if (physical.developerModeStatus === 'disabled') {
-        blockers.push('developer mode off — Settings → Privacy & Security → Developer Mode');
+      // Wi-Fi-only is a distinct, reassuring case from "nothing plugged
+      // in at all": devicectl sees the device over the local network but
+      // Pilot's wired-tunnel test flow needs a USB cable.
+      if (!isUsbAttached) {
+        if (physical.transportType === 'localNetwork') {
+          blockers.push('Wi-Fi only — connect USB cable (wired tunnel required)');
+        } else {
+          blockers.push('Plug in via USB cable');
+        }
       }
-      if (!isUsbAttached) blockers.push('not attached via USB');
+      if (!physical.isPaired) {
+        blockers.push('Pair in Xcode → Window → Devices and Simulators');
+      }
+      if (physical.developerModeStatus === 'disabled') {
+        blockers.push('Enable Developer Mode: Settings → Privacy & Security → Developer Mode');
+      }
+      // NB: we intentionally don't check `ddiServicesAvailable` here.
+      // devicectl only reports it as `true` after something (Xcode) has
+      // already mounted the Developer Disk Image in the current session,
+      // so it false-alarms on devices where `pilot test` would succeed —
+      // pilot mounts the DDI itself at test time.
     }
   }
 
@@ -149,21 +181,14 @@ function blockersFor(
     // adb surfaces "unauthorized" when the device hasn't accepted the
     // RSA key yet and "offline" when the connection is broken.
     if (device.state === 'unauthorized') {
-      blockers.push('unauthorized — accept the USB debugging prompt on the device');
+      blockers.push('Accept the USB debugging prompt on the device');
     }
     if (device.state === 'offline') {
-      blockers.push('offline — reconnect the cable or restart adb');
+      blockers.push('Reconnect cable or run `adb kill-server`');
     }
   }
 
   return blockers;
-}
-
-function infoFor(physical: PhysicalDeviceInfo | undefined): string[] {
-  if (!physical) return [];
-  const info: string[] = [];
-  if (physical.osVersion) info.push(`iOS ${physical.osVersion}`);
-  return info;
 }
 
 // ─── Rendering ──────────────────────────────────────────────────────────
@@ -175,14 +200,18 @@ function formatTable(rows: DeviceRow[]): string {
       '  or start an Android emulator — then re-run `pilot list-devices`.\n';
   }
 
-  const headers = ['', 'PLATFORM', 'SERIAL', 'NAME', 'STATE', 'NOTES'];
+  // Columns: NAME · PLATFORM · SERIAL · OS · STATUS. Name comes first
+  // because humans scan device lists by name. No ✓/✗ column — the STATUS
+  // cell already carries the ready/blocked signal via color (green
+  // "Ready" vs. yellow blocker text).
+  const EMPTY_OS = '—';
+  const headers = ['NAME', 'PLATFORM', 'SERIAL', 'OS', 'STATUS'];
   const plain: string[][] = rows.map((r) => [
-    r.ready ? '✓' : '✗',
+    r.name,
     r.platform,
     r.serial,
-    r.name,
-    r.state,
-    noteStringPlain(r),
+    r.osLabel || EMPTY_OS,
+    statusStringPlain(r),
   ]);
   const widths = headers.map((h, i) =>
     Math.max(h.length, ...plain.map((row) => row[i].length)),
@@ -194,18 +223,15 @@ function formatTable(rows: DeviceRow[]): string {
   const separator = widths.map((w) => '─'.repeat(w)).join('  ');
 
   const body = rows.map((r) => {
-    const statusRaw = r.ready ? '✓' : '✗';
-    const statusCell = r.ready ? green(statusRaw) : yellow(statusRaw);
-    const platformCell = colorPlatform(r.platform, r.ready);
-    const stateCell = colorState(r.state, r.ready);
-    const notesCell = noteStringColored(r);
+    const osCell = r.osLabel || EMPTY_OS;
+    const statusTextCell = statusStringColored(r);
+    const statusTextRaw = statusStringPlain(r);
     return [
-      pad(statusCell, widths[0] + (statusCell.length - statusRaw.length)),
-      pad(platformCell, widths[1] + (platformCell.length - r.platform.length)),
+      pad(r.name, widths[0]),
+      pad(r.platform, widths[1]),
       pad(r.serial, widths[2]),
-      pad(r.name, widths[3]),
-      pad(stateCell, widths[4] + (stateCell.length - r.state.length)),
-      notesCell.padEnd(widths[5] + (notesCell.length - noteStringPlain(r).length)),
+      pad(osCell, widths[3]),
+      statusTextCell.padEnd(widths[4] + (statusTextCell.length - statusTextRaw.length)),
     ].join('  ');
   });
 
@@ -215,38 +241,31 @@ function formatTable(rows: DeviceRow[]): string {
     ? green(`${readyCount} ready · 0 need attention`)
     : `${green(`${readyCount} ready`)} · ${yellow(`${blockedCount} need attention`)}`;
 
-  return [
-    headerLine,
-    dim(separator),
-    ...body,
-    '',
-    summary,
-  ].join('\n') + '\n';
+  const lines = [headerLine, dim(separator), ...body, '', summary];
+
+  // Footer hint: if any blocked row is a physical iOS device, point at
+  // the guided fix command. We intentionally skip the hint for Android-
+  // only blockers because `setup-ios-device` wouldn't help there.
+  const hasIosPhysicalBlocker = rows.some(
+    (r) => !r.ready && r.platform === 'ios-device',
+  );
+  if (hasIosPhysicalBlocker) {
+    lines.push(dim('Run `pilot setup-ios-device` for guided fixes.'));
+  }
+
+  return lines.join('\n') + '\n';
 }
 
-/** Uncolored note string — blockers joined with " · ", then info. */
-function noteStringPlain(r: DeviceRow): string {
-  return [...r.blockers, ...r.info].join(' · ');
+/** Uncolored status cell — "Ready" or blockers joined with " · ". */
+function statusStringPlain(r: DeviceRow): string {
+  if (r.ready) return 'Ready';
+  return r.blockers.join(' · ');
 }
 
-/** Colored note string — blockers yellow, info dim. */
-function noteStringColored(r: DeviceRow): string {
-  const parts: string[] = [];
-  for (const b of r.blockers) parts.push(yellow(b));
-  for (const i of r.info) parts.push(dim(i));
-  return parts.join(' · ');
-}
-
-function colorPlatform(p: string, ready: boolean): string {
-  if (!ready) return yellow(p);
-  if (p === 'ios-device' || p === 'android') return green(p);
-  return dim(p);
-}
-
-function colorState(s: string, ready: boolean): string {
-  if (!ready) return yellow(s);
-  if (s === 'booted' || s === 'device') return green(s);
-  return dim(s);
+/** Colored status cell — "Ready" green, blockers yellow. */
+function statusStringColored(r: DeviceRow): string {
+  if (r.ready) return green('Ready');
+  return r.blockers.map((b) => yellow(b)).join(' · ');
 }
 
 // ─── Daemon bootstrap ───────────────────────────────────────────────────
@@ -289,12 +308,19 @@ async function listDevicesFromDaemon(): Promise<DeviceInfoProto[]> {
 
 // ─── CLI entry point ────────────────────────────────────────────────────
 
-export async function runListDevices(): Promise<void> {
+export async function runListDevices(argv: string[] = []): Promise<void> {
+  const jsonOutput = argv.includes('--json');
+
   let daemonDevices: DeviceInfoProto[];
   try {
     daemonDevices = await listDevicesFromDaemon();
   } catch (err) {
-    console.error(red(err instanceof Error ? err.message : String(err)));
+    const msg = err instanceof Error ? err.message : String(err);
+    if (jsonOutput) {
+      process.stdout.write(JSON.stringify({ error: msg }) + '\n');
+    } else {
+      console.error(red(msg));
+    }
     process.exit(1);
   }
 
@@ -316,6 +342,12 @@ export async function runListDevices(): Promise<void> {
   }
 
   const rows = buildDeviceRows(daemonDevices, physical, usbAttached);
+
+  if (jsonOutput) {
+    process.stdout.write(JSON.stringify({ devices: rows }, null, 2) + '\n');
+    return;
+  }
+
   process.stdout.write('\n' + formatTable(rows) + '\n');
 }
 
