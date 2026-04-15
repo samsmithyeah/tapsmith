@@ -27,6 +27,7 @@ import type {
   UIRunTraceEventMessage,
 } from './ui-protocol.js';
 import type { AnyTraceEvent } from '../trace/types.js';
+import { isNetworkTracingEnabled, networkHostsForPac } from '../trace/types.js';
 
 // ─── Helpers ───
 
@@ -82,6 +83,7 @@ function buildSessionContext(
     device,
     client,
     deviceSerial,
+    networkTracingEnabled: isNetworkTracingEnabled(config.trace),
   };
 }
 
@@ -126,7 +128,11 @@ async function handleRun(msg: UIRunMessage): Promise<void> {
   }
 
   const device = new Device(client, config);
-  await device.setDevice(msg.deviceSerial);
+  await device.setDevice(
+    msg.deviceSerial,
+    isNetworkTracingEnabled(config.trace),
+    networkHostsForPac(config.trace),
+  );
 
   const ctx = buildSessionContext(config, device, client, msg.deviceSerial);
 

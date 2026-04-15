@@ -39,6 +39,16 @@ pub struct PilotServiceImpl {
     /// lifetime of the XCUITest runner session; dropped when a new agent is
     /// started or the session is torn down.
     ios_iproxy: Arc<RwLock<Option<crate::ios::iproxy::IproxyHandle>>>,
+    /// Whether the current session has network tracing enabled. Set from
+    /// `SetDeviceRequest.network_tracing_enabled` and re-affirmed by
+    /// `StartAgentRequest.network_tracing_enabled`. Gates the
+    /// `ensure_ios_physical_proxy` pre-arming on physical iOS devices —
+    /// when false, the daemon skips every MITM/OCSP-passthrough code path,
+    /// which eliminates the entire failure surface for users who just want
+    /// to run tests on a real phone without HTTP capture. The CLI is the
+    /// single source of truth for this value; the daemon never reads
+    /// pilot.config.ts itself.
+    network_tracing_enabled: Arc<RwLock<bool>>,
 }
 
 /// Stored iOS agent launch config for restart.
@@ -69,6 +79,7 @@ impl PilotServiceImpl {
             ios_redirect: Arc::new(RwLock::new(None)),
             ios_agent_config: Arc::new(RwLock::new(None)),
             ios_iproxy: Arc::new(RwLock::new(None)),
+            network_tracing_enabled: Arc::new(RwLock::new(false)),
         }
     }
 
@@ -381,8 +392,11 @@ impl PilotServiceImpl {
         // Physical iOS: re-prime the Wi-Fi MITM proxy before xcodebuild so
         // iOS's OCSP query for the relaunched runner reaches our passthrough
         // path. A prior test's stop_network_capture may have torn it down.
+        // Gated on `network_tracing_enabled`: when the session has tracing
+        // off, iOS never routes through our proxy port anyway, so there's
+        // nothing to pre-arm and we save the OCSP-race surface entirely.
         #[cfg(target_os = "macos")]
-        if is_physical {
+        if is_physical && *self.network_tracing_enabled.read().await {
             self.ensure_ios_physical_proxy(serial).await;
         }
 
@@ -1544,13 +1558,28 @@ impl proto::pilot_service_server::PilotService for PilotServiceImpl {
                 // ensure_ios_physical_proxy can acquire its own locks without
                 // deadlocking against our write guard.
                 drop(dm);
-                // For physical iOS, pre-start the Wi-Fi MITM proxy
-                // immediately so any subsequent devicectl install / launch /
-                // xcodebuild invocation can't race the phone's OCSP check
-                // (which routes through the Wi-Fi proxy port on the Mac).
+                // Persist the CLI's tracing flag on the server so subsequent
+                // call sites (start_agent, recovery restarts) can check it
+                // without re-plumbing the bool through every request. The
+                // CLI is authoritative — it derives this from pilot.config.ts.
+                *self.network_tracing_enabled.write().await = req.network_tracing_enabled;
+                // For physical iOS with tracing enabled, pre-start the Wi-Fi
+                // MITM proxy immediately so any subsequent devicectl install
+                // / launch / xcodebuild invocation can't race the phone's
+                // OCSP check (which routes through the Wi-Fi proxy port on
+                // the Mac). When tracing is off, iOS has no reason to route
+                // through our proxy at all, so we skip the pre-start entirely
+                // — this is the single biggest basic-track failure reduction.
                 #[cfg(target_os = "macos")]
-                if self.is_active_ios_physical().await {
+                if req.network_tracing_enabled && self.is_active_ios_physical().await {
                     self.ensure_ios_physical_proxy(&req.serial).await;
+                    // Push the current trace.networkHosts allowlist into
+                    // the live proxy so the next `/pilot.pac` fetch from
+                    // iOS reflects the user's pilot.config.ts exactly.
+                    // Safe to call while the proxy is serving traffic.
+                    if let Some(proxy) = self.network_proxy.read().await.as_ref() {
+                        proxy.set_network_hosts(req.network_hosts.clone()).await;
+                    }
                 }
                 Ok(Response::new(proto::ActionResponse {
                     request_id,
@@ -1616,12 +1645,19 @@ impl proto::pilot_service_server::PilotService for PilotServiceImpl {
                 // same physical device would fight its own leftover tunnel.
                 *self.ios_iproxy.write().await = None;
 
-                // Pre-start the Wi-Fi MITM proxy for physical iOS devices.
-                // Idempotent — skipped if already bound (typically from
-                // set_device). Re-primes when prior test's stop_network_capture
-                // tore the listener down.
+                // Re-affirm the server-wide tracing flag. SetDevice is the
+                // primary setter, but StartAgent is called in the same RPC
+                // sequence — keeping both in sync is defensive against
+                // future clients that skip set_device.
+                *self.network_tracing_enabled.write().await = req.network_tracing_enabled;
+
+                // Pre-start the Wi-Fi MITM proxy for physical iOS devices
+                // with tracing enabled. Idempotent — skipped if already
+                // bound (typically from set_device). Re-primes when prior
+                // test's stop_network_capture tore the listener down. When
+                // tracing is off, skipped entirely (see SetDevice for why).
                 #[cfg(target_os = "macos")]
-                if is_physical {
+                if is_physical && req.network_tracing_enabled {
                     self.ensure_ios_physical_proxy(&serial).await;
                 }
 

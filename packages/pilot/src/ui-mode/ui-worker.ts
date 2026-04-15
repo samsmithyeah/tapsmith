@@ -24,6 +24,7 @@ import {
 } from '../worker-protocol.js';
 import { ensureSessionReady, launchConfiguredApp, type SessionPreflightContext } from '../session-preflight.js';
 import type { AnyTraceEvent } from '../trace/types.js';
+import { isNetworkTracingEnabled, networkHostsForPac } from '../trace/types.js';
 import type {
   UIWorkerMessage,
   UIWorkerChildMessage,
@@ -101,6 +102,7 @@ function sessionContext(
     label, config, device, client, agentApkPath, agentTestApkPath,
     iosXctestrunPath: iosXctestrunPath ?? resolvedXctestrunPath,
     deviceSerial: serial,
+    networkTracingEnabled: isNetworkTracingEnabled(config.trace),
   };
 }
 
@@ -151,7 +153,11 @@ async function handleInit(msg: UIWorkerInitMessage): Promise<void> {
 
   if (msg.deviceSerial) {
     sendProgress(`selecting device ${msg.deviceSerial}`);
-    await device.setDevice(msg.deviceSerial);
+    await device.setDevice(
+      msg.deviceSerial,
+      isNetworkTracingEnabled(config.trace),
+      networkHostsForPac(config.trace),
+    );
   }
 
   // Wake and unlock
@@ -248,6 +254,7 @@ async function handleInit(msg: UIWorkerInitMessage): Promise<void> {
     resolvedAgentTestApk,
     resolvedIosXctestrun,
     resolvedIosAppPath,
+    isNetworkTracingEnabled(config.trace),
   );
 
   try {

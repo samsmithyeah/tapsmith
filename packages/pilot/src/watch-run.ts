@@ -15,6 +15,7 @@ import { Device } from './device.js';
 import { runTestFile, collectResults } from './runner.js';
 import type { PilotConfig } from './config.js';
 import { ensureSessionReady, launchConfiguredApp, type SessionPreflightContext } from './session-preflight.js';
+import { isNetworkTracingEnabled, networkHostsForPac } from './trace/types.js';
 import {
   serializeTestResult,
   serializeSuiteResult,
@@ -112,6 +113,7 @@ function buildSessionContext(
     device,
     client,
     deviceSerial,
+    networkTracingEnabled: isNetworkTracingEnabled(config.trace),
   };
 }
 
@@ -128,7 +130,11 @@ async function handleRun(msg: WatchRunMessage): Promise<void> {
   }
 
   const device = new Device(client, config);
-  await device.setDevice(msg.deviceSerial);
+  await device.setDevice(
+    msg.deviceSerial,
+    isNetworkTracingEnabled(config.trace),
+    networkHostsForPac(config.trace),
+  );
 
   // Ensure the device is awake — the screen may have auto-locked while
   // watch mode was idle waiting for file changes.

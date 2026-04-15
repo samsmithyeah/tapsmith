@@ -7,6 +7,7 @@ mod ios;
 mod ios_redirect;
 mod mitm_ca;
 mod network_proxy;
+mod pac;
 mod platform;
 mod screenshot;
 

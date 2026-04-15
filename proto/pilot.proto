@@ -269,6 +269,20 @@ message ListDevicesResponse {
 message SetDeviceRequest {
   string request_id = 1;
   string serial = 2;
+  // When false, the daemon skips every physical-iOS network-capture code
+  // path for this session — no MITM proxy pre-start, no OCSP passthrough
+  // pre-arming. Default (false) keeps the basic-track failure surface
+  // minimal; the CLI sets this to true only when the user's pilot.config.ts
+  // has tracing enabled (trace.mode !== 'off' && trace.network !== false).
+  // The daemon stays agnostic of pilot.config.ts; the CLI is the single
+  // source of truth.
+  bool network_tracing_enabled = 3;
+  // Host-glob allowlist for the PAC script served at /pilot.pac on
+  // physical iOS. When empty, the PAC routes every host through the
+  // proxy (matching the old ProxyType=Manual behavior). Sourced from
+  // `trace.networkHosts` in pilot.config.ts. Only meaningful when
+  // `network_tracing_enabled == true`.
+  repeated string network_hosts = 4;
 }
 
 message StartAgentRequest {
@@ -282,6 +296,9 @@ message StartAgentRequest {
   // calls (devicectl has no host-side app container access, so reinstall
   // is the only way to reset persistent state). Empty for simulators.
   string ios_app_path = 6;
+  // Same semantics as SetDeviceRequest.network_tracing_enabled — gates
+  // `ensure_ios_physical_proxy` pre-arming on the start_agent path.
+  bool network_tracing_enabled = 7;
 }
 
 message PingRequest {}

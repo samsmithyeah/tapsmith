@@ -259,16 +259,39 @@ pub fn generate_mobileconfig(inputs: &MobileconfigInputs) -> Result<Vec<u8>> {
     wifi.insert("EncryptionType".into(), Value::String("Any".into()));
     wifi.insert("AutoJoin".into(), Value::Boolean(true));
     wifi.insert("HIDDEN_NETWORK".into(), Value::Boolean(false));
-    wifi.insert("ProxyType".into(), Value::String("Manual".into()));
+    // PAC-based (Auto) proxy configuration instead of the old
+    // ProxyType=Manual + ProxyServer/Port fields. Two wins:
+    //
+    //   1. Automatic fallback to DIRECT when the Pilot daemon isn't
+    //      running. The PAC script's `PROXY …; DIRECT` return value lets
+    //      iOS transparently fall through to direct connections when the
+    //      proxy socket is unreachable. Users can leave the profile
+    //      installed permanently instead of toggling it between "testing"
+    //      and "normal use".
+    //   2. Host filtering upstream of the MITM. `trace.networkHosts`
+    //      globs are inlined into the PAC so Apple OCSP, other apps'
+    //      traffic, and iOS background services never reach the proxy.
+    //
+    // The PAC is served live from the daemon at
+    // `http://<host>:<port>/pilot.pac`. iOS fetches it on Wi-Fi join
+    // (and periodically, depending on device caching behavior). See
+    // `crate::pac::generate_pac_script` for the script body.
+    //
+    // `ProxyPACFallbackAllowed = true` tells iOS to fall back to DIRECT
+    // when the PAC fetch itself fails — matters on cold-boot scenarios
+    // where the phone joins Wi-Fi before `pilot test` starts the daemon.
+    // Without this, a failed PAC fetch could leave iOS unable to use the
+    // proxy config at all, breaking even basic Wi-Fi connectivity. We'd
+    // rather a failed fetch degrade gracefully to direct connections.
+    wifi.insert("ProxyType".into(), Value::String("Auto".into()));
     wifi.insert(
-        "ProxyServer".into(),
-        Value::String(inputs.host_ip.to_string()),
+        "ProxyAutoConfigURLString".into(),
+        Value::String(format!(
+            "http://{}:{}/pilot.pac",
+            inputs.host_ip, inputs.port
+        )),
     );
-    wifi.insert(
-        "ProxyServerPort".into(),
-        Value::Integer(i64::from(inputs.port).into()),
-    );
-    wifi.insert("ProxyPACFallbackAllowed".into(), Value::Boolean(false));
+    wifi.insert("ProxyPACFallbackAllowed".into(), Value::Boolean(true));
 
     // ── Certificate payload ──
     // Apple config profiles expect the CA as DER bytes wrapped in a

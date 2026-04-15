@@ -22,6 +22,13 @@ export interface SessionPreflightContext {
   iosAppPath?: string
   /** ADB serial for this device — enables ADB-level recovery when agent is unavailable */
   deviceSerial?: string
+  /**
+   * Whether this session wants network tracing. Threaded through to
+   * `startAgent` so daemon recovery paths don't spin up the physical-iOS
+   * MITM proxy for a basic-track session. Default false is the safe
+   * no-op. Callers should compute this once via `isNetworkTracingEnabled`.
+   */
+  networkTracingEnabled?: boolean
 }
 
 const DEFAULT_READY_TIMEOUT_MS = 5_000;
@@ -131,6 +138,7 @@ export async function launchConfiguredApp(
   try {
     await ctx.device.startAgent(
       ctx.config.package, ctx.agentApkPath, ctx.agentTestApkPath, ctx.iosXctestrunPath, ctx.iosAppPath,
+      ctx.networkTracingEnabled ?? false,
     );
   } catch {
     // Will be recovered by ensureSessionReady below
@@ -228,7 +236,7 @@ async function recoverSession(ctx: SessionPreflightContext): Promise<void> {
 
   // Then try agent-level dismissal if the agent is reachable
   await dismissBlockingSystemUi(ctx);
-  await ctx.device.startAgent(ctx.config.package ?? '', ctx.agentApkPath, ctx.agentTestApkPath, ctx.iosXctestrunPath, ctx.iosAppPath);
+  await ctx.device.startAgent(ctx.config.package ?? '', ctx.agentApkPath, ctx.agentTestApkPath, ctx.iosXctestrunPath, ctx.iosAppPath, ctx.networkTracingEnabled ?? false);
   if (!ctx.config.package) return;
 
   try {

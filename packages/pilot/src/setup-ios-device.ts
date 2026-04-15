@@ -23,6 +23,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { listPhysicalDevices, type PhysicalDeviceInfo } from './ios-devicectl.js';
 import { parseCodesignIdentities, readXcodeRegisteredTeams } from './build-ios-agent.js';
+import { getProfileExpiryInfo, formatExpiryWarning, EXPIRY_WARNING_DAYS } from './ios-profile-expiry.js';
 
 const DIM = '\x1b[2m';
 const BOLD = '\x1b[1m';
@@ -250,53 +251,58 @@ export function checkSudoTruePasswordless(): CheckResult {
 }
 
 /**
- * Check macOS Application Firewall stealth mode. When stealth mode is on,
- * the kernel silently drops inbound TCP SYNs to user processes even when
- * the binary is explicitly allowed in the firewall list. That breaks
- * Pilot's physical iOS network capture path — the device can't reach the
- * proxy at the Mac's LAN IP, traffic capture returns 0 entries, and the
- * user has no useful feedback until they run `verify-ios-network`.
+ * Check the provisioning-profile expiry for the currently-built iOS agent
+ * runner. Free Apple Developer accounts re-roll the profile every 7 days,
+ * and a profile that's about to expire is the single most common cause of
+ * "it suddenly stopped working" reports. Surfacing it here means users
+ * running `pilot setup-ios-device` before a test session get an immediate
+ * "rebuild now" nudge rather than learning mid-test.
  *
- * This check is a warning, not a hard fail — users who don't plan to use
- * network capture can ignore it.
+ * Returns `ok: true` with no detail when no runner is built yet (that's
+ * caught separately by `checkIosAgentBuilt`) or when the profile is
+ * outside the warning window.
  */
-export function checkFirewallStealthMode(): CheckResult {
-  let out: string;
-  try {
-    out = execFileSync(
-      '/usr/libexec/ApplicationFirewall/socketfilterfw',
-      ['--getstealthmode'],
-      { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] },
-    );
-  } catch {
-    // socketfilterfw unavailable or errored — treat as unknown, skip warning.
+export function checkProfileExpiry(): CheckResult {
+  const candidates = [
+    path.resolve(process.cwd(), 'ios-agent/.build-device/Build/Products'),
+    path.resolve(process.cwd(), '../ios-agent/.build-device/Build/Products'),
+    path.resolve(process.cwd(), '../../ios-agent/.build-device/Build/Products'),
+  ];
+  let xctestrunPath: string | undefined;
+  for (const dir of candidates) {
+    if (!fs.existsSync(dir)) continue;
+    try {
+      const entry = fs.readdirSync(dir).find(
+        (e) => e.endsWith('.xctestrun') && e.includes('iphoneos') && !e.endsWith('.patched.xctestrun'),
+      );
+      if (entry) {
+        xctestrunPath = path.join(dir, entry);
+        break;
+      }
+    } catch {
+      // skip
+    }
+  }
+  if (!xctestrunPath) {
+    return { label: 'Provisioning profile expiry', ok: true, detail: 'no signed runner yet (build first)' };
+  }
+  const info = getProfileExpiryInfo(xctestrunPath);
+  if (!info) {
+    return { label: 'Provisioning profile expiry', ok: true, detail: 'could not determine (non-fatal)' };
+  }
+  if (info.daysUntilExpiry > EXPIRY_WARNING_DAYS) {
     return {
-      label: 'macOS Application Firewall stealth mode',
+      label: 'Provisioning profile expiry',
       ok: true,
-      detail: 'could not determine (non-fatal)',
+      detail: `${info.daysUntilExpiry} days remaining`,
     };
   }
-  const stealthOn = /stealth mode is on/i.test(out);
-  if (!stealthOn) {
-    return {
-      label: 'macOS Application Firewall stealth mode',
-      ok: true,
-      detail: 'off (LAN proxy connections will work)',
-    };
-  }
+  const warning = formatExpiryWarning(info);
   return {
-    label: 'macOS Application Firewall stealth mode',
+    label: 'Provisioning profile expiry',
     ok: false,
     advisory: true,
-    fix: [
-      'Stealth mode is ON. iOS devices on Wi-Fi will NOT be able to reach',
-      'the Pilot MITM proxy on the Mac\'s LAN IP — inbound TCP SYNs get',
-      'silently dropped even for allow-listed binaries. Turn it off with:',
-      '',
-      '  sudo /usr/libexec/ApplicationFirewall/socketfilterfw --setstealthmode off',
-      '',
-      'If you don\'t use `pilot test` with network capture, ignore this.',
-    ],
+    fix: warning ? [warning] : ['Profile near expiry — re-run `pilot build-ios-agent`.'],
   };
 }
 
@@ -432,8 +438,8 @@ export async function runSetupIosDevice(): Promise<void> {
   results.push(checkIproxy());
   results.push(checkSigningIdentities());
   results.push(checkSudoTruePasswordless());
-  results.push(checkFirewallStealthMode());
   results.push(checkIosAgentBuilt());
+  results.push(checkProfileExpiry());
   for (const r of results) printCheck(r);
   console.log();
 

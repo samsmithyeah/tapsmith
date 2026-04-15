@@ -17,6 +17,7 @@
  */
 
 import { execFileSync, spawn } from 'node:child_process';
+import * as readline from 'node:readline';
 import { findDaemonBin } from './daemon-bin.js';
 import { PilotGrpcClient } from './grpc-client.js';
 import { pickFreePort } from './port-utils.js';
@@ -39,6 +40,75 @@ interface Options {
   ssid?: string
   deviceName?: string
   mode: 'configure' | 'refresh'
+  /**
+   * When true, offer to auto-disable macOS Application Firewall stealth
+   * mode via sudo. Scoped to the network-capture track: stealth mode only
+   * matters when setting up the Wi-Fi proxy, so this flag lives here and
+   * NOT on `setup-ios-device`, keeping the basic track free of firewall /
+   * sudo mentions entirely.
+   */
+  fixFirewall?: boolean
+}
+
+/**
+ * Best-effort check for macOS Application Firewall stealth mode. Returns
+ * `true` when stealth mode is on (and will silently drop the Pilot proxy's
+ * inbound TCP SYNs), `false` when off or indeterminate. We do NOT treat
+ * indeterminate as blocking — the user might have disabled the firewall
+ * entirely.
+ */
+function isStealthModeOn(): boolean {
+  try {
+    const out = execFileSync(
+      '/usr/libexec/ApplicationFirewall/socketfilterfw',
+      ['--getstealthmode'],
+      { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] },
+    );
+    return /stealth mode is on/i.test(out);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Run the sudo command that disables stealth mode. The command itself is
+ * a single write to a well-known system property and has no side effects
+ * beyond that toggle; still, we only run it when the user explicitly
+ * passed `--fix-firewall` so the consent is clear.
+ */
+function disableStealthMode(): { ok: boolean; error?: string } {
+  try {
+    execFileSync(
+      'sudo',
+      ['/usr/libexec/ApplicationFirewall/socketfilterfw', '--setstealthmode', 'off'],
+      { stdio: 'inherit' },
+    );
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : String(err) };
+  }
+}
+
+/**
+ * Prompt interactively for a Wi-Fi SSID when detection fails or returns a
+ * redacted placeholder (common on macOS 14+ without Location Services
+ * permission). Returns the entered string or undefined on EOF / non-TTY
+ * stdin — the caller falls through to the existing "bail with a clear
+ * error" path.
+ */
+async function promptForSsid(): Promise<string | undefined> {
+  if (!process.stdin.isTTY) return undefined;
+  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+  try {
+    return await new Promise<string | undefined>((resolve) => {
+      rl.question(
+        bold('Wi-Fi SSID') + dim(' (the network the device will use for tracing): '),
+        (answer) => resolve(answer.trim() || undefined),
+      );
+    });
+  } finally {
+    rl.close();
+  }
 }
 
 /**
@@ -180,6 +250,7 @@ function parseArgs(argv: string[], mode: 'configure' | 'refresh'): Options & { h
   let udid: string | undefined;
   let ssid: string | undefined;
   let deviceName: string | undefined;
+  let fixFirewall = false;
   let i = 0;
   while (i < argv.length) {
     const arg = argv[i]!;
@@ -198,6 +269,9 @@ function parseArgs(argv: string[], mode: 'configure' | 'refresh'): Options & { h
     } else if (arg.startsWith('--device-name=')) {
       deviceName = arg.slice('--device-name='.length);
       i += 1;
+    } else if (arg === '--fix-firewall') {
+      fixFirewall = true;
+      i += 1;
     } else if (!arg.startsWith('-') && !udid) {
       udid = arg;
       i += 1;
@@ -205,7 +279,7 @@ function parseArgs(argv: string[], mode: 'configure' | 'refresh'): Options & { h
       throw new Error(`Unknown argument: ${arg}`);
     }
   }
-  return { udid: udid ?? '', ssid, deviceName, mode, help };
+  return { udid: udid ?? '', ssid, deviceName, mode, fixFirewall, help };
 }
 
 function printHelp(mode: 'configure' | 'refresh'): void {
@@ -219,6 +293,7 @@ ${bold('Usage:')}
 ${bold('Options:')}
   --ssid <name>         Wi-Fi SSID the profile targets (defaults to the host's current network)
   --device-name <name>  Friendly name for the PayloadDisplayName (defaults to the device's name)
+  --fix-firewall        Disable macOS Application Firewall stealth mode via sudo (prompts once)
   --help, -h            Show this help
 `);
 }
@@ -267,12 +342,64 @@ async function run(argv: string[], mode: 'configure' | 'refresh'): Promise<void>
     process.exit(1);
   }
 
+  // Offer to auto-disable stealth mode before we even call the daemon —
+  // if the user ran --fix-firewall, they've already consented, and we'd
+  // rather surface the sudo prompt up front than at the very end after
+  // profile generation.
+  if (opts.fixFirewall && isStealthModeOn()) {
+    console.log(dim('Disabling macOS Application Firewall stealth mode (sudo)…'));
+    const res = disableStealthMode();
+    if (!res.ok) {
+      console.error(red(`Failed to disable stealth mode: ${res.error ?? 'unknown error'}`));
+      console.error(dim('You can also run this yourself:'));
+      console.error(dim('  sudo /usr/libexec/ApplicationFirewall/socketfilterfw --setstealthmode off'));
+      process.exit(1);
+    }
+    console.log(green('✓ Stealth mode disabled.'));
+    console.log();
+  } else if (!opts.fixFirewall && isStealthModeOn()) {
+    // Stealth mode is on and the user didn't pass --fix-firewall. Warn
+    // loudly so they don't get silent zero-entry captures later.
+    console.log(yellow('⚠ macOS Application Firewall stealth mode is ON.'));
+    console.log(dim('  Inbound TCP SYNs to the Pilot proxy will be silently dropped.'));
+    console.log(dim('  Fix once: pilot configure-ios-network <udid> --fix-firewall'));
+    console.log(dim('  Or run manually: sudo /usr/libexec/ApplicationFirewall/socketfilterfw --setstealthmode off'));
+    console.log();
+  }
+
   try {
     console.log(dim(`Starting temporary pilot-core daemon…`));
-    const result = await callGenerateProfile(opts);
+    let result = await callGenerateProfile(opts);
+
+    // Interactive SSID fallback: the daemon returns whatever SSID it
+    // could detect, which on macOS 14+ without Location Services comes
+    // back as "<redacted>" (or similar placeholder). Prompt the user
+    // rather than bailing with a cryptic error — the profile is already
+    // generated, but if the SSID baked in is redacted the device won't
+    // match it on Wi-Fi join and traces will come back empty.
+    if (looksLikeRedactedSsid(result.ssid) && !opts.ssid) {
+      console.log();
+      console.log(yellow('Could not auto-detect your Wi-Fi SSID (macOS redacted it).'));
+      console.log(dim('Enter the SSID you want the profile to target:'));
+      const entered = await promptForSsid();
+      if (entered) {
+        // Re-generate the profile with the explicit SSID so the baked-in
+        // name actually matches the phone's Wi-Fi.
+        opts.ssid = entered;
+        result = await callGenerateProfile(opts);
+      }
+    }
+
     printWalkthrough(opts, result);
   } catch (err) {
     console.error(red(err instanceof Error ? err.message : String(err)));
     process.exit(1);
   }
+}
+
+/** Detect the redacted-SSID placeholder macOS returns without Location Services. */
+function looksLikeRedactedSsid(ssid: string): boolean {
+  if (!ssid) return true;
+  const s = ssid.toLowerCase();
+  return s.includes('redacted') || s.includes('<private>') || s === '--';
 }

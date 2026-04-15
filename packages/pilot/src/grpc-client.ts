@@ -339,10 +339,16 @@ export class PilotGrpcClient {
     });
   }
 
-  async setDevice(serial: string): Promise<ActionResponse> {
+  async setDevice(
+    serial: string,
+    networkTracingEnabled = false,
+    networkHosts: string[] = [],
+  ): Promise<ActionResponse> {
     return this.call<ActionResponse>('setDevice', {
       requestId: requestId(),
       serial,
+      networkTracingEnabled,
+      networkHosts,
     }, 120_000);
   }
 
@@ -352,6 +358,7 @@ export class PilotGrpcClient {
     agentTestApkPath?: string,
     iosXctestrunPath?: string,
     iosAppPath?: string,
+    networkTracingEnabled = false,
   ): Promise<ActionResponse> {
     return this.call<ActionResponse>('startAgent', {
       requestId: requestId(),
@@ -360,6 +367,7 @@ export class PilotGrpcClient {
       agentTestApkPath: agentTestApkPath ?? '',
       iosXctestrunPath: iosXctestrunPath ?? '',
       iosAppPath: iosAppPath ?? '',
+      networkTracingEnabled,
     }, 180_000);
   }
 

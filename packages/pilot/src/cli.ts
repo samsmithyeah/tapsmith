@@ -18,7 +18,7 @@ import { runTestFile, collectResults, type TestResult, type SuiteResult } from '
 import { createReporters, ReporterDispatcher, type FullResult } from './reporter.js';
 import { ensureSessionReady, launchConfiguredApp } from './session-preflight.js';
 import { glob } from 'glob';
-import { resolveTraceConfig } from './trace/types.js';
+import { resolveTraceConfig, isNetworkTracingEnabled, networkHostsForPac } from './trace/types.js';
 import { spawn, execFileSync } from 'node:child_process';
 import {
   clearOfflineEmulatorTransports,
@@ -276,8 +276,19 @@ async function ensureDaemonRunning(address: string, daemonBin?: string, platform
   const resolvedBin = process.env.PILOT_DAEMON_BIN ?? daemonBin ?? 'pilot-core';
   const daemonArgs = ['--port', port];
   if (platform) daemonArgs.push('--platform', platform);
+  // Optional: redirect the spawned daemon's stdout/stderr to a file when
+  // `PILOT_DAEMON_LOG=<path>` is set. Useful for debugging daemon-side
+  // behaviour (MITM proxy pre-start, `/pilot.pac` serves, agent startup)
+  // without spinning up a separate daemon process. Off by default — the
+  // env var is the only way to enable it.
+  let daemonStdio: 'ignore' | ['ignore', number, number] = 'ignore';
+  const daemonLogPath = process.env.PILOT_DAEMON_LOG;
+  if (daemonLogPath) {
+    const fd = fs.openSync(daemonLogPath, 'a');
+    daemonStdio = ['ignore', fd, fd];
+  }
   const child = spawn(resolvedBin, daemonArgs, {
-    stdio: 'ignore',
+    stdio: daemonStdio,
   });
   child.on('error', () => {
     // Handled below via waitForReady timeout
@@ -341,8 +352,16 @@ async function setupSequentialDevice(
   const client = await ensureDaemonRunning(cfg.daemonAddress, cfg.daemonBin, cfg.platform);
   const device = new Device(client, cfg);
 
+  // Tell the daemon whether this session intends to capture network traffic.
+  // When false, the daemon skips every physical-iOS MITM/OCSP pre-arm code
+  // path — the biggest single basic-track failure-surface reduction.
+  // When true, we also pass the host-glob allowlist through so the daemon
+  // can embed it in the PAC script served at `/pilot.pac`.
+  const networkTracingEnabled = isNetworkTracingEnabled(cfg.trace);
+  const pacNetworkHosts = networkHostsForPac(cfg.trace);
+
   try {
-    await device.setDevice(cfg.device);
+    await device.setDevice(cfg.device, networkTracingEnabled, pacNetworkHosts);
     console.log(dim(`Using device: ${cfg.device}`));
   } catch (err) {
     throw new Error(`Failed to set device: ${err}`);
@@ -360,6 +379,51 @@ async function setupSequentialDevice(
     const { isPhysicalDevice } = await import('./ios-devicectl.js');
     targetIsPhysical = cfg.device ? isPhysicalDevice(cfg.device) : false;
     resolvedIosAppPath = cfg.app ? path.resolve(cfg.rootDir, cfg.app) : undefined;
+  }
+
+  // Physical-iOS fast-fail checks. Fire BEFORE the 8-second installAppOnDevice
+  // so the user gets an immediate, actionable error instead of a mid-test hang.
+  if (cfg.platform === 'ios' && targetIsPhysical && cfg.device) {
+    // Cert-trust probe. The devicectl launch is ~1s and pattern-matches
+    // cleanly on "cert not trusted". Only helpful when the runner is
+    // already installed (i.e. second-and-subsequent runs on the device)
+    // — on a fresh device the probe returns 'runner-not-installed' and
+    // we proceed silently so xcodebuild can install it via the normal
+    // path and trigger the iOS trust prompt.
+    const { probeCertTrust } = await import('./ios-trust-probe.js');
+    const trust = await probeCertTrust(cfg.device);
+    if (trust.state === 'untrusted') {
+      console.error();
+      console.error('\x1b[31m✗ Pilot runner is installed but the developer certificate is not trusted.\x1b[0m');
+      console.error();
+      console.error('  On the phone, open \x1b[1mSettings → General → VPN & Device Management\x1b[0m,');
+      console.error('  find \x1b[1mApple Development: <your name>\x1b[0m, and tap \x1b[1mTrust\x1b[0m.');
+      console.error();
+      console.error(dim('  Free Apple Developer accounts re-roll the profile every 7 days,'));
+      console.error(dim('  so this step recurs weekly. Re-run `pilot build-ios-agent`'));
+      console.error(dim('  before trusting so the profile on the phone matches.'));
+      console.error();
+      throw new Error('iOS developer certificate not trusted on device');
+    }
+    // Host-IP drift when tracing is enabled. A stale sidecar means the
+    // mobileconfig points at the Mac's old LAN IP and the device will
+    // silently fail to route through the proxy.
+    if (isNetworkTracingEnabled(cfg.trace)) {
+      const { checkHostIpDrift } = await import('./ios-host-ip-check.js');
+      const drift = checkHostIpDrift(cfg.device);
+      if (!drift.ok && drift.sidecarHostIp && drift.currentHostIp) {
+        console.log();
+        console.log('\x1b[33m⚠ Host IP drift detected.\x1b[0m');
+        console.log(
+          dim(`  Installed profile points at ${drift.sidecarHostIp}, Mac is now ${drift.currentHostIp}.`),
+        );
+        console.log(
+          dim(`  Run \`pilot refresh-ios-network ${cfg.device}\` and reinstall the updated`),
+        );
+        console.log(dim('  profile on the device, otherwise traces will come back empty.'));
+        console.log();
+      }
+    }
   }
 
   if (cfg.platform === 'ios') {
@@ -512,6 +576,19 @@ async function setupSequentialDevice(
     }
   }
 
+  // Physical-iOS provisioning-profile expiry warning, now that we have
+  // the resolved xctestrun path. Three-point surfacing (here + build-ios-agent
+  // tail + setup-ios-device preflight) so users hit the warning whichever
+  // path they took to get to this point.
+  if (cfg.platform === 'ios' && targetIsPhysical && resolvedIosXctestrun) {
+    const { getProfileExpiryInfo, formatExpiryWarning } = await import('./ios-profile-expiry.js');
+    const info = getProfileExpiryInfo(resolvedIosXctestrun);
+    if (info) {
+      const warning = formatExpiryWarning(info);
+      if (warning) console.log(`  \x1b[33m⚠\x1b[0m ${warning}`);
+    }
+  }
+
   try {
     if (cfg.platform === 'ios') {
       console.log(dim(`Starting iOS agent (xctestrun: ${resolvedIosXctestrun ? 'set' : 'NOT SET'})`));
@@ -525,6 +602,7 @@ async function setupSequentialDevice(
       // reinstall-based clearAppData. Simulators keep the host-filesystem
       // app-container clearing path instead.
       cfg.platform === 'ios' && targetIsPhysical ? resolvedIosAppPath : undefined,
+      networkTracingEnabled,
     );
     if (cfg.platform !== 'ios') {
       await ensureSessionReady({
@@ -536,6 +614,7 @@ async function setupSequentialDevice(
         agentTestApkPath: resolvedAgentTestApk,
         iosXctestrunPath: resolvedIosXctestrun,
         deviceSerial: cfg.device,
+        networkTracingEnabled,
       }, 'startup');
     }
     console.log(dim('Agent connected.'));

@@ -216,10 +216,14 @@ export class Device {
     return this._client.listDevices();
   }
 
-  async setDevice(serial: string): Promise<void> {
+  async setDevice(
+    serial: string,
+    networkTracingEnabled = false,
+    networkHosts: string[] = [],
+  ): Promise<void> {
     // Refresh the daemon's device registry so newly-launched emulators are visible
     await this._client.listDevices();
-    const res = await this._client.setDevice(serial);
+    const res = await this._client.setDevice(serial, networkTracingEnabled, networkHosts);
     if (!res.success) {
       throw new Error(res.errorMessage || 'Set device failed');
     }
@@ -231,6 +235,7 @@ export class Device {
     agentTestApkPath?: string,
     iosXctestrunPath?: string,
     iosAppPath?: string,
+    networkTracingEnabled = false,
   ): Promise<void> {
     const res = await this._client.startAgent(
       targetPackage,
@@ -238,6 +243,7 @@ export class Device {
       agentTestApkPath,
       iosXctestrunPath,
       iosAppPath,
+      networkTracingEnabled,
     );
     if (!res.success) {
       throw new Error(res.errorMessage || 'Start agent failed');

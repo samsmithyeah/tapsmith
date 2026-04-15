@@ -32,6 +32,7 @@ import { execFileSync, spawn } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { glob } from 'glob';
+import { getProfileExpiryInfo, formatExpiryWarning } from './ios-profile-expiry.js';
 
 const DIM = '\x1b[2m';
 const BOLD = '\x1b[1m';
@@ -423,6 +424,19 @@ export async function buildIosAgent(options: BuildIosAgentOptions): Promise<stri
   console.log();
   console.log(green(`✓ Built PilotAgent runner in ${elapsedSec}s.`));
   console.log();
+
+  // Surface provisioning-profile expiry up front. Free Apple Developer
+  // accounts roll the profile every 7 days — without a heads-up, users
+  // run into cryptic signing errors mid-test a week later.
+  const expiry = getProfileExpiryInfo(newest);
+  if (expiry) {
+    const warning = formatExpiryWarning(expiry);
+    if (warning) {
+      console.log(`  ${yellow('⚠')} ${warning}`);
+      console.log();
+    }
+  }
+
   console.log('  Add to your ' + bold('pilot.config.ts') + ':');
   console.log(`    ${dim('iosXctestrun:')} ${green("'" + path.relative(cwd, newest) + "'")}`);
   console.log();

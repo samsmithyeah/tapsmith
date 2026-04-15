@@ -11,6 +11,7 @@
 import * as path from 'node:path';
 import { PilotGrpcClient } from './grpc-client.js';
 import { Device } from './device.js';
+import { isNetworkTracingEnabled, networkHostsForPac } from './trace/types.js';
 import { runTestFile, collectResults } from './runner.js';
 import type { PilotConfig } from './config.js';
 import { isPackageInstalled, waitForPackageIndexed } from './emulator.js';
@@ -93,7 +94,11 @@ async function handleInit(msg: InitMessage): Promise<void> {
   config.device = msg.deviceSerial;
   if (msg.deviceSerial) {
     sendProgress(`selecting device ${msg.deviceSerial}`);
-    await device.setDevice(msg.deviceSerial);
+    await device.setDevice(
+      msg.deviceSerial,
+      isNetworkTracingEnabled(config.trace),
+      networkHostsForPac(config.trace),
+    );
   }
 
   // Wake and unlock device screen
@@ -191,6 +196,7 @@ async function handleInit(msg: InitMessage): Promise<void> {
     resolvedAgentTestApk,
     resolvedIosXctestrun,
     resolvedIosAppPath,
+    isNetworkTracingEnabled(config.trace),
   );
 
   try {
@@ -358,6 +364,7 @@ function sessionContext(
     iosXctestrunPath: iosXctestrunPath ?? resolvedXctestrunPath,
     iosAppPath: iosAppPath ?? resolvedAppPath,
     deviceSerial: serial,
+    networkTracingEnabled: isNetworkTracingEnabled(config.trace),
   };
 }
 
