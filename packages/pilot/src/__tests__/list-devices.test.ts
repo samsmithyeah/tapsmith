@@ -24,110 +24,138 @@ const physicalDevice = (overrides: Partial<PhysicalDeviceInfo>): PhysicalDeviceI
   ...overrides,
 });
 
-describe('buildDeviceRows', () => {
+describe('buildDeviceRows — platform labelling', () => {
   it('labels an iOS simulator as ios-sim', () => {
     const rows = buildDeviceRows(
       [daemonDevice({ serial: 'SIM-UDID', model: 'iPhone 17 Pro', platform: 'ios', isEmulator: true, state: 'Booted' })],
       [],
     );
-    expect(rows).toHaveLength(1);
     expect(rows[0]!.platform).toBe('ios-sim');
-    expect(rows[0]!.name).toBe('iPhone 17 Pro');
     expect(rows[0]!.state).toBe('Booted');
-    expect(rows[0]!.notes).toEqual([]);
   });
 
-  it('labels a USB-attached physical iPhone as ios-device and enriches from devicectl', () => {
+  it('labels a physical iPhone as ios-device', () => {
     const rows = buildDeviceRows(
-      [daemonDevice({ serial: 'PHYS-UDID', model: "Sam's iPhone", platform: 'ios', isEmulator: false, state: 'Discovered' })],
-      [physicalDevice({ udid: 'PHYS-UDID', name: "Sam's iPhone", osVersion: '26.2.1' })],
-      new Set(['PHYS-UDID']),
+      [daemonDevice({ serial: 'UDID', model: "Sam's iPhone", platform: 'ios', isEmulator: false })],
+      [physicalDevice({ udid: 'UDID' })],
+      new Set(['UDID']),
     );
     expect(rows[0]!.platform).toBe('ios-device');
-    expect(rows[0]!.state).toBe('booted');
-    expect(rows[0]!.notes).toEqual(['iOS 26.2.1']);
   });
 
-  it('flags a physical device without pairing', () => {
-    const rows = buildDeviceRows(
-      [daemonDevice({ serial: 'UDID', platform: 'ios', isEmulator: false })],
-      [physicalDevice({ udid: 'UDID', osVersion: '26.2.1', isPaired: false })],
-      new Set(['UDID']),
-    );
-    expect(rows[0]!.notes).toEqual(['iOS 26.2.1', 'not paired']);
-  });
-
-  it('flags a physical device with developer mode off', () => {
-    const rows = buildDeviceRows(
-      [daemonDevice({ serial: 'UDID', platform: 'ios', isEmulator: false })],
-      [physicalDevice({ udid: 'UDID', osVersion: '26.2.1', developerModeStatus: 'disabled' })],
-      new Set(['UDID']),
-    );
-    expect(rows[0]!.notes).toContain('developer mode off');
-  });
-
-  it('flags a devicectl-visible device that isn\'t actually attached via USB', () => {
-    // CoreDevice keeps Wi-Fi-paired devices listed forever; devicectl's
-    // own transportType reports `localNetwork` even for cabled devices
-    // once Wi-Fi pairing exists. `idevice_id -l` (libimobiledevice) is
-    // the ground-truth signal for "is there a USB data connection right
-    // now?", and Pilot's agent tunnel is USB-only.
-    const rows = buildDeviceRows(
-      [daemonDevice({ serial: 'UDID', platform: 'ios', isEmulator: false })],
-      [physicalDevice({ udid: 'UDID', osVersion: '26.2.1', transportType: 'localNetwork' })],
-      new Set(), // not in USB set
-    );
-    expect(rows[0]!.notes).toContain('not attached via USB');
-  });
-
-  it('does NOT flag as wireless when USB attached', () => {
-    const rows = buildDeviceRows(
-      [daemonDevice({ serial: 'UDID', platform: 'ios', isEmulator: false })],
-      // devicectl reports localNetwork even for cabled devices — the
-      // USB set is the source of truth, not the transport type.
-      [physicalDevice({ udid: 'UDID', osVersion: '26.2.1', transportType: 'localNetwork' })],
-      new Set(['UDID']),
-    );
-    expect(rows[0]!.notes).not.toContain('not attached via USB');
-  });
-
-  it('does NOT flag DDI-not-mounted — the listing is passive', () => {
-    // `ddiServicesAvailable` is false whenever CoreDevice isn't actively
-    // holding a DDI assertion. That's the common idle state even for
-    // perfectly healthy devices; `setup-ios-device` surfaces it with a
-    // fix-it hint, but `list-devices` should stay quiet about it.
-    const rows = buildDeviceRows(
-      [daemonDevice({ serial: 'UDID', platform: 'ios', isEmulator: false })],
-      [physicalDevice({ udid: 'UDID', osVersion: '26.2.1', ddiServicesAvailable: false })],
-    );
-    expect(rows[0]!.notes).not.toContain('DDI not mounted');
-  });
-
-  it('labels Android physical vs emulator', () => {
+  it('labels Android emulators separately from real devices', () => {
     const rows = buildDeviceRows(
       [
-        daemonDevice({ serial: 'HT123', model: 'Pixel 9', platform: 'android', isEmulator: false, state: 'device' }),
-        daemonDevice({ serial: 'emulator-5554', model: 'Pixel 5 (API 35)', platform: 'android', isEmulator: true, state: 'device' }),
+        daemonDevice({ serial: 'HT123', platform: 'android', isEmulator: false, state: 'device' }),
+        daemonDevice({ serial: 'emulator-5554', platform: 'android', isEmulator: true, state: 'device' }),
       ],
       [],
     );
     expect(rows[0]!.platform).toBe('android');
     expect(rows[1]!.platform).toBe('android-emu');
   });
+});
 
-  it('handles a daemon entry with no devicectl enrichment', () => {
-    // macOS without Xcode Command Line Tools, or a daemon running on a
-    // non-Mac host: we still want to print the daemon's view without
-    // decorating it.
+describe('buildDeviceRows — readiness', () => {
+  it('reports a USB-attached iOS physical device as ready', () => {
     const rows = buildDeviceRows(
-      [daemonDevice({ serial: 'UDID', platform: 'ios', isEmulator: false, state: 'Discovered' })],
-      [],
+      [daemonDevice({ serial: 'UDID', platform: 'ios', isEmulator: false })],
+      [physicalDevice({ udid: 'UDID', osVersion: '26.2.1' })],
+      new Set(['UDID']),
     );
-    expect(rows[0]!.platform).toBe('ios-device');
-    expect(rows[0]!.state).toBe('Discovered');
-    expect(rows[0]!.notes).toEqual([]);
+    expect(rows[0]!.ready).toBe(true);
+    expect(rows[0]!.blockers).toEqual([]);
+    expect(rows[0]!.info).toEqual(['iOS 26.2.1']);
   });
 
+  it('flags an iOS physical device not attached via USB as not ready', () => {
+    const rows = buildDeviceRows(
+      [daemonDevice({ serial: 'UDID', platform: 'ios', isEmulator: false })],
+      [physicalDevice({ udid: 'UDID', osVersion: '26.2.1' })],
+      new Set(), // idevice_id -l empty → phone isn't cabled
+    );
+    expect(rows[0]!.ready).toBe(false);
+    expect(rows[0]!.blockers).toContain('not attached via USB');
+  });
+
+  it('flags an unpaired iOS physical device', () => {
+    const rows = buildDeviceRows(
+      [daemonDevice({ serial: 'UDID', platform: 'ios', isEmulator: false })],
+      [physicalDevice({ udid: 'UDID', isPaired: false })],
+      new Set(['UDID']),
+    );
+    expect(rows[0]!.ready).toBe(false);
+    expect(rows[0]!.blockers.some((b) => b.includes('not paired'))).toBe(true);
+  });
+
+  it('flags an iOS device with Developer Mode off', () => {
+    const rows = buildDeviceRows(
+      [daemonDevice({ serial: 'UDID', platform: 'ios', isEmulator: false })],
+      [physicalDevice({ udid: 'UDID', developerModeStatus: 'disabled' })],
+      new Set(['UDID']),
+    );
+    expect(rows[0]!.ready).toBe(false);
+    expect(rows[0]!.blockers.some((b) => b.includes('developer mode off'))).toBe(true);
+  });
+
+  it('iOS simulators are always ready (Pilot boots them on demand)', () => {
+    const rows = buildDeviceRows(
+      [daemonDevice({ serial: 'SIM', platform: 'ios', isEmulator: true, state: 'Shutdown' })],
+      [],
+    );
+    expect(rows[0]!.ready).toBe(true);
+  });
+
+  it('Android devices in `device` state are ready', () => {
+    const rows = buildDeviceRows(
+      [daemonDevice({ serial: 'HT123', platform: 'android', state: 'device' })],
+      [],
+    );
+    expect(rows[0]!.ready).toBe(true);
+  });
+
+  it('flags an unauthorized Android device', () => {
+    const rows = buildDeviceRows(
+      [daemonDevice({ serial: 'HT123', platform: 'android', state: 'unauthorized' })],
+      [],
+    );
+    expect(rows[0]!.ready).toBe(false);
+    expect(rows[0]!.blockers.some((b) => b.includes('unauthorized'))).toBe(true);
+  });
+
+  it('flags an offline Android device', () => {
+    const rows = buildDeviceRows(
+      [daemonDevice({ serial: 'HT123', platform: 'android', state: 'offline' })],
+      [],
+    );
+    expect(rows[0]!.ready).toBe(false);
+    expect(rows[0]!.blockers.some((b) => b.includes('offline'))).toBe(true);
+  });
+
+  it('treats iOS physical devices as ready when devicectl enrichment is missing (non-macOS host)', () => {
+    const rows = buildDeviceRows(
+      [daemonDevice({ serial: 'UDID', platform: 'ios', isEmulator: false })],
+      [], // no devicectl data → we can't judge, assume ready
+    );
+    expect(rows[0]!.ready).toBe(true);
+  });
+});
+
+describe('buildDeviceRows — sort order', () => {
+  it('ready devices come before not-ready devices', () => {
+    const rows = buildDeviceRows(
+      [
+        daemonDevice({ serial: 'BLOCKED', platform: 'ios', isEmulator: false }),
+        daemonDevice({ serial: 'READY', platform: 'ios', isEmulator: true, state: 'Booted' }),
+      ],
+      [physicalDevice({ udid: 'BLOCKED', osVersion: '26.2.1' })],
+      new Set(), // BLOCKED is not attached via USB
+    );
+    expect(rows.map((r) => r.serial)).toEqual(['READY', 'BLOCKED']);
+  });
+});
+
+describe('buildDeviceRows — empty input', () => {
   it('returns empty when no devices are connected', () => {
     expect(buildDeviceRows([], [])).toEqual([]);
   });
