@@ -29,6 +29,8 @@ export interface PhysicalDeviceInfo {
   isPaired: boolean
   ddiServicesAvailable: boolean
   bootState: string
+  /** `enabled` / `disabled` / `unknown`. Only iOS 16+ devices report this. */
+  developerModeStatus: string
 }
 
 // ─── Listing ───
@@ -104,6 +106,9 @@ export function parseDevicectlDeviceList(json: string): PhysicalDeviceInfo[] {
       ddiServicesAvailable: devProps['ddiServicesAvailable'] === true,
       bootState: typeof devProps['bootState'] === 'string'
         ? (devProps['bootState'] as string)
+        : 'unknown',
+      developerModeStatus: typeof devProps['developerModeStatus'] === 'string'
+        ? (devProps['developerModeStatus'] as string)
         : 'unknown',
     });
   }

@@ -16,6 +16,7 @@ describe('parseDevicectlDeviceList', () => {
               bootState: 'booted',
               ddiServicesAvailable: false,
               osVersionNumber: '26.2.1',
+              developerModeStatus: 'enabled',
             },
             hardwareProperties: {
               platform: 'iOS',
@@ -36,6 +37,22 @@ describe('parseDevicectlDeviceList', () => {
     expect(d.ddiServicesAvailable).toBe(false);
     expect(d.osVersion).toBe('26.2.1');
     expect(d.bootState).toBe('booted');
+    expect(d.developerModeStatus).toBe('enabled');
+  });
+
+  it('falls back to "unknown" when developerModeStatus is absent', () => {
+    const json = JSON.stringify({
+      result: {
+        devices: [
+          {
+            connectionProperties: { pairingState: 'paired' },
+            deviceProperties: { name: 'iPhone', bootState: 'booted' },
+            hardwareProperties: { platform: 'iOS', udid: 'UDID' },
+          },
+        ],
+      },
+    });
+    expect(parseDevicectlDeviceList(json)[0]?.developerModeStatus).toBe('unknown');
   });
 
   it('filters out non-iOS entries (Apple Watch, Mac)', () => {

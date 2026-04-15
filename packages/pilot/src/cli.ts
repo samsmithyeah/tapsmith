@@ -1111,6 +1111,7 @@ ${bold('Usage:')}
   pilot show-trace <file.zip>     Open trace viewer in browser
   pilot show-report [dir]         Open HTML test report
   pilot merge-reports [dir]       Merge blob reports from sharded runs
+  pilot list-devices              List connected devices (Android, iOS sim, iOS physical)
   pilot setup-ios                 First-run setup for iOS network capture (macOS only)
   pilot setup-ios-device          Preflight checklist for physical iOS device testing
   pilot build-ios-agent           Build the signed PilotAgent runner for physical iOS devices
@@ -1212,6 +1213,12 @@ async function main(): Promise<void> {
     const dispatcher = new ReporterDispatcher(reporters);
     dispatcher.onRunStart(config, 0);
     await dispatcher.onRunEnd(result);
+    return;
+  }
+
+  if (args.command === 'list-devices') {
+    const { runListDevices } = await import('./list-devices.js');
+    await runListDevices();
     return;
   }
 

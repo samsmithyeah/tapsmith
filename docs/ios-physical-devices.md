@@ -27,7 +27,7 @@ pilot setup-ios-device
 
 4. **Register the device with your Apple Developer team.** Open Xcode → Window → Devices and Simulators, wait for the device to appear, and click **Use for Development**. Xcode will automatically register the device under your team and download a development provisioning profile. This is the step that's impossible to automate from the command line — every other step below works headlessly, but Xcode owns the one-time device registration.
 
-5. **Verify with `pilot setup-ios-device`.** Every row should be ✓ and your device should be listed as "ready for pilot test". If it says "not paired" or "Developer Disk Image not mounted", go back through steps 1-4.
+5. **Verify with `pilot setup-ios-device`.** Every row should be ✓ and your device should be listed as "ready for pilot test". If it says "not paired" or "Developer Disk Image not mounted", go back through steps 1-4. `pilot list-devices` gives a one-line view of everything Pilot can see (iOS physical, iOS simulators, Android) — handy for confirming the UDID to drop into your config.
 
 6. **Build the signed Pilot agent for your device.**
 
