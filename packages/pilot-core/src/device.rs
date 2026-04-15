@@ -24,6 +24,11 @@ pub struct DeviceInfo {
     pub is_emulator: bool,
     pub state: ConnectionState,
     pub platform: Platform,
+    /// Human-friendly OS version ("14", "18.1", "26.2.1"). Empty when unknown.
+    /// Android: filled from `ro.build.version.release`. iOS sim: runtime
+    /// version parsed from simctl. iOS physical: left blank here and filled
+    /// CLI-side via devicectl (daemon has no cheap path).
+    pub os_version: String,
 }
 
 /// Manages the set of known devices and tracks the active device.
@@ -81,9 +86,14 @@ impl DeviceManager {
                             debug!(serial = %existing.serial, "Device reconnected");
                         }
                     } else {
-                        let model = adb::get_device_model(&adb_dev.serial)
-                            .await
-                            .unwrap_or_else(|_| "unknown".to_string());
+                        // Fetch model and OS version concurrently so a slow
+                        // getprop call doesn't double the cost per new device.
+                        let (model, os_version) = tokio::join!(
+                            adb::get_device_model(&adb_dev.serial),
+                            adb::get_device_os_version(&adb_dev.serial),
+                        );
+                        let model = model.unwrap_or_else(|_| "unknown".to_string());
+                        let os_version = os_version.unwrap_or_default();
 
                         self.devices.push(DeviceInfo {
                             serial: adb_dev.serial.clone(),
@@ -91,6 +101,7 @@ impl DeviceManager {
                             is_emulator: adb_dev.is_emulator(),
                             state: ConnectionState::Discovered,
                             platform: Platform::Android,
+                            os_version,
                         });
                         debug!(serial = %adb_dev.serial, "New Android device discovered");
                     }
@@ -132,6 +143,7 @@ impl DeviceManager {
                         is_emulator: ios_dev.is_simulator,
                         state: ConnectionState::Discovered,
                         platform: Platform::Ios,
+                        os_version: ios_dev.os_version.clone(),
                     });
                     debug!(serial = %ios_dev.udid, name = %ios_dev.name, "New iOS device discovered");
                 }
@@ -250,6 +262,7 @@ mod tests {
             is_emulator: serial.starts_with("emulator-"),
             state,
             platform: Platform::Android,
+            os_version: String::new(),
         }
     }
 

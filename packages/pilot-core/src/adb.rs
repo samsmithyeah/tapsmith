@@ -114,6 +114,18 @@ pub async fn get_device_model(serial: &str) -> Result<String> {
     Ok(String::from_utf8_lossy(&stdout).trim().to_string())
 }
 
+/// Get the human-friendly Android OS version (e.g. "14") for a device.
+#[instrument]
+pub async fn get_device_os_version(serial: &str) -> Result<String> {
+    let stdout = run_adb(
+        Some(serial),
+        &["shell", "getprop", "ro.build.version.release"],
+        DEFAULT_TIMEOUT,
+    )
+    .await?;
+    Ok(String::from_utf8_lossy(&stdout).trim().to_string())
+}
+
 /// Install an APK on the device. Uses `-r` to allow reinstall.
 #[instrument(skip(apk_path))]
 pub async fn install_apk(serial: &str, apk_path: &str) -> Result<()> {

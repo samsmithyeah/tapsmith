@@ -1466,6 +1466,7 @@ impl proto::pilot_service_server::PilotService for PilotServiceImpl {
                 state: format!("{:?}", d.state),
                 is_emulator: d.is_emulator,
                 platform: d.platform.as_str().to_string(),
+                os_version: d.os_version.clone(),
             })
             .collect();
 

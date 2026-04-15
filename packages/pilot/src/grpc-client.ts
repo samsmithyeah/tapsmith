@@ -73,6 +73,9 @@ export interface DeviceInfoProto {
   state: string;
   isEmulator: boolean;
   platform: string;
+  /** Human-friendly OS version. Empty when the daemon can't determine it
+   * (iOS physical, where CLI-side devicectl enrichment fills it in). */
+  osVersion: string;
 }
 
 export interface ListDevicesResponse {

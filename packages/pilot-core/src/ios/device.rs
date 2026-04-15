@@ -68,7 +68,12 @@ pub async fn list_simulators() -> Result<Vec<IosDevice>> {
     let mut devices = Vec::new();
 
     if let Some(device_map) = value.get("devices").and_then(|d| d.as_object()) {
-        for (_runtime, device_list) in device_map {
+        for (runtime, device_list) in device_map {
+            // Runtime key looks like `com.apple.CoreSimulator.SimRuntime.iOS-18-1`;
+            // produce a user-facing "18.1". Non-iOS runtimes (watchOS, tvOS)
+            // just fall through with an empty version — we don't surface them
+            // in list-devices today.
+            let runtime_version = parse_simctl_runtime_version(runtime);
             if let Some(list) = device_list.as_array() {
                 for device in list {
                     let udid = device
@@ -99,7 +104,7 @@ pub async fn list_simulators() -> Result<Vec<IosDevice>> {
                             is_simulator: true,
                             is_paired: true,
                             ddi_services_available: true,
-                            os_version: String::new(),
+                            os_version: runtime_version.clone(),
                         });
                     }
                 }
@@ -109,6 +114,17 @@ pub async fn list_simulators() -> Result<Vec<IosDevice>> {
 
     debug!(count = devices.len(), "Listed iOS simulators");
     Ok(devices)
+}
+
+/// Parse a simctl runtime identifier (e.g.
+/// `com.apple.CoreSimulator.SimRuntime.iOS-18-1`) into a human-friendly
+/// version string (`18.1`). Returns an empty string for non-iOS runtimes
+/// or when the identifier doesn't match the expected shape.
+fn parse_simctl_runtime_version(runtime: &str) -> String {
+    let Some(tail) = runtime.strip_prefix("com.apple.CoreSimulator.SimRuntime.iOS-") else {
+        return String::new();
+    };
+    tail.replace('-', ".")
 }
 
 /// List connected physical iOS devices via devicectl.
