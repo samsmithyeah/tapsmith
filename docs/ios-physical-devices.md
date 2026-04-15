@@ -144,6 +144,31 @@ This starts the proxy, asks you to load an HTTPS page in Safari on the device, t
 
 From then on, `pilot test --trace on` against that UDID will capture full HTTPS traffic into the trace. See [ios-network-capture.md](./ios-network-capture.md#physical-ios-devices) for the full writeup, including the host Wi-Fi IP drift fix and parallel-device setup.
 
+### What gets captured
+
+**Important:** On physical iOS, the Wi-Fi HTTP proxy is applied system-wide by iOS — there's no per-app scoping available without an MDM enrollment. That means Pilot's MITM proxy sees traffic from **every app and background service running on the device**, not just the app under test:
+
+- iOS system services (captive portal checks, weather, analytics, iCloud sync)
+- Any other app you have running (Mail, Safari, Messages, etc.)
+- The app under test
+
+By default those all end up in the trace alongside your app's traffic. Two things help:
+
+1. **Use a host allowlist** in `pilot.config.ts` to keep only the traffic that matters:
+
+   ```ts
+   trace: {
+     mode: 'on',
+     networkHosts: ['*.myapp.com', 'api.example.com'],
+   }
+   ```
+
+   Only entries whose hostname matches one of the patterns will appear in traces. Glob syntax: `*` matches any number of characters, `*.example.com` matches `api.example.com`, `cdn.example.com`, and `example.com` itself. Case-insensitive. Omit the field to keep every entry.
+
+2. **Close unrelated apps** on the phone before running tests — iOS background services are unavoidable but at least Mail/Safari/etc. go quiet.
+
+On iOS **simulators** the filtering is handled automatically at the kernel level by the macOS Network Extension redirector (per-PID), so simulator runs aren't noisy. `networkHosts` is still honoured there if set, but rarely needed.
+
 ### Why explicit `--ssid` is usually needed
 
 macOS 14+ redacts Wi-Fi SSIDs from `ipconfig getsummary` output unless the calling process has Location Services permission. The legacy `networksetup -getairportnetwork` command is also broken on modern macOS (always returns "You are not associated with an AirPort network" even when connected). Pilot detects the redacted placeholder and bails with a clear error, but passing `--ssid "YourWiFiName"` explicitly avoids the dance entirely.

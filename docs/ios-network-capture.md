@@ -183,6 +183,33 @@ Follow the on-screen walkthrough to install the profile on the device:
 
 From then on, `pilot test` against that UDID with tracing enabled will capture traffic.
 
+### Scoping what gets captured (physical only)
+
+iOS applies the `com.apple.wifi.managed` HTTP proxy **system-wide** — there's no per-app scoping available without MDM enrollment. The MITM proxy therefore sees traffic from every app and background service running on the device, not just the app under test. iOS's own chatty background services (captive portal checks, Apple ID refresh, analytics, iCloud sync) will show up in the trace alongside your app's requests.
+
+Use `trace.networkHosts` in your config to scrub the noise:
+
+```ts
+import { defineConfig } from 'pilot'
+
+export default defineConfig({
+  platform: 'ios',
+  device: '00008140-00096C9014F3001C',
+  trace: {
+    mode: 'on',
+    // Only keep entries whose hostname matches one of these patterns.
+    // Glob syntax: `*` matches any number of characters;
+    // `*.example.com` matches `api.example.com`, `cdn.example.com`,
+    // and `example.com` itself. Case-insensitive.
+    networkHosts: ['*.myapp.com', 'api.partner.example'],
+  },
+})
+```
+
+Pilot applies the filter when stopping the capture, so filtered-out entries never touch the trace archive. If you don't set `networkHosts`, every entry is kept (current behaviour).
+
+**Simulators** already filter per-PID at the kernel level via the macOS Network Extension redirector, so `networkHosts` is mostly redundant on sim runs — but it still works there if you want belt-and-braces filtering.
+
 ### Running parallel physical devices
 
 The deterministic per-UDID port means multiple physical devices on the same Wi-Fi network each get their own host port without collision. Run `pilot configure-ios-network` once per device; each installs a profile with a distinct port, and parallel worker buckets dispatch independently.

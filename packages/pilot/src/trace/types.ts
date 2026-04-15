@@ -256,6 +256,30 @@ export interface TraceConfig {
   attachments: boolean
   /** Whether to capture network traffic via HTTP proxy. */
   network: boolean
+  /**
+   * Glob-style host patterns to retain in captured network entries.
+   * Defaults to `undefined` — keep every captured entry.
+   *
+   * Matters most for physical iOS devices, where Pilot's Wi-Fi MITM
+   * proxy is system-wide and sees every app's traffic, including iOS
+   * background services (captive portal checks, analytics, iCloud).
+   * Set an allowlist of hostnames that match the app(s) under test so
+   * the trace only keeps relevant entries:
+   *
+   *     trace: {
+   *       mode: 'on',
+   *       networkHosts: ['*.myapp.com', 'api.example.com'],
+   *     }
+   *
+   * Simulators already filter per-PID (via the macOS Network Extension
+   * redirector), so leaving this unset is fine for sim-only runs. On
+   * physical iOS, unset = verbose traces with system noise.
+   *
+   * Patterns use glob semantics: `*` matches one hostname segment,
+   * `**` (or a leading `*.`) matches any number. Matching is
+   * case-insensitive. See `filterEntriesByHosts` for the exact rules.
+   */
+  networkHosts?: string[]
 }
 
 /** Parse a string shorthand or object into a full TraceConfig. */
