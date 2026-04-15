@@ -31,6 +31,15 @@ export interface PhysicalDeviceInfo {
   bootState: string
   /** `enabled` / `disabled` / `unknown`. Only iOS 16+ devices report this. */
   developerModeStatus: string
+  /**
+   * How CoreDevice is currently reaching this device. `wired` means USB;
+   * `localNetwork` means Wi-Fi pairing (device is on the same network and
+   * was previously paired). Pilot's test flow needs USB attachment
+   * (iproxy + xcodebuild over a wired tunnel), so wireless-only devices
+   * are listable but can't currently be driven — `list-devices` flags
+   * them so `pilot test` doesn't get blamed for the failure mode.
+   */
+  transportType: string
 }
 
 // ─── Listing ───
@@ -109,6 +118,9 @@ export function parseDevicectlDeviceList(json: string): PhysicalDeviceInfo[] {
         : 'unknown',
       developerModeStatus: typeof devProps['developerModeStatus'] === 'string'
         ? (devProps['developerModeStatus'] as string)
+        : 'unknown',
+      transportType: typeof connProps['transportType'] === 'string'
+        ? (connProps['transportType'] as string)
         : 'unknown',
     });
   }

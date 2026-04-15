@@ -93,6 +93,13 @@ function notesFor(physical: PhysicalDeviceInfo | undefined): string[] {
   if (physical.osVersion) notes.push(`iOS ${physical.osVersion}`);
   if (!physical.isPaired) notes.push('not paired');
   if (physical.developerModeStatus === 'disabled') notes.push('developer mode off');
+  // CoreDevice keeps Wi-Fi-paired devices discoverable even when unplugged,
+  // but Pilot's test flow needs a USB tunnel (iproxy + xcodebuild wired
+  // attachment). Flag the device so `pilot test --device <udid>` against
+  // a wireless-only target is obviously going to fail at agent launch.
+  if (physical.transportType === 'localNetwork') {
+    notes.push('wireless only (connect via USB to run tests)');
+  }
   // `ddiServicesAvailable` only reflects whether CoreDevice is currently
   // holding a DDI assertion, not whether the device can mount one when
   // needed. Pilot's `startAgent` flow mounts it on demand, so showing

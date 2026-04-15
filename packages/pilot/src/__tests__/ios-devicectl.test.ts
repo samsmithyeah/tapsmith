@@ -38,6 +38,22 @@ describe('parseDevicectlDeviceList', () => {
     expect(d.osVersion).toBe('26.2.1');
     expect(d.bootState).toBe('booted');
     expect(d.developerModeStatus).toBe('enabled');
+    expect(d.transportType).toBe('wired');
+  });
+
+  it('captures transportType for wireless-paired devices', () => {
+    const json = JSON.stringify({
+      result: {
+        devices: [
+          {
+            connectionProperties: { pairingState: 'paired', transportType: 'localNetwork' },
+            deviceProperties: { name: 'iPhone' },
+            hardwareProperties: { platform: 'iOS', udid: 'UDID' },
+          },
+        ],
+      },
+    });
+    expect(parseDevicectlDeviceList(json)[0]?.transportType).toBe('localNetwork');
   });
 
   it('falls back to "unknown" when developerModeStatus is absent', () => {

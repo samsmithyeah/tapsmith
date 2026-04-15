@@ -20,6 +20,7 @@ const physicalDevice = (overrides: Partial<PhysicalDeviceInfo>): PhysicalDeviceI
   ddiServicesAvailable: true,
   bootState: 'booted',
   developerModeStatus: 'enabled',
+  transportType: 'wired',
   ...overrides,
 });
 
@@ -60,6 +61,18 @@ describe('buildDeviceRows', () => {
       [physicalDevice({ udid: 'UDID', osVersion: '26.2.1', developerModeStatus: 'disabled' })],
     );
     expect(rows[0]!.notes).toContain('developer mode off');
+  });
+
+  it('flags a Wi-Fi-only physical device so `pilot test` isn\'t blamed for USB-only paths', () => {
+    // CoreDevice keeps wirelessly-paired devices listed even when unplugged,
+    // but Pilot's agent tunnel (iproxy + xcodebuild) is USB-only. Better to
+    // surface that in the listing than let `pilot test --device <udid>`
+    // fail mid-run with a confusing tunnel error.
+    const rows = buildDeviceRows(
+      [daemonDevice({ serial: 'UDID', platform: 'ios', isEmulator: false })],
+      [physicalDevice({ udid: 'UDID', osVersion: '26.2.1', transportType: 'localNetwork' })],
+    );
+    expect(rows[0]!.notes).toContain('wireless only (connect via USB to run tests)');
   });
 
   it('does NOT flag DDI-not-mounted — the listing is passive', () => {
