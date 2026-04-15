@@ -79,7 +79,7 @@ export function findDaemonBin(): string {
     `Could not find the pilot-core daemon binary.\n\n` +
       `Pilot looked in:\n` +
       candidates.map((c) => `  • ${c}`).join('\n') +
-      `\n  • \$PATH (via \`${whichCmd} ${BIN_NAME}\`)\n\n` +
+      `\n  • $PATH (via \`${whichCmd} ${BIN_NAME}\`)\n\n` +
       `Fix one of:\n` +
       `  1. Build it from the monorepo: cd packages/pilot-core && cargo build --release\n` +
       `  2. Point PILOT_DAEMON_BIN at an existing binary:\n` +

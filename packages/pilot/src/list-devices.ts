@@ -50,50 +50,56 @@ export function buildDeviceRows(
   daemonDevices: DeviceInfoProto[],
   devicectlDevices: PhysicalDeviceInfo[],
 ): DeviceRow[] {
-  // Match on full UDID OR the short form devicectl returns (first 8 chars
-  // + '-' + rest of the 40-char identifier). The daemon returns whichever
-  // form the platform tooling uses; devicectl uses the hex ECID form for
-  // iOS 16+ devices.
   const byUdid = new Map<string, PhysicalDeviceInfo>();
   for (const d of devicectlDevices) byUdid.set(d.udid, d);
 
   return daemonDevices.map<DeviceRow>((device) => {
-    const notes: string[] = [];
-    let platform = device.platform || (device.isEmulator ? 'sim' : 'device');
-    if (device.platform === 'ios' && device.isEmulator) platform = 'ios-sim';
-    if (device.platform === 'ios' && !device.isEmulator) platform = 'ios-device';
-    if (device.platform === 'android') {
-      platform = device.isEmulator ? 'android-emu' : 'android';
-    }
-
-    let state = device.state || 'unknown';
     const physical = byUdid.get(device.serial);
-    if (physical) {
-      // Prefer the boot state from devicectl — it has "booted" / "shutdown"
-      // for iOS physical devices. Daemon's state is typically blank for
-      // physical.
-      if (physical.bootState && physical.bootState !== 'unknown') {
-        state = physical.bootState;
-      }
-      if (physical.osVersion) notes.push(`iOS ${physical.osVersion}`);
-      if (!physical.isPaired) notes.push('not paired');
-      if (physical.developerModeStatus === 'disabled') notes.push('developer mode off');
-      // `ddiServicesAvailable` only reflects whether CoreDevice is currently
-      // holding a DDI assertion, not whether the device can mount one when
-      // needed. Pilot's `startAgent` flow mounts it on demand, so showing
-      // "DDI not mounted" in a passive listing is misleading. `setup-ios-device`
-      // surfaces it (with proper "how to fix" hints) when the user actually
-      // asks for a preflight check.
-    }
-
     return {
-      platform,
+      platform: platformLabel(device),
       serial: device.serial,
       name: device.model || '',
-      state,
-      notes,
+      state: stateLabel(device, physical),
+      notes: notesFor(physical),
     };
   });
+}
+
+function platformLabel(device: DeviceInfoProto): string {
+  switch (device.platform) {
+    case 'ios':
+      return device.isEmulator ? 'ios-sim' : 'ios-device';
+    case 'android':
+      return device.isEmulator ? 'android-emu' : 'android';
+    default:
+      return device.platform || (device.isEmulator ? 'sim' : 'device');
+  }
+}
+
+function stateLabel(device: DeviceInfoProto, physical: PhysicalDeviceInfo | undefined): string {
+  // Prefer the boot state from devicectl for physical iOS devices — the
+  // daemon's state is typically blank there. `unknown` falls through to
+  // whatever the daemon reported.
+  const bootState = physical?.bootState;
+  if (bootState && bootState !== 'unknown') {
+    return bootState;
+  }
+  return device.state || 'unknown';
+}
+
+function notesFor(physical: PhysicalDeviceInfo | undefined): string[] {
+  if (!physical) return [];
+  const notes: string[] = [];
+  if (physical.osVersion) notes.push(`iOS ${physical.osVersion}`);
+  if (!physical.isPaired) notes.push('not paired');
+  if (physical.developerModeStatus === 'disabled') notes.push('developer mode off');
+  // `ddiServicesAvailable` only reflects whether CoreDevice is currently
+  // holding a DDI assertion, not whether the device can mount one when
+  // needed. Pilot's `startAgent` flow mounts it on demand, so showing
+  // "DDI not mounted" in a passive listing is misleading. `setup-ios-device`
+  // surfaces it (with proper "how to fix" hints) when the user actually
+  // asks for a preflight check.
+  return notes;
 }
 
 // ─── Rendering ──────────────────────────────────────────────────────────
@@ -114,23 +120,24 @@ function formatTable(rows: DeviceRow[]): string {
     r.notes.join(', '),
   ]);
   const widths = headers.map((h, i) =>
-    Math.max(h.length, ...plain.map((row) => row[i]!.length)),
+    Math.max(h.length, ...plain.map((row) => row[i].length)),
   );
 
   const pad = (s: string, w: number): string => s + ' '.repeat(Math.max(0, w - s.length));
 
-  const headerLine = headers.map((h, i) => bold(pad(h, widths[i]!))).join('  ');
+  const headerLine = headers.map((h, i) => bold(pad(h, widths[i]))).join('  ');
   const separator = widths.map((w) => '─'.repeat(w)).join('  ');
 
   const body = rows.map((r) => {
-    const cells = [
-      pad(colorPlatform(r.platform), widths[0]! + colorOverhead(colorPlatform(r.platform), r.platform)),
-      pad(r.serial, widths[1]!),
-      pad(r.name, widths[2]!),
-      pad(colorState(r.state), widths[3]! + colorOverhead(colorState(r.state), r.state)),
-      colorNotes(r.notes).padEnd(widths[4]!),
-    ];
-    return cells.join('  ');
+    const platformCell = colorPlatform(r.platform);
+    const stateCell = colorState(r.state);
+    return [
+      pad(platformCell, widths[0] + colorOverhead(platformCell, r.platform)),
+      pad(r.serial, widths[1]),
+      pad(r.name, widths[2]),
+      pad(stateCell, widths[3] + colorOverhead(stateCell, r.state)),
+      colorNotes(r.notes).padEnd(widths[4]),
+    ].join('  ');
   });
 
   return [headerLine, dim(separator), ...body].join('\n') + '\n';
