@@ -8,7 +8,8 @@
     "pilot": "dist/cli.js"
   },
   "scripts": {
-    "build": "tsc && npm run build:trace-viewer && npm run build:ui-mode",
+    "build": "npm run clean && tsc && npm run build:trace-viewer && npm run build:ui-mode",
+    "clean": "rm -rf dist",
     "build:trace-viewer": "vite build",
     "build:ui-mode": "vite build --config vite.config.ui-mode.ts",
     "lint": "eslint src/ --ignore-pattern src/trace-viewer/",

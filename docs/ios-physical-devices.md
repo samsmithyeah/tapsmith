@@ -205,6 +205,14 @@ Run `pilot setup-ios-device` first — it surfaces most setup issues with action
 
 **"iproxy not found"** — `brew install libimobiledevice`.
 
+**`Password:` prompt mid-test, right after "Starting iOS agent…"** — Xcode's CoreDevice mounts the Developer Disk Image via `sudo -- /usr/bin/true` to prime the sudo cache, and the prompt only appears in the first `xcodebuild` invocation per macOS login session. Pilot itself doesn't call sudo. Eliminate the prompt permanently with one command:
+
+```sh
+sudo DevToolsSecurity -enable
+```
+
+That adds your user to the `_developer` group so all subsequent Xcode-driven operations skip the auth check. `pilot setup-ios-device` flags this with a ⚠ advisory and the same fix.
+
 **"Device unpaired" in `pilot setup-ios-device`** — open Xcode → Window → Devices and Simulators, wait for the device, click "Use for Development".
 
 **"Developer Disk Image not mounted"** — this usually resolves on the first `xcodebuild -destination id=<udid>` run. It can also be triggered manually by opening the device in Xcode → Window → Devices and Simulators.

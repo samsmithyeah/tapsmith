@@ -196,6 +196,59 @@ export function checkSigningIdentities(): CheckResult {
 }
 
 /**
+ * Check Xcode's Developer Tools security mode. When disabled, the first
+ * `xcodebuild` invocation against a physical iOS device per macOS login
+ * session pops a sudo password prompt mid-test — Xcode's CoreDevice
+ * layer needs admin to mount the Developer Disk Image and primes the
+ * sudo cache via `sudo -- /usr/bin/true`. The prompt arrives RIGHT
+ * after Pilot's "Starting iOS agent…" line, which makes it look like
+ * Pilot is asking for a password, but it's actually xcodebuild.
+ *
+ * The fix is a one-time `sudo DevToolsSecurity -enable` which adds the
+ * user to the `_developer` group and grants persistent Developer Tools
+ * access. Pilot can't run it for the user (it needs sudo itself), so
+ * this is an advisory check that surfaces the fix command upfront.
+ */
+export function checkDevToolsSecurity(): CheckResult {
+  let out: string;
+  try {
+    out = execFileSync('DevToolsSecurity', ['-status'], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+    });
+  } catch {
+    return {
+      label: 'Xcode Developer Tools access',
+      ok: true,
+      detail: 'could not determine (non-fatal)',
+    };
+  }
+  // The string is stable across macOS versions: "Developer mode is currently
+  // enabled." or "Developer mode is currently disabled."
+  if (/currently enabled/i.test(out)) {
+    return {
+      label: 'Xcode Developer Tools access',
+      ok: true,
+      detail: 'enabled (no auth prompt during physical-device test runs)',
+    };
+  }
+  return {
+    label: 'Xcode Developer Tools access',
+    ok: false,
+    advisory: true,
+    fix: [
+      'Disabled. The first `xcodebuild` against a physical device per login',
+      'session will pop a "Password:" prompt mid-test (Xcode\'s CoreDevice',
+      'mounts the Developer Disk Image via sudo). Run this one-time:',
+      '',
+      '  sudo DevToolsSecurity -enable',
+      '',
+      'After that, Pilot test runs against physical devices won\'t prompt.',
+    ],
+  };
+}
+
+/**
  * Check macOS Application Firewall stealth mode. When stealth mode is on,
  * the kernel silently drops inbound TCP SYNs to user processes even when
  * the binary is explicitly allowed in the firewall list. That breaks
@@ -377,6 +430,7 @@ export async function runSetupIosDevice(): Promise<void> {
   results.push(checkDevicectl());
   results.push(checkIproxy());
   results.push(checkSigningIdentities());
+  results.push(checkDevToolsSecurity());
   results.push(checkFirewallStealthMode());
   results.push(checkIosAgentBuilt());
   for (const r of results) printCheck(r);
