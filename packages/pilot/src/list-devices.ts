@@ -14,6 +14,7 @@
  */
 
 import { execFileSync, spawn } from 'node:child_process';
+import { findDaemonBin } from './daemon-bin.js';
 import { PilotGrpcClient, type DeviceInfoProto } from './grpc-client.js';
 import { listPhysicalDevices, type PhysicalDeviceInfo } from './ios-devicectl.js';
 
@@ -167,8 +168,9 @@ function colorOverhead(colored: string, plain: string): number {
  */
 async function listDevicesFromDaemon(): Promise<DeviceInfoProto[]> {
   const port = String(50051 + Math.floor(Math.random() * 1000));
+  const bin = findDaemonBin();
   const child = spawn(
-    process.env['PILOT_DAEMON_BIN'] ?? 'pilot-core',
+    bin,
     ['--port', port],
     { stdio: ['ignore', 'ignore', 'ignore'] },
   );

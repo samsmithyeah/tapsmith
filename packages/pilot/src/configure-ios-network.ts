@@ -17,6 +17,7 @@
  */
 
 import { execFileSync, spawn } from 'node:child_process';
+import { findDaemonBin } from './daemon-bin.js';
 import { PilotGrpcClient } from './grpc-client.js';
 import { findPidsOnPort } from './port-utils.js';
 
@@ -70,7 +71,8 @@ async function callGenerateProfile(opts: Options): Promise<{
     await new Promise((r) => setTimeout(r, 300));
   }
 
-  const child = spawn(process.env['PILOT_DAEMON_BIN'] ?? 'pilot-core', ['--port', port, '--platform', 'ios'], {
+  const bin = findDaemonBin();
+  const child = spawn(bin, ['--port', port, '--platform', 'ios'], {
     stdio: 'ignore',
   });
   child.unref();
