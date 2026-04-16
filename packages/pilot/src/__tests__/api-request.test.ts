@@ -401,6 +401,13 @@ describe('APIRequestContext', () => {
       expect(event.error).toBeDefined();
       expect(event.log[1]).toContain('FAILED');
 
+      // Failed requests should also create a network entry (status 0)
+      const entries = ctx.getNetworkEntries();
+      expect(entries).toHaveLength(1);
+      expect(entries[0].status).toBe(0);
+      expect(entries[0].method).toBe('GET');
+      expect(entries[0].responseSize).toBe(0);
+
       setActiveTraceCollector(null);
     });
 

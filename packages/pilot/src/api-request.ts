@@ -229,6 +229,28 @@ export class APIRequestContext {
           hasHierarchyAfter: false,
           sourceLocation,
         });
+
+        // Also record a NetworkEntry so failed requests appear in the Network tab
+        const requestBodyBuf = body !== undefined
+          ? Buffer.from(typeof body === 'string' ? body : body as Uint8Array)
+          : undefined;
+        this._networkEntries.push({
+          index: this._networkEntries.length,
+          actionIndex: collector.currentActionIndex - 1,
+          startTime,
+          endTime: startTime + duration,
+          method,
+          url: resolvedUrl.toString(),
+          status: 0,
+          contentType: '',
+          requestSize: requestBodyBuf?.length ?? 0,
+          responseSize: 0,
+          duration,
+          requestHeaders: { ...headers },
+          responseHeaders: {},
+          requestBody: requestBodyBuf,
+          responseBody: undefined,
+        });
       }
       throw fetchError;
     } finally {
