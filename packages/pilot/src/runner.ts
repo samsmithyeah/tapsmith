@@ -16,6 +16,7 @@ import * as os from 'node:os';
 import type { PilotConfig, UseOptions } from './config.js';
 import type { Device } from './device.js';
 import type { PilotReporter } from './reporter.js';
+import { APIRequestContext } from './api-request.js';
 import { flushSoftErrors } from './expect.js';
 import { FixtureRegistry, resolveFixtures, type FixtureDefinitions, type BuiltinFixtures } from './fixtures.js';
 import { resolveTraceConfig } from './trace/types.js';
@@ -71,6 +72,8 @@ export interface SuiteResult {
 
 export interface TestFixtures {
   device: Device;
+  /** API request context for making HTTP calls during tests. */
+  request: APIRequestContext;
   /** Name of the project running this test, if projects are configured. */
   projectName?: string;
 }
@@ -342,7 +345,8 @@ async function captureFailureScreenshot(
 // practice this is fine because hooks are simple `async ({ device }) => …`.
 async function invokeHook(fn: HookFn, device?: Device, projectName?: string): Promise<void> {
   if (fn.length > 0 && device) {
-    await (fn as (fixtures: TestFixtures) => void | Promise<void>)({ device, projectName });
+    // Hooks receive device + projectName; request fixture is test-scoped only.
+    await (fn as (fixtures: { device: Device; projectName?: string }) => void | Promise<void>)({ device, projectName });
   } else {
     await (fn as () => void | Promise<void>)();
   }
@@ -652,6 +656,12 @@ async function runSuiteContext(
       }
     }
 
+    // Create request fixture outside try so it's accessible in trace finalization
+    const requestContext = new APIRequestContext({
+      baseURL: opts.config.baseURL,
+      extraHTTPHeaders: opts.config.extraHTTPHeaders,
+    });
+
     try {
       // ── Setup phase (not subject to test timeout) ──
       // Hooks and fixture resolution run outside the test timeout so that
@@ -707,10 +717,11 @@ async function runSuiteContext(
         traceCollector?.endGroup();
       }
 
-      // Build fixture context: base (device) + worker-scoped + test-scoped
+      // Build fixture context: base (device + request) + worker-scoped + test-scoped
       const registry = getFixtureRegistry();
       const baseFixtures: Record<string, unknown> = {
         ...(opts.device ? { device: opts.device } : {}),
+        request: requestContext,
         ...(opts.projectName != null ? { projectName: opts.projectName } : {}),
         ...(opts.workerFixtures ?? {}),
       };
@@ -739,6 +750,7 @@ async function runSuiteContext(
           if (testFixtureTeardown) {
             await testFixtureTeardown();
           }
+          requestContext.dispose();
         }
       };
 
@@ -904,9 +916,23 @@ async function runSuiteContext(
           responseBody: e.responseBody,
         }));
 
-        if (networkEntries && opts.onNetworkEntries) {
-          opts.onNetworkEntries(networkEntries);
-        }
+      }
+
+      // Merge API request fixture network entries (test-level HTTP calls)
+      const apiEntries = requestContext.getNetworkEntries();
+      if (apiEntries.length > 0) {
+        const deviceEntries = networkEntries ?? [];
+        const offset = deviceEntries.length;
+        const mappedApiEntries = apiEntries.map((e, i) => ({
+          ...e,
+          index: offset + i,
+        }));
+        networkEntries = [...deviceEntries, ...mappedApiEntries];
+      }
+
+      // Notify UI mode with the full set of network entries (device + API)
+      if (networkEntries && opts.onNetworkEntries) {
+        opts.onNetworkEntries(networkEntries);
       }
       if (collector) {
         const retain = shouldRetain(traceConfig.mode, status === 'passed', attempt);

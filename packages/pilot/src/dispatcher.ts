@@ -639,6 +639,8 @@ export async function runParallel(opts: DispatcherOptions, _portOffset = 0): Pro
       simulator: config.simulator,
       resetAppDeepLink: config.resetAppDeepLink,
       resetAppWaitMs: config.resetAppWaitMs,
+      baseURL: config.baseURL,
+      extraHTTPHeaders: config.extraHTTPHeaders,
     };
 
     const launchedSerials = new Set(launchedEmulators.map((emu) => emu.serial));

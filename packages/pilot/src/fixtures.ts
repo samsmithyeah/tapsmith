@@ -9,6 +9,7 @@
  */
 
 import type { Device } from './device.js';
+import type { APIRequestContext } from './api-request.js';
 
 // ─── Types ───
 
@@ -48,6 +49,7 @@ export interface ResolvedFixture<T = unknown> {
 
 export interface BuiltinFixtures {
   device: Device
+  request: APIRequestContext
 }
 
 // ─── Fixture registry ───

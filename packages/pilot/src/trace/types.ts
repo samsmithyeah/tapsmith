@@ -39,6 +39,7 @@ export type ActionCategory =
   | 'device'
   | 'assertion'
   | 'screenshot'
+  | 'api'
   | 'other'
 
 /** Console output level. */

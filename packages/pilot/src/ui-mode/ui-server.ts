@@ -224,6 +224,8 @@ export async function startUIServer(
     app: ctx.config.app,
     iosXctestrun: ctx.config.iosXctestrun,
     simulator: ctx.config.simulator,
+    baseURL: ctx.config.baseURL,
+    extraHTTPHeaders: ctx.config.extraHTTPHeaders,
   };
 
   // Resolve a friendly display name for single-worker mode (e.g. UUID → "iPhone 17").

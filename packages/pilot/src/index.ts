@@ -45,6 +45,9 @@ export {
   type BuiltinFixtures,
 } from './fixtures.js';
 
+// API request fixture
+export { APIRequestContext, PilotAPIResponse, type APIRequestOptions } from './api-request.js';
+
 // Config
 export { defineConfig, loadConfig, type PilotConfig, type ProjectConfig, type ScreenshotMode, type TraceMode, type TraceConfig } from './config.js';
 

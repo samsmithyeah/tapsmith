@@ -68,6 +68,8 @@ function configFromSerialized(s: SerializedConfig, daemonAddress: string): Pilot
     simulator: s.simulator,
     resetAppDeepLink: s.resetAppDeepLink,
     resetAppWaitMs: s.resetAppWaitMs,
+    baseURL: s.baseURL,
+    extraHTTPHeaders: s.extraHTTPHeaders,
   };
 }
 

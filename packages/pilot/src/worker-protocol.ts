@@ -36,6 +36,8 @@ export interface RunFileUseOptions {
   retries?: number
   trace?: 'off' | 'on' | 'retain-on-failure' | 'on-first-retry' | 'on-all-retries'
   appState?: string
+  baseURL?: string
+  extraHTTPHeaders?: Record<string, string>
 }
 
 export interface ShutdownMessage {
@@ -146,6 +148,8 @@ export interface SerializedConfig {
   simulator?: string
   resetAppDeepLink?: string
   resetAppWaitMs?: number
+  baseURL?: string
+  extraHTTPHeaders?: Record<string, string>
 }
 
 /** TestResult with Error serialized to plain object for IPC. */

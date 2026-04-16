@@ -171,6 +171,15 @@ export interface PilotConfig {
    * ]
    */
   projects?: ProjectConfig[];
+
+  /** Base URL for API requests made via the `request` fixture. */
+  baseURL?: string;
+
+  /**
+   * Extra HTTP headers sent with every `request` fixture call.
+   * Per-request headers override these when names collide.
+   */
+  extraHTTPHeaders?: Record<string, string>;
 }
 
 // ─── Per-scope option overrides ───
@@ -203,6 +212,8 @@ export type UseOptions = Partial<Pick<PilotConfig,
   | 'launchEmulators'
   | 'resetAppDeepLink'
   | 'resetAppWaitMs'
+  | 'baseURL'
+  | 'extraHTTPHeaders'
 >> & {
   /**
    * Path to a saved app state archive (created by `device.saveAppState()`).

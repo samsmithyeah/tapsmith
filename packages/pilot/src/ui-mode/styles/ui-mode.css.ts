@@ -742,6 +742,7 @@ html, body, #app {
 .action-icon.scroll { color: var(--color-keyword); }
 .action-icon.nav { color: var(--color-function); }
 .action-icon.assert { color: var(--color-number); }
+.action-icon.api { color: var(--color-accent); }
 .action-icon.assert.failed, .action-icon.failed { color: var(--color-error); }
 .action-name { font-size: 12px; color: var(--color-text-primary); white-space: nowrap; }
 .action-selector-text { color: var(--color-text-muted); font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; min-width: 0; }

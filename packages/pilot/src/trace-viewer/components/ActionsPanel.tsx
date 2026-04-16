@@ -31,6 +31,12 @@ const ACTION_ICONS: Record<string, [string, string]> = {
   blur:        ['\u25cb', 'tap'],
   selectOption:['\u25bc', 'tap'],      // ▼
   highlight:   ['\u25a1', 'tap'],
+  'request.get':    ['\u2190', 'api'],   // ←
+  'request.post':   ['\u2192', 'api'],   // →
+  'request.put':    ['\u2192', 'api'],
+  'request.patch':  ['\u2192', 'api'],
+  'request.delete': ['\u2717', 'api'],   // ✗
+  'request.head':   ['\u2190', 'api'],
 };
 
 function getIcon(event: ActionTraceEvent | AssertionTraceEvent): [string, string] {

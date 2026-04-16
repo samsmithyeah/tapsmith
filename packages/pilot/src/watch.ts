@@ -148,6 +148,8 @@ export async function runWatchMode(ctx: WatchModeContext): Promise<void> {
     app: ctx.config.app,
     iosXctestrun: ctx.config.iosXctestrun,
     simulator: ctx.config.simulator,
+    baseURL: ctx.config.baseURL,
+    extraHTTPHeaders: ctx.config.extraHTTPHeaders,
   };
 
   // Resolve tsx binary for forking TypeScript files
