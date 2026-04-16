@@ -49,6 +49,7 @@ Walk through the on-device steps once:
 1. **Send** the profile. Finder has it pre-selected — right-click → Share → AirDrop → your iPhone. (Email / Messages work too.)
 2. **Install** it. Settings shows a "Profile Downloaded" banner — tap it → Install → enter passcode → Install.
 3. **Trust the Pilot CA.** Settings → General → About → Certificate Trust Settings → toggle **Pilot MITM CA**. This row only appears *after* step 2 — the profile install is what makes iOS reveal it.
+4. **Set the proxy URL.** Settings → Wi-Fi → **(i)** next to your network → Configure Proxy → **Automatic** → enter the URL printed by the command above (e.g. `http://192.168.4.38:9037/pilot.pac`) → **Save**. This is a one-time step per Wi-Fi network. The profile handles the CA cert (the part that genuinely requires a mobileconfig); the proxy URL must be set manually because iOS doesn't enforce proxy settings from profiles on unsupervised devices.
 
 Then verify end-to-end:
 

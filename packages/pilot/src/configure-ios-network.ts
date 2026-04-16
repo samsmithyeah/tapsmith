@@ -219,7 +219,16 @@ function printWalkthrough(opts: Options, result: {
   console.log(`     Open ${bold('Settings → General → About → Certificate Trust Settings')}`);
   console.log(`     and enable the toggle next to ${bold('Pilot MITM CA')}.`);
   console.log();
-  console.log(`  ${bold('4)')} ${bold('Verify')} that decrypted HTTPS capture works:`);
+  console.log(`  ${bold('4)')} ${bold('Set the proxy URL.')} Open ${bold('Settings → Wi-Fi')} → tap ${bold('(i)')}`);
+  console.log(`     next to ${bold(result.ssid)} → ${bold('Configure Proxy')} → ${bold('Automatic')} →`);
+  console.log(`     enter this URL → ${bold('Save')}:`);
+  console.log(`     ${green(`http://${result.hostIp}:${result.port}/pilot.pac`)}`);
+  console.log(`     ${dim('One-time step per Wi-Fi network. The profile handles the CA cert')}`);
+  console.log(`     ${dim('(which genuinely requires a mobileconfig); the proxy URL must be')}`);
+  console.log(`     ${dim('set manually because iOS doesn\'t enforce proxy config from profiles')}`);
+  console.log(`     ${dim('on unsupervised devices.')}`);
+  console.log();
+  console.log(`  ${bold('5)')} ${bold('Verify')} that decrypted HTTPS capture works:`);
   console.log(`     ${green('pilot verify-ios-network ' + opts.udid)}`);
   console.log();
   console.log(yellow('  Important: the device must be on Wi-Fi "') + bold(result.ssid) + yellow('" for'));
