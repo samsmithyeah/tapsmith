@@ -53,7 +53,7 @@ export class PilotAPIResponse {
 
   /** Parse the response body as JSON. Returns `null` for empty bodies. */
   async json(): Promise<unknown> {
-    const text = this._body.toString('utf-8');
+    const text = this._body.toString('utf-8').trim();
     return text ? JSON.parse(text) : null;
   }
 
@@ -253,16 +253,9 @@ export class APIRequestContext {
       const responseHeaders = pilotResponse.headersObject();
 
       // Build and accumulate NetworkEntry
-      let requestBodyBuf: Buffer | undefined;
-      if (body !== undefined) {
-        if (typeof body === 'string') {
-          requestBodyBuf = Buffer.from(body);
-        } else if (body instanceof Uint8Array) {
-          requestBodyBuf = Buffer.from(body);
-        } else {
-          requestBodyBuf = Buffer.from(String(body));
-        }
-      }
+      const requestBodyBuf = body !== undefined
+        ? Buffer.from(typeof body === 'string' ? body : body as Uint8Array)
+        : undefined;
       const entry: NetworkEntry = {
         index: this._networkEntries.length,
         actionIndex: collector.currentActionIndex - 1,
