@@ -2,6 +2,7 @@ import { render } from 'preact';
 import { useState, useEffect, useCallback, useRef } from 'preact/hooks';
 import { unzipSync, strFromU8 } from 'fflate';
 import type { AnyTraceEvent, ActionTraceEvent, AssertionTraceEvent, TraceMetadata, NetworkEntry } from '../trace/types.js';
+import { sortEventsByStartTime } from '../trace/sort-events.js';
 import { ActionsPanel } from './components/ActionsPanel.js';
 import { ScreenshotPanel } from './components/ScreenshotPanel.js';
 import { DetailTabs } from './components/DetailTabs.js';
@@ -150,11 +151,14 @@ function App() {
     }
   }, [selectedIndex, trace]);
 
-  const actionEvents = trace?.events.filter(
+  // Sort events by start time (timestamp - duration) so concurrent actions
+  // appear in the order they actually started, not the order they completed.
+  const sortedEvents = trace ? sortEventsByStartTime(trace.events) : [];
+  const actionEvents = sortedEvents.filter(
     (e): e is ActionTraceEvent | AssertionTraceEvent =>
       (e.type === 'action' || e.type === 'assertion')
       && !('action' in e && e.action === '__final_screenshot')
-  ) ?? [];
+  );
 
   const handleKeyDown = useCallback((e: KeyboardEvent) => {
     if (e.key === 'ArrowDown' || e.key === 'j') {
@@ -264,7 +268,7 @@ function App() {
       <div class="middle-row">
         <div style={{ width: `${leftWidth}px`, flexShrink: 0 }}>
           <ActionsPanel
-            events={trace.events}
+            events={sortedEvents}
             actionEvents={actionEvents}
             selectedIndex={selectedIndex}
             pinnedIndex={pinnedIndex}
@@ -441,6 +445,7 @@ style.textContent = `
   .action-icon.nav { color: var(--color-function); }
   .action-icon.assert { color: var(--color-number); }
   .action-icon.api { color: var(--color-accent); }
+  .action-icon.net { color: #7c3aed; }
   .action-icon.assert.failed, .action-icon.failed { color: var(--color-error); }
   .action-name { font-size: 12px; color: var(--color-text-primary); white-space: nowrap; }
   .action-selector-text { color: var(--color-text-muted); font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; min-width: 0; }

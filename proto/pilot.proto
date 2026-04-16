@@ -72,6 +72,13 @@ service PilotService {
   // physical iOS device to route Wi-Fi traffic through Pilot's MITM proxy
   // on a deterministic per-UDID host port.
   rpc GenerateIosNetworkProfile(GenerateIosNetworkProfileRequest) returns (GenerateIosNetworkProfileResponse);
+
+  // ─── Network Route Interception ───
+  // Bidirectional stream for intercepting and mocking device network
+  // requests. The SDK registers URL patterns; the daemon pauses matching
+  // requests and sends them to the SDK for a routing decision (abort,
+  // continue with modifications, or fulfill with a mock response).
+  rpc NetworkRoute(stream NetworkRouteClientMessage) returns (stream NetworkRouteServerMessage);
 }
 
 // ─── Common Types ───
@@ -569,6 +576,9 @@ message CapturedNetworkEntry {
   bytes request_body = 11;
   bytes response_body = 12;
   bool is_https = 13;
+  // How this request was handled by a route: "mocked", "aborted",
+  // "continued", "fetched", or "" (no route matched / passthrough).
+  string route_action = 14;
 }
 
 message StopNetworkCaptureResponse {
@@ -604,4 +614,156 @@ message GenerateIosNetworkProfileResponse {
   uint32 port = 6;
   // SSID captured in the profile.
   string ssid = 7;
+}
+
+// ─── Network Route Interception ───
+
+// Envelope for client → daemon messages on the NetworkRoute stream.
+message NetworkRouteClientMessage {
+  oneof msg {
+    RegisterRouteRequest register_route = 1;
+    UnregisterRouteRequest unregister_route = 2;
+    RouteDecision route_decision = 3;
+    SubscribeNetworkEvents subscribe_events = 4;
+    UnsubscribeNetworkEvents unsubscribe_events = 5;
+  }
+}
+
+// Envelope for daemon → client messages on the NetworkRoute stream.
+message NetworkRouteServerMessage {
+  oneof msg {
+    RegisterRouteResponse register_route_response = 1;
+    InterceptedRequest intercepted_request = 2;
+    UnregisterRouteResponse unregister_route_response = 3;
+    FetchedResponse fetched_response = 4;
+    NetworkRequestEvent request_event = 5;
+    NetworkResponseEvent response_event = 6;
+  }
+}
+
+// ─── Route Registration ───
+
+message RegisterRouteRequest {
+  // Client-generated UUID identifying this route.
+  string route_id = 1;
+  // URL glob pattern (Playwright semantics: * matches except /, ** matches all).
+  string url_pattern = 2;
+}
+
+message RegisterRouteResponse {
+  string route_id = 1;
+  bool success = 2;
+  string error_message = 3;
+}
+
+message UnregisterRouteRequest {
+  string route_id = 1;
+}
+
+message UnregisterRouteResponse {
+  string route_id = 1;
+  bool success = 2;
+}
+
+// ─── Interception ───
+
+// Sent by the daemon when a request matches a registered route.
+// The proxy pauses the request until a RouteDecision arrives.
+message InterceptedRequest {
+  // Unique ID for this interception (maps RouteDecision back to the request).
+  string intercept_id = 1;
+  // Which registered route matched.
+  string route_id = 2;
+  string method = 3;
+  string url = 4;
+  repeated HeaderEntry headers = 5;
+  bytes body = 6;
+  bool is_https = 7;
+}
+
+// SDK → daemon: what to do with an intercepted request.
+message RouteDecision {
+  string intercept_id = 1;
+  oneof action {
+    RouteAbort abort = 2;
+    RouteContinue continue_request = 3;
+    RouteFulfill fulfill = 4;
+    RouteFetch fetch = 5;
+    // Used after a RouteFetch: the daemon sent a FetchedResponse, and the
+    // SDK now provides the final (possibly modified) response to return.
+    RouteFulfill fulfill_after_fetch = 6;
+  }
+}
+
+message RouteAbort {
+  // Error reason: "connectionrefused", "connectionreset", "timedout", etc.
+  // Empty string = generic connection reset.
+  string error_code = 1;
+}
+
+message RouteContinue {
+  // Override fields. Empty/zero = keep original value.
+  string url = 1;
+  string method = 2;
+  repeated HeaderEntry headers = 3;
+  bytes post_data = 4;
+}
+
+message RouteFulfill {
+  int32 status = 1;                  // HTTP status code (default 200)
+  repeated HeaderEntry headers = 2;
+  bytes body = 3;
+  string content_type = 4;
+}
+
+message RouteFetch {
+  // Override fields for the upstream request. Empty = keep original.
+  string url = 1;
+  string method = 2;
+  repeated HeaderEntry headers = 3;
+  bytes post_data = 4;
+}
+
+// Daemon → SDK: the real upstream response (sent after RouteFetch).
+// The SDK inspects/modifies this and sends a RouteDecision.fulfill_after_fetch.
+message FetchedResponse {
+  string intercept_id = 1;
+  int32 status = 2;
+  repeated HeaderEntry headers = 3;
+  bytes body = 4;
+}
+
+// Shared key-value pair for HTTP headers.
+message HeaderEntry {
+  string name = 1;
+  string value = 2;
+}
+
+// ─── Network Events (non-blocking notifications) ───
+
+// Subscribe to request/response events for all proxied traffic.
+// Events are informational only — they do not block requests.
+message SubscribeNetworkEvents {}
+
+message UnsubscribeNetworkEvents {}
+
+// Fired when a request is sent upstream (or fulfilled by a route).
+message NetworkRequestEvent {
+  string method = 1;
+  string url = 2;
+  repeated HeaderEntry headers = 3;
+  bytes body = 4;
+  bool is_https = 5;
+  // Non-empty if this request was intercepted by a route.
+  string route_action = 6;
+}
+
+// Fired when a response is received from upstream (or synthesized by a route).
+message NetworkResponseEvent {
+  string method = 1;
+  string url = 2;
+  int32 status = 3;
+  repeated HeaderEntry headers = 4;
+  bytes body = 5;
+  string route_action = 6;
 }

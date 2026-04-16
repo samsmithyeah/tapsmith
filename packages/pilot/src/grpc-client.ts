@@ -630,6 +630,7 @@ export class PilotGrpcClient {
       requestBody: Buffer;
       responseBody: Buffer;
       isHttps: boolean;
+      routeAction: string;
     }>;
     errorMessage: string;
   }> {
@@ -685,6 +686,18 @@ export class PilotGrpcClient {
       sinceMs: sinceMs ?? 0,
       untilMs: untilMs ?? 0,
     });
+  }
+
+  // ── Network Route Interception ──
+
+  /**
+   * Open a bidirectional streaming RPC for network route interception.
+   * Returns a duplex stream for sending/receiving route messages.
+   * @internal
+   */
+  networkRouteStream(): grpc.ClientDuplexStream<unknown, unknown> {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- dynamic RPC dispatch on proto-loaded client
+    return (this.client as any).networkRoute() as grpc.ClientDuplexStream<unknown, unknown>;
   }
 
   // ── Lifecycle ──

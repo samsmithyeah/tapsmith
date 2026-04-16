@@ -799,6 +799,16 @@ async function runSuiteContext(
       }
     }
 
+    // Clean up route interception between tests so routes don't leak
+    // across tests within the same describe block.
+    if (opts.device?._routeManager?.hasRoutes) {
+      try {
+        await opts.device._routeManager.removeAllRoutes();
+      } catch {
+        // best-effort cleanup
+      }
+    }
+
     // Collect soft assertion failures (PILOT-43)
     const softErrors = flushSoftErrors();
     if (softErrors.length > 0) {
@@ -828,6 +838,11 @@ async function runSuiteContext(
         opts.screenshotDir,
         fullName,
       );
+    }
+
+    // Clean up route interception before stopping network capture
+    if (opts.device?._disposeRouteManager) {
+      await opts.device._disposeRouteManager();
     }
 
     // Finalize trace recording
@@ -917,6 +932,7 @@ async function runSuiteContext(
           responseHeaders: e.responseHeadersJson ? JSON.parse(e.responseHeadersJson) : {},
           requestBody: e.requestBody,
           responseBody: e.responseBody,
+          routeAction: e.routeAction ? e.routeAction as 'mocked' | 'aborted' | 'continued' | 'fetched' : undefined,
         }));
 
       }

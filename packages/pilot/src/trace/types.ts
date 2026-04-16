@@ -40,6 +40,7 @@ export type ActionCategory =
   | 'assertion'
   | 'screenshot'
   | 'api'
+  | 'network'
   | 'other'
 
 /** Console output level. */
@@ -371,6 +372,8 @@ export interface NetworkEntry {
   requestBody?: Buffer
   /** Response body bytes (transient — not serialized to archive JSON). */
   responseBody?: Buffer
+  /** How this request was handled by a route: "mocked", "aborted", "continued", "fetched". */
+  routeAction?: 'mocked' | 'aborted' | 'continued' | 'fetched'
 }
 
 // ─── Union type for all events ───

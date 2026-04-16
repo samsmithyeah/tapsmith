@@ -2,6 +2,7 @@ import { render } from 'preact';
 import { useState, useCallback, useMemo, useRef, useEffect } from 'preact/hooks';
 import type { ServerMessage, ClientMessage, TestTreeNode, WorkerInfo } from './ui-protocol.js';
 import type { ActionTraceEvent, AssertionTraceEvent, TraceMetadata } from '../trace/types.js';
+import { sortEventsByStartTime } from '../trace/sort-events.js';
 import { useWebSocket } from './hooks/use-websocket.js';
 import {
   useTraceData,
@@ -166,8 +167,19 @@ function App() {
   );
   const viewedTraceKey = viewedTestName ? traceKey(viewedTestProject, viewedTestName) : null;
   const currentTrace = viewedTraceKey && viewedTestNode?.type === 'test' ? testTraces.get(viewedTraceKey) : undefined;
-  const traceEvents = currentTrace?.events ?? EMPTY_EVENTS;
-  const actionEvents = currentTrace?.actionEvents ?? EMPTY_ACTION_EVENTS;
+  // Sort by start time (timestamp - duration) so concurrent actions
+  // (e.g. route handlers firing during a tap) appear in start-time order
+  // rather than completion order.
+  const traceEvents = useMemo(
+    () => (currentTrace?.events ? sortEventsByStartTime(currentTrace.events) : EMPTY_EVENTS),
+    [currentTrace?.events],
+  );
+  const actionEvents = useMemo(
+    () => (currentTrace?.actionEvents
+      ? sortEventsByStartTime(currentTrace.actionEvents)
+      : EMPTY_ACTION_EVENTS),
+    [currentTrace?.actionEvents],
+  );
   const screenshots = currentTrace?.screenshots ?? EMPTY_MAP;
   const hierarchies = currentTrace?.hierarchies ?? EMPTY_MAP;
   const sources = currentTrace?.sources ?? EMPTY_MAP;
