@@ -717,12 +717,7 @@ fn glob_to_regex(pattern: &str) -> Result<regex::Regex, regex::Error> {
 }
 
 fn regex_escape_char(c: char) -> String {
-    match c {
-        '.' | '+' | '^' | '$' | '|' | '(' | ')' | '[' | ']' | '\\' => {
-            format!("\\{c}")
-        }
-        _ => c.to_string(),
-    }
+    regex::escape(&c.to_string())
 }
 
 /// Convert a [`proto::RouteDecision`] into our internal enum.

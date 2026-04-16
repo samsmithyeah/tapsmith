@@ -1477,7 +1477,7 @@ async fn handle_http(
     };
 
     // Parse request headers from initial data
-    let (req_headers, header_end) = parse_headers(initial_data);
+    let (mut req_headers, header_end) = parse_headers(initial_data);
     let mut request_body = if header_end < initial_data.len() {
         initial_data[header_end..].to_vec()
     } else {
@@ -1500,12 +1500,18 @@ async fn handle_http(
         request_body.extend_from_slice(&body_buf);
     }
 
+    // Owned copies of method/path that the handler can mutate via
+    // route.continue() overrides. Shadowed below after the handler block.
+    let mut effective_method = method.to_string();
+    let mut effective_path = path.clone();
+    let mut was_continued = false;
+
     // Check handler for route interception before forwarding upstream.
     let handler = state.lock().await.handler.clone();
     if let Some(h) = handler.as_ref() {
         let mut parsed_req = ParsedRequest {
-            method: method.to_string(),
-            path: path.clone(),
+            method: effective_method.clone(),
+            path: effective_path.clone(),
             headers: req_headers.clone(),
             body: request_body.clone(),
             raw_bytes: Vec::new(),
@@ -1546,11 +1552,19 @@ async fn handle_http(
             .await;
             return;
         }
-        // Handler may have mutated the request — update local vars.
-        // (For plain HTTP, we rebuild the request line below anyway.)
+        // Handler returned None — route.continue() was called (or no
+        // route matched). Apply mutations from the handler back to the
+        // local variables used by the upstream request builder below.
+        was_continued = true;
+        effective_method = parsed_req.method;
+        effective_path = parsed_req.path;
+        req_headers = parsed_req.headers;
+        request_body = parsed_req.body;
     }
 
     // Rebuild the request with a relative path for the upstream server
+    let method = &effective_method;
+    let path = &effective_path;
     let mut upstream_request = format!("{method} {path} HTTP/1.1\r\n");
     let mut has_connection = false;
     for (key, value) in &req_headers {
@@ -1695,7 +1709,11 @@ async fn handle_http(
             response_body
         },
         is_https: false,
-        route_action: String::new(),
+        route_action: if was_continued {
+            "continued".to_string()
+        } else {
+            String::new()
+        },
     });
 }
 
