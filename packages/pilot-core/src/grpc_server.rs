@@ -1,10 +1,12 @@
+use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Result;
 use serde_json::{json, Value};
 use tokio::sync::RwLock;
-use tonic::{Request, Response, Status};
+use tokio_stream::Stream;
+use tonic::{Request, Response, Status, Streaming};
 use tracing::{debug, error, info, instrument, warn};
 use uuid::Uuid;
 
@@ -16,6 +18,7 @@ use crate::mitm_ca::MitmAuthority;
 use crate::network_proxy::NetworkProxy;
 use crate::platform::Platform;
 use crate::proto;
+use crate::route_handler::RouteInterceptHandler;
 use crate::screenshot;
 
 pub struct PilotServiceImpl {
@@ -49,6 +52,10 @@ pub struct PilotServiceImpl {
     /// single source of truth for this value; the daemon never reads
     /// pilot.config.ts itself.
     network_tracing_enabled: Arc<RwLock<bool>>,
+    /// Active route interception handler, if a `NetworkRoute` stream is open.
+    /// Stored here so that `start_network_capture` can install it on newly
+    /// created proxies (the stream may open before or after capture starts).
+    active_route_handler: Arc<RwLock<Option<Arc<RouteInterceptHandler>>>>,
 }
 
 /// Stored iOS agent launch config for restart.
@@ -80,6 +87,7 @@ impl PilotServiceImpl {
             ios_agent_config: Arc::new(RwLock::new(None)),
             ios_iproxy: Arc::new(RwLock::new(None)),
             network_tracing_enabled: Arc::new(RwLock::new(false)),
+            active_route_handler: Arc::new(RwLock::new(None)),
         }
     }
 
@@ -3377,6 +3385,17 @@ impl proto::pilot_service_server::PilotService for PilotServiceImpl {
         }
 
         *proxy_guard = Some(proxy);
+
+        // If a NetworkRoute stream is active, install its handler on the
+        // newly created proxy so route interception works regardless of
+        // whether the stream opened before or after capture started.
+        if let Some(handler) = self.active_route_handler.read().await.as_ref() {
+            if let Some(p) = proxy_guard.as_ref() {
+                p.set_handler(Arc::clone(handler) as Arc<dyn crate::network_proxy::NetworkHandler>)
+                    .await;
+            }
+        }
+
         *self.proxy_device_serial.write().await = Some(serial);
         *self.proxy_platform.write().await = Some(platform);
 
@@ -3475,6 +3494,7 @@ impl proto::pilot_service_server::PilotService for PilotServiceImpl {
                 request_body: e.request_body,
                 response_body: e.response_body,
                 is_https: e.is_https,
+                route_action: e.route_action,
             })
             .collect();
 
@@ -4312,6 +4332,137 @@ impl proto::pilot_service_server::PilotService for PilotServiceImpl {
                 Ok(Self::success_action_response(request_id))
             }
         }
+    }
+
+    // ─── Network Route Interception ───
+
+    type NetworkRouteStream =
+        Pin<Box<dyn Stream<Item = Result<proto::NetworkRouteServerMessage, Status>> + Send>>;
+
+    async fn network_route(
+        &self,
+        request: Request<Streaming<proto::NetworkRouteClientMessage>>,
+    ) -> Result<Response<Self::NetworkRouteStream>, Status> {
+        info!("NetworkRoute stream opened");
+
+        let mut inbound = request.into_inner();
+        let network_proxy = self.network_proxy.clone();
+
+        // Channel for server → client messages. Buffered to avoid blocking
+        // the proxy on slow SDK consumers.
+        let (to_sdk_tx, mut to_sdk_rx) =
+            tokio::sync::mpsc::channel::<proto::NetworkRouteServerMessage>(256);
+
+        let handler = Arc::new(RouteInterceptHandler::new(to_sdk_tx));
+        let handler_for_proxy = handler.clone();
+
+        // Store the handler so start_network_capture can install it on
+        // newly created proxies (the stream may open before capture starts).
+        *self.active_route_handler.write().await = Some(handler.clone());
+
+        // Install the handler on the proxy if one is already running.
+        {
+            let proxy_guard = network_proxy.read().await;
+            if let Some(proxy) = proxy_guard.as_ref() {
+                proxy.set_handler(handler_for_proxy.clone()).await;
+            }
+        }
+
+        // The output stream sends server messages to the client.
+        let (out_tx, out_rx) =
+            tokio::sync::mpsc::channel::<Result<proto::NetworkRouteServerMessage, Status>>(256);
+
+        // Task: forward to_sdk_rx → out_tx
+        let out_tx_fwd = out_tx.clone();
+        tokio::spawn(async move {
+            while let Some(msg) = to_sdk_rx.recv().await {
+                if out_tx_fwd.send(Ok(msg)).await.is_err() {
+                    break;
+                }
+            }
+        });
+
+        // Task: read inbound client messages and dispatch
+        let handler_for_read = handler.clone();
+        let out_tx_read = out_tx;
+        let network_proxy_cleanup = network_proxy.clone();
+        let active_route_handler_cleanup = self.active_route_handler.clone();
+        tokio::spawn(async move {
+            while let Some(result) = inbound.message().await.transpose() {
+                let msg = match result {
+                    Ok(m) => m,
+                    Err(e) => {
+                        debug!("NetworkRoute inbound error: {e}");
+                        break;
+                    }
+                };
+
+                let Some(inner) = msg.msg else { continue };
+                match inner {
+                    proto::network_route_client_message::Msg::RegisterRoute(req) => {
+                        let route_id = req.route_id.clone();
+                        let result = handler_for_read
+                            .register_route(route_id.clone(), &req.url_pattern)
+                            .await;
+                        let resp = proto::NetworkRouteServerMessage {
+                            msg: Some(
+                                proto::network_route_server_message::Msg::RegisterRouteResponse(
+                                    proto::RegisterRouteResponse {
+                                        route_id,
+                                        success: result.is_ok(),
+                                        error_message: result.err().unwrap_or_default(),
+                                    },
+                                ),
+                            ),
+                        };
+                        if out_tx_read.send(Ok(resp)).await.is_err() {
+                            break;
+                        }
+                    }
+                    proto::network_route_client_message::Msg::UnregisterRoute(req) => {
+                        let success = handler_for_read.unregister_route(&req.route_id).await;
+                        let resp = proto::NetworkRouteServerMessage {
+                            msg: Some(
+                                proto::network_route_server_message::Msg::UnregisterRouteResponse(
+                                    proto::UnregisterRouteResponse {
+                                        route_id: req.route_id,
+                                        success,
+                                    },
+                                ),
+                            ),
+                        };
+                        if out_tx_read.send(Ok(resp)).await.is_err() {
+                            break;
+                        }
+                    }
+                    proto::network_route_client_message::Msg::RouteDecision(decision) => {
+                        handler_for_read.resolve_decision(decision).await;
+                    }
+                    proto::network_route_client_message::Msg::SubscribeEvents(_) => {
+                        handler_for_read.subscribe_events().await;
+                    }
+                    proto::network_route_client_message::Msg::UnsubscribeEvents(_) => {
+                        handler_for_read.unsubscribe_events().await;
+                    }
+                }
+            }
+
+            // Stream closed — clean up
+            info!("NetworkRoute stream closed, releasing pending intercepts");
+            handler_for_read.release_all_pending().await;
+
+            // Clear the stored handler reference
+            *active_route_handler_cleanup.write().await = None;
+
+            // Remove handler from proxy
+            let proxy_guard = network_proxy_cleanup.read().await;
+            if let Some(proxy) = proxy_guard.as_ref() {
+                proxy.clear_handler().await;
+            }
+        });
+
+        let output_stream = tokio_stream::wrappers::ReceiverStream::new(out_rx);
+        Ok(Response::new(Box::pin(output_stream)))
     }
 }
 

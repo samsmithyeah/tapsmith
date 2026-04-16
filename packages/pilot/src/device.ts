@@ -30,6 +30,13 @@ import { Tracing } from './trace/tracing.js';
 import { type TraceCollector, getActiveTraceCollector } from './trace/trace-collector.js';
 import type { ActionCategory } from './trace/types.js';
 import { tracedAction } from './trace/traced-action.js';
+import {
+  NetworkRouteManager,
+  type PilotRequest,
+  type Route,
+  type NetworkResponseEventData,
+  matchUrlPattern,
+} from './network.js';
 
 // ─── Types for device-level actions ───
 
@@ -52,6 +59,9 @@ export class Device {
   /** Programmatic tracing API. */
   readonly tracing: Tracing;
 
+  /** @internal — Network route manager (lazily created). */
+  _routeManager: NetworkRouteManager | null = null;
+
   constructor(client: PilotGrpcClient, config?: Partial<Pick<PilotConfig, 'timeout' | 'package'>>) {
     this._client = client;
     this._defaultTimeoutMs = config?.timeout ?? 30_000;
@@ -60,6 +70,13 @@ export class Device {
       () => this._takeScreenshotBuffer(),
       () => this._captureHierarchy(),
     );
+  }
+
+  private _ensureRouteManager(): NetworkRouteManager {
+    if (!this._routeManager) {
+      this._routeManager = new NetworkRouteManager(this._client);
+    }
+    return this._routeManager;
   }
 
   /**
@@ -457,6 +474,129 @@ export class Device {
   /** @internal — Stop network capture and return entries (used by the runner). */
   async _stopNetworkCapture(): Promise<ReturnType<PilotGrpcClient['stopNetworkCapture']>> {
     return this._client.stopNetworkCapture();
+  }
+
+  // ─── Network Route Interception ───
+
+  /**
+   * Intercept network requests matching a URL pattern. The handler receives a
+   * `Route` object that can `abort()`, `continue()`, `fulfill()`, or `fetch()`
+   * the request.
+   */
+  async route(
+    url: string | RegExp | ((url: URL) => boolean),
+    handler: (route: Route) => Promise<void> | void,
+    options?: { times?: number },
+  ): Promise<void> {
+    return this._ensureRouteManager().addRoute(url, handler, options);
+  }
+
+  /**
+   * Remove a previously registered route handler.
+   * If `handler` is omitted, all handlers for the pattern are removed.
+   */
+  async unroute(
+    url: string | RegExp | ((url: URL) => boolean),
+    handler?: (route: Route) => Promise<void> | void,
+  ): Promise<void> {
+    if (!this._routeManager) return;
+    return this._routeManager.removeRoute(url, handler);
+  }
+
+  /** Remove all registered route handlers. */
+  async unrouteAll(): Promise<void> {
+    if (!this._routeManager) return;
+    return this._routeManager.removeAllRoutes();
+  }
+
+  /** Wait for a request matching the pattern. */
+  waitForRequest(
+    urlOrPredicate: string | RegExp | ((request: PilotRequest) => boolean),
+    options?: { timeout?: number },
+  ): Promise<PilotRequest> {
+    const timeout = options?.timeout ?? this._defaultTimeoutMs;
+    const manager = this._ensureRouteManager();
+
+    return new Promise<PilotRequest>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        manager.removeRequestListener(listener);
+        reject(new Error(`waitForRequest timed out after ${timeout}ms`));
+      }, timeout);
+
+      const listener = (req: PilotRequest) => {
+        const matches = typeof urlOrPredicate === 'function'
+          ? urlOrPredicate(req)
+          : matchUrlPattern(req.url, urlOrPredicate);
+        if (matches) {
+          clearTimeout(timer);
+          manager.removeRequestListener(listener);
+          resolve(req);
+        }
+      };
+      manager.addRequestListener(listener);
+    });
+  }
+
+  /** Wait for a response matching the pattern. */
+  waitForResponse(
+    urlOrPredicate: string | RegExp | ((response: NetworkResponseEventData) => boolean),
+    options?: { timeout?: number },
+  ): Promise<NetworkResponseEventData> {
+    const timeout = options?.timeout ?? this._defaultTimeoutMs;
+    const manager = this._ensureRouteManager();
+
+    return new Promise<NetworkResponseEventData>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        manager.removeResponseListener(listener);
+        reject(new Error(`waitForResponse timed out after ${timeout}ms`));
+      }, timeout);
+
+      const listener = (resp: NetworkResponseEventData) => {
+        const matches = typeof urlOrPredicate === 'function'
+          ? urlOrPredicate(resp)
+          : matchUrlPattern(resp.url, urlOrPredicate);
+        if (matches) {
+          clearTimeout(timer);
+          manager.removeResponseListener(listener);
+          resolve(resp);
+        }
+      };
+      manager.addResponseListener(listener);
+    });
+  }
+
+  /** Subscribe to network request/response events. */
+  on(event: 'request', handler: (request: PilotRequest) => void): void;
+  on(event: 'response', handler: (response: NetworkResponseEventData) => void): void;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- overload implementation
+  on(event: string, handler: (...args: any[]) => void): void {
+    const manager = this._ensureRouteManager();
+    if (event === 'request') {
+      manager.addRequestListener(handler as (req: PilotRequest) => void);
+    } else {
+      manager.addResponseListener(handler as (resp: NetworkResponseEventData) => void);
+    }
+  }
+
+  /** Unsubscribe from network events. */
+  off(event: 'request', handler: (request: PilotRequest) => void): void;
+  off(event: 'response', handler: (response: NetworkResponseEventData) => void): void;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- overload implementation
+  off(event: string, handler: (...args: any[]) => void): void {
+    if (!this._routeManager) return;
+    if (event === 'request') {
+      this._routeManager.removeRequestListener(handler as (req: PilotRequest) => void);
+    } else {
+      this._routeManager.removeResponseListener(handler as (resp: NetworkResponseEventData) => void);
+    }
+  }
+
+  /** @internal — Dispose the route manager (called by the runner during cleanup). */
+  async _disposeRouteManager(): Promise<void> {
+    if (this._routeManager) {
+      await this._routeManager.dispose();
+      this._routeManager = null;
+    }
   }
 
   close(): void {

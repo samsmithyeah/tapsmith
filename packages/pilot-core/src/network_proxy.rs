@@ -51,6 +51,9 @@ pub struct CapturedEntry {
     pub request_body: Vec<u8>,
     pub response_body: Vec<u8>,
     pub is_https: bool,
+    /// How this request was handled by a route: "mocked", "aborted",
+    /// "continued", "fetched", or "" (no route matched / passthrough).
+    pub route_action: String,
 }
 
 /// A decoded HTTP request, structured for transformation hooks.
@@ -81,22 +84,35 @@ pub(crate) struct ParsedResponse {
 
 /// Hook trait for request/response transformation and synthetic responses.
 ///
-/// All methods have no-op defaults. PILOT-182 adds the insertion points but
-/// no actual handler implementations — request/response modification is a
-/// separate roadmap feature that will build on this scaffolding.
+/// All methods have no-op defaults. PILOT-182 adds the insertion points;
+/// `route_handler::RouteInterceptHandler` provides the live implementation
+/// that bridges requests to the SDK's `device.route()` handlers.
 #[async_trait::async_trait]
 pub(crate) trait NetworkHandler: Send + Sync {
     /// Inspect (and optionally mutate) a request before it's forwarded to
     /// upstream. If this returns `Some(resp)`, the upstream call is skipped
-    /// and `resp` is returned directly to the client — this is how synthetic
-    /// responses / route-stubbing will work in the future.
-    async fn on_request(&self, _req: &mut ParsedRequest) -> Option<ParsedResponse> {
+    /// and `resp` is returned directly to the client (route fulfillment /
+    /// abort). `hostname` and `is_https` are provided so the handler can
+    /// reconstruct the full URL.
+    async fn on_request(
+        &self,
+        _req: &mut ParsedRequest,
+        _hostname: &str,
+        _is_https: bool,
+    ) -> Option<ParsedResponse> {
         None
     }
 
     /// Inspect (and optionally mutate) a response before it's written back
-    /// to the client. Used for header/body rewriting.
-    async fn on_response(&self, _req: &ParsedRequest, _resp: &mut ParsedResponse) {}
+    /// to the client. Used for header/body rewriting and event notifications.
+    async fn on_response(
+        &self,
+        _req: &ParsedRequest,
+        _hostname: &str,
+        _is_https: bool,
+        _resp: &mut ParsedResponse,
+    ) {
+    }
 }
 
 /// Shared state for the proxy server.
@@ -229,6 +245,20 @@ impl NetworkProxy {
     pub async fn set_network_hosts(&self, hosts: Vec<String>) {
         let mut state = self.state.lock().await;
         state.network_hosts = hosts;
+    }
+
+    /// Set a [`NetworkHandler`] implementation on the proxy. Requests
+    /// arriving after this call will be routed through the handler's
+    /// `on_request` / `on_response` hooks. Used by the `NetworkRoute`
+    /// streaming RPC to install the route interception handler.
+    pub async fn set_handler(&self, handler: Arc<dyn NetworkHandler>) {
+        self.state.lock().await.handler = Some(handler);
+    }
+
+    /// Remove the active handler. Subsequent requests pass through
+    /// unmodified.
+    pub async fn clear_handler(&self) {
+        self.state.lock().await.handler = None;
     }
 
     /// Clear any captured entries without stopping the proxy. Used when a
@@ -426,6 +456,7 @@ fn connect_error_entry(target: &str) -> CapturedEntry {
         request_body: Vec::new(),
         response_body: Vec::new(),
         is_https: true,
+        route_action: String::new(),
     }
 }
 
@@ -1214,6 +1245,7 @@ async fn record_entry(
     hostname: &str,
     is_https: bool,
     start_ms: u64,
+    route_action: &str,
 ) {
     let scheme = if is_https { "https" } else { "http" };
     let url = format!("{scheme}://{hostname}{}", req.path);
@@ -1252,6 +1284,7 @@ async fn record_entry(
         request_body: truncate(&req.body),
         response_body: truncate(&resp.body),
         is_https,
+        route_action: route_action.to_string(),
     });
 }
 
@@ -1301,7 +1334,7 @@ async fn handle_mitm_http<C, U>(
         // so we skip the re-encode there — it's wasted work (`record_entry`
         // reads structured fields, not `raw_bytes`).
         if let Some(h) = handler.as_ref() {
-            if let Some(mut synth) = h.on_request(&mut req).await {
+            if let Some(mut synth) = h.on_request(&mut req, hostname, is_https).await {
                 if synth.raw_bytes.is_empty() {
                     synth.raw_bytes = reencode_response(&synth);
                 }
@@ -1309,7 +1342,12 @@ async fn handle_mitm_http<C, U>(
                     return;
                 }
                 let close = has_connection_close(&synth.headers);
-                record_entry(&state, &req, &synth, hostname, is_https, start).await;
+                let action = if synth.status_code == 0 {
+                    "aborted"
+                } else {
+                    "mocked"
+                };
+                record_entry(&state, &req, &synth, hostname, is_https, start, action).await;
                 if close {
                     return;
                 }
@@ -1333,7 +1371,7 @@ async fn handle_mitm_http<C, U>(
         // Same `raw_bytes` regeneration rule — keep wire bytes in sync with
         // the structured fields after any mutation.
         if let Some(h) = handler.as_ref() {
-            h.on_response(&req, &mut resp).await;
+            h.on_response(&req, hostname, is_https, &mut resp).await;
             resp.raw_bytes = reencode_response(&resp);
         }
 
@@ -1346,7 +1384,7 @@ async fn handle_mitm_http<C, U>(
         // response's Connection: close is honored, request's is ignored.
         let connection_close = has_connection_close(&resp.headers);
 
-        record_entry(&state, &req, &resp, hostname, is_https, start).await;
+        record_entry(&state, &req, &resp, hostname, is_https, start, "").await;
 
         if connection_close {
             return;
@@ -1459,6 +1497,35 @@ async fn handle_http(
         request_body.extend_from_slice(&body_buf);
     }
 
+    // Check handler for route interception before forwarding upstream.
+    let handler = state.lock().await.handler.clone();
+    if let Some(h) = handler.as_ref() {
+        let mut parsed_req = ParsedRequest {
+            method: method.to_string(),
+            path: path.clone(),
+            headers: req_headers.clone(),
+            body: request_body.clone(),
+            raw_bytes: Vec::new(),
+        };
+        let hostname = host.split(':').next().unwrap_or(&host);
+        if let Some(mut synth) = h.on_request(&mut parsed_req, hostname, false).await {
+            // Handler returned a synthetic response — send it to the client.
+            if synth.raw_bytes.is_empty() {
+                synth.raw_bytes = reencode_response(&synth);
+            }
+            let _ = client.write_all(&synth.raw_bytes).await;
+            let action = if synth.status_code == 0 {
+                "aborted"
+            } else {
+                "mocked"
+            };
+            record_entry(&state, &parsed_req, &synth, hostname, false, start, action).await;
+            return;
+        }
+        // Handler may have mutated the request — update local vars.
+        // (For plain HTTP, we rebuild the request line below anyway.)
+    }
+
     // Rebuild the request with a relative path for the upstream server
     let mut upstream_request = format!("{method} {path} HTTP/1.1\r\n");
     let mut has_connection = false;
@@ -1519,6 +1586,7 @@ async fn handle_http(
                 request_body,
                 response_body: Vec::new(),
                 is_https: false,
+                route_action: String::new(),
             });
             return;
         }
@@ -1603,6 +1671,7 @@ async fn handle_http(
             response_body
         },
         is_https: false,
+        route_action: String::new(),
     });
 }
 

@@ -1,0 +1,705 @@
+/**
+ * Network route interception — Playwright-style `device.route()` API.
+ *
+ * Provides Route, PilotRequest, and the internal NetworkRouteManager that
+ * bridges TypeScript route handlers to the Rust daemon's MITM proxy via a
+ * bidirectional gRPC stream.
+ */
+
+import * as crypto from 'node:crypto';
+import * as fs from 'node:fs';
+import type * as grpc from '@grpc/grpc-js';
+import type { PilotGrpcClient } from './grpc-client.js';
+
+// ─── Public Types ───
+
+/** An intercepted HTTP request. */
+export class PilotRequest {
+  readonly method: string;
+  readonly url: string;
+  readonly headers: Record<string, string>;
+  readonly postData: Buffer | null;
+  readonly isHttps: boolean;
+
+  /** @internal */
+  constructor(data: {
+    method: string
+    url: string
+    headers: Array<{ name: string; value: string }>
+    body: Buffer | Uint8Array | null
+    isHttps: boolean
+  }) {
+    this.method = data.method;
+    this.url = data.url;
+    this.headers = {};
+    for (const h of data.headers) {
+      this.headers[h.name.toLowerCase()] = h.value;
+    }
+    this.postData = data.body && data.body.length > 0 ? Buffer.from(data.body) : null;
+    this.isHttps = data.isHttps;
+  }
+}
+
+/** Options for `route.continue()`. */
+export interface RouteContinueOptions {
+  url?: string
+  method?: string
+  headers?: Record<string, string>
+  postData?: string | Buffer
+}
+
+/** Options for `route.fulfill()`. */
+export interface RouteFulfillOptions {
+  status?: number
+  headers?: Record<string, string>
+  body?: string | Buffer
+  contentType?: string
+  /** Convenience: serialize as JSON and set content-type. */
+  json?: unknown
+  /** Read body from a file path. */
+  path?: string
+}
+
+/** A route handler receives this object to decide how to handle the request. */
+export class Route {
+  private _interceptId: string;
+  private _request: PilotRequest;
+  private _resolved = false;
+  private _sendDecision: (decision: RouteDecisionMsg) => void;
+  private _awaitFetchedResponse: (() => Promise<FetchedResponseMsg>) | null = null;
+
+  /** @internal */
+  constructor(
+    interceptId: string,
+    request: PilotRequest,
+    sendDecision: (decision: RouteDecisionMsg) => void,
+    awaitFetchedResponse: () => Promise<FetchedResponseMsg>,
+  ) {
+    this._interceptId = interceptId;
+    this._request = request;
+    this._sendDecision = sendDecision;
+    this._awaitFetchedResponse = awaitFetchedResponse;
+  }
+
+  /** The intercepted request. */
+  request(): PilotRequest {
+    return this._request;
+  }
+
+  /** Abort the request. */
+  async abort(errorCode?: string): Promise<void> {
+    this._ensureNotResolved();
+    this._resolved = true;
+    this._sendDecision({
+      interceptId: this._interceptId,
+      abort: { errorCode: errorCode ?? '' },
+    });
+  }
+
+  /** Continue the request with optional overrides. */
+  async continue(overrides?: RouteContinueOptions): Promise<void> {
+    this._ensureNotResolved();
+    this._resolved = true;
+    this._sendDecision({
+      interceptId: this._interceptId,
+      continueRequest: {
+        url: overrides?.url ?? '',
+        method: overrides?.method ?? '',
+        headers: overrides?.headers
+          ? Object.entries(overrides.headers).map(([name, value]) => ({ name, value }))
+          : [],
+        postData: overrides?.postData
+          ? Buffer.from(overrides.postData)
+          : Buffer.alloc(0),
+      },
+    });
+  }
+
+  /** Fulfill the request with a mock response. */
+  async fulfill(options?: RouteFulfillOptions): Promise<void> {
+    this._ensureNotResolved();
+    this._resolved = true;
+
+    let body: Buffer = Buffer.alloc(0);
+    let contentType = options?.contentType ?? '';
+
+    if (options?.json !== undefined) {
+      body = Buffer.from(JSON.stringify(options.json));
+      if (!contentType) contentType = 'application/json';
+    } else if (options?.path) {
+      body = fs.readFileSync(options.path);
+    } else if (options?.body !== undefined) {
+      body = Buffer.from(options.body);
+    }
+
+    this._sendDecision({
+      interceptId: this._interceptId,
+      fulfill: {
+        status: options?.status ?? 200,
+        headers: options?.headers
+          ? Object.entries(options.headers).map(([name, value]) => ({ name, value }))
+          : [],
+        body,
+        contentType,
+      },
+    });
+  }
+
+  /** Fetch the actual response from upstream, allowing modification. */
+  async fetch(overrides?: RouteContinueOptions): Promise<FetchedAPIResponse> {
+    this._ensureNotResolved();
+
+    // Send a RouteFetch decision
+    this._sendDecision({
+      interceptId: this._interceptId,
+      fetch: {
+        url: overrides?.url ?? '',
+        method: overrides?.method ?? '',
+        headers: overrides?.headers
+          ? Object.entries(overrides.headers).map(([name, value]) => ({ name, value }))
+          : [],
+        postData: overrides?.postData
+          ? Buffer.from(overrides.postData)
+          : Buffer.alloc(0),
+      },
+    });
+
+    // Wait for the daemon to send back the real upstream response
+    const fetched = await this._awaitFetchedResponse!();
+
+    const headers: Record<string, string> = {};
+    for (const h of fetched.headers ?? []) {
+      headers[h.name.toLowerCase()] = h.value;
+    }
+
+    // Replace _sendDecision so the next route.fulfill() sends
+    // fulfill_after_fetch instead of a regular fulfill.
+    const originalSend = this._sendDecision;
+    this._resolved = false;
+    this._sendDecision = (decision: RouteDecisionMsg) => {
+      if (decision.fulfill) {
+        originalSend({
+          interceptId: this._interceptId,
+          fulfillAfterFetch: decision.fulfill,
+        });
+      } else {
+        originalSend(decision);
+      }
+    };
+
+    return new FetchedAPIResponse(fetched.status, headers, Buffer.from(fetched.body ?? []));
+  }
+
+  private _ensureNotResolved(): void {
+    if (this._resolved) {
+      throw new Error('Route has already been handled');
+    }
+  }
+}
+
+/** Response returned by `route.fetch()` — wraps the real upstream response. */
+export class FetchedAPIResponse {
+  readonly status: number;
+  readonly headers: Record<string, string>;
+  private readonly _body: Buffer;
+
+  constructor(status: number, headers: Record<string, string>, body: Buffer) {
+    this.status = status;
+    this.headers = headers;
+    this._body = body;
+  }
+
+  body(): Buffer {
+    return this._body;
+  }
+
+  text(): string {
+    return this._body.toString('utf-8');
+  }
+
+  json(): unknown {
+    return JSON.parse(this.text());
+  }
+}
+
+// ─── Internal Types (proto message shapes) ───
+
+interface HeaderEntry {
+  name: string
+  value: string
+}
+
+interface RouteDecisionMsg {
+  interceptId: string
+  abort?: { errorCode: string }
+  continueRequest?: {
+    url: string
+    method: string
+    headers: HeaderEntry[]
+    postData: Buffer
+  }
+  fulfill?: {
+    status: number
+    headers: HeaderEntry[]
+    body: Buffer
+    contentType: string
+  }
+  fetch?: {
+    url: string
+    method: string
+    headers: HeaderEntry[]
+    postData: Buffer
+  }
+  fulfillAfterFetch?: {
+    status: number
+    headers: HeaderEntry[]
+    body: Buffer
+    contentType: string
+  }
+}
+
+interface InterceptedRequestMsg {
+  interceptId: string
+  routeId: string
+  method: string
+  url: string
+  headers: HeaderEntry[]
+  body: Buffer | Uint8Array
+  isHttps: boolean
+}
+
+interface FetchedResponseMsg {
+  interceptId: string
+  status: number
+  headers: HeaderEntry[]
+  body: Buffer | Uint8Array
+}
+
+interface RegisteredRouteInfo {
+  routeId: string
+  urlPattern: string
+  handler: (route: Route) => Promise<void> | void
+  timesRemaining?: number
+}
+
+// ─── URL Pattern Matching ───
+
+/** Match a URL against a glob/regex/predicate pattern (used SDK-side for event filtering). */
+export function matchUrlPattern(
+  url: string,
+  pattern: string | RegExp | ((url: URL) => boolean),
+): boolean {
+  if (typeof pattern === 'string') {
+    return globMatch(pattern, url);
+  } else if (pattern instanceof RegExp) {
+    return pattern.test(url);
+  } else {
+    try {
+      return pattern(new URL(url));
+    } catch {
+      return false;
+    }
+  }
+}
+
+function globMatch(pattern: string, url: string): boolean {
+  const re = globToRegex(pattern);
+  return re.test(url);
+}
+
+function globToRegex(pattern: string): RegExp {
+  let re = '^';
+  const chars = [...pattern];
+  let i = 0;
+
+  while (i < chars.length) {
+    if (chars[i] === '*') {
+      if (i + 1 < chars.length && chars[i + 1] === '*') {
+        re += '.*';
+        i += 2;
+        if (i < chars.length && chars[i] === '/') {
+          re += '(?:/)?';
+          i++;
+        }
+      } else {
+        re += '[^/]*';
+        i++;
+      }
+    } else if (chars[i] === '?') {
+      re += '[^/]';
+      i++;
+    } else if (chars[i] === '{') {
+      const close = chars.indexOf('}', i);
+      if (close !== -1) {
+        const group = chars.slice(i + 1, close).join('');
+        const alts = group.split(',').map(escapeRegex).join('|');
+        re += `(${alts})`;
+        i = close + 1;
+      } else {
+        re += escapeRegex(chars[i]);
+        i++;
+      }
+    } else {
+      re += escapeRegex(chars[i]);
+      i++;
+    }
+  }
+
+  re += '$';
+  return new RegExp(re);
+}
+
+function escapeRegex(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+/** Convert a URL pattern to the glob string sent to the daemon. */
+function patternToGlob(pattern: string | RegExp | ((url: URL) => boolean)): string {
+  if (typeof pattern === 'string') {
+    return pattern;
+  }
+  // For RegExp and predicate patterns, we use a catch-all glob on the daemon
+  // and do the filtering SDK-side in the handler dispatch.
+  return '**';
+}
+
+// ─── NetworkRouteManager ───
+
+/**
+ * Manages the bidirectional gRPC stream for network route interception.
+ * Opened lazily on the first `device.route()` call.
+ * @internal
+ */
+export class NetworkRouteManager {
+  private _client: PilotGrpcClient;
+  private _stream: grpc.ClientDuplexStream<unknown, unknown> | null = null;
+  private _routes: Map<string, RegisteredRouteInfo> = new Map();
+  private _pendingFetches: Map<string, (resp: FetchedResponseMsg) => void> = new Map();
+  private _requestListeners: Set<(req: PilotRequest) => void> = new Set();
+  private _responseListeners: Set<(resp: NetworkResponseEventData) => void> = new Set();
+  private _disposed = false;
+
+  constructor(client: PilotGrpcClient) {
+    this._client = client;
+  }
+
+  /** Lazily open the bidi stream. */
+  private _ensureStream(): grpc.ClientDuplexStream<unknown, unknown> {
+    if (this._stream) return this._stream;
+
+    const stream = this._client.networkRouteStream();
+    this._stream = stream;
+
+    stream.on('data', (msg: ServerMessage) => {
+      this._onServerMessage(msg);
+    });
+
+    stream.on('error', (err: Error) => {
+      // CANCELLED is expected when we close the stream
+      if (!(err as grpc.ServiceError).code || (err as grpc.ServiceError).code !== 1) {
+         
+        console.warn('[pilot] NetworkRoute stream error:', err.message);
+      }
+    });
+
+    stream.on('end', () => {
+      this._stream = null;
+    });
+
+    return stream;
+  }
+
+  /** Register a route handler. */
+  async addRoute(
+    pattern: string | RegExp | ((url: URL) => boolean),
+    handler: (route: Route) => Promise<void> | void,
+    options?: { times?: number },
+  ): Promise<void> {
+    const routeId = crypto.randomUUID();
+    const urlPattern = patternToGlob(pattern);
+
+    this._routes.set(routeId, {
+      routeId,
+      urlPattern,
+      handler,
+      timesRemaining: options?.times,
+    });
+
+    const stream = this._ensureStream();
+
+    return new Promise<void>((resolve, reject) => {
+      const onResponse = (msg: ServerMessage) => {
+        if (msg.registerRouteResponse?.routeId === routeId) {
+          stream.removeListener('data', onResponse);
+          if (msg.registerRouteResponse.success) {
+            resolve();
+          } else {
+            this._routes.delete(routeId);
+            reject(new Error(msg.registerRouteResponse.errorMessage || 'Failed to register route'));
+          }
+        }
+      };
+      stream.on('data', onResponse);
+
+      stream.write({
+        registerRoute: {
+          routeId,
+          urlPattern,
+        },
+      });
+    });
+  }
+
+  /** Remove a route handler. */
+  async removeRoute(
+    pattern: string | RegExp | ((url: URL) => boolean),
+    handler?: (route: Route) => Promise<void> | void,
+  ): Promise<void> {
+    const glob = patternToGlob(pattern);
+    const toRemove: string[] = [];
+
+    for (const [id, info] of this._routes) {
+      if (info.urlPattern === glob) {
+        if (!handler || info.handler === handler) {
+          toRemove.push(id);
+        }
+      }
+    }
+
+    for (const id of toRemove) {
+      this._routes.delete(id);
+      this._stream?.write({
+        unregisterRoute: { routeId: id },
+      });
+    }
+  }
+
+  /** Remove all routes. */
+  async removeAllRoutes(): Promise<void> {
+    const ids = [...this._routes.keys()];
+    for (const id of ids) {
+      this._routes.delete(id);
+      this._stream?.write({
+        unregisterRoute: { routeId: id },
+      });
+    }
+  }
+
+  /** Subscribe to request events. */
+  addRequestListener(handler: (req: PilotRequest) => void): void {
+    this._requestListeners.add(handler);
+    if (this._requestListeners.size === 1 && this._responseListeners.size === 0) {
+      const stream = this._ensureStream();
+      stream.write({ subscribeEvents: {} });
+    }
+  }
+
+  /** Unsubscribe from request events. */
+  removeRequestListener(handler: (req: PilotRequest) => void): void {
+    this._requestListeners.delete(handler);
+    if (this._requestListeners.size === 0 && this._responseListeners.size === 0 && this._stream) {
+      this._stream.write({ unsubscribeEvents: {} });
+    }
+  }
+
+  /** Subscribe to response events. */
+  addResponseListener(handler: (resp: NetworkResponseEventData) => void): void {
+    this._responseListeners.add(handler);
+    if (this._responseListeners.size === 1 && this._requestListeners.size === 0) {
+      const stream = this._ensureStream();
+      stream.write({ subscribeEvents: {} });
+    }
+  }
+
+  /** Unsubscribe from response events. */
+  removeResponseListener(handler: (resp: NetworkResponseEventData) => void): void {
+    this._responseListeners.delete(handler);
+    if (this._responseListeners.size === 0 && this._requestListeners.size === 0 && this._stream) {
+      this._stream.write({ unsubscribeEvents: {} });
+    }
+  }
+
+  /** Whether any routes are registered. */
+  get hasRoutes(): boolean {
+    return this._routes.size > 0;
+  }
+
+  /** Close the stream and clean up. */
+  async dispose(): Promise<void> {
+    if (this._disposed) return;
+    this._disposed = true;
+
+    this._routes.clear();
+    this._pendingFetches.clear();
+    this._requestListeners.clear();
+    this._responseListeners.clear();
+
+    if (this._stream) {
+      this._stream.end();
+      this._stream = null;
+    }
+  }
+
+  /** Handle an incoming server message. */
+  private _onServerMessage(msg: ServerMessage): void {
+    if (msg.interceptedRequest) {
+      this._handleInterceptedRequest(msg.interceptedRequest);
+    } else if (msg.fetchedResponse) {
+      this._handleFetchedResponse(msg.fetchedResponse);
+    } else if (msg.requestEvent) {
+      this._handleRequestEvent(msg.requestEvent);
+    } else if (msg.responseEvent) {
+      this._handleResponseEvent(msg.responseEvent);
+    }
+    // registerRouteResponse / unregisterRouteResponse handled inline
+  }
+
+  /** Dispatch an intercepted request to the matching route handler. */
+  private _handleInterceptedRequest(msg: InterceptedRequestMsg): void {
+    const routeInfo = this._routes.get(msg.routeId);
+    if (!routeInfo) {
+      // Route was removed while request was in flight — continue upstream
+      this._stream?.write({
+        routeDecision: {
+          interceptId: msg.interceptId,
+          continueRequest: { url: '', method: '', headers: [], postData: Buffer.alloc(0) },
+        },
+      });
+      return;
+    }
+
+    // Check times remaining
+    if (routeInfo.timesRemaining !== undefined) {
+      routeInfo.timesRemaining--;
+      if (routeInfo.timesRemaining <= 0) {
+        this._routes.delete(routeInfo.routeId);
+        this._stream?.write({
+          unregisterRoute: { routeId: routeInfo.routeId },
+        });
+      }
+    }
+
+    const request = new PilotRequest({
+      method: msg.method,
+      url: msg.url,
+      headers: msg.headers,
+      body: msg.body,
+      isHttps: msg.isHttps,
+    });
+
+    const sendDecision = (decision: RouteDecisionMsg) => {
+      this._stream?.write({ routeDecision: decision });
+    };
+
+    const awaitFetchedResponse = (): Promise<FetchedResponseMsg> => {
+      return new Promise<FetchedResponseMsg>((resolve) => {
+        this._pendingFetches.set(msg.interceptId, resolve);
+      });
+    };
+
+    const route = new Route(msg.interceptId, request, sendDecision, awaitFetchedResponse);
+
+    // Run the handler. If it throws or rejects, continue the request.
+    Promise.resolve()
+      .then(() => routeInfo.handler(route))
+      .catch((err) => {
+         
+        console.warn(`[pilot] Route handler error: ${err}`);
+        // Fail-open: continue the request
+        this._stream?.write({
+          routeDecision: {
+            interceptId: msg.interceptId,
+            continueRequest: { url: '', method: '', headers: [], postData: Buffer.alloc(0) },
+          },
+        });
+      });
+  }
+
+  /** Deliver a fetched response to the pending fetch promise. */
+  private _handleFetchedResponse(msg: FetchedResponseMsg): void {
+    const resolve = this._pendingFetches.get(msg.interceptId);
+    if (resolve) {
+      this._pendingFetches.delete(msg.interceptId);
+      resolve(msg);
+    }
+  }
+
+  /** Notify request event listeners. */
+  private _handleRequestEvent(msg: RequestEventMsg): void {
+    const request = new PilotRequest({
+      method: msg.method,
+      url: msg.url,
+      headers: msg.headers,
+      body: msg.body,
+      isHttps: msg.isHttps,
+    });
+    for (const listener of this._requestListeners) {
+      try {
+        listener(request);
+      } catch {
+        // ignore listener errors
+      }
+    }
+  }
+
+  /** Notify response event listeners. */
+  private _handleResponseEvent(msg: ResponseEventMsg): void {
+    const data: NetworkResponseEventData = {
+      method: msg.method,
+      url: msg.url,
+      status: msg.status,
+      headers: {},
+      body: msg.body ? Buffer.from(msg.body) : null,
+      routeAction: msg.routeAction || undefined,
+    };
+    for (const h of msg.headers ?? []) {
+      data.headers[h.name.toLowerCase()] = h.value;
+    }
+    for (const listener of this._responseListeners) {
+      try {
+        listener(data);
+      } catch {
+        // ignore listener errors
+      }
+    }
+  }
+}
+
+/** Data emitted for response events. */
+export interface NetworkResponseEventData {
+  method: string
+  url: string
+  status: number
+  headers: Record<string, string>
+  body: Buffer | null
+  routeAction?: string
+}
+
+// ─── Internal server message shape (from proto) ───
+
+interface ServerMessage {
+  registerRouteResponse?: { routeId: string; success: boolean; errorMessage: string }
+  unregisterRouteResponse?: { routeId: string; success: boolean }
+  interceptedRequest?: InterceptedRequestMsg
+  fetchedResponse?: FetchedResponseMsg
+  requestEvent?: RequestEventMsg
+  responseEvent?: ResponseEventMsg
+}
+
+interface RequestEventMsg {
+  method: string
+  url: string
+  headers: HeaderEntry[]
+  body: Buffer | Uint8Array
+  isHttps: boolean
+  routeAction: string
+}
+
+interface ResponseEventMsg {
+  method: string
+  url: string
+  status: number
+  headers: HeaderEntry[]
+  body: Buffer | Uint8Array
+  routeAction: string
+}

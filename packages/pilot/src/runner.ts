@@ -830,6 +830,11 @@ async function runSuiteContext(
       );
     }
 
+    // Clean up route interception before stopping network capture
+    if (opts.device?._disposeRouteManager) {
+      await opts.device._disposeRouteManager();
+    }
+
     // Finalize trace recording
     if (traceCollector && opts.device) {
       // Stop network capture and collect raw entries
@@ -917,6 +922,7 @@ async function runSuiteContext(
           responseHeaders: e.responseHeadersJson ? JSON.parse(e.responseHeadersJson) : {},
           requestBody: e.requestBody,
           responseBody: e.responseBody,
+          routeAction: e.routeAction ? e.routeAction as 'mocked' | 'aborted' | 'continued' | 'fetched' : undefined,
         }));
 
       }

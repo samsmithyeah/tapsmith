@@ -9,6 +9,7 @@ mod mitm_ca;
 mod network_proxy;
 mod pac;
 mod platform;
+mod route_handler;
 mod screenshot;
 
 use std::net::SocketAddr;

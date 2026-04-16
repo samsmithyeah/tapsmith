@@ -1,3 +1,4 @@
+import * as preact from 'preact';
 import { useState, useMemo } from 'preact/hooks';
 import type { NetworkEntry } from '../../trace/types.js';
 
@@ -43,6 +44,13 @@ const NETWORK_STYLES = `
   .net-header-value { color: var(--color-string); word-break: break-all; }
   .net-body-block { background: var(--color-bg); border: 1px solid var(--color-border); border-radius: 3px; padding: 8px; font-family: 'SF Mono', 'Cascadia Code', Consolas, monospace; font-size: 11px; color: var(--color-text-secondary); white-space: pre-wrap; word-break: break-all; max-height: 200px; overflow-y: auto; }
 
+  .net-route-badge { display: inline-block; padding: 1px 5px; border-radius: 3px; font-size: 9px; font-weight: 700; letter-spacing: 0.3px; text-transform: uppercase; margin-left: 6px; vertical-align: middle; }
+  .net-route-mocked { background: #7c3aed22; color: #7c3aed; border: 1px solid #7c3aed44; }
+  .net-route-aborted { background: #ef444422; color: #ef4444; border: 1px solid #ef444444; }
+  .net-route-continued { background: #eab30822; color: #ca8a04; border: 1px solid #eab30844; }
+  .net-route-fetched { background: #3b82f622; color: #3b82f6; border: 1px solid #3b82f644; }
+  .net-status-aborted { color: var(--color-error); font-style: italic; }
+
   .net-empty { color: var(--color-text-faintest); font-size: 12px; padding: 24px; text-align: center; }
   .net-empty-note { color: var(--color-text-faintest); font-size: 11px; margin-top: 6px; }
   .net-table-wrapper { flex: 1; overflow-y: auto; }
@@ -64,7 +72,7 @@ interface Props {
   bodies: Map<string, string>
 }
 
-type StatusFilter = 'all' | '2xx' | '3xx' | '4xx' | '5xx'
+type StatusFilter = 'all' | '2xx' | '3xx' | '4xx' | '5xx' | 'mocked'
 
 type SortColumn = 'method' | 'url' | 'status' | 'type' | 'duration' | 'size'
 type SortDirection = 'asc' | 'desc'
@@ -126,11 +134,19 @@ function formatBody(body: string, contentType: string): string {
   }
 }
 
-function matchesStatusFilter(status: number, filter: StatusFilter): boolean {
+function matchesStatusFilter(entry: NetworkEntry, filter: StatusFilter): boolean {
   if (filter === 'all') return true;
-  const prefix = Math.floor(status / 100);
+  if (filter === 'mocked') return !!entry.routeAction;
+  const prefix = Math.floor(entry.status / 100);
   const filterPrefix = parseInt(filter[0], 10);
   return prefix === filterPrefix;
+}
+
+function routeBadge(routeAction?: string): preact.JSX.Element | null {
+  if (!routeAction) return null;
+  const cls = `net-route-badge net-route-${routeAction}`;
+  const label = routeAction === 'continued' ? 'modified' : routeAction;
+  return <span class={cls}>{label}</span>;
 }
 
 // ─── Component ───
@@ -147,7 +163,7 @@ export function NetworkTab({ entries, bodies }: Props) {
   const filteredAndSorted = useMemo(() => {
     let result = entries.filter(e => {
       if (urlFilter && !e.url.toLowerCase().includes(urlFilter.toLowerCase())) return false;
-      if (!matchesStatusFilter(e.status, statusFilter)) return false;
+      if (!matchesStatusFilter(e, statusFilter)) return false;
       return true;
     });
 
@@ -194,7 +210,10 @@ export function NetworkTab({ entries, bodies }: Props) {
     );
   }
 
-  const STATUS_FILTERS: StatusFilter[] = ['all', '2xx', '3xx', '4xx', '5xx'];
+  const hasMocked = entries.some(e => !!e.routeAction);
+  const STATUS_FILTERS: StatusFilter[] = hasMocked
+    ? ['all', '2xx', '3xx', '4xx', '5xx', 'mocked']
+    : ['all', '2xx', '3xx', '4xx', '5xx'];
 
   return (
     <div class="net-container">
@@ -245,8 +264,10 @@ export function NetworkTab({ entries, bodies }: Props) {
                     onClick={() => handleRowClick(entry.index)}
                   >
                     <td class="net-method">{entry.method}</td>
-                    <td class="net-url">{truncateUrl(entry.url, 60)}</td>
-                    <td class={statusClass(entry.status)}>{entry.status}</td>
+                    <td class="net-url">{truncateUrl(entry.url, 60)}{routeBadge(entry.routeAction)}</td>
+                    <td class={entry.routeAction === 'aborted' ? 'net-status-aborted' : statusClass(entry.status)}>
+                      {entry.routeAction === 'aborted' ? 'ABORTED' : entry.status}
+                    </td>
                     <td class="net-type">{shortenContentType(entry.contentType)}</td>
                     <td class="net-duration">{entry.duration}ms</td>
                     <td class="net-size">{formatSize(entry.responseSize)}</td>

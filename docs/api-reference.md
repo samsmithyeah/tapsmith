@@ -419,6 +419,111 @@ Close the gRPC connection to the daemon.
 
 ---
 
+### Network Interception
+
+Pilot supports Playwright-style network interception. Route handlers let you mock, modify, or abort HTTP/HTTPS requests made by the app under test.
+
+#### `device.route(url, handler, options?): Promise<void>`
+
+Intercept network requests matching a URL pattern.
+
+- `url`: `string | RegExp | ((url: URL) => boolean)` — URL pattern (glob), regex, or predicate
+- `handler`: `(route: Route) => Promise<void> | void` — handler that decides how to handle the request
+- `options.times?`: `number` — how many times to intercept (then auto-remove)
+
+```ts
+await device.route('**/api/posts*', async (route) => {
+  await route.fulfill({ json: [{ id: 1, title: 'Mocked' }] })
+})
+```
+
+#### `device.unroute(url, handler?): Promise<void>`
+
+Remove a previously registered route handler. If `handler` is omitted, all handlers for the pattern are removed.
+
+#### `device.unrouteAll(): Promise<void>`
+
+Remove all registered route handlers.
+
+#### `device.waitForRequest(urlOrPredicate, options?): Promise<PilotRequest>`
+
+Wait for a network request matching the pattern.
+
+- `urlOrPredicate`: `string | RegExp | ((request: PilotRequest) => boolean)`
+- `options.timeout?`: `number` — timeout in ms (default: device timeout)
+
+#### `device.waitForResponse(urlOrPredicate, options?): Promise<NetworkResponseEventData>`
+
+Wait for a network response matching the pattern.
+
+#### `device.on(event, handler): void`
+
+Subscribe to network events: `'request'` or `'response'`.
+
+```ts
+device.on('request', (req) => console.log(req.url))
+device.on('response', (resp) => console.log(resp.status))
+```
+
+#### `device.off(event, handler): void`
+
+Unsubscribe from network events.
+
+### Route
+
+The `Route` object is passed to route handlers. It provides methods to decide how to handle the intercepted request.
+
+#### `route.request(): PilotRequest`
+
+Returns the intercepted request.
+
+#### `route.abort(errorCode?): Promise<void>`
+
+Abort the request. Optional `errorCode`: `'connectionrefused'`, `'connectionreset'`, `'timedout'`.
+
+#### `route.continue(overrides?): Promise<void>`
+
+Continue the request to the server with optional modifications.
+
+- `overrides.url?`: `string` — override the URL
+- `overrides.method?`: `string` — override the HTTP method
+- `overrides.headers?`: `Record<string, string>` — override headers
+- `overrides.postData?`: `string | Buffer` — override request body
+
+#### `route.fulfill(options?): Promise<void>`
+
+Return a mock response without contacting the server.
+
+- `options.status?`: `number` — HTTP status code (default: 200)
+- `options.headers?`: `Record<string, string>` — response headers
+- `options.body?`: `string | Buffer` — response body
+- `options.contentType?`: `string` — content-type header
+- `options.json?`: `unknown` — convenience: JSON-serializes and sets content-type
+- `options.path?`: `string` — read body from a file
+
+#### `route.fetch(overrides?): Promise<FetchedAPIResponse>`
+
+Fetch the actual response from the server. Returns a `FetchedAPIResponse` that you can inspect and modify before calling `route.fulfill()`.
+
+```ts
+await device.route('**/api/users/*', async (route) => {
+  const response = await route.fetch()
+  const data = response.json()
+  data.name = 'Modified'
+  await route.fulfill({ json: data })
+})
+```
+
+### PilotRequest
+
+Properties: `method`, `url`, `headers`, `postData`, `isHttps`.
+
+### FetchedAPIResponse
+
+Returned by `route.fetch()`. Properties: `status`, `headers`. Methods: `body()`, `text()`, `json()`.
+
+---
+
 ## ElementHandle
 
 An `ElementHandle` is a lazy reference to a UI element. It is returned by every `device.getBy*()` and `device.locator()` call, and supports chaining, queries, actions, and positional selection.
