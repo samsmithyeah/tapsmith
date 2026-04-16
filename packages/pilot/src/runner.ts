@@ -799,6 +799,16 @@ async function runSuiteContext(
       }
     }
 
+    // Clean up route interception between tests so routes don't leak
+    // across tests within the same describe block.
+    if (opts.device?._routeManager?.hasRoutes) {
+      try {
+        await opts.device._routeManager.removeAllRoutes();
+      } catch {
+        // best-effort cleanup
+      }
+    }
+
     // Collect soft assertion failures (PILOT-43)
     const softErrors = flushSoftErrors();
     if (softErrors.length > 0) {
