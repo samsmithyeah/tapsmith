@@ -79,12 +79,16 @@ export function TestExplorer(props: TestExplorerProps) {
   const parentMap = useMemo(() => buildParentMap(files), [files]);
   const [pendingIds, setPendingIds] = useState<Set<string>>(new Set());
 
-  // Clear pending IDs as nodes transition to running
+  // Clear pending IDs once the node actually transitions to 'running'.
+  // Previously this cleared pending whenever status wasn't 'idle', but for
+  // re-runs of already-passed/failed tests the status stays at its prior
+  // result until the server reports 'running' — keep them pending meanwhile
+  // so the UI shows immediate feedback on play-button click.
   useEffect(() => {
     if (pendingIds.size === 0) return;
     const stillPending = new Set<string>();
     const check = (node: TestTreeNode) => {
-      if (pendingIds.has(node.id) && node.status === 'idle') stillPending.add(node.id);
+      if (pendingIds.has(node.id) && node.status !== 'running') stillPending.add(node.id);
       node.children?.forEach(check);
     };
     files.forEach(check);
@@ -265,6 +269,7 @@ function TreeNode({ node, depth, parentProjectName, expandedNodes, selectedTestI
 
   const handleRun = useCallback((e: Event) => {
     e.stopPropagation();
+    onSelectTest(node.id);
     onSetPending(node.id);
     if (node.type === 'project') {
       onSend({ type: 'run-project', projectName: node.name });
@@ -273,7 +278,7 @@ function TreeNode({ node, depth, parentProjectName, expandedNodes, selectedTestI
     } else {
       onSend({ type: 'run-test', fullName: node.fullName, filePath: node.filePath, projectName: parentProjectName });
     }
-  }, [node, parentProjectName, onSend, onSetPending]);
+  }, [node, parentProjectName, onSend, onSelectTest, onSetPending]);
 
   const handleWatch = useCallback((e: Event) => {
     e.stopPropagation();
@@ -355,7 +360,10 @@ function TreeNode({ node, depth, parentProjectName, expandedNodes, selectedTestI
 // ─── Status icon ───
 
 function StatusIcon({ status, pending }: { status: TestTreeNode['status']; pending?: boolean }) {
-  if (pending && status === 'idle') {
+  // While pending (play clicked, run not yet reported as started) show the
+  // pulsing pending icon regardless of the previous result — a lingering
+  // passed/failed icon makes the UI feel unresponsive.
+  if (pending && status !== 'running') {
     return <span class="te-status-icon pending"><Circle size={STATUS_SIZE} /></span>;
   }
   switch (status) {

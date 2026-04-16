@@ -18,6 +18,8 @@ export interface TestTraceData {
   hierarchies: Map<string, string>;
   sources: Map<string, string>;
   network: NetworkEntry[];
+  /** Decoded network request/response bodies keyed by path (e.g. `network/res-0.bin`). */
+  networkBodies: Map<string, string>;
   /** File this test belongs to — used to scope clearing on re-runs. */
   filePath?: string;
   /** Path to the trace ZIP on the server (set when test completes). */
@@ -33,6 +35,14 @@ export function base64ToBlobUrl(base64: string): string {
   return URL.createObjectURL(new Blob([arr], { type: 'image/png' }));
 }
 
+/** Decode a base64-encoded body into a UTF-8 string for display. */
+export function base64ToUtf8(base64: string): string {
+  const bin = atob(base64);
+  const bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+  return new TextDecoder().decode(bytes);
+}
+
 /** Revoke all blob URLs in a trace's screenshot map to free memory. */
 export function revokeTraceScreenshots(data: TestTraceData): void {
   for (const blobUrl of data.screenshots.values()) {
@@ -41,7 +51,7 @@ export function revokeTraceScreenshots(data: TestTraceData): void {
 }
 
 export function emptyTraceData(filePath?: string): TestTraceData {
-  return { events: [], actionEvents: [], screenshots: new Map(), hierarchies: new Map(), sources: new Map(), network: [], filePath };
+  return { events: [], actionEvents: [], screenshots: new Map(), hierarchies: new Map(), sources: new Map(), network: [], networkBodies: new Map(), filePath };
 }
 
 /** Get existing trace data or create a new entry. */

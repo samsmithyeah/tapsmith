@@ -12,6 +12,7 @@
     "clean": "rm -rf dist",
     "build:trace-viewer": "vite build",
     "build:ui-mode": "vite build --config vite.config.ui-mode.ts",
+    "dev:ui-mode": "vite --config vite.config.ui-mode.ts",
     "lint": "eslint src/ --ignore-pattern src/trace-viewer/",
     "knip": "knip",
     "test": "vitest run",

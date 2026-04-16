@@ -186,13 +186,22 @@ async function handleRun(msg: UIRunMessage): Promise<void> {
     projectName: msg.projectName,
     testFilter: msg.testFilter,
     onNetworkEntries: (entries) => {
-      // Strip Buffer fields (not IPC-safe) before sending
-      const safe = entries.map((e) => ({
-        ...e,
-        requestBody: undefined,
-        responseBody: undefined,
-      }));
-      send({ type: 'network', entries: safe });
+      const bodies: Record<string, string> = {};
+      const safe = entries.map((e) => {
+        const copy = { ...e, requestBody: undefined, responseBody: undefined };
+        if (e.requestBody && e.requestBody.length > 0) {
+          const p = `network/req-${e.index}.bin`;
+          bodies[p] = e.requestBody.toString('base64');
+          copy.requestBodyPath = p;
+        }
+        if (e.responseBody && e.responseBody.length > 0) {
+          const p = `network/res-${e.index}.bin`;
+          bodies[p] = e.responseBody.toString('base64');
+          copy.responseBodyPath = p;
+        }
+        return copy;
+      });
+      send({ type: 'network', entries: safe, bodies });
     },
   });
 

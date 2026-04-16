@@ -7,6 +7,7 @@ import { useWebSocket } from './hooks/use-websocket.js';
 import {
   useTraceData,
   base64ToBlobUrl,
+  base64ToUtf8,
   revokeTraceScreenshots,
   emptyTraceData,
   getOrCreateTrace,
@@ -184,6 +185,7 @@ function App() {
   const hierarchies = currentTrace?.hierarchies ?? EMPTY_MAP;
   const sources = currentTrace?.sources ?? EMPTY_MAP;
   const networkEntries = currentTrace?.network ?? EMPTY_NETWORK;
+  const networkBodies = currentTrace?.networkBodies ?? EMPTY_MAP;
 
   // Metadata for trace viewer components
   const testDeviceSerial = useMemo(() => {
@@ -451,7 +453,7 @@ function App() {
           }
 
           const next = new Map(map);
-          next.set(key, { events, actionEvents, screenshots, hierarchies, sources: data.sources, network: data.network, filePath: data.filePath });
+          next.set(key, { events, actionEvents, screenshots, hierarchies, sources: data.sources, network: data.network, networkBodies: data.networkBodies, filePath: data.filePath });
           return next;
         });
 
@@ -474,8 +476,14 @@ function App() {
         if (!key) break;
         setTestTraces((prev) => {
           const { data, map } = getOrCreateTrace(key, prev);
+          const networkBodies = new Map(data.networkBodies);
+          if (msg.bodies) {
+            for (const [path, b64] of Object.entries(msg.bodies)) {
+              networkBodies.set(path, base64ToUtf8(b64));
+            }
+          }
           const next = new Map(map);
-          next.set(key, { ...data, network: msg.entries });
+          next.set(key, { ...data, network: msg.entries, networkBodies });
           return next;
         });
         break;
@@ -764,7 +772,7 @@ function App() {
           sources={sources}
           metadata={metadata}
           networkEntries={networkEntries}
-          networkBodies={EMPTY_MAP}
+          networkBodies={networkBodies}
         />
       }
     />

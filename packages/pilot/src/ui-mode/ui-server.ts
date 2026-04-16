@@ -117,6 +117,13 @@ export interface UIServerContext {
 
 export interface UIServerOptions {
   port?: number
+  /**
+   * When set, the UI server serves a thin HTML shell that loads the Preact
+   * SPA from a running Vite dev server at this URL (e.g. `http://localhost:5174`)
+   * instead of the bundled single-file HTML. Enables Preact Fast Refresh so
+   * frontend edits hot-swap without a full rebuild + CLI restart.
+   */
+  devUrl?: string
 }
 
 interface TaggedFile {
@@ -268,7 +275,9 @@ export async function startUIServer(
 
   let tsxBin: string | undefined;
   if (useTypeScript || resolvedDiscoverScript.endsWith('.ts') || resolvedWorkerScript.endsWith('.ts')) {
-    const pilotPkgDir = path.resolve(__dirname, '..');
+    // __dirname is packages/pilot/{src,dist}/ui-mode — the package root
+    // (where node_modules lives) is two levels up in both cases.
+    const pilotPkgDir = path.resolve(__dirname, '..', '..');
     const localTsx = path.join(pilotPkgDir, 'node_modules', '.bin', 'tsx');
     tsxBin = fs.existsSync(localTsx) ? localTsx : 'tsx';
   }
@@ -797,6 +806,7 @@ export async function startUIServer(
               testFullName: currentTestFullName,
               projectName,
               entries: response.entries,
+              bodies: response.bodies,
             });
             break;
           }
@@ -1417,7 +1427,7 @@ export async function startUIServer(
               break;
             }
             case 'network': {
-              broadcast({ type: 'network', testFullName: worker.currentTest ?? '', projectName: worker.currentFile?.projectName, entries: msg.entries });
+              broadcast({ type: 'network', testFullName: worker.currentTest ?? '', projectName: worker.currentFile?.projectName, entries: msg.entries, bodies: msg.bodies });
               break;
             }
             case 'file-done': {
@@ -1623,19 +1633,38 @@ export async function startUIServer(
     }
   }
 
-  /** Signal all busy workers to abort gracefully (finish current test, skip rest). */
+  /** Stop a parallel run by hard-killing any busy workers so their in-flight
+   * device operation is interrupted immediately, rather than waiting for the
+   * current test (or the whole file) to finish. Retired workers are respawned
+   * by ensureWorkersReady() before the next run. */
   function stopParallelRun(): void {
     parallelRunAborted = true;
 
     for (const worker of uiWorkers) {
-      if (worker.busy) {
-        // Send graceful abort — worker stays alive, no respawn needed
-        try { worker.process.send({ type: 'abort' } satisfies import('./ui-protocol.js').UIWorkerAbortMessage); } catch { /* IPC closed */ }
-      }
-    }
+      if (!worker.busy) continue;
 
-    // Don't force-resolve the dispatch promise — let file-done messages settle
-    // naturally so workers transition to !busy and the promise resolves cleanly.
+      // Mark retired FIRST so the worker's exit handler calls maybeResolve()
+      // instead of retireWorker() (which would re-queue the in-flight file
+      // and broadcast an 'error' worker status).
+      worker.retired = true;
+      const inFlight = worker.currentFile;
+      const inFlightTest = worker.currentTest;
+      worker.busy = false;
+      worker.currentFile = undefined;
+      worker.currentTest = undefined;
+
+      if (inFlight) {
+        // Reset the in-flight test to 'idle' so it doesn't stay stuck on
+        // 'running' in the UI after a stop — it'll re-run cleanly next time.
+        if (inFlightTest) {
+          updateTestStatus(inFlightTest, inFlight.filePath, 'idle', undefined, undefined, undefined, worker.id, inFlight.projectName);
+        }
+        broadcastFileStatus(inFlight.filePath, 'done', inFlight.projectName);
+      }
+      broadcastWorkerStatus(worker, 'idle');
+
+      try { worker.process.kill(); } catch { /* already dead */ }
+    }
   }
 
   /** Respawn any retired workers before starting a new run. */
@@ -2147,10 +2176,15 @@ export async function startUIServer(
   // ─── HTTP Server ───
 
   let spaHtml: string;
-  try {
-    spaHtml = fs.readFileSync(SPA_HTML_PATH, 'utf-8');
-  } catch {
-    spaHtml = buildFallbackHtml();
+  if (options.devUrl) {
+    spaHtml = buildDevShellHtml(options.devUrl);
+    console.log(`${YELLOW}UI mode dev shell — loading SPA from ${options.devUrl} (HMR enabled)${RESET}`);
+  } else {
+    try {
+      spaHtml = fs.readFileSync(SPA_HTML_PATH, 'utf-8');
+    } catch {
+      spaHtml = buildFallbackHtml();
+    }
   }
 
   const server = http.createServer((req, res) => {
@@ -2371,6 +2405,29 @@ export async function startUIServer(
       preserveEmulatorsForReuse(ctx.launchedEmulators);
     },
   };
+}
+
+// ─── Dev-shell HTML ───
+
+/**
+ * HTML shell used in dev mode: points the browser at a running Vite dev
+ * server for the SPA modules while the WebSocket still talks to this server.
+ */
+function buildDevShellHtml(devUrl: string): string {
+  const base = devUrl.replace(/\/+$/, '');
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Pilot UI Mode (dev)</title>
+  <script type="module" src="${base}/@vite/client"></script>
+  <script type="module" src="${base}/main.tsx"></script>
+</head>
+<body>
+  <div id="app"></div>
+</body>
+</html>`;
 }
 
 // ─── Fallback HTML ───

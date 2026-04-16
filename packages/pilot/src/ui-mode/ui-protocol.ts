@@ -201,6 +201,9 @@ export interface NetworkMessage {
    * configs so the same test under multiple projects doesn't collide. */
   projectName?: string
   entries: import('../trace/types.js').NetworkEntry[]
+  /** Request/response bodies keyed by path (e.g. `network/res-0.bin`).
+   * Encoded as base64; decoded lazily on the client when rendering. */
+  bodies?: Record<string, string>
 }
 
 export interface ErrorMessage {
@@ -421,6 +424,7 @@ export interface UIRunSourceMessage {
 export interface UIRunNetworkMessage {
   type: 'network'
   entries: import('../trace/types.js').NetworkEntry[]
+  bodies?: Record<string, string>
 }
 
 export interface UIRunErrorMessage {
@@ -550,6 +554,7 @@ export interface UIWorkerNetworkMessage {
   type: 'network'
   workerId: number
   entries: import('../trace/types.js').NetworkEntry[]
+  bodies?: Record<string, string>
 }
 
 /** UI worker → server: file execution completed. */

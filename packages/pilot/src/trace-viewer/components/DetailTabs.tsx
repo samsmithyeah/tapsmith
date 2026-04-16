@@ -36,33 +36,28 @@ export function DetailTabs({ event, events, hierarchies, sources, metadata, netw
     prevTestError.current = testError;
   }, [testError, event]);
 
-  const hasSources = sources.size > 0;
-  const hasHierarchy = hierarchies.size > 0;
-
   const consoleEvents = events.filter((e): e is ConsoleTraceEvent => e.type === 'console');
-  const hasConsole = consoleEvents.length > 0;
-  const hasNetwork = networkEntries.length > 0;
+  const failedCount = events.filter(e =>
+    (e.type === 'action' && !(e as ActionTraceEvent).success) ||
+    (e.type === 'assertion' && !(e as AssertionTraceEvent).passed),
+  ).length + (testError ? 1 : 0);
 
   return (
     <div class="detail-panel">
       <div class="detail-tabs-bar">
         <div class={`detail-tab${tab === 'call' ? ' active' : ''}`} onClick={() => setTab('call')}>Call</div>
         <div class={`detail-tab${tab === 'log' ? ' active' : ''}`} onClick={() => setTab('log')}>Log</div>
-        {hasConsole && (
-          <div class={`detail-tab${tab === 'console' ? ' active' : ''}`} onClick={() => setTab('console')}>Console</div>
-        )}
-        {hasSources && (
-          <div class={`detail-tab${tab === 'source' ? ' active' : ''}`} onClick={() => setTab('source')}>Source</div>
-        )}
-        {hasHierarchy && (
-          <div class={`detail-tab${tab === 'hierarchy' ? ' active' : ''}`} onClick={() => setTab('hierarchy')}>Hierarchy</div>
-        )}
-        {hasNetwork && (
-          <div class={`detail-tab${tab === 'network' ? ' active' : ''}`} onClick={() => setTab('network')}>Network</div>
-        )}
-        {hasError && (
-          <div class={`detail-tab${tab === 'errors' ? ' active' : ''}${hasError ? ' has-error' : ''}`} onClick={() => setTab('errors')}>Errors</div>
-        )}
+        <div class={`detail-tab${tab === 'console' ? ' active' : ''}`} onClick={() => setTab('console')}>
+          Console{consoleEvents.length > 0 && <span class="detail-tab-count">{consoleEvents.length}</span>}
+        </div>
+        <div class={`detail-tab${tab === 'source' ? ' active' : ''}`} onClick={() => setTab('source')}>Source</div>
+        <div class={`detail-tab${tab === 'hierarchy' ? ' active' : ''}`} onClick={() => setTab('hierarchy')}>Hierarchy</div>
+        <div class={`detail-tab${tab === 'network' ? ' active' : ''}`} onClick={() => setTab('network')}>
+          Network{networkEntries.length > 0 && <span class="detail-tab-count">{networkEntries.length}</span>}
+        </div>
+        <div class={`detail-tab${tab === 'errors' ? ' active' : ''}${hasError ? ' has-error' : ''}`} onClick={() => setTab('errors')}>
+          Errors{failedCount > 0 && <span class="detail-tab-count">{failedCount}</span>}
+        </div>
       </div>
       {testError && tab !== 'errors' && (
         <div class="test-error-banner" onClick={() => setTab('errors')}>
