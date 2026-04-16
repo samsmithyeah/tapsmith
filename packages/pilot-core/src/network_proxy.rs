@@ -252,6 +252,10 @@ impl NetworkProxy {
     /// changed) `trace.networkHosts`. Safe to call while the proxy is
     /// serving traffic — the next PAC fetch (or iOS re-evaluation) picks
     /// up the new list.
+    ///
+    /// Only called from `#[cfg(target_os = "macos")]` blocks (physical iOS
+    /// is macOS-only), so gated to avoid dead-code warnings on Linux CI.
+    #[cfg(target_os = "macos")]
     pub async fn set_network_hosts(&self, hosts: Vec<String>) {
         let mut state = self.state.lock().await;
         state.network_hosts = hosts;
