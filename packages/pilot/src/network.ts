@@ -398,9 +398,14 @@ export class NetworkRouteManager {
     });
 
     stream.on('error', (err: Error) => {
-      // CANCELLED is expected when we close the stream
-      if (!(err as grpc.ServiceError).code || (err as grpc.ServiceError).code !== 1) {
-         
+      // Drop the broken stream so subsequent operations don't try to
+      // write to it. Next ensureStream() call will reconnect.
+      this._stream = null;
+      // CANCELLED (1) and UNAVAILABLE (14) are expected during teardown
+      // and daemon reconnection — don't spam warnings for them.
+      const code = (err as grpc.ServiceError).code;
+      if (code !== 1 && code !== 14) {
+        // eslint-disable-next-line no-console
         console.warn('[pilot] NetworkRoute stream error:', err.message);
       }
     });
@@ -410,6 +415,17 @@ export class NetworkRouteManager {
     });
 
     return stream;
+  }
+
+  /** Best-effort write to the stream. Silently no-ops if the stream is down. */
+  private _safeWrite(msg: unknown): void {
+    if (!this._stream) return;
+    try {
+      this._stream.write(msg);
+    } catch {
+      // Stream closed between check and write — drop the message.
+      this._stream = null;
+    }
   }
 
   /** Register a route handler. */
@@ -476,7 +492,7 @@ export class NetworkRouteManager {
 
     for (const id of toRemove) {
       this._routes.delete(id);
-      this._stream?.write({
+      this._safeWrite({
         unregisterRoute: { routeId: id },
       });
     }
@@ -487,7 +503,7 @@ export class NetworkRouteManager {
     const ids = [...this._routes.keys()];
     for (const id of ids) {
       this._routes.delete(id);
-      this._stream?.write({
+      this._safeWrite({
         unregisterRoute: { routeId: id },
       });
     }
@@ -567,7 +583,7 @@ export class NetworkRouteManager {
     const routeInfo = this._routes.get(msg.routeId);
     if (!routeInfo) {
       // Route was removed while request was in flight — continue upstream
-      this._stream?.write({
+      this._safeWrite({
         routeDecision: {
           interceptId: msg.interceptId,
           continueRequest: { url: '', method: '', headers: [], postData: Buffer.alloc(0) },
@@ -581,7 +597,7 @@ export class NetworkRouteManager {
       routeInfo.timesRemaining--;
       if (routeInfo.timesRemaining <= 0) {
         this._routes.delete(routeInfo.routeId);
-        this._stream?.write({
+        this._safeWrite({
           unregisterRoute: { routeId: routeInfo.routeId },
         });
       }
@@ -602,7 +618,7 @@ export class NetworkRouteManager {
       else if (decision.fulfill || decision.fulfillAfterFetch) routeAction = 'fulfill';
       else if (decision.fetch) routeAction = 'fetch';
       else routeAction = 'continue';
-      this._stream?.write({ routeDecision: decision });
+      this._safeWrite({ routeDecision: decision });
     };
 
     const awaitFetchedResponse = (): Promise<FetchedResponseMsg> => {
@@ -625,7 +641,7 @@ export class NetworkRouteManager {
          
         console.warn(`[pilot] Route handler error: ${err}`);
         // Fail-open: continue the request
-        this._stream?.write({
+        this._safeWrite({
           routeDecision: {
             interceptId: msg.interceptId,
             continueRequest: { url: '', method: '', headers: [], postData: Buffer.alloc(0) },

@@ -640,7 +640,6 @@ async function runSuiteContext(
       // users whose trace has no network entries know exactly why and
       // exactly what to do.
       if (traceConfig.network) {
-        const captureStart = Date.now();
         try {
           const res = await opts.device._startNetworkCapture();
           if (!res.success && res.errorMessage) {
@@ -648,17 +647,6 @@ async function runSuiteContext(
           } else if (res.errorMessage) {
             _warnCaptureOnce('Network capture warning', res.errorMessage);
           }
-          traceCollector?.addActionEvent({
-            category: 'device',
-            action: 'startNetworkCapture',
-            duration: Date.now() - captureStart,
-            success: res.success,
-            error: res.success ? undefined : res.errorMessage,
-            hasScreenshotBefore: false,
-            hasScreenshotAfter: false,
-            hasHierarchyBefore: false,
-            hasHierarchyAfter: false,
-          });
         } catch (err) {
           _warnCaptureOnce(
             'Network capture failed to start',
@@ -862,19 +850,8 @@ async function runSuiteContext(
       // Stop network capture and collect raw entries
       let rawNetworkEntries: Awaited<ReturnType<typeof opts.device._stopNetworkCapture>>['entries'] | undefined;
       if (traceConfig.network) {
-        const captureStopStart = Date.now();
         try {
           const res = await opts.device._stopNetworkCapture();
-          traceCollector?.addActionEvent({
-            category: 'device',
-            action: 'stopNetworkCapture',
-            duration: Date.now() - captureStopStart,
-            success: res.success,
-            hasScreenshotBefore: false,
-            hasScreenshotAfter: false,
-            hasHierarchyBefore: false,
-            hasHierarchyAfter: false,
-          });
           if (res.success) {
             // Apply user-supplied host allowlist, if any. On physical iOS
             // the Wi-Fi proxy is system-wide and captures every app's

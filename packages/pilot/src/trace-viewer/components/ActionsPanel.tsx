@@ -37,8 +37,6 @@ const ACTION_ICONS: Record<string, [string, string]> = {
   'request.patch':  ['\u2192', 'api'],
   'request.delete': ['\u2717', 'api'],   // ✗
   'request.head':   ['\u2190', 'api'],
-  startNetworkCapture: ['\u25b6', 'net'], // ▶
-  stopNetworkCapture:  ['\u25a0', 'net'], // ■
   'route':          ['\u21cc', 'net'],   // ⇌
   'unroute':        ['\u21cc', 'net'],   // ⇌
   'unrouteAll':     ['\u21cc', 'net'],   // ⇌
