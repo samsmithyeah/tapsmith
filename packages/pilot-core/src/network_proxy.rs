@@ -2712,4 +2712,37 @@ mod tests {
         // raw_bytes must end with the chunked terminator, nothing more.
         assert!(first.raw_bytes.ends_with(b"0\r\n\r\n"));
     }
+
+    #[test]
+    fn parse_host_header_with_port() {
+        let (host, port) = super::parse_host_header("192.168.4.38:9037").unwrap();
+        assert_eq!(host, "192.168.4.38");
+        assert_eq!(port, 9037);
+    }
+
+    #[test]
+    fn parse_host_header_without_port_defaults_to_80() {
+        let (host, port) = super::parse_host_header("192.168.4.38").unwrap();
+        assert_eq!(host, "192.168.4.38");
+        assert_eq!(port, 80);
+    }
+
+    #[test]
+    fn parse_host_header_empty_returns_none() {
+        assert!(super::parse_host_header("").is_none());
+        assert!(super::parse_host_header("   ").is_none());
+    }
+
+    #[test]
+    fn parse_host_header_invalid_port_returns_none() {
+        assert!(super::parse_host_header("192.168.4.38:notaport").is_none());
+        assert!(super::parse_host_header("192.168.4.38:99999").is_none());
+    }
+
+    #[test]
+    fn parse_host_header_trims_whitespace() {
+        let (host, port) = super::parse_host_header("  10.0.0.1:8080  ").unwrap();
+        assert_eq!(host, "10.0.0.1");
+        assert_eq!(port, 8080);
+    }
 }

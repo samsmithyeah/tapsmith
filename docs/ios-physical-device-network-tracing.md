@@ -104,6 +104,12 @@ You can also refresh manually:
 pilot refresh-ios-network <udid>
 ```
 
+## Security note
+
+When network tracing is enabled, Pilot's MITM proxy binds on `0.0.0.0:<port>` (all network interfaces) so the iPhone can reach it over Wi-Fi. This means **any device on the same local network** could potentially route HTTP/HTTPS traffic through the proxy and have it decrypted by the Pilot CA. The proxy has no authentication.
+
+In practice this is only a concern on untrusted networks (coffee shops, shared offices). On a private home/lab Wi-Fi it's a non-issue. If you're on a shared network, either restrict to simulator-only tracing (which binds on `127.0.0.1`) or ensure your Mac's firewall allows only the specific iPhone's IP. The proxy is only bound while `pilot test` (with tracing) or `pilot verify-ios-network` is running — it's not a persistent listener.
+
 ## Known limitations
 
 - **VPN apps on the device bypass HTTP proxy.** The MITM proxy won't see traffic the VPN is handling.
