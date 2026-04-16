@@ -182,74 +182,6 @@ impl RouteInterceptHandler {
         *self.events_subscribed.write().await = false;
     }
 
-    /// Send a request event notification (non-blocking, best-effort).
-    #[allow(dead_code)]
-    pub(crate) async fn notify_request(
-        &self,
-        req: &ParsedRequest,
-        url: &str,
-        is_https: bool,
-        route_action: &str,
-    ) {
-        if !*self.events_subscribed.read().await {
-            return;
-        }
-        let msg = proto::NetworkRouteServerMessage {
-            msg: Some(proto::network_route_server_message::Msg::RequestEvent(
-                proto::NetworkRequestEvent {
-                    method: req.method.clone(),
-                    url: url.to_string(),
-                    headers: req
-                        .headers
-                        .iter()
-                        .map(|(n, v)| proto::HeaderEntry {
-                            name: n.clone(),
-                            value: v.clone(),
-                        })
-                        .collect(),
-                    body: req.body.clone(),
-                    is_https,
-                    route_action: route_action.to_string(),
-                },
-            )),
-        };
-        let _ = self.to_sdk.try_send(msg);
-    }
-
-    /// Send a response event notification (non-blocking, best-effort).
-    #[allow(dead_code)]
-    pub(crate) async fn notify_response(
-        &self,
-        req: &ParsedRequest,
-        resp: &ParsedResponse,
-        url: &str,
-        route_action: &str,
-    ) {
-        if !*self.events_subscribed.read().await {
-            return;
-        }
-        let msg = proto::NetworkRouteServerMessage {
-            msg: Some(proto::network_route_server_message::Msg::ResponseEvent(
-                proto::NetworkResponseEvent {
-                    method: req.method.clone(),
-                    url: url.to_string(),
-                    status: resp.status_code,
-                    headers: resp
-                        .headers
-                        .iter()
-                        .map(|(n, v)| proto::HeaderEntry {
-                            name: n.clone(),
-                            value: v.clone(),
-                        })
-                        .collect(),
-                    body: resp.body.clone(),
-                    route_action: route_action.to_string(),
-                },
-            )),
-        };
-        let _ = self.to_sdk.try_send(msg);
-    }
-
     /// Release all pending intercepts with fail-open (continue upstream).
     /// Called when the stream closes.
     pub(crate) async fn release_all_pending(&self) {
@@ -444,7 +376,26 @@ impl NetworkHandler for RouteInterceptHandler {
                         }
                     }
                     None => {
-                        warn!("RouteFetch: upstream request failed; forwarding original");
+                        // Upstream fetch failed. Signal the SDK so its
+                        // `route.fetch()` promise rejects instead of hanging
+                        // until the handler timeout. `status = 0` is the
+                        // sentinel — not a valid HTTP status, so it's
+                        // unambiguous (and matches the proto's default).
+                        warn!(
+                            %intercept_id, %target_url,
+                            "RouteFetch: upstream request failed; signalling SDK and forwarding original",
+                        );
+                        let msg = proto::NetworkRouteServerMessage {
+                            msg: Some(proto::network_route_server_message::Msg::FetchedResponse(
+                                proto::FetchedResponse {
+                                    intercept_id: intercept_id.clone(),
+                                    status: 0,
+                                    headers: Vec::new(),
+                                    body: Vec::new(),
+                                },
+                            )),
+                        };
+                        let _ = self.to_sdk.send(msg).await;
                         None
                     }
                 }
@@ -462,6 +413,69 @@ impl NetworkHandler for RouteInterceptHandler {
         // Response hooks are not used for route interception (Playwright
         // intercepts at the request stage). Event notifications happen at the
         // proxy level instead.
+    }
+
+    async fn notify_request(&self, req: &ParsedRequest, hostname: &str, is_https: bool) {
+        if !*self.events_subscribed.read().await {
+            return;
+        }
+        let scheme = if is_https { "https" } else { "http" };
+        let url = format!("{scheme}://{hostname}{}", req.path);
+        let msg = proto::NetworkRouteServerMessage {
+            msg: Some(proto::network_route_server_message::Msg::RequestEvent(
+                proto::NetworkRequestEvent {
+                    method: req.method.clone(),
+                    url,
+                    headers: req
+                        .headers
+                        .iter()
+                        .map(|(n, v)| proto::HeaderEntry {
+                            name: n.clone(),
+                            value: v.clone(),
+                        })
+                        .collect(),
+                    body: req.body.clone(),
+                    is_https,
+                    route_action: String::new(),
+                },
+            )),
+        };
+        let _ = self.to_sdk.try_send(msg);
+    }
+
+    async fn notify_response(
+        &self,
+        req: &ParsedRequest,
+        resp: &ParsedResponse,
+        hostname: &str,
+        is_https: bool,
+        route_action: &str,
+    ) {
+        if !*self.events_subscribed.read().await {
+            return;
+        }
+        let scheme = if is_https { "https" } else { "http" };
+        let url = format!("{scheme}://{hostname}{}", req.path);
+        let msg = proto::NetworkRouteServerMessage {
+            msg: Some(proto::network_route_server_message::Msg::ResponseEvent(
+                proto::NetworkResponseEvent {
+                    method: req.method.clone(),
+                    url,
+                    status: resp.status_code,
+                    headers: resp
+                        .headers
+                        .iter()
+                        .map(|(n, v)| proto::HeaderEntry {
+                            name: n.clone(),
+                            value: v.clone(),
+                        })
+                        .collect(),
+                    body: resp.body.clone(),
+                    route_action: route_action.to_string(),
+                },
+            )),
+        };
+        let _ = self.to_sdk.try_send(msg);
     }
 }
 
@@ -533,6 +547,26 @@ async fn fetch_upstream_plain(
     read_http_response(&mut stream).await
 }
 
+/// Cached rustls client config shared across all `route.fetch()` TLS
+/// connections. Building a `ClientConfig` loads the full `webpki_roots`
+/// trust store, so we do it once per process rather than per request.
+static TLS_CLIENT_CONFIG: std::sync::OnceLock<Arc<rustls::ClientConfig>> =
+    std::sync::OnceLock::new();
+
+fn tls_client_config() -> Arc<rustls::ClientConfig> {
+    TLS_CLIENT_CONFIG
+        .get_or_init(|| {
+            let mut root_store = rustls::RootCertStore::empty();
+            root_store.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
+            Arc::new(
+                rustls::ClientConfig::builder()
+                    .with_root_certificates(root_store)
+                    .with_no_client_auth(),
+            )
+        })
+        .clone()
+}
+
 async fn fetch_upstream_tls(
     stream: tokio::net::TcpStream,
     host: &str,
@@ -541,14 +575,7 @@ async fn fetch_upstream_tls(
 ) -> Option<ParsedResponse> {
     use tokio::io::AsyncWriteExt;
 
-    let mut root_store = rustls::RootCertStore::empty();
-    root_store.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
-    let tls_config = Arc::new(
-        rustls::ClientConfig::builder()
-            .with_root_certificates(root_store)
-            .with_no_client_auth(),
-    );
-    let connector = tokio_rustls::TlsConnector::from(tls_config);
+    let connector = tokio_rustls::TlsConnector::from(tls_client_config());
     let server_name = rustls::pki_types::ServerName::try_from(host.to_string()).ok()?;
     let mut tls_stream = connector.connect(server_name, stream).await.ok()?;
 
@@ -567,6 +594,7 @@ async fn read_http_response<S: tokio::io::AsyncRead + Unpin>(
     let mut data = Vec::new();
     let mut buf = vec![0u8; 8192];
     let max_size = 10 * 1024 * 1024; // 10 MB
+    let mut truncated = false;
     loop {
         match tokio::time::timeout(std::time::Duration::from_secs(30), stream.read(&mut buf)).await
         {
@@ -574,11 +602,21 @@ async fn read_http_response<S: tokio::io::AsyncRead + Unpin>(
             Ok(Ok(n)) => {
                 data.extend_from_slice(&buf[..n]);
                 if data.len() > max_size {
+                    truncated = true;
                     break;
                 }
             }
             Ok(Err(_)) | Err(_) => break,
         }
+    }
+
+    if truncated {
+        warn!(
+            bytes_read = data.len(),
+            max_size,
+            "route.fetch() upstream response exceeded {max_size} bytes; body truncated — \
+             route.fetch().json()/text() may fail or return partial data",
+        );
     }
 
     if data.is_empty() {

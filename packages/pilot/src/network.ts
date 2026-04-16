@@ -7,7 +7,7 @@
  */
 
 import * as crypto from 'node:crypto';
-import * as fs from 'node:fs';
+import { readFile } from 'node:fs/promises';
 import type * as grpc from '@grpc/grpc-js';
 import type { PilotGrpcClient } from './grpc-client.js';
 import { getActiveTraceCollector, extractSourceLocation } from './trace/trace-collector.js';
@@ -120,7 +120,6 @@ export class Route {
   /** Fulfill the request with a mock response. */
   async fulfill(options?: RouteFulfillOptions): Promise<void> {
     this._ensureNotResolved();
-    this._resolved = true;
 
     let body: Buffer = Buffer.alloc(0);
     let contentType = options?.contentType ?? '';
@@ -129,11 +128,14 @@ export class Route {
       body = Buffer.from(JSON.stringify(options.json));
       if (!contentType) contentType = 'application/json';
     } else if (options?.path) {
-      body = fs.readFileSync(options.path);
+      // Read *before* marking the route resolved so a failed read still lets
+      // the handler's catch path fail-open via continueRequest.
+      body = await readFile(options.path);
     } else if (options?.body !== undefined) {
       body = Buffer.from(options.body);
     }
 
+    this._resolved = true;
     this._sendDecision({
       interceptId: this._interceptId,
       fulfill: {
@@ -196,6 +198,11 @@ export class Route {
     if (this._resolved) {
       throw new Error('Route has already been handled');
     }
+  }
+
+  /** @internal — used by NetworkRouteManager to detect handlers that return without resolving. */
+  _isResolved(): boolean {
+    return this._resolved;
   }
 }
 
@@ -280,6 +287,12 @@ interface FetchedResponseMsg {
 interface RegisteredRouteInfo {
   routeId: string
   urlPattern: string
+  /**
+   * Original user-supplied pattern. For regex/predicate patterns the daemon
+   * is sent a `**` glob (it can't evaluate JS regexes), so every request
+   * matches on the wire; we re-check this in the SDK before dispatching.
+   */
+  originalPattern: string | RegExp | ((url: URL) => boolean)
   handler: (route: Route) => Promise<void> | void
   timesRemaining?: number
   sourceLocation?: SourceLocation
@@ -377,7 +390,10 @@ export class NetworkRouteManager {
   private _client: PilotGrpcClient;
   private _stream: grpc.ClientDuplexStream<unknown, unknown> | null = null;
   private _routes: Map<string, RegisteredRouteInfo> = new Map();
-  private _pendingFetches: Map<string, (resp: FetchedResponseMsg) => void> = new Map();
+  private _pendingFetches: Map<string, {
+    resolve: (resp: FetchedResponseMsg) => void
+    reject: (err: Error) => void
+  }> = new Map();
   private _requestListeners: Set<(req: PilotRequest) => void> = new Set();
   private _responseListeners: Set<(resp: NetworkResponseEventData) => void> = new Set();
   private _disposed = false;
@@ -405,13 +421,14 @@ export class NetworkRouteManager {
       // and daemon reconnection — don't spam warnings for them.
       const code = (err as grpc.ServiceError).code;
       if (code !== 1 && code !== 14) {
-        // eslint-disable-next-line no-console
         console.warn('[pilot] NetworkRoute stream error:', err.message);
       }
+      this._rejectPendingFetches(`NetworkRoute stream error: ${err.message}`);
     });
 
     stream.on('end', () => {
       this._stream = null;
+      this._rejectPendingFetches('NetworkRoute stream closed');
     });
 
     return stream;
@@ -444,6 +461,7 @@ export class NetworkRouteManager {
     this._routes.set(routeId, {
       routeId,
       urlPattern,
+      originalPattern: pattern,
       handler,
       timesRemaining: options?.times,
       sourceLocation,
@@ -554,7 +572,7 @@ export class NetworkRouteManager {
     this._disposed = true;
 
     this._routes.clear();
-    this._pendingFetches.clear();
+    this._rejectPendingFetches('NetworkRouteManager disposed');
     this._requestListeners.clear();
     this._responseListeners.clear();
 
@@ -583,6 +601,20 @@ export class NetworkRouteManager {
     const routeInfo = this._routes.get(msg.routeId);
     if (!routeInfo) {
       // Route was removed while request was in flight — continue upstream
+      this._safeWrite({
+        routeDecision: {
+          interceptId: msg.interceptId,
+          continueRequest: { url: '', method: '', headers: [], postData: Buffer.alloc(0) },
+        },
+      });
+      return;
+    }
+
+    // For regex/predicate patterns the daemon matches on a `**` glob, so we
+    // re-check in the SDK. If the real pattern doesn't match, don't invoke
+    // the handler — just continue the request upstream.
+    if (typeof routeInfo.originalPattern !== 'string'
+        && !matchUrlPattern(msg.url, routeInfo.originalPattern)) {
       this._safeWrite({
         routeDecision: {
           interceptId: msg.interceptId,
@@ -622,8 +654,8 @@ export class NetworkRouteManager {
     };
 
     const awaitFetchedResponse = (): Promise<FetchedResponseMsg> => {
-      return new Promise<FetchedResponseMsg>((resolve) => {
-        this._pendingFetches.set(msg.interceptId, resolve);
+      return new Promise<FetchedResponseMsg>((resolve, reject) => {
+        this._pendingFetches.set(msg.interceptId, { resolve, reject });
       });
     };
 
@@ -631,22 +663,39 @@ export class NetworkRouteManager {
 
     const startTime = Date.now();
 
-    // Run the handler. If it throws or rejects, continue the request.
+    // Run the handler. If it throws, rejects, or returns without calling
+    // abort/continue/fulfill/fetch, continue the request (fail-open).
     Promise.resolve()
       .then(() => routeInfo.handler(route))
       .then(() => {
+        if (!route._isResolved()) {
+          console.warn(
+            `[pilot] Route handler for ${msg.method} ${msg.url} returned without calling ` +
+            `abort/continue/fulfill/fetch — continuing request upstream. Make sure the handler ` +
+            `awaits one of these (or returns the promise).`,
+          );
+          this._safeWrite({
+            routeDecision: {
+              interceptId: msg.interceptId,
+              continueRequest: { url: '', method: '', headers: [], postData: Buffer.alloc(0) },
+            },
+          });
+          routeAction = 'continue';
+        }
         this._emitRouteTraceEvent(msg, routeAction, startTime, true, undefined, routeInfo.sourceLocation);
       })
       .catch((err) => {
-         
         console.warn(`[pilot] Route handler error: ${err}`);
-        // Fail-open: continue the request
-        this._safeWrite({
-          routeDecision: {
-            interceptId: msg.interceptId,
-            continueRequest: { url: '', method: '', headers: [], postData: Buffer.alloc(0) },
-          },
-        });
+        // Fail-open: continue the request (only if the handler hasn't
+        // already resolved the route — don't double-send a decision).
+        if (!route._isResolved()) {
+          this._safeWrite({
+            routeDecision: {
+              interceptId: msg.interceptId,
+              continueRequest: { url: '', method: '', headers: [], postData: Buffer.alloc(0) },
+            },
+          });
+        }
         this._emitRouteTraceEvent(msg, 'continue', startTime, false, String(err), routeInfo.sourceLocation);
       });
   }
@@ -693,11 +742,27 @@ export class NetworkRouteManager {
 
   /** Deliver a fetched response to the pending fetch promise. */
   private _handleFetchedResponse(msg: FetchedResponseMsg): void {
-    const resolve = this._pendingFetches.get(msg.interceptId);
-    if (resolve) {
-      this._pendingFetches.delete(msg.interceptId);
-      resolve(msg);
+    const pending = this._pendingFetches.get(msg.interceptId);
+    if (!pending) return;
+    this._pendingFetches.delete(msg.interceptId);
+    // Daemon signals upstream-fetch failure with status 0 (not a valid HTTP
+    // status, matches the proto default). Reject so user code can catch it
+    // instead of hanging.
+    if (msg.status === 0) {
+      pending.reject(new Error('route.fetch() failed: upstream request error'));
+      return;
     }
+    pending.resolve(msg);
+  }
+
+  /** Reject all in-flight route.fetch() promises. */
+  private _rejectPendingFetches(reason: string): void {
+    if (this._pendingFetches.size === 0) return;
+    const err = new Error(reason);
+    for (const { reject } of this._pendingFetches.values()) {
+      reject(err);
+    }
+    this._pendingFetches.clear();
   }
 
   /** Notify request event listeners. */

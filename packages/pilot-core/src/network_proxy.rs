@@ -113,6 +113,27 @@ pub(crate) trait NetworkHandler: Send + Sync {
         _resp: &mut ParsedResponse,
     ) {
     }
+
+    /// Fire a best-effort request notification to subscribers
+    /// (`device.on('request', …)` / `device.waitForRequest`). Called once
+    /// per request, regardless of whether `on_request` returned a synthetic
+    /// response. Non-blocking — implementations should drop the message if
+    /// the subscriber channel is full.
+    async fn notify_request(&self, _req: &ParsedRequest, _hostname: &str, _is_https: bool) {}
+
+    /// Fire a best-effort response notification to subscribers
+    /// (`device.on('response', …)` / `device.waitForResponse`). `route_action`
+    /// is one of `""`, `"continued"`, `"mocked"`, `"aborted"` and mirrors
+    /// the value recorded in `CapturedEntry`.
+    async fn notify_response(
+        &self,
+        _req: &ParsedRequest,
+        _resp: &ParsedResponse,
+        _hostname: &str,
+        _is_https: bool,
+        _route_action: &str,
+    ) {
+    }
 }
 
 /// Shared state for the proxy server.
@@ -1326,6 +1347,13 @@ async fn handle_mitm_http<C, U>(
             ReadOutcome::ConnectionClosed | ReadOutcome::Error => return,
         };
 
+        // Fire a request event to any SDK subscribers BEFORE interception
+        // runs — mirrors Playwright's `page.on('request')` timing and means
+        // `waitForRequest` resolves as soon as the proxy sees bytes.
+        if let Some(h) = handler.as_ref() {
+            h.notify_request(&req, hostname, is_https).await;
+        }
+
         // Request hook: optionally transform the request, and optionally
         // short-circuit with a synthetic response (no upstream call at all).
         // After the hook runs we re-serialize `raw_bytes` from the (possibly
@@ -1340,6 +1368,8 @@ async fn handle_mitm_http<C, U>(
                     // A clean TCP close triggers a network error in the app's
                     // HTTP client without corrupting its state (important for
                     // iOS NSURLSession which crashes on malformed responses).
+                    h.notify_response(&req, &synth, hostname, is_https, "aborted")
+                        .await;
                     record_entry(&state, &req, &synth, hostname, is_https, start, "aborted").await;
                     return;
                 }
@@ -1350,6 +1380,8 @@ async fn handle_mitm_http<C, U>(
                     return;
                 }
                 let close = has_connection_close(&synth.headers);
+                h.notify_response(&req, &synth, hostname, is_https, "mocked")
+                    .await;
                 record_entry(&state, &req, &synth, hostname, is_https, start, "mocked").await;
                 if close {
                     return;
@@ -1387,6 +1419,9 @@ async fn handle_mitm_http<C, U>(
         // response's Connection: close is honored, request's is ignored.
         let connection_close = has_connection_close(&resp.headers);
 
+        if let Some(h) = handler.as_ref() {
+            h.notify_response(&req, &resp, hostname, is_https, "").await;
+        }
         record_entry(&state, &req, &resp, hostname, is_https, start, "").await;
 
         if connection_close {
@@ -1505,6 +1540,7 @@ async fn handle_http(
     let mut effective_method = method.to_string();
     let mut effective_path = path.clone();
     let mut was_continued = false;
+    let hostname_owned = host.split(':').next().unwrap_or(&host).to_string();
 
     // Check handler for route interception before forwarding upstream.
     let handler = state.lock().await.handler.clone();
@@ -1516,13 +1552,20 @@ async fn handle_http(
             body: request_body.clone(),
             raw_bytes: Vec::new(),
         };
-        let hostname = host.split(':').next().unwrap_or(&host);
+        let hostname = hostname_owned.as_str();
+
+        // Fire `request` event before interception runs so waitForRequest /
+        // device.on('request') see the pre-mutation request.
+        h.notify_request(&parsed_req, hostname, false).await;
+
         if let Some(mut synth) = h.on_request(&mut parsed_req, hostname, false).await {
             if synth.status_code == 0 {
                 // Abort: drop the connection without sending anything.
                 // This causes a clean TCP RST / connection-closed error in
                 // the app's HTTP client rather than a malformed response
                 // that could crash iOS's NSURLSession.
+                h.notify_response(&parsed_req, &synth, hostname, false, "aborted")
+                    .await;
                 record_entry(
                     &state,
                     &parsed_req,
@@ -1540,6 +1583,8 @@ async fn handle_http(
                 synth.raw_bytes = reencode_response(&synth);
             }
             let _ = client.write_all(&synth.raw_bytes).await;
+            h.notify_response(&parsed_req, &synth, hostname, false, "mocked")
+                .await;
             record_entry(
                 &state,
                 &parsed_req,
@@ -1684,6 +1729,33 @@ async fn handle_http(
         duration_ms = duration,
         "HTTP request captured"
     );
+
+    // Fire `response` event if a route handler is installed + events are
+    // subscribed. `route_action` mirrors what we record in `CapturedEntry`.
+    if let Some(h) = handler.as_ref() {
+        let route_action = if was_continued { "continued" } else { "" };
+        let notify_req = ParsedRequest {
+            method: effective_method.clone(),
+            path: effective_path.clone(),
+            headers: req_headers.clone(),
+            body: request_body.clone(),
+            raw_bytes: Vec::new(),
+        };
+        let notify_resp = ParsedResponse {
+            status_code,
+            headers: resp_headers.clone(),
+            body: response_body.clone(),
+            raw_bytes: Vec::new(),
+        };
+        h.notify_response(
+            &notify_req,
+            &notify_resp,
+            &hostname_owned,
+            false,
+            route_action,
+        )
+        .await;
+    }
 
     // Truncate bodies to 1MB max
     let max_body = MAX_BODY_SIZE;

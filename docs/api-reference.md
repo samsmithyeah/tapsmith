@@ -485,10 +485,16 @@ Abort the request. Optional `errorCode`: `'connectionrefused'`, `'connectionrese
 
 Continue the request to the server with optional modifications.
 
-- `overrides.url?`: `string` — override the URL
+- `overrides.url?`: `string` — override the URL **path and query** (see limitation below)
 - `overrides.method?`: `string` — override the HTTP method
 - `overrides.headers?`: `Record<string, string>` — override headers
 - `overrides.postData?`: `string | Buffer` — override request body
+
+> **Known limitation:** `overrides.url` currently only swaps the path and query —
+> the host stays the same (upstream TCP connection and `Host` header are
+> unchanged). Cross-origin redirection via `route.continue()` is not yet
+> supported. If you need to hit a different host, use `route.fetch({ url })`
+> and then `route.fulfill()` with the result. Tracked in PILOT-189.
 
 #### `route.fulfill(options?): Promise<void>`
 
