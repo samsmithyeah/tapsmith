@@ -243,6 +243,27 @@ describe('Route', () => {
     await expect(route.continue()).rejects.toThrow(/After route\.fetch\(\), only route\.fulfill\(\)/);
   });
 
+  it('force-resolves the route when fetch() rejects (no stale continue fail-open)', async () => {
+    // When the daemon rejects the fetched-response promise (upstream-fail
+    // sentinel or stream drop), route.fetch() throws and marks the route
+    // resolved — so the handler's .catch path sees _isResolved=true and
+    // skips the spurious continueRequest send.
+    const decisions: unknown[] = [];
+    const sendDecision = (d: unknown) => { decisions.push(d); };
+    const awaitFetched = () => Promise.reject(new Error('upstream failed'));
+    const request = new PilotRequest({
+      method: 'GET',
+      url: 'https://example.com/api',
+      headers: [],
+      body: null,
+      isHttps: true,
+    });
+    const route = new Route('intercept-err', request, sendDecision, awaitFetched);
+
+    await expect(route.fetch()).rejects.toThrow('upstream failed');
+    expect(route._isResolved()).toBe(true);
+  });
+
   it('fetch sends fetch then fulfillAfterFetch on subsequent fulfill', async () => {
     const { route, decisions } = makeRoute();
     const resp = await route.fetch();

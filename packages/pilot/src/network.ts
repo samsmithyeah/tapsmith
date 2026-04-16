@@ -171,8 +171,20 @@ export class Route {
       },
     });
 
-    // Wait for the daemon to send back the real upstream response
-    const fetched = await this._awaitFetchedResponse!();
+    // Wait for the daemon to send back the real upstream response.
+    // If the daemon rejected (upstream-fetch failure → status=0 sentinel,
+    // or stream died mid-fetch), lock the route SDK-side before rethrowing
+    // so the outer handler's `.catch` fail-open path doesn't send a stale
+    // `continueRequest` for an intercept the daemon already forgot (which
+    // would trigger a spurious "RouteDecision for unknown intercept_id"
+    // warning in the daemon).
+    let fetched: FetchedResponseMsg;
+    try {
+      fetched = await this._awaitFetchedResponse!();
+    } catch (err) {
+      this._resolved = true;
+      throw err;
+    }
 
     const headers: Record<string, string> = {};
     for (const h of fetched.headers ?? []) {

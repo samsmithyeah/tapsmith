@@ -12,7 +12,10 @@ use std::time::Duration;
 use tokio::sync::{mpsc, oneshot, RwLock};
 use tracing::{debug, warn};
 
-use crate::network_proxy::{NetworkHandler, ParsedRequest, ParsedResponse, RequestOutcome};
+use crate::network_proxy::{
+    sanitise_request_line_component, write_header_sanitised, NetworkHandler, ParsedRequest,
+    ParsedResponse, RequestOutcome,
+};
 use crate::proto;
 
 /// Timeout waiting for the SDK to send a [`RouteDecision`] before we
@@ -512,41 +515,49 @@ async fn fetch_upstream(
     .ok()?
     .ok()?;
 
-    // Build HTTP/1.1 request
+    // Build HTTP/1.1 request. We go through the byte-level sanitisers from
+    // `network_proxy` (same path `reencode_request` uses) so a handler can't
+    // smuggle extra headers or a second request via CR/LF in header values,
+    // method, or path. Header names with non-token characters are dropped.
     let path = if let Some(q) = parsed.query() {
         format!("{}?{q}", parsed.path())
     } else {
         parsed.path().to_string()
     };
+    let mut req_buf: Vec<u8> = Vec::with_capacity(256);
+    req_buf.extend_from_slice(&sanitise_request_line_component(method));
+    req_buf.push(b' ');
+    req_buf.extend_from_slice(&sanitise_request_line_component(&path));
+    req_buf.extend_from_slice(b" HTTP/1.1\r\n");
     // Force identity encoding so we don't have to decompress gzip/br here —
     // some CDNs return compressed bodies even when the client doesn't
     // negotiate for them, so we set this explicitly rather than relying on
     // absence of `Accept-Encoding` meaning "no encoding".
-    let mut req_buf = format!(
-        "{method} {path} HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\nAccept-Encoding: identity\r\n",
-    );
+    write_header_sanitised(&mut req_buf, "Host", host);
+    write_header_sanitised(&mut req_buf, "Connection", "close");
+    write_header_sanitised(&mut req_buf, "Accept-Encoding", "identity");
     for (k, v) in headers {
-        let lower = k.to_lowercase();
         // Skip headers we set ourselves (Host/Connection/Accept-Encoding/
         // Content-Length), the proxy-specific Proxy-Connection, and any
-        // Content-Length the caller provided — we recompute it from the
-        // real body length below to avoid duplicate headers (a known HTTP
-        // request-smuggling vector).
-        if lower == "host"
-            || lower == "connection"
-            || lower == "proxy-connection"
-            || lower == "accept-encoding"
-            || lower == "content-length"
-            || lower == "transfer-encoding"
+        // caller-supplied Content-Length — we recompute it from the real
+        // body length below to avoid duplicate headers (a known HTTP
+        // request-smuggling vector). `eq_ignore_ascii_case` avoids a
+        // per-header `to_lowercase()` allocation.
+        if k.eq_ignore_ascii_case("host")
+            || k.eq_ignore_ascii_case("connection")
+            || k.eq_ignore_ascii_case("proxy-connection")
+            || k.eq_ignore_ascii_case("accept-encoding")
+            || k.eq_ignore_ascii_case("content-length")
+            || k.eq_ignore_ascii_case("transfer-encoding")
         {
             continue;
         }
-        req_buf.push_str(&format!("{k}: {v}\r\n"));
+        write_header_sanitised(&mut req_buf, k, v);
     }
     if !body.is_empty() {
-        req_buf.push_str(&format!("Content-Length: {}\r\n", body.len()));
+        write_header_sanitised(&mut req_buf, "Content-Length", &body.len().to_string());
     }
-    req_buf.push_str("\r\n");
+    req_buf.extend_from_slice(b"\r\n");
 
     if is_tls {
         fetch_upstream_tls(stream, host, &req_buf, body).await
@@ -557,11 +568,11 @@ async fn fetch_upstream(
 
 async fn fetch_upstream_plain(
     mut stream: tokio::net::TcpStream,
-    request: &str,
+    request: &[u8],
     body: &[u8],
 ) -> Option<ParsedResponse> {
     use tokio::io::AsyncWriteExt;
-    stream.write_all(request.as_bytes()).await.ok()?;
+    stream.write_all(request).await.ok()?;
     if !body.is_empty() {
         stream.write_all(body).await.ok()?;
     }
@@ -591,7 +602,7 @@ fn tls_client_config() -> Arc<rustls::ClientConfig> {
 async fn fetch_upstream_tls(
     stream: tokio::net::TcpStream,
     host: &str,
-    request: &str,
+    request: &[u8],
     body: &[u8],
 ) -> Option<ParsedResponse> {
     use tokio::io::AsyncWriteExt;
@@ -600,7 +611,7 @@ async fn fetch_upstream_tls(
     let server_name = rustls::pki_types::ServerName::try_from(host.to_string()).ok()?;
     let mut tls_stream = connector.connect(server_name, stream).await.ok()?;
 
-    tls_stream.write_all(request.as_bytes()).await.ok()?;
+    tls_stream.write_all(request).await.ok()?;
     if !body.is_empty() {
         tls_stream.write_all(body).await.ok()?;
     }
@@ -969,6 +980,22 @@ mod tests {
         assert!(re.is_match("https://example.com/api/v1/posts"));
         assert!(re.is_match("https://example.com/api/v2/posts"));
         assert!(!re.is_match("https://example.com/api/v12/posts"));
+    }
+
+    #[test]
+    fn fetch_upstream_header_values_are_sanitised() {
+        // Smoke-level check that CR/LF in a header value can't smuggle
+        // another header through `write_header_sanitised`. `fetch_upstream`
+        // routes caller-supplied headers through this same helper, so
+        // verifying the helper's contract covers the fetch path.
+        use crate::network_proxy::write_header_sanitised;
+        let mut out = Vec::new();
+        write_header_sanitised(&mut out, "X-Smuggle", "legit\r\nEvil: injected");
+        let s = String::from_utf8(out).unwrap();
+        // The injected header must not appear on its own line.
+        assert!(!s.contains("\r\nEvil: injected"));
+        // But the legit value content is preserved (CR/LF replaced with spaces).
+        assert!(s.contains("X-Smuggle: legit  Evil: injected\r\n"));
     }
 
     #[test]

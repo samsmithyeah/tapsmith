@@ -1165,7 +1165,7 @@ where
 /// RFC 7230 token char check for HTTP header names. Used to defend against
 /// header-injection smuggling when re-encoding requests/responses after a
 /// `NetworkHandler` hook has mutated them.
-fn is_valid_header_name(name: &str) -> bool {
+pub(crate) fn is_valid_header_name(name: &str) -> bool {
     if name.is_empty() {
         return false;
     }
@@ -1185,7 +1185,7 @@ fn is_valid_header_name(name: &str) -> bool {
 /// preserves the value's visible content while preventing a malicious handler
 /// from smuggling additional headers or a second request via embedded
 /// `\r\n` sequences.
-fn write_header_sanitised(out: &mut Vec<u8>, name: &str, value: &str) {
+pub(crate) fn write_header_sanitised(out: &mut Vec<u8>, name: &str, value: &str) {
     if !is_valid_header_name(name) {
         debug!(name = %name, "dropping header with invalid name characters");
         return;
@@ -1205,7 +1205,7 @@ fn write_header_sanitised(out: &mut Vec<u8>, name: &str, value: &str) {
 /// Replace CR/LF bytes in a request-line component (method or path) with a
 /// single space. Defends `reencode_request` against handler-injected
 /// `\r\n` sequences in those fields.
-fn sanitise_request_line_component(s: &str) -> Vec<u8> {
+pub(crate) fn sanitise_request_line_component(s: &str) -> Vec<u8> {
     s.bytes()
         .map(|b| if b == b'\r' || b == b'\n' { b' ' } else { b })
         .collect()
