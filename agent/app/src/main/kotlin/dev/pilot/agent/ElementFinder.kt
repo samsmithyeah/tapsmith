@@ -127,15 +127,12 @@ class ElementFinder(private val device: UiDevice) {
                     ")",
             )
 
-        // Bundle keys used by AccessibilityNodeInfoCompat#setRoleDescription.
-        // The AndroidX implementation has shipped under multiple key names
-        // across versions; check both so we pick up whichever one the host
-        // androidx.core lib wrote.
-        val ROLE_DESCRIPTION_EXTRA_KEYS: List<String> =
-            listOf(
-                "AccessibilityNodeInfo.roleDescription",
-                "androidx.view.accessibility.AccessibilityNodeInfoCompat.ROLE_DESCRIPTION_KEY",
-            )
+        // Bundle key used by AccessibilityNodeInfoCompat#setRoleDescription.
+        // AndroidX writes the literal `"AccessibilityNodeInfo.roleDescription"`
+        // into the node's extras; the long namespaced variant that earlier
+        // copies of this constant included was never actually emitted by
+        // the runtime, so we read just the canonical key.
+        val ROLE_DESCRIPTION_EXTRA_KEY: String = "AccessibilityNodeInfo.roleDescription"
 
         // Bundle key used by AccessibilityNodeInfoCompat#setHeading to flag
         // a heading on API levels < 28 (the framework itself gained
@@ -590,13 +587,30 @@ class ElementFinder(private val device: UiDevice) {
             }
 
             // 3. Role description set via AccessibilityNodeInfoCompat.
-            for (key in ROLE_DESCRIPTION_EXTRA_KEYS) {
-                val raw = extras?.getCharSequence(key)?.toString()
-                if (!raw.isNullOrEmpty()) return raw
-            }
-            null
+            extras?.getCharSequence(ROLE_DESCRIPTION_EXTRA_KEY)?.toString()?.takeIf { it.isNotEmpty() }
         } catch (_: Exception) {
             null
+        }
+    }
+
+    /**
+     * Whether the field is currently displaying its hint/placeholder rather
+     * than user-entered text. AccessibilityNodeInfo.isShowingHintText is
+     * available on API 26+. On older devices this returns false (we fall
+     * back to a less precise equality check in toElementInfo).
+     */
+    private fun isShowingHintText(obj: UiObject2): Boolean {
+        if (android.os.Build.VERSION.SDK_INT < 26) {
+            // Approximation: the placeholder is being displayed when the
+            // surfaced `text` matches `getHintText()`. Wrong if the user
+            // typed exactly the placeholder, but unavoidable on older APIs.
+            val hint = extractHint(obj)
+            return hint != null && obj.text == hint
+        }
+        return try {
+            nodeInfoFor(obj)?.isShowingHintText == true
+        } catch (_: Exception) {
+            false
         }
     }
 
@@ -611,6 +625,23 @@ class ElementFinder(private val device: UiDevice) {
         method.isAccessible = true
         nodeInfoMethodCache[cls] = method
         return method
+    }
+
+    /**
+     * Whether the className is a generic container View whose own `text` is
+     * never meaningful — so aggregating descendant text into it can't
+     * regress assertions on a typed element with a real (but empty) label.
+     */
+    private fun isContainerClass(className: String): Boolean {
+        return when (className) {
+            "android.view.View",
+            "android.view.ViewGroup",
+            "android.widget.FrameLayout",
+            "android.widget.LinearLayout",
+            "android.widget.RelativeLayout",
+            -> true
+            else -> false
+        }
     }
 
     /**
@@ -646,14 +677,26 @@ class ElementFinder(private val device: UiDevice) {
 
         // PILOT-133/toBeEmpty: UIAutomator surfaces the placeholder/hint as
         // `text` when an EditText is empty. Strip it so callers see the actual
-        // typed value (empty after clear).
+        // typed value (empty after clear). We gate on
+        // AccessibilityNodeInfo.isShowingHintText (API 26+) so an EditText
+        // whose user-typed value happens to equal its placeholder isn't
+        // mis-reported as empty. Pre-API-26 we fall back to the equality
+        // check, which is wrong for the equal-typed-value edge case but
+        // preserves the toBeEmpty behavior most users rely on.
         val effectiveText: String? =
-            if (rawText != null && hint != null && rawText == hint) {
-                null
-            } else if (rawText.isNullOrEmpty()) {
+            if (rawText.isNullOrEmpty()) {
                 // Aggregate descendant text so wrapping Views (e.g. RN Toast
-                // <View><Text/></View>) expose their visible label.
-                collectDescendantText(obj).ifEmpty { null }
+                // <View><Text/></View>) expose their visible label. Restrict
+                // to generic container classes (View, ViewGroup, FrameLayout,
+                // LinearLayout) so we don't surprise tests that previously
+                // saw `text` as null on a typed element with no label.
+                if (isContainerClass(className)) {
+                    collectDescendantText(obj).ifEmpty { null }
+                } else {
+                    null
+                }
+            } else if (isShowingHintText(obj)) {
+                null
             } else {
                 rawText
             }

@@ -83,9 +83,12 @@ class SnapshotElementFinder {
         // works.
         SnapshotElementFinder.annotateTraits(dict: &snapshotDict, snapshot: resolvedSnapshot)
 
-        // Flatten and search
+        // Flatten and search (pre-order — `.first()` callers depend on it).
         var matches: [([String: Any], CGRect)] = []
         findMatches(in: snapshotDict, selector: selector, results: &matches)
+        // Drop RN-style wrappers (`XCUIElementTypeOther`) whose identifier
+        // or label is shadowed by a real native control nested inside.
+        matches = suppressOverlappingWrappers(matches)
 
         // Check once if keyboard is visible (for focus detection).
         // Keyboard = elementType 56 (XCUIElement.ElementType.keyboard).
@@ -165,12 +168,17 @@ class SnapshotElementFinder {
                 displayText = title
             } else if !label.isEmpty {
                 displayText = label
-            } else {
-                // Wrapping containers (e.g. RN <View accessibilityRole="alert">)
+            } else if elType == .other {
+                // Wrapping containers (e.g. RN `<View accessibilityRole="alert">`)
                 // carry their visible text in descendant nodes. Aggregate so
-                // assertions like toContainText see it.
+                // assertions like toContainText see the visible string.
+                // Restricted to `.other` so we don't change behavior for typed
+                // elements that legitimately have no label (e.g. an empty
+                // ScrollView that wraps content).
                 let descendant = SnapshotElementFinder.collectDescendantText(nodeDict)
                 displayText = descendant.isEmpty ? nil : descendant
+            } else {
+                displayText = nil
             }
 
             let viewportRatio = computeViewportRatio(bounds, screenSize: screenSize)
@@ -287,9 +295,6 @@ class SnapshotElementFinder {
             || elType == .textView || elType == .searchField
     }
 
-    /// Walk a snapshot subtree and concatenate descendant labels/values so a
-    /// wrapping container (e.g. RN `<View accessibilityRole="alert">`) reports
-    /// its visible text content. Mirrors Android's collectDescendantText().
     /// Read the UIAccessibilityTraits bitmask out of an annotated snapshot
     /// dictionary. `annotateTraits()` splices the value in via KVC on the
     /// underlying XCElementSnapshot, so we only need to read the canonical
@@ -309,6 +314,13 @@ class SnapshotElementFinder {
     /// snapshot dict. dictionaryRepresentation on Xcode 26 omits traits, but
     /// the underlying XCElementSnapshot exposes them via KVC. Walking the
     /// snapshot tree in parallel with the dict lets us annotate every node.
+    ///
+    /// Children are matched by stable attributes (identifier first, then
+    /// elementType + frame) rather than positional index, because
+    /// dictionaryRepresentation can filter or reorder children differently
+    /// from `snapshot.children` (e.g. empty cells, accessibility-hidden
+    /// nodes). Positional alignment would silently mis-attribute traits to
+    /// the wrong nodes whenever the two sequences diverge.
     static func annotateTraits(dict: inout [String: Any], snapshot: XCUIElementSnapshot) {
         let traits: UInt64 = {
             let raw = (snapshot as? NSObject)?.value(forKey: "traits")
@@ -319,29 +331,54 @@ class SnapshotElementFinder {
         if traits != 0 {
             dict["traits"] = traits
         }
-        // Recurse through children in lockstep. Both sequences should have
-        // the same length (dict was built from the same snapshot moments
-        // earlier). If they ever drift, log loudly and process the prefix
-        // we can match — silently dropping trait info would make role
-        // detection look like a flake instead of a misalignment bug.
-        if var children = dict["children"] as? [[String: Any]] {
-            let snapChildren = snapshot.children
-            if children.count != snapChildren.count {
-                NSLog(
-                    "[PilotSnapshot] annotateTraits child mismatch: dict=\(children.count) snapshot=\(snapChildren.count). " +
-                    "Trait data for overflowing nodes will be dropped."
-                )
-            }
-            let count = min(children.count, snapChildren.count)
-            for i in 0..<count {
-                var childDict = children[i]
-                annotateTraits(dict: &childDict, snapshot: snapChildren[i])
-                children[i] = childDict
-            }
-            dict["children"] = children
+        guard var children = dict["children"] as? [[String: Any]] else { return }
+        let snapChildren = snapshot.children
+        if children.count != snapChildren.count {
+            NSLog(
+                "[PilotSnapshot] annotateTraits child mismatch: dict=\(children.count) snapshot=\(snapChildren.count)."
+            )
         }
+        // Build a quick index of snapshot children keyed by (identifier,
+        // elementType, frame). Multiple children can share the same key
+        // (anonymous siblings); track which slots are still unclaimed.
+        struct ChildKey: Hashable {
+            let identifier: String
+            let elementType: UInt
+            let originX: Int
+            let originY: Int
+        }
+        var available: [ChildKey: [Int]] = [:]
+        for (idx, snap) in snapChildren.enumerated() {
+            let key = ChildKey(
+                identifier: snap.identifier,
+                elementType: UInt(snap.elementType.rawValue),
+                originX: Int(snap.frame.origin.x),
+                originY: Int(snap.frame.origin.y)
+            )
+            available[key, default: []].append(idx)
+        }
+        for (i, child) in children.enumerated() {
+            let frame = SnapshotElementFinder.parseFrame(child)
+            let key = ChildKey(
+                identifier: child["identifier"] as? String ?? "",
+                elementType: SnapshotElementFinder.parseUInt(child["elementType"]) ?? 0,
+                originX: Int(frame.origin.x),
+                originY: Int(frame.origin.y)
+            )
+            guard var slots = available[key], let first = slots.first else { continue }
+            slots.removeFirst()
+            available[key] = slots.isEmpty ? nil : slots
+            var mutableChild = child
+            annotateTraits(dict: &mutableChild, snapshot: snapChildren[first])
+            children[i] = mutableChild
+        }
+        dict["children"] = children
     }
 
+    /// Walk a snapshot subtree and concatenate descendant labels/values so a
+    /// wrapping container (e.g. RN `<View accessibilityRole="alert">`)
+    /// reports its visible text content. Mirrors Android's
+    /// `collectDescendantText`.
     static func collectDescendantText(_ node: [String: Any]) -> String {
         var parts: [String] = []
         if let children = node["children"] as? [[String: Any]] {
@@ -380,44 +417,60 @@ class SnapshotElementFinder {
         selector: ElementSelector,
         results: inout [([String: Any], CGRect)]
     ) {
-        // Recurse first so we know whether any descendant already matched —
-        // we only want this lookahead to decide whether to suppress a
-        // generic .other wrapper that shares an identifier/label with the
-        // native control nested inside.
-        let mark = results.count
+        // Pre-order: parent first, then descendants. Callers (e.g.
+        // `.first()`) rely on document/snapshot order, so we must NOT
+        // reorder here. Wrapper-vs-inner deduplication is handled by
+        // suppressOverlappingWrappers() once the full result list is built.
+        if matchesSelector(nodeDict, selector: selector) {
+            let frame = parseFrame(nodeDict)
+            results.append((nodeDict, frame))
+        }
         if let children = nodeDict["children"] as? [[String: Any]] {
             for child in children {
                 findMatches(in: child, selector: selector, results: &results)
             }
         }
+    }
 
-        if matchesSelector(nodeDict, selector: selector) {
-            // React Native wraps native controls in generic UIViews
-            // (.other) that inherit the same accessibilityIdentifier /
-            // accessibilityLabel as the inner control. When both match,
-            // prefer the inner control — only it is hittable for typeText
-            // and reports an updated `value` after typing. Skip *only* when
-            // a descendant we just collected shares this node's identifier
-            // or label (so we don't drop a legitimate parent match just
-            // because some unrelated descendant happened to satisfy the
-            // selector).
-            let elTypeRaw = parseUInt(nodeDict["elementType"]) ?? 0
-            let elType = XCUIElement.ElementType(rawValue: elTypeRaw) ?? .other
-            if elType == .other && results.count > mark {
-                let myIdentifier = nodeDict["identifier"] as? String ?? ""
-                let myLabel = nodeDict["label"] as? String ?? ""
-                let descendantOverlaps = results[mark...].contains { (descDict, _) in
-                    let descId = descDict["identifier"] as? String ?? ""
-                    let descLabel = descDict["label"] as? String ?? ""
-                    if !myIdentifier.isEmpty && descId == myIdentifier { return true }
-                    if !myLabel.isEmpty && descLabel == myLabel { return true }
-                    return false
-                }
-                if descendantOverlaps { return }
+    /// Drop generic `.other` wrappers that share an `identifier` (or, when
+    /// no identifier is set, a `label`) with another result that came
+    /// later in pre-order traversal — i.e. one of their own descendants.
+    /// React Native wraps native controls in `.other` UIViews that inherit
+    /// the inner control's accessibility attributes; only the inner
+    /// control is hittable for typeText and reports an updated `value`
+    /// after typing.
+    private func suppressOverlappingWrappers(
+        _ matches: [([String: Any], CGRect)]
+    ) -> [([String: Any], CGRect)] {
+        guard matches.count > 1 else { return matches }
+        // Pre-compute keys (id, label) so we don't repeatedly key into dicts.
+        let keys: [(elType: XCUIElement.ElementType, id: String, label: String)] =
+            matches.map { (dict, _) in
+                let raw = parseUInt(dict["elementType"]) ?? 0
+                return (
+                    XCUIElement.ElementType(rawValue: raw) ?? .other,
+                    dict["identifier"] as? String ?? "",
+                    dict["label"] as? String ?? ""
+                )
             }
-            let frame = parseFrame(nodeDict)
-            results.append((nodeDict, frame))
+        var keep = [Bool](repeating: true, count: matches.count)
+        for i in matches.indices where keys[i].elType == .other {
+            let me = keys[i]
+            // Look at *later* matches (descendants in pre-order) for an
+            // overlap on identifier or, failing that, label.
+            for j in (i + 1)..<matches.count {
+                let other = keys[j]
+                if !me.id.isEmpty && other.id == me.id {
+                    keep[i] = false
+                    break
+                }
+                if me.id.isEmpty && !me.label.isEmpty && other.label == me.label {
+                    keep[i] = false
+                    break
+                }
+            }
         }
+        return zip(matches, keep).compactMap { $1 ? $0 : nil }
     }
 
     private func matchesSelector(_ node: [String: Any], selector: ElementSelector) -> Bool {
@@ -545,6 +598,10 @@ class SnapshotElementFinder {
     }
 
     private func parseFrame(_ node: [String: Any]) -> CGRect {
+        SnapshotElementFinder.parseFrame(node)
+    }
+
+    static func parseFrame(_ node: [String: Any]) -> CGRect {
         // The snapshot dictionary stores frame as a sub-dictionary
         if let frameDict = node["frame"] as? [String: Any] {
             let x = (frameDict["X"] as? Double) ?? (frameDict["x"] as? Double) ?? 0
@@ -557,6 +614,10 @@ class SnapshotElementFinder {
     }
 
     private func parseUInt(_ raw: Any?) -> UInt? {
+        SnapshotElementFinder.parseUInt(raw)
+    }
+
+    static func parseUInt(_ raw: Any?) -> UInt? {
         guard let raw else { return nil }
         switch raw {
         case let value as UInt:
@@ -700,6 +761,11 @@ class SnapshotElementFinder {
         let elType = element.elementType
         let label = element.label
         let identifier = element.identifier
+        // XCUIElement doesn't expose placeholderValue directly; pull it via
+        // KVC so re-fetched elements report `hint` consistently with the
+        // snapshot path (review #7).
+        let placeholderValue =
+            ((element as NSObject).value(forKey: "placeholderValue") as? String) ?? ""
 
         let bounds = ElementBounds(
             left: Int(frame.origin.x), top: Int(frame.origin.y),
@@ -723,7 +789,7 @@ class SnapshotElementFinder {
             text: label.isEmpty ? nil : label,
             contentDescription: label.isEmpty ? nil : label,
             resourceId: identifier.isEmpty ? nil : identifier,
-            hint: nil, bounds: bounds,
+            hint: placeholderValue.isEmpty ? nil : placeholderValue, bounds: bounds,
             isEnabled: element.isEnabled, isChecked: isChecked, isFocused: element.hasFocus,
             isClickable: frame.width > 0 && frame.height > 0,
             isFocusable: true,

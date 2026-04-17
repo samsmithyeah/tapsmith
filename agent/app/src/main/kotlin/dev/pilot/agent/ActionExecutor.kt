@@ -141,6 +141,12 @@ class ActionExecutor(private val device: UiDevice) {
                     flushPrintableRun(buffer)
                 }
                 device.executeShellCommand("input keyevent $keyCode")
+            } else if (ch.code < 0x20) {
+                // Drop other ASCII control codes (NUL, BEL, vertical tab, etc.).
+                // `input text` would garble them; routing each to a key event
+                // is not generally meaningful. Specific cases (\n, \t, \b)
+                // are handled above.
+                continue
             } else {
                 buffer.append(ch)
             }

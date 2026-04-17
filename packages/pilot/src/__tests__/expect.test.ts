@@ -1195,6 +1195,31 @@ describe("toHaveRole()", () => {
       pilotExpect(handle).not.toHaveRole("button", { timeout: 50 }),
     ).rejects.toThrow("NOT to have role");
   });
+
+  it("accepts 'header' as an alias for 'heading'", async () => {
+    const client = makeMockClient(async () => ({
+      requestId: "1",
+      found: true,
+      element: makeElementInfo({ role: "heading" }),
+      errorMessage: "",
+    }));
+    const handle = makeHandle(client);
+    // Either spelling resolves to the same normalized role.
+    await pilotExpect(handle).toHaveRole("header", { timeout: 50 });
+    await pilotExpect(handle).toHaveRole("heading", { timeout: 50 });
+  });
+
+  it("accepts 'slider' as an alias for 'seekbar'", async () => {
+    const client = makeMockClient(async () => ({
+      requestId: "1",
+      found: true,
+      element: makeElementInfo({ role: "seekbar" }),
+      errorMessage: "",
+    }));
+    const handle = makeHandle(client);
+    await pilotExpect(handle).toHaveRole("slider", { timeout: 50 });
+    await pilotExpect(handle).toHaveRole("seekbar", { timeout: 50 });
+  });
 });
 
 // ─── toHaveValue() (PILOT-39) ───

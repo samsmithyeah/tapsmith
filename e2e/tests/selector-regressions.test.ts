@@ -57,4 +57,28 @@ describe("Selector & assertion regressions", () => {
     await device.getByTestId("email-input").clear()
     await expect(device.getByTestId("email-input")).toBeEmpty()
   })
+
+  // ─── type() must round-trip shell metacharacters verbatim ───
+  // Android's typeTextWithoutFocus runs `input text $tokenized` where
+  // `tokenized` is passed through UiDevice.executeShellCommand with no
+  // surrounding shell — so &, ;, |, $, `, (, ) etc. must survive.
+  test("type() round-trips shell metacharacters", async ({ device }) => {
+    await device.getByDescription("Login Form").tap()
+    const tricky = "a&b;c|d$e`f(g)h"
+    await device.getByTestId("email-input").type(tricky)
+    await expect(device.getByTestId("email-input")).toHaveValue(tricky)
+  })
+
+  // ─── header is an accepted alias for heading on toHaveRole ───
+  test("toHaveRole accepts 'header' as an alias for 'heading'", async ({ device }) => {
+    await expect(device.getByText("Test Screens", { exact: true })).toHaveRole("header")
+  })
+
+  // ─── getByPlaceholder negative case: unknown placeholder returns nothing ───
+  test("getByPlaceholder returns no match for an unknown placeholder", async ({ device }) => {
+    await device.getByDescription("Login Form").tap()
+    await expect(
+      device.getByPlaceholder("This placeholder definitely does not exist"),
+    ).toHaveCount(0)
+  })
 })

@@ -315,12 +315,11 @@ class CommandHandler {
             let element = try resolveElement(params)
             // iOS text fields don't have a reliable "select all" gesture
             // (triple-tap selects a word; Cmd+A often misses on RN-wrapped
-            // controls). The most reliable approach is to focus the field
-            // and send one backspace per grapheme cluster of the current
-            // value. We use the snapshot value (already in `element.text`
-            // for textfields — see SnapshotElementFinder) to avoid an
-            // `xcElem.value` query, which triggers a quiescence wait on
-            // Xcode 26 and can time out.
+            // controls). Focus the field, then send backspaces in batches
+            // until a fresh snapshot reports the value is empty. We loop
+            // because autocorrect / suggestion bar / RN bridge updates can
+            // grow or shrink the value between batches, so a single batch
+            // sized off the initial snapshot is brittle.
             if let center = snapshotCenter(for: element.elementId) {
                 actionExecutor.tapCoordinates(x: Int(center.x), y: Int(center.y))
                 Thread.sleep(forTimeInterval: 0.1)
@@ -328,18 +327,25 @@ class CommandHandler {
                 xcElem.tap()
                 Thread.sleep(forTimeInterval: 0.05)
             }
-            // Re-resolve after focus so the value reflects the current state
-            // (the tap may have scrolled the field into view or settled an
-            // animation that left the first snapshot stale). Fall back to the
-            // pre-tap snapshot if re-resolution fails.
-            let refreshed = (try? resolveElement(params)) ?? element
-            let currentValue = refreshed.text ?? element.text ?? ""
-            if !currentValue.isEmpty {
-                // String.count counts grapheme clusters, which matches what a
-                // single backspace deletes on the iOS keyboard for both ASCII
-                // and composed emoji.
-                let backspaces = String(repeating: "\u{8}", count: currentValue.count)
-                actionExecutor.typeTextWithoutFocus(backspaces)
+            // Cap iterations so a misbehaving field can't hang the agent. The
+            // per-iteration cap of 256 keystrokes covers any realistic field
+            // length; multiple iterations let us mop up post-autocorrect
+            // residue.
+            let maxIterations = 16
+            let perIterationCap = 256
+            var lastValue: String = ""
+            for _ in 0..<maxIterations {
+                let refreshed = (try? resolveElement(params)) ?? element
+                let value = refreshed.text ?? ""
+                if value.isEmpty { break }
+                // Stop if we made no progress (likely a non-text field or a
+                // platform that's not honoring \u{8}); avoids infinite loop.
+                if value == lastValue { break }
+                lastValue = value
+                // String.count counts grapheme clusters — matches keyboard
+                // backspace granularity for ASCII and composed emoji.
+                let count = min(value.count, perIterationCap)
+                actionExecutor.typeTextWithoutFocus(String(repeating: "\u{8}", count: count))
             }
             return ["success": true]
 
