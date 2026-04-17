@@ -43,7 +43,10 @@ const MAX_INLINE_BODY_BYTES = 2 * 1024 * 1024;
 
 /** Decode a base64-encoded body into a UTF-8 string for display. Returns a
  * short placeholder for bodies above `MAX_INLINE_BODY_BYTES` so we don't
- * freeze the UI on a multi-megabyte response. */
+ * freeze the UI on a multi-megabyte response. `atob` throws `DOMException`
+ * on malformed input, so we catch and substitute a placeholder — this
+ * function runs inside the network-message handler and an uncaught throw
+ * would break subsequent trace updates. */
 export function base64ToUtf8(base64: string): string {
   // base64 encodes ~3 bytes per 4 chars; use the encoded length as a cheap
   // upper bound to short-circuit huge bodies before we allocate.
@@ -51,10 +54,14 @@ export function base64ToUtf8(base64: string): string {
   if (approxBytes > MAX_INLINE_BODY_BYTES) {
     return `[body too large to display inline — ${(approxBytes / (1024 * 1024)).toFixed(1)} MB; open the trace archive to inspect]`;
   }
-  const bin = atob(base64);
-  const bytes = new Uint8Array(bin.length);
-  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
-  return new TextDecoder().decode(bytes);
+  try {
+    const bin = atob(base64);
+    const bytes = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+    return new TextDecoder().decode(bytes);
+  } catch (e) {
+    return `[error decoding body: ${e instanceof Error ? e.message : String(e)}]`;
+  }
 }
 
 /** Revoke all blob URLs in a trace's screenshot map to free memory. */
