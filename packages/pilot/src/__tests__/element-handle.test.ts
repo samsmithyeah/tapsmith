@@ -1158,7 +1158,10 @@ describe('method composition', () => {
 
     // Should use direct selector, not resolve via findElements
     expect(findElements).not.toHaveBeenCalled();
-    expect(tap).toHaveBeenCalledWith(sel, 5000);
+    // tap forwards the remaining budget from _waitForEnabled(), which is
+    // `deadline - Date.now()` — on a slow tick CI run that can be 4999ms
+    // rather than exactly 5000. Assert the call shape, not the exact value.
+    expect(tap).toHaveBeenCalledWith(sel, expect.any(Number));
   });
 
   it('action selector falls back to contentDescription when no resourceId', async () => {

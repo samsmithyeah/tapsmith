@@ -7,6 +7,7 @@ import { useWebSocket } from './hooks/use-websocket.js';
 import {
   useTraceData,
   base64ToBlobUrl,
+  base64ToUtf8,
   revokeTraceScreenshots,
   emptyTraceData,
   getOrCreateTrace,
@@ -184,6 +185,7 @@ function App() {
   const hierarchies = currentTrace?.hierarchies ?? EMPTY_MAP;
   const sources = currentTrace?.sources ?? EMPTY_MAP;
   const networkEntries = currentTrace?.network ?? EMPTY_NETWORK;
+  const networkBodies = currentTrace?.networkBodies ?? EMPTY_MAP;
 
   // Metadata for trace viewer components
   const testDeviceSerial = useMemo(() => {
@@ -193,7 +195,12 @@ function App() {
         return workers[workerId].displayName || workers[workerId].deviceSerial;
       }
     }
-    return deviceSerial;
+    // Multi-worker runs: don't fall back to the global deviceSerial — it
+    // holds the first worker's serial from the initial `device-info` event,
+    // which is almost never the worker that ran the viewed test. Returning
+    // empty hides the label rather than labelling the filmstrip with a
+    // sibling worker's name. Single-worker runs have no ambiguity.
+    return workers.length > 1 ? '' : deviceSerial;
   }, [viewedTraceKey, workers, deviceSerial]);
 
   // DPR for the worker that ran the viewed test — not the currently selected
@@ -389,6 +396,9 @@ function App() {
           : (activeTestRef.current ?? '');
         if (!key) break;
         const ev = msg.event;
+        // Skip internal marker events from the visible event lists and from
+        // auto-pin — their actionIndex is one past the last real event.
+        const isInternal = ev.type === 'action' && (ev as ActionTraceEvent).action === '__final_screenshot';
 
         setTestTraces((prev) => {
           const { data, map } = getOrCreateTrace(key, prev);
@@ -404,8 +414,6 @@ function App() {
               eventToStore = { ...ev, bounds: prevWithBounds.bounds };
             }
           }
-          // Skip internal marker events from the visible event lists
-          const isInternal = ev.type === 'action' && (ev as ActionTraceEvent).action === '__final_screenshot';
           const events = isInternal ? data.events : [...data.events, eventToStore];
           const actionEvents = (!isInternal && (eventToStore.type === 'action' || eventToStore.type === 'assertion'))
             ? [...data.actionEvents, eventToStore as ActionTraceEvent | AssertionTraceEvent]
@@ -451,12 +459,15 @@ function App() {
           }
 
           const next = new Map(map);
-          next.set(key, { events, actionEvents, screenshots, hierarchies, sources: data.sources, network: data.network, filePath: data.filePath });
+          next.set(key, { events, actionEvents, screenshots, hierarchies, sources: data.sources, network: data.network, networkBodies: data.networkBodies, filePath: data.filePath });
           return next;
         });
 
-        // Auto-pin to latest action, but only when viewing the running test
-        if ((ev.type === 'action' || ev.type === 'assertion') && key === activeTestRef.current
+        // Auto-pin to latest action, but only when viewing the running test.
+        // Skip internal markers (e.g. __final_screenshot) — their actionIndex
+        // is one past the last real event, so pinning to them leaves the UI
+        // with nothing selected once the test ends.
+        if (!isInternal && (ev.type === 'action' || ev.type === 'assertion') && key === activeTestRef.current
           && (!viewedTestNameRef.current || viewedTestNameRef.current === testName)) {
           setPinnedIndex(ev.actionIndex);
         }
@@ -474,17 +485,23 @@ function App() {
         if (!key) break;
         setTestTraces((prev) => {
           const { data, map } = getOrCreateTrace(key, prev);
+          const networkBodies = new Map(data.networkBodies);
+          if (msg.bodies) {
+            for (const [path, b64] of Object.entries(msg.bodies)) {
+              networkBodies.set(path, base64ToUtf8(b64));
+            }
+          }
           const next = new Map(map);
-          next.set(key, { ...data, network: msg.entries });
+          next.set(key, { ...data, network: msg.entries, networkBodies });
           return next;
         });
         break;
       }
       case 'watch-event':
         if (msg.event === 'watch-enabled') {
-          treeRef.current.updateWatchEnabled(msg.filePath, true);
+          treeRef.current.updateWatchEnabled(msg.filePath, true, msg.testFilter, msg.projectName);
         } else if (msg.event === 'watch-disabled') {
-          treeRef.current.updateWatchEnabled(msg.filePath, false);
+          treeRef.current.updateWatchEnabled(msg.filePath, false, msg.testFilter, msg.projectName);
         }
         break;
       case 'device-info':
@@ -700,15 +717,13 @@ function App() {
         />
       }
       filmstrip={
-        actionEvents.length > 0 ? (
-          <TimelineFilmstrip
-            events={actionEvents}
-            screenshots={screenshots}
-            metadata={metadata}
-            selectedIndex={selectedIndex}
-            onSelect={handleActionPin}
-          />
-        ) : null
+        <TimelineFilmstrip
+          events={actionEvents}
+          screenshots={screenshots}
+          metadata={metadata}
+          selectedIndex={selectedIndex}
+          onSelect={handleActionPin}
+        />
       }
       actionsPanel={
         <ActionsPanel
@@ -764,7 +779,7 @@ function App() {
           sources={sources}
           metadata={metadata}
           networkEntries={networkEntries}
-          networkBodies={EMPTY_MAP}
+          networkBodies={networkBodies}
         />
       }
     />

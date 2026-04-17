@@ -111,6 +111,39 @@ The redirector binary is missing. Run the [first-run setup](#first-run-setup) ab
 
 You installed the SE but haven't approved it yet. Go to **System Settings → General → Login Items & Extensions → Network Extensions → (i)** and toggle it on. The state should change to `[activated enabled]`.
 
+### SE control-channel timeout
+
+Error text:
+
+```
+[pilot] Network capture disabled: Mitmproxy Redirector System Extension did not connect within 10s.
+```
+
+Pilot waits up to 10 s for the macOS System Extension to dial back into its per-daemon Unix socket after spawning the redirector launcher. If that doesn't happen, capture is disabled for the session (tests still run, just without network data in the trace).
+
+**Usual cause.** A previous Pilot session left a stuck `Mitmproxy Redirector` process behind — typically one that got orphaned when pilot-core was SIGKILL'd (crash, IDE restart, `pkill node`). Stuck redirectors often sit in `UE` or `Z` state and can wedge the SE's ability to accept a new control-channel connection.
+
+Pilot now **auto-cleans orphaned redirectors at startup** (looks for redirector processes whose owning pilot-core PID is dead and `kill -9`s them before spawning a new one). That handles the common case invisibly. If you still hit the timeout, try in order:
+
+1. **Force-clean manually:**
+   ```sh
+   pkill -9 -f 'Mitmproxy Redirector'
+   rm -f /tmp/pilot-redirector-*.sock
+   ```
+   Then re-run `pilot test`.
+
+2. **Check system load.** On a busy machine (load average > 10), the SE can genuinely need more than 10 s to respond. Quit other heavy processes (Xcode builds, other emulators) and retry. `uptime` will show the load averages.
+
+3. **Reboot macOS.** The Network Extension's state can drift over long uptime or across macOS updates. A reboot resets both the SE and any lingering kernel state.
+
+4. **Re-run setup.**
+   ```sh
+   npx pilot setup-ios
+   ```
+   This re-registers the SE and can recover from registration glitches.
+
+Verify success on the next run by looking for `System Extension control channel connected` in the daemon debug logs (`RUST_LOG=pilot_core=debug`).
+
 ### Network entries missing from the trace (`network.json` not in the archive)
 
 Check the daemon logs — run `pilot test` with `RUST_LOG=pilot_core=debug` and look for lines from `pilot_core::ios_redirect` (control channel connection, initial InterceptConf, intercepted flows) and `pilot_core::network_proxy` (MITM handshakes). Common causes:

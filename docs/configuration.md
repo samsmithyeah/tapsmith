@@ -106,21 +106,62 @@ For fine-grained control, pass an object instead of a mode string:
 
 ```typescript
 interface TraceConfig {
-  mode: TraceMode;         // Recording mode (default: "off")
-  screenshots: boolean;    // Capture before/after screenshots (default: true)
-  snapshots: boolean;      // Capture view hierarchy XML (default: true)
-  sources: boolean;        // Include test source files (default: true)
-  attachments: boolean;    // Include user attachments (default: true)
-  network: boolean;        // Capture HTTP/HTTPS traffic via proxy (default: true)
-  networkHosts?: string[]; // Hostname allowlist (glob patterns). When set,
-                           // only entries whose host matches a pattern are
-                           // kept in the trace archive. Primarily useful on
-                           // physical iOS, where the Wi-Fi proxy is
-                           // system-wide — see docs/ios-network-capture.md.
+  mode: TraceMode;               // Recording mode (default: "off")
+  screenshots: boolean;          // Capture before/after screenshots (default: true)
+  snapshots: boolean;            // Capture view hierarchy XML (default: true)
+  sources: boolean;              // Include test source files (default: true)
+  attachments: boolean;          // Include user attachments (default: true)
+  network: boolean;              // Capture HTTP/HTTPS traffic via proxy (default: true)
+  networkHosts?: string[];       // Hostname allowlist (glob patterns). When set,
+                                 // only entries whose host matches a pattern are
+                                 // kept in the trace archive.
+  networkIgnoreHosts?: string[]; // Hostname denylist (glob patterns). Entries
+                                 // whose host matches a pattern are dropped.
+                                 // Combines with `networkHosts`: entry is kept
+                                 // iff it matches allow AND does NOT match deny.
 }
 ```
 
 When `network` is enabled, the Rust daemon starts an HTTP proxy and configures the device to route traffic through it. HTTPS traffic is decrypted using an auto-generated CA certificate installed on the device.
+
+### Scrubbing system noise from traces
+
+On **Android emulators** the HTTP proxy is set globally (`settings put global http_proxy`), so every app and system process on the emulator routes through it — including Google Play Services, connectivity checks, push, ad attribution, etc. On **physical iOS** a system-wide Wi-Fi proxy has the same characteristic. (iOS simulators are the exception: the macOS Network Extension redirector filters per-PID.)
+
+Two patterns, pick whichever fits:
+
+**Allowlist** — only keep entries from your app's hosts:
+
+```typescript
+trace: {
+  mode: "on",
+  networkHosts: ["*.myapp.com", "api.partner.example"],
+}
+```
+
+**Denylist** — keep everything except known-noisy hosts:
+
+```typescript
+trace: {
+  mode: "on",
+  networkIgnoreHosts: [
+    // Android emulator system traffic
+    "connectivitycheck.gstatic.com",
+    "*.googleapis.com",
+    "play.googleapis.com",
+    "mtalk.google.com",
+    "android.clients.google.com",
+    "www.google.com",
+    "clients*.google.com",
+    // iOS background (physical devices only)
+    "*.apple.com",
+    "*.icloud.com",
+    "captive.apple.com",
+  ],
+}
+```
+
+Both accept glob patterns (`*` matches any single segment, `**` or a leading `*.` matches any number). Matching is case-insensitive. When both are set, the entry is kept iff it matches the allowlist AND does NOT match the denylist — deny wins.
 
 Example:
 

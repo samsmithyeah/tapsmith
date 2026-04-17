@@ -95,11 +95,16 @@ export function ScreenshotPanel({ event, screenshots, highlightBounds, onScreens
   const hasBefore = !!beforeUrl;
   const hasAfter = !!afterUrl;
 
-  // Auto-select best available tab
+  // The "Action" tab shows the screenshot that best represents the moment
+  // the action happened. For taps/swipes that's the BEFORE screenshot (you
+  // want to see where the touch landed). For assertions it's the AFTER
+  // screenshot — the assertion resolved when the expected state appeared,
+  // so the "before" state (often still loading) is the wrong frame to show.
+  const isAssertion = event.type === 'assertion';
   let currentUrl: string | undefined;
   if (tab === 'before') currentUrl = beforeUrl;
   else if (tab === 'after') currentUrl = afterUrl ?? beforeUrl;
-  else currentUrl = beforeUrl; // 'action' tab shows before with overlay
+  else currentUrl = isAssertion ? (afterUrl ?? beforeUrl) : beforeUrl;
 
   // If selected tab has no screenshot, fall back
   if (!currentUrl) {

@@ -1,12 +1,14 @@
 /**
  * Host-pattern filtering for captured network entries.
  *
- * Primary use case: Pilot's physical iOS network capture path uses a
- * system-wide Wi-Fi HTTP proxy, so the MITM proxy sees every app's
- * traffic — iOS background services (captive portal checks, analytics,
- * iCloud sync) as well as the app under test. Users set
- * `trace.networkHosts: ['*.myapp.com']` to scrub system noise from
- * their trace archives.
+ * Primary use cases:
+ *   - iOS physical + Android emulator capture paths route through a
+ *     system-wide HTTP proxy, so the MITM proxy sees every app's
+ *     traffic — background services (captive portal checks, analytics,
+ *     iCloud/Google sync) as well as the app under test. Users set
+ *     `trace.networkHosts` to allowlist only their app's hosts.
+ *   - Alternatively, users can keep the broad default and explicitly
+ *     drop known-noisy hosts via `trace.networkIgnoreHosts`.
  *
  * Pattern syntax (glob, case-insensitive):
  *   - `api.example.com`       → exact hostname match
@@ -17,12 +19,13 @@
  *                                `example.anything`
  *   - `192.168.1.*`           → literal dots in IPv4 prefixes work fine
  *
- * Semantics:
- *   - Patterns are an allowlist: an entry is kept iff its hostname
- *     matches at least one pattern.
- *   - If `patterns` is empty or undefined, every entry is kept.
+ * Semantics (when both allow and deny lists are supplied):
+ *   - An entry is kept iff its hostname matches the allowlist AND does
+ *     NOT match the denylist. Deny wins.
+ *   - Empty/undefined allowlist = allow all. Empty/undefined denylist =
+ *     deny none.
  *   - Entries whose URL fails to parse (malformed, empty, etc.) are
- *     dropped when filtering is active, kept when it isn't.
+ *     dropped when any filter is active, kept when none is.
  */
 
 /** Build a case-insensitive anchored regex for a single glob pattern. */
@@ -76,23 +79,62 @@ export function hostMatchesAny(host: string, patterns: readonly string[] | undef
 }
 
 /**
- * Filter a list of captured entries to those whose URL hostname matches
- * one of the allowed patterns. Unparseable URLs are dropped when
- * filtering is active, kept otherwise.
+ * Return true if `host` is blocked by any of the deny patterns.
+ * Empty/undefined deny list returns false (block nothing).
+ */
+export function hostBlockedByAny(host: string, patterns: readonly string[] | undefined): boolean {
+  if (!patterns || patterns.length === 0) return false;
+  const normalized = host.toLowerCase();
+  for (const pattern of patterns) {
+    if (compilePattern(pattern).test(normalized)) return true;
+  }
+  return false;
+}
+
+/** Combined allow/deny filter spec. */
+export interface HostFilterSpec {
+  allow?: readonly string[]
+  deny?: readonly string[]
+}
+
+/**
+ * Filter a list of captured entries by allowlist and/or denylist. Entry
+ * is kept iff it matches the allowlist AND does NOT match the denylist.
+ * Either list may be empty/undefined independently. Unparseable URLs are
+ * dropped when any filter is active, kept when neither is.
+ *
+ * Accepts a legacy positional `readonly string[] | undefined` second
+ * argument (interpreted as allowlist) for back-compat with existing
+ * call sites; new code should pass a `HostFilterSpec` object.
  */
 export function filterEntriesByHosts<T extends { url: string }>(
   entries: readonly T[],
-  patterns: readonly string[] | undefined,
+  spec: HostFilterSpec | readonly string[] | undefined,
 ): T[] {
-  if (!patterns || patterns.length === 0) return [...entries];
-  const compiled = patterns.map(compilePattern);
+  const { allow, deny } = normalizeFilterSpec(spec);
+  const hasAllow = !!(allow && allow.length > 0);
+  const hasDeny = !!(deny && deny.length > 0);
+  if (!hasAllow && !hasDeny) return [...entries];
+
+  const allowRes = hasAllow ? allow!.map(compilePattern) : null;
+  const denyRes = hasDeny ? deny!.map(compilePattern) : null;
+
   const result: T[] = [];
   for (const entry of entries) {
     const host = hostOf(entry.url);
     if (host === null) continue;
-    if (compiled.some((re) => re.test(host))) {
-      result.push(entry);
-    }
+    if (allowRes && !allowRes.some((re) => re.test(host))) continue;
+    if (denyRes && denyRes.some((re) => re.test(host))) continue;
+    result.push(entry);
   }
   return result;
+}
+
+function normalizeFilterSpec(
+  spec: HostFilterSpec | readonly string[] | undefined,
+): { allow?: readonly string[]; deny?: readonly string[] } {
+  if (!spec) return {};
+  if (Array.isArray(spec)) return { allow: spec as readonly string[] };
+  const s = spec as HostFilterSpec;
+  return { allow: s.allow, deny: s.deny };
 }

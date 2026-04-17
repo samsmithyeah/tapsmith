@@ -45,22 +45,26 @@ export function TimelineFilmstrip({ events, screenshots, metadata, selectedIndex
 
   const statusClass = metadata.testStatus === 'passed' ? 'passed'
     : metadata.testStatus === 'failed' ? 'failed'
-    : 'running';
+    : metadata.testStatus === 'running' ? 'running'
+    : 'idle';
   const statusIcon = metadata.testStatus === 'passed' ? '\u2713'
     : metadata.testStatus === 'failed' ? '\u2717'
     : '\u25CB';
 
   const firstTimestamp = events.length > 0 ? events[0].timestamp : 0;
+  const hasTestName = !!metadata.testName;
+  const hasDeviceSerial = !!metadata.device.serial;
 
   return (
     <div class="timeline">
       <div class="timeline-meta">
-        <span class={`test-status ${statusClass}`}>{statusIcon} {metadata.testName}</span>
-        {metadata.testStatus !== 'running' && metadata.testStatus !== 'idle' && (
+        {hasTestName
+          ? <span class={`test-status ${statusClass}`}>{statusIcon} {metadata.testName}</span>
+          : <span class="test-status">No test selected</span>}
+        {hasTestName && metadata.testStatus !== 'running' && metadata.testStatus !== 'idle' && (
           <span>{' \u00b7 '}{metadata.testDuration}ms</span>
         )}
-        {' \u00b7 '}
-        {metadata.device.serial}
+        {hasDeviceSerial && <>{' \u00b7 '}{metadata.device.serial}</>}
       </div>
       <div class="timeline-inner">
         {events.map((event, i) => {

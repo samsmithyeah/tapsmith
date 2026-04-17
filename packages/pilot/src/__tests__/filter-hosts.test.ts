@@ -1,5 +1,7 @@
 import { describe, it, expect } from 'vitest';
-import { hostOf, hostMatchesAny, filterEntriesByHosts } from '../trace/filter-hosts.js';
+import {
+  hostOf, hostMatchesAny, hostBlockedByAny, filterEntriesByHosts,
+} from '../trace/filter-hosts.js';
 
 describe('hostOf', () => {
   it('extracts the hostname from a URL', () => {
@@ -107,5 +109,82 @@ describe('filterEntriesByHosts', () => {
   it('is a no-op when the allowlist matches nothing (empty result)', () => {
     const result = filterEntriesByHosts(entries, ['*.nonexistent.example']);
     expect(result).toEqual([]);
+  });
+});
+
+describe('hostBlockedByAny', () => {
+  it('returns false for empty/undefined deny list', () => {
+    expect(hostBlockedByAny('api.myapp.com', undefined)).toBe(false);
+    expect(hostBlockedByAny('api.myapp.com', [])).toBe(false);
+  });
+
+  it('returns true when any deny pattern matches', () => {
+    expect(hostBlockedByAny('connectivitycheck.gstatic.com', ['connectivitycheck.gstatic.com'])).toBe(true);
+    expect(hostBlockedByAny('play.googleapis.com', ['*.googleapis.com'])).toBe(true);
+  });
+
+  it('returns false when no deny pattern matches', () => {
+    expect(hostBlockedByAny('api.myapp.com', ['*.googleapis.com', 'connectivitycheck.gstatic.com'])).toBe(false);
+  });
+});
+
+describe('filterEntriesByHosts (allow + deny)', () => {
+  const entries = [
+    { url: 'https://api.myapp.com/users' },
+    { url: 'https://cdn.myapp.com/image.png' },
+    { url: 'https://connectivitycheck.gstatic.com/generate_204' },
+    { url: 'https://play.googleapis.com/play/log' },
+    { url: 'https://tracker.otherapp.com/beacon' },
+  ];
+
+  it('denylist-only: drops matching entries, keeps the rest', () => {
+    const result = filterEntriesByHosts(entries, {
+      deny: ['*.googleapis.com', 'connectivitycheck.gstatic.com'],
+    });
+    expect(result.map((e) => e.url)).toEqual([
+      'https://api.myapp.com/users',
+      'https://cdn.myapp.com/image.png',
+      'https://tracker.otherapp.com/beacon',
+    ]);
+  });
+
+  it('allowlist + denylist: both apply, deny wins over allow', () => {
+    // allow: any *.myapp.com OR *.googleapis.com, but deny *.googleapis.com
+    const result = filterEntriesByHosts(entries, {
+      allow: ['*.myapp.com', '*.googleapis.com'],
+      deny: ['*.googleapis.com'],
+    });
+    expect(result.map((e) => e.url)).toEqual([
+      'https://api.myapp.com/users',
+      'https://cdn.myapp.com/image.png',
+    ]);
+  });
+
+  it('empty allow + empty deny is a no-op', () => {
+    const result = filterEntriesByHosts(entries, { allow: [], deny: [] });
+    expect(result).toEqual(entries);
+  });
+
+  it('undefined allow + undefined deny is a no-op', () => {
+    expect(filterEntriesByHosts(entries, {})).toEqual(entries);
+    expect(filterEntriesByHosts(entries, undefined)).toEqual(entries);
+  });
+
+  it('accepts legacy positional array as allowlist (back-compat)', () => {
+    // The runner still calls filterEntriesByHosts(entries, stringArray).
+    const result = filterEntriesByHosts(entries, ['*.myapp.com']);
+    expect(result.map((e) => e.url)).toEqual([
+      'https://api.myapp.com/users',
+      'https://cdn.myapp.com/image.png',
+    ]);
+  });
+
+  it('drops unparseable URLs only when a filter is active', () => {
+    const withBad = [...entries, { url: 'not-a-url' }, { url: '' }];
+    // No filters → all kept (including unparseable)
+    expect(filterEntriesByHosts(withBad, {})).toHaveLength(withBad.length);
+    // Deny-only → unparseable dropped
+    const denyResult = filterEntriesByHosts(withBad, { deny: ['foo.bar'] });
+    expect(denyResult.every((e) => e.url.startsWith('https://'))).toBe(true);
   });
 });

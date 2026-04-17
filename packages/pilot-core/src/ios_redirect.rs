@@ -135,6 +135,115 @@ async fn check_se_status() -> SeStatus {
     }
 }
 
+/// Best-effort pre-flight cleanup: find `Mitmproxy Redirector` processes
+/// launched by pilot-core instances that no longer exist, and `kill -9` them.
+///
+/// Each redirector is spawned by a specific pilot-core daemon and takes the
+/// Unix socket path `/tmp/pilot-redirector-<daemon-pid>.sock` as its first
+/// (and only) argument. When a pilot-core dies ungracefully (SIGKILL, crash,
+/// IDE restart), the redirector it spawned can end up orphaned — sometimes
+/// stuck in `UE` / `Z` state, where it's still registered with the macOS
+/// System Extension and apparently delays or blocks the next session's
+/// control-channel connect.
+///
+/// We identify orphans by parsing the redirector's command-line arguments to
+/// extract the owning pilot-core PID, then checking whether that PID is
+/// still alive. Only orphans are killed; redirectors owned by concurrent
+/// sibling daemons are left alone.
+///
+/// Everything is best-effort — any step failing (pgrep missing, ps missing,
+/// kill fails) is logged at debug and swallowed. The call-site immediately
+/// proceeds to the real connect attempt.
+async fn kill_orphaned_redirectors() {
+    // macOS `pgrep` does not support the GNU `-a` flag — it silently ignores
+    // it and prints bare PIDs, so we use `pgrep -f` to get PIDs and then
+    // `ps -p <pid> -o command=` per PID to recover the command line and
+    // verify the match.
+    let output = match Command::new("pgrep")
+        .args(["-f", "Mitmproxy Redirector"])
+        .output()
+        .await
+    {
+        Ok(o) if o.status.success() => o,
+        Ok(_) => return, // No matches (pgrep exits 1 when nothing matches)
+        Err(e) => {
+            debug!("pgrep unavailable for redirector cleanup: {e}");
+            return;
+        }
+    };
+    let text = String::from_utf8_lossy(&output.stdout);
+    let self_pid = std::process::id();
+
+    for line in text.lines() {
+        let Ok(pid) = line.trim().parse::<u32>() else {
+            continue;
+        };
+        // Defensive: never kill a process under our own PID (launcher might
+        // briefly show up here between spawn and self-exit).
+        if pid == self_pid {
+            continue;
+        }
+        // Recover the command-line arguments via `ps`. Skip silently if
+        // the process exited between the pgrep listing and this call.
+        let ps_out = match Command::new("ps")
+            .args(["-p", &pid.to_string(), "-o", "command="])
+            .output()
+            .await
+        {
+            Ok(o) if o.status.success() => o,
+            _ => continue,
+        };
+        let args = String::from_utf8_lossy(&ps_out.stdout);
+        // Extract "/tmp/pilot-redirector-<daemon-pid>.sock" from the args.
+        // If the arg shape doesn't match what we know, skip — don't guess.
+        let Some(daemon_pid) = extract_owner_pid_from_args(args.trim()) else {
+            continue;
+        };
+        // If the owning daemon is still alive, this redirector belongs to
+        // a sibling pilot-core and we must not touch it.
+        if process_is_alive(daemon_pid).await {
+            continue;
+        }
+        warn!(
+            redirector_pid = pid,
+            dead_daemon_pid = daemon_pid,
+            "cleaning up orphaned Mitmproxy Redirector from prior pilot-core session"
+        );
+        let _ = Command::new("kill")
+            .args(["-9", &pid.to_string()])
+            .status()
+            .await;
+    }
+}
+
+/// Parse `/tmp/pilot-redirector-<daemon-pid>.sock` out of a redirector's
+/// command-line args. Returns `None` if the args don't contain a
+/// recognisable pilot-core socket reference — we refuse to kill anything
+/// we can't positively identify.
+fn extract_owner_pid_from_args(args: &str) -> Option<u32> {
+    // Look for the literal prefix; tolerate the rest of the path so we
+    // don't depend on exact formatting.
+    let start = args.find("/tmp/pilot-redirector-")?;
+    let tail = &args[start + "/tmp/pilot-redirector-".len()..];
+    let dot = tail.find('.')?;
+    tail[..dot].parse::<u32>().ok()
+}
+
+/// Probe whether a PID is still alive. Uses `kill -0` which exits 0 if the
+/// process exists (regardless of permission), so it's a reliable liveness
+/// check for processes we own. Defaults to "alive" on any failure so we
+/// err on the side of NOT killing a redirector whose owner we can't probe.
+async fn process_is_alive(pid: u32) -> bool {
+    match Command::new("kill")
+        .args(["-0", &pid.to_string()])
+        .status()
+        .await
+    {
+        Ok(status) => status.success(),
+        Err(_) => true,
+    }
+}
+
 /// Handle to a running redirector session. Dropping it aborts the
 /// background tasks (including any in-flight per-flow handlers) and unlinks
 /// the Unix socket file.
@@ -208,6 +317,15 @@ impl IosRedirect {
         }
         let listener = UnixListener::bind(&listener_path)
             .with_context(|| format!("binding listener at {}", listener_path.display()))?;
+
+        // Best-effort cleanup of orphaned redirector processes from a prior
+        // pilot-core session whose owner is no longer alive. Empirically, a
+        // stale `Mitmproxy Redirector` stuck in `UE`/`Z` state can wedge the
+        // macOS System Extension in a way that makes the next control-channel
+        // accept below time out. Safe because we only kill processes whose
+        // socket argument references a PID that isn't running anymore —
+        // concurrent sibling pilot-core daemons are left untouched.
+        kill_orphaned_redirectors().await;
 
         // `resolve_redirector_path` does synchronous filesystem work
         // (exists checks, directory creation, tar extraction via a blocking
@@ -308,7 +426,24 @@ impl IosRedirect {
 
         let (control_stream, _) = timeout(CONTROL_CHANNEL_TIMEOUT, listener.accept())
             .await
-            .context("timed out waiting for System Extension to connect")?
+            .map_err(|_| {
+                anyhow::anyhow!(
+                    "Mitmproxy Redirector System Extension did not connect within {}s.\n\
+                     \n\
+                     Common causes:\n\
+                     • A stuck redirector process from a prior Pilot session is wedging the SE.\n\
+                     • The macOS host is under heavy load (load average > 10).\n\
+                     • The SE got into a bad state after a macOS update or long uptime.\n\
+                     \n\
+                     Quick fixes (in order):\n\
+                     \x20\x201. pkill -9 -f 'Mitmproxy Redirector' && rm -f /tmp/pilot-redirector-*.sock\n\
+                     \x20\x202. Restart pilot-core and re-run `pilot test`.\n\
+                     \x20\x203. If it still times out, reboot macOS.\n\
+                     \n\
+                     See: docs/ios-network-capture.md#se-control-channel-timeout",
+                    CONTROL_CHANNEL_TIMEOUT.as_secs()
+                )
+            })?
             .context("accepting System Extension control channel")?;
         debug!("System Extension control channel connected");
 
@@ -794,4 +929,58 @@ fn extract_brew_tarball(tar_path: &Path) -> Result<()> {
     }
     drop(guard); // explicit cleanup of any leftover tmp files
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn extract_owner_pid_from_canonical_args() {
+        assert_eq!(
+            extract_owner_pid_from_args(
+                "/Applications/Mitmproxy Redirector.app/Contents/MacOS/Mitmproxy Redirector /tmp/pilot-redirector-12345.sock"
+            ),
+            Some(12345)
+        );
+    }
+
+    #[test]
+    fn extract_owner_pid_from_bare_socket_path() {
+        // Minimal form — just the socket path on its own.
+        assert_eq!(
+            extract_owner_pid_from_args("/tmp/pilot-redirector-67890.sock"),
+            Some(67890)
+        );
+    }
+
+    #[test]
+    fn extract_owner_pid_rejects_unrelated_paths() {
+        // A redirector invoked without our socket path shape — don't guess.
+        assert_eq!(
+            extract_owner_pid_from_args(
+                "/Applications/Mitmproxy Redirector.app/Contents/MacOS/Mitmproxy Redirector"
+            ),
+            None,
+        );
+        assert_eq!(
+            extract_owner_pid_from_args("/tmp/some-other-socket.sock"),
+            None,
+        );
+        assert_eq!(extract_owner_pid_from_args(""), None);
+    }
+
+    #[test]
+    fn extract_owner_pid_rejects_non_numeric_suffix() {
+        // Defensive: if a future naming scheme has letters in the slot,
+        // we must not mis-parse and kill a sibling process.
+        assert_eq!(
+            extract_owner_pid_from_args("/tmp/pilot-redirector-abc.sock"),
+            None,
+        );
+        assert_eq!(
+            extract_owner_pid_from_args("/tmp/pilot-redirector-.sock"),
+            None,
+        );
+    }
 }

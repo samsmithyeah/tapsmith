@@ -11,6 +11,11 @@ export default defineConfig({
     jsxInject: `import { h, Fragment } from 'preact'`,
   },
   root: resolve(__dirname, 'src/ui-mode'),
+  server: {
+    port: 5174,
+    strictPort: true,
+    cors: true,
+  },
   build: {
     outDir: resolve(__dirname, 'dist/ui-mode'),
     emptyOutDir: false,

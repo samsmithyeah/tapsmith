@@ -101,8 +101,12 @@ export function useTestTree() {
     setFiles((prev) => updateFileStatusInTree(prev, filePath, status, projectName));
   }, []);
 
-  const updateWatchEnabled = useCallback((filePath: string, enabled: boolean) => {
-    setFiles((prev) => updateWatchInTree(prev, filePath, enabled));
+  const updateWatchEnabled = useCallback((filePath: string, enabled: boolean, testFilter?: string, projectName?: string) => {
+    if (filePath === 'project' && projectName) {
+      setFiles((prev) => updateProjectWatchInTree(prev, projectName, enabled));
+      return;
+    }
+    setFiles((prev) => updateWatchInTree(prev, filePath, enabled, testFilter, projectName));
   }, []);
 
   /** Reset any 'running' nodes back to 'idle' (e.g. after a stopped run). */
@@ -289,19 +293,60 @@ function updateFileStatusInTree(
 }
 
 /**
- * Recursively update a file node's watchEnabled flag, handling project nesting.
+ * Set watchEnabled on a specific project node (top-level), leaving its
+ * descendants alone. Used for project-scoped watch toggles where the
+ * project-level icon should light up on its own.
+ */
+function updateProjectWatchInTree(
+  nodes: TestTreeNode[],
+  projectName: string,
+  enabled: boolean,
+): TestTreeNode[] {
+  return nodes.map((node) => {
+    if (node.type === 'project' && node.name === projectName) {
+      return { ...node, watchEnabled: enabled };
+    }
+    return node;
+  });
+}
+
+/**
+ * Recursively set watchEnabled on a node. If testFilter is undefined, targets
+ * the file node; otherwise targets the test/suite node whose fullName matches
+ * the filter within that file. When projectName is provided, only nodes
+ * descended from that project's subtree are updated — in multi-device
+ * configs the same file appears under multiple project subtrees, and watch
+ * state must be per-project to match the project-specific run it triggers.
  */
 function updateWatchInTree(
   nodes: TestTreeNode[],
   filePath: string,
   enabled: boolean,
+  testFilter: string | undefined,
+  projectName: string | undefined,
+  insideMatchingProject: boolean = projectName === undefined,
 ): TestTreeNode[] {
   return nodes.map((node) => {
-    if (node.type === 'file' && node.filePath === filePath) {
+    if (node.type === 'project') {
+      const childInside = projectName === undefined || node.name === projectName;
+      if (!node.children) return node;
+      const updatedChildren = updateWatchInTree(node.children, filePath, enabled, testFilter, projectName, childInside);
+      if (updatedChildren.some((c, i) => c !== node.children![i])) {
+        return { ...node, children: updatedChildren };
+      }
+      return node;
+    }
+    const isTarget = insideMatchingProject && (
+      testFilter === undefined
+        ? (node.type === 'file' && node.filePath === filePath)
+        : (node.filePath === filePath && node.fullName === testFilter
+            && (node.type === 'suite' || node.type === 'test'))
+    );
+    if (isTarget) {
       return { ...node, watchEnabled: enabled };
     }
     if (node.children) {
-      const updatedChildren = updateWatchInTree(node.children, filePath, enabled);
+      const updatedChildren = updateWatchInTree(node.children, filePath, enabled, testFilter, projectName, insideMatchingProject);
       if (updatedChildren.some((c, i) => c !== node.children![i])) {
         return { ...node, children: updatedChildren };
       }

@@ -259,29 +259,56 @@ export interface TraceConfig {
   /** Whether to capture network traffic via HTTP proxy. */
   network: boolean
   /**
-   * Glob-style host patterns to retain in captured network entries.
-   * Defaults to `undefined` — keep every captured entry.
+   * Glob-style host patterns to retain in captured network entries
+   * (allowlist). Defaults to `undefined` — keep every captured entry.
    *
-   * Matters most for physical iOS devices, where Pilot's Wi-Fi MITM
-   * proxy is system-wide and sees every app's traffic, including iOS
-   * background services (captive portal checks, analytics, iCloud).
-   * Set an allowlist of hostnames that match the app(s) under test so
-   * the trace only keeps relevant entries:
+   * Matters most for physical iOS devices and Android emulators, where
+   * Pilot's proxy is system-wide and sees every app's traffic, including
+   * OS background services (captive portal checks, analytics, push,
+   * iCloud/Google sync). Set an allowlist of hostnames that match the
+   * app(s) under test so the trace only keeps relevant entries:
    *
    *     trace: {
    *       mode: 'on',
    *       networkHosts: ['*.myapp.com', 'api.example.com'],
    *     }
    *
-   * Simulators already filter per-PID (via the macOS Network Extension
-   * redirector), so leaving this unset is fine for sim-only runs. On
-   * physical iOS, unset = verbose traces with system noise.
+   * iOS simulators already filter per-PID (via the macOS Network
+   * Extension redirector), so leaving this unset is fine for sim-only
+   * runs. On physical iOS and Android emulators, unset = verbose traces
+   * with system noise.
    *
    * Patterns use glob semantics: `*` matches one hostname segment,
    * `**` (or a leading `*.`) matches any number. Matching is
    * case-insensitive. See `filterEntriesByHosts` for the exact rules.
    */
   networkHosts?: string[]
+  /**
+   * Glob-style host patterns to drop from captured network entries
+   * (denylist). Defaults to `undefined` — drop nothing.
+   *
+   * Use this when you want a broad capture (no allowlist) but need to
+   * scrub known-noisy hosts — e.g. Android emulator system traffic:
+   *
+   *     trace: {
+   *       mode: 'on',
+   *       networkIgnoreHosts: [
+   *         'connectivitycheck.gstatic.com',
+   *         '*.googleapis.com',
+   *         '*.google.com',
+   *         'play.googleapis.com',
+   *         'mtalk.google.com',
+   *         'android.clients.google.com',
+   *       ],
+   *     }
+   *
+   * When both `networkHosts` and `networkIgnoreHosts` are set, an entry
+   * is kept iff it matches the allowlist AND does NOT match the
+   * denylist. Deny wins.
+   *
+   * Same glob syntax as `networkHosts`.
+   */
+  networkIgnoreHosts?: string[]
 }
 
 /** Parse a string shorthand or object into a full TraceConfig. */

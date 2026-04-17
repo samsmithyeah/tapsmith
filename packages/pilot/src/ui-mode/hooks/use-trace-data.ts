@@ -18,6 +18,8 @@ export interface TestTraceData {
   hierarchies: Map<string, string>;
   sources: Map<string, string>;
   network: NetworkEntry[];
+  /** Decoded network request/response bodies keyed by path (e.g. `network/res-0.bin`). */
+  networkBodies: Map<string, string>;
   /** File this test belongs to — used to scope clearing on re-runs. */
   filePath?: string;
   /** Path to the trace ZIP on the server (set when test completes). */
@@ -33,6 +35,35 @@ export function base64ToBlobUrl(base64: string): string {
   return URL.createObjectURL(new Blob([arr], { type: 'image/png' }));
 }
 
+/** Upper bound for inline body decoding in the UI (2 MiB decoded). Anything
+ * larger would stall the main thread on decode and isn't useful to render
+ * in a `<pre>` anyway — we substitute a placeholder so the rest of the
+ * Network tab still works. */
+const MAX_INLINE_BODY_BYTES = 2 * 1024 * 1024;
+
+/** Decode a base64-encoded body into a UTF-8 string for display. Returns a
+ * short placeholder for bodies above `MAX_INLINE_BODY_BYTES` so we don't
+ * freeze the UI on a multi-megabyte response. `atob` throws `DOMException`
+ * on malformed input, so we catch and substitute a placeholder — this
+ * function runs inside the network-message handler and an uncaught throw
+ * would break subsequent trace updates. */
+export function base64ToUtf8(base64: string): string {
+  // base64 encodes ~3 bytes per 4 chars; use the encoded length as a cheap
+  // upper bound to short-circuit huge bodies before we allocate.
+  const approxBytes = Math.floor((base64.length * 3) / 4);
+  if (approxBytes > MAX_INLINE_BODY_BYTES) {
+    return `[body too large to display inline — ${(approxBytes / (1024 * 1024)).toFixed(1)} MB; open the trace archive to inspect]`;
+  }
+  try {
+    const bin = atob(base64);
+    const bytes = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+    return new TextDecoder().decode(bytes);
+  } catch (e) {
+    return `[error decoding body: ${e instanceof Error ? e.message : String(e)}]`;
+  }
+}
+
 /** Revoke all blob URLs in a trace's screenshot map to free memory. */
 export function revokeTraceScreenshots(data: TestTraceData): void {
   for (const blobUrl of data.screenshots.values()) {
@@ -41,7 +72,7 @@ export function revokeTraceScreenshots(data: TestTraceData): void {
 }
 
 export function emptyTraceData(filePath?: string): TestTraceData {
-  return { events: [], actionEvents: [], screenshots: new Map(), hierarchies: new Map(), sources: new Map(), network: [], filePath };
+  return { events: [], actionEvents: [], screenshots: new Map(), hierarchies: new Map(), sources: new Map(), network: [], networkBodies: new Map(), filePath };
 }
 
 /** Get existing trace data or create a new entry. */

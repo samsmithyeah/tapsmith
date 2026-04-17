@@ -44,6 +44,7 @@ function findNode(roots: TestTreeNode[], id: string): TestTreeNode | undefined {
   }
 }
 
+
 interface TestExplorerProps {
   files: TestTreeNode[]
   expandedNodes: Set<string>
@@ -78,23 +79,42 @@ export function TestExplorer(props: TestExplorerProps) {
 
   const parentMap = useMemo(() => buildParentMap(files), [files]);
   const [pendingIds, setPendingIds] = useState<Set<string>>(new Set());
+  /** Status snapshot per pending id, captured when play was clicked. Pending
+   * is cleared the moment the node's status moves off its snapshot — this
+   * catches the normal transition to 'running' *and* the edge case where
+   * the server jumps straight to a terminal state ('passed'/'failed'/
+   * 'skipped') without an intermediate 'running'. */
+  const pendingSnapshots = useRef<Map<string, TestTreeNode['status']>>(new Map());
 
-  // Clear pending IDs as nodes transition to running
   useEffect(() => {
     if (pendingIds.size === 0) return;
     const stillPending = new Set<string>();
     const check = (node: TestTreeNode) => {
-      if (pendingIds.has(node.id) && node.status === 'idle') stillPending.add(node.id);
+      if (pendingIds.has(node.id)) {
+        const snapshot = pendingSnapshots.current.get(node.id);
+        const unchanged = snapshot === undefined
+          ? node.status !== 'running'
+          : node.status === snapshot;
+        if (unchanged) stillPending.add(node.id);
+      }
       node.children?.forEach(check);
     };
     files.forEach(check);
-    if (stillPending.size !== pendingIds.size) setPendingIds(stillPending);
+    if (stillPending.size !== pendingIds.size) {
+      for (const id of pendingIds) {
+        if (!stillPending.has(id)) pendingSnapshots.current.delete(id);
+      }
+      setPendingIds(stillPending);
+    }
   }, [files, pendingIds]);
 
   // Clear all pending when a run stops
   useEffect(() => {
-    if (!isRunning && pendingIds.size > 0) setPendingIds(new Set());
-  }, [isRunning]);  
+    if (!isRunning && pendingIds.size > 0) {
+      pendingSnapshots.current.clear();
+      setPendingIds(new Set());
+    }
+  }, [isRunning]);
 
   const handleSetPending = useCallback((nodeId: string) => {
     const node = findNode(files, nodeId);
@@ -105,6 +125,10 @@ export function TestExplorer(props: TestExplorerProps) {
     while (cur) {
       ids.push(cur);
       cur = parentMap.get(cur);
+    }
+    for (const id of ids) {
+      const n = findNode(files, id);
+      if (n) pendingSnapshots.current.set(id, n.status);
     }
     setPendingIds((prev) => {
       const next = new Set(prev);
@@ -265,6 +289,7 @@ function TreeNode({ node, depth, parentProjectName, expandedNodes, selectedTestI
 
   const handleRun = useCallback((e: Event) => {
     e.stopPropagation();
+    onSelectTest(node.id);
     onSetPending(node.id);
     if (node.type === 'project') {
       onSend({ type: 'run-project', projectName: node.name });
@@ -273,12 +298,23 @@ function TreeNode({ node, depth, parentProjectName, expandedNodes, selectedTestI
     } else {
       onSend({ type: 'run-test', fullName: node.fullName, filePath: node.filePath, projectName: parentProjectName });
     }
-  }, [node, parentProjectName, onSend, onSetPending]);
+  }, [node, parentProjectName, onSend, onSelectTest, onSetPending]);
 
   const handleWatch = useCallback((e: Event) => {
     e.stopPropagation();
-    onSend({ type: 'toggle-watch', filePath: node.filePath });
-  }, [node, onSend]);
+    if (node.type === 'project') {
+      // Project-level watch: server iterates every file in the project and
+      // toggles whole-file watch scoped to that project.
+      onSend({ type: 'toggle-watch', filePath: 'project', projectName: node.name });
+      return;
+    }
+    // File nodes watch the whole file; test/suite nodes pass their fullName
+    // as the filter so only that test (or describe subtree) re-runs.
+    // parentProjectName scopes the watch to one project in multi-device
+    // configs so sibling projects don't inherit it.
+    const testFilter = node.type === 'file' ? undefined : node.fullName;
+    onSend({ type: 'toggle-watch', filePath: node.filePath, testFilter, projectName: parentProjectName });
+  }, [node, parentProjectName, onSend]);
 
   const handleClick = useCallback(() => {
     if (hasChildren) {
@@ -321,15 +357,19 @@ function TreeNode({ node, depth, parentProjectName, expandedNodes, selectedTestI
           <button class="te-action-btn te-run-btn" onClick={handleRun} disabled={isRunning} title="Run">
             <Play size={ICON_SIZE} />
           </button>
-          {node.type === 'file' && (
-            <button
-              class={`te-action-btn te-watch-btn ${node.watchEnabled ? 'active' : ''}`}
-              onClick={handleWatch}
-              title="Watch"
-            >
-              <Eye size={ICON_SIZE} />
-            </button>
-          )}
+          <button
+            class={`te-action-btn te-watch-btn ${node.watchEnabled ? 'active' : ''}`}
+            onClick={handleWatch}
+            title={node.type === 'project'
+              ? 'Watch all files in this project'
+              : node.type === 'file'
+                ? 'Watch file for changes'
+                : node.type === 'suite'
+                  ? 'Watch this describe block'
+                  : 'Watch this test'}
+          >
+            <Eye size={ICON_SIZE} />
+          </button>
         </div>
       </div>
       {hasChildren && isExpanded && node.children!.map((child) => (
@@ -355,7 +395,10 @@ function TreeNode({ node, depth, parentProjectName, expandedNodes, selectedTestI
 // ─── Status icon ───
 
 function StatusIcon({ status, pending }: { status: TestTreeNode['status']; pending?: boolean }) {
-  if (pending && status === 'idle') {
+  // While pending (play clicked, run not yet reported as started) show the
+  // pulsing pending icon regardless of the previous result — a lingering
+  // passed/failed icon makes the UI feel unresponsive.
+  if (pending && status !== 'running') {
     return <span class="te-status-icon pending"><Circle size={STATUS_SIZE} /></span>;
   }
   switch (status) {

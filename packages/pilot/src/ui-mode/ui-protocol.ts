@@ -149,6 +149,13 @@ export interface HierarchyUpdateMessage {
 export interface WatchEventMessage {
   type: 'watch-event'
   filePath: string
+  /** Present when the watch event is scoped to a specific test fullName or
+   * describe prefix. Omitted for whole-file watches. */
+  testFilter?: string
+  /** Present when the watch is scoped to a specific project (multi-device
+   * configs share the same file across projects, so watch state must be
+   * per-project to match the project-specific run it will trigger). */
+  projectName?: string
   event: 'changed' | 'added' | 'removed' | 'watch-enabled' | 'watch-disabled'
 }
 
@@ -201,6 +208,9 @@ export interface NetworkMessage {
    * configs so the same test under multiple projects doesn't collide. */
   projectName?: string
   entries: import('../trace/types.js').NetworkEntry[]
+  /** Request/response bodies keyed by path (e.g. `network/res-0.bin`).
+   * Encoded as base64; decoded lazily on the client when rendering. */
+  bodies?: Record<string, string>
 }
 
 export interface ErrorMessage {
@@ -274,6 +284,13 @@ export interface ToggleWatchCommand {
   type: 'toggle-watch'
   /** File path to toggle, or 'all' for all files. */
   filePath: string
+  /** Test fullName or describe prefix to scope the watch to. Omit (or
+   * pass undefined) to toggle watching the whole file. */
+  testFilter?: string
+  /** Project to scope the watch to in multi-project configs — the same file
+   * appears under each project, and the watched entry must remember which
+   * one so re-runs route to the right device. */
+  projectName?: string
 }
 
 export interface RequestHierarchyCommand {
@@ -421,6 +438,7 @@ export interface UIRunSourceMessage {
 export interface UIRunNetworkMessage {
   type: 'network'
   entries: import('../trace/types.js').NetworkEntry[]
+  bodies?: Record<string, string>
 }
 
 export interface UIRunErrorMessage {
@@ -550,6 +568,7 @@ export interface UIWorkerNetworkMessage {
   type: 'network'
   workerId: number
   entries: import('../trace/types.js').NetworkEntry[]
+  bodies?: Record<string, string>
 }
 
 /** UI worker → server: file execution completed. */

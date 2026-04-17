@@ -126,7 +126,6 @@ html, body, #app {
 .ui-explorer {
   flex: 0 0 auto;
   overflow-y: auto;
-  border-right: 1px solid var(--border);
   background: var(--bg-secondary);
 }
 
@@ -140,7 +139,6 @@ html, body, #app {
 
 .ui-filmstrip {
   flex: 0 0 auto;
-  border-bottom: 1px solid var(--border);
   overflow: hidden;
 }
 
@@ -154,7 +152,6 @@ html, body, #app {
 .ui-actions {
   flex: 0 0 auto;
   overflow-y: auto;
-  border-right: 1px solid var(--border);
 }
 
 .ui-screenshot {
@@ -169,37 +166,31 @@ html, body, #app {
 .ui-detail {
   flex: 0 0 auto;
   overflow: hidden;
-  border-top: 1px solid var(--border);
 }
 
+/* 1px grey divider that doubles as the resize handle. The ::before
+ * pseudo widens the drag hit area to ~7px so users can grab it easily
+ * without having a thick white band between panes. */
 .ui-resize-handle {
-  flex: 0 0 6px;
-  background: transparent;
+  flex: 0 0 1px;
+  background: var(--border);
   transition: background 0.15s;
   position: relative;
+  z-index: 10;
 }
-.ui-resize-handle:hover { background: color-mix(in srgb, var(--color-accent) 30%, transparent); }
-.ui-resize-handle:active { background: var(--color-accent); }
-.ui-resize-handle:hover::after {
-  content: '\u2022\u2022\u2022';
+.ui-resize-handle::before {
+  content: '';
   position: absolute;
-  color: var(--color-accent);
-  font-size: 8px;
-  letter-spacing: -1px;
-  pointer-events: none;
+  inset: 0;
 }
+.ui-resize-handle:hover { background: var(--color-accent); }
+.ui-resize-handle:active { background: var(--color-accent); }
+
 .ui-resize-col { cursor: col-resize; }
-.ui-resize-col:hover::after {
-  top: 50%;
-  left: 50%;
-  transform: translate(-50%, -50%) rotate(90deg);
-}
+.ui-resize-col::before { left: -3px; right: -3px; top: 0; bottom: 0; }
+
 .ui-resize-row { cursor: row-resize; }
-.ui-resize-row:hover::after {
-  top: 50%;
-  left: 50%;
-  transform: translate(-50%, -50%);
-}
+.ui-resize-row::before { top: -3px; bottom: -3px; left: 0; right: 0; }
 
 /* ─── Screen area (Action screenshots) ─── */
 
@@ -247,7 +238,6 @@ html, body, #app {
   display: flex;
   flex-direction: column;
   overflow: hidden;
-  border-left: 1px solid var(--border);
   background: var(--bg-secondary);
 }
 
@@ -581,6 +571,7 @@ html, body, #app {
 .te-empty { padding: 20px; text-align: center; color: var(--color-text-faint); font-size: 12px; }
 
 .te-node {
+  position: relative;
   display: flex;
   align-items: center;
   gap: 4px;
@@ -645,10 +636,26 @@ html, body, #app {
 
 .te-duration { font-size: 10px; color: var(--color-text-faint); font-family: var(--font-mono); flex-shrink: 0; }
 
-.te-actions { display: flex; gap: 2px; flex-shrink: 0; }
+/* Actions float over the right edge of the row on hover so the test name
+ * can use the row's full width. Individual buttons control their own
+ * visibility (hover shows all; watch-active persists). Pointer-events are
+ * routed per-button so the invisible buttons don't swallow clicks on the
+ * name. */
+.te-actions {
+  position: absolute; right: 6px; top: 50%; transform: translateY(-50%);
+  display: flex; gap: 2px; flex-shrink: 0;
+  pointer-events: none;
+}
+.te-actions > button { pointer-events: auto; }
 .te-action-btn { opacity: 0; transition: opacity 0.15s; }
 .te-node:hover .te-action-btn { opacity: 1; }
 .te-watch-btn.active { opacity: 1; }
+
+/* Background pill on hover so the floating buttons read cleanly over the
+ * clipped name underneath. Matches the row's hover/selected background so
+ * the overlay blends with the row. */
+.te-node:hover .te-actions { background: var(--bg-hover); border-radius: 3px; padding: 1px 2px; }
+.te-node.selected:hover .te-actions { background: var(--bg-selected); }
 
 .te-action-btn {
   width: 20px; height: 20px;
@@ -773,6 +780,8 @@ html, body, #app {
 .detail-tab:hover { color: var(--color-text-secondary); }
 .detail-tab.active { color: var(--color-text-primary); border-bottom-color: var(--color-accent); }
 .detail-tab.has-error { color: var(--color-error); }
+.detail-tab-count { margin-left: 6px; padding: 1px 5px; border-radius: 8px; background: var(--color-bg-tertiary); color: var(--color-text-secondary); font-size: 10px; font-weight: 600; letter-spacing: 0; }
+.detail-tab.active .detail-tab-count { background: var(--color-accent); color: var(--color-bg); }
 .detail-content { flex: 1; overflow-y: auto; padding: 10px 14px; font-size: 12px; }
 .detail-content.detail-content-flush { padding: 0; overflow: hidden; }
 
@@ -792,18 +801,42 @@ html, body, #app {
 .log-source { font-size: 10px; color: var(--color-text-faintest); min-width: 46px; }
 .log-message { word-break: break-all; }
 
-.source-code { font-family: var(--font-mono); font-size: 12px; line-height: 1.5; white-space: pre; overflow-x: auto; }
+/* Source tab: filename as a fixed header, code scrolls underneath.
+ * Parent .detail-content uses detail-content-flush for this tab. */
+.source-tab { display: flex; flex-direction: column; height: 100%; overflow: hidden; }
+.source-filename {
+  flex-shrink: 0; padding: 8px 14px 8px 8px;
+  background: var(--bg-secondary); border-bottom: 1px solid var(--border);
+  color: var(--color-text-muted); font-size: 11px;
+  font-family: var(--font-mono);
+}
+.source-code { flex: 1; min-height: 0; overflow: auto; padding: 10px 14px; font-family: var(--font-mono); font-size: 12px; line-height: 1.5; white-space: pre; }
 .source-line { display: flex; }
 .source-line-number { min-width: 40px; text-align: right; padding-right: 12px; color: var(--color-text-faintest); user-select: none; }
 .source-line-content { flex: 1; }
 .source-line.highlight { background: var(--color-highlight); }
 
-.error-block { display: flex; flex-direction: column; gap: 8px; }
-.error-entry { background: var(--color-error-bg); border: 1px solid var(--color-error-border); border-radius: 4px; padding: 10px; }
-.error-entry-selected { border-color: var(--color-error); }
-.error-entry-label { font-size: 11px; color: var(--color-text-muted); margin-bottom: 4px; font-family: var(--font-mono); }
-.error-message { color: var(--color-error); font-weight: 500; margin-bottom: 6px; font-size: 12px; }
-.error-stack { font-family: var(--font-mono); font-size: 11px; color: var(--color-text-muted); white-space: pre-wrap; word-break: break-all; }
+.error-block { display: flex; flex-direction: column; gap: 12px; }
+.error-entry { background: var(--color-error-bg); border: 1px solid var(--color-error-border); border-left: 3px solid var(--color-error); border-radius: 4px; padding: 10px 12px; }
+.error-entry-selected { border-color: var(--color-error); box-shadow: 0 0 0 1px var(--color-error) inset; }
+.error-title { color: var(--color-error); font-weight: 600; font-size: 12px; font-family: var(--font-mono); margin-bottom: 8px; word-break: break-word; }
+.error-grid { display: grid; grid-template-columns: 80px 1fr; gap: 3px 12px; font-size: 12px; margin-bottom: 8px; }
+.error-grid:empty { display: none; }
+.error-grid-key { color: var(--color-text-muted); text-transform: lowercase; }
+.error-grid-value { color: var(--color-text-secondary); word-break: break-word; }
+.error-grid-value.mono { font-family: var(--font-mono); font-size: 11px; }
+.error-grid-value.expected { font-family: var(--font-mono); font-size: 11px; color: var(--color-success); }
+.error-grid-value.received { font-family: var(--font-mono); font-size: 11px; color: var(--color-error); }
+.error-message { color: var(--color-error); font-size: 12px; margin-top: 4px; word-break: break-word; }
+.error-log { margin-top: 10px; border-top: 1px solid var(--color-error-border); padding-top: 8px; }
+.error-log-title { color: var(--color-text-muted); font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 4px; }
+.error-log-list { list-style: none; margin: 0; padding: 0; font-family: var(--font-mono); font-size: 11px; color: var(--color-text-secondary); }
+.error-log-list li { padding: 1px 0 1px 12px; position: relative; white-space: pre-wrap; word-break: break-word; }
+.error-log-list li::before { content: '–'; position: absolute; left: 0; color: var(--color-text-faintest); }
+.error-stack-details { margin-top: 8px; }
+.error-stack-details summary { color: var(--color-text-muted); font-size: 11px; cursor: pointer; user-select: none; }
+.error-stack-details summary:hover { color: var(--color-text-secondary); }
+.error-stack { font-family: var(--font-mono); font-size: 11px; color: var(--color-text-muted); white-space: pre-wrap; word-break: break-all; margin-top: 6px; padding: 6px 8px; background: var(--color-bg); border-radius: 3px; }
 .test-error-banner { display: flex; align-items: center; gap: 6px; padding: 6px 12px; background: var(--color-error-bg); border-bottom: 1px solid var(--color-error-border); cursor: pointer; font-size: 12px; color: var(--color-error); flex-shrink: 0; }
 .test-error-banner:hover { background: var(--color-error-border); }
 .test-error-banner-icon { font-weight: 700; flex-shrink: 0; }
@@ -811,8 +844,10 @@ html, body, #app {
 .no-content { color: var(--color-text-faintest); font-size: 12px; }
 
 /* Timeline */
-.timeline { display: flex; align-items: flex-end; gap: 0; padding: 0; background: var(--color-bg-secondary); border-bottom: 1px solid var(--color-border); flex-shrink: 0; overflow-x: auto; position: relative; height: 80px; }
-.timeline-inner { display: flex; align-items: flex-end; gap: 2px; padding: 4px 8px; min-width: 100%; }
+.timeline { display: flex; flex-direction: column; gap: 0; padding: 0; background: var(--color-bg-secondary); border-bottom: 1px solid var(--color-border); flex-shrink: 0; position: relative; }
+/* min-height keeps the filmstrip at its normal size even when there are
+ * no thumbnails yet — thumb height (56) + label + gap + padding ≈ 78px. */
+.timeline-inner { display: flex; align-items: flex-end; gap: 2px; padding: 4px 8px; min-width: 100%; min-height: 78px; overflow-x: auto; }
 .timeline-thumb { height: 56px; width: auto; border-radius: 2px; border: 2px solid transparent; cursor: pointer; opacity: 0.6; transition: all 0.1s; flex-shrink: 0; }
 .timeline-thumb:hover { opacity: 1; }
 .timeline-thumb.selected { opacity: 1; border-color: var(--color-accent); }
@@ -820,7 +855,7 @@ html, body, #app {
 .timeline-placeholder { width: 40px; height: 56px; border-radius: 2px; background: var(--color-bg-tertiary); border: 2px solid transparent; display: flex; align-items: center; justify-content: center; font-size: 10px; color: var(--color-text-faintest); flex-shrink: 0; cursor: pointer; }
 .timeline-placeholder.selected { border-color: var(--color-accent); }
 .timeline-time-label { position: absolute; transform: translateX(-50%); }
-.timeline-meta { position: absolute; top: 2px; right: 12px; font-size: 11px; color: var(--color-text-faint); }
+.timeline-meta { padding: 4px 12px 0; text-align: right; font-size: 11px; color: var(--color-text-faint); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .timeline-meta .test-status { font-weight: 600; }
 .timeline-meta .passed { color: var(--color-success); }
 .timeline-meta .failed { color: var(--color-error); }

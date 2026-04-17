@@ -56,7 +56,12 @@ export function Layout({ topBar, testExplorer, filmstrip, actionsPanel, screensh
   }, []);
 
   const handleExplorerResize = useCallback(
-    (e: MouseEvent) => makeColResize(() => explorerWidth, setExplorerWidth, 180, 450)(e),
+    (e: MouseEvent) => {
+      // Cap against the window so sibling panes retain at least ~300px, but
+      // otherwise let the user drag the explorer as wide as they like.
+      const max = Math.max(180, window.innerWidth - 300);
+      makeColResize(() => explorerWidth, setExplorerWidth, 180, max)(e);
+    },
     [explorerWidth, makeColResize],
   );
 
@@ -76,7 +81,10 @@ export function Layout({ topBar, testExplorer, filmstrip, actionsPanel, screensh
     const startHeight = detailHeight;
     const onMove = (ev: MouseEvent) => {
       const delta = startY - ev.clientY;
-      setDetailHeight(Math.max(100, Math.min(500, startHeight + delta)));
+      // Cap against the window so the top panes keep at least ~100px of
+      // height, but otherwise let the user drag as tall as they want.
+      const max = Math.max(100, window.innerHeight - 100);
+      setDetailHeight(Math.max(100, Math.min(max, startHeight + delta)));
     };
     const onUp = () => {
       document.removeEventListener('mousemove', onMove);

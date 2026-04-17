@@ -1,6 +1,5 @@
 import "dotenv/config"
 import { defineConfig } from "pilot"
-import { findLatestXctestrun } from "./utils/find-xctestrun.mjs"
 
 // ─── Multi-device config ───
 //
@@ -37,7 +36,6 @@ const IOS_USE = {
   platform: "ios",
   app: "../test-app/build/Build/Products/Release-iphonesimulator/PilotTestApp.app",
   simulator: process.env.PILOT_IOS_SIMULATOR || "iPhone 17",
-  iosXctestrun: process.env.PILOT_IOS_XCTESTRUN || findLatestXctestrun(),
 }
 
 export default defineConfig({
@@ -45,8 +43,10 @@ export default defineConfig({
   timeout: 10_000,
   retries: 0,
   screenshot: "only-on-failure",
-  trace: "retain-on-failure",
-  daemonBin: "../packages/pilot-core/target/release/pilot-core",
+  trace: {
+    mode: "retain-on-failure",
+    networkHosts: ["jsonplaceholder.typicode.com"]
+  },
   projects: [
     // ─── Android ───
     {

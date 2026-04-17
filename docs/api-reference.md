@@ -1243,7 +1243,7 @@ describe("custom config", () => {
 | `timeout`    | `number`                                    | Action/assertion timeout (ms)                |
 | `screenshot` | `'always' \| 'only-on-failure' \| 'never'` | Screenshot capture mode                      |
 | `retries`    | `number`                                    | Retry count for failed tests                 |
-| `trace`      | `TraceMode \| Partial<TraceConfig>`         | Trace recording configuration. See [configuration.md](./configuration.md#traceconfig) for the full `TraceConfig` shape (includes `network`, `networkHosts`, `screenshots`, etc.). |
+| `trace`      | `TraceMode \| Partial<TraceConfig>`         | Trace recording configuration. See [configuration.md](./configuration.md#traceconfig) for the full `TraceConfig` shape (includes `network`, `networkHosts`, `networkIgnoreHosts`, `screenshots`, etc.). |
 | `appState`   | `string`                                    | Path to saved app state archive to restore   |
 
 The following device-shaping fields may **only** be set on a project's

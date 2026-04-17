@@ -28,6 +28,7 @@ import type {
 } from './ui-protocol.js';
 import type { AnyTraceEvent } from '../trace/types.js';
 import { isNetworkTracingEnabled, networkHostsForPac } from '../trace/types.js';
+import { encodeNetworkBodies } from './encode-bodies.js';
 
 // ─── Helpers ───
 
@@ -186,13 +187,8 @@ async function handleRun(msg: UIRunMessage): Promise<void> {
     projectName: msg.projectName,
     testFilter: msg.testFilter,
     onNetworkEntries: (entries) => {
-      // Strip Buffer fields (not IPC-safe) before sending
-      const safe = entries.map((e) => ({
-        ...e,
-        requestBody: undefined,
-        responseBody: undefined,
-      }));
-      send({ type: 'network', entries: safe });
+      const { entries: safe, bodies } = encodeNetworkBodies(entries);
+      send({ type: 'network', entries: safe, bodies });
     },
   });
 

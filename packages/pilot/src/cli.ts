@@ -848,6 +848,7 @@ interface CliArgs {
   watch: boolean;
   ui: boolean;
   uiPort?: number;
+  uiDevUrl?: string;
   config?: string;
   forceInstall: boolean;
   version: boolean;
@@ -934,6 +935,10 @@ function parseArgs(argv: string[]): CliArgs {
         process.exit(1);
       }
       args.uiPort = val;
+    } else if (arg === '--ui-dev-url') {
+      args.uiDevUrl = rest[++i];
+    } else if (arg?.startsWith('--ui-dev-url=')) {
+      args.uiDevUrl = arg.slice('--ui-dev-url='.length);
     } else if (arg === '--config' || arg === '-c') {
       args.config = rest[++i];
     } else if (arg?.startsWith('--config=')) {
@@ -1768,6 +1773,7 @@ async function main(): Promise<void> {
         bucketByProject: uiBucketByProject,
       }, {
         port: args.uiPort,
+        devUrl: args.uiDevUrl ?? process.env.PILOT_UI_DEV_URL,
       });
 
       // Keep alive until user exits

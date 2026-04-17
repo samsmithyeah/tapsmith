@@ -13,6 +13,7 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as os from 'node:os';
+import * as zlib from 'node:zlib';
 import type { PilotConfig, UseOptions } from './config.js';
 import type { Device } from './device.js';
 import type { PilotReporter } from './reporter.js';
@@ -36,6 +37,61 @@ import { getSimulatorScreenScale } from './ios-simulator.js';
  * for every test.
  */
 const _printedCaptureWarnings = new Set<string>();
+
+/** Strip HTTP/1.1 chunked transfer encoding framing from a body.
+ * Returns the original buffer if parsing fails. */
+function dechunkHttpBody(body: Buffer): Buffer {
+  const parts: Buffer[] = [];
+  let pos = 0;
+  while (pos < body.length) {
+    const lineEnd = body.indexOf('\r\n', pos);
+    if (lineEnd === -1) return body;
+    const sizeHex = body.subarray(pos, lineEnd).toString('ascii').split(';')[0].trim();
+    const size = parseInt(sizeHex, 16);
+    if (!Number.isFinite(size) || size < 0) return body;
+    pos = lineEnd + 2;
+    if (size === 0) break;
+    if (pos + size > body.length) return body;
+    parts.push(body.subarray(pos, pos + size));
+    pos += size;
+    if (body[pos] === 0x0d && body[pos + 1] === 0x0a) pos += 2;
+  }
+  return Buffer.concat(parts);
+}
+
+/** Case-insensitive header lookup. HTTP header names are case-insensitive
+ * per RFC 7230 §3.2, and the on-device collectors have historically mixed
+ * casing (`Transfer-Encoding`, `transfer-encoding`, `Transfer-encoding`). */
+function headerValue(headers: Record<string, string>, name: string): string | undefined {
+  const target = name.toLowerCase();
+  for (const k of Object.keys(headers)) {
+    if (k.toLowerCase() === target) return headers[k];
+  }
+  return undefined;
+}
+
+/** Decode a captured HTTP body: strip chunked framing per Transfer-Encoding,
+ * then decompress per Content-Encoding. Device-level network interception
+ * captures raw wire bytes, so we have to reverse any hop-by-hop framing
+ * before display. Falls back to the raw buffer on any parse/decode failure. */
+function decodeHttpBody(body: Buffer | undefined, headers: Record<string, string>): Buffer | undefined {
+  if (!body || body.length === 0) return body;
+  let decoded = body;
+  const te = (headerValue(headers, 'transfer-encoding') ?? '').toLowerCase();
+  if (te.split(',').map((s) => s.trim()).includes('chunked')) {
+    decoded = dechunkHttpBody(decoded);
+  }
+  const ce = (headerValue(headers, 'content-encoding') ?? '').toLowerCase().trim();
+  if (!ce || ce === 'identity') return decoded;
+  try {
+    if (ce === 'gzip' || ce === 'x-gzip') return zlib.gunzipSync(decoded);
+    if (ce === 'deflate') return zlib.inflateSync(decoded);
+    if (ce === 'br') return zlib.brotliDecompressSync(decoded);
+  } catch {
+    // Fall through on decompression failure
+  }
+  return decoded;
+}
 
 function _warnCaptureOnce(prefix: string, msg: string): void {
   const key = `${prefix}:${msg}`;
@@ -577,6 +633,12 @@ async function runSuiteContext(
 
   // Run tests
   for (const entry of ctx.tests) {
+    // Abort: stop running remaining tests but don't record them as
+    // 'skipped' — a user-initiated stop should leave untouched tests with
+    // whatever prior status they had, not overwrite them with a synthetic
+    // skipped result.
+    if (opts.abortSignal?.aborted) break;
+
     const fullName = parentPrefix ? `${parentPrefix} > ${entry.name}` : entry.name;
 
     // Determine if this test should be skipped.
@@ -584,8 +646,7 @@ async function runSuiteContext(
     const filteredOut = opts.testFilter
       && fullName !== opts.testFilter
       && !fullName.startsWith(opts.testFilter + ' > ');
-    const shouldSkip = entry.skip || (hasOnly && !entry.only) || filteredOut
-      || opts.abortSignal?.aborted;
+    const shouldSkip = entry.skip || (hasOnly && !entry.only) || filteredOut;
 
     if (shouldSkip) {
       const skippedResult: TestResult = {
@@ -853,15 +914,18 @@ async function runSuiteContext(
         try {
           const res = await opts.device._stopNetworkCapture();
           if (res.success) {
-            // Apply user-supplied host allowlist, if any. On physical iOS
-            // the Wi-Fi proxy is system-wide and captures every app's
-            // traffic — this is how users scrub system services (captive
-            // portal, analytics, iCloud) out of their trace archives.
-            // On simulators the macOS Network Extension redirector
-            // already filters per-PID, so the allowlist is usually
-            // redundant for sim runs but still honoured when set.
+            // Apply user-supplied host filters, if any. On physical iOS
+            // and Android emulators the proxy is system-wide and captures
+            // every app's traffic — this is how users scrub system
+            // services (captive portal, analytics, Google/iCloud sync)
+            // out of their trace archives. iOS simulators filter per-PID
+            // via the macOS Network Extension redirector, so filters are
+            // usually redundant for sim runs but still honoured.
             const { filterEntriesByHosts } = await import('./trace/filter-hosts.js');
-            rawNetworkEntries = filterEntriesByHosts(res.entries, traceConfig.networkHosts);
+            rawNetworkEntries = filterEntriesByHosts(res.entries, {
+              allow: traceConfig.networkHosts,
+              deny: traceConfig.networkIgnoreHosts,
+            });
             if (
               traceConfig.networkHosts &&
               traceConfig.networkHosts.length > 0 &&
@@ -916,24 +980,28 @@ async function runSuiteContext(
           return best;
         };
 
-        networkEntries = rawNetworkEntries.map((e, i) => ({
-          index: i,
-          actionIndex: findActionIndex(e.startTimeMs),
-          startTime: e.startTimeMs,
-          endTime: e.startTimeMs + e.durationMs,
-          method: e.method,
-          url: e.url,
-          status: e.statusCode,
-          contentType: e.contentType,
-          requestSize: e.requestSize,
-          responseSize: e.responseSize,
-          duration: e.durationMs,
-          requestHeaders: e.requestHeadersJson ? JSON.parse(e.requestHeadersJson) : {},
-          responseHeaders: e.responseHeadersJson ? JSON.parse(e.responseHeadersJson) : {},
-          requestBody: e.requestBody,
-          responseBody: e.responseBody,
-          routeAction: e.routeAction ? e.routeAction as 'mocked' | 'aborted' | 'continued' | 'fetched' : undefined,
-        }));
+        networkEntries = rawNetworkEntries.map((e, i) => {
+          const requestHeaders = e.requestHeadersJson ? JSON.parse(e.requestHeadersJson) : {};
+          const responseHeaders = e.responseHeadersJson ? JSON.parse(e.responseHeadersJson) : {};
+          return {
+            index: i,
+            actionIndex: findActionIndex(e.startTimeMs),
+            startTime: e.startTimeMs,
+            endTime: e.startTimeMs + e.durationMs,
+            method: e.method,
+            url: e.url,
+            status: e.statusCode,
+            contentType: e.contentType,
+            requestSize: e.requestSize,
+            responseSize: e.responseSize,
+            duration: e.durationMs,
+            requestHeaders,
+            responseHeaders,
+            requestBody: decodeHttpBody(e.requestBody, requestHeaders),
+            responseBody: decodeHttpBody(e.responseBody, responseHeaders),
+            routeAction: e.routeAction ? e.routeAction as 'mocked' | 'aborted' | 'continued' | 'fetched' : undefined,
+          };
+        });
 
       }
 
@@ -1018,8 +1086,11 @@ async function runSuiteContext(
 
   // Run child suites
   for (const suiteEntry of ctx.suites) {
-    const shouldSkip = suiteEntry.skip || (hasOnly && !suiteEntry.only && !hasOnlyTests)
-      || opts.abortSignal?.aborted;
+    // Abort: same semantics as the test loop — stop here without recording
+    // the remaining suites' tests as 'skipped'.
+    if (opts.abortSignal?.aborted) break;
+
+    const shouldSkip = suiteEntry.skip || (hasOnly && !suiteEntry.only && !hasOnlyTests);
 
     if (shouldSkip) {
       // Mark all tests in skipped suite as skipped (we still need to discover them)

@@ -117,6 +117,13 @@ export interface UIServerContext {
 
 export interface UIServerOptions {
   port?: number
+  /**
+   * When set, the UI server serves a thin HTML shell that loads the Preact
+   * SPA from a running Vite dev server at this URL (e.g. `http://localhost:5174`)
+   * instead of the bundled single-file HTML. Enables Preact Fast Refresh so
+   * frontend edits hot-swap without a full rebuild + CLI restart.
+   */
+  devUrl?: string
 }
 
 interface TaggedFile {
@@ -163,7 +170,25 @@ export async function startUIServer(
   let screenSeq = 0;
   let screenPollActive = false;
   let watcher: FSWatcher | null = null;
-  const watchedFiles = new Set<string>();
+  /** A single watched entry: optional project scope + optional test filter.
+   * testFilter = undefined means "whole file"; projectName = undefined means
+   * "whichever project this file resolves to" (non-multi-project configs). */
+  interface WatchedEntry { projectName?: string; testFilter?: string }
+  /** filePath → list of watched entries. chokidar adds the file when the
+   * first entry appears and removes it when the last entry is cleared. */
+  const watchedEntries = new Map<string, WatchedEntry[]>();
+  function entryKey(e: WatchedEntry): string {
+    // JSON-encode both fields so a test name containing '::' (or any other
+    // delimiter) can't collide with a project-name / filter pair that
+    // happens to produce the same concatenated string.
+    return JSON.stringify([e.projectName ?? null, e.testFilter ?? null]);
+  }
+  function findEntry(filePath: string, projectName: string | undefined, testFilter: string | undefined): number {
+    const list = watchedEntries.get(filePath);
+    if (!list) return -1;
+    const key = entryKey({ projectName, testFilter });
+    return list.findIndex((e) => entryKey(e) === key);
+  }
 
   // ─── Multi-worker state ───
   const multiWorker = (ctx.workers ?? 1) > 1 && (ctx.deviceSerials?.length ?? 0) > 1;
@@ -268,7 +293,9 @@ export async function startUIServer(
 
   let tsxBin: string | undefined;
   if (useTypeScript || resolvedDiscoverScript.endsWith('.ts') || resolvedWorkerScript.endsWith('.ts')) {
-    const pilotPkgDir = path.resolve(__dirname, '..');
+    // __dirname is packages/pilot/{src,dist}/ui-mode — the package root
+    // (where node_modules lives) is two levels up in both cases.
+    const pilotPkgDir = path.resolve(__dirname, '..', '..');
     const localTsx = path.join(pilotPkgDir, 'node_modules', '.bin', 'tsx');
     tsxBin = fs.existsSync(localTsx) ? localTsx : 'tsx';
   }
@@ -797,6 +824,7 @@ export async function startUIServer(
               testFullName: currentTestFullName,
               projectName,
               entries: response.entries,
+              bodies: response.bodies,
             });
             break;
           }
@@ -1417,7 +1445,7 @@ export async function startUIServer(
               break;
             }
             case 'network': {
-              broadcast({ type: 'network', testFullName: worker.currentTest ?? '', projectName: worker.currentFile?.projectName, entries: msg.entries });
+              broadcast({ type: 'network', testFullName: worker.currentTest ?? '', projectName: worker.currentFile?.projectName, entries: msg.entries, bodies: msg.bodies });
               break;
             }
             case 'file-done': {
@@ -1623,19 +1651,19 @@ export async function startUIServer(
     }
   }
 
-  /** Signal all busy workers to abort gracefully (finish current test, skip rest). */
+  /** Stop a parallel run: signal each busy worker to abort. The worker's
+   * poll loops bail out immediately via getActiveAbortSignal(), so the
+   * in-flight assertion/action doesn't finish its own timeout; the worker
+   * itself stays alive and ready for the next run. */
   function stopParallelRun(): void {
     parallelRunAborted = true;
 
     for (const worker of uiWorkers) {
-      if (worker.busy) {
-        // Send graceful abort — worker stays alive, no respawn needed
-        try { worker.process.send({ type: 'abort' } satisfies import('./ui-protocol.js').UIWorkerAbortMessage); } catch { /* IPC closed */ }
-      }
+      if (!worker.busy) continue;
+      try {
+        worker.process.send({ type: 'abort' } satisfies import('./ui-protocol.js').UIWorkerAbortMessage);
+      } catch { /* IPC closed */ }
     }
-
-    // Don't force-resolve the dispatch promise — let file-done messages settle
-    // naturally so workers transition to !busy and the promise resolves cleanly.
   }
 
   /** Respawn any retired workers before starting a new run. */
@@ -1700,6 +1728,40 @@ export async function startUIServer(
       return runFileParallel(filePath, testFilter, explicitProjectName);
     }
     return runFileSingle(filePath, testFilter, explicitProjectName);
+  }
+
+  /** Parallel-mode batch dispatch: send multiple TaggedFile entries to
+   * `dispatchFilesParallel` under a single run-start/run-end envelope so
+   * sibling projects' workers run concurrently. Used by the watch queue
+   * when one file change implicates multiple projects (e.g. watching a
+   * test under Android and a different test under iOS in a multi-device
+   * config). Caller is responsible for ensuring parallel mode is active. */
+  async function runBatchParallel(files: TaggedFile[]): Promise<void> {
+    if (files.length === 0 || isRunning) return;
+    isRunning = true;
+    screenPollActive = true;
+    parallelRunAborted = false;
+
+    broadcast({ type: 'run-start', fileCount: files.length });
+
+    try {
+      const r = await dispatchFilesParallel(files);
+      broadcast({
+        type: 'run-end',
+        status: r.failed > 0 ? 'failed' : 'passed',
+        duration: r.duration,
+        passed: r.passed,
+        failed: r.failed,
+        skipped: r.skipped,
+      });
+    } catch (err) {
+      const errMsg = err instanceof Error ? err.message : String(err);
+      broadcast({ type: 'error', message: errMsg });
+      broadcast({ type: 'run-end', status: 'failed', duration: 0, passed: 0, failed: files.length, skipped: 0 });
+    } finally {
+      isRunning = false;
+      screenPollActive = false;
+    }
   }
 
   async function runAllFiles(): Promise<void> {
@@ -1948,37 +2010,108 @@ export async function startUIServer(
 
   // ─── Watch Mode ───
 
-  function startWatching(filePath: string): void {
-    if (watchedFiles.has(filePath)) return;
-    watchedFiles.add(filePath);
+  function startWatching(filePath: string, projectName: string | undefined, testFilter: string | undefined, emitEvent = true): void {
+    let list = watchedEntries.get(filePath);
+    const isNewFile = !list;
+    if (!list) {
+      list = [];
+      watchedEntries.set(filePath, list);
+    }
+    if (findEntry(filePath, projectName, testFilter) >= 0) return;
+    list.push({ projectName, testFilter });
 
     if (!watcher) {
       watcher = chokidarWatch([], { ignoreInitial: true });
       watcher.on('change', (changedPath) => {
-        if (watchedFiles.has(changedPath)) {
+        if (watchedEntries.has(changedPath)) {
           broadcast({ type: 'watch-event', filePath: changedPath, event: 'changed' });
           watchQueue.scheduleFiles([changedPath]);
         }
       });
     }
 
-    watcher.add(filePath);
-    broadcast({ type: 'watch-event', filePath, event: 'watch-enabled' });
+    if (isNewFile) watcher.add(filePath);
+    if (emitEvent) {
+      broadcast({ type: 'watch-event', filePath, testFilter, projectName, event: 'watch-enabled' });
+    }
   }
 
-  function stopWatching(filePath: string): void {
-    if (!watchedFiles.has(filePath)) return;
-    watchedFiles.delete(filePath);
-    watcher?.unwatch(filePath);
-    broadcast({ type: 'watch-event', filePath, event: 'watch-disabled' });
+  function stopWatching(filePath: string, projectName: string | undefined, testFilter: string | undefined, emitEvent = true): void {
+    const list = watchedEntries.get(filePath);
+    const idx = findEntry(filePath, projectName, testFilter);
+    if (!list || idx < 0) return;
+    list.splice(idx, 1);
+    if (list.length === 0) {
+      watchedEntries.delete(filePath);
+      watcher?.unwatch(filePath);
+    }
+    if (emitEvent) {
+      broadcast({ type: 'watch-event', filePath, testFilter, projectName, event: 'watch-disabled' });
+    }
   }
 
-  const watchQueue = new RunQueue(300, (request) => {
-    if (request.type === 'all') {
-      runAllFiles().catch(broadcastError);
-    } else {
+  /** Expand the watched entries for a file into concrete runs. Within a
+   * project, a whole-file watch supersedes per-test watches (running the
+   * file covers them). */
+  function expandWatchedRuns(entries: WatchedEntry[]): Array<{ projectName: string | undefined; testFilter: string | undefined }> {
+    const byProject = new Map<string, WatchedEntry[]>();
+    for (const e of entries) {
+      const key = e.projectName ?? '';
+      let arr = byProject.get(key);
+      if (!arr) { arr = []; byProject.set(key, arr); }
+      arr.push(e);
+    }
+    const runs: Array<{ projectName: string | undefined; testFilter: string | undefined }> = [];
+    for (const [, group] of byProject) {
+      const wholeFile = group.find((e) => e.testFilter === undefined);
+      if (wholeFile) {
+        runs.push({ projectName: wholeFile.projectName, testFilter: undefined });
+      } else {
+        for (const e of group) runs.push({ projectName: e.projectName, testFilter: e.testFilter });
+      }
+    }
+    return runs;
+  }
+
+  const watchQueue = new RunQueue(300, async (request) => {
+    try {
+      if (request.type === 'all') {
+        await runAllFiles();
+        return;
+      }
       const file = request.files[0];
-      if (file) runFile(file).catch(broadcastError);
+      if (!file) return;
+      const entries = watchedEntries.get(file);
+      if (!entries || entries.length === 0) {
+        await runFile(file);
+        return;
+      }
+      const runs = expandWatchedRuns(entries);
+      // Parallel mode with multiple runs: dispatch as one batch so sibling
+      // projects' workers can execute concurrently. The global `isRunning`
+      // lock makes back-to-back `runFile` calls serialize — batching is
+      // the only way to reach the parallelism the worker pool can offer.
+      // Single-worker (or single-run) paths keep the simple sequential
+      // shape since one device can only run one thing at a time.
+      if (runs.length > 1 && useParallel()) {
+        await ensureWorkersReady();
+        const files: TaggedFile[] = runs.map((r) => {
+          const project = projectForFile(file, r.projectName);
+          return {
+            filePath: file,
+            projectUseOptions: project?.use as RunFileUseOptions | undefined,
+            projectName: project && project.name !== 'default' ? project.name : undefined,
+            testFilter: r.testFilter,
+          };
+        });
+        await runBatchParallel(files);
+        return;
+      }
+      for (const r of runs) {
+        await runFile(file, r.testFilter, r.projectName);
+      }
+    } catch (err) {
+      broadcastError(err);
     }
   });
 
@@ -2060,14 +2193,39 @@ export async function startUIServer(
         break;
       case 'toggle-watch':
         if (msg.filePath === 'all') {
-          const allWatched = ctx.testFiles.every((f) => watchedFiles.has(f));
+          // The 'all' toggle watches every file at whole-file scope,
+          // unscoped by project (applies across all projects that include
+          // the file).
+          const allWhole = ctx.testFiles.every((f) => findEntry(f, undefined, undefined) >= 0);
           for (const f of ctx.testFiles) {
-            if (allWatched) stopWatching(f);
-            else startWatching(f);
+            if (allWhole) stopWatching(f, undefined, undefined);
+            else startWatching(f, undefined, undefined);
           }
+        } else if (msg.filePath === 'project' && msg.projectName) {
+          // Watch every file within a specific project at whole-file scope.
+          // Per-file events are suppressed so only the project-level icon
+          // lights up in the UI — the child file icons stay dark. A single
+          // project-scoped event is broadcast to flip the project node.
+          const project = ctx.projects?.find((p) => p.name === msg.projectName);
+          if (!project) break;
+          const allWatched = project.testFiles.every((f) => findEntry(f, msg.projectName, undefined) >= 0);
+          for (const f of project.testFiles) {
+            if (allWatched) stopWatching(f, msg.projectName, undefined, false);
+            else startWatching(f, msg.projectName, undefined, false);
+          }
+          broadcast({
+            type: 'watch-event',
+            filePath: 'project',
+            projectName: msg.projectName,
+            event: allWatched ? 'watch-disabled' : 'watch-enabled',
+          });
         } else {
-          if (watchedFiles.has(msg.filePath)) stopWatching(msg.filePath);
-          else startWatching(msg.filePath);
+          const exists = findEntry(msg.filePath, msg.projectName, msg.testFilter) >= 0;
+          if (exists) {
+            stopWatching(msg.filePath, msg.projectName, msg.testFilter);
+          } else {
+            startWatching(msg.filePath, msg.projectName, msg.testFilter);
+          }
         }
         break;
       case 'request-hierarchy': {
@@ -2147,10 +2305,15 @@ export async function startUIServer(
   // ─── HTTP Server ───
 
   let spaHtml: string;
-  try {
-    spaHtml = fs.readFileSync(SPA_HTML_PATH, 'utf-8');
-  } catch {
-    spaHtml = buildFallbackHtml();
+  if (options.devUrl) {
+    spaHtml = buildDevShellHtml(options.devUrl);
+    console.log(`${YELLOW}UI mode dev shell — loading SPA from ${options.devUrl} (HMR enabled)${RESET}`);
+  } else {
+    try {
+      spaHtml = fs.readFileSync(SPA_HTML_PATH, 'utf-8');
+    } catch {
+      spaHtml = buildFallbackHtml();
+    }
   }
 
   const server = http.createServer((req, res) => {
@@ -2371,6 +2534,47 @@ export async function startUIServer(
       preserveEmulatorsForReuse(ctx.launchedEmulators);
     },
   };
+}
+
+// ─── Dev-shell HTML ───
+
+/**
+ * HTML shell used in dev mode: points the browser at a running Vite dev
+ * server for the SPA modules while the WebSocket still talks to this server.
+ */
+function buildDevShellHtml(devUrl: string): string {
+  // Validate as a URL (fail loudly on garbage) and escape for an attribute
+  // context before interpolation. The value comes from a CLI flag / env var
+  // and isn't attacker-controlled in any realistic threat model, but an
+  // unescaped interpolation would trip future linters and make this
+  // function unsafe if anyone ever wires in untrusted input.
+  let base: string;
+  try {
+    const u = new URL(devUrl);
+    base = u.origin + u.pathname.replace(/\/+$/, '');
+  } catch {
+    throw new Error(`Invalid --ui-dev-url: ${devUrl}`);
+  }
+  // Covers both attribute-context delimiters (double + single quote) so the
+  // helper stays safe if the template below ever switches to single quotes.
+  const attr = (s: string) => s
+    .replaceAll('&', '&amp;')
+    .replaceAll('"', '&quot;')
+    .replaceAll("'", '&#39;')
+    .replaceAll('<', '&lt;');
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Pilot UI Mode (dev)</title>
+  <script type="module" src="${attr(base)}/@vite/client"></script>
+  <script type="module" src="${attr(base)}/main.tsx"></script>
+</head>
+<body>
+  <div id="app"></div>
+</body>
+</html>`;
 }
 
 // ─── Fallback HTML ───
