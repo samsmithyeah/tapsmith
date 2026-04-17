@@ -178,7 +178,10 @@ export async function startUIServer(
    * first entry appears and removes it when the last entry is cleared. */
   const watchedEntries = new Map<string, WatchedEntry[]>();
   function entryKey(e: WatchedEntry): string {
-    return `${e.projectName ?? ''}::${e.testFilter ?? '*'}`;
+    // JSON-encode both fields so a test name containing '::' (or any other
+    // delimiter) can't collide with a project-name / filter pair that
+    // happens to produce the same concatenated string.
+    return JSON.stringify([e.projectName ?? null, e.testFilter ?? null]);
   }
   function findEntry(filePath: string, projectName: string | undefined, testFilter: string | undefined): number {
     const list = watchedEntries.get(filePath);

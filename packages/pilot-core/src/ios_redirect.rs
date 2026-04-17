@@ -155,12 +155,12 @@ async fn check_se_status() -> SeStatus {
 /// kill fails) is logged at debug and swallowed. The call-site immediately
 /// proceeds to the real connect attempt.
 async fn kill_orphaned_redirectors() {
-    // `pgrep -a -f '<pattern>'` prints one line per matching process,
-    // format: "<pid> <full-command-with-args>". `-a` enables the full
-    // line; `-f` matches against the full command line (so we catch the
-    // launcher binary regardless of how it's invoked).
+    // macOS `pgrep` does not support the GNU `-a` flag — it silently ignores
+    // it and prints bare PIDs, so we use `pgrep -f` to get PIDs and then
+    // `ps -p <pid> -o command=` per PID to recover the command line and
+    // verify the match.
     let output = match Command::new("pgrep")
-        .args(["-a", "-f", "Mitmproxy Redirector"])
+        .args(["-f", "Mitmproxy Redirector"])
         .output()
         .await
     {
@@ -175,10 +175,7 @@ async fn kill_orphaned_redirectors() {
     let self_pid = std::process::id();
 
     for line in text.lines() {
-        let Some((pid_str, args)) = line.trim().split_once(' ') else {
-            continue;
-        };
-        let Ok(pid) = pid_str.parse::<u32>() else {
+        let Ok(pid) = line.trim().parse::<u32>() else {
             continue;
         };
         // Defensive: never kill a process under our own PID (launcher might
@@ -186,9 +183,20 @@ async fn kill_orphaned_redirectors() {
         if pid == self_pid {
             continue;
         }
+        // Recover the command-line arguments via `ps`. Skip silently if
+        // the process exited between the pgrep listing and this call.
+        let ps_out = match Command::new("ps")
+            .args(["-p", &pid.to_string(), "-o", "command="])
+            .output()
+            .await
+        {
+            Ok(o) if o.status.success() => o,
+            _ => continue,
+        };
+        let args = String::from_utf8_lossy(&ps_out.stdout);
         // Extract "/tmp/pilot-redirector-<daemon-pid>.sock" from the args.
         // If the arg shape doesn't match what we know, skip — don't guess.
-        let Some(daemon_pid) = extract_owner_pid_from_args(args) else {
+        let Some(daemon_pid) = extract_owner_pid_from_args(args.trim()) else {
             continue;
         };
         // If the owning daemon is still alive, this redirector belongs to
