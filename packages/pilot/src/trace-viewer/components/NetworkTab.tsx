@@ -7,7 +7,9 @@ import type { NetworkEntry } from '../../trace/types.js';
 const NETWORK_STYLES = `
   .net-container { display: flex; flex-direction: column; height: 100%; min-height: 0; }
 
-  .net-toolbar { display: flex; align-items: center; gap: 10px; padding: 6px 0 8px; flex-shrink: 0; flex-wrap: wrap; }
+  /* Horizontal padding here because NetworkTab renders inside a flush
+   * detail-content (no parent padding) so the table can extend edge-to-edge. */
+  .net-toolbar { display: flex; align-items: center; gap: 10px; padding: 8px 12px; flex-shrink: 0; flex-wrap: wrap; border-bottom: 1px solid var(--color-border); }
   .net-search { flex: 1; min-width: 180px; padding: 4px 8px; background: var(--color-bg); border: 1px solid var(--color-border); border-radius: 3px; color: var(--color-text-secondary); font-size: 12px; outline: none; font-family: 'SF Mono', 'Cascadia Code', Consolas, monospace; }
   .net-search:focus { border-color: var(--color-accent); }
   .net-pills { display: flex; gap: 2px; flex-wrap: wrap; }
@@ -225,7 +227,11 @@ function shortenContentType(contentType: string): string {
 }
 
 function formatSize(bytes: number): string {
-  if (!bytes) return '—';
+  // 0 bytes is a valid result (e.g. 204 No Content) and should read as
+  // "0 B", not the missing-data dash. Only treat null/undefined/NaN as
+  // missing — in practice the upstream type is `number`, but defend
+  // against unset values that coerce to falsy here too.
+  if (bytes == null || Number.isNaN(bytes)) return '—';
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} kB`;
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
@@ -297,13 +303,23 @@ export function NetworkTab({ entries, bodies }: Props) {
       return true;
     });
 
+    // Precompute sort keys that are expensive per-call (splitUrl builds a
+    // URL object; shortenContentType mapping) so we don't recompute O(n log
+    // n) times inside the comparator.
+    const sortKey = new Map<number, string>();
+    if (sortColumn === 'name') {
+      for (const e of result) sortKey.set(e.index, splitUrl(e.url).name);
+    } else if (sortColumn === 'type') {
+      for (const e of result) sortKey.set(e.index, shortenContentType(e.contentType));
+    }
+
     result = [...result].sort((a, b) => {
       let cmp = 0;
       switch (sortColumn) {
-        case 'name': cmp = splitUrl(a.url).name.localeCompare(splitUrl(b.url).name); break;
+        case 'name': cmp = sortKey.get(a.index)!.localeCompare(sortKey.get(b.index)!); break;
         case 'method': cmp = a.method.localeCompare(b.method); break;
         case 'status': cmp = a.status - b.status; break;
-        case 'type': cmp = shortenContentType(a.contentType).localeCompare(shortenContentType(b.contentType)); break;
+        case 'type': cmp = sortKey.get(a.index)!.localeCompare(sortKey.get(b.index)!); break;
         case 'size': cmp = a.responseSize - b.responseSize; break;
         case 'time': cmp = a.startTime - b.startTime; break;
         case 'waterfall': cmp = a.startTime - b.startTime; break;
@@ -627,7 +643,13 @@ function ResponseTab({ entry, body }: { entry: NetworkEntry; body: string | unde
 function BodyViewer({ body, contentType }: { body: string; contentType: string }) {
   const canPretty = isJsonContentType(contentType);
   const [pretty, setPretty] = useState(canPretty);
-  const display = pretty && canPretty ? prettyJson(body).text : body;
+  // Pretty-print is up to ~2 MiB of JSON.parse + JSON.stringify — keep it
+  // out of the render path so toggling other state (tab switches, window
+  // resizes) doesn't redo the work.
+  const display = useMemo(
+    () => (pretty && canPretty ? prettyJson(body).text : body),
+    [pretty, canPretty, body],
+  );
   return (
     <>
       <div class="net-body-toolbar">

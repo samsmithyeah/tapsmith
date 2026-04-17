@@ -195,7 +195,12 @@ function App() {
         return workers[workerId].displayName || workers[workerId].deviceSerial;
       }
     }
-    return deviceSerial;
+    // Multi-worker runs: don't fall back to the global deviceSerial — it
+    // holds the first worker's serial from the initial `device-info` event,
+    // which is almost never the worker that ran the viewed test. Returning
+    // empty hides the label rather than labelling the filmstrip with a
+    // sibling worker's name. Single-worker runs have no ambiguity.
+    return workers.length > 1 ? '' : deviceSerial;
   }, [viewedTraceKey, workers, deviceSerial]);
 
   // DPR for the worker that ran the viewed test — not the currently selected

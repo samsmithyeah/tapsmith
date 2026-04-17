@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect } from 'preact/hooks';
+import { useState, useRef, useEffect, useMemo } from 'preact/hooks';
 import type { ActionTraceEvent, AssertionTraceEvent, AnyTraceEvent, ConsoleTraceEvent, TraceMetadata, NetworkEntry } from '../../trace/types.js';
 import { HierarchyTree } from './HierarchyTree.js';
 import type { Bounds } from './HierarchyTree.js';
@@ -36,16 +36,27 @@ export function DetailTabs({ event, events, hierarchies, sources, metadata, netw
     prevTestError.current = testError;
   }, [testError, event]);
 
-  const consoleEvents = events.filter((e): e is ConsoleTraceEvent => e.type === 'console');
-  const failedEventsForCount = events.filter((e): e is ActionTraceEvent | AssertionTraceEvent =>
-    (e.type === 'action' && !(e as ActionTraceEvent).success) ||
-    (e.type === 'assertion' && !(e as AssertionTraceEvent).passed),
+  // Memoize: DetailTabs re-renders on every selected-event change, and
+  // `events` can be large for long tests. Filtering + the dedupe check is
+  // cheap per-element but adds up when it runs on every hover.
+  const consoleEvents = useMemo(
+    () => events.filter((e): e is ConsoleTraceEvent => e.type === 'console'),
+    [events],
+  );
+  const failedEventsForCount = useMemo(
+    () => events.filter((e): e is ActionTraceEvent | AssertionTraceEvent =>
+      (e.type === 'action' && !(e as ActionTraceEvent).success) ||
+      (e.type === 'assertion' && !(e as AssertionTraceEvent).passed),
+    ),
+    [events],
   );
   // The test-level error is usually just the failing assertion's message, so
   // don't double-count it when ErrorsTab would dedupe it visually.
-  const testErrorIsDuplicate = !!testError
-    && failedEventsForCount.some((ev) => ev.error && testError.includes(ev.error));
-  const failedCount = failedEventsForCount.length + (testError && !testErrorIsDuplicate ? 1 : 0);
+  const failedCount = useMemo(() => {
+    const testErrorIsDuplicate = !!testError
+      && failedEventsForCount.some((ev) => ev.error && testError.includes(ev.error));
+    return failedEventsForCount.length + (testError && !testErrorIsDuplicate ? 1 : 0);
+  }, [failedEventsForCount, testError]);
 
   return (
     <div class="detail-panel">
@@ -70,7 +81,7 @@ export function DetailTabs({ event, events, hierarchies, sources, metadata, netw
           <span class="test-error-banner-text">{testError}</span>
         </div>
       )}
-      <div class={`detail-content${tab === 'hierarchy' || tab === 'source' ? ' detail-content-flush' : ''}`}>
+      <div class={`detail-content${tab === 'hierarchy' || tab === 'source' || tab === 'network' ? ' detail-content-flush' : ''}`}>
         {tab === 'call' && <CallTab event={event} />}
         {tab === 'log' && <LogTab event={event} />}
         {tab === 'console' && <ConsoleTab event={event} events={consoleEvents} />}
