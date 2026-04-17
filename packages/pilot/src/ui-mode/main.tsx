@@ -391,6 +391,9 @@ function App() {
           : (activeTestRef.current ?? '');
         if (!key) break;
         const ev = msg.event;
+        // Skip internal marker events from the visible event lists and from
+        // auto-pin — their actionIndex is one past the last real event.
+        const isInternal = ev.type === 'action' && (ev as ActionTraceEvent).action === '__final_screenshot';
 
         setTestTraces((prev) => {
           const { data, map } = getOrCreateTrace(key, prev);
@@ -406,8 +409,6 @@ function App() {
               eventToStore = { ...ev, bounds: prevWithBounds.bounds };
             }
           }
-          // Skip internal marker events from the visible event lists
-          const isInternal = ev.type === 'action' && (ev as ActionTraceEvent).action === '__final_screenshot';
           const events = isInternal ? data.events : [...data.events, eventToStore];
           const actionEvents = (!isInternal && (eventToStore.type === 'action' || eventToStore.type === 'assertion'))
             ? [...data.actionEvents, eventToStore as ActionTraceEvent | AssertionTraceEvent]
@@ -457,8 +458,11 @@ function App() {
           return next;
         });
 
-        // Auto-pin to latest action, but only when viewing the running test
-        if ((ev.type === 'action' || ev.type === 'assertion') && key === activeTestRef.current
+        // Auto-pin to latest action, but only when viewing the running test.
+        // Skip internal markers (e.g. __final_screenshot) — their actionIndex
+        // is one past the last real event, so pinning to them leaves the UI
+        // with nothing selected once the test ends.
+        if (!isInternal && (ev.type === 'action' || ev.type === 'assertion') && key === activeTestRef.current
           && (!viewedTestNameRef.current || viewedTestNameRef.current === testName)) {
           setPinnedIndex(ev.actionIndex);
         }
