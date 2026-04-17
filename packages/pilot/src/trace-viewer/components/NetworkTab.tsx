@@ -321,7 +321,11 @@ export function NetworkTab({ entries, bodies }: Props) {
         case 'status': cmp = a.status - b.status; break;
         case 'type': cmp = sortKey.get(a.index)!.localeCompare(sortKey.get(b.index)!); break;
         case 'size': cmp = a.responseSize - b.responseSize; break;
-        case 'time': cmp = a.startTime - b.startTime; break;
+        // "Time" column displays duration (`formatDuration(entry.duration)`),
+        // so sort by duration — sorting by startTime would silently reorder
+        // rows without matching the values the user sees. Chronological
+        // ordering lives on the Waterfall column instead.
+        case 'time': cmp = a.duration - b.duration; break;
         case 'waterfall': cmp = a.startTime - b.startTime; break;
       }
       return sortDirection === 'asc' ? cmp : -cmp;
