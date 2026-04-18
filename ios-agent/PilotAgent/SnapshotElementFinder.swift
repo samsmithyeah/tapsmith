@@ -331,6 +331,12 @@ class SnapshotElementFinder {
         private let lock = NSLock()
         private var fired = false
 
+        var hasFired: Bool {
+            lock.lock()
+            defer { lock.unlock() }
+            return fired
+        }
+
         func log(_ message: String) {
             lock.lock()
             defer { lock.unlock() }
@@ -410,13 +416,14 @@ class SnapshotElementFinder {
         }()
         if traits != 0 {
             dict["traits"] = traits
-        } else if raw == nil {
+        } else if raw == nil && !kvcMissLogger.hasFired {
             // KVC returned nil (or the property was missing entirely) —
             // Xcode may have renamed or restricted the private property.
             // All trait-derived role detection silently degrades to 0, so
-            // log the first occurrence loudly. We only flag at the root
-            // (where the tree is non-empty) to avoid spamming for
-            // genuinely traitless leaf nodes.
+            // log the first occurrence loudly. Skip the `.children`
+            // access (which is itself an IPC) once we've already logged
+            // — the per-snapshot probe was burning O(N) IPC calls for a
+            // log line we'd already emitted.
             if !snapshot.children.isEmpty {
                 logKvcMissOnce()
             }
@@ -900,64 +907,20 @@ class SnapshotElementFinder {
 
     private func toElementInfo(_ element: XCUIElement, elementId: String) -> ElementInfo {
         let frame = element.frame
-        let elType = element.elementType
-        let label = element.label
-        let identifier = element.identifier
-        // `XCUIElement` conforms to `XCUIElementAttributes` so
-        // `placeholderValue` is a normal Swift property — no KVC needed.
-        let placeholderValue = element.placeholderValue ?? ""
-        let value = element.value as? String
-
         let bounds = ElementBounds(
             left: Int(frame.origin.x), top: Int(frame.origin.y),
             right: Int(frame.origin.x + frame.size.width),
             bottom: Int(frame.origin.y + frame.size.height)
         )
-        let className = RoleMapping.typeName(for: elType)
-        let role = RoleMapping.resolveRole(for: elType)
-        let isSelected = element.isSelected
-        let isChecked = checkedState(
-            for: elType,
-            value: value,
-            label: label,
-            selected: isSelected
-        )
-
         let viewportRatio = computeViewportRatio(bounds, screenSize: screenSize)
-
-        // Mirror the snapshot path's text-derivation rules so a re-fetched
-        // element reports the same `text` as a freshly-resolved one. For
-        // text fields we only surface the typed value (and treat the
-        // placeholder as empty); other element types prefer value/title/label.
-        // Container aggregation isn't possible here (we don't have a tree
-        // walk on a single XCUIElement) so we fall back to label only.
-        let displayText: String?
-        if isTextFieldType(elType) {
-            let v = value ?? ""
-            if v.isEmpty || v == placeholderValue {
-                displayText = nil
-            } else {
-                displayText = v
-            }
-        } else if let v = value, !v.isEmpty {
-            displayText = v
-        } else {
-            displayText = label.isEmpty ? nil : label
-        }
-
-        return ElementInfo(
-            elementId: elementId, className: className,
-            text: displayText,
-            contentDescription: label.isEmpty ? nil : label,
-            resourceId: identifier.isEmpty ? nil : identifier,
-            hint: placeholderValue.isEmpty ? nil : placeholderValue, bounds: bounds,
-            isEnabled: element.isEnabled, isChecked: isChecked, isFocused: element.hasFocus,
-            isClickable: frame.width > 0 && frame.height > 0,
-            isFocusable: true,
-            isScrollable: elType == .scrollView || elType == .table || elType == .collectionView,
-            isVisible: viewportRatio > 0,
-            isSelected: isSelected, childCount: 0,
-            role: role, viewportRatio: viewportRatio
+        // Delegated to the shared factory in ElementInfo.swift so the
+        // sibling ElementFinder.swift path can't drift on text /
+        // checked / role / hint derivation.
+        return ElementInfo.makeFromXCUIElement(
+            element,
+            elementId: elementId,
+            bounds: bounds,
+            viewportRatio: viewportRatio
         )
     }
 
@@ -975,37 +938,18 @@ class SnapshotElementFinder {
         return parts.joined(separator: ", ")
     }
 
+    /// Thin delegate to the shared canonical implementation.
     private func checkedState(
         for elementType: XCUIElement.ElementType,
         value: String?,
         label: String? = nil,
         selected: Bool
     ) -> Bool {
-        let normalized = value?
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-            .lowercased() ?? ""
-
-        switch normalized {
-        case "1", "true", "on", "yes", "selected", "checked":
-            return true
-        case "0", "false", "off", "no", "not selected", "unchecked":
-            return false
-        default:
-            // React Native checkbox/radio on iOS produces compound values like
-            // "checkbox, checked", "checkbox, unchecked", "radio button, checked".
-            // Parse the state from the trailing component after the last comma.
-            if normalized.hasSuffix(", checked") || normalized.hasSuffix(", selected") {
-                return true
-            }
-            if normalized.hasSuffix(", unchecked") || normalized.hasSuffix(", not selected") {
-                return false
-            }
-            switch elementType {
-            case .switch, .toggle, .checkBox, .radioButton:
-                return selected
-            default:
-                return false
-            }
-        }
+        ElementInfo.deriveCheckedState(
+            elementType: elementType,
+            value: value,
+            label: label ?? "",
+            selected: selected
+        )
     }
 }

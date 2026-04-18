@@ -312,6 +312,22 @@ class CommandHandler {
             return ["success": true]
 
         case "clearText":
+            // The clearText backspace loop calls `resolveElement(params)`
+            // between iterations to read a fresh `value`. If the caller
+            // passed `elementId` only, that path returns the cached
+            // snapshot info (whose `text` was captured at original
+            // snapshot time) and the loop exits on iteration 1 thinking
+            // "no progress" even when backspaces are working. Selectors
+            // re-snapshot via the snapshot finder, so we require one.
+            let selectorKeys = ["role", "id", "contentDesc", "className",
+                                "testId", "hint", "textContains", "text"]
+            let hasSelector = selectorKeys.contains { params[$0] != nil }
+            if params["elementId"] != nil && !hasSelector {
+                throw AgentError.invalidRequest(
+                    "clearText requires a selector — elementId-only would " +
+                        "reuse a stale snapshot value between iterations"
+                )
+            }
             let element = try resolveElement(params)
             // Refuse to "clear" non-text elements. The backspace loop below
             // assumes `element.text` reflects the editable value; on a

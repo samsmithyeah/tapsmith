@@ -146,11 +146,14 @@ class ElementFinder(private val device: UiDevice) {
             )
 
         // Bundle key used by AccessibilityNodeInfoCompat#setRoleDescription.
-        // AndroidX writes the literal `"AccessibilityNodeInfo.roleDescription"`
-        // into the node's extras; the long namespaced variant that earlier
-        // copies of this constant included was never actually emitted by
-        // the runtime, so we read just the canonical key.
+        // Current AndroidX writes the literal
+        // `"AccessibilityNodeInfo.roleDescription"`. We also probe the
+        // older namespaced variant because some shipped AndroidX versions
+        // (pre-1.0) used it; not free to verify them all, so keep the
+        // fallback as defensive.
         val ROLE_DESCRIPTION_EXTRA_KEY: String = "AccessibilityNodeInfo.roleDescription"
+        val ROLE_DESCRIPTION_LONG_FORM_KEY: String =
+            "androidx.view.accessibility.AccessibilityNodeInfoCompat.ROLE_DESCRIPTION_KEY"
 
         // Bundle key + bitmask used by AccessibilityNodeInfoCompat to flag
         // a heading on API levels < 28 (the framework itself gained
@@ -668,7 +671,17 @@ class ElementFinder(private val device: UiDevice) {
             }
 
             // 3. Role description set via AccessibilityNodeInfoCompat.
-            extras?.getCharSequence(ROLE_DESCRIPTION_EXTRA_KEY)?.toString()?.takeIf { it.isNotEmpty() }
+            // Try both the canonical and the older long-form key — older
+            // AndroidX shims wrote under the namespaced variant.
+            val raw =
+                extras?.getCharSequence(ROLE_DESCRIPTION_EXTRA_KEY)?.toString()
+                    ?: extras?.getCharSequence(ROLE_DESCRIPTION_LONG_FORM_KEY)?.toString()
+            // Lowercase the value before returning so the SDK's
+            // case-insensitive normalizeRole + ROLE_ALIASES table can
+            // match. Without this, an app setting accessibilityRole="Header"
+            // (capitalized) would surface as the literal "Header" and
+            // toHaveRole("heading") would not match through the alias.
+            raw?.takeIf { it.isNotEmpty() }?.lowercase()
         } catch (e: Exception) {
             // Reflection on UiObject2 is the load-bearing path here; if it
             // breaks (AndroidX rename, restricted API), every role-from-RN

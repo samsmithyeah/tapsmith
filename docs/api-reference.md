@@ -720,6 +720,14 @@ Type text into this element.
 await device.getByPlaceholder("Email").type("user@example.com");
 ```
 
+> **Control characters.** `\n`, `\t`, and `\b` are dispatched as
+> `KEYCODE_ENTER` / `KEYCODE_TAB` / `KEYCODE_DEL` key events on Android
+> and the equivalent key events on iOS. Notably `\b` is **destructive**
+> — `type("foo\bbar")` deletes the `o` and types `bar`, ending with
+> `fobar`. CR (`\r`) is dropped (Android keyboards send `\n` for the
+> Enter key). Other ASCII control codes below `0x20` are dropped with
+> a one-shot warning log.
+
 #### `elementHandle.clearAndType(text: string): Promise<void>`
 
 Clear existing text and type new text.
@@ -735,6 +743,15 @@ Clear the text content of this element.
 ```typescript
 await device.locator({ id: "search_box" }).clear();
 ```
+
+> **iOS very-long-field ceiling.** On iOS, `clear()` first attempts
+> Cmd+A + Delete; if that misses (common on React Native wrapped
+> controls), it falls back to a per-character backspace loop capped at
+> 16 iterations × 256 keystrokes = 4096 backspaces. A field with more
+> than ~4000 grapheme clusters of content will throw `actionFailed`
+> rather than partially clearing. The cap exists so a misbehaving
+> field can't hang the agent. Android uses the native `UiObject2.clear()`
+> API and isn't subject to this limit.
 
 #### `elementHandle.scroll(direction: string, options?: { distance?: number }): Promise<void>`
 

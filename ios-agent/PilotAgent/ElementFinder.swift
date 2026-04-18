@@ -207,79 +207,24 @@ class ElementFinder {
     // MARK: - Conversion
 
     private func toElementInfo(_ element: XCUIElement, elementId: String) -> ElementInfo {
-        // Each XCUIElement property access is an IPC round-trip to the
-        // accessibility framework. Read properties once and reuse values
-        // to minimize IPC calls. Avoid expensive calls like children().count.
         let frame = element.frame
-        let elType = element.elementType
-        let label = element.label
-        let identifier = element.identifier
-        // `XCUIElement` conforms to `XCUIElementAttributes`, so
-        // `placeholderValue` is a published property — no KVC required.
-        let placeholderValue = element.placeholderValue ?? ""
-        let value = element.value as? String
-
         let bounds = ElementBounds(
             left: Int(frame.origin.x),
             top: Int(frame.origin.y),
             right: Int(frame.origin.x + frame.size.width),
             bottom: Int(frame.origin.y + frame.size.height)
         )
-
-        let className = RoleMapping.typeName(for: elType)
-        let role = RoleMapping.resolveRole(for: elType)
-        let isSelected = element.isSelected
-        let isChecked = checkedState(
-            for: elType,
-            value: value,
-            selected: isSelected
-        )
-
         let viewportRatio = computeViewportRatio(bounds)
-
-        // Mirror SnapshotElementFinder's text-derivation rules so a
-        // re-resolved element (e.g. via WaitEngine) reports the same
-        // `text` and `hint` as the snapshot path. For text fields we
-        // surface only the typed value and treat a placeholder-equal
-        // value as empty; other element types fall back to value, then
-        // label.
-        let isTextField =
-            elType == .textField || elType == .secureTextField
-                || elType == .textView || elType == .searchField
-        let displayText: String?
-        if isTextField {
-            let v = value ?? ""
-            if v.isEmpty || v == placeholderValue {
-                displayText = nil
-            } else {
-                displayText = v
-            }
-        } else if let v = value, !v.isEmpty {
-            displayText = v
-        } else {
-            displayText = label.isEmpty ? nil : label
-        }
-
-        return ElementInfo(
+        // Delegated to the shared factory in ElementInfo.swift so this
+        // path can't drift from the sibling SnapshotElementFinder
+        // implementation. Earlier the two methods diverged on `text`
+        // (round 7), `checkedState` (round 8), and trait-aware role
+        // resolution (round cold-4); consolidating here prevents that
+        // class of regression.
+        return ElementInfo.makeFromXCUIElement(
+            element,
             elementId: elementId,
-            className: className,
-            text: displayText,
-            contentDescription: label.isEmpty ? nil : label,
-            resourceId: identifier.isEmpty ? nil : identifier,
-            hint: placeholderValue.isEmpty ? nil : placeholderValue,
             bounds: bounds,
-            isEnabled: element.isEnabled,
-            isChecked: isChecked,
-            isFocused: element.hasFocus,
-            isClickable: frame.width > 0 && frame.height > 0,
-            isFocusable: true,
-            isScrollable: elType == .scrollView
-                || elType == .table
-                || elType == .collectionView,
-            isVisible: viewportRatio > 0,
-            isSelected: isSelected,
-            childCount: 0,  // Skip children().count — very expensive IPC
-            role: role,
             viewportRatio: viewportRatio
         )
     }
@@ -387,27 +332,17 @@ class ElementFinder {
         return parts.joined(separator: ", ")
     }
 
+    /// Thin delegate to the shared canonical implementation.
     private func checkedState(
         for elementType: XCUIElement.ElementType,
         value: String?,
         selected: Bool
     ) -> Bool {
-        let normalized = value?
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-            .lowercased() ?? ""
-
-        switch normalized {
-        case "1", "true", "on", "yes", "selected", "checked":
-            return true
-        case "0", "false", "off", "no", "not selected", "unchecked":
-            return false
-        default:
-            switch elementType {
-            case .switch, .toggle, .checkBox, .radioButton:
-                return selected
-            default:
-                return false
-            }
-        }
+        ElementInfo.deriveCheckedState(
+            elementType: elementType,
+            value: value,
+            label: "",
+            selected: selected
+        )
     }
 }
