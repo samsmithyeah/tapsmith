@@ -18,6 +18,9 @@ class WaitEngine(private val device: UiDevice) {
         private const val STABILITY_WINDOW_MS = 100L
         private const val DEFAULT_IDLE_TIMEOUT_MS = 5000L
         private const val DEFAULT_ELEMENT_TIMEOUT_MS = 10000L
+
+        /** Polling interval used when re-trying findElement inside the wait loop. */
+        private const val FIND_POLL_INTERVAL_MS = 200L
     }
 
     /**
@@ -115,14 +118,28 @@ class WaitEngine(private val device: UiDevice) {
             device.waitForIdle(timeoutMs.coerceAtMost(2000))
         }
 
-        // Final lookup to return a cached ElementInfo
-        try {
-            return elementFinder.findElement(selector)
-        } catch (e: ElementNotFoundException) {
-            throw TimeoutException(
-                "Timed out after ${timeoutMs}ms: element not found after waiting. " +
-                    "Selector: ${describeSelector(selector)}",
-            )
+        // Final lookup. The BySelector built above is broader than the
+        // full selector for hint/role queries (it matches *any* EditText
+        // for a hint-only wait, *any* element of the role's class set
+        // for a role-only wait), so a `hasObject` hit just means a
+        // candidate exists — not that the specific match the caller
+        // wants is present yet. Poll findElement until the specific
+        // match appears or we run out of time, otherwise this would
+        // throw "not found" within milliseconds whenever a sibling
+        // candidate happened to render before the targeted one.
+        while (true) {
+            try {
+                return elementFinder.findElement(selector)
+            } catch (_: ElementNotFoundException) {
+                val remaining = timeoutMs - (SystemClock.uptimeMillis() - startTime)
+                if (remaining <= 0) {
+                    throw TimeoutException(
+                        "Timed out after ${timeoutMs}ms: element not found after waiting. " +
+                            "Selector: ${describeSelector(selector)}",
+                    )
+                }
+                device.waitForIdle(FIND_POLL_INTERVAL_MS.coerceAtMost(remaining))
+            }
         }
     }
 
@@ -154,7 +171,7 @@ class WaitEngine(private val device: UiDevice) {
             // resolves to. Without this we'd fall through to the slow
             // waitForIdle path even though we know exactly which classes
             // satisfy the role.
-            selector.role != null -> elementFinder.roleClassPattern(selector.role)?.let { By.clazz(it) }
+            selector.role != null -> By.clazz(elementFinder.roleClassPattern(selector.role))
             else -> null
         }
     }

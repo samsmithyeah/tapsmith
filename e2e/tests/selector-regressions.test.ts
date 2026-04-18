@@ -130,5 +130,4 @@ describe("Selector & assertion regressions", () => {
       device.getByPlaceholder("This placeholder definitely does not exist"),
     ).toHaveCount(0)
   })
-
 })

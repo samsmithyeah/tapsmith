@@ -63,6 +63,13 @@ struct ElementInfo {
     let isScrollable: Bool
     let isVisible: Bool
     let isSelected: Bool
+    /// Number of direct children of this element.
+    ///
+    /// **Path asymmetry — read with care:**
+    /// - The snapshot path (`SnapshotElementFinder` / `findElementsBySnapshot`) populates this from the snapshot dictionary, so it reflects the true accessibility-tree fan-out.
+    /// - The live `XCUIElement` path (`makeFromXCUIElement`) returns `0` regardless of the actual child count — calling `element.children(...)` here would synchronously dump the subtree, which is the exact cost we built the snapshot path to avoid.
+    ///
+    /// In practice the snapshot path serves all SDK queries, so consumers see real counts. Don't read this field from internal call sites that may have come through the live path without verifying which finder produced the `ElementInfo`.
     let childCount: Int
     let role: String
     let viewportRatio: Float
@@ -157,7 +164,9 @@ struct ElementInfo {
                 || elType == .collectionView,
             isVisible: viewportRatio > 0,
             isSelected: isSelected,
-            childCount: 0,  // children().count is too expensive to read here
+            // Always 0 on the live XCUIElement path. See the `childCount`
+            // doc on the struct for the asymmetry vs. the snapshot path.
+            childCount: 0,
             role: role,
             viewportRatio: viewportRatio
         )

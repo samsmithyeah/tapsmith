@@ -375,19 +375,33 @@ class CommandHandler {
                 )
             }
 
-            // Fast path: Cmd+A + Delete. Works on native UITextField and on
-            // simulators with a hardware-keyboard mapping; skipped silently
-            // on RN-wrapped controls (which typically don't honor Cmd+A),
-            // where we fall through to the per-character loop.
+            // Fast path: Cmd+A then a single backspace. Works on native
+            // UITextField and on simulators with a hardware-keyboard
+            // mapping; silently no-ops on RN-wrapped controls (which
+            // typically don't honor Cmd+A) where we fall through to the
+            // per-character loop.
+            //
+            // We deliberately use `\u{8}` (backspace) instead of
+            // `XCUIKeyboardKey.delete` because:
+            //   - if Cmd+A took, the keyboard backspace deletes the
+            //     entire selection — fast clear in one event
+            //   - if Cmd+A didn't take, the cursor is at the end and
+            //     backspace deletes one trailing character. That's
+            //     still progress; the loop below handles the rest.
+            // Sending Delete after a failed selection would either
+            // forward-delete (data loss past the cursor) or no-op
+            // depending on the IME, hence the safer backspace.
             if EventSynthesizer.keyPress(key: "a", modifiers: .command) {
                 Thread.sleep(forTimeInterval: 0.05)
-                _ = EventSynthesizer.keyPress(key: XCUIKeyboardKey.delete.rawValue)
+                actionExecutor.typeTextWithoutFocus("\u{8}")
                 Thread.sleep(forTimeInterval: 0.05)
                 let afterSelectAll = (try? resolveElement(params)) ?? element
                 if (afterSelectAll.text ?? "").isEmpty {
                     return ["success": true]
                 }
-                // Cmd+A didn't clear the field. Continue to the backspace loop.
+                // Cmd+A didn't take (or deleted only one char). Fall
+                // through to the per-character backspace loop, which
+                // re-reads the value before each batch.
             }
 
             // Cap iterations so a misbehaving field can't hang the agent. The
@@ -399,6 +413,7 @@ class CommandHandler {
             var lastLength: Int = .max
             var finalLength: Int = .max
             var iterationsRun = 0
+            var stalled = false
             for _ in 0..<maxIterations {
                 iterationsRun += 1
                 let refreshed = (try? resolveElement(params)) ?? element
@@ -410,7 +425,10 @@ class CommandHandler {
                 // autocorrect compositions where the visible text changes
                 // but length still drops between batches; comparing length
                 // tolerates that as progress.
-                if value.count >= lastLength { break }
+                if value.count >= lastLength {
+                    stalled = true
+                    break
+                }
                 lastLength = value.count
                 // String.count counts grapheme clusters — matches keyboard
                 // backspace granularity for ASCII and composed emoji.
@@ -419,12 +437,22 @@ class CommandHandler {
             }
             // If we didn't fully clear, surface the failure rather than
             // silently returning success with residual text in the field.
+            // Distinguish "stalled" (backspaces aren't shrinking the value —
+            // the field is rejecting input or the snapshot is stale) from
+            // "hit the iteration cap" (the field is genuinely larger than
+            // maxIterations × perIterationCap can clear) so the operator
+            // knows whether to investigate the field or raise the cap.
             if finalLength > 0 {
+                let reason = stalled
+                    ? "backspace stopped shrinking the value " +
+                        "(field rejected input or snapshot is stale)"
+                    : "exhausted the \(maxIterations)-iteration cap " +
+                        "(\(maxIterations * perIterationCap) keystrokes); " +
+                        "field is larger than expected"
                 throw AgentError.actionFailed(
                     "clearText could not empty element \(element.elementId): " +
                         "\(finalLength) grapheme cluster(s) remain after " +
-                        "\(iterationsRun) iteration\(iterationsRun == 1 ? "" : "s") " +
-                        "(cap=\(maxIterations); typically exits early when no progress)"
+                        "\(iterationsRun) iteration\(iterationsRun == 1 ? "" : "s") — \(reason)"
                 )
             }
             return ["success": true]

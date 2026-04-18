@@ -74,6 +74,8 @@ device.locator({ xpath: "//android.widget.Button[@text='OK']" })
 
 > The `getBy*` methods and `locator()` are also available on every `ElementHandle`. Calling them on a parent locator scopes the search to its descendants. See [ElementHandle Scoping](#scoping).
 
+> **iOS wrapper suppression.** When traversing the iOS accessibility tree, Pilot drops `XCUIElementTypeOther` containers whose `accessibilityIdentifier`, `accessibilityLabel`, and visible text are all empty or fully duplicated by a descendant in the same subtree. This collapses the redundant wrappers React Native (and SwiftUI in some configurations) emit around interactive elements, so a `getByText("Submit")` resolves to the actual control rather than the surrounding container. If your native iOS app deliberately exposes a labeled `.other` container *and* labels its child with the same identifier, the outer wrapper will not be selectable — give the wrapper a unique `accessibilityIdentifier` (or use `device.locator({ id: ... })`) to address it directly.
+
 ---
 
 ## Device

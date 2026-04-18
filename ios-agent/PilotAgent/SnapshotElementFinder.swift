@@ -367,11 +367,14 @@ class SnapshotElementFinder {
         case let v as UInt64: return v
         case let v as UInt: return UInt64(v)
         case let v as Int:
-            // Preserve the raw bit pattern rather than zeroing the mask.
-            // iOS traits use bits up to 1 << 20; when the full 64-bit
-            // value is sign-extended into `Int` on platforms where `Int`
-            // is 64-bit, a negative value could legitimately carry
-            // high-order trait bits we'd otherwise discard.
+            // Reinterpret the bit pattern instead of doing `UInt64(v)` —
+            // the latter traps when `v` is negative. `Int` is 64-bit on
+            // every Apple platform we ship to, so when ObjC hands us a
+            // trait value with bit 63 set (a private/future Apple trait
+            // beyond the documented 0..<21 range, or a misencoded value),
+            // bridging surfaces it as a negative `Int`. Preserving the
+            // raw bits keeps the high-order flags intact instead of
+            // crashing the agent on an unexpected snapshot.
             return UInt64(bitPattern: Int64(v))
         case let v as NSNumber: return v.uint64Value
         default: return 0

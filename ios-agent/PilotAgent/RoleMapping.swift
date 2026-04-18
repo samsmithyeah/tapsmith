@@ -81,7 +81,7 @@ enum RoleMapping {
     /// Get the XCUIElement.ElementType values for a role name.
     /// - Throws: AgentError.invalidSelector if the role is unknown.
     static func elementTypes(for role: String) throws -> [XCUIElement.ElementType] {
-        let normalized = ROLE_ALIASES[role.lowercased()] ?? role.lowercased()
+        let normalized = roleAliases[role.lowercased()] ?? role.lowercased()
         guard let types = roleToElementTypes[normalized] else {
             let known = roleToElementTypes.keys.sorted().joined(separator: ", ")
             throw AgentError.invalidSelector("Unknown role: '\(role)'. Known roles: \(known)")
@@ -93,7 +93,7 @@ enum RoleMapping {
     /// `ROLE_ALIASES` map and the SDK's `normalizeRole`. Lets users pass
     /// either the React Native spelling ("header", "slider", "search") or the
     /// Pilot/Playwright canonical ("heading", "seekbar", "searchfield").
-    static let ROLE_ALIASES: [String: String] = [
+    static let roleAliases: [String: String] = [
         "header": "heading",
         "slider": "seekbar",
         "search": "searchfield",
