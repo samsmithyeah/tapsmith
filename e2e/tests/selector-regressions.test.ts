@@ -39,6 +39,9 @@ describe("Selector & assertion regressions", () => {
   })
 
   // ─── accessibilityRole now flows through to the role attribute ───
+  // The "Test Screens" element is rendered by test-app/app/index.tsx as
+  // <Text accessibilityRole="header">Test Screens</Text>; if that
+  // declaration changes, expect this test to need updating.
   test("accessibilityRole should map to UIAutomator role", async ({ device }) => {
     await expect(device.getByText("Test Screens", { exact: true })).toHaveRole("heading")
   })

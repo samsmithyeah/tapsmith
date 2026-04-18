@@ -149,6 +149,10 @@ class ElementFinder(private val device: UiDevice) {
             mapOf(
                 "header" to "heading",
                 "slider" to "seekbar",
+                // RN's accessibilityRole="search" surfaces as a role
+                // description of "search"; normalize to the canonical
+                // "searchfield" so toHaveRole("searchfield") matches.
+                "search" to "searchfield",
             )
     }
 
@@ -254,15 +258,16 @@ class ElementFinder(private val device: UiDevice) {
                     "android.widget.TabWidget",
                     "com.google.android.material.tabs.TabLayout",
                 ),
-            // Mirrors iOS RoleMapping ("searchfield" -> .searchField). RN
-            // renders accessibilityRole="search" as a normal EditText with
-            // a roleDescription; include EditText so the lookup catches
-            // both native SearchView and RN-style search inputs.
+            // Mirrors iOS RoleMapping ("searchfield" -> .searchField).
+            // Native SearchView only — RN renders accessibilityRole="search"
+            // as an EditText with a roleDescription; that path is handled
+            // through extractRoleDescription + the "search" → "searchfield"
+            // alias rather than the class map, so the reverse map
+            // (className → role) doesn't fight with "textfield".
             "searchfield" to
                 listOf(
                     "android.widget.SearchView",
                     "androidx.appcompat.widget.SearchView",
-                    "android.widget.EditText",
                 ),
         )
 
@@ -423,12 +428,27 @@ class ElementFinder(private val device: UiDevice) {
         return byName
     }
 
+    /**
+     * Compiled class-name pattern for a role, or null if the role is
+     * unknown. Public so WaitEngine can use the same matcher during the
+     * wait phase as ElementFinder uses for the find phase.
+     */
+    fun roleClassPattern(role: String): java.util.regex.Pattern? {
+        val lowered = role.lowercase()
+        val normalized = ROLE_ALIASES[lowered] ?: lowered
+        val classNames = roleClassMap[normalized] ?: return null
+        return java.util.regex.Pattern.compile(
+            classNames.joinToString("|") { Regex.escape(it) },
+        )
+    }
+
     private fun buildBySelector(selector: ElementSelector): BySelector? {
         var by: BySelector? = null
 
         // Role-based selection
         if (selector.role != null) {
-            val normalizedRole = ROLE_ALIASES[selector.role.lowercase()] ?: selector.role.lowercase()
+            val lowered = selector.role.lowercase()
+            val normalizedRole = ROLE_ALIASES[lowered] ?: lowered
             val classNames =
                 roleClassMap[normalizedRole]
                     ?: throw InvalidSelectorException("Unknown role: '${selector.role}'. Known roles: ${roleClassMap.keys.joinToString()}")
@@ -696,9 +716,16 @@ class ElementFinder(private val device: UiDevice) {
             val ownText =
                 child.text?.takeIf { it.isNotEmpty() }
                     ?: child.contentDescription?.takeIf { it.isNotEmpty() }
-            ownText?.let { parts.add(it) }
-            val nested = collectDescendantText(child)
-            if (nested.isNotEmpty()) parts.add(nested)
+            if (ownText != null) {
+                // Child labels its own visible content — accessibility
+                // services typically already absorb descendant text into
+                // the parent label, so recursing further would duplicate
+                // ("Hello Hello").
+                parts.add(ownText)
+            } else {
+                val nested = collectDescendantText(child)
+                if (nested.isNotEmpty()) parts.add(nested)
+            }
         }
         return parts.joinToString(" ")
     }

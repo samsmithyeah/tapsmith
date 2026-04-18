@@ -160,6 +160,7 @@ class ActionExecutor(private val device: UiDevice) {
     }
 
     private fun flushPrintableRun(buffer: StringBuilder) {
+        if (buffer.isEmpty()) return
         val tokenized = buffer.toString().replace(" ", "%s")
         device.executeShellCommand("input text $tokenized")
         buffer.setLength(0)

@@ -91,11 +91,12 @@ enum RoleMapping {
 
     /// Cross-platform role aliases — kept in sync with Android's
     /// `ROLE_ALIASES` map and the SDK's `normalizeRole`. Lets users pass
-    /// either the React Native spelling ("header", "slider") or the
-    /// Pilot/Playwright canonical ("heading", "seekbar").
+    /// either the React Native spelling ("header", "slider", "search") or the
+    /// Pilot/Playwright canonical ("heading", "seekbar", "searchfield").
     static let ROLE_ALIASES: [String: String] = [
         "header": "heading",
         "slider": "seekbar",
+        "search": "searchfield",
     ]
 
     /// Check if a UIAccessibilityTraits bitmask matches a role.

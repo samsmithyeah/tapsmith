@@ -343,6 +343,15 @@ class CommandHandler {
             } else if let xcElem = try? getXCUIElement(element.elementId), xcElem.isHittable {
                 xcElem.tap()
                 Thread.sleep(forTimeInterval: 0.05)
+            } else {
+                // Neither path could focus the field. Sending backspaces with
+                // nothing focused either silently no-ops or mis-targets
+                // whichever element happens to be focused — both worse than
+                // failing loudly.
+                throw AgentError.actionFailed(
+                    "clearText could not focus element \(element.elementId): " +
+                        "snapshot bounds were off-screen and the XCUIElement is not hittable"
+                )
             }
             // Cap iterations so a misbehaving field can't hang the agent. The
             // per-iteration cap of 256 keystrokes covers any realistic field

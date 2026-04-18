@@ -365,6 +365,13 @@ class SnapshotElementFinder {
     /// from `snapshot.children` (e.g. empty cells, accessibility-hidden
     /// nodes). Positional alignment would silently mis-attribute traits to
     /// the wrong nodes whenever the two sequences diverge.
+    ///
+    /// Cost: O(N) KVC lookups per snapshot — each `value(forKey: "traits")`
+    /// crosses the Swift↔ObjC bridge. For typical screens (a few hundred
+    /// nodes) this is negligible; for pathologically deep hierarchies it
+    /// could become noticeable. KVC has no Method-cache equivalent in Swift,
+    /// so the cost is intrinsic until iOS exposes traits in
+    /// dictionaryRepresentation directly.
     static func annotateTraits(dict: inout [String: Any], snapshot: XCUIElementSnapshot) {
         let raw = (snapshot as? NSObject)?.value(forKey: "traits")
         let traits: UInt64 = {
@@ -436,11 +443,26 @@ class SnapshotElementFinder {
         var parts: [String] = []
         if let children = node["children"] as? [[String: Any]] {
             for child in children {
-                if let v = child["value"] as? String, !v.isEmpty { parts.append(v) }
-                else if let t = child["title"] as? String, !t.isEmpty { parts.append(t) }
-                else if let l = child["label"] as? String, !l.isEmpty { parts.append(l) }
-                let nested = collectDescendantText(child)
-                if !nested.isEmpty { parts.append(nested) }
+                let ownText: String?
+                if let v = child["value"] as? String, !v.isEmpty {
+                    ownText = v
+                } else if let t = child["title"] as? String, !t.isEmpty {
+                    ownText = t
+                } else if let l = child["label"] as? String, !l.isEmpty {
+                    ownText = l
+                } else {
+                    ownText = nil
+                }
+                if let own = ownText {
+                    // Child labels its own visible content; iOS accessibility
+                    // typically auto-concatenates descendant text into the
+                    // parent label already, so recursing further would
+                    // duplicate ("Hello Hello").
+                    parts.append(own)
+                } else {
+                    let nested = collectDescendantText(child)
+                    if !nested.isEmpty { parts.append(nested) }
+                }
             }
         }
         return parts.joined(separator: " ")
@@ -517,8 +539,11 @@ class SnapshotElementFinder {
             for j in (i + 1)..<matches.count {
                 let other = keys[j]
                 let otherFrame = matches[j].1
-                let isDescendant = myFrame.contains(otherFrame) && myFrame != otherFrame
-                guard isDescendant else { continue }
+                // Allow equal frames as ancestry — RN often wraps native
+                // controls in a zero-padding `.other` whose frame matches
+                // the inner control exactly. We're only considering j > i
+                // (later in pre-order), so self-comparison can't happen.
+                guard myFrame.contains(otherFrame) else { continue }
                 if !me.id.isEmpty && other.id == me.id {
                     keep[i] = false
                     break

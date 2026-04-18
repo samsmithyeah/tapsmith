@@ -141,10 +141,6 @@ const ROLE_CLASS_MAP: Record<string, string[]> = {
   searchfield: [
     "android.widget.SearchView",
     "androidx.appcompat.widget.SearchView",
-    // RN renders accessibilityRole="search" as a normal EditText with the
-    // searchfield trait/role description; include it so toHaveRole and
-    // role-derived className matching agree.
-    "android.widget.EditText",
   ],
 };
 
@@ -925,6 +921,11 @@ const ROLE_ALIASES: Record<string, string> = {
   heading: "heading",
   slider: "seekbar",
   seekbar: "seekbar",
+  // RN's accessibilityRole="search" surfaces as a role description of
+  // "search" via extractRoleDescription; normalize so toHaveRole("searchfield")
+  // matches.
+  search: "searchfield",
+  searchfield: "searchfield",
 };
 
 function normalizeRole(role: string): string {

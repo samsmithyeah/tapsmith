@@ -62,7 +62,7 @@ class WaitEngine(private val device: UiDevice) {
         val startTime = SystemClock.uptimeMillis()
 
         // Build a BySelector for event-driven waiting
-        val bySelector = buildWaitSelector(selector)
+        val bySelector = buildWaitSelector(selector, elementFinder)
 
         if (bySelector != null) {
             // Phase 1: Wait for the element to exist using event-driven Until.hasObject
@@ -130,7 +130,10 @@ class WaitEngine(private val device: UiDevice) {
      * Build a BySelector from an ElementSelector for use with Until conditions.
      * Returns null if the selector type cannot be expressed as a BySelector.
      */
-    private fun buildWaitSelector(selector: ElementSelector): androidx.test.uiautomator.BySelector? {
+    private fun buildWaitSelector(
+        selector: ElementSelector,
+        elementFinder: ElementFinder,
+    ): androidx.test.uiautomator.BySelector? {
         return when {
             selector.text != null -> By.text(selector.text)
             selector.textContains != null -> By.textContains(selector.textContains)
@@ -147,6 +150,11 @@ class WaitEngine(private val device: UiDevice) {
             // and the find resolve the same set of widgets (plain EditText,
             // AppCompat, MaterialTextInput, etc.).
             selector.hint != null -> By.clazz(ElementFinder.EDIT_TEXT_HINT_CLASS_PATTERN)
+            // Role-only waits use the same class pattern the find phase
+            // resolves to. Without this we'd fall through to the slow
+            // waitForIdle path even though we know exactly which classes
+            // satisfy the role.
+            selector.role != null -> elementFinder.roleClassPattern(selector.role)?.let { By.clazz(it) }
             else -> null
         }
     }
