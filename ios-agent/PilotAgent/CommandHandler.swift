@@ -344,7 +344,10 @@ class CommandHandler {
                 Thread.sleep(forTimeInterval: 0.1)
             } else if let xcElem = try? getXCUIElement(element.elementId), xcElem.isHittable {
                 xcElem.tap()
-                Thread.sleep(forTimeInterval: 0.05)
+                // Match the snapshot path's 0.1s wait so the upcoming
+                // Cmd+A / backspace keypress doesn't race the field
+                // becoming first-responder.
+                Thread.sleep(forTimeInterval: 0.1)
             } else {
                 // Neither path could focus the field. Sending backspaces with
                 // nothing focused either silently no-ops or mis-targets
@@ -379,7 +382,9 @@ class CommandHandler {
             let perIterationCap = 256
             var lastLength: Int = .max
             var finalLength: Int = .max
+            var iterationsRun = 0
             for _ in 0..<maxIterations {
+                iterationsRun += 1
                 let refreshed = (try? resolveElement(params)) ?? element
                 let value = refreshed.text ?? ""
                 finalLength = value.count
@@ -401,7 +406,9 @@ class CommandHandler {
             if finalLength > 0 {
                 throw AgentError.actionFailed(
                     "clearText could not empty element \(element.elementId): " +
-                        "\(finalLength) grapheme cluster(s) remain after \(maxIterations) iterations"
+                        "\(finalLength) grapheme cluster(s) remain after " +
+                        "\(iterationsRun) iteration\(iterationsRun == 1 ? "" : "s") " +
+                        "(cap=\(maxIterations); typically exits early when no progress)"
                 )
             }
             return ["success": true]

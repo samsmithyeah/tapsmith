@@ -169,7 +169,10 @@ class ActionExecutor(private val device: UiDevice) {
                     // Drop CR — Android keyboards send '\n' for the
                     // Enter key; '\r' alone has no useful target and
                     // would emit an extra keyevent in CRLF input.
-                    '\r' -> null
+                    '\r' -> {
+                        warnDroppedControlChar(0x0D)
+                        null
+                    }
                     else -> ""
                 }
             if (keyCode == null) continue

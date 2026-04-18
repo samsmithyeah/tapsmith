@@ -341,6 +341,7 @@ class SnapshotElementFinder {
     }
 
     private static let kvcMissLogger = OneShotLogger()
+    private static let childMismatchLogger = OneShotLogger()
 
     private static func logKvcMissOnce() {
         kvcMissLogger.log(
@@ -423,8 +424,14 @@ class SnapshotElementFinder {
         guard var children = dict["children"] as? [[String: Any]] else { return }
         let snapChildren = snapshot.children
         if children.count != snapChildren.count {
-            NSLog(
-                "[PilotSnapshot] annotateTraits child mismatch: dict=\(children.count) snapshot=\(snapChildren.count)."
+            // Route through the same one-shot logger as the KVC-miss
+            // warning so we don't spam the log per snapshot. The
+            // mismatch is non-fatal (we still match what we can by
+            // stable key) but worth a single visible note.
+            childMismatchLogger.log(
+                "[PilotSnapshot] annotateTraits child count differs between dict and snapshot " +
+                    "(dict=\(children.count) snapshot=\(snapChildren.count)). " +
+                    "Trait data for unmatched nodes will not be spliced in."
             )
         }
         // Build a quick index of snapshot children keyed by (identifier,

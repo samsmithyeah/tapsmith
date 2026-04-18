@@ -73,21 +73,29 @@ describe("Selector & assertion regressions", () => {
   })
 
   // ─── type("\n") must NOT garble surrounding characters ───
-  // Before this fix, Android `input text "foo\nbar"` was tokenized on the
-  // newline by the shell and only the first whitespace-delimited segment
-  // reached the field — a string starting with "foo" became something
-  // unpredictable. Now the agent splits printable runs on control
-  // characters and dispatches Enter as a key event between them, so the
-  // leading run is preserved verbatim. (What happens to characters AFTER
-  // the Enter is platform-specific: Android single-line TextInput often
-  // converts the Enter to a space and keeps appending; iOS UITextField
-  // blurs the field and the rest is dropped. Either is acceptable; the
-  // bug we're guarding against is whether the leading segment survives.)
-  test("type() preserves the leading segment around a newline", async ({ device }) => {
+  // Before this fix, Android `input text "foo\nbar"` was garbled by the
+  // shell tokenizer and only the first whitespace-delimited segment
+  // reached the field. Now the agent splits printable runs on control
+  // characters and dispatches Enter as a key event between them. Post-
+  // Enter behavior is platform-specific:
+  //   - Android single-line TextInput consumes Enter as a space and
+  //     keeps appending → final value is "foo bar".
+  //   - iOS UITextField blurs the field so trailing input lands
+  //     elsewhere → final value is just "foo".
+  // Split per-platform so either one regressing to the other's behavior
+  // fails loudly.
+  test("type() around newline (Android → 'foo bar' with KEYCODE_ENTER-as-space)", async ({ device, projectName }) => {
+    if (!(projectName ?? "").startsWith("android")) return
     await device.getByDescription("Login Form").tap()
     await device.getByTestId("email-input").type("foo\nbar")
-    const el = await device.getByTestId("email-input").find()
-    expect(el.text ?? "").toContain("foo")
+    await expect(device.getByTestId("email-input")).toHaveValue("foo bar")
+  })
+
+  test("type() around newline (iOS → 'foo' because Enter blurs)", async ({ device, projectName }) => {
+    if (!(projectName ?? "").startsWith("ios")) return
+    await device.getByDescription("Login Form").tap()
+    await device.getByTestId("email-input").type("foo\nbar")
+    await expect(device.getByTestId("email-input")).toHaveValue("foo")
   })
 
   // ─── header is an accepted alias for heading on toHaveRole ───

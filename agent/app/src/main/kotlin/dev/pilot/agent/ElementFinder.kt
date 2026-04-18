@@ -107,11 +107,21 @@ class ElementFinder(private val device: UiDevice) {
      * Lazily-resolved reflective handle for `UiObject2.getAccessibilityNodeInfo`.
      * The method lives on the base class regardless of the runtime subclass
      * `obj.javaClass` reports, so a single lookup is enough.
+     *
+     * Wrapped in `runCatching` so a future UIAutomator that renames or
+     * removes the method doesn't crash every textfield-related assertion
+     * via an `ExceptionInInitializerError` on first access. Callers route
+     * the null through `extractHint` / `extractRoleDescription` /
+     * `isShowingHintText`, all of which already handle null cleanly.
      */
-    private val nodeInfoMethod: java.lang.reflect.Method by lazy {
-        UiObject2::class.java
-            .getDeclaredMethod("getAccessibilityNodeInfo")
-            .apply { isAccessible = true }
+    private val nodeInfoMethod: java.lang.reflect.Method? by lazy {
+        runCatching {
+            UiObject2::class.java
+                .getDeclaredMethod("getAccessibilityNodeInfo")
+                .apply { isAccessible = true }
+        }.onFailure { e ->
+            warnOnce("nodeInfoMethod-init", e)
+        }.getOrNull()
     }
 
     /** Names of reflection sites we've already warned about. */
@@ -142,11 +152,16 @@ class ElementFinder(private val device: UiDevice) {
         // the runtime, so we read just the canonical key.
         val ROLE_DESCRIPTION_EXTRA_KEY: String = "AccessibilityNodeInfo.roleDescription"
 
-        // Bundle key used by AccessibilityNodeInfoCompat#setHeading to flag
+        // Bundle key + bitmask used by AccessibilityNodeInfoCompat to flag
         // a heading on API levels < 28 (the framework itself gained
-        // setHeading() in API 28).
-        const val COMPAT_HEADING_EXTRA_KEY: String =
-            "androidx.view.accessibility.AccessibilityNodeInfoCompat.HEADING_KEY"
+        // setHeading() in API 28). The compat lib packs several boolean
+        // properties (heading, screen-reader-focusable, showing-hint, …)
+        // into a single int under this extras key. Bit 2 (`0x2`) is
+        // `BOOLEAN_PROPERTY_IS_HEADING`. Verified against
+        // androidx.core 1.15.0 source.
+        const val COMPAT_BOOLEAN_PROPERTY_KEY: String =
+            "androidx.view.accessibility.AccessibilityNodeInfoCompat.BOOLEAN_PROPERTY_KEY"
+        const val COMPAT_BOOLEAN_PROPERTY_IS_HEADING: Int = 0x2
 
         // Cap on collectDescendantText recursion. Each level of recursion
         // makes an IPC call (UiObject2.children) — unbounded recursion on a
@@ -518,10 +533,21 @@ class ElementFinder(private val device: UiDevice) {
 
         // Hint text — UIAutomator has no By.hint(), so narrow to EditText
         // candidates here and post-filter on the actual hint value in
-        // findUiObjects(). Use a wrapped pattern so the alternation isn't
-        // miscompiled against UiAutomator's matches() check.
-        if (selector.hint != null && by == null) {
-            by = By.clazz(EDIT_TEXT_HINT_CLASS_PATTERN)
+        // findUiObjects(). Always intersect with the EditText pattern,
+        // even when other selector fields are also set: the post-filter
+        // requires EditText anyway, so without this the candidate set
+        // would include non-EditText elements that get rejected and the
+        // call would return [] instead of the matching placeholder.
+        // Note: BySelector.clazz() replaces any prior `clazz` constraint,
+        // so combining `hint` with `className` is incoherent — `hint`
+        // wins. Documented in the post-filter and in the SDK API.
+        if (selector.hint != null) {
+            by =
+                if (by != null) {
+                    by.clazz(EDIT_TEXT_HINT_CLASS_PATTERN)
+                } else {
+                    By.clazz(EDIT_TEXT_HINT_CLASS_PATTERN)
+                }
         }
 
         return by
@@ -631,10 +657,14 @@ class ElementFinder(private val device: UiDevice) {
                 return "heading"
             }
 
-            // 2. Compat-shimmed heading flag for older API levels.
+            // 2. Compat-shimmed heading flag for older API levels: read the
+            // packed boolean-properties int and test the IS_HEADING bit.
             val extras = nodeInfo.extras
-            if (extras != null && extras.getBoolean(COMPAT_HEADING_EXTRA_KEY, false)) {
-                return "heading"
+            if (extras != null) {
+                val packed = extras.getInt(COMPAT_BOOLEAN_PROPERTY_KEY, 0)
+                if ((packed and COMPAT_BOOLEAN_PROPERTY_IS_HEADING) != 0) {
+                    return "heading"
+                }
             }
 
             // 3. Role description set via AccessibilityNodeInfoCompat.
@@ -689,24 +719,8 @@ class ElementFinder(private val device: UiDevice) {
     }
 
     private fun nodeInfoFor(obj: UiObject2): android.view.accessibility.AccessibilityNodeInfo? {
-        return nodeInfoMethod.invoke(obj) as? android.view.accessibility.AccessibilityNodeInfo
-    }
-
-    /**
-     * Whether the className is a generic container View whose own `text` is
-     * never meaningful — so aggregating descendant text into it can't
-     * regress assertions on a typed element with a real (but empty) label.
-     */
-    private fun isContainerClass(className: String): Boolean {
-        return when (className) {
-            "android.view.View",
-            "android.view.ViewGroup",
-            "android.widget.FrameLayout",
-            "android.widget.LinearLayout",
-            "android.widget.RelativeLayout",
-            -> true
-            else -> false
-        }
+        val method = nodeInfoMethod ?: return null
+        return method.invoke(obj) as? android.view.accessibility.AccessibilityNodeInfo
     }
 
     /**
@@ -775,16 +789,14 @@ class ElementFinder(private val device: UiDevice) {
         // preserves the toBeEmpty behavior most users rely on.
         val effectiveText: String? =
             if (rawText.isNullOrEmpty()) {
-                // Aggregate descendant text so wrapping Views (e.g. RN Toast
-                // <View><Text/></View>) expose their visible label. Restrict
-                // to generic container classes (View, ViewGroup, FrameLayout,
-                // LinearLayout) so we don't surprise tests that previously
-                // saw `text` as null on a typed element with no label.
-                if (isContainerClass(className)) {
-                    collectDescendantText(obj).ifEmpty { null }
-                } else {
-                    null
-                }
+                // Aggregate descendant text so wrapping containers (RN
+                // ReactViewGroup, plain ViewGroup, ConstraintLayout, etc.)
+                // expose their visible label. Earlier this was gated on a
+                // small allowlist of class names — that excluded the actual
+                // RN class users have on real apps. Aggregation cost is
+                // bounded by MAX_DESCENDANT_TEXT_DEPTH so unconditional
+                // recursion on empty-own-text elements is safe.
+                collectDescendantText(obj).ifEmpty { null }
             } else if (isShowingHintText(obj)) {
                 null
             } else {

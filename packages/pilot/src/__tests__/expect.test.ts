@@ -1245,6 +1245,39 @@ describe("toHaveRole()", () => {
     const handle = makeHandle(client);
     await pilotExpect(handle).toHaveRole("HEADER", { timeout: 50 });
   });
+
+  // ─── Alias-map parity check ───
+  // Lock the set of aliases the SDK recognizes so drift between the
+  // three places (SDK expect.ts, Android ElementFinder.kt, iOS
+  // RoleMapping.swift) fails a unit test instead of quietly mis-matching
+  // in production. If you add a new alias, update all three.
+  describe("ROLE_ALIASES parity", () => {
+    // The canonical set as of this commit. Pairs express "user can pass
+    // X and it normalizes to Y". Both directions are covered by
+    // toHaveRole's poll (agent reports canonical or alias; user passes
+    // either).
+    const expectedAliases: Array<[string, string]> = [
+      ["header", "heading"],
+      ["heading", "heading"],
+      ["slider", "seekbar"],
+      ["seekbar", "seekbar"],
+      ["search", "searchfield"],
+      ["searchfield", "searchfield"],
+    ];
+
+    for (const [input, canonical] of expectedAliases) {
+      it(`normalizes "${input}" → "${canonical}"`, async () => {
+        const client = makeMockClient(async () => ({
+          requestId: "1",
+          found: true,
+          element: makeElementInfo({ role: canonical }),
+          errorMessage: "",
+        }));
+        const handle = makeHandle(client);
+        await pilotExpect(handle).toHaveRole(input, { timeout: 50 });
+      });
+    }
+  });
 });
 
 // ─── toHaveValue() (PILOT-39) ───
