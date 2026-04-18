@@ -254,6 +254,16 @@ class ElementFinder(private val device: UiDevice) {
                     "android.widget.TabWidget",
                     "com.google.android.material.tabs.TabLayout",
                 ),
+            // Mirrors iOS RoleMapping ("searchfield" -> .searchField). RN
+            // renders accessibilityRole="search" as a normal EditText with
+            // a roleDescription; include EditText so the lookup catches
+            // both native SearchView and RN-style search inputs.
+            "searchfield" to
+                listOf(
+                    "android.widget.SearchView",
+                    "androidx.appcompat.widget.SearchView",
+                    "android.widget.EditText",
+                ),
         )
 
     /**

@@ -138,6 +138,14 @@ const ROLE_CLASS_MAP: Record<string, string[]> = {
     "android.widget.TabWidget",
     "com.google.android.material.tabs.TabLayout",
   ],
+  searchfield: [
+    "android.widget.SearchView",
+    "androidx.appcompat.widget.SearchView",
+    // RN renders accessibilityRole="search" as a normal EditText with the
+    // searchfield trait/role description; include it so toHaveRole and
+    // role-derived className matching agree.
+    "android.widget.EditText",
+  ],
 };
 
 const EDITABLE_CLASSES = new Set(ROLE_CLASS_MAP["textfield"]);

@@ -350,15 +350,18 @@ class CommandHandler {
             // residue.
             let maxIterations = 16
             let perIterationCap = 256
-            var lastValue: String = ""
+            var lastLength: Int = .max
             for _ in 0..<maxIterations {
                 let refreshed = (try? resolveElement(params)) ?? element
                 let value = refreshed.text ?? ""
                 if value.isEmpty { break }
-                // Stop if we made no progress (likely a non-text field or a
-                // platform that's not honoring \u{8}); avoids infinite loop.
-                if value == lastValue { break }
-                lastValue = value
+                // Exit only if the value isn't *shrinking*. Comparing whole
+                // strings would prematurely stop on attributed-string /
+                // autocorrect compositions where the visible text changes
+                // but length still drops between batches; comparing length
+                // tolerates that as progress.
+                if value.count >= lastLength { break }
+                lastLength = value.count
                 // String.count counts grapheme clusters — matches keyboard
                 // backspace granularity for ASCII and composed emoji.
                 let count = min(value.count, perIterationCap)

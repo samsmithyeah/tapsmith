@@ -165,6 +165,14 @@ class SnapshotElementFinder {
                 // `value` (older iOS, certain RN TextInput configs). Strip
                 // that so toBeEmpty()/toHaveValue("") behave the same way
                 // they do on Android (where isShowingHintText covers this).
+                //
+                // KNOWN TRADE-OFF: a user who literally typed the
+                // placeholder string and then queried `toHaveValue` against
+                // that exact value will see the value mis-reported as
+                // empty. iOS doesn't expose `isShowingPlaceholder` in
+                // XCUIElementSnapshot, so we can't distinguish. Mirrors the
+                // Android API < 26 limitation called out in
+                // docs/api-reference.md.
                 if v.isEmpty || v == placeholderValue {
                     displayText = nil
                 } else {
@@ -303,20 +311,31 @@ class SnapshotElementFinder {
             || elType == .textView || elType == .searchField
     }
 
-    /// Tracks whether we've already logged a KVC miss on `traits`, so the
-    /// warning fires once per agent process instead of per snapshot.
-    private static let kvcMissLogged = NSLock()
-    nonisolated(unsafe) private static var kvcMissLoggedFlag = false
+    /// One-shot logger for the KVC `traits` miss. Wrapping the flag in a
+    /// class lets us hold it as a `static let` (immutable reference,
+    /// internally locked mutability) — avoids the `nonisolated(unsafe)`
+    /// escape hatch that a bare `static var` would require under Swift
+    /// strict concurrency.
+    private final class OneShotLogger {
+        private let lock = NSLock()
+        private var fired = false
+
+        func log(_ message: String) {
+            lock.lock()
+            defer { lock.unlock() }
+            guard !fired else { return }
+            fired = true
+            NSLog("%@", message)
+        }
+    }
+
+    private static let kvcMissLogger = OneShotLogger()
 
     private static func logKvcMissOnce() {
-        kvcMissLogged.lock()
-        defer { kvcMissLogged.unlock() }
-        guard !kvcMissLoggedFlag else { return }
-        kvcMissLoggedFlag = true
-        NSLog(
+        kvcMissLogger.log(
             "[PilotSnapshot] KVC `traits` returned nil on a non-empty snapshot. " +
-            "Trait-derived roles (heading/searchfield/link via traits) will not resolve. " +
-            "Likely cause: Xcode renamed/restricted the XCElementSnapshot.traits property."
+                "Trait-derived roles (heading/searchfield/link via traits) will not resolve. " +
+                "Likely cause: Xcode renamed/restricted the XCElementSnapshot.traits property."
         )
     }
 
@@ -490,10 +509,16 @@ class SnapshotElementFinder {
         var keep = [Bool](repeating: true, count: matches.count)
         for i in matches.indices where keys[i].elType == .other {
             let me = keys[i]
-            // Look at *later* matches (descendants in pre-order) for an
-            // overlap on identifier or, failing that, label.
+            let myFrame = matches[i].1
+            // Suppress only if a later match is an actual *descendant* of
+            // this wrapper (frame strictly contained), not a sibling that
+            // happens to share the identifier or label. Pre-order alone
+            // would catch sibling duplicates and silently drop one.
             for j in (i + 1)..<matches.count {
                 let other = keys[j]
+                let otherFrame = matches[j].1
+                let isDescendant = myFrame.contains(otherFrame) && myFrame != otherFrame
+                guard isDescendant else { continue }
                 if !me.id.isEmpty && other.id == me.id {
                     keep[i] = false
                     break
