@@ -104,10 +104,15 @@ class ElementFinder(private val device: UiDevice) {
     private val elementCache = ConcurrentHashMap<String, UiObject2>()
 
     /**
-     * Cache the reflective `getAccessibilityNodeInfo` Method per UiObject2
-     * subclass so we don't pay for the lookup on every element conversion.
+     * Lazily-resolved reflective handle for `UiObject2.getAccessibilityNodeInfo`.
+     * The method lives on the base class regardless of the runtime subclass
+     * `obj.javaClass` reports, so a single lookup is enough.
      */
-    private val nodeInfoMethodCache = ConcurrentHashMap<Class<*>, java.lang.reflect.Method>()
+    private val nodeInfoMethod: java.lang.reflect.Method by lazy {
+        UiObject2::class.java
+            .getDeclaredMethod("getAccessibilityNodeInfo")
+            .apply { isAccessible = true }
+    }
 
     /** Names of reflection sites we've already warned about. */
     private val warnedSites: MutableSet<String> = ConcurrentHashMap.newKeySet()
@@ -679,25 +684,7 @@ class ElementFinder(private val device: UiDevice) {
     }
 
     private fun nodeInfoFor(obj: UiObject2): android.view.accessibility.AccessibilityNodeInfo? {
-        val method = nodeInfoMethod()
-        return method.invoke(obj) as? android.view.accessibility.AccessibilityNodeInfo
-    }
-
-    /**
-     * Look up the private `getAccessibilityNodeInfo` method on `UiObject2`
-     * itself rather than on `obj.javaClass`. R8 / proxy / instrumented
-     * subclasses might not redeclare the method, in which case
-     * `getDeclaredMethod` on the subclass throws NoSuchMethodException
-     * and silently degrades every textfield-related assertion.
-     * `Method.invoke` works on subclass instances regardless.
-     */
-    private fun nodeInfoMethod(): java.lang.reflect.Method {
-        val target = UiObject2::class.java
-        nodeInfoMethodCache[target]?.let { return it }
-        val method = target.getDeclaredMethod("getAccessibilityNodeInfo")
-        method.isAccessible = true
-        nodeInfoMethodCache[target] = method
-        return method
+        return nodeInfoMethod.invoke(obj) as? android.view.accessibility.AccessibilityNodeInfo
     }
 
     /**

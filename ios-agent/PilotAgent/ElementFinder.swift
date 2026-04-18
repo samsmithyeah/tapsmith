@@ -214,6 +214,10 @@ class ElementFinder {
         let elType = element.elementType
         let label = element.label
         let identifier = element.identifier
+        // `XCUIElement` conforms to `XCUIElementAttributes`, so
+        // `placeholderValue` is a published property — no KVC required.
+        let placeholderValue = element.placeholderValue ?? ""
+        let value = element.value as? String
 
         let bounds = ElementBounds(
             left: Int(frame.origin.x),
@@ -227,19 +231,42 @@ class ElementFinder {
         let isSelected = element.isSelected
         let isChecked = checkedState(
             for: elType,
-            value: element.value as? String,
+            value: value,
             selected: isSelected
         )
 
         let viewportRatio = computeViewportRatio(bounds)
 
+        // Mirror SnapshotElementFinder's text-derivation rules so a
+        // re-resolved element (e.g. via WaitEngine) reports the same
+        // `text` and `hint` as the snapshot path. For text fields we
+        // surface only the typed value and treat a placeholder-equal
+        // value as empty; other element types fall back to value, then
+        // label.
+        let isTextField =
+            elType == .textField || elType == .secureTextField
+                || elType == .textView || elType == .searchField
+        let displayText: String?
+        if isTextField {
+            let v = value ?? ""
+            if v.isEmpty || v == placeholderValue {
+                displayText = nil
+            } else {
+                displayText = v
+            }
+        } else if let v = value, !v.isEmpty {
+            displayText = v
+        } else {
+            displayText = label.isEmpty ? nil : label
+        }
+
         return ElementInfo(
             elementId: elementId,
             className: className,
-            text: label.isEmpty ? nil : label,
+            text: displayText,
             contentDescription: label.isEmpty ? nil : label,
             resourceId: identifier.isEmpty ? nil : identifier,
-            hint: nil,  // Skip placeholderValue IPC unless needed
+            hint: placeholderValue.isEmpty ? nil : placeholderValue,
             bounds: bounds,
             isEnabled: element.isEnabled,
             isChecked: isChecked,
