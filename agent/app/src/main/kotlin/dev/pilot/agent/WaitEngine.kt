@@ -167,11 +167,18 @@ class WaitEngine(private val device: UiDevice) {
             // and the find resolve the same set of widgets (plain EditText,
             // AppCompat, MaterialTextInput, etc.).
             selector.hint != null -> By.clazz(ElementFinder.EDIT_TEXT_HINT_CLASS_PATTERN)
-            // Role-only waits use the same class pattern the find phase
-            // resolves to. Without this we'd fall through to the slow
-            // waitForIdle path even though we know exactly which classes
-            // satisfy the role.
-            selector.role != null -> By.clazz(elementFinder.roleClassPattern(selector.role))
+            // Role waits intentionally fall through to the slow
+            // waitForIdle + poll path. The find phase resolves roles via
+            // both the class map AND `extractRoleDescription` (RN /
+            // accessibility-trait channel), but a `By.clazz` short-circuit
+            // here only sees the class map. That made wait and find
+            // disagree about what `role: "heading"` means: a RN
+            // `<View accessibilityRole="header">` rendered as
+            // `ReactViewGroup` would time out in the wait phase even
+            // though `findElement` could resolve it. The resulting
+            // TimeoutException never reached the find-phase polling
+            // loop. Falling through unifies the two paths at the cost
+            // of a one-time `waitForIdle` settle.
             else -> null
         }
     }

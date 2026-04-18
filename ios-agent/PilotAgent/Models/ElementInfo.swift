@@ -124,7 +124,15 @@ struct ElementInfo {
         let elType = element.elementType
         let label = element.label
         let identifier = element.identifier
-        let placeholderValue = element.placeholderValue ?? ""
+        // Only text-input elements carry a meaningful `placeholderValue`.
+        // Reading it on every element is an extra IPC per node that adds up
+        // on screens with many siblings; gating here keeps the live-element
+        // path lean for non-text widgets where the value is always nil.
+        let isTextInput = elType == .textField
+            || elType == .secureTextField
+            || elType == .textView
+            || elType == .searchField
+        let placeholderValue = isTextInput ? (element.placeholderValue ?? "") : ""
         let value = element.value as? String
 
         let className = RoleMapping.typeName(for: elType)

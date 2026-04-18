@@ -320,7 +320,8 @@ class CommandHandler {
             // "no progress" even when backspaces are working. Selectors
             // re-snapshot via the snapshot finder, so we require one.
             let selectorKeys = ["role", "id", "contentDesc", "className",
-                                "testId", "hint", "textContains", "text"]
+                                "testId", "hint", "textContains", "text",
+                                "xpath"]
             let hasSelector = selectorKeys.contains { params[$0] != nil }
             if params["elementId"] != nil && !hasSelector {
                 throw AgentError.invalidRequest(
@@ -417,22 +418,45 @@ class CommandHandler {
             for _ in 0..<maxIterations {
                 iterationsRun += 1
                 let refreshed = (try? resolveElement(params)) ?? element
-                let value = refreshed.text ?? ""
-                finalLength = value.count
-                if value.isEmpty { break }
+                let displayed = refreshed.text ?? ""
+                finalLength = displayed.count
+                if displayed.isEmpty {
+                    // `deriveDisplayText` returns nil when the field's
+                    // value equals its placeholder, so a snapshot-empty
+                    // `text` could mean either "field is truly empty
+                    // (placeholder showing)" or "user typed content that
+                    // happens to differ from the placeholder but the
+                    // snapshot lagged". Read the live `XCUIElement.value`
+                    // directly to disambiguate. If the live value is
+                    // non-empty AND differs from the placeholder, we have
+                    // residual content the snapshot mis-classified —
+                    // backspace a fresh batch instead of declaring success.
+                    if let xc = try? getXCUIElement(refreshed.elementId),
+                       let live = xc.value as? String,
+                       !live.isEmpty,
+                       live != (refreshed.hint ?? "") {
+                        finalLength = live.count
+                        let count = min(finalLength, perIterationCap)
+                        actionExecutor.typeTextWithoutFocus(
+                            String(repeating: "\u{8}", count: count)
+                        )
+                        continue
+                    }
+                    break
+                }
                 // Exit only if the value isn't *shrinking*. Comparing whole
                 // strings would prematurely stop on attributed-string /
                 // autocorrect compositions where the visible text changes
                 // but length still drops between batches; comparing length
                 // tolerates that as progress.
-                if value.count >= lastLength {
+                if displayed.count >= lastLength {
                     stalled = true
                     break
                 }
-                lastLength = value.count
+                lastLength = displayed.count
                 // String.count counts grapheme clusters — matches keyboard
                 // backspace granularity for ASCII and composed emoji.
-                let count = min(value.count, perIterationCap)
+                let count = min(displayed.count, perIterationCap)
                 actionExecutor.typeTextWithoutFocus(String(repeating: "\u{8}", count: count))
             }
             // If we didn't fully clear, surface the failure rather than

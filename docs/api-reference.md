@@ -754,6 +754,17 @@ await device.locator({ id: "search_box" }).clear();
 > rather than partially clearing. The cap exists so a misbehaving
 > field can't hang the agent. Android uses the native `UiObject2.clear()`
 > API and isn't subject to this limit.
+>
+> **iOS gRPC contract — selector required.** The iOS agent's
+> `clearText` rejects requests that carry only an `elementId` and no
+> selector. Re-resolving by selector on each iteration is what lets
+> the loop see the post-backspace value; an `elementId`-only request
+> would read a stale snapshot and exit on iteration 1 thinking no
+> progress was made. The SDK's `ElementHandle.clear()` always derives
+> a selector for you, so callers using the public API are unaffected.
+> Anyone driving the gRPC contract directly must include at least one
+> selector key (`role`, `text`, `textContains`, `id`, `contentDesc`,
+> `hint`, `className`, `testId`, or `xpath`) alongside the elementId.
 
 #### `elementHandle.scroll(direction: string, options?: { distance?: number }): Promise<void>`
 
