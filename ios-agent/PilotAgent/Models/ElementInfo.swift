@@ -202,9 +202,22 @@ struct ElementInfo {
     /// `SnapshotElementFinder.annotateTraits` — `responds(to:)` first so
     /// a future Xcode that drops the property doesn't crash with an
     /// uncatchable `NSUnknownKeyException`.
+    ///
+    /// `XCElementSnapshot` is documented to expose `traits` via KVC; the
+    /// live `XCUIElement` is not. In practice today's Xcode forwards the
+    /// key onto the underlying snapshot, so the same call works on both,
+    /// but if a future SDK rev breaks that forwarding, trait-derived role
+    /// resolution on this code path silently degrades to type-only. Log
+    /// once when the responds-check fails so the regression surfaces in
+    /// the agent log instead of failing tests with an unhelpful "no role".
     static func extractTraits(from element: XCUIElement) -> UInt64 {
         guard let nsElement = element as? NSObject,
               nsElement.responds(to: NSSelectorFromString("traits")) else {
+            ElementInfo.liveTraitsKvcMissLogger.log(
+                "[Pilot] XCUIElement does not respond to KVC `traits`. " +
+                    "Trait-derived roles via the live-element path will not resolve. " +
+                    "Likely cause: Xcode SDK change. Snapshot path is unaffected."
+            )
             return 0
         }
         let raw = nsElement.value(forKey: "traits")
@@ -213,6 +226,24 @@ struct ElementInfo {
         if let v = raw as? Int { return UInt64(bitPattern: Int64(v)) }
         return 0
     }
+
+    /// One-shot logger for the live-path KVC `traits` miss. Mirrors the
+    /// pattern in `SnapshotElementFinder` (separate logger so a snapshot-side
+    /// miss does not silence a live-side miss or vice versa).
+    private final class OneShotLogger {
+        private let lock = NSLock()
+        private var fired = false
+
+        func log(_ message: String) {
+            lock.lock()
+            defer { lock.unlock() }
+            guard !fired else { return }
+            fired = true
+            NSLog("%@", message)
+        }
+    }
+
+    private static let liveTraitsKvcMissLogger = OneShotLogger()
 
     /// Pulled out of `SnapshotElementFinder` so the live-element paths
     /// can use the same React Native compound-value parsing.

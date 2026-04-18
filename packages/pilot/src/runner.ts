@@ -14,7 +14,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as os from 'node:os';
 import * as zlib from 'node:zlib';
-import type { PilotConfig, UseOptions } from './config.js';
+import type { PilotConfig, Platform, UseOptions } from './config.js';
 import type { Device } from './device.js';
 import type { PilotReporter } from './reporter.js';
 import { APIRequestContext } from './api-request.js';
@@ -132,6 +132,13 @@ export interface TestFixtures {
   request: APIRequestContext;
   /** Name of the project running this test, if projects are configured. */
   projectName?: string;
+  /**
+   * Platform the device under test is running on (`'android'` or `'ios'`).
+   * Sourced from the resolved config so tests can branch on platform without
+   * relying on project-name conventions, which differ between the multi-device
+   * config and the single-platform configs.
+   */
+  platform?: Platform;
 }
 
 // ─── Per-scope option overrides ───
@@ -784,6 +791,7 @@ async function runSuiteContext(
         ...(opts.device ? { device: opts.device } : {}),
         request: requestContext,
         ...(opts.projectName != null ? { projectName: opts.projectName } : {}),
+        ...(opts.config.platform != null ? { platform: opts.config.platform } : {}),
         ...(opts.workerFixtures ?? {}),
       };
 
@@ -1265,6 +1273,7 @@ export async function runTestFile(
   const baseFixtures: Record<string, unknown> = {
     ...(opts.device ? { device: opts.device } : {}),
     ...(opts.projectName != null ? { projectName: opts.projectName } : {}),
+    ...(opts.config.platform != null ? { platform: opts.config.platform } : {}),
   };
   let workerFixtures: Record<string, unknown> = opts.workerFixtures ?? {};
   let workerTeardown: (() => Promise<void>) | undefined;

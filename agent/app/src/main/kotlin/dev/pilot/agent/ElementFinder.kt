@@ -650,13 +650,16 @@ class ElementFinder(private val device: UiDevice) {
      *   - `AccessibilityNodeInfo.setHeading(true)` for "header"
      *   - `AccessibilityNodeInfoCompat.setRoleDescription(...)` for other roles
      *
-     * The role description is returned verbatim — including custom or
+     * The role description is returned (lowercased) including custom or
      * localized values the SDK doesn't otherwise know about. This lets apps
      * surface their own roles to tests without us maintaining an allowlist.
-     * The trade-off is that an app setting `accessibilityRole="Überschrift"`
-     * will surface `role: "Überschrift"` rather than the normalized
-     * `"heading"`. The Android `isHeading` check above returns the
-     * normalized "heading" first to avoid this for the common case.
+     * Lowercasing is a deliberate compromise: it lets the SDK's
+     * case-insensitive `normalizeRole` + ROLE_ALIASES table match an app
+     * that publishes `"Header"` against `toHaveRole("heading")`, at the
+     * cost of folding case on truly custom values. An app setting
+     * `accessibilityRole="Überschrift"` will surface as `"überschrift"`.
+     * The Android `isHeading` check above returns the canonical
+     * `"heading"` first to avoid this for the common case.
      *
      * Returns null when no role is published.
      */

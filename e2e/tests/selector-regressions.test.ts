@@ -84,15 +84,15 @@ describe("Selector & assertion regressions", () => {
   //     elsewhere → final value is just "foo".
   // Split per-platform so either one regressing to the other's behavior
   // fails loudly.
-  test("type() around newline (Android → 'foo bar' with KEYCODE_ENTER-as-space)", async ({ device, projectName }) => {
-    if (!(projectName ?? "").startsWith("android")) return
+  test("type() around newline (Android → 'foo bar' with KEYCODE_ENTER-as-space)", async ({ device, platform }) => {
+    if (platform !== "android") return
     await device.getByDescription("Login Form").tap()
     await device.getByTestId("email-input").type("foo\nbar")
     await expect(device.getByTestId("email-input")).toHaveValue("foo bar")
   })
 
-  test("type() around newline (iOS → 'foo' because Enter blurs)", async ({ device, projectName }) => {
-    if (!(projectName ?? "").startsWith("ios")) return
+  test("type() around newline (iOS → 'foo' because Enter blurs)", async ({ device, platform }) => {
+    if (platform !== "ios") return
     await device.getByDescription("Login Form").tap()
     await device.getByTestId("email-input").type("foo\nbar")
     await expect(device.getByTestId("email-input")).toHaveValue("foo")
@@ -109,15 +109,15 @@ describe("Selector & assertion regressions", () => {
   // means a literal "%s" in user text comes out as a space. iOS doesn't
   // have this issue. Split per-platform so a regression that silently
   // inverts the behavior on either one fails loudly.
-  test("type() — documented %s limitation (Android → literal space)", async ({ device, projectName }) => {
-    if (!(projectName ?? "").startsWith("android")) return
+  test("type() — documented %s limitation (Android → literal space)", async ({ device, platform }) => {
+    if (platform !== "android") return
     await device.getByDescription("Login Form").tap()
     await device.getByTestId("email-input").type("a%sb")
     await expect(device.getByTestId("email-input")).toHaveValue("a b")
   })
 
-  test("type() — %s round-trips verbatim on iOS", async ({ device, projectName }) => {
-    if (!(projectName ?? "").startsWith("ios")) return
+  test("type() — %s round-trips verbatim on iOS", async ({ device, platform }) => {
+    if (platform !== "ios") return
     await device.getByDescription("Login Form").tap()
     await device.getByTestId("email-input").type("a%sb")
     await expect(device.getByTestId("email-input")).toHaveValue("a%sb")
