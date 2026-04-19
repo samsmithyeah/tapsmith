@@ -580,15 +580,27 @@ class SnapshotElementFinder {
         if matchesSelector(nodeDict, selector: selector) {
             let myId = nodeDict["identifier"] as? String ?? ""
             let myLabel = nodeDict["label"] as? String ?? ""
+            let raw = parseUInt(nodeDict["elementType"]) ?? 0
+            let elType = XCUIElement.ElementType(rawValue: raw) ?? .other
 
             // If an in-scope `.other` ancestor shares our identifier (or
             // label when identifier is empty), mark it for suppression —
-            // we're the "real" inner control.
-            for anc in otherAncestors {
-                if !anc.identifier.isEmpty && anc.identifier == myId {
-                    suppressed.insert(anc.resultIndex)
-                } else if anc.identifier.isEmpty && !anc.label.isEmpty && anc.label == myLabel {
-                    suppressed.insert(anc.resultIndex)
+            // we're the "real" inner control. Gate on this node being
+            // *non-`.other`* so a `.other` ancestor isn't suppressed by
+            // another matching `.other` descendant: when both ends are
+            // generic wrappers we can't tell which one the caller wants
+            // and the safer default is to keep both. Today this only
+            // matters in theory (RN/SwiftUI don't typically nest `.other`
+            // wrappers with matching labels), but a future `alert` /
+            // `dialog` role that lands on `.other` would otherwise lose
+            // its outer container.
+            if elType != .other {
+                for anc in otherAncestors {
+                    if !anc.identifier.isEmpty && anc.identifier == myId {
+                        suppressed.insert(anc.resultIndex)
+                    } else if anc.identifier.isEmpty && !anc.label.isEmpty && anc.label == myLabel {
+                        suppressed.insert(anc.resultIndex)
+                    }
                 }
             }
 
@@ -597,9 +609,7 @@ class SnapshotElementFinder {
             let myIndex = results.count - 1
 
             // Push this node onto the ancestor stack if it's a generic
-            // wrapper — any matching descendant will suppress us.
-            let raw = parseUInt(nodeDict["elementType"]) ?? 0
-            let elType = XCUIElement.ElementType(rawValue: raw) ?? .other
+            // wrapper — any matching non-`.other` descendant will suppress us.
             if elType == .other {
                 otherAncestors.append(
                     WrapperAncestor(identifier: myId, label: myLabel, resultIndex: myIndex)

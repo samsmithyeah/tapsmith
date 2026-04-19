@@ -347,6 +347,28 @@ class CommandHandler {
                     "clearText only works on text input elements (got className=\(element.className))"
                 )
             }
+            // No-op fast path: if the snapshot already shows the field
+            // empty AND the live `XCUIElement.value` agrees (placeholder-
+            // mis-classification disambiguation, mirroring the iter-1
+            // guard in the backspace loop below), skip everything —
+            // tap-to-focus, Cmd+A, the resolve round-trips, all of it.
+            // Test setup commonly calls `clear()` defensively on every
+            // field; a no-op clear used to cost ~150ms per call (one tap,
+            // 0.1s wait, Cmd+A, 0.05s wait, backspace, 0.05s wait,
+            // resolveElement). For a setup that pre-clears a half-dozen
+            // fields that adds up to roughly a second per test.
+            if (element.text ?? "").isEmpty {
+                if let xc = try? getXCUIElement(element.elementId) {
+                    let live = (xc.value as? String) ?? ""
+                    if live.isEmpty || live == (element.hint ?? "") {
+                        return ["success": true]
+                    }
+                } else {
+                    // Snapshot says empty and we can't reach the live
+                    // element to second-guess — trust the snapshot.
+                    return ["success": true]
+                }
+            }
             // iOS text fields don't have a reliable "select all" gesture
             // (triple-tap selects a word; Cmd+A often misses on RN-wrapped
             // controls). Focus the field, try Cmd+A+Delete as a fast path,
