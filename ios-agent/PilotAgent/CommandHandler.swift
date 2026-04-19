@@ -413,45 +413,6 @@ class CommandHandler {
                 )
             }
 
-            // Resolve the XCUIElement once and read its live `.value`
-            // each iteration instead of re-resolving via selector. The
-            // selector path was prone to a subtle stale-selector bug:
-            // the SDK's `_actionSelector()` can fall back to text-only
-            // addressing when no id/desc/testId is available, which
-            // means the selector matches on the *current* value. After
-            // the first backspace the value changes, the selector no
-            // longer matches, `resolveElement` returns the frozen
-            // pre-clear `element`, the length comparison sees the
-            // stored count, the stall detector trips, and clearText
-            // throws "stalled" on a field it could have cleared.
-            // Reading the XCUIElement reference directly bypasses
-            // selector resolution entirely — the elementId stays
-            // cached for the lifetime of the call, and `.value` is
-            // always live.
-            let xcElement: XCUIElement
-            do {
-                xcElement = try getXCUIElement(element.elementId)
-            } catch {
-                throw AgentError.actionFailed(
-                    "clearText could not access element \(element.elementId) for value reads: \(error)"
-                )
-            }
-            let placeholder = element.hint ?? ""
-
-            // Read the current grapheme-cluster count off the live
-            // XCUIElement. Treat "empty" and "showing placeholder" as
-            // 0 — `XCUIElement.value` returns the placeholder when
-            // the field is empty in iOS's accessibility model, so we
-            // can't distinguish that from a typed value that
-            // happens to equal the placeholder string. Counting
-            // grapheme clusters (rather than UTF-16 length) matches
-            // keyboard backspace granularity for composed emoji.
-            func currentLength() -> Int {
-                let live = (xcElement.value as? String) ?? ""
-                if live.isEmpty || live == placeholder { return 0 }
-                return live.count
-            }
-
             // Fast path: Cmd+A then a single backspace. Works on native
             // UITextField and on simulators with a hardware-keyboard
             // mapping; silently no-ops on RN-wrapped controls (which
@@ -472,7 +433,8 @@ class CommandHandler {
                 Thread.sleep(forTimeInterval: 0.05)
                 actionExecutor.typeTextWithoutFocus("\u{8}")
                 Thread.sleep(forTimeInterval: 0.05)
-                if currentLength() == 0 {
+                let afterSelectAll = (try? resolveElement(params)) ?? element
+                if (afterSelectAll.text ?? "").isEmpty {
                     return ["success": true]
                 }
                 // Cmd+A didn't take (or deleted only one char). Fall
@@ -484,6 +446,18 @@ class CommandHandler {
             // per-iteration cap of 256 keystrokes covers any realistic field
             // length; multiple iterations let us mop up post-autocorrect
             // residue.
+            //
+            // We re-resolve via the snapshot finder rather than reading
+            // `XCUIElement.value` directly: the snapshot path applies the
+            // selector's role/type filter during its tree walk, so it
+            // matches the right textfield. The cached XCUIElement query
+            // is built with `descendants(matching: .any).firstMatch` (no
+            // type constraint, to support RN's `.other`-typed buttons),
+            // and `firstMatch` can resolve to the wrong element when
+            // multiple nodes share a label — e.g. an "Email" header label
+            // sitting above the email textfield will be picked instead of
+            // the textfield, and its missing `.value` then makes the loop
+            // think the field is already empty.
             let maxIterations = 16
             let perIterationCap = 256
             var lastLength: Int = .max
@@ -492,20 +466,23 @@ class CommandHandler {
             var stalled = false
             for _ in 0..<maxIterations {
                 iterationsRun += 1
-                let length = currentLength()
-                finalLength = length
-                if length == 0 { break }
+                let refreshed = (try? resolveElement(params)) ?? element
+                let displayed = refreshed.text ?? ""
+                finalLength = displayed.count
+                if displayed.isEmpty { break }
                 // Exit only if the value isn't *shrinking*. Comparing whole
                 // strings would prematurely stop on attributed-string /
                 // autocorrect compositions where the visible text changes
                 // but length still drops between batches; comparing length
                 // tolerates that as progress.
-                if length >= lastLength {
+                if displayed.count >= lastLength {
                     stalled = true
                     break
                 }
-                lastLength = length
-                let count = min(length, perIterationCap)
+                lastLength = displayed.count
+                // String.count counts grapheme clusters — matches keyboard
+                // backspace granularity for ASCII and composed emoji.
+                let count = min(displayed.count, perIterationCap)
                 actionExecutor.typeTextWithoutFocus(String(repeating: "\u{8}", count: count))
             }
             // If we didn't fully clear, surface the failure rather than
