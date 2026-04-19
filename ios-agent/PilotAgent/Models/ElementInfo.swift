@@ -184,6 +184,19 @@ struct ElementInfo {
     /// snapshot-dict path's textfield branch. For text fields surface
     /// only the typed value (placeholder-equal value reads as empty);
     /// other element types fall back to value, then label.
+    ///
+    /// **Live-vs-snapshot divergence:** the snapshot path's
+    /// `SnapshotElementFinder.collectDescendantText` aggregates the
+    /// labels of an `.other` wrapper's descendants when the wrapper has
+    /// no value/label of its own — so a `Pressable` with an inner
+    /// `<Text>Submit</Text>` reads as `"Submit"` via the snapshot path.
+    /// The live `XCUIElement` path here does NOT walk descendants
+    /// (calling `element.children(...)` is the cost we built the
+    /// snapshot path to avoid), so the same wrapper read live returns
+    /// `nil`. In practice all SDK queries route through the snapshot
+    /// path, so consumers see aggregated text; any future code wiring
+    /// this method into a query path needs to accept the divergence or
+    /// add an explicit descendant aggregator here.
     static func deriveDisplayText(
         elementType: XCUIElement.ElementType,
         value: String?,

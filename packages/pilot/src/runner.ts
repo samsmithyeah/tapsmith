@@ -136,9 +136,13 @@ export interface TestFixtures {
    * Platform the device under test is running on (`'android'` or `'ios'`).
    * Sourced from the resolved config so tests can branch on platform without
    * relying on project-name conventions, which differ between the multi-device
-   * config and the single-platform configs.
+   * config and the single-platform configs. Always set — defaults to
+   * `'android'` when `config.platform` is unset (mirrors the
+   * `PilotConfig.platform` doc default), so test branches like
+   * `if (platform === 'android') ...` cannot silently skip both arms when a
+   * caller forgets to declare the platform.
    */
-  platform?: Platform;
+  platform: Platform;
 }
 
 // ─── Per-scope option overrides ───
@@ -791,7 +795,9 @@ async function runSuiteContext(
         ...(opts.device ? { device: opts.device } : {}),
         request: requestContext,
         ...(opts.projectName != null ? { projectName: opts.projectName } : {}),
-        ...(opts.config.platform != null ? { platform: opts.config.platform } : {}),
+        // Always set so platform-conditional tests can't silently skip
+        // both branches when a caller forgets `config.platform`.
+        platform: opts.config.platform ?? 'android',
         ...(opts.workerFixtures ?? {}),
       };
 
@@ -1273,7 +1279,7 @@ export async function runTestFile(
   const baseFixtures: Record<string, unknown> = {
     ...(opts.device ? { device: opts.device } : {}),
     ...(opts.projectName != null ? { projectName: opts.projectName } : {}),
-    ...(opts.config.platform != null ? { platform: opts.config.platform } : {}),
+    platform: opts.config.platform ?? 'android',
   };
   let workerFixtures: Record<string, unknown> = opts.workerFixtures ?? {};
   let workerTeardown: (() => Promise<void>) | undefined;

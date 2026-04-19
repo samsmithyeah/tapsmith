@@ -436,6 +436,13 @@ class CommandHandler {
                        !live.isEmpty,
                        live != (refreshed.hint ?? "") {
                         finalLength = live.count
+                        // Update lastLength so the stall detector sees this
+                        // iteration's length. Without it, lastLength stays
+                        // at .max and the next iteration always passes the
+                        // shrinking check — a true stall on this branch
+                        // would never trip and we'd burn the full
+                        // iteration cap before failing.
+                        lastLength = finalLength
                         let count = min(finalLength, perIterationCap)
                         actionExecutor.typeTextWithoutFocus(
                             String(repeating: "\u{8}", count: count)
