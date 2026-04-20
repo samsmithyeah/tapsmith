@@ -7,29 +7,46 @@ export interface ParsedSelector {
   type: string
   value: string
   name?: string
+  index?: number | 'first' | 'last'
 }
 
 // Matches: device.getByText("value"), device.getByRole("role", { name: "n" })
 // Supports both single and double quotes, optional whitespace around args
-const DEVICE_RE = /^device\.getBy(\w+)\(\s*(["'])(.*?)\2(?:\s*,\s*\{\s*name:\s*(["'])(.*?)\4\s*\})?\s*\)$/
+const DEVICE_RE = /^device\.getBy(\w+)\(\s*(["'])(.*?)\2(?:\s*,\s*\{\s*name:\s*(["'])(.*?)\4\s*\})?\s*\)/
 // Matches: text("value"), contentDesc("value") — legacy/shorthand format
-const SHORT_RE = /^(\w+)\(\s*(["'])(.*?)\2\s*\)$/
+const SHORT_RE = /^(\w+)\(\s*(["'])(.*?)\2\s*\)/
+
+// Matches trailing .first(), .last(), .nth(N)
+const CHAIN_RE = /\.(first|last)\(\)$|\.nth\(\s*(\d+)\s*\)$/
+
+function parseChain(input: string): { base: string; index?: number | 'first' | 'last' } {
+  const match = input.match(CHAIN_RE)
+  if (!match) return { base: input }
+  const base = input.slice(0, match.index)
+  if (match[1] === 'first') return { base, index: 'first' }
+  if (match[1] === 'last') return { base, index: 'last' }
+  return { base, index: parseInt(match[2], 10) }
+}
 
 export function parseSelectorString(input: string): ParsedSelector | null {
   const trimmed = input.trim()
   if (!trimmed) return null
 
-  const deviceMatch = trimmed.match(DEVICE_RE)
+  const { base, index } = parseChain(trimmed)
+
+  const deviceMatch = base.match(DEVICE_RE)
   if (deviceMatch) {
     const method = deviceMatch[1]
     const value = deviceMatch[3]
     const name = deviceMatch[5]
-    return mapDeviceMethod(method, value, name)
+    const sel = mapDeviceMethod(method, value, name)
+    if (sel) sel.index = index
+    return sel
   }
 
-  const shortMatch = trimmed.match(SHORT_RE)
+  const shortMatch = base.match(SHORT_RE)
   if (shortMatch) {
-    return { type: shortMatch[1], value: shortMatch[3] }
+    return { type: shortMatch[1], value: shortMatch[3], index }
   }
 
   return null
@@ -146,11 +163,11 @@ function nodeMatchesSelector(node: HierarchyNode, selector: ParsedSelector): boo
 }
 
 export function findMatchingNodes(roots: HierarchyNode[], selector: ParsedSelector): HierarchyNode[] {
-  const results: HierarchyNode[] = []
+  const all: HierarchyNode[] = []
 
   function walk(node: HierarchyNode) {
     if (nodeMatchesSelector(node, selector)) {
-      results.push(node)
+      all.push(node)
     }
     for (const child of node.children) {
       walk(child)
@@ -160,7 +177,11 @@ export function findMatchingNodes(roots: HierarchyNode[], selector: ParsedSelect
   for (const root of roots) {
     walk(root)
   }
-  return results
+
+  if (selector.index === undefined) return all
+  if (selector.index === 'first') return all.length > 0 ? [all[0]] : []
+  if (selector.index === 'last') return all.length > 0 ? [all[all.length - 1]] : []
+  return all[selector.index] ? [all[selector.index]] : []
 }
 
 export function getNodeBounds(node: HierarchyNode): Bounds | null {
