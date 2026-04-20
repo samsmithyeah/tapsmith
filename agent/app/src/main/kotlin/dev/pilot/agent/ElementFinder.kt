@@ -431,13 +431,16 @@ class ElementFinder(private val device: UiDevice) {
             }
                 ?: emptyList()
 
-        // Post-filter by role name: match contentDescription, text, or descendant text
+        // Post-filter by role name: match contentDescription, text, or an
+        // exact descendant text segment. We use segment-level equality (not
+        // substring `contains`) so "Sign" doesn't false-positive on a
+        // container whose descendant reads "Sign out".
         val byName =
             if (selector.role != null && selector.name != null) {
                 results.filter { obj ->
                     obj.contentDescription == selector.name ||
                         obj.text == selector.name ||
-                        collectDescendantText(obj).contains(selector.name!!)
+                        collectDescendantTextParts(obj).any { it == selector.name }
                 }
             } else {
                 results
@@ -492,23 +495,21 @@ class ElementFinder(private val device: UiDevice) {
     private fun buildBySelector(selector: ElementSelector): BySelector? {
         // Reject incompatible combinations up front so the failure mode
         // is "loud and obvious" rather than "silent contract drift".
-        // `hint` always narrows to the EditText pattern below and
-        // `BySelector.clazz()` replaces any prior `clazz` constraint,
-        // so combining `hint` with `className`, `role`, or `id` is
-        // incoherent — the latter constraint silently wins. Throwing
-        // here means callers either drop the conflicting field or
-        // restructure the lookup.
+        // `hint` always narrows to the EditText class pattern below via
+        // `BySelector.clazz()`, which *replaces* any prior `clazz`
+        // constraint — so combining `hint` with `className` or `role`
+        // (both of which also set `clazz`) is incoherent. `id` and
+        // `testId` use `BySelector.res()` which composes cleanly with
+        // `clazz`, so those are allowed.
         if (selector.hint != null) {
             val conflicting = mutableListOf<String>()
             if (selector.className != null) conflicting.add("className")
             if (selector.role != null) conflicting.add("role")
-            if (selector.id != null) conflicting.add("id")
-            if (selector.testId != null) conflicting.add("testId")
             if (conflicting.isNotEmpty()) {
                 throw InvalidSelectorException(
                     "`hint` cannot be combined with [${conflicting.joinToString(", ")}] — " +
-                        "the hint post-filter narrows the candidate set to EditText variants only, " +
-                        "so the other fields would be silently dropped. Drop the conflicting field " +
+                        "both set the BySelector class constraint, and `clazz()` replaces " +
+                        "rather than intersects. Drop the conflicting field " +
                         "or use `getByPlaceholder` (hint-only) for placeholder-text matching.",
                 )
             }
@@ -782,29 +783,29 @@ class ElementFinder(private val device: UiDevice) {
      * RN compositions, while bounding worst-case cost for accidental
      * deep matches.
      */
-    private fun collectDescendantText(
+    private fun collectDescendantTextParts(
         obj: UiObject2,
         depth: Int = 0,
-    ): String {
-        if (depth >= MAX_DESCENDANT_TEXT_DEPTH) return ""
+    ): List<String> {
+        if (depth >= MAX_DESCENDANT_TEXT_DEPTH) return emptyList()
         val parts = mutableListOf<String>()
         for (child in obj.children.orEmpty()) {
             val ownText =
                 child.text?.takeIf { it.isNotEmpty() }
                     ?: child.contentDescription?.takeIf { it.isNotEmpty() }
             if (ownText != null) {
-                // Child labels its own visible content — accessibility
-                // services typically already absorb descendant text into
-                // the parent label, so recursing further would duplicate
-                // ("Hello Hello").
                 parts.add(ownText)
             } else {
-                val nested = collectDescendantText(child, depth + 1)
-                if (nested.isNotEmpty()) parts.add(nested)
+                parts.addAll(collectDescendantTextParts(child, depth + 1))
             }
         }
-        return parts.joinToString(" ")
+        return parts
     }
+
+    private fun collectDescendantText(
+        obj: UiObject2,
+        depth: Int = 0,
+    ): String = collectDescendantTextParts(obj, depth).joinToString(" ")
 
     private fun toElementInfo(
         obj: UiObject2,

@@ -17,6 +17,7 @@
 		853075A66BC9F6DE241F4974 /* ActionExecutor.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8CD398B24240A3E02BB14A95 /* ActionExecutor.swift */; };
 		998A8170306D3EE1D9F50A94 /* CommandHandler.swift in Sources */ = {isa = PBXBuildFile; fileRef = C92BBDFDDEDEB91636510627 /* CommandHandler.swift */; };
 		A61DFB830FA095C01519279C /* ElementInfo.swift in Sources */ = {isa = PBXBuildFile; fileRef = B504F3FF5D60D36BF6229E19 /* ElementInfo.swift */; };
+		D1A2B3C4E5F6071829304152 /* OneShotLogger.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1A2B3C4E5F60718293041AB /* OneShotLogger.swift */; };
 		B21303BE9DB0B610FDD9DF1C /* ElementFinder.swift in Sources */ = {isa = PBXBuildFile; fileRef = 052B8FF38B0F091AD93BB398 /* ElementFinder.swift */; };
 		C6ED38BD5949928E21D627E5 /* SelectorParser.swift in Sources */ = {isa = PBXBuildFile; fileRef = BBBB5205B682352F65D8FBA7 /* SelectorParser.swift */; };
 		C93319A539FD79550174D983 /* TouchSynthesizer.m in Sources */ = {isa = PBXBuildFile; fileRef = B939B7C7AA38B6E333EDDB3B /* TouchSynthesizer.m */; };
@@ -34,6 +35,7 @@
 		8CD398B24240A3E02BB14A95 /* ActionExecutor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ActionExecutor.swift; sourceTree = "<group>"; };
 		9524979C432056F44C69DF1E /* SocketServer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SocketServer.swift; sourceTree = "<group>"; };
 		B504F3FF5D60D36BF6229E19 /* ElementInfo.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ElementInfo.swift; sourceTree = "<group>"; };
+		D1A2B3C4E5F60718293041AB /* OneShotLogger.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OneShotLogger.swift; sourceTree = "<group>"; };
 		B532FDE651479856F60A24DA /* RoleMapping.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RoleMapping.swift; sourceTree = "<group>"; };
 		B939B7C7AA38B6E333EDDB3B /* TouchSynthesizer.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = TouchSynthesizer.m; sourceTree = "<group>"; };
 		BBBB5205B682352F65D8FBA7 /* SelectorParser.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SelectorParser.swift; sourceTree = "<group>"; };
@@ -87,6 +89,7 @@
 			children = (
 				BF04A6E21D2294FB006A8008 /* AgentError.swift */,
 				B504F3FF5D60D36BF6229E19 /* ElementInfo.swift */,
+				D1A2B3C4E5F60718293041AB /* OneShotLogger.swift */,
 			);
 			path = Models;
 			sourceTree = "<group>";
@@ -152,6 +155,7 @@
 				B21303BE9DB0B610FDD9DF1C /* ElementFinder.swift in Sources */,
 				A61DFB830FA095C01519279C /* ElementInfo.swift in Sources */,
 				FD2CA370FC67FA974233B97B /* HierarchyDumper.swift in Sources */,
+				D1A2B3C4E5F6071829304152 /* OneShotLogger.swift in Sources */,
 				2B315E22BA068C8558C27B65 /* PilotAgentRunner.swift in Sources */,
 				2B055AB09AD5D972B559ECED /* QuiescenceDisabler.swift in Sources */,
 				4FEA51A33465493A72809BB1 /* RoleMapping.swift in Sources */,

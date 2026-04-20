@@ -352,30 +352,6 @@ class SnapshotElementFinder {
             || elType == .textView || elType == .searchField
     }
 
-    /// One-shot logger for the KVC `traits` miss. Wrapping the flag in a
-    /// class lets us hold it as a `static let` (immutable reference,
-    /// internally locked mutability) — avoids the `nonisolated(unsafe)`
-    /// escape hatch that a bare `static var` would require under Swift
-    /// strict concurrency.
-    private final class OneShotLogger {
-        private let lock = NSLock()
-        private var fired = false
-
-        var hasFired: Bool {
-            lock.lock()
-            defer { lock.unlock() }
-            return fired
-        }
-
-        func log(_ message: String) {
-            lock.lock()
-            defer { lock.unlock() }
-            guard !fired else { return }
-            fired = true
-            NSLog("%@", message)
-        }
-    }
-
     private static let kvcMissLogger = OneShotLogger()
     private static let childMismatchLogger = OneShotLogger()
 
@@ -518,14 +494,19 @@ class SnapshotElementFinder {
                 height: Int(frame.size.height.rounded())
             )
         }
-        var available: [ChildKey: [Int]] = [:]
+        var available: [ChildKey: (indices: [Int], nextSlot: Int)] = [:]
         for (idx, snap) in snapChildren.enumerated() {
             let key = keyOf(
                 identifier: snap.identifier,
                 elementType: UInt(snap.elementType.rawValue),
                 frame: snap.frame
             )
-            available[key, default: []].append(idx)
+            if var entry = available[key] {
+                entry.indices.append(idx)
+                available[key] = entry
+            } else {
+                available[key] = (indices: [idx], nextSlot: 0)
+            }
         }
         for (i, child) in children.enumerated() {
             let frame = SnapshotElementFinder.parseFrame(child)
@@ -534,11 +515,12 @@ class SnapshotElementFinder {
                 elementType: SnapshotElementFinder.parseUInt(child["elementType"]) ?? 0,
                 frame: frame
             )
-            guard var slots = available[key], let first = slots.first else { continue }
-            slots.removeFirst()
-            available[key] = slots.isEmpty ? nil : slots
+            guard var entry = available[key], entry.nextSlot < entry.indices.count else { continue }
+            let snapIdx = entry.indices[entry.nextSlot]
+            entry.nextSlot += 1
+            available[key] = entry
             var mutableChild = child
-            annotateTraits(dict: &mutableChild, snapshot: snapChildren[first])
+            annotateTraits(dict: &mutableChild, snapshot: snapChildren[snapIdx])
             children[i] = mutableChild
         }
         dict["children"] = children

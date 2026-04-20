@@ -247,22 +247,6 @@ struct ElementInfo {
         return 0
     }
 
-    /// One-shot logger for the live-path KVC `traits` miss. Mirrors the
-    /// pattern in `SnapshotElementFinder` (separate logger so a snapshot-side
-    /// miss does not silence a live-side miss or vice versa).
-    private final class OneShotLogger {
-        private let lock = NSLock()
-        private var fired = false
-
-        func log(_ message: String) {
-            lock.lock()
-            defer { lock.unlock() }
-            guard !fired else { return }
-            fired = true
-            NSLog("%@", message)
-        }
-    }
-
     private static let liveTraitsKvcMissLogger = OneShotLogger()
 
     /// Pulled out of `SnapshotElementFinder` so the live-element paths

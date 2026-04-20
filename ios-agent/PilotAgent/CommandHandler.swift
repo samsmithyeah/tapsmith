@@ -335,15 +335,15 @@ class CommandHandler {
             return ["success": true]
 
         case "clearText":
-            // Either a selector or an elementId is fine — the backspace
-            // loop below reads `XCUIElement.value` directly via the
-            // cached element reference, not via a per-iteration snapshot
-            // re-resolve, so neither a stale-snapshot elementId nor a
-            // text-only selector that goes stale across backspaces can
-            // mislead the loop. (Earlier revisions required a selector
-            // because the loop re-resolved from snapshots; that
-            // requirement was lifted when the loop switched to live
-            // value reads.)
+            // The backspace loop re-resolves via `resolveElement(params)`
+            // each iteration to get a fresh snapshot-based text value.
+            // Reading `XCUIElement.value` directly was tried (cold-10 #1)
+            // and reverted (32b0fa7): the cached XCUIElement query uses
+            // `descendants(matching: .any).firstMatch` without a type
+            // filter, so it can resolve to a non-input sibling (e.g. an
+            // "Email" header) instead of the textfield — making the loop
+            // think the field is already empty. The snapshot path's
+            // role/type filter avoids this.
             let element = try resolveElement(params)
             // Refuse to "clear" non-text elements. The backspace loop below
             // assumes `element.text` reflects the editable value; on a
