@@ -259,19 +259,23 @@ function App() {
     return hierarchies.get(afterKey) ?? hierarchies.get(beforeKey)
   }, [selectedEvent, hierarchies])
 
+  const currentRoots = useMemo(
+    () => currentHierarchyXml ? parseHierarchyXml(currentHierarchyXml) : [],
+    [currentHierarchyXml],
+  )
+
   const dpr = viewedTestDpr ?? 1
 
   const handleScreenshotClick = useCallback((point: { x: number; y: number }) => {
-    if (!pickMode || !currentHierarchyXml) return
-    const roots = parseHierarchyXml(currentHierarchyXml)
-    const result = handlePickFromScreenshot(roots, point.x / dpr, point.y / dpr)
+    if (!pickMode || currentRoots.length === 0) return
+    const result = handlePickFromScreenshot(currentRoots, point.x / dpr, point.y / dpr)
     if (result) {
       setSelectorText(result.selector)
       setPickedNode(result.node)
       setPickMode(false)
       setHoverBounds(null)
     }
-  }, [pickMode, currentHierarchyXml, dpr])
+  }, [pickMode, currentRoots, dpr])
 
   const handlePickToggle = useCallback(() => {
     setPickMode(p => !p)
@@ -279,13 +283,12 @@ function App() {
   }, [])
 
   const handleScreenshotHover = useCallback((point: { x: number; y: number } | null) => {
-    if (!pickMode || !currentHierarchyXml || !point) {
+    if (!pickMode || currentRoots.length === 0 || !point) {
       setHoverBounds(null)
       return
     }
-    const roots = parseHierarchyXml(currentHierarchyXml)
-    setHoverBounds(handleHoverFromScreenshot(roots, point.x / dpr, point.y / dpr))
-  }, [pickMode, currentHierarchyXml, dpr])
+    setHoverBounds(handleHoverFromScreenshot(currentRoots, point.x / dpr, point.y / dpr))
+  }, [pickMode, currentRoots, dpr])
 
   // Clear selector state when selected action changes
   useEffect(() => {

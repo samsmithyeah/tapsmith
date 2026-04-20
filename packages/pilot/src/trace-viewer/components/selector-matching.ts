@@ -10,9 +10,10 @@ export interface ParsedSelector {
 }
 
 // Matches: device.getByText("value"), device.getByRole("role", { name: "n" })
-const DEVICE_RE = /^device\.getBy(\w+)\("([^"]*)"(?:\s*,\s*\{\s*name:\s*"([^"]*)"\s*\})?\)$/
+// Supports both single and double quotes, optional whitespace around args
+const DEVICE_RE = /^device\.getBy(\w+)\(\s*(["'])(.*?)\2(?:\s*,\s*\{\s*name:\s*(["'])(.*?)\4\s*\})?\s*\)$/
 // Matches: text("value"), contentDesc("value") — legacy/shorthand format
-const SHORT_RE = /^(\w+)\("([^"]*)"\)$/
+const SHORT_RE = /^(\w+)\(\s*(["'])(.*?)\2\s*\)$/
 
 export function parseSelectorString(input: string): ParsedSelector | null {
   const trimmed = input.trim()
@@ -21,14 +22,14 @@ export function parseSelectorString(input: string): ParsedSelector | null {
   const deviceMatch = trimmed.match(DEVICE_RE)
   if (deviceMatch) {
     const method = deviceMatch[1]
-    const value = deviceMatch[2]
-    const name = deviceMatch[3]
+    const value = deviceMatch[3]
+    const name = deviceMatch[5]
     return mapDeviceMethod(method, value, name)
   }
 
   const shortMatch = trimmed.match(SHORT_RE)
   if (shortMatch) {
-    return { type: shortMatch[1], value: shortMatch[2] }
+    return { type: shortMatch[1], value: shortMatch[3] }
   }
 
   return null
