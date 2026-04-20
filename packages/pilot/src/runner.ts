@@ -951,14 +951,13 @@ async function runSuiteContext(
       );
     }
 
-    // Clean up route interception before stopping network capture
-    if (opts.device?._disposeRouteManager) {
-      await opts.device._disposeRouteManager();
-    }
-
     // Finalize trace recording
     if (traceCollector && opts.device) {
-      // Stop network capture and collect raw entries
+      // Stop network capture BEFORE disposing the route manager — the
+      // proxy may still have in-flight requests that need the gRPC stream
+      // alive to receive route decisions. Disposing the manager first
+      // would close the stream and cause "NetworkRouteManager disposed"
+      // errors for any request the proxy hasn't finished proxying yet.
       let rawNetworkEntries: Awaited<ReturnType<typeof opts.device._stopNetworkCapture>>['entries'] | undefined;
       if (traceConfig.network) {
         try {
@@ -992,6 +991,12 @@ async function runSuiteContext(
         } catch (err) {
           console.warn(`[pilot] Failed to stop network capture: ${err instanceof Error ? err.message : err}`);
         }
+      }
+
+      // Now that the proxy has stopped and in-flight requests have settled,
+      // dispose the route manager (closes the gRPC stream).
+      if (opts.device?._disposeRouteManager) {
+        await opts.device._disposeRouteManager();
       }
 
       // Capture a final screenshot so the last action has an "after" view.
@@ -1114,6 +1119,9 @@ async function runSuiteContext(
         }
         collector.cleanup();
       }
+    } else if (opts.device?._disposeRouteManager) {
+      // No tracing — still need to clean up routes.
+      await opts.device._disposeRouteManager();
     }
 
     const testResult: TestResult = {

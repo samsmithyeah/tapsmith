@@ -464,6 +464,7 @@ export class NetworkRouteManager {
 
   /** Lazily open the bidi stream. */
   private _ensureStream(): grpc.ClientDuplexStream<unknown, unknown> {
+    if (this._disposed) throw new Error('NetworkRouteManager is disposed');
     if (this._stream) return this._stream;
 
     const stream = this._client.networkRouteStream();
