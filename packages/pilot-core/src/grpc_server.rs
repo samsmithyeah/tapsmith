@@ -4557,6 +4557,10 @@ impl proto::pilot_service_server::PilotService for PilotServiceImpl {
                     ),
                 })),
             },
+            // Note: the iOS TypeScript SDK connects directly to the simulator's
+            // webinspectord socket (webkit-inspector.ts) and does not use this
+            // RPC. This path exists as a server-side fallback via
+            // ios-webkit-debug-proxy for potential future use.
             Platform::Ios => {
                 #[cfg(target_os = "macos")]
                 {

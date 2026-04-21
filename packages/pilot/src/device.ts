@@ -722,14 +722,15 @@ export class Device {
     while (Date.now() < deadline) {
       const targets = await inspector.listTargets();
 
-      // Find the target app's WebView pages
-      const appTarget = targets.find(t =>
-        t.pages.length > 0 && (
-          t.bundleId === (this.defaultPackageName ?? 'dev.pilot.testapp') ||
-          t.bundleId === _packageName ||
-          t.name === _packageName
-        ),
-      ) ?? targets.find(t => t.pages.length > 0);
+      // Find the target app's WebView pages — prefer matching by package/name,
+      // fall back to the first app with any inspectable pages.
+      const matchesPkg = (t: { bundleId: string; name: string }) => {
+        if (_packageName) return t.bundleId === _packageName || t.name === _packageName;
+        if (this.defaultPackageName) return t.bundleId === this.defaultPackageName;
+        return false;
+      };
+      const appTarget = targets.find(t => t.pages.length > 0 && matchesPkg(t))
+        ?? targets.find(t => t.pages.length > 0);
 
       if (!appTarget || appTarget.pages.length === 0) {
         lastError = 'No inspectable WebView pages found';

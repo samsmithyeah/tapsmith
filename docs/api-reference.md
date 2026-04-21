@@ -1947,7 +1947,7 @@ Test hybrid apps that embed WebViews (login screens, payment flows, in-app brows
 ### Prerequisites
 
 - **Android**: The app must enable WebView debugging: `WebView.setWebContentsDebuggingEnabled(true)`. React Native WebView provides a `webviewDebuggingEnabled` prop.
-- **iOS**: The WKWebView must set `isInspectable = true` (required since iOS 16.4). You also need `ios-webkit-debug-proxy` installed: `brew install ios-webkit-debug-proxy`.
+- **iOS**: The WKWebView must set `isInspectable = true` (required since iOS 16.4). React Native WebView provides a `webviewDebuggingEnabled` prop which sets this automatically. Pilot connects directly to the simulator's WebKit Inspector — no external tools needed.
 
 ### `device.webview(packageName?: string): Promise<WebViewHandle>`
 
