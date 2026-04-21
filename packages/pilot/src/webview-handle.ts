@@ -111,8 +111,9 @@ export class WebViewHandle {
       })()`) as { left: number; top: number; right: number; bottom: number } | null;
       if (!rect) return undefined;
 
-      // Look up the native WebView element's bounds to translate to screen coords
-      if (!this._webviewNativeBounds) {
+      // Look up the native WebView element's bounds to translate to screen coords.
+      // Re-fetch each time since the WebView may have moved (scrolling, layout changes).
+      {
         const webviewClassName = this._platform === 'ios'
           ? 'XCUIElementTypeWebView'
           : 'android.webkit.WebView';

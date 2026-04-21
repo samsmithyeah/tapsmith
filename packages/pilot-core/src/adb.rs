@@ -390,7 +390,6 @@ pub async fn list_webview_sockets(serial: &str) -> Result<Vec<WebViewSocket>> {
     .await?;
 
     let mut sockets = Vec::new();
-    let mut pids = Vec::new();
 
     for line in unix_output.lines() {
         let line = line.trim();
@@ -415,7 +414,6 @@ pub async fn list_webview_sockets(serial: &str) -> Result<Vec<WebViewSocket>> {
             .and_then(|s| s.parse().ok())
             .unwrap_or(0);
 
-        pids.push(pid);
         sockets.push(WebViewSocket {
             socket_name: socket_name.to_string(),
             pid,
@@ -427,21 +425,18 @@ pub async fn list_webview_sockets(serial: &str) -> Result<Vec<WebViewSocket>> {
         return Ok(sockets);
     }
 
-    // Resolve PIDs to package names
-    let ps_output = shell_lenient(serial, "ps -A -o PID,NAME 2>/dev/null || ps").await?;
-    let mut pid_to_pkg: std::collections::HashMap<i32, String> = std::collections::HashMap::new();
-    for line in ps_output.lines().skip(1) {
-        let parts: Vec<&str> = line.split_whitespace().collect();
-        if parts.len() >= 2 {
-            if let Ok(pid) = parts[0].parse::<i32>() {
-                pid_to_pkg.insert(pid, parts.last().unwrap_or(&"").to_string());
-            }
-        }
-    }
-
+    // Resolve PIDs to package names via /proc/<pid>/cmdline (more reliable
+    // than parsing `ps` output, which varies across Android versions).
     for socket in &mut sockets {
-        if let Some(pkg) = pid_to_pkg.get(&socket.pid) {
-            socket.package_name = pkg.clone();
+        if socket.pid > 0 {
+            if let Ok(cmdline) =
+                shell_lenient(serial, &format!("cat /proc/{}/cmdline", socket.pid)).await
+            {
+                let pkg = cmdline.trim_matches('\0').trim();
+                if !pkg.is_empty() {
+                    socket.package_name = pkg.to_string();
+                }
+            }
         }
     }
 

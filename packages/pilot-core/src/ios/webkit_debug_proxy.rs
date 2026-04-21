@@ -12,7 +12,7 @@ use anyhow::{bail, Context, Result};
 use tokio::process::{Child, Command};
 use tracing::{debug, info, warn};
 
-const SPAWN_SETTLE_DELAY: std::time::Duration = std::time::Duration::from_millis(500);
+const SPAWN_SETTLE_DELAY: std::time::Duration = std::time::Duration::from_millis(1000);
 
 /// Owned handle to a running `ios_webkit_debug_proxy` child. Dropping kills it.
 #[derive(Debug)]

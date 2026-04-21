@@ -4768,8 +4768,11 @@ async fn query_cdp_json(port: u16) -> anyhow::Result<Vec<serde_json::Value>> {
     stream.read_to_end(&mut buf).await?;
     let response = String::from_utf8_lossy(&buf);
 
-    // Skip HTTP headers — find the blank line separating headers from body
-    let body = response.split("\r\n\r\n").nth(1).unwrap_or(&response);
+    // Skip HTTP headers — find the first blank line separating headers from body
+    let body = response
+        .find("\r\n\r\n")
+        .map(|pos| &response[pos + 4..])
+        .unwrap_or(&response);
 
     let targets: Vec<serde_json::Value> = serde_json::from_str(body)?;
     Ok(targets)
