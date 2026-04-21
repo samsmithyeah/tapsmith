@@ -959,6 +959,7 @@ function parseArgs(argv: string[]): CliArgs {
         || arg === 'refresh-ios-network'
         || arg === 'verify-ios-network'
         || arg === 'list-devices'
+        || arg === 'mcp-server'
       ) {
         break;
       }
@@ -1271,6 +1272,7 @@ ${bold('Usage:')}
   pilot configure-ios-network <udid>   Generate a network capture profile (.mobileconfig) for a physical iOS device
   pilot refresh-ios-network <udid>     Regenerate the network capture profile after a host Wi-Fi change
   pilot verify-ios-network <udid>      Verify decrypted HTTPS capture is working on a physical iOS device
+  pilot mcp-server                Run MCP server for LLM/agent integration (stdio transport)
   pilot --version                 Print version
   pilot --help                    Show this help
 
@@ -1421,6 +1423,12 @@ async function main(): Promise<void> {
     const forwardedArgv = process.argv.slice(process.argv.indexOf('build-ios-agent') + 1)
       .filter((a) => a !== '--__tsx-reexec');
     await runBuildIosAgent(forwardedArgv);
+    return;
+  }
+
+  if (args.command === 'mcp-server') {
+    const { runMcpServer } = await import('./mcp/index.js');
+    await runMcpServer();
     return;
   }
 

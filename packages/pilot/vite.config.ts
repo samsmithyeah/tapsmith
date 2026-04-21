@@ -13,7 +13,7 @@ export default defineConfig({
   root: resolve(__dirname, 'src/trace-viewer'),
   build: {
     outDir: resolve(__dirname, 'dist/trace-viewer'),
-    emptyOutDir: true,
+    emptyOutDir: false,
     rollupOptions: {
       input: resolve(__dirname, 'src/trace-viewer/index.html'),
     },
