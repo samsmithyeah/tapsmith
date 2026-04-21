@@ -63,6 +63,8 @@ const SELECTOR_TAB_STYLES = `
   .st-empty { padding: 10px; color: var(--color-text-faintest); font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; }
   .st-pick-hint { padding: 10px; color: var(--color-text-muted); font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; font-size: 12px; }
   .st-pick-hint code { background: var(--color-bg-tertiary); padding: 1px 5px; border-radius: 3px; font-size: 11px; }
+  .st-setup-hint { padding: 4px 10px 6px; font-size: 11px; color: var(--color-text-faint); font-family: 'SF Mono', 'Cascadia Code', Consolas, monospace; }
+  .st-setup-hint code { color: var(--color-text-muted); }
 `
 
 let stStylesInjected = false
@@ -96,6 +98,8 @@ export function SelectorTab({ hierarchyXml, pickedNode, onHighlightsChange, sele
     () => pickedNode ? generateSelectors(pickedNode) : [],
     [pickedNode],
   )
+
+  const isWebViewPick = pickedNode?.attributes.get('webview') === 'true'
 
   const matchCount = useMemo(() => {
     if (!selector.trim() || roots.length === 0) return null
@@ -163,6 +167,11 @@ export function SelectorTab({ hierarchyXml, pickedNode, onHighlightsChange, sele
         {generatedSelectors.length > 0 && (
           <>
             <div class="st-section-label">Suggested locators</div>
+            {isWebViewPick && (
+              <div class="st-setup-hint">
+                <code>const webview = await device.webview()</code>
+              </div>
+            )}
             {generatedSelectors.map((s, i) => (
               <div
                 key={i}

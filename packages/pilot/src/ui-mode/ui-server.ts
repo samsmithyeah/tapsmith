@@ -2232,9 +2232,23 @@ export async function startUIServer(
         const hierClient = multiWorker && workersInitialized
           ? uiWorkers.find((w) => w.id === selectedWorkerId && !w.retired)?.screenClient
           : ctx.client;
-        hierClient?.getUiHierarchy().then((response) => {
-          if (response.hierarchyXml) {
-            broadcast({ type: 'hierarchy-update', xml: response.hierarchyXml });
+        hierClient?.getUiHierarchy().then(async (response) => {
+          let xml = response.hierarchyXml;
+          if (xml) {
+            // Append WebView DOM hierarchy if a WebView is active (single-worker mode)
+            const activeWebView = ctx.device?._activeWebView;
+            if (activeWebView) {
+              try {
+                const webviewDom = await activeWebView._dumpDomHierarchy();
+                if (webviewDom) {
+                  const lastClose = xml.lastIndexOf('</');
+                  if (lastClose !== -1) {
+                    xml = xml.slice(0, lastClose) + webviewDom + '\n' + xml.slice(lastClose);
+                  }
+                }
+              } catch { /* best-effort */ }
+            }
+            broadcast({ type: 'hierarchy-update', xml });
           }
         }).catch(() => {});
         break;
