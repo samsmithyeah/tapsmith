@@ -1436,6 +1436,33 @@ function createSoftLocatorAssertions(
   return wrapper;
 }
 
+function createSoftWebViewAssertions(
+  locator: WebViewLocator,
+  negated: boolean,
+): WebViewAssertions {
+  const inner = createWebViewAssertions(locator, negated);
+  const wrapper: WebViewAssertions = {} as WebViewAssertions;
+
+  Object.defineProperty(wrapper, "not", {
+    get() {
+      return createSoftWebViewAssertions(locator, !negated);
+    },
+  });
+
+  for (const key of Object.keys(inner) as (keyof WebViewAssertions)[]) {
+    if (key === "not") continue;
+    const original = inner[key] as (...args: unknown[]) => Promise<void>;
+    (wrapper as unknown as Record<string, unknown>)[key] = async (...args: unknown[]) => {
+      try {
+        await original.apply(inner, args);
+      } catch (err) {
+        _softErrors.push(err instanceof Error ? err : new Error(String(err)));
+      }
+    };
+  }
+  return wrapper;
+}
+
 function createSoftGenericAssertions(actual: unknown, negated: boolean): GenericAssertions {
   return createGenericAssertions(actual, negated, (message) => {
     _softErrors.push(new Error(message));
@@ -1811,7 +1838,7 @@ expect.soft = function soft(value: unknown): PilotAssertions | WebViewAssertions
     return createSoftLocatorAssertions(value, false);
   }
   if (isWebViewLocator(value)) {
-    return createWebViewAssertions(value, false);
+    return createSoftWebViewAssertions(value, false);
   }
   return createSoftGenericAssertions(value, false);
 } as {

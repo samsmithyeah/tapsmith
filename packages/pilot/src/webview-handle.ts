@@ -285,7 +285,14 @@ export class WebViewHandle {
     }
     const id = ++this._msgId;
     return new Promise((resolve, reject) => {
-      this._pending.set(id, { resolve, reject });
+      const timeout = setTimeout(() => {
+        this._pending.delete(id);
+        reject(new Error(`CDP message timed out (method=${method}, id=${id})`));
+      }, 30_000);
+      this._pending.set(id, {
+        resolve: (v) => { clearTimeout(timeout); resolve(v); },
+        reject: (e) => { clearTimeout(timeout); reject(e); },
+      });
       this._ws!.send(JSON.stringify({ id, method, params }));
     });
   }
@@ -442,7 +449,7 @@ export class WebViewHandle {
       const domData = await this._evaluate(`(() => {
         const dpr = ${useDpr ? 'window.devicePixelRatio || 1' : '1'};
         function walk(el, depth) {
-          if (depth > 10) return null;
+          if (depth > 20) return null;
           const tag = el.tagName?.toLowerCase() || '';
           if (!tag || tag === 'script' || tag === 'style' || tag === 'head') return null;
           const r = el.getBoundingClientRect();

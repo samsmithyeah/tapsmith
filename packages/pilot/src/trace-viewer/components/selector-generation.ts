@@ -48,7 +48,7 @@ const HTML_TAG_TO_ROLE: Record<string, string> = {
   textarea: 'textfield',
   select: 'combobox',
   h1: 'heading', h2: 'heading', h3: 'heading', h4: 'heading', h5: 'heading', h6: 'heading',
-  img: 'img',
+  img: 'image',
   ul: 'list', ol: 'list',
   li: 'listitem',
   progress: 'progressbar',

@@ -6,4 +6,5 @@ pub mod physical_device_proxy;
 pub mod screenshot;
 #[cfg(target_os = "macos")]
 pub mod simulator_processes;
+#[cfg(target_os = "macos")]
 pub mod webkit_debug_proxy;
