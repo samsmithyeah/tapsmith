@@ -1094,6 +1094,43 @@ html, body, #app {
 }
 .mcp-entry.error .mcp-entry-summary { color: var(--color-error); }
 
+.mcp-entry { cursor: pointer; }
+.mcp-entry:hover { background: var(--bg-hover); }
+.mcp-entry.expanded { background: var(--bg-selected); }
+
+.mcp-entry-detail {
+  margin-top: 4px;
+  padding: 4px 8px 4px 56px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--color-text-muted);
+}
+.mcp-detail-row {
+  display: flex;
+  gap: 6px;
+  line-height: 1.5;
+}
+.mcp-detail-key {
+  color: var(--color-text-faint);
+  flex-shrink: 0;
+}
+.mcp-detail-value {
+  word-break: break-all;
+}
+
+.mcp-code-block {
+  display: block;
+  padding: 8px;
+  background: var(--bg-tertiary);
+  border-radius: 4px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  white-space: pre;
+  line-height: 1.5;
+  color: var(--color-text);
+  overflow-x: auto;
+}
+
 /* ─── Scrollbar ─── */
 
 ::-webkit-scrollbar { width: 8px; height: 8px; }
