@@ -20,6 +20,9 @@ interface RunControlsProps {
   workers: WorkerInfo[]
   /** Elapsed run time in ms. */
   runElapsed: number
+  mcpClientName?: string
+  mcpPanelOpen?: boolean
+  onToggleMcpPanel?: () => void
 }
 
 const ICON_SIZE = 14;
@@ -112,7 +115,7 @@ function WorkerDevice({ w, onSend }: { w: WorkerInfo; onSend: (msg: ClientMessag
 
 // ─── RunControls ───
 
-export function RunControls({ connected, isRunning, deviceSerial, counts, theme, onThemeChange, onSend, workers, runElapsed }: RunControlsProps) {
+export function RunControls({ connected, isRunning, deviceSerial, counts, theme, onThemeChange, onSend, workers, runElapsed, mcpClientName, mcpPanelOpen, onToggleMcpPanel }: RunControlsProps) {
   const hasWorkers = workers.length > 1;
 
   return (
@@ -168,6 +171,16 @@ export function RunControls({ connected, isRunning, deviceSerial, counts, theme,
                 </span>
               )}
         </div>
+        <span class="rc-divider" />
+        <button
+          class={`rc-mcp-indicator ${mcpPanelOpen ? 'active' : ''}`}
+          onClick={onToggleMcpPanel}
+          title={mcpClientName ? `MCP: ${mcpClientName} (click to toggle panel)` : 'MCP: listening (click to toggle panel)'}
+        >
+          <span class={`rc-dot ${mcpClientName ? 'done' : 'idle'}`} />
+          MCP
+          {mcpClientName && <span class="rc-mcp-client">{mcpClientName}</span>}
+        </button>
         <span class="rc-divider" />
         <select
           class="rc-theme-select"

@@ -24,6 +24,7 @@ import { Layout } from './components/Layout.js';
 import { TestExplorer } from './components/TestExplorer.js';
 import { RunControls, type Theme } from './components/RunControls.js';
 import { DevicePane } from './components/DevicePane.js';
+import { McpPanel } from './components/McpPanel.js';
 // Trace viewer components — reused for live trace display
 import { ActionsPanel } from '../trace-viewer/components/ActionsPanel.js';
 import { ScreenshotPanel } from '../trace-viewer/components/ScreenshotPanel.js';
@@ -76,6 +77,13 @@ function App() {
   // Device pane state
   const [selectedWorkerId, setSelectedWorkerId] = useState(0);
   const [deviceViewMode, setDeviceViewMode] = useState<'all' | number>('all');
+
+  // MCP state
+  const [mcpSseUrl, setMcpSseUrl] = useState<string | undefined>();
+  const [mcpClientName, setMcpClientName] = useState<string | undefined>();
+  const [mcpClientVersion, setMcpClientVersion] = useState<string | undefined>();
+  const [mcpToolCalls, setMcpToolCalls] = useState<import('./ui-protocol.js').McpToolCallMessage[]>([]);
+  const [mcpPanelOpen, setMcpPanelOpen] = useState(false);
 
   // "Run deps first" toggle — persisted in localStorage
   const [runDepsFirst, setRunDepsFirst] = useState(() => {
@@ -598,6 +606,19 @@ function App() {
       case 'error':
         console.error('[Pilot UI]', msg.message);
         break;
+
+      case 'mcp-status':
+        setMcpSseUrl(msg.sseUrl);
+        setMcpClientName(msg.clientName);
+        setMcpClientVersion(msg.clientVersion);
+        break;
+
+      case 'mcp-tool-call':
+        setMcpToolCalls((prev) => {
+          const next = [...prev, msg];
+          return next.length > 200 ? next.slice(-200) : next;
+        });
+        break;
     }
   }, []);
 
@@ -745,6 +766,9 @@ function App() {
           onSend={handleSend}
           workers={workers}
           runElapsed={runElapsed}
+          mcpClientName={mcpClientName}
+          mcpPanelOpen={mcpPanelOpen}
+          onToggleMcpPanel={() => setMcpPanelOpen(prev => !prev)}
         />
       }
       testExplorer={
@@ -837,6 +861,15 @@ function App() {
           unregisterCanvas={unregisterCanvas}
         />
       }
+      mcpPanel={mcpPanelOpen ? (
+        <McpPanel
+          sseUrl={mcpSseUrl}
+          clientName={mcpClientName}
+          clientVersion={mcpClientVersion}
+          toolCalls={mcpToolCalls}
+          onClear={() => setMcpToolCalls([])}
+        />
+      ) : undefined}
       detailTabs={
         <DetailTabs
           event={selectedEvent}

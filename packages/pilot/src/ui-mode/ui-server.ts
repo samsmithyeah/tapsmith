@@ -18,6 +18,9 @@ import * as path from 'node:path';
 import { execFileSync, fork, spawn, type ChildProcess } from 'node:child_process';
 import { watch as chokidarWatch, type FSWatcher } from 'chokidar';
 import { WebSocketServer, type WebSocket } from 'ws';
+import { createMcpServer } from '../mcp/index.js';
+import { McpEventEmitter } from '../mcp/events.js';
+import { SSEServerTransport } from '@modelcontextprotocol/sdk/server/sse.js';
 import type { PilotConfig } from '../config.js';
 import { PilotGrpcClient } from '../grpc-client.js';
 import type { Device } from '../device.js';
@@ -162,6 +165,7 @@ export async function startUIServer(
   options: UIServerOptions = {},
 ): Promise<{ port: number; close: () => void }> {
   const clients = new Set<WebSocket>();
+  let boundPort = 0;
   let testTree: TestTreeNode[] = [];
   let isRunning = false;
   const failedFiles = new Set<string>();
@@ -324,6 +328,56 @@ export async function startUIServer(
       }
     }
   }
+
+  // ─── MCP Server (SSE) ───
+
+  const mcpEvents = new McpEventEmitter();
+  const mcpServer = createMcpServer(mcpEvents);
+  let mcpTransport: SSEServerTransport | null = null;
+  let mcpClientName: string | undefined;
+  let mcpClientVersion: string | undefined;
+
+  function getMcpStatus(port?: number): ServerMessage {
+    return {
+      type: 'mcp-status' as const,
+      running: true,
+      sseUrl: port != null ? `http://localhost:${port}/mcp` : undefined,
+      clientName: mcpClientName,
+      clientVersion: mcpClientVersion,
+    };
+  }
+
+  mcpEvents.onToolCall((event) => {
+    broadcast({ type: 'mcp-tool-call', ...event });
+  });
+
+  mcpEvents.onClientChange((info) => {
+    mcpClientName = info?.name;
+    mcpClientVersion = info?.version;
+    broadcast(getMcpStatus());
+  });
+
+  // Intercept MCP client connection info from the initialize request
+  const origConnect = mcpServer.server.connect.bind(mcpServer.server);
+  mcpServer.server.connect = async function (transport) {
+    const origOnMessage = transport.onmessage;
+    transport.onmessage = (msg, extra) => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- inspecting raw JSON-RPC
+      const rpc = msg as any;
+      if (rpc.method === 'initialize' && rpc.params?.clientInfo) {
+        mcpEvents.emitClientChange({
+          name: rpc.params.clientInfo.name ?? 'Unknown',
+          version: rpc.params.clientInfo.version ?? '',
+        });
+      }
+      origOnMessage?.(msg, extra);
+    };
+    transport.onclose = () => {
+      mcpEvents.emitClientChange(null);
+      mcpTransport = null;
+    };
+    return origConnect(transport);
+  };
 
   // ─── Test Discovery ───
 
@@ -2376,6 +2430,46 @@ export async function startUIServer(
       return;
     }
 
+    // MCP SSE endpoint — GET establishes SSE stream
+    if (url.pathname === '/mcp' && req.method === 'GET') {
+      if (mcpTransport) {
+        res.writeHead(409);
+        res.end('MCP session already active');
+        return;
+      }
+      mcpTransport = new SSEServerTransport('/mcp/message', res);
+      mcpServer.connect(mcpTransport).catch(() => {
+        mcpTransport = null;
+      });
+      return;
+    }
+
+    // MCP message endpoint — POST sends JSON-RPC messages
+    if (url.pathname === '/mcp/message' && req.method === 'POST') {
+      if (!mcpTransport) {
+        res.writeHead(400);
+        res.end('No active MCP session');
+        return;
+      }
+      mcpTransport.handlePostMessage(req, res);
+      return;
+    }
+
+    // Event ingest from standalone `pilot mcp-server`
+    if (url.pathname === '/mcp-events' && req.method === 'POST') {
+      let body = '';
+      req.on('data', (chunk: Buffer) => { body += chunk.toString(); });
+      req.on('end', () => {
+        try {
+          const event = JSON.parse(body);
+          broadcast({ type: 'mcp-tool-call', ...event });
+        } catch { /* ignore malformed */ }
+        res.writeHead(200);
+        res.end('OK');
+      });
+      return;
+    }
+
     res.writeHead(404);
     res.end('Not found');
   });
@@ -2389,6 +2483,7 @@ export async function startUIServer(
 
     // Send current state to new client
     ws.send(JSON.stringify({ type: 'test-tree', files: testTree } satisfies ServerMessage));
+    ws.send(JSON.stringify(getMcpStatus(boundPort)));
 
     if (multiWorker && workersInitialized) {
       // Send workers info
@@ -2472,6 +2567,7 @@ export async function startUIServer(
     });
     server.on('error', reject);
   });
+  boundPort = actualPort;
 
   // Discover tests
   await discoverAllFiles();
@@ -2499,6 +2595,7 @@ export async function startUIServer(
 
   console.log(`\x1b[2m${workerLabel} | ${ctx.testFiles.length} test file(s)\x1b[0m`);
   console.log(`\x1b[1mPilot UI mode running at ${viewerUrl}\x1b[0m`);
+  console.log(`\x1b[2mMCP server available at http://127.0.0.1:${actualPort}/mcp\x1b[0m`);
 
   // Send device info (single-worker)
   if (!multiWorker && ctx.deviceSerial) {
@@ -2540,6 +2637,8 @@ export async function startUIServer(
         ctx.client?.close();
       }
 
+      if (mcpTransport) mcpTransport.close();
+      mcpServer.close();
       if (watcher) watcher.close();
       for (const ws of clients) ws.close();
       wss.close();
