@@ -46,6 +46,7 @@ export class WebKitInspectorClient {
   private _senderKey: string | null = null;
   private _targetId: string | null = null;
   private _outerMsgId = 0;
+  private _connectedPageId: number | null = null;
 
   constructor() {
     this._connectionId = `pilot-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -376,9 +377,6 @@ export class WebKitInspectorClient {
       });
     });
   }
-
-  /** @internal */
-  private _connectedPageId: number | null = null;
 
   close(): void {
     if (this._socket) {

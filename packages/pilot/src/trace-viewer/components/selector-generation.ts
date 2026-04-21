@@ -1,5 +1,5 @@
 import type { HierarchyNode } from './hierarchy-utils.js'
-import { getNodeRole } from './hierarchy-utils.js'
+import { getNodeRole, WEBVIEW_TAG_TO_ROLE } from './hierarchy-utils.js'
 
 function escapeQuotes(s: string): string {
   return s.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\n/g, '\\n')
@@ -39,21 +39,7 @@ function isIos(node: HierarchyNode): boolean {
   return node.tagName.startsWith('XCUI') || node.attributes.has('type')
 }
 
-// ─── WebView Role Mapping (HTML tag → Pilot role) ───
-
-const HTML_TAG_TO_ROLE: Record<string, string> = {
-  button: 'button',
-  a: 'link',
-  input: 'textfield',
-  textarea: 'textfield',
-  select: 'combobox',
-  h1: 'heading', h2: 'heading', h3: 'heading', h4: 'heading', h5: 'heading', h6: 'heading',
-  img: 'image',
-  ul: 'list', ol: 'list',
-  li: 'listitem',
-  progress: 'progressbar',
-  dialog: 'dialog',
-}
+// ─── WebView Role Mapping ───
 
 function getWebViewRole(node: HierarchyNode): string | null {
   const explicitRole = node.attributes.get('webview-role')
@@ -62,7 +48,6 @@ function getWebViewRole(node: HierarchyNode): string | null {
   const tag = node.attributes.get('webview-tag') ?? ''
   const inputType = node.attributes.get('webview-type') ?? ''
 
-  // input type → role
   if (tag === 'input') {
     if (inputType === 'checkbox') return 'checkbox'
     if (inputType === 'radio') return 'radio'
@@ -71,7 +56,7 @@ function getWebViewRole(node: HierarchyNode): string | null {
     return 'textfield'
   }
 
-  return HTML_TAG_TO_ROLE[tag] ?? null
+  return WEBVIEW_TAG_TO_ROLE[tag] ?? null
 }
 
 // ─── Selector Generation ───

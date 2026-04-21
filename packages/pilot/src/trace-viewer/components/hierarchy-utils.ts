@@ -124,7 +124,7 @@ export const IOS_TYPE_TO_ROLE: Record<string, string> = {
   'XCUIElementTypeRadioButton': 'radiobutton',
 }
 
-const WEBVIEW_TAG_TO_ROLE: Record<string, string> = {
+export const WEBVIEW_TAG_TO_ROLE: Record<string, string> = {
   button: 'button',
   a: 'link',
   input: 'textfield',

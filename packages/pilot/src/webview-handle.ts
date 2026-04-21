@@ -23,6 +23,7 @@ const ROLE_CSS_MAP: Record<string, string[]> = {
   tab: ['[role="tab"]'],
   progressbar: ['progress', '[role="progressbar"]'],
   dialog: ['dialog', '[role="dialog"]'],
+  image: ['img', '[role="img"]'],
 };
 
 export interface WebViewTraceContext {

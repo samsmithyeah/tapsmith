@@ -4765,7 +4765,12 @@ async fn query_cdp_json(port: u16) -> anyhow::Result<Vec<serde_json::Value>> {
         .await?;
 
     let mut buf = Vec::with_capacity(8192);
-    stream.read_to_end(&mut buf).await?;
+    tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        stream.read_to_end(&mut buf),
+    )
+    .await
+    .map_err(|_| anyhow::anyhow!("CDP /json read timed out after 10s"))??;
     let response = String::from_utf8_lossy(&buf);
 
     // Skip HTTP headers — find the first blank line separating headers from body
