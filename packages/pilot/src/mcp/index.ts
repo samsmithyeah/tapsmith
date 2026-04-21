@@ -12,11 +12,24 @@ import { registerAppControlTools } from './tools/app-control.js';
 import { registerListDevicesTool } from './tools/list-devices.js';
 import { registerRunTestsTool } from './tools/run-tests.js';
 import { registerReadTraceTool } from './tools/read-trace.js';
+import { registerListResultsTool } from './tools/list-results.js';
+import { registerListTestsTool } from './tools/list-tests.js';
+import { registerStopTestsTool } from './tools/stop-tests.js';
 import { closeClient } from './connection.js';
 import { McpEventEmitter, nextCallId, summarizeResult } from './events.js';
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
+import type { TestDispatcher } from './test-dispatcher.js';
 
-export function createMcpServer(events?: McpEventEmitter): McpServer {
+export type { TestDispatcher, TestRunResult, TestResultEntry } from './test-dispatcher.js';
+
+export interface McpServerOptions {
+  events?: McpEventEmitter
+  dispatcher?: TestDispatcher
+}
+
+export function createMcpServer(options?: McpServerOptions): McpServer {
+  const { events, dispatcher } = options ?? {};
+
   const server = new McpServer({
     name: 'pilot',
     version: '0.1.0',
@@ -28,8 +41,14 @@ export function createMcpServer(events?: McpEventEmitter): McpServer {
   registerDeviceActionTools(server);
   registerAppControlTools(server);
   registerListDevicesTool(server);
-  registerRunTestsTool(server);
+  registerRunTestsTool(server, dispatcher);
   registerReadTraceTool(server);
+
+  if (dispatcher) {
+    registerListTestsTool(server, dispatcher);
+    registerListResultsTool(server, dispatcher);
+    registerStopTestsTool(server, dispatcher);
+  }
 
   // Wrap tool handlers with event emission
   if (events) {
@@ -126,7 +145,7 @@ export async function runMcpServer(): Promise<void> {
     });
   }
 
-  const server = createMcpServer(events);
+  const server = createMcpServer({ events });
 
   const transport = new StdioServerTransport();
   await server.connect(transport);

@@ -21,6 +21,7 @@ import { watch as chokidarWatch, type FSWatcher } from 'chokidar';
 import { WebSocketServer, type WebSocket } from 'ws';
 import { createMcpServer } from '../mcp/index.js';
 import { McpEventEmitter } from '../mcp/events.js';
+import type { TestDispatcher, TestRunResult, TestResultEntry } from '../mcp/index.js';
 import { SSEServerTransport } from '@modelcontextprotocol/sdk/server/sse.js';
 import type { PilotConfig } from '../config.js';
 import { PilotGrpcClient } from '../grpc-client.js';
@@ -169,6 +170,7 @@ export async function startUIServer(
   let testTree: TestTreeNode[] = [];
   let isRunning = false;
   const failedFiles = new Set<string>();
+  const testResults = new Map<string, TestResultEntry>();
   let activeChild: ChildProcess | null = null;
   let screenPollTimer: ReturnType<typeof setTimeout> | null = null;
   let screenSeq = 0;
@@ -331,8 +333,46 @@ export async function startUIServer(
 
   // ─── MCP Server (SSE) ───
 
+  const testDispatcher: TestDispatcher = {
+    async runFiles(files, options) {
+      const { testFilter, project } = options ?? {};
+      const validFiles = files.filter((f) => ctx.testFiles.includes(f));
+      if (validFiles.length === 0) {
+        return { status: 'failed', passed: 0, failed: 0, skipped: 0, duration: 0 };
+      }
+      if (validFiles.length === 1) return runFile(validFiles[0], testFilter, project);
+      let totalPassed = 0, totalFailed = 0, totalSkipped = 0, totalDuration = 0;
+      for (const f of validFiles) {
+        const r = await runFile(f, undefined, project);
+        totalPassed += r.passed;
+        totalFailed += r.failed;
+        totalSkipped += r.skipped;
+        totalDuration += r.duration;
+      }
+      return {
+        status: totalFailed > 0 ? 'failed' : 'passed',
+        passed: totalPassed,
+        failed: totalFailed,
+        skipped: totalSkipped,
+        duration: totalDuration,
+      };
+    },
+    runAll: () => runAllFiles(),
+    stop() {
+      if (useParallel()) stopParallelRun();
+      else if (activeChild) { try { activeChild.kill(); } catch { /* already dead */ } }
+    },
+    isRunning: () => isRunning,
+    getResults: () => [...testResults.values()],
+    getTestFiles: () => ctx.testFiles,
+    getProjects: () => {
+      if (!ctx.projects) return [];
+      return ctx.projects.filter((p) => p.name !== 'default').map((p) => p.name);
+    },
+  };
+
   const mcpEvents = new McpEventEmitter();
-  const mcpServer = createMcpServer(mcpEvents);
+  const mcpServer = createMcpServer({ events: mcpEvents, dispatcher: testDispatcher });
   let mcpTransport: SSEServerTransport | null = null;
   let mcpClientName: string | undefined;
   let mcpClientVersion: string | undefined;
@@ -494,6 +534,10 @@ export async function startUIServer(
     projectName?: string,
   ): void {
     if (status === 'failed') failedFiles.add(filePath);
+
+    const key = projectName ? `${projectName}::${fullName}` : fullName;
+    testResults.set(key, { fullName, filePath, status, duration, error, tracePath, projectName });
+
     broadcast({
       type: 'test-status',
       fullName,
@@ -540,8 +584,8 @@ export async function startUIServer(
   // ─── Single-worker execution (existing — forks ui-run.ts per file)
   // ═══════════════════════════════════════════════════════════════════
 
-  async function runFileSingle(filePath: string, testFilter?: string, explicitProjectName?: string): Promise<void> {
-    if (isRunning) return;
+  async function runFileSingle(filePath: string, testFilter?: string, explicitProjectName?: string): Promise<TestRunResult> {
+    if (isRunning) return { status: 'failed', passed: 0, failed: 0, skipped: 0, duration: 0 };
 
     isRunning = true;
     const project = projectForFile(filePath, explicitProjectName);
@@ -561,27 +605,24 @@ export async function startUIServer(
       const duration = suite.durationMs;
 
       broadcastFileStatus(filePath, 'done', projectName);
-      broadcast({
-        type: 'run-end',
-        status: failed > 0 ? 'failed' : 'passed',
-        duration,
-        passed,
-        failed,
-        skipped,
-      });
+      const runResult: TestRunResult = { status: failed > 0 ? 'failed' : 'passed', passed, failed, skipped, duration };
+      broadcast({ type: 'run-end', ...runResult });
+      return runResult;
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       broadcast({ type: 'error', message: `Failed to run ${path.basename(filePath)}: ${msg}` });
       broadcastFileStatus(filePath, 'done', projectName);
-      broadcast({ type: 'run-end', status: 'failed', duration: 0, passed: 0, failed: 1, skipped: 0 });
+      const runResult: TestRunResult = { status: 'failed', passed: 0, failed: 1, skipped: 0, duration: 0 };
+      broadcast({ type: 'run-end', ...runResult });
+      return runResult;
     } finally {
       isRunning = false;
       screenPollActive = false;
     }
   }
 
-  async function runAllFilesSingle(): Promise<void> {
-    if (isRunning) return;
+  async function runAllFilesSingle(): Promise<TestRunResult> {
+    if (isRunning) return { status: 'failed', passed: 0, failed: 0, skipped: 0, duration: 0 };
     isRunning = true;
     screenPollActive = true;
 
@@ -638,14 +679,15 @@ export async function startUIServer(
         }
       }
 
-      broadcast({
-        type: 'run-end',
+      const runResult: TestRunResult = {
         status: totalFailed > 0 ? 'failed' : 'passed',
         duration: totalDuration,
         passed: totalPassed,
         failed: totalFailed,
         skipped: totalSkipped,
-      });
+      };
+      broadcast({ type: 'run-end', ...runResult });
+      return runResult;
     } finally {
       isRunning = false;
       screenPollActive = false;
@@ -934,7 +976,8 @@ export async function startUIServer(
 
     const project = projectForFile(filePath, explicitProjectName);
     if (!project || project.dependencies.length === 0 || !ctx.projects || !ctx.projectWaves) {
-      return runFileSingle(filePath, testFilter, explicitProjectName);
+      await runFileSingle(filePath, testFilter, explicitProjectName);
+      return;
     }
 
     isRunning = true;
@@ -1561,8 +1604,8 @@ export async function startUIServer(
     return { passed, failed, skipped, duration, anyFailed, failedProjectNames: failedProjectsInDispatch };
   }
 
-  async function runAllFilesParallel(): Promise<void> {
-    if (isRunning) return;
+  async function runAllFilesParallel(): Promise<TestRunResult> {
+    if (isRunning) return { status: 'failed', passed: 0, failed: 0, skipped: 0, duration: 0 };
     isRunning = true;
     screenPollActive = true;
     parallelRunAborted = false;
@@ -1639,25 +1682,27 @@ export async function startUIServer(
         totalDuration = r.duration;
       }
 
-      broadcast({
-        type: 'run-end',
+      const runResult: TestRunResult = {
         status: totalFailed > 0 || parallelRunAborted ? 'failed' : 'passed',
         duration: totalDuration,
         passed: totalPassed,
         failed: totalFailed,
         skipped: totalSkipped,
-      });
+      };
+      broadcast({ type: 'run-end', ...runResult });
+      return runResult;
     } catch (err) {
       const errMsg = err instanceof Error ? err.message : String(err);
       broadcast({ type: 'error', message: errMsg });
-      broadcast({
-        type: 'run-end',
+      const runResult: TestRunResult = {
         status: 'failed',
         duration: totalDuration,
         passed: totalPassed,
         failed: totalFailed + 1,
         skipped: totalSkipped,
-      });
+      };
+      broadcast({ type: 'run-end', ...runResult });
+      return runResult;
     } finally {
       isRunning = false;
       screenPollActive = false;
@@ -1667,8 +1712,8 @@ export async function startUIServer(
     }
   }
 
-  async function runFileParallel(filePath: string, testFilter?: string, explicitProjectName?: string): Promise<void> {
-    if (isRunning) return;
+  async function runFileParallel(filePath: string, testFilter?: string, explicitProjectName?: string): Promise<TestRunResult> {
+    if (isRunning) return { status: 'failed', passed: 0, failed: 0, skipped: 0, duration: 0 };
     isRunning = true;
     screenPollActive = true;
     parallelRunAborted = false;
@@ -1686,20 +1731,16 @@ export async function startUIServer(
 
     try {
       const r = await dispatchFilesParallel([file]);
-
-      broadcast({
-        type: 'run-end',
-        status: r.failed > 0 ? 'failed' : 'passed',
-        duration: r.duration,
-        passed: r.passed,
-        failed: r.failed,
-        skipped: r.skipped,
-      });
+      const runResult: TestRunResult = { status: r.failed > 0 ? 'failed' : 'passed', duration: r.duration, passed: r.passed, failed: r.failed, skipped: r.skipped };
+      broadcast({ type: 'run-end', ...runResult });
+      return runResult;
     } catch (err) {
       const errMsg = err instanceof Error ? err.message : String(err);
       broadcast({ type: 'error', message: `Failed to run ${path.basename(filePath)}: ${errMsg}` });
       broadcastFileStatus(filePath, 'done', file.projectName);
-      broadcast({ type: 'run-end', status: 'failed', duration: 0, passed: 0, failed: 1, skipped: 0 });
+      const runResult: TestRunResult = { status: 'failed', passed: 0, failed: 1, skipped: 0, duration: 0 };
+      broadcast({ type: 'run-end', ...runResult });
+      return runResult;
     } finally {
       isRunning = false;
       screenPollActive = false;
@@ -1777,7 +1818,7 @@ export async function startUIServer(
 
   const useParallel = () => multiWorker && workersInitialized && uiWorkers.length > 1;
 
-  async function runFile(filePath: string, testFilter?: string, explicitProjectName?: string): Promise<void> {
+  async function runFile(filePath: string, testFilter?: string, explicitProjectName?: string): Promise<TestRunResult> {
     if (useParallel()) {
       await ensureWorkersReady();
       return runFileParallel(filePath, testFilter, explicitProjectName);
@@ -1819,7 +1860,7 @@ export async function startUIServer(
     }
   }
 
-  async function runAllFiles(): Promise<void> {
+  async function runAllFiles(): Promise<TestRunResult> {
     if (useParallel()) {
       await ensureWorkersReady();
       return runAllFilesParallel();
@@ -1911,7 +1952,8 @@ export async function startUIServer(
       // In parallel mode, run deps as waves then target file
       const project = projectForFile(filePath, explicitProjectName);
       if (!project || project.dependencies.length === 0 || !ctx.projects || !ctx.projectWaves) {
-        return runFile(filePath, testFilter, explicitProjectName);
+        await runFile(filePath, testFilter, explicitProjectName);
+        return;
       }
 
       if (isRunning) return;
