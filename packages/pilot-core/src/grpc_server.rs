@@ -4752,6 +4752,7 @@ fn extract_port_from_ws_url(url: &str) -> Option<u16> {
 
 /// Query a CDP-compatible endpoint's /json page to list available targets.
 /// Uses a raw TCP connection + HTTP/1.1 GET to avoid adding an HTTP client dependency.
+#[cfg(target_os = "macos")]
 async fn query_cdp_json(port: u16) -> anyhow::Result<Vec<serde_json::Value>> {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpStream;
