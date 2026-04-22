@@ -146,6 +146,15 @@ export async function runMcpServer(): Promise<void> {
   const uiPort = discoverUiServerPort();
   const events = uiPort ? new McpEventEmitter() : undefined;
 
+  if (uiPort) {
+    const sseUrl = `http://localhost:${uiPort}/mcp`;
+    process.stderr.write(
+      `[pilot-mcp] UI mode detected at ${sseUrl}\n` +
+      `[pilot-mcp] For shared-session mode (recommended), connect via SSE instead:\n` +
+      `[pilot-mcp]   claude mcp add pilot --transport sse ${sseUrl}\n`,
+    );
+  }
+
   if (events && uiPort) {
     events.onToolCall((event) => {
       postToUiServer(uiPort, '/mcp-events', event);

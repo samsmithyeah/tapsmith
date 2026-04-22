@@ -100,6 +100,18 @@ export function summarizeResult(tool: string, result: string): string {
       return result.includes('## Steps')
         ? result.match(/## Steps \((\d+) events\)/)?.[0] ?? result.slice(0, 60)
         : result.slice(0, 60);
+    case 'pilot_list_tests':
+      return result.match(/(\d+) test file/)?.[0] ?? result.slice(0, 60);
+    case 'pilot_list_results': {
+      const resMatch = result.match(/(\d+) passed, (\d+) failed, (\d+) skipped/);
+      return resMatch ? `${resMatch[1]} passed, ${resMatch[2]} failed, ${resMatch[3]} skipped` : result.slice(0, 60);
+    }
+    case 'pilot_stop_tests':
+      return result.includes('Stop signal') ? 'stopped' : 'nothing running';
+    case 'pilot_session_info':
+      return 'session info';
+    case 'pilot_watch':
+      return result.includes('enabled') ? 'watch enabled' : 'watch disabled';
     default:
       return result.slice(0, 60);
   }

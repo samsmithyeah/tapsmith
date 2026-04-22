@@ -9,8 +9,6 @@ interface McpPanelProps {
   onClear: () => void
 }
 
-const STDIO_COMMAND = 'claude mcp add pilot -- pilot mcp-server';
-
 export function McpPanel({ sseUrl, clientName, clientVersion, toolCalls, onClear }: McpPanelProps) {
   const feedRef = useRef<HTMLDivElement>(null);
   const [expandedId, setExpandedId] = useState<string | null>(null);
@@ -135,8 +133,7 @@ function McpSetupHint({ sseUrl }: { sseUrl: string }) {
   return (
     <div class="mcp-setup">
       <div class="mcp-setup-title">Connect Claude Code</div>
-      <CopyableCommand label="With UI mode (live activity feed)" command={sseCommand} />
-      <CopyableCommand label="Standalone (works without UI mode)" command={STDIO_COMMAND} />
+      <CopyableCommand label="Run this in Claude Code to connect" command={sseCommand} />
     </div>
   );
 }
