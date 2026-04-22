@@ -233,8 +233,14 @@ html, body, #app {
 
 /* ─── Device Pane ─── */
 
-.ui-device-pane {
+.ui-right-column {
   flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.ui-device-pane {
+  flex: 1 1 0;
   display: flex;
   flex-direction: column;
   overflow: hidden;
@@ -933,6 +939,252 @@ html, body, #app {
   font-size: 10px;
   line-height: 1.5;
   box-shadow: 0 1px 0 var(--border);
+}
+
+/* ─── MCP Indicator (top bar) ─── */
+
+.rc-mcp-indicator {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 2px 8px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: transparent;
+  color: var(--color-text-muted);
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+  transition: border-color 0.15s;
+}
+.rc-mcp-indicator:hover,
+.rc-mcp-indicator.active {
+  border-color: var(--color-accent);
+  color: var(--color-text);
+}
+.rc-mcp-client {
+  color: var(--color-text);
+  font-weight: 500;
+}
+
+/* ─── MCP Panel ─── */
+
+.ui-mcp-pane {
+  flex: 0 0 200px;
+  border-bottom: 1px solid var(--border);
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-primary);
+}
+
+.mcp-panel {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  font-family: var(--font-ui);
+  font-size: 12px;
+}
+
+.mcp-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--border);
+  gap: 8px;
+  flex-shrink: 0;
+}
+.mcp-header-left {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.mcp-header-right {
+  display: flex;
+  gap: 4px;
+  flex-shrink: 0;
+}
+.mcp-title {
+  font-weight: 600;
+  color: var(--color-text);
+  white-space: nowrap;
+}
+.mcp-connection {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--color-text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.mcp-connection.connected { color: var(--color-success); }
+
+.mcp-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+.mcp-dot.connected { background: var(--color-success); }
+.mcp-dot.listening { background: var(--color-text-faint); }
+
+.mcp-btn {
+  padding: 2px 6px;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  background: transparent;
+  color: var(--color-text-muted);
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+}
+.mcp-btn:hover {
+  background: var(--bg-hover);
+  color: var(--color-text);
+}
+
+.mcp-feed {
+  flex: 1;
+  overflow-y: auto;
+  padding: 4px 0;
+}
+
+.mcp-empty {
+  padding: 16px 10px;
+  color: var(--color-text-faint);
+  text-align: center;
+  font-size: 11px;
+  line-height: 1.5;
+  word-break: break-all;
+}
+
+.mcp-entry {
+  padding: 4px 10px;
+  border-bottom: 1px solid var(--border);
+}
+.mcp-entry:last-child { border-bottom: none; }
+.mcp-entry.error { background: color-mix(in srgb, var(--color-error) 8%, transparent); }
+
+.mcp-entry-header {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+.mcp-time {
+  color: var(--color-text-faint);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  flex-shrink: 0;
+}
+.mcp-tool {
+  color: var(--color-text);
+  font-weight: 500;
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+.mcp-duration {
+  margin-left: auto;
+  color: var(--color-text-faint);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  flex-shrink: 0;
+}
+.mcp-entry-summary {
+  color: var(--color-text-muted);
+  font-size: 11px;
+  margin-top: 1px;
+  padding-left: 56px;
+}
+.mcp-entry.error .mcp-entry-summary { color: var(--color-error); }
+.mcp-entry.started { opacity: 0.8; }
+.mcp-duration.running {
+  margin-left: auto;
+  color: var(--color-accent);
+  font-size: 10px;
+  flex-shrink: 0;
+  animation: mcp-pulse 1.5s ease-in-out infinite;
+}
+.mcp-in-progress { font-style: italic; }
+@keyframes mcp-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
+
+.mcp-entry { cursor: pointer; }
+.mcp-entry:hover { background: var(--bg-hover); }
+.mcp-entry.expanded { background: var(--bg-selected); }
+
+.mcp-entry-detail {
+  margin-top: 4px;
+  padding: 4px 8px 4px 56px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--color-text-muted);
+}
+.mcp-detail-row {
+  display: flex;
+  gap: 6px;
+  line-height: 1.5;
+}
+.mcp-detail-key {
+  color: var(--color-text-faint);
+  flex-shrink: 0;
+}
+.mcp-detail-value {
+  word-break: break-all;
+}
+
+.mcp-setup {
+  text-align: left;
+}
+.mcp-setup-title {
+  font-weight: 600;
+  color: var(--color-text);
+  margin-bottom: 10px;
+  font-size: 12px;
+}
+.mcp-command {
+  margin-bottom: 10px;
+}
+.mcp-command:last-child { margin-bottom: 0; }
+.mcp-command-label {
+  font-size: 10px;
+  color: var(--color-text-muted);
+  margin-bottom: 4px;
+}
+.mcp-command-row {
+  display: flex;
+  align-items: stretch;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  overflow: hidden;
+  background: var(--bg-tertiary);
+}
+.mcp-command-text {
+  flex: 1;
+  padding: 6px 8px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--color-text);
+  white-space: nowrap;
+  overflow-x: auto;
+  line-height: 1.4;
+}
+.mcp-copy-btn {
+  flex-shrink: 0;
+  padding: 4px 10px;
+  border: none;
+  border-left: 1px solid var(--border);
+  background: var(--bg-secondary);
+  color: var(--color-text-muted);
+  font: inherit;
+  font-size: 10px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.mcp-copy-btn:hover {
+  background: var(--bg-hover);
+  color: var(--color-text);
 }
 
 /* ─── Scrollbar ─── */

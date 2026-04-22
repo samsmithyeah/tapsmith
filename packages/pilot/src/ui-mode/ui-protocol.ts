@@ -219,6 +219,28 @@ export interface ErrorMessage {
   stack?: string
 }
 
+// ─── MCP messages ───
+
+export interface McpStatusMessage {
+  type: 'mcp-status'
+  running: boolean
+  sseUrl?: string
+  clientName?: string
+  clientVersion?: string
+}
+
+export interface McpToolCallMessage {
+  type: 'mcp-tool-call'
+  id: string
+  tool: string
+  args: Record<string, unknown>
+  status: 'started' | 'completed' | 'error'
+  resultSummary?: string
+  error?: string
+  durationMs?: number
+  timestamp: number
+}
+
 /** Union of all server → client JSON messages. */
 export type ServerMessage =
   | TestTreeMessage
@@ -236,6 +258,8 @@ export type ServerMessage =
   | SourceMessage
   | NetworkMessage
   | ErrorMessage
+  | McpStatusMessage
+  | McpToolCallMessage
 
 // ─── Client → Server messages ───
 

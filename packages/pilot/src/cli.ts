@@ -224,6 +224,20 @@ let spawnedDaemonProcess: ReturnType<typeof spawn> | undefined;
 async function ensureDaemonRunning(address: string, daemonBin?: string, platform?: string): Promise<PilotGrpcClient> {
   const port = address.split(':').pop() ?? '50051';
 
+  // When PILOT_REUSE_DAEMON is set (e.g. from MCP server's pilot_run_tests),
+  // connect to the existing daemon without killing it. This avoids destroying
+  // a daemon owned by UI mode or another long-lived session.
+  if (process.env.PILOT_REUSE_DAEMON) {
+    const client = new PilotGrpcClient(address);
+    const alive = await client.waitForReady(5_000);
+    if (alive) {
+      console.log(dim(`Connected to existing Pilot daemon v${(await client.ping()).version}`));
+      return client;
+    }
+    client.close();
+    // Fall through to normal startup if no daemon is running
+  }
+
   // Kill any stale daemon on this port so we always get a fresh one
   // with the correct --platform flag. The daemon starts in <1s so
   // the cost of a restart is negligible.
@@ -959,6 +973,7 @@ function parseArgs(argv: string[]): CliArgs {
         || arg === 'refresh-ios-network'
         || arg === 'verify-ios-network'
         || arg === 'list-devices'
+        || arg === 'mcp-server'
       ) {
         break;
       }
@@ -1271,6 +1286,7 @@ ${bold('Usage:')}
   pilot configure-ios-network <udid>   Generate a network capture profile (.mobileconfig) for a physical iOS device
   pilot refresh-ios-network <udid>     Regenerate the network capture profile after a host Wi-Fi change
   pilot verify-ios-network <udid>      Verify decrypted HTTPS capture is working on a physical iOS device
+  pilot mcp-server                Run MCP server for LLM/agent integration (stdio transport)
   pilot --version                 Print version
   pilot --help                    Show this help
 
@@ -1421,6 +1437,12 @@ async function main(): Promise<void> {
     const forwardedArgv = process.argv.slice(process.argv.indexOf('build-ios-agent') + 1)
       .filter((a) => a !== '--__tsx-reexec');
     await runBuildIosAgent(forwardedArgv);
+    return;
+  }
+
+  if (args.command === 'mcp-server') {
+    const { runMcpServer } = await import('./mcp/index.js');
+    await runMcpServer();
     return;
   }
 

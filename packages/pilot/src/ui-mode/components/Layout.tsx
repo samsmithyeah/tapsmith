@@ -20,9 +20,10 @@ interface LayoutProps {
   screenshotPanel: ComponentChildren
   detailTabs: ComponentChildren
   devicePane?: ComponentChildren
+  mcpPanel?: ComponentChildren
 }
 
-export function Layout({ topBar, testExplorer, filmstrip, actionsPanel, screenshotPanel, detailTabs, devicePane }: LayoutProps) {
+export function Layout({ topBar, testExplorer, filmstrip, actionsPanel, screenshotPanel, detailTabs, devicePane, mcpPanel }: LayoutProps) {
   const [explorerWidth, setExplorerWidth] = useState(260);
   const [actionsWidth, setActionsWidth] = useState(380);
   const [detailHeight, setDetailHeight] = useState(250);
@@ -131,12 +132,19 @@ export function Layout({ topBar, testExplorer, filmstrip, actionsPanel, screensh
           </div>
         </div>
 
-        {/* Right: Device pane */}
+        {/* Right: Device pane + optional MCP panel */}
         {devicePane && (
           <>
             <div class="ui-resize-handle ui-resize-col" onMouseDown={handleDeviceResize} />
-            <div class="ui-device-pane" style={{ width: `${deviceWidth}px`, minWidth: `${deviceWidth}px` }}>
-              {devicePane}
+            <div class="ui-right-column" style={{ width: `${deviceWidth}px`, minWidth: `${deviceWidth}px` }}>
+              {mcpPanel && (
+                <div class="ui-mcp-pane">
+                  {mcpPanel}
+                </div>
+              )}
+              <div class="ui-device-pane">
+                {devicePane}
+              </div>
             </div>
           </>
         )}

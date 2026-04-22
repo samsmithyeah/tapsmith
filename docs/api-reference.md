@@ -2078,3 +2078,12 @@ All assertions support `.not` and a `{ timeout }` option:
 await expect(webview.locator(".spinner")).not.toBeVisible()
 await expect(webview.locator(".loaded")).toBeVisible({ timeout: 10_000 })
 ```
+
+## MCP Server
+
+Pilot includes a built-in MCP server that lets AI coding agents interact with devices, run tests, and inspect results. It supports two transport modes:
+
+- **SSE mode** (via `pilot test --ui`) — agent shares the UI session with full test tree, results, watch mode, and mutual exclusion. 16 tools available.
+- **Stdio mode** (via `pilot mcp-server`) — standalone agent with its own daemon and device. 11 tools available.
+
+See the [MCP Server Guide](mcp-server.md) for setup instructions, the full tool reference, and the recommended workflow.

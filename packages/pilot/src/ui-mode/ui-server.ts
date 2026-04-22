@@ -18,6 +18,10 @@ import * as path from 'node:path';
 import { execFileSync, fork, spawn, type ChildProcess } from 'node:child_process';
 import { watch as chokidarWatch, type FSWatcher } from 'chokidar';
 import { WebSocketServer, type WebSocket } from 'ws';
+import { createMcpServer } from '../mcp/index.js';
+import { McpEventEmitter } from '../mcp/events.js';
+import type { TestDispatcher, TestRunResult, TestResultEntry, TestTreeEntry, SessionInfo } from '../mcp/index.js';
+import { SSEServerTransport } from '@modelcontextprotocol/sdk/server/sse.js';
 import type { PilotConfig } from '../config.js';
 import { PilotGrpcClient } from '../grpc-client.js';
 import type { Device } from '../device.js';
@@ -165,6 +169,7 @@ export async function startUIServer(
   let testTree: TestTreeNode[] = [];
   let isRunning = false;
   const failedFiles = new Set<string>();
+  const testResults = new Map<string, TestResultEntry>();
   let activeChild: ChildProcess | null = null;
   let screenPollTimer: ReturnType<typeof setTimeout> | null = null;
   let screenSeq = 0;
@@ -325,6 +330,160 @@ export async function startUIServer(
     }
   }
 
+  // ─── MCP Server (SSE) ───
+
+  function collectFailures(): import('../mcp/test-dispatcher.js').TestFailureDetail[] {
+    return [...testResults.values()]
+      .filter((r) => r.status === 'failed' && r.error)
+      .map((r) => ({
+        fullName: r.fullName,
+        filePath: r.filePath,
+        error: r.error!,
+        tracePath: r.tracePath,
+        projectName: r.projectName,
+      }));
+  }
+
+  function withFailures(result: TestRunResult): TestRunResult {
+    if (result.failed > 0) result.failures = collectFailures();
+    return result;
+  }
+
+  function toTreeEntry(node: TestTreeNode): TestTreeEntry {
+    const entry: TestTreeEntry = {
+      type: node.type,
+      name: node.name,
+      fullName: node.fullName,
+      filePath: node.filePath,
+      status: node.status,
+    };
+    if (node.children && node.children.length > 0) {
+      entry.children = node.children.map(toTreeEntry);
+    }
+    return entry;
+  }
+
+  const testDispatcher: TestDispatcher = {
+    async runFiles(files, options) {
+      if (multiWorker) await ensureWorkersReady();
+      const { testFilter, project } = options ?? {};
+      const validFiles = files.filter((f) => ctx.testFiles.includes(f));
+      if (validFiles.length === 0) {
+        return { status: 'failed', passed: 0, failed: 0, skipped: 0, duration: 0 };
+      }
+      if (validFiles.length === 1) return withFailures(await runFile(validFiles[0], testFilter, project));
+      let totalPassed = 0, totalFailed = 0, totalSkipped = 0, totalDuration = 0;
+      for (const f of validFiles) {
+        const r = await runFile(f, undefined, project);
+        totalPassed += r.passed;
+        totalFailed += r.failed;
+        totalSkipped += r.skipped;
+        totalDuration += r.duration;
+      }
+      return withFailures({
+        status: totalFailed > 0 ? 'failed' : 'passed',
+        passed: totalPassed,
+        failed: totalFailed,
+        skipped: totalSkipped,
+        duration: totalDuration,
+      });
+    },
+    async runAll() {
+      if (multiWorker) await ensureWorkersReady();
+      return withFailures(await runAllFiles());
+    },
+    stop() {
+      if (useParallel()) stopParallelRun();
+      else if (activeChild) { try { activeChild.kill(); } catch { /* already dead */ } }
+    },
+    isRunning: () => isRunning,
+    getResults: () => [...testResults.values()],
+    getTestFiles: () => ctx.testFiles,
+    getProjects: () => {
+      if (!ctx.projects) return [];
+      return ctx.projects.filter((p) => p.name !== 'default').map((p) => p.name);
+    },
+    getTestTree: () => testTree.map(toTreeEntry),
+    getSessionInfo: (): SessionInfo => {
+      const projects = (ctx.projects ?? [])
+        .filter((p) => p.name !== 'default')
+        .map((p) => ({
+          name: p.name,
+          platform: p.effectiveConfig.platform,
+          package: p.effectiveConfig.package,
+          testFiles: p.testFiles,
+          dependencies: p.dependencies,
+        }));
+      return {
+        platform: ctx.config.platform,
+        package: ctx.config.package,
+        device: singleWorkerDisplayName ?? ctx.deviceSerial,
+        timeout: ctx.config.timeout,
+        retries: ctx.config.retries,
+        projects,
+      };
+    },
+    toggleWatch(filePath, options) {
+      const { testFilter, project } = options ?? {};
+      const isWatched = findEntry(filePath, project, testFilter) >= 0;
+      if (isWatched) {
+        stopWatching(filePath, project, testFilter);
+        return { enabled: false };
+      }
+      startWatching(filePath, project, testFilter);
+      return { enabled: true };
+    },
+  };
+
+  const mcpEvents = new McpEventEmitter();
+  const mcpServer = createMcpServer({ events: mcpEvents, dispatcher: testDispatcher });
+  let mcpTransport: SSEServerTransport | null = null;
+  let mcpClientName: string | undefined;
+  let mcpClientVersion: string | undefined;
+  let mcpPort = 0;
+
+  function getMcpStatus(): ServerMessage {
+    return {
+      type: 'mcp-status' as const,
+      running: true,
+      sseUrl: mcpPort ? `http://localhost:${mcpPort}/mcp` : undefined,
+      clientName: mcpClientName,
+      clientVersion: mcpClientVersion,
+    };
+  }
+
+  mcpEvents.onToolCall((event) => {
+    broadcast({ type: 'mcp-tool-call', ...event });
+  });
+
+  mcpEvents.onClientChange((info) => {
+    mcpClientName = info?.name;
+    mcpClientVersion = info?.version;
+    broadcast(getMcpStatus());
+  });
+
+  // Intercept MCP client connection info from the initialize request
+  const origConnect = mcpServer.server.connect.bind(mcpServer.server);
+  mcpServer.server.connect = async function (transport) {
+    const origOnMessage = transport.onmessage;
+    transport.onmessage = (msg, extra) => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- inspecting raw JSON-RPC
+      const rpc = msg as any;
+      if (rpc.method === 'initialize' && rpc.params?.clientInfo) {
+        mcpEvents.emitClientChange({
+          name: rpc.params.clientInfo.name ?? 'Unknown',
+          version: rpc.params.clientInfo.version ?? '',
+        });
+      }
+      origOnMessage?.(msg, extra);
+    };
+    transport.onclose = () => {
+      mcpEvents.emitClientChange(null);
+      mcpTransport = null;
+    };
+    return origConnect(transport);
+  };
+
   // ─── Test Discovery ───
 
   async function discoverFile(filePath: string): Promise<TestTreeNode | null> {
@@ -439,6 +598,10 @@ export async function startUIServer(
     projectName?: string,
   ): void {
     if (status === 'failed') failedFiles.add(filePath);
+
+    const key = projectName ? `${projectName}::${fullName}` : fullName;
+    testResults.set(key, { fullName, filePath, status, duration, error, tracePath, projectName });
+
     broadcast({
       type: 'test-status',
       fullName,
@@ -485,10 +648,11 @@ export async function startUIServer(
   // ─── Single-worker execution (existing — forks ui-run.ts per file)
   // ═══════════════════════════════════════════════════════════════════
 
-  async function runFileSingle(filePath: string, testFilter?: string, explicitProjectName?: string): Promise<void> {
-    if (isRunning) return;
+  async function runFileSingle(filePath: string, testFilter?: string, explicitProjectName?: string): Promise<TestRunResult> {
+    if (isRunning) return { status: 'failed', passed: 0, failed: 0, skipped: 0, duration: 0 };
 
     isRunning = true;
+    testResults.clear();
     const project = projectForFile(filePath, explicitProjectName);
     const useOptions = project?.use as RunFileUseOptions | undefined;
     const projectName = project && project.name !== 'default' ? project.name : undefined;
@@ -506,28 +670,26 @@ export async function startUIServer(
       const duration = suite.durationMs;
 
       broadcastFileStatus(filePath, 'done', projectName);
-      broadcast({
-        type: 'run-end',
-        status: failed > 0 ? 'failed' : 'passed',
-        duration,
-        passed,
-        failed,
-        skipped,
-      });
+      const runResult: TestRunResult = { status: failed > 0 ? 'failed' : 'passed', passed, failed, skipped, duration };
+      broadcast({ type: 'run-end', ...runResult });
+      return runResult;
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       broadcast({ type: 'error', message: `Failed to run ${path.basename(filePath)}: ${msg}` });
       broadcastFileStatus(filePath, 'done', projectName);
-      broadcast({ type: 'run-end', status: 'failed', duration: 0, passed: 0, failed: 1, skipped: 0 });
+      const runResult: TestRunResult = { status: 'failed', passed: 0, failed: 1, skipped: 0, duration: 0 };
+      broadcast({ type: 'run-end', ...runResult });
+      return runResult;
     } finally {
       isRunning = false;
       screenPollActive = false;
     }
   }
 
-  async function runAllFilesSingle(): Promise<void> {
-    if (isRunning) return;
+  async function runAllFilesSingle(): Promise<TestRunResult> {
+    if (isRunning) return { status: 'failed', passed: 0, failed: 0, skipped: 0, duration: 0 };
     isRunning = true;
+    testResults.clear();
     screenPollActive = true;
 
     broadcast({ type: 'run-start', fileCount: ctx.testFiles.length });
@@ -583,14 +745,15 @@ export async function startUIServer(
         }
       }
 
-      broadcast({
-        type: 'run-end',
+      const runResult: TestRunResult = {
         status: totalFailed > 0 ? 'failed' : 'passed',
         duration: totalDuration,
         passed: totalPassed,
         failed: totalFailed,
         skipped: totalSkipped,
-      });
+      };
+      broadcast({ type: 'run-end', ...runResult });
+      return runResult;
     } finally {
       isRunning = false;
       screenPollActive = false;
@@ -879,7 +1042,8 @@ export async function startUIServer(
 
     const project = projectForFile(filePath, explicitProjectName);
     if (!project || project.dependencies.length === 0 || !ctx.projects || !ctx.projectWaves) {
-      return runFileSingle(filePath, testFilter, explicitProjectName);
+      await runFileSingle(filePath, testFilter, explicitProjectName);
+      return;
     }
 
     isRunning = true;
@@ -1506,9 +1670,10 @@ export async function startUIServer(
     return { passed, failed, skipped, duration, anyFailed, failedProjectNames: failedProjectsInDispatch };
   }
 
-  async function runAllFilesParallel(): Promise<void> {
-    if (isRunning) return;
+  async function runAllFilesParallel(): Promise<TestRunResult> {
+    if (isRunning) return { status: 'failed', passed: 0, failed: 0, skipped: 0, duration: 0 };
     isRunning = true;
+    testResults.clear();
     screenPollActive = true;
     parallelRunAborted = false;
 
@@ -1584,25 +1749,27 @@ export async function startUIServer(
         totalDuration = r.duration;
       }
 
-      broadcast({
-        type: 'run-end',
+      const runResult: TestRunResult = {
         status: totalFailed > 0 || parallelRunAborted ? 'failed' : 'passed',
         duration: totalDuration,
         passed: totalPassed,
         failed: totalFailed,
         skipped: totalSkipped,
-      });
+      };
+      broadcast({ type: 'run-end', ...runResult });
+      return runResult;
     } catch (err) {
       const errMsg = err instanceof Error ? err.message : String(err);
       broadcast({ type: 'error', message: errMsg });
-      broadcast({
-        type: 'run-end',
+      const runResult: TestRunResult = {
         status: 'failed',
         duration: totalDuration,
         passed: totalPassed,
         failed: totalFailed + 1,
         skipped: totalSkipped,
-      });
+      };
+      broadcast({ type: 'run-end', ...runResult });
+      return runResult;
     } finally {
       isRunning = false;
       screenPollActive = false;
@@ -1612,9 +1779,10 @@ export async function startUIServer(
     }
   }
 
-  async function runFileParallel(filePath: string, testFilter?: string, explicitProjectName?: string): Promise<void> {
-    if (isRunning) return;
+  async function runFileParallel(filePath: string, testFilter?: string, explicitProjectName?: string): Promise<TestRunResult> {
+    if (isRunning) return { status: 'failed', passed: 0, failed: 0, skipped: 0, duration: 0 };
     isRunning = true;
+    testResults.clear();
     screenPollActive = true;
     parallelRunAborted = false;
 
@@ -1631,20 +1799,16 @@ export async function startUIServer(
 
     try {
       const r = await dispatchFilesParallel([file]);
-
-      broadcast({
-        type: 'run-end',
-        status: r.failed > 0 ? 'failed' : 'passed',
-        duration: r.duration,
-        passed: r.passed,
-        failed: r.failed,
-        skipped: r.skipped,
-      });
+      const runResult: TestRunResult = { status: r.failed > 0 ? 'failed' : 'passed', duration: r.duration, passed: r.passed, failed: r.failed, skipped: r.skipped };
+      broadcast({ type: 'run-end', ...runResult });
+      return runResult;
     } catch (err) {
       const errMsg = err instanceof Error ? err.message : String(err);
       broadcast({ type: 'error', message: `Failed to run ${path.basename(filePath)}: ${errMsg}` });
       broadcastFileStatus(filePath, 'done', file.projectName);
-      broadcast({ type: 'run-end', status: 'failed', duration: 0, passed: 0, failed: 1, skipped: 0 });
+      const runResult: TestRunResult = { status: 'failed', passed: 0, failed: 1, skipped: 0, duration: 0 };
+      broadcast({ type: 'run-end', ...runResult });
+      return runResult;
     } finally {
       isRunning = false;
       screenPollActive = false;
@@ -1722,7 +1886,7 @@ export async function startUIServer(
 
   const useParallel = () => multiWorker && workersInitialized && uiWorkers.length > 1;
 
-  async function runFile(filePath: string, testFilter?: string, explicitProjectName?: string): Promise<void> {
+  async function runFile(filePath: string, testFilter?: string, explicitProjectName?: string): Promise<TestRunResult> {
     if (useParallel()) {
       await ensureWorkersReady();
       return runFileParallel(filePath, testFilter, explicitProjectName);
@@ -1764,7 +1928,7 @@ export async function startUIServer(
     }
   }
 
-  async function runAllFiles(): Promise<void> {
+  async function runAllFiles(): Promise<TestRunResult> {
     if (useParallel()) {
       await ensureWorkersReady();
       return runAllFilesParallel();
@@ -1856,7 +2020,8 @@ export async function startUIServer(
       // In parallel mode, run deps as waves then target file
       const project = projectForFile(filePath, explicitProjectName);
       if (!project || project.dependencies.length === 0 || !ctx.projects || !ctx.projectWaves) {
-        return runFile(filePath, testFilter, explicitProjectName);
+        await runFile(filePath, testFilter, explicitProjectName);
+        return;
       }
 
       if (isRunning) return;
@@ -2389,6 +2554,7 @@ export async function startUIServer(
 
     // Send current state to new client
     ws.send(JSON.stringify({ type: 'test-tree', files: testTree } satisfies ServerMessage));
+    ws.send(JSON.stringify(getMcpStatus()));
 
     if (multiWorker && workersInitialized) {
       // Send workers info
@@ -2472,6 +2638,73 @@ export async function startUIServer(
     });
     server.on('error', reject);
   });
+  // ─── MCP Server (separate fixed port) ───
+
+  const MCP_DEFAULT_PORT = 9274;
+  const mcpHttpServer = http.createServer((req, res) => {
+    const url = new URL(req.url ?? '/', 'http://localhost');
+
+    // SSE endpoint — GET establishes SSE stream
+    if (url.pathname === '/mcp' && req.method === 'GET') {
+      if (mcpTransport) {
+        // Close old session so the new client can connect
+        mcpTransport.close();
+        mcpTransport = null;
+      }
+      mcpTransport = new SSEServerTransport('/mcp/message', res);
+      mcpServer.connect(mcpTransport).catch(() => {
+        mcpTransport = null;
+      });
+      return;
+    }
+
+    // Message endpoint — POST sends JSON-RPC messages
+    if (url.pathname === '/mcp/message' && req.method === 'POST') {
+      if (!mcpTransport) {
+        res.writeHead(400);
+        res.end('No active MCP session');
+        return;
+      }
+      mcpTransport.handlePostMessage(req, res);
+      return;
+    }
+
+    // Event ingest from standalone `pilot mcp-server`
+    if (url.pathname === '/mcp-events' && req.method === 'POST') {
+      let body = '';
+      req.on('data', (chunk: Buffer) => { body += chunk.toString(); });
+      req.on('end', () => {
+        try {
+          const event = JSON.parse(body);
+          broadcast({ type: 'mcp-tool-call', ...event });
+        } catch { /* ignore malformed */ }
+        res.writeHead(200);
+        res.end('OK');
+      });
+      return;
+    }
+
+    res.writeHead(404);
+    res.end('Not found');
+  });
+
+  mcpPort = MCP_DEFAULT_PORT;
+  try {
+    await new Promise<void>((resolve, reject) => {
+      mcpHttpServer.listen(MCP_DEFAULT_PORT, '127.0.0.1', resolve);
+      mcpHttpServer.on('error', reject);
+    });
+  } catch {
+    // Port in use — fall back to a random port
+    mcpPort = await new Promise<number>((resolve, reject) => {
+      mcpHttpServer.listen(0, '127.0.0.1', () => {
+        const addr = mcpHttpServer.address();
+        if (typeof addr === 'object' && addr) resolve(addr.port);
+        else reject(new Error('Failed to bind MCP server'));
+      });
+      mcpHttpServer.on('error', reject);
+    });
+  }
 
   // Discover tests
   await discoverAllFiles();
@@ -2499,6 +2732,16 @@ export async function startUIServer(
 
   console.log(`\x1b[2m${workerLabel} | ${ctx.testFiles.length} test file(s)\x1b[0m`);
   console.log(`\x1b[1mPilot UI mode running at ${viewerUrl}\x1b[0m`);
+  console.log(`\x1b[2mMCP server available at http://127.0.0.1:${mcpPort}/mcp\x1b[0m`);
+
+  // Write port file for standalone MCP server discovery
+  const { uiPortFilePath } = await import('../mcp/port-file.js');
+  const portFilePath = uiPortFilePath();
+  try {
+    fs.writeFileSync(portFilePath, String(mcpPort));
+  } catch {
+    // Non-fatal
+  }
 
   // Send device info (single-worker)
   if (!multiWorker && ctx.deviceSerial) {
@@ -2540,6 +2783,10 @@ export async function startUIServer(
         ctx.client?.close();
       }
 
+      if (mcpTransport) mcpTransport.close();
+      mcpServer.close();
+      mcpHttpServer.close();
+      try { fs.unlinkSync(portFilePath); } catch { /* already gone */ }
       if (watcher) watcher.close();
       for (const ws of clients) ws.close();
       wss.close();
