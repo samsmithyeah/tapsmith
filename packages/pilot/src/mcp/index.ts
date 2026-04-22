@@ -149,9 +149,8 @@ export async function runMcpServer(): Promise<void> {
   if (uiPort) {
     const sseUrl = `http://localhost:${uiPort}/mcp`;
     process.stderr.write(
-      `[pilot-mcp] UI mode detected at ${sseUrl}\n` +
-      `[pilot-mcp] For shared-session mode (recommended), connect via SSE instead:\n` +
-      `[pilot-mcp]   claude mcp add pilot --transport sse ${sseUrl}\n`,
+      `[pilot-mcp] UI mode detected. For shared-session mode (recommended), connect via SSE instead:\n` +
+      `[pilot-mcp]   ${sseUrl}\n`,
     );
   }
 

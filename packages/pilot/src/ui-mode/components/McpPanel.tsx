@@ -132,8 +132,9 @@ function McpSetupHint({ sseUrl }: { sseUrl: string }) {
 
   return (
     <div class="mcp-setup">
-      <div class="mcp-setup-title">Connect Claude Code</div>
-      <CopyableCommand label="Run this in Claude Code to connect" command={sseCommand} />
+      <div class="mcp-setup-title">Connect your AI agent</div>
+      <CopyableCommand label="SSE endpoint" command={sseUrl} />
+      <CopyableCommand label="Claude Code (run in terminal)" command={sseCommand} />
     </div>
   );
 }
