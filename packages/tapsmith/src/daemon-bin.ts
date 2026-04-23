@@ -42,6 +42,20 @@ export function findDaemonBin(): string {
     path.resolve(process.cwd(), '../../packages/tapsmith-core/target/release', BIN_NAME),
   );
 
+  // npm-installed platform-specific binary (e.g. @tapsmith/core-darwin-arm64)
+  const platform = process.platform;
+  const arch = process.arch;
+  const platformPkg = `@tapsmith/core-${platform}-${arch}`;
+  try {
+    const dist = path.dirname(__filename);
+    candidates.push(
+      path.resolve(dist, '..', 'node_modules', platformPkg, BIN_NAME),
+      path.resolve(dist, '..', '..', '..', platformPkg, BIN_NAME),
+    );
+  } catch {
+    // __dirname may not be defined — skip.
+  }
+
   // Monorepo release build relative to this module's install dir.
   // `import.meta.url` isn't available in CJS builds, so walk up from
   // __dirname (dist/) to find a sibling `packages/tapsmith-core`.
