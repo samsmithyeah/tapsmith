@@ -17,6 +17,7 @@ import { Device } from './device.js';
 import { runTestFile, collectResults, type TestResult, type SuiteResult } from './runner.js';
 import { createReporters, ReporterDispatcher, type FullResult } from './reporter.js';
 import { ensureSessionReady, launchConfiguredApp } from './session-preflight.js';
+import { findAgentApk, findAgentTestApk } from './agent-resolve.js';
 import { glob } from 'glob';
 import { resolveTraceConfig, isNetworkTracingEnabled, networkHostsForPac } from './trace/types.js';
 import { spawn, execFileSync } from 'node:child_process';
@@ -547,10 +548,10 @@ async function setupSequentialDevice(
 
   const resolvedAgentApk = cfg.agentApk
     ? path.resolve(cfg.rootDir, cfg.agentApk)
-    : undefined;
+    : findAgentApk();
   const resolvedAgentTestApk = cfg.agentTestApk
     ? path.resolve(cfg.rootDir, cfg.agentTestApk)
-    : undefined;
+    : findAgentTestApk();
   let resolvedIosXctestrun = cfg.iosXctestrun
     ? path.resolve(cfg.rootDir, cfg.iosXctestrun)
     : undefined;
@@ -1287,6 +1288,8 @@ ${bold('Usage:')}
   tapsmith configure-ios-network <udid>   Generate a network capture profile (.mobileconfig) for a physical iOS device
   tapsmith refresh-ios-network <udid>     Regenerate the network capture profile after a host Wi-Fi change
   tapsmith verify-ios-network <udid>      Verify decrypted HTTPS capture is working on a physical iOS device
+  tapsmith init                      Initialize a new Tapsmith project (interactive wizard)
+  tapsmith doctor                    Check system health and dependencies
   tapsmith mcp-server                Run MCP server for LLM/agent integration (stdio transport)
   tapsmith --version                 Print version
   tapsmith --help                    Show this help
@@ -1438,6 +1441,18 @@ async function main(): Promise<void> {
     const forwardedArgv = process.argv.slice(process.argv.indexOf('build-ios-agent') + 1)
       .filter((a) => a !== '--__tsx-reexec');
     await runBuildIosAgent(forwardedArgv);
+    return;
+  }
+
+  if (args.command === 'init') {
+    const { runInit } = await import('./init.js');
+    await runInit();
+    return;
+  }
+
+  if (args.command === 'doctor') {
+    const { runDoctor } = await import('./doctor.js');
+    await runDoctor();
     return;
   }
 

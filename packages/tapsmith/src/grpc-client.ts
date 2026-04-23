@@ -7,6 +7,7 @@
 
 import * as grpc from '@grpc/grpc-js';
 import * as protoLoader from '@grpc/proto-loader';
+import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as crypto from 'node:crypto';
 import { type Selector, selectorToProto } from './selectors.js';
@@ -180,7 +181,11 @@ export interface ScrollOptions {
 
 // ─── Client ───
 
-const PROTO_PATH = path.resolve(__dirname, '../../../proto/tapsmith.proto');
+const PROTO_PATH = (() => {
+  const bundled = path.resolve(__dirname, 'proto/tapsmith.proto');
+  if (fs.existsSync(bundled)) return bundled;
+  return path.resolve(__dirname, '../../../proto/tapsmith.proto');
+})();
 const DEFAULT_ADDRESS = 'localhost:50051';
 
 function requestId(): string {

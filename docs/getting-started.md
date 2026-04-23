@@ -38,11 +38,33 @@ Apple Developer account, device pairing). See [iOS physical devices](./ios-physi
 npm install tapsmith
 ```
 
-This installs the TypeScript SDK, test runner, and the Tapsmith daemon binary for your platform.
+This installs the TypeScript SDK, test runner, the Tapsmith daemon binary for your platform, and the Android agent APKs.
 
-## Create a Configuration File
+## Quick Setup (Recommended)
 
-Create `tapsmith.config.ts` in your project root:
+The interactive setup wizard detects your environment, walks you through platform configuration, and generates your config file:
+
+```bash
+npx tapsmith init
+```
+
+The wizard handles:
+- Environment detection (ADB, Xcode, simulators, emulators)
+- Platform selection (Android, iOS, or both)
+- App configuration and package name detection
+- Device setup (emulators, simulators, physical devices)
+- Network capture setup (optional)
+- Config file and example test generation
+
+After setup, verify everything is working:
+
+```bash
+npx tapsmith doctor
+```
+
+## Manual Configuration
+
+If you prefer to configure manually, create `tapsmith.config.ts` in your project root:
 
 ### Android
 

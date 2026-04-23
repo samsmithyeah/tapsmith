@@ -42,18 +42,16 @@ export function findDaemonBin(): string {
     path.resolve(process.cwd(), '../../packages/tapsmith-core/target/release', BIN_NAME),
   );
 
-  // npm-installed platform-specific binary (e.g. @tapsmith/core-darwin-arm64)
+  // npm-installed platform-specific binary (e.g. @tapsmith/core-darwin-arm64).
+  // Use require.resolve to handle all package manager layouts (hoisting, pnpm, yarn PnP).
   const platform = process.platform;
   const arch = process.arch;
   const platformPkg = `@tapsmith/core-${platform}-${arch}`;
   try {
-    const dist = path.dirname(__filename);
-    candidates.push(
-      path.resolve(dist, '..', 'node_modules', platformPkg, BIN_NAME),
-      path.resolve(dist, '..', '..', '..', platformPkg, BIN_NAME),
-    );
+    const pkgJson = require.resolve(`${platformPkg}/package.json`);
+    candidates.push(path.resolve(path.dirname(pkgJson), BIN_NAME));
   } catch {
-    // __dirname may not be defined — skip.
+    // Platform package not installed — skip.
   }
 
   // Monorepo release build relative to this module's install dir.
@@ -96,8 +94,9 @@ export function findDaemonBin(): string {
       candidates.map((c) => `  • ${c}`).join('\n') +
       `\n  • $PATH (via \`${whichCmd} ${BIN_NAME}\`)\n\n` +
       `Fix one of:\n` +
-      `  1. Build it from the monorepo: cd packages/tapsmith-core && cargo build --release\n` +
-      `  2. Point TAPSMITH_DAEMON_BIN at an existing binary:\n` +
+      `  1. Install the platform binary: npm install ${platformPkg}\n` +
+      `  2. Build it from the monorepo: cd packages/tapsmith-core && cargo build --release\n` +
+      `  3. Point TAPSMITH_DAEMON_BIN at an existing binary:\n` +
       `     export TAPSMITH_DAEMON_BIN=/absolute/path/to/tapsmith-core\n`,
   );
 }

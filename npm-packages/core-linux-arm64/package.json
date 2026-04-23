@@ -1,0 +1,18 @@
+{
+  "name": "@tapsmith/core-linux-arm64",
+  "version": "0.1.0",
+  "description": "Tapsmith daemon binary for Linux ARM64",
+  "os": ["linux"],
+  "cpu": ["arm64"],
+  "files": ["tapsmith-core"],
+  "preferUnplugged": true,
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/samsmithyeah/tapsmith.git",
+    "directory": "npm-packages/core-linux-arm64"
+  },
+  "license": "MIT",
+  "scripts": {
+    "postinstall": "node -e \"try{require('fs').chmodSync('tapsmith-core',0o755)}catch{}\""
+  }
+}

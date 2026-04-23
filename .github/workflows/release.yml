@@ -1,0 +1,239 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  # ─── Build Rust daemon for all platforms ───
+  build-daemon:
+    name: Build daemon (${{ matrix.npm-pkg }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: aarch64-apple-darwin
+            os: macos-latest
+            npm-pkg: core-darwin-arm64
+          - target: x86_64-apple-darwin
+            os: macos-latest
+            npm-pkg: core-darwin-x64
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+            npm-pkg: core-linux-x64
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-latest
+            npm-pkg: core-linux-arm64
+            use-cross: true
+    defaults:
+      run:
+        working-directory: packages/tapsmith-core
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Install protobuf compiler (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+
+      - name: Install protobuf compiler (macOS)
+        if: runner.os == 'macOS'
+        run: brew install protobuf
+
+      - name: Install cross
+        if: matrix.use-cross
+        run: cargo install cross --locked
+
+      - name: Cache Cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            packages/tapsmith-core/target
+          key: release-${{ matrix.target }}-cargo-${{ hashFiles('packages/tapsmith-core/Cargo.lock') }}
+          restore-keys: |
+            release-${{ matrix.target }}-cargo-
+
+      - name: Build release binary
+        run: |
+          if [ "${{ matrix.use-cross }}" = "true" ]; then
+            cross build --release --target ${{ matrix.target }}
+          else
+            cargo build --release --target ${{ matrix.target }}
+          fi
+
+      - name: Strip binary
+        run: |
+          BINARY=target/${{ matrix.target }}/release/tapsmith-core
+          if command -v strip &> /dev/null; then
+            strip "$BINARY" 2>/dev/null || true
+          fi
+
+      - name: Ad-hoc codesign (macOS)
+        if: runner.os == 'macOS'
+        run: codesign -s - target/${{ matrix.target }}/release/tapsmith-core
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: daemon-${{ matrix.npm-pkg }}
+          path: packages/tapsmith-core/target/${{ matrix.target }}/release/tapsmith-core
+
+  # ─── Build Android agent APKs ───
+  build-android-agent:
+    name: Build Android agent
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: agent
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - name: Cache Gradle
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+            agent/.gradle
+          key: release-gradle-${{ hashFiles('agent/**/*.gradle.kts', 'agent/gradle/wrapper/gradle-wrapper.properties') }}
+          restore-keys: |
+            release-gradle-
+
+      - name: Build agent APKs
+        run: ./gradlew assembleDebug assembleDebugAndroidTest
+
+      - name: Upload agent APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-agent-apk
+          path: agent/app/build/outputs/apk/debug/app-debug.apk
+
+      - name: Upload agent test APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-agent-test-apk
+          path: agent/app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk
+
+  # ─── Publish platform-specific binary packages ───
+  publish-platform-packages:
+    name: Publish @tapsmith/core-*
+    needs: [build-daemon]
+    runs-on: ubuntu-latest
+    strategy:
+      max-parallel: 1
+      matrix:
+        pkg:
+          - core-darwin-arm64
+          - core-darwin-x64
+          - core-linux-x64
+          - core-linux-arm64
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+
+      - name: Download daemon binary
+        uses: actions/download-artifact@v4
+        with:
+          name: daemon-${{ matrix.pkg }}
+          path: npm-packages/${{ matrix.pkg }}/
+
+      - name: Make binary executable
+        run: chmod +x npm-packages/${{ matrix.pkg }}/tapsmith-core
+
+      - name: Set version from tag
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          cd npm-packages/${{ matrix.pkg }}
+          npm version "$VERSION" --no-git-tag-version
+
+      - name: Publish
+        working-directory: npm-packages/${{ matrix.pkg }}
+        run: npm publish --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+  # ─── Publish main tapsmith package ───
+  publish-tapsmith:
+    name: Publish tapsmith
+    needs: [publish-platform-packages, build-android-agent]
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: packages/tapsmith
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+          cache: npm
+          cache-dependency-path: packages/tapsmith/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Download Android agent APK
+        uses: actions/download-artifact@v4
+        with:
+          name: android-agent-apk
+          path: packages/tapsmith/dist/agents/android/
+
+      - name: Download Android agent test APK
+        uses: actions/download-artifact@v4
+        with:
+          name: android-agent-test-apk
+          path: packages/tapsmith/dist/agents/android/
+
+      - name: Set version from tag
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          npm version "$VERSION" --no-git-tag-version
+          # Update optionalDependencies to match
+          node -e "
+            const pkg = require('./package.json');
+            const fs = require('fs');
+            for (const dep of Object.keys(pkg.optionalDependencies || {})) {
+              pkg.optionalDependencies[dep] = '$VERSION';
+            }
+            fs.writeFileSync('package.json', JSON.stringify(pkg, null, 2) + '\n');
+          "
+
+      - name: Build
+        run: npm run build
+
+      - name: Verify package contents
+        run: |
+          npm pack --dry-run 2>&1
+          # Check critical files are present
+          test -f dist/cli.js || (echo "Missing dist/cli.js" && exit 1)
+          test -f dist/proto/tapsmith.proto || (echo "Missing dist/proto/tapsmith.proto" && exit 1)
+          test -f dist/agents/android/app-debug.apk || (echo "Missing Android agent APK" && exit 1)
+          test -f dist/agents/android/app-debug-androidTest.apk || (echo "Missing Android agent test APK" && exit 1)
+
+      - name: Publish
+        run: npm publish --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

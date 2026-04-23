@@ -11,6 +11,7 @@ packages/tapsmith-core/   # Rust daemon — gRPC server, ADB/simctl bridge, devi
 agent/                    # Android Kotlin agent — UIAutomator2 instrumentation
 ios-agent/                # iOS Swift agent — XCUITest instrumentation
 proto/tapsmith.proto      # gRPC contract (single proto file, buf for linting)
+npm-packages/             # Platform-specific npm packages (@tapsmith/core-{os}-{arch}) for daemon binary distribution
 docs/                     # User-facing documentation
 test-app/                 # React Native (Expo) test app for E2E testing
 e2e/                      # E2E test suite run against the test app
@@ -68,6 +69,19 @@ buf breaking proto/ --against '.git#ref=origin/main,subdir=proto'
 ## CI
 
 GitHub Actions runs 4 parallel jobs: `proto-lint`, `typescript`, `rust`, `android`. All must pass. See `.github/workflows/ci.yml`.
+
+## npm packaging & releases
+
+Releases are triggered by pushing a `v*` tag (e.g., `git tag v0.2.0 && git push --tags`). The release workflow (`.github/workflows/release.yml`) builds and publishes:
+
+- **`@tapsmith/core-{darwin,linux}-{arm64,x64}`**: Platform-specific packages containing only the prebuilt `tapsmith-core` binary. Listed as `optionalDependencies` so npm auto-installs only the matching platform.
+- **`tapsmith`**: Main package. Bundles the TypeScript SDK, CLI, proto file (`dist/proto/`), Android agent APKs (`dist/agents/android/`), and trace viewer/UI mode web apps.
+
+**Binary resolution** (`daemon-bin.ts`): Uses `require.resolve()` to find the platform package, with fallbacks to monorepo builds, `TAPSMITH_DAEMON_BIN` env var, and `PATH`.
+
+**Agent APK resolution** (`agent-resolve.ts`): Checks bundled APKs in `dist/agents/android/`, then monorepo build output. Config `agentApk`/`agentTestApk` override.
+
+**Proto file** (`grpc-client.ts`): Tries `dist/proto/tapsmith.proto` (npm-installed), falls back to `../../proto/tapsmith.proto` (monorepo).
 
 ## TypeScript conventions
 

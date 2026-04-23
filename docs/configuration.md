@@ -40,8 +40,8 @@ For emulator-managed runs, the recommended path is `launchEmulators + avd`.
 | `deviceStrategy` | `"prefer-connected" \| "avd-only"` | contextual | Optional override for device selection (Android). Defaults to `"avd-only"` when `avd` is set, otherwise `"prefer-connected"`. |
 | `rootDir` | `string` | `process.cwd()` | Working directory for test discovery. |
 | `outputDir` | `string` | `"tapsmith-results"` | Directory for screenshots and other artifacts. |
-| `agentApk` | `string` | `undefined` | Path to the Tapsmith agent APK (Android). |
-| `agentTestApk` | `string` | `undefined` | Path to the Tapsmith agent test APK (Android). |
+| `agentApk` | `string` | auto-resolved | Path to the Tapsmith agent APK (Android). When installed via npm, the bundled APK is used automatically. Only set this to override with a custom build. |
+| `agentTestApk` | `string` | auto-resolved | Path to the Tapsmith agent test APK (Android). When installed via npm, the bundled APK is used automatically. Only set this to override with a custom build. |
 | `iosXctestrun` | `string` | `undefined` | Path to the iOS agent `.xctestrun` file. **Simulator and device builds are NOT interchangeable** — build one with `xcodebuild -destination 'platform=iOS Simulator,…'` for simulators, or `tapsmith build-ios-agent` for physical devices. Use one project per target with its own `iosXctestrun`. |
 | `simulator` | `string` | `undefined` | iOS simulator name or UDID. Run `xcrun simctl list devices` to see available simulators. For physical iOS devices, use `device` with the UDID instead — see [iOS physical devices](./ios-physical-devices.md). |
 | `reporter` | `ReporterConfig` | auto-detected | Reporter output configuration. Defaults to `list` locally and `dot` in CI. |

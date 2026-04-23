@@ -8,7 +8,9 @@
     "tapsmith": "dist/cli.js"
   },
   "scripts": {
-    "build": "npm run clean && tsc && chmod +x dist/cli.js && npm run build:trace-viewer && npm run build:ui-mode",
+    "build": "npm run clean && tsc && chmod +x dist/cli.js && mkdir -p dist/proto && cp ../../proto/tapsmith.proto dist/proto/ && npm run build:agents && npm run build:ios-agent-src && npm run build:trace-viewer && npm run build:ui-mode",
+    "build:agents": "mkdir -p dist/agents/android && cp ../../agent/app/build/outputs/apk/debug/app-debug.apk dist/agents/android/ 2>/dev/null && cp ../../agent/app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk dist/agents/android/ 2>/dev/null || true",
+    "build:ios-agent-src": "mkdir -p dist/ios-agent && cp -r ../../ios-agent/TapsmithAgent dist/ios-agent/ && cp -r ../../ios-agent/TapsmithAgent.xcodeproj dist/ios-agent/ && cp ../../ios-agent/create-xcode-project.sh dist/ios-agent/ && cp ../../ios-agent/Package.swift dist/ios-agent/ 2>/dev/null || true",
     "clean": "rm -rf dist",
     "build:trace-viewer": "vite build",
     "build:ui-mode": "vite build --config vite.config.ui-mode.ts",
@@ -45,6 +47,7 @@
     }
   },
   "dependencies": {
+    "@clack/prompts": "^1.2.0",
     "@grpc/grpc-js": "^1.12.0",
     "@grpc/proto-loader": "^0.7.13",
     "@modelcontextprotocol/sdk": "^1.29.0",
@@ -74,6 +77,12 @@
     "vite": "^5.4.21",
     "vite-plugin-singlefile": "^2.3.2",
     "vitest": "^3.0.0"
+  },
+  "optionalDependencies": {
+    "@tapsmith/core-darwin-arm64": "0.1.0",
+    "@tapsmith/core-darwin-x64": "0.1.0",
+    "@tapsmith/core-linux-arm64": "0.1.0",
+    "@tapsmith/core-linux-x64": "0.1.0"
   },
   "engines": {
     "node": ">=18"
