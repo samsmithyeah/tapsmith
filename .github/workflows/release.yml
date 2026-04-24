@@ -174,7 +174,21 @@ jobs:
             fs.writeFileSync('package.json', JSON.stringify(pkg, null, 2) + '\n');
           "
 
+      - name: Check if package version already exists
+        id: core_exists
+        working-directory: npm-packages/${{ matrix.pkg }}
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          NAME=$(node -p "require('./package.json').name")
+          if npm view "${NAME}@${VERSION}" version >/dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+            echo "${NAME}@${VERSION} is already published; skipping npm publish."
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Publish
+        if: steps.core_exists.outputs.exists != 'true'
         working-directory: npm-packages/${{ matrix.pkg }}
         run: npm publish --access public
         env:
@@ -239,7 +253,19 @@ jobs:
           test -f dist/agents/android/app-debug.apk || (echo "Missing Android agent APK" && exit 1)
           test -f dist/agents/android/app-debug-androidTest.apk || (echo "Missing Android agent test APK" && exit 1)
 
+      - name: Check if tapsmith version already exists
+        id: tapsmith_exists
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          if npm view "tapsmith@${VERSION}" version >/dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+            echo "tapsmith@${VERSION} is already published; skipping npm publish."
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Publish
+        if: steps.tapsmith_exists.outputs.exists != 'true'
         run: npm publish --access public
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
