@@ -1,9 +1,12 @@
 use std::path::PathBuf;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // Use a vendored protoc so builds do not depend on runner/container packages.
-    let protoc = protoc_bin_vendored::protoc_bin_path()?;
-    std::env::set_var("PROTOC", protoc);
+    // Use a vendored protoc by default so builds do not depend on runner/container
+    // packages, but allow callers to override PROTOC explicitly.
+    if std::env::var_os("PROTOC").is_none() {
+        let protoc = protoc_bin_vendored::protoc_bin_path()?;
+        std::env::set_var("PROTOC", protoc);
+    }
 
     // Try monorepo-relative path first, fall back to local copy (used by cross builds
     // where only the crate directory is mounted into the Docker container).
