@@ -1,17 +1,20 @@
 use std::path::PathBuf;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let proto_path = PathBuf::from("../../proto/tapsmith.proto");
-
-    if !proto_path.exists() {
+    // Try monorepo-relative path first, fall back to local copy (used by cross builds
+    // where only the crate directory is mounted into the Docker container).
+    let (proto_path, include_dir) = if PathBuf::from("../../proto/tapsmith.proto").exists() {
+        (PathBuf::from("../../proto/tapsmith.proto"), "../../proto")
+    } else if PathBuf::from("proto/tapsmith.proto").exists() {
+        (PathBuf::from("proto/tapsmith.proto"), "proto")
+    } else {
         panic!(
-            "Proto file not found at {:?}. Expected at ../../proto/tapsmith.proto relative to packages/tapsmith-core/",
-            proto_path.canonicalize().unwrap_or(proto_path)
+            "Proto file not found. Expected at ../../proto/tapsmith.proto (monorepo) or proto/tapsmith.proto (cross build)"
         );
-    }
+    };
 
-    let mut protos: Vec<PathBuf> = vec![proto_path];
-    let mut includes: Vec<&str> = vec!["../../proto"];
+    let mut protos: Vec<PathBuf> = vec![proto_path.clone()];
+    let mut includes: Vec<&str> = vec![include_dir];
 
     // The mitmproxy_ipc IPC proto is only needed on macOS (the ios_redirect
     // module that uses it is cfg-gated). Compiling it only when targeting
@@ -35,7 +38,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .build_client(false)
         .compile_protos(&protos, &includes)?;
 
-    println!("cargo:rerun-if-changed=../../proto/tapsmith.proto");
+    println!("cargo:rerun-if-changed={}", proto_path.display());
 
     Ok(())
 }

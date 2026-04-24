@@ -66,6 +66,15 @@ jobs:
           restore-keys: |
             release-${{ matrix.target }}-cargo-
 
+      # cross mounts only the crate directory into Docker, so the monorepo-relative
+      # proto path (../../proto/) doesn't exist inside the container. Copy it into
+      # the crate so build.rs can find it in both native and cross builds.
+      - name: Copy proto for cross builds
+        if: matrix.use-cross
+        run: |
+          mkdir -p proto
+          cp ../../proto/tapsmith.proto proto/
+
       - name: Build release binary
         run: |
           if [ "${{ matrix.use-cross }}" = "true" ]; then
