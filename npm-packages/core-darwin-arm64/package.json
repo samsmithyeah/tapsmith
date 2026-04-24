@@ -13,6 +13,6 @@
   },
   "license": "MIT",
   "scripts": {
-    "postinstall": "node -e \"try{require('fs').chmodSync('tapsmith-core',0o755)}catch{}\""
+    "postinstall": "node -e \"try{require('fs').chmodSync('tapsmith-core',0o755)}catch(e){console.warn('tapsmith: chmod failed:',e.message)}\""
   }
 }

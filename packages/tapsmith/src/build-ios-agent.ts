@@ -78,7 +78,7 @@ export function resolveIosAgentDir(cwd?: string): string {
     fs.writeFileSync(versionFile, currentVersion);
     const script = path.join(cached, 'create-xcode-project.sh');
     if (fs.existsSync(script)) {
-      try { fs.chmodSync(script, 0o755); } catch {}
+      try { fs.chmodSync(script, 0o755); } catch { /* non-fatal — build will fail later if script isn't executable */ }
     }
     return cached;
   }

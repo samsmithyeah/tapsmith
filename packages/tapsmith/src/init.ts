@@ -609,7 +609,7 @@ export async function runInit(): Promise<void> {
             const iosAgentDir = resolveIosAgentDir();
             const createScript = path.join(iosAgentDir, 'create-xcode-project.sh');
             if (fs.existsSync(createScript)) {
-              try { execFileSync(createScript, [], { cwd: iosAgentDir, stdio: 'ignore' }); } catch {}
+              try { execFileSync(createScript, [], { cwd: iosAgentDir, stdio: 'ignore' }); } catch { /* optional — xcodebuild will fail below if needed */ }
             }
             const dest = iosConfig.simulator
               ? `platform=iOS Simulator,name=${iosConfig.simulator}`
