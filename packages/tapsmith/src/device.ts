@@ -503,6 +503,31 @@ export class Device {
     return this._client.stopNetworkCapture();
   }
 
+  /** @internal — Start video recording on the device (used by the runner, PILOT-114). */
+  async _startVideoRecording(options?: { size?: { width: number; height: number } }): Promise<{
+    success: boolean
+    errorMessage: string
+  }> {
+    const res = await this._client.startVideoRecording(options);
+    return { success: res.success, errorMessage: res.errorMessage };
+  }
+
+  /** @internal — Stop video recording and return MP4 bytes (used by the runner, PILOT-114). */
+  async _stopVideoRecording(): Promise<{
+    success: boolean
+    data: Buffer
+    errorMessage: string
+    durationMs: number
+  }> {
+    const res = await this._client.stopVideoRecording();
+    return {
+      success: res.success,
+      data: res.data,
+      errorMessage: res.errorMessage,
+      durationMs: res.durationMs,
+    };
+  }
+
   // ─── Network Route Interception ───
 
   /**

@@ -50,6 +50,7 @@ For emulator-managed runs, the recommended path is `launchEmulators + avd`.
 | `launchEmulators` | `boolean` | `false` | Automatically launch Android emulators to fill the requested worker count. |
 | `avd` | `string` | `undefined` | AVD name to use for `launchEmulators` (Android). When set, Tapsmith launches repeated instances of this AVD. |
 | `trace` | `TraceMode \| Partial<TraceConfig>` | `"off"` | Trace recording mode. See [TraceMode](#tracemode) below. |
+| `video` | `VideoMode \| Partial<VideoConfig>` | `"off"` | Continuous video recording of the device screen. See [VideoMode](#videomode) below. |
 
 ### `ScreenshotMode`
 
@@ -174,6 +175,34 @@ trace: {
   network: true,
 }
 ```
+
+### `VideoMode`
+
+```typescript
+type VideoMode = "off" | "on" | "on-first-retry" | "on-all-retries" | "retain-on-failure" | "retain-on-first-failure";
+```
+
+The mode set is identical to `TraceMode` and the semantics match exactly — `"on"` records every test, `"retain-on-failure"` records but discards passing-test videos, etc.
+
+### `VideoConfig`
+
+```typescript
+interface VideoConfig {
+  mode: VideoMode;             // Recording mode (default: "off")
+  size?: { width: number; height: number }; // Output resolution. Honoured on
+                               // Android only (passed as
+                               // `screenrecord --size WxH`); iOS records at
+                               // native resolution and emits a one-time
+                               // warning when `size` is set.
+}
+```
+
+Recordings land in `<outputDir>/videos/` as MP4 files and are surfaced as
+`TestResult.videoPath`. The HTML reporter embeds them inline. Implementation:
+Android uses `adb shell screenrecord` (3-min hard cap per recording, accepted
+in v1); iOS Simulator uses `xcrun simctl io recordVideo`; iOS physical
+devices use `ffmpeg -f avfoundation` and require `ffmpeg` on `PATH`. See the
+full reference at [api-reference.md#video-recording](./api-reference.md#video-recording).
 
 ## Example Configurations
 

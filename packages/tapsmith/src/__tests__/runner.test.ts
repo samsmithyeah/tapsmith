@@ -143,6 +143,25 @@ describe('collectResults()', () => {
     expect(results[0].screenshotPath).toBe('/tmp/screenshot.png');
   });
 
+  it('preserves videoPath in results (PILOT-114)', () => {
+    const suite: SuiteResult = {
+      name: 'root',
+      tests: [
+        {
+          name: 'with-video',
+          fullName: 'with-video',
+          status: 'failed',
+          durationMs: 50,
+          videoPath: '/tmp/with-video-1.mp4',
+        },
+      ],
+      suites: [],
+      durationMs: 50,
+    };
+    const results = collectResults(suite);
+    expect(results[0].videoPath).toBe('/tmp/with-video-1.mp4');
+  });
+
   it('handles multiple nested suites at the same level', () => {
     const suite: SuiteResult = {
       name: 'root',

@@ -1,0 +1,246 @@
+//! Continuous screen-recording dispatcher (PILOT-114).
+//!
+//! Mirrors `crate::screenshot`'s platform-dispatch shape: a `start` that
+//! returns an owned `RecordingHandle`, and a `stop` that consumes the handle
+//! and returns the recorded MP4 bytes.
+//!
+//! Platform routing:
+//! - Android → `adb shell screenrecord` (3-min hard cap per segment; see
+//!   the warning in `stop`).
+//! - iOS simulator → `xcrun simctl io recordVideo --codec h264`.
+//! - iOS physical → `ffmpeg -f avfoundation`. Requires ffmpeg on PATH.
+
+use anyhow::{bail, Context, Result};
+use std::path::PathBuf;
+use std::time::{Duration, Instant};
+use tokio::process::Child;
+use tracing::{info, warn};
+
+use crate::adb;
+use crate::ios;
+use crate::platform::Platform;
+
+/// `screenrecord`'s hard cap. Recordings beyond this are truncated by the
+/// device-side encoder; we surface a warning when the recorded duration
+/// approaches it.
+const SCREENRECORD_MAX_DURATION: Duration = Duration::from_secs(180);
+
+/// How long to wait for a child to exit cleanly after we send the stop
+/// signal. Long enough for ffmpeg/simctl to finalise the MP4 (write the
+/// MOOV atom); short enough to avoid hanging a test teardown.
+const STOP_GRACEFUL_WAIT: Duration = Duration::from_secs(5);
+
+/// Owned handle to a running recording.
+pub struct RecordingHandle {
+    pub backend: Backend,
+    /// Local filesystem path the MP4 is being written to (or, for Android,
+    /// where it will land after we `adb pull` it from the device).
+    pub local_path: PathBuf,
+    pub started_at: Instant,
+}
+
+pub enum Backend {
+    /// Android: `adb shell screenrecord <device_path>`. We need to `adb pull`
+    /// the file to the host on stop.
+    Android {
+        child: Child,
+        serial: String,
+        device_path: String,
+    },
+    /// iOS Simulator: `xcrun simctl io recordVideo` writes the MP4 to the
+    /// host directly. Stop with SIGINT.
+    IosSim { child: Child },
+    /// iOS Physical: `ffmpeg -f avfoundation` writes to the host. Stop by
+    /// writing `q\n` to ffmpeg's stdin.
+    IosPhysical { child: Child },
+}
+
+/// Start a recording for the given device.
+///
+/// `size` is honoured on Android only (passed through as `screenrecord
+/// --size WxH`); iOS ignores it and records at native resolution. A one-time
+/// warning is logged on iOS when `size` is set.
+pub async fn start(
+    serial: &str,
+    platform: Platform,
+    size: Option<(u32, u32)>,
+) -> Result<RecordingHandle> {
+    match platform {
+        Platform::Android => start_android(serial, size).await,
+        Platform::Ios => start_ios(serial, size).await,
+    }
+}
+
+async fn start_android(serial: &str, size: Option<(u32, u32)>) -> Result<RecordingHandle> {
+    // We use a fresh on-device path under /sdcard so re-entry doesn't
+    // collide. The host-side path is supplied by the caller via `local_path`
+    // on the returned handle, but we don't have a local_path yet — we'll
+    // assign one in `stop` when we pull the file. To keep the handle's
+    // `local_path` meaningful for callers who want it ahead of time, we
+    // generate the host path here and fill it in.
+    let id = uuid::Uuid::new_v4();
+    let device_path = format!("/sdcard/tapsmith-recording-{id}.mp4");
+    let local_path = std::env::temp_dir().join(format!("tapsmith-recording-{id}.mp4"));
+
+    let child = adb::screenrecord_spawn(serial, &device_path, size).await?;
+    info!(serial, %device_path, "Started Android screenrecord");
+    Ok(RecordingHandle {
+        backend: Backend::Android {
+            child,
+            serial: serial.to_string(),
+            device_path,
+        },
+        local_path,
+        started_at: Instant::now(),
+    })
+}
+
+async fn start_ios(udid: &str, size: Option<(u32, u32)>) -> Result<RecordingHandle> {
+    if size.is_some() {
+        warn_size_ignored_on_ios_once();
+    }
+
+    // Decide simulator vs physical by listing devices once.
+    let device = lookup_ios_device(udid).await?;
+    let id = uuid::Uuid::new_v4();
+    let local_path = std::env::temp_dir().join(format!("tapsmith-recording-{id}.mp4"));
+
+    if device.is_simulator {
+        let child = ios::recording::recordvideo_sim_spawn(udid, &local_path).await?;
+        info!(udid, path = %local_path.display(), "Started iOS sim recordVideo");
+        Ok(RecordingHandle {
+            backend: Backend::IosSim { child },
+            local_path,
+            started_at: Instant::now(),
+        })
+    } else {
+        let child = ios::recording::recordvideo_physical_spawn(&device.name, &local_path).await?;
+        info!(
+            udid,
+            device_name = %device.name,
+            path = %local_path.display(),
+            "Started iOS physical ffmpeg recording"
+        );
+        Ok(RecordingHandle {
+            backend: Backend::IosPhysical { child },
+            local_path,
+            started_at: Instant::now(),
+        })
+    }
+}
+
+/// Stop a recording, finalise the MP4, and return its bytes.
+///
+/// The handle's `local_path` is removed from disk after reading so we don't
+/// leak temp files; if reading fails it's logged but not surfaced as an
+/// additional error so the caller's stop path remains simple.
+pub async fn stop(handle: RecordingHandle) -> Result<(Vec<u8>, Duration)> {
+    let elapsed = handle.started_at.elapsed();
+    if elapsed >= SCREENRECORD_MAX_DURATION && matches!(handle.backend, Backend::Android { .. }) {
+        warn!(
+            elapsed_secs = elapsed.as_secs(),
+            "Recording exceeded `adb shell screenrecord` 3-min cap; the \
+             resulting video has been truncated by the device-side encoder. \
+             Chained-segment recording is not yet supported (PILOT-114 v1)."
+        );
+    }
+
+    let local_path = handle.local_path.clone();
+
+    match handle.backend {
+        Backend::Android {
+            mut child,
+            serial,
+            device_path,
+        } => {
+            // SIGINT is the documented way to flush screenrecord's MP4 box
+            // (SIGTERM also works but is less reliable on older Android).
+            send_sigint_to_child(&child)?;
+            match tokio::time::timeout(STOP_GRACEFUL_WAIT, child.wait()).await {
+                Ok(_) => {}
+                Err(_) => {
+                    warn!("screenrecord did not exit on signal; escalating to kill");
+                    let _ = child.kill().await;
+                }
+            }
+            // Pull the file off the device. screenrecord writes to /sdcard,
+            // so a vanilla `adb pull` works regardless of root.
+            let local_str = local_path
+                .to_str()
+                .context("recording path must be valid UTF-8")?;
+            adb::pull_file(&serial, &device_path, local_str)
+                .await
+                .with_context(|| format!("Failed to pull screenrecord MP4 from {device_path}"))?;
+            // Clean up the on-device file. Best-effort.
+            let _ = adb::shell(&serial, &format!("rm -f '{device_path}'")).await;
+        }
+        Backend::IosSim { child } => {
+            ios::recording::stop_simctl_recording(child, STOP_GRACEFUL_WAIT).await?;
+        }
+        Backend::IosPhysical { child } => {
+            ios::recording::stop_ffmpeg_recording(child, STOP_GRACEFUL_WAIT).await?;
+        }
+    }
+
+    // Read the finalised MP4. If the file isn't there it usually means the
+    // recording was killed before it could write any frames — return an
+    // empty payload with a non-fatal warning so the caller can decide
+    // whether to retain or discard.
+    let bytes = match tokio::fs::read(&local_path).await {
+        Ok(b) => b,
+        Err(e) => {
+            warn!(
+                path = %local_path.display(),
+                error = %e,
+                "Recording file is missing after stop; returning empty payload"
+            );
+            Vec::new()
+        }
+    };
+
+    // Best-effort cleanup of the host-side temp file.
+    let _ = tokio::fs::remove_file(&local_path).await;
+
+    Ok((bytes, elapsed))
+}
+
+/// Look up an iOS device record by UDID, querying both simulators and physical
+/// devices. We need this to pick sim vs physical, and for physical we need
+/// the friendly name to feed into AVFoundation device matching.
+async fn lookup_ios_device(udid: &str) -> Result<ios::device::IosDevice> {
+    let all = ios::device::list_all_devices()
+        .await
+        .context("Failed to list iOS devices for recording")?;
+    if let Some(d) = all.into_iter().find(|d| d.udid == udid) {
+        return Ok(d);
+    }
+    bail!("iOS device with UDID '{udid}' not found in simctl/devicectl listing");
+}
+
+fn send_sigint_to_child(child: &Child) -> Result<()> {
+    let Some(pid) = child.id() else {
+        bail!("recording child has no PID; cannot signal");
+    };
+    // SAFETY: a kill on an exited PID returns ESRCH which we ignore.
+    unsafe {
+        libc::kill(pid as i32, libc::SIGINT);
+    }
+    Ok(())
+}
+
+// ─── Once-per-process warnings ───
+
+use std::sync::atomic::{AtomicBool, Ordering};
+static SIZE_IGNORED_LOGGED: AtomicBool = AtomicBool::new(false);
+
+fn warn_size_ignored_on_ios_once() {
+    if SIZE_IGNORED_LOGGED
+        .compare_exchange(false, true, Ordering::Relaxed, Ordering::Relaxed)
+        .is_ok()
+    {
+        warn!(
+            "video.size is honoured on Android only — iOS records at native \
+             resolution. Resizing iOS recordings post-process is on the roadmap."
+        );
+    }
+}

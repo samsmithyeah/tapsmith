@@ -11,12 +11,13 @@ import * as path from 'node:path';
 import * as fs from 'node:fs';
 import type { ReporterConfig } from './reporter.js';
 import type { TraceMode, TraceConfig } from './trace/types.js';
+import type { VideoMode, VideoConfig } from './video/types.js';
 
 export type ScreenshotMode = 'always' | 'only-on-failure' | 'never';
 export type DeviceStrategy = 'prefer-connected' | 'avd-only';
 export type Platform = 'android' | 'ios';
 
-export type { TraceMode, TraceConfig };
+export type { TraceMode, TraceConfig, VideoMode, VideoConfig };
 
 export interface TapsmithConfig {
   /**
@@ -161,6 +162,28 @@ export interface TapsmithConfig {
   trace?: TraceMode | Partial<TraceConfig>;
 
   /**
+   * Continuous video recording of the device screen during test execution
+   * (PILOT-114). Mirrors Playwright's `video` config.
+   *
+   * Defaults to `'off'`. The supported modes are the same as `trace`.
+   *
+   * Implementation: Android via `adb shell screenrecord` (3-min hard cap per
+   * recording — videos beyond 3 minutes are truncated by the device-side
+   * encoder); iOS Simulator via `xcrun simctl io recordVideo`; iOS physical
+   * devices via `ffmpeg -f avfoundation` (requires `ffmpeg` on PATH).
+   *
+   * @example
+   * // String shorthand
+   * video: 'retain-on-failure'
+   *
+   * @example
+   * // Object form — `size` is honoured on Android only; iOS records at
+   * // native resolution and emits a one-time warning when `size` is set.
+   * video: { mode: 'on', size: { width: 1280, height: 720 } }
+   */
+  video?: VideoMode | Partial<VideoConfig>;
+
+  /**
    * Named test groups with dependency ordering, mirroring Playwright's projects.
    * Setup projects run first; dependent projects run after their dependencies complete.
    *
@@ -197,6 +220,7 @@ export type UseOptions = Partial<Pick<TapsmithConfig,
   | 'screenshot'
   | 'retries'
   | 'trace'
+  | 'video'
   | 'platform'
   | 'device'
   | 'avd'

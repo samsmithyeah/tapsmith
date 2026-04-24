@@ -126,6 +126,18 @@ export interface GetColorSchemeResponse {
   scheme: string;
 }
 
+// ─── Video Recording (PILOT-114) ───
+
+export interface StopVideoRecordingResponse {
+  requestId: string;
+  success: boolean;
+  /** Raw MP4 bytes. Empty when success is false or recording was skipped. */
+  data: Buffer;
+  errorMessage: string;
+  /** Wall-clock duration of the recording in milliseconds. */
+  durationMs: number;
+}
+
 // ─── Trace Support (PILOT-85) ───
 
 export interface GetLogcatResponse {
@@ -663,6 +675,26 @@ export class TapsmithGrpcClient {
     return this.call('stopNetworkCapture', {
       requestId: requestId(),
     }, 30_000);
+  }
+
+  // ── Video Recording (PILOT-114) ──
+
+  async startVideoRecording(options?: { size?: { width: number; height: number } }): Promise<ActionResponse> {
+    return this.call<ActionResponse>('startVideoRecording', {
+      requestId: requestId(),
+      sizeWidth: options?.size?.width ?? 0,
+      sizeHeight: options?.size?.height ?? 0,
+    });
+  }
+
+  async stopVideoRecording(): Promise<StopVideoRecordingResponse> {
+    // Stopping a recording can take several seconds while ffmpeg / simctl
+    // flushes the MOOV atom and adb pulls the file off the device. Keep
+    // the deadline generous so we don't surface spurious DEADLINE_EXCEEDED
+    // errors during teardown of legitimately-large recordings.
+    return this.call<StopVideoRecordingResponse>('stopVideoRecording', {
+      requestId: requestId(),
+    }, 60_000);
   }
 
   // ── Physical iOS device network profile (PILOT-185) ──

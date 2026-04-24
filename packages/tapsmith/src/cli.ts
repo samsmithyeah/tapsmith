@@ -861,6 +861,8 @@ interface CliArgs {
   workers?: number;
   shard?: { current: number; total: number };
   trace?: string;
+  /** `--video <mode>` override. See `VideoMode` in config for accepted values. */
+  video?: string;
   watch: boolean;
   ui: boolean;
   uiPort?: number;
@@ -933,6 +935,10 @@ function parseArgs(argv: string[]): CliArgs {
       args.trace = rest[++i] ?? 'on';
     } else if (arg?.startsWith('--trace=')) {
       args.trace = arg.slice('--trace='.length);
+    } else if (arg === '--video') {
+      args.video = rest[++i] ?? 'on';
+    } else if (arg?.startsWith('--video=')) {
+      args.video = arg.slice('--video='.length);
     } else if (arg === '--watch' || arg === '-w') {
       args.watch = true;
     } else if (arg === '--ui') {
@@ -1277,6 +1283,7 @@ ${bold('Usage:')}
   tapsmith test --workers <n>        Run tests in parallel across n devices
   tapsmith test --shard=x/y          Run shard x of y (for CI)
   tapsmith test --trace <mode>       Record traces (on, retain-on-failure, etc.)
+  tapsmith test --video <mode>       Record videos (on, retain-on-failure, etc.)
   tapsmith show-trace <file.zip>     Open trace viewer in browser
   tapsmith show-report [dir]         Open HTML test report
   tapsmith merge-reports [dir]       Merge blob reports from sharded runs
@@ -1301,6 +1308,8 @@ ${bold('Options:')}
   --shard=x/y              Split tests across CI machines (e.g. --shard=1/4)
   --trace <mode>           Trace mode: off, on, on-first-retry, on-all-retries,
                            retain-on-failure, retain-on-first-failure
+  --video <mode>           Video mode (same set as --trace). Records the
+                           device screen for the lifetime of each test.
   -c, --config <path>      Path to config file (default: tapsmith.config.ts)
   --force-install          Reinstall the app even if already installed
   -v, --version            Print version
@@ -1487,6 +1496,9 @@ async function main(): Promise<void> {
   }
   if (args.trace) {
     config.trace = args.trace as TapsmithConfig['trace'];
+  }
+  if (args.video) {
+    config.video = args.video as TapsmithConfig['video'];
   }
 
   // Validate watch mode constraints

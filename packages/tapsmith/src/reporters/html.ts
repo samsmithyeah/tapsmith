@@ -57,7 +57,18 @@ export class HtmlReporter implements TapsmithReporter {
       }
     }
 
-    const html = generateHtml(result, this._startTime, screenshotMap, traceMap);
+    // Copy video MP4s to report folder (PILOT-114)
+    const videoMap = new Map<string, string>();
+    for (const test of result.tests) {
+      if (test.videoPath && fs.existsSync(test.videoPath)) {
+        const basename = path.basename(test.videoPath);
+        const dest = path.join(outputDir, basename);
+        fs.copyFileSync(test.videoPath, dest);
+        videoMap.set(test.videoPath, basename);
+      }
+    }
+
+    const html = generateHtml(result, this._startTime, screenshotMap, traceMap, videoMap);
     const indexPath = path.join(outputDir, 'index.html');
     fs.writeFileSync(indexPath, html);
 
@@ -84,6 +95,7 @@ function generateHtml(
   startTime: Date,
   screenshotMap: Map<string, string>,
   traceMap: Map<string, string>,
+  videoMap: Map<string, string>,
 ): string {
   const passed = result.tests.filter((t) => t.status === 'passed').length;
   const failed = result.tests.filter((t) => t.status === 'failed').length;
@@ -93,6 +105,7 @@ function generateHtml(
   const testRows = result.tests.map((t) => {
     const screenshotFile = t.screenshotPath ? screenshotMap.get(t.screenshotPath) : null;
     const traceFile = t.tracePath ? traceMap.get(t.tracePath) : null;
+    const videoFile = t.videoPath ? videoMap.get(t.videoPath) : null;
     return {
       name: escapeHtml(t.fullName),
       status: t.status,
@@ -102,6 +115,7 @@ function generateHtml(
       codeSnippet: t.error?.stack ? extractCodeSnippetForHtml(t.error) : null,
       screenshot: screenshotFile,
       trace: traceFile,
+      video: videoFile,
       project: t.project || null,
     };
   });
@@ -156,6 +170,11 @@ function generateHtml(
   .screenshot { margin-top: 12px; }
   .screenshot img { max-width: 400px; border: 1px solid #ddd; border-radius: 4px; cursor: pointer; }
   .screenshot img:hover { box-shadow: 0 4px 12px rgba(0,0,0,0.15); }
+  .video-section { margin-top: 12px; }
+  .video-section video { max-width: 400px; border: 1px solid #ddd; border-radius: 4px; background: black; display: block; }
+  .video-section a { display: inline-block; margin-top: 6px; font-size: 12px; color: #555; text-decoration: none; }
+  .video-section a:hover { color: #1a1a2e; text-decoration: underline; }
+  .video-badge { display: inline-flex; align-items: center; gap: 4px; padding: 2px 8px; background: #00b894; color: white; border-radius: 10px; font-size: 11px; font-weight: 600; margin-left: 6px; }
   .trace-section { margin-top: 12px; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
   .trace-btn { display: inline-flex; align-items: center; gap: 6px; padding: 8px 16px; background: #6c5ce7; color: white; border: none; border-radius: 6px; font-size: 13px; font-weight: 600; cursor: pointer; text-decoration: none; transition: background 0.15s; }
   .trace-btn:hover { background: #5a4bd1; }
@@ -215,6 +234,7 @@ function render(filter, query) {
     if (t.project) header += '<span class="project-badge">' + t.project + '</span> ';
     header += t.name;
     if (t.trace) header += '<span class="trace-badge">&#9654; Trace</span>';
+    if (t.video) header += '<span class="video-badge">&#9210; Video</span>';
     header += '</span>';
     header += '<span class="test-duration">' + dur + '</span></div>';
     var details = '<div class="test-details" id="details-' + i + '">';
@@ -235,6 +255,12 @@ function render(filter, query) {
     }
     if (t.stack) details += '<div class="stack-trace">' + t.stack + '</div>';
     if (t.screenshot) details += '<div class="screenshot"><img src="' + t.screenshot + '" onclick="window.open(this.src)"></div>';
+    if (t.video) {
+      details += '<div class="video-section">';
+      details += '<video controls preload="metadata" src="' + t.video + '"></video>';
+      details += '<a href="' + t.video + '" download>Download video</a>';
+      details += '</div>';
+    }
     if (t.trace && t.status !== 'failed') {
       details += '<div class="trace-section">';
       details += '<a class="trace-btn" href="' + t.trace + '" download><svg viewBox="0 0 24 24"><path d="M13 3v9.59l3.3-3.3 1.4 1.42L12 16.41l-5.7-5.7 1.4-1.42L11 12.59V3h2zM4 19v2h16v-2H4z"/></svg>Download Trace</a>';

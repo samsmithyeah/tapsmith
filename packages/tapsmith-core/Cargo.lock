@@ -1534,6 +1534,7 @@ dependencies = [
  "http-body-util",
  "hyper",
  "hyper-util",
+ "libc",
  "md-5",
  "plist",
  "prost",
