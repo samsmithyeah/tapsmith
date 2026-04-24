@@ -158,7 +158,7 @@ function displayEnvironment(env: EnvScan): void {
 // ─── Prompt helpers ───
 
 async function ask<T>(question: Record<string, unknown>): Promise<T> {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- enquirer's PromptOptions union is too narrow for dynamic question objects
   const result = await enquirer.prompt({ ...question, name: '_' } as any) as Record<string, T>;
   return result['_'];
 }
@@ -194,7 +194,21 @@ async function configureAndroid(env: EnvScan): Promise<AndroidConfig> {
   });
 
   let packageName: string | undefined;
-  const aapt = tryExec('aapt2', ['dump', 'badging', apkPath]);
+  let aapt2Bin = 'aapt2';
+  if (!tryExec('aapt2', ['version'])) {
+    const androidHome = process.env['ANDROID_HOME'] || process.env['ANDROID_SDK_ROOT'];
+    if (androidHome) {
+      const buildTools = path.join(androidHome, 'build-tools');
+      if (fs.existsSync(buildTools)) {
+        const versions = fs.readdirSync(buildTools).sort().reverse();
+        for (const v of versions) {
+          const candidate = path.join(buildTools, v, 'aapt2');
+          if (fs.existsSync(candidate)) { aapt2Bin = candidate; break; }
+        }
+      }
+    }
+  }
+  const aapt = tryExec(aapt2Bin, ['dump', 'badging', apkPath]);
   if (aapt) {
     const match = aapt.match(/package: name='([^']+)'/);
     if (match) {
@@ -593,17 +607,19 @@ export async function runInit(): Promise<void> {
           try {
             const { resolveIosAgentDir } = await import('./build-ios-agent.js');
             const iosAgentDir = resolveIosAgentDir();
+            const createScript = path.join(iosAgentDir, 'create-xcode-project.sh');
+            if (fs.existsSync(createScript)) {
+              try { execFileSync(createScript, [], { cwd: iosAgentDir, stdio: 'ignore' }); } catch {}
+            }
             const dest = iosConfig.simulator
               ? `platform=iOS Simulator,name=${iosConfig.simulator}`
               : 'platform=iOS Simulator';
-            execFileSync('bash', ['-c',
-              `cd "${iosAgentDir}" && ` +
-              `./create-xcode-project.sh 2>/dev/null; ` +
-              `xcodebuild build-for-testing ` +
-              `-project TapsmithAgent.xcodeproj ` +
-              `-scheme TapsmithAgentUITests ` +
-              `-destination '${dest}' 2>&1`,
-            ], { stdio: ['ignore', 'pipe', 'pipe'], timeout: 120_000 });
+            execFileSync('xcodebuild', [
+              'build-for-testing',
+              '-project', path.join(iosAgentDir, 'TapsmithAgent.xcodeproj'),
+              '-scheme', 'TapsmithAgentUITests',
+              '-destination', dest,
+            ], { stdio: ['ignore', 'pipe', 'pipe'], timeout: 300_000 });
             console.log(`  ${green('✓')} iOS simulator agent built`);
           } catch (err) {
             console.log(`  ${YELLOW}⚠${RESET} Build failed: ${err instanceof Error ? err.message : String(err)}`);

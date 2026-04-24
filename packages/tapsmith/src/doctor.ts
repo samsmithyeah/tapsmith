@@ -106,7 +106,7 @@ function checkAdb(checks: CheckList): boolean {
       encoding: 'utf-8',
       stdio: ['ignore', 'pipe', 'pipe'],
     });
-    const versionMatch = versionOutput.match(/(\d+\.\d+\.\d+)/);
+    const versionMatch = versionOutput.match(/Version\s+([\d.]+)/);
     const version = versionMatch ? versionMatch[1] : 'unknown';
     pass(checks, `ADB ${version}`);
     return true;
