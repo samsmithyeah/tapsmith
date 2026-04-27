@@ -792,6 +792,50 @@ function App() {
     }
   }, [send]);
 
+  // Wrap tree.setPending to also clear trace data for the node being run so
+  // the Actions tab immediately shows the preflight "Waiting for first
+  // action…" message instead of lingering actions from the previous run.
+  // Without this, old actions stay visible until the server's run-start
+  // broadcast arrives and clears the trace — a noticeable delay, especially
+  // with multiple workers where ensureWorkersReady() adds latency.
+  const handleSetPending = useCallback((nodeId: string) => {
+    treeRef.current.setPending(nodeId);
+
+    const projectName = extractProject(nodeId);
+    const stripped = stripProjectPrefix(nodeId);
+    const sep = stripped.indexOf('::');
+    if (sep !== -1) {
+      // Test or suite node — clear its specific trace
+      const fullName = stripped.slice(sep + 2);
+      const key = traceKey(projectName, fullName);
+      setTestTraces((prev) => {
+        const old = prev.get(key);
+        if (!old) return prev;
+        revokeTraceScreenshots(old);
+        const next = new Map(prev);
+        next.delete(key);
+        return next;
+      });
+    } else {
+      // File or project node — clear all traces for matching file
+      setTestTraces((prev) => {
+        let changed = false;
+        const next = new Map<string, TestTraceData>();
+        for (const [k, data] of prev) {
+          const matchesFile = data.filePath === stripped;
+          const matchesProject = !projectName || k.startsWith(`${projectName}::`);
+          if (matchesFile && matchesProject) {
+            revokeTraceScreenshots(data);
+            changed = true;
+          } else {
+            next.set(k, data);
+          }
+        }
+        return changed ? next : prev;
+      });
+    }
+  }, [setTestTraces]);
+
   const handleToggleRunDeps = useCallback(() => {
     setRunDepsFirst((prev) => {
       const next = !prev;
@@ -939,7 +983,7 @@ function App() {
           onStop={() => { send({ type: 'stop-run' }); setIsStopping(true); }}
           onToggleRunDeps={handleToggleRunDeps}
           pendingIds={tree.pendingIds}
-          onSetPending={tree.setPending}
+          onSetPending={handleSetPending}
         />
       }
       filmstrip={

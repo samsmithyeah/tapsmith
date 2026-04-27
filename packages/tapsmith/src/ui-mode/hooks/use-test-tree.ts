@@ -160,9 +160,16 @@ export function useTestTree(isRunning: boolean = false) {
     }
   }, [files, pendingIds]);
 
-  // Clear all pending when a run stops.
+  // Clear all pending when a run stops — only react to isRunning
+  // transitioning to false, NOT to pendingIds changing. Including pendingIds
+  // would immediately clear the pending state set by setPending() because
+  // isRunning is still false when the user clicks play (the server hasn't
+  // broadcast run-start yet).
+  const wasRunningRef = useRef(false);
   useEffect(() => {
-    if (!isRunning && pendingIds.size > 0) {
+    const wasRunning = wasRunningRef.current;
+    wasRunningRef.current = isRunning;
+    if (wasRunning && !isRunning && pendingIds.size > 0) {
       pendingSnapshots.current.clear();
       setPendingIds(new Set());
     }
