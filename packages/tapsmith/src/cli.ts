@@ -354,7 +354,7 @@ async function setupSequentialDevice(
 
   if (!target.selectedSerial) {
     throw new Error(
-      'No online devices found. Connect a device, start an emulator, or set `launchEmulators: true` with `avd` in your config.',
+      'No online devices found. Connect a device, start an emulator, or set `avd` in your config to auto-launch emulators.',
     );
   }
 

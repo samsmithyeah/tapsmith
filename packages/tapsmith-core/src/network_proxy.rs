@@ -1,8 +1,18 @@
-//! HTTP/HTTPS forward proxy for network traffic capture during tracing.
+//! HTTP/HTTPS proxy for network traffic capture during tracing.
 //!
-//! Starts a local TCP proxy that intercepts HTTP and HTTPS requests from the
-//! device (configured via `adb shell settings put global http_proxy`). For
-//! HTTPS, performs MITM interception using per-host certificates signed by
+//! Supports two interception modes:
+//!
+//! * **Forward proxy** — the device is configured to send all traffic through
+//!   this proxy (via HTTP CONNECT for HTTPS, absolute-URL for HTTP). Used by
+//!   iOS physical devices.
+//!
+//! * **Transparent redirect** — an OS-level mechanism (iOS Network Extension
+//!   or Android iptables) silently reroutes device TCP connections to the
+//!   proxy port. The proxy peeks the first bytes to detect TLS vs. plain
+//!   HTTP, extracts the hostname from the TLS SNI or HTTP Host header, and
+//!   proceeds with MITM interception. Used by iOS simulators and Android.
+//!
+//! For HTTPS, performs MITM interception using per-host certificates signed by
 //! the Tapsmith CA to decrypt and capture request/response content.
 
 use std::net::SocketAddr;
@@ -325,6 +335,17 @@ fn now_ms() -> u64 {
 }
 
 /// Handle a single proxy connection.
+///
+/// Supports three connection types:
+///
+/// 1. **Forward-proxy HTTP** — `GET http://host/path` or `CONNECT host:port`
+///    (classic HTTP proxy protocol).
+/// 2. **Transparent TLS** — raw TLS ClientHello (iptables redirect on
+///    Android, or `handle_transparent_tcp` from the iOS NE redirector).
+///    Detected by peeking the first 3 bytes for `0x16 0x03 0x0?`.
+/// 3. **Transparent HTTP** — plain HTTP with a relative path (`GET /path`)
+///    arriving via iptables redirect. The Host header provides the upstream
+///    destination.
 async fn handle_connection(
     mut client: TcpStream,
     addr: SocketAddr,
@@ -333,22 +354,15 @@ async fn handle_connection(
 ) {
     debug!(%addr, "New proxy connection");
 
-    // Read the initial request line + headers (loop until \r\n\r\n)
+    // Read the first chunk from the client and ensure we have at least 3
+    // bytes — enough to distinguish a TLS ClientHello (`0x16 0x03 0x0?`)
+    // from an HTTP request line (starts with an ASCII method letter > 0x40).
     let mut buf = Vec::new();
     let mut tmp = vec![0u8; 8192];
-    loop {
+    while buf.len() < 3 {
         match tokio::time::timeout(CLIENT_READ_TIMEOUT, client.read(&mut tmp)).await {
             Ok(Ok(0)) => return,
-            Ok(Ok(n)) => {
-                buf.extend_from_slice(&tmp[..n]);
-                if buf.windows(4).any(|w| w == b"\r\n\r\n") {
-                    break;
-                }
-                if buf.len() > 65536 {
-                    debug!("Proxy request headers too large");
-                    return;
-                }
-            }
+            Ok(Ok(n)) => buf.extend_from_slice(&tmp[..n]),
             Ok(Err(e)) => {
                 debug!("Read error from proxy client: {e}");
                 return;
@@ -360,7 +374,48 @@ async fn handle_connection(
         }
     }
 
-    let request_str = String::from_utf8_lossy(&buf);
+    // Transparent TLS: the first 3 bytes of a TLS record are
+    //   0x16 (Handshake) + 0x03 (SSL/TLS major) + 0x00..=0x04 (minor).
+    // HTTP request lines always start with an ASCII method letter (> 0x40),
+    // so this can't collide with any valid HTTP request.
+    if buf[0] == 0x16 && buf[1] == 0x03 && buf[2] <= 0x04 {
+        debug!(%addr, "Detected transparent TLS connection");
+        let chained = PrefixedStream::new(buf, client);
+        // Port 443: the iptables rules only redirect --dport 443 to TLS.
+        handle_transparent_tls(chained, String::new(), 443, state, mitm_ca).await;
+        return;
+    }
+
+    // Not TLS — continue reading until we have complete HTTP headers.
+    let mut header_buf = buf;
+    if !header_buf.windows(4).any(|w| w == b"\r\n\r\n") {
+        let mut tmp = vec![0u8; 8192];
+        loop {
+            match tokio::time::timeout(CLIENT_READ_TIMEOUT, client.read(&mut tmp)).await {
+                Ok(Ok(0)) => return,
+                Ok(Ok(n)) => {
+                    header_buf.extend_from_slice(&tmp[..n]);
+                    if header_buf.windows(4).any(|w| w == b"\r\n\r\n") {
+                        break;
+                    }
+                    if header_buf.len() > 65536 {
+                        debug!("Proxy request headers too large");
+                        return;
+                    }
+                }
+                Ok(Err(e)) => {
+                    debug!("Read error from proxy client: {e}");
+                    return;
+                }
+                Err(_) => {
+                    debug!("Proxy client header read timed out");
+                    return;
+                }
+            }
+        }
+    }
+
+    let request_str = String::from_utf8_lossy(&header_buf);
     let first_line = request_str.lines().next().unwrap_or("");
     let parts: Vec<&str> = first_line.split_whitespace().collect();
 
@@ -376,14 +431,29 @@ async fn handle_connection(
     // Wi-Fi join when the device's profile uses `ProxyType=Auto`. Served
     // straight out of ProxyState — no upstream round-trip.
     if method == "GET" && target == "/tapsmith.pac" {
-        handle_pac_request(client, addr, &buf, state).await;
+        handle_pac_request(client, addr, &header_buf, state).await;
         return;
     }
 
     if method == "CONNECT" {
         handle_connect(client, target, state, mitm_ca).await;
+    } else if target.starts_with("http://") || target.starts_with("https://") {
+        // Forward-proxy HTTP — absolute URL in the request line.
+        handle_http(client, method, target, &header_buf, state).await;
     } else {
-        handle_http(client, method, target, &buf, state).await;
+        // Transparent HTTP — relative path from iptables redirect. Use
+        // `handle_mitm_http` (not `handle_http`) because it supports
+        // chunked transfer-encoding and HTTP keep-alive.
+        let (headers, _) = parse_headers(&header_buf);
+        if let Some(host) = get_header(&headers, "host") {
+            let hostname = host.split(':').next().unwrap_or(host);
+            if let Some(upstream_tcp) = dial_upstream(hostname, 80).await {
+                let chained = PrefixedStream::new(header_buf, client);
+                handle_mitm_http(chained, upstream_tcp, hostname, state, false).await;
+            }
+        } else {
+            debug!("Transparent HTTP request missing Host header: {first_line}");
+        }
     }
 }
 
@@ -1835,24 +1905,23 @@ async fn handle_http(
     });
 }
 
-// ─── Transparent-TCP entry point (iOS Network Extension redirect) ───
+// ─── Transparent-TCP entry point ───
 //
-// Used by the `ios_redirect` module to feed already-accepted client streams
-// into the MITM pipeline without a CONNECT preamble. The transparent-TCP
-// path is macOS-only because its only consumer (the iOS NE redirector) is
-// macOS-only; keeping the cfg gate avoids dead-code warnings on Linux.
+// Used by the `ios_redirect` module (macOS) and iptables-redirected
+// connections (Android) to feed already-accepted client streams into the
+// MITM pipeline without a CONNECT preamble. Also used by
+// `handle_connection` when it detects a raw TLS ClientHello instead of
+// an HTTP request line.
 
 /// A stream adapter that reads from a pre-captured prefix buffer first,
 /// then delegates to an inner stream. Used by [`handle_transparent_tcp`] to
 /// "un-peek" the first bytes read during TLS/HTTP detection.
-#[cfg(target_os = "macos")]
 struct PrefixedStream<S> {
     prefix: Vec<u8>,
     prefix_pos: usize,
     inner: S,
 }
 
-#[cfg(target_os = "macos")]
 impl<S> PrefixedStream<S> {
     fn new(prefix: Vec<u8>, inner: S) -> Self {
         Self {
@@ -1863,7 +1932,6 @@ impl<S> PrefixedStream<S> {
     }
 }
 
-#[cfg(target_os = "macos")]
 impl<S: AsyncRead + Unpin> AsyncRead for PrefixedStream<S> {
     fn poll_read(
         mut self: std::pin::Pin<&mut Self>,
@@ -1881,7 +1949,6 @@ impl<S: AsyncRead + Unpin> AsyncRead for PrefixedStream<S> {
     }
 }
 
-#[cfg(target_os = "macos")]
 impl<S: AsyncWrite + Unpin> AsyncWrite for PrefixedStream<S> {
     fn poll_write(
         mut self: std::pin::Pin<&mut Self>,
@@ -1907,7 +1974,6 @@ impl<S: AsyncWrite + Unpin> AsyncWrite for PrefixedStream<S> {
 }
 
 /// Dial a TCP upstream with the shared connect timeout, logging on failure.
-#[cfg(target_os = "macos")]
 async fn dial_upstream(dst_host: &str, dst_port: u16) -> Option<TcpStream> {
     let addr = format!("{dst_host}:{dst_port}");
     match tokio::time::timeout(UPSTREAM_CONNECT_TIMEOUT, TcpStream::connect(&addr)).await {
@@ -2004,7 +2070,6 @@ pub(crate) async fn handle_transparent_tcp<S>(
 /// Lazily read the client's TLS `ClientHello`, extract SNI, dial upstream
 /// with the real hostname as SNI, mint a matching cert, resume the client
 /// handshake, and hand both decrypted streams to [`handle_mitm_http`].
-#[cfg(target_os = "macos")]
 async fn handle_transparent_tls<S>(
     chained: PrefixedStream<S>,
     dst_host: String,
@@ -2047,7 +2112,18 @@ async fn handle_transparent_tls<S>(
         "transparent TLS: extracted SNI from ClientHello"
     );
 
-    let Some(upstream_tcp) = dial_upstream(&dst_host, dst_port).await else {
+    // For transparent redirect (iptables), `dst_host` may be empty — use the
+    // SNI hostname for the upstream connection. For iOS NE redirect, `dst_host`
+    // is the already-resolved IP which avoids an extra DNS lookup.
+    let upstream_host = if dst_host.is_empty() { &sni } else { &dst_host };
+    if upstream_host.is_empty() {
+        debug!(
+            dst_port,
+            "transparent TLS: no SNI and no dst_host — cannot determine upstream, dropping"
+        );
+        return;
+    }
+    let Some(upstream_tcp) = dial_upstream(upstream_host, dst_port).await else {
         return;
     };
 

@@ -13,8 +13,8 @@ describe('generateConfig()', () => {
     expect(config).toContain("import { defineConfig } from 'tapsmith'");
     expect(config).toContain("package: 'com.example.app',");
     expect(config).toContain("apk: './app.apk',");
-    expect(config).toContain('launchEmulators: true,');
     expect(config).toContain("avd: 'Pixel_7',");
+    expect(config).not.toContain('launchEmulators');
     expect(config).not.toContain('projects');
     expect(config).not.toContain('trace');
   });

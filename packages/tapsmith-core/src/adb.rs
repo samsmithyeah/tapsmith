@@ -3,7 +3,7 @@ use std::time::Duration;
 
 use anyhow::{anyhow, bail, Context, Result};
 use tokio::process::Command;
-use tracing::{debug, info, instrument};
+use tracing::{debug, info, instrument, warn};
 
 /// Locate the `adb` binary on PATH.
 pub async fn find_adb() -> Result<PathBuf> {
@@ -466,6 +466,54 @@ pub async fn forward_abstract_socket(
         socket_name, "Abstract socket forwarding established"
     );
     Ok(())
+}
+
+// ─── iptables transparent redirect (PILOT-187) ───
+
+const IPTABLES_CHAIN: &str = "TAPSMITH_REDIRECT";
+
+/// Set up iptables rules to transparently redirect HTTP (80) and HTTPS (443)
+/// traffic through the proxy port. Returns `true` on success.
+///
+/// Uses a dedicated chain (`TAPSMITH_REDIRECT`) for easy identification and
+/// cleanup. Traffic destined for `127.0.0.1` is excluded to prevent redirect
+/// loops (the proxy is reached via `adb reverse` on loopback).
+pub async fn setup_iptables_redirect(serial: &str, proxy_port: u16) -> bool {
+    // Clean up any stale chain from a prior crash
+    cleanup_iptables_redirect(serial).await;
+
+    let commands = [
+        format!("iptables -t nat -N {IPTABLES_CHAIN}"),
+        format!("iptables -t nat -A {IPTABLES_CHAIN} -d 127.0.0.0/8 -j RETURN"),
+        format!("iptables -t nat -A {IPTABLES_CHAIN} -p tcp --dport 80 -j REDIRECT --to-port {proxy_port}"),
+        format!("iptables -t nat -A {IPTABLES_CHAIN} -p tcp --dport 443 -j REDIRECT --to-port {proxy_port}"),
+        format!("iptables -t nat -I OUTPUT -j {IPTABLES_CHAIN}"),
+    ];
+
+    for cmd in &commands {
+        if let Err(e) = shell(serial, cmd).await {
+            warn!(%serial, cmd, "iptables command failed: {e}");
+            cleanup_iptables_redirect(serial).await;
+            return false;
+        }
+    }
+
+    info!(%serial, proxy_port, "iptables transparent redirect configured");
+    true
+}
+
+/// Remove the `TAPSMITH_REDIRECT` iptables chain and its reference from OUTPUT.
+/// Safe to call even if the chain doesn't exist.
+pub async fn cleanup_iptables_redirect(serial: &str) {
+    // Remove the jump rule from OUTPUT (may fail if not present — that's fine)
+    let _ = shell(
+        serial,
+        &format!("iptables -t nat -D OUTPUT -j {IPTABLES_CHAIN}"),
+    )
+    .await;
+    // Flush and delete the chain
+    let _ = shell(serial, &format!("iptables -t nat -F {IPTABLES_CHAIN}")).await;
+    let _ = shell(serial, &format!("iptables -t nat -X {IPTABLES_CHAIN}")).await;
 }
 
 #[cfg(test)]

@@ -542,7 +542,7 @@ export async function runParallel(opts: DispatcherOptions, _portOffset = 0): Pro
       isIos
         ? `No booted iOS simulators found.${config.simulator ? ` Boot a simulator matching '${config.simulator}', or add more simulators for parallel execution.` : ' Set `simulator` in your config and boot at least one.'}`
         : 'No online devices found. Connect a device, start an emulator, ' +
-          'or set `launchEmulators: true` in your config.',
+          'or set `avd` in your config to auto-launch emulators.',
     );
   }
 
@@ -720,7 +720,7 @@ export async function runParallel(opts: DispatcherOptions, _portOffset = 0): Pro
     if (workerCount === 0) {
       throw new Error(
         'No worker-ready devices found. Start healthy emulators or devices, ' +
-        'or set `launchEmulators: true` in your config.',
+        'or set `avd` in your config to auto-launch emulators.',
       );
     }
 

@@ -463,9 +463,8 @@ export function generateConfig(
     if (pkg) lines.push(`  package: '${esc(pkg)}',`);
     if (android) {
       lines.push(`  apk: '${esc(android.apkPath)}',`);
-      if (android.useEmulators) {
-        lines.push('  launchEmulators: true,');
-        if (android.avd) lines.push(`  avd: '${esc(android.avd)}',`);
+      if (android.useEmulators && android.avd) {
+        lines.push(`  avd: '${esc(android.avd)}',`);
       }
     }
     if (ios) {
@@ -484,9 +483,8 @@ export function generateConfig(
     lines.push("        platform: 'android',");
     if (android.packageName) lines.push(`        package: '${esc(android.packageName)}',`);
     lines.push(`        apk: '${esc(android.apkPath)}',`);
-    if (android.useEmulators) {
-      lines.push('        launchEmulators: true,');
-      if (android.avd) lines.push(`        avd: '${esc(android.avd)}',`);
+    if (android.useEmulators && android.avd) {
+      lines.push(`        avd: '${esc(android.avd)}',`);
     }
     lines.push('      },');
     lines.push('    },');

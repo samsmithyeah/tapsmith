@@ -37,6 +37,16 @@ describe('defineConfig()', () => {
     expect(config.screenshot).toBe('only-on-failure');
   });
 
+  it('defaults launchEmulators to true when avd is set', () => {
+    const config = defineConfig({ avd: 'Pixel_9_API_35' });
+    expect(config.launchEmulators).toBe(true);
+  });
+
+  it('respects explicit launchEmulators: false when avd is set', () => {
+    const config = defineConfig({ avd: 'Pixel_9_API_35', launchEmulators: false });
+    expect(config.launchEmulators).toBe(false);
+  });
+
   it('overrides timeout while keeping other defaults', () => {
     const config = defineConfig({ timeout: 15_000 });
     expect(config.timeout).toBe(15_000);

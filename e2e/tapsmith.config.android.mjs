@@ -9,7 +9,6 @@ export default defineConfig({
   screenshot: "only-on-failure",
   workers: 2,
   trace: "retain-on-failure",
-  launchEmulators: true,
   avd: "Tapsmith_Generic_Phone_API_35",
   daemonBin: "../packages/tapsmith-core/target/release/tapsmith-core",
   agentApk: "../agent/app/build/outputs/apk/debug/app-debug.apk",

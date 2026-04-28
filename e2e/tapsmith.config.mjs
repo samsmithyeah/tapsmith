@@ -26,7 +26,6 @@ const ANDROID_USE = {
   apk: "../test-app/android/app/build/outputs/apk/release/app-release.apk",
   activity: "dev.tapsmith.testapp.MainActivity",
   avd: "Tapsmith_Generic_Phone_API_35",
-  launchEmulators: true,
   agentApk: "../agent/app/build/outputs/apk/debug/app-debug.apk",
   agentTestApk:
     "../agent/app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk",

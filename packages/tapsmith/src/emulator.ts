@@ -3,7 +3,7 @@
  *
  * Provides utilities to discover AVDs, launch emulators on specific ports,
  * wait for boot, and clean up on exit. Used by the dispatcher when
- * `launchEmulators: true` to auto-provision devices for workers.
+ * `avd` is configured to auto-provision devices for workers.
  *
  * @see PILOT-106
  */

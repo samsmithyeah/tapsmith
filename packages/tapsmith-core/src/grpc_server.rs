@@ -33,6 +33,10 @@ pub struct TapsmithServiceImpl {
     proxy_reverse_port: Arc<RwLock<Option<u16>>>,
     /// On-device path of the installed CA cert (for cleanup, Android only).
     proxy_ca_cert_path: Arc<RwLock<Option<String>>>,
+    /// Whether iptables transparent redirect is active (Android only). Used
+    /// to run targeted cleanup — only remove iptables rules when they were
+    /// actually installed, and only reset the system HTTP proxy when it was set.
+    proxy_uses_iptables: Arc<RwLock<bool>>,
     /// iOS Network Extension redirector session (for cleanup, iOS simulators only).
     #[cfg(target_os = "macos")]
     ios_redirect: Arc<RwLock<Option<crate::ios_redirect::IosRedirect>>>,
@@ -87,6 +91,7 @@ impl TapsmithServiceImpl {
             proxy_platform: Arc::new(RwLock::new(None)),
             proxy_reverse_port: Arc::new(RwLock::new(None)),
             proxy_ca_cert_path: Arc::new(RwLock::new(None)),
+            proxy_uses_iptables: Arc::new(RwLock::new(false)),
             #[cfg(target_os = "macos")]
             ios_redirect: Arc::new(RwLock::new(None)),
             ios_agent_config: Arc::new(RwLock::new(None)),
@@ -594,6 +599,7 @@ impl TapsmithServiceImpl {
         let platform = self.proxy_platform.write().await.take();
         let reverse_port = self.proxy_reverse_port.write().await.take();
         let ca_cert_path = self.proxy_ca_cert_path.write().await.take();
+        let used_iptables = std::mem::replace(&mut *self.proxy_uses_iptables.write().await, false);
 
         if let Some(serial) = &serial {
             match platform {
@@ -602,7 +608,11 @@ impl TapsmithServiceImpl {
                 }
                 _ => {
                     info!(%serial, "Cleaning up Android proxy settings on shutdown");
-                    if let Err(e) = adb::shell(serial, "settings put global http_proxy :0").await {
+                    if used_iptables {
+                        adb::cleanup_iptables_redirect(serial).await;
+                    } else if let Err(e) =
+                        adb::shell(serial, "settings put global http_proxy :0").await
+                    {
                         warn!(%serial, "Failed to reset http_proxy on shutdown: {e}");
                     }
                     if let Some(port) = reverse_port {
@@ -3403,16 +3413,32 @@ impl proto::tapsmith_service_server::TapsmithService for TapsmithServiceImpl {
                     error!("Failed to set up adb reverse: {e}");
                 }
 
-                let proxy_setting = format!("127.0.0.1:{device_port}");
-                info!(%serial, %proxy_setting, host_port, "Configuring device HTTP proxy via adb reverse");
+                info!(%serial, device_port, host_port, "Configuring Android proxy");
 
-                if let Err(e) = adb::shell(
-                    &serial,
-                    &format!("settings put global http_proxy {proxy_setting}"),
-                )
-                .await
-                {
-                    error!("Failed to set device proxy: {e}");
+                // PILOT-187: Use iptables transparent redirect instead of the
+                // system HTTP proxy setting. Some Android HTTP clients (notably
+                // React Native's fetch/OkHttp) don't issue CONNECT tunnels for
+                // HTTPS through the system proxy, causing HTTPS traffic to be
+                // recorded as http://. Transparent redirect intercepts at the
+                // TCP level, so TLS is correctly detected from the ClientHello.
+                let iptables_ok = adb::setup_iptables_redirect(&serial, device_port).await;
+                *self.proxy_uses_iptables.write().await = iptables_ok;
+                if !iptables_ok {
+                    // Fallback: set the system HTTP proxy for non-rooted devices
+                    // or emulators where iptables is unavailable.
+                    warn!(
+                        %serial,
+                        "iptables redirect unavailable, falling back to system HTTP proxy"
+                    );
+                    let proxy_setting = format!("127.0.0.1:{device_port}");
+                    if let Err(e) = adb::shell(
+                        &serial,
+                        &format!("settings put global http_proxy {proxy_setting}"),
+                    )
+                    .await
+                    {
+                        error!("Failed to set device proxy: {e}");
+                    }
                 }
                 *self.proxy_reverse_port.write().await = Some(device_port);
             }
@@ -3463,6 +3489,7 @@ impl proto::tapsmith_service_server::TapsmithService for TapsmithServiceImpl {
         let platform = self.proxy_platform.write().await.take();
         let reverse_port = self.proxy_reverse_port.write().await.take();
         let ca_cert_path = self.proxy_ca_cert_path.write().await.take();
+        let used_iptables = std::mem::replace(&mut *self.proxy_uses_iptables.write().await, false);
         if let Some(serial) = &serial {
             match platform {
                 Some(Platform::Ios) => {
@@ -3487,8 +3514,12 @@ impl proto::tapsmith_service_server::TapsmithService for TapsmithServiceImpl {
                     info!(%serial, "iOS proxy stopped");
                 }
                 _ => {
-                    info!(%serial, "Reverting Android device HTTP proxy");
-                    if let Err(e) = adb::shell(serial, "settings put global http_proxy :0").await {
+                    info!(%serial, "Reverting Android proxy configuration");
+                    if used_iptables {
+                        adb::cleanup_iptables_redirect(serial).await;
+                    } else if let Err(e) =
+                        adb::shell(serial, "settings put global http_proxy :0").await
+                    {
                         warn!(%serial, "Failed to reset http_proxy: {e}");
                     }
                     if let Some(port) = reverse_port {
