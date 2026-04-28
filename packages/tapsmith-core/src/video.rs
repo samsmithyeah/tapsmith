@@ -152,13 +152,14 @@ pub async fn stop(handle: RecordingHandle) -> Result<(PathBuf, Duration)> {
             serial,
             device_path,
         } => {
-            // SIGINT is the documented way to flush screenrecord's MP4 box
-            // (SIGTERM also works but is less reliable on older Android).
-            crate::signal::send_sigint(&mut child)?;
+            // Send SIGINT to the remote screenrecord process on the device.
+            // Signaling the local adb process does NOT forward the interrupt
+            // to the device-side process, leaving the MP4 without a MOOV atom.
+            let _ = adb::shell(&serial, "kill -INT $(pidof screenrecord)").await;
             match tokio::time::timeout(STOP_GRACEFUL_WAIT, child.wait()).await {
                 Ok(_) => {}
                 Err(_) => {
-                    warn!("screenrecord did not exit on signal; escalating to kill");
+                    warn!("screenrecord did not exit after remote SIGINT; escalating to kill");
                     let _ = child.kill().await;
                 }
             }
