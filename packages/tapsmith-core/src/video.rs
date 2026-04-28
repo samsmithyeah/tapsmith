@@ -154,7 +154,7 @@ pub async fn stop(handle: RecordingHandle) -> Result<(PathBuf, Duration)> {
         } => {
             // SIGINT is the documented way to flush screenrecord's MP4 box
             // (SIGTERM also works but is less reliable on older Android).
-            send_sigint_to_child(&mut child)?;
+            crate::signal::send_sigint(&mut child)?;
             match tokio::time::timeout(STOP_GRACEFUL_WAIT, child.wait()).await {
                 Ok(_) => {}
                 Err(_) => {
@@ -192,51 +192,22 @@ pub async fn stop(handle: RecordingHandle) -> Result<(PathBuf, Duration)> {
     Ok((local_path, elapsed))
 }
 
-/// Look up an iOS device record by UDID, caching the result so repeated
+/// Look up an iOS device record by UDID, caching the device list so repeated
 /// recordings within the same daemon session don't re-query simctl/devicectl.
 async fn lookup_ios_device(udid: &str) -> Result<ios::device::IosDevice> {
     use tokio::sync::OnceCell;
-    static CACHED: OnceCell<ios::device::IosDevice> = OnceCell::const_new();
+    static CACHED_LIST: OnceCell<Vec<ios::device::IosDevice>> = OnceCell::const_new();
 
-    let device = CACHED
+    let all = CACHED_LIST
         .get_or_try_init(|| async {
-            let all = ios::device::list_all_devices()
+            ios::device::list_all_devices()
                 .await
-                .context("Failed to list iOS devices for recording")?;
-            all.into_iter().find(|d| d.udid == udid).ok_or_else(|| {
-                anyhow::anyhow!(
-                    "iOS device with UDID '{udid}' not found in simctl/devicectl listing"
-                )
-            })
+                .context("Failed to list iOS devices for recording")
         })
         .await?;
-    Ok(device.clone())
-}
-
-fn send_sigint_to_child(child: &mut Child) -> Result<()> {
-    if let Ok(Some(_)) = child.try_wait() {
-        return Ok(());
-    }
-    #[cfg(unix)]
-    {
-        let Some(pid) = child.id() else {
-            bail!("recording child has no PID; cannot signal");
-        };
-        // SAFETY: child is still running (try_wait returned None) and we hold
-        // the Child handle, so the PID cannot have been recycled.
-        let ret = unsafe { libc::kill(pid as i32, libc::SIGINT) };
-        if ret != 0 {
-            let err = std::io::Error::last_os_error();
-            bail!("failed to send SIGINT to recording child (pid {pid}): {err}");
-        }
-    }
-    #[cfg(not(unix))]
-    {
-        child
-            .start_kill()
-            .context("failed to kill recording child")?;
-    }
-    Ok(())
+    all.iter().find(|d| d.udid == udid).cloned().ok_or_else(|| {
+        anyhow::anyhow!("iOS device with UDID '{udid}' not found in simctl/devicectl listing")
+    })
 }
 
 // ─── Once-per-process warnings ───
