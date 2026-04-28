@@ -1,7 +1,7 @@
 import { defineConfig } from "tapsmith";
 
 export default defineConfig({
-  apk: "../test-app/android/app/build/outputs/apk/release/app-release.apk",
+  apk: "./fixtures/app-release.apk",
   activity: "dev.tapsmith.testapp.MainActivity",
   package: "dev.tapsmith.testapp",
   timeout: 10_000,
@@ -10,7 +10,6 @@ export default defineConfig({
   workers: 2,
   trace: "retain-on-failure",
   avd: "Tapsmith_Generic_Phone_API_35",
-  daemonBin: "../packages/tapsmith-core/target/release/tapsmith-core",
   agentApk: "../agent/app/build/outputs/apk/debug/app-debug.apk",
   agentTestApk:
     "../agent/app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk",

@@ -11,7 +11,6 @@ export default defineConfig({
   workers: 4,
   trace: "retain-on-failure",
   simulator: process.env.TAPSMITH_IOS_SIMULATOR || "iPhone 17",
-  daemonBin: "../packages/tapsmith-core/target/release/tapsmith-core",
   projects: [
     {
       name: "authentication",

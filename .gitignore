@@ -8,6 +8,7 @@ packages/tapsmith/tapsmith-*.tgz
 *.class
 *.dex
 *.apk
+!e2e/fixtures/app-release.apk
 
 # Android/Gradle
 agent/.gradle/
