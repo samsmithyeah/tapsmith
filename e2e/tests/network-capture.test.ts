@@ -18,33 +18,26 @@ describe("Network capture", () => {
     await expect(screen.heading).toBeVisible()
   })
 
-  test("HTTPS request is captured with https:// scheme", async ({ device }) => {
-    const screen = new ApiCallsScreen(device)
-
-    const responsePromise = device.waitForResponse(
-      (resp) => resp.url.includes("jsonplaceholder.typicode.com/users/1"),
-      { timeout: 15_000 },
-    )
-
-    await screen.fetchUserButton.tap()
-    const response = await responsePromise
-
-    expect(response.url).toMatch(/^https:\/\//)
-    expect(response.status).toBe(200)
-  })
-
-  test("HTTPS request event has correct URL", async ({ device }) => {
+  test("HTTPS request is captured with correct scheme and properties", async ({ device }) => {
     const screen = new ApiCallsScreen(device)
 
     const requestPromise = device.waitForRequest(
       (req) => req.url.includes("jsonplaceholder.typicode.com/users/1"),
       { timeout: 15_000 },
     )
+    const responsePromise = device.waitForResponse(
+      (resp) => resp.url.includes("jsonplaceholder.typicode.com/users/1"),
+      { timeout: 15_000 },
+    )
 
     await screen.fetchUserButton.tap()
-    const request = await requestPromise
+
+    const [request, response] = await Promise.all([requestPromise, responsePromise])
 
     expect(request.url).toMatch(/^https:\/\//)
     expect(request.isHttps).toBe(true)
+
+    expect(response.url).toMatch(/^https:\/\//)
+    expect(response.status).toBe(200)
   })
 })

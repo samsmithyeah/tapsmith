@@ -491,14 +491,10 @@ pub async fn setup_iptables_redirect(serial: &str, proxy_port: u16) -> bool {
     ];
 
     for cmd in &commands {
-        match shell(serial, cmd).await {
-            Ok(_) => {}
-            Err(e) => {
-                warn!(%serial, cmd, "iptables command failed: {e}");
-                // Roll back on failure
-                cleanup_iptables_redirect(serial).await;
-                return false;
-            }
+        if let Err(e) = shell(serial, cmd).await {
+            warn!(%serial, cmd, "iptables command failed: {e}");
+            cleanup_iptables_redirect(serial).await;
+            return false;
         }
     }
 
