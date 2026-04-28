@@ -224,8 +224,10 @@ fn send_sigint_to_child(child: &mut Child) -> Result<()> {
         };
         // SAFETY: child is still running (try_wait returned None) and we hold
         // the Child handle, so the PID cannot have been recycled.
-        unsafe {
-            libc::kill(pid as i32, libc::SIGINT);
+        let ret = unsafe { libc::kill(pid as i32, libc::SIGINT) };
+        if ret != 0 {
+            let err = std::io::Error::last_os_error();
+            bail!("failed to send SIGINT to recording child (pid {pid}): {err}");
         }
     }
     #[cfg(not(unix))]

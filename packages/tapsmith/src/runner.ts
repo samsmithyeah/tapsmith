@@ -1207,8 +1207,8 @@ async function runSuiteContext(
           // Not retaining — clean up the temp file.
           try {
             fs.unlinkSync(res.videoPath);
-          } catch {
-            // best-effort cleanup
+          } catch (unlinkErr) {
+            _warnCaptureOnce('Video temp file cleanup failed', unlinkErr instanceof Error ? unlinkErr.message : String(unlinkErr));
           }
         } else if (!res.success && res.errorMessage) {
           _warnCaptureOnce('Video recording stopped with error', res.errorMessage);
