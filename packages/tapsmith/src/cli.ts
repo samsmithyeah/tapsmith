@@ -1093,6 +1093,9 @@ function buildSerializedConfig(cfg: TapsmithConfig): import('./worker-protocol.j
     trace: typeof cfg.trace === 'string' || typeof cfg.trace === 'object'
       ? cfg.trace
       : undefined,
+    video: typeof cfg.video === 'string' || typeof cfg.video === 'object'
+      ? cfg.video
+      : undefined,
     platform: cfg.platform,
     app: cfg.app,
     iosXctestrun: cfg.iosXctestrun,

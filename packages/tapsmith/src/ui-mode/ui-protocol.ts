@@ -105,6 +105,7 @@ export interface TestStatusMessage {
   duration?: number
   error?: string
   tracePath?: string
+  videoPath?: string
   /** Worker that ran this test (multi-worker mode only). */
   workerId?: number
   /** Project this test belongs to. When set, the SPA scopes the update to

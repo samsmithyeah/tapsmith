@@ -491,14 +491,16 @@ function App() {
         setTestTraces((prev) => {
           const existing = prev.get(statusKey);
           const needsClear = existing?.inFlightAction != null;
-          if (!existing && !msg.tracePath) return prev;
-          if (existing && !needsClear && !msg.tracePath) return prev;
+          const hasPath = msg.tracePath || msg.videoPath;
+          if (!existing && !hasPath) return prev;
+          if (existing && !needsClear && !hasPath) return prev;
           const data = existing ?? emptyTraceData(msg.filePath);
           const next = new Map(prev);
           next.set(statusKey, {
             ...data,
             inFlightAction: null,
             ...(msg.tracePath ? { tracePath: msg.tracePath } : {}),
+            ...(msg.videoPath ? { videoPath: msg.videoPath } : {}),
           });
           return next;
         });
@@ -944,6 +946,24 @@ function App() {
     }
   }, [viewedTestName, currentTrace]);
 
+  const handleDownloadVideo = useCallback(async () => {
+    if (!viewedTestName || !currentTrace?.videoPath) return;
+    try {
+      const resp = await fetch(`/video/${encodeURIComponent(currentTrace.videoPath)}`);
+      if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+      const blob = await resp.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `video-${viewedTestName.replace(/[^a-zA-Z0-9]+/g, '-')}.mp4`;
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      console.error('[Tapsmith UI] Failed to download video:', err);
+      alert(`Failed to download video: ${err instanceof Error ? err.message : err}`);
+    }
+  }, [viewedTestName, currentTrace]);
+
   return (
     <Layout
       topBar={
@@ -1017,15 +1037,26 @@ function App() {
       }
       screenshotPanel={
         <div class="ui-screen-area">
-          {currentTrace?.tracePath && (
+          {(currentTrace?.tracePath || currentTrace?.videoPath) && (
             <div class="ui-screen-header">
-              <button
-                class="ui-download-btn"
-                onClick={handleDownloadTrace}
-                title="Download trace for this test"
-              >
-                {'\u2913'} Trace
-              </button>
+              {currentTrace?.tracePath && (
+                <button
+                  class="ui-download-btn"
+                  onClick={handleDownloadTrace}
+                  title="Download trace for this test"
+                >
+                  {'\u2913'} Trace
+                </button>
+              )}
+              {currentTrace?.videoPath && (
+                <button
+                  class="ui-download-btn"
+                  onClick={handleDownloadVideo}
+                  title="Download video for this test"
+                >
+                  {'\u2913'} Video
+                </button>
+              )}
             </div>
           )}
           <div class="ui-screen-content">
