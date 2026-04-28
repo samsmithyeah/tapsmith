@@ -58,7 +58,7 @@ pub async fn recordvideo_sim_spawn(udid: &str, local_path: &Path) -> Result<Chil
 /// finalise the MP4 (write the MOOV atom). Falls back to a hard kill if the
 /// child doesn't exit within `wait`.
 pub async fn stop_simctl_recording(mut child: Child, wait: std::time::Duration) -> Result<()> {
-    send_sigint(&child)?;
+    send_sigint(&mut child)?;
     match tokio::time::timeout(wait, child.wait()).await {
         Ok(Ok(_status)) => Ok(()),
         Ok(Err(e)) => Err(anyhow::Error::from(e).context("waiting for simctl recordVideo to exit")),
@@ -255,14 +255,15 @@ pub async fn stop_ffmpeg_recording(mut child: Child, wait: std::time::Duration) 
 /// Send SIGINT to a tokio child via libc::kill. tokio::process doesn't expose
 /// a portable signal API, but `Child::id()` gives us the pid and SIGINT is
 /// well-defined on Unix.
-fn send_sigint(child: &Child) -> Result<()> {
+fn send_sigint(child: &mut Child) -> Result<()> {
+    if let Ok(Some(_)) = child.try_wait() {
+        return Ok(());
+    }
     let Some(pid) = child.id() else {
         bail!("child has no PID; cannot signal");
     };
-    // SAFETY: `kill(pid, SIGINT)` on a non-existent or already-reaped pid
-    // returns -1 with errno ESRCH; we don't surface that as an error here
-    // because the calling code is in a stop path and the child has already
-    // exited (which is fine).
+    // SAFETY: child is still running (try_wait returned None) and we hold
+    // the Child handle, so the PID cannot have been recycled.
     unsafe {
         libc::kill(pid as i32, libc::SIGINT);
     }

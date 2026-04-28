@@ -154,7 +154,7 @@ pub async fn stop(handle: RecordingHandle) -> Result<(PathBuf, Duration)> {
         } => {
             // SIGINT is the documented way to flush screenrecord's MP4 box
             // (SIGTERM also works but is less reliable on older Android).
-            send_sigint_to_child(&child)?;
+            send_sigint_to_child(&mut child)?;
             match tokio::time::timeout(STOP_GRACEFUL_WAIT, child.wait()).await {
                 Ok(_) => {}
                 Err(_) => {
@@ -205,11 +205,15 @@ async fn lookup_ios_device(udid: &str) -> Result<ios::device::IosDevice> {
     bail!("iOS device with UDID '{udid}' not found in simctl/devicectl listing");
 }
 
-fn send_sigint_to_child(child: &Child) -> Result<()> {
+fn send_sigint_to_child(child: &mut Child) -> Result<()> {
+    if let Ok(Some(_)) = child.try_wait() {
+        return Ok(());
+    }
     let Some(pid) = child.id() else {
         bail!("recording child has no PID; cannot signal");
     };
-    // SAFETY: a kill on an exited PID returns ESRCH which we ignore.
+    // SAFETY: child is still running (try_wait returned None) and we hold
+    // the Child handle, so the PID cannot have been recycled.
     unsafe {
         libc::kill(pid as i32, libc::SIGINT);
     }

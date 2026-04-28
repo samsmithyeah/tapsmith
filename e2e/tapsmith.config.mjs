@@ -46,6 +46,9 @@ export default defineConfig({
     mode: "retain-on-failure",
     networkHosts: ["jsonplaceholder.typicode.com"]
   },
+  video: {
+    mode: "retain-on-failure",
+  },
   projects: [
     // ─── Android ───
     {
