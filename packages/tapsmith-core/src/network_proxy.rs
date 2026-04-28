@@ -378,6 +378,7 @@ async fn handle_connection(
     if n >= 3 && buf[0] == 0x16 && buf[1] == 0x03 && buf[2] <= 0x04 {
         debug!(%addr, "Detected transparent TLS connection");
         let chained = PrefixedStream::new(buf, client);
+        // Port 443: the iptables rules only redirect --dport 443 to TLS.
         handle_transparent_tls(chained, String::new(), 443, state, mitm_ca).await;
         return;
     }
