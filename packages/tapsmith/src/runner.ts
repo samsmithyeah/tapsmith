@@ -1189,11 +1189,11 @@ async function runSuiteContext(
               opts.config.outputDir,
               'videos',
             );
-            fs.mkdirSync(videoDir, { recursive: true });
+            await fsPromises.mkdir(videoDir, { recursive: true });
             const safeName = fullName.replace(/[^a-zA-Z0-9_-]/g, '_');
             const filePath = path.join(
               videoDir,
-              `${safeName}-${Date.now()}.mp4`,
+              `${safeName}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}.mp4`,
             );
             await fsPromises.copyFile(res.videoPath, filePath);
             await fsPromises.unlink(res.videoPath);

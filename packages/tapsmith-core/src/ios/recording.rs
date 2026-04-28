@@ -140,10 +140,22 @@ pub async fn resolve_avfoundation_index(device_name: &str) -> Result<Option<usiz
         .iter()
         .find(|(_, name)| name.to_lowercase() == needle_lower)
         .or_else(|| {
-            devices.iter().find(|(_, name)| {
-                let name_lower = name.to_lowercase();
-                name_lower.contains(&needle_lower) || needle_lower.contains(&name_lower)
-            })
+            let matches: Vec<_> = devices
+                .iter()
+                .filter(|(_, name)| {
+                    let name_lower = name.to_lowercase();
+                    name_lower.contains(&needle_lower) || needle_lower.contains(&name_lower)
+                })
+                .collect();
+            if matches.len() > 1 {
+                warn!(
+                    device_name,
+                    candidates = ?matches.iter().map(|(_, n)| n.as_str()).collect::<Vec<_>>(),
+                    "Multiple AVFoundation devices match; using the first. \
+                     Use the exact device name to avoid ambiguity."
+                );
+            }
+            matches.into_iter().next()
         });
 
     if let Some((idx, name)) = found {

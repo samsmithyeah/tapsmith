@@ -167,11 +167,11 @@ pub async fn stop(handle: RecordingHandle) -> Result<(PathBuf, Duration)> {
             let local_str = local_path
                 .to_str()
                 .context("recording path must be valid UTF-8")?;
-            adb::pull_file(&serial, &device_path, local_str)
-                .await
-                .with_context(|| format!("Failed to pull screenrecord MP4 from {device_path}"))?;
-            // Clean up the on-device file. Best-effort.
+            let pull_res = adb::pull_file(&serial, &device_path, local_str).await;
+            // Clean up the on-device file regardless of pull success.
             let _ = adb::shell(&serial, &format!("rm -f '{device_path}'")).await;
+            pull_res
+                .with_context(|| format!("Failed to pull screenrecord MP4 from {device_path}"))?;
         }
         Backend::IosSim { child } => {
             ios::recording::stop_simctl_recording(child, STOP_GRACEFUL_WAIT).await?;
