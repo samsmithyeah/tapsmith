@@ -87,6 +87,13 @@ service TapsmithService {
   rpc ListWebViews(ListWebViewsRequest) returns (ListWebViewsResponse);
   rpc ForwardWebViewPort(ForwardWebViewPortRequest) returns (ForwardWebViewPortResponse);
   rpc CloseWebViewPort(CloseWebViewPortRequest) returns (ActionResponse);
+
+  // ─── Video Recording (PILOT-114) ───
+  // Continuous screen recording over the lifetime of a test, mirroring
+  // Playwright's `video` config. Start/stop are unary RPCs; the recorded
+  // MP4 is returned inline in the StopVideoRecording response.
+  rpc StartVideoRecording(StartVideoRecordingRequest) returns (ActionResponse);
+  rpc StopVideoRecording(StopVideoRecordingRequest) returns (StopVideoRecordingResponse);
 }
 
 // ─── Common Types ───
@@ -811,4 +818,32 @@ message ForwardWebViewPortResponse {
 message CloseWebViewPortRequest {
   string request_id = 1;
   uint32 local_port = 2;
+}
+
+// ─── Video Recording (PILOT-114) ───
+
+message StartVideoRecordingRequest {
+  string request_id = 1;
+  // Optional output size. Honored on Android via `screenrecord --size WxH`;
+  // ignored on iOS sim and physical (the daemon emits a one-time warning).
+  // Set both to 0 (the proto default) for native resolution.
+  uint32 size_width = 2;
+  uint32 size_height = 3;
+}
+
+message StopVideoRecordingRequest {
+  string request_id = 1;
+}
+
+message StopVideoRecordingResponse {
+  string request_id = 1;
+  bool success = 2;
+  // Host-local filesystem path to the finalised MP4. The SDK is
+  // responsible for copying/moving the file to its output directory and
+  // cleaning up. Empty when success == false.
+  string video_path = 3;
+  string error_message = 4;
+  // Wall-clock duration of the recording in milliseconds. Useful for
+  // surfacing "exceeded screenrecord 3-min limit" warnings to the user.
+  uint64 duration_ms = 5;
 }

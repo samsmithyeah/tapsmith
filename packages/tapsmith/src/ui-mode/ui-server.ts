@@ -251,6 +251,9 @@ export async function startUIServer(
     trace: typeof ctx.config.trace === 'string' || typeof ctx.config.trace === 'object'
       ? ctx.config.trace
       : 'on',
+    video: typeof ctx.config.video === 'string' || typeof ctx.config.video === 'object'
+      ? ctx.config.video
+      : undefined,
     platform: ctx.config.platform,
     app: ctx.config.app,
     iosXctestrun: ctx.config.iosXctestrun,
@@ -595,13 +598,14 @@ export async function startUIServer(
     duration?: number,
     error?: string,
     tracePath?: string,
+    videoPath?: string,
     workerId?: number,
     projectName?: string,
   ): void {
     if (status === 'failed') failedFiles.add(filePath);
 
     const key = projectName ? `${projectName}::${fullName}` : fullName;
-    testResults.set(key, { fullName, filePath, status, duration, error, tracePath, projectName });
+    testResults.set(key, { fullName, filePath, status, duration, error, tracePath, videoPath, projectName });
 
     broadcast({
       type: 'test-status',
@@ -611,6 +615,7 @@ export async function startUIServer(
       duration,
       error,
       tracePath,
+      videoPath,
       workerId,
       projectName,
     });
@@ -631,7 +636,7 @@ export async function startUIServer(
     function markChildren(nodes: TestTreeNode[]): void {
       for (const node of nodes) {
         if (node.type === 'test') {
-          updateTestStatus(node.fullName, node.filePath, 'skipped', undefined, undefined, undefined, undefined, projectName);
+          updateTestStatus(node.fullName, node.filePath, 'skipped', undefined, undefined, undefined, undefined, undefined, projectName);
         }
         if (node.children) markChildren(node.children);
       }
@@ -956,6 +961,7 @@ export async function startUIServer(
               result.durationMs,
               result.error?.message,
               result.tracePath,
+              result.videoPath,
               undefined,
               projectName,
             );
@@ -1585,6 +1591,7 @@ export async function startUIServer(
                 result.durationMs,
                 result.error?.message,
                 result.tracePath,
+                result.videoPath,
                 worker.id,
                 worker.currentFile?.projectName,
               );
@@ -2507,6 +2514,42 @@ export async function startUIServer(
       return;
     }
 
+    // Serve video MP4 files for download.
+    // Security: only serve .mp4 files that reside within the project's output directory.
+    if (url.pathname.startsWith('/video/')) {
+      const videoPath = decodeURIComponent(url.pathname.slice('/video/'.length));
+      if (!videoPath.endsWith('.mp4')) {
+        res.writeHead(404);
+        res.end('Video not found');
+        return;
+      }
+      const resolvedVideo = path.resolve(videoPath);
+      const resolvedOutputDir = path.resolve(ctx.config.rootDir, ctx.config.outputDir);
+      const relative = path.relative(resolvedOutputDir, resolvedVideo);
+      if (relative.startsWith('..') || path.isAbsolute(relative) || !fs.existsSync(resolvedVideo)) {
+        res.writeHead(404);
+        res.end('Video not found');
+        return;
+      }
+      let stat: fs.Stats;
+      try {
+        stat = fs.statSync(resolvedVideo);
+      } catch {
+        res.writeHead(404);
+        res.end('Video not found');
+        return;
+      }
+      res.writeHead(200, {
+        'Content-Type': 'video/mp4',
+        'Content-Length': stat.size,
+        'Content-Disposition': `attachment; filename="${path.basename(resolvedVideo)}"`,
+      });
+      fs.createReadStream(resolvedVideo)
+        .on('error', () => { res.end(); })
+        .pipe(res);
+      return;
+    }
+
     // Serve trace ZIP files for download.
     // Security: only serve .zip files that reside within the project's output directory.
     if (url.pathname.startsWith('/trace/')) {
@@ -2570,6 +2613,7 @@ export async function startUIServer(
         duration: r.duration,
         error: r.error,
         tracePath: r.tracePath,
+        videoPath: r.videoPath,
         projectName: r.projectName,
       } satisfies ServerMessage));
     }

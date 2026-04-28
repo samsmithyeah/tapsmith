@@ -40,6 +40,10 @@ url = "2"
 crc32fast = "1.4"
 plist = "1.7"
 tempfile = "3"
+# Used to send SIGINT/SIGTERM to recording child processes (ffmpeg / simctl
+# recordVideo) so they finalise the MP4 before exit. tokio::process exposes
+# only kill(), which sends SIGKILL and leaves un-finalised files.
+libc = "0.2"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 tokio-util = { version = "0.7", features = ["codec"] }

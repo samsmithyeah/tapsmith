@@ -65,6 +65,10 @@ pub struct TapsmithServiceImpl {
     /// iOS WebKit debug proxy handle (managed child process).
     #[cfg(target_os = "macos")]
     webkit_debug_proxy: Arc<RwLock<Option<crate::ios::webkit_debug_proxy::WebkitDebugProxyHandle>>>,
+    /// Active video recording, if any. Mirrors `ios_iproxy` — owned for the
+    /// lifetime of one test, released by `StopVideoRecording`. Dropping the
+    /// handle (e.g. on session teardown) hard-kills the underlying recorder.
+    video_recording: Arc<RwLock<Option<crate::video::RecordingHandle>>>,
 }
 
 /// Stored iOS agent launch config for restart.
@@ -101,6 +105,7 @@ impl TapsmithServiceImpl {
             webview_forwards: Arc::new(RwLock::new(std::collections::HashMap::new())),
             #[cfg(target_os = "macos")]
             webkit_debug_proxy: Arc::new(RwLock::new(None)),
+            video_recording: Arc::new(RwLock::new(None)),
         }
     }
 
@@ -4785,6 +4790,99 @@ impl proto::tapsmith_service_server::TapsmithService for TapsmithServiceImpl {
             error_message: String::new(),
             screenshot: Vec::new(),
         }))
+    }
+
+    #[instrument(skip_all, fields(request_id))]
+    async fn start_video_recording(
+        &self,
+        request: Request<proto::StartVideoRecordingRequest>,
+    ) -> Result<Response<proto::ActionResponse>, Status> {
+        let req = request.into_inner();
+        let request_id = Self::request_id(&req.request_id);
+
+        let mut video_recording = self.video_recording.write().await;
+        if video_recording.is_some() {
+            return Ok(Response::new(proto::ActionResponse {
+                request_id,
+                success: false,
+                error_type: "already_recording".into(),
+                error_message: "A video recording is already in progress. Call \
+                                StopVideoRecording before starting a new one."
+                    .into(),
+                screenshot: Vec::new(),
+            }));
+        }
+
+        let serial = self.active_serial().await?;
+        let platform = self.require_platform().await?;
+        let size = if req.size_width > 0 && req.size_height > 0 {
+            Some((req.size_width, req.size_height))
+        } else {
+            None
+        };
+
+        match crate::video::start(&serial, platform, size).await {
+            Ok(handle) => {
+                *video_recording = Some(handle);
+                Ok(Response::new(proto::ActionResponse {
+                    request_id,
+                    success: true,
+                    error_type: String::new(),
+                    error_message: String::new(),
+                    screenshot: Vec::new(),
+                }))
+            }
+            Err(e) => {
+                error!(error = %e, "StartVideoRecording failed");
+                Ok(Response::new(proto::ActionResponse {
+                    request_id,
+                    success: false,
+                    error_type: "start_failed".into(),
+                    error_message: e.to_string(),
+                    screenshot: Vec::new(),
+                }))
+            }
+        }
+    }
+
+    #[instrument(skip_all, fields(request_id))]
+    async fn stop_video_recording(
+        &self,
+        request: Request<proto::StopVideoRecordingRequest>,
+    ) -> Result<Response<proto::StopVideoRecordingResponse>, Status> {
+        let req = request.into_inner();
+        let request_id = Self::request_id(&req.request_id);
+
+        let handle = self.video_recording.write().await.take();
+        let Some(handle) = handle else {
+            return Ok(Response::new(proto::StopVideoRecordingResponse {
+                request_id,
+                success: false,
+                video_path: String::new(),
+                error_message: "No active recording — did you call StartVideoRecording?".into(),
+                duration_ms: 0,
+            }));
+        };
+
+        match crate::video::stop(handle).await {
+            Ok((video_path, elapsed)) => Ok(Response::new(proto::StopVideoRecordingResponse {
+                request_id,
+                success: true,
+                video_path: video_path.to_string_lossy().into_owned(),
+                error_message: String::new(),
+                duration_ms: elapsed.as_millis() as u64,
+            })),
+            Err(e) => {
+                error!(error = %e, "StopVideoRecording failed");
+                Ok(Response::new(proto::StopVideoRecordingResponse {
+                    request_id,
+                    success: false,
+                    video_path: String::new(),
+                    error_message: e.to_string(),
+                    duration_ms: 0,
+                }))
+            }
+        }
     }
 }
 

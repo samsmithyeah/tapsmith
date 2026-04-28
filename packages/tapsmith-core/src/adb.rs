@@ -226,6 +226,46 @@ pub async fn screencap(serial: &str) -> Result<Vec<u8>> {
     Ok(png)
 }
 
+/// Spawn `adb shell screenrecord` to record the device screen to a file
+/// at `remote_path` on the device. Returns the running child process so the
+/// caller can stop it later by sending SIGINT (`Child::kill_on_drop` is set,
+/// so an unsent stop will still clean up on drop).
+///
+/// `size` is `(width, height)`; when supplied, passed as `--size WxH`. When
+/// `None`, screenrecord uses the device's native resolution.
+///
+/// Note: Android's `screenrecord` truncates at 3 minutes per invocation. The
+/// caller is responsible for surfacing that to the user when the recording
+/// duration approaches the cap.
+#[instrument]
+pub async fn screenrecord_spawn(
+    serial: &str,
+    remote_path: &str,
+    size: Option<(u32, u32)>,
+) -> Result<tokio::process::Child> {
+    let mut cmd = Command::new("adb");
+    cmd.arg("-s").arg(serial);
+    cmd.arg("shell");
+    let mut shell_cmd = String::from("screenrecord");
+    if let Some((w, h)) = size {
+        shell_cmd.push_str(&format!(" --size {w}x{h}"));
+    }
+    shell_cmd.push(' ');
+    // Shell-escape the remote path: replace ' with '\'' then wrap in
+    // single quotes so spaces and special chars are handled safely.
+    let escaped = remote_path.replace('\'', "'\\''");
+    shell_cmd.push_str(&format!("'{escaped}'"));
+    cmd.arg(&shell_cmd);
+    cmd.kill_on_drop(true);
+    cmd.stdin(std::process::Stdio::null());
+    cmd.stdout(std::process::Stdio::null());
+    cmd.stderr(std::process::Stdio::null());
+
+    debug!(serial, remote_path, "Spawning adb shell screenrecord");
+    let child = cmd.spawn().context("Failed to spawn adb screenrecord")?;
+    Ok(child)
+}
+
 /// Check if a package is installed on the device.
 #[instrument]
 pub async fn is_package_installed(serial: &str, package: &str) -> Result<bool> {

@@ -64,6 +64,7 @@ function configFromSerialized(s: SerializedConfig, daemonAddress: string): Tapsm
     workers: 1,
     launchEmulators: false,
     trace: s.trace as TapsmithConfig['trace'],
+    video: s.video as TapsmithConfig['video'],
     platform: s.platform,
     app: s.app,
     iosXctestrun: s.iosXctestrun,

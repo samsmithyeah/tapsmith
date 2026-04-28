@@ -28,6 +28,8 @@ export interface TestTraceData {
   filePath?: string;
   /** Path to the trace ZIP on the server (set when test completes). */
   tracePath?: string;
+  /** Path to the recorded video MP4 on the server (set when test completes). */
+  videoPath?: string;
   /** Currently in-flight action/assertion (UI mode live streaming only). */
   inFlightAction?: InFlightAction | null;
 }

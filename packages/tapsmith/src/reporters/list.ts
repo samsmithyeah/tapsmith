@@ -71,6 +71,10 @@ export class ListReporter implements TapsmithReporter {
     if (test.tracePath) {
       process.stdout.write(`        ${dim(`Trace:      npx tapsmith show-trace ${test.tracePath}`)}\n`);
     }
+
+    if (test.videoPath) {
+      process.stdout.write(`        ${dim(`Video:      ${test.videoPath}`)}\n`);
+    }
   }
 
   onTestFileEnd(): void {
@@ -102,6 +106,9 @@ export class ListReporter implements TapsmithReporter {
           }
           if (test.tracePath) {
             process.stdout.write(`        ${dim(`Trace: npx tapsmith show-trace ${test.tracePath}`)}\n`);
+          }
+          if (test.videoPath) {
+            process.stdout.write(`        ${dim(`Video: ${test.videoPath}`)}\n`);
           }
           process.stdout.write('\n');
         }

@@ -129,6 +129,19 @@ tapsmith test --project ios-phys # just the physical device
 
 If you need decrypted HTTPS request/response bodies in your traces, set up [iOS physical device network capture](./ios-physical-device-network-tracing.md). It's a separate one-time step per device involving a mobileconfig profile and a MITM CA trust — nothing you need for basic testing.
 
+## Want video recording?
+
+Tapsmith records physical-device video via `ffmpeg`'s AVFoundation backend (PILOT-114). Two prerequisites beyond the standard physical-device setup above:
+
+1. **Install ffmpeg.** `brew install ffmpeg` is enough; the daemon checks `PATH` and surfaces an actionable error if it's missing.
+2. **Pair and trust the device.** AVFoundation only sees iPhones that have been paired in Xcode and have accepted the "Trust This Computer" prompt — the same prompt you accepted during the one-time setup above.
+
+Once both are in place, set `video: 'on'` (or any other mode — see [api-reference.md#video-recording](./api-reference.md#video-recording)) and run as usual. Recordings land in `<outputDir>/videos/`.
+
+**Caveat — multi-device matching.** AVFoundation lists video devices by friendly name (e.g. "Sam's iPhone"), not UDID. When multiple iPhones are plugged in with similar names, the daemon's name-based match may pick the wrong one. The pragmatic workaround is to rename the device in iOS Settings → General → About → Name to something unique. A future Swift helper (CoreMediaIO) will let us match on UDID directly.
+
+**ffmpeg CPU cost.** Roughly one CPU core for 30 fps 1080p `libx264 -preset ultrafast`. Disable video on machines that are already CPU-bound by other workers.
+
 ## Known limitations
 
 Some simulator-only APIs don't work on physical devices and will return a clear `UNSUPPORTED_ON_PHYSICAL_DEVICE` error at test time:

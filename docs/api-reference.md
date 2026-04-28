@@ -1270,6 +1270,7 @@ describe("custom config", () => {
 | `screenshot` | `'always' \| 'only-on-failure' \| 'never'` | Screenshot capture mode                      |
 | `retries`    | `number`                                    | Retry count for failed tests                 |
 | `trace`      | `TraceMode \| Partial<TraceConfig>`         | Trace recording configuration. See [configuration.md](./configuration.md#traceconfig) for the full `TraceConfig` shape (includes `network`, `networkHosts`, `networkIgnoreHosts`, `screenshots`, etc.). |
+| `video`      | `VideoMode \| Partial<VideoConfig>`         | Video recording configuration. See the [Video recording](#video-recording) section below. |
 | `appState`   | `string`                                    | Path to saved app state archive to restore   |
 
 The following device-shaping fields may **only** be set on a project's
@@ -1745,6 +1746,7 @@ interface TestResult {
   error?: Error;
   screenshotPath?: string;
   tracePath?: string; // path to the trace archive (.zip) when tracing is enabled
+  videoPath?: string; // path to the recorded MP4 when `video` is enabled and retained
   workerIndex?: number; // set in parallel mode — index of the worker that ran this test
 }
 ```
@@ -1851,6 +1853,77 @@ Record traces during test execution. Overrides the `trace` config option.
 npx tapsmith test --trace on                    # Record all tests
 npx tapsmith test --trace retain-on-failure     # Only keep traces for failures
 ```
+
+### `tapsmith test --video <mode>`
+
+Record an MP4 of the device screen for the lifetime of each test. Mirrors
+Playwright's `video` flag and overrides the `video` config option. Accepts
+the same mode set as `--trace`. See [Video recording](#video-recording).
+
+```bash
+npx tapsmith test --video on                    # Record every test
+npx tapsmith test --video retain-on-failure     # Only keep videos for failed tests
+```
+
+## Video recording
+
+Tapsmith records continuous screen video over the duration of each test,
+mirroring Playwright's `video` config (PILOT-114). Retained videos land in
+`<outputDir>/videos/` as `<safe-test-name>-<timestamp>.mp4` and are surfaced
+on `TestResult.videoPath`. The HTML reporter embeds an inline `<video>`
+element and a download link in each test's detail panel.
+
+### Modes
+
+```typescript
+import { defineConfig } from 'tapsmith'
+
+export default defineConfig({
+  use: {
+    video: 'retain-on-failure', // mode shorthand
+    // — or —
+    video: {
+      mode: 'on',
+      size: { width: 1280, height: 720 }, // Android only
+    },
+  },
+})
+```
+
+The supported modes are the same as `trace`:
+
+| Mode                        | Behaviour                                              |
+| --------------------------- | ------------------------------------------------------ |
+| `off`                       | No recording (default).                                |
+| `on`                        | Record every test, retain every video.                 |
+| `retain-on-failure`         | Record every test; keep videos only for failed tests.  |
+| `retain-on-first-failure`   | Like `retain-on-failure` but limited to attempt 0.     |
+| `on-first-retry`            | Record only on the first retry attempt.                |
+| `on-all-retries`            | Record on every retry attempt (skips the first run).   |
+
+### Implementation
+
+| Platform              | Recorder                                                   |
+| --------------------- | ---------------------------------------------------------- |
+| Android               | `adb shell screenrecord` (3-min hard cap per recording).   |
+| iOS Simulator         | `xcrun simctl io <udid> recordVideo --codec h264`.         |
+| iOS physical device   | `ffmpeg -f avfoundation` — requires `ffmpeg` on `PATH`.    |
+
+**Android 3-minute cap**: `screenrecord` truncates at 180 seconds. Recordings
+of longer tests are truncated by the device-side encoder; the daemon emits
+a one-time warning per test that exceeds the cap. Chained-segment recording
+is on the roadmap.
+
+**iOS physical devices**: ffmpeg's AVFoundation backend captures the
+iPhone's screen via the CoreMediaIO video device that appears on macOS once
+the device is paired in Xcode and you have accepted the "Trust This
+Computer" prompt. The daemon resolves the device by friendly name; if
+multiple iPhones are connected, name conflicts can cause the wrong device
+to be recorded. See [ios-physical-devices.md](./ios-physical-devices.md).
+
+**`size` option**: honoured on Android only (passed through as
+`screenrecord --size WxH`). On iOS the daemon emits a one-time warning and
+records at native resolution.
 
 ### `tapsmith test --network` / `tapsmith test --no-network`
 

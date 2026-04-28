@@ -11,6 +11,8 @@ mod pac;
 mod platform;
 mod route_handler;
 mod screenshot;
+mod signal;
+mod video;
 
 use std::net::SocketAddr;
 use std::sync::Arc;

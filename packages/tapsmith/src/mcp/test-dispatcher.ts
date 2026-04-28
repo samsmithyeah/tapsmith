@@ -22,6 +22,7 @@ export interface TestResultEntry {
   duration?: number
   error?: string
   tracePath?: string
+  videoPath?: string
   projectName?: string
 }
 

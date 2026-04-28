@@ -20,6 +20,7 @@ interface JsonTestEntry {
   duration: number
   error?: { message: string; stack?: string }
   screenshotPath?: string
+  videoPath?: string
   workerIndex?: number
   project?: string
 }
@@ -99,6 +100,7 @@ function serializeSuite(suite: SuiteResult): JsonSuiteEntry {
       duration: t.durationMs,
       error: t.error ? { message: t.error.message, stack: t.error.stack } : undefined,
       screenshotPath: t.screenshotPath,
+      videoPath: t.videoPath,
       workerIndex: t.workerIndex,
       project: t.project,
     })),

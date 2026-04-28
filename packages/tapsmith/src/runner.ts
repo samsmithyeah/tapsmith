@@ -11,6 +11,7 @@
  */
 
 import * as fs from 'node:fs';
+import * as fsPromises from 'node:fs/promises';
 import * as path from 'node:path';
 import * as os from 'node:os';
 import * as zlib from 'node:zlib';
@@ -22,6 +23,7 @@ import { flushSoftErrors } from './expect.js';
 import { FixtureRegistry, resolveFixtures, type FixtureDefinitions, type BuiltinFixtures } from './fixtures.js';
 import { resolveTraceConfig } from './trace/types.js';
 import { shouldRecord, shouldRetain } from './trace/trace-mode.js';
+import { resolveVideoConfig } from './video/types.js';
 import { packageTrace } from './trace/trace-packager.js';
 import { TraceCollector, setActiveTraceCollector, withActiveTraceCollector } from './trace/trace-collector.js';
 import type { AnyTraceEvent } from './trace/types.js';
@@ -111,6 +113,8 @@ export interface TestResult {
   screenshotPath?: string;
   /** Path to the trace archive, if recorded. */
   tracePath?: string;
+  /** Path to the recorded MP4 video, if `video` was enabled and retained (PILOT-114). */
+  videoPath?: string;
   /** Index of the worker that ran this test (only set in parallel mode). */
   workerIndex?: number;
   /** Project name this test belongs to (only set when projects are configured). */
@@ -721,6 +725,7 @@ async function runSuiteContext(
     let error: Error | undefined;
     let screenshotPath: string | undefined;
     let tracePath: string | undefined;
+    let videoPath: string | undefined;
     // 2x the assertion timeout: a test may have multiple actions, each with
     // their own timeout. The test-level timeout is a safety net against hangs.
     // Safety timeout for the test body (hooks run outside this).
@@ -769,6 +774,32 @@ async function runSuiteContext(
             err instanceof Error ? err.message : String(err),
           );
         }
+      }
+    }
+
+    // Video recording — bracket the test the same way `trace` does (PILOT-114).
+    // Recording happens regardless of whether trace is enabled. Failures
+    // here are surfaced via _warnCaptureOnce and never abort the run; the
+    // daemon already returns structured errors in `errorMessage` rather
+    // than throwing for missing-ffmpeg / unmatched-AVF-device cases.
+    const videoConfig = resolveVideoConfig(opts.config.video);
+    const videoRecording = shouldRecord(videoConfig.mode, attempt);
+    if (videoRecording && opts.device) {
+      try {
+        const res = await opts.device._startVideoRecording(
+          videoConfig.size ? { size: videoConfig.size } : undefined,
+        );
+        if (!res.success) {
+          _warnCaptureOnce(
+            'Video recording failed to start',
+            res.errorMessage || 'unknown error',
+          );
+        }
+      } catch (err) {
+        _warnCaptureOnce(
+          'Video recording failed to start',
+          err instanceof Error ? err.message : String(err),
+        );
       }
     }
 
@@ -1140,6 +1171,57 @@ async function runSuiteContext(
       }
     }
 
+    // Stop video recording and decide whether to keep the MP4 (PILOT-114).
+    // Always stop if we started — even when retain decides to discard, the
+    // child process must be cleaned up so the next test can start fresh.
+    if (videoRecording && opts.device) {
+      try {
+        const res = await opts.device._stopVideoRecording();
+        const retainVideo = shouldRetain(
+          videoConfig.mode,
+          status === 'passed',
+          attempt,
+        );
+        if (res.success && res.videoPath && retainVideo) {
+          try {
+            const videoDir = path.resolve(
+              opts.config.rootDir,
+              opts.config.outputDir,
+              'videos',
+            );
+            await fsPromises.mkdir(videoDir, { recursive: true });
+            const safeName = fullName.replace(/[^a-zA-Z0-9_-]/g, '_');
+            const filePath = path.join(
+              videoDir,
+              `${safeName}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}.mp4`,
+            );
+            await fsPromises.copyFile(res.videoPath, filePath);
+            await fsPromises.unlink(res.videoPath);
+            videoPath = filePath;
+          } catch (err) {
+            _warnCaptureOnce(
+              'Video recording failed to write',
+              err instanceof Error ? err.message : String(err),
+            );
+          }
+        } else if (res.success && res.videoPath) {
+          // Not retaining — clean up the temp file.
+          try {
+            await fsPromises.unlink(res.videoPath);
+          } catch (unlinkErr) {
+            _warnCaptureOnce('Video temp file cleanup failed', unlinkErr instanceof Error ? unlinkErr.message : String(unlinkErr));
+          }
+        } else if (!res.success && res.errorMessage) {
+          _warnCaptureOnce('Video recording stopped with error', res.errorMessage);
+        }
+      } catch (err) {
+        _warnCaptureOnce(
+          'Video recording failed to stop',
+          err instanceof Error ? err.message : String(err),
+        );
+      }
+    }
+
     const testResult: TestResult = {
       name: entry.name,
       fullName,
@@ -1148,6 +1230,7 @@ async function runSuiteContext(
       error,
       screenshotPath,
       tracePath,
+      videoPath,
       project: opts.projectName,
     };
     result.tests.push(testResult);

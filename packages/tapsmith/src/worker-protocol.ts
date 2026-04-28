@@ -142,6 +142,7 @@ export interface SerializedConfig {
   agentApk?: string
   agentTestApk?: string
   trace?: string | Record<string, unknown>
+  video?: string | Record<string, unknown>
   platform?: 'android' | 'ios'
   app?: string
   iosXctestrun?: string
@@ -161,6 +162,7 @@ export interface SerializedTestResult {
   error?: { message: string; stack?: string }
   screenshotPath?: string
   tracePath?: string
+  videoPath?: string
   workerIndex: number
   project?: string
 }
@@ -185,6 +187,7 @@ export function serializeTestResult(result: TestResult, workerIndex: number): Se
       : undefined,
     screenshotPath: result.screenshotPath,
     tracePath: result.tracePath,
+    videoPath: result.videoPath,
     workerIndex,
     project: result.project,
   };
@@ -210,6 +213,7 @@ export function deserializeTestResult(s: SerializedTestResult): TestResult & { w
       : undefined,
     screenshotPath: s.screenshotPath,
     tracePath: s.tracePath,
+    videoPath: s.videoPath,
     workerIndex: s.workerIndex,
     project: s.project,
   };
