@@ -487,16 +487,10 @@ Abort the request. Optional `errorCode`: `'connectionrefused'`, `'connectionrese
 
 Continue the request to the server with optional modifications.
 
-- `overrides.url?`: `string` — override the URL **path and query** (see limitation below)
+- `overrides.url?`: `string` — override the request URL. Supports both same-origin path changes (e.g. `/v2/posts`) and cross-origin redirection (e.g. `https://staging.example.com/api/posts`). When the host differs, the `Host` header is automatically updated.
 - `overrides.method?`: `string` — override the HTTP method
 - `overrides.headers?`: `Record<string, string>` — override headers
 - `overrides.postData?`: `string | Buffer` — override request body
-
-> **Known limitation:** `overrides.url` currently only swaps the path and query —
-> the host stays the same (upstream TCP connection and `Host` header are
-> unchanged). Cross-origin redirection via `route.continue()` is not yet
-> supported. If you need to hit a different host, use `route.fetch({ url })`
-> and then `route.fulfill()` with the result. Tracked in PILOT-189.
 
 #### `route.fulfill(options?): Promise<void>`
 
@@ -513,7 +507,7 @@ Return a mock response without contacting the server.
 
 Fetch the actual response from the server. Returns a `FetchedAPIResponse` that you can inspect and modify before calling `route.fulfill()`.
 
-- `overrides.url?`: `string` — override the URL to fetch from. **Unlike `route.continue()`, this may target a different host** — the daemon opens an independent connection to the override URL's host/port/scheme
+- `overrides.url?`: `string` — override the URL to fetch from (supports cross-origin, same as `route.continue()`)
 - `overrides.method?`: `string` — override the HTTP method
 - `overrides.headers?`: `Record<string, string>` — override headers
 - `overrides.postData?`: `string | Buffer` — override request body

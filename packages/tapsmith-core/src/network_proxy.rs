@@ -79,6 +79,9 @@ pub(crate) struct ParsedRequest {
     pub headers: Vec<(String, String)>,
     pub body: Vec<u8>,
     pub raw_bytes: Vec<u8>,
+    /// Set by `route.continue({ url })` when the override URL targets a
+    /// different origin. Fields: (hostname, port, is_https).
+    pub override_host: Option<(String, u16, bool)>,
 }
 
 /// A decoded HTTP response, structured for transformation hooks.
@@ -868,6 +871,7 @@ where
         headers,
         body,
         raw_bytes: buf,
+        override_host: None,
     })
 }
 
@@ -1492,13 +1496,30 @@ async fn handle_mitm_http<C, U>(
             }
         }
 
-        if upstream_stream.write_all(&req.raw_bytes).await.is_err() {
-            return;
-        }
-
-        let mut resp = match read_response(&mut upstream_stream, hostname).await {
-            ReadOutcome::Ok(r) => r,
-            ReadOutcome::ConnectionClosed | ReadOutcome::Error => return,
+        let mut resp = if let Some((ref new_host, new_port, new_is_https)) = req.override_host {
+            // Cross-origin redirect: make an independent upstream request to
+            // the new host instead of using the pre-established connection.
+            let scheme = if new_is_https { "https" } else { "http" };
+            let url = format!("{scheme}://{new_host}:{new_port}{}", req.path);
+            match crate::route_handler::fetch_upstream(&url, &req.method, &req.headers, &req.body)
+                .await
+            {
+                Some(r) => r,
+                None => {
+                    let _ = client_stream
+                        .write_all(b"HTTP/1.1 502 Bad Gateway\r\n\r\n")
+                        .await;
+                    return;
+                }
+            }
+        } else {
+            if upstream_stream.write_all(&req.raw_bytes).await.is_err() {
+                return;
+            }
+            match read_response(&mut upstream_stream, hostname).await {
+                ReadOutcome::Ok(r) => r,
+                ReadOutcome::ConnectionClosed | ReadOutcome::Error => return,
+            }
         };
 
         // Response hook: optionally transform the response before forwarding.
@@ -1649,7 +1670,7 @@ async fn handle_http(
     let mut effective_method = method.to_string();
     let mut effective_path = path.clone();
     let mut was_continued = false;
-    let hostname_owned = host.split(':').next().unwrap_or(&host).to_string();
+    let mut hostname_owned = host.split(':').next().unwrap_or(&host).to_string();
 
     // Check handler for route interception before forwarding upstream.
     let handler = state.lock().await.handler.clone();
@@ -1660,6 +1681,7 @@ async fn handle_http(
             headers: req_headers.clone(),
             body: request_body.clone(),
             raw_bytes: Vec::new(),
+            override_host: None,
         };
         let hostname = hostname_owned.as_str();
 
@@ -1708,14 +1730,66 @@ async fn handle_http(
                 return;
             }
             RequestOutcome::Continued => {
-                // Route matched + handler called `continue()` (possibly with
-                // mutations). Apply them back to the local variables used by
-                // the upstream request builder below.
                 was_continued = true;
                 effective_method = parsed_req.method;
                 effective_path = parsed_req.path;
                 req_headers = parsed_req.headers;
                 request_body = parsed_req.body;
+                if let Some((ref new_host, new_port, new_is_https)) = parsed_req.override_host {
+                    // Cross-origin: use fetch_upstream which handles both
+                    // HTTP and HTTPS targets correctly.
+                    let scheme = if new_is_https { "https" } else { "http" };
+                    let url = format!("{scheme}://{new_host}:{new_port}{}", effective_path);
+                    let resp = match crate::route_handler::fetch_upstream(
+                        &url,
+                        &effective_method,
+                        &req_headers,
+                        &request_body,
+                    )
+                    .await
+                    {
+                        Some(r) => r,
+                        None => {
+                            let _ = client.write_all(b"HTTP/1.1 502 Bad Gateway\r\n\r\n").await;
+                            return;
+                        }
+                    };
+                    let raw = reencode_response(&resp);
+                    let _ = client.write_all(&raw).await;
+                    hostname_owned = new_host.clone();
+                    let hostname = &hostname_owned;
+                    if let Some(h) = handler.as_ref() {
+                        let notify_req = ParsedRequest {
+                            method: effective_method.clone(),
+                            path: effective_path.clone(),
+                            headers: req_headers.clone(),
+                            body: request_body.clone(),
+                            raw_bytes: Vec::new(),
+                            override_host: None,
+                        };
+                        h.notify_response(&notify_req, &resp, hostname, false, "continued")
+                            .await;
+                    }
+                    state.lock().await.entries.push(CapturedEntry {
+                        method: effective_method,
+                        url: url.clone(),
+                        status_code: resp.status_code,
+                        content_type: get_header(&resp.headers, "content-type")
+                            .unwrap_or_default()
+                            .to_string(),
+                        request_size: request_body.len() as u64,
+                        response_size: resp.body.len() as u64,
+                        start_time_ms: start,
+                        duration_ms: now_ms() - start,
+                        request_headers: req_headers,
+                        response_headers: resp.headers,
+                        request_body,
+                        response_body: resp.body,
+                        is_https: new_is_https,
+                        route_action: "continued".to_string(),
+                    });
+                    return;
+                }
             }
             RequestOutcome::NotMatched => {
                 // No registered route matched this URL — forward original.
@@ -1856,6 +1930,7 @@ async fn handle_http(
             headers: req_headers.clone(),
             body: request_body.clone(),
             raw_bytes: Vec::new(),
+            override_host: None,
         };
         let notify_resp = ParsedResponse {
             status_code,
@@ -2541,6 +2616,7 @@ mod tests {
             )],
             body: vec![],
             raw_bytes: vec![],
+            override_host: None,
         };
         let out = reencode_request(&req);
         // parse_headers skips line 0 (the request line) and parses the rest.
@@ -2565,6 +2641,7 @@ mod tests {
             ],
             body: vec![],
             raw_bytes: vec![],
+            override_host: None,
         };
         let out = reencode_request(&req);
         let s = std::str::from_utf8(&out).unwrap();
@@ -2581,6 +2658,7 @@ mod tests {
             headers: vec![],
             body: vec![],
             raw_bytes: vec![],
+            override_host: None,
         };
         let out = reencode_request(&req);
         // The request line must be a single line — the first \r\n in the

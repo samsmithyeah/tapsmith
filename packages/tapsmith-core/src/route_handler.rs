@@ -325,11 +325,35 @@ impl NetworkHandler for RouteInterceptHandler {
                 }
                 if let Some(u) = url {
                     if !u.is_empty() {
-                        // Extract path from full URL if it contains a scheme
                         if let Ok(parsed) = u.parse::<url::Url>() {
                             req.path = parsed.path().to_string();
                             if let Some(q) = parsed.query() {
                                 req.path = format!("{}?{q}", req.path);
+                            }
+                            // Cross-origin: detect host mismatch
+                            let new_host = parsed.host_str().unwrap_or("");
+                            if !new_host.is_empty() && new_host != hostname {
+                                let new_port = parsed
+                                    .port_or_known_default()
+                                    .unwrap_or(if parsed.scheme() == "https" { 443 } else { 80 });
+                                let new_is_https = parsed.scheme() == "https";
+                                req.override_host =
+                                    Some((new_host.to_string(), new_port, new_is_https));
+                                // Auto-update Host header to match the new origin
+                                let host_val = if (new_is_https && new_port == 443)
+                                    || (!new_is_https && new_port == 80)
+                                {
+                                    new_host.to_string()
+                                } else {
+                                    format!("{new_host}:{new_port}")
+                                };
+                                if let Some(entry) = req
+                                    .headers
+                                    .iter_mut()
+                                    .find(|(k, _)| k.eq_ignore_ascii_case("host"))
+                                {
+                                    entry.1 = host_val;
+                                }
                             }
                         } else {
                             req.path = u;
@@ -494,8 +518,9 @@ impl NetworkHandler for RouteInterceptHandler {
 // ─── Upstream Fetch (for RouteFetch) ───
 
 /// Make a standalone HTTP/HTTPS request to the upstream server. Used by
-/// `RouteFetch` to get the real response so the SDK can inspect/modify it.
-async fn fetch_upstream(
+/// `RouteFetch` to get the real response so the SDK can inspect/modify it,
+/// and by `handle_mitm_http` for cross-origin `route.continue()` redirects.
+pub(crate) async fn fetch_upstream(
     url: &str,
     method: &str,
     headers: &[(String, String)],
