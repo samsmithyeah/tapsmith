@@ -2005,6 +2005,7 @@ async fn dial_upstream(dst_host: &str, dst_port: u16) -> Option<TcpStream> {
 /// the per-host MITM cert CN. The client handshake is then resumed via
 /// [`tokio_rustls::StartHandshake::into_stream`]. Plain HTTP flows pass
 /// through to [`handle_mitm_http`] directly (no SNI needed).
+#[cfg(target_os = "macos")]
 pub(crate) async fn handle_transparent_tcp<S>(
     mut client: S,
     dst_host: String,
