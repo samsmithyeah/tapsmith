@@ -481,6 +481,7 @@ async function captureFailureScreenshot(
  *   (intersected: root AND project).
  * - `grepInvert` / `projectGrepInvert`: no regex in the union may match.
  */
+// Reset lastIndex before each test() — RegExp with the `g` flag is stateful.
 function passesTestFilter(fullName: string, opts: RunOptions): boolean {
   if (opts.testFilter
     && fullName !== opts.testFilter
