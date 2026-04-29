@@ -107,12 +107,17 @@ jobs:
           distribution: temurin
           java-version: 17
 
-      - name: Install dependencies and build
+      - name: Install dependencies and prebuild
         if: steps.test-app-cache.outputs.cache-hit != 'true'
         working-directory: test-app
         run: |
           npm ci --legacy-peer-deps
-          npx expo run:android --variant release --no-install
+          npx expo prebuild --platform android
+
+      - name: Build release APK
+        if: steps.test-app-cache.outputs.cache-hit != 'true'
+        working-directory: test-app/android
+        run: ./gradlew assembleRelease
 
       - uses: actions/upload-artifact@v4
         with:
