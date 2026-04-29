@@ -17,7 +17,7 @@ import * as path from 'node:path';
 import * as fs from 'node:fs';
 import { watch as chokidarWatch, type FSWatcher } from 'chokidar';
 import { minimatch } from 'minimatch';
-import type { TapsmithConfig } from './config.js';
+import { normalizeGrep, type TapsmithConfig } from './config.js';
 import { findDaemonBin } from './daemon-bin.js';
 import type { Device } from './device.js';
 import { TapsmithGrpcClient } from './grpc-client.js';
@@ -27,6 +27,7 @@ import type { ResolvedProject } from './project.js';
 import {
   deserializeTestResult,
   deserializeSuiteResult,
+  serializeRegExpArray,
   type SerializedConfig,
   type RunFileUseOptions,
 } from './worker-protocol.js';
@@ -151,6 +152,8 @@ export async function runWatchMode(ctx: WatchModeContext): Promise<void> {
     simulator: ctx.config.simulator,
     baseURL: ctx.config.baseURL,
     extraHTTPHeaders: ctx.config.extraHTTPHeaders,
+    grep: serializeRegExpArray(normalizeGrep(ctx.config.grep)),
+    grepInvert: serializeRegExpArray(normalizeGrep(ctx.config.grepInvert)),
   };
 
   // Resolve tsx binary for forking TypeScript files

@@ -4,6 +4,9 @@ import {
   deserializeTestResult,
   serializeSuiteResult,
   deserializeSuiteResult,
+  serializeRegExp,
+  serializeRegExpArray,
+  deserializeRegExpArray,
 } from '../worker-protocol.js';
 import type { TestResult, SuiteResult } from '../runner.js';
 
@@ -118,6 +121,38 @@ describe('worker-protocol serialization', () => {
       const deserialized = deserializeSuiteResult(serialized);
       expect(deserialized.tests).toEqual([]);
       expect(deserialized.suites).toEqual([]);
+    });
+  });
+
+  describe('serializeRegExp / serializeRegExpArray / deserializeRegExpArray', () => {
+    it('round-trips source and flags through serialization', () => {
+      const original = /Foo|Bar/i;
+      const serialized = serializeRegExp(original);
+      expect(serialized).toEqual({ source: 'Foo|Bar', flags: 'i' });
+
+      const [restored] = deserializeRegExpArray([serialized])!;
+      expect(restored.source).toBe(original.source);
+      expect(restored.flags).toBe(original.flags);
+      expect(restored.test('foo')).toBe(true);
+      expect(restored.test('baz')).toBe(false);
+    });
+
+    it('returns undefined for empty/missing arrays so the runner can skip filtering', () => {
+      expect(serializeRegExpArray(undefined)).toBeUndefined();
+      expect(serializeRegExpArray([])).toBeUndefined();
+      expect(deserializeRegExpArray(undefined)).toBeUndefined();
+      expect(deserializeRegExpArray([])).toBeUndefined();
+    });
+
+    it('round-trips multi-flag patterns (e.g. global + multiline)', () => {
+      const original = /^cart\b/gm;
+      const serialized = serializeRegExpArray([original])!;
+      const [restored] = deserializeRegExpArray(serialized)!;
+      expect(restored.source).toBe(original.source);
+      // Order is implementation-defined; compare as set.
+      expect(restored.flags.split('').sort().join('')).toBe(
+        original.flags.split('').sort().join(''),
+      );
     });
   });
 });

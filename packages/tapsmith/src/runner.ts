@@ -406,6 +406,30 @@ export interface RunOptions {
   projectName?: string;
   /** Run only the test whose fullName matches this value. All other tests are skipped. */
   testFilter?: string;
+  /**
+   * Regular expressions matched against each test's fullName. When set, only
+   * tests with a fullName matching at least one pattern are run; the rest are
+   * marked skipped. Mirrors Playwright's `--grep` / `config.grep`.
+   */
+  grep?: RegExp[];
+  /**
+   * Per-project grep filter, intersected with `grep`. A test must match at
+   * least one pattern in this set AND at least one pattern in `grep` (when
+   * either is set). Mirrors Playwright's per-project `grep`, which AND-s
+   * with the root `grep`.
+   */
+  projectGrep?: RegExp[];
+  /**
+   * Regular expressions matched against each test's fullName. When set, tests
+   * whose fullName matches any of these patterns are skipped. Mirrors
+   * Playwright's `--grep-invert` / `config.grepInvert`.
+   */
+  grepInvert?: RegExp[];
+  /**
+   * Per-project grep-invert filter, unioned with `grepInvert`. A test that
+   * matches any pattern in either set is skipped.
+   */
+  projectGrepInvert?: RegExp[];
   /** Called with mapped network entries after capture stops. Used by UI mode for live streaming. */
   onNetworkEntries?: (entries: import('./trace/types.js').NetworkEntry[]) => void;
   /**
@@ -446,6 +470,41 @@ async function captureFailureScreenshot(
     // screenshot capture is best-effort
   }
   return undefined;
+}
+
+/**
+ * Whether a test's fullName passes all configured selection filters
+ * (`testFilter`, `grep`, `grepInvert`). A test that doesn't pass is skipped.
+ *
+ * - `testFilter`: exact-match or describe-prefix match.
+ * - `grep` / `projectGrep`: each set must have at least one matching regex
+ *   (intersected: root AND project).
+ * - `grepInvert` / `projectGrepInvert`: no regex in the union may match.
+ */
+// Reset lastIndex before each test() — RegExp with the `g` flag is stateful.
+function passesTestFilter(fullName: string, opts: RunOptions): boolean {
+  if (opts.testFilter
+    && fullName !== opts.testFilter
+    && !fullName.startsWith(opts.testFilter + ' > ')) {
+    return false;
+  }
+  if (opts.grep && opts.grep.length > 0
+    && !opts.grep.some((re) => (re.lastIndex = 0, re.test(fullName)))) {
+    return false;
+  }
+  if (opts.projectGrep && opts.projectGrep.length > 0
+    && !opts.projectGrep.some((re) => (re.lastIndex = 0, re.test(fullName)))) {
+    return false;
+  }
+  if (opts.grepInvert && opts.grepInvert.length > 0
+    && opts.grepInvert.some((re) => (re.lastIndex = 0, re.test(fullName)))) {
+    return false;
+  }
+  if (opts.projectGrepInvert && opts.projectGrepInvert.length > 0
+    && opts.projectGrepInvert.some((re) => (re.lastIndex = 0, re.test(fullName)))) {
+    return false;
+  }
+  return true;
 }
 
 // Dispatch based on Function.length (parameter count). Note: fn.length does
@@ -566,19 +625,15 @@ async function runSuiteContext(
     const traceConfig = resolveTraceConfig(opts.config.trace);
     if (shouldRecord(traceConfig.mode, 0)) {
       // Pick the test to tag beforeAll trace events with. The predicate
-      // must match the loop's actual shouldSkip (line ~698) — otherwise we
-      // could fire onTestStart for a test that the loop will skip, and the
-      // duplicate-test-start guard below would then swallow the real
-      // first-test test-start. Mirror: skip explicit `.skip`, honour
-      // `.only` when any are set, and respect testFilter.
-      const matchesFilter = (fn: string): boolean => !opts.testFilter
-        || fn === opts.testFilter
-        || fn.startsWith(opts.testFilter + ' > ');
+      // must match the loop's actual shouldSkip — otherwise we could fire
+      // onTestStart for a test that the loop will skip, and the
+      // duplicate-test-start guard below would swallow the real first-test
+      // test-start.
       const targetTest = ctx.tests.find((t) => {
         if (t.skip) return false;
         if (hasOnly && !t.only) return false;
         const fn = parentPrefix ? `${parentPrefix} > ${t.name}` : t.name;
-        return matchesFilter(fn);
+        return passesTestFilter(fn, opts);
       });
       if (targetTest && opts.onTestStart) {
         beforeAllFirstFullName = parentPrefix ? `${parentPrefix} > ${targetTest.name}` : targetTest.name;
@@ -702,9 +757,8 @@ async function runSuiteContext(
 
     // Determine if this test should be skipped.
     // testFilter matches either an exact test name or a describe prefix.
-    const filteredOut = opts.testFilter
-      && fullName !== opts.testFilter
-      && !fullName.startsWith(opts.testFilter + ' > ');
+    // grep / grepInvert match against the fullName as regular expressions.
+    const filteredOut = !passesTestFilter(fullName, opts);
     const shouldSkip = entry.skip || (hasOnly && !entry.only) || filteredOut;
 
     if (shouldSkip) {
@@ -1274,15 +1328,12 @@ async function runSuiteContext(
     const traceConfig = resolveTraceConfig(opts.config.trace);
     if (shouldRecord(traceConfig.mode, 0)) {
       // Find the last test that actually ran (not skipped/filtered) to tag events.
-      // Must account for testFilter and .only so we don't tag with a test that didn't run.
+      // Must account for selection filters and .only so we don't tag with a test that didn't run.
       const lastRunTest = [...ctx.tests].reverse().find((t) => {
         if (t.skip) return false;
         if (hasOnly && !t.only) return false;
-        if (opts.testFilter) {
-          const fn = parentPrefix ? `${parentPrefix} > ${t.name}` : t.name;
-          if (fn !== opts.testFilter && !fn.startsWith(opts.testFilter + ' > ')) return false;
-        }
-        return true;
+        const fn = parentPrefix ? `${parentPrefix} > ${t.name}` : t.name;
+        return passesTestFilter(fn, opts);
       });
       if (lastRunTest && opts.onTestStart) {
         const lastFullName = parentPrefix ? `${parentPrefix} > ${lastRunTest.name}` : lastRunTest.name;

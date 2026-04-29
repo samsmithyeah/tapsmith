@@ -1535,6 +1535,8 @@ correct device.
 | `dependencies` | `string[]` | Projects that must complete first |
 | `use` | `UseOptions` | Per-project option overrides (applied under file-level `test.use()`). Includes the device-shaping fields documented above. |
 | `workers` | `number` | Number of parallel workers (devices) for this project. Additive — does not consume from the global `workers` budget. When unset, the project shares the global budget proportionally to file count. |
+| `grep` | `RegExp \| RegExp[]` | Per-project grep filter, intersected with the root `grep`. A test must match at least one pattern in this set AND at least one pattern in the root set (when either is configured). |
+| `grepInvert` | `RegExp \| RegExp[]` | Per-project grep-invert filter, unioned with the root `grepInvert`. A test that matches any pattern in either set is skipped. |
 
 ### `loadConfig(dir?: string): Promise<TapsmithConfig>`
 
@@ -1823,6 +1825,53 @@ npx tapsmith test --shard=4/4
 ```
 
 When sharding is active, the `blob` reporter is automatically added so results can be merged later with `tapsmith merge-reports`.
+
+### `tapsmith test --grep <pattern>` / `tapsmith test -g <pattern>`
+
+Run only the tests whose fullName (`describe > test`) matches the given regular expression. Mirrors Playwright's `--grep`.
+
+```bash
+npx tapsmith test --grep checkout            # Only tests with "checkout" in their fullName
+npx tapsmith test -g "^login > "             # Only tests inside the top-level "login" describe
+npx tapsmith test --grep "@smoke|@critical"  # Run smoke + critical tests by tag-style suffixes
+```
+
+The pattern is compiled as a JavaScript `RegExp`. Combine with `--grep-invert` to further narrow the selection.
+
+The same filter can be set in `tapsmith.config.ts`:
+
+```ts
+export default defineConfig({
+  grep: /checkout/,                  // single pattern
+})
+
+// Or match any of several patterns:
+export default defineConfig({
+  grep: [/login/, /signup/],         // any pattern matches
+})
+```
+
+Per-project filters are intersected with the root filter (a test must match both):
+
+```ts
+export default defineConfig({
+  grep: /smoke/,
+  projects: [
+    { name: 'android', grep: /android/ }, // runs tests matching BOTH /smoke/ and /android/
+  ],
+})
+```
+
+### `tapsmith test --grep-invert <pattern>`
+
+Skip tests whose fullName matches the given regular expression. Mirrors Playwright's `--grep-invert`.
+
+```bash
+npx tapsmith test --grep-invert slow          # Run everything except "slow" tests
+npx tapsmith test -g checkout --grep-invert wip  # Checkout tests, excluding work-in-progress
+```
+
+Also configurable in `tapsmith.config.ts` as `grepInvert: RegExp | RegExp[]`, with per-project entries unioned with the root entry.
 
 ### `tapsmith show-trace <file.zip>`
 
