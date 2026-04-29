@@ -14,10 +14,10 @@ env:
   SHARD_TOTAL: 4
 
 jobs:
-  # ─── Build prerequisites ───────────────────────────────────────────────
+  # ─── Build prerequisites (parallel) ────────────────────────────────────
 
-  build:
-    name: Build
+  build-daemon:
+    name: Build Daemon
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
@@ -37,9 +37,21 @@ jobs:
           key: ${{ runner.os }}-cargo-e2e-${{ hashFiles('packages/tapsmith-core/Cargo.lock') }}
           restore-keys: ${{ runner.os }}-cargo-e2e-
 
-      - name: Build daemon
+      - name: Build release binary
         working-directory: packages/tapsmith-core
         run: cargo build --release
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: daemon-binary-macos
+          retention-days: 1
+          path: packages/tapsmith-core/target/release/tapsmith-core
+
+  build-agent:
+    name: Build Agent
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
 
       - name: Select Xcode
         run: sudo xcode-select -s /Applications/Xcode.app/Contents/Developer
@@ -50,7 +62,7 @@ jobs:
           brew install xcodegen 2>/dev/null || true
           ./create-xcode-project.sh
 
-      - name: Build iOS agent
+      - name: Build for testing
         working-directory: ios-agent
         run: |
           xcodebuild build-for-testing \
@@ -60,15 +72,7 @@ jobs:
             -derivedDataPath .build-sim \
             -quiet
 
-      - name: Upload daemon binary
-        uses: actions/upload-artifact@v4
-        with:
-          name: daemon-binary-macos
-          retention-days: 1
-          path: packages/tapsmith-core/target/release/tapsmith-core
-
-      - name: Upload iOS agent
-        uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v4
         with:
           name: ios-agent-build
           retention-days: 1
@@ -79,7 +83,7 @@ jobs:
 
   e2e-test:
     name: "Shard ${{ matrix.shard }}/4"
-    needs: [build]
+    needs: [build-daemon, build-agent]
     runs-on: macos-latest
     timeout-minutes: 30
     strategy:
