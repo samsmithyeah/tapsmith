@@ -13,8 +13,8 @@ use tokio::sync::{mpsc, oneshot, RwLock};
 use tracing::{debug, warn};
 
 use crate::network_proxy::{
-    sanitise_request_line_component, write_header_sanitised, NetworkHandler, ParsedRequest,
-    ParsedResponse, RequestOutcome,
+    sanitise_request_line_component, write_header_sanitised, NetworkHandler, OverrideOrigin,
+    ParsedRequest, ParsedResponse, RequestOutcome,
 };
 use crate::proto;
 
@@ -337,8 +337,11 @@ impl NetworkHandler for RouteInterceptHandler {
                                     .port_or_known_default()
                                     .unwrap_or(if parsed.scheme() == "https" { 443 } else { 80 });
                                 let new_is_https = parsed.scheme() == "https";
-                                req.override_host =
-                                    Some((new_host.to_string(), new_port, new_is_https));
+                                req.override_host = Some(OverrideOrigin {
+                                    host: new_host.to_string(),
+                                    port: new_port,
+                                    is_https: new_is_https,
+                                });
                                 // Auto-update Host header to match the new origin
                                 let host_val = if (new_is_https && new_port == 443)
                                     || (!new_is_https && new_port == 80)

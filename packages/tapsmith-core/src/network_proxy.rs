@@ -80,8 +80,16 @@ pub(crate) struct ParsedRequest {
     pub body: Vec<u8>,
     pub raw_bytes: Vec<u8>,
     /// Set by `route.continue({ url })` when the override URL targets a
-    /// different origin. Fields: (hostname, port, is_https).
-    pub override_host: Option<(String, u16, bool)>,
+    /// different origin.
+    pub override_host: Option<OverrideOrigin>,
+}
+
+/// Cross-origin target for `route.continue({ url })` redirects.
+#[derive(Debug, Clone)]
+pub(crate) struct OverrideOrigin {
+    pub host: String,
+    pub port: u16,
+    pub is_https: bool,
 }
 
 /// A decoded HTTP response, structured for transformation hooks.
@@ -1498,18 +1506,17 @@ async fn handle_mitm_http<C, U>(
 
         // When cross-origin, use the override values for logging/events.
         let (effective_hostname, effective_is_https);
-        if let Some((ref h, _, is_tls)) = req.override_host {
-            effective_hostname = h.clone();
-            effective_is_https = is_tls;
+        if let Some(ref origin) = req.override_host {
+            effective_hostname = origin.host.clone();
+            effective_is_https = origin.is_https;
         } else {
             effective_hostname = hostname.to_string();
             effective_is_https = is_https;
         }
 
-        let mut resp = if req.override_host.is_some() {
-            let (ref new_host, new_port, new_is_https) = req.override_host.as_ref().unwrap();
-            let scheme = if *new_is_https { "https" } else { "http" };
-            let url = format!("{scheme}://{new_host}:{new_port}{}", req.path);
+        let mut resp = if let Some(ref origin) = req.override_host {
+            let scheme = if origin.is_https { "https" } else { "http" };
+            let url = format!("{scheme}://{}:{}{}", origin.host, origin.port, req.path);
             match crate::route_handler::fetch_upstream(&url, &req.method, &req.headers, &req.body)
                 .await
             {
@@ -1745,11 +1752,14 @@ async fn handle_http(
                 effective_path = parsed_req.path;
                 req_headers = parsed_req.headers;
                 request_body = parsed_req.body;
-                if let Some((ref new_host, new_port, new_is_https)) = parsed_req.override_host {
+                if let Some(ref origin) = parsed_req.override_host {
                     // Cross-origin: use fetch_upstream which handles both
                     // HTTP and HTTPS targets correctly.
-                    let scheme = if new_is_https { "https" } else { "http" };
-                    let url = format!("{scheme}://{new_host}:{new_port}{}", effective_path);
+                    let scheme = if origin.is_https { "https" } else { "http" };
+                    let url = format!(
+                        "{scheme}://{}:{}{}",
+                        origin.host, origin.port, effective_path
+                    );
                     let resp = match crate::route_handler::fetch_upstream(
                         &url,
                         &effective_method,
@@ -1766,7 +1776,7 @@ async fn handle_http(
                     };
                     let raw = reencode_response(&resp);
                     let _ = client.write_all(&raw).await;
-                    hostname_owned = new_host.clone();
+                    hostname_owned = origin.host.clone();
                     let notify_req = ParsedRequest {
                         method: effective_method,
                         path: effective_path,
@@ -1780,7 +1790,7 @@ async fn handle_http(
                             &notify_req,
                             &resp,
                             &hostname_owned,
-                            new_is_https,
+                            origin.is_https,
                             "continued",
                         )
                         .await;
@@ -1790,7 +1800,7 @@ async fn handle_http(
                         &notify_req,
                         &resp,
                         &hostname_owned,
-                        new_is_https,
+                        origin.is_https,
                         start,
                         "continued",
                     )
