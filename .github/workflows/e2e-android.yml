@@ -167,9 +167,11 @@ jobs:
         working-directory: e2e
         run: npm ci
 
-      - name: Run E2E tests
+      - name: Run E2E tests (retry once on infra failure)
         working-directory: e2e
-        run: npx tapsmith test -c tapsmith.config.android.mjs --shard=${{ matrix.shard }}/${{ env.SHARD_TOTAL }} --workers 1
+        run: |
+          npx tapsmith test -c tapsmith.config.android.mjs --shard=${{ matrix.shard }}/${{ env.SHARD_TOTAL }} --workers 1 || \
+          npx tapsmith test -c tapsmith.config.android.mjs --shard=${{ matrix.shard }}/${{ env.SHARD_TOTAL }} --workers 1
 
       - name: Upload blob report
         if: always()

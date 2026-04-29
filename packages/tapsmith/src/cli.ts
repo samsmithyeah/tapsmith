@@ -2062,9 +2062,8 @@ async function main(): Promise<void> {
     }
     // Leave emulators running for reuse by the next run.
     preserveEmulatorsForReuse(launchedEmulators);
+    process.exit(sequentialExitCode);
   }
-
-  process.exit(sequentialExitCode);
 }
 
 // ─── Infrastructure error recovery for single-worker mode ───
