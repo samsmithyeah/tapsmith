@@ -104,6 +104,27 @@ jobs:
           npm ci --legacy-peer-deps
           npx expo prebuild --platform ios
 
+      - name: Patch Podfile for Swift 6 compatibility
+        if: steps.test-app-cache.outputs.cache-hit != 'true'
+        working-directory: test-app/ios
+        run: |
+          # expo-modules-core 55.x has unresolved Swift 6 concurrency violations
+          # (expo/expo#42525). Inject SWIFT_STRICT_CONCURRENCY=minimal into the
+          # post_install hook so it applies per-pod target, not just top-level.
+          ruby -i -pe '
+            if /react_native_post_install/ =~ $_
+              $_ += <<~RUBY
+
+                # [CI] Relax Swift 6 strict concurrency for Expo pods
+                installer.pods_project.targets.each do |target|
+                  target.build_configurations.each do |config|
+                    config.build_settings["SWIFT_STRICT_CONCURRENCY"] ||= "minimal"
+                  end
+                end
+              RUBY
+            end
+          ' Podfile
+
       - name: Install CocoaPods
         if: steps.test-app-cache.outputs.cache-hit != 'true'
         working-directory: test-app/ios
@@ -119,7 +140,6 @@ jobs:
             -configuration Release \
             -destination 'generic/platform=iOS Simulator' \
             -derivedDataPath ../.build \
-            SWIFT_STRICT_CONCURRENCY=minimal \
             -quiet
 
       - name: Copy to fixtures path
