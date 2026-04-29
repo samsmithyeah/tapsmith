@@ -79,24 +79,26 @@ class ActionExecutor {
         }
         element.tap()
         Thread.sleep(forTimeInterval: 0.05)
-        typeCharByChar(text, delayMs: delayMs)
+        typeIntoFocused(text, delayMs: delayMs)
     }
 
     /// Type text into the currently focused element.
     func typeTextWithoutFocus(_ text: String, delayMs: Int = 0) {
-        typeCharByChar(text, delayMs: delayMs)
+        typeIntoFocused(text, delayMs: delayMs)
     }
 
-    func typeCharByChar(_ text: String, delayMs: Int = 0) {
-        let delay = TimeInterval(delayMs) / 1000.0
-        for char in text {
-            let s = String(char)
-            if !EventSynthesizer.typeText(s) {
-                app.typeText(s)
-            }
-            if delay > 0 {
+    /// Type text using XCUITest's built-in typeText, which has proper
+    /// event synchronisation. EventSynthesizer is unreliable on slow CI
+    /// simulators — it drops characters regardless of inter-key delay.
+    private func typeIntoFocused(_ text: String, delayMs: Int = 0) {
+        if delayMs > 0 {
+            let delay = TimeInterval(delayMs) / 1000.0
+            for char in text {
+                app.typeText(String(char))
                 Thread.sleep(forTimeInterval: delay)
             }
+        } else {
+            app.typeText(text)
         }
     }
 
