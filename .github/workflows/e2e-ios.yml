@@ -112,15 +112,29 @@ jobs:
           path: ios-agent/.build-sim
 
       - name: Make daemon executable
-        run: chmod +x packages/tapsmith-core/target/release/tapsmith-core
+        run: |
+          chmod +x packages/tapsmith-core/target/release/tapsmith-core
+          xattr -d com.apple.quarantine packages/tapsmith-core/target/release/tapsmith-core 2>/dev/null || true
 
-      - name: Select Xcode and detect simulator
+      - name: Select Xcode and boot simulator
         run: |
           sudo xcode-select -s /Applications/Xcode.app/Contents/Developer
           xcodebuild -version
           SIM=$(xcrun simctl list devices available | grep -oE "iPhone [0-9]+ " | head -1 | xargs)
           echo "Using simulator: $SIM"
           echo "TAPSMITH_IOS_SIMULATOR=$SIM" >> $GITHUB_ENV
+          UDID=$(xcrun simctl list devices available -j | python3 -c "
+          import json,sys
+          d=json.load(sys.stdin)
+          for devs in d['devices'].values():
+            for dev in devs:
+              if dev['name']=='$SIM' and dev['isAvailable']:
+                print(dev['udid']); sys.exit()
+          ")
+          if [ -n "$UDID" ]; then
+            echo "Booting $SIM ($UDID)"
+            xcrun simctl boot "$UDID" 2>/dev/null || true
+          fi
 
       - name: Link agent build to DerivedData for auto-discovery
         run: |
