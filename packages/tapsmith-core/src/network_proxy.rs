@@ -1496,10 +1496,19 @@ async fn handle_mitm_http<C, U>(
             }
         }
 
-        let mut resp = if let Some((ref new_host, new_port, new_is_https)) = req.override_host {
-            // Cross-origin redirect: make an independent upstream request to
-            // the new host instead of using the pre-established connection.
-            let scheme = if new_is_https { "https" } else { "http" };
+        // When cross-origin, use the override values for logging/events.
+        let (effective_hostname, effective_is_https);
+        if let Some((ref h, _, is_tls)) = req.override_host {
+            effective_hostname = h.clone();
+            effective_is_https = is_tls;
+        } else {
+            effective_hostname = hostname.to_string();
+            effective_is_https = is_https;
+        }
+
+        let mut resp = if req.override_host.is_some() {
+            let (ref new_host, new_port, new_is_https) = req.override_host.as_ref().unwrap();
+            let scheme = if *new_is_https { "https" } else { "http" };
             let url = format!("{scheme}://{new_host}:{new_port}{}", req.path);
             match crate::route_handler::fetch_upstream(&url, &req.method, &req.headers, &req.body)
                 .await
@@ -1522,11 +1531,9 @@ async fn handle_mitm_http<C, U>(
             }
         };
 
-        // Response hook: optionally transform the response before forwarding.
-        // Same `raw_bytes` regeneration rule — keep wire bytes in sync with
-        // the structured fields after any mutation.
         if let Some(h) = handler.as_ref() {
-            h.on_response(&req, hostname, is_https, &mut resp).await;
+            h.on_response(&req, &effective_hostname, effective_is_https, &mut resp)
+                .await;
             resp.raw_bytes = reencode_response(&resp);
         }
 
@@ -1534,21 +1541,24 @@ async fn handle_mitm_http<C, U>(
             return;
         }
 
-        // Extract keep-alive hint BEFORE recording so we can consume `resp`
-        // via borrow rather than move. Matches original semantics: only
-        // response's Connection: close is honored, request's is ignored.
         let connection_close = has_connection_close(&resp.headers);
 
         if let Some(h) = handler.as_ref() {
-            h.notify_response(&req, &resp, hostname, is_https, route_action_on_pass)
-                .await;
+            h.notify_response(
+                &req,
+                &resp,
+                &effective_hostname,
+                effective_is_https,
+                route_action_on_pass,
+            )
+            .await;
         }
         record_entry(
             &state,
             &req,
             &resp,
-            hostname,
-            is_https,
+            &effective_hostname,
+            effective_is_https,
             start,
             route_action_on_pass,
         )
@@ -1757,37 +1767,34 @@ async fn handle_http(
                     let raw = reencode_response(&resp);
                     let _ = client.write_all(&raw).await;
                     hostname_owned = new_host.clone();
-                    let hostname = &hostname_owned;
-                    if let Some(h) = handler.as_ref() {
-                        let notify_req = ParsedRequest {
-                            method: effective_method.clone(),
-                            path: effective_path.clone(),
-                            headers: req_headers.clone(),
-                            body: request_body.clone(),
-                            raw_bytes: Vec::new(),
-                            override_host: None,
-                        };
-                        h.notify_response(&notify_req, &resp, hostname, false, "continued")
-                            .await;
-                    }
-                    state.lock().await.entries.push(CapturedEntry {
+                    let notify_req = ParsedRequest {
                         method: effective_method,
-                        url: url.clone(),
-                        status_code: resp.status_code,
-                        content_type: get_header(&resp.headers, "content-type")
-                            .unwrap_or_default()
-                            .to_string(),
-                        request_size: request_body.len() as u64,
-                        response_size: resp.body.len() as u64,
-                        start_time_ms: start,
-                        duration_ms: now_ms() - start,
-                        request_headers: req_headers,
-                        response_headers: resp.headers,
-                        request_body,
-                        response_body: resp.body,
-                        is_https: new_is_https,
-                        route_action: "continued".to_string(),
-                    });
+                        path: effective_path,
+                        headers: req_headers,
+                        body: request_body,
+                        raw_bytes: Vec::new(),
+                        override_host: None,
+                    };
+                    if let Some(h) = handler.as_ref() {
+                        h.notify_response(
+                            &notify_req,
+                            &resp,
+                            &hostname_owned,
+                            new_is_https,
+                            "continued",
+                        )
+                        .await;
+                    }
+                    record_entry(
+                        &state,
+                        &notify_req,
+                        &resp,
+                        &hostname_owned,
+                        new_is_https,
+                        start,
+                        "continued",
+                    )
+                    .await;
                     return;
                 }
             }
