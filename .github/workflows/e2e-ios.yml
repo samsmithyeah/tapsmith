@@ -110,20 +110,24 @@ jobs:
         run: |
           # expo-modules-core 55.x has unresolved Swift 6 concurrency violations
           # (expo/expo#42525). Inject SWIFT_STRICT_CONCURRENCY=minimal into the
-          # post_install hook so it applies per-pod target, not just top-level.
-          ruby -i -pe '
-            if /react_native_post_install/ =~ $_
-              $_ += <<~RUBY
-
-                # [CI] Relax Swift 6 strict concurrency for Expo pods
-                installer.pods_project.targets.each do |target|
-                  target.build_configurations.each do |config|
-                    config.build_settings["SWIFT_STRICT_CONCURRENCY"] ||= "minimal"
-                  end
+          # existing post_install hook so it applies per-pod target.
+          python3 -c "
+          with open('Podfile', 'r') as f:
+              content = f.read()
+          patch = '''
+              installer.pods_project.targets.each do |target|
+                target.build_configurations.each do |bc|
+                  bc.build_settings['SWIFT_STRICT_CONCURRENCY'] ||= 'minimal'
                 end
-              RUBY
-            end
-          ' Podfile
+              end
+          '''
+          content = content.replace(
+              '    )\n  end\nend',
+              '    )\n' + patch + '  end\nend'
+          )
+          with open('Podfile', 'w') as f:
+              f.write(content)
+          "
 
       - name: Install CocoaPods
         if: steps.test-app-cache.outputs.cache-hit != 'true'
