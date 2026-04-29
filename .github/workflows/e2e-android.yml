@@ -154,6 +154,7 @@ jobs:
             -k "${{ env.ANDROID_SYSTEM_IMAGE }}" \
             --device "pixel_6" \
             --force
+          adb start-server
           nohup emulator -avd "${{ env.AVD_NAME }}" \
             -port 5554 \
             -read-only \
