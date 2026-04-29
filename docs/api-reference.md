@@ -1842,8 +1842,12 @@ The same filter can be set in `tapsmith.config.ts`:
 
 ```ts
 export default defineConfig({
-  grep: /checkout/,            // single pattern
-  grep: [/login/, /signup/],   // any pattern matches
+  grep: /checkout/,                  // single pattern
+})
+
+// Or match any of several patterns:
+export default defineConfig({
+  grep: [/login/, /signup/],         // any pattern matches
 })
 ```
 

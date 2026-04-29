@@ -874,12 +874,14 @@ interface CliArgs {
   tsxReexec: boolean;
   /** Pattern from `--grep` / `-g`. Compiled to a RegExp later. */
   grep?: string;
-  /** Pattern from `--grep-invert` / `-gv`. Compiled to a RegExp later. */
+  /** Pattern from `--grep-invert`. Compiled to a RegExp later. */
   grepInvert?: string;
 }
 
 function compileGrepPattern(pattern: string, flag: string): RegExp {
   try {
+    const match = pattern.match(/^\/(.*)\/([gimusy]*)$/);
+    if (match) return new RegExp(match[1], match[2]);
     return new RegExp(pattern);
   } catch (err) {
     console.error(red(`${flag} is not a valid regular expression: ${(err as Error).message}`));

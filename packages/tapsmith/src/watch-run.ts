@@ -175,9 +175,8 @@ async function handleRun(msg: WatchRunMessage): Promise<void> {
     reporter: reporterProxy,
     projectUseOptions: msg.projectUseOptions,
     projectName: msg.projectName,
-    // configFromSerialized stores grep/grepInvert as RegExp[] (from deserialization).
-    grep: Array.isArray(config.grep) ? config.grep : undefined,
-    grepInvert: Array.isArray(config.grepInvert) ? config.grepInvert : undefined,
+    grep: deserializeRegExpArray(msg.config.grep),
+    grepInvert: deserializeRegExpArray(msg.config.grepInvert),
   });
 
   const results = collectResults(suiteResult);

@@ -488,19 +488,19 @@ function passesTestFilter(fullName: string, opts: RunOptions): boolean {
     return false;
   }
   if (opts.grep && opts.grep.length > 0
-    && !opts.grep.some((re) => re.test(fullName))) {
+    && !opts.grep.some((re) => (re.lastIndex = 0, re.test(fullName)))) {
     return false;
   }
   if (opts.projectGrep && opts.projectGrep.length > 0
-    && !opts.projectGrep.some((re) => re.test(fullName))) {
+    && !opts.projectGrep.some((re) => (re.lastIndex = 0, re.test(fullName)))) {
     return false;
   }
   if (opts.grepInvert && opts.grepInvert.length > 0
-    && opts.grepInvert.some((re) => re.test(fullName))) {
+    && opts.grepInvert.some((re) => (re.lastIndex = 0, re.test(fullName)))) {
     return false;
   }
   if (opts.projectGrepInvert && opts.projectGrepInvert.length > 0
-    && opts.projectGrepInvert.some((re) => re.test(fullName))) {
+    && opts.projectGrepInvert.some((re) => (re.lastIndex = 0, re.test(fullName)))) {
     return false;
   }
   return true;
