@@ -6,7 +6,7 @@ export default defineConfig({
   package: "dev.tapsmith.testapp",
   timeout: 20_000,
   retries: 0,
-  reporter: [["list"], ["html", { open: "never" }]],
+  reporter: [["list"], ["github"], ["html", { open: "never" }]],
   screenshot: "only-on-failure",
   trace: { mode: "retain-on-failure", network: false },
   video: "retain-on-failure",
