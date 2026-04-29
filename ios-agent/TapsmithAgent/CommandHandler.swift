@@ -317,7 +317,25 @@ class CommandHandler {
                 if let center = snapshotCenter(for: element.elementId) {
                     actionExecutor.tapCoordinates(x: Int(center.x), y: Int(center.y))
                     Thread.sleep(forTimeInterval: 0.5)
-                    actionExecutor.typeTextWithoutFocus(text, delayMs: delayMs)
+                    actionExecutor.typeViaEventSynthesizer(text, delayMs: delayMs)
+                    // Verify and retry: EventSynthesizer can drop characters
+                    // on slow CI simulators. Re-read the field value and type
+                    // any missing suffix.
+                    if delayMs > 0, !text.contains("\n") {
+                        Thread.sleep(forTimeInterval: 0.1)
+                        for attempt in 0..<3 {
+                            let fresh = try resolveElement(selectorParams)
+                            let current = fresh.text ?? ""
+                            if text.hasPrefix(current) && current.count < text.count {
+                                let missing = String(text.dropFirst(current.count))
+                                NSLog("[typeText] Retry \(attempt+1): got '\(current)', missing '\(missing)'")
+                                actionExecutor.typeViaEventSynthesizer(missing, delayMs: delayMs)
+                                Thread.sleep(forTimeInterval: 0.1)
+                            } else {
+                                break
+                            }
+                        }
+                    }
                 } else {
                     let xcElem = try getXCUIElement(element.elementId)
                     try actionExecutor.typeText(xcElem, text: text, delayMs: delayMs)
