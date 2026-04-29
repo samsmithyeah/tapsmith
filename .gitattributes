@@ -1,1 +1,2 @@
 e2e/fixtures/app-release.apk filter=lfs diff=lfs merge=lfs -text
+e2e/fixtures/TapsmithTestApp.app.tar.gz filter=lfs diff=lfs merge=lfs -text

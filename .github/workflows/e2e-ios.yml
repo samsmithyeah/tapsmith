@@ -1,0 +1,200 @@
+name: E2E iOS
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: e2e-ios-${{ github.head_ref || github.run_id }}
+  cancel-in-progress: true
+
+env:
+  SHARD_TOTAL: 4
+
+jobs:
+  # ─── Build prerequisites ───────────────────────────────────────────────
+
+  build:
+    name: Build
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Install protobuf compiler
+        run: brew install protobuf
+
+      - name: Cache Cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            packages/tapsmith-core/target
+          key: ${{ runner.os }}-cargo-e2e-${{ hashFiles('packages/tapsmith-core/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-e2e-
+
+      - name: Build daemon
+        working-directory: packages/tapsmith-core
+        run: cargo build --release
+
+      - name: Select Xcode
+        run: sudo xcode-select -s /Applications/Xcode.app/Contents/Developer
+
+      - name: Generate Xcode project
+        working-directory: ios-agent
+        run: |
+          brew install xcodegen 2>/dev/null || true
+          ./create-xcode-project.sh
+
+      - name: Build iOS agent
+        working-directory: ios-agent
+        run: |
+          xcodebuild build-for-testing \
+            -project TapsmithAgent.xcodeproj \
+            -scheme TapsmithAgentUITests \
+            -destination 'platform=iOS Simulator,name=iPhone 16' \
+            -derivedDataPath .build-sim \
+            -quiet
+
+      - name: Upload daemon binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: daemon-binary-macos
+          retention-days: 1
+          path: packages/tapsmith-core/target/release/tapsmith-core
+
+      - name: Upload iOS agent
+        uses: actions/upload-artifact@v4
+        with:
+          name: ios-agent-build
+          retention-days: 1
+          path: ios-agent/.build-sim/
+
+  # ─── Sharded E2E execution ─────────────────────────────────────────────
+
+  e2e-test:
+    name: "Shard ${{ matrix.shard }}/4"
+    needs: [build]
+    runs-on: macos-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          lfs: true
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Download daemon binary
+        uses: actions/download-artifact@v4
+        with:
+          name: daemon-binary-macos
+          path: packages/tapsmith-core/target/release
+
+      - name: Download iOS agent
+        uses: actions/download-artifact@v4
+        with:
+          name: ios-agent-build
+          path: ios-agent/.build-sim
+
+      - name: Make daemon executable
+        run: chmod +x packages/tapsmith-core/target/release/tapsmith-core
+
+      - name: Select Xcode
+        run: sudo xcode-select -s /Applications/Xcode.app/Contents/Developer
+
+      - name: Link agent build to DerivedData for auto-discovery
+        run: |
+          mkdir -p ~/Library/Developer/Xcode/DerivedData
+          ln -s "$PWD/ios-agent/.build-sim" ~/Library/Developer/Xcode/DerivedData/TapsmithAgent-ci
+
+      - name: Extract test app
+        working-directory: e2e/fixtures
+        run: tar xzf TapsmithTestApp.app.tar.gz
+
+      - name: Install SDK dependencies
+        working-directory: packages/tapsmith
+        run: npm ci
+
+      - name: Build SDK
+        working-directory: packages/tapsmith
+        run: npm run build
+
+      - name: Install E2E dependencies
+        working-directory: e2e
+        run: npm ci
+
+      - name: Run E2E tests (retry once on infra failure)
+        working-directory: e2e
+        run: |
+          npx tapsmith test -c tapsmith.config.ios-ci.mjs --shard=${{ matrix.shard }}/${{ env.SHARD_TOTAL }} --workers 1 || \
+          npx tapsmith test -c tapsmith.config.ios-ci.mjs --shard=${{ matrix.shard }}/${{ env.SHARD_TOTAL }} --workers 1
+
+      - name: Upload blob report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: blob-report-ios-${{ matrix.shard }}
+          retention-days: 7
+          path: e2e/blob-report/
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results-ios-${{ matrix.shard }}
+          retention-days: 7
+          path: |
+            e2e/tapsmith-results/
+            !e2e/tapsmith-results/**/*.tar.gz
+
+  # ─── Merge shard reports ───────────────────────────────────────────────
+
+  e2e-report:
+    name: Merge Reports
+    needs: [e2e-test]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: packages/tapsmith/package-lock.json
+
+      - name: Install and build SDK
+        working-directory: packages/tapsmith
+        run: npm ci && npm run build
+
+      - name: Download all blob reports
+        uses: actions/download-artifact@v4
+        with:
+          pattern: blob-report-ios-*
+          path: all-blob-reports
+          merge-multiple: true
+
+      - name: Install E2E dependencies
+        working-directory: e2e
+        run: npm ci
+
+      - name: Merge reports
+        working-directory: e2e
+        run: npx tapsmith merge-reports ../all-blob-reports -c tapsmith.config.ios-ci.mjs
+
+      - name: Upload HTML report
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-ios-report
+          retention-days: 30
+          path: e2e/tapsmith-report/
