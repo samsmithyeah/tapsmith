@@ -9,6 +9,7 @@ export default defineConfig({
   reporter: [["list"], ["html", { open: "never" }]],
   screenshot: "only-on-failure",
   trace: { mode: "retain-on-failure", network: false },
+  video: "retain-on-failure",
   workers: 1,
   simulator: process.env.TAPSMITH_IOS_SIMULATOR || "iPhone 16",
   projects: [
