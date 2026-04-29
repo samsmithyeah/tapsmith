@@ -81,7 +81,7 @@ jobs:
 
   build-test-app:
     name: Build Test App
-    runs-on: macos-latest
+    runs-on: macos-26
     steps:
       - uses: actions/checkout@v4
 
@@ -103,31 +103,6 @@ jobs:
         run: |
           npm ci --legacy-peer-deps
           npx expo prebuild --platform ios
-
-      - name: Patch Podfile for Swift 6 compatibility
-        if: steps.test-app-cache.outputs.cache-hit != 'true'
-        working-directory: test-app/ios
-        run: |
-          # expo-modules-core 55.x has unresolved Swift 6 concurrency violations
-          # (expo/expo#42525). Inject SWIFT_STRICT_CONCURRENCY=minimal into the
-          # existing post_install hook so it applies per-pod target.
-          python3 -c "
-          with open('Podfile', 'r') as f:
-              content = f.read()
-          patch = '''
-              installer.pods_project.targets.each do |target|
-                target.build_configurations.each do |bc|
-                  bc.build_settings['SWIFT_STRICT_CONCURRENCY'] ||= 'minimal'
-                end
-              end
-          '''
-          content = content.replace(
-              '    )\n  end\nend',
-              '    )\n' + patch + '  end\nend'
-          )
-          with open('Podfile', 'w') as f:
-              f.write(content)
-          "
 
       - name: Install CocoaPods
         if: steps.test-app-cache.outputs.cache-hit != 'true'
