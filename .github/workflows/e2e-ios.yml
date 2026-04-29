@@ -68,7 +68,7 @@ jobs:
           xcodebuild build-for-testing \
             -project TapsmithAgent.xcodeproj \
             -scheme TapsmithAgentUITests \
-            -destination 'platform=iOS Simulator,name=iPhone 16' \
+            -destination 'generic/platform=iOS Simulator' \
             -derivedDataPath .build-sim \
             -quiet
 
