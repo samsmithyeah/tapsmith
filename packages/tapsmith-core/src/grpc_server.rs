@@ -4219,7 +4219,12 @@ impl proto::tapsmith_service_server::TapsmithService for TapsmithServiceImpl {
                     }
                     return Ok(Self::success_action_response(request_id));
                 }
-                // iOS simulator: extract archive directly into the app container
+                // iOS simulator: host-accessible container. Terminate before
+                // resolving/restoring so the target path reflects the current
+                // post-teardown data container.
+                let _ = ios::device::terminate_app(&serial, pkg).await;
+                tokio::time::sleep(Duration::from_millis(250)).await;
+
                 let container = match ios::device::get_app_container(&serial, pkg).await {
                     Ok(path) => path,
                     Err(e) => {
@@ -4233,8 +4238,19 @@ impl proto::tapsmith_service_server::TapsmithService for TapsmithServiceImpl {
                     }
                 };
 
-                // Terminate the app before restoring
-                let _ = ios::device::terminate_app(&serial, pkg).await;
+                // Clear before extracting. Extracting over an existing
+                // simulator container can leave stale SQLite/WAL/cache files
+                // behind on slower CI runners, causing the relaunched app to
+                // read the pre-restore state even though tar succeeded.
+                if let Err(e) = ios::device::clear_container(&container).await {
+                    return Ok(self
+                        .action_error(
+                            request_id,
+                            "APP_STATE_RESTORE_FAILED",
+                            format!("Failed to clear app container before restore: {e}"),
+                        )
+                        .await);
+                }
 
                 // Extract archive into the data container
                 let output = tokio::process::Command::new("tar")
