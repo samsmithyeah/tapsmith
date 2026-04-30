@@ -71,9 +71,12 @@ export class Device {
   /** @internal — Active WebView handle, if in WebView context. */
   _activeWebView: WebViewHandle | null = null;
 
-  constructor(client: TapsmithGrpcClient, config?: Partial<Pick<TapsmithConfig, 'timeout' | 'package' | 'platform' | 'simulator'>>) {
+  private _typingDelayMs: number;
+
+  constructor(client: TapsmithGrpcClient, config?: Partial<Pick<TapsmithConfig, 'timeout' | 'package' | 'platform' | 'simulator' | 'typingDelay'>>) {
     this._client = client;
     this._defaultTimeoutMs = config?.timeout ?? 30_000;
+    this._typingDelayMs = config?.typingDelay ?? 0;
     this.defaultPackageName = config?.package;
     this._platform = config?.platform ?? 'android';
     this._simulatorUdid = config?.simulator;
@@ -215,7 +218,7 @@ export class Device {
       takeScreenshot: () => this._takeScreenshotBuffer(),
       captureHierarchy: () => this._captureHierarchy(),
     } : undefined;
-    return new ElementHandle(this._client, selector, this._defaultTimeoutMs, { traceCapture });
+    return new ElementHandle(this._client, selector, this._defaultTimeoutMs, { traceCapture, typingDelay: this._typingDelayMs });
   }
 
   // ── Device-level actions ──
@@ -491,6 +494,9 @@ export class Device {
     errorMessage: string
   }> {
     const res = await this._client.startNetworkCapture();
+    if (res.success) {
+      this._ensureRouteManager().ensureEventsSubscribed();
+    }
     return {
       proxyPort: res.proxyPort,
       success: res.success,

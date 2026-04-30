@@ -2103,9 +2103,11 @@ async function main(): Promise<void> {
     }
     // Leave emulators running for reuse by the next run.
     preserveEmulatorsForReuse(launchedEmulators);
+    // Defer process.exit so any pending error handlers (unhandledRejection
+    // etc.) in the current microtask queue run first — process.exit() in a
+    // finally block swallows them.
+    setTimeout(() => process.exit(sequentialExitCode), 0);
   }
-
-  process.exit(sequentialExitCode);
 }
 
 // ─── Infrastructure error recovery for single-worker mode ───
@@ -2186,5 +2188,6 @@ main().catch(async (err) => {
     if (isDispatcherShuttingDown()) return;
   } catch { /* dispatcher not loaded — fall through */ }
   console.error(red(`Fatal error: ${err}`));
+  console.error((err as Error)?.stack ?? err);
   process.exit(1);
 });

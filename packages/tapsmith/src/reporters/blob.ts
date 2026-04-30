@@ -26,6 +26,7 @@ interface BlobData {
   suites: SerializedSuite[]
   tests: SerializedTest[]
   screenshots: Record<string, string>
+  attachments?: string[]
 }
 
 interface SerializedTest {
@@ -35,6 +36,8 @@ interface SerializedTest {
   durationMs: number
   error?: { message: string; stack?: string }
   screenshotKey?: string
+  traceKey?: string
+  videoKey?: string
 }
 
 interface SerializedSuite {
@@ -63,8 +66,25 @@ export class BlobReporter implements TapsmithReporter {
     const outputDir = path.resolve(rootDir, this._outputDir);
     fs.mkdirSync(outputDir, { recursive: true });
 
-    // Encode screenshots as base64
+    // Encode screenshots as base64, copy traces/videos as files
     const screenshots: Record<string, string> = {};
+    const attachments: string[] = [];
+
+    const copyAttachment = (filePath: string): string | undefined => {
+      try {
+        if (!fs.existsSync(filePath)) return undefined;
+        const key = path.basename(filePath);
+        const dest = path.join(outputDir, key);
+        if (!fs.existsSync(dest)) {
+          fs.copyFileSync(filePath, dest);
+        }
+        attachments.push(key);
+        return key;
+      } catch {
+        return undefined;
+      }
+    };
+
     const serializeTest = (t: TestResult): SerializedTest => {
       let screenshotKey: string | undefined;
       if (t.screenshotPath && fs.existsSync(t.screenshotPath)) {
@@ -73,6 +93,8 @@ export class BlobReporter implements TapsmithReporter {
           screenshots[screenshotKey] = fs.readFileSync(t.screenshotPath).toString('base64');
         }
       }
+      const traceKey = t.tracePath ? copyAttachment(t.tracePath) : undefined;
+      const videoKey = t.videoPath ? copyAttachment(t.videoPath) : undefined;
       return {
         name: t.name,
         fullName: t.fullName,
@@ -80,6 +102,8 @@ export class BlobReporter implements TapsmithReporter {
         durationMs: t.durationMs,
         error: t.error ? { message: t.error.message, stack: t.error.stack } : undefined,
         screenshotKey,
+        traceKey,
+        videoKey,
       };
     };
 
@@ -103,6 +127,7 @@ export class BlobReporter implements TapsmithReporter {
       suites: result.suites.map(serializeSuite),
       tests: result.tests.map(serializeTest),
       screenshots,
+      attachments,
     };
 
     // Use a shard-friendly filename (timestamp + random suffix)
@@ -153,12 +178,14 @@ export function mergeBlobs(blobDir: string): FullResult {
         durationMs: t.durationMs,
         error: t.error ? Object.assign(new Error(t.error.message), { stack: t.error.stack }) : undefined,
         screenshotPath: t.screenshotKey ? path.join(blobDir, t.screenshotKey) : undefined,
+        tracePath: t.traceKey ? path.join(blobDir, t.traceKey) : undefined,
+        videoPath: t.videoKey ? path.join(blobDir, t.videoKey) : undefined,
       });
     }
 
     // Restore suites
     for (const s of blob.suites) {
-      allSuites.push(deserializeSuite(s, blob.screenshots ?? {}, blobDir));
+      allSuites.push(deserializeSuite(s, blobDir));
     }
   }
 
@@ -173,7 +200,6 @@ export function mergeBlobs(blobDir: string): FullResult {
 
 function deserializeSuite(
   s: SerializedSuite,
-  screenshots: Record<string, string>,
   blobDir: string,
 ): SuiteResult {
   return {
@@ -186,7 +212,9 @@ function deserializeSuite(
       durationMs: t.durationMs,
       error: t.error ? Object.assign(new Error(t.error.message), { stack: t.error.stack }) : undefined,
       screenshotPath: t.screenshotKey ? path.join(blobDir, t.screenshotKey) : undefined,
+      tracePath: t.traceKey ? path.join(blobDir, t.traceKey) : undefined,
+      videoPath: t.videoKey ? path.join(blobDir, t.videoKey) : undefined,
     })),
-    suites: s.suites.map((child) => deserializeSuite(child, screenshots, blobDir)),
+    suites: s.suites.map((child) => deserializeSuite(child, blobDir)),
   };
 }

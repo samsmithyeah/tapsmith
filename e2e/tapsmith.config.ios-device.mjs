@@ -35,7 +35,6 @@ export default defineConfig({
     // fill up with iOS background services and unrelated apps.
     networkHosts: ["jsonplaceholder.typicode.com"],
   },
-  daemonBin: "../packages/tapsmith-core/target/release/tapsmith-core",
   projects: [
     {
       name: "authentication",

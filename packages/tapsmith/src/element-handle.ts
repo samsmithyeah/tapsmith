@@ -87,6 +87,8 @@ interface ElementHandleOptions {
   resolvedElementsPromise?: Promise<ElementInfo[]>;
   /** Trace capture context, propagated from the Device. */
   traceCapture?: TraceCapture;
+  /** Default inter-keystroke delay in ms, from config.typingDelay. */
+  typingDelay?: number;
 }
 
 // ─── Helpers ───
@@ -750,14 +752,16 @@ export class ElementHandle {
     return this._tracedAction('longPress', 'tap', () => this._client.longPress(sel, durationMs, remaining), 'Long press failed');
   }
 
-  async type(text: string): Promise<void> {
+  async type(text: string, options?: { delay?: number }): Promise<void> {
     const sel = await this._actionSelector();
-    return this._tracedAction('type', 'type', () => this._client.typeText(sel, text, this._timeoutMs), 'Type text failed', { inputValue: text });
+    const delay = options?.delay ?? this._options.typingDelay ?? 0;
+    return this._tracedAction('type', 'type', () => this._client.typeText(sel, text, this._timeoutMs, delay), 'Type text failed', { inputValue: text });
   }
 
-  async clearAndType(text: string): Promise<void> {
+  async clearAndType(text: string, options?: { delay?: number }): Promise<void> {
     const sel = await this._actionSelector();
-    return this._tracedAction('clearAndType', 'type', () => this._client.clearAndType(sel, text, this._timeoutMs), 'Clear and type failed', { inputValue: text });
+    const delay = options?.delay ?? this._options.typingDelay ?? 0;
+    return this._tracedAction('clearAndType', 'type', () => this._client.clearAndType(sel, text, this._timeoutMs, delay), 'Clear and type failed', { inputValue: text });
   }
 
   async clear(): Promise<void> {

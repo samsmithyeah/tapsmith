@@ -283,12 +283,13 @@ export class TapsmithGrpcClient {
     });
   }
 
-  async typeText(selector: Selector, text: string, timeoutMs?: number): Promise<ActionResponse> {
+  async typeText(selector: Selector, text: string, timeoutMs?: number, typingDelayMs?: number): Promise<ActionResponse> {
     return this.call<ActionResponse>('typeText', {
       requestId: requestId(),
       selector: this.selectorProto(selector),
       text,
       timeoutMs: timeoutMs ?? 0,
+      typingDelayMs: typingDelayMs ?? 0,
     });
   }
 
@@ -300,12 +301,13 @@ export class TapsmithGrpcClient {
     });
   }
 
-  async clearAndType(selector: Selector, text: string, timeoutMs?: number): Promise<ActionResponse> {
+  async clearAndType(selector: Selector, text: string, timeoutMs?: number, typingDelayMs?: number): Promise<ActionResponse> {
     return this.call<ActionResponse>('clearAndType', {
       requestId: requestId(),
       selector: this.selectorProto(selector),
       text,
       timeoutMs: timeoutMs ?? 0,
+      typingDelayMs: typingDelayMs ?? 0,
     });
   }
 

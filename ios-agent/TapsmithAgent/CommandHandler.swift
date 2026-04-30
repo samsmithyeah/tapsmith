@@ -189,6 +189,142 @@ class CommandHandler {
         return try elementFinder.getElement(elementId)
     }
 
+    /// Tap inside a text input, biased toward the trailing edge so refocusing
+    /// during retries keeps the insertion point at the end of the current
+    /// value instead of moving it into the middle of existing text.
+    private func focusElementForTyping(_ element: ElementInfo, settleTime: TimeInterval) throws {
+        let bounds = element.bounds
+        if bounds.width > 0 && bounds.height > 0 {
+            let inset = min(12, max(1, bounds.width / 4))
+            let x = CGFloat(max(bounds.left + 1, bounds.right - inset))
+            let y = CGFloat(bounds.centerY)
+            let screen = snapshotFinder.screenSize
+            if x >= 0 && y >= 0 && x <= screen.width && y <= screen.height {
+                actionExecutor.tapCoordinates(x: Int(x), y: Int(y))
+                Thread.sleep(forTimeInterval: settleTime)
+                return
+            }
+        }
+
+        let xcElem = try getXCUIElement(element.elementId)
+        guard xcElem.isHittable else {
+            throw AgentError.actionFailed("Element is not hittable — cannot type text")
+        }
+        xcElem.tap()
+        Thread.sleep(forTimeInterval: settleTime)
+    }
+
+    /// Type through EventSynthesizer, but don't advance to the next grapheme
+    /// until the target field's snapshot reflects the current one. This fixes
+    /// slow CI simulators dropping an in-string character (e.g. "test" ->
+    /// "tet"), which suffix-only verification cannot repair.
+    private func typeTextWithPerGraphemeVerification(
+        _ text: String,
+        selectorParams: [String: Any],
+        initialElement: ElementInfo,
+        delayMs: Int
+    ) throws {
+        let isSecureField = initialElement.className == "XCUIElementTypeSecureTextField"
+        var expectedValue = initialElement.text ?? ""
+        var expectedLength = expectedValue.count
+        let timeoutPerGrapheme = max(1.0, TimeInterval(delayMs) / 1000.0 * 5.0)
+        let pollInterval = 0.02
+        let maxAttempts = 3
+
+        for grapheme in text {
+            let next = String(grapheme)
+
+            // Single-line UITextField treats Return as submit/blur. After that
+            // the original field no longer receives trailing input, so preserve
+            // the existing iOS behavior tested by selector-regressions.
+            if next == "\n" && initialElement.className != "XCUIElementTypeTextView" {
+                if !actionExecutor.typeViaEventSynthesizer(next) {
+                    throw AgentError.actionFailed("typeText failed to synthesize Return key")
+                }
+                Thread.sleep(forTimeInterval: max(0.05, TimeInterval(delayMs) / 1000.0))
+                return
+            }
+
+            let beforeValue = expectedValue
+            let beforeLength = expectedLength
+            expectedValue += next
+            expectedLength += 1
+
+            var delivered = false
+            var lastObserved = beforeValue
+
+            for attempt in 1...maxAttempts {
+                if !actionExecutor.typeViaEventSynthesizer(next) {
+                    NSLog("[typeText] EventSynthesizer returned false for grapheme '\(next)'")
+                }
+
+                let deadline = Date(timeIntervalSinceNow: timeoutPerGrapheme)
+                while Date() < deadline {
+                    let fresh = try resolveElement(selectorParams)
+                    let current = fresh.text ?? ""
+                    lastObserved = current
+
+                    if isSecureField {
+                        if current.count == expectedLength {
+                            delivered = true
+                            break
+                        }
+                        if current.count > expectedLength {
+                            throw AgentError.actionFailed(
+                                "typeText produced extra secure-field input: " +
+                                    "expected length \(expectedLength), got \(current.count)"
+                            )
+                        }
+                    } else {
+                        if current == expectedValue {
+                            delivered = true
+                            break
+                        }
+                        if current != beforeValue && !expectedValue.hasPrefix(current) {
+                            throw AgentError.actionFailed(
+                                "typeText diverged after grapheme '\(next)': " +
+                                    "expected prefix '\(expectedValue)', got '\(current)'"
+                            )
+                        }
+                    }
+
+                    RunLoop.current.run(
+                        mode: .default,
+                        before: Date(timeIntervalSinceNow: pollInterval)
+                    )
+                }
+
+                if delivered { break }
+                NSLog(
+                    "[typeText] Retry \(attempt) for grapheme '\(next)': " +
+                        "expected '\(expectedValue)', got '\(lastObserved)'"
+                )
+                if lastObserved == beforeValue {
+                    let refreshed = try resolveElement(selectorParams)
+                    try focusElementForTyping(refreshed, settleTime: 0.25)
+                }
+            }
+
+            guard delivered else {
+                let expectedDescription = isSecureField
+                    ? "length \(expectedLength)"
+                    : "'\(expectedValue)'"
+                let observedDescription = isSecureField
+                    ? "length \(lastObserved.count)"
+                    : "'\(lastObserved)'"
+                throw AgentError.actionFailed(
+                    "typeText could not deliver grapheme '\(next)': " +
+                        "expected \(expectedDescription), got \(observedDescription) " +
+                        "(previous length \(beforeLength))"
+                )
+            }
+
+            if delayMs > 0 {
+                Thread.sleep(forTimeInterval: TimeInterval(delayMs) / 1000.0)
+            }
+        }
+    }
+
     // MARK: - Dispatch
 
     private func dispatch(method: String, params: [String: Any]) throws -> [String: Any] {
@@ -303,34 +439,33 @@ class CommandHandler {
 
         case "typeText":
             let text = params["text"] as? String ?? ""
-            // No-op fast path: typing an empty string would still
-            // resolve the element, tap to focus, and burn a 0.5s
-            // keyboard-wait sleep before passing "" to the event
-            // synthesizer (which is itself a no-op). Skip everything.
             if text.isEmpty {
                 return ["success": true]
             }
+            let delayMs = params["typingDelayMs"] as? Int ?? 0
             let selectorKeys = ["role", "id", "contentDesc", "className", "testId", "hint", "textContains", "elementId"]
             let hasSelector = selectorKeys.contains { params[$0] != nil }
             if hasSelector {
-                // Remove "text" from params before resolving selector
                 var selectorParams = params
                 selectorParams.removeValue(forKey: "text")
+                selectorParams.removeValue(forKey: "typingDelayMs")
                 let element = try resolveElement(selectorParams)
-                // Tap at coordinates to focus, wait for keyboard, then type
-                if let center = snapshotCenter(for: element.elementId) {
-                    actionExecutor.tapCoordinates(x: Int(center.x), y: Int(center.y))
-                    // Wait for the keyboard to appear after focus tap.
-                    // Maestro waits for app.keyboards.firstMatch.exists but that
-                    // triggers quiescence. Use a fixed delay instead.
-                    Thread.sleep(forTimeInterval: 0.5)
-                    actionExecutor.typeTextWithoutFocus(text)
-                } else {
-                    let xcElem = try getXCUIElement(element.elementId)
-                    try actionExecutor.typeText(xcElem, text: text)
+                try focusElementForTyping(element, settleTime: 0.5)
+                if delayMs > 0 {
+                    let focused = try resolveElement(selectorParams)
+                    try typeTextWithPerGraphemeVerification(
+                        text,
+                        selectorParams: selectorParams,
+                        initialElement: focused,
+                        delayMs: delayMs
+                    )
+                } else if !actionExecutor.typeViaEventSynthesizer(text, delayMs: delayMs) {
+                    throw AgentError.actionFailed("typeText failed to synthesize input")
                 }
             } else {
-                actionExecutor.typeTextWithoutFocus(text)
+                if !actionExecutor.typeTextWithoutFocus(text, delayMs: delayMs) {
+                    throw AgentError.actionFailed("typeText failed to synthesize input")
+                }
             }
             return ["success": true]
 

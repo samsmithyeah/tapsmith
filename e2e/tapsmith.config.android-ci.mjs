@@ -1,16 +1,19 @@
-import "dotenv/config"
 import { defineConfig } from "tapsmith"
 
 export default defineConfig({
-  platform: "ios",
-  app: "../test-app/build/Build/Products/Release-iphonesimulator/TapsmithTestApp.app",
+  apk: "./fixtures/app-release.apk",
+  activity: "dev.tapsmith.testapp.MainActivity",
   package: "dev.tapsmith.testapp",
-  timeout: 10_000,
-  retries: 0,
+  timeout: 15_000,
+  retries: 1,
+  reporter: [["list"], ["github"], ["html", { open: "never" }]],
   screenshot: "only-on-failure",
-  workers: 4,
+  workers: 1,
   trace: "retain-on-failure",
-  simulator: process.env.TAPSMITH_IOS_SIMULATOR || "iPhone 17",
+  avd: "Tapsmith_Generic_Phone_API_35",
+  agentApk: "../agent/app/build/outputs/apk/debug/app-debug.apk",
+  agentTestApk:
+    "../agent/app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk",
   projects: [
     {
       name: "authentication",
@@ -19,7 +22,7 @@ export default defineConfig({
     {
       name: "default",
       testMatch: ["**/*.test.ts"],
-      testIgnore: ["**/app-state.test.ts", "**/auth-gate.test.ts", "**/*.android.test.ts"],
+      testIgnore: ["**/app-state.test.ts", "**/auth-gate.test.ts", "**/webview*.test.ts"],
     },
     {
       name: "authenticated",

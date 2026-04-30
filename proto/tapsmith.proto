@@ -198,6 +198,9 @@ message TypeTextRequest {
   Selector selector = 2;
   string text = 3;
   uint64 timeout_ms = 4;
+  // Delay in ms between keystrokes. Helps prevent dropped characters
+  // on slow CI simulators/emulators. 0 = no delay (default).
+  uint32 typing_delay_ms = 5;
 }
 
 message ClearTextRequest {
@@ -211,6 +214,7 @@ message ClearAndTypeRequest {
   Selector selector = 2;
   string text = 3;
   uint64 timeout_ms = 4;
+  uint32 typing_delay_ms = 5;
 }
 
 message SwipeRequest {
