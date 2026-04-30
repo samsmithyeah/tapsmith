@@ -76,9 +76,9 @@ pub struct TapsmithServiceImpl {
 struct IosAgentConfig {
     xctestrun_path: String,
     target_package: String,
-    /// Host path to the installed `.app` bundle. Only set when the target
-    /// device is physical — used by `clearAppData` to reinstall the app as
-    /// the only way to wipe persistent state on a real device.
+    /// Host path to the `.app` bundle. Used by `clearAppData` and
+    /// `restoreAppState` to uninstall + reinstall the app for a clean
+    /// data container.
     app_path: Option<String>,
 }
 
@@ -4219,11 +4219,41 @@ impl proto::tapsmith_service_server::TapsmithService for TapsmithServiceImpl {
                     }
                     return Ok(Self::success_action_response(request_id));
                 }
-                // iOS simulator: host-accessible container. Terminate before
-                // resolving/restoring so the target path reflects the current
-                // post-teardown data container.
+                // iOS simulator: uninstall + reinstall so the data container
+                // is guaranteed clean. Merely clearing files inside the
+                // existing container leaves stale SQLite WAL/SHM and cache
+                // artefacts on slower CI runners, causing the relaunched app
+                // to ignore the restored state.
                 let _ = ios::device::terminate_app(&serial, pkg).await;
-                tokio::time::sleep(Duration::from_millis(250)).await;
+
+                let app_path = self
+                    .ios_agent_config
+                    .read()
+                    .await
+                    .as_ref()
+                    .and_then(|c| c.app_path.clone());
+                let Some(ref app_path) = app_path else {
+                    return Ok(self
+                        .action_error(
+                            request_id,
+                            "APP_STATE_RESTORE_FAILED",
+                            "restoreAppState on iOS simulator requires the app \
+                             bundle path (set `app` in your config)"
+                                .to_string(),
+                        )
+                        .await);
+                };
+
+                if let Err(e) = ios::device::clear_app_data(&serial, pkg, Some(app_path)).await {
+                    return Ok(self
+                        .action_error(
+                            request_id,
+                            "APP_STATE_RESTORE_FAILED",
+                            format!("Failed to reinstall app before restore: {e}"),
+                        )
+                        .await);
+                }
+                tokio::time::sleep(Duration::from_millis(500)).await;
 
                 let container = match ios::device::get_app_container(&serial, pkg).await {
                     Ok(path) => path,
@@ -4232,27 +4262,16 @@ impl proto::tapsmith_service_server::TapsmithService for TapsmithServiceImpl {
                             .action_error(
                                 request_id,
                                 "APP_STATE_RESTORE_FAILED",
-                                format!("Failed to locate app container: {e}"),
+                                format!("Failed to locate app container after reinstall: {e}"),
                             )
                             .await);
                     }
                 };
 
-                // Clear before extracting. Extracting over an existing
-                // simulator container can leave stale SQLite/WAL/cache files
-                // behind on slower CI runners, causing the relaunched app to
-                // read the pre-restore state even though tar succeeded.
-                if let Err(e) = ios::device::clear_container(&container).await {
-                    return Ok(self
-                        .action_error(
-                            request_id,
-                            "APP_STATE_RESTORE_FAILED",
-                            format!("Failed to clear app container before restore: {e}"),
-                        )
-                        .await);
+                // Extract archive into the fresh data container
+                if let Some(parent) = std::path::Path::new(&container).parent() {
+                    let _ = tokio::fs::create_dir_all(parent).await;
                 }
-
-                // Extract archive into the data container
                 let output = tokio::process::Command::new("tar")
                     .args(["xzf", local_path, "-C", &container])
                     .output()
@@ -4260,7 +4279,7 @@ impl proto::tapsmith_service_server::TapsmithService for TapsmithServiceImpl {
 
                 match output {
                     Ok(out) if out.status.success() => {
-                        info!(%pkg, %local_path, "iOS app state restored");
+                        info!(%pkg, %local_path, container, "iOS simulator app state restored");
                         Ok(Self::success_action_response(request_id))
                     }
                     Ok(out) => {

@@ -1,18 +1,19 @@
 import { defineConfig } from "tapsmith"
 
 export default defineConfig({
-  platform: "ios",
-  app: "./fixtures/TapsmithTestApp.app",
+  apk: "./fixtures/app-release.apk",
+  activity: "dev.tapsmith.testapp.MainActivity",
   package: "dev.tapsmith.testapp",
-  timeout: 30_000,
-  typingDelay: 10,
+  timeout: 15_000,
   retries: 1,
   reporter: [["list"], ["github"], ["html", { open: "never" }]],
   screenshot: "only-on-failure",
-  trace: { mode: "retain-on-failure", network: false },
-  video: "retain-on-failure",
   workers: 1,
-  simulator: process.env.TAPSMITH_IOS_SIMULATOR || "iPhone 16",
+  trace: "retain-on-failure",
+  avd: "Tapsmith_Generic_Phone_API_35",
+  agentApk: "../agent/app/build/outputs/apk/debug/app-debug.apk",
+  agentTestApk:
+    "../agent/app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk",
   projects: [
     {
       name: "authentication",
@@ -21,15 +22,7 @@ export default defineConfig({
     {
       name: "default",
       testMatch: ["**/*.test.ts"],
-      testIgnore: [
-        "**/app-state.test.ts",
-        "**/auth-gate.test.ts",
-        "**/*.android.test.ts",
-        "**/webview*.test.ts",
-        // PILOT-TODO: network capture on iOS requires mitmproxy (not available on GHA runners)
-        "**/network-capture.test.ts",
-        "**/network-mocking.test.ts",
-      ],
+      testIgnore: ["**/app-state.test.ts", "**/auth-gate.test.ts", "**/webview*.test.ts"],
     },
     {
       name: "authenticated",

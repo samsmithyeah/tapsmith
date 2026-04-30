@@ -216,10 +216,10 @@ jobs:
       - name: Run E2E tests (retry once on infra failure)
         working-directory: e2e
         run: |
-          npx tapsmith test -c tapsmith.config.android.mjs --shard=${{ matrix.shard }}/${{ env.SHARD_TOTAL }} --workers 1 || \
+          npx tapsmith test -c tapsmith.config.android-ci.mjs --shard=${{ matrix.shard }}/${{ env.SHARD_TOTAL }} --workers 1 || \
           (echo "First attempt failed — killing stale emulators before retry" && \
            adb emu kill 2>/dev/null; sleep 2; \
-           npx tapsmith test -c tapsmith.config.android.mjs --shard=${{ matrix.shard }}/${{ env.SHARD_TOTAL }} --workers 1)
+           npx tapsmith test -c tapsmith.config.android-ci.mjs --shard=${{ matrix.shard }}/${{ env.SHARD_TOTAL }} --workers 1)
 
       - name: Upload blob report
         if: always()
@@ -272,7 +272,7 @@ jobs:
 
       - name: Merge reports
         working-directory: e2e
-        run: npx tapsmith merge-reports ../all-blob-reports -c tapsmith.config.android.mjs
+        run: npx tapsmith merge-reports ../all-blob-reports -c tapsmith.config.android-ci.mjs
 
       - name: Upload HTML report
         uses: actions/upload-artifact@v4
