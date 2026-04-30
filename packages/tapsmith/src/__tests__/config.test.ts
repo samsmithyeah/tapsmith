@@ -7,6 +7,7 @@ import {
   resolveDeviceStrategy,
   isExplicitWorkers,
   loadConfig,
+  normalizeGrep,
 } from '../config.js';
 
 describe('defineConfig()', () => {
@@ -268,5 +269,21 @@ describe('resolveDeviceStrategy()', () => {
         defineConfig({ avd: 'Pixel_9_API_35', deviceStrategy: 'prefer-connected' }),
       ),
     ).toBe('prefer-connected');
+  });
+});
+
+describe('normalizeGrep()', () => {
+  it('returns [] for undefined', () => {
+    expect(normalizeGrep(undefined)).toEqual([]);
+  });
+
+  it('wraps a single RegExp in an array', () => {
+    const re = /foo/;
+    expect(normalizeGrep(re)).toEqual([re]);
+  });
+
+  it('passes through arrays as-is', () => {
+    const arr = [/foo/, /bar/i];
+    expect(normalizeGrep(arr)).toBe(arr);
   });
 });

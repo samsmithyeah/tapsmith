@@ -31,6 +31,10 @@ export interface ResolvedProject {
    * gets exactly this many devices and bypasses the proportional split.
    */
   workers?: number
+  /** Per-project grep filter, intersected with the root `grep`. */
+  grep?: RegExp | RegExp[]
+  /** Per-project grep-invert filter, unioned with the root `grepInvert`. */
+  grepInvert?: RegExp | RegExp[]
 }
 
 // ─── Device signature ───
@@ -280,6 +284,8 @@ export function resolveProjects(config: TapsmithConfig): ResolvedProject[] {
       effectiveConfig: effective,
       deviceSignature: deviceSignature(effective),
       workers: p.workers,
+      grep: p.grep,
+      grepInvert: p.grepInvert,
     };
   });
 }

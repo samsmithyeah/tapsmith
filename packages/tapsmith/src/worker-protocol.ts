@@ -27,6 +27,16 @@ export interface RunFileMessage {
   projectUseOptions?: RunFileUseOptions
   /** Project name for reporter grouping. */
   projectName?: string
+  /**
+   * Per-project grep filters, intersected with the root `grep` from the worker's
+   * `SerializedConfig`. A test must match at least one entry in each set.
+   */
+  projectGrep?: SerializedRegExp[]
+  /**
+   * Per-project grep-invert filters, unioned with the root `grepInvert` from
+   * the worker's `SerializedConfig`.
+   */
+  projectGrepInvert?: SerializedRegExp[]
 }
 
 /** IPC-safe subset of UseOptions for project-level overrides. */
@@ -151,6 +161,29 @@ export interface SerializedConfig {
   resetAppWaitMs?: number
   baseURL?: string
   extraHTTPHeaders?: Record<string, string>
+  /** RegExp filters for test fullNames. Source/flags are serialized for IPC. */
+  grep?: SerializedRegExp[]
+  grepInvert?: SerializedRegExp[]
+}
+
+/** IPC-safe RegExp representation (RegExp instances don't survive structured clone reliably). */
+export interface SerializedRegExp {
+  source: string
+  flags: string
+}
+
+export function serializeRegExp(re: RegExp): SerializedRegExp {
+  return { source: re.source, flags: re.flags };
+}
+
+export function serializeRegExpArray(values: RegExp[] | undefined): SerializedRegExp[] | undefined {
+  if (!values || values.length === 0) return undefined;
+  return values.map(serializeRegExp);
+}
+
+export function deserializeRegExpArray(values: SerializedRegExp[] | undefined): RegExp[] | undefined {
+  if (!values || values.length === 0) return undefined;
+  return values.map((v) => new RegExp(v.source, v.flags));
 }
 
 /** TestResult with Error serialized to plain object for IPC. */

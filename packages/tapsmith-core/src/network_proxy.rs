@@ -79,6 +79,48 @@ pub(crate) struct ParsedRequest {
     pub headers: Vec<(String, String)>,
     pub body: Vec<u8>,
     pub raw_bytes: Vec<u8>,
+    /// Set by `route.continue({ url })` when the override URL targets a
+    /// different origin.
+    pub override_host: Option<OverrideOrigin>,
+}
+
+/// Cross-origin target for `route.continue({ url })` redirects.
+#[derive(Debug, Clone)]
+pub(crate) struct OverrideOrigin {
+    pub host: String,
+    pub port: u16,
+    pub is_https: bool,
+}
+
+impl OverrideOrigin {
+    pub fn from_parsed_url(parsed: &url::Url) -> Option<Self> {
+        let host = parsed.host_str().unwrap_or("").to_string();
+        if host.is_empty() {
+            return None;
+        }
+        let is_https = parsed.scheme() == "https";
+        let port = parsed
+            .port_or_known_default()
+            .unwrap_or(if is_https { 443 } else { 80 });
+        Some(Self {
+            host,
+            port,
+            is_https,
+        })
+    }
+
+    pub fn url(&self, path: &str) -> String {
+        let scheme = if self.is_https { "https" } else { "http" };
+        format!("{scheme}://{}:{}{}", self.host, self.port, path)
+    }
+
+    pub fn host_header_value(&self) -> String {
+        if (self.is_https && self.port == 443) || (!self.is_https && self.port == 80) {
+            self.host.clone()
+        } else {
+            format!("{}:{}", self.host, self.port)
+        }
+    }
 }
 
 /// A decoded HTTP response, structured for transformation hooks.
@@ -868,6 +910,7 @@ where
         headers,
         body,
         raw_bytes: buf,
+        override_host: None,
     })
 }
 
@@ -1492,20 +1535,38 @@ async fn handle_mitm_http<C, U>(
             }
         }
 
-        if upstream_stream.write_all(&req.raw_bytes).await.is_err() {
-            return;
-        }
-
-        let mut resp = match read_response(&mut upstream_stream, hostname).await {
-            ReadOutcome::Ok(r) => r,
-            ReadOutcome::ConnectionClosed | ReadOutcome::Error => return,
+        // When cross-origin, use the override values for logging/events.
+        let (effective_hostname, effective_is_https) = match req.override_host {
+            Some(ref origin) => (origin.host.clone(), origin.is_https),
+            None => (hostname.to_string(), is_https),
         };
 
-        // Response hook: optionally transform the response before forwarding.
-        // Same `raw_bytes` regeneration rule — keep wire bytes in sync with
-        // the structured fields after any mutation.
+        let mut resp = if let Some(ref origin) = req.override_host {
+            let url = origin.url(&req.path);
+            match crate::route_handler::fetch_upstream(&url, &req.method, &req.headers, &req.body)
+                .await
+            {
+                Some(r) => r,
+                None => {
+                    let _ = client_stream
+                        .write_all(b"HTTP/1.1 502 Bad Gateway\r\n\r\n")
+                        .await;
+                    return;
+                }
+            }
+        } else {
+            if upstream_stream.write_all(&req.raw_bytes).await.is_err() {
+                return;
+            }
+            match read_response(&mut upstream_stream, hostname).await {
+                ReadOutcome::Ok(r) => r,
+                ReadOutcome::ConnectionClosed | ReadOutcome::Error => return,
+            }
+        };
+
         if let Some(h) = handler.as_ref() {
-            h.on_response(&req, hostname, is_https, &mut resp).await;
+            h.on_response(&req, &effective_hostname, effective_is_https, &mut resp)
+                .await;
             resp.raw_bytes = reencode_response(&resp);
         }
 
@@ -1513,21 +1574,24 @@ async fn handle_mitm_http<C, U>(
             return;
         }
 
-        // Extract keep-alive hint BEFORE recording so we can consume `resp`
-        // via borrow rather than move. Matches original semantics: only
-        // response's Connection: close is honored, request's is ignored.
         let connection_close = has_connection_close(&resp.headers);
 
         if let Some(h) = handler.as_ref() {
-            h.notify_response(&req, &resp, hostname, is_https, route_action_on_pass)
-                .await;
+            h.notify_response(
+                &req,
+                &resp,
+                &effective_hostname,
+                effective_is_https,
+                route_action_on_pass,
+            )
+            .await;
         }
         record_entry(
             &state,
             &req,
             &resp,
-            hostname,
-            is_https,
+            &effective_hostname,
+            effective_is_https,
             start,
             route_action_on_pass,
         )
@@ -1649,7 +1713,7 @@ async fn handle_http(
     let mut effective_method = method.to_string();
     let mut effective_path = path.clone();
     let mut was_continued = false;
-    let hostname_owned = host.split(':').next().unwrap_or(&host).to_string();
+    let mut hostname_owned = host.split(':').next().unwrap_or(&host).to_string();
 
     // Check handler for route interception before forwarding upstream.
     let handler = state.lock().await.handler.clone();
@@ -1660,6 +1724,7 @@ async fn handle_http(
             headers: req_headers.clone(),
             body: request_body.clone(),
             raw_bytes: Vec::new(),
+            override_host: None,
         };
         let hostname = hostname_owned.as_str();
 
@@ -1708,14 +1773,62 @@ async fn handle_http(
                 return;
             }
             RequestOutcome::Continued => {
-                // Route matched + handler called `continue()` (possibly with
-                // mutations). Apply them back to the local variables used by
-                // the upstream request builder below.
                 was_continued = true;
                 effective_method = parsed_req.method;
                 effective_path = parsed_req.path;
                 req_headers = parsed_req.headers;
                 request_body = parsed_req.body;
+                if let Some(ref origin) = parsed_req.override_host {
+                    // Cross-origin: use fetch_upstream which handles both
+                    // HTTP and HTTPS targets correctly.
+                    let url = origin.url(&effective_path);
+                    let resp = match crate::route_handler::fetch_upstream(
+                        &url,
+                        &effective_method,
+                        &req_headers,
+                        &request_body,
+                    )
+                    .await
+                    {
+                        Some(r) => r,
+                        None => {
+                            let _ = client.write_all(b"HTTP/1.1 502 Bad Gateway\r\n\r\n").await;
+                            return;
+                        }
+                    };
+                    let raw = reencode_response(&resp);
+                    let _ = client.write_all(&raw).await;
+                    hostname_owned = origin.host.clone();
+                    let notify_req = ParsedRequest {
+                        method: effective_method,
+                        path: effective_path,
+                        headers: req_headers,
+                        body: request_body,
+                        raw_bytes: Vec::new(),
+                        override_host: None,
+                    };
+                    if let Some(h) = handler.as_ref() {
+                        h.notify_response(
+                            &notify_req,
+                            &resp,
+                            &hostname_owned,
+                            origin.is_https,
+                            "continued",
+                        )
+                        .await;
+                    }
+                    record_entry(
+                        &state,
+                        &notify_req,
+                        &resp,
+                        &hostname_owned,
+                        origin.is_https,
+                        start,
+                        "continued",
+                    )
+                    .await;
+                    return;
+                }
             }
             RequestOutcome::NotMatched => {
                 // No registered route matched this URL — forward original.
@@ -1856,6 +1969,7 @@ async fn handle_http(
             headers: req_headers.clone(),
             body: request_body.clone(),
             raw_bytes: Vec::new(),
+            override_host: None,
         };
         let notify_resp = ParsedResponse {
             status_code,
@@ -2541,6 +2655,7 @@ mod tests {
             )],
             body: vec![],
             raw_bytes: vec![],
+            override_host: None,
         };
         let out = reencode_request(&req);
         // parse_headers skips line 0 (the request line) and parses the rest.
@@ -2565,6 +2680,7 @@ mod tests {
             ],
             body: vec![],
             raw_bytes: vec![],
+            override_host: None,
         };
         let out = reencode_request(&req);
         let s = std::str::from_utf8(&out).unwrap();
@@ -2581,6 +2697,7 @@ mod tests {
             headers: vec![],
             body: vec![],
             raw_bytes: vec![],
+            override_host: None,
         };
         let out = reencode_request(&req);
         // The request line must be a single line — the first \r\n in the

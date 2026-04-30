@@ -12,7 +12,7 @@ import { fork, spawn, execFileSync, type ChildProcess } from 'node:child_process
 import * as net from 'node:net';
 import * as path from 'node:path';
 import * as fs from 'node:fs';
-import { resolveDeviceStrategy, type TapsmithConfig } from './config.js';
+import { normalizeGrep, resolveDeviceStrategy, type TapsmithConfig } from './config.js';
 import { findDaemonBin } from './daemon-bin.js';
 import { TapsmithGrpcClient } from './grpc-client.js';
 import type { TestResult, SuiteResult } from './runner.js';
@@ -22,7 +22,7 @@ import type {
   MainToWorkerMessage,
   SerializedConfig,
 } from './worker-protocol.js';
-import { deserializeTestResult, deserializeSuiteResult } from './worker-protocol.js';
+import { deserializeTestResult, deserializeSuiteResult, serializeRegExpArray } from './worker-protocol.js';
 import {
   clearOfflineEmulatorTransports,
   provisionEmulators,
@@ -56,6 +56,8 @@ interface TaggedFile {
   filePath: string
   projectUseOptions?: import('./worker-protocol.js').RunFileUseOptions
   projectName?: string
+  projectGrep?: import('./worker-protocol.js').SerializedRegExp[]
+  projectGrepInvert?: import('./worker-protocol.js').SerializedRegExp[]
 }
 
 interface WorkerHandle {
@@ -642,6 +644,8 @@ export async function runParallel(opts: DispatcherOptions, _portOffset = 0): Pro
       resetAppWaitMs: config.resetAppWaitMs,
       baseURL: config.baseURL,
       extraHTTPHeaders: config.extraHTTPHeaders,
+      grep: serializeRegExpArray(normalizeGrep(config.grep)),
+      grepInvert: serializeRegExpArray(normalizeGrep(config.grepInvert)),
     };
 
     const launchedSerials = new Set(launchedEmulators.map((emu) => emu.serial));
@@ -754,11 +758,15 @@ export async function runParallel(opts: DispatcherOptions, _portOffset = 0): Pro
       for (const wave of opts.projectWaves) {
         const waveFiles: TaggedFile[] = [];
         for (const project of wave) {
+          const projectGrep = serializeRegExpArray(normalizeGrep(project.grep));
+          const projectGrepInvert = serializeRegExpArray(normalizeGrep(project.grepInvert));
           for (const file of project.testFiles) {
             waveFiles.push({
               filePath: file,
               projectUseOptions: project.use as TaggedFile['projectUseOptions'],
               projectName: project.name,
+              projectGrep,
+              projectGrepInvert,
             });
           }
         }
@@ -815,6 +823,8 @@ export async function runParallel(opts: DispatcherOptions, _portOffset = 0): Pro
             filePath: next.filePath,
             projectUseOptions: next.projectUseOptions,
             projectName: next.projectName,
+            projectGrep: next.projectGrep,
+            projectGrepInvert: next.projectGrepInvert,
           };
           worker.process.send(msg);
         }
@@ -945,11 +955,15 @@ export async function runParallel(opts: DispatcherOptions, _portOffset = 0): Pro
             failedProjects.add(project.name);
             continue;
           }
+          const projectGrep = serializeRegExpArray(normalizeGrep(project.grep));
+          const projectGrepInvert = serializeRegExpArray(normalizeGrep(project.grepInvert));
           for (const file of project.testFiles) {
             filteredWaveFiles.push({
               filePath: file,
               projectUseOptions: project.use as TaggedFile['projectUseOptions'],
               projectName: project.name,
+              projectGrep,
+              projectGrepInvert,
             });
           }
         }

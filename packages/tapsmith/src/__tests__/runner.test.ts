@@ -478,6 +478,161 @@ describe('test.use()', () => {
   });
 });
 
+// ─── grep / grepInvert filtering ───
+
+describe('grep / grepInvert', () => {
+  it('grep keeps only matching tests, marks the rest skipped', async () => {
+    pushContext();
+    tapsmithTest('login flow', async () => {});
+    tapsmithTest('logout flow', async () => {});
+    tapsmithTest('signup flow', async () => {});
+    const ctx = popContext();
+
+    const result = await runSuiteContext(ctx, '', [], [], makeOpts({
+      grep: [/login|logout/],
+    }));
+
+    const flat = collectResults(result);
+    expect(flat).toHaveLength(3);
+    const byName = new Map(flat.map((t) => [t.name, t.status]));
+    expect(byName.get('login flow')).toBe('passed');
+    expect(byName.get('logout flow')).toBe('passed');
+    expect(byName.get('signup flow')).toBe('skipped');
+  });
+
+  it('grep matches against fullName so describe scope counts', async () => {
+    pushContext();
+    tapsmithDescribe('checkout', () => {
+      tapsmithTest('happy path', async () => {});
+      tapsmithTest('failure', async () => {});
+    });
+    tapsmithDescribe('login', () => {
+      tapsmithTest('happy path', async () => {});
+    });
+    const ctx = popContext();
+
+    const result = await runSuiteContext(ctx, '', [], [], makeOpts({
+      grep: [/^checkout/],
+    }));
+
+    const flat = collectResults(result);
+    expect(flat).toHaveLength(3);
+    const byName = new Map(flat.map((t) => [t.fullName, t.status]));
+    expect(byName.get('checkout > happy path')).toBe('passed');
+    expect(byName.get('checkout > failure')).toBe('passed');
+    expect(byName.get('login > happy path')).toBe('skipped');
+  });
+
+  it('grepInvert skips matching tests', async () => {
+    pushContext();
+    tapsmithTest('fast assert', async () => {});
+    tapsmithTest('slow integration', async () => {});
+    tapsmithTest('slow load', async () => {});
+    const ctx = popContext();
+
+    const result = await runSuiteContext(ctx, '', [], [], makeOpts({
+      grepInvert: [/slow/],
+    }));
+
+    const flat = collectResults(result);
+    const byName = new Map(flat.map((t) => [t.name, t.status]));
+    expect(byName.get('fast assert')).toBe('passed');
+    expect(byName.get('slow integration')).toBe('skipped');
+    expect(byName.get('slow load')).toBe('skipped');
+  });
+
+  it('grep and grepInvert together: must match grep AND not match grepInvert', async () => {
+    pushContext();
+    tapsmithTest('login fast', async () => {});
+    tapsmithTest('login slow', async () => {});
+    tapsmithTest('signup fast', async () => {});
+    const ctx = popContext();
+
+    const result = await runSuiteContext(ctx, '', [], [], makeOpts({
+      grep: [/login/],
+      grepInvert: [/slow/],
+    }));
+
+    const flat = collectResults(result);
+    const byName = new Map(flat.map((t) => [t.name, t.status]));
+    expect(byName.get('login fast')).toBe('passed');
+    expect(byName.get('login slow')).toBe('skipped');
+    expect(byName.get('signup fast')).toBe('skipped');
+  });
+
+  it('grep with multiple patterns matches union (any pattern is enough)', async () => {
+    pushContext();
+    tapsmithTest('alpha', async () => {});
+    tapsmithTest('beta', async () => {});
+    tapsmithTest('gamma', async () => {});
+    const ctx = popContext();
+
+    const result = await runSuiteContext(ctx, '', [], [], makeOpts({
+      grep: [/alpha/, /gamma/],
+    }));
+
+    const flat = collectResults(result);
+    const byName = new Map(flat.map((t) => [t.name, t.status]));
+    expect(byName.get('alpha')).toBe('passed');
+    expect(byName.get('beta')).toBe('skipped');
+    expect(byName.get('gamma')).toBe('passed');
+  });
+
+  it('projectGrep is intersected with grep (both must match)', async () => {
+    pushContext();
+    tapsmithTest('login fast', async () => {});
+    tapsmithTest('login slow', async () => {});
+    tapsmithTest('signup fast', async () => {});
+    const ctx = popContext();
+
+    const result = await runSuiteContext(ctx, '', [], [], makeOpts({
+      grep: [/login/],
+      projectGrep: [/fast/],
+    }));
+
+    const flat = collectResults(result);
+    const byName = new Map(flat.map((t) => [t.name, t.status]));
+    // Only the test matching BOTH the root grep and the project grep runs.
+    expect(byName.get('login fast')).toBe('passed');
+    expect(byName.get('login slow')).toBe('skipped');
+    expect(byName.get('signup fast')).toBe('skipped');
+  });
+
+  it('projectGrepInvert is unioned with grepInvert', async () => {
+    pushContext();
+    tapsmithTest('alpha', async () => {});
+    tapsmithTest('beta', async () => {});
+    tapsmithTest('gamma', async () => {});
+    const ctx = popContext();
+
+    const result = await runSuiteContext(ctx, '', [], [], makeOpts({
+      grepInvert: [/alpha/],
+      projectGrepInvert: [/gamma/],
+    }));
+
+    const flat = collectResults(result);
+    const byName = new Map(flat.map((t) => [t.name, t.status]));
+    expect(byName.get('alpha')).toBe('skipped');
+    expect(byName.get('beta')).toBe('passed');
+    expect(byName.get('gamma')).toBe('skipped');
+  });
+
+  it('empty grep arrays behave the same as undefined', async () => {
+    pushContext();
+    tapsmithTest('a', async () => {});
+    tapsmithTest('b', async () => {});
+    const ctx = popContext();
+
+    const result = await runSuiteContext(ctx, '', [], [], makeOpts({
+      grep: [],
+      grepInvert: [],
+    }));
+
+    const flat = collectResults(result);
+    expect(flat.every((t) => t.status === 'passed')).toBe(true);
+  });
+});
+
 // ─── beforeAll failure ───
 
 describe('beforeAll failure marks all tests as failed', () => {

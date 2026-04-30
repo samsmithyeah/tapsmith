@@ -26,6 +26,7 @@ import {
   serializeTestResult,
   serializeSuiteResult,
   isRecoverableInfrastructureError,
+  deserializeRegExpArray,
 } from './worker-protocol.js';
 import { ensureSessionReady, launchConfiguredApp, type SessionPreflightContext } from './session-preflight.js';
 
@@ -36,6 +37,8 @@ let config: TapsmithConfig | undefined;
 let assignedSerial: string | undefined;
 let resolvedXctestrunPath: string | undefined;
 let resolvedAppPath: string | undefined;
+let rootGrep: RegExp[] | undefined;
+let rootGrepInvert: RegExp[] | undefined;
 
 function send(msg: WorkerToMainMessage): void {
   if (process.send) {
@@ -73,6 +76,8 @@ function configFromSerialized(s: SerializedConfig, daemonAddress: string): Tapsm
     resetAppWaitMs: s.resetAppWaitMs,
     baseURL: s.baseURL,
     extraHTTPHeaders: s.extraHTTPHeaders,
+    grep: deserializeRegExpArray(s.grep),
+    grepInvert: deserializeRegExpArray(s.grepInvert),
   };
 }
 
@@ -82,6 +87,8 @@ async function handleInit(msg: InitMessage): Promise<void> {
   sendProgress(`connecting to daemon on ${daemonAddress}`);
 
   config = configFromSerialized(msg.config, daemonAddress);
+  rootGrep = deserializeRegExpArray(msg.config.grep);
+  rootGrepInvert = deserializeRegExpArray(msg.config.grepInvert);
 
   // Connect to our dedicated daemon
   client = new TapsmithGrpcClient(daemonAddress);
@@ -240,7 +247,13 @@ async function handleInit(msg: InitMessage): Promise<void> {
   send({ type: 'ready', workerId });
 }
 
-async function handleRunFile(filePath: string, projectUseOptions?: import('./worker-protocol.js').RunFileUseOptions, projectName?: string): Promise<void> {
+async function handleRunFile(
+  filePath: string,
+  projectUseOptions?: import('./worker-protocol.js').RunFileUseOptions,
+  projectName?: string,
+  projectGrep?: import('./worker-protocol.js').SerializedRegExp[],
+  projectGrepInvert?: import('./worker-protocol.js').SerializedRegExp[],
+): Promise<void> {
   if (!config || !device) {
     throw new Error(`Worker ${workerId}: Not initialized`);
   }
@@ -268,7 +281,15 @@ async function handleRunFile(filePath: string, projectUseOptions?: import('./wor
     },
   };
 
-  const suiteResult = await runFileWithRecovery(filePath, screenshotDir, reporterProxy, projectUseOptions, projectName);
+  const suiteResult = await runFileWithRecovery(
+    filePath,
+    screenshotDir,
+    reporterProxy,
+    projectUseOptions,
+    projectName,
+    projectGrep,
+    projectGrepInvert,
+  );
 
   const results = collectResults(suiteResult);
 
@@ -287,10 +308,19 @@ async function runFileWithRecovery(
   reporterProxy: { onTestEnd(result: import('./runner.js').TestResult): void },
   projectUseOptions?: import('./worker-protocol.js').RunFileUseOptions,
   projectName?: string,
+  projectGrep?: import('./worker-protocol.js').SerializedRegExp[],
+  projectGrepInvert?: import('./worker-protocol.js').SerializedRegExp[],
 ): Promise<import('./runner.js').SuiteResult> {
   if (!config || !device) {
     throw new Error(`Worker ${workerId}: Not initialized`);
   }
+
+  // Root grep (from SerializedConfig) and project-level grep are passed
+  // separately so the runner can apply them with the correct semantics:
+  // root AND project must each be satisfied (intersection for grep, union
+  // for grepInvert).
+  const projectGrepRe = deserializeRegExpArray(projectGrep);
+  const projectGrepInvertRe = deserializeRegExpArray(projectGrepInvert);
 
   for (let attempt = 1; attempt <= 2; attempt++) {
     try {
@@ -312,6 +342,10 @@ async function runFileWithRecovery(
         bustImportCache: attempt > 1,
         projectUseOptions,
         projectName,
+        grep: rootGrep,
+        grepInvert: rootGrepInvert,
+        projectGrep: projectGrepRe,
+        projectGrepInvert: projectGrepInvertRe,
       });
       const infrastructureFailure = findRecoverableInfrastructureFailure(collectResults(suite));
       if (!infrastructureFailure) {
@@ -430,7 +464,13 @@ process.on('message', async (msg: MainToWorkerMessage) => {
         await handleInit(msg);
         break;
       case 'run-file':
-        await handleRunFile(msg.filePath, msg.projectUseOptions, msg.projectName);
+        await handleRunFile(
+          msg.filePath,
+          msg.projectUseOptions,
+          msg.projectName,
+          msg.projectGrep,
+          msg.projectGrepInvert,
+        );
         break;
       case 'shutdown':
         handleShutdown();

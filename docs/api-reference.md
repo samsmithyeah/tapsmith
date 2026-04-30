@@ -487,16 +487,10 @@ Abort the request. Optional `errorCode`: `'connectionrefused'`, `'connectionrese
 
 Continue the request to the server with optional modifications.
 
-- `overrides.url?`: `string` — override the URL **path and query** (see limitation below)
+- `overrides.url?`: `string` — override the request URL. Supports both same-origin path changes (e.g. `/v2/posts`) and cross-origin redirection (e.g. `https://staging.example.com/api/posts`). When the host differs, the `Host` header is automatically updated.
 - `overrides.method?`: `string` — override the HTTP method
 - `overrides.headers?`: `Record<string, string>` — override headers
 - `overrides.postData?`: `string | Buffer` — override request body
-
-> **Known limitation:** `overrides.url` currently only swaps the path and query —
-> the host stays the same (upstream TCP connection and `Host` header are
-> unchanged). Cross-origin redirection via `route.continue()` is not yet
-> supported. If you need to hit a different host, use `route.fetch({ url })`
-> and then `route.fulfill()` with the result. Tracked in PILOT-189.
 
 #### `route.fulfill(options?): Promise<void>`
 
@@ -513,7 +507,7 @@ Return a mock response without contacting the server.
 
 Fetch the actual response from the server. Returns a `FetchedAPIResponse` that you can inspect and modify before calling `route.fulfill()`.
 
-- `overrides.url?`: `string` — override the URL to fetch from. **Unlike `route.continue()`, this may target a different host** — the daemon opens an independent connection to the override URL's host/port/scheme
+- `overrides.url?`: `string` — override the URL to fetch from (supports cross-origin, same as `route.continue()`)
 - `overrides.method?`: `string` — override the HTTP method
 - `overrides.headers?`: `Record<string, string>` — override headers
 - `overrides.postData?`: `string | Buffer` — override request body
@@ -1541,6 +1535,8 @@ correct device.
 | `dependencies` | `string[]` | Projects that must complete first |
 | `use` | `UseOptions` | Per-project option overrides (applied under file-level `test.use()`). Includes the device-shaping fields documented above. |
 | `workers` | `number` | Number of parallel workers (devices) for this project. Additive — does not consume from the global `workers` budget. When unset, the project shares the global budget proportionally to file count. |
+| `grep` | `RegExp \| RegExp[]` | Per-project grep filter, intersected with the root `grep`. A test must match at least one pattern in this set AND at least one pattern in the root set (when either is configured). |
+| `grepInvert` | `RegExp \| RegExp[]` | Per-project grep-invert filter, unioned with the root `grepInvert`. A test that matches any pattern in either set is skipped. |
 
 ### `loadConfig(dir?: string): Promise<TapsmithConfig>`
 
@@ -1829,6 +1825,53 @@ npx tapsmith test --shard=4/4
 ```
 
 When sharding is active, the `blob` reporter is automatically added so results can be merged later with `tapsmith merge-reports`.
+
+### `tapsmith test --grep <pattern>` / `tapsmith test -g <pattern>`
+
+Run only the tests whose fullName (`describe > test`) matches the given regular expression. Mirrors Playwright's `--grep`.
+
+```bash
+npx tapsmith test --grep checkout            # Only tests with "checkout" in their fullName
+npx tapsmith test -g "^login > "             # Only tests inside the top-level "login" describe
+npx tapsmith test --grep "@smoke|@critical"  # Run smoke + critical tests by tag-style suffixes
+```
+
+The pattern is compiled as a JavaScript `RegExp`. Combine with `--grep-invert` to further narrow the selection.
+
+The same filter can be set in `tapsmith.config.ts`:
+
+```ts
+export default defineConfig({
+  grep: /checkout/,                  // single pattern
+})
+
+// Or match any of several patterns:
+export default defineConfig({
+  grep: [/login/, /signup/],         // any pattern matches
+})
+```
+
+Per-project filters are intersected with the root filter (a test must match both):
+
+```ts
+export default defineConfig({
+  grep: /smoke/,
+  projects: [
+    { name: 'android', grep: /android/ }, // runs tests matching BOTH /smoke/ and /android/
+  ],
+})
+```
+
+### `tapsmith test --grep-invert <pattern>`
+
+Skip tests whose fullName matches the given regular expression. Mirrors Playwright's `--grep-invert`.
+
+```bash
+npx tapsmith test --grep-invert slow          # Run everything except "slow" tests
+npx tapsmith test -g checkout --grep-invert wip  # Checkout tests, excluding work-in-progress
+```
+
+Also configurable in `tapsmith.config.ts` as `grepInvert: RegExp | RegExp[]`, with per-project entries unioned with the root entry.
 
 ### `tapsmith show-trace <file.zip>`
 

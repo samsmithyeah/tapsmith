@@ -186,6 +186,25 @@ describe("Network mocking", () => {
     await expect(device.getByText("Once Only")).not.toBeVisible()
   })
 
+  test("route.continue({ url }) — cross-origin redirect", async ({ device }) => {
+    const screen = new ApiCallsScreen(device)
+
+    // Redirect the user request from jsonplaceholder to httpbin.org.
+    // httpbin returns valid 200 JSON but with no "name" field, so
+    // the User section renders but without jsonplaceholder's data.
+    await device.route("**/users/1", async (route) => {
+      await route.continue({ url: "https://httpbin.org/get" })
+    })
+
+    await screen.fetchUserButton.tap()
+    await expect(screen.userHeading).toBeVisible({ timeout: 10_000 })
+    // jsonplaceholder user 1 is "Leanne Graham" — if cross-origin
+    // redirect worked, that name won't appear (httpbin doesn't have it)
+    await expect(device.getByText("Leanne Graham")).not.toBeVisible()
+
+    await device.unrouteAll()
+  })
+
   test("multiple routes — last registered wins", async ({ device }) => {
     const screen = new ApiCallsScreen(device)
 

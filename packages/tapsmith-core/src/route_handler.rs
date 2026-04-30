@@ -13,8 +13,8 @@ use tokio::sync::{mpsc, oneshot, RwLock};
 use tracing::{debug, warn};
 
 use crate::network_proxy::{
-    sanitise_request_line_component, write_header_sanitised, NetworkHandler, ParsedRequest,
-    ParsedResponse, RequestOutcome,
+    sanitise_request_line_component, write_header_sanitised, NetworkHandler, OverrideOrigin,
+    ParsedRequest, ParsedResponse, RequestOutcome,
 };
 use crate::proto;
 
@@ -325,11 +325,22 @@ impl NetworkHandler for RouteInterceptHandler {
                 }
                 if let Some(u) = url {
                     if !u.is_empty() {
-                        // Extract path from full URL if it contains a scheme
                         if let Ok(parsed) = u.parse::<url::Url>() {
                             req.path = parsed.path().to_string();
                             if let Some(q) = parsed.query() {
                                 req.path = format!("{}?{q}", req.path);
+                            }
+                            if let Some(origin) = OverrideOrigin::from_parsed_url(&parsed) {
+                                if origin.host != hostname {
+                                    if let Some(entry) = req
+                                        .headers
+                                        .iter_mut()
+                                        .find(|(k, _)| k.eq_ignore_ascii_case("host"))
+                                    {
+                                        entry.1 = origin.host_header_value();
+                                    }
+                                    req.override_host = Some(origin);
+                                }
                             }
                         } else {
                             req.path = u;
@@ -494,8 +505,9 @@ impl NetworkHandler for RouteInterceptHandler {
 // ─── Upstream Fetch (for RouteFetch) ───
 
 /// Make a standalone HTTP/HTTPS request to the upstream server. Used by
-/// `RouteFetch` to get the real response so the SDK can inspect/modify it.
-async fn fetch_upstream(
+/// `RouteFetch` to get the real response so the SDK can inspect/modify it,
+/// and by `handle_mitm_http` for cross-origin `route.continue()` redirects.
+pub(crate) async fn fetch_upstream(
     url: &str,
     method: &str,
     headers: &[(String, String)],
