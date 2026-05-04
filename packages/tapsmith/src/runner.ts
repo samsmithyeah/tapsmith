@@ -780,13 +780,11 @@ async function runSuiteContext(
     let screenshotPath: string | undefined;
     let tracePath: string | undefined;
     let videoPath: string | undefined;
-    // 2x the assertion timeout: a test may have multiple actions, each with
-    // their own timeout. The test-level timeout is a safety net against hangs.
     // Safety timeout for the test body (hooks run outside this).
-    // 3x the assertion timeout gives headroom for tests with multiple
-    // device operations (clearAppData, launchApp, openDeepLink, etc.)
-    // that each include their own internal waits.
-    const testTimeoutMs = opts.config.timeout * 3;
+    // Use the scope-level timeout override (from test.use({ timeout })) when
+    // it exceeds the default, so tests that need more time actually get it.
+    const defaultTestTimeoutMs = opts.config.timeout * 3;
+    const testTimeoutMs = scopeTimeout ? Math.max(defaultTestTimeoutMs, scopeTimeout) : defaultTestTimeoutMs;
 
     // Trace recording — start if configured
     const traceConfig = resolveTraceConfig(opts.config.trace);
