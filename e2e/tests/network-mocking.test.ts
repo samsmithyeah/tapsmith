@@ -7,20 +7,17 @@
  * Run with --trace on to see route badges in the trace viewer:
  *   npx tapsmith test tests/network-mocking.test.ts --trace on
  */
-import { beforeAll, beforeEach, describe, expect, test } from "tapsmith"
+import { beforeEach, describe, expect, test } from "tapsmith"
 import { ApiCallsScreen } from "../screens/api-calls.screen.js"
 
 describe("Network mocking", () => {
   // Network interception + real HTTP + iOS restartApp need generous timeout
   test.use({ timeout: 20_000 })
 
-  beforeAll(async ({ device }) => {
-    await device.restartApp()
-  })
-
   beforeEach(async ({ device }) => {
-    await device.unrouteAll()
-    await device.openDeepLink("tapsmithtest:///api-calls")
+    await device.restartApp()
+    await device.getByDescription("API Calls").scrollIntoView()
+    await device.getByDescription("API Calls").tap()
     const screen = new ApiCallsScreen(device)
     await expect(screen.heading).toBeVisible()
   })
@@ -123,8 +120,10 @@ describe("Network mocking", () => {
     await screen.fetchPostsButton.tap()
     await expect(device.getByText("Still Mocked")).toBeVisible({ timeout: 10_000 })
 
-    // Navigate away and back to clear UI state (deep link avoids slow restartApp)
-    await device.openDeepLink("tapsmithtest:///api-calls")
+    // Restart to clear UI state
+    await device.restartApp()
+    await device.getByDescription("API Calls").scrollIntoView()
+    await device.getByDescription("API Calls").tap()
     await expect(screen.heading).toBeVisible()
 
     // Remove the route
@@ -150,9 +149,11 @@ describe("Network mocking", () => {
     await screen.fetchPostsButton.tap()
     await expect(device.getByText("Failed to fetch posts")).toBeVisible({ timeout: 10_000 })
 
-    // Remove all routes and navigate away/back to clear UI state
+    // Remove all routes and restart app
     await device.unrouteAll()
-    await device.openDeepLink("tapsmithtest:///api-calls")
+    await device.restartApp()
+    await device.getByDescription("API Calls").scrollIntoView()
+    await device.getByDescription("API Calls").tap()
     await expect(screen.heading).toBeVisible()
 
     // Now requests should go through
@@ -173,8 +174,10 @@ describe("Network mocking", () => {
     await screen.fetchPostsButton.tap()
     await expect(device.getByText("Once Only")).toBeVisible({ timeout: 10_000 })
 
-    // Navigate away and back to clear UI state
-    await device.openDeepLink("tapsmithtest:///api-calls")
+    // Restart app to clear state
+    await device.restartApp()
+    await device.getByDescription("API Calls").scrollIntoView()
+    await device.getByDescription("API Calls").tap()
     await expect(screen.heading).toBeVisible()
 
     // Second call: should go through (route expired after 1 use)
