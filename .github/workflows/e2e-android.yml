@@ -201,6 +201,35 @@ jobs:
             --device "pixel_6" \
             --force
 
+      - name: Boot emulator
+        run: |
+          nohup emulator -avd "${{ env.AVD_NAME }}" \
+            -no-window -no-audio -no-snapshot-save \
+            -gpu swiftshader_indirect \
+            -no-boot-anim \
+            -memory 4096 \
+            &>/tmp/emulator.log &
+          echo "Waiting for emulator to boot..."
+          adb wait-for-device
+          # Poll until boot_completed
+          TIMEOUT=120
+          while [ $TIMEOUT -gt 0 ]; do
+            BOOT=$(adb shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')
+            if [ "$BOOT" = "1" ]; then break; fi
+            sleep 2
+            TIMEOUT=$((TIMEOUT - 2))
+          done
+          if [ "$BOOT" != "1" ]; then
+            echo "::error::Emulator failed to boot within 120s"
+            cat /tmp/emulator.log | tail -30
+            exit 1
+          fi
+          # Disable animations for test stability
+          adb shell settings put global window_animation_scale 0
+          adb shell settings put global transition_animation_scale 0
+          adb shell settings put global animator_duration_scale 0
+          echo "Emulator booted and ready ($(adb shell getprop ro.build.display.id))"
+
       - name: Install SDK dependencies
         working-directory: packages/tapsmith
         run: npm ci
@@ -217,9 +246,20 @@ jobs:
         working-directory: e2e
         run: |
           npx tapsmith test -c tapsmith.config.android-ci.mjs --shard=${{ matrix.shard }}/${{ env.SHARD_TOTAL }} --workers 1 || \
-          (echo "First attempt failed — killing stale emulators before retry" && \
+          (echo "::warning::First attempt failed — restarting emulator before retry" && \
            rm -rf blob-report/ tapsmith-results/ && \
-           adb emu kill 2>/dev/null; sleep 2; \
+           adb emu kill 2>/dev/null; sleep 5; \
+           nohup emulator -avd "${{ env.AVD_NAME }}" \
+             -no-window -no-audio -no-snapshot-save \
+             -gpu swiftshader_indirect \
+             -no-boot-anim \
+             -memory 4096 \
+             &>/tmp/emulator-retry.log & \
+           adb wait-for-device && \
+           while [ "$(adb shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')" != "1" ]; do sleep 2; done && \
+           adb shell settings put global window_animation_scale 0 && \
+           adb shell settings put global transition_animation_scale 0 && \
+           adb shell settings put global animator_duration_scale 0 && \
            npx tapsmith test -c tapsmith.config.android-ci.mjs --shard=${{ matrix.shard }}/${{ env.SHARD_TOTAL }} --workers 1)
 
       - name: Upload blob report

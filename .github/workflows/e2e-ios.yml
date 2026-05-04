@@ -194,7 +194,24 @@ jobs:
           ")
           if [ -n "$UDID" ]; then
             echo "Booting $SIM ($UDID)"
+            echo "TAPSMITH_IOS_UDID=$UDID" >> $GITHUB_ENV
             xcrun simctl boot "$UDID" 2>/dev/null || true
+            # Wait for simulator to be fully booted
+            TIMEOUT=60
+            while [ $TIMEOUT -gt 0 ]; do
+              STATE=$(xcrun simctl list devices -j | python3 -c "
+          import json,sys
+          d=json.load(sys.stdin)
+          for devs in d['devices'].values():
+            for dev in devs:
+              if dev['udid']=='$UDID':
+                print(dev['state']); sys.exit()
+          ")
+              if [ "$STATE" = "Booted" ]; then break; fi
+              sleep 2
+              TIMEOUT=$((TIMEOUT - 2))
+            done
+            echo "Simulator state: $STATE"
           fi
 
       - name: Link agent build to DerivedData for auto-discovery
@@ -223,9 +240,18 @@ jobs:
         working-directory: e2e
         run: |
           npx tapsmith test -c tapsmith.config.ios-ci.mjs --shard=${{ matrix.shard }}/${{ env.SHARD_TOTAL }} --workers 1 || \
-          (echo "First attempt failed — killing stale simulators before retry" && \
+          (echo "::warning::First attempt failed — rebooting simulator before retry" && \
            rm -rf blob-report/ tapsmith-results/ && \
-           xcrun simctl shutdown all 2>/dev/null; \
+           xcrun simctl shutdown all 2>/dev/null; sleep 3; \
+           xcrun simctl boot "$TAPSMITH_IOS_UDID" 2>/dev/null || true; \
+           while [ "$(xcrun simctl list devices -j | python3 -c "
+          import json,sys
+          d=json.load(sys.stdin)
+          for devs in d['devices'].values():
+            for dev in devs:
+              if dev['udid']=='$TAPSMITH_IOS_UDID':
+                print(dev['state']); sys.exit()
+          ")" != "Booted" ]; do sleep 2; done; \
            npx tapsmith test -c tapsmith.config.ios-ci.mjs --shard=${{ matrix.shard }}/${{ env.SHARD_TOTAL }} --workers 1)
 
       - name: Upload blob report
