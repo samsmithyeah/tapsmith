@@ -13,6 +13,7 @@ use uuid::Uuid;
 use crate::adb;
 use crate::agent_comms::{AgentCommand, AgentConnection, AgentResponse};
 use crate::device::DeviceManager;
+use crate::device_logs;
 use crate::ios;
 use crate::mitm_ca::MitmAuthority;
 use crate::network_proxy::NetworkProxy;
@@ -3939,6 +3940,56 @@ impl proto::tapsmith_service_server::TapsmithService for TapsmithServiceImpl {
             logcat,
             error_message: String::new(),
         }))
+    }
+
+    // ─── Device Log Streaming (PILOT-193) ───
+
+    type StreamDeviceLogsStream =
+        Pin<Box<dyn Stream<Item = Result<proto::DeviceLogEntry, Status>> + Send>>;
+
+    async fn stream_device_logs(
+        &self,
+        request: Request<proto::StreamDeviceLogsRequest>,
+    ) -> Result<Response<Self::StreamDeviceLogsStream>, Status> {
+        let req = request.into_inner();
+        let serial = self.active_serial().await?;
+        let platform = self.require_platform().await?;
+
+        info!(
+            serial = %serial,
+            platform = %platform,
+            package = %req.package_name,
+            "Starting device log stream"
+        );
+
+        let handle = device_logs::start(serial, platform, req.package_name)
+            .await
+            .map_err(|e| Status::internal(format!("Failed to start device log stream: {e}")))?;
+
+        let (out_tx, out_rx) =
+            tokio::sync::mpsc::channel::<Result<proto::DeviceLogEntry, Status>>(256);
+
+        tokio::spawn(async move {
+            // Keep `handle` alive as a whole — dropping `_cancel_tx` kills
+            // the log subprocess, so it must outlive the recv loop.
+            let mut handle = handle;
+            while let Some(entry) = handle.rx.recv().await {
+                let proto_entry = proto::DeviceLogEntry {
+                    level: entry.level.to_string(),
+                    message: entry.message,
+                    tag: entry.tag,
+                    timestamp_ms: entry.timestamp_ms,
+                    pid: entry.pid,
+                };
+                if out_tx.send(Ok(proto_entry)).await.is_err() {
+                    break;
+                }
+            }
+            drop(handle);
+        });
+
+        let output_stream = tokio_stream::wrappers::ReceiverStream::new(out_rx);
+        Ok(Response::new(Box::pin(output_stream)))
     }
 
     // ─── App State Snapshot (PILOT-115) ───

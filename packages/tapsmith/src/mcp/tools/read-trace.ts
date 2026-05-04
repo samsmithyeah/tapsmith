@@ -11,8 +11,9 @@ export function registerReadTraceTool(server: McpServer): void {
     {
       path: z.string().describe('Path to the trace .zip file'),
       include_screenshots: z.boolean().optional().describe('Include base64 screenshots for each step (default false)'),
+      device_logs: z.enum(['errors', 'all', 'none']).optional().describe('Include device logs: "errors" for error/warn only (default), "all" for all levels, "none" to exclude'),
     },
-    async ({ path: tracePath, include_screenshots }) => {
+    async ({ path: tracePath, include_screenshots, device_logs }) => {
       const resolved = path.resolve(tracePath);
       if (!resolved.endsWith('.zip')) {
         return { content: [{ type: 'text' as const, text: 'Invalid trace path: must be a .zip file' }], isError: true };
@@ -22,7 +23,7 @@ export function registerReadTraceTool(server: McpServer): void {
       }
 
       try {
-        const content = readTraceArchive(resolved, include_screenshots ?? false);
+        const content = readTraceArchive(resolved, include_screenshots ?? false, device_logs ?? 'errors');
         return { content };
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
@@ -36,7 +37,7 @@ type ContentItem =
   | { type: 'text'; text: string }
   | { type: 'image'; data: string; mimeType: string };
 
-function readTraceArchive(tracePath: string, includeScreenshots: boolean): ContentItem[] {
+function readTraceArchive(tracePath: string, includeScreenshots: boolean, deviceLogs: 'errors' | 'all' | 'none'): ContentItem[] {
   const zipData = new Uint8Array(fs.readFileSync(tracePath));
   const files = unzipSync(zipData);
   const lines: string[] = [];
@@ -79,6 +80,25 @@ function readTraceArchive(tracePath: string, includeScreenshots: boolean): Conte
         if (event.error) lines.push(`   Error: ${event.error}`);
       } else if (event.type === 'group-start') {
         lines.push(`\n### ${event.title ?? 'Test'}`);
+      }
+    }
+
+    // Device logs
+    if (deviceLogs !== 'none') {
+      const isErrorOnly = deviceLogs === 'errors';
+      const logEvents = events.filter((e: Record<string, unknown>) =>
+        e.type === 'console' && e.source === 'device'
+        && (!isErrorOnly || e.level === 'error' || e.level === 'warn'),
+      );
+      if (logEvents.length > 0) {
+        const cap = isErrorOnly ? 50 : 200;
+        const shown = logEvents.slice(-cap);
+        lines.push('');
+        lines.push(`## Device Logs (${logEvents.length} entries${logEvents.length > cap ? `, showing last ${cap}` : ''})`);
+        lines.push('');
+        for (const ev of shown) {
+          lines.push(`[${(ev.level as string)?.toUpperCase()}] ${ev.message ?? ''}`);
+        }
       }
     }
   }

@@ -63,6 +63,12 @@ service TapsmithService {
   // ─── Trace Support (PILOT-85) ───
   rpc GetLogcat(GetLogcatRequest) returns (GetLogcatResponse);
 
+  // ─── Device Log Streaming (PILOT-193) ───
+  // Server-side stream that tails device logs (Android logcat / iOS
+  // simulator syslog), filtered to the app-under-test's process.
+  // Cancel the stream to stop.
+  rpc StreamDeviceLogs(StreamDeviceLogsRequest) returns (stream DeviceLogEntry);
+
   // ─── Network Capture (PILOT-164) ───
   rpc StartNetworkCapture(StartNetworkCaptureRequest) returns (StartNetworkCaptureResponse);
   rpc StopNetworkCapture(StopNetworkCaptureRequest) returns (StopNetworkCaptureResponse);
@@ -562,6 +568,21 @@ message GetLogcatResponse {
   string request_id = 1;
   string logcat = 2;         // raw logcat output
   string error_message = 3;
+}
+
+// ─── Device Log Streaming (PILOT-193) ───
+
+message StreamDeviceLogsRequest {
+  string request_id = 1;
+  string package_name = 2;   // filter by app package / bundle ID
+}
+
+message DeviceLogEntry {
+  string level = 1;           // "debug" | "info" | "warn" | "error" | "log"
+  string message = 2;
+  string tag = 3;             // Android tag / iOS subsystem
+  uint64 timestamp_ms = 4;    // epoch milliseconds
+  int32 pid = 5;
 }
 
 // ─── Network Capture (PILOT-164) ───

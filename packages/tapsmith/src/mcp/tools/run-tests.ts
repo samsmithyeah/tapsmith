@@ -50,6 +50,11 @@ export function registerRunTestsTool(server: McpServer, dispatcher?: TestDispatc
                     lines.push('  Steps leading to failure:');
                     for (const step of summary.steps) lines.push(`    ${step}`);
                   }
+                  if (summary.deviceLogs.length > 0) {
+                    lines.push('');
+                    lines.push('  Device logs (errors/warnings):');
+                    for (const log of summary.deviceLogs) lines.push(`    ${log}`);
+                  }
                   if (summary.failureScreenshot) screenshots.push(summary.failureScreenshot);
                 }
                 lines.push(`  Trace: ${f.tracePath}`);

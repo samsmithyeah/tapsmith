@@ -801,6 +801,8 @@ html, body, #app {
 .detail-tab.has-error { color: var(--color-error); }
 .detail-tab-count { margin-left: 6px; padding: 1px 5px; border-radius: 8px; background: var(--color-bg-tertiary); color: var(--color-text-secondary); font-size: 10px; font-weight: 600; letter-spacing: 0; }
 .detail-tab.active .detail-tab-count { background: var(--color-accent); color: var(--color-bg); }
+.detail-tab-dot { display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: var(--color-text-faintest); margin-left: 5px; vertical-align: middle; }
+.detail-tab.active .detail-tab-dot { background: var(--color-accent); }
 .detail-content { flex: 1; overflow-y: auto; padding: 10px 14px; font-size: 12px; }
 .detail-content.detail-content-flush { padding: 0; overflow: hidden; }
 
@@ -810,7 +812,7 @@ html, body, #app {
 .call-value.error { color: var(--color-error); }
 .call-value.success { color: var(--color-success); }
 
-.log-entry { font-family: var(--font-mono); font-size: 11px; padding: 1px 0; display: flex; gap: 8px; line-height: 1.6; }
+.log-entry { font-family: var(--font-mono); font-size: 11px; padding: 1px 12px; display: flex; gap: 8px; line-height: 1.6; }
 .log-level { min-width: 40px; font-weight: 600; text-transform: uppercase; font-size: 10px; }
 .log-level.error { color: var(--color-error); }
 .log-level.warn { color: var(--color-warning); }
@@ -819,6 +821,19 @@ html, body, #app {
 .log-level.log { color: var(--color-text-secondary); }
 .log-source { font-size: 10px; color: var(--color-text-faintest); min-width: 46px; }
 .log-message { word-break: break-all; }
+
+.con-container { display: flex; flex-direction: column; height: 100%; min-height: 0; }
+.con-toolbar { display: flex; align-items: center; gap: 10px; padding: 8px 12px; flex-shrink: 0; flex-wrap: wrap; border-bottom: 1px solid var(--color-border); }
+.con-search { flex: 1; min-width: 140px; padding: 4px 8px; background: var(--color-bg); border: 1px solid var(--color-border); border-radius: 3px; color: var(--color-text-secondary); font-size: 12px; outline: none; font-family: var(--font-mono); }
+.con-search:focus { border-color: var(--color-accent); }
+.con-pills { display: flex; gap: 2px; flex-wrap: wrap; }
+.con-pill { padding: 2px 8px; background: transparent; border: 1px solid var(--color-border); border-radius: 10px; color: var(--color-text-muted); font-size: 10px; cursor: pointer; text-transform: uppercase; letter-spacing: 0.4px; font-weight: 600; }
+.con-pill:hover { color: var(--color-text-secondary); border-color: var(--color-text-faintest); }
+.con-pill.active { color: var(--color-text-primary); border-color: var(--color-accent); background: var(--color-highlight); }
+.con-pill.level-error.active { border-color: var(--color-error); background: rgba(255,85,85,0.1); color: var(--color-error); }
+.con-pill.level-warn.active { border-color: var(--color-warning); background: rgba(255,180,40,0.1); color: var(--color-warning); }
+.con-pill-sep { width: 1px; background: var(--color-border); margin: 2px 4px; align-self: stretch; }
+.con-list { flex: 1; overflow-y: auto; }
 
 /* Source tab: filename as a fixed header, code scrolls underneath.
  * Parent .detail-content uses detail-content-flush for this tab. */

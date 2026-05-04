@@ -829,6 +829,18 @@ async function runSuiteContext(
           );
         }
       }
+
+      // Start device log streaming if configured
+      if (traceConfig.deviceLogs && traceCollector) {
+        try {
+          opts.device._startDeviceLogStream(traceCollector);
+        } catch (err) {
+          _warnCaptureOnce(
+            'Device log streaming failed to start',
+            err instanceof Error ? err.message : String(err),
+          );
+        }
+      }
     }
 
     // Video recording — bracket the test the same way `trace` does (PILOT-114).
@@ -1048,6 +1060,9 @@ async function runSuiteContext(
 
     // Finalize trace recording
     if (traceCollector && opts.device) {
+      // Stop device log streaming first — no async cleanup needed
+      opts.device._stopDeviceLogStream();
+
       // Stop network capture BEFORE disposing the route manager — the
       // proxy may still have in-flight requests that need the gRPC stream
       // alive to receive route decisions. Disposing the manager first

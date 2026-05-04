@@ -146,6 +146,14 @@ export interface GetLogcatResponse {
   errorMessage: string;
 }
 
+export interface DeviceLogEntry {
+  level: string;
+  message: string;
+  tag: string;
+  timestampMs: number;
+  pid: number;
+}
+
 export interface WebViewInfo {
   socketName: string;
   pid: number;
@@ -746,6 +754,21 @@ export class TapsmithGrpcClient {
       sinceMs: sinceMs ?? 0,
       untilMs: untilMs ?? 0,
     });
+  }
+
+  // ── Device Log Streaming (PILOT-193) ──
+
+  /**
+   * Open a server-side streaming RPC for device log streaming.
+   * Cancel the returned stream to stop.
+   * @internal
+   */
+  deviceLogStream(packageName: string): grpc.ClientReadableStream<DeviceLogEntry> {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- dynamic RPC dispatch on proto-loaded client
+    return (this.client as any).streamDeviceLogs({
+      requestId: requestId(),
+      packageName,
+    }) as grpc.ClientReadableStream<DeviceLogEntry>;
   }
 
   // ── Network Route Interception ──

@@ -40,10 +40,17 @@ export function registerListResultsTool(server: McpServer, dispatcher: TestDispa
         if (r.error) lines.push(`       Error: ${r.error}`);
         if (details && r.status === 'failed' && r.tracePath) {
           const summary = readTraceSummary(r.tracePath);
-          if (summary && summary.steps.length > 0) {
-            lines.push('');
-            lines.push('       Steps leading to failure:');
-            for (const step of summary.steps) lines.push(`         ${step}`);
+          if (summary) {
+            if (summary.steps.length > 0) {
+              lines.push('');
+              lines.push('       Steps leading to failure:');
+              for (const step of summary.steps) lines.push(`         ${step}`);
+            }
+            if (summary.deviceLogs.length > 0) {
+              lines.push('');
+              lines.push('       Device logs (errors/warnings):');
+              for (const log of summary.deviceLogs) lines.push(`         ${log}`);
+            }
             lines.push('');
           }
         }

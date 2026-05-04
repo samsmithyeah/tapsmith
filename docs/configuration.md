@@ -115,6 +115,8 @@ interface TraceConfig {
   sources: boolean;              // Include test source files (default: true)
   attachments: boolean;          // Include user attachments (default: true)
   network: boolean;              // Capture HTTP/HTTPS traffic via proxy (default: true)
+  deviceLogs: boolean;           // Stream device logs — Android logcat / iOS
+                                 // simulator syslog — into the trace (default: true)
   networkHosts?: string[];       // Hostname allowlist (glob patterns). When set,
                                  // only entries whose host matches a pattern are
                                  // kept in the trace archive.
@@ -175,6 +177,7 @@ trace: {
   snapshots: true,
   sources: false,
   network: true,
+  deviceLogs: true,
 }
 ```
 

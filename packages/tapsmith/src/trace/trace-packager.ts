@@ -83,6 +83,7 @@ export function packageTrace(
       snapshots: collector.config.snapshots,
       sources: collector.config.sources,
       network: collector.config.network,
+      deviceLogs: collector.config.deviceLogs,
     },
     actionCount: collector.currentActionIndex,
     screenshotCount: collector.screenshots.length,

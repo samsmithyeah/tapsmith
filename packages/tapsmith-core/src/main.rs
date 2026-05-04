@@ -1,6 +1,7 @@
 mod adb;
 mod agent_comms;
 mod device;
+mod device_logs;
 mod grpc_server;
 mod ios;
 #[cfg(target_os = "macos")]

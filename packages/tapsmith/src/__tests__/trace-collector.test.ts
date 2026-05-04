@@ -16,7 +16,7 @@ describe('TraceCollector', () => {
       screenshots: true,
       snapshots: true,
       sources: true,
-      attachments: true, network: false,
+      attachments: true, network: false, deviceLogs: false,
     };
   });
 

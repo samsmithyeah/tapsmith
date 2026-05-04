@@ -15,6 +15,7 @@ import {
   _hint,
   _testId,
 } from './selectors.js';
+import * as grpc from '@grpc/grpc-js';
 import {
   TapsmithGrpcClient,
   type ActionResponse,
@@ -23,12 +24,13 @@ import {
   type AppState,
   type Orientation,
   type ColorScheme,
+  type DeviceLogEntry,
 } from './grpc-client.js';
 import { ElementHandle, locatorOptionsToSelector, type LocatorOptions } from './element-handle.js';
 import type { TapsmithConfig } from './config.js';
 import { Tracing } from './trace/tracing.js';
 import { type TraceCollector, getActiveTraceCollector, extractSourceLocation } from './trace/trace-collector.js';
-import type { ActionCategory } from './trace/types.js';
+import type { ActionCategory, ConsoleLevel } from './trace/types.js';
 import { tracedAction } from './trace/traced-action.js';
 import {
   NetworkRouteManager,
@@ -70,6 +72,9 @@ export class Device {
 
   /** @internal — Active WebView handle, if in WebView context. */
   _activeWebView: WebViewHandle | null = null;
+
+  /** @internal — Active device log stream. */
+  private _logStream: grpc.ClientReadableStream<DeviceLogEntry> | null = null;
 
   private _typingDelayMs: number;
 
@@ -534,6 +539,45 @@ export class Device {
     };
   }
 
+  // ─── Device Log Streaming (PILOT-193) ───
+
+  /** @internal — Start streaming device logs into the active trace collector. */
+  _startDeviceLogStream(collector: TraceCollector): void {
+    if (this._logStream) return;
+    if (!this.defaultPackageName) return;
+
+    const stream = this._client.deviceLogStream(this.defaultPackageName);
+    this._logStream = stream;
+
+    stream.on('data', (entry: DeviceLogEntry) => {
+      const level = mapDeviceLogLevel(entry.level);
+      const message = entry.tag
+        ? `[${entry.tag}] ${entry.message}`
+        : entry.message;
+      collector.addLogcatEntry(level, message);
+    });
+
+    stream.on('error', (err: Error) => {
+      const code = (err as grpc.ServiceError).code;
+      if (code !== grpc.status.CANCELLED) {
+        console.warn('[tapsmith] Device log stream error:', err.message);
+      }
+      this._logStream = null;
+    });
+
+    stream.on('end', () => {
+      this._logStream = null;
+    });
+  }
+
+  /** @internal — Stop streaming device logs. */
+  _stopDeviceLogStream(): void {
+    if (this._logStream) {
+      this._logStream.cancel();
+      this._logStream = null;
+    }
+  }
+
   // ─── Network Route Interception ───
 
   /**
@@ -862,6 +906,16 @@ export class Device {
 
   close(): void {
     this._client.close();
+  }
+}
+
+function mapDeviceLogLevel(level: string): ConsoleLevel {
+  switch (level) {
+    case 'debug': return 'debug';
+    case 'info': return 'info';
+    case 'warn': return 'warn';
+    case 'error': return 'error';
+    default: return 'log';
   }
 }
 

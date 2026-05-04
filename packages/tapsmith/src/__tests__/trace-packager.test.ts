@@ -27,7 +27,7 @@ describe('trace packager', () => {
       screenshots: false,
       snapshots: false,
       sources: false,
-      attachments: true, network: false,
+      attachments: true, network: false, deviceLogs: false,
     };
 
     const collector = new TraceCollector(config, tempDir);
@@ -100,7 +100,7 @@ describe('trace packager', () => {
       screenshots: false,
       snapshots: false,
       sources: true,
-      attachments: true, network: false,
+      attachments: true, network: false, deviceLogs: false,
     };
 
     // Create a fake source file
@@ -134,7 +134,7 @@ describe('trace packager', () => {
       screenshots: false,
       snapshots: false,
       sources: false,
-      attachments: true, network: false,
+      attachments: true, network: false, deviceLogs: false,
     };
 
     const collector = new TraceCollector(config, tempDir);

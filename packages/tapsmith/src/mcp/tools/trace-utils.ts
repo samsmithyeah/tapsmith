@@ -11,10 +11,14 @@ export interface TraceEvent {
   expected?: unknown
   actual?: unknown
   duration?: number
+  level?: string
+  message?: string
+  source?: string
 }
 
 export interface TraceSummary {
   steps: string[]
+  deviceLogs: string[]
   failureScreenshot?: Buffer
 }
 
@@ -26,6 +30,7 @@ export function readTraceSummary(tracePath: string, maxSteps = 10): TraceSummary
     const decode = (data: Uint8Array) => new TextDecoder().decode(data);
 
     const steps: string[] = [];
+    const deviceLogs: string[] = [];
 
     if (files['trace.json']) {
       const events: TraceEvent[] = decode(files['trace.json'])
@@ -56,6 +61,19 @@ export function readTraceSummary(tracePath: string, maxSteps = 10): TraceSummary
       if (meaningful.length > maxSteps) {
         steps.unshift(`... ${meaningful.length - maxSteps} earlier step(s) omitted`);
       }
+
+      // Extract error/warn device logs (capped)
+      const maxDeviceLogs = 20;
+      const deviceLogEvents = events.filter(
+        (e) => e.type === 'console' && e.source === 'device' && (e.level === 'error' || e.level === 'warn'),
+      );
+      const deviceLogTail = deviceLogEvents.slice(-maxDeviceLogs);
+      for (const ev of deviceLogTail) {
+        deviceLogs.push(`[${ev.level?.toUpperCase()}] ${ev.message ?? ''}`);
+      }
+      if (deviceLogEvents.length > maxDeviceLogs) {
+        deviceLogs.unshift(`... ${deviceLogEvents.length - maxDeviceLogs} earlier device log(s) omitted`);
+      }
     }
 
     // Find failure screenshot (last screenshot in the archive)
@@ -68,7 +86,7 @@ export function readTraceSummary(tracePath: string, maxSteps = 10): TraceSummary
       failureScreenshot = Buffer.from(files[last]);
     }
 
-    return { steps, failureScreenshot };
+    return { steps, deviceLogs, failureScreenshot };
   } catch {
     return undefined;
   }

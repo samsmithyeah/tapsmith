@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect, useMemo } from 'preact/hooks';
 import type { ComponentChildren } from 'preact';
-import type { ActionTraceEvent, AssertionTraceEvent, AnyTraceEvent, ConsoleTraceEvent, TraceMetadata, NetworkEntry } from '../../trace/types.js';
+import type { ActionTraceEvent, AssertionTraceEvent, AnyTraceEvent, ConsoleTraceEvent, TraceMetadata, NetworkEntry, ConsoleLevel } from '../../trace/types.js';
 import { HierarchyTree } from './HierarchyTree.js';
 import type { Bounds } from './HierarchyTree.js';
 import { NetworkTab } from './NetworkTab.js';
@@ -72,7 +72,7 @@ export function DetailTabs({ event, events, hierarchies, sources, metadata, netw
         <div class={`detail-tab${tab === 'call' ? ' active' : ''}`} onClick={() => setTab('call')}>Call</div>
         <div class={`detail-tab${tab === 'log' ? ' active' : ''}`} onClick={() => setTab('log')}>Log</div>
         <div class={`detail-tab${tab === 'console' ? ' active' : ''}`} onClick={() => setTab('console')}>
-          Console{consoleEvents.length > 0 && <span class="detail-tab-count">{consoleEvents.length}</span>}
+          Console{consoleEvents.length > 0 && <span class="detail-tab-dot" />}
         </div>
         <div class={`detail-tab${tab === 'source' ? ' active' : ''}`} onClick={() => setTab('source')}>Source</div>
         <div class={`detail-tab${tab === 'hierarchy' ? ' active' : ''}`} onClick={() => setTab('hierarchy')}>Hierarchy</div>
@@ -90,7 +90,7 @@ export function DetailTabs({ event, events, hierarchies, sources, metadata, netw
           <span class="test-error-banner-text">{testError}</span>
         </div>
       )}
-      <div class={`detail-content${tab === 'hierarchy' || tab === 'source' || tab === 'network' || tab === 'locator' ? ' detail-content-flush' : ''}`}>
+      <div class={`detail-content${tab === 'hierarchy' || tab === 'source' || tab === 'network' || tab === 'locator' || tab === 'console' ? ' detail-content-flush' : ''}`}>
         {tab === 'call' && <CallTab event={event} />}
         {tab === 'log' && <LogTab event={event} />}
         {tab === 'console' && <ConsoleTab event={event} events={consoleEvents} />}
@@ -202,26 +202,100 @@ function LogTab({ event }: { event: ActionTraceEvent | AssertionTraceEvent | und
 
 // ─── Console Tab ───
 
+type SourceFilter = 'all' | 'test' | 'device'
+
+const LEVEL_ORDER: ConsoleLevel[] = ['error', 'warn', 'info', 'log', 'debug']
+
 function ConsoleTab({ event, events: consoleEvents }: { event: ActionTraceEvent | AssertionTraceEvent | undefined; events: ConsoleTraceEvent[] }) {
-  if (consoleEvents.length === 0) return <div class="no-content">No console output recorded</div>;
+  const [search, setSearch] = useState('')
+  const [levelFilter, setLevelFilter] = useState<Set<ConsoleLevel>>(new Set(LEVEL_ORDER))
+  const [sourceFilter, setSourceFilter] = useState<SourceFilter>('all')
+  const [scopeToAction, setScopeToAction] = useState(false)
 
-  const relevant = event
-    ? consoleEvents.filter(e => Math.abs(e.actionIndex - event.actionIndex) <= 1)
-    : consoleEvents;
+  const hasBothSources = useMemo(() => {
+    const sources = new Set(consoleEvents.map(e => e.source))
+    return sources.has('test') && sources.has('device')
+  }, [consoleEvents])
 
-  if (relevant.length === 0) return <div class="no-content">No console output for this action</div>;
+  const filtered = useMemo(() => {
+    const lf = search.toLowerCase()
+    return consoleEvents.filter(e => {
+      if (!levelFilter.has(e.level as ConsoleLevel)) return false
+      if (sourceFilter !== 'all' && e.source !== sourceFilter) return false
+      if (scopeToAction && event && Math.abs(e.actionIndex - event.actionIndex) > 1) return false
+      if (lf && !e.message.toLowerCase().includes(lf)) return false
+      return true
+    })
+  }, [consoleEvents, search, levelFilter, sourceFilter, scopeToAction, event])
+
+  const toggleLevel = (level: ConsoleLevel) => {
+    setLevelFilter(prev => {
+      const next = new Set(prev)
+      if (next.has(level)) next.delete(level)
+      else next.add(level)
+      return next
+    })
+  }
+
+  if (consoleEvents.length === 0) return <div class="no-content">No console output recorded</div>
 
   return (
-    <div>
-      {relevant.map((ev, i) => (
-        <div key={i} class="log-entry">
-          <span class={`log-level ${ev.level}`}>{ev.level}</span>
-          <span class="log-source">{ev.source === 'device' ? 'device' : 'test'}</span>
-          <span class="log-message">{ev.message}</span>
+    <div class="con-container">
+      <div class="con-toolbar">
+        <input
+          class="con-search"
+          type="text"
+          placeholder="Filter logs…"
+          value={search}
+          onInput={(e) => setSearch((e.target as HTMLInputElement).value)}
+        />
+        <div class="con-pills">
+          {LEVEL_ORDER.map(level => (
+            <button
+              key={level}
+              class={`con-pill level-${level}${levelFilter.has(level) ? ' active' : ''}`}
+              onClick={() => toggleLevel(level)}
+            >{level}</button>
+          ))}
         </div>
-      ))}
+        {hasBothSources && (
+          <>
+            <div class="con-pill-sep" />
+            <div class="con-pills">
+              {(['all', 'test', 'device'] as SourceFilter[]).map(s => (
+                <button
+                  key={s}
+                  class={`con-pill${sourceFilter === s ? ' active' : ''}`}
+                  onClick={() => setSourceFilter(s)}
+                >{s}</button>
+              ))}
+            </div>
+          </>
+        )}
+        {event && (
+          <>
+            <div class="con-pill-sep" />
+            <button
+              class={`con-pill${scopeToAction ? ' active' : ''}`}
+              onClick={() => setScopeToAction(prev => !prev)}
+            >current action</button>
+          </>
+        )}
+      </div>
+      <div class="con-list">
+        {filtered.length === 0
+          ? <div class="no-content" style="padding: 12px">No matching log entries</div>
+          : filtered.map((ev, i) => (
+            <div key={i} class="log-entry">
+              <span class={`log-level ${ev.level}`}>{ev.level}</span>
+              <span class="log-source">{ev.source === 'device' ? 'device' : 'test'}</span>
+              <span class="log-message">{ev.message}</span>
+            </div>
+          ))
+        }
+      </div>
     </div>
-  );
+  )
 }
 
 // ─── Source Tab ───
