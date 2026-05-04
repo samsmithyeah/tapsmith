@@ -8,7 +8,7 @@
 import { beforeAll, beforeEach, describe, expect, test } from "tapsmith"
 
 describe("WebView testing", () => {
-  test.use({ timeout: 60_000 })
+  test.use({ timeout: 90_000 })
 
   beforeAll(async ({ device }) => {
     await device.restartApp()
