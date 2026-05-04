@@ -218,6 +218,7 @@ jobs:
         run: |
           npx tapsmith test -c tapsmith.config.android-ci.mjs --shard=${{ matrix.shard }}/${{ env.SHARD_TOTAL }} --workers 1 || \
           (echo "First attempt failed — killing stale emulators before retry" && \
+           rm -rf blob-report/ tapsmith-results/ && \
            adb emu kill 2>/dev/null; sleep 2; \
            npx tapsmith test -c tapsmith.config.android-ci.mjs --shard=${{ matrix.shard }}/${{ env.SHARD_TOTAL }} --workers 1)
 

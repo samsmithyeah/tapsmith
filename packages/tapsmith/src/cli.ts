@@ -1639,16 +1639,26 @@ async function main(): Promise<void> {
     process.exit(1);
   }
 
-  // Apply sharding — deterministic split within each project. Projects that
-  // are dependencies of other projects run in full on every shard (like setup).
+  // Apply sharding — deterministic split within each project. Setup projects
+  // (depended on by others) only run on shards that have tests from their dependents.
   if (config.shard) {
     const { current, total } = config.shard;
     if (hasProjects) {
-      // Find projects that are depended on by others — these must not be sharded
       const depTargets = new Set(projects.flatMap((p) => p.dependencies));
+      // First pass: shard non-setup projects
       for (const project of projects) {
-        if (depTargets.has(project.name)) continue; // run in full on every shard
+        if (depTargets.has(project.name)) continue;
         project.testFiles = project.testFiles.filter((_, i) => i % total === current - 1);
+      }
+      // Second pass: skip setup projects whose dependents have no files in this shard
+      for (const project of projects) {
+        if (!depTargets.has(project.name)) continue;
+        const hasDependentTests = projects.some(
+          (p) => p.dependencies.includes(project.name) && p.testFiles.length > 0,
+        );
+        if (!hasDependentTests) {
+          project.testFiles = [];
+        }
       }
       testFiles = projects.flatMap((p) => p.testFiles);
     } else {

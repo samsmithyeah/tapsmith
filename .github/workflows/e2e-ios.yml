@@ -224,6 +224,7 @@ jobs:
         run: |
           npx tapsmith test -c tapsmith.config.ios-ci.mjs --shard=${{ matrix.shard }}/${{ env.SHARD_TOTAL }} --workers 1 || \
           (echo "First attempt failed — killing stale simulators before retry" && \
+           rm -rf blob-report/ tapsmith-results/ && \
            xcrun simctl shutdown all 2>/dev/null; \
            npx tapsmith test -c tapsmith.config.ios-ci.mjs --shard=${{ matrix.shard }}/${{ env.SHARD_TOTAL }} --workers 1)
 

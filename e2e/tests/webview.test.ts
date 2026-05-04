@@ -5,15 +5,17 @@
  * web content via CSS selectors, assert on DOM state, then switch back
  * to native.
  */
-import { beforeEach, describe, expect, test } from "tapsmith"
+import { beforeAll, beforeEach, describe, expect, test } from "tapsmith"
 
 describe("WebView testing", () => {
   test.use({ timeout: 60_000 })
 
-  beforeEach(async ({ device }) => {
+  beforeAll(async ({ device }) => {
     await device.restartApp()
-    await device.getByDescription("WebView").scrollIntoView()
-    await device.getByDescription("WebView").tap()
+  })
+
+  beforeEach(async ({ device }) => {
+    await device.openDeepLink("tapsmithtest:///webview")
     await expect(device.getByText("Embedded WebView")).toBeVisible()
   })
 
