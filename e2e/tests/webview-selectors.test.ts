@@ -2,16 +2,13 @@
  * Verify that every selector the Selector Playground would suggest
  * for WebView elements actually works at runtime.
  */
-import { beforeAll, beforeEach, describe, expect, test } from "tapsmith"
+import { beforeAll, describe, expect, test } from "tapsmith"
 
 describe("WebView selector playground parity", () => {
   test.use({ timeout: 90_000 })
 
   beforeAll(async ({ device }) => {
     await device.restartApp()
-  })
-
-  beforeEach(async ({ device }) => {
     await device.openDeepLink("tapsmithtest:///webview")
     await expect(device.getByText("Embedded WebView")).toBeVisible()
   })
