@@ -5219,6 +5219,16 @@ mod tests {
     }
 
     #[test]
+    fn selector_to_json_label() {
+        let sel = proto::Selector {
+            selector: Some(proto::selector::Selector::Label("Email".into())),
+            parent: None,
+        };
+        let j = selector_to_json(&sel);
+        assert_eq!(j["label"], "Email");
+    }
+
+    #[test]
     fn selector_to_json_with_parent() {
         let parent = proto::Selector {
             selector: Some(proto::selector::Selector::ResourceId(

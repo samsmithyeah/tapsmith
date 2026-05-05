@@ -559,6 +559,7 @@ An `ElementHandle` is a lazy reference to a UI element. It is returned by every 
 | `getByDescription(text)` | Accessibility description within the parent. |
 | `getByPlaceholder(text)` | Placeholder / hint text within the parent. |
 | `getByTestId(id)` | Test identifier within the parent. |
+| `getByLabel(text)` | Input element by associated label text within the parent. |
 | `locator(options)` | Native id / xpath / className within the parent. |
 
 Cannot be called on modified handles (e.g. after `.first()`, `.filter()`, `.and()`).
