@@ -785,24 +785,24 @@ export class TapsmithGrpcClient {
 
   // ── WebView Testing (PILOT-116) ──
 
-  async listWebViews(): Promise<ListWebViewsResponse> {
+  async listWebViews(deadlineMs?: number): Promise<ListWebViewsResponse> {
     return this.call<ListWebViewsResponse>('listWebViews', {
       requestId: requestId(),
-    });
+    }, deadlineMs);
   }
 
-  async forwardWebViewPort(socketName: string): Promise<ForwardWebViewPortResponse> {
+  async forwardWebViewPort(socketName: string, deadlineMs?: number): Promise<ForwardWebViewPortResponse> {
     return this.call<ForwardWebViewPortResponse>('forwardWebViewPort', {
       requestId: requestId(),
       socketName,
-    });
+    }, deadlineMs);
   }
 
-  async closeWebViewPort(localPort: number): Promise<ActionResponse> {
+  async closeWebViewPort(localPort: number, deadlineMs?: number): Promise<ActionResponse> {
     return this.call<ActionResponse>('closeWebViewPort', {
       requestId: requestId(),
       localPort,
-    });
+    }, deadlineMs);
   }
 
   // ── Lifecycle ──

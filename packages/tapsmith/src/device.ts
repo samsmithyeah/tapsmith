@@ -42,6 +42,40 @@ import {
 import { WebViewHandle } from './webview-handle.js';
 import type { Platform } from './config.js';
 
+const WEBVIEW_RPC_TIMEOUT_MS = 5_000;
+const WEBVIEW_RETRY_INTERVAL_MS = 500;
+
+function remainingMs(deadline: number): number {
+  return Math.max(0, deadline - Date.now());
+}
+
+async function sleepUpTo(ms: number, deadline: number): Promise<void> {
+  const timeout = Math.min(ms, remainingMs(deadline));
+  if (timeout <= 0) return;
+  await new Promise((resolve) => setTimeout(resolve, timeout));
+}
+
+async function withDeadline<T>(promise: Promise<T>, deadline: number, label: string): Promise<T> {
+  const timeoutMs = remainingMs(deadline);
+  if (timeoutMs <= 0) {
+    throw new Error(`${label} timed out`);
+  }
+
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  promise.catch(() => undefined);
+
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error(`${label} timed out after ${timeoutMs}ms`)), timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
 // ─── Types for device-level actions ───
 
 /** Options for `device.swipe()`. */
@@ -75,6 +109,7 @@ export class Device {
 
   /** @internal — Cached WebView handle kept alive across native()/webview() switches. */
   private _cachedWebView: WebViewHandle | null = null;
+  private _webviewGeneration = 0;
 
   /** @internal — Active device log stream. */
   private _logStream: grpc.ClientReadableStream<DeviceLogEntry> | null = null;
@@ -751,27 +786,136 @@ export class Device {
    *   when multiple are present.
    */
   async webview(packageName?: string): Promise<WebViewHandle> {
+    return this._tracedWebViewConnect(packageName);
+  }
+
+  private async _tracedWebViewConnect(packageName?: string): Promise<WebViewHandle> {
+    const collector = this._traceCollector;
+    if (!collector) {
+      return this._connectWebView(packageName);
+    }
+
+    const sourceLocation = extractSourceLocation(new Error().stack ?? '');
+    const selector = packageName ? `package=${packageName}` : undefined;
+    const { captures: beforeCaptures } = await collector.captureBeforeAction(
+      () => this._takeScreenshotBuffer(),
+      () => this._captureHierarchy(),
+    );
+
+    collector._emitActionStarted({
+      category: 'webview',
+      action: 'connect',
+      selector,
+      sourceLocation,
+      log: [`device.webview(${packageName ? JSON.stringify(packageName) : ''})`],
+      hasScreenshotBefore: !!beforeCaptures.screenshotBefore,
+      hasHierarchyBefore: !!beforeCaptures.hierarchyBefore,
+    });
+
+    const start = Date.now();
+    let failedByTimeout = false;
+    let timeoutError: string | undefined;
+    collector.setPendingOperation((errorMessage: string) => {
+      failedByTimeout = true;
+      timeoutError = errorMessage;
+      collector.addActionEvent({
+        category: 'webview',
+        action: 'connect',
+        selector,
+        duration: Date.now() - start,
+        success: false,
+        error: errorMessage,
+        log: [`device.webview() timed out: ${errorMessage}`],
+        hasScreenshotBefore: !!beforeCaptures.screenshotBefore,
+        hasScreenshotAfter: false,
+        hasHierarchyBefore: !!beforeCaptures.hierarchyBefore,
+        hasHierarchyAfter: false,
+        sourceLocation,
+      });
+    });
+
+    let handle: WebViewHandle | undefined;
+    try {
+      handle = await this._connectWebView(packageName);
+    } catch (err) {
+      collector.clearPendingOperation();
+      if (!failedByTimeout) {
+        const message = err instanceof Error ? err.message : String(err);
+        collector.addActionEvent({
+          category: 'webview',
+          action: 'connect',
+          selector,
+          duration: Date.now() - start,
+          success: false,
+          error: message,
+          log: [`device.webview() failed: ${message}`],
+          hasScreenshotBefore: !!beforeCaptures.screenshotBefore,
+          hasScreenshotAfter: false,
+          hasHierarchyBefore: !!beforeCaptures.hierarchyBefore,
+          hasHierarchyAfter: false,
+          sourceLocation,
+        });
+      }
+      throw err;
+    }
+
+    collector.clearPendingOperation();
+    if (failedByTimeout) {
+      throw new Error(timeoutError ?? 'device.webview() timed out');
+    }
+
+    collector.addActionEvent({
+      category: 'webview',
+      action: 'connect',
+      selector,
+      duration: Date.now() - start,
+      success: true,
+      log: ['device.webview() connected'],
+      hasScreenshotBefore: !!beforeCaptures.screenshotBefore,
+      hasScreenshotAfter: false,
+      hasHierarchyBefore: !!beforeCaptures.hierarchyBefore,
+      hasHierarchyAfter: false,
+      sourceLocation,
+    });
+
+    return handle;
+  }
+
+  private async _connectWebView(packageName?: string): Promise<WebViewHandle> {
     if (this._cachedWebView?._isAlive()) {
       this._activeWebView = this._cachedWebView;
+      this._applyTraceCtx(this._cachedWebView);
       return this._cachedWebView;
     }
     this._cachedWebView = null;
+    const generation = this._webviewGeneration;
 
     if (this._platform === 'ios') {
-      return this._webviewIos(packageName);
+      return this._webviewIos(packageName, generation);
     }
-    return this._webviewAndroid(packageName);
+    return this._webviewAndroid(packageName, generation);
   }
 
-  private async _webviewAndroid(packageName?: string): Promise<WebViewHandle> {
+  private async _webviewAndroid(packageName: string | undefined, generation: number): Promise<WebViewHandle> {
     const deadline = Date.now() + this._defaultTimeoutMs;
 
     let lastError = '';
-    while (Date.now() < deadline) {
-      const list = await this._client.listWebViews();
+    while (remainingMs(deadline) > 0) {
+      let list: Awaited<ReturnType<TapsmithGrpcClient['listWebViews']>>;
+      try {
+        list = await withDeadline(
+          this._client.listWebViews(Math.min(WEBVIEW_RPC_TIMEOUT_MS, remainingMs(deadline))),
+          deadline,
+          'Listing WebViews',
+        );
+      } catch (e) {
+        lastError = e instanceof Error ? e.message : String(e);
+        await sleepUpTo(WEBVIEW_RETRY_INTERVAL_MS, deadline);
+        continue;
+      }
       if (list.errorMessage) {
         lastError = list.errorMessage;
-        await new Promise(r => setTimeout(r, 500));
+        await sleepUpTo(WEBVIEW_RETRY_INTERVAL_MS, deadline);
         continue;
       }
 
@@ -784,28 +928,43 @@ export class Device {
         lastError = packageName
           ? `No WebViews found for package "${packageName}"`
           : 'No WebViews found';
-        await new Promise(r => setTimeout(r, 500));
+        await sleepUpTo(WEBVIEW_RETRY_INTERVAL_MS, deadline);
         continue;
       }
 
       const target = webviews[0];
-      const fwd = await this._client.forwardWebViewPort(target.socketName);
+      let fwd: Awaited<ReturnType<TapsmithGrpcClient['forwardWebViewPort']>>;
+      try {
+        fwd = await withDeadline(
+          this._client.forwardWebViewPort(target.socketName, Math.min(WEBVIEW_RPC_TIMEOUT_MS, remainingMs(deadline))),
+          deadline,
+          'Forwarding WebView debug port',
+        );
+      } catch (e) {
+        lastError = e instanceof Error ? e.message : String(e);
+        await sleepUpTo(WEBVIEW_RETRY_INTERVAL_MS, deadline);
+        continue;
+      }
       if (!fwd.success) {
         throw new Error(`Failed to forward WebView port: ${fwd.errorMessage}`);
       }
 
+      const handle = new WebViewHandle(this._client, fwd.localPort, Math.min(this._defaultTimeoutMs, remainingMs(deadline)));
+      this._applyTraceCtx(handle);
       try {
-        const handle = new WebViewHandle(this._client, fwd.localPort, this._defaultTimeoutMs);
-        this._applyTraceCtx(handle);
-        await handle._connect();
+        await withDeadline(handle._connect(), deadline, 'Connecting to WebView CDP endpoint');
+        if (generation !== this._webviewGeneration) {
+          await handle.close();
+          throw new Error('WebView connection was disposed before it completed');
+        }
 
         this._activeWebView = handle;
         this._cachedWebView = handle;
         return handle;
       } catch (e) {
         lastError = e instanceof Error ? e.message : String(e);
-        await this._client.closeWebViewPort(fwd.localPort);
-        await new Promise(r => setTimeout(r, 500));
+        await handle.close();
+        await sleepUpTo(WEBVIEW_RETRY_INTERVAL_MS, deadline);
         continue;
       }
     }
@@ -817,7 +976,7 @@ export class Device {
     );
   }
 
-  private async _webviewIos(_packageName?: string): Promise<WebViewHandle> {
+  private async _webviewIos(_packageName: string | undefined, generation: number): Promise<WebViewHandle> {
     const { WebKitInspectorClient, findSimulatorInspectorSocket } = await import('./webkit-inspector.js');
 
     // Find the simulator's webinspectord socket
@@ -837,7 +996,7 @@ export class Device {
     const deadline = Date.now() + this._defaultTimeoutMs;
     let lastError = '';
 
-    while (Date.now() < deadline) {
+    while (remainingMs(deadline) > 0) {
       const targets = await inspector.listTargets();
 
       // Find the target app's WebView pages — prefer matching by package/name,
@@ -852,7 +1011,7 @@ export class Device {
 
       if (!appTarget || appTarget.pages.length === 0) {
         lastError = 'No inspectable WebView pages found';
-        await new Promise(r => setTimeout(r, 500));
+        await sleepUpTo(WEBVIEW_RETRY_INTERVAL_MS, deadline);
         continue;
       }
 
@@ -863,6 +1022,10 @@ export class Device {
         this._client, inspector, appTarget.appId, page.id, this._defaultTimeoutMs,
       );
       this._applyTraceCtx(handle);
+      if (generation !== this._webviewGeneration) {
+        await handle.close();
+        throw new Error('WebView connection was disposed before it completed');
+      }
 
       this._activeWebView = handle;
       this._cachedWebView = handle;
@@ -893,6 +1056,7 @@ export class Device {
 
   /** @internal — Dispose the WebView manager (called by the runner during cleanup). */
   async _disposeWebViewManager(): Promise<void> {
+    this._webviewGeneration++;
     this._activeWebView = null;
     if (this._cachedWebView) {
       await this._cachedWebView.close();

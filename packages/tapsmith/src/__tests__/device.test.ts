@@ -66,6 +66,34 @@ function makeMockClient(overrides: Partial<TapsmithGrpcClient> = {}): TapsmithGr
     saveAppState: vi.fn(async () => successResponse()),
     restoreAppState: vi.fn(async () => successResponse()),
     waitForIdle: vi.fn(async () => successResponse()),
+    takeScreenshot: vi.fn(async () => ({
+      requestId: '1',
+      success: true,
+      data: Buffer.alloc(0),
+      errorMessage: '',
+    })),
+    getUiHierarchy: vi.fn(async () => ({
+      requestId: '1',
+      hierarchyXml: '<hierarchy />',
+      errorMessage: '',
+    })),
+    findElement: vi.fn(async () => ({
+      requestId: '1',
+      found: false,
+      errorMessage: '',
+    })),
+    listWebViews: vi.fn(async () => ({
+      requestId: '1',
+      webviews: [],
+      errorMessage: '',
+    })),
+    forwardWebViewPort: vi.fn(async () => ({
+      requestId: '1',
+      success: false,
+      localPort: 0,
+      errorMessage: 'not forwarded',
+    })),
+    closeWebViewPort: vi.fn(async () => successResponse()),
     ...overrides,
   } as unknown as TapsmithGrpcClient;
 }
@@ -259,6 +287,57 @@ describe('Device device log streaming', () => {
       collector2.cleanup();
       fs.rmSync(tempDir1, { recursive: true, force: true });
       fs.rmSync(tempDir2, { recursive: true, force: true });
+    }
+  });
+});
+
+// ─── WebView management ───
+
+describe('Device.webview()', () => {
+  it('fails within the device timeout when WebView discovery hangs', async () => {
+    const listWebViews = vi.fn(() => new Promise<never>(() => {}));
+    const client = makeMockClient({ listWebViews });
+    const device = new Device(client, { timeout: 50 });
+    const started = Date.now();
+
+    await expect(device.webview()).rejects.toThrow(/Timed out waiting for WebView/);
+
+    expect(Date.now() - started).toBeLessThan(1_000);
+    expect(listWebViews).toHaveBeenCalled();
+  });
+
+  it('records a failed WebView connect action in traces', async () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tapsmith-webview-trace-'));
+    const listWebViews = vi.fn(() => new Promise<never>(() => {}));
+    const client = makeMockClient({ listWebViews });
+    const device = new Device(client, { timeout: 50 });
+    const collector = device.tracing._startManaged({
+      mode: 'on',
+      screenshots: false,
+      snapshots: false,
+      sources: false,
+      attachments: true,
+      network: false,
+      deviceLogs: false,
+    }, tempDir);
+
+    try {
+      await expect(device.webview()).rejects.toThrow(/Timed out waiting for WebView/);
+      const event = collector.events.find((ev) =>
+        ev.type === 'action' &&
+        ev.category === 'webview' &&
+        ev.action === 'connect'
+      );
+      expect(event).toMatchObject({
+        type: 'action',
+        category: 'webview',
+        action: 'connect',
+        success: false,
+      });
+    } finally {
+      device.tracing._stopManaged();
+      collector.cleanup();
+      fs.rmSync(tempDir, { recursive: true, force: true });
     }
   });
 });

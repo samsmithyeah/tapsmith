@@ -23,6 +23,8 @@ use crate::route_handler::RouteInterceptHandler;
 use crate::screenshot;
 
 const ANDROID_PROXY_CLEANUP_TIMEOUT: Duration = Duration::from_secs(5);
+const WEBVIEW_ADB_TIMEOUT: Duration = Duration::from_secs(5);
+const WEBVIEW_ADB_CLEANUP_TIMEOUT: Duration = Duration::from_secs(2);
 
 pub struct TapsmithServiceImpl {
     device_manager: Arc<RwLock<DeviceManager>>,
@@ -694,7 +696,9 @@ impl TapsmithServiceImpl {
             if let Some(serial) = self.device_manager.read().await.active_serial() {
                 let serial = serial.to_string();
                 for port in forwards {
-                    if let Err(e) = adb::remove_forward(&serial, port).await {
+                    if let Err(e) =
+                        adb::remove_forward_with_timeout(&serial, port, WEBVIEW_ADB_TIMEOUT).await
+                    {
                         warn!(
                             port,
                             "Failed to remove WebView port forward on shutdown: {e}"
@@ -4967,7 +4971,14 @@ impl proto::tapsmith_service_server::TapsmithService for TapsmithServiceImpl {
                     .port();
                 drop(listener);
 
-                match adb::forward_abstract_socket(&serial, host_port, &req.socket_name).await {
+                match adb::forward_abstract_socket_with_timeout(
+                    &serial,
+                    host_port,
+                    &req.socket_name,
+                    WEBVIEW_ADB_TIMEOUT,
+                )
+                .await
+                {
                     Ok(()) => {
                         self.webview_forwards
                             .write()
@@ -5029,7 +5040,10 @@ impl proto::tapsmith_service_server::TapsmithService for TapsmithServiceImpl {
         if removed.is_some() {
             if let Some(serial) = self.device_manager.read().await.active_serial() {
                 let serial = serial.to_string();
-                if let Err(e) = adb::remove_forward(&serial, port).await {
+                if let Err(e) =
+                    adb::remove_forward_with_timeout(&serial, port, WEBVIEW_ADB_CLEANUP_TIMEOUT)
+                        .await
+                {
                     warn!(port, "Failed to remove WebView port forward: {e}");
                 }
             }

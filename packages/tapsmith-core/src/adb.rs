@@ -156,13 +156,18 @@ pub async fn forward_port(serial: &str, host_port: u16, device_port: u16) -> Res
 /// Remove a specific port forward.
 #[instrument]
 pub async fn remove_forward(serial: &str, host_port: u16) -> Result<()> {
+    remove_forward_with_timeout(serial, host_port, DEFAULT_TIMEOUT).await
+}
+
+/// Remove a specific port forward with a caller-provided timeout.
+#[instrument]
+pub async fn remove_forward_with_timeout(
+    serial: &str,
+    host_port: u16,
+    timeout: Duration,
+) -> Result<()> {
     let host_arg = format!("tcp:{host_port}");
-    run_adb(
-        Some(serial),
-        &["forward", "--remove", &host_arg],
-        DEFAULT_TIMEOUT,
-    )
-    .await?;
+    run_adb(Some(serial), &["forward", "--remove", &host_arg], timeout).await?;
     Ok(())
 }
 
@@ -394,6 +399,17 @@ async fn run_adb_lenient(serial: &str, args: &[&str]) -> Result<Vec<u8>> {
 /// `dumpsys` that may write to stdout before exiting with an error.
 #[instrument]
 pub async fn shell_lenient(serial: &str, command: &str) -> Result<String> {
+    shell_lenient_with_timeout(serial, command, DEFAULT_TIMEOUT).await
+}
+
+/// Execute a shell command on the device with a caller-provided timeout,
+/// returning stdout even when the command exits non-zero.
+#[instrument]
+pub async fn shell_lenient_with_timeout(
+    serial: &str,
+    command: &str,
+    timeout: Duration,
+) -> Result<String> {
     let mut cmd = Command::new("adb");
     cmd.arg("-s").arg(serial).arg("shell").arg(command);
 
@@ -403,9 +419,9 @@ pub async fn shell_lenient(serial: &str, command: &str) -> Result<String> {
         "Running adb shell (lenient)"
     );
 
-    let output = tokio::time::timeout(DEFAULT_TIMEOUT, cmd.output())
+    let output = tokio::time::timeout(timeout, cmd.output())
         .await
-        .map_err(|_| anyhow!("adb command timed out after {DEFAULT_TIMEOUT:?}"))?
+        .map_err(|_| anyhow!("adb command timed out after {timeout:?}"))?
         .context("Failed to execute adb")?;
 
     Ok(String::from_utf8_lossy(&output.stdout).to_string())
@@ -425,9 +441,12 @@ pub struct WebViewSocket {
 /// `@webview_devtools_remote_<pid>` or `@chrome_devtools_remote`.
 #[instrument]
 pub async fn list_webview_sockets(serial: &str) -> Result<Vec<WebViewSocket>> {
-    let unix_output = shell_lenient(
+    let discovery_timeout = Duration::from_secs(5);
+    let pid_lookup_timeout = Duration::from_secs(2);
+    let unix_output = shell_lenient_with_timeout(
         serial,
         "cat /proc/net/unix 2>/dev/null | grep devtools_remote",
+        discovery_timeout,
     )
     .await?;
 
@@ -471,8 +490,12 @@ pub async fn list_webview_sockets(serial: &str) -> Result<Vec<WebViewSocket>> {
     // than parsing `ps` output, which varies across Android versions).
     for socket in &mut sockets {
         if socket.pid > 0 {
-            if let Ok(cmdline) =
-                shell_lenient(serial, &format!("cat /proc/{}/cmdline", socket.pid)).await
+            if let Ok(cmdline) = shell_lenient_with_timeout(
+                serial,
+                &format!("cat /proc/{}/cmdline", socket.pid),
+                pid_lookup_timeout,
+            )
+            .await
             {
                 let pkg = cmdline.trim_matches('\0').trim();
                 if !pkg.is_empty() {
@@ -486,23 +509,18 @@ pub async fn list_webview_sockets(serial: &str) -> Result<Vec<WebViewSocket>> {
     Ok(sockets)
 }
 
-/// Forward a local TCP port to a device-side abstract Unix socket.
-///
-/// Used for Chrome DevTools Protocol connections to WebView debug sockets.
+/// Forward a local TCP port to a device-side abstract Unix socket with a
+/// caller-provided timeout.
 #[instrument]
-pub async fn forward_abstract_socket(
+pub async fn forward_abstract_socket_with_timeout(
     serial: &str,
     host_port: u16,
     socket_name: &str,
+    timeout: Duration,
 ) -> Result<()> {
     let host_arg = format!("tcp:{host_port}");
     let device_arg = format!("localabstract:{socket_name}");
-    run_adb(
-        Some(serial),
-        &["forward", &host_arg, &device_arg],
-        DEFAULT_TIMEOUT,
-    )
-    .await?;
+    run_adb(Some(serial), &["forward", &host_arg, &device_arg], timeout).await?;
     debug!(
         host_port,
         socket_name, "Abstract socket forwarding established"

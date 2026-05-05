@@ -991,6 +991,13 @@ async function runSuiteContext(
       // Fail any in-flight traced action/assertion so it appears in the trace
       traceCollector?.failPendingOperation(error.message);
 
+      // If a WebView/CDP operation is the thing that hit the runner timeout,
+      // close it before screenshot/network teardown so stale async work does
+      // not bleed into the next test.
+      if (error.message.startsWith('Test timed out after ') && opts.device?._disposeWebViewManager) {
+        await opts.device._disposeWebViewManager();
+      }
+
       // Screenshot on failure
       if (opts.config.screenshot !== 'never') {
         screenshotPath = await captureFailureScreenshot(
