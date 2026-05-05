@@ -242,11 +242,30 @@ export class WebViewHandle {
   }
 
   private async _fetchTargets(): Promise<CDPTarget[]> {
-    const resp = await fetch(`http://127.0.0.1:${this._localPort}/json`);
-    if (!resp.ok) {
-      throw new Error(`CDP /json returned ${resp.status}`);
+    const deadline = Date.now() + this._timeoutMs;
+    let delayMs = 100;
+    let lastError: Error | undefined;
+
+    while (Date.now() < deadline) {
+      try {
+        const resp = await fetch(`http://127.0.0.1:${this._localPort}/json`, {
+          signal: AbortSignal.timeout(5000),
+        });
+        if (!resp.ok) {
+          throw new Error(`CDP /json returned ${resp.status}`);
+        }
+        return (await resp.json()) as CDPTarget[];
+      } catch (e) {
+        lastError = e instanceof Error ? e : new Error(String(e));
+        if (Date.now() + delayMs >= deadline) break;
+        await sleep(delayMs);
+        delayMs = Math.min(delayMs * 2, 2000);
+      }
     }
-    return (await resp.json()) as CDPTarget[];
+
+    throw new Error(
+      `WebView debug socket not available after ${this._timeoutMs}ms: ${lastError?.message}`,
+    );
   }
 
   private _connectWebSocket(url: string): Promise<void> {
