@@ -58,7 +58,8 @@ export class ListReporter implements TapsmithReporter {
     const counter = dim(`[${this._testIndex}]`);
     const worker = this._multipleWorkers ? workerTag(test.workerIndex) : '';
     const project = this._showProjectTags ? projectTag(test.project) : '';
-    process.stdout.write(`  ${icon} ${counter} ${worker}${project}${test.fullName} ${duration}\n`);
+    const retry = test.retry ? dim(` [retry #${test.retry}]`) : '';
+    process.stdout.write(`  ${icon} ${counter} ${worker}${project}${test.fullName}${retry} ${duration}\n`);
 
     if (test.error) {
       process.stdout.write(formatError(test.error) + '\n');
@@ -89,6 +90,7 @@ export class ListReporter implements TapsmithReporter {
     const passed = result.tests.filter((t) => t.status === 'passed').length;
     const failed = result.tests.filter((t) => t.status === 'failed').length;
     const skipped = result.tests.filter((t) => t.status === 'skipped').length;
+    const flaky = result.tests.filter((t) => t.status === 'passed' && t.retry).length;
 
     process.stdout.write('\n');
 
@@ -115,6 +117,6 @@ export class ListReporter implements TapsmithReporter {
       }
     }
 
-    process.stdout.write(formatSummaryLine(passed, failed, skipped, result.duration, result.setupDuration) + '\n\n');
+    process.stdout.write(formatSummaryLine(passed, failed, skipped, result.duration, result.setupDuration, flaky) + '\n\n');
   }
 }

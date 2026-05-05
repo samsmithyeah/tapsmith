@@ -198,6 +198,7 @@ export interface SerializedTestResult {
   videoPath?: string
   workerIndex: number
   project?: string
+  retry?: number
 }
 
 export interface SerializedSuiteResult {

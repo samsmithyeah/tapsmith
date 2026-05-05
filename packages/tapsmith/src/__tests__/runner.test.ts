@@ -791,3 +791,137 @@ describe('resolvePlatformFixture()', () => {
     }))).not.toThrow();
   });
 });
+
+// ─── Retries ───
+
+describe('retries', () => {
+  it('does not retry a passing test', async () => {
+    let callCount = 0;
+    pushContext();
+    tapsmithTest('passes first time', async () => { callCount++; });
+    const ctx = popContext();
+    const result = await runSuiteContext(ctx, '', [], [], makeOpts({
+      config: makeConfig({ retries: 2 }),
+    }));
+    expect(callCount).toBe(1);
+    expect(result.tests[0].status).toBe('passed');
+    expect(result.tests[0].retry).toBeUndefined();
+  });
+
+  it('retries a failing test up to the configured count', async () => {
+    let callCount = 0;
+    pushContext();
+    tapsmithTest('always fails', async () => {
+      callCount++;
+      throw new Error('boom');
+    });
+    const ctx = popContext();
+    const result = await runSuiteContext(ctx, '', [], [], makeOpts({
+      config: makeConfig({ retries: 2 }),
+    }));
+    expect(callCount).toBe(3);
+    expect(result.tests[0].status).toBe('failed');
+    expect(result.tests[0].retry).toBe(2);
+  });
+
+  it('passes on retry and reports the successful attempt', async () => {
+    let callCount = 0;
+    pushContext();
+    tapsmithTest('fails then passes', async () => {
+      callCount++;
+      if (callCount < 3) throw new Error('not yet');
+    });
+    const ctx = popContext();
+    const result = await runSuiteContext(ctx, '', [], [], makeOpts({
+      config: makeConfig({ retries: 3 }),
+    }));
+    expect(callCount).toBe(3);
+    expect(result.tests[0].status).toBe('passed');
+    expect(result.tests[0].retry).toBe(2);
+  });
+
+  it('does not retry when retries is 0', async () => {
+    let callCount = 0;
+    pushContext();
+    tapsmithTest('fails once', async () => {
+      callCount++;
+      throw new Error('fail');
+    });
+    const ctx = popContext();
+    const result = await runSuiteContext(ctx, '', [], [], makeOpts({
+      config: makeConfig({ retries: 0 }),
+    }));
+    expect(callCount).toBe(1);
+    expect(result.tests[0].status).toBe('failed');
+    expect(result.tests[0].retry).toBeUndefined();
+  });
+
+  it('runs beforeEach and afterEach on every attempt', async () => {
+    const log: string[] = [];
+    let callCount = 0;
+    pushContext();
+    tapsmithBeforeEach(async () => { log.push('before'); });
+    tapsmithAfterEach(async () => { log.push('after'); });
+    tapsmithTest('flaky', async () => {
+      callCount++;
+      if (callCount < 2) throw new Error('fail');
+    });
+    const ctx = popContext();
+    await runSuiteContext(ctx, '', [], [], makeOpts({
+      config: makeConfig({ retries: 2 }),
+    }));
+    expect(log).toEqual(['before', 'after', 'before', 'after']);
+  });
+
+  it('only produces one test result even with retries', async () => {
+    pushContext();
+    let callCount = 0;
+    tapsmithTest('flaky', async () => {
+      callCount++;
+      if (callCount === 1) throw new Error('first attempt');
+    });
+    const ctx = popContext();
+    const result = await runSuiteContext(ctx, '', [], [], makeOpts({
+      config: makeConfig({ retries: 1 }),
+    }));
+    expect(result.tests).toHaveLength(1);
+    expect(result.tests[0].status).toBe('passed');
+  });
+
+  it('reports retry via reporter.onTestEnd', async () => {
+    const reported: TestResult[] = [];
+    let callCount = 0;
+    pushContext();
+    tapsmithTest('flaky', async () => {
+      callCount++;
+      if (callCount === 1) throw new Error('first attempt');
+    });
+    const ctx = popContext();
+    await runSuiteContext(ctx, '', [], [], makeOpts({
+      config: makeConfig({ retries: 1 }),
+      reporter: { onTestEnd: (t: TestResult) => { reported.push(t); } },
+    }));
+    expect(reported).toHaveLength(1);
+    expect(reported[0].status).toBe('passed');
+    expect(reported[0].retry).toBe(1);
+  });
+
+  it('uses test.use({ retries }) to override config retries', async () => {
+    let callCount = 0;
+    pushContext();
+    tapsmithDescribe('scoped', () => {
+      tapsmithTest.use({ retries: 3 });
+      tapsmithTest('always fails', async () => {
+        callCount++;
+        throw new Error('fail');
+      });
+    });
+    const ctx = popContext();
+    const result = await runSuiteContext(ctx, '', [], [], makeOpts({
+      config: makeConfig({ retries: 0 }),
+    }));
+    expect(callCount).toBe(4);
+    const flat = collectResults(result);
+    expect(flat[0].status).toBe('failed');
+  });
+});

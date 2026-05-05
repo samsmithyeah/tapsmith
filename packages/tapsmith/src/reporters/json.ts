@@ -23,6 +23,7 @@ interface JsonTestEntry {
   videoPath?: string
   workerIndex?: number
   project?: string
+  retry?: number
 }
 
 interface JsonSuiteEntry {
@@ -103,6 +104,7 @@ function serializeSuite(suite: SuiteResult): JsonSuiteEntry {
       videoPath: t.videoPath,
       workerIndex: t.workerIndex,
       project: t.project,
+      retry: t.retry,
     })),
     suites: suite.suites.map((s) => serializeSuite(s)),
   };

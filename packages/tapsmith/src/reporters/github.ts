@@ -30,6 +30,7 @@ export class GitHubActionsReporter implements TapsmithReporter {
     const passed = result.tests.filter((t) => t.status === 'passed').length;
     const failed = result.tests.filter((t) => t.status === 'failed').length;
     const skipped = result.tests.filter((t) => t.status === 'skipped').length;
+    const flaky = result.tests.filter((t) => t.status === 'passed' && t.retry).length;
 
     // Write a summary using GitHub Actions job summary
     if (process.env.GITHUB_STEP_SUMMARY) {
@@ -39,6 +40,7 @@ export class GitHubActionsReporter implements TapsmithReporter {
       summaryLines.push(`| Status | Count |`);
       summaryLines.push(`| --- | --- |`);
       summaryLines.push(`| Passed | ${passed} |`);
+      if (flaky > 0) summaryLines.push(`| Flaky | ${flaky} |`);
       summaryLines.push(`| Failed | ${failed} |`);
       summaryLines.push(`| Skipped | ${skipped} |`);
       summaryLines.push(`| Duration | ${(result.duration / 1000).toFixed(2)}s |`);
@@ -63,6 +65,8 @@ export class GitHubActionsReporter implements TapsmithReporter {
       }
     }
 
+    // Also print a plain summary line to stdout
+    process.stdout.write('\n' + formatSummaryLine(passed, failed, skipped, result.duration, result.setupDuration, flaky) + '\n\n');
   }
 }
 

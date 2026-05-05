@@ -38,6 +38,7 @@ interface SerializedTest {
   screenshotKey?: string
   traceKey?: string
   videoKey?: string
+  retry?: number
 }
 
 interface SerializedSuite {
@@ -104,6 +105,7 @@ export class BlobReporter implements TapsmithReporter {
         screenshotKey,
         traceKey,
         videoKey,
+        retry: t.retry,
       };
     };
 
@@ -180,6 +182,7 @@ export function mergeBlobs(blobDir: string): FullResult {
         screenshotPath: t.screenshotKey ? path.join(blobDir, t.screenshotKey) : undefined,
         tracePath: t.traceKey ? path.join(blobDir, t.traceKey) : undefined,
         videoPath: t.videoKey ? path.join(blobDir, t.videoKey) : undefined,
+        retry: t.retry,
       });
     }
 
@@ -214,6 +217,7 @@ function deserializeSuite(
       screenshotPath: t.screenshotKey ? path.join(blobDir, t.screenshotKey) : undefined,
       tracePath: t.traceKey ? path.join(blobDir, t.traceKey) : undefined,
       videoPath: t.videoKey ? path.join(blobDir, t.videoKey) : undefined,
+      retry: t.retry,
     })),
     suites: s.suites.map((child) => deserializeSuite(child, blobDir)),
   };

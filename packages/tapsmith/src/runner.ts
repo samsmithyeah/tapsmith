@@ -119,6 +119,8 @@ export interface TestResult {
   workerIndex?: number;
   /** Project name this test belongs to (only set when projects are configured). */
   project?: string;
+  /** Zero-based attempt number on which this result was recorded (0 = first run). */
+  retry?: number;
 }
 
 export interface SuiteResult {
@@ -787,10 +789,20 @@ async function runSuiteContext(
     // it exceeds the default, so tests that need more time actually get it.
     const defaultTestTimeoutMs = opts.config.timeout * 3;
     const testTimeoutMs = scopeTimeout ? Math.max(defaultTestTimeoutMs, scopeTimeout) : defaultTestTimeoutMs;
+    const maxRetries = opts.config.retries;
+    let lastAttempt = 0;
+
+    for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    // Reset per-attempt state
+    status = 'passed';
+    error = undefined;
+    screenshotPath = undefined;
+    tracePath = undefined;
+    videoPath = undefined;
+    lastAttempt = attempt;
 
     // Trace recording — start if configured
     const traceConfig = resolveTraceConfig(opts.config.trace);
-    const attempt = 0; // TODO: wire up retry count when retries are implemented
     const recording = shouldRecord(traceConfig.mode, attempt);
     let traceCollector: TraceCollector | null = null;
 
@@ -1298,6 +1310,9 @@ async function runSuiteContext(
       }
     }
 
+    if (status === 'passed' || attempt === maxRetries) break;
+    } // end retry loop
+
     const testResult: TestResult = {
       name: entry.name,
       fullName,
@@ -1308,6 +1323,7 @@ async function runSuiteContext(
       tracePath,
       videoPath,
       project: opts.projectName,
+      retry: lastAttempt > 0 ? lastAttempt : undefined,
     };
     result.tests.push(testResult);
     opts.reporter?.onTestEnd?.(testResult);

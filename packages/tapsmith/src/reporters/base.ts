@@ -51,9 +51,11 @@ export function formatSummaryLine(
   skipped: number,
   durationMs: number,
   setupDurationMs?: number,
+  flaky?: number,
 ): string {
   const parts = [
     passed > 0 ? green(`${passed} passed`) : null,
+    flaky ? yellow(`${flaky} flaky`) : null,
     failed > 0 ? red(`${failed} failed`) : null,
     skipped > 0 ? yellow(`${skipped} skipped`) : null,
   ].filter(Boolean);
