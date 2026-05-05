@@ -1,12 +1,13 @@
-import { beforeEach, describe, expect, test } from "tapsmith"
+import { beforeAll, beforeEach, describe, expect, test } from "tapsmith"
 import { DialogsScreen } from "../screens/dialogs.screen.js"
 
 describe("Dialogs screen", () => {
-  // Restart app before each test to ensure clean state. Transient UI
-  // elements like toasts can leak between tests under heavy load.
-  beforeEach(async ({ device }) => {
+  beforeAll(async ({ device }) => {
     await device.restartApp()
-    await device.getByDescription("Dialogs").tap()
+  })
+
+  beforeEach(async ({ device }) => {
+    await device.openDeepLink("tapsmithtest:///dialogs")
     await expect(device.getByText("Dialogs & Overlays", { exact: true })).toBeVisible()
   })
 

@@ -11,7 +11,7 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  SHARD_TOTAL: 4
+  SHARD_TOTAL: 3
 
 jobs:
   # ─── Build prerequisites (parallel) ────────────────────────────────────
@@ -146,7 +146,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        shard: [1, 2, 3, 4]
+        shard: [1, 2, 3]
     steps:
       - uses: actions/checkout@v4
 

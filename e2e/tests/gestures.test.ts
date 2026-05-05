@@ -1,10 +1,13 @@
-import { beforeEach, describe, expect, test } from "tapsmith"
+import { beforeAll, beforeEach, describe, expect, test } from "tapsmith"
 import { GesturesScreen } from "../screens/gestures.screen.js"
 
 describe("Gestures screen", () => {
-  beforeEach(async ({ device }) => {
+  beforeAll(async ({ device }) => {
     await device.restartApp()
-    await device.getByDescription("Gestures").tap()
+  })
+
+  beforeEach(async ({ device }) => {
+    await device.openDeepLink("tapsmithtest:///gestures")
     await expect(device.getByText("Gesture Testing", { exact: true })).toBeVisible()
   })
 
