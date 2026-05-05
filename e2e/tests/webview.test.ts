@@ -16,7 +16,8 @@ describe("WebView testing", () => {
 
   beforeAll(async ({ device }) => {
     await device.restartApp()
-    await device.openDeepLink("tapsmithtest:///webview")
+    await device.getByDescription("WebView").scrollIntoView()
+    await device.getByDescription("WebView").tap()
     await expect(device.getByText("Embedded WebView")).toBeVisible()
   })
 
