@@ -14,6 +14,7 @@ import {
   _contentDesc,
   _hint,
   _testId,
+  _label,
 } from './selectors.js';
 import * as grpc from '@grpc/grpc-js';
 import {
@@ -202,6 +203,19 @@ export class Device {
   /** Locate an element by its test ID. */
   getByTestId(testId: string): ElementHandle {
     return this._handle(_testId(testId));
+  }
+
+  /**
+   * Locate an input element by its associated label text. Finds form controls
+   * (text fields, checkboxes, switches, etc.) whose accessible name is derived
+   * from a nearby label.
+   *
+   * - Android: follows `labelFor`/`labeledBy` relationships, or matches inputs
+   *   whose `contentDescription` equals the label text.
+   * - iOS: matches input elements whose `accessibilityLabel` equals the text.
+   */
+  getByLabel(text: string): ElementHandle {
+    return this._handle(_label(text));
   }
 
   /**

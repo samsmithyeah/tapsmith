@@ -389,6 +389,7 @@ class CommandHandler(
             testId = params.optString("testId", null),
             id = resourceId,
             xpath = params.optString("xpath", null),
+            label = params.optString("label", null),
             enabled = if (params.has("enabled")) params.getBoolean("enabled") else null,
             checked = if (params.has("checked")) params.getBoolean("checked") else null,
             focused = if (params.has("focused")) params.getBoolean("focused") else null,

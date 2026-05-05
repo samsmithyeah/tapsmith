@@ -14,6 +14,7 @@ struct ElementSelector {
     var testId: String?
     var id: String?
     var xpath: String?
+    var label: String?
     var enabled: Bool?
     var checked: Bool?
     var focused: Bool?

@@ -9,6 +9,7 @@ import {
   _testId,
   _id,
   _xpath,
+  _label,
   withParent,
   selectorToProto,
 } from '../selectors.js';
@@ -68,6 +69,10 @@ describe('internal selector builders', () => {
     });
   });
 
+  it('_label() creates a label selector', () => {
+    expect(_label('Email').kind).toEqual({ type: 'label', value: 'Email' });
+  });
+
   it('all selectors start with no parent', () => {
     const selectors = [
       _role('button'),
@@ -79,6 +84,7 @@ describe('internal selector builders', () => {
       _testId('x'),
       _id('x'),
       _xpath('//x'),
+      _label('hi'),
     ];
     for (const sel of selectors) {
       expect(sel.parent).toBeUndefined();
@@ -160,6 +166,10 @@ describe('selectorToProto()', () => {
 
   it('serializes xpath selector', () => {
     expect(selectorToProto(_xpath('//Button'))).toEqual({ xpath: '//Button' });
+  });
+
+  it('serializes label selector', () => {
+    expect(selectorToProto(_label('Email'))).toEqual({ label: 'Email' });
   });
 
   it('serializes nested parent selectors', () => {

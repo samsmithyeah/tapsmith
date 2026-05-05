@@ -115,6 +115,7 @@ message Selector {
     string test_id = 7;
     string resource_id = 8;
     string xpath = 9;
+    string label = 11;
   }
   Selector parent = 10;
 }

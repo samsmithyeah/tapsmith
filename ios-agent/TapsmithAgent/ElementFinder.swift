@@ -165,6 +165,20 @@ class ElementFinder {
             return []
         }
 
+        // Label selector: find input elements whose accessibilityLabel matches.
+        // Single query on .any avoids multiple expensive IPC calls per element type.
+        if let label = selector.label {
+            let inputTypes: Set<XCUIElement.ElementType> = [
+                .textField, .secureTextField, .textView,
+                .switch, .slider, .stepper, .picker,
+                .checkBox, .radioButton,
+            ]
+            let predicate = NSPredicate(format: "label == %@", label)
+            let query = root.descendants(matching: .any).matching(predicate)
+            let all = allElements(from: query)
+            return all.filter { inputTypes.contains($0.elementType) }
+        }
+
         throw AgentError.invalidSelector("No valid selector criteria provided")
     }
 

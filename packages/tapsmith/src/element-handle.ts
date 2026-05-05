@@ -19,6 +19,7 @@ import {
   _role,
   _className,
   _xpath,
+  _label,
 } from './selectors.js';
 import type { TapsmithGrpcClient, ElementInfo, ActionResponse } from './grpc-client.js';
 import { type TraceCapture, extractSourceLocation } from './trace/trace-collector.js';
@@ -192,6 +193,14 @@ export class ElementHandle {
   /** Locate a descendant by its test ID. */
   getByTestId(testId: string): ElementHandle {
     return this._scoped(_testId(testId));
+  }
+
+  /**
+   * Locate a descendant input element by its associated label text. Finds
+   * form controls whose accessible name is derived from a nearby label.
+   */
+  getByLabel(text: string): ElementHandle {
+    return this._scoped(_label(text));
   }
 
   /**

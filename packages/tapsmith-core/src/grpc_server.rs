@@ -1071,6 +1071,9 @@ pub(crate) fn selector_to_json(selector: &proto::Selector) -> Value {
             proto::selector::Selector::Xpath(t) => {
                 obj["xpath"] = json!(t);
             }
+            proto::selector::Selector::Label(t) => {
+                obj["label"] = json!(t);
+            }
         }
     }
 
@@ -5213,6 +5216,16 @@ mod tests {
         };
         let j = selector_to_json(&sel);
         assert_eq!(j["xpath"], "//button[@text='OK']");
+    }
+
+    #[test]
+    fn selector_to_json_label() {
+        let sel = proto::Selector {
+            selector: Some(proto::selector::Selector::Label("Email".into())),
+            parent: None,
+        };
+        let j = selector_to_json(&sel);
+        assert_eq!(j["label"], "Email");
     }
 
     #[test]

@@ -53,6 +53,19 @@ Locate an element by its dedicated test identifier.
 device.getByTestId("submit-button")
 ```
 
+### `device.getByLabel(text: string): ElementHandle`
+
+Locate an input element by its associated label text. Finds form controls (text fields, checkboxes, switches, etc.) whose accessible name matches the label.
+
+- **Android**: matches inputs whose `contentDescription` equals the text, or inputs linked via `labelFor`/`labeledBy`.
+- **iOS**: matches input elements (text fields, switches, sliders, etc.) whose `accessibilityLabel` equals the text.
+
+```typescript
+device.getByLabel("Email")           // finds the email text field
+device.getByLabel("Dark Mode")       // finds the Dark Mode switch
+device.getByLabel("Volume")          // finds the Volume slider
+```
+
 ### `device.locator(options: LocatorOptions): ElementHandle`
 
 Escape hatch for native, non-accessible queries. Exactly one of `id`, `xpath`, or `className` must be set.
@@ -546,6 +559,7 @@ An `ElementHandle` is a lazy reference to a UI element. It is returned by every 
 | `getByDescription(text)` | Accessibility description within the parent. |
 | `getByPlaceholder(text)` | Placeholder / hint text within the parent. |
 | `getByTestId(id)` | Test identifier within the parent. |
+| `getByLabel(text)` | Input element by associated label text within the parent. |
 | `locator(options)` | Native id / xpath / className within the parent. |
 
 Cannot be called on modified handles (e.g. after `.first()`, `.filter()`, `.and()`).

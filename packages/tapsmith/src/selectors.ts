@@ -25,7 +25,8 @@ export type SelectorKind =
   | { type: 'className'; value: string }
   | { type: 'testId'; value: string }
   | { type: 'id'; value: string }
-  | { type: 'xpath'; value: string };
+  | { type: 'xpath'; value: string }
+  | { type: 'label'; value: string };
 
 /**
  * A Selector identifies a UI element. Internal representation only.
@@ -91,6 +92,9 @@ export function selectorToProto(selector: Selector): Record<string, unknown> {
     case 'xpath':
       proto.xpath = selector.kind.value;
       break;
+    case 'label':
+      proto.label = selector.kind.value;
+      break;
   }
 
   if (selector.parent) {
@@ -145,4 +149,9 @@ export function _id(resourceId: string): Selector {
 /** @internal */
 export function _xpath(expr: string): Selector {
   return makeSelector({ type: 'xpath', value: expr });
+}
+
+/** @internal */
+export function _label(text: string): Selector {
+  return makeSelector({ type: 'label', value: text });
 }
