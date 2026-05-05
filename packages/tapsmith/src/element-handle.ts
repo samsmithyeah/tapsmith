@@ -627,6 +627,83 @@ export class ElementHandle {
     }
   }
 
+  // ── Waiting ──
+
+  /**
+   * Wait until this element reaches the specified state.
+   *
+   * - `'visible'` (default): element exists in the hierarchy AND is visible.
+   * - `'hidden'`: element either doesn't exist OR exists with `visible === false`.
+   * - `'attached'`: element exists in the hierarchy (regardless of visibility).
+   * - `'detached'`: element does not exist in the hierarchy.
+   */
+  async waitFor(options?: {
+    state?: 'visible' | 'hidden' | 'attached' | 'detached';
+    timeout?: number;
+  }): Promise<void> {
+    const state = options?.state ?? 'visible';
+    const timeoutMs = options?.timeout ?? this._timeoutMs;
+    this._emitQueryStarted(`waitFor(${state})`);
+    const start = Date.now();
+
+    const POLL_MS = 250;
+    const FIND_TIMEOUT_MS = 500;
+    const deadline = start + timeoutMs;
+
+    const checkState = async (): Promise<boolean> => {
+      let elements: ElementInfo[];
+      const findBudget = Math.min(FIND_TIMEOUT_MS, Math.max(0, deadline - Date.now()));
+      try {
+        if (this._hasModifiers()) {
+          const pollHandle = new ElementHandle(this._client, this._selector, findBudget, this._options);
+          elements = await pollHandle._resolveAll();
+        } else {
+          const res = await this._client.findElements(this._selector, findBudget);
+          elements = res.elements ?? [];
+        }
+      } catch (err) {
+        if (!isPollableNotFoundError(err)) throw err;
+        elements = [];
+      }
+
+      // Respect nthIndex — target the specific element, not the full set
+      const nthIndex = this._options.nthIndex;
+      if (nthIndex !== undefined) {
+        const idx = nthIndex < 0 ? elements.length + nthIndex : nthIndex;
+        elements = (idx >= 0 && idx < elements.length) ? [elements[idx]] : [];
+      }
+
+      const attached = elements.length > 0;
+      const visible = attached && elements.some((el) => el.visible);
+
+      switch (state) {
+        case 'visible': return visible;
+        case 'hidden': return !visible;
+        case 'attached': return attached;
+        case 'detached': return !attached;
+      }
+    };
+
+    try {
+      while (true) {
+        if (await checkState()) {
+          await this._traceQuery(`waitFor(${state})`, `State reached: ${state}`, Date.now() - start);
+          return;
+        }
+        if (Date.now() >= deadline) {
+          throw new Error(
+            `Element ${this._describe()} did not reach state "${state}" after ${timeoutMs}ms`,
+          );
+        }
+        const sleepMs = Math.min(POLL_MS, Math.max(0, deadline - Date.now()));
+        if (sleepMs > 0) await new Promise((r) => setTimeout(r, sleepMs));
+      }
+    } catch (err) {
+      await this._traceQueryFailed(`waitFor(${state})`, err, Date.now() - start);
+      throw err;
+    }
+  }
+
   // ── Actions ──
 
   /** @internal — Run an action RPC and throw on failure. */

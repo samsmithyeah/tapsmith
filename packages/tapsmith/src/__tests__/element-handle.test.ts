@@ -1839,3 +1839,149 @@ describe('highlight()', () => {
     await expect(handle.highlight()).rejects.toThrow('Highlight failed');
   });
 });
+
+// ─── waitFor ───
+
+describe('waitFor', () => {
+  it('resolves immediately when element is already visible (default state)', async () => {
+    const client = makeMockClient({
+      findElements: vi.fn(async () => makeFindElementsResponse([
+        makeElementInfo({ visible: true }),
+      ])),
+    });
+    const handle = new ElementHandle(client, _text('Hello'), 5000);
+    await handle.waitFor();
+  });
+
+  it('resolves immediately for state "attached" when element exists', async () => {
+    const client = makeMockClient({
+      findElements: vi.fn(async () => makeFindElementsResponse([
+        makeElementInfo({ visible: false }),
+      ])),
+    });
+    const handle = new ElementHandle(client, _text('Hello'), 5000);
+    await handle.waitFor({ state: 'attached' });
+  });
+
+  it('resolves immediately for state "hidden" when element does not exist', async () => {
+    const client = makeMockClient({
+      findElements: vi.fn(async () => makeFindElementsResponse([])),
+    });
+    const handle = new ElementHandle(client, _text('Hello'), 5000);
+    await handle.waitFor({ state: 'hidden' });
+  });
+
+  it('resolves for state "hidden" when element exists but is not visible', async () => {
+    const client = makeMockClient({
+      findElements: vi.fn(async () => makeFindElementsResponse([
+        makeElementInfo({ visible: false }),
+      ])),
+    });
+    const handle = new ElementHandle(client, _text('Hello'), 5000);
+    await handle.waitFor({ state: 'hidden' });
+  });
+
+  it('resolves immediately for state "detached" when element does not exist', async () => {
+    const client = makeMockClient({
+      findElements: vi.fn(async () => makeFindElementsResponse([])),
+    });
+    const handle = new ElementHandle(client, _text('Hello'), 5000);
+    await handle.waitFor({ state: 'detached' });
+  });
+
+  it('polls until element becomes visible', async () => {
+    let callCount = 0;
+    const client = makeMockClient({
+      findElements: vi.fn(async () => {
+        callCount++;
+        if (callCount < 3) return makeFindElementsResponse([]);
+        return makeFindElementsResponse([makeElementInfo({ visible: true })]);
+      }),
+    });
+    const handle = new ElementHandle(client, _text('Hello'), 5000);
+    await handle.waitFor({ state: 'visible' });
+    expect(callCount).toBeGreaterThanOrEqual(3);
+  });
+
+  it('polls until element becomes detached', async () => {
+    let callCount = 0;
+    const client = makeMockClient({
+      findElements: vi.fn(async () => {
+        callCount++;
+        if (callCount < 3) return makeFindElementsResponse([makeElementInfo()]);
+        return makeFindElementsResponse([]);
+      }),
+    });
+    const handle = new ElementHandle(client, _text('Hello'), 5000);
+    await handle.waitFor({ state: 'detached' });
+    expect(callCount).toBeGreaterThanOrEqual(3);
+  });
+
+  it('throws after timeout when state is not reached', async () => {
+    const client = makeMockClient({
+      findElements: vi.fn(async () => makeFindElementsResponse([])),
+    });
+    const handle = new ElementHandle(client, _text('Hello'), 500);
+    await expect(handle.waitFor({ state: 'visible', timeout: 500 }))
+      .rejects.toThrow(/did not reach state "visible" after 500ms/);
+  });
+
+  it('respects custom timeout option', async () => {
+    const client = makeMockClient({
+      findElements: vi.fn(async () => makeFindElementsResponse([
+        makeElementInfo({ visible: false }),
+      ])),
+    });
+    const handle = new ElementHandle(client, _text('Hello'), 30000);
+    const start = Date.now();
+    await expect(handle.waitFor({ state: 'visible', timeout: 300 }))
+      .rejects.toThrow(/did not reach state "visible"/);
+    const elapsed = Date.now() - start;
+    expect(elapsed).toBeLessThan(1000);
+  });
+
+  it('propagates infrastructure errors instead of polling', async () => {
+    const client = makeMockClient({
+      findElements: vi.fn(async () => { throw new Error('gRPC unavailable'); }),
+    });
+    const handle = new ElementHandle(client, _text('Hello'), 5000);
+    await expect(handle.waitFor()).rejects.toThrow('gRPC unavailable');
+  });
+
+  it('works with .first() modifier', async () => {
+    const client = makeMockClient({
+      findElements: vi.fn(async () => makeFindElementsResponse([
+        makeElementInfo({ elementId: 'a', visible: true }),
+        makeElementInfo({ elementId: 'b', visible: true }),
+      ])),
+    });
+    const handle = new ElementHandle(client, _text('Hello'), 5000).first();
+    await handle.waitFor({ state: 'visible' });
+  });
+
+  it('respects nthIndex — only checks the targeted element', async () => {
+    const client = makeMockClient({
+      findElements: vi.fn(async () => makeFindElementsResponse([
+        makeElementInfo({ elementId: 'a', visible: false }),
+        makeElementInfo({ elementId: 'b', visible: true }),
+      ])),
+    });
+    // .first() targets index 0 which is NOT visible
+    const handle = new ElementHandle(client, _text('Hello'), 500).first();
+    await expect(handle.waitFor({ state: 'visible', timeout: 500 }))
+      .rejects.toThrow(/did not reach state "visible"/);
+  });
+
+  it('respects nthIndex for detached state with .last()', async () => {
+    const client = makeMockClient({
+      findElements: vi.fn(async () => makeFindElementsResponse([
+        makeElementInfo({ elementId: 'a' }),
+        makeElementInfo({ elementId: 'b' }),
+      ])),
+    });
+    // .last() targets index -1 which exists — so 'detached' should fail
+    const handle = new ElementHandle(client, _text('Hello'), 500).last();
+    await expect(handle.waitFor({ state: 'detached', timeout: 500 }))
+      .rejects.toThrow(/did not reach state "detached"/);
+  });
+});
