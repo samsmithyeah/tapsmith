@@ -961,7 +961,7 @@ export class ElementHandle {
   }
 
   async isEditable(): Promise<boolean> {
-    const info = this._hasModifiers() ? await this._resolveOne() : await this.find();
+    const info = await this.find();
     return info.role === 'textfield' && info.enabled;
   }
 
