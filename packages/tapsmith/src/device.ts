@@ -73,6 +73,9 @@ export class Device {
   /** @internal — Active WebView handle, if in WebView context. */
   _activeWebView: WebViewHandle | null = null;
 
+  /** @internal — Cached WebView handle kept alive across native()/webview() switches. */
+  private _cachedWebView: WebViewHandle | null = null;
+
   /** @internal — Active device log stream. */
   private _logStream: grpc.ClientReadableStream<DeviceLogEntry> | null = null;
 
@@ -322,6 +325,7 @@ export class Device {
   ): Promise<void> {
     const packageName = typeof packageOrOptions === 'string' ? packageOrOptions : undefined;
     const options = typeof packageOrOptions === 'string' ? maybeOptions : packageOrOptions;
+    await this._disposeWebViewManager();
     return this._tracedAction('restartApp', 'device', undefined,
       () => this._client.restartApp(this.requirePackageName(packageName), options?.waitForIdle ?? true),
       'Restart app failed');
@@ -734,6 +738,12 @@ export class Device {
    *   when multiple are present.
    */
   async webview(packageName?: string): Promise<WebViewHandle> {
+    if (this._cachedWebView?._isAlive()) {
+      this._activeWebView = this._cachedWebView;
+      return this._cachedWebView;
+    }
+    this._cachedWebView = null;
+
     if (this._platform === 'ios') {
       return this._webviewIos(packageName);
     }
@@ -777,6 +787,7 @@ export class Device {
         await handle._connect();
 
         this._activeWebView = handle;
+        this._cachedWebView = handle;
         return handle;
       } catch (e) {
         lastError = e instanceof Error ? e.message : String(e);
@@ -841,6 +852,7 @@ export class Device {
       this._applyTraceCtx(handle);
 
       this._activeWebView = handle;
+      this._cachedWebView = handle;
       return handle;
     }
 
@@ -861,19 +873,17 @@ export class Device {
     }
   }
 
-  /** Switch back to native context, closing any active WebView handle. */
+  /** Switch back to native context. The WebView connection stays alive for reuse. */
   async native(): Promise<void> {
-    if (this._activeWebView) {
-      await this._activeWebView.close();
-      this._activeWebView = null;
-    }
+    this._activeWebView = null;
   }
 
   /** @internal — Dispose the WebView manager (called by the runner during cleanup). */
   async _disposeWebViewManager(): Promise<void> {
-    if (this._activeWebView) {
-      await this._activeWebView.close();
-      this._activeWebView = null;
+    this._activeWebView = null;
+    if (this._cachedWebView) {
+      await this._cachedWebView.close();
+      this._cachedWebView = null;
     }
   }
 

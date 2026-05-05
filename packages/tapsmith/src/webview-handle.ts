@@ -732,6 +732,13 @@ export class WebViewHandle {
     return new WebViewLocator(this, cssSelector, this._timeoutMs);
   }
 
+  /** @internal — Check if this handle is still usable (WebSocket open or inspector connected). */
+  _isAlive(): boolean {
+    if (this._closed) return false;
+    if (this._useInspector) return this._inspector !== null;
+    return this._ws !== null && this._ws.readyState === WebSocket.OPEN;
+  }
+
   async close(): Promise<void> {
     if (this._closed) return;
     this._closed = true;
