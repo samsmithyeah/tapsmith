@@ -1985,3 +1985,46 @@ describe('waitFor', () => {
       .rejects.toThrow(/did not reach state "detached"/);
   });
 });
+
+// ─── isEditable ───
+
+describe('isEditable', () => {
+  it('returns true for enabled textfield', async () => {
+    const client = makeMockClient({
+      findElement: vi.fn(async () => ({
+        requestId: '1',
+        found: true,
+        element: makeElementInfo({ role: 'textfield', enabled: true }),
+        errorMessage: '',
+      })),
+    });
+    const handle = new ElementHandle(client, _text('Email'), 5000);
+    expect(await handle.isEditable()).toBe(true);
+  });
+
+  it('returns false for disabled textfield', async () => {
+    const client = makeMockClient({
+      findElement: vi.fn(async () => ({
+        requestId: '1',
+        found: true,
+        element: makeElementInfo({ role: 'textfield', enabled: false }),
+        errorMessage: '',
+      })),
+    });
+    const handle = new ElementHandle(client, _text('Email'), 5000);
+    expect(await handle.isEditable()).toBe(false);
+  });
+
+  it('returns false for non-textfield element', async () => {
+    const client = makeMockClient({
+      findElement: vi.fn(async () => ({
+        requestId: '1',
+        found: true,
+        element: makeElementInfo({ role: 'button', enabled: true }),
+        errorMessage: '',
+      })),
+    });
+    const handle = new ElementHandle(client, _text('Submit'), 5000);
+    expect(await handle.isEditable()).toBe(false);
+  });
+});
