@@ -682,6 +682,42 @@ for (const item of items) {
 }
 ```
 
+### Waiting
+
+#### `elementHandle.waitFor(options?): Promise<void>`
+
+Wait until the element reaches the specified state. Polls the UI hierarchy until the condition is met or the timeout expires.
+
+```typescript
+// Wait for a loading spinner to disappear
+await device.getByRole("progressbar").waitFor({ state: "hidden" });
+
+// Wait for an element to appear (default state is 'visible')
+await device.getByText("Welcome").waitFor();
+
+// Wait for element to be removed from the hierarchy entirely
+await device.getByText("Toast message").waitFor({ state: "detached" });
+
+// Wait for element to exist (even if not visible, e.g. off-screen)
+await device.getByTestId("lazy-section").waitFor({ state: "attached" });
+```
+
+**Options:**
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `state` | `'visible' \| 'hidden' \| 'attached' \| 'detached'` | `'visible'` | Target state to wait for |
+| `timeout` | `number` | Device timeout (30s) | Maximum time to wait in milliseconds |
+
+**States:**
+
+| State | Condition |
+|-------|-----------|
+| `visible` | Element exists in the hierarchy AND is visible |
+| `hidden` | Element doesn't exist OR exists with `visible === false` |
+| `attached` | Element exists in the hierarchy (regardless of visibility) |
+| `detached` | Element does not exist in the hierarchy |
+
 ### Actions
 
 #### `elementHandle.tap(): Promise<void>`
