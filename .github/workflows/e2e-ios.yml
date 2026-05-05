@@ -2,9 +2,9 @@ name: E2E iOS
 
 on:
   push:
-    branches: [main]
+    branches: [ main ]
   pull_request:
-    branches: [main]
+    branches: [ main ]
 
 concurrency:
   group: e2e-ios-${{ github.head_ref || github.run_id }}
@@ -34,7 +34,8 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             packages/tapsmith-core/target
-          key: ${{ runner.os }}-cargo-e2e-${{ hashFiles('packages/tapsmith-core/Cargo.lock') }}
+          key: ${{ runner.os }}-cargo-e2e-${{
+            hashFiles('packages/tapsmith-core/Cargo.lock') }}
           restore-keys: ${{ runner.os }}-cargo-e2e-
 
       - name: Build release binary
@@ -90,7 +91,8 @@ jobs:
         uses: actions/cache@v4
         with:
           path: e2e/fixtures/TapsmithTestApp.app
-          key: test-app-ios-${{ hashFiles('test-app/app/**', 'test-app/assets/**', 'test-app/package-lock.json', 'test-app/app.json') }}
+          key: test-app-ios-${{ hashFiles('test-app/app/**', 'test-app/assets/**',
+            'test-app/package-lock.json', 'test-app/app.json') }}
 
       - uses: actions/setup-node@v4
         if: steps.test-app-cache.outputs.cache-hit != 'true'
@@ -140,13 +142,13 @@ jobs:
 
   e2e-test:
     name: "Shard ${{ matrix.shard }}/4"
-    needs: [build-daemon, build-agent, build-test-app]
+    needs: [ build-daemon, build-agent, build-test-app ]
     runs-on: macos-latest
     timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
-        shard: [1, 2, 3, 4]
+        shard: [ 1, 2, 3, 4 ]
     steps:
       - uses: actions/checkout@v4
 
@@ -236,23 +238,10 @@ jobs:
         working-directory: e2e
         run: npm ci
 
-      - name: Run E2E tests (retry once on infra failure)
+      - name: Run E2E tests
         working-directory: e2e
         run: |
-          npx tapsmith test -c tapsmith.config.ios-ci.mjs --shard=${{ matrix.shard }}/${{ env.SHARD_TOTAL }} --workers 1 || \
-          (echo "::warning::First attempt failed — rebooting simulator before retry" && \
-           rm -rf blob-report/ tapsmith-results/ && \
-           xcrun simctl shutdown all 2>/dev/null; sleep 3; \
-           xcrun simctl boot "$TAPSMITH_IOS_UDID" 2>/dev/null || true; \
-           while [ "$(xcrun simctl list devices -j | python3 -c "
-          import json,sys
-          d=json.load(sys.stdin)
-          for devs in d['devices'].values():
-            for dev in devs:
-              if dev['udid']=='$TAPSMITH_IOS_UDID':
-                print(dev['state']); sys.exit()
-          ")" != "Booted" ]; do sleep 2; done; \
-           npx tapsmith test -c tapsmith.config.ios-ci.mjs --shard=${{ matrix.shard }}/${{ env.SHARD_TOTAL }} --workers 1)
+          npx tapsmith test -c tapsmith.config.ios-ci.mjs --shard=${{ matrix.shard }}/${{ env.SHARD_TOTAL }} --workers 1
 
       - name: Upload blob report
         if: always()
@@ -276,7 +265,7 @@ jobs:
 
   e2e-report:
     name: Merge Reports
-    needs: [e2e-test]
+    needs: [ e2e-test ]
     if: always()
     runs-on: ubuntu-latest
     steps:
@@ -305,7 +294,8 @@ jobs:
 
       - name: Merge reports
         working-directory: e2e
-        run: npx tapsmith merge-reports ../all-blob-reports -c tapsmith.config.ios-ci.mjs
+        run: npx tapsmith merge-reports ../all-blob-reports -c
+          tapsmith.config.ios-ci.mjs
 
       - name: Upload HTML report
         uses: actions/upload-artifact@v4

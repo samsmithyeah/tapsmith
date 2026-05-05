@@ -2,9 +2,9 @@ name: E2E Android
 
 on:
   push:
-    branches: [main]
+    branches: [ main ]
   pull_request:
-    branches: [main]
+    branches: [ main ]
 
 concurrency:
   group: e2e-android-${{ github.head_ref || github.run_id }}
@@ -37,7 +37,8 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             packages/tapsmith-core/target
-          key: ${{ runner.os }}-cargo-e2e-${{ hashFiles('packages/tapsmith-core/Cargo.lock') }}
+          key: ${{ runner.os }}-cargo-e2e-${{
+            hashFiles('packages/tapsmith-core/Cargo.lock') }}
           restore-keys: ${{ runner.os }}-cargo-e2e-
 
       - name: Build release binary
@@ -68,7 +69,8 @@ jobs:
             ~/.gradle/caches
             ~/.gradle/wrapper
             agent/.gradle
-          key: ${{ runner.os }}-gradle-agent-${{ hashFiles('agent/**/*.gradle.kts', 'agent/gradle/wrapper/gradle-wrapper.properties') }}
+          key: ${{ runner.os }}-gradle-agent-${{ hashFiles('agent/**/*.gradle.kts',
+            'agent/gradle/wrapper/gradle-wrapper.properties') }}
           restore-keys: ${{ runner.os }}-gradle-agent-
 
       - name: Build agent APKs
@@ -94,7 +96,9 @@ jobs:
         uses: actions/cache@v4
         with:
           path: test-app/android/app/build/outputs/apk/release/app-release.apk
-          key: test-app-android-${{ hashFiles('test-app/app/**', 'test-app/assets/**', 'test-app/plugins/**', 'test-app/package-lock.json', 'test-app/app.json') }}
+          key: test-app-android-${{ hashFiles('test-app/app/**', 'test-app/assets/**',
+            'test-app/plugins/**', 'test-app/package-lock.json',
+            'test-app/app.json') }}
 
       - uses: actions/setup-node@v4
         if: steps.test-app-cache.outputs.cache-hit != 'true'
@@ -129,13 +133,13 @@ jobs:
 
   e2e-test:
     name: "Shard ${{ matrix.shard }}/4"
-    needs: [build-daemon, build-agent, build-test-app]
+    needs: [ build-daemon, build-agent, build-test-app ]
     runs-on: ubuntu-latest
     timeout-minutes: 50
     strategy:
       fail-fast: false
       matrix:
-        shard: [1, 2, 3, 4]
+        shard: [ 1, 2, 3, 4 ]
     steps:
       - uses: actions/checkout@v4
 
@@ -242,25 +246,10 @@ jobs:
         working-directory: e2e
         run: npm ci
 
-      - name: Run E2E tests (retry once on infra failure)
+      - name: Run E2E tests
         working-directory: e2e
         run: |
-          npx tapsmith test -c tapsmith.config.android-ci.mjs --shard=${{ matrix.shard }}/${{ env.SHARD_TOTAL }} --workers 1 || \
-          (echo "::warning::First attempt failed — restarting emulator before retry" && \
-           rm -rf blob-report/ tapsmith-results/ && \
-           adb emu kill 2>/dev/null; sleep 5; \
-           nohup emulator -avd "${{ env.AVD_NAME }}" \
-             -no-window -no-audio -no-snapshot-save \
-             -gpu swiftshader_indirect \
-             -no-boot-anim \
-             -memory 4096 \
-             &>/tmp/emulator-retry.log & \
-           adb wait-for-device && \
-           while [ "$(adb shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')" != "1" ]; do sleep 2; done && \
-           adb shell settings put global window_animation_scale 0 && \
-           adb shell settings put global transition_animation_scale 0 && \
-           adb shell settings put global animator_duration_scale 0 && \
-           npx tapsmith test -c tapsmith.config.android-ci.mjs --shard=${{ matrix.shard }}/${{ env.SHARD_TOTAL }} --workers 1)
+          npx tapsmith test -c tapsmith.config.android-ci.mjs --shard=${{ matrix.shard }}/${{ env.SHARD_TOTAL }} --workers 1
 
       - name: Upload blob report
         if: always()
@@ -284,7 +273,7 @@ jobs:
 
   e2e-report:
     name: Merge Reports
-    needs: [e2e-test]
+    needs: [ e2e-test ]
     if: always()
     runs-on: ubuntu-latest
     steps:
@@ -313,7 +302,8 @@ jobs:
 
       - name: Merge reports
         working-directory: e2e
-        run: npx tapsmith merge-reports ../all-blob-reports -c tapsmith.config.android-ci.mjs
+        run: npx tapsmith merge-reports ../all-blob-reports -c
+          tapsmith.config.android-ci.mjs
 
       - name: Upload HTML report
         uses: actions/upload-artifact@v4
