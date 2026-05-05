@@ -14,6 +14,10 @@
 export interface RoleSelectorValue {
   role: string;
   name: string;
+  checked?: boolean;
+  disabled?: boolean;
+  selected?: boolean;
+  expanded?: boolean;
 }
 
 export type SelectorKind =
@@ -62,12 +66,16 @@ export function selectorToProto(selector: Selector): Record<string, unknown> {
   const proto: Record<string, unknown> = {};
 
   switch (selector.kind.type) {
-    case 'role':
-      proto.role = {
-        role: selector.kind.value.role,
-        name: selector.kind.value.name,
-      };
+    case 'role': {
+      const rv = selector.kind.value;
+      const roleProto: Record<string, unknown> = { role: rv.role, name: rv.name };
+      if (rv.checked !== undefined) roleProto.checked = rv.checked;
+      if (rv.disabled !== undefined) roleProto.disabled = rv.disabled;
+      if (rv.selected !== undefined) roleProto.selected = rv.selected;
+      if (rv.expanded !== undefined) roleProto.expanded = rv.expanded;
+      proto.role = roleProto;
       break;
+    }
     case 'text':
       proto.text = selector.kind.value;
       break;
@@ -107,8 +115,18 @@ export function selectorToProto(selector: Selector): Record<string, unknown> {
 // ─── Internal builders (used by Device/ElementHandle getBy* methods) ───
 
 /** @internal */
-export function _role(roleName: string, name?: string): Selector {
-  return makeSelector({ type: 'role', value: { role: roleName, name: name ?? '' } });
+export function _role(roleName: string, options?: { name?: string; checked?: boolean; disabled?: boolean; selected?: boolean; expanded?: boolean }): Selector {
+  return makeSelector({
+    type: 'role',
+    value: {
+      role: roleName,
+      name: options?.name ?? '',
+      checked: options?.checked,
+      disabled: options?.disabled,
+      selected: options?.selected,
+      expanded: options?.expanded,
+    },
+  });
 }
 
 /** @internal */

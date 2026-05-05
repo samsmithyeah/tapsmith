@@ -35,7 +35,9 @@ enum SelectorParser {
             label: nonEmpty(params["label"] as? String),
             enabled: params["enabled"] as? Bool,
             checked: params["checked"] as? Bool,
-            focused: params["focused"] as? Bool
+            focused: params["focused"] as? Bool,
+            selected: params["selected"] as? Bool,
+            expanded: params["expanded"] as? Bool
         )
     }
 

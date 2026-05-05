@@ -783,6 +783,17 @@ class SnapshotElementFinder {
             if isFocused != wantFocused { return false }
         }
 
+        // Selected filter
+        if let wantSelected = selector.selected {
+            if isSelected != wantSelected { return false }
+        }
+
+        // Expanded filter — React Native exposes via accessibilityState.expanded
+        if let wantExpanded = selector.expanded {
+            let expandedValue = node["expanded"] as? Bool
+            if expandedValue != wantExpanded { return false }
+        }
+
         // Label selector: match input-type elements whose label matches.
         if let labelSelector = selector.label {
             let inputTypes: Set<XCUIElement.ElementType> = [

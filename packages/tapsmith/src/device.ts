@@ -182,9 +182,9 @@ export class Device {
     return this._handle(options?.exact ? _text(text) : _textContains(text));
   }
 
-  /** Locate an element by accessibility role, optionally with an accessible name. */
-  getByRole(role: string, options?: { name?: string }): ElementHandle {
-    return this._handle(_role(role, options?.name));
+  /** Locate an element by accessibility role, optionally filtering by name or state. */
+  getByRole(role: string, options?: { name?: string; checked?: boolean; disabled?: boolean; selected?: boolean; expanded?: boolean }): ElementHandle {
+    return this._handle(_role(role, options));
   }
 
   /**

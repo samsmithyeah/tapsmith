@@ -172,9 +172,9 @@ export class ElementHandle {
     return this._scoped(options?.exact ? _text(text) : _textContains(text));
   }
 
-  /** Locate a descendant by accessibility role, optionally with an accessible name. */
-  getByRole(role: string, options?: { name?: string }): ElementHandle {
-    return this._scoped(_role(role, options?.name));
+  /** Locate a descendant by accessibility role, optionally filtering by name or state. */
+  getByRole(role: string, options?: { name?: string; checked?: boolean; disabled?: boolean; selected?: boolean; expanded?: boolean }): ElementHandle {
+    return this._scoped(_role(role, options));
   }
 
   /**

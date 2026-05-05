@@ -123,6 +123,10 @@ message Selector {
 message RoleSelector {
   string role = 1;
   string name = 2;
+  optional bool checked = 3;
+  optional bool disabled = 4;
+  optional bool selected = 5;
+  optional bool expanded = 6;
 }
 
 message ElementInfo {

@@ -33,6 +33,8 @@ data class ElementSelector(
     val enabled: Boolean? = null,
     val checked: Boolean? = null,
     val focused: Boolean? = null,
+    val selected: Boolean? = null,
+    val expanded: Boolean? = null,
 )
 
 /**
@@ -384,7 +386,9 @@ class ElementFinder(private val device: UiDevice) {
             objects.filter { obj ->
                 (selector.enabled == null || obj.isEnabled == selector.enabled) &&
                     (selector.checked == null || obj.isChecked == selector.checked) &&
-                    (selector.focused == null || obj.isFocused == selector.focused)
+                    (selector.focused == null || obj.isFocused == selector.focused) &&
+                    (selector.selected == null || obj.isSelected == selector.selected) &&
+                    (selector.expanded == null || isExpanded(obj) == selector.expanded)
             }
 
         return filtered.map { cacheAndConvert(it) }
@@ -730,6 +734,31 @@ class ElementFinder(private val device: UiDevice) {
         } catch (e: Exception) {
             android.util.Log.w("ElementFinder", "Failed to extract hint text for ${obj.className}", e)
             null
+        }
+    }
+
+    /**
+     * Check if a UiObject2 is in the expanded state via AccessibilityNodeInfo.
+     * Returns null if the expanded state cannot be determined (element doesn't
+     * support expand/collapse actions).
+     */
+    private fun isExpanded(obj: UiObject2): Boolean? {
+        val nodeInfo = nodeInfoFor(obj) ?: return null
+        return try {
+            val actions = nodeInfo.actionList ?: return null
+            val expandId =
+                android.view.accessibility.AccessibilityNodeInfo.AccessibilityAction.ACTION_EXPAND.id
+            val collapseId =
+                android.view.accessibility.AccessibilityNodeInfo.AccessibilityAction.ACTION_COLLAPSE.id
+            val hasExpand = actions.any { it.id == expandId }
+            val hasCollapse = actions.any { it.id == collapseId }
+            when {
+                hasCollapse -> true
+                hasExpand -> false
+                else -> null
+            }
+        } finally {
+            nodeInfo.recycle()
         }
     }
 
