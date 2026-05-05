@@ -393,6 +393,8 @@ class CommandHandler(
             enabled = if (params.has("enabled")) params.getBoolean("enabled") else null,
             checked = if (params.has("checked")) params.getBoolean("checked") else null,
             focused = if (params.has("focused")) params.getBoolean("focused") else null,
+            selected = if (params.has("selected")) params.getBoolean("selected") else null,
+            expanded = if (params.has("expanded")) params.getBoolean("expanded") else null,
         )
     }
 

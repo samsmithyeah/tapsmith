@@ -18,6 +18,8 @@ struct ElementSelector {
     var enabled: Bool?
     var checked: Bool?
     var focused: Bool?
+    var selected: Bool?
+    var expanded: Bool?
 }
 
 /// Bounding rectangle for an element.

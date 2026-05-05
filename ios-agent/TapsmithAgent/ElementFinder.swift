@@ -69,6 +69,12 @@ class ElementFinder {
                 if isChecked != wantChecked { return false }
             }
             if let wantFocused = selector.focused, elem.hasFocus != wantFocused { return false }
+            if let wantSelected = selector.selected, elem.isSelected != wantSelected { return false }
+            if let wantExpanded = selector.expanded {
+                let val = (elem.value as? String ?? "").lowercased()
+                let isExpanded = val.contains("expanded")
+                if isExpanded != wantExpanded { return false }
+            }
             return true
         }
 

@@ -783,6 +783,19 @@ class SnapshotElementFinder {
             if isFocused != wantFocused { return false }
         }
 
+        // Selected filter
+        if let wantSelected = selector.selected {
+            if isSelected != wantSelected { return false }
+        }
+
+        // Expanded filter — React Native surfaces expanded state as "expanded"
+        // in the accessibilityValue string (e.g. "expanded" or "expanded, busy").
+        // Only "expanded" is added (no "collapsed"), so absence means collapsed.
+        if let wantExpanded = selector.expanded {
+            let isExpanded = value.lowercased().contains("expanded")
+            if isExpanded != wantExpanded { return false }
+        }
+
         // Label selector: match input-type elements whose label matches.
         if let labelSelector = selector.label {
             let inputTypes: Set<XCUIElement.ElementType> = [

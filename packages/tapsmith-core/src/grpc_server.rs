@@ -1046,6 +1046,18 @@ pub(crate) fn selector_to_json(selector: &proto::Selector) -> Value {
                     "role": role_sel.role,
                     "name": role_sel.name,
                 });
+                if let Some(checked) = role_sel.checked {
+                    obj["checked"] = json!(checked);
+                }
+                if let Some(disabled) = role_sel.disabled {
+                    obj["enabled"] = json!(!disabled);
+                }
+                if let Some(selected) = role_sel.selected {
+                    obj["selected"] = json!(selected);
+                }
+                if let Some(expanded) = role_sel.expanded {
+                    obj["expanded"] = json!(expanded);
+                }
             }
             proto::selector::Selector::Text(t) => {
                 obj["text"] = json!(t);
@@ -5134,12 +5146,38 @@ mod tests {
             selector: Some(proto::selector::Selector::Role(proto::RoleSelector {
                 role: "button".into(),
                 name: "Submit".into(),
+                checked: None,
+                disabled: None,
+                selected: None,
+                expanded: None,
             })),
             parent: None,
         };
         let j = selector_to_json(&sel);
         assert_eq!(j["role"]["role"], "button");
         assert_eq!(j["role"]["name"], "Submit");
+    }
+
+    #[test]
+    fn selector_to_json_role_with_state_filters() {
+        let sel = proto::Selector {
+            selector: Some(proto::selector::Selector::Role(proto::RoleSelector {
+                role: "switch".into(),
+                name: "Dark Mode".into(),
+                checked: Some(true),
+                disabled: Some(true),
+                selected: None,
+                expanded: Some(false),
+            })),
+            parent: None,
+        };
+        let j = selector_to_json(&sel);
+        assert_eq!(j["role"]["role"], "switch");
+        assert_eq!(j["role"]["name"], "Dark Mode");
+        assert_eq!(j["checked"], true);
+        assert_eq!(j["enabled"], false); // disabled=true → enabled=false
+        assert!(j.get("selected").is_none());
+        assert_eq!(j["expanded"], false);
     }
 
     #[test]

@@ -17,15 +17,29 @@ device.getByText("Welcome")                          // substring
 device.getByText("Sign In", { exact: true })         // exact
 ```
 
-### `device.getByRole(role: string, options?: { name?: string }): ElementHandle`
+### `device.getByRole(role: string, options?): ElementHandle`
 
-Locate an element by its accessibility role, optionally filtered by accessible name.
+Locate an element by its accessibility role, optionally filtered by accessible name or state.
 
 ```typescript
 device.getByRole("button", { name: "Submit" })
 device.getByRole("textfield", { name: "Email" })
 device.getByRole("checkbox")
+device.getByRole("switch", { name: "Dark Mode", checked: true })
+device.getByRole("button", { name: "Submit", disabled: true })
+device.getByRole("tab", { name: "Settings", selected: true })
+device.getByRole("button", { name: "Details", expanded: true })
 ```
+
+**Options:**
+
+| Option | Type | Description |
+|--------|------|-------------|
+| `name` | `string` | Filter by accessible name |
+| `checked` | `boolean` | Filter by checked state (checkbox, switch, radio) |
+| `disabled` | `boolean` | Filter by disabled state |
+| `selected` | `boolean` | Filter by selected state (tab, option) |
+| `expanded` | `boolean` | Filter by expanded state (accordion, dropdown) |
 
 ### `device.getByDescription(text: string): ElementHandle`
 

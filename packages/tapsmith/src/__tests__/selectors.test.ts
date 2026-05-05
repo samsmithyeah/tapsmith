@@ -18,7 +18,7 @@ import {
 
 describe('internal selector builders', () => {
   it('_role() creates a role selector with role and name', () => {
-    const sel = _role('button', 'Submit');
+    const sel = _role('button', { name: 'Submit' });
     expect(sel.kind).toEqual({ type: 'role', value: { role: 'button', name: 'Submit' } });
     expect(sel.parent).toBeUndefined();
   });
@@ -26,6 +26,14 @@ describe('internal selector builders', () => {
   it('_role() defaults name to empty string when omitted', () => {
     const sel = _role('checkbox');
     expect(sel.kind).toEqual({ type: 'role', value: { role: 'checkbox', name: '' } });
+  });
+
+  it('_role() accepts state filter options', () => {
+    const sel = _role('switch', { name: 'Dark Mode', checked: true, disabled: false });
+    expect(sel.kind).toEqual({
+      type: 'role',
+      value: { role: 'switch', name: 'Dark Mode', checked: true, disabled: false },
+    });
   });
 
   it('_text() creates a text selector', () => {
@@ -131,7 +139,25 @@ describe('withParent()', () => {
 
 describe('selectorToProto()', () => {
   it('serializes role selector', () => {
-    expect(selectorToProto(_role('button', 'OK'))).toEqual({ role: { role: 'button', name: 'OK' } });
+    expect(selectorToProto(_role('button', { name: 'OK' }))).toEqual({ role: { role: 'button', name: 'OK' } });
+  });
+
+  it('serializes role selector with checked option', () => {
+    expect(selectorToProto(_role('switch', { name: 'Dark Mode', checked: true }))).toEqual({
+      role: { role: 'switch', name: 'Dark Mode', checked: true },
+    });
+  });
+
+  it('serializes role selector with disabled option', () => {
+    expect(selectorToProto(_role('button', { name: 'Submit', disabled: true }))).toEqual({
+      role: { role: 'button', name: 'Submit', disabled: true },
+    });
+  });
+
+  it('serializes role selector with selected and expanded options', () => {
+    expect(selectorToProto(_role('tab', { selected: true, expanded: false }))).toEqual({
+      role: { role: 'tab', name: '', selected: true, expanded: false },
+    });
   });
 
   it('serializes text selector', () => {
