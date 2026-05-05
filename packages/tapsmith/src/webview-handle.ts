@@ -6,6 +6,7 @@ import { extractSourceLocation } from './trace/trace-collector.js';
 import type { WebKitInspectorClient } from './webkit-inspector.js';
 
 const POLL_INTERVAL_MS = 250;
+const WEB_SOCKET_CONNECT_TIMEOUT_MS = 5_000;
 
 const ROLE_CSS_MAP: Record<string, string[]> = {
   button: ['button', '[role="button"]', 'input[type="button"]', 'input[type="submit"]', 'input[type="reset"]'],
@@ -236,6 +237,10 @@ export class WebViewHandle {
       wsUrl = `ws://127.0.0.1:${this._localPort}${wsUrl}`;
     }
 
+    if (!wsUrl) {
+      throw new Error('WebView target did not expose a CDP WebSocket URL');
+    }
+
     await this._connectWebSocket(wsUrl);
     await this._send('Runtime.enable', {});
     await this._send('Page.enable', {});
@@ -273,13 +278,31 @@ export class WebViewHandle {
 
   private _connectWebSocket(url: string): Promise<void> {
     return new Promise((resolve, reject) => {
-      const ws = new WebSocket(url);
+      let settled = false;
+      const timeoutMs = Math.min(this._timeoutMs, WEB_SOCKET_CONNECT_TIMEOUT_MS);
+      const ws = new WebSocket(url, { handshakeTimeout: timeoutMs });
+      const timer = setTimeout(() => {
+        finish(() => {
+          ws.terminate();
+          reject(new Error(`WebView CDP WebSocket connection timed out after ${timeoutMs}ms`));
+        });
+      }, timeoutMs);
+      function finish(fn: () => void) {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        fn();
+      }
       ws.on('open', () => {
-        this._ws = ws;
-        resolve();
+        finish(() => {
+          this._ws = ws;
+          resolve();
+        });
       });
       ws.on('error', (err) => {
-        if (!this._ws) reject(err);
+        if (!this._ws) {
+          finish(() => reject(err));
+        }
       });
       ws.on('message', (data) => {
         const msg = JSON.parse(data.toString()) as CDPResponse;
@@ -296,6 +319,9 @@ export class WebViewHandle {
         }
       });
       ws.on('close', () => {
+        if (!this._ws) {
+          finish(() => reject(new Error('WebView CDP WebSocket closed before opening')));
+        }
         this._ws = null;
         for (const [, p] of this._pending) {
           p.reject(new Error('WebView CDP connection closed'));

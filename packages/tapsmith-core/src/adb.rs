@@ -65,6 +65,7 @@ async fn run_adb(serial: Option<&str>, args: &[&str], timeout: Duration) -> Resu
 }
 
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(30);
+const CLEANUP_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// User-installed CA certificate directory. Apps must include
 /// `<certificates src="user"/>` in their network security config to
@@ -187,16 +188,15 @@ pub async fn reverse_port(serial: &str, device_port: u16, host_port: u16) -> Res
     Ok(())
 }
 
-/// Remove a specific reverse port forward.
+/// Remove a specific reverse port forward with a caller-provided timeout.
 #[instrument]
-pub async fn remove_reverse(serial: &str, device_port: u16) -> Result<()> {
+pub async fn remove_reverse_with_timeout(
+    serial: &str,
+    device_port: u16,
+    timeout: Duration,
+) -> Result<()> {
     let device_arg = format!("tcp:{device_port}");
-    run_adb(
-        Some(serial),
-        &["reverse", "--remove", &device_arg],
-        DEFAULT_TIMEOUT,
-    )
-    .await?;
+    run_adb(Some(serial), &["reverse", "--remove", &device_arg], timeout).await?;
     Ok(())
 }
 
@@ -548,14 +548,25 @@ pub async fn setup_iptables_redirect(serial: &str, proxy_port: u16) -> bool {
 /// Safe to call even if the chain doesn't exist.
 pub async fn cleanup_iptables_redirect(serial: &str) {
     // Remove the jump rule from OUTPUT (may fail if not present — that's fine)
-    let _ = shell(
+    let _ = shell_with_timeout(
         serial,
         &format!("iptables -t nat -D OUTPUT -j {IPTABLES_CHAIN}"),
+        CLEANUP_TIMEOUT,
     )
     .await;
     // Flush and delete the chain
-    let _ = shell(serial, &format!("iptables -t nat -F {IPTABLES_CHAIN}")).await;
-    let _ = shell(serial, &format!("iptables -t nat -X {IPTABLES_CHAIN}")).await;
+    let _ = shell_with_timeout(
+        serial,
+        &format!("iptables -t nat -F {IPTABLES_CHAIN}"),
+        CLEANUP_TIMEOUT,
+    )
+    .await;
+    let _ = shell_with_timeout(
+        serial,
+        &format!("iptables -t nat -X {IPTABLES_CHAIN}"),
+        CLEANUP_TIMEOUT,
+    )
+    .await;
 }
 
 #[cfg(test)]

@@ -22,6 +22,8 @@ use crate::proto;
 use crate::route_handler::RouteInterceptHandler;
 use crate::screenshot;
 
+const ANDROID_PROXY_CLEANUP_TIMEOUT: Duration = Duration::from_secs(5);
+
 pub struct TapsmithServiceImpl {
     device_manager: Arc<RwLock<DeviceManager>>,
     agent: Arc<RwLock<AgentConnection>>,
@@ -639,18 +641,34 @@ impl TapsmithServiceImpl {
                     info!(%serial, "Cleaning up Android proxy settings on shutdown");
                     if used_iptables {
                         adb::cleanup_iptables_redirect(serial).await;
-                    } else if let Err(e) =
-                        adb::shell(serial, "settings put global http_proxy :0").await
+                    } else if let Err(e) = adb::shell_with_timeout(
+                        serial,
+                        "settings put global http_proxy :0",
+                        ANDROID_PROXY_CLEANUP_TIMEOUT,
+                    )
+                    .await
                     {
                         warn!(%serial, "Failed to reset http_proxy on shutdown: {e}");
                     }
                     if let Some(port) = reverse_port {
-                        if let Err(e) = adb::remove_reverse(serial, port).await {
+                        if let Err(e) = adb::remove_reverse_with_timeout(
+                            serial,
+                            port,
+                            ANDROID_PROXY_CLEANUP_TIMEOUT,
+                        )
+                        .await
+                        {
                             warn!(%serial, port, "Failed to remove reverse port forward on shutdown: {e}");
                         }
                     }
                     if let Some(cert_path) = &ca_cert_path {
-                        if let Err(e) = adb::shell(serial, &format!("rm -f {cert_path}")).await {
+                        if let Err(e) = adb::shell_with_timeout(
+                            serial,
+                            &format!("rm -f {cert_path}"),
+                            ANDROID_PROXY_CLEANUP_TIMEOUT,
+                        )
+                        .await
+                        {
                             warn!(%serial, "Failed to remove CA cert on shutdown: {e}");
                         }
                     }
@@ -3632,18 +3650,34 @@ impl proto::tapsmith_service_server::TapsmithService for TapsmithServiceImpl {
                     info!(%serial, "Reverting Android proxy configuration");
                     if used_iptables {
                         adb::cleanup_iptables_redirect(serial).await;
-                    } else if let Err(e) =
-                        adb::shell(serial, "settings put global http_proxy :0").await
+                    } else if let Err(e) = adb::shell_with_timeout(
+                        serial,
+                        "settings put global http_proxy :0",
+                        ANDROID_PROXY_CLEANUP_TIMEOUT,
+                    )
+                    .await
                     {
                         warn!(%serial, "Failed to reset http_proxy: {e}");
                     }
                     if let Some(port) = reverse_port {
-                        if let Err(e) = adb::remove_reverse(serial, port).await {
+                        if let Err(e) = adb::remove_reverse_with_timeout(
+                            serial,
+                            port,
+                            ANDROID_PROXY_CLEANUP_TIMEOUT,
+                        )
+                        .await
+                        {
                             warn!(%serial, port, "Failed to remove reverse port forward: {e}");
                         }
                     }
                     if let Some(cert_path) = &ca_cert_path {
-                        if let Err(e) = adb::shell(serial, &format!("rm -f {cert_path}")).await {
+                        if let Err(e) = adb::shell_with_timeout(
+                            serial,
+                            &format!("rm -f {cert_path}"),
+                            ANDROID_PROXY_CLEANUP_TIMEOUT,
+                        )
+                        .await
+                        {
                             warn!(%serial, "Failed to remove CA cert: {e}");
                         }
                     }
