@@ -3648,39 +3648,52 @@ impl proto::tapsmith_service_server::TapsmithService for TapsmithServiceImpl {
                 }
                 _ => {
                     info!(%serial, "Reverting Android proxy configuration");
-                    if used_iptables {
-                        adb::cleanup_iptables_redirect(serial).await;
-                    } else if let Err(e) = adb::shell_with_timeout(
-                        serial,
-                        "settings put global http_proxy :0",
-                        ANDROID_PROXY_CLEANUP_TIMEOUT,
-                    )
-                    .await
-                    {
-                        warn!(%serial, "Failed to reset http_proxy: {e}");
-                    }
-                    if let Some(port) = reverse_port {
-                        if let Err(e) = adb::remove_reverse_with_timeout(
-                            serial,
-                            port,
+                    // Run cleanup commands concurrently — they're independent
+                    // and each has its own timeout. Sequential execution on
+                    // slow CI emulators can exceed the gRPC deadline.
+                    let serial_a = serial.to_string();
+                    let serial_b = serial.to_string();
+                    let serial_c = serial.to_string();
+                    let proxy_cleanup = async move {
+                        if used_iptables {
+                            adb::cleanup_iptables_redirect(&serial_a).await;
+                        } else if let Err(e) = adb::shell_with_timeout(
+                            &serial_a,
+                            "settings put global http_proxy :0",
                             ANDROID_PROXY_CLEANUP_TIMEOUT,
                         )
                         .await
                         {
-                            warn!(%serial, port, "Failed to remove reverse port forward: {e}");
+                            warn!(serial = %serial_a, "Failed to reset http_proxy: {e}");
                         }
-                    }
-                    if let Some(cert_path) = &ca_cert_path {
-                        if let Err(e) = adb::shell_with_timeout(
-                            serial,
-                            &format!("rm -f {cert_path}"),
-                            ANDROID_PROXY_CLEANUP_TIMEOUT,
-                        )
-                        .await
-                        {
-                            warn!(%serial, "Failed to remove CA cert: {e}");
+                    };
+                    let reverse_cleanup = async move {
+                        if let Some(port) = reverse_port {
+                            if let Err(e) = adb::remove_reverse_with_timeout(
+                                &serial_b,
+                                port,
+                                ANDROID_PROXY_CLEANUP_TIMEOUT,
+                            )
+                            .await
+                            {
+                                warn!(serial = %serial_b, port, "Failed to remove reverse port forward: {e}");
+                            }
                         }
-                    }
+                    };
+                    let cert_cleanup = async move {
+                        if let Some(cert_path) = &ca_cert_path {
+                            if let Err(e) = adb::shell_with_timeout(
+                                &serial_c,
+                                &format!("rm -f {cert_path}"),
+                                ANDROID_PROXY_CLEANUP_TIMEOUT,
+                            )
+                            .await
+                            {
+                                warn!(serial = %serial_c, "Failed to remove CA cert: {e}");
+                            }
+                        }
+                    };
+                    tokio::join!(proxy_cleanup, reverse_cleanup, cert_cleanup);
                 }
             }
         }
