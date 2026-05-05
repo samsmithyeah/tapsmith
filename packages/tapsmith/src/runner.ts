@@ -396,6 +396,8 @@ export interface RunOptions {
    */
   beforeEachTest?: (fullName: string) => Promise<void>;
   abortFileOnError?: (error: Error) => boolean;
+  /** @internal — controller whose signal is wired to abortSignal; aborted by abortFileOnError. */
+  _abortFileController?: AbortController;
   /** Pre-resolved worker-scoped fixture values (set by worker-runner). */
   workerFixtures?: Record<string, unknown>;
   /** Test file path — used by trace packager for testFile metadata and source inclusion. */
@@ -585,8 +587,8 @@ async function runSuiteContext(
   const result: SuiteResult = { name: parentPrefix, tests: [], suites: [], durationMs: 0 };
   const suiteStart = Date.now();
 
-  // try/finally ensures device timeout is restored even if a hook or
-  // abortFileOnError throws. Body intentionally not re-indented.
+  // try/finally ensures device timeout is restored even if a hook
+  // throws. Body intentionally not re-indented.
   try {
 
   // Restore or clear app state if test.use({ appState }) was specified for this scope.
@@ -1304,7 +1306,8 @@ async function runSuiteContext(
     opts.reporter?.onTestEnd?.(testResult);
 
     if (status === 'failed' && error && opts.abortFileOnError?.(error)) {
-      throw error;
+      opts._abortFileController?.abort();
+      break;
     }
   }
 
@@ -1500,7 +1503,14 @@ export async function runTestFile(
     workerTeardown = resolved.teardown;
   }
 
-  const fileOpts: RunOptions = { ...opts, workerFixtures, testFilePath: filePath };
+  const abortFileController = opts.abortFileOnError ? new AbortController() : undefined;
+  const fileOpts: RunOptions = {
+    ...opts,
+    workerFixtures,
+    testFilePath: filePath,
+    _abortFileController: abortFileController,
+    abortSignal: abortFileController?.signal ?? opts.abortSignal,
+  };
 
   try {
     return await runSuiteContext(rootCtx, '', [], [], fileOpts);
