@@ -788,10 +788,12 @@ class SnapshotElementFinder {
             if isSelected != wantSelected { return false }
         }
 
-        // Expanded filter — React Native exposes via accessibilityState.expanded
+        // Expanded filter — React Native surfaces expanded state as "expanded"
+        // in the accessibilityValue string (e.g. "expanded" or "expanded, busy").
+        // Only "expanded" is added (no "collapsed"), so absence means collapsed.
         if let wantExpanded = selector.expanded {
-            let expandedValue = node["expanded"] as? Bool
-            if expandedValue != wantExpanded { return false }
+            let isExpanded = value.lowercased().contains("expanded")
+            if isExpanded != wantExpanded { return false }
         }
 
         // Label selector: match input-type elements whose label matches.
