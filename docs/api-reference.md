@@ -954,6 +954,14 @@ Check whether this checkbox, switch, or radio button is in the checked state.
 const checked = await device.getByRole("switch", { name: "Notifications" }).isChecked();
 ```
 
+#### `elementHandle.isEditable(): Promise<boolean>`
+
+Check whether this element is an editable input field (text field role and enabled).
+
+```typescript
+const editable = await device.getByRole("textfield", { name: "Email" }).isEditable();
+```
+
 #### `elementHandle.inputValue(): Promise<string>`
 
 Get the current value of an input field. On Android, this returns the element's text property.

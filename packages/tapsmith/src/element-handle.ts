@@ -960,6 +960,11 @@ export class ElementHandle {
     return info.checked;
   }
 
+  async isEditable(): Promise<boolean> {
+    const info = this._hasModifiers() ? await this._resolveOne() : await this.find();
+    return info.role === 'textfield' && info.enabled;
+  }
+
   async inputValue(): Promise<string> {
     const info = this._hasModifiers() ? await this._resolveOne() : await this.find();
     return info.text;
