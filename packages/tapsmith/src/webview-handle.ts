@@ -242,7 +242,10 @@ export class WebViewHandle {
   }
 
   private async _fetchTargets(): Promise<CDPTarget[]> {
-    const deadline = Date.now() + this._timeoutMs;
+    // Retry with backoff for up to 10s. The outer loop in _webviewAndroid
+    // owns the full timeout and re-lists WebViews / re-forwards ports
+    // between attempts, so we keep this window short.
+    const deadline = Date.now() + Math.min(this._timeoutMs, 10_000);
     let delayMs = 100;
     let lastError: Error | undefined;
 
@@ -264,7 +267,7 @@ export class WebViewHandle {
     }
 
     throw new Error(
-      `WebView debug socket not available after ${this._timeoutMs}ms: ${lastError?.message}`,
+      `WebView debug socket not available after retry: ${lastError?.message}`,
     );
   }
 
