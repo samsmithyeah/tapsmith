@@ -1232,23 +1232,6 @@ async function runSuiteContext(
         }
         collector.cleanup();
       }
-
-      // Re-create the trace collector and restart device log streaming
-      // for the next test. Without this, subsequent tests in the same
-      // file have no device logs and a dead collector reference.
-      const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tapsmith-trace-'));
-      traceCollector = opts.device.tracing._startManaged(traceConfig, tempDir);
-      setActiveTraceCollector(traceCollector);
-      if (traceConfig.deviceLogs) {
-        try {
-          opts.device._startDeviceLogStream(traceCollector);
-        } catch { /* best-effort */ }
-      }
-      if (traceConfig.network) {
-        try {
-          await opts.device._startNetworkCapture();
-        } catch { /* best-effort — next test's trace just won't have network data */ }
-      }
     } else if (opts.device?._disposeRouteManager) {
       // No tracing — still need to clean up routes and WebView state.
       await opts.device._disposeRouteManager();

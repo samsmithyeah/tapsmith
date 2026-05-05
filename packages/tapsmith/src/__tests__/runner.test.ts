@@ -1,4 +1,8 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
+import * as fs from 'node:fs';
+import * as os from 'node:os';
+import * as path from 'node:path';
+import { unzipSync } from 'fflate';
 
 // We need to test the runner's registration and execution logic.
 // The runner uses module-level state, so we import the internal helpers
@@ -17,6 +21,8 @@ import {
   type RunOptions,
 } from '../runner.js';
 import type { TapsmithConfig } from '../config.js';
+import { Tracing } from '../trace/tracing.js';
+import type { TraceCollector } from '../trace/trace-collector.js';
 
 const { pushContext, popContext, runSuiteContext, resolvePlatformFixture } = _internal;
 
@@ -286,6 +292,74 @@ describe('runner execution', () => {
     const result = await runSuiteContext(ctx, '', [], [], makeOpts());
     expect(result.tests).toHaveLength(1);
     expect(result.tests[0].status).toBe('passed');
+  });
+
+  it('starts device log streaming for each traced test collector', async () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'tapsmith-runner-logs-'));
+    let activeLogCollector: TraceCollector | null = null;
+    const streamStarts: TraceCollector[] = [];
+    const streamStops: TraceCollector[] = [];
+    const tracing = new Tracing(async () => undefined, async () => undefined);
+    const mockDevice = {
+      tracing,
+      waitForIdle: vi.fn(async () => {}),
+      _startDeviceLogStream: vi.fn((collector: TraceCollector) => {
+        if (activeLogCollector) return;
+        activeLogCollector = collector;
+        streamStarts.push(collector);
+        collector.addLogcatEntry('info', `device-log-${streamStarts.length}`);
+      }),
+      _stopDeviceLogStream: vi.fn(() => {
+        if (activeLogCollector) streamStops.push(activeLogCollector);
+        activeLogCollector = null;
+      }),
+    };
+
+    try {
+      pushContext();
+      tapsmithTest('first traced test', async () => {});
+      tapsmithTest('second traced test', async () => {});
+      const ctx = popContext();
+
+      const result = await runSuiteContext(ctx, '', [], [], makeOpts({
+        config: makeConfig({
+          rootDir: tempRoot,
+          outputDir: 'out',
+          trace: {
+            mode: 'on',
+            network: false,
+            screenshots: false,
+            snapshots: false,
+            sources: false,
+          },
+        }),
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any -- focused runner lifecycle mock
+        device: mockDevice as any,
+      }));
+
+      expect(result.tests.map((t) => t.status)).toEqual(['passed', 'passed']);
+      expect(mockDevice._startDeviceLogStream).toHaveBeenCalledTimes(2);
+      expect(mockDevice._stopDeviceLogStream).toHaveBeenCalledTimes(2);
+      expect(streamStarts).toHaveLength(2);
+      expect(streamStops).toEqual(streamStarts);
+
+      for (let i = 0; i < result.tests.length; i++) {
+        const tracePath = result.tests[i].tracePath;
+        expect(tracePath).toBeTruthy();
+        const files = unzipSync(new Uint8Array(fs.readFileSync(tracePath!)));
+        const traceJson = Buffer.from(files['trace.json']).toString('utf8');
+        const deviceMessages = traceJson
+          .trim()
+          .split('\n')
+          .filter(Boolean)
+          .map((line) => JSON.parse(line) as { source?: string; message?: string })
+          .filter((event) => event.source === 'device')
+          .map((event) => event.message);
+        expect(deviceMessages).toEqual([`device-log-${i + 1}`]);
+      }
+    } finally {
+      fs.rmSync(tempRoot, { recursive: true, force: true });
+    }
   });
 });
 

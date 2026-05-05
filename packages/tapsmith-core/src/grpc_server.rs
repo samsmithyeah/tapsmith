@@ -2408,6 +2408,15 @@ impl proto::tapsmith_service_server::TapsmithService for TapsmithServiceImpl {
                     ));
                 }
                 let serial = self.active_serial().await?;
+
+                // Snapshot the UI hierarchy before the intent so we can
+                // detect whether navigation actually occurred.
+                let hierarchy_before = self
+                    .send_agent_command_with_timeout(&AgentCommand::GetUiHierarchy {}, 5_000)
+                    .await
+                    .ok()
+                    .map(|r| r.data);
+
                 let cmd = format!("am start -a android.intent.action.VIEW -d '{}'", req.uri);
                 if let Err(e) = adb::shell(&serial, &cmd).await {
                     let screenshot = self.error_screenshot().await;
@@ -2420,16 +2429,42 @@ impl proto::tapsmith_service_server::TapsmithService for TapsmithServiceImpl {
                     }));
                 }
 
-                // Wait for the intent to be delivered and the UI to settle.
-                // Without this, the next test action can race ahead of the
-                // navigation on slow CI emulators (PILOT-210).
-                tokio::time::sleep(Duration::from_millis(100)).await;
+                // Poll until the UI changes (confirming the deep link was
+                // processed) or we run out of patience. On slow CI emulators
+                // the intent can be silently dropped by a busy Activity, so
+                // we retry the intent once if the hierarchy hasn't changed.
+                let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+                let mut retried_intent = false;
+                loop {
+                    tokio::time::sleep(Duration::from_millis(300)).await;
+
+                    let hierarchy_now = self
+                        .send_agent_command_with_timeout(&AgentCommand::GetUiHierarchy {}, 5_000)
+                        .await
+                        .ok()
+                        .map(|r| r.data);
+
+                    if hierarchy_now != hierarchy_before {
+                        break;
+                    }
+                    if tokio::time::Instant::now() >= deadline {
+                        break;
+                    }
+                    // Retry the intent once — the first one may have been
+                    // dropped by a busy Activity on a slow emulator.
+                    if !retried_intent {
+                        retried_intent = true;
+                        debug!("Deep link: UI unchanged, retrying intent");
+                        let _ = adb::shell(&serial, &cmd).await;
+                    }
+                }
+
+                // Final idle wait so animations finish before the caller
+                // interacts with the new screen.
                 let idle_cmd = AgentCommand::WaitForIdle {
-                    timeout_ms: Some(10_000),
+                    timeout_ms: Some(5_000),
                 };
-                let _ = self
-                    .send_agent_command_with_timeout(&idle_cmd, 10_000)
-                    .await;
+                let _ = self.send_agent_command_with_timeout(&idle_cmd, 5_000).await;
 
                 Ok(Self::success_action_response(request_id))
             }

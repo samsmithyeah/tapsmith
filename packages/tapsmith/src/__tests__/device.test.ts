@@ -1,7 +1,12 @@
 import { describe, it, expect, vi } from 'vitest';
+import * as fs from 'node:fs';
+import * as os from 'node:os';
+import * as path from 'node:path';
 import { Device } from '../device.js';
 import { selectorToProto } from '../selectors.js';
 import type { TapsmithGrpcClient, ActionResponse } from '../grpc-client.js';
+import { TraceCollector } from '../trace/trace-collector.js';
+import type { ConsoleTraceEvent } from '../trace/types.js';
 
 // ─── Mock helpers ───
 
@@ -63,6 +68,45 @@ function makeMockClient(overrides: Partial<TapsmithGrpcClient> = {}): TapsmithGr
     waitForIdle: vi.fn(async () => successResponse()),
     ...overrides,
   } as unknown as TapsmithGrpcClient;
+}
+
+type LogHandler = (value?: unknown) => void;
+
+function makeDeviceLogStream() {
+  const handlers = new Map<string, LogHandler[]>();
+  const stream = {
+    cancel: vi.fn(),
+    on: vi.fn((event: string, handler: LogHandler) => {
+      const list = handlers.get(event) ?? [];
+      list.push(handler);
+      handlers.set(event, list);
+      return stream;
+    }),
+    emit(event: string, value?: unknown) {
+      for (const handler of handlers.get(event) ?? []) handler(value);
+    },
+  };
+  return stream;
+}
+
+function makeTraceCollector(tempDir: string): TraceCollector {
+  return new TraceCollector({
+    mode: 'on',
+    screenshots: false,
+    snapshots: false,
+    sources: false,
+    attachments: true,
+    network: false,
+    deviceLogs: true,
+  }, tempDir);
+}
+
+function deviceLogMessages(collector: TraceCollector): (string | undefined)[] {
+  return collector.events
+    .filter((event): event is ConsoleTraceEvent =>
+      event.type === 'console' && event.source === 'device'
+    )
+    .map((event) => event.message);
 }
 
 // ─── getBy* locator factories ───
@@ -152,6 +196,70 @@ describe('Device locator factories', () => {
     const client = makeMockClient();
     const device = new Device(client);
     expect(() => device.locator({ id: 'a', xpath: '//b' })).toThrow(/exactly one/);
+  });
+});
+
+// ─── Device Log Streaming ───
+
+describe('Device device log streaming', () => {
+  it('rebinds the log stream when a new trace collector starts', () => {
+    const tempDir1 = fs.mkdtempSync(path.join(os.tmpdir(), 'tapsmith-device-log-'));
+    const tempDir2 = fs.mkdtempSync(path.join(os.tmpdir(), 'tapsmith-device-log-'));
+    const collector1 = makeTraceCollector(tempDir1);
+    const collector2 = makeTraceCollector(tempDir2);
+    const stream1 = makeDeviceLogStream();
+    const stream2 = makeDeviceLogStream();
+    const streams = [stream1, stream2];
+    const deviceLogStream = vi.fn(() =>
+      streams.shift() as unknown as ReturnType<TapsmithGrpcClient['deviceLogStream']>
+    );
+    const client = makeMockClient({ deviceLogStream });
+    const device = new Device(client, { package: 'com.example.app' });
+
+    try {
+      device._startDeviceLogStream(collector1);
+      stream1.emit('data', {
+        level: 'info',
+        tag: 'App',
+        message: 'first',
+        timestampMs: 1,
+        pid: 10,
+      });
+
+      device._startDeviceLogStream(collector2);
+      expect(stream1.cancel).toHaveBeenCalledTimes(1);
+      expect(deviceLogStream).toHaveBeenCalledTimes(2);
+
+      stream1.emit('end');
+      device._startDeviceLogStream(collector2);
+      expect(deviceLogStream).toHaveBeenCalledTimes(2);
+
+      stream1.emit('data', {
+        level: 'warn',
+        tag: 'App',
+        message: 'stale',
+        timestampMs: 2,
+        pid: 10,
+      });
+      stream2.emit('data', {
+        level: 'warn',
+        tag: 'App',
+        message: 'second',
+        timestampMs: 3,
+        pid: 11,
+      });
+
+      expect(deviceLogMessages(collector1)).toEqual(['[App] first']);
+      expect(deviceLogMessages(collector2)).toEqual(['[App] second']);
+
+      device._stopDeviceLogStream();
+      expect(stream2.cancel).toHaveBeenCalledTimes(1);
+    } finally {
+      collector1.cleanup();
+      collector2.cleanup();
+      fs.rmSync(tempDir1, { recursive: true, force: true });
+      fs.rmSync(tempDir2, { recursive: true, force: true });
+    }
   });
 });
 

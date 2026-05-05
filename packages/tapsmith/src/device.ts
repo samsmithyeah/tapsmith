@@ -78,6 +78,7 @@ export class Device {
 
   /** @internal — Active device log stream. */
   private _logStream: grpc.ClientReadableStream<DeviceLogEntry> | null = null;
+  private _logStreamCollector: TraceCollector | null = null;
 
   private _typingDelayMs: number;
 
@@ -547,13 +548,25 @@ export class Device {
 
   /** @internal — Start streaming device logs into the active trace collector. */
   _startDeviceLogStream(collector: TraceCollector): void {
-    if (this._logStream) return;
     if (!this.defaultPackageName) return;
+    if (this._logStream) {
+      if (this._logStreamCollector === collector) return;
+      this._stopDeviceLogStream();
+    }
 
     const stream = this._client.deviceLogStream(this.defaultPackageName);
     this._logStream = stream;
+    this._logStreamCollector = collector;
+
+    const clearStream = () => {
+      if (this._logStream === stream) {
+        this._logStream = null;
+        this._logStreamCollector = null;
+      }
+    };
 
     stream.on('data', (entry: DeviceLogEntry) => {
+      if (this._logStream !== stream) return;
       const level = mapDeviceLogLevel(entry.level);
       const message = entry.tag
         ? `[${entry.tag}] ${entry.message}`
@@ -566,20 +579,20 @@ export class Device {
       if (code !== grpc.status.CANCELLED) {
         console.warn('[tapsmith] Device log stream error:', err.message);
       }
-      this._logStream = null;
+      clearStream();
     });
 
     stream.on('end', () => {
-      this._logStream = null;
+      clearStream();
     });
   }
 
   /** @internal — Stop streaming device logs. */
   _stopDeviceLogStream(): void {
-    if (this._logStream) {
-      this._logStream.cancel();
-      this._logStream = null;
-    }
+    const stream = this._logStream;
+    this._logStream = null;
+    this._logStreamCollector = null;
+    stream?.cancel();
   }
 
   // ─── Network Route Interception ───
