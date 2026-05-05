@@ -652,17 +652,25 @@ export class ElementHandle {
 
     const checkState = async (): Promise<boolean> => {
       let elements: ElementInfo[];
+      const findBudget = Math.min(FIND_TIMEOUT_MS, Math.max(0, deadline - Date.now()));
       try {
         if (this._hasModifiers()) {
-          elements = await this._resolveAll();
+          const pollHandle = new ElementHandle(this._client, this._selector, findBudget, this._options);
+          elements = await pollHandle._resolveAll();
         } else {
-          const findBudget = Math.min(FIND_TIMEOUT_MS, Math.max(0, deadline - Date.now()));
           const res = await this._client.findElements(this._selector, findBudget);
           elements = res.elements ?? [];
         }
       } catch (err) {
         if (!isPollableNotFoundError(err)) throw err;
         elements = [];
+      }
+
+      // Respect nthIndex — target the specific element, not the full set
+      const nthIndex = this._options.nthIndex;
+      if (nthIndex !== undefined) {
+        const idx = nthIndex < 0 ? elements.length + nthIndex : nthIndex;
+        elements = (idx >= 0 && idx < elements.length) ? [elements[idx]] : [];
       }
 
       const attached = elements.length > 0;

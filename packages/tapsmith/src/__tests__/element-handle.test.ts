@@ -1958,4 +1958,30 @@ describe('waitFor', () => {
     const handle = new ElementHandle(client, _text('Hello'), 5000).first();
     await handle.waitFor({ state: 'visible' });
   });
+
+  it('respects nthIndex — only checks the targeted element', async () => {
+    const client = makeMockClient({
+      findElements: vi.fn(async () => makeFindElementsResponse([
+        makeElementInfo({ elementId: 'a', visible: false }),
+        makeElementInfo({ elementId: 'b', visible: true }),
+      ])),
+    });
+    // .first() targets index 0 which is NOT visible
+    const handle = new ElementHandle(client, _text('Hello'), 500).first();
+    await expect(handle.waitFor({ state: 'visible', timeout: 500 }))
+      .rejects.toThrow(/did not reach state "visible"/);
+  });
+
+  it('respects nthIndex for detached state with .last()', async () => {
+    const client = makeMockClient({
+      findElements: vi.fn(async () => makeFindElementsResponse([
+        makeElementInfo({ elementId: 'a' }),
+        makeElementInfo({ elementId: 'b' }),
+      ])),
+    });
+    // .last() targets index -1 which exists — so 'detached' should fail
+    const handle = new ElementHandle(client, _text('Hello'), 500).last();
+    await expect(handle.waitFor({ state: 'detached', timeout: 500 }))
+      .rejects.toThrow(/did not reach state "detached"/);
+  });
 });
