@@ -4,7 +4,9 @@ import { AccessibilityScreen } from "../screens/accessibility.screen.js"
 describe("Accessibility screen", () => {
   beforeAll(async ({ device }) => {
     await device.restartApp()
-    await device.openDeepLink("tapsmithtest:///accessibility")
+    const accessibilityCard = device.getByDescription("Accessibility")
+    await accessibilityCard.scrollIntoView()
+    await accessibilityCard.tap()
     await expect(device.getByText("Accessibility Testing", { exact: true })).toBeVisible()
   })
 

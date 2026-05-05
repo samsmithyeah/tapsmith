@@ -1,13 +1,10 @@
-import { beforeAll, beforeEach, describe, expect, test } from "tapsmith"
+import { beforeEach, describe, expect, test } from "tapsmith"
 import { TogglesScreen } from "../screens/toggles.screen.js"
 
 describe("Toggles screen", () => {
-  beforeAll(async ({ device }) => {
-    await device.restartApp()
-  })
-
   beforeEach(async ({ device }) => {
-    await device.openDeepLink("tapsmithtest:///toggles")
+    await device.restartApp()
+    await device.getByDescription("Toggles").tap()
     const screen = new TogglesScreen(device)
     await expect(screen.switchesHeading).toBeVisible()
   })

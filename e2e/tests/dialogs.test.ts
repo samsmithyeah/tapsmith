@@ -1,13 +1,10 @@
-import { beforeAll, beforeEach, describe, expect, test } from "tapsmith"
+import { beforeEach, describe, expect, test } from "tapsmith"
 import { DialogsScreen } from "../screens/dialogs.screen.js"
 
 describe("Dialogs screen", () => {
-  beforeAll(async ({ device }) => {
-    await device.restartApp()
-  })
-
   beforeEach(async ({ device }) => {
-    await device.openDeepLink("tapsmithtest:///dialogs")
+    await device.restartApp()
+    await device.getByDescription("Dialogs").tap()
     await expect(device.getByText("Dialogs & Overlays", { exact: true })).toBeVisible()
   })
 

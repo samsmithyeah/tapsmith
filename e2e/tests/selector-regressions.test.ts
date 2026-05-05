@@ -3,15 +3,11 @@
  * Each section preserves the original PILOT issue ID so future regressions
  * are easy to triage.
  */
-import { beforeAll, beforeEach, describe, expect, test } from "tapsmith"
+import { beforeEach, describe, expect, test } from "tapsmith"
 
 describe("Selector & assertion regressions", () => {
-  beforeAll(async ({ device }) => {
-    await device.restartApp()
-  })
-
   beforeEach(async ({ device }) => {
-    await device.openDeepLink("tapsmithtest:///")
+    await device.restartApp()
   })
 
   // ─── PILOT-131: testId() now resolves to resource-id ───
