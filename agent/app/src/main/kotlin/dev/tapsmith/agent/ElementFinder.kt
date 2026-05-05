@@ -666,9 +666,7 @@ class ElementFinder(private val device: UiDevice) {
         parent: UiObject2?,
     ): List<UiObject2> {
         val results = mutableListOf<UiObject2>()
-        val seenIds = mutableSetOf<String>()
 
-        // Strategy 1: find inputs whose contentDescription matches
         val inputClasses =
             roleClassMap["textfield"].orEmpty() +
                 roleClassMap["checkbox"].orEmpty() +
@@ -677,29 +675,36 @@ class ElementFinder(private val device: UiDevice) {
                 roleClassMap["seekbar"].orEmpty() +
                 roleClassMap["spinner"].orEmpty()
 
+        // Single IPC call using a regex pattern to find all input-type elements
+        val classPattern =
+            java.util.regex.Pattern.compile(
+                inputClasses.joinToString("|") { Regex.escape(it) },
+            )
+        val by = By.clazz(classPattern)
         val allInputs =
-            inputClasses.flatMap { className ->
-                val by = By.clazz(className)
-                (if (parent != null) parent.findObjects(by) else device.findObjects(by)) ?: emptyList()
-            }
+            (if (parent != null) parent.findObjects(by) else device.findObjects(by))
+                ?: emptyList()
 
         for (input in allInputs) {
+            // Strategy 1: contentDescription matches the label text
             if (input.contentDescription == labelText) {
-                val id = input.resourceName ?: System.identityHashCode(input).toString()
-                if (seenIds.add(id)) results.add(input)
+                results.add(input)
+                continue
             }
-        }
-
-        // Strategy 2: find via labeledBy relationship
-        for (input in allInputs) {
+            // Strategy 2: labeledBy relationship points to a node with matching text
             val nodeInfo = nodeInfoFor(input) ?: continue
-            val labelNode = nodeInfo.labeledBy ?: continue
-            val labelNodeText = labelNode.text?.toString()
-            if (labelNodeText == labelText) {
-                val id = input.resourceName ?: System.identityHashCode(input).toString()
-                if (seenIds.add(id)) results.add(input)
+            try {
+                val labelNode = nodeInfo.labeledBy ?: continue
+                try {
+                    if (labelNode.text?.toString() == labelText) {
+                        results.add(input)
+                    }
+                } finally {
+                    labelNode.recycle()
+                }
+            } finally {
+                nodeInfo.recycle()
             }
-            labelNode.recycle()
         }
 
         return results
