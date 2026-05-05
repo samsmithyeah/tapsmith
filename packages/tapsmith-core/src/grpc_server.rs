@@ -2389,8 +2389,31 @@ impl proto::tapsmith_service_server::TapsmithService for TapsmithServiceImpl {
                         "uri contains an invalid character: single quote (') is not allowed",
                     ));
                 }
+                let serial = self.active_serial().await?;
                 let cmd = format!("am start -a android.intent.action.VIEW -d '{}'", req.uri);
-                self.adb_action(request_id, &cmd).await
+                if let Err(e) = adb::shell(&serial, &cmd).await {
+                    let screenshot = self.error_screenshot().await;
+                    return Ok(Response::new(proto::ActionResponse {
+                        request_id,
+                        success: false,
+                        error_type: "ADB_COMMAND_FAILED".to_string(),
+                        error_message: e.to_string(),
+                        screenshot,
+                    }));
+                }
+
+                // Wait for the intent to be delivered and the UI to settle.
+                // Without this, the next test action can race ahead of the
+                // navigation on slow CI emulators (PILOT-210).
+                tokio::time::sleep(Duration::from_millis(100)).await;
+                let idle_cmd = AgentCommand::WaitForIdle {
+                    timeout_ms: Some(10_000),
+                };
+                let _ = self
+                    .send_agent_command_with_timeout(&idle_cmd, 10_000)
+                    .await;
+
+                Ok(Self::success_action_response(request_id))
             }
         }
     }
