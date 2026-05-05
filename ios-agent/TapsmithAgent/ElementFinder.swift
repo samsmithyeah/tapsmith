@@ -165,6 +165,24 @@ class ElementFinder {
             return []
         }
 
+        // Label selector: find input elements whose accessibilityLabel matches.
+        // On iOS, this targets text fields, secure text fields, switches, sliders,
+        // pickers, and steppers — the elements that act as form inputs.
+        if let label = selector.label {
+            let predicate = NSPredicate(format: "label == %@", label)
+            let inputTypes: [XCUIElement.ElementType] = [
+                .textField, .secureTextField, .textView,
+                .switch, .slider, .stepper, .picker,
+                .checkBox, .radioButton,
+            ]
+            for type in inputTypes {
+                let query = root.descendants(matching: type).matching(predicate)
+                let matches = allElements(from: query)
+                results.append(contentsOf: matches)
+            }
+            return results
+        }
+
         throw AgentError.invalidSelector("No valid selector criteria provided")
     }
 

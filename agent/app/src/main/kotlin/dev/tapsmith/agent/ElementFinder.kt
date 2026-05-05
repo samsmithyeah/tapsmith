@@ -29,6 +29,7 @@ data class ElementSelector(
     val testId: String? = null,
     val id: String? = null,
     val xpath: String? = null,
+    val label: String? = null,
     val enabled: Boolean? = null,
     val checked: Boolean? = null,
     val focused: Boolean? = null,
@@ -419,6 +420,13 @@ class ElementFinder(private val device: UiDevice) {
         selector: ElementSelector,
         parent: UiObject2?,
     ): List<UiObject2> {
+        // Label selector: find input elements whose accessible name matches the label text.
+        // Strategy: find inputs whose contentDescription matches, OR inputs labeled by a
+        // TextView with matching text (via AccessibilityNodeInfo.getLabeledBy).
+        if (selector.label != null) {
+            return findByLabel(selector.label, parent)
+        }
+
         val bySelector =
             buildBySelector(selector)
                 ?: throw InvalidSelectorException("No valid selector criteria provided")
@@ -639,6 +647,59 @@ class ElementFinder(private val device: UiDevice) {
                 ),
             )
             // XPath elements can't be cached as UiObject2 — they're XML-based
+        }
+
+        return results
+    }
+
+    /**
+     * Find input elements by their associated label text.
+     *
+     * Resolution strategy:
+     * 1. Find inputs whose contentDescription matches the label text (most common
+     *    in React Native where accessibilityLabel is set directly on the input).
+     * 2. Find inputs that are labeled by a TextView via AccessibilityNodeInfo's
+     *    labeledBy/labelFor relationship (native Android labelFor pattern).
+     */
+    private fun findByLabel(
+        labelText: String,
+        parent: UiObject2?,
+    ): List<UiObject2> {
+        val results = mutableListOf<UiObject2>()
+        val seenIds = mutableSetOf<String>()
+
+        // Strategy 1: find inputs whose contentDescription matches
+        val inputClasses =
+            roleClassMap["textfield"].orEmpty() +
+                roleClassMap["checkbox"].orEmpty() +
+                roleClassMap["switch"].orEmpty() +
+                roleClassMap["radiobutton"].orEmpty() +
+                roleClassMap["seekbar"].orEmpty() +
+                roleClassMap["spinner"].orEmpty()
+
+        val allInputs =
+            inputClasses.flatMap { className ->
+                val by = By.clazz(className)
+                (if (parent != null) parent.findObjects(by) else device.findObjects(by)) ?: emptyList()
+            }
+
+        for (input in allInputs) {
+            if (input.contentDescription == labelText) {
+                val id = input.resourceName ?: System.identityHashCode(input).toString()
+                if (seenIds.add(id)) results.add(input)
+            }
+        }
+
+        // Strategy 2: find via labeledBy relationship
+        for (input in allInputs) {
+            val nodeInfo = nodeInfoFor(input) ?: continue
+            val labelNode = nodeInfo.labeledBy ?: continue
+            val labelNodeText = labelNode.text?.toString()
+            if (labelNodeText == labelText) {
+                val id = input.resourceName ?: System.identityHashCode(input).toString()
+                if (seenIds.add(id)) results.add(input)
+            }
+            labelNode.recycle()
         }
 
         return results

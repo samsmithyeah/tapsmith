@@ -32,6 +32,7 @@ enum SelectorParser {
             testId: nonEmpty(params["testId"] as? String),
             id: resourceId,
             xpath: nonEmpty(params["xpath"] as? String),
+            label: nonEmpty(params["label"] as? String),
             enabled: params["enabled"] as? Bool,
             checked: params["checked"] as? Bool,
             focused: params["focused"] as? Bool

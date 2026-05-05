@@ -1071,6 +1071,9 @@ pub(crate) fn selector_to_json(selector: &proto::Selector) -> Value {
             proto::selector::Selector::Xpath(t) => {
                 obj["xpath"] = json!(t);
             }
+            proto::selector::Selector::Label(t) => {
+                obj["label"] = json!(t);
+            }
         }
     }
 

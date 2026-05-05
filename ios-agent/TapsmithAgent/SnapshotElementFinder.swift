@@ -783,11 +783,23 @@ class SnapshotElementFinder {
             if isFocused != wantFocused { return false }
         }
 
+        // Label selector: match input-type elements whose label matches.
+        if let labelSelector = selector.label {
+            let inputTypes: Set<XCUIElement.ElementType> = [
+                .textField, .secureTextField, .textView,
+                .switch, .slider, .stepper, .picker,
+                .checkBox, .radioButton,
+            ]
+            if !inputTypes.contains(elType) { return false }
+            if label != labelSelector && title != labelSelector { return false }
+        }
+
         // Must have at least one positive match criterion
         let hasAnySelector = selector.text != nil || selector.textContains != nil
             || selector.contentDesc != nil || selector.testId != nil
             || selector.id != nil || selector.hint != nil
             || selector.role != nil || selector.className != nil
+            || selector.label != nil
         if !hasAnySelector { return false }
 
         return true
@@ -982,6 +994,7 @@ class SnapshotElementFinder {
         if let v = selector.className { parts.append("className=\(v)") }
         if let v = selector.testId { parts.append("testId=\(v)") }
         if let v = selector.id { parts.append("id=\(v)") }
+        if let v = selector.label { parts.append("label=\(v)") }
         return parts.joined(separator: ", ")
     }
 
