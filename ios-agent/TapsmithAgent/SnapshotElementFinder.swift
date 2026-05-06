@@ -1072,7 +1072,13 @@ class SnapshotElementFinder {
     private var _screenSize: CGSize?
 
     var screenSize: CGSize {
-        if let cached = _screenSize { return cached }
+        lock.lock()
+        if let cached = _screenSize {
+            lock.unlock()
+            return cached
+        }
+        lock.unlock()
+
         // Get actual screen size from the app's main window frame.
         // On iOS the main window is always full-screen.
         let frame = app.windows.firstMatch.frame
@@ -1083,14 +1089,19 @@ class SnapshotElementFinder {
             // Fallback for pre-launch state
             size = CGSize(width: 393, height: 852)
         }
+
+        lock.lock()
         _screenSize = size
+        lock.unlock()
         return size
     }
 
     /// Invalidate the cached screen size. Call after orientation changes
     /// so the next access re-reads from the window frame.
     func invalidateScreenSize() {
+        lock.lock()
         _screenSize = nil
+        lock.unlock()
     }
 
     private func computeViewportRatio(_ bounds: ElementBounds, screenSize: CGSize) -> Float {

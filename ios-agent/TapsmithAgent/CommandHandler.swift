@@ -127,7 +127,7 @@ class CommandHandler {
             // XCUITest private APIs from crashing the agent process.
             // Swift's do/catch only catches Swift Error types — ObjC
             // NSExceptions bypass it entirely and terminate the process.
-            let objcError = ObjCExceptionCatcher.catchException {
+            let objcError = ObjCExceptionCatcher.catchExceptionInBlock {
                 do {
                     result = try self.dispatch(method: method, params: params)
                 } catch {
