@@ -1,4 +1,5 @@
-import { useState, useRef, useEffect, useMemo } from 'preact/hooks';
+import { useRef, useEffect, useMemo } from 'preact/hooks';
+import { usePersistedString } from '../../ui-mode/hooks/use-persisted-state.js';
 import type { ComponentChildren } from 'preact';
 import type { ActionTraceEvent, AssertionTraceEvent, AnyTraceEvent, ConsoleTraceEvent, TraceMetadata, NetworkEntry, ConsoleLevel } from '../../trace/types.js';
 import { HierarchyTree } from './HierarchyTree.js';
@@ -22,7 +23,7 @@ type DetailTab = 'call' | 'log' | 'console' | 'source' | 'hierarchy' | 'locator'
 
 export function DetailTabs({ event, events, hierarchies, sources, metadata, networkEntries, networkBodies, onHierarchyNodeSelect, locatorTab, pickMode }: Props) {
   const testError = metadata.error;
-  const [tab, setTab] = useState<DetailTab>('call');
+  const [tab, setTab] = usePersistedString('tapsmith-detail-tab', 'call') as [DetailTab, (v: DetailTab) => void];
 
   const hasActionError = event && (
     (event.type === 'action' && !event.success) ||

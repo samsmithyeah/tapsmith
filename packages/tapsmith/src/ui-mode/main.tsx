@@ -85,7 +85,16 @@ function App() {
 
   // Device pane state
   const [selectedWorkerId, setSelectedWorkerId] = useState(0);
-  const [deviceViewMode, setDeviceViewMode] = useState<'all' | number>('all');
+  const [deviceViewMode, setDeviceViewMode] = useState<'all' | number>(() => {
+    try {
+      const raw = sessionStorage.getItem('tapsmith-device-view');
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (parsed === 'all' || typeof parsed === 'number') return parsed;
+      }
+    } catch { /* ignore */ }
+    return 'all';
+  });
 
   // MCP state
   const [mcpSseUrl, setMcpSseUrl] = useState<string | undefined>();
@@ -884,6 +893,7 @@ function App() {
 
   const handleSelectDeviceView = useCallback((mode: 'all' | number) => {
     setDeviceViewMode(mode);
+    try { sessionStorage.setItem('tapsmith-device-view', JSON.stringify(mode)); } catch { /* ignore */ }
     if (typeof mode === 'number') {
       setSelectedWorkerId(mode);
       lastSentWorkerRef.current = mode;
