@@ -31,6 +31,7 @@ For emulator-managed runs, the recommended path is `launchEmulators + avd`.
 | `package` | `string` | `undefined` | Package name (Android) or bundle identifier (iOS) of the app under test. When set, Tapsmith launches the app before tests. |
 | `activity` | `string` | `undefined` | Optional activity name to launch (Android only). Usually not needed; Tapsmith will try the default launcher activity automatically. |
 | `timeout` | `number` | `30000` | Default timeout in milliseconds for actions and assertions. |
+| `typingDelay` | `number` | `0` | Delay in milliseconds between keystrokes when typing text. Helps prevent dropped characters on slow CI simulators/emulators. Can be overridden per-call via `type("text", { delay: 50 })`. |
 | `retries` | `number` | `0` | Number of times to retry a failed test. |
 | `screenshot` | `ScreenshotMode` | `"only-on-failure"` | When to capture screenshots: `"always"`, `"only-on-failure"`, or `"never"`. |
 | `testMatch` | `string[]` | `["**/*.test.ts", "**/*.spec.ts"]` | Glob patterns for discovering test files. |

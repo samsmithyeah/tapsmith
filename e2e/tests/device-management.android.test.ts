@@ -1,15 +1,15 @@
-import { test, expect, describe } from "tapsmith"
+import { test, expect, describe, Device } from "tapsmith"
 
 const PKG = "dev.tapsmith.testapp"
 const CAMERA_PERMISSION = "android.permission.CAMERA"
 
-async function expectAppReady(device) {
+async function expectAppReady(device: Device) {
   expect(await device.currentPackage()).toBe(PKG)
   expect(await device.getAppState(PKG)).toBe("foreground")
   await expect(device.getByText("Tapsmith Test App", { exact: true })).toBeVisible()
 }
 
-async function launchAppReady(device) {
+async function launchAppReady(device: Device) {
   await device.launchApp(PKG)
   await device.openDeepLink("tapsmithtest:///")
   await expectAppReady(device)

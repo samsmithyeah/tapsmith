@@ -710,12 +710,15 @@ Long press this element.
 await device.getByText("Item 1", { exact: true }).longPress(2000);
 ```
 
-#### `elementHandle.type(text: string): Promise<void>`
+#### `elementHandle.type(text: string, options?: { delay?: number }): Promise<void>`
 
 Type text into this element.
 
+- `options.delay?`: `number` — delay in milliseconds between keystrokes. Overrides the global `typingDelay` config for this call. Defaults to `0` (no delay).
+
 ```typescript
 await device.getByPlaceholder("Email").type("user@example.com");
+await device.getByPlaceholder("OTP").type("123456", { delay: 50 });
 ```
 
 > **Control characters.** `\n`, `\t`, and `\b` are dispatched as
@@ -726,9 +729,11 @@ await device.getByPlaceholder("Email").type("user@example.com");
 > Enter key). Other ASCII control codes below `0x20` are dropped with
 > a one-shot warning log.
 
-#### `elementHandle.clearAndType(text: string): Promise<void>`
+#### `elementHandle.clearAndType(text: string, options?: { delay?: number }): Promise<void>`
 
 Clear existing text and type new text.
+
+- `options.delay?`: `number` — delay in milliseconds between keystrokes. Same as `type()`.
 
 ```typescript
 await device.locator({ id: "search_box" }).clearAndType("new query");
