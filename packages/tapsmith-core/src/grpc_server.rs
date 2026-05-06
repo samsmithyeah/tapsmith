@@ -11,7 +11,7 @@ use tracing::{debug, error, info, instrument, warn};
 use uuid::Uuid;
 
 use crate::adb;
-use crate::agent_comms::{AgentCommand, AgentConnection, AgentResponse};
+use crate::agent_comms::{AgentCommand, AgentConnection, AgentResponse, ConnectionParams};
 use crate::device::DeviceManager;
 use crate::device_logs;
 use crate::ios;
@@ -189,6 +189,12 @@ impl TapsmithServiceImpl {
     }
 
     async fn active_serial(&self) -> Result<String, Status> {
+        // Fast path: read lock — if an active serial is already set, return it
+        // without taking the expensive write lock.
+        if let Some(serial) = self.device_manager.read().await.active_serial() {
+            return Ok(serial.to_string());
+        }
+        // Slow path: write lock for auto-discovery/selection
         self.device_manager
             .write()
             .await
@@ -197,8 +203,18 @@ impl TapsmithServiceImpl {
             .map_err(|e| Status::failed_precondition(e.to_string()))
     }
 
+    /// Extract connection params under a brief read lock so TCP I/O
+    /// happens without holding the lock.
+    #[allow(clippy::result_large_err)] // Status is tonic's standard error type
+    fn agent_params(agent: &AgentConnection) -> Result<ConnectionParams, Status> {
+        agent
+            .connection_params()
+            .map_err(|e| Status::failed_precondition(e.to_string()))
+    }
+
     async fn send_agent_command(&self, command: &AgentCommand) -> Result<AgentResponse, Status> {
-        let raw = self.agent.write().await.send_command(command).await;
+        let params = Self::agent_params(&*self.agent.read().await)?;
+        let raw = AgentConnection::send_with_params(&params, command).await;
         self.recover_agent_on_timeout(command, raw).await
     }
 
@@ -216,10 +232,8 @@ impl TapsmithServiceImpl {
         } else {
             Duration::from_secs(30)
         };
-        self.agent
-            .write()
-            .await
-            .send_command_with_timeout(command, timeout)
+        let params = Self::agent_params(&*self.agent.read().await)?;
+        AgentConnection::send_with_params_and_timeout(&params, command, timeout)
             .await
             .map_err(|e| Status::internal(e.to_string()))
     }
@@ -235,12 +249,8 @@ impl TapsmithServiceImpl {
             Duration::from_secs(30)
         };
 
-        let raw = self
-            .agent
-            .write()
-            .await
-            .send_command_with_timeout(command, timeout)
-            .await;
+        let params = Self::agent_params(&*self.agent.read().await)?;
+        let raw = AgentConnection::send_with_params_and_timeout(&params, command, timeout).await;
         self.recover_agent_on_timeout(command, raw).await
     }
 
@@ -287,10 +297,8 @@ impl TapsmithServiceImpl {
                 "Agent timed out ({msg}); recovery also failed: {e}"
             )));
         }
-        self.agent
-            .write()
-            .await
-            .send_command(command)
+        let params = Self::agent_params(&*self.agent.read().await)?;
+        AgentConnection::send_with_params(&params, command)
             .await
             .map_err(|e| {
                 Status::internal(format!(
@@ -1362,6 +1370,10 @@ impl proto::tapsmith_service_server::TapsmithService for TapsmithServiceImpl {
 
         let sel_json = selector_to_json(selector);
 
+        // Track elapsed time so the type phase uses only the remaining budget
+        // instead of the full user timeout (which would double the wall-clock).
+        let start = std::time::Instant::now();
+
         // Clear first, then type
         let clear_cmd = AgentCommand::ClearText {
             selector: sel_json.clone(),
@@ -1382,10 +1394,13 @@ impl proto::tapsmith_service_server::TapsmithService for TapsmithServiceImpl {
             }
         }
 
+        let elapsed_ms = start.elapsed().as_millis() as u64;
+        let remaining_ms = req.timeout_ms.saturating_sub(elapsed_ms).max(1000);
+
         let type_cmd = AgentCommand::TypeText {
             selector: sel_json,
             text: req.text,
-            timeout_ms: opt_timeout(req.timeout_ms),
+            timeout_ms: opt_timeout(remaining_ms),
             typing_delay_ms: if req.typing_delay_ms > 0 {
                 Some(req.typing_delay_ms)
             } else {
@@ -1394,7 +1409,7 @@ impl proto::tapsmith_service_server::TapsmithService for TapsmithServiceImpl {
         };
 
         let result = self
-            .send_agent_command_with_timeout(&type_cmd, req.timeout_ms)
+            .send_agent_command_with_timeout(&type_cmd, remaining_ms)
             .await;
         self.make_action_response(request_id, result).await
     }

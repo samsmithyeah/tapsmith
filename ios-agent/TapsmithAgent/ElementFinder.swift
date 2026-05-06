@@ -11,10 +11,25 @@ class ElementFinder {
     private var elementCache: [String: XCUIElement] = [:]
     private let lock = NSLock()
 
+    /// Maximum number of cached elements before eviction.
+    private let maxCacheSize = 500
+
     /// Clear all caches (call after app relaunch).
     func clearCaches() {
         lock.lock()
         elementCache.removeAll()
+        lock.unlock()
+    }
+
+    /// Evict oldest entries when the cache exceeds `maxCacheSize`.
+    private func pruneCache() {
+        lock.lock()
+        if elementCache.count > maxCacheSize {
+            let keysToRemove = Array(elementCache.keys.prefix(elementCache.count / 2))
+            for key in keysToRemove {
+                elementCache.removeValue(forKey: key)
+            }
+        }
         lock.unlock()
     }
 
@@ -221,6 +236,7 @@ class ElementFinder {
         lock.lock()
         elementCache[elementId] = element
         lock.unlock()
+        pruneCache()
         return toElementInfo(element, elementId: elementId)
     }
 

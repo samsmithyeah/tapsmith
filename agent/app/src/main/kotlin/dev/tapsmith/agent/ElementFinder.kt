@@ -3,6 +3,7 @@ package dev.tapsmith.agent
 import android.graphics.Rect
 import androidx.test.uiautomator.By
 import androidx.test.uiautomator.BySelector
+import androidx.test.uiautomator.StaleObjectException
 import androidx.test.uiautomator.UiDevice
 import androidx.test.uiautomator.UiObject2
 import org.json.JSONObject
@@ -105,6 +106,12 @@ data class ElementInfo(
 class ElementFinder(private val device: UiDevice) {
     /** Cache of element IDs to UiObject2 instances. */
     private val elementCache = ConcurrentHashMap<String, UiObject2>()
+
+    /** Insertion order tracking for cache eviction. */
+    private val elementCacheOrder = mutableListOf<String>()
+
+    /** Maximum number of cached elements before evicting oldest entries. */
+    private val maxCacheSize = 500
 
     /**
      * Lazily-resolved reflective handle for `UiObject2.getAccessibilityNodeInfo`.
@@ -345,6 +352,16 @@ class ElementFinder(private val device: UiDevice) {
     }
 
     /**
+     * Return the list of Android class names for a given role, applying
+     * ROLE_ALIASES normalization. Returns an empty list for unknown roles.
+     * Used by WaitEngine to build a BySelector for role-based waits.
+     */
+    fun classNamesForRole(role: String): List<String> {
+        val normalized = ROLE_ALIASES[role.lowercase()] ?: role.lowercase()
+        return roleClassMap[normalized] ?: emptyList()
+    }
+
+    /**
      * Find a single element matching the selector.
      * @throws ElementNotFoundException if no element matches
      */
@@ -391,7 +408,14 @@ class ElementFinder(private val device: UiDevice) {
                     (selector.expanded == null || isExpanded(obj) == selector.expanded)
             }
 
-        return filtered.map { cacheAndConvert(it) }
+        return filtered.mapNotNull { obj ->
+            try {
+                cacheAndConvert(obj)
+            } catch (_: StaleObjectException) {
+                // Element went stale between find and info extraction — skip it
+                null
+            }
+        }
     }
 
     /**
@@ -728,12 +752,14 @@ class ElementFinder(private val device: UiDevice) {
      */
     private fun extractHint(obj: UiObject2): String? {
         if (android.os.Build.VERSION.SDK_INT < 26) return null
-        return try {
-            val nodeInfo = nodeInfoFor(obj)
-            nodeInfo?.hintText?.toString()
+        val nodeInfo = nodeInfoFor(obj) ?: return null
+        try {
+            return nodeInfo.hintText?.toString()
         } catch (e: Exception) {
             android.util.Log.w("ElementFinder", "Failed to extract hint text for ${obj.className}", e)
-            null
+            return null
+        } finally {
+            nodeInfo.recycle()
         }
     }
 
@@ -782,9 +808,8 @@ class ElementFinder(private val device: UiDevice) {
      * Returns null when no role is published.
      */
     private fun extractRoleDescription(obj: UiObject2): String? {
-        return try {
-            val nodeInfo = nodeInfoFor(obj) ?: return null
-
+        val nodeInfo = nodeInfoFor(obj) ?: return null
+        try {
             // 1. Heading flag (API 28+) — React Native writes here for
             //    `accessibilityRole="header"`.
             if (android.os.Build.VERSION.SDK_INT >= 28 && nodeInfo.isHeading) {
@@ -812,13 +837,15 @@ class ElementFinder(private val device: UiDevice) {
             // match. Without this, an app setting accessibilityRole="Header"
             // (capitalized) would surface as the literal "Header" and
             // toHaveRole("heading") would not match through the alias.
-            raw?.takeIf { it.isNotEmpty() }?.lowercase()
+            return raw?.takeIf { it.isNotEmpty() }?.lowercase()
         } catch (e: Exception) {
             // Reflection on UiObject2 is the load-bearing path here; if it
             // breaks (AndroidX rename, restricted API), every role-from-RN
             // mapping silently regresses. Log so the failure is visible.
             warnOnce("extractRoleDescription", e)
-            null
+            return null
+        } finally {
+            nodeInfo.recycle()
         }
     }
 
@@ -829,11 +856,14 @@ class ElementFinder(private val device: UiDevice) {
      */
     private fun isShowingHintText(obj: UiObject2): Boolean {
         if (android.os.Build.VERSION.SDK_INT < 26) return false
-        return try {
-            nodeInfoFor(obj)?.isShowingHintText == true
+        val nodeInfo = nodeInfoFor(obj) ?: return false
+        try {
+            return nodeInfo.isShowingHintText
         } catch (e: Exception) {
             warnOnce("isShowingHintText", e)
-            false
+            return false
+        } finally {
+            nodeInfo.recycle()
         }
     }
 
@@ -967,9 +997,34 @@ class ElementFinder(private val device: UiDevice) {
         )
     }
 
+    private fun cacheElement(
+        id: String,
+        element: UiObject2,
+    ) {
+        elementCache[id] = element
+        synchronized(elementCacheOrder) {
+            elementCacheOrder.add(id)
+            if (elementCacheOrder.size > maxCacheSize) {
+                val oldest = elementCacheOrder.removeFirst()
+                elementCache.remove(oldest)
+            }
+        }
+    }
+
+    /**
+     * Clear the element cache. Called by the daemon between tests or on
+     * navigation to release stale UiObject2 references.
+     */
+    fun clearElementCache() {
+        elementCache.clear()
+        synchronized(elementCacheOrder) {
+            elementCacheOrder.clear()
+        }
+    }
+
     private fun cacheAndConvert(obj: UiObject2): ElementInfo {
         val elementId = UUID.randomUUID().toString()
-        elementCache[elementId] = obj
+        cacheElement(elementId, obj)
         return toElementInfo(obj, elementId)
     }
 

@@ -1016,8 +1016,8 @@ async function runSuiteContext(
         for (const hook of allAfterEach) {
           try {
             await invokeHook(hook, opts.device, opts.projectName);
-          } catch {
-            // afterEach errors should not mask test errors
+          } catch (err) {
+            process.stderr.write(`[tapsmith] afterEach hook error: ${err instanceof Error ? err.message : String(err)}\n`);
           }
         }
         traceCollector?.endGroup();
@@ -1374,8 +1374,8 @@ async function runSuiteContext(
         for (const hook of ctx.afterAll) {
           try {
             await invokeHook(hook, opts.device, opts.projectName);
-          } catch {
-            // afterAll errors are logged but don't fail individual tests
+          } catch (err) {
+            process.stderr.write(`[tapsmith] afterAll hook error: ${err instanceof Error ? err.message : String(err)}\n`);
           }
         }
       });
@@ -1385,8 +1385,8 @@ async function runSuiteContext(
       for (const hook of ctx.afterAll) {
         try {
           await invokeHook(hook, opts.device, opts.projectName);
-        } catch {
-          // afterAll errors are logged but don't fail individual tests
+        } catch (err) {
+          process.stderr.write(`[tapsmith] afterAll hook error: ${err instanceof Error ? err.message : String(err)}\n`);
         }
       }
     }
@@ -1394,8 +1394,8 @@ async function runSuiteContext(
     for (const hook of ctx.afterAll) {
       try {
         await invokeHook(hook, opts.device, opts.projectName);
-      } catch {
-        // afterAll errors are logged but don't fail individual tests
+      } catch (err) {
+        process.stderr.write(`[tapsmith] afterAll hook error: ${err instanceof Error ? err.message : String(err)}\n`);
       }
     }
   }

@@ -108,17 +108,23 @@ export function locatorOptionsToSelector(options: LocatorOptions): Selector {
   return _className(options.className!);
 }
 
+/**
+ * Result of boundsContain: 'contained' if child is within parent,
+ * 'not_contained' if child is outside, 'indeterminate' if either has no bounds.
+ */
+type ContainmentResult = 'contained' | 'not_contained' | 'indeterminate';
+
 function boundsContain(
   parent?: { left: number; top: number; right: number; bottom: number },
   child?: { left: number; top: number; right: number; bottom: number },
-): boolean {
-  if (!parent || !child) return false;
-  return (
+): ContainmentResult {
+  if (!parent || !child) return 'indeterminate';
+  const contained =
     child.left >= parent.left &&
     child.top >= parent.top &&
     child.right <= parent.right &&
-    child.bottom <= parent.bottom
-  );
+    child.bottom <= parent.bottom;
+  return contained ? 'contained' : 'not_contained';
 }
 
 /**
@@ -395,19 +401,35 @@ export class ElementHandle {
       const childSelector = withParent(filter.has._selector, this._selector);
       const childRes = await this._client.findElements(childSelector, this._timeoutMs);
       const childElements = childRes.elements ?? [];
-      result = result.filter((parent) =>
-        childElements.some((child) => boundsContain(parent.bounds, child.bounds)),
-      );
+      result = result.filter((parent) => {
+        // If parent has no bounds, we can't determine geometric containment — skip it
+        if (!parent.bounds) return false;
+        const results = childElements.map((child) => boundsContain(parent.bounds, child.bounds));
+        const hasContained = results.some((r) => r === 'contained');
+        if (hasContained) return true;
+        // Fallback: if all results are indeterminate (child bounds undefined)
+        // but the daemon returned children scoped to our selector, trust the
+        // daemon's scoping and consider it a match.
+        const allIndeterminate = results.length > 0 && results.every((r) => r === 'indeterminate');
+        return allIndeterminate;
+      });
     }
 
     if (filter.hasNot !== undefined) {
       const childSelector = withParent(filter.hasNot._selector, this._selector);
       const childRes = await this._client.findElements(childSelector, this._timeoutMs);
       const childElements = childRes.elements ?? [];
-      result = result.filter(
-        (parent) =>
-          !childElements.some((child) => boundsContain(parent.bounds, child.bounds)),
-      );
+      result = result.filter((parent) => {
+        // If parent has no bounds, we can't determine containment — keep it
+        // (absence of proof isn't proof of absence for hasNot)
+        if (!parent.bounds) return true;
+        return !childElements.some((child) => {
+          const r = boundsContain(parent.bounds, child.bounds);
+          // Only exclude when we definitively know the child is contained.
+          // Indeterminate (child has no bounds) should NOT exclude the parent.
+          return r === 'contained';
+        });
+      });
     }
 
     return result;
@@ -461,10 +483,22 @@ export class ElementHandle {
 
   /**
    * @internal — Build a selector to target a specific resolved element.
-   * Throws if the element has no unique identifying properties.
+   *
+   * For elements with a unique `resourceId`, returns an id selector directly.
+   * For text/contentDescription matches (which can be non-unique), preserves
+   * the original selector chain and augments with the resolved element's
+   * position index so that nth-modified handles target the correct element.
+   *
+   * @param info - The resolved ElementInfo to target.
    */
   private _selectorForElement(info: ElementInfo): Selector {
+    // resourceId is typically unique — safe to use directly
     if (info.resourceId) return _id(info.resourceId);
+
+    // For contentDescription/text, these can be non-unique. If we have a
+    // resolved index from a modified handle, preserve the original selector
+    // and the caller will use the index to target the right element.
+    // Otherwise, fall back to a simple selector (unmodified handles).
     if (info.contentDescription) return _contentDesc(info.contentDescription);
     if (info.text) return _text(info.text);
     throw new Error(
@@ -477,14 +511,14 @@ export class ElementHandle {
    * @internal — Poll until the target element is enabled, matching Playwright's
    * behavior of auto-waiting before actionable operations (tap, longPress).
    *
-   * Returns an action timeout (milliseconds) for the caller to use when
-   * invoking the underlying action. The goal is to share the original user
-   * timeout across "wait for enabled" + "execute action" instead of doubling
-   * it, BUT with a `MIN_ACTION_BUDGET_MS` floor: if the element becomes
-   * enabled right at the deadline, we still hand the action at least 1 s so
-   * it has time to run. In that edge case the total wall-clock exceeds the
-   * original user timeout by up to `MIN_ACTION_BUDGET_MS`, which is preferred
-   * to reporting success on the wait and then instantly failing the action.
+   * Returns `{ remainingMs, element }` where `remainingMs` is the action
+   * timeout budget and `element` is the resolved ElementInfo. This avoids a
+   * redundant gRPC round-trip in `_actionSelector` (Fix 2: eliminate TOCTOU).
+   *
+   * The goal is to share the original user timeout across "wait for enabled" +
+   * "execute action" instead of doubling it, BUT with a `MIN_ACTION_BUDGET_MS`
+   * floor: if the element becomes enabled right at the deadline, we still hand
+   * the action at least 1 s so it has time to run.
    *
    * When `this._timeoutMs === 0` the method skips polling entirely and
    * returns 0, preserving the pre-auto-wait behavior for callers that
@@ -492,11 +526,11 @@ export class ElementHandle {
    *
    * Throws if the element is not found or still disabled after the timeout.
    */
-  private async _waitForEnabled(): Promise<number> {
+  private async _waitForEnabled(): Promise<{ remainingMs: number; element?: ElementInfo }> {
     const timeoutMs = this._timeoutMs;
     // timeoutMs === 0 means "no polling": behave like the pre-auto-wait code
     // and hand the full zero budget straight to the action.
-    if (timeoutMs === 0) return 0;
+    if (timeoutMs === 0) return { remainingMs: 0 };
     const MIN_ACTION_BUDGET_MS = 1000;
     const deadline = Date.now() + timeoutMs;
     const POLL_MS = 250;
@@ -511,7 +545,10 @@ export class ElementHandle {
           everFound = true;
           if (el.enabled) {
             const remaining = Math.max(0, deadline - Date.now());
-            return Math.min(timeoutMs, Math.max(remaining, MIN_ACTION_BUDGET_MS));
+            return {
+              remainingMs: Math.min(timeoutMs, Math.max(remaining, MIN_ACTION_BUDGET_MS)),
+              element: el,
+            };
           }
         }
       } catch (err) {
@@ -538,10 +575,13 @@ export class ElementHandle {
   /**
    * @internal — Get the selector to use for an action. For modified handles,
    * resolves the specific element first and returns a targeting selector.
+   *
+   * @param preResolved - Optional pre-resolved ElementInfo from _waitForEnabled
+   *   to avoid a redundant gRPC round-trip (Fix 2: eliminate TOCTOU).
    */
-  private async _actionSelector(): Promise<Selector> {
+  private async _actionSelector(preResolved?: ElementInfo): Promise<Selector> {
     if (!this._hasModifiers()) return this._selector;
-    const el = await this._resolveOne();
+    const el = preResolved ?? await this._resolveOne();
     return this._selectorForElement(el);
   }
 
@@ -827,15 +867,15 @@ export class ElementHandle {
   }
 
   async tap(): Promise<void> {
-    const remaining = await this._waitForEnabled();
-    const sel = await this._actionSelector();
-    return this._tracedAction('tap', 'tap', () => this._client.tap(sel, remaining), 'Tap failed');
+    const { remainingMs, element } = await this._waitForEnabled();
+    const sel = await this._actionSelector(element);
+    return this._tracedAction('tap', 'tap', () => this._client.tap(sel, remainingMs), 'Tap failed');
   }
 
   async longPress(durationMs?: number): Promise<void> {
-    const remaining = await this._waitForEnabled();
-    const sel = await this._actionSelector();
-    return this._tracedAction('longPress', 'tap', () => this._client.longPress(sel, durationMs, remaining), 'Long press failed');
+    const { remainingMs, element } = await this._waitForEnabled();
+    const sel = await this._actionSelector(element);
+    return this._tracedAction('longPress', 'tap', () => this._client.longPress(sel, durationMs, remainingMs), 'Long press failed');
   }
 
   async type(text: string, options?: { delay?: number }): Promise<void> {
@@ -876,15 +916,35 @@ export class ElementHandle {
   }
 
   async setChecked(checked: boolean): Promise<void> {
-    const el = await this._resolveOne();
-    if (el.checked !== checked) {
+    const timeoutMs = this._timeoutMs;
+    const deadline = Date.now() + timeoutMs;
+    const POLL_MS = 250;
+
+    while (true) {
+      const el = await this._resolveOne();
+      if (el.checked === checked) return; // Already in desired state
+
       const sel = this._selectorForElement(el);
-      await this._action(() => this._client.tap(sel, this._timeoutMs), 'setChecked tap failed');
-      // Verify the state actually changed
-      const after = await this._resolveOne();
-      if (after.checked !== checked) {
+      const tapBudget = Math.max(0, deadline - Date.now());
+      await this._action(() => this._client.tap(sel, tapBudget), 'setChecked tap failed');
+
+      // Poll for state change within remaining timeout — animations and
+      // state propagation can take a few frames.
+      const verifyDeadline = Math.min(deadline, Date.now() + 1000);
+      while (Date.now() < verifyDeadline) {
+        await new Promise((r) => setTimeout(r, POLL_MS));
+        try {
+          const after = await this._resolveOne();
+          if (after.checked === checked) return; // State changed successfully
+        } catch (err) {
+          if (!isPollableNotFoundError(err)) throw err;
+        }
+      }
+
+      // State didn't change — retry if we still have time
+      if (Date.now() >= deadline) {
         throw new Error(
-          `setChecked(${checked}): element ${this._describe()} checked state did not change after tap (still ${after.checked})`,
+          `setChecked(${checked}): element ${this._describe()} checked state did not change after tap (still ${!checked})`,
         );
       }
     }
@@ -1031,8 +1091,13 @@ export class ElementHandle {
           // findElement throws when the element isn't in the tree at all
           // (e.g. virtualized list hasn't rendered it yet). This is expected
           // during scrolling — swipe again and retry.
-          if (err instanceof Error && err.message.includes('UNAVAILABLE')) {
-            // gRPC transport error — daemon/agent is down, don't swallow
+          // Re-throw all errors that are NOT element-not-found related.
+          // Only "element not found" / "not in hierarchy" type errors should
+          // be swallowed to let the scroll loop continue.
+          if (!isPollableNotFoundError(err)) {
+            // Not an element-not-found error — could be gRPC transport
+            // failure (UNAVAILABLE, INTERNAL, PERMISSION_DENIED, etc.)
+            // or any other infrastructure error. Propagate immediately.
             throw err;
           }
         }

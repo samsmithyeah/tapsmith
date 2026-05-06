@@ -487,6 +487,13 @@ impl AgentResponse {
 
 // ─── Connection Management ───
 
+/// Snapshot of the fields needed to send a command over TCP, extracted under
+/// a brief read lock so the actual I/O happens without holding the lock.
+#[derive(Debug, Clone)]
+pub struct ConnectionParams {
+    pub host_port: u16,
+}
+
 /// Manages the TCP connection to the on-device Tapsmith agent.
 #[derive(Debug)]
 pub struct AgentConnection {
@@ -516,6 +523,47 @@ impl AgentConnection {
 
     pub fn port(&self) -> u16 {
         self.host_port
+    }
+
+    /// Snapshot the connection params needed for TCP I/O. Returns an error if
+    /// the agent is not connected. Designed to be called under a brief read
+    /// lock so the caller can release the lock before doing the actual I/O.
+    pub fn connection_params(&self) -> Result<ConnectionParams> {
+        if !self.connected {
+            bail!("Not connected to agent. Call StartAgent or connect first.");
+        }
+        Ok(ConnectionParams {
+            host_port: self.host_port,
+        })
+    }
+
+    /// Send a command using pre-extracted connection params (no lock needed).
+    /// This is the lock-free counterpart of `send_command`.
+    pub async fn send_with_params(
+        params: &ConnectionParams,
+        command: &AgentCommand,
+    ) -> Result<AgentResponse> {
+        Self::send_with_params_and_timeout(params, command, DEFAULT_COMMAND_TIMEOUT).await
+    }
+
+    /// Send a command with a specific timeout using pre-extracted connection
+    /// params (no lock needed). This is the lock-free counterpart of
+    /// `send_command_with_timeout`.
+    pub async fn send_with_params_and_timeout(
+        params: &ConnectionParams,
+        command: &AgentCommand,
+        timeout: Duration,
+    ) -> Result<AgentResponse> {
+        match try_send_with_params(params, command, timeout).await {
+            Ok(resp) => Ok(resp),
+            Err(SendError::Connect(e)) => {
+                warn!("Agent connect failed, retrying once: {e}");
+                try_send_with_params(params, command, timeout)
+                    .await
+                    .map_err(Into::into)
+            }
+            Err(SendError::PostSend(e)) => Err(e),
+        }
     }
 
     /// Establish port forwarding and verify the agent is reachable.
@@ -577,12 +625,18 @@ impl AgentConnection {
     }
 
     /// Send a command to the agent and wait for a response.
+    ///
+    /// Note: production code uses `send_with_params` (lock-free). This method
+    /// is retained for tests that exercise the retry/classification logic with
+    /// a direct `AgentConnection` instance.
+    #[allow(dead_code)]
     pub async fn send_command(&mut self, command: &AgentCommand) -> Result<AgentResponse> {
         self.send_command_with_timeout(command, DEFAULT_COMMAND_TIMEOUT)
             .await
     }
 
     /// Send a command with a specific timeout.
+    #[allow(dead_code)]
     pub async fn send_command_with_timeout(
         &mut self,
         command: &AgentCommand,
@@ -626,6 +680,7 @@ impl AgentConnection {
         }
     }
 
+    #[allow(dead_code)]
     async fn try_send_command(
         &self,
         command: &AgentCommand,
@@ -788,6 +843,81 @@ impl AgentConnection {
             Err(e) => {
                 bail!("Failed to reconnect to agent: {e}");
             }
+        }
+    }
+}
+
+/// Lock-free counterpart of `AgentConnection::try_send_command`. Performs the
+/// full TCP connect → write → read cycle using only the pre-extracted
+/// `ConnectionParams`, so the caller can release the `RwLock` before calling
+/// this function.
+async fn try_send_with_params(
+    params: &ConnectionParams,
+    command: &AgentCommand,
+    timeout: Duration,
+) -> std::result::Result<AgentResponse, SendError> {
+    let addr = format!("127.0.0.1:{}", params.host_port);
+    let mut stream = tokio::time::timeout(Duration::from_secs(5), async {
+        TcpStream::connect(&addr).await
+    })
+    .await
+    .map_err(|_| SendError::Connect(anyhow!("Timed out connecting to agent socket")))?
+    .map_err(|e| SendError::Connect(anyhow!(e).context("Failed to connect to agent socket")))?;
+
+    let io_result: Result<AgentResponse> = async {
+        let request_id = uuid::Uuid::new_v4().to_string();
+        let json_msg = command.to_json(&request_id);
+        let payload = serde_json::to_string(&json_msg).context("Failed to serialize command")?;
+        debug!(payload = %payload, "Sending command to agent");
+
+        stream
+            .write_all(payload.as_bytes())
+            .await
+            .context("Failed to write to agent socket")?;
+        stream
+            .write_all(b"\n")
+            .await
+            .context("Failed to write newline to agent socket")?;
+        stream.flush().await?;
+
+        let read_timeout = timeout + READ_TIMEOUT_HEADROOM;
+        let reader = BufReader::new(&mut stream);
+        let mut line = String::new();
+
+        tokio::time::timeout(read_timeout, async {
+            let mut reader = reader;
+            reader
+                .read_line(&mut line)
+                .await
+                .context("Failed to read from agent socket")
+        })
+        .await
+        .map_err(|_| anyhow!("Agent command timed out after {read_timeout:?}"))??;
+
+        let line = line.trim();
+        if line.is_empty() {
+            bail!("{}", EMPTY_RESPONSE_MARKER);
+        }
+
+        debug!(response = %line, "Received response from agent");
+
+        let raw: Value =
+            serde_json::from_str(line).context("Failed to parse agent response as JSON")?;
+
+        Ok(AgentResponse::from_json(&raw))
+    }
+    .await;
+
+    match io_result {
+        Ok(resp) => Ok(resp),
+        Err(e) => {
+            if is_empty_response(&e) && probe_agent_alive(&addr).await {
+                warn!("Agent returned empty response but is still reachable — treating as stale connection and retrying");
+                return Err(SendError::Connect(e.context(
+                    "Agent connection dropped (empty response); reconnecting",
+                )));
+            }
+            Err(SendError::PostSend(e))
         }
     }
 }

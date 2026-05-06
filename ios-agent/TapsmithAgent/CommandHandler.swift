@@ -99,6 +99,7 @@ class CommandHandler {
         elementFinder = ElementFinder(app: refreshedApp)
         snapshotFinder = SnapshotElementFinder(app: refreshedApp)
         actionExecutor = ActionExecutor(app: refreshedApp)
+        actionExecutor.cachedScreenSize = snapshotFinder.screenSize
         waitEngine = WaitEngine(app: refreshedApp)
         hierarchyDumper = HierarchyDumper(app: refreshedApp)
         return refreshedApp
@@ -119,8 +120,31 @@ class CommandHandler {
         let params = json["params"] as? [String: Any] ?? [:]
 
         do {
-            let result = try dispatch(method: method, params: params)
-            return successResponse(id: id, result: result)
+            var result: [String: Any]?
+            var swiftError: Error?
+
+            // Wrap in ObjC @try/@catch to prevent NSExceptions from
+            // XCUITest private APIs from crashing the agent process.
+            // Swift's do/catch only catches Swift Error types — ObjC
+            // NSExceptions bypass it entirely and terminate the process.
+            var objcError: NSError?
+            let success = ObjCExceptionCatcher.tryBlock({
+                do {
+                    result = try self.dispatch(method: method, params: params)
+                } catch {
+                    swiftError = error
+                }
+            }, error: &objcError)
+
+            if let error = swiftError {
+                throw error
+            }
+            if !success {
+                let msg = objcError?.localizedDescription ?? "Objective-C exception"
+                NSLog("[TapsmithCommand] ObjC exception in method '\(method)': \(msg)")
+                return errorResponse(id: id, type: "INTERNAL_ERROR", message: msg)
+            }
+            return successResponse(id: id, result: result!)
         } catch let error as AgentError {
             return errorResponse(id: id, type: error.type, message: error.message)
         } catch {
@@ -131,12 +155,17 @@ class CommandHandler {
 
     // MARK: - Coordinate-based actions (fast path)
 
-    /// Get the center point of an element from the snapshot bounds cache.
-    /// This avoids XCUIElement queries which trigger slow quiescence on Xcode 26.
+    /// Get the center point of an element, refreshing bounds from a live
+    /// XCUIElement read to minimize the TOCTOU window between coordinate
+    /// resolution and the subsequent tap/gesture action.
+    ///
+    /// Falls back to cached snapshot bounds if the live refresh fails.
     /// Returns nil if bounds are off-screen (e.g., scroll view children with
     /// stale snapshot coordinates), falling through to the XCUIElement path.
     private func snapshotCenter(for elementId: String) -> CGPoint? {
-        guard let bounds = snapshotFinder.getBounds(elementId) else { return nil }
+        // refreshBounds takes a live frame read from the cached XCUIElement,
+        // falling back to the snapshot-time bounds if unavailable.
+        guard let bounds = snapshotFinder.refreshBounds(for: elementId) else { return nil }
         guard bounds.width > 0 && bounds.height > 0 else { return nil }
         let center = CGPoint(x: bounds.midX, y: bounds.midY)
         // Reject off-screen coordinates — snapshot frames for scroll view
@@ -201,7 +230,7 @@ class CommandHandler {
             let screen = snapshotFinder.screenSize
             if x >= 0 && y >= 0 && x <= screen.width && y <= screen.height {
                 actionExecutor.tapCoordinates(x: Int(x), y: Int(y))
-                Thread.sleep(forTimeInterval: settleTime)
+                waitForKeyboardAppearance(maxWait: settleTime)
                 return
             }
         }
@@ -211,7 +240,17 @@ class CommandHandler {
             throw AgentError.actionFailed("Element is not hittable — cannot type text")
         }
         xcElem.tap()
-        Thread.sleep(forTimeInterval: settleTime)
+        waitForKeyboardAppearance(maxWait: settleTime)
+    }
+
+    private func waitForKeyboardAppearance(maxWait: TimeInterval) {
+        let deadline = CFAbsoluteTimeGetCurrent() + maxWait
+        while CFAbsoluteTimeGetCurrent() < deadline {
+            let snap = try? app.snapshot()
+            let dict = snap.map { $0.dictionaryRepresentation } ?? [:]
+            if hasKeyboardInSnapshot(dict) { return }
+            Thread.sleep(forTimeInterval: 0.15)
+        }
     }
 
     /// Type through EventSynthesizer, but don't advance to the next grapheme
@@ -672,6 +711,9 @@ class CommandHandler {
                 let xcElem = try getXCUIElement(startEl.elementId)
                 try actionExecutor.swipe(xcElem, direction: direction, speed: speed, distance: distance)
             } else {
+                // Sync screen size to avoid quiescence-triggering
+                // app.windows.firstMatch.frame.size read inside swipeScreen().
+                actionExecutor.cachedScreenSize = snapshotFinder.screenSize
                 try actionExecutor.swipeScreen(direction: direction, speed: speed, distance: distance)
             }
             // Swipe generates scroll momentum that continues for 500ms+.
@@ -783,6 +825,9 @@ class CommandHandler {
         case "blur":
             let element = try resolveElement(params)
             let xcElem = try getXCUIElement(element.elementId)
+            // Sync screen size to avoid quiescence-triggering
+            // app.windows.firstMatch.frame.size read inside blur().
+            actionExecutor.cachedScreenSize = snapshotFinder.screenSize
             try actionExecutor.blur(xcElem)
             return ["success": true]
 
@@ -960,6 +1005,7 @@ class CommandHandler {
                 XCUIDevice.shared.orientation = target
                 Thread.sleep(forTimeInterval: 0.4)
             }
+            snapshotFinder.invalidateScreenSize()
             return ["success": true]
 
         case "getOrientation":

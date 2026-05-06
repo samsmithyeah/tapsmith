@@ -1158,7 +1158,22 @@ export class Device {
     });
   }
 
-  close(): void {
+  async close(): Promise<void> {
+    // Stop device log stream (synchronous)
+    this._stopDeviceLogStream();
+
+    // Dispose the route manager (closes gRPC stream)
+    if (this._routeManager) {
+      await this._routeManager.dispose();
+      this._routeManager = null;
+    }
+
+    // Close any active WebView handle
+    if (this._activeWebView) {
+      await this._activeWebView.close();
+      this._activeWebView = null;
+    }
+
     this._client.close();
   }
 }

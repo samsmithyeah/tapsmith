@@ -142,14 +142,73 @@ class WaitEngine {
                 NSPredicate(format: "elementType == %d", elementTypeRawValue(className))
             )
         }
-        // Role, xpath, hint cannot be expressed as simple queries
+        if let role = selector.role {
+            if let types = try? RoleMapping.elementTypes(for: role) {
+                let typePredicates = types.map { "elementType == \($0.rawValue)" }
+                let predicate = NSPredicate(format: typePredicates.joined(separator: " OR "))
+                return app.descendants(matching: .any).matching(predicate)
+            }
+        }
+        // xpath, hint cannot be expressed as simple queries
         return nil
     }
 
     /// Get the raw value for an element type name.
     private func elementTypeRawValue(_ className: String) -> UInt {
-        // This is a simplified mapping — in practice, we'd use the same map as RoleMapping
-        return 0
+        // Map className strings (both XCUIElementType names and common short names)
+        // to XCUIElement.ElementType raw values. Aligns with RoleMapping.typeName.
+        switch className {
+        case "XCUIElementTypeButton", "button":
+            return XCUIElement.ElementType.button.rawValue
+        case "XCUIElementTypeStaticText", "statictext", "textview":
+            return XCUIElement.ElementType.staticText.rawValue
+        case "XCUIElementTypeTextField", "textfield", "edittext":
+            return XCUIElement.ElementType.textField.rawValue
+        case "XCUIElementTypeSecureTextField":
+            return XCUIElement.ElementType.secureTextField.rawValue
+        case "XCUIElementTypeImage", "image", "imageview":
+            return XCUIElement.ElementType.image.rawValue
+        case "XCUIElementTypeSwitch", "switch":
+            return XCUIElement.ElementType.switch.rawValue
+        case "XCUIElementTypeToggle":
+            return XCUIElement.ElementType.toggle.rawValue
+        case "XCUIElementTypeSlider", "slider":
+            return XCUIElement.ElementType.slider.rawValue
+        case "XCUIElementTypeCell", "cell":
+            return XCUIElement.ElementType.cell.rawValue
+        case "XCUIElementTypeTable", "table":
+            return XCUIElement.ElementType.table.rawValue
+        case "XCUIElementTypeCollectionView":
+            return XCUIElement.ElementType.collectionView.rawValue
+        case "XCUIElementTypeScrollView", "scrollview":
+            return XCUIElement.ElementType.scrollView.rawValue
+        case "XCUIElementTypeSearchField", "searchfield":
+            return XCUIElement.ElementType.searchField.rawValue
+        case "XCUIElementTypeTextView":
+            return XCUIElement.ElementType.textView.rawValue
+        case "XCUIElementTypePicker":
+            return XCUIElement.ElementType.picker.rawValue
+        case "XCUIElementTypeProgressIndicator":
+            return XCUIElement.ElementType.progressIndicator.rawValue
+        case "XCUIElementTypeActivityIndicator":
+            return XCUIElement.ElementType.activityIndicator.rawValue
+        case "XCUIElementTypeToolbar":
+            return XCUIElement.ElementType.toolbar.rawValue
+        case "XCUIElementTypeTabBar":
+            return XCUIElement.ElementType.tabBar.rawValue
+        case "XCUIElementTypeTab":
+            return XCUIElement.ElementType.tab.rawValue
+        case "XCUIElementTypeLink":
+            return XCUIElement.ElementType.link.rawValue
+        case "XCUIElementTypeCheckBox":
+            return XCUIElement.ElementType.checkBox.rawValue
+        case "XCUIElementTypeRadioButton":
+            return XCUIElement.ElementType.radioButton.rawValue
+        case "XCUIElementTypeOther":
+            return XCUIElement.ElementType.other.rawValue
+        default:
+            return XCUIElement.ElementType.any.rawValue
+        }
     }
 
     private func describeSelector(_ selector: ElementSelector) -> String {

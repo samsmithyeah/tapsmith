@@ -7,6 +7,7 @@ import android.os.Handler
 import android.os.Looper
 import android.util.Base64
 import android.util.Log
+import androidx.test.uiautomator.StaleObjectException
 import androidx.test.uiautomator.UiDevice
 import org.json.JSONObject
 import java.util.concurrent.CountDownLatch
@@ -64,6 +65,8 @@ class CommandHandler(
             errorResponse(id, "INVALID_SELECTOR", e.message ?: "Invalid selector")
         } catch (e: ActionFailedException) {
             errorResponse(id, "ACTION_FAILED", e.message ?: "Action failed")
+        } catch (e: StaleObjectException) {
+            errorResponse(id, "ELEMENT_NOT_FOUND", "Element is stale (UI changed): ${e.message}")
         } catch (e: Exception) {
             Log.e(TAG, "Error handling method '$method'", e)
             errorResponse(id, "INTERNAL_ERROR", e.message ?: "Unknown error")
@@ -360,6 +363,11 @@ class CommandHandler(
                 JSONObject().put("text", text)
             }
 
+            "clearElementCache" -> {
+                elementFinder.clearElementCache()
+                JSONObject().put("success", true)
+            }
+
             "ping" -> {
                 JSONObject().put("pong", true)
             }
@@ -465,7 +473,7 @@ class CommandHandler(
     private fun captureScreenshot(quality: Int): String {
         val tmpFile = java.io.File.createTempFile("tapsmith_screenshot", ".png")
         try {
-            val success = device.takeScreenshot(tmpFile, quality.toFloat() / 100f, quality)
+            val success = device.takeScreenshot(tmpFile, 1.0f, quality)
             if (!success) {
                 throw ActionFailedException("Failed to capture screenshot")
             }

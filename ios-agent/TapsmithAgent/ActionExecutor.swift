@@ -6,6 +6,11 @@ import Foundation
 class ActionExecutor {
     private let app: XCUIApplication
 
+    /// Cached screen size, set during initialization or via `updateScreenSize`.
+    /// Avoids accessing `app.windows.firstMatch.frame.size` which triggers
+    /// XCUITest quiescence waits on React Native apps.
+    var cachedScreenSize: CGSize?
+
     /// Minimum pixel margin for tapping outside an element during blur.
     private static let blurTapMarginPx: CGFloat = 50
     /// Time to wait for idle after focus/blur actions.
@@ -154,7 +159,7 @@ class ActionExecutor {
 
     /// Swipe on the full screen using event synthesis.
     func swipeScreen(direction: String, speed: Int = 5000, distance: Double = 0.5) throws {
-        let screenSize = app.windows.firstMatch.frame.size
+        let screenSize = cachedScreenSize ?? app.windows.firstMatch.frame.size
         let center = CGPoint(x: screenSize.width / 2, y: screenSize.height / 2)
         let swipeDistance = min(screenSize.height, screenSize.width) * CGFloat(distance)
         try swipeFromCenter(center, direction: direction, distance: swipeDistance, speed: speed)
@@ -362,7 +367,7 @@ class ActionExecutor {
     /// Blur an element by tapping outside its bounds.
     func blur(_ element: XCUIElement) throws {
         let frame = element.frame
-        let screenSize = app.windows.firstMatch.frame.size
+        let screenSize = cachedScreenSize ?? app.windows.firstMatch.frame.size
 
         let tapX: CGFloat
         let tapY: CGFloat

@@ -592,8 +592,10 @@ export async function runParallel(opts: DispatcherOptions, _portOffset = 0): Pro
     }
     scheduleShutdownExit(signal);
   };
-  process.on('SIGINT', () => emergencyCleanup('SIGINT'));
-  process.on('SIGTERM', () => emergencyCleanup('SIGTERM'));
+  const sigintHandler = () => emergencyCleanup('SIGINT');
+  const sigtermHandler = () => emergencyCleanup('SIGTERM');
+  process.on('SIGINT', sigintHandler);
+  process.on('SIGTERM', sigtermHandler);
 
   try {
     // Fork worker processes.
@@ -990,8 +992,8 @@ export async function runParallel(opts: DispatcherOptions, _portOffset = 0): Pro
       await dispatchWave(waves[0] ?? []);
     }
   } finally {
-    process.removeListener('SIGINT', emergencyCleanup);
-    process.removeListener('SIGTERM', emergencyCleanup);
+    process.removeListener('SIGINT', sigintHandler);
+    process.removeListener('SIGTERM', sigtermHandler);
 
     // Cleanup order matters: workers first, then daemons, then ADB state, then emulators.
     // This ensures nothing is using the resources when we clean them up.

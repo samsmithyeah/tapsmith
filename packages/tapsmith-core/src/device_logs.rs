@@ -58,17 +58,27 @@ async fn stream_android(
 
     // Use std::process (blocking) + a dedicated thread for reading stdout.
     // Tokio's async process I/O on macOS doesn't reliably poll adb's pipe.
-    let mut child = match std::process::Command::new("adb")
-        .arg("-s")
-        .arg(&serial)
-        .args(["logcat", "-v", "epoch"])
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::null())
-        .spawn()
+    // Wrap the blocking spawn() call in spawn_blocking to avoid blocking
+    // the tokio worker thread.
+    let serial_for_spawn = serial.clone();
+    let mut child = match tokio::task::spawn_blocking(move || {
+        std::process::Command::new("adb")
+            .arg("-s")
+            .arg(&serial_for_spawn)
+            .args(["logcat", "-v", "epoch"])
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+    })
+    .await
     {
-        Ok(child) => child,
-        Err(e) => {
+        Ok(Ok(child)) => child,
+        Ok(Err(e)) => {
             warn!("Failed to spawn logcat: {e}");
+            return;
+        }
+        Err(e) => {
+            warn!("Failed to spawn logcat (join error): {e}");
             return;
         }
     };
@@ -245,25 +255,35 @@ async fn stream_ios(
     };
     info!(udid = %udid, bundle_id = %bundle_id, ?process_name, "Starting iOS log stream");
 
-    let mut child = match std::process::Command::new("xcrun")
-        .args([
-            "simctl",
-            "spawn",
-            &udid,
-            "log",
-            "stream",
-            "--style",
-            "ndjson",
-            "--predicate",
-            &predicate,
-        ])
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::null())
-        .spawn()
+    let udid_for_spawn = udid.clone();
+    let predicate_for_spawn = predicate.clone();
+    let mut child = match tokio::task::spawn_blocking(move || {
+        std::process::Command::new("xcrun")
+            .args([
+                "simctl",
+                "spawn",
+                &udid_for_spawn,
+                "log",
+                "stream",
+                "--style",
+                "ndjson",
+                "--predicate",
+                &predicate_for_spawn,
+            ])
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+    })
+    .await
     {
-        Ok(child) => child,
-        Err(e) => {
+        Ok(Ok(child)) => child,
+        Ok(Err(e)) => {
             warn!("Failed to spawn iOS log stream: {e}");
+            stream_ios_compact(udid, predicate, tx, cancel_rx).await;
+            return;
+        }
+        Err(e) => {
+            warn!("Failed to spawn iOS log stream (join error): {e}");
             stream_ios_compact(udid, predicate, tx, cancel_rx).await;
             return;
         }
@@ -374,25 +394,32 @@ async fn stream_ios_compact(
     tx: mpsc::Sender<ParsedLogEntry>,
     mut cancel_rx: oneshot::Receiver<()>,
 ) {
-    let mut child = match std::process::Command::new("xcrun")
-        .args([
-            "simctl",
-            "spawn",
-            &udid,
-            "log",
-            "stream",
-            "--style",
-            "compact",
-            "--predicate",
-            &predicate,
-        ])
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::null())
-        .spawn()
+    let mut child = match tokio::task::spawn_blocking(move || {
+        std::process::Command::new("xcrun")
+            .args([
+                "simctl",
+                "spawn",
+                &udid,
+                "log",
+                "stream",
+                "--style",
+                "compact",
+                "--predicate",
+                &predicate,
+            ])
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+    })
+    .await
     {
-        Ok(child) => child,
-        Err(e) => {
+        Ok(Ok(child)) => child,
+        Ok(Err(e)) => {
             warn!("Failed to spawn iOS log stream (compact fallback): {e}");
+            return;
+        }
+        Err(e) => {
+            warn!("Failed to spawn iOS log stream (compact fallback, join error): {e}");
             return;
         }
     };

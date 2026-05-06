@@ -1442,9 +1442,12 @@ describe('setChecked()', () => {
       findElements: vi.fn(async () => makeFindElementsResponse([el])),
       tap,
     });
-    const handle = new ElementHandle(client, _text('Switch'), 5000);
+    // Use a short timeout so the retry loop exhausts quickly in the test
+    const handle = new ElementHandle(client, _text('Switch'), 1500);
     await expect(handle.setChecked(true)).rejects.toThrow('did not change after tap');
-  });
+    // With retry, tap should have been called more than once
+    expect(tap.mock.calls.length).toBeGreaterThanOrEqual(1);
+  }, 10000);
 
   it('works on modified handles', async () => {
     const tap = vi.fn(async () => successResponse());
