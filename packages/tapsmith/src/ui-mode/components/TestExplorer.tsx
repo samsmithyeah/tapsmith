@@ -6,7 +6,7 @@
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'preact/hooks';
-import { ArrowLeft, Check, ChevronsDownUp, ChevronsUpDown, Circle, CircleSlash, Eye, Link, LoaderCircle, Play, Square, X } from 'lucide-preact';
+import { ArrowLeft, Check, ChevronsDownUp, ChevronsUpDown, Circle, CircleSlash, Eye, Link, LoaderCircle, Play, Search, Square, X } from 'lucide-preact';
 import type { TestTreeNode, ClientMessage } from '../ui-protocol.js';
 
 const ICON_SIZE = 13;
@@ -54,23 +54,26 @@ export function TestExplorer(props: TestExplorerProps) {
   return (
     <div class="test-explorer">
       <div class="te-header">
-        <input
-          class="te-search"
-          type="text"
-          placeholder="Filter tests..."
-          value={nameFilter}
-          onInput={(e) => onSetNameFilter((e.target as HTMLInputElement).value)}
-        />
-        <div class="te-status-filters">
+        <div class="explorer-search">
+          <Search size={13} />
+          <input
+            class="te-search"
+            type="text"
+            placeholder="Filter tests..."
+            value={nameFilter}
+            onInput={(e) => onSetNameFilter((e.target as HTMLInputElement).value)}
+          />
+        </div>
+        <div class="te-status-filters filter-tabs">
           <StatusButton label="All" value="all" count={counts.total} active={statusFilter} onClick={onSetStatusFilter} />
           <StatusButton label="Pass" value="passed" count={counts.passed} active={statusFilter} onClick={onSetStatusFilter} />
           <StatusButton label="Fail" value="failed" count={counts.failed} active={statusFilter} onClick={onSetStatusFilter} />
           <StatusButton label="Skip" value="skipped" count={counts.skipped} active={statusFilter} onClick={onSetStatusFilter} />
         </div>
       </div>
-      <div class="te-toolbar">
+      <div class="te-toolbar explorer-toolbar">
         <span class="te-toolbar-title">Tests</span>
-        <div class="te-toolbar-actions">
+        <div class="te-toolbar-actions explorer-toolbar-actions">
           <button
             class="te-toolbar-btn"
             onClick={() => onSend({ type: 'run-all' })}
@@ -150,12 +153,14 @@ interface StatusButtonProps {
 }
 
 function StatusButton({ label, value, count, active, onClick }: StatusButtonProps) {
+  const isActive = active === value;
   return (
     <button
-      class={`te-status-btn ${active === value ? 'active' : ''} te-status-${value}`}
+      class={`te-status-btn filter-tab ${isActive ? 'active' : ''} te-status-${value}`}
       onClick={() => onClick(value)}
     >
-      {label} {count > 0 && <span class="te-count">{count}</span>}
+      {value !== 'all' && <span class={`ind ind-${value}`} />}
+      {label} {count > 0 && <span class="te-count ct">{count}</span>}
     </button>
   );
 }
@@ -242,8 +247,11 @@ function TreeNode({ node, depth, parentProjectName, expandedNodes, selectedTestI
   return (
     <div class="te-node-group">
       <div
-        class={`te-node ${isSelected ? 'selected' : ''} te-node-${node.type} ${runningClass} ${flashClass}`}
-        style={{ paddingLeft: `${12 + depth * 16}px` }}
+        class={`te-node node ${isSelected ? 'selected' : ''} te-node-${node.type} ${runningClass} ${flashClass}`}
+        data-status={node.status}
+        data-depth={depth}
+        data-type={node.type}
+        style={{ '--depth': depth, paddingLeft: `${12 + depth * 16}px` }}
         onClick={handleClick}
       >
         {hasChildren && (
@@ -264,7 +272,7 @@ function TreeNode({ node, depth, parentProjectName, expandedNodes, selectedTestI
         )}
 
         {node.duration !== undefined && node.duration > 0 && (
-          <span class="te-duration">{formatDuration(node.duration)}</span>
+          <span class="te-duration dur">{formatDuration(node.duration)}</span>
         )}
 
         <div class="te-actions">

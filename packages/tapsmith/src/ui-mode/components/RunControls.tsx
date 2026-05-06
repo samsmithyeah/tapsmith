@@ -119,15 +119,16 @@ export function RunControls({ connected, isRunning, deviceSerial, counts, theme,
   const hasWorkers = workers.length > 1;
 
   return (
-    <div class="run-controls">
-      <div class="rc-left">
-        <div class="rc-logo">
-          <span class="rc-logo-text">Tapsmith</span>
-          <span class="rc-mode">UI Mode</span>
+    <div class="rail">
+      <div class="rail-brand">
+        <span class="rail-brand-mark">T</span>
+        <div>
+          <div class="rc-logo-text">Tapsmith</div>
+          <div class="rail-brand-sub">UI Mode</div>
         </div>
       </div>
 
-      <div class="rc-center">
+      <div class="rail-right">
         {counts.failed > 0 && (
           <button
             class="rc-btn rc-run-failed"
@@ -138,11 +139,8 @@ export function RunControls({ connected, isRunning, deviceSerial, counts, theme,
             <RefreshCw size={ICON_SIZE} /> Rerun Failed <span class="rc-kbd">F</span>
           </button>
         )}
-      </div>
-
-      <div class="rc-right">
         {isRunning && (
-          <span class="rc-elapsed">{formatElapsed(runElapsed)}</span>
+          <span class="rc-elapsed mono">{formatElapsed(runElapsed)}</span>
         )}
         {counts.total > 0 && (
           <div class="rc-counts">

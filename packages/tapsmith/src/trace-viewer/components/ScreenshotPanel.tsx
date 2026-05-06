@@ -1,6 +1,6 @@
 import { useState, useRef, useCallback, useEffect } from 'preact/hooks';
+import { Focus, ExternalLink, Download } from 'lucide-preact';
 import type { ActionTraceEvent, AssertionTraceEvent } from '../../trace/types.js';
-import { PickButton } from './SelectorPlayground.js';
 
 // ─── Injected Styles ───
 
@@ -38,6 +38,10 @@ interface Props {
   onPickModeToggle?: () => void
   /** Device pixel ratio — bounds are in logical points, screenshots in pixels. */
   devicePixelRatio?: number
+  testName?: string
+  testStatus?: string
+  onDownloadTrace?: () => void
+  onDownloadVideo?: () => void
 }
 
 type ScreenshotTab = 'before' | 'after' | 'action'
@@ -47,7 +51,7 @@ interface NaturalSize {
   height: number
 }
 
-export function ScreenshotPanel({ event, screenshots, highlightBounds, selectorHighlights, hoverBounds, onScreenshotClick, onScreenshotHover, pickMode, onPickModeToggle, devicePixelRatio }: Props) {
+export function ScreenshotPanel({ event, screenshots, highlightBounds, selectorHighlights, hoverBounds, onScreenshotClick, onScreenshotHover, pickMode, onPickModeToggle, devicePixelRatio, testName, testStatus, onDownloadTrace, onDownloadVideo }: Props) {
   injectStyles();
 
   const [tab, setTab] = useState<ScreenshotTab>('action');
@@ -155,23 +159,43 @@ export function ScreenshotPanel({ event, screenshots, highlightBounds, selectorH
 
   return (
     <div class="screenshot-panel">
-      <div class="screenshot-tabs">
-        {hasBefore && hasAfter && (
-          <div class={`screenshot-tab${tab === 'action' ? ' active' : ''}`} onClick={() => setTab('action')}>Action</div>
-        )}
-        {hasBefore && (
-          <div class={`screenshot-tab${tab === 'before' ? ' active' : ''}`} onClick={() => setTab('before')}>Before</div>
-        )}
-        {hasAfter && (
-          <div class={`screenshot-tab${tab === 'after' ? ' active' : ''}`} onClick={() => setTab('after')}>After</div>
-        )}
-        {scale !== 1 && (
-          <div class="screenshot-zoom-label">{Math.round(scale * 100)}%</div>
-        )}
+      <div class="viewer-head">
+        <div class="viewer-head-meta">
+          {testStatus && (
+            <span class={`te-status-icon ${testStatus === 'passed' ? 'passed' : testStatus === 'failed' ? 'failed' : ''}`}>
+              {testStatus === 'passed' ? '✓' : testStatus === 'failed' ? '✗' : '○'}
+            </span>
+          )}
+          {testName && <span class="viewer-head-title">{testName}</span>}
+        </div>
+        <div class="viewer-head-actions">
+          {onPickModeToggle && (
+            <button class={`viewer-pick-btn ${pickMode ? 'active' : ''}`} onClick={onPickModeToggle} title={pickMode ? 'Exit pick mode' : 'Pick element'}>
+              <Focus size={12} /> {pickMode ? 'Picking…' : 'Pick'}
+            </button>
+          )}
+          {onDownloadTrace && (
+            <button class="viewer-download-btn" onClick={onDownloadTrace} title="Download trace ZIP">
+              <ExternalLink size={12} /> Trace
+            </button>
+          )}
+          {onDownloadVideo && (
+            <button class="viewer-download-btn" onClick={onDownloadVideo} title="Download video">
+              <Download size={12} /> Video
+            </button>
+          )}
+          {scale !== 1 && (
+            <div class="screenshot-zoom-label">{Math.round(scale * 100)}%</div>
+          )}
+        </div>
       </div>
-      <div class="screenshot-container" onWheel={handleWheel} style={{ position: 'relative' }}>
-        {onPickModeToggle && (
-          <PickButton active={!!pickMode} onToggle={onPickModeToggle} />
+      <div class="screenshot-container viewer-body has-grid" onWheel={handleWheel} style={{ position: 'relative' }}>
+        {(hasBefore && hasAfter) && (
+          <div class="screenshot-tab-float">
+            <div class={`screenshot-tab${tab === 'action' ? ' active' : ''}`} onClick={() => setTab('action')}>Action</div>
+            <div class={`screenshot-tab${tab === 'before' ? ' active' : ''}`} onClick={() => setTab('before')}>Before</div>
+            <div class={`screenshot-tab${tab === 'after' ? ' active' : ''}`} onClick={() => setTab('after')}>After</div>
+          </div>
         )}
         {currentUrl ? (
           <div class="screenshot-image-wrapper" style={scale !== 1 ? { transform: `scale(${scale})`, transformOrigin: 'center center' } : undefined}>

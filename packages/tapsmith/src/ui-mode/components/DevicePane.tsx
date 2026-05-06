@@ -49,8 +49,8 @@ function WorkerCanvas({ workerId, label, connected, registerCanvas, unregisterCa
   }, [workerId, registerCanvas, unregisterCanvas]);
 
   return (
-    <div class="device-pane-grid-item">
-      <div class="device-pane-grid-label">{label}</div>
+    <div class="device-body-item">
+      <div class="device-body-label">{label}</div>
       <div class="dm-viewport">
         {!connected && (
           <div class="dm-overlay">
@@ -89,15 +89,18 @@ export function DevicePane({
   const hasWorkers = workers.length > 1;
 
   return (
-    <div class="device-pane">
-      <div class="device-pane-header">
-        <span class="device-pane-header-title">Live device mirror</span>
+    <div class="device-col">
+      <div class="device-head">
+        <span class="device-head-title">Live device mirror</span>
+        <span class="device-head-meta">
+          <span class="dot running" />
+        </span>
       </div>
 
       {hasWorkers && (
-        <div class="device-pane-workers">
+        <div class="worker-tabs">
           <button
-            class={`device-pane-worker ${deviceViewMode === 'all' ? 'active' : ''}`}
+            class={`worker-tab ${deviceViewMode === 'all' ? 'active' : ''}`}
             onClick={() => onSelectDeviceView('all')}
           >
             All
@@ -105,11 +108,11 @@ export function DevicePane({
           {workers.map((w) => (
             <button
               key={w.workerId}
-              class={`device-pane-worker ${deviceViewMode === w.workerId ? 'active' : ''}`}
+              class={`worker-tab ${deviceViewMode === w.workerId ? 'active' : ''}`}
               onClick={() => onSelectDeviceView(w.workerId)}
               title={`${w.displayName} (${w.deviceSerial}) — ${w.status}`}
             >
-              <span class={`rc-dot ${connected ? DOT_CLASS[w.status] : 'error'}`} />
+              <span class={`dot ${connected ? DOT_CLASS[w.status] : 'error'}`} />
               {w.displayName}
             </button>
           ))}

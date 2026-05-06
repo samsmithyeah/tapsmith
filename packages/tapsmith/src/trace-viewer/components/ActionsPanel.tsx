@@ -1,4 +1,6 @@
 import { useState, useRef, useEffect } from 'preact/hooks';
+import type { ComponentChildren } from 'preact';
+import { Check, X, Type, Clock, ArrowLeft, Play, ExternalLink, MoveHorizontal, ArrowUpDown, CircleDot, ChevronDown, Hand, Pointer, Eye, Keyboard, RotateCcw, Target, Zap, Globe, Send } from 'lucide-preact';
 import type { AnyTraceEvent, ActionTraceEvent, AssertionTraceEvent, GroupTraceEvent, TraceMetadata } from '../../trace/types.js';
 import type { InFlightAction } from '../types.js';
 
@@ -20,71 +22,98 @@ interface Props {
   preflightMessage?: string
 }
 
-// Simple text-based icons — no emoji
-const ACTION_ICONS: Record<string, [string, string]> = {
-  tap:         ['\u25ce', 'tap'],      // ◎
-  longPress:   ['\u25ce', 'tap'],
-  doubleTap:   ['\u25ce', 'tap'],
-  type:        ['T',      'type'],
-  clearAndType:['T',      'type'],
-  swipe:       ['\u2194', 'swipe'],    // ↔
-  scroll:      ['\u2195', 'scroll'],   // ↕
-  pressKey:    ['\u21b5', 'type'],     // ↵
-  launchApp:   ['\u25b6', 'nav'],      // ▶
-  openDeepLink:['\u2197', 'nav'],      // ↗
-  drag:        ['\u21c4', 'swipe'],    // ⇄
-  pinchIn:     ['\u25c9', 'tap'],
-  pinchOut:    ['\u25c9', 'tap'],
-  focus:       ['\u25cb', 'tap'],
-  blur:        ['\u25cb', 'tap'],
-  selectOption:['\u25bc', 'tap'],      // ▼
-  highlight:   ['\u25a1', 'tap'],
-  'request.get':    ['\u2190', 'api'],   // ←
-  'request.post':   ['\u2192', 'api'],   // →
-  'request.put':    ['\u2192', 'api'],
-  'request.patch':  ['\u2192', 'api'],
-  'request.delete': ['\u2717', 'api'],   // ✗
-  'request.head':   ['\u2190', 'api'],
-  'route':          ['\u21cc', 'net'],   // ⇌
-  'unroute':        ['\u21cc', 'net'],   // ⇌
-  'unrouteAll':     ['\u21cc', 'net'],   // ⇌
-  'route.fulfill':  ['\u25a0', 'net'],   // ■
-  'route.abort':    ['\u2298', 'net'],   // ⊘
-  'route.continue': ['\u2192', 'net'],   // →
-  'route.fetch':    ['\u21c4', 'net'],   // ⇄
+
+const ICON_SIZE = 13;
+
+const ACTION_ICON_MAP: Record<string, [ComponentChildren, string]> = {
+  tap:         [<Hand size={ICON_SIZE} />, 'tap'],
+  longPress:   [<Hand size={ICON_SIZE} />, 'tap'],
+  doubleTap:   [<Hand size={ICON_SIZE} />, 'tap'],
+  type:        [<Type size={ICON_SIZE} />, 'type'],
+  clearAndType:[<Type size={ICON_SIZE} />, 'type'],
+  swipe:       [<MoveHorizontal size={ICON_SIZE} />, 'swipe'],
+  scroll:      [<ArrowUpDown size={ICON_SIZE} />, 'scroll'],
+  scrollIntoView: [<Eye size={ICON_SIZE} />, 'scroll'],
+  pressKey:    [<Keyboard size={ICON_SIZE} />, 'type'],
+  launchApp:   [<Play size={ICON_SIZE} />, 'nav'],
+  openDeepLink:[<ExternalLink size={ICON_SIZE} />, 'nav'],
+  restartApp:  [<RotateCcw size={ICON_SIZE} />, 'nav'],
+  drag:        [<MoveHorizontal size={ICON_SIZE} />, 'swipe'],
+  pinchIn:     [<Pointer size={ICON_SIZE} />, 'tap'],
+  pinchOut:    [<Pointer size={ICON_SIZE} />, 'tap'],
+  focus:       [<Target size={ICON_SIZE} />, 'tap'],
+  blur:        [<CircleDot size={ICON_SIZE} />, 'tap'],
+  selectOption:[<ChevronDown size={ICON_SIZE} />, 'tap'],
+  highlight:   [<Eye size={ICON_SIZE} />, 'tap'],
+  waitForIdle: [<Clock size={ICON_SIZE} />, 'scroll'],
+  'request.get':    [<Globe size={ICON_SIZE} />, 'api'],
+  'request.post':   [<Send size={ICON_SIZE} />, 'api'],
+  'request.put':    [<Send size={ICON_SIZE} />, 'api'],
+  'request.patch':  [<Send size={ICON_SIZE} />, 'api'],
+  'request.delete': [<X size={ICON_SIZE} />, 'api'],
+  'request.head':   [<Globe size={ICON_SIZE} />, 'api'],
+  'route':          [<MoveHorizontal size={ICON_SIZE} />, 'net'],
+  'unroute':        [<MoveHorizontal size={ICON_SIZE} />, 'net'],
+  'unrouteAll':     [<MoveHorizontal size={ICON_SIZE} />, 'net'],
+  'route.fulfill':  [<Check size={ICON_SIZE} />, 'net'],
+  'route.abort':    [<X size={ICON_SIZE} />, 'net'],
+  'route.continue': [<ExternalLink size={ICON_SIZE} />, 'net'],
+  'route.fetch':    [<MoveHorizontal size={ICON_SIZE} />, 'net'],
 };
 
-function getIcon(event: ActionTraceEvent | AssertionTraceEvent): [string, string] {
+function getIcon(event: ActionTraceEvent | AssertionTraceEvent): [ComponentChildren, string] {
   if (event.type === 'assertion') {
     const passed = event.passed;
-    return [passed ? '\u2713' : '\u2717', passed ? 'assert' : 'assert failed'];
+    return [passed ? <Check size={ICON_SIZE} /> : <X size={ICON_SIZE} />, passed ? 'assert' : 'assert failed'];
   }
   if (!event.success) {
-    return ['\u2717', 'failed'];  // ✗
+    return [<X size={ICON_SIZE} />, 'failed'];
   }
-  return ACTION_ICONS[event.action] ?? ['\u2022', 'tap'];
+  return ACTION_ICON_MAP[event.action] ?? [<CircleDot size={ICON_SIZE} />, 'tap'];
 }
 
-function getInFlightIcon(item: InFlightAction): [string, string] {
-  // Use a neutral bullet for in-flight assertions — the tick (✓) implies
-  // a passed assertion, but at this point the assertion is still polling.
-  if (item.kind === 'assertion') return ['•', ''];
-  return ACTION_ICONS[item.label] ?? ['•', ''];
+function getInFlightIcon(item: InFlightAction): [ComponentChildren, string] {
+  if (item.kind === 'assertion') return [<Clock size={ICON_SIZE} />, ''];
+  return ACTION_ICON_MAP[item.label] ?? [<Clock size={ICON_SIZE} />, ''];
+}
+
+interface SelectorParts { fn: string; args: string[] }
+
+function parseSelectorParts(sel: string | undefined): SelectorParts | null {
+  if (!sel) return null;
+  try {
+    const parsed = JSON.parse(sel);
+    if (parsed.text) return { fn: 'text', args: [parsed.text] };
+    if (parsed.role) return { fn: 'role', args: [parsed.role.role, ...(parsed.role.name ? [parsed.role.name] : [])] };
+    if (parsed.contentDesc) return { fn: 'contentDesc', args: [parsed.contentDesc] };
+    if (parsed.testId) return { fn: 'testId', args: [parsed.testId] };
+    if (parsed.resourceId) return { fn: 'id', args: [parsed.resourceId] };
+    return null;
+  } catch {
+    return null;
+  }
 }
 
 function parseSelectorString(sel: string | undefined): string {
-  if (!sel) return '';
-  try {
-    const parsed = JSON.parse(sel);
-    if (parsed.text) return `"${parsed.text}"`;
-    if (parsed.role) return `role=${parsed.role.role}${parsed.role.name ? ` "${parsed.role.name}"` : ''}`;
-    if (parsed.contentDesc) return `desc="${parsed.contentDesc}"`;
-    if (parsed.testId) return `testId="${parsed.testId}"`;
-    if (parsed.resourceId) return `id="${parsed.resourceId}"`;
-    return sel;
-  } catch {
-    return sel;
+  const parts = parseSelectorParts(sel);
+  if (!parts) return sel ?? '';
+  return `${parts.fn}(${parts.args.map(a => `"${a}"`).join(', ')})`;
+}
+
+function SelectorDisplay({ sel }: { sel: string | undefined }) {
+  const parts = parseSelectorParts(sel);
+  if (!parts) {
+    const plain = sel ?? '';
+    return <span class="action-selector-text">{plain || '—'}</span>;
   }
+  return (
+    <span class="action-selector-text">
+      <span class="sel-fn">{parts.fn}</span>
+      ({parts.args.map((a, i) => (
+        <span key={i}>{i > 0 && ', '}<span class="sel-val">"{a}"</span></span>
+      ))})
+    </span>
+  );
 }
 
 function getLabel(event: ActionTraceEvent | AssertionTraceEvent): string {
@@ -94,6 +123,17 @@ function getLabel(event: ActionTraceEvent | AssertionTraceEvent): string {
 
 function getSelectorDisplay(event: ActionTraceEvent | AssertionTraceEvent): string {
   return parseSelectorString(event.selector);
+}
+
+function formatGroupName(name: string): string {
+  switch (name) {
+    case 'beforeAll Hooks': return 'BEFORE ALL';
+    case 'beforeEach Hooks': return 'BEFORE EACH';
+    case 'afterEach Hooks': return 'AFTER EACH';
+    case 'afterAll Hooks': return 'AFTER ALL';
+    case 'Test': return 'TEST BODY';
+    default: return name.toUpperCase();
+  }
 }
 
 export function ActionsPanel({ events, actionEvents, selectedIndex, pinnedIndex, onHover, onPin, metadata, showMetadata, inFlightAction, preflightMessage }: Props) {
@@ -130,6 +170,12 @@ export function ActionsPanel({ events, actionEvents, selectedIndex, pinnedIndex,
 
   const filterLower = filter.toLowerCase();
 
+  // Compute max duration across all actions for the heatmap
+  const maxDur = items.reduce((max, item) => {
+    if (item.kind !== 'action') return max;
+    return Math.max(max, item.event.duration);
+  }, 1);
+
   // Index assigned to the in-flight row — slots in right after the last
   // completed action so its actionIndex matches the global index that the
   // matching `addActionEvent` will eventually own. Auto-pin in main.tsx
@@ -165,8 +211,8 @@ export function ActionsPanel({ events, actionEvents, selectedIndex, pinnedIndex,
                   if (filterLower && !item.event.name.toLowerCase().includes(filterLower)) return null;
                   const isLifecycle = item.event.name === 'beforeAll Hooks' || item.event.name === 'beforeEach Hooks' || item.event.name === 'afterEach Hooks' || item.event.name === 'Test';
                   return (
-                    <div key={`g-${i}`} class={`group-item${isLifecycle ? ' lifecycle' : ''}`}>
-                      {isLifecycle ? '' : '\u25b8 '}{item.event.name}
+                    <div key={`g-${i}`} class={`group-item${isLifecycle ? ' lifecycle' : ''} act-group`}>
+                      {formatGroupName(item.event.name)}
                     </div>
                   );
                 }
@@ -189,7 +235,8 @@ export function ActionsPanel({ events, actionEvents, selectedIndex, pinnedIndex,
                   <div
                     key={`a-${item.actionIndex}`}
                     ref={isSelected ? selectedRef : undefined}
-                    class={`action-item${isSelected ? ' selected' : ''}${isPinned ? ' pinned' : ''}${isFailed ? ' failed' : ''}`}
+                    class={`action-item act${isSelected ? ' selected' : ''}${isPinned ? ' pinned' : ''}${isFailed ? ' failed' : ''}`}
+                    style={{ '--dur-pct': `${(event.duration / maxDur * 100)}%` }}
                     onMouseEnter={() => onHover(item.actionIndex)}
                     onMouseLeave={() => onHover(null)}
                     onClick={() => onPin(item.actionIndex)}
@@ -197,9 +244,9 @@ export function ActionsPanel({ events, actionEvents, selectedIndex, pinnedIndex,
                     <span class={`action-icon ${iconClass}`}>{icon}</span>
                     <div class="action-details">
                       <span class="action-name">{label}</span>
-                      {selector && <span class="action-selector-text">{selector}</span>}
+                      <SelectorDisplay sel={event.selector} />
                     </div>
-                    <span class="action-duration">{event.duration}ms</span>
+                    <span class="action-duration act-dur">{event.duration}ms</span>
                   </div>
                 );
               })}
@@ -211,7 +258,7 @@ export function ActionsPanel({ events, actionEvents, selectedIndex, pinnedIndex,
                   <div
                     key={`a-inflight-${inFlightAction.actionIndex}`}
                     ref={isSelected ? selectedRef : undefined}
-                    class={`action-item in-progress${isSelected ? ' selected' : ''}${isPinned ? ' pinned' : ''}`}
+                    class={`action-item act in-progress${isSelected ? ' selected' : ''}${isPinned ? ' pinned' : ''}`}
                     onMouseEnter={() => onHover(inFlightItemIndex)}
                     onMouseLeave={() => onHover(null)}
                     onClick={() => onPin(inFlightItemIndex)}
@@ -219,7 +266,7 @@ export function ActionsPanel({ events, actionEvents, selectedIndex, pinnedIndex,
                     <span class={`action-icon ${iconClass}`}>{icon}</span>
                     <div class="action-details">
                       <span class="action-name">{inFlightAction.label}</span>
-                      {inFlightSelector && <span class="action-selector-text">{inFlightSelector}</span>}
+                      <SelectorDisplay sel={inFlightAction.selector} />
                     </div>
                     <span class="action-spinner" aria-label="running" />
                   </div>

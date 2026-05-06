@@ -1063,28 +1063,6 @@ function App() {
       }
       screenshotPanel={
         <div class="ui-screen-area">
-          {(currentTrace?.tracePath || currentTrace?.videoPath) && (
-            <div class="ui-screen-header">
-              {currentTrace?.tracePath && (
-                <button
-                  class="ui-download-btn"
-                  onClick={handleDownloadTrace}
-                  title="Download trace for this test"
-                >
-                  {'\u2913'} Trace
-                </button>
-              )}
-              {currentTrace?.videoPath && (
-                <button
-                  class="ui-download-btn"
-                  onClick={handleDownloadVideo}
-                  title="Download video for this test"
-                >
-                  {'\u2913'} Video
-                </button>
-              )}
-            </div>
-          )}
           <div class="ui-screen-content">
             <ScreenshotPanel
               event={selectedEvent}
@@ -1097,6 +1075,10 @@ function App() {
               pickMode={pickMode}
               onPickModeToggle={handlePickToggle}
               devicePixelRatio={viewedTestDpr}
+              testName={metadata.testName}
+              testStatus={metadata.testStatus}
+              onDownloadTrace={currentTrace?.tracePath ? handleDownloadTrace : undefined}
+              onDownloadVideo={currentTrace?.videoPath ? handleDownloadVideo : undefined}
             />
           </div>
         </div>

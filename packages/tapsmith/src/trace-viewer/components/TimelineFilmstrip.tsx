@@ -77,24 +77,24 @@ export function TimelineFilmstrip({ events, screenshots, metadata, selectedIndex
           const relativeTime = formatRelativeTime(event.timestamp - firstTimestamp);
 
           return (
-            <div key={i} class="timeline-item">
+            <div key={i} class={`timeline-item film-frame${isFailed ? ' failed' : ''}${isSelected ? ' active' : ''}`}>
               {url ? (
                 <img
                   ref={isSelected ? selectedRef as preact.RefObject<HTMLImageElement> : undefined}
-                  class={`timeline-thumb${isSelected ? ' selected' : ''}${isFailed ? ' failed' : ''}`}
+                  class={`timeline-thumb film-thumb${isSelected ? ' selected' : ''}${isFailed ? ' failed' : ''}`}
                   src={url}
                   onClick={() => onSelect(i)}
                 />
               ) : (
                 <div
                   ref={isSelected ? selectedRef as preact.RefObject<HTMLDivElement> : undefined}
-                  class={`timeline-placeholder${isSelected ? ' selected' : ''}`}
+                  class={`timeline-placeholder film-thumb${isSelected ? ' selected' : ''}`}
                   onClick={() => onSelect(i)}
                 >
                   {i + 1}
                 </div>
               )}
-              <div class="timeline-time-label">{relativeTime}</div>
+              <div class="timeline-time-label film-label">{relativeTime}</div>
             </div>
           );
         })}

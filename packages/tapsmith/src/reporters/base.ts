@@ -3,6 +3,7 @@
  */
 
 import * as fs from 'node:fs';
+import { buildCodeSnippet } from '../trace/code-frame.js';
 
 // ─── ANSI codes ───
 
@@ -115,14 +116,7 @@ export function formatError(error: Error, indent: string = '        '): string {
 
 // ─── Code snippet extraction ───
 
-interface SnippetLine {
-  lineNumber: number
-  text: string
-  highlight: boolean
-}
-
-function extractCodeSnippet(frame: string): { lines: SnippetLine[]; gutterWidth: number } | null {
-  // Parse "at ... (file:line:col)" or "at file:line:col"
+function extractCodeSnippet(frame: string): ReturnType<typeof buildCodeSnippet> | null {
   const match = frame.match(/\(?([^()]+):(\d+):\d+\)?$/);
   if (!match) return null;
 
@@ -133,23 +127,7 @@ function extractCodeSnippet(frame: string): { lines: SnippetLine[]; gutterWidth:
   try {
     if (!fs.existsSync(filePath)) return null;
     const source = fs.readFileSync(filePath, 'utf-8');
-    const sourceLines = source.split('\n');
-
-    const contextSize = 2;
-    const start = Math.max(0, lineNum - 1 - contextSize);
-    const end = Math.min(sourceLines.length, lineNum + contextSize);
-
-    const result: SnippetLine[] = [];
-    for (let i = start; i < end; i++) {
-      result.push({
-        lineNumber: i + 1,
-        text: sourceLines[i],
-        highlight: i + 1 === lineNum,
-      });
-    }
-
-    const gutterWidth = String(end).length;
-    return { lines: result, gutterWidth };
+    return buildCodeSnippet(source, lineNum);
   } catch {
     return null;
   }

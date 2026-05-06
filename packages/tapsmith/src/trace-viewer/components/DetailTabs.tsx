@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect, useMemo } from 'preact/hooks';
 import { usePersistedString } from '../../ui-mode/hooks/use-persisted-state.js';
 import type { ComponentChildren } from 'preact';
+import { AlertTriangle } from 'lucide-preact';
 import type { ActionTraceEvent, AssertionTraceEvent, AnyTraceEvent, ConsoleTraceEvent, TraceMetadata, NetworkEntry, ConsoleLevel } from '../../trace/types.js';
 import { HierarchyTree } from './HierarchyTree.js';
 import type { Bounds } from './HierarchyTree.js';
@@ -70,19 +71,19 @@ export function DetailTabs({ event, events, hierarchies, sources, metadata, netw
   return (
     <div class="detail-panel">
       <div class="detail-tabs-bar">
-        <div class={`detail-tab${tab === 'call' ? ' active' : ''}`} onClick={() => setTab('call')}>Call</div>
-        <div class={`detail-tab${tab === 'log' ? ' active' : ''}`} onClick={() => setTab('log')}>Log</div>
-        <div class={`detail-tab${tab === 'console' ? ' active' : ''}`} onClick={() => setTab('console')}>
+        <div class={`detail-tab vtab${tab === 'call' ? ' active' : ''}`} onClick={() => setTab('call')}>Call</div>
+        <div class={`detail-tab vtab${tab === 'log' ? ' active' : ''}`} onClick={() => setTab('log')}>Log</div>
+        <div class={`detail-tab vtab${tab === 'console' ? ' active' : ''}`} onClick={() => setTab('console')}>
           Console{consoleEvents.length > 0 && <span class="detail-tab-dot" />}
         </div>
-        <div class={`detail-tab${tab === 'source' ? ' active' : ''}`} onClick={() => setTab('source')}>Source</div>
-        <div class={`detail-tab${tab === 'hierarchy' ? ' active' : ''}`} onClick={() => setTab('hierarchy')}>Hierarchy</div>
-        {locatorTab && <div class={`detail-tab${tab === 'locator' ? ' active' : ''}`} onClick={() => setTab('locator')}>Locator</div>}
-        <div class={`detail-tab${tab === 'network' ? ' active' : ''}`} onClick={() => setTab('network')}>
-          Network{networkEntries.length > 0 && <span class="detail-tab-count">{networkEntries.length}</span>}
+        <div class={`detail-tab vtab${tab === 'source' ? ' active' : ''}`} onClick={() => setTab('source')}>Source</div>
+        <div class={`detail-tab vtab${tab === 'hierarchy' ? ' active' : ''}`} onClick={() => setTab('hierarchy')}>Hierarchy</div>
+        {locatorTab && <div class={`detail-tab vtab${tab === 'locator' ? ' active' : ''}`} onClick={() => setTab('locator')}>Locator</div>}
+        <div class={`detail-tab vtab${tab === 'network' ? ' active' : ''}`} onClick={() => setTab('network')}>
+          Network{networkEntries.length > 0 && <span class="ct">{networkEntries.length}</span>}
         </div>
-        <div class={`detail-tab${tab === 'errors' ? ' active' : ''}${hasError ? ' has-error' : ''}`} onClick={() => setTab('errors')}>
-          Errors{failedCount > 0 && <span class="detail-tab-count">{failedCount}</span>}
+        <div class={`detail-tab vtab${tab === 'errors' ? ' active' : ''}${hasError ? ' has-error' : ''}`} onClick={() => setTab('errors')}>
+          Errors{failedCount > 0 && <span class="ct">{failedCount}</span>}
         </div>
       </div>
       {testError && tab !== 'errors' && (
@@ -92,14 +93,14 @@ export function DetailTabs({ event, events, hierarchies, sources, metadata, netw
         </div>
       )}
       <div class={`detail-content${tab === 'hierarchy' || tab === 'source' || tab === 'network' || tab === 'locator' || tab === 'console' ? ' detail-content-flush' : ''}`}>
-        {tab === 'call' && <CallTab event={event} />}
+        {tab === 'call' && <CallTab event={event} metadata={metadata} />}
         {tab === 'log' && <LogTab event={event} />}
         {tab === 'console' && <ConsoleTab event={event} events={consoleEvents} />}
         {tab === 'source' && <SourceTab event={event} sources={sources} />}
         {tab === 'hierarchy' && <HierarchyTabWrapper event={event} hierarchies={hierarchies} onNodeSelect={onHierarchyNodeSelect} />}
         {tab === 'locator' && locatorTab}
         {tab === 'network' && <NetworkTab entries={networkEntries} bodies={networkBodies} />}
-        {tab === 'errors' && <ErrorsTab event={event} events={events} testError={testError} />}
+        {tab === 'errors' && <ErrorsTab event={event} events={events} testError={testError} sources={sources} />}
       </div>
     </div>
   );
@@ -107,7 +108,29 @@ export function DetailTabs({ event, events, hierarchies, sources, metadata, netw
 
 // ─── Call Tab ───
 
-function CallTab({ event }: { event: ActionTraceEvent | AssertionTraceEvent | undefined }) {
+function formatSelectorForCall(sel: string | undefined): ComponentChildren {
+  if (!sel) return null;
+  try {
+    const parsed = JSON.parse(sel);
+    let fn = '';
+    const args: string[] = [];
+    if (parsed.text) { fn = 'text'; args.push(parsed.text); }
+    else if (parsed.role) { fn = 'role'; args.push(parsed.role.role); if (parsed.role.name) args.push(parsed.role.name); }
+    else if (parsed.contentDesc) { fn = 'contentDesc'; args.push(parsed.contentDesc); }
+    else if (parsed.testId) { fn = 'testId'; args.push(parsed.testId); }
+    else if (parsed.resourceId) { fn = 'id'; args.push(parsed.resourceId); }
+    else return <span class="call-value mono">{sel}</span>;
+    return (
+      <span class="call-value mono">
+        <span class="sel-fn">{fn}</span>({args.map((a, i) => <span key={i}>{i > 0 && ', '}<span class="sel-val">"{a}"</span></span>)})
+      </span>
+    );
+  } catch {
+    return <span class="call-value mono">{sel}</span>;
+  }
+}
+
+function CallTab({ event, metadata }: { event: ActionTraceEvent | AssertionTraceEvent | undefined; metadata: TraceMetadata }) {
   if (!event) return <div class="no-content">No action selected</div>;
 
   if (event.type === 'action') {
@@ -117,25 +140,25 @@ function CallTab({ event }: { event: ActionTraceEvent | AssertionTraceEvent | un
         <span class="call-value">{event.action}</span>
         {event.selector && <>
           <span class="call-label">Selector</span>
-          <span class="call-value">{event.selector}</span>
+          {formatSelectorForCall(event.selector)}
         </>}
         {event.inputValue !== undefined && <>
           <span class="call-label">Input</span>
-          <span class="call-value">"{event.inputValue}"</span>
+          <span class="call-value mono">"{event.inputValue}"</span>
         </>}
         <span class="call-label">Duration</span>
-        <span class="call-value">{event.duration}ms</span>
+        <span class="call-value mono">{event.duration}ms</span>
         <span class="call-label">Status</span>
         <span class={`call-value ${event.success ? 'success' : 'error'}`}>
           {event.success ? 'passed' : 'failed'}
         </span>
-        {event.bounds && <>
-          <span class="call-label">Bounds</span>
-          <span class="call-value">[{event.bounds.left}, {event.bounds.top}, {event.bounds.right}, {event.bounds.bottom}]</span>
+        {metadata.device.serial && <>
+          <span class="call-label">Device</span>
+          <span class="call-value">{metadata.device.model ? `${metadata.device.model} · ` : ''}{metadata.device.serial}</span>
         </>}
         {event.sourceLocation && <>
           <span class="call-label">Source</span>
-          <span class="call-value">{event.sourceLocation.file}:{event.sourceLocation.line}</span>
+          <span class="call-value mono">{event.sourceLocation.file}:{event.sourceLocation.line}</span>
         </>}
         {event.error && <>
           <span class="call-label">Error</span>
@@ -147,29 +170,35 @@ function CallTab({ event }: { event: ActionTraceEvent | AssertionTraceEvent | un
 
   return (
     <div class="call-grid">
-      <span class="call-label">Assertion</span>
+      <span class="call-label">Action</span>
       <span class="call-value">{event.assertion}</span>
       {event.selector && <>
         <span class="call-label">Selector</span>
-        <span class="call-value">{event.selector}</span>
+        {formatSelectorForCall(event.selector)}
       </>}
+      <span class="call-label">Wait strategy</span>
+      <span class="call-value">element to {event.assertion.replace('toBe', 'become ').replace('toHave', 'have ')} (auto-wait)</span>
       {event.expected !== undefined && <>
         <span class="call-label">Expected</span>
-        <span class="call-value">{event.expected}</span>
+        <span class="call-value mono">{event.expected}</span>
       </>}
       {event.actual !== undefined && <>
-        <span class="call-label">Actual</span>
-        <span class="call-value">{event.actual}</span>
+        <span class="call-label">Received</span>
+        <span class="call-value mono">{event.actual}</span>
       </>}
-      <span class="call-label">Result</span>
-      <span class={`call-value ${event.passed ? 'success' : 'error'}`}>
-        {event.passed ? 'passed' : 'failed'}{event.negated ? ' (negated)' : ''}{event.soft ? ' (soft)' : ''}
+      <span class="call-label">Timeout</span>
+      <span class="call-value mono">{event.duration}ms</span>
+      <span class="call-label">Elapsed</span>
+      <span class={`call-value mono ${event.passed ? '' : 'error'}`}>
+        {event.duration}ms{!event.passed ? ' (timed out)' : ''} — {event.attempts} attempt{event.attempts !== 1 ? 's' : ''}
       </span>
-      <span class="call-label">Duration</span>
-      <span class="call-value">{event.duration}ms ({event.attempts} attempt{event.attempts !== 1 ? 's' : ''})</span>
-      {event.bounds && <>
-        <span class="call-label">Bounds</span>
-        <span class="call-value">[{event.bounds.left}, {event.bounds.top}, {event.bounds.right}, {event.bounds.bottom}]</span>
+      {metadata.device.serial && <>
+        <span class="call-label">Device</span>
+        <span class="call-value">{metadata.device.model ? `${metadata.device.model} · ` : ''}{metadata.device.serial}</span>
+      </>}
+      {event.sourceLocation && <>
+        <span class="call-label">Source</span>
+        <span class="call-value mono">{event.sourceLocation.file}:{event.sourceLocation.line}</span>
       </>}
       {event.error && <>
         <span class="call-label">Error</span>
@@ -504,10 +533,21 @@ function errorTitle(ev: ActionTraceEvent | AssertionTraceEvent): string {
   return `Error: ${ev.action}() failed`;
 }
 
-function ErrorsTab({ event, events, testError }: {
+import { buildCodeSnippet, formatCodeSnippetPlain } from '../../trace/code-frame.js';
+
+function buildCodeFrame(sources: Map<string, string>, loc: { file: string; line: number } | undefined): string | null {
+  if (!loc || sources.size === 0) return null;
+  const [_filename, content] = [...sources.entries()][0];
+  if (!content) return null;
+  const snippet = buildCodeSnippet(content, loc.line);
+  return formatCodeSnippetPlain(snippet);
+}
+
+function ErrorsTab({ event, events, testError, sources }: {
   event: ActionTraceEvent | AssertionTraceEvent | undefined
   events: AnyTraceEvent[]
   testError?: string
+  sources: Map<string, string>
 }) {
   const failedEvents = events.filter((e): e is ActionTraceEvent | AssertionTraceEvent =>
     (e.type === 'action' && !(e as ActionTraceEvent).success) ||
@@ -529,11 +569,12 @@ function ErrorsTab({ event, events, testError }: {
           key={i}
           ev={ev}
           isSelected={!!event && event.actionIndex === ev.actionIndex && event.type === ev.type}
+          sources={sources}
         />
       ))}
       {showTestError && (
         <div class="error-entry">
-          <div class="error-title">Test Error</div>
+          <div class="error-title"><AlertTriangle size={14} class="error-title-icon" />Test Error</div>
           <div class="error-message">{testError}</div>
         </div>
       )}
@@ -541,66 +582,33 @@ function ErrorsTab({ event, events, testError }: {
   );
 }
 
-function ErrorEntry({ ev, isSelected }: { ev: ActionTraceEvent | AssertionTraceEvent; isSelected: boolean }) {
+function ErrorEntry({ ev, isSelected, sources }: { ev: ActionTraceEvent | AssertionTraceEvent; isSelected: boolean; sources: Map<string, string> }) {
   const title = errorTitle(ev);
   const log = ev.type === 'action' ? ev.log : undefined;
-  const stack = ev.type === 'action' ? ev.errorStack : undefined;
   const isAssertion = ev.type === 'assertion';
+  const codeFrame = buildCodeFrame(sources, ev.sourceLocation);
+
+  const detailLines: string[] = [];
+  if (ev.selector) detailLines.push(`Locator: ${ev.selector}`);
+  if (isAssertion && ev.expected !== undefined) detailLines.push(`Expected: ${ev.expected}`);
+  if (isAssertion && ev.actual !== undefined) detailLines.push(`Received: ${ev.actual}`);
+  if (ev.error) { detailLines.push(''); detailLines.push(ev.error); }
+  if (codeFrame) { detailLines.push(''); detailLines.push(codeFrame); }
 
   return (
     <div class={`error-entry${isSelected ? ' error-entry-selected' : ''}`}>
-      <div class="error-title">{title}</div>
+      <div class="error-title"><AlertTriangle size={14} class="error-title-icon" />{title}</div>
 
-      <div class="error-grid">
-        {ev.selector && (
-          <>
-            <span class="error-grid-key">Locator</span>
-            <span class="error-grid-value mono">{ev.selector}</span>
-          </>
-        )}
-        {isAssertion && ev.expected !== undefined && (
-          <>
-            <span class="error-grid-key">Expected</span>
-            <span class="error-grid-value expected">{ev.expected}</span>
-          </>
-        )}
-        {isAssertion && ev.actual !== undefined && (
-          <>
-            <span class="error-grid-key">Received</span>
-            <span class="error-grid-value received">{ev.actual}</span>
-          </>
-        )}
-        {isAssertion && (
-          <>
-            <span class="error-grid-key">Timeout</span>
-            <span class="error-grid-value mono">{ev.duration}ms ({ev.attempts} attempt{ev.attempts === 1 ? '' : 's'})</span>
-          </>
-        )}
-        {ev.sourceLocation && (
-          <>
-            <span class="error-grid-key">At</span>
-            <span class="error-grid-value mono">{ev.sourceLocation.file}:{ev.sourceLocation.line}</span>
-          </>
-        )}
-      </div>
-
-      {ev.error && (
-        <div class="error-message">{ev.error}</div>
+      {detailLines.length > 0 && (
+        <pre class="error-detail-block">{detailLines.join('\n')}</pre>
       )}
 
       {log && log.length > 0 && (
-        <div class="error-log">
-          <div class="error-log-title">Call log</div>
+        <details class="error-stack-details">
+          <summary>Call log</summary>
           <ul class="error-log-list">
             {log.map((line, i) => <li key={i}>{line}</li>)}
           </ul>
-        </div>
-      )}
-
-      {stack && (
-        <details class="error-stack-details">
-          <summary>Stack trace</summary>
-          <pre class="error-stack">{stack}</pre>
         </details>
       )}
     </div>
