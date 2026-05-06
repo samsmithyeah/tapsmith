@@ -1839,6 +1839,18 @@ impl proto::tapsmith_service_server::TapsmithService for TapsmithServiceImpl {
             }
             Platform::Android => {
                 // ─── Android: install APKs and launch instrumentation ───
+                if let Err(e) = adb::wait_for_device_ready(&serial, Duration::from_secs(45)).await {
+                    return Ok(Response::new(proto::ActionResponse {
+                        request_id,
+                        success: false,
+                        error_type: "DEVICE_NOT_READY".to_string(),
+                        error_message: format!(
+                            "Android device was not ready before starting agent: {e}"
+                        ),
+                        screenshot: Vec::new(),
+                    }));
+                }
+
                 let has_apk_paths =
                     !req.agent_apk_path.is_empty() && !req.agent_test_apk_path.is_empty();
                 let agent_installed = adb::is_package_installed(&serial, "dev.tapsmith.agent")
