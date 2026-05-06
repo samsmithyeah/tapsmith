@@ -54,6 +54,7 @@ targets:
         CODE_SIGNING_REQUIRED: NO
         CODE_SIGNING_ALLOWED: NO
         SWIFT_VERSION: "5.9"
+        SWIFT_OBJC_BRIDGING_HEADER: TapsmithAgent/TapsmithAgent-Bridging-Header.h
 XCODEGEN
     xcodegen generate
     rm project.yml
