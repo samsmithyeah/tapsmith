@@ -143,9 +143,9 @@ class WaitEngine {
             )
         }
         if let role = selector.role {
-            if let types = try? RoleMapping.elementTypes(for: role) {
-                let typePredicates = types.map { "elementType == \($0.rawValue)" }
-                let predicate = NSPredicate(format: typePredicates.joined(separator: " OR "))
+            if let types = try? RoleMapping.elementTypes(for: role), !types.isEmpty {
+                let rawValues = types.map { NSNumber(value: $0.rawValue) }
+                let predicate = NSPredicate(format: "elementType IN %@", rawValues)
                 return app.descendants(matching: .any).matching(predicate)
             }
         }

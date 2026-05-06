@@ -1086,7 +1086,7 @@ class SnapshotElementFinder {
         if frame.width > 0 && frame.height > 0 {
             size = frame.size
         } else {
-            // Fallback for pre-launch state
+            NSLog("[TapsmithSnapshot] WARNING: Could not determine screen size from window frame (%@), using fallback 393x852", NSStringFromCGRect(frame))
             size = CGSize(width: 393, height: 852)
         }
 
