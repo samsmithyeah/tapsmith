@@ -341,6 +341,7 @@ export function matchUrlPattern(
   if (typeof pattern === 'string') {
     return globMatch(pattern, url);
   } else if (pattern instanceof RegExp) {
+    pattern.lastIndex = 0;
     return pattern.test(url);
   } else {
     try {
@@ -351,8 +352,15 @@ export function matchUrlPattern(
   }
 }
 
+const _globCache = new Map<string, RegExp>();
+
 function globMatch(pattern: string, url: string): boolean {
-  const re = globToRegex(pattern);
+  if (_globCache.size > 1000) _globCache.clear();
+  let re = _globCache.get(pattern);
+  if (!re) {
+    re = globToRegex(pattern);
+    _globCache.set(pattern, re);
+  }
   return re.test(url);
 }
 

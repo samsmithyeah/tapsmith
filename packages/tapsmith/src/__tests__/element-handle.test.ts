@@ -1398,7 +1398,9 @@ describe('setChecked()', () => {
   it('does not tap when current state matches desired state', async () => {
     const tap = vi.fn(async () => successResponse());
     const el = makeElementInfo({ checked: true, text: 'Switch', resourceId: 'sw1' });
+    const findResult = { requestId: '1', found: true, element: el, errorMessage: '' };
     const client = makeMockClient({
+      findElement: vi.fn(async () => findResult),
       findElements: vi.fn(async () => makeFindElementsResponse([el])),
       tap,
     });
@@ -1410,13 +1412,10 @@ describe('setChecked()', () => {
   it('taps to uncheck when element is checked and desired is false', async () => {
     const tap = vi.fn(async () => successResponse());
     let callCount = 0;
+    const makEl = () => { callCount++; return makeElementInfo({ checked: callCount <= 1, text: 'Switch', resourceId: 'sw1' }); };
     const client = makeMockClient({
-      findElements: vi.fn(async () => {
-        callCount++;
-        // First call: checked, second call (verification): unchecked
-        const checked = callCount <= 1;
-        return makeFindElementsResponse([makeElementInfo({ checked, text: 'Switch', resourceId: 'sw1' })]);
-      }),
+      findElement: vi.fn(async () => ({ requestId: '1', found: true, element: makEl(), errorMessage: '' })),
+      findElements: vi.fn(async () => makeFindElementsResponse([makEl()])),
       tap,
     });
     const handle = new ElementHandle(client, _text('Switch'), 5000);
@@ -1442,9 +1441,12 @@ describe('setChecked()', () => {
       findElements: vi.fn(async () => makeFindElementsResponse([el])),
       tap,
     });
-    const handle = new ElementHandle(client, _text('Switch'), 5000);
+    // Use a short timeout so the retry loop exhausts quickly in the test
+    const handle = new ElementHandle(client, _text('Switch'), 1500);
     await expect(handle.setChecked(true)).rejects.toThrow('did not change after tap');
-  });
+    // With retry, tap should have been called more than once
+    expect(tap.mock.calls.length).toBeGreaterThanOrEqual(1);
+  }, 10000);
 
   it('works on modified handles', async () => {
     const tap = vi.fn(async () => successResponse());

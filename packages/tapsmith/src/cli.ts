@@ -618,7 +618,7 @@ async function setupSequentialDevice(
       cfg.platform === 'ios' ? resolvedIosAppPath : undefined,
       networkTracingEnabled,
     );
-    if (cfg.platform !== 'ios') {
+    if (cfg.platform !== 'ios' && !cfg.package) {
       await ensureSessionReady({
         label: `Device ${cfg.device}`,
         config: cfg,
@@ -646,8 +646,10 @@ async function setupSequentialDevice(
         agentApkPath: resolvedAgentApk,
         agentTestApkPath: resolvedAgentTestApk,
         iosXctestrunPath: resolvedIosXctestrun,
+        iosAppPath: resolvedIosAppPath,
         deviceSerial: cfg.device,
-      }, 'startup');
+        networkTracingEnabled,
+      }, 'startup', { readinessAttempts: 3 });
       console.log(dim(`Launched ${cfg.package}`));
     } catch (err) {
       throw new Error(`Failed to launch app: ${err}`);

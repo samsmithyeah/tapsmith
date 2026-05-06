@@ -52,7 +52,15 @@ export async function ensureSessionReady(
     } catch (err) {
       lastError = err;
       if (attempt === maxAttempts) break;
-      await recoverSession(ctx);
+      try {
+        await recoverSession(ctx);
+      } catch (recoveryErr) {
+        // The recovery RPC can hit the same transient agent/ADB transport
+        // blip that caused verification to fail. If the caller allowed more
+        // attempts, loop back and probe the session again before giving up.
+        lastError = recoveryErr;
+        if (attempt === maxAttempts - 1) break;
+      }
     }
   }
 
@@ -64,10 +72,12 @@ export async function ensureSessionReady(
 export async function launchConfiguredApp(
   ctx: SessionPreflightContext,
   phase: string,
-  options: { allowSoftReset?: boolean } = {},
+  options: { allowSoftReset?: boolean; readinessAttempts?: number } = {},
 ): Promise<void> {
+  const readinessAttempts = options.readinessAttempts;
+
   if (!ctx.config.package) {
-    await ensureSessionReady(ctx, phase);
+    await ensureSessionReady(ctx, phase, readinessAttempts);
     return;
   }
 
@@ -75,7 +85,7 @@ export async function launchConfiguredApp(
   if (ctx.config.platform === 'ios') {
     if (allowSoftReset && ctx.config.resetAppDeepLink) {
       await softResetAppViaDeepLink(ctx);
-      await ensureSessionReady(ctx, phase);
+      await ensureSessionReady(ctx, phase, readinessAttempts);
       return;
     }
 
@@ -103,7 +113,7 @@ export async function launchConfiguredApp(
       const message = err instanceof Error ? err.message : String(err);
       process.stderr.write(`[tapsmith] iOS file-level restartApp failed (will recover): ${message}\n`);
     }
-    await ensureSessionReady(ctx, phase);
+    await ensureSessionReady(ctx, phase, readinessAttempts);
     // After launch, wait for the app to actually be ready (non-empty
     // accessibility hierarchy). This guards the file-level race where
     // beforeAll can fire before the React Native JS bundle has loaded.
@@ -146,7 +156,7 @@ export async function launchConfiguredApp(
 
   await ctx.device.launchApp(ctx.config.package, launchOptions(ctx.config));
 
-  await ensureSessionReady(ctx, phase);
+  await ensureSessionReady(ctx, phase, readinessAttempts);
 }
 
 async function verifySession(ctx: SessionPreflightContext): Promise<void> {

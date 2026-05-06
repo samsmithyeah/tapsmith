@@ -13,7 +13,13 @@ class SnapshotElementFinder {
     private var elementCache: [String: XCUIElement] = [:]
     /// Bounds from snapshot — used for coordinate-based actions (fast, no quiescence).
     private var boundsCache: [String: CGRect] = [:]
+    private var cacheOrder: [String] = []
     private let lock = NSLock()
+
+    /// Maximum number of cached elements before eviction. Prevents unbounded
+    /// growth from thousands of stale XCUIElement references accumulating
+    /// over a long test run.
+    private let maxCacheSize = 500
 
     /// Parsed snapshot node from the accessibility tree.
     struct AXNode {
@@ -125,7 +131,7 @@ class SnapshotElementFinder {
 
         let screenSize = self.screenSize
 
-        return matches.map { (nodeDict, frame) in
+        let results = matches.map { (nodeDict, frame) in
             let bounds = ElementBounds(
                 left: Int(frame.origin.x),
                 top: Int(frame.origin.y),
@@ -164,8 +170,9 @@ class SnapshotElementFinder {
 
             // Lazily build an XCUIElement query for actions that need it (typeText, etc.).
             // This is deferred — the query object is created but not evaluated until
-            // a property (like .isHittable) is accessed.
-            cacheQueryElement(elementId: elementId, selector: selector)
+            // a property (like .isHittable) is accessed. Pass the snapshot node so the
+            // query can use element type + identifier for more precise matching.
+            cacheQueryElement(elementId: elementId, selector: selector, snapshotNode: nodeDict)
             // The snapshot's hasFocus is unreliable on Xcode 26 — it reports false
             // even when the element is the first responder with keyboard showing.
             // For text fields, detect focus by checking if a keyboard is visible
@@ -248,6 +255,13 @@ class SnapshotElementFinder {
                 viewportRatio: viewportRatio
             )
         }
+
+        // Evict stale entries if caches have grown too large.
+        lock.lock()
+        pruneCacheLocked()
+        lock.unlock()
+
+        return results
     }
 
     /// Clear all caches (call after app relaunch).
@@ -255,7 +269,18 @@ class SnapshotElementFinder {
         lock.lock()
         elementCache.removeAll()
         boundsCache.removeAll()
+        cacheOrder.removeAll()
         lock.unlock()
+    }
+
+    /// Evict oldest entries when the cache exceeds `maxCacheSize`.
+    /// Must be called while `lock` is held.
+    private func pruneCacheLocked() {
+        while elementCache.count > maxCacheSize, !cacheOrder.isEmpty {
+            let oldest = cacheOrder.removeFirst()
+            elementCache.removeValue(forKey: oldest)
+            boundsCache.removeValue(forKey: oldest)
+        }
     }
 
     /// Get a cached XCUIElement by its stable ID (for actions like tap).
@@ -283,6 +308,42 @@ class SnapshotElementFinder {
         return bounds
     }
 
+    /// Take a fresh snapshot and return updated bounds for a cached element.
+    ///
+    /// Used to minimize the TOCTOU window between coordinate reads and
+    /// tap/gesture actions. If the element can be re-identified in the
+    /// fresh snapshot (by its cached XCUIElement query), returns its
+    /// current frame. Otherwise returns nil.
+    ///
+    /// **Cost:** one `element.frame` IPC read on the cached XCUIElement.
+    /// This is cheaper than a full `app.snapshot()` but still crosses
+    /// the XPC boundary, so only call immediately before a coordinate
+    /// action where stale bounds could cause a mis-tap.
+    func refreshBounds(for elementId: String) -> CGRect? {
+        lock.lock()
+        let cachedElement = elementCache[elementId]
+        let cachedBounds = boundsCache[elementId]
+        lock.unlock()
+
+        guard let element = cachedElement else { return cachedBounds }
+
+        // Read the live frame — this is a single IPC call.
+        let liveFrame = element.frame
+        guard liveFrame.width > 0 && liveFrame.height > 0 else {
+            return cachedBounds
+        }
+
+        // Update the bounds cache atomically — re-check the element is
+        // still cached (clearCaches may have run between the two locks).
+        lock.lock()
+        if elementCache[elementId] != nil {
+            boundsCache[elementId] = liveFrame
+        }
+        lock.unlock()
+
+        return liveFrame
+    }
+
     /// Get the ElementInfo for a cached element.
     ///
     /// **Cost:** several live `XCUIElement` property reads (label,
@@ -302,6 +363,8 @@ class SnapshotElementFinder {
         let elementId = UUID().uuidString
         lock.lock()
         elementCache[elementId] = element
+        cacheOrder.append(elementId)
+        pruneCacheLocked()
         lock.unlock()
         return toElementInfo(element, elementId: elementId)
     }
@@ -891,22 +954,25 @@ class SnapshotElementFinder {
     // MARK: - XCUIElement caching for actions
 
     /// Lazily cache an XCUIElement for the given selector so it can be used for actions.
-    private func cacheQueryElement(elementId: String, selector: ElementSelector) {
+    ///
+    /// Builds an XCUIElement query that is as specific as possible to avoid
+    /// matching a DIFFERENT element when multiple elements share the same label.
+    /// Uses element type + identifier + label when available, falling back to
+    /// broader queries only when the selector doesn't carry enough info.
+    private func cacheQueryElement(
+        elementId: String,
+        selector: ElementSelector,
+        snapshotNode: [String: Any]? = nil
+    ) {
         // Build a query that matches this element
         let element: XCUIElement?
 
-        if let text = selector.text {
-            // Use a predicate that handles iOS's auto-concatenated labels.
-            // A Pressable with children ["Login Form", "description"] gets
-            // label "Login Form, description" — so exact match alone fails.
-            element = app.descendants(matching: .any)
-                .matching(concatenatedLabelPredicate(text))
-                .firstMatch
-        } else if let contentDesc = selector.contentDesc {
-            element = app.descendants(matching: .any)
-                .matching(concatenatedLabelPredicate(contentDesc))
-                .firstMatch
-        } else if let testId = selector.testId {
+        // Extract snapshot metadata for more precise queries when available.
+        let nodeElTypeRaw = snapshotNode.flatMap { parseUInt($0["elementType"]) } ?? 0
+        let nodeElType = XCUIElement.ElementType(rawValue: nodeElTypeRaw)
+        let nodeIdentifier = snapshotNode?["identifier"] as? String ?? ""
+
+        if let testId = selector.testId {
             element = app.descendants(matching: .any)
                 .matching(NSPredicate(format: "identifier == %@", testId))
                 .firstMatch
@@ -914,18 +980,67 @@ class SnapshotElementFinder {
             element = app.descendants(matching: .any)
                 .matching(NSPredicate(format: "identifier == %@", id))
                 .firstMatch
+        } else if let text = selector.text {
+            // Use type + identifier constraints from the snapshot to narrow
+            // the query beyond just the label, avoiding false matches when
+            // multiple elements share the same text.
+            let labelPredicate = concatenatedLabelPredicate(text)
+            if let elType = nodeElType, elType != .other, elType != .any {
+                var query = app.descendants(matching: elType).matching(labelPredicate)
+                if !nodeIdentifier.isEmpty {
+                    query = query.matching(NSPredicate(format: "identifier == %@", nodeIdentifier))
+                }
+                element = query.firstMatch
+            } else {
+                element = app.descendants(matching: .any)
+                    .matching(labelPredicate)
+                    .firstMatch
+            }
+        } else if let contentDesc = selector.contentDesc {
+            let labelPredicate = concatenatedLabelPredicate(contentDesc)
+            if let elType = nodeElType, elType != .other, elType != .any {
+                var query = app.descendants(matching: elType).matching(labelPredicate)
+                if !nodeIdentifier.isEmpty {
+                    query = query.matching(NSPredicate(format: "identifier == %@", nodeIdentifier))
+                }
+                element = query.firstMatch
+            } else {
+                element = app.descendants(matching: .any)
+                    .matching(labelPredicate)
+                    .firstMatch
+            }
         } else if let role = selector.role, let name = selector.name {
             // Role + name: e.g. role("button", "Sign in")
-            // Match by accessible name across all descendants. React Native
-            // buttons often surface as XCUIElementTypeOther with traits, so a
-            // type-constrained query can miss the element we just found in the snapshot.
-            element = app.descendants(matching: .any)
-                .matching(concatenatedLabelPredicate(name))
-                .firstMatch
+            // Use type constraint when the snapshot element isn't `.other`
+            // (React Native buttons surface as .other with traits, so a
+            // type-constrained query can miss those — fall back to label-only).
+            let labelPredicate = concatenatedLabelPredicate(name)
+            if let elType = nodeElType, elType != .other, elType != .any {
+                var query = app.descendants(matching: elType).matching(labelPredicate)
+                if !nodeIdentifier.isEmpty {
+                    query = query.matching(NSPredicate(format: "identifier == %@", nodeIdentifier))
+                }
+                element = query.firstMatch
+            } else if !nodeIdentifier.isEmpty {
+                element = app.descendants(matching: .any)
+                    .matching(NSPredicate(format: "identifier == %@", nodeIdentifier))
+                    .matching(labelPredicate)
+                    .firstMatch
+            } else {
+                element = app.descendants(matching: .any)
+                    .matching(labelPredicate)
+                    .firstMatch
+            }
         } else if let role = selector.role {
-            // Role-only: match the first element of this type
+            // Role-only: match by type, narrowed by identifier if available
             if let types = try? RoleMapping.elementTypes(for: role), let firstType = types.first {
-                element = app.descendants(matching: firstType).firstMatch
+                if !nodeIdentifier.isEmpty {
+                    element = app.descendants(matching: firstType)
+                        .matching(NSPredicate(format: "identifier == %@", nodeIdentifier))
+                        .firstMatch
+                } else {
+                    element = app.descendants(matching: firstType).firstMatch
+                }
             } else {
                 element = nil
             }
@@ -936,6 +1051,7 @@ class SnapshotElementFinder {
         if let element = element {
             lock.lock()
             elementCache[elementId] = element
+            cacheOrder.append(elementId)
             lock.unlock()
         }
     }
@@ -953,16 +1069,40 @@ class SnapshotElementFinder {
 
     // MARK: - Helpers
 
-    lazy var screenSize: CGSize = {
+    private var _screenSize: CGSize?
+
+    var screenSize: CGSize {
+        lock.lock()
+        if let cached = _screenSize {
+            lock.unlock()
+            return cached
+        }
+        lock.unlock()
+
         // Get actual screen size from the app's main window frame.
         // On iOS the main window is always full-screen.
         let frame = app.windows.firstMatch.frame
+        let size: CGSize
         if frame.width > 0 && frame.height > 0 {
-            return frame.size
+            size = frame.size
+        } else {
+            NSLog("[TapsmithSnapshot] WARNING: Could not determine screen size from window frame (\(frame)), using fallback 393x852")
+            size = CGSize(width: 393, height: 852)
         }
-        // Fallback for pre-launch state
-        return CGSize(width: 393, height: 852)
-    }()
+
+        lock.lock()
+        _screenSize = size
+        lock.unlock()
+        return size
+    }
+
+    /// Invalidate the cached screen size. Call after orientation changes
+    /// so the next access re-reads from the window frame.
+    func invalidateScreenSize() {
+        lock.lock()
+        _screenSize = nil
+        lock.unlock()
+    }
 
     private func computeViewportRatio(_ bounds: ElementBounds, screenSize: CGSize) -> Float {
         let screenRect = CGRect(x: 0, y: 0, width: screenSize.width, height: screenSize.height)

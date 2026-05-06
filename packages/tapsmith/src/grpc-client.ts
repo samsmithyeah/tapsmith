@@ -232,6 +232,13 @@ export class TapsmithGrpcClient {
     this.client = new TapsmithService(
       this.address,
       grpc.credentials.createInsecure(),
+      {
+        'grpc.max_receive_message_length': 64 * 1024 * 1024,  // 64MB
+        'grpc.max_send_message_length': 64 * 1024 * 1024,     // 64MB
+        'grpc.keepalive_time_ms': 30_000,                      // ping every 30s
+        'grpc.keepalive_timeout_ms': 10_000,                   // 10s to respond
+        'grpc.keepalive_permit_without_calls': 1,              // ping even when idle
+      },
     // eslint-disable-next-line @typescript-eslint/no-unsafe-function-type
     ) as grpc.Client & Record<string, Function>;
   }

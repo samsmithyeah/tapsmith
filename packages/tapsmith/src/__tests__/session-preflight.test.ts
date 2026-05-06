@@ -57,6 +57,20 @@ describe('session-preflight', () => {
     });
   });
 
+  it('continues when recovery itself hits a transient transport error', async () => {
+    const ctx = makeContext();
+    vi.mocked(ctx.client.ping)
+      .mockRejectedValueOnce(new Error('Agent connection dropped (empty response); reconnecting'))
+      .mockResolvedValueOnce({ version: '0.1.0', agentConnected: true });
+    vi.mocked(ctx.device.startAgent)
+      .mockRejectedValueOnce(new Error('Failed to connect to agent socket'));
+
+    await expect(ensureSessionReady(ctx, 'startup', 3)).resolves.toBeUndefined();
+
+    expect(ctx.device.startAgent).toHaveBeenCalledTimes(1);
+    expect(ctx.client.ping).toHaveBeenCalledTimes(2);
+  });
+
   it('fails when the foreground package never matches', async () => {
     const ctx = makeContext();
     vi.mocked(ctx.device.currentPackage).mockResolvedValue('com.other.app');

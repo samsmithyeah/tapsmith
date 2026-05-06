@@ -17,6 +17,7 @@ mod video;
 
 use std::net::SocketAddr;
 use std::sync::Arc;
+use std::time::Duration;
 
 use anyhow::{Context, Result};
 use tokio::sync::RwLock;
@@ -190,8 +191,12 @@ async fn main() -> Result<()> {
     info!(%addr, "Starting Tapsmith gRPC server");
 
     Server::builder()
+        .http2_keepalive_interval(Some(Duration::from_secs(30)))
+        .http2_keepalive_timeout(Some(Duration::from_secs(10)))
         .add_service(
-            proto::tapsmith_service_server::TapsmithServiceServer::from_arc(service_handle.clone()),
+            proto::tapsmith_service_server::TapsmithServiceServer::from_arc(service_handle.clone())
+                .max_decoding_message_size(64 * 1024 * 1024)
+                .max_encoding_message_size(64 * 1024 * 1024),
         )
         .serve_with_shutdown(addr, shutdown_signal())
         .await

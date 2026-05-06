@@ -42,6 +42,20 @@ class CommandHandler {
         return ProcessInfo.processInfo.environment["TAPSMITH_TARGET_BUNDLE_ID"] ?? ""
     }
 
+    /// Accept SpringBoard's custom URL-scheme confirmation if it is covering
+    /// the app after a deep-link launch.
+    @discardableResult
+    private func acceptOpenInAppDialogIfPresent(timeout: TimeInterval = 0.0) -> Bool {
+        let springboard = XCUIApplication(bundleIdentifier: "com.apple.springboard")
+        let openButton = springboard.buttons["Open"]
+        if openButton.waitForExistence(timeout: timeout) {
+            openButton.tap()
+            Thread.sleep(forTimeInterval: 0.25)
+            return true
+        }
+        return false
+    }
+
     /// Dismiss any blocking iOS system dialog currently covering the app
     /// (e.g. "Save Password?", "Allow Notifications?", iCloud Keychain
     /// prompts). Returns true if a dialog was dismissed. Intended for
@@ -58,6 +72,10 @@ class CommandHandler {
     /// permission grant when the intent was to decline.
     @discardableResult
     private func dismissBlockingSystemDialogs() -> Bool {
+        if acceptOpenInAppDialogIfPresent(timeout: 0.1) {
+            return true
+        }
+
         let dismissalLabels = [
             "Not Now",
             "Don’t Allow",
@@ -99,6 +117,7 @@ class CommandHandler {
         elementFinder = ElementFinder(app: refreshedApp)
         snapshotFinder = SnapshotElementFinder(app: refreshedApp)
         actionExecutor = ActionExecutor(app: refreshedApp)
+        actionExecutor.cachedScreenSize = snapshotFinder.screenSize
         waitEngine = WaitEngine(app: refreshedApp)
         hierarchyDumper = HierarchyDumper(app: refreshedApp)
         return refreshedApp
@@ -119,7 +138,32 @@ class CommandHandler {
         let params = json["params"] as? [String: Any] ?? [:]
 
         do {
-            let result = try dispatch(method: method, params: params)
+            var result: [String: Any]?
+            var swiftError: Error?
+
+            // Wrap in ObjC @try/@catch to prevent NSExceptions from
+            // XCUITest private APIs from crashing the agent process.
+            // Swift's do/catch only catches Swift Error types — ObjC
+            // NSExceptions bypass it entirely and terminate the process.
+            let objcError = ObjCExceptionCatcher.catchException {
+                do {
+                    result = try self.dispatch(method: method, params: params)
+                } catch {
+                    swiftError = error
+                }
+            }
+
+            if let error = swiftError {
+                throw error
+            }
+            if let objcError = objcError {
+                let msg = objcError.localizedDescription
+                NSLog("[TapsmithCommand] ObjC exception in method '\(method)': \(msg)")
+                return errorResponse(id: id, type: "INTERNAL_ERROR", message: msg)
+            }
+            guard let result = result else {
+                return errorResponse(id: id, type: "INTERNAL_ERROR", message: "Command dispatch returned no result")
+            }
             return successResponse(id: id, result: result)
         } catch let error as AgentError {
             return errorResponse(id: id, type: error.type, message: error.message)
@@ -131,12 +175,17 @@ class CommandHandler {
 
     // MARK: - Coordinate-based actions (fast path)
 
-    /// Get the center point of an element from the snapshot bounds cache.
-    /// This avoids XCUIElement queries which trigger slow quiescence on Xcode 26.
+    /// Get the center point of an element, refreshing bounds from a live
+    /// XCUIElement read to minimize the TOCTOU window between coordinate
+    /// resolution and the subsequent tap/gesture action.
+    ///
+    /// Falls back to cached snapshot bounds if the live refresh fails.
     /// Returns nil if bounds are off-screen (e.g., scroll view children with
     /// stale snapshot coordinates), falling through to the XCUIElement path.
     private func snapshotCenter(for elementId: String) -> CGPoint? {
-        guard let bounds = snapshotFinder.getBounds(elementId) else { return nil }
+        // refreshBounds takes a live frame read from the cached XCUIElement,
+        // falling back to the snapshot-time bounds if unavailable.
+        guard let bounds = snapshotFinder.refreshBounds(for: elementId) else { return nil }
         guard bounds.width > 0 && bounds.height > 0 else { return nil }
         let center = CGPoint(x: bounds.midX, y: bounds.midY)
         // Reject off-screen coordinates — snapshot frames for scroll view
@@ -201,7 +250,7 @@ class CommandHandler {
             let screen = snapshotFinder.screenSize
             if x >= 0 && y >= 0 && x <= screen.width && y <= screen.height {
                 actionExecutor.tapCoordinates(x: Int(x), y: Int(y))
-                Thread.sleep(forTimeInterval: settleTime)
+                waitForKeyboardAppearance(maxWait: settleTime)
                 return
             }
         }
@@ -211,7 +260,17 @@ class CommandHandler {
             throw AgentError.actionFailed("Element is not hittable — cannot type text")
         }
         xcElem.tap()
-        Thread.sleep(forTimeInterval: settleTime)
+        waitForKeyboardAppearance(maxWait: settleTime)
+    }
+
+    private func waitForKeyboardAppearance(maxWait: TimeInterval) {
+        let deadline = CFAbsoluteTimeGetCurrent() + maxWait
+        while CFAbsoluteTimeGetCurrent() < deadline {
+            let snap = try? app.snapshot()
+            let dict = snap.map { $0.dictionaryRepresentation } ?? [:]
+            if hasKeyboardInSnapshot(dict) { return }
+            Thread.sleep(forTimeInterval: 0.15)
+        }
     }
 
     /// Type through EventSynthesizer, but don't advance to the next grapheme
@@ -361,7 +420,12 @@ class CommandHandler {
                     }
                     if timeout >= 1000 {
                         // Element not in current snapshot — poll with wait engine
-                        element = try waitEngine.waitForElement(selector, timeoutMs: timeout, elementFinder: elementFinder)
+                        element = try waitEngine.waitForElement(
+                            selector,
+                            timeoutMs: timeout,
+                            elementFinder: elementFinder,
+                            snapshotFinder: snapshotFinder
+                        )
                     } else {
                         throw error
                     }
@@ -668,10 +732,18 @@ class CommandHandler {
                 try actionExecutor.swipe(xcElem, direction: direction, speed: speed, distance: distance)
             } else if let startElement = params["startElement"] as? [String: Any] {
                 let startSel = SelectorParser.parse(startElement)
-                let startEl = try waitEngine.waitForElement(startSel, timeoutMs: 10000, elementFinder: elementFinder)
+                let startEl = try waitEngine.waitForElement(
+                    startSel,
+                    timeoutMs: 10000,
+                    elementFinder: elementFinder,
+                    snapshotFinder: snapshotFinder
+                )
                 let xcElem = try getXCUIElement(startEl.elementId)
                 try actionExecutor.swipe(xcElem, direction: direction, speed: speed, distance: distance)
             } else {
+                // Sync screen size to avoid quiescence-triggering
+                // app.windows.firstMatch.frame.size read inside swipeScreen().
+                actionExecutor.cachedScreenSize = snapshotFinder.screenSize
                 try actionExecutor.swipeScreen(direction: direction, speed: speed, distance: distance)
             }
             // Swipe generates scroll momentum that continues for 500ms+.
@@ -691,7 +763,12 @@ class CommandHandler {
             }
             if let container = params["container"] as? [String: Any] {
                 let containerSel = SelectorParser.parse(container)
-                let containerEl = try waitEngine.waitForElement(containerSel, timeoutMs: 10000, elementFinder: elementFinder)
+                let containerEl = try waitEngine.waitForElement(
+                    containerSel,
+                    timeoutMs: 10000,
+                    elementFinder: elementFinder,
+                    snapshotFinder: snapshotFinder
+                )
                 let xcElem = try getXCUIElement(containerEl.elementId)
                 try actionExecutor.scroll(xcElem, direction: direction, targetSelector: targetSelector)
             } else if let elementId = params["elementId"] as? String {
@@ -725,12 +802,22 @@ class CommandHandler {
             do {
                 sourceEl = try snapshotFinder.findElement(sourceSel)
             } catch {
-                sourceEl = try waitEngine.waitForElement(sourceSel, timeoutMs: timeout, elementFinder: elementFinder)
+                sourceEl = try waitEngine.waitForElement(
+                    sourceSel,
+                    timeoutMs: timeout,
+                    elementFinder: elementFinder,
+                    snapshotFinder: snapshotFinder
+                )
             }
             do {
                 targetEl = try snapshotFinder.findElement(targetSel)
             } catch {
-                targetEl = try waitEngine.waitForElement(targetSel, timeoutMs: timeout, elementFinder: elementFinder)
+                targetEl = try waitEngine.waitForElement(
+                    targetSel,
+                    timeoutMs: timeout,
+                    elementFinder: elementFinder,
+                    snapshotFinder: snapshotFinder
+                )
             }
             // Use snapshot bounds to avoid XCUIElement .frame IPC which can
             // trigger quiescence waits and hang/crash the XCTest session.
@@ -783,6 +870,9 @@ class CommandHandler {
         case "blur":
             let element = try resolveElement(params)
             let xcElem = try getXCUIElement(element.elementId)
+            // Sync screen size to avoid quiescence-triggering
+            // app.windows.firstMatch.frame.size read inside blur().
+            actionExecutor.cachedScreenSize = snapshotFinder.screenSize
             try actionExecutor.blur(xcElem)
             return ["success": true]
 
@@ -825,7 +915,12 @@ class CommandHandler {
         case "waitForElement":
             let selector = SelectorParser.parse(params)
             let timeout = params["timeout"] as? Int64 ?? 10000
-            let element = try waitEngine.waitForElement(selector, timeoutMs: timeout, elementFinder: elementFinder)
+            let element = try waitEngine.waitForElement(
+                selector,
+                timeoutMs: timeout,
+                elementFinder: elementFinder,
+                snapshotFinder: snapshotFinder
+            )
             return element.toDict()
 
         // ─── Clipboard ───
@@ -850,15 +945,10 @@ class CommandHandler {
             targetApp.activate()
             // Brief wait for the app to settle.
             Thread.sleep(forTimeInterval: 0.15)
-            // Quick check for system dialogs without blocking.
-            // Only check one button with a very short timeout to stay within
-            // the daemon's 4-second command timeout for launchApp.
+            // Accept custom URL-scheme confirmation if simctl openurl left
+            // SpringBoard in front of the app before this rebind.
             let springboard = XCUIApplication(bundleIdentifier: "com.apple.springboard")
-            let openButton = springboard.buttons["Open"]
-            if openButton.exists {
-                openButton.tap()
-                Thread.sleep(forTimeInterval: 0.1)
-            }
+            _ = acceptOpenInAppDialogIfPresent(timeout: 1.0)
             // Dismiss "Save Password?" dialog from iOS Passwords framework.
             let notNow = springboard.buttons["Not Now"]
             if notNow.exists {
@@ -915,6 +1005,7 @@ class CommandHandler {
                 Thread.sleep(forTimeInterval: 0.15)
                 targetApp.open(url)
                 Thread.sleep(forTimeInterval: 0.3)
+                _ = acceptOpenInAppDialogIfPresent(timeout: 1.0)
                 return ["success": true]
             } else {
                 throw AgentError.actionFailed(
@@ -960,6 +1051,7 @@ class CommandHandler {
                 XCUIDevice.shared.orientation = target
                 Thread.sleep(forTimeInterval: 0.4)
             }
+            snapshotFinder.invalidateScreenSize()
             return ["success": true]
 
         case "getOrientation":

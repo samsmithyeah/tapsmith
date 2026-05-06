@@ -1,5 +1,5 @@
 use std::path::PathBuf;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::{anyhow, bail, Context, Result};
 use tokio::process::Command;
@@ -66,6 +66,11 @@ async fn run_adb(serial: Option<&str>, args: &[&str], timeout: Duration) -> Resu
 
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(30);
 const CLEANUP_TIMEOUT: Duration = Duration::from_secs(5);
+const ADB_TRANSPORT_RETRY_ATTEMPTS: usize = 3;
+const ADB_TRANSPORT_RECOVERY_TIMEOUT: Duration = Duration::from_secs(45);
+const ADB_READY_COMMAND_TIMEOUT: Duration = Duration::from_secs(5);
+const ADB_READY_PACKAGE_TIMEOUT: Duration = Duration::from_secs(10);
+const ADB_READY_POLL_INTERVAL: Duration = Duration::from_secs(2);
 
 /// User-installed CA certificate directory. Apps must include
 /// `<certificates src="user"/>` in their network security config to
@@ -134,7 +139,8 @@ pub async fn get_device_os_version(serial: &str) -> Result<String> {
 #[instrument(skip(apk_path))]
 pub async fn install_apk(serial: &str, apk_path: &str) -> Result<()> {
     let timeout = Duration::from_secs(120);
-    run_adb(Some(serial), &["install", "-r", apk_path], timeout).await?;
+    run_adb_with_transport_recovery(serial, &["install", "-r", apk_path], timeout, "install APK")
+        .await?;
     Ok(())
 }
 
@@ -208,7 +214,9 @@ pub async fn remove_reverse_with_timeout(
 /// Execute a shell command on the device, returning stdout as a String.
 #[instrument]
 pub async fn shell(serial: &str, command: &str) -> Result<String> {
-    let stdout = run_adb(Some(serial), &["shell", command], DEFAULT_TIMEOUT).await?;
+    let stdout =
+        run_adb_with_transport_recovery(serial, &["shell", command], DEFAULT_TIMEOUT, "adb shell")
+            .await?;
     Ok(String::from_utf8_lossy(&stdout).to_string())
 }
 
@@ -308,6 +316,151 @@ pub async fn pull_file(serial: &str, remote_path: &str, local_path: &str) -> Res
 pub async fn shell_with_timeout(serial: &str, command: &str, timeout: Duration) -> Result<String> {
     let stdout = run_adb(Some(serial), &["shell", command], timeout).await?;
     Ok(String::from_utf8_lossy(&stdout).to_string())
+}
+
+/// Wait until ADB reports the device online, Android has completed boot, and
+/// package manager calls are working. `sys.boot_completed=1` alone can be too
+/// early on hosted CI: the next `adb install` may still hit a transient
+/// `device offline` or unavailable package-manager transport.
+#[instrument]
+pub async fn wait_for_device_ready(serial: &str, timeout: Duration) -> Result<()> {
+    let deadline = Instant::now() + timeout;
+    let mut last_error = "device was not ready".to_string();
+
+    while Instant::now() < deadline {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            break;
+        }
+
+        let wait_timeout = remaining.min(Duration::from_secs(10));
+        if let Err(e) = run_adb(Some(serial), &["wait-for-device"], wait_timeout).await {
+            last_error = e.to_string();
+            tokio::time::sleep(ADB_READY_POLL_INTERVAL.min(remaining)).await;
+            continue;
+        }
+
+        match run_adb(Some(serial), &["get-state"], ADB_READY_COMMAND_TIMEOUT).await {
+            Ok(stdout) => {
+                let state = String::from_utf8_lossy(&stdout).trim().to_string();
+                if state != "device" {
+                    last_error = format!("adb get-state returned {state:?}");
+                    tokio::time::sleep(ADB_READY_POLL_INTERVAL.min(remaining)).await;
+                    continue;
+                }
+            }
+            Err(e) => {
+                last_error = e.to_string();
+                tokio::time::sleep(ADB_READY_POLL_INTERVAL.min(remaining)).await;
+                continue;
+            }
+        }
+
+        match run_adb(
+            Some(serial),
+            &["shell", "getprop sys.boot_completed"],
+            ADB_READY_COMMAND_TIMEOUT,
+        )
+        .await
+        {
+            Ok(stdout) => {
+                let boot_completed = String::from_utf8_lossy(&stdout).trim().to_string();
+                if boot_completed != "1" {
+                    last_error = format!("sys.boot_completed={boot_completed:?}");
+                    tokio::time::sleep(ADB_READY_POLL_INTERVAL.min(remaining)).await;
+                    continue;
+                }
+            }
+            Err(e) => {
+                last_error = e.to_string();
+                tokio::time::sleep(ADB_READY_POLL_INTERVAL.min(remaining)).await;
+                continue;
+            }
+        }
+
+        match run_adb(
+            Some(serial),
+            &["shell", "cmd package list packages >/dev/null"],
+            ADB_READY_PACKAGE_TIMEOUT,
+        )
+        .await
+        {
+            Ok(_) => return Ok(()),
+            Err(e) => {
+                last_error = e.to_string();
+                tokio::time::sleep(ADB_READY_POLL_INTERVAL.min(remaining)).await;
+            }
+        }
+    }
+
+    bail!(
+        "Android device {serial} was not ready after {:?}: {last_error}",
+        timeout
+    )
+}
+
+async fn run_adb_with_transport_recovery(
+    serial: &str,
+    args: &[&str],
+    timeout: Duration,
+    operation: &str,
+) -> Result<Vec<u8>> {
+    for attempt in 1..=ADB_TRANSPORT_RETRY_ATTEMPTS {
+        match run_adb(Some(serial), args, timeout).await {
+            Ok(stdout) => return Ok(stdout),
+            Err(e) => {
+                let message = e.to_string();
+                if attempt == ADB_TRANSPORT_RETRY_ATTEMPTS
+                    || !is_retryable_adb_transport_error(&message)
+                {
+                    return Err(e);
+                }
+
+                warn!(
+                    %serial,
+                    operation,
+                    attempt,
+                    max_attempts = ADB_TRANSPORT_RETRY_ATTEMPTS,
+                    error = %message,
+                    "ADB transport failure; waiting for device and retrying"
+                );
+
+                if let Err(recovery_err) =
+                    wait_for_device_ready(serial, ADB_TRANSPORT_RECOVERY_TIMEOUT).await
+                {
+                    bail!(
+                        "{operation} failed after retryable ADB transport error ({message}); \
+                         device did not recover: {recovery_err}"
+                    );
+                }
+            }
+        }
+    }
+
+    unreachable!("ADB retry loop must return on success or final failure")
+}
+
+fn is_retryable_adb_transport_error(message: &str) -> bool {
+    let msg = message.to_ascii_lowercase();
+    if msg.contains("device '") && msg.contains("' not found") {
+        return true;
+    }
+
+    [
+        "device offline",
+        "device still connecting",
+        "no devices/emulators found",
+        "device not found",
+        "transport is down",
+        "transport endpoint is not connected",
+        "failed to read response from server",
+        "protocol fault",
+        "connection reset",
+        "broken pipe",
+        "closed",
+    ]
+    .iter()
+    .any(|needle| msg.contains(needle))
 }
 
 /// Install a CA certificate on the device for MITM HTTPS interception.
@@ -590,6 +743,39 @@ pub async fn cleanup_iptables_redirect(serial: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ─── Retryable ADB transport errors ───
+
+    #[test]
+    fn retryable_adb_transport_error_matches_offline_device() {
+        assert!(is_retryable_adb_transport_error(
+            "adb command failed (exit exit status: 1): adb: device offline"
+        ));
+    }
+
+    #[test]
+    fn retryable_adb_transport_error_matches_missing_device() {
+        assert!(is_retryable_adb_transport_error(
+            "adb command failed (exit exit status: 1): error: no devices/emulators found"
+        ));
+        assert!(is_retryable_adb_transport_error(
+            "adb command failed (exit exit status: 1): error: device 'emulator-5554' not found"
+        ));
+    }
+
+    #[test]
+    fn retryable_adb_transport_error_rejects_install_semantic_failure() {
+        assert!(!is_retryable_adb_transport_error(
+            "adb command failed (exit exit status: 1): Failure [INSTALL_FAILED_VERSION_DOWNGRADE]"
+        ));
+    }
+
+    #[test]
+    fn retryable_adb_transport_error_rejects_unauthorized_device() {
+        assert!(!is_retryable_adb_transport_error(
+            "adb command failed (exit exit status: 1): error: device unauthorized"
+        ));
+    }
 
     // ─── AdbDevice::is_online ───
 

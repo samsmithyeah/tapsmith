@@ -5,6 +5,7 @@ import android.util.Log
 import androidx.test.uiautomator.By
 import androidx.test.uiautomator.UiDevice
 import androidx.test.uiautomator.Until
+import java.util.regex.Pattern
 
 /**
  * Event-driven waiting engine that avoids polling loops and Thread.sleep().
@@ -65,7 +66,7 @@ class WaitEngine(private val device: UiDevice) {
         val startTime = SystemClock.uptimeMillis()
 
         // Build a BySelector for event-driven waiting
-        val bySelector = buildWaitSelector(selector)
+        val bySelector = buildWaitSelector(selector, elementFinder)
 
         if (bySelector != null) {
             // Phase 1: Wait for the element to exist using event-driven Until.hasObject
@@ -146,8 +147,17 @@ class WaitEngine(private val device: UiDevice) {
     /**
      * Build a BySelector from an ElementSelector for use with Until conditions.
      * Returns null if the selector type cannot be expressed as a BySelector.
+     *
+     * For role-based selectors, this builds a broad BySelector from the role's
+     * class-name mapping. The selector is intentionally broader than the full
+     * match (role+name+attributes) — Phase 1 just needs to wait for an element
+     * of the right type to exist, then the polling loop in waitForElement does
+     * the precise matching via elementFinder.findElement.
      */
-    private fun buildWaitSelector(selector: ElementSelector): androidx.test.uiautomator.BySelector? {
+    private fun buildWaitSelector(
+        selector: ElementSelector,
+        elementFinder: ElementFinder,
+    ): androidx.test.uiautomator.BySelector? {
         return when {
             selector.text != null -> By.text(selector.text)
             selector.textContains != null -> By.textContains(selector.textContains)
@@ -164,18 +174,21 @@ class WaitEngine(private val device: UiDevice) {
             // and the find resolve the same set of widgets (plain EditText,
             // AppCompat, MaterialTextInput, etc.).
             selector.hint != null -> By.clazz(ElementFinder.EDIT_TEXT_HINT_CLASS_PATTERN)
-            // Role waits intentionally fall through to the slow
-            // waitForIdle + poll path. The find phase resolves roles via
-            // both the class map AND `extractRoleDescription` (RN /
-            // accessibility-trait channel), but a `By.clazz` short-circuit
-            // here only sees the class map. That made wait and find
-            // disagree about what `role: "heading"` means: a RN
-            // `<View accessibilityRole="header">` rendered as
-            // `ReactViewGroup` would time out in the wait phase even
-            // though `findElement` could resolve it. The resulting
-            // TimeoutException never reached the find-phase polling
-            // loop. Falling through unifies the two paths at the cost
-            // of a one-time `waitForIdle` settle.
+            // Role-based wait: build a BySelector from the role's class-name
+            // mapping. This is broader than the full match (a role can also be
+            // resolved via extractRoleDescription for RN accessibilityRole),
+            // but it lets the event-driven wait detect when a candidate of the
+            // right class type appears, avoiding the 2s waitForIdle penalty.
+            // The polling loop after this does the precise findElement match.
+            selector.role != null -> {
+                val classNames = elementFinder.classNamesForRole(selector.role)
+                if (classNames.isNotEmpty()) {
+                    val pattern = classNames.joinToString("|") { Regex.escape(it) }
+                    By.clazz(Pattern.compile(pattern))
+                } else {
+                    null
+                }
+            }
             else -> null
         }
     }
