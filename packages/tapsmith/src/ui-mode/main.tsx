@@ -870,14 +870,17 @@ function App() {
     }
   }, [viewedTraceKey, workers.length, send]);
 
-  // When the user clicks a completed test, pin to the last action so they
-  // see the final state rather than the first action.
+  // When the user clicks a completed test (or the selection is restored on
+  // reconnect), pin to the last action so they see the final state.
+  const hasPinnedRestoredSelection = useRef(false);
   useEffect(() => {
-    if (viewedTraceKey && autoFollowRef.current === 'manual' && actionEvents.length > 0) {
+    if (viewedTraceKey && actionEvents.length > 0
+      && (autoFollowRef.current === 'manual' || !hasPinnedRestoredSelection.current)) {
+      hasPinnedRestoredSelection.current = true;
       setPinnedIndex(actionEvents.length - 1);
       setHoveredIndex(null);
     }
-  }, [viewedTraceKey]);
+  }, [viewedTraceKey, actionEvents.length]);
 
   const handleSelectDeviceView = useCallback((mode: 'all' | number) => {
     setDeviceViewMode(mode);
