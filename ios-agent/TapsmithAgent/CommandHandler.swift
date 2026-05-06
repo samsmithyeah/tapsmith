@@ -143,7 +143,10 @@ class CommandHandler {
                 NSLog("[TapsmithCommand] ObjC exception in method '\(method)': \(msg)")
                 return errorResponse(id: id, type: "INTERNAL_ERROR", message: msg)
             }
-            return successResponse(id: id, result: result!)
+            guard let result = result else {
+                return errorResponse(id: id, type: "INTERNAL_ERROR", message: "Command dispatch returned no result")
+            }
+            return successResponse(id: id, result: result)
         } catch let error as AgentError {
             return errorResponse(id: id, type: error.type, message: error.message)
         } catch {

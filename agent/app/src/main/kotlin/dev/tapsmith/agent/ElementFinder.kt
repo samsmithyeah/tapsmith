@@ -1016,8 +1016,8 @@ class ElementFinder(private val device: UiDevice) {
      * navigation to release stale UiObject2 references.
      */
     fun clearElementCache() {
-        elementCache.clear()
         synchronized(elementCacheOrder) {
+            elementCache.clear()
             elementCacheOrder.clear()
         }
     }
