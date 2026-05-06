@@ -2157,6 +2157,12 @@ async function runTestFileWithRecovery(
         device: opts.device,
         screenshotDir: opts.screenshotDir,
         reporter: opts.reporter,
+        beforeEachTest: async (fullName) => {
+          await ensureSessionReady(
+            opts.sessionContext,
+            `before test ${fullName}`,
+          );
+        },
         abortFileOnError: isRecoverableInfrastructureError,
         projectUseOptions: opts.projectUseOptions,
         projectName: opts.projectName,

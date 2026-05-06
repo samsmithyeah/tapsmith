@@ -196,7 +196,7 @@ async function verifySession(ctx: SessionPreflightContext): Promise<void> {
       // The app may still be visible underneath a system overlay (e.g. launcher
       // text-selection, share sheet). Check if the hierarchy contains nodes
       // from the expected package — if so, dismiss the overlay rather than failing.
-      const appInHierarchy = hierarchy.hierarchyXml.includes(`package="${ctx.config.package}"`);
+      const appInHierarchy = hierarchyContainsPackage(hierarchy.hierarchyXml, ctx.config.package);
       if (!appInHierarchy) {
         throw new Error(
           `foreground package mismatch (expected ${ctx.config.package}, got ${currentPackage || '(none)'})`,
@@ -204,6 +204,8 @@ async function verifySession(ctx: SessionPreflightContext): Promise<void> {
       }
       await ctx.device.pressBack();
       await ctx.device.waitForIdle(DEFAULT_READY_TIMEOUT_MS);
+    } else {
+      await waitForAndroidAppHierarchy(ctx, hierarchy.hierarchyXml, ctx.config.package);
     }
   }
 }
@@ -226,6 +228,31 @@ async function waitForIosAppReady(ctx: SessionPreflightContext): Promise<void> {
     await new Promise((resolve) => setTimeout(resolve, HIERARCHY_POLL_INTERVAL_MS));
   }
   throw new Error('iOS app not ready: accessibility hierarchy is empty after launch');
+}
+
+async function waitForAndroidAppHierarchy(
+  ctx: SessionPreflightContext,
+  initialHierarchyXml: string,
+  packageName: string,
+): Promise<void> {
+  if (hierarchyContainsPackage(initialHierarchyXml, packageName)) return;
+
+  const deadline = Date.now() + HIERARCHY_READY_TIMEOUT_MS;
+  while (Date.now() < deadline) {
+    try {
+      const h = await ctx.client.getUiHierarchy();
+      if (hierarchyContainsPackage(h.hierarchyXml, packageName)) return;
+    } catch {
+      // Agent may still be settling after a cold launch.
+    }
+    await new Promise((resolve) => setTimeout(resolve, HIERARCHY_POLL_INTERVAL_MS));
+  }
+
+  throw new Error(`Android app hierarchy for ${packageName} not ready after launch`);
+}
+
+function hierarchyContainsPackage(hierarchyXml: string, packageName: string): boolean {
+  return hierarchyXml.includes(`package="${packageName}"`);
 }
 
 async function recoverSession(ctx: SessionPreflightContext): Promise<void> {
