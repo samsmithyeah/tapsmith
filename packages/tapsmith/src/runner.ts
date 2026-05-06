@@ -791,8 +791,11 @@ async function runSuiteContext(
     const testTimeoutMs = scopeTimeout ? Math.max(defaultTestTimeoutMs, scopeTimeout) : defaultTestTimeoutMs;
     const maxRetries = opts.config.retries;
     let lastAttempt = 0;
+    const traceConfig = resolveTraceConfig(opts.config.trace);
+    const videoConfig = resolveVideoConfig(opts.config.video);
 
     for (let attempt = 0; attempt <= maxRetries; attempt++) {
+      const attemptStart = Date.now();
       // Reset per-attempt state
       status = 'passed';
       error = undefined;
@@ -802,7 +805,6 @@ async function runSuiteContext(
       lastAttempt = attempt;
 
       // Trace recording — start if configured
-      const traceConfig = resolveTraceConfig(opts.config.trace);
       const recording = shouldRecord(traceConfig.mode, attempt);
       let traceCollector: TraceCollector | null = null;
 
@@ -860,7 +862,6 @@ async function runSuiteContext(
       // here are surfaced via _warnCaptureOnce and never abort the run; the
       // daemon already returns structured errors in `errorMessage` rather
       // than throwing for missing-ffmpeg / unmatched-AVF-device cases.
-      const videoConfig = resolveVideoConfig(opts.config.video);
       const videoRecording = shouldRecord(videoConfig.mode, attempt);
       if (videoRecording && opts.device) {
         try {
@@ -975,7 +976,6 @@ async function runSuiteContext(
             if (testFixtureTeardown) {
               await testFixtureTeardown();
             }
-            requestContext.dispose();
           }
         };
 
@@ -1222,8 +1222,8 @@ async function runSuiteContext(
                 testFile: opts.testFilePath ?? '',
                 testName: fullName,
                 testStatus: status,
-                testDuration: Date.now() - testStart,
-                startTime: testStart,
+                testDuration: Date.now() - attemptStart,
+                startTime: attemptStart,
                 endTime: Date.now(),
                 device: {
                   serial: opts.config.device ?? 'unknown',
