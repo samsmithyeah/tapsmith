@@ -73,6 +73,37 @@ describe('worker-protocol serialization', () => {
       expect(deserialized.status).toBe('skipped');
       expect(deserialized.durationMs).toBe(0);
     });
+
+    it('round-trips the retry field', () => {
+      const result: TestResult = {
+        name: 'flaky',
+        fullName: 'flaky',
+        status: 'passed',
+        durationMs: 500,
+        retry: 2,
+      };
+
+      const serialized = serializeTestResult(result, 0);
+      expect(serialized.retry).toBe(2);
+
+      const deserialized = deserializeTestResult(serialized);
+      expect(deserialized.retry).toBe(2);
+    });
+
+    it('omits retry when undefined', () => {
+      const result: TestResult = {
+        name: 'clean pass',
+        fullName: 'clean pass',
+        status: 'passed',
+        durationMs: 100,
+      };
+
+      const serialized = serializeTestResult(result, 0);
+      expect(serialized.retry).toBeUndefined();
+
+      const deserialized = deserializeTestResult(serialized);
+      expect(deserialized.retry).toBeUndefined();
+    });
   });
 
   describe('serializeSuiteResult / deserializeSuiteResult', () => {

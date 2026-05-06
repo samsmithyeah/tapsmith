@@ -17,6 +17,7 @@ import {
   bold,
   formatError,
   formatSummaryLine,
+  countFlaky,
   workerTag,
   projectTag,
 } from './base.js';
@@ -63,7 +64,7 @@ export class DotReporter implements TapsmithReporter {
     const passed = result.tests.filter((t) => t.status === 'passed').length;
     const failed = result.tests.filter((t) => t.status === 'failed').length;
     const skipped = result.tests.filter((t) => t.status === 'skipped').length;
-    const flaky = result.tests.filter((t) => t.status === 'passed' && t.retry).length;
+    const flaky = countFlaky(result.tests);
 
     // End the dot line
     if (this._column > 0) {

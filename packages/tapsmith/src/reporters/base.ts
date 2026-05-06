@@ -4,6 +4,7 @@
 
 import * as fs from 'node:fs';
 import { buildCodeSnippet } from '../trace/code-frame.js';
+import type { TestResult } from '../runner.js';
 
 // ─── ANSI codes ───
 
@@ -69,6 +70,10 @@ export function formatSummaryLine(
   }
 
   return bold('Summary: ') + parts.join(', ') + dim(timing);
+}
+
+export function countFlaky(tests: TestResult[]): number {
+  return tests.filter((t) => t.status === 'passed' && t.retry).length;
 }
 
 export function workerTag(workerIndex: number | undefined): string {

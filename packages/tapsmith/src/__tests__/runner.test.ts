@@ -924,4 +924,22 @@ describe('retries', () => {
     const flat = collectResults(result);
     expect(flat[0].status).toBe('failed');
   });
+
+  it('stops retrying when abort signal fires', async () => {
+    let callCount = 0;
+    const ac = new AbortController();
+    pushContext();
+    tapsmithTest('aborted', async () => {
+      callCount++;
+      if (callCount === 1) ac.abort();
+      throw new Error('fail');
+    });
+    const ctx = popContext();
+    const result = await runSuiteContext(ctx, '', [], [], makeOpts({
+      config: makeConfig({ retries: 5 }),
+      abortSignal: ac.signal,
+    }));
+    expect(callCount).toBe(1);
+    expect(result.tests[0].status).toBe('failed');
+  });
 });

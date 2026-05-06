@@ -10,6 +10,7 @@
 
 import type { TapsmithReporter, FullResult } from '../reporter.js';
 import type { TestResult } from '../runner.js';
+import { formatSummaryLine, countFlaky } from './base.js';
 
 export class GitHubActionsReporter implements TapsmithReporter {
   onTestEnd(test: TestResult): void {
@@ -30,7 +31,7 @@ export class GitHubActionsReporter implements TapsmithReporter {
     const passed = result.tests.filter((t) => t.status === 'passed').length;
     const failed = result.tests.filter((t) => t.status === 'failed').length;
     const skipped = result.tests.filter((t) => t.status === 'skipped').length;
-    const flaky = result.tests.filter((t) => t.status === 'passed' && t.retry).length;
+    const flaky = countFlaky(result.tests);
 
     // Write a summary using GitHub Actions job summary
     if (process.env.GITHUB_STEP_SUMMARY) {

@@ -224,6 +224,7 @@ export function serializeTestResult(result: TestResult, workerIndex: number): Se
     videoPath: result.videoPath,
     workerIndex,
     project: result.project,
+    retry: result.retry,
   };
 }
 
@@ -250,6 +251,7 @@ export function deserializeTestResult(s: SerializedTestResult): TestResult & { w
     videoPath: s.videoPath,
     workerIndex: s.workerIndex,
     project: s.project,
+    retry: s.retry,
   };
 }
 
