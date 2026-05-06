@@ -162,6 +162,26 @@ describe('session-preflight', () => {
     expect(ctx.client.getUiHierarchy).toHaveBeenCalledTimes(2);
   });
 
+  it('dismisses Android notification shade overlays before waiting for the app hierarchy', async () => {
+    const ctx = makeContext();
+    vi.mocked(ctx.client.getUiHierarchy)
+      .mockResolvedValueOnce({
+        requestId: '1',
+        hierarchyXml: '<hierarchy><node package="com.android.systemui" resource-id="com.android.systemui:id/notification_panel" /></hierarchy>',
+        errorMessage: '',
+      })
+      .mockResolvedValueOnce({
+        requestId: '2',
+        hierarchyXml: '<hierarchy><node package="com.example.app" /></hierarchy>',
+        errorMessage: '',
+      });
+
+    await expect(ensureSessionReady(ctx, 'startup')).resolves.toBeUndefined();
+
+    expect(ctx.device.pressBack).toHaveBeenCalledTimes(1);
+    expect(ctx.client.getUiHierarchy).toHaveBeenCalledTimes(2);
+  });
+
   it('iOS clearAppData + restartApp path when no deep link configured', async () => {
     const ctx = makeContext({
       config: { package: 'com.example.app', activity: undefined, platform: 'ios' },

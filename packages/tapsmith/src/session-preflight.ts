@@ -235,13 +235,30 @@ async function waitForAndroidAppHierarchy(
   initialHierarchyXml: string,
   packageName: string,
 ): Promise<void> {
-  if (hierarchyContainsPackage(initialHierarchyXml, packageName)) return;
+  let hierarchyXml = initialHierarchyXml;
+  if (hierarchyContainsPackage(hierarchyXml, packageName)) return;
+
+  if (isAndroidSystemOverlay(hierarchyXml)) {
+    const dismissedHierarchy = await dismissAndroidSystemOverlay(ctx, packageName);
+    if (dismissedHierarchy) {
+      hierarchyXml = dismissedHierarchy;
+      if (hierarchyContainsPackage(hierarchyXml, packageName)) return;
+    }
+  }
 
   const deadline = Date.now() + HIERARCHY_READY_TIMEOUT_MS;
   while (Date.now() < deadline) {
     try {
       const h = await ctx.client.getUiHierarchy();
-      if (hierarchyContainsPackage(h.hierarchyXml, packageName)) return;
+      hierarchyXml = h.hierarchyXml;
+      if (hierarchyContainsPackage(hierarchyXml, packageName)) return;
+      if (isAndroidSystemOverlay(hierarchyXml)) {
+        const dismissedHierarchy = await dismissAndroidSystemOverlay(ctx, packageName);
+        if (dismissedHierarchy) {
+          hierarchyXml = dismissedHierarchy;
+          if (hierarchyContainsPackage(hierarchyXml, packageName)) return;
+        }
+      }
     } catch {
       // Agent may still be settling after a cold launch.
     }
@@ -253,6 +270,34 @@ async function waitForAndroidAppHierarchy(
 
 function hierarchyContainsPackage(hierarchyXml: string, packageName: string): boolean {
   return hierarchyXml.includes(`package="${packageName}"`);
+}
+
+async function dismissAndroidSystemOverlay(
+  ctx: SessionPreflightContext,
+  packageName: string,
+): Promise<string | undefined> {
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      await ctx.device.pressBack();
+      await ctx.device.waitForIdle(1_000);
+      const h = await ctx.client.getUiHierarchy();
+      if (hierarchyContainsPackage(h.hierarchyXml, packageName) || !isAndroidSystemOverlay(h.hierarchyXml)) {
+        return h.hierarchyXml;
+      }
+    } catch {
+      return undefined;
+    }
+  }
+  return undefined;
+}
+
+function isAndroidSystemOverlay(hierarchyXml: string): boolean {
+  return hierarchyXml.includes('package="com.android.systemui"') && (
+    hierarchyXml.includes('resource-id="com.android.systemui:id/notification_panel"') ||
+    hierarchyXml.includes('resource-id="com.android.systemui:id/notification_stack_scroller"') ||
+    hierarchyXml.includes('resource-id="com.android.systemui:id/quick_settings_container"') ||
+    hierarchyXml.includes('resource-id="com.android.systemui:id/qs_frame"')
+  );
 }
 
 async function recoverSession(ctx: SessionPreflightContext): Promise<void> {
