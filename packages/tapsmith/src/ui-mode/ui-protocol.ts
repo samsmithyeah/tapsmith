@@ -246,11 +246,18 @@ export interface McpToolCallMessage {
   timestamp: number
 }
 
+export interface RunStateMessage {
+  type: 'run-state'
+  isRunning: boolean
+  startedAt?: number
+}
+
 /** Union of all server → client JSON messages. */
 export type ServerMessage =
   | TestTreeMessage
   | RunStartMessage
   | RunEndMessage
+  | RunStateMessage
   | TestStartMessage
   | TestStatusMessage
   | FileStatusMessage

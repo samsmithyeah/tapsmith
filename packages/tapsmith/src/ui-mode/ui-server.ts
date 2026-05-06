@@ -169,8 +169,24 @@ export async function startUIServer(
   const clients = new Set<WebSocket>();
   let testTree: TestTreeNode[] = [];
   let isRunning = false;
+  let runStartedAt = 0;
+  const runningFiles = new Map<string, { filePath: string; projectName?: string }>();
+  let singleWorkerRunningTest: { fullName: string; filePath: string; projectName?: string } | null = null;
   const failedFiles = new Set<string>();
   const testResults = new Map<string, TestResultEntry>();
+
+  function markRunStarted(): void {
+    isRunning = true;
+    runStartedAt = Date.now();
+  }
+
+  function markRunEnded(): void {
+    isRunning = false;
+    runStartedAt = 0;
+    singleWorkerRunningTest = null;
+    runningFiles.clear();
+  }
+
   let activeChild: ChildProcess | null = null;
   let screenPollTimer: ReturnType<typeof setTimeout> | null = null;
   let screenSeq = 0;
@@ -183,6 +199,7 @@ export async function startUIServer(
   /** filePath → list of watched entries. chokidar adds the file when the
    * first entry appears and removes it when the last entry is cleared. */
   const watchedEntries = new Map<string, WatchedEntry[]>();
+  const watchedProjects = new Set<string>();
   function entryKey(e: WatchedEntry): string {
     // JSON-encode both fields so a test name containing '::' (or any other
     // delimiter) can't collide with a project-name / filter pair that
@@ -625,6 +642,9 @@ export async function startUIServer(
    * client only updates that project's copy of the file node (multi-device
    * configs share the same file across projects). */
   function broadcastFileStatus(filePath: string, status: 'running' | 'done', projectName?: string): void {
+    const key = JSON.stringify([filePath, projectName]);
+    if (status === 'running') runningFiles.set(key, { filePath, projectName });
+    else runningFiles.delete(key);
     broadcast({ type: 'file-status', filePath, status, projectName });
   }
 
@@ -657,7 +677,7 @@ export async function startUIServer(
   async function runFileSingle(filePath: string, testFilter?: string, explicitProjectName?: string): Promise<TestRunResult> {
     if (isRunning) return { status: 'failed', passed: 0, failed: 0, skipped: 0, duration: 0 };
 
-    isRunning = true;
+    markRunStarted();
     testResults.clear();
     const project = projectForFile(filePath, explicitProjectName);
     const useOptions = project?.use as RunFileUseOptions | undefined;
@@ -687,14 +707,14 @@ export async function startUIServer(
       broadcast({ type: 'run-end', ...runResult });
       return runResult;
     } finally {
-      isRunning = false;
+      markRunEnded();
       screenPollActive = false;
     }
   }
 
   async function runAllFilesSingle(): Promise<TestRunResult> {
     if (isRunning) return { status: 'failed', passed: 0, failed: 0, skipped: 0, duration: 0 };
-    isRunning = true;
+    markRunStarted();
     testResults.clear();
     screenPollActive = true;
 
@@ -761,7 +781,7 @@ export async function startUIServer(
       broadcast({ type: 'run-end', ...runResult });
       return runResult;
     } finally {
-      isRunning = false;
+      markRunEnded();
       screenPollActive = false;
     }
   }
@@ -803,7 +823,7 @@ export async function startUIServer(
     const target = ctx.projects.find((p) => p.name === projectName);
     if (!target) return;
 
-    isRunning = true;
+    markRunStarted();
     screenPollActive = true;
 
     const requiredNames = collectTransitiveDeps(new Set([projectName]), ctx.projects);
@@ -846,7 +866,7 @@ export async function startUIServer(
         skipped: totalSkipped,
       });
     } finally {
-      isRunning = false;
+      markRunEnded();
       screenPollActive = false;
     }
   }
@@ -858,7 +878,7 @@ export async function startUIServer(
 
     if (useParallel()) {
       if (isRunning) return;
-      isRunning = true;
+      markRunStarted();
       screenPollActive = true;
       parallelRunAborted = false;
 
@@ -883,7 +903,7 @@ export async function startUIServer(
           skipped: r.skipped,
         });
       } finally {
-        isRunning = false;
+        markRunEnded();
         screenPollActive = false;
       }
       return;
@@ -891,7 +911,7 @@ export async function startUIServer(
 
     // Single-worker mode
     if (isRunning) return;
-    isRunning = true;
+    markRunStarted();
     screenPollActive = true;
 
     broadcast({ type: 'run-start', fileCount: target.testFiles.length });
@@ -907,7 +927,7 @@ export async function startUIServer(
         skipped: r.skipped,
       });
     } finally {
-      isRunning = false;
+      markRunEnded();
       screenPollActive = false;
     }
   }
@@ -941,6 +961,7 @@ export async function startUIServer(
         switch (response.type) {
           case 'test-start': {
             currentTestFullName = response.fullName;
+            singleWorkerRunningTest = { fullName: response.fullName, filePath: response.filePath, projectName };
             broadcast({
               type: 'test-start',
               fullName: response.fullName,
@@ -950,6 +971,7 @@ export async function startUIServer(
             break;
           }
           case 'test-end': {
+            singleWorkerRunningTest = null;
             const result = deserializeTestResult(response.result);
             if (testFilter && result.status === 'skipped' && result.fullName !== testFilter) {
               break;
@@ -1054,7 +1076,7 @@ export async function startUIServer(
       return;
     }
 
-    isRunning = true;
+    markRunStarted();
     screenPollActive = true;
 
     const depNames = collectTransitiveDeps(new Set(project.dependencies), ctx.projects);
@@ -1130,7 +1152,7 @@ export async function startUIServer(
         skipped: totalSkipped,
       });
     } finally {
-      isRunning = false;
+      markRunEnded();
       screenPollActive = false;
     }
   }
@@ -1682,7 +1704,7 @@ export async function startUIServer(
 
   async function runAllFilesParallel(): Promise<TestRunResult> {
     if (isRunning) return { status: 'failed', passed: 0, failed: 0, skipped: 0, duration: 0 };
-    isRunning = true;
+    markRunStarted();
     testResults.clear();
     screenPollActive = true;
     parallelRunAborted = false;
@@ -1781,7 +1803,7 @@ export async function startUIServer(
       broadcast({ type: 'run-end', ...runResult });
       return runResult;
     } finally {
-      isRunning = false;
+      markRunEnded();
       screenPollActive = false;
       for (const w of uiWorkers) {
         if (!w.retired) broadcastWorkerStatus(w, 'idle');
@@ -1791,7 +1813,7 @@ export async function startUIServer(
 
   async function runFileParallel(filePath: string, testFilter?: string, explicitProjectName?: string): Promise<TestRunResult> {
     if (isRunning) return { status: 'failed', passed: 0, failed: 0, skipped: 0, duration: 0 };
-    isRunning = true;
+    markRunStarted();
     testResults.clear();
     screenPollActive = true;
     parallelRunAborted = false;
@@ -1820,7 +1842,7 @@ export async function startUIServer(
       broadcast({ type: 'run-end', ...runResult });
       return runResult;
     } finally {
-      isRunning = false;
+      markRunEnded();
       screenPollActive = false;
     }
   }
@@ -1912,7 +1934,7 @@ export async function startUIServer(
    * config). Caller is responsible for ensuring parallel mode is active. */
   async function runBatchParallel(files: TaggedFile[]): Promise<void> {
     if (files.length === 0 || isRunning) return;
-    isRunning = true;
+    markRunStarted();
     screenPollActive = true;
     parallelRunAborted = false;
 
@@ -1933,7 +1955,7 @@ export async function startUIServer(
       broadcast({ type: 'error', message: errMsg });
       broadcast({ type: 'run-end', status: 'failed', duration: 0, passed: 0, failed: files.length, skipped: 0 });
     } finally {
-      isRunning = false;
+      markRunEnded();
       screenPollActive = false;
     }
   }
@@ -1955,7 +1977,7 @@ export async function startUIServer(
       const target = ctx.projects.find((p) => p.name === projectName);
       if (!target) return;
 
-      isRunning = true;
+      markRunStarted();
       screenPollActive = true;
       parallelRunAborted = false;
 
@@ -2017,7 +2039,7 @@ export async function startUIServer(
           skipped: totalSkipped,
         });
       } finally {
-        isRunning = false;
+        markRunEnded();
         screenPollActive = false;
       }
       return;
@@ -2035,7 +2057,7 @@ export async function startUIServer(
       }
 
       if (isRunning) return;
-      isRunning = true;
+      markRunStarted();
       screenPollActive = true;
       parallelRunAborted = false;
 
@@ -2119,7 +2141,7 @@ export async function startUIServer(
           skipped: totalSkipped,
         });
       } finally {
-        isRunning = false;
+        markRunEnded();
         screenPollActive = false;
       }
       return;
@@ -2313,7 +2335,7 @@ export async function startUIServer(
           failedFiles.clear();
           ;(async () => {
             if (useParallel() && files.length > 1) {
-              isRunning = true;
+              markRunStarted();
               screenPollActive = true;
               parallelRunAborted = false;
               await ensureWorkersReady();
@@ -2344,7 +2366,7 @@ export async function startUIServer(
                 broadcast({ type: 'error', message: `Failed to run failed tests: ${errMsg}` });
                 broadcast({ type: 'run-end', status: 'failed', duration: 0, passed: 0, failed: 1, skipped: 0 });
               } finally {
-                isRunning = false;
+                markRunEnded();
                 screenPollActive = false;
               }
             } else {
@@ -2388,6 +2410,8 @@ export async function startUIServer(
             if (allWatched) stopWatching(f, msg.projectName, undefined, false);
             else startWatching(f, msg.projectName, undefined, false);
           }
+          if (allWatched) watchedProjects.delete(msg.projectName);
+          else watchedProjects.add(msg.projectName);
           broadcast({
             type: 'watch-event',
             filePath: 'project',
@@ -2600,6 +2624,13 @@ export async function startUIServer(
 
     // Send current state to new client
     ws.send(JSON.stringify({ type: 'test-tree', files: testTree } satisfies ServerMessage));
+
+    // If a run is in progress, tell the client before replaying results so
+    // the Running indicator and timer appear immediately.
+    if (isRunning) {
+      ws.send(JSON.stringify({ type: 'run-state', isRunning: true, startedAt: runStartedAt } satisfies ServerMessage));
+    }
+
     // Replay accumulated test results so a reconnecting client (e.g. after
     // the laptop wakes from sleep) sees the same passed/failed statuses it
     // had before — `test-tree` ships a tree of 'idle' nodes, and individual
@@ -2617,6 +2648,24 @@ export async function startUIServer(
         projectName: r.projectName,
       } satisfies ServerMessage));
     }
+
+    // Replay running file statuses so the tree shows which files are mid-run.
+    for (const { filePath, projectName } of runningFiles.values()) {
+      ws.send(JSON.stringify({ type: 'file-status', filePath, status: 'running', projectName } satisfies ServerMessage));
+    }
+
+    // Replay the currently-running test (single-worker) so it highlights in
+    // the tree. Multi-worker gets this via worker-status below.
+    if (singleWorkerRunningTest && !multiWorker) {
+      ws.send(JSON.stringify({
+        type: 'test-status',
+        fullName: singleWorkerRunningTest.fullName,
+        filePath: singleWorkerRunningTest.filePath,
+        status: 'running' as const,
+        projectName: singleWorkerRunningTest.projectName,
+      } satisfies ServerMessage));
+    }
+
     ws.send(JSON.stringify(getMcpStatus()));
 
     if (multiWorker && workersInitialized) {
@@ -2649,12 +2698,14 @@ export async function startUIServer(
         } satisfies ServerMessage));
       }
 
-      // Send current worker statuses
+      // Send current worker statuses (including currentFile/currentTest)
       for (const w of uiWorkers) {
         ws.send(JSON.stringify({
           type: 'worker-status',
           workerId: w.id,
           deviceSerial: w.deviceSerial,
+          currentFile: w.currentFile?.filePath ? path.basename(w.currentFile.filePath) : undefined,
+          currentTest: w.currentTest,
           status: w.retired ? 'error' : w.busy ? 'running' : 'idle',
           passed: w.passed,
           failed: w.failed,
@@ -2671,6 +2722,22 @@ export async function startUIServer(
         tapsmithVersion: TAPSMITH_VERSION,
         devicePixelRatio: cachedScreenScale(ctx.deviceSerial, ctx.config.platform),
       } satisfies ServerMessage));
+    }
+
+    // Replay watch state so toggle icons restore on reconnect.
+    for (const projectName of watchedProjects) {
+      ws.send(JSON.stringify({
+        type: 'watch-event', filePath: 'project', projectName, event: 'watch-enabled',
+      } satisfies ServerMessage));
+    }
+    for (const [filePath, entries] of watchedEntries) {
+      for (const entry of entries) {
+        if (entry.projectName && watchedProjects.has(entry.projectName) && !entry.testFilter) continue;
+        ws.send(JSON.stringify({
+          type: 'watch-event', filePath, testFilter: entry.testFilter,
+          projectName: entry.projectName, event: 'watch-enabled',
+        } satisfies ServerMessage));
+      }
     }
 
     ws.on('message', (data) => {
