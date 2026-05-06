@@ -870,17 +870,17 @@ function App() {
     }
   }, [viewedTraceKey, workers.length, send]);
 
-  // When the user clicks a completed test (or the selection is restored on
-  // reconnect), pin to the last action so they see the final state.
-  const hasPinnedRestoredSelection = useRef(false);
+  // Pin to the last action when viewing a completed test — whether the user
+  // clicked it manually or the selection was restored on reconnect.  During
+  // a live run auto-follow handles pinning via the trace-event handler, so
+  // we only fire here when no run is in progress.
   useEffect(() => {
     if (viewedTraceKey && actionEvents.length > 0
-      && (autoFollowRef.current === 'manual' || !hasPinnedRestoredSelection.current)) {
-      hasPinnedRestoredSelection.current = true;
+      && (autoFollowRef.current === 'manual' || !isRunning)) {
       setPinnedIndex(actionEvents.length - 1);
       setHoveredIndex(null);
     }
-  }, [viewedTraceKey, actionEvents.length]);
+  }, [viewedTraceKey, actionEvents.length, isRunning]);
 
   const handleSelectDeviceView = useCallback((mode: 'all' | number) => {
     setDeviceViewMode(mode);
