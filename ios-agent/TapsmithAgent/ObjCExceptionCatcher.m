@@ -2,19 +2,16 @@
 
 @implementation ObjCExceptionCatcher
 
-+ (BOOL)tryBlock:(void(NS_NOESCAPE ^)(void))block error:(NSError **)error {
++ (nullable NSError *)catchExceptionInBlock:(void(NS_NOESCAPE ^)(void))block {
     @try {
         block();
-        return YES;
+        return nil;
     } @catch (NSException *exception) {
-        if (error) {
-            *error = [NSError errorWithDomain:@"dev.tapsmith.agent"
-                                         code:-1
-                                     userInfo:@{
-                NSLocalizedDescriptionKey: exception.reason ?: exception.name
-            }];
-        }
-        return NO;
+        return [NSError errorWithDomain:@"dev.tapsmith.agent"
+                                   code:-1
+                               userInfo:@{
+            NSLocalizedDescriptionKey: exception.reason ?: exception.name
+        }];
     }
 }
 

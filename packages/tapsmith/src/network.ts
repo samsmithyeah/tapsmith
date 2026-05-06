@@ -355,6 +355,7 @@ export function matchUrlPattern(
 const _globCache = new Map<string, RegExp>();
 
 function globMatch(pattern: string, url: string): boolean {
+  if (_globCache.size > 1000) _globCache.clear();
   let re = _globCache.get(pattern);
   if (!re) {
     re = globToRegex(pattern);

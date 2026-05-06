@@ -127,20 +127,19 @@ class CommandHandler {
             // XCUITest private APIs from crashing the agent process.
             // Swift's do/catch only catches Swift Error types — ObjC
             // NSExceptions bypass it entirely and terminate the process.
-            var objcError: NSError?
-            let success = ObjCExceptionCatcher.tryBlock({
+            let objcError = ObjCExceptionCatcher.catchException {
                 do {
                     result = try self.dispatch(method: method, params: params)
                 } catch {
                     swiftError = error
                 }
-            }, error: &objcError)
+            }
 
             if let error = swiftError {
                 throw error
             }
-            if !success {
-                let msg = objcError?.localizedDescription ?? "Objective-C exception"
+            if let objcError = objcError {
+                let msg = objcError.localizedDescription
                 NSLog("[TapsmithCommand] ObjC exception in method '\(method)': \(msg)")
                 return errorResponse(id: id, type: "INTERNAL_ERROR", message: msg)
             }

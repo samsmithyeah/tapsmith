@@ -269,21 +269,19 @@ class SnapshotElementFinder {
         lock.unlock()
     }
 
-    /// Evict oldest entries when the cache exceeds `maxCacheSize`.
+    /// Evict entries when the cache exceeds `maxCacheSize`.
     /// Must be called while the lock is NOT held — acquires it internally.
     private func pruneCache() {
         lock.lock()
-        if elementCache.count > maxCacheSize {
-            // Dictionary key order is non-deterministic, but we just need
-            // to shed half the entries to reclaim memory. The exact eviction
-            // order doesn't matter — all stale entries are equally useless.
-            let keysToRemove = Array(elementCache.keys.prefix(elementCache.count / 2))
-            for key in keysToRemove {
+        defer { lock.unlock() }
+        while elementCache.count > maxCacheSize {
+            if let key = elementCache.keys.first {
                 elementCache.removeValue(forKey: key)
                 boundsCache.removeValue(forKey: key)
+            } else {
+                break
             }
         }
-        lock.unlock()
     }
 
     /// Get a cached XCUIElement by its stable ID (for actions like tap).

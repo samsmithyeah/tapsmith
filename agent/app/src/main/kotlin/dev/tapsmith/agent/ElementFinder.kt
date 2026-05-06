@@ -1001,8 +1001,8 @@ class ElementFinder(private val device: UiDevice) {
         id: String,
         element: UiObject2,
     ) {
-        elementCache[id] = element
         synchronized(elementCacheOrder) {
+            elementCache[id] = element
             elementCacheOrder.add(id)
             if (elementCacheOrder.size > maxCacheSize) {
                 val oldest = elementCacheOrder.removeFirst()

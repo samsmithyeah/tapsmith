@@ -21,16 +21,17 @@ class ElementFinder {
         lock.unlock()
     }
 
-    /// Evict oldest entries when the cache exceeds `maxCacheSize`.
+    /// Evict entries when the cache exceeds `maxCacheSize`.
     private func pruneCache() {
         lock.lock()
-        if elementCache.count > maxCacheSize {
-            let keysToRemove = Array(elementCache.keys.prefix(elementCache.count / 2))
-            for key in keysToRemove {
+        defer { lock.unlock() }
+        while elementCache.count > maxCacheSize {
+            if let key = elementCache.keys.first {
                 elementCache.removeValue(forKey: key)
+            } else {
+                break
             }
         }
-        lock.unlock()
     }
 
     /// Screen dimensions for viewport ratio calculation.
