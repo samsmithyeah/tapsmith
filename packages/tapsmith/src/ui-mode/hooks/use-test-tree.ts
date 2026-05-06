@@ -7,7 +7,7 @@
 
 import { useState, useCallback, useMemo, useRef, useEffect } from 'preact/hooks';
 import type { TestTreeNode, TestNodeStatus } from '../ui-protocol.js';
-import { usePersistedString } from './use-persisted-state.js';
+import { usePersistedString, usePersistedJSON } from './use-persisted-state.js';
 
 export function useTestTree(isRunning: boolean = false) {
   const [files, setFiles] = useState<TestTreeNode[]>([]);
@@ -25,18 +25,7 @@ export function useTestTree(isRunning: boolean = false) {
       return next;
     });
   }, []);
-  const [selectedTestId, _setSelectedTestId] = useState<string | null>(
-    () => {
-      try { return sessionStorage.getItem('tapsmith-selected-test'); } catch { return null; }
-    },
-  );
-  const setSelectedTestId = useCallback((id: string | null) => {
-    _setSelectedTestId(id);
-    try {
-      if (id) sessionStorage.setItem('tapsmith-selected-test', id);
-      else sessionStorage.removeItem('tapsmith-selected-test');
-    } catch { /* SSR or quota */ }
-  }, []);
+  const [selectedTestId, setSelectedTestId] = usePersistedJSON<string | null>('tapsmith-selected-test', null);
   const selectedTestIdRef = useRef(selectedTestId);
   selectedTestIdRef.current = selectedTestId;
   const [nameFilter, setNameFilter] = usePersistedString('tapsmith-name-filter', '');
