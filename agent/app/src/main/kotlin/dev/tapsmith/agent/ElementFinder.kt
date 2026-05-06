@@ -107,8 +107,8 @@ class ElementFinder(private val device: UiDevice) {
     /** Cache of element IDs to UiObject2 instances. */
     private val elementCache = ConcurrentHashMap<String, UiObject2>()
 
-    /** Insertion order tracking for cache eviction. */
-    private val elementCacheOrder = mutableListOf<String>()
+    /** Insertion order tracking for cache eviction (ArrayDeque for O(1) removeFirst). */
+    private val elementCacheOrder = ArrayDeque<String>()
 
     /** Maximum number of cached elements before evicting oldest entries. */
     private val maxCacheSize = 500

@@ -916,14 +916,14 @@ export class ElementHandle {
     const deadline = Date.now() + timeoutMs;
     const POLL_MS = 250;
 
-    const el = await this._resolveOne();
+    const { remainingMs, element } = await this._waitForEnabled();
+    const el = element ?? await this._resolveOne();
     if (el.checked === checked) return; // Already in desired state
 
     // Tap once — for toggleable elements (checkboxes, switches) a second
     // tap would revert the state, so we must not re-tap.
-    const sel = this._selectorForElement(el);
-    const tapBudget = Math.max(0, deadline - Date.now());
-    await this._action(() => this._client.tap(sel, tapBudget), 'setChecked tap failed');
+    const sel = await this._actionSelector(el);
+    await this._action(() => this._client.tap(sel, remainingMs), 'setChecked tap failed');
 
     // Poll for the state change until the full deadline — animations
     // and state propagation can take several frames.
