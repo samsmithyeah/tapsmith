@@ -796,7 +796,9 @@ async function runSuiteContext(
 
     for (let attempt = 0; attempt <= maxRetries; attempt++) {
       const attemptStart = Date.now();
-      // Reset per-attempt state
+      // Reset per-attempt state. Only the final attempt's artifacts are
+      // reported — prior attempt traces/videos are retained on disk via
+      // shouldRetain() but not linked from the TestResult.
       status = 'passed';
       error = undefined;
       screenshotPath = undefined;
@@ -1014,9 +1016,6 @@ async function runSuiteContext(
           );
         }
       } finally {
-        // Ensure request fixture is cleaned up even if hooks threw before the test body
-        requestContext.dispose();
-
         // Run afterEach hooks (always)
         if (allAfterEach.length > 0) {
           traceCollector?.startGroup('afterEach Hooks');
@@ -1304,6 +1303,9 @@ async function runSuiteContext(
           );
         }
       }
+
+      // Dispose after trace finalization so getNetworkEntries() is still available
+      requestContext.dispose();
 
       if (status === 'passed' || attempt === maxRetries || opts.abortSignal?.aborted) break;
     }
