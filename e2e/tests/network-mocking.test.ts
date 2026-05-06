@@ -163,8 +163,10 @@ describe("Network mocking", () => {
 
   test("route with times option — limited invocations", async ({ device }) => {
     const screen = new ApiCallsScreen(device)
+    let routeHits = 0
 
     await device.route("**/posts*", async (route) => {
+      routeHits += 1
       await route.fulfill({
         json: [{ id: 1, title: "Once Only", body: "body" }],
       })
@@ -173,6 +175,7 @@ describe("Network mocking", () => {
     // First call: mocked
     await screen.fetchPostsButton.tap()
     await expect(device.getByText("Once Only")).toBeVisible({ timeout: 10_000 })
+    expect(routeHits).toBe(1)
 
     // Restart app to clear state
     await device.restartApp()
@@ -180,10 +183,11 @@ describe("Network mocking", () => {
     await device.getByDescription("API Calls").tap()
     await expect(screen.heading).toBeVisible()
 
-    // Second call: should go through (route expired after 1 use)
+    // Second call: route should have expired after 1 use.
     await screen.fetchPostsButton.tap()
-    await expect(screen.postsHeading).toBeVisible({ timeout: 10_000 })
-    await expect(device.getByText("Once Only")).not.toBeVisible()
+    await new Promise((resolve) => setTimeout(resolve, 1_000))
+    expect(routeHits).toBe(1)
+    await expect(device.getByText("Once Only")).not.toBeVisible({ timeout: 1_000 })
   })
 
   test("route.continue({ url }) — cross-origin redirect", async ({ device }) => {

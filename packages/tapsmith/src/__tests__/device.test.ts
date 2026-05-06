@@ -306,6 +306,70 @@ describe('Device.webview()', () => {
     expect(listWebViews).toHaveBeenCalled();
   });
 
+  it('targets the configured app package by default', async () => {
+    const listWebViews = vi.fn(async () => ({
+      requestId: '1',
+      webviews: [
+        {
+          socketName: 'webview_devtools_remote_foreign',
+          pid: 111,
+          packageName: 'com.google.android.googlequicksearchbox:search',
+          url: '',
+          title: '',
+        },
+        {
+          socketName: 'webview_devtools_remote_app',
+          pid: 222,
+          packageName: 'com.example.app',
+          url: '',
+          title: '',
+        },
+      ],
+      errorMessage: '',
+    }));
+    const forwardWebViewPort = vi.fn(async () => ({
+      requestId: '1',
+      success: false,
+      localPort: 0,
+      errorMessage: 'not forwarded',
+    }));
+    const client = makeMockClient({ listWebViews, forwardWebViewPort });
+    const device = new Device(client, { timeout: 50, package: 'com.example.app' });
+
+    await expect(device.webview()).rejects.toThrow(/Timed out waiting for WebView/);
+
+    expect(forwardWebViewPort).toHaveBeenCalled();
+    expect((forwardWebViewPort.mock.calls[0] as unknown[])[0]).toBe('webview_devtools_remote_app');
+  });
+
+  it('does not attach to another app when a package is configured', async () => {
+    const listWebViews = vi.fn(async () => ({
+      requestId: '1',
+      webviews: [
+        {
+          socketName: 'webview_devtools_remote_foreign',
+          pid: 111,
+          packageName: 'com.google.android.googlequicksearchbox:search',
+          url: '',
+          title: '',
+        },
+      ],
+      errorMessage: '',
+    }));
+    const forwardWebViewPort = vi.fn(async () => ({
+      requestId: '1',
+      success: true,
+      localPort: 12345,
+      errorMessage: '',
+    }));
+    const client = makeMockClient({ listWebViews, forwardWebViewPort });
+    const device = new Device(client, { timeout: 50, package: 'com.example.app' });
+
+    await expect(device.webview()).rejects.toThrow(/No WebViews found for package "com.example.app"/);
+
+    expect(forwardWebViewPort).not.toHaveBeenCalled();
+  });
+
   it('records a failed WebView connect action in traces', async () => {
     const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tapsmith-webview-trace-'));
     const listWebViews = vi.fn(() => new Promise<never>(() => {}));
