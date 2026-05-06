@@ -484,21 +484,16 @@ export class ElementHandle {
   /**
    * @internal — Build a selector to target a specific resolved element.
    *
-   * For elements with a unique `resourceId`, returns an id selector directly.
-   * For text/contentDescription matches (which can be non-unique), preserves
-   * the original selector chain and augments with the resolved element's
-   * position index so that nth-modified handles target the correct element.
+   * Uses the resolved element's identifying property (resourceId,
+   * contentDescription, or text) to build a simple selector. For modified
+   * handles (nth, filter), the caller should pass the pre-resolved element
+   * from `_waitForEnabled` to `_actionSelector` to avoid re-resolution,
+   * which is the primary defense against targeting the wrong element.
    *
    * @param info - The resolved ElementInfo to target.
    */
   private _selectorForElement(info: ElementInfo): Selector {
-    // resourceId is typically unique — safe to use directly
     if (info.resourceId) return _id(info.resourceId);
-
-    // For contentDescription/text, these can be non-unique. If we have a
-    // resolved index from a modified handle, preserve the original selector
-    // and the caller will use the index to target the right element.
-    // Otherwise, fall back to a simple selector (unmodified handles).
     if (info.contentDescription) return _contentDesc(info.contentDescription);
     if (info.text) return _text(info.text);
     throw new Error(

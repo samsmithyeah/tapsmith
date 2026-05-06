@@ -13,6 +13,7 @@ class SnapshotElementFinder {
     private var elementCache: [String: XCUIElement] = [:]
     /// Bounds from snapshot — used for coordinate-based actions (fast, no quiescence).
     private var boundsCache: [String: CGRect] = [:]
+    private var cacheOrder: [String] = []
     private let lock = NSLock()
 
     /// Maximum number of cached elements before eviction. Prevents unbounded
@@ -266,21 +267,19 @@ class SnapshotElementFinder {
         lock.lock()
         elementCache.removeAll()
         boundsCache.removeAll()
+        cacheOrder.removeAll()
         lock.unlock()
     }
 
-    /// Evict entries when the cache exceeds `maxCacheSize`.
+    /// Evict oldest entries when the cache exceeds `maxCacheSize`.
     /// Must be called while the lock is NOT held — acquires it internally.
     private func pruneCache() {
         lock.lock()
         defer { lock.unlock() }
-        while elementCache.count > maxCacheSize {
-            if let key = elementCache.keys.first {
-                elementCache.removeValue(forKey: key)
-                boundsCache.removeValue(forKey: key)
-            } else {
-                break
-            }
+        while elementCache.count > maxCacheSize, !cacheOrder.isEmpty {
+            let oldest = cacheOrder.removeFirst()
+            elementCache.removeValue(forKey: oldest)
+            boundsCache.removeValue(forKey: oldest)
         }
     }
 
@@ -334,9 +333,12 @@ class SnapshotElementFinder {
             return cachedBounds
         }
 
-        // Update the bounds cache with the fresh value.
+        // Update the bounds cache atomically — re-check the element is
+        // still cached (clearCaches may have run between the two locks).
         lock.lock()
-        boundsCache[elementId] = liveFrame
+        if elementCache[elementId] != nil {
+            boundsCache[elementId] = liveFrame
+        }
         lock.unlock()
 
         return liveFrame
@@ -361,6 +363,7 @@ class SnapshotElementFinder {
         let elementId = UUID().uuidString
         lock.lock()
         elementCache[elementId] = element
+        cacheOrder.append(elementId)
         lock.unlock()
         pruneCache()
         return toElementInfo(element, elementId: elementId)
@@ -1048,6 +1051,7 @@ class SnapshotElementFinder {
         if let element = element {
             lock.lock()
             elementCache[elementId] = element
+            cacheOrder.append(elementId)
             lock.unlock()
         }
     }

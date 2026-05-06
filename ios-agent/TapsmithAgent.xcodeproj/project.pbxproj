@@ -7,101 +7,106 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
-		2B055AB09AD5D972B559ECED /* QuiescenceDisabler.swift in Sources */ = {isa = PBXBuildFile; fileRef = 298CD3A0AA1DE4F72055E818 /* QuiescenceDisabler.swift */; };
-		2B315E22BA068C8558C27B65 /* TapsmithAgentRunner.swift in Sources */ = {isa = PBXBuildFile; fileRef = 580285546D29B0A6F17C7437 /* TapsmithAgentRunner.swift */; };
-		2DF0A1F5D7D91EE33ECEF87B /* SocketServer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9524979C432056F44C69DF1E /* SocketServer.swift */; };
-		34B43CF359F7F231C30FB6E3 /* SnapshotElementFinder.swift in Sources */ = {isa = PBXBuildFile; fileRef = E1EB840C8692BFAB0CDD825A /* SnapshotElementFinder.swift */; };
-		40844F0CB9D9DDBBB420D8EF /* WaitEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = 12B246A769785A2E9FFF3A73 /* WaitEngine.swift */; };
-		4FEA51A33465493A72809BB1 /* RoleMapping.swift in Sources */ = {isa = PBXBuildFile; fileRef = B532FDE651479856F60A24DA /* RoleMapping.swift */; };
-		5DE7E2D39892BB51ADCDFDF9 /* AgentError.swift in Sources */ = {isa = PBXBuildFile; fileRef = BF04A6E21D2294FB006A8008 /* AgentError.swift */; };
-		853075A66BC9F6DE241F4974 /* ActionExecutor.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8CD398B24240A3E02BB14A95 /* ActionExecutor.swift */; };
-		998A8170306D3EE1D9F50A94 /* CommandHandler.swift in Sources */ = {isa = PBXBuildFile; fileRef = C92BBDFDDEDEB91636510627 /* CommandHandler.swift */; };
-		A61DFB830FA095C01519279C /* ElementInfo.swift in Sources */ = {isa = PBXBuildFile; fileRef = B504F3FF5D60D36BF6229E19 /* ElementInfo.swift */; };
-		D1A2B3C4E5F6071829304152 /* OneShotLogger.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1A2B3C4E5F60718293041AB /* OneShotLogger.swift */; };
-		B21303BE9DB0B610FDD9DF1C /* ElementFinder.swift in Sources */ = {isa = PBXBuildFile; fileRef = 052B8FF38B0F091AD93BB398 /* ElementFinder.swift */; };
-		C6ED38BD5949928E21D627E5 /* SelectorParser.swift in Sources */ = {isa = PBXBuildFile; fileRef = BBBB5205B682352F65D8FBA7 /* SelectorParser.swift */; };
-		C93319A539FD79550174D983 /* TouchSynthesizer.m in Sources */ = {isa = PBXBuildFile; fileRef = B939B7C7AA38B6E333EDDB3B /* TouchSynthesizer.m */; };
-		FD2CA370FC67FA974233B97B /* HierarchyDumper.swift in Sources */ = {isa = PBXBuildFile; fileRef = 19A283F8352CFBFC08BC18C3 /* HierarchyDumper.swift */; };
+		00939514784AEE11CC64485E /* CommandHandler.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1D4606C81DC5E17A14939D8D /* CommandHandler.swift */; };
+		09E2E27C7BCBF01AE2648172 /* SnapshotElementFinder.swift in Sources */ = {isa = PBXBuildFile; fileRef = 95F1D55A943C25C2F98CC102 /* SnapshotElementFinder.swift */; };
+		17687791BBF6102D034AB942 /* TouchSynthesizer.m in Sources */ = {isa = PBXBuildFile; fileRef = 03BBAA69CD44B39C3AD6DA0F /* TouchSynthesizer.m */; };
+		1C2ED89480D51025F3F287F0 /* ActionExecutor.swift in Sources */ = {isa = PBXBuildFile; fileRef = D53CA4D47911BC911C8430EF /* ActionExecutor.swift */; };
+		6C50B1ECB9A19432E1A89D91 /* WaitEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = 45B43D837B50F6CE9F2973A3 /* WaitEngine.swift */; };
+		8343FFC928BF3DED3CE9B54D /* ObjCExceptionCatcher.m in Sources */ = {isa = PBXBuildFile; fileRef = 4F73B6388FA79243297885B0 /* ObjCExceptionCatcher.m */; };
+		8EAA355DA951C199AF253DB7 /* ElementInfo.swift in Sources */ = {isa = PBXBuildFile; fileRef = 19310EAA5EA86B6E6776B6F8 /* ElementInfo.swift */; };
+		9A7AA0FD964CB0917BA73A34 /* ElementFinder.swift in Sources */ = {isa = PBXBuildFile; fileRef = 120AEFF331CC195D7A1592FC /* ElementFinder.swift */; };
+		A36314E56A12B9911A8E07F5 /* SelectorParser.swift in Sources */ = {isa = PBXBuildFile; fileRef = D17FE6EF9A57433664F043E7 /* SelectorParser.swift */; };
+		A4DD313B0DC87ACC0AC5EC36 /* TapsmithAgentRunner.swift in Sources */ = {isa = PBXBuildFile; fileRef = 46F2F23AB376461F1E086465 /* TapsmithAgentRunner.swift */; };
+		AF850BF1649CFB7D3D5FEDAB /* OneShotLogger.swift in Sources */ = {isa = PBXBuildFile; fileRef = E2D8F09D7C424D6639D7D0AD /* OneShotLogger.swift */; };
+		B5ED1D32F5D4721948E90845 /* HierarchyDumper.swift in Sources */ = {isa = PBXBuildFile; fileRef = 09C5E3AFD1299FFFF4B31AB6 /* HierarchyDumper.swift */; };
+		B8E4DB3D143C129530BED0E8 /* SocketServer.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20F42F1DA77FBEEC0F04F60 /* SocketServer.swift */; };
+		B9C16B182851EAD07DF20338 /* RoleMapping.swift in Sources */ = {isa = PBXBuildFile; fileRef = B4047824F41AA54563A432DC /* RoleMapping.swift */; };
+		C3EA7BC091BB4FFF7DDD0C3D /* AgentError.swift in Sources */ = {isa = PBXBuildFile; fileRef = EDF3E8F423ADAE29CD2EFB48 /* AgentError.swift */; };
+		C3FB8341E6CADE143C84D0C0 /* QuiescenceDisabler.swift in Sources */ = {isa = PBXBuildFile; fileRef = 45FCCCE646EA2B85354B30F7 /* QuiescenceDisabler.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
-		052B8FF38B0F091AD93BB398 /* ElementFinder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ElementFinder.swift; sourceTree = "<group>"; };
-		0A6811EF273DF034325FCB19 /* TapsmithAgent-Bridging-Header.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = "TapsmithAgent-Bridging-Header.h"; sourceTree = "<group>"; };
-		12B246A769785A2E9FFF3A73 /* WaitEngine.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WaitEngine.swift; sourceTree = "<group>"; };
-		19A283F8352CFBFC08BC18C3 /* HierarchyDumper.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HierarchyDumper.swift; sourceTree = "<group>"; };
-		298CD3A0AA1DE4F72055E818 /* QuiescenceDisabler.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QuiescenceDisabler.swift; sourceTree = "<group>"; };
-		536F181C1B309E519E2A21D3 /* TouchSynthesizer.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = TouchSynthesizer.h; sourceTree = "<group>"; };
-		580285546D29B0A6F17C7437 /* TapsmithAgentRunner.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TapsmithAgentRunner.swift; sourceTree = "<group>"; };
-		8CD398B24240A3E02BB14A95 /* ActionExecutor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ActionExecutor.swift; sourceTree = "<group>"; };
-		9524979C432056F44C69DF1E /* SocketServer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SocketServer.swift; sourceTree = "<group>"; };
-		B504F3FF5D60D36BF6229E19 /* ElementInfo.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ElementInfo.swift; sourceTree = "<group>"; };
-		D1A2B3C4E5F60718293041AB /* OneShotLogger.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OneShotLogger.swift; sourceTree = "<group>"; };
-		B532FDE651479856F60A24DA /* RoleMapping.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RoleMapping.swift; sourceTree = "<group>"; };
-		B939B7C7AA38B6E333EDDB3B /* TouchSynthesizer.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = TouchSynthesizer.m; sourceTree = "<group>"; };
-		BBBB5205B682352F65D8FBA7 /* SelectorParser.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SelectorParser.swift; sourceTree = "<group>"; };
-		BF04A6E21D2294FB006A8008 /* AgentError.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentError.swift; sourceTree = "<group>"; };
-		C92BBDFDDEDEB91636510627 /* CommandHandler.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CommandHandler.swift; sourceTree = "<group>"; };
-		E1EB840C8692BFAB0CDD825A /* SnapshotElementFinder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SnapshotElementFinder.swift; sourceTree = "<group>"; };
-		EE611337BAF116661D4AEE93 /* TapsmithAgentUITests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = TapsmithAgentUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		03BBAA69CD44B39C3AD6DA0F /* TouchSynthesizer.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = TouchSynthesizer.m; sourceTree = "<group>"; };
+		09C5E3AFD1299FFFF4B31AB6 /* HierarchyDumper.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HierarchyDumper.swift; sourceTree = "<group>"; };
+		120AEFF331CC195D7A1592FC /* ElementFinder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ElementFinder.swift; sourceTree = "<group>"; };
+		19310EAA5EA86B6E6776B6F8 /* ElementInfo.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ElementInfo.swift; sourceTree = "<group>"; };
+		1D4606C81DC5E17A14939D8D /* CommandHandler.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CommandHandler.swift; sourceTree = "<group>"; };
+		34424E01B06D5C34CAEE7B3F /* TapsmithAgentUITests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = TapsmithAgentUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		45B43D837B50F6CE9F2973A3 /* WaitEngine.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WaitEngine.swift; sourceTree = "<group>"; };
+		45FCCCE646EA2B85354B30F7 /* QuiescenceDisabler.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QuiescenceDisabler.swift; sourceTree = "<group>"; };
+		46F2F23AB376461F1E086465 /* TapsmithAgentRunner.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TapsmithAgentRunner.swift; sourceTree = "<group>"; };
+		4F73B6388FA79243297885B0 /* ObjCExceptionCatcher.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = ObjCExceptionCatcher.m; sourceTree = "<group>"; };
+		7CD67663681CC3C8C65959F0 /* ObjCExceptionCatcher.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = ObjCExceptionCatcher.h; sourceTree = "<group>"; };
+		95F1D55A943C25C2F98CC102 /* SnapshotElementFinder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SnapshotElementFinder.swift; sourceTree = "<group>"; };
+		B20F42F1DA77FBEEC0F04F60 /* SocketServer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SocketServer.swift; sourceTree = "<group>"; };
+		B4047824F41AA54563A432DC /* RoleMapping.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RoleMapping.swift; sourceTree = "<group>"; };
+		BDD4545E80BE3B249F9D6B2F /* TapsmithAgent-Bridging-Header.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = "TapsmithAgent-Bridging-Header.h"; sourceTree = "<group>"; };
+		C511FD447184FAEDC3739DB9 /* TouchSynthesizer.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = TouchSynthesizer.h; sourceTree = "<group>"; };
+		D17FE6EF9A57433664F043E7 /* SelectorParser.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SelectorParser.swift; sourceTree = "<group>"; };
+		D53CA4D47911BC911C8430EF /* ActionExecutor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ActionExecutor.swift; sourceTree = "<group>"; };
+		E2D8F09D7C424D6639D7D0AD /* OneShotLogger.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OneShotLogger.swift; sourceTree = "<group>"; };
+		EDF3E8F423ADAE29CD2EFB48 /* AgentError.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentError.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXGroup section */
-		0CA93ACE5728048F2ADF9962 = {
+		454C9CF63A96ADB0BE5F22C6 /* TapsmithAgent */ = {
 			isa = PBXGroup;
 			children = (
-				3895D496ECF0C4000D551435 /* TapsmithAgent */,
-				562A3DBB3ABFAC67350D600C /* Products */,
-			);
-			sourceTree = "<group>";
-		};
-		3895D496ECF0C4000D551435 /* TapsmithAgent */ = {
-			isa = PBXGroup;
-			children = (
-				8CD398B24240A3E02BB14A95 /* ActionExecutor.swift */,
-				C92BBDFDDEDEB91636510627 /* CommandHandler.swift */,
-				052B8FF38B0F091AD93BB398 /* ElementFinder.swift */,
-				19A283F8352CFBFC08BC18C3 /* HierarchyDumper.swift */,
-				0A6811EF273DF034325FCB19 /* TapsmithAgent-Bridging-Header.h */,
-				580285546D29B0A6F17C7437 /* TapsmithAgentRunner.swift */,
-				298CD3A0AA1DE4F72055E818 /* QuiescenceDisabler.swift */,
-				B532FDE651479856F60A24DA /* RoleMapping.swift */,
-				BBBB5205B682352F65D8FBA7 /* SelectorParser.swift */,
-				E1EB840C8692BFAB0CDD825A /* SnapshotElementFinder.swift */,
-				9524979C432056F44C69DF1E /* SocketServer.swift */,
-				536F181C1B309E519E2A21D3 /* TouchSynthesizer.h */,
-				B939B7C7AA38B6E333EDDB3B /* TouchSynthesizer.m */,
-				12B246A769785A2E9FFF3A73 /* WaitEngine.swift */,
-				D9EE59A9E251CFA8B8FAF121 /* Models */,
+				D53CA4D47911BC911C8430EF /* ActionExecutor.swift */,
+				1D4606C81DC5E17A14939D8D /* CommandHandler.swift */,
+				120AEFF331CC195D7A1592FC /* ElementFinder.swift */,
+				09C5E3AFD1299FFFF4B31AB6 /* HierarchyDumper.swift */,
+				7CD67663681CC3C8C65959F0 /* ObjCExceptionCatcher.h */,
+				4F73B6388FA79243297885B0 /* ObjCExceptionCatcher.m */,
+				45FCCCE646EA2B85354B30F7 /* QuiescenceDisabler.swift */,
+				B4047824F41AA54563A432DC /* RoleMapping.swift */,
+				D17FE6EF9A57433664F043E7 /* SelectorParser.swift */,
+				95F1D55A943C25C2F98CC102 /* SnapshotElementFinder.swift */,
+				B20F42F1DA77FBEEC0F04F60 /* SocketServer.swift */,
+				BDD4545E80BE3B249F9D6B2F /* TapsmithAgent-Bridging-Header.h */,
+				46F2F23AB376461F1E086465 /* TapsmithAgentRunner.swift */,
+				C511FD447184FAEDC3739DB9 /* TouchSynthesizer.h */,
+				03BBAA69CD44B39C3AD6DA0F /* TouchSynthesizer.m */,
+				45B43D837B50F6CE9F2973A3 /* WaitEngine.swift */,
+				842E5124C674BF673EBF46E5 /* Models */,
 			);
 			path = TapsmithAgent;
 			sourceTree = "<group>";
 		};
-		562A3DBB3ABFAC67350D600C /* Products */ = {
+		82A371343BA29ADE41D01FAD /* Products */ = {
 			isa = PBXGroup;
 			children = (
-				EE611337BAF116661D4AEE93 /* TapsmithAgentUITests.xctest */,
+				34424E01B06D5C34CAEE7B3F /* TapsmithAgentUITests.xctest */,
 			);
 			name = Products;
 			sourceTree = "<group>";
 		};
-		D9EE59A9E251CFA8B8FAF121 /* Models */ = {
+		842E5124C674BF673EBF46E5 /* Models */ = {
 			isa = PBXGroup;
 			children = (
-				BF04A6E21D2294FB006A8008 /* AgentError.swift */,
-				B504F3FF5D60D36BF6229E19 /* ElementInfo.swift */,
-				D1A2B3C4E5F60718293041AB /* OneShotLogger.swift */,
+				EDF3E8F423ADAE29CD2EFB48 /* AgentError.swift */,
+				19310EAA5EA86B6E6776B6F8 /* ElementInfo.swift */,
+				E2D8F09D7C424D6639D7D0AD /* OneShotLogger.swift */,
 			);
 			path = Models;
+			sourceTree = "<group>";
+		};
+		AA935D53E8E5487B664F3796 = {
+			isa = PBXGroup;
+			children = (
+				454C9CF63A96ADB0BE5F22C6 /* TapsmithAgent */,
+				82A371343BA29ADE41D01FAD /* Products */,
+			);
 			sourceTree = "<group>";
 		};
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
-		A4C2A3E5FCF6FD9A8B4D4CCE /* TapsmithAgentUITests */ = {
+		973951936FC46964192EC09F /* TapsmithAgentUITests */ = {
 			isa = PBXNativeTarget;
-			buildConfigurationList = 68BB9C5D1794AEF07E33FE26 /* Build configuration list for PBXNativeTarget "TapsmithAgentUITests" */;
+			buildConfigurationList = 08A30720D5458EF014F15BF4 /* Build configuration list for PBXNativeTarget "TapsmithAgentUITests" */;
 			buildPhases = (
-				A65B865D8DF85CE0647A8D25 /* Sources */,
+				E5E7FC72215BC1A645108A16 /* Sources */,
 			);
 			buildRules = (
 			);
@@ -111,13 +116,13 @@
 			packageProductDependencies = (
 			);
 			productName = TapsmithAgentUITests;
-			productReference = EE611337BAF116661D4AEE93 /* TapsmithAgentUITests.xctest */;
+			productReference = 34424E01B06D5C34CAEE7B3F /* TapsmithAgentUITests.xctest */;
 			productType = "com.apple.product-type.bundle.ui-testing";
 		};
 /* End PBXNativeTarget section */
 
 /* Begin PBXProject section */
-		0283E28FC8B4B3E8A71D0845 /* Project object */ = {
+		9F4FE376CBE520D7BBEB22FA /* Project object */ = {
 			isa = PBXProject;
 			attributes = {
 				BuildIndependentTargetsInParallel = YES;
@@ -125,78 +130,53 @@
 				TargetAttributes = {
 				};
 			};
-			buildConfigurationList = 57A71B9483E815E2FD989FDB /* Build configuration list for PBXProject "TapsmithAgent" */;
+			buildConfigurationList = 38AB17DA263824B3B6BB3A3A /* Build configuration list for PBXProject "TapsmithAgent" */;
 			developmentRegion = en;
 			hasScannedForEncodings = 0;
 			knownRegions = (
 				Base,
 				en,
 			);
-			mainGroup = 0CA93ACE5728048F2ADF9962;
+			mainGroup = AA935D53E8E5487B664F3796;
 			minimizedProjectReferenceProxies = 1;
 			preferredProjectObjectVersion = 77;
-			productRefGroup = 562A3DBB3ABFAC67350D600C /* Products */;
+			productRefGroup = 82A371343BA29ADE41D01FAD /* Products */;
 			projectDirPath = "";
 			projectRoot = "";
 			targets = (
-				A4C2A3E5FCF6FD9A8B4D4CCE /* TapsmithAgentUITests */,
+				973951936FC46964192EC09F /* TapsmithAgentUITests */,
 			);
 		};
 /* End PBXProject section */
 
 /* Begin PBXSourcesBuildPhase section */
-		A65B865D8DF85CE0647A8D25 /* Sources */ = {
+		E5E7FC72215BC1A645108A16 /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				853075A66BC9F6DE241F4974 /* ActionExecutor.swift in Sources */,
-				5DE7E2D39892BB51ADCDFDF9 /* AgentError.swift in Sources */,
-				998A8170306D3EE1D9F50A94 /* CommandHandler.swift in Sources */,
-				B21303BE9DB0B610FDD9DF1C /* ElementFinder.swift in Sources */,
-				A61DFB830FA095C01519279C /* ElementInfo.swift in Sources */,
-				FD2CA370FC67FA974233B97B /* HierarchyDumper.swift in Sources */,
-				D1A2B3C4E5F6071829304152 /* OneShotLogger.swift in Sources */,
-				2B315E22BA068C8558C27B65 /* TapsmithAgentRunner.swift in Sources */,
-				2B055AB09AD5D972B559ECED /* QuiescenceDisabler.swift in Sources */,
-				4FEA51A33465493A72809BB1 /* RoleMapping.swift in Sources */,
-				C6ED38BD5949928E21D627E5 /* SelectorParser.swift in Sources */,
-				34B43CF359F7F231C30FB6E3 /* SnapshotElementFinder.swift in Sources */,
-				2DF0A1F5D7D91EE33ECEF87B /* SocketServer.swift in Sources */,
-				C93319A539FD79550174D983 /* TouchSynthesizer.m in Sources */,
-				40844F0CB9D9DDBBB420D8EF /* WaitEngine.swift in Sources */,
+				1C2ED89480D51025F3F287F0 /* ActionExecutor.swift in Sources */,
+				C3EA7BC091BB4FFF7DDD0C3D /* AgentError.swift in Sources */,
+				00939514784AEE11CC64485E /* CommandHandler.swift in Sources */,
+				9A7AA0FD964CB0917BA73A34 /* ElementFinder.swift in Sources */,
+				8EAA355DA951C199AF253DB7 /* ElementInfo.swift in Sources */,
+				B5ED1D32F5D4721948E90845 /* HierarchyDumper.swift in Sources */,
+				8343FFC928BF3DED3CE9B54D /* ObjCExceptionCatcher.m in Sources */,
+				AF850BF1649CFB7D3D5FEDAB /* OneShotLogger.swift in Sources */,
+				C3FB8341E6CADE143C84D0C0 /* QuiescenceDisabler.swift in Sources */,
+				B9C16B182851EAD07DF20338 /* RoleMapping.swift in Sources */,
+				A36314E56A12B9911A8E07F5 /* SelectorParser.swift in Sources */,
+				09E2E27C7BCBF01AE2648172 /* SnapshotElementFinder.swift in Sources */,
+				B8E4DB3D143C129530BED0E8 /* SocketServer.swift in Sources */,
+				A4DD313B0DC87ACC0AC5EC36 /* TapsmithAgentRunner.swift in Sources */,
+				17687791BBF6102D034AB942 /* TouchSynthesizer.m in Sources */,
+				6C50B1ECB9A19432E1A89D91 /* WaitEngine.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 /* End PBXSourcesBuildPhase section */
 
 /* Begin XCBuildConfiguration section */
-		32C7BD3A984A384C70A7D13D /* Release */ = {
-			isa = XCBuildConfiguration;
-			buildSettings = {
-				BUNDLE_LOADER = "$(TEST_HOST)";
-				CLANG_ENABLE_MODULES = YES;
-				CODE_SIGNING_ALLOWED = NO;
-				CODE_SIGNING_REQUIRED = NO;
-				CODE_SIGN_IDENTITY = "";
-				GENERATE_INFOPLIST_FILE = YES;
-				INFOPLIST_FILE = "";
-				LD_RUNPATH_SEARCH_PATHS = (
-					"$(inherited)",
-					"@executable_path/Frameworks",
-					"@loader_path/Frameworks",
-				);
-				PRODUCT_BUNDLE_IDENTIFIER = dev.tapsmith.agent;
-				SDKROOT = iphoneos;
-				SUPPORTS_MACCATALYST = NO;
-				SWIFT_OBJC_BRIDGING_HEADER = "TapsmithAgent/TapsmithAgent-Bridging-Header.h";
-				SWIFT_VERSION = 5.9;
-				TARGETED_DEVICE_FAMILY = "1,2";
-				TEST_HOST = "";
-				TEST_TARGET_NAME = "";
-			};
-			name = Release;
-		};
-		55A23E1498908291B8171524 /* Debug */ = {
+		03062BC4F86157B6D666FDA4 /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ALWAYS_SEARCH_USER_PATHS = NO;
@@ -259,11 +239,10 @@
 			};
 			name = Debug;
 		};
-		5727B8FF404B2F28C6802A4E /* Debug */ = {
+		27D1E765C3B9EE0354EC5539 /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				BUNDLE_LOADER = "$(TEST_HOST)";
-				CLANG_ENABLE_MODULES = YES;
 				CODE_SIGNING_ALLOWED = NO;
 				CODE_SIGNING_REQUIRED = NO;
 				CODE_SIGN_IDENTITY = "";
@@ -277,15 +256,14 @@
 				PRODUCT_BUNDLE_IDENTIFIER = dev.tapsmith.agent;
 				SDKROOT = iphoneos;
 				SUPPORTS_MACCATALYST = NO;
-				SWIFT_OBJC_BRIDGING_HEADER = "TapsmithAgent/TapsmithAgent-Bridging-Header.h";
 				SWIFT_VERSION = 5.9;
 				TARGETED_DEVICE_FAMILY = "1,2";
 				TEST_HOST = "";
 				TEST_TARGET_NAME = "";
 			};
-			name = Debug;
+			name = Release;
 		};
-		FD9405E7A022F5B4113452A3 /* Release */ = {
+		72C651998A85C11D4F56A611 /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ALWAYS_SEARCH_USER_PATHS = NO;
@@ -341,28 +319,52 @@
 			};
 			name = Release;
 		};
+		F5524C6948AFB65C156DA5B5 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGNING_ALLOWED = NO;
+				CODE_SIGNING_REQUIRED = NO;
+				CODE_SIGN_IDENTITY = "";
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = "";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = dev.tapsmith.agent;
+				SDKROOT = iphoneos;
+				SUPPORTS_MACCATALYST = NO;
+				SWIFT_VERSION = 5.9;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_HOST = "";
+				TEST_TARGET_NAME = "";
+			};
+			name = Debug;
+		};
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
-		57A71B9483E815E2FD989FDB /* Build configuration list for PBXProject "TapsmithAgent" */ = {
+		08A30720D5458EF014F15BF4 /* Build configuration list for PBXNativeTarget "TapsmithAgentUITests" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
-				55A23E1498908291B8171524 /* Debug */,
-				FD9405E7A022F5B4113452A3 /* Release */,
+				F5524C6948AFB65C156DA5B5 /* Debug */,
+				27D1E765C3B9EE0354EC5539 /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Debug;
 		};
-		68BB9C5D1794AEF07E33FE26 /* Build configuration list for PBXNativeTarget "TapsmithAgentUITests" */ = {
+		38AB17DA263824B3B6BB3A3A /* Build configuration list for PBXProject "TapsmithAgent" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
-				5727B8FF404B2F28C6802A4E /* Debug */,
-				32C7BD3A984A384C70A7D13D /* Release */,
+				03062BC4F86157B6D666FDA4 /* Debug */,
+				72C651998A85C11D4F56A611 /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Debug;
 		};
 /* End XCConfigurationList section */
 	};
-	rootObject = 0283E28FC8B4B3E8A71D0845 /* Project object */;
+	rootObject = 9F4FE376CBE520D7BBEB22FA /* Project object */;
 }

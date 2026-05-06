@@ -9,6 +9,7 @@ import Foundation
 class ElementFinder {
     private let app: XCUIApplication
     private var elementCache: [String: XCUIElement] = [:]
+    private var cacheOrder: [String] = []
     private let lock = NSLock()
 
     /// Maximum number of cached elements before eviction.
@@ -18,19 +19,17 @@ class ElementFinder {
     func clearCaches() {
         lock.lock()
         elementCache.removeAll()
+        cacheOrder.removeAll()
         lock.unlock()
     }
 
-    /// Evict entries when the cache exceeds `maxCacheSize`.
+    /// Evict oldest entries when the cache exceeds `maxCacheSize`.
     private func pruneCache() {
         lock.lock()
         defer { lock.unlock() }
-        while elementCache.count > maxCacheSize {
-            if let key = elementCache.keys.first {
-                elementCache.removeValue(forKey: key)
-            } else {
-                break
-            }
+        while elementCache.count > maxCacheSize, !cacheOrder.isEmpty {
+            let oldest = cacheOrder.removeFirst()
+            elementCache.removeValue(forKey: oldest)
         }
     }
 
@@ -236,6 +235,7 @@ class ElementFinder {
         let elementId = UUID().uuidString
         lock.lock()
         elementCache[elementId] = element
+        cacheOrder.append(elementId)
         lock.unlock()
         pruneCache()
         return toElementInfo(element, elementId: elementId)
