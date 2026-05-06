@@ -42,6 +42,9 @@ import type {
   ServerMessage,
   ClientMessage,
   TestTreeNode,
+  TraceEventMessage,
+  SourceMessage,
+  NetworkMessage,
   UIRunMessage,
   UIRunChildMessage,
   UIDiscoverMessage,
@@ -174,6 +177,9 @@ export async function startUIServer(
   let singleWorkerRunningTest: { fullName: string; filePath: string; projectName?: string } | null = null;
   const failedFiles = new Set<string>();
   const testResults = new Map<string, TestResultEntry>();
+  const traceBuffer: TraceEventMessage[] = [];
+  const sourceBuffer = new Map<string, SourceMessage>();
+  const networkBuffer: NetworkMessage[] = [];
 
   function markRunStarted(): void {
     isRunning = true;
@@ -678,6 +684,9 @@ export async function startUIServer(
 
     markRunStarted();
     testResults.clear();
+    traceBuffer.length = 0;
+    sourceBuffer.clear();
+    networkBuffer.length = 0;
     const project = projectForFile(filePath, explicitProjectName);
     const useOptions = project?.use as RunFileUseOptions | undefined;
     const projectName = project && project.name !== 'default' ? project.name : undefined;
@@ -715,6 +724,9 @@ export async function startUIServer(
     if (isRunning) return { status: 'failed', passed: 0, failed: 0, skipped: 0, duration: 0 };
     markRunStarted();
     testResults.clear();
+    traceBuffer.length = 0;
+    sourceBuffer.clear();
+    networkBuffer.length = 0;
     screenPollActive = true;
 
     broadcast({ type: 'run-start', fileCount: ctx.testFiles.length });
@@ -989,7 +1001,7 @@ export async function startUIServer(
             break;
           }
           case 'trace-event': {
-            broadcast({
+            const traceMsg: TraceEventMessage = {
               type: 'trace-event',
               testFullName: currentTestFullName,
               projectName,
@@ -999,25 +1011,31 @@ export async function startUIServer(
               screenshotAfter: response.screenshotAfter,
               hierarchyBefore: response.hierarchyBefore,
               hierarchyAfter: response.hierarchyAfter,
-            });
+            };
+            traceBuffer.push(traceMsg);
+            broadcast(traceMsg);
             break;
           }
           case 'source': {
-            broadcast({
+            const sourceMsg: SourceMessage = {
               type: 'source',
               fileName: response.fileName,
               content: response.content,
-            });
+            };
+            sourceBuffer.set(response.fileName, sourceMsg);
+            broadcast(sourceMsg);
             break;
           }
           case 'network': {
-            broadcast({
+            const networkMsg: NetworkMessage = {
               type: 'network',
               testFullName: currentTestFullName,
               projectName,
               entries: response.entries,
               bodies: response.bodies,
-            });
+            };
+            networkBuffer.push(networkMsg);
+            broadcast(networkMsg);
             break;
           }
           case 'file-done': {
@@ -1624,7 +1642,7 @@ export async function startUIServer(
               break;
             }
             case 'trace-event': {
-              broadcast({
+              const traceMsg: TraceEventMessage = {
                 type: 'trace-event',
                 testFullName: worker.currentTest ?? '',
                 projectName: worker.currentFile?.projectName,
@@ -1634,15 +1652,21 @@ export async function startUIServer(
                 screenshotAfter: msg.screenshotAfter,
                 hierarchyBefore: msg.hierarchyBefore,
                 hierarchyAfter: msg.hierarchyAfter,
-              });
+              };
+              traceBuffer.push(traceMsg);
+              broadcast(traceMsg);
               break;
             }
             case 'source': {
-              broadcast({ type: 'source', fileName: msg.fileName, content: msg.content });
+              const sourceMsg: SourceMessage = { type: 'source', fileName: msg.fileName, content: msg.content };
+              sourceBuffer.set(msg.fileName, sourceMsg);
+              broadcast(sourceMsg);
               break;
             }
             case 'network': {
-              broadcast({ type: 'network', testFullName: worker.currentTest ?? '', projectName: worker.currentFile?.projectName, entries: msg.entries, bodies: msg.bodies });
+              const networkMsg: NetworkMessage = { type: 'network', testFullName: worker.currentTest ?? '', projectName: worker.currentFile?.projectName, entries: msg.entries, bodies: msg.bodies };
+              networkBuffer.push(networkMsg);
+              broadcast(networkMsg);
               break;
             }
             case 'file-done': {
@@ -1707,6 +1731,9 @@ export async function startUIServer(
     if (isRunning) return { status: 'failed', passed: 0, failed: 0, skipped: 0, duration: 0 };
     markRunStarted();
     testResults.clear();
+    traceBuffer.length = 0;
+    sourceBuffer.clear();
+    networkBuffer.length = 0;
     screenPollActive = true;
     parallelRunAborted = false;
 
@@ -1816,6 +1843,9 @@ export async function startUIServer(
     if (isRunning) return { status: 'failed', passed: 0, failed: 0, skipped: 0, duration: 0 };
     markRunStarted();
     testResults.clear();
+    traceBuffer.length = 0;
+    sourceBuffer.clear();
+    networkBuffer.length = 0;
     screenPollActive = true;
     parallelRunAborted = false;
 
@@ -2644,6 +2674,18 @@ export async function startUIServer(
         videoPath: r.videoPath,
         projectName: r.projectName,
       } satisfies ServerMessage));
+    }
+
+    // Replay trace events, source files, and network data so the trace
+    // panel restores on reconnect (not just the tree pass/fail icons).
+    for (const sourceMsg of sourceBuffer.values()) {
+      ws.send(JSON.stringify(sourceMsg));
+    }
+    for (const traceMsg of traceBuffer) {
+      ws.send(JSON.stringify(traceMsg));
+    }
+    for (const networkMsg of networkBuffer) {
+      ws.send(JSON.stringify(networkMsg));
     }
 
     // Replay running file statuses so the tree shows which files are mid-run.
