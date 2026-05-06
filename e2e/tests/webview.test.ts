@@ -4,13 +4,17 @@
  * Tests hybrid app scenarios: switch to WebView context, interact with
  * web content via CSS selectors, assert on DOM state, then switch back
  * to native.
+ *
+ * Tests are ordered so read-only/non-destructive tests run first,
+ * then stateful tests (login, counter) run last — avoiding WebView
+ * remounts between tests for debug socket stability on CI.
  */
-import { beforeEach, describe, expect, test } from "tapsmith"
+import { beforeAll, describe, expect, test } from "tapsmith"
 
 describe("WebView testing", () => {
-  test.use({ timeout: 30_000 })
+  test.use({ timeout: 90_000 })
 
-  beforeEach(async ({ device }) => {
+  beforeAll(async ({ device }) => {
     await device.restartApp()
     await device.getByDescription("WebView").scrollIntoView()
     await device.getByDescription("WebView").tap()
@@ -32,15 +36,6 @@ describe("WebView testing", () => {
     await device.native()
   })
 
-  test("can click buttons and see state changes", async ({ device }) => {
-    const webview = await device.webview()
-    await webview.fill("#email", "user@test.com")
-    await webview.fill("#password", "password123")
-    await webview.click("#login-button")
-    await expect(webview.locator(".success-message")).toBeVisible()
-    await device.native()
-  })
-
   test("locator assertions work with WebView elements", async ({ device }) => {
     const webview = await device.webview()
 
@@ -50,7 +45,7 @@ describe("WebView testing", () => {
     // Verify description contains expected text
     await expect(webview.locator(".description")).toContainText("CDP")
 
-    // Verify success message is initially hidden
+    // Verify success message is initially hidden (must run before login tests)
     await expect(webview.locator(".success-message")).toBeHidden()
 
     await device.native()
@@ -60,18 +55,6 @@ describe("WebView testing", () => {
     const webview = await device.webview()
     const result = await webview.evaluate<number>("2 + 2")
     expect(result).toBe(4)
-    await device.native()
-  })
-
-  test("can interact with counter", async ({ device }) => {
-    const webview = await device.webview()
-
-    await expect(webview.locator("#count-display")).toHaveText("Count: 0")
-    await webview.click("#increment-button")
-    await expect(webview.locator("#count-display")).toHaveText("Count: 1")
-    await webview.click("#increment-button")
-    await expect(webview.locator("#count-display")).toHaveText("Count: 2")
-
     await device.native()
   })
 
@@ -88,6 +71,27 @@ describe("WebView testing", () => {
 
     // Native elements should still be accessible
     await expect(device.getByText("Embedded WebView")).toBeVisible()
+  })
+
+  test("can click buttons and see state changes", async ({ device }) => {
+    const webview = await device.webview()
+    await webview.fill("#email", "user@test.com")
+    await webview.fill("#password", "password123")
+    await webview.click("#login-button")
+    await expect(webview.locator(".success-message")).toBeVisible()
+    await device.native()
+  })
+
+  test("can interact with counter", async ({ device }) => {
+    const webview = await device.webview()
+
+    await expect(webview.locator("#count-display")).toHaveText("Count: 0")
+    await webview.click("#increment-button")
+    await expect(webview.locator("#count-display")).toHaveText("Count: 1")
+    await webview.click("#increment-button")
+    await expect(webview.locator("#count-display")).toHaveText("Count: 2")
+
+    await device.native()
   })
 
   test("getByRole and getByText locators work", async ({ device }) => {

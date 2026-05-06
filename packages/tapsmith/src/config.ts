@@ -103,6 +103,13 @@ export interface TapsmithConfig {
   resetAppWaitMs?: number;
 
   /**
+   * Delay in milliseconds between keystrokes when typing text.
+   * Helps prevent dropped characters on slow CI simulators/emulators.
+   * Defaults to 0 (no delay).
+   */
+  typingDelay?: number;
+
+  /**
    * iOS simulator name or UDID. Analogous to `avd` for Android.
    * Run `xcrun simctl list devices` to see available simulators.
    */

@@ -1458,17 +1458,11 @@ async fn handle_mitm_http<C, U>(
     C: AsyncRead + AsyncWrite + Unpin,
     U: AsyncRead + AsyncWrite + Unpin,
 {
-    // Snapshot the handler once per connection. A handler is configured
-    // before capture starts and doesn't change during a live connection, so
-    // there's no need to re-lock on every request iteration. Today this is
-    // always None and the hook call-sites below are no-ops at runtime,
-    // but the full hook plumbing (including `raw_bytes` regeneration after
-    // mutation) is in place so the future modification feature drops in
-    // cleanly — a handler that mutates `req.headers`/`req.body` is actually
-    // observed on the wire, not silently dropped.
-    let handler = state.lock().await.handler.clone();
-
     loop {
+        // Re-read the handler on each request so that routes registered after
+        // this connection was established are visible immediately. The lock +
+        // Arc::clone is cheap compared to the network I/O per request.
+        let handler = state.lock().await.handler.clone();
         let start = now_ms();
 
         let mut req = match read_request(&mut client_stream, hostname).await {

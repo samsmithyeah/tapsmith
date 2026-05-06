@@ -20,7 +20,7 @@ function makeContext(overrides: Partial<Parameters<typeof ensureSessionReady>[0]
     ping: vi.fn(async () => ({ version: '0.1.0', agentConnected: true })),
     getUiHierarchy: vi.fn(async () => ({
       requestId: '1',
-      hierarchyXml: '<hierarchy />',
+      hierarchyXml: '<hierarchy><node package="com.example.app" /></hierarchy>',
       errorMessage: '',
     })),
   };
@@ -60,6 +60,11 @@ describe('session-preflight', () => {
   it('fails when the foreground package never matches', async () => {
     const ctx = makeContext();
     vi.mocked(ctx.device.currentPackage).mockResolvedValue('com.other.app');
+    vi.mocked(ctx.client.getUiHierarchy).mockResolvedValue({
+      requestId: '1',
+      hierarchyXml: '<hierarchy><node package="com.other.app" /></hierarchy>',
+      errorMessage: '',
+    });
 
     await expect(ensureSessionReady(ctx, 'startup')).rejects.toThrow(
       'foreground package mismatch',
@@ -127,10 +132,54 @@ describe('session-preflight', () => {
   it('fails on package mismatch when app is not in hierarchy', async () => {
     const ctx = makeContext();
     vi.mocked(ctx.device.currentPackage).mockResolvedValue('com.google.android.apps.nexuslauncher');
+    vi.mocked(ctx.client.getUiHierarchy).mockResolvedValue({
+      requestId: '1',
+      hierarchyXml: '<hierarchy><node package="com.google.android.apps.nexuslauncher" /></hierarchy>',
+      errorMessage: '',
+    });
 
     await expect(ensureSessionReady(ctx, 'startup')).rejects.toThrow(
       'foreground package mismatch',
     );
+  });
+
+  it('waits for the Android app hierarchy after a cold launch splash', async () => {
+    const ctx = makeContext();
+    vi.mocked(ctx.client.getUiHierarchy)
+      .mockResolvedValueOnce({
+        requestId: '1',
+        hierarchyXml: '<hierarchy><node package="com.android.systemui" /></hierarchy>',
+        errorMessage: '',
+      })
+      .mockResolvedValueOnce({
+        requestId: '2',
+        hierarchyXml: '<hierarchy><node package="com.example.app" /></hierarchy>',
+        errorMessage: '',
+      });
+
+    await expect(ensureSessionReady(ctx, 'startup')).resolves.toBeUndefined();
+
+    expect(ctx.client.getUiHierarchy).toHaveBeenCalledTimes(2);
+  });
+
+  it('dismisses Android notification shade overlays before waiting for the app hierarchy', async () => {
+    const ctx = makeContext();
+    vi.mocked(ctx.client.getUiHierarchy)
+      .mockResolvedValueOnce({
+        requestId: '1',
+        hierarchyXml: '<hierarchy><node package="com.android.systemui" resource-id="com.android.systemui:id/notification_panel" /></hierarchy>',
+        errorMessage: '',
+      })
+      .mockResolvedValueOnce({
+        requestId: '2',
+        hierarchyXml: '<hierarchy><node package="com.example.app" /></hierarchy>',
+        errorMessage: '',
+      });
+
+    await expect(ensureSessionReady(ctx, 'startup')).resolves.toBeUndefined();
+
+    expect(ctx.device.pressBack).toHaveBeenCalledTimes(1);
+    expect(ctx.client.getUiHierarchy).toHaveBeenCalledTimes(2);
   });
 
   it('iOS clearAppData + restartApp path when no deep link configured', async () => {
@@ -292,14 +341,14 @@ describe('session-preflight', () => {
       })
       .mockResolvedValueOnce({
         requestId: '1',
-        hierarchyXml: '<hierarchy />',
+        hierarchyXml: '<hierarchy><node package="com.example.app" /></hierarchy>',
         errorMessage: '',
       })
       .mockResolvedValueOnce({
         requestId: '1',
-        hierarchyXml: '<hierarchy />',
+        hierarchyXml: '<hierarchy><node package="com.example.app" /></hierarchy>',
         errorMessage: '',
-    });
+      });
 
     await expect(ensureSessionReady(ctx, 'startup')).resolves.toBeUndefined();
     expect(ctx.device.startAgent).toHaveBeenCalledTimes(1);

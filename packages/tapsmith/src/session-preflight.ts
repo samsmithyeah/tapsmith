@@ -196,7 +196,7 @@ async function verifySession(ctx: SessionPreflightContext): Promise<void> {
       // The app may still be visible underneath a system overlay (e.g. launcher
       // text-selection, share sheet). Check if the hierarchy contains nodes
       // from the expected package — if so, dismiss the overlay rather than failing.
-      const appInHierarchy = hierarchy.hierarchyXml.includes(`package="${ctx.config.package}"`);
+      const appInHierarchy = hierarchyContainsPackage(hierarchy.hierarchyXml, ctx.config.package);
       if (!appInHierarchy) {
         throw new Error(
           `foreground package mismatch (expected ${ctx.config.package}, got ${currentPackage || '(none)'})`,
@@ -204,6 +204,8 @@ async function verifySession(ctx: SessionPreflightContext): Promise<void> {
       }
       await ctx.device.pressBack();
       await ctx.device.waitForIdle(DEFAULT_READY_TIMEOUT_MS);
+    } else {
+      await waitForAndroidAppHierarchy(ctx, hierarchy.hierarchyXml, ctx.config.package);
     }
   }
 }
@@ -226,6 +228,76 @@ async function waitForIosAppReady(ctx: SessionPreflightContext): Promise<void> {
     await new Promise((resolve) => setTimeout(resolve, HIERARCHY_POLL_INTERVAL_MS));
   }
   throw new Error('iOS app not ready: accessibility hierarchy is empty after launch');
+}
+
+async function waitForAndroidAppHierarchy(
+  ctx: SessionPreflightContext,
+  initialHierarchyXml: string,
+  packageName: string,
+): Promise<void> {
+  let hierarchyXml = initialHierarchyXml;
+  if (hierarchyContainsPackage(hierarchyXml, packageName)) return;
+
+  if (isAndroidSystemOverlay(hierarchyXml)) {
+    const dismissedHierarchy = await dismissAndroidSystemOverlay(ctx, packageName);
+    if (dismissedHierarchy) {
+      hierarchyXml = dismissedHierarchy;
+      if (hierarchyContainsPackage(hierarchyXml, packageName)) return;
+    }
+  }
+
+  const deadline = Date.now() + HIERARCHY_READY_TIMEOUT_MS;
+  while (Date.now() < deadline) {
+    try {
+      const h = await ctx.client.getUiHierarchy();
+      hierarchyXml = h.hierarchyXml;
+      if (hierarchyContainsPackage(hierarchyXml, packageName)) return;
+      if (isAndroidSystemOverlay(hierarchyXml)) {
+        const dismissedHierarchy = await dismissAndroidSystemOverlay(ctx, packageName);
+        if (dismissedHierarchy) {
+          hierarchyXml = dismissedHierarchy;
+          if (hierarchyContainsPackage(hierarchyXml, packageName)) return;
+        }
+      }
+    } catch {
+      // Agent may still be settling after a cold launch.
+    }
+    await new Promise((resolve) => setTimeout(resolve, HIERARCHY_POLL_INTERVAL_MS));
+  }
+
+  throw new Error(`Android app hierarchy for ${packageName} not ready after launch`);
+}
+
+function hierarchyContainsPackage(hierarchyXml: string, packageName: string): boolean {
+  return hierarchyXml.includes(`package="${packageName}"`);
+}
+
+async function dismissAndroidSystemOverlay(
+  ctx: SessionPreflightContext,
+  packageName: string,
+): Promise<string | undefined> {
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      await ctx.device.pressBack();
+      await ctx.device.waitForIdle(1_000);
+      const h = await ctx.client.getUiHierarchy();
+      if (hierarchyContainsPackage(h.hierarchyXml, packageName) || !isAndroidSystemOverlay(h.hierarchyXml)) {
+        return h.hierarchyXml;
+      }
+    } catch {
+      return undefined;
+    }
+  }
+  return undefined;
+}
+
+function isAndroidSystemOverlay(hierarchyXml: string): boolean {
+  return hierarchyXml.includes('package="com.android.systemui"') && (
+    hierarchyXml.includes('resource-id="com.android.systemui:id/notification_panel"') ||
+    hierarchyXml.includes('resource-id="com.android.systemui:id/notification_stack_scroller"') ||
+    hierarchyXml.includes('resource-id="com.android.systemui:id/quick_settings_container"') ||
+    hierarchyXml.includes('resource-id="com.android.systemui:id/qs_frame"')
+  );
 }
 
 async function recoverSession(ctx: SessionPreflightContext): Promise<void> {

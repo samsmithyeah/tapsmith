@@ -25,6 +25,7 @@ let _activeConsoleInterceptors = 0;
 // ─── Global collector accessor ───
 
 let _activeCollector: TraceCollector | null = null;
+const TRACE_CAPTURE_TIMEOUT_MS = 5_000;
 
 /** Get the currently active trace collector (set by the runner during test execution). */
 export function getActiveTraceCollector(): TraceCollector | null {
@@ -49,6 +50,21 @@ export async function withActiveTraceCollector<T>(
     return await fn();
   } finally {
     setActiveTraceCollector(null);
+  }
+}
+
+async function captureWithTimeout<T>(promise: Promise<T>): Promise<T | undefined> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  promise.catch(() => undefined);
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<undefined>((resolve) => {
+        timer = setTimeout(() => resolve(undefined), TRACE_CAPTURE_TIMEOUT_MS);
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
   }
 }
 
@@ -316,7 +332,7 @@ export class TraceCollector {
 
     if (this.config.screenshots) {
       tasks.push(
-        takeScreenshot().then((data) => {
+        captureWithTimeout(takeScreenshot()).then((data) => {
           if (data) {
             const filename = `action-${String(actionIndex).padStart(3, '0')}-before.png`;
             const diskPath = path.join(this._tempDir, 'screenshots', filename);
@@ -340,7 +356,7 @@ export class TraceCollector {
 
     if (this.config.snapshots) {
       tasks.push(
-        captureHierarchy().then((xml) => {
+        captureWithTimeout(captureHierarchy()).then((xml) => {
           if (xml) {
             captures.hierarchyBefore = {
               archivePath: `hierarchy/action-${String(actionIndex).padStart(3, '0')}-before.xml`,
@@ -375,7 +391,7 @@ export class TraceCollector {
 
     if (this.config.screenshots) {
       tasks.push(
-        takeScreenshot().then((data) => {
+        captureWithTimeout(takeScreenshot()).then((data) => {
           if (data) {
             const filename = `action-${String(actionIndex).padStart(3, '0')}-after.png`;
             const diskPath = path.join(this._tempDir, 'screenshots', filename);
@@ -399,7 +415,7 @@ export class TraceCollector {
 
     if (this.config.snapshots) {
       tasks.push(
-        captureHierarchy().then((xml) => {
+        captureWithTimeout(captureHierarchy()).then((xml) => {
           if (xml) {
             captures.hierarchyAfter = {
               archivePath: `hierarchy/action-${String(actionIndex).padStart(3, '0')}-after.xml`,

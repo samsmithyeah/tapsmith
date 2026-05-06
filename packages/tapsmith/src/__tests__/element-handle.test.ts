@@ -450,7 +450,7 @@ describe('type()', () => {
     const sel = _text('Input');
     const handle = new ElementHandle(client, sel, 5000);
     await handle.type('hello');
-    expect(typeText).toHaveBeenCalledWith(sel, 'hello', 5000);
+    expect(typeText).toHaveBeenCalledWith(sel, 'hello', 5000, 0);
   });
 
   it('throws on failure', async () => {
@@ -469,7 +469,7 @@ describe('clearAndType()', () => {
     const sel = _text('Field');
     const handle = new ElementHandle(client, sel, 5000);
     await handle.clearAndType('new value');
-    expect(clearAndType).toHaveBeenCalledWith(sel, 'new value', 5000);
+    expect(clearAndType).toHaveBeenCalledWith(sel, 'new value', 5000, 0);
   });
 
   it('throws on failure', async () => {

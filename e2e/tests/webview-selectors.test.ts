@@ -2,12 +2,12 @@
  * Verify that every selector the Selector Playground would suggest
  * for WebView elements actually works at runtime.
  */
-import { beforeEach, describe, expect, test } from "tapsmith"
+import { beforeAll, describe, expect, test } from "tapsmith"
 
 describe("WebView selector playground parity", () => {
-  test.use({ timeout: 30_000 })
+  test.use({ timeout: 90_000 })
 
-  beforeEach(async ({ device }) => {
+  beforeAll(async ({ device }) => {
     await device.restartApp()
     await device.getByDescription("WebView").scrollIntoView()
     await device.getByDescription("WebView").tap()

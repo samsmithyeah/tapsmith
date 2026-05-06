@@ -33,7 +33,7 @@ export function listSimulators(): SimulatorInfo[] {
   try {
     const output = execFileSync('xcrun', ['simctl', 'list', 'devices', '--json'], {
       encoding: 'utf-8',
-      timeout: 10_000,
+      timeout: 30_000,
     });
 
     const parsed = JSON.parse(output) as {

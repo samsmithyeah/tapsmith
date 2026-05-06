@@ -65,8 +65,12 @@ async fn run_adb(serial: Option<&str>, args: &[&str], timeout: Duration) -> Resu
 }
 
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(30);
+const CLEANUP_TIMEOUT: Duration = Duration::from_secs(5);
 
-/// Base directory for user-installed CA certificates on Android.
+/// User-installed CA certificate directory. Apps must include
+/// `<certificates src="user"/>` in their network security config to
+/// trust these on Android API 24+. The Tapsmith test app and user apps
+/// that need MITM interception should configure this — see the docs.
 const DEVICE_CA_CERT_DIR: &str = "/data/misc/user/0/cacerts-added";
 
 /// Build the full on-device path for a CA cert given its filename (e.g. `a1b2c3d4.0`).
@@ -152,13 +156,18 @@ pub async fn forward_port(serial: &str, host_port: u16, device_port: u16) -> Res
 /// Remove a specific port forward.
 #[instrument]
 pub async fn remove_forward(serial: &str, host_port: u16) -> Result<()> {
+    remove_forward_with_timeout(serial, host_port, DEFAULT_TIMEOUT).await
+}
+
+/// Remove a specific port forward with a caller-provided timeout.
+#[instrument]
+pub async fn remove_forward_with_timeout(
+    serial: &str,
+    host_port: u16,
+    timeout: Duration,
+) -> Result<()> {
     let host_arg = format!("tcp:{host_port}");
-    run_adb(
-        Some(serial),
-        &["forward", "--remove", &host_arg],
-        DEFAULT_TIMEOUT,
-    )
-    .await?;
+    run_adb(Some(serial), &["forward", "--remove", &host_arg], timeout).await?;
     Ok(())
 }
 
@@ -184,16 +193,15 @@ pub async fn reverse_port(serial: &str, device_port: u16, host_port: u16) -> Res
     Ok(())
 }
 
-/// Remove a specific reverse port forward.
+/// Remove a specific reverse port forward with a caller-provided timeout.
 #[instrument]
-pub async fn remove_reverse(serial: &str, device_port: u16) -> Result<()> {
+pub async fn remove_reverse_with_timeout(
+    serial: &str,
+    device_port: u16,
+    timeout: Duration,
+) -> Result<()> {
     let device_arg = format!("tcp:{device_port}");
-    run_adb(
-        Some(serial),
-        &["reverse", "--remove", &device_arg],
-        DEFAULT_TIMEOUT,
-    )
-    .await?;
+    run_adb(Some(serial), &["reverse", "--remove", &device_arg], timeout).await?;
     Ok(())
 }
 
@@ -354,7 +362,6 @@ pub async fn install_ca_cert(serial: &str, ca_pem_path: &str, cert_filename: &st
     // Push cert to a temp location
     push_file(serial, ca_pem_path, "/data/local/tmp/tapsmith-ca.pem").await?;
 
-    // Install into user CA store with hash-based filename
     let device_path = device_ca_cert_path(cert_filename);
     shell(serial, &format!("mkdir -p {DEVICE_CA_CERT_DIR}")).await?;
     shell(
@@ -364,7 +371,7 @@ pub async fn install_ca_cert(serial: &str, ca_pem_path: &str, cert_filename: &st
     .await?;
     shell(serial, &format!("chmod 644 {device_path}")).await?;
 
-    info!(%serial, "CA certificate installed on device");
+    info!(%serial, cert_filename, "CA certificate installed on device");
     Ok(())
 }
 
@@ -392,6 +399,17 @@ async fn run_adb_lenient(serial: &str, args: &[&str]) -> Result<Vec<u8>> {
 /// `dumpsys` that may write to stdout before exiting with an error.
 #[instrument]
 pub async fn shell_lenient(serial: &str, command: &str) -> Result<String> {
+    shell_lenient_with_timeout(serial, command, DEFAULT_TIMEOUT).await
+}
+
+/// Execute a shell command on the device with a caller-provided timeout,
+/// returning stdout even when the command exits non-zero.
+#[instrument]
+pub async fn shell_lenient_with_timeout(
+    serial: &str,
+    command: &str,
+    timeout: Duration,
+) -> Result<String> {
     let mut cmd = Command::new("adb");
     cmd.arg("-s").arg(serial).arg("shell").arg(command);
 
@@ -401,9 +419,9 @@ pub async fn shell_lenient(serial: &str, command: &str) -> Result<String> {
         "Running adb shell (lenient)"
     );
 
-    let output = tokio::time::timeout(DEFAULT_TIMEOUT, cmd.output())
+    let output = tokio::time::timeout(timeout, cmd.output())
         .await
-        .map_err(|_| anyhow!("adb command timed out after {DEFAULT_TIMEOUT:?}"))?
+        .map_err(|_| anyhow!("adb command timed out after {timeout:?}"))?
         .context("Failed to execute adb")?;
 
     Ok(String::from_utf8_lossy(&output.stdout).to_string())
@@ -423,9 +441,12 @@ pub struct WebViewSocket {
 /// `@webview_devtools_remote_<pid>` or `@chrome_devtools_remote`.
 #[instrument]
 pub async fn list_webview_sockets(serial: &str) -> Result<Vec<WebViewSocket>> {
-    let unix_output = shell_lenient(
+    let discovery_timeout = Duration::from_secs(5);
+    let pid_lookup_timeout = Duration::from_secs(2);
+    let unix_output = shell_lenient_with_timeout(
         serial,
         "cat /proc/net/unix 2>/dev/null | grep devtools_remote",
+        discovery_timeout,
     )
     .await?;
 
@@ -469,8 +490,12 @@ pub async fn list_webview_sockets(serial: &str) -> Result<Vec<WebViewSocket>> {
     // than parsing `ps` output, which varies across Android versions).
     for socket in &mut sockets {
         if socket.pid > 0 {
-            if let Ok(cmdline) =
-                shell_lenient(serial, &format!("cat /proc/{}/cmdline", socket.pid)).await
+            if let Ok(cmdline) = shell_lenient_with_timeout(
+                serial,
+                &format!("cat /proc/{}/cmdline", socket.pid),
+                pid_lookup_timeout,
+            )
+            .await
             {
                 let pkg = cmdline.trim_matches('\0').trim();
                 if !pkg.is_empty() {
@@ -484,23 +509,18 @@ pub async fn list_webview_sockets(serial: &str) -> Result<Vec<WebViewSocket>> {
     Ok(sockets)
 }
 
-/// Forward a local TCP port to a device-side abstract Unix socket.
-///
-/// Used for Chrome DevTools Protocol connections to WebView debug sockets.
+/// Forward a local TCP port to a device-side abstract Unix socket with a
+/// caller-provided timeout.
 #[instrument]
-pub async fn forward_abstract_socket(
+pub async fn forward_abstract_socket_with_timeout(
     serial: &str,
     host_port: u16,
     socket_name: &str,
+    timeout: Duration,
 ) -> Result<()> {
     let host_arg = format!("tcp:{host_port}");
     let device_arg = format!("localabstract:{socket_name}");
-    run_adb(
-        Some(serial),
-        &["forward", &host_arg, &device_arg],
-        DEFAULT_TIMEOUT,
-    )
-    .await?;
+    run_adb(Some(serial), &["forward", &host_arg, &device_arg], timeout).await?;
     debug!(
         host_port,
         socket_name, "Abstract socket forwarding established"
@@ -546,14 +566,25 @@ pub async fn setup_iptables_redirect(serial: &str, proxy_port: u16) -> bool {
 /// Safe to call even if the chain doesn't exist.
 pub async fn cleanup_iptables_redirect(serial: &str) {
     // Remove the jump rule from OUTPUT (may fail if not present — that's fine)
-    let _ = shell(
+    let _ = shell_with_timeout(
         serial,
         &format!("iptables -t nat -D OUTPUT -j {IPTABLES_CHAIN}"),
+        CLEANUP_TIMEOUT,
     )
     .await;
     // Flush and delete the chain
-    let _ = shell(serial, &format!("iptables -t nat -F {IPTABLES_CHAIN}")).await;
-    let _ = shell(serial, &format!("iptables -t nat -X {IPTABLES_CHAIN}")).await;
+    let _ = shell_with_timeout(
+        serial,
+        &format!("iptables -t nat -F {IPTABLES_CHAIN}"),
+        CLEANUP_TIMEOUT,
+    )
+    .await;
+    let _ = shell_with_timeout(
+        serial,
+        &format!("iptables -t nat -X {IPTABLES_CHAIN}"),
+        CLEANUP_TIMEOUT,
+    )
+    .await;
 }
 
 #[cfg(test)]

@@ -107,6 +107,15 @@ async fn start_ios(udid: &str, size: Option<(u32, u32)>) -> Result<RecordingHand
 
     if device.is_simulator {
         let child = ios::recording::recordvideo_sim_spawn(udid, &local_path).await?;
+        // Wait for the recorder to create the output file, which signals
+        // the encoder is initialised and capturing frames.
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !local_path.exists() && Instant::now() < deadline {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        if !local_path.exists() {
+            warn!(path = %local_path.display(), "Recorder did not create output file within 5s");
+        }
         info!(udid, path = %local_path.display(), "Started iOS sim recordVideo");
         Ok(RecordingHandle {
             backend: Backend::IosSim { child },

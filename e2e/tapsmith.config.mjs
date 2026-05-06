@@ -23,7 +23,7 @@ import { defineConfig } from "tapsmith"
 
 const ANDROID_USE = {
   platform: "android",
-  apk: "../test-app/android/app/build/outputs/apk/release/app-release.apk",
+  apk: "./fixtures/app-release.apk",
   activity: "dev.tapsmith.testapp.MainActivity",
   avd: "Tapsmith_Generic_Phone_API_35",
   agentApk: "../agent/app/build/outputs/apk/debug/app-debug.apk",

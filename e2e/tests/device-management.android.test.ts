@@ -1,6 +1,19 @@
-import { test, expect, describe } from "tapsmith"
+import { test, expect, describe, Device } from "tapsmith"
 
 const PKG = "dev.tapsmith.testapp"
+const CAMERA_PERMISSION = "android.permission.CAMERA"
+
+async function expectAppReady(device: Device) {
+  expect(await device.currentPackage()).toBe(PKG)
+  expect(await device.getAppState(PKG)).toBe("foreground")
+  await expect(device.getByText("Tapsmith Test App", { exact: true })).toBeVisible()
+}
+
+async function launchAppReady(device: Device) {
+  await device.launchApp(PKG)
+  await device.openDeepLink("tapsmithtest:///")
+  await expectAppReady(device)
+}
 
 // ─── Android-only device management tests ───
 // These tests use APIs that are only available on Android.
@@ -10,20 +23,27 @@ const PKG = "dev.tapsmith.testapp"
 
 describe("App lifecycle (Android)", () => {
   test("currentActivity() returns a non-empty activity", async ({ device }) => {
+    await launchAppReady(device)
     const activity = await device.currentActivity()
     expect(activity.length).toBeGreaterThan(0)
   })
 
   test("sendToBackground() backgrounds the app", async ({ device }) => {
+    await launchAppReady(device)
     await device.sendToBackground()
-    const state = await device.getAppState(PKG)
-    expect(state).toBe("background")
+    expect(await device.getAppState(PKG)).toBe("background")
+
+    await device.bringToForeground(PKG)
+    await expectAppReady(device)
   })
 
-  test("bringToForeground() brings the app back", async ({ device }) => {
+  test("bringToForeground() brings a backgrounded app back", async ({ device }) => {
+    await launchAppReady(device)
+    await device.sendToBackground()
+    expect(await device.getAppState(PKG)).toBe("background")
+
     await device.bringToForeground(PKG)
-    const state = await device.getAppState(PKG)
-    expect(state).toBe("foreground")
+    await expectAppReady(device)
   })
 
   test("getAppState() returns 'not_installed' for unknown package", async ({ device }) => {
@@ -36,80 +56,103 @@ describe("App lifecycle (Android)", () => {
 
 describe("Deep links (Android)", () => {
   test("navigate back after deep link", async ({ device }) => {
+    await launchAppReady(device)
     await device.openDeepLink("tapsmithtest:///login")
+    await expect(device.getByText("Sign In", { exact: true })).toBeVisible()
+
     await device.pressBack()
+    await expectAppReady(device)
   })
 })
 
 // ─── Device Navigation ───
 
 describe("Device navigation", () => {
-  test("pressHome() goes to home screen", async ({ device }) => {
-    await device.launchApp(PKG)
+  test("pressHome() goes to home screen and app can be relaunched", async ({ device }) => {
+    await launchAppReady(device)
     await device.pressHome()
-    const pkg = await device.currentPackage()
-    expect(pkg).not.toBe(PKG)
+
+    expect(await device.getAppState(PKG)).toBe("background")
+    expect(await device.currentPackage()).not.toBe(PKG)
+
+    await launchAppReady(device)
   })
 
-  test("openNotifications() opens notification shade", async ({ device }) => {
+  test("openNotifications() opens notification shade and pressBack() closes it", async ({ device }) => {
+    await launchAppReady(device)
     await device.openNotifications()
-  })
+    await expect(device.getByText("Android System", { exact: true })).toBeVisible()
 
-  test("pressBack() closes notification shade", async ({ device }) => {
     await device.pressBack()
+    await expectAppReady(device)
   })
 
-  test("openQuickSettings() opens quick settings", async ({ device }) => {
+  test("openQuickSettings() opens quick settings and pressBack() closes it", async ({ device }) => {
+    await launchAppReady(device)
     await device.openQuickSettings()
-  })
+    await expect(device.getByText("Internet", { exact: true })).toBeVisible()
 
-  test("pressBack() closes quick settings", async ({ device }) => {
     await device.pressBack()
+    await device.pressBack()
+    await expectAppReady(device)
   })
 
-  test("pressRecentApps() opens recents", async ({ device }) => {
+  test("pressRecentApps() opens recents without stopping the app", async ({ device }) => {
+    await launchAppReady(device)
     await device.pressRecentApps()
-    await device.pressBack()
+    expect(await device.getAppState(PKG)).not.toBe("stopped")
+
+    await launchAppReady(device)
   })
 })
 
 // ─── Color Scheme ───
 
 describe("Color scheme", () => {
-  test("setColorScheme('dark') enables dark mode", async ({ device }) => {
+  test("setColorScheme() toggles dark and light mode", async ({ device }) => {
     await device.setColorScheme("dark")
-    const scheme = await device.getColorScheme()
-    expect(scheme).toBe("dark")
-  })
+    expect(await device.getColorScheme()).toBe("dark")
 
-  test("setColorScheme('light') restores light mode", async ({ device }) => {
     await device.setColorScheme("light")
-    const scheme = await device.getColorScheme()
-    expect(scheme).toBe("light")
+    expect(await device.getColorScheme()).toBe("light")
   })
 })
 
 // ─── Permissions ───
 
 describe("Permissions", () => {
-  test("grantPermission() grants a runtime permission", async ({ device }) => {
-    await device.grantPermission(PKG, "android.permission.CAMERA")
+  test("grantPermission() grants camera permission to the app", async ({ device }) => {
+    await device.revokePermission(PKG, CAMERA_PERMISSION)
+    await device.grantPermission(PKG, CAMERA_PERMISSION)
+    await device.openDeepLink("tapsmithtest:///permissions")
+
+    await expect(device.getByText("Permissions", { exact: true })).toBeVisible()
+    await device.locator({ id: "request-camera" }).tap()
+    await expect(device.locator({ id: "camera-status" })).toContainText("granted")
   })
 
-  test("revokePermission() revokes a runtime permission", async ({ device }) => {
-    await device.revokePermission(PKG, "android.permission.CAMERA")
+  test("revokePermission() revokes a runtime permission without disrupting the app", async ({ device }) => {
+    await device.grantPermission(PKG, CAMERA_PERMISSION)
+    await device.revokePermission(PKG, CAMERA_PERMISSION)
+    expect(await device.getAppState(PKG)).not.toBe("not_installed")
+
+    await launchAppReady(device)
   })
 })
 
 // ─── pressKey (Hardware) ───
 
 describe("Key presses", () => {
-  test("pressKey('VOLUME_UP') does not throw", async ({ device }) => {
+  test("pressKey('VOLUME_UP') keeps the app running", async ({ device }) => {
+    await launchAppReady(device)
     await device.pressKey("VOLUME_UP")
+    expect(await device.getAppState(PKG)).toBe("foreground")
   })
 
-  test("pressKey('VOLUME_DOWN') does not throw", async ({ device }) => {
+  test("pressKey('VOLUME_DOWN') keeps the app running", async ({ device }) => {
+    await launchAppReady(device)
     await device.pressKey("VOLUME_DOWN")
+    expect(await device.getAppState(PKG)).toBe("foreground")
   })
 })
 
@@ -118,12 +161,8 @@ describe("Key presses", () => {
 describe("App data", () => {
   test("clearAppData() clears app data, app can be relaunched", async ({ device }) => {
     await device.clearAppData(PKG)
-    const state = await device.getAppState(PKG)
-    expect(state).toBe("stopped")
+    expect(await device.getAppState(PKG)).toBe("stopped")
 
-    // clearAppData stops the app — relaunch to leave a clean state
-    await device.launchApp(PKG)
-    const pkg = await device.currentPackage()
-    expect(pkg).toBe(PKG)
+    await launchAppReady(device)
   })
 })

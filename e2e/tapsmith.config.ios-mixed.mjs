@@ -57,7 +57,6 @@ export default defineConfig({
     // the sim's Network Extension redirector already filters per-PID).
     networkHosts: ["jsonplaceholder.typicode.com"],
   },
-  daemonBin: "../packages/tapsmith-core/target/release/tapsmith-core",
   projects: [
     // ─── Simulator ───
     {

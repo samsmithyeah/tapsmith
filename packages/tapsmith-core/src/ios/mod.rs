@@ -8,4 +8,6 @@ pub mod screenshot;
 #[cfg(target_os = "macos")]
 pub mod simulator_processes;
 #[cfg(target_os = "macos")]
+pub mod system_proxy;
+#[cfg(target_os = "macos")]
 pub mod webkit_debug_proxy;

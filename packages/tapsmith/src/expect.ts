@@ -1631,6 +1631,26 @@ function createWebViewAssertions(
     let passed = true;
     let error: string | undefined;
     let caughtErr: unknown;
+    let failedByTimeout = false;
+
+    traceCtx.collector.setPendingOperation((timeoutError: string) => {
+      failedByTimeout = true;
+      traceCtx.collector.addAssertionEvent({
+        assertion: (negated ? "not." : "") + name,
+        selector: selectorStr,
+        passed: false,
+        soft: false,
+        negated,
+        duration: Date.now() - start,
+        attempts: Math.max(1, Math.round((Date.now() - start) / POLL_INTERVAL_MS)),
+        error: timeoutError,
+        sourceLocation,
+        hasScreenshotBefore: !!beforeCaptures.screenshotBefore,
+        hasScreenshotAfter: false,
+        hasHierarchyBefore: !!beforeCaptures.hierarchyBefore,
+        hasHierarchyAfter: false,
+      } as Parameters<typeof traceCtx.collector.addAssertionEvent>[0]);
+    });
 
     try {
       await fn();
@@ -1638,6 +1658,12 @@ function createWebViewAssertions(
       passed = false;
       error = err instanceof Error ? err.message : String(err);
       caughtErr = err;
+    }
+
+    traceCtx.collector.clearPendingOperation();
+    if (failedByTimeout) {
+      if (caughtErr !== undefined) throw caughtErr;
+      return;
     }
 
     const duration = Date.now() - start;

@@ -454,7 +454,9 @@ Tapsmith supports Playwright-style network interception. Route handlers let you 
 
 #### `device.route(url, handler, options?): Promise<void>`
 
-Intercept network requests matching a URL pattern.
+Intercept network requests matching a URL pattern. Requires network tracing to be enabled (set `trace` to any mode other than `'off'` with `network: true`, which is the default). Without it, the MITM proxy that intercepts traffic is not active and route handlers will never fire.
+
+See also: [`device.unroute()`](#deviceunrouteurl-handler-promisevoid), [`device.unrouteAll()`](#deviceunrouteall-promisevoid).
 
 - `url`: `string | RegExp | ((url: URL) => boolean)` — URL pattern (glob), regex, or predicate
 - `handler`: `(route: Route) => Promise<void> | void` — handler that decides how to handle the request
@@ -476,14 +478,14 @@ Remove all registered route handlers.
 
 #### `device.waitForRequest(urlOrPredicate, options?): Promise<TapsmithRequest>`
 
-Wait for a network request matching the pattern.
+Wait for a network request matching the pattern. Requires network tracing to be enabled (same prerequisite as `device.route()`).
 
 - `urlOrPredicate`: `string | RegExp | ((request: TapsmithRequest) => boolean)`
 - `options.timeout?`: `number` — timeout in ms (default: device timeout)
 
 #### `device.waitForResponse(urlOrPredicate, options?): Promise<NetworkResponseEventData>`
 
-Wait for a network response matching the pattern.
+Wait for a network response matching the pattern. Requires network tracing to be enabled (same prerequisite as `device.route()`).
 
 #### `device.on(event, handler): void`
 
@@ -772,12 +774,15 @@ Long press this element.
 await device.getByText("Item 1", { exact: true }).longPress(2000);
 ```
 
-#### `elementHandle.type(text: string): Promise<void>`
+#### `elementHandle.type(text: string, options?: { delay?: number }): Promise<void>`
 
 Type text into this element.
 
+- `options.delay?`: `number` — delay in milliseconds between keystrokes. Overrides the global `typingDelay` config for this call. Defaults to `0` (no delay).
+
 ```typescript
 await device.getByPlaceholder("Email").type("user@example.com");
+await device.getByPlaceholder("OTP").type("123456", { delay: 50 });
 ```
 
 > **Control characters.** `\n`, `\t`, and `\b` are dispatched as
@@ -788,9 +793,11 @@ await device.getByPlaceholder("Email").type("user@example.com");
 > Enter key). Other ASCII control codes below `0x20` are dropped with
 > a one-shot warning log.
 
-#### `elementHandle.clearAndType(text: string): Promise<void>`
+#### `elementHandle.clearAndType(text: string, options?: { delay?: number }): Promise<void>`
 
 Clear existing text and type new text.
+
+- `options.delay?`: `number` — delay in milliseconds between keystrokes. Same as `type()`.
 
 ```typescript
 await device.locator({ id: "search_box" }).clearAndType("new query");

@@ -41,7 +41,9 @@
       "favicon": "./assets/favicon.png"
     },
     "plugins": [
-      "expo-router"
+      "expo-router",
+      "./plugins/with-network-security-config",
+      "./plugins/with-webview-debugging"
     ],
     "experiments": {
       "typedRoutes": true

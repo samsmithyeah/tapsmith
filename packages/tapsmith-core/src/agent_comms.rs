@@ -102,6 +102,7 @@ pub enum AgentCommand {
         selector: Value,
         text: String,
         timeout_ms: Option<u64>,
+        typing_delay_ms: Option<u32>,
     },
     ClearText {
         selector: Value,
@@ -191,6 +192,8 @@ pub enum AgentCommand {
     GetAppState {
         package: String,
     },
+    #[allow(dead_code)]
+    DismissSystemDialog,
 }
 
 impl AgentCommand {
@@ -245,11 +248,15 @@ impl AgentCommand {
                 selector,
                 text,
                 timeout_ms,
+                typing_delay_ms,
             } => {
                 let mut p = selector.clone();
                 p["text"] = json!(text);
                 if let Some(t) = timeout_ms {
                     p["timeout"] = json!(t);
+                }
+                if let Some(d) = typing_delay_ms {
+                    p["typingDelayMs"] = json!(d);
                 }
                 ("typeText", p)
             }
@@ -434,6 +441,7 @@ impl AgentCommand {
             AgentCommand::GetAppState { package } => {
                 ("getAppState", json!({ "bundleId": package }))
             }
+            AgentCommand::DismissSystemDialog => ("dismissSystemDialogs", json!({})),
         };
 
         json!({
@@ -870,12 +878,14 @@ mod tests {
             selector: json!({"hint": "Email"}),
             text: "user@example.com".into(),
             timeout_ms: Some(3000),
+            typing_delay_ms: Some(10),
         };
         let j = cmd.to_json("tt1");
         assert_eq!(j["method"], "typeText");
         assert_eq!(j["params"]["text"], "user@example.com");
         assert_eq!(j["params"]["hint"], "Email");
         assert_eq!(j["params"]["timeout"], 3000);
+        assert_eq!(j["params"]["typingDelayMs"], 10);
     }
 
     #[test]

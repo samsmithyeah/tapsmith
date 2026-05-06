@@ -291,12 +291,13 @@ export class TapsmithGrpcClient {
     });
   }
 
-  async typeText(selector: Selector, text: string, timeoutMs?: number): Promise<ActionResponse> {
+  async typeText(selector: Selector, text: string, timeoutMs?: number, typingDelayMs?: number): Promise<ActionResponse> {
     return this.call<ActionResponse>('typeText', {
       requestId: requestId(),
       selector: this.selectorProto(selector),
       text,
       timeoutMs: timeoutMs ?? 0,
+      typingDelayMs: typingDelayMs ?? 0,
     });
   }
 
@@ -308,12 +309,13 @@ export class TapsmithGrpcClient {
     });
   }
 
-  async clearAndType(selector: Selector, text: string, timeoutMs?: number): Promise<ActionResponse> {
+  async clearAndType(selector: Selector, text: string, timeoutMs?: number, typingDelayMs?: number): Promise<ActionResponse> {
     return this.call<ActionResponse>('clearAndType', {
       requestId: requestId(),
       selector: this.selectorProto(selector),
       text,
       timeoutMs: timeoutMs ?? 0,
+      typingDelayMs: typingDelayMs ?? 0,
     });
   }
 
@@ -783,24 +785,24 @@ export class TapsmithGrpcClient {
 
   // ── WebView Testing (PILOT-116) ──
 
-  async listWebViews(): Promise<ListWebViewsResponse> {
+  async listWebViews(deadlineMs?: number): Promise<ListWebViewsResponse> {
     return this.call<ListWebViewsResponse>('listWebViews', {
       requestId: requestId(),
-    });
+    }, deadlineMs);
   }
 
-  async forwardWebViewPort(socketName: string): Promise<ForwardWebViewPortResponse> {
+  async forwardWebViewPort(socketName: string, deadlineMs?: number): Promise<ForwardWebViewPortResponse> {
     return this.call<ForwardWebViewPortResponse>('forwardWebViewPort', {
       requestId: requestId(),
       socketName,
-    });
+    }, deadlineMs);
   }
 
-  async closeWebViewPort(localPort: number): Promise<ActionResponse> {
+  async closeWebViewPort(localPort: number, deadlineMs?: number): Promise<ActionResponse> {
     return this.call<ActionResponse>('closeWebViewPort', {
       requestId: requestId(),
       localPort,
-    });
+    }, deadlineMs);
   }
 
   // ── Lifecycle ──

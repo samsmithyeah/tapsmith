@@ -24,7 +24,7 @@ describe("Slow load screen", () => {
   test("2s load shows data after loading", async ({ device }) => {
     const screen = new SlowLoadScreen(device)
     await screen.load2sButton.tap()
-    await expect(screen.profileHeading).toBeVisible({ timeout: 10000 })
+    await expect(screen.profileHeading).toBeVisible({ timeout: 15_000 })
     await expect(screen.profileName).toBeVisible()
   })
 

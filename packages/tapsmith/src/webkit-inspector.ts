@@ -271,7 +271,21 @@ export class WebKitInspectorClient {
 
   /** Wait for page listings to arrive, then return all apps with pages. */
   async listTargets(): Promise<Array<{ appId: string; bundleId: string; name: string; pages: WebKitPage[] }>> {
-    // Wait a bit for listing messages to arrive
+    // Request page listings for all known apps. The simulator only
+    // sends _rpc_applicationSentListing: in response to this request —
+    // it does NOT push listings automatically after reporting the app
+    // list. Without this, pages stay empty on fresh CI simulators.
+    for (const [appId] of this._apps) {
+      this._sendMessage({
+        __selector: '_rpc_forwardGetListing:',
+        __argument: {
+          WIRConnectionIdentifierKey: this._connectionId,
+          WIRApplicationIdentifierKey: appId,
+        },
+      });
+    }
+
+    // Wait for listing responses to arrive
     await new Promise(r => setTimeout(r, 1000));
 
     const results: Array<{ appId: string; bundleId: string; name: string; pages: WebKitPage[] }> = [];

@@ -6,6 +6,10 @@ import { extractSourceLocation } from './trace/trace-collector.js';
 import type { WebKitInspectorClient } from './webkit-inspector.js';
 
 const POLL_INTERVAL_MS = 250;
+const WEB_SOCKET_CONNECT_TIMEOUT_MS = 5_000;
+const WEBVIEW_CLOSE_RPC_TIMEOUT_MS = 2_000;
+const WEBVIEW_BEST_EFFORT_CDP_TIMEOUT_MS = 2_000;
+const WEBVIEW_CDP_MESSAGE_TIMEOUT_MS = 30_000;
 
 const ROLE_CSS_MAP: Record<string, string[]> = {
   button: ['button', '[role="button"]', 'input[type="button"]', 'input[type="submit"]', 'input[type="reset"]'],
@@ -96,6 +100,12 @@ export class WebViewHandle {
     return this._inspector !== null;
   }
 
+  private _throwIfClosed(): void {
+    if (this._closed) {
+      throw new Error('WebView handle is closed');
+    }
+  }
+
   /** @internal — Get the screen-space bounds of an element inside the WebView. */
   async _getElementBounds(selectorOrFinderJs: string, finderJs?: string): Promise<{ left: number; top: number; right: number; bottom: number } | undefined> {
     try {
@@ -109,7 +119,7 @@ export class WebViewHandle {
         const r = el.getBoundingClientRect();
         const dpr = ${useDpr ? 'window.devicePixelRatio || 1' : '1'};
         return { left: r.left * dpr, top: r.top * dpr, right: r.right * dpr, bottom: r.bottom * dpr };
-      })()`) as { left: number; top: number; right: number; bottom: number } | null;
+      })()`, WEBVIEW_BEST_EFFORT_CDP_TIMEOUT_MS) as { left: number; top: number; right: number; bottom: number } | null;
       if (!rect) return undefined;
 
       // Look up the native WebView element's bounds to translate to screen coords.
@@ -145,9 +155,9 @@ export class WebViewHandle {
     }
   }
 
-  private async _traced<T>(action: string, selector: string | undefined, fn: () => Promise<T>, finderJs?: string): Promise<T> {
+  private async _traced<T>(action: string, selector: string | undefined, fn: (deadline: number) => Promise<T>, finderJs?: string): Promise<T> {
     const ctx = this._traceCtx;
-    if (!ctx) return fn();
+    if (!ctx) return fn(Date.now() + this._timeoutMs);
 
     const sourceLocation = extractSourceLocation(new Error().stack ?? '');
     const selectorStr = selector ? `css=${selector}` : undefined;
@@ -170,26 +180,52 @@ export class WebViewHandle {
     });
 
     const start = Date.now();
+    const deadline = start + this._timeoutMs;
     let success = true;
     let error: string | undefined;
     let result: T;
+    let failedByTimeout = false;
+    let timeoutError: string | undefined;
 
-    try {
-      result = await fn();
-    } catch (err) {
-      success = false;
-      error = err instanceof Error ? err.message : String(err);
+    ctx.collector.setPendingOperation((errorMessage: string) => {
+      failedByTimeout = true;
+      timeoutError = errorMessage;
       ctx.collector.addActionEvent({
         category: 'webview', action, selector: selectorStr,
-        duration: Date.now() - start, success, error,
-        log: [`webview.${action}(${selectorStr ?? ''}) failed: ${error}`],
+        duration: Date.now() - start, success: false, error: errorMessage,
+        log: [`webview.${action}(${selectorStr ?? ''}) timed out: ${errorMessage}`],
         hasScreenshotBefore: !!beforeCaptures.screenshotBefore,
         hasScreenshotAfter: false,
         hasHierarchyBefore: !!beforeCaptures.hierarchyBefore,
         hasHierarchyAfter: false,
         sourceLocation,
       });
+    });
+
+    try {
+      result = await fn(deadline);
+    } catch (err) {
+      success = false;
+      error = err instanceof Error ? err.message : String(err);
+      ctx.collector.clearPendingOperation();
+      if (!failedByTimeout) {
+        ctx.collector.addActionEvent({
+          category: 'webview', action, selector: selectorStr,
+          duration: Date.now() - start, success, error,
+          log: [`webview.${action}(${selectorStr ?? ''}) failed: ${error}`],
+          hasScreenshotBefore: !!beforeCaptures.screenshotBefore,
+          hasScreenshotAfter: false,
+          hasHierarchyBefore: !!beforeCaptures.hierarchyBefore,
+          hasHierarchyAfter: false,
+          sourceLocation,
+        });
+      }
       throw err;
+    }
+
+    ctx.collector.clearPendingOperation();
+    if (failedByTimeout) {
+      throw new Error(timeoutError ?? `webview.${action}() timed out`);
     }
 
     // Look up element bounds after action succeeds (best-effort)
@@ -222,7 +258,9 @@ export class WebViewHandle {
 
   /** @internal — Connect to the WebView's CDP endpoint. */
   async _connect(): Promise<void> {
+    this._throwIfClosed();
     const targets = await this._fetchTargets();
+    this._throwIfClosed();
     const page = targets.find(t => t.type === 'page') ?? targets[0];
     if (!page) {
       throw new Error(
@@ -236,28 +274,83 @@ export class WebViewHandle {
       wsUrl = `ws://127.0.0.1:${this._localPort}${wsUrl}`;
     }
 
+    if (!wsUrl) {
+      throw new Error('WebView target did not expose a CDP WebSocket URL');
+    }
+
     await this._connectWebSocket(wsUrl);
-    await this._send('Runtime.enable', {});
-    await this._send('Page.enable', {});
+    this._throwIfClosed();
+    await this._send('Runtime.enable', {}, Math.min(this._timeoutMs, WEB_SOCKET_CONNECT_TIMEOUT_MS));
+    this._throwIfClosed();
+    await this._send('Page.enable', {}, Math.min(this._timeoutMs, WEB_SOCKET_CONNECT_TIMEOUT_MS));
   }
 
   private async _fetchTargets(): Promise<CDPTarget[]> {
-    const resp = await fetch(`http://127.0.0.1:${this._localPort}/json`);
-    if (!resp.ok) {
-      throw new Error(`CDP /json returned ${resp.status}`);
+    // Retry with backoff for up to 10s. The outer loop in _webviewAndroid
+    // owns the full timeout and re-lists WebViews / re-forwards ports
+    // between attempts, so we keep this window short.
+    const deadline = Date.now() + Math.min(this._timeoutMs, 10_000);
+    let delayMs = 100;
+    let lastError: Error | undefined;
+
+    while (Date.now() < deadline) {
+      this._throwIfClosed();
+      try {
+        const fetchTimeoutMs = Math.max(1, Math.min(5000, deadline - Date.now()));
+        const resp = await fetch(`http://127.0.0.1:${this._localPort}/json`, {
+          signal: AbortSignal.timeout(fetchTimeoutMs),
+        });
+        this._throwIfClosed();
+        if (!resp.ok) {
+          throw new Error(`CDP /json returned ${resp.status}`);
+        }
+        return (await resp.json()) as CDPTarget[];
+      } catch (e) {
+        lastError = e instanceof Error ? e : new Error(String(e));
+        if (Date.now() + delayMs >= deadline) break;
+        await sleep(delayMs);
+        delayMs = Math.min(delayMs * 2, 2000);
+      }
     }
-    return (await resp.json()) as CDPTarget[];
+
+    throw new Error(
+      `WebView debug socket not available after retry: ${lastError?.message}`,
+    );
   }
 
   private _connectWebSocket(url: string): Promise<void> {
+    this._throwIfClosed();
     return new Promise((resolve, reject) => {
-      const ws = new WebSocket(url);
+      let settled = false;
+      const timeoutMs = Math.min(this._timeoutMs, WEB_SOCKET_CONNECT_TIMEOUT_MS);
+      const ws = new WebSocket(url, { handshakeTimeout: timeoutMs });
+      const timer = setTimeout(() => {
+        finish(() => {
+          ws.terminate();
+          reject(new Error(`WebView CDP WebSocket connection timed out after ${timeoutMs}ms`));
+        });
+      }, timeoutMs);
+      function finish(fn: () => void) {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        fn();
+      }
       ws.on('open', () => {
-        this._ws = ws;
-        resolve();
+        finish(() => {
+          if (this._closed) {
+            ws.terminate();
+            reject(new Error('WebView handle is closed'));
+            return;
+          }
+          this._ws = ws;
+          resolve();
+        });
       });
       ws.on('error', (err) => {
-        if (!this._ws) reject(err);
+        if (!this._ws) {
+          finish(() => reject(err));
+        }
       });
       ws.on('message', (data) => {
         const msg = JSON.parse(data.toString()) as CDPResponse;
@@ -274,6 +367,9 @@ export class WebViewHandle {
         }
       });
       ws.on('close', () => {
+        if (!this._ws) {
+          finish(() => reject(new Error('WebView CDP WebSocket closed before opening')));
+        }
         this._ws = null;
         for (const [, p] of this._pending) {
           p.reject(new Error('WebView CDP connection closed'));
@@ -284,7 +380,8 @@ export class WebViewHandle {
   }
 
   /** @internal */
-  async _send(method: string, params: Record<string, unknown>): Promise<unknown> {
+  async _send(method: string, params: Record<string, unknown>, timeoutMs?: number): Promise<unknown> {
+    this._throwIfClosed();
     if (this._useInspector) {
       const id = ++this._msgId;
       return this._inspector!.sendInspectorMessage(this._inspectorAppId!, {
@@ -299,10 +396,11 @@ export class WebViewHandle {
     }
     const id = ++this._msgId;
     return new Promise((resolve, reject) => {
+      const messageTimeoutMs = Math.max(1, Math.min(timeoutMs ?? WEBVIEW_CDP_MESSAGE_TIMEOUT_MS, WEBVIEW_CDP_MESSAGE_TIMEOUT_MS));
       const timeout = setTimeout(() => {
         this._pending.delete(id);
         reject(new Error(`CDP message timed out (method=${method}, id=${id})`));
-      }, 30_000);
+      }, messageTimeoutMs);
       this._pending.set(id, {
         resolve: (v) => { clearTimeout(timeout); resolve(v); },
         reject: (e) => { clearTimeout(timeout); reject(e); },
@@ -312,12 +410,12 @@ export class WebViewHandle {
   }
 
   /** @internal — Evaluate JS and return the result value. */
-  async _evaluate(expression: string): Promise<unknown> {
+  async _evaluate(expression: string, timeoutMs?: number): Promise<unknown> {
     const rawResult = await this._send('Runtime.evaluate', {
       expression,
       returnByValue: true,
       awaitPromise: true,
-    });
+    }, timeoutMs);
     // WebKit Inspector wraps the response in a 'result' key at the top level
     const result = (this._useInspector
       ? (rawResult as Record<string, unknown>).result as Record<string, unknown> | undefined ?? rawResult
@@ -334,11 +432,13 @@ export class WebViewHandle {
     const timeout = timeoutMs ?? this._timeoutMs;
     const deadline = Date.now() + timeout;
     while (Date.now() < deadline) {
+      const remaining = Math.max(1, deadline - Date.now());
       const found = await this._evaluate(
         `document.querySelector(${JSON.stringify(selector)}) !== null`,
+        remaining,
       );
       if (found) return;
-      await sleep(POLL_INTERVAL_MS);
+      await sleep(Math.min(POLL_INTERVAL_MS, Math.max(0, deadline - Date.now())));
     }
     throw new Error(
       `Timed out waiting for selector "${selector}" in WebView (${timeout}ms)`,
@@ -350,9 +450,10 @@ export class WebViewHandle {
     const timeout = timeoutMs ?? this._timeoutMs;
     const deadline = Date.now() + timeout;
     while (Date.now() < deadline) {
-      const found = await this._evaluate(`(${finderJs}) !== null`);
+      const remaining = Math.max(1, deadline - Date.now());
+      const found = await this._evaluate(`(${finderJs}) !== null`, remaining);
       if (found) return;
-      await sleep(POLL_INTERVAL_MS);
+      await sleep(Math.min(POLL_INTERVAL_MS, Math.max(0, deadline - Date.now())));
     }
     throw new Error(
       `Timed out waiting for "${displaySelector}" in WebView (${timeout}ms)`,
@@ -363,59 +464,60 @@ export class WebViewHandle {
 
   /** @internal */
   async _clickLocator(loc: WebViewLocator): Promise<void> {
-    return this._traced('click', loc._selector, async () => {
-      await this._waitForFinder(loc._finderJs, loc._selector);
-      await this._evaluate(`(${loc._finderJs}).click()`);
+    return this._traced('click', loc._selector, async (deadline) => {
+      await this._waitForFinder(loc._finderJs, loc._selector, remainingUntil(deadline));
+      await this._evaluate(`(${loc._finderJs}).click()`, remainingUntil(deadline));
     }, loc._finderJs);
   }
 
   /** @internal */
   async _fillLocator(loc: WebViewLocator, value: string): Promise<void> {
-    return this._traced('fill', loc._selector, async () => {
-      await this._waitForFinder(loc._finderJs, loc._selector);
+    return this._traced('fill', loc._selector, async (deadline) => {
+      await this._waitForFinder(loc._finderJs, loc._selector, remainingUntil(deadline));
       const escaped = JSON.stringify(value);
       await this._evaluate(`(() => {
         const el = (${loc._finderJs});
         el.value = ${escaped};
         el.dispatchEvent(new Event('input', { bubbles: true }));
         el.dispatchEvent(new Event('change', { bubbles: true }));
-      })()`);
+      })()`, remainingUntil(deadline));
     }, loc._finderJs);
   }
 
   /** @internal */
   async _textContentLocator(loc: WebViewLocator): Promise<string> {
-    return this._traced('textContent', loc._selector, async () => {
-      await this._waitForFinder(loc._finderJs, loc._selector);
-      const result = await this._evaluate(`(${loc._finderJs}).textContent`);
+    return this._traced('textContent', loc._selector, async (deadline) => {
+      await this._waitForFinder(loc._finderJs, loc._selector, remainingUntil(deadline));
+      const result = await this._evaluate(`(${loc._finderJs}).textContent`, remainingUntil(deadline));
       return (result as string) ?? '';
     }, loc._finderJs);
   }
 
   /** @internal */
   async _innerHTMLLocator(loc: WebViewLocator): Promise<string> {
-    return this._traced('innerHTML', loc._selector, async () => {
-      await this._waitForFinder(loc._finderJs, loc._selector);
-      const result = await this._evaluate(`(${loc._finderJs}).innerHTML`);
+    return this._traced('innerHTML', loc._selector, async (deadline) => {
+      await this._waitForFinder(loc._finderJs, loc._selector, remainingUntil(deadline));
+      const result = await this._evaluate(`(${loc._finderJs}).innerHTML`, remainingUntil(deadline));
       return (result as string) ?? '';
     }, loc._finderJs);
   }
 
   /** @internal */
   async _inputValueLocator(loc: WebViewLocator): Promise<string> {
-    return this._traced('inputValue', loc._selector, async () => {
-      await this._waitForFinder(loc._finderJs, loc._selector);
-      const result = await this._evaluate(`(${loc._finderJs}).value`);
+    return this._traced('inputValue', loc._selector, async (deadline) => {
+      await this._waitForFinder(loc._finderJs, loc._selector, remainingUntil(deadline));
+      const result = await this._evaluate(`(${loc._finderJs}).value`, remainingUntil(deadline));
       return (result as string) ?? '';
     }, loc._finderJs);
   }
 
   /** @internal */
   async _getAttributeLocator(loc: WebViewLocator, name: string): Promise<string | null> {
-    return this._traced('getAttribute', loc._selector, async () => {
-      await this._waitForFinder(loc._finderJs, loc._selector);
+    return this._traced('getAttribute', loc._selector, async (deadline) => {
+      await this._waitForFinder(loc._finderJs, loc._selector, remainingUntil(deadline));
       const result = await this._evaluate(
         `(${loc._finderJs}).getAttribute(${JSON.stringify(name)})`,
+        remainingUntil(deadline),
       );
       return result as string | null;
     }, loc._finderJs);
@@ -428,7 +530,7 @@ export class WebViewHandle {
       if (!el) return false;
       const style = window.getComputedStyle(el);
       return style.display !== 'none' && style.visibility !== 'hidden' && style.opacity !== '0';
-    })()`);
+    })()`, Math.min(this._timeoutMs, WEB_SOCKET_CONNECT_TIMEOUT_MS));
     return result as boolean;
   }
 
@@ -501,7 +603,7 @@ export class WebViewHandle {
           return node;
         }
         return walk(document.body, 0);
-      })()`) as DomNode | null;
+      })()`, WEBVIEW_BEST_EFFORT_CDP_TIMEOUT_MS) as DomNode | null;
 
       if (!domData) return undefined;
 
@@ -546,62 +648,67 @@ export class WebViewHandle {
   // ─── Public API ───
 
   async click(selector: string): Promise<void> {
-    return this._traced('click', selector, async () => {
-      await this._waitForSelector(selector);
+    return this._traced('click', selector, async (deadline) => {
+      await this._waitForSelector(selector, remainingUntil(deadline));
       await this._evaluate(
         `document.querySelector(${JSON.stringify(selector)}).click()`,
+        remainingUntil(deadline),
       );
     });
   }
 
   async fill(selector: string, value: string): Promise<void> {
-    return this._traced('fill', selector, async () => {
-      await this._waitForSelector(selector);
+    return this._traced('fill', selector, async (deadline) => {
+      await this._waitForSelector(selector, remainingUntil(deadline));
       const escaped = JSON.stringify(value);
       await this._evaluate(`(() => {
         const el = document.querySelector(${JSON.stringify(selector)});
         el.value = ${escaped};
         el.dispatchEvent(new Event('input', { bubbles: true }));
         el.dispatchEvent(new Event('change', { bubbles: true }));
-      })()`);
+      })()`, remainingUntil(deadline));
     });
   }
 
   async textContent(selector: string): Promise<string> {
-    return this._traced('textContent', selector, async () => {
-      await this._waitForSelector(selector);
+    return this._traced('textContent', selector, async (deadline) => {
+      await this._waitForSelector(selector, remainingUntil(deadline));
       const result = await this._evaluate(
         `document.querySelector(${JSON.stringify(selector)}).textContent`,
+        remainingUntil(deadline),
       );
       return (result as string) ?? '';
     });
   }
 
   async innerHTML(selector: string): Promise<string> {
-    return this._traced('innerHTML', selector, async () => {
-      await this._waitForSelector(selector);
+    return this._traced('innerHTML', selector, async (deadline) => {
+      await this._waitForSelector(selector, remainingUntil(deadline));
       const result = await this._evaluate(
         `document.querySelector(${JSON.stringify(selector)}).innerHTML`,
+        remainingUntil(deadline),
       );
       return (result as string) ?? '';
     });
   }
 
   async getAttribute(selector: string, name: string): Promise<string | null> {
-    return this._traced('getAttribute', selector, async () => {
-      await this._waitForSelector(selector);
+    return this._traced('getAttribute', selector, async (deadline) => {
+      await this._waitForSelector(selector, remainingUntil(deadline));
       const result = await this._evaluate(
         `document.querySelector(${JSON.stringify(selector)}).getAttribute(${JSON.stringify(name)})`,
+        remainingUntil(deadline),
       );
       return result as string | null;
     });
   }
 
   async inputValue(selector: string): Promise<string> {
-    return this._traced('inputValue', selector, async () => {
-      await this._waitForSelector(selector);
+    return this._traced('inputValue', selector, async (deadline) => {
+      await this._waitForSelector(selector, remainingUntil(deadline));
       const result = await this._evaluate(
         `document.querySelector(${JSON.stringify(selector)}).value`,
+        remainingUntil(deadline),
       );
       return (result as string) ?? '';
     });
@@ -613,19 +720,19 @@ export class WebViewHandle {
       if (!el) return false;
       const style = window.getComputedStyle(el);
       return style.display !== 'none' && style.visibility !== 'hidden' && style.opacity !== '0';
-    })()`);
+    })()`, Math.min(this._timeoutMs, WEB_SOCKET_CONNECT_TIMEOUT_MS));
     return result as boolean;
   }
 
   async evaluate<T = unknown>(expression: string): Promise<T> {
-    return this._traced('evaluate', undefined, async () => {
-      return (await this._evaluate(expression)) as T;
+    return this._traced('evaluate', undefined, async (deadline) => {
+      return (await this._evaluate(expression, remainingUntil(deadline))) as T;
     });
   }
 
   async goto(url: string): Promise<void> {
-    return this._traced('goto', url, async () => {
-      await this._send('Page.navigate', { url });
+    return this._traced('goto', url, async (deadline) => {
+      await this._send('Page.navigate', { url }, remainingUntil(deadline));
     });
   }
 
@@ -713,6 +820,13 @@ export class WebViewHandle {
     return new WebViewLocator(this, cssSelector, this._timeoutMs);
   }
 
+  /** @internal — Check if this handle is still usable (WebSocket open or inspector connected). */
+  _isAlive(): boolean {
+    if (this._closed) return false;
+    if (this._useInspector) return this._inspector !== null;
+    return this._ws !== null && this._ws.readyState === WebSocket.OPEN;
+  }
+
   async close(): Promise<void> {
     if (this._closed) return;
     this._closed = true;
@@ -726,12 +840,16 @@ export class WebViewHandle {
     }
     if (this._localPort > 0) {
       try {
-        await this._client.closeWebViewPort(this._localPort);
+        await this._client.closeWebViewPort(this._localPort, WEBVIEW_CLOSE_RPC_TIMEOUT_MS);
       } catch {
         // Best-effort cleanup
       }
     }
   }
+}
+
+function remainingUntil(deadline: number): number {
+  return Math.max(1, deadline - Date.now());
 }
 
 function sleep(ms: number): Promise<void> {

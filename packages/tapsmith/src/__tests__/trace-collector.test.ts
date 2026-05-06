@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as os from 'node:os';
@@ -21,6 +21,7 @@ describe('TraceCollector', () => {
   });
 
   afterEach(() => {
+    vi.useRealTimers();
     fs.rmSync(tempDir, { recursive: true, force: true });
   });
 
@@ -127,6 +128,22 @@ describe('TraceCollector', () => {
 
     expect(collector.events).toHaveLength(1);
     expect(collector.events[0].type).toBe('error');
+  });
+
+  it('does not block indefinitely on hung screenshot or hierarchy captures', async () => {
+    vi.useFakeTimers();
+    const collector = new TraceCollector(config, tempDir);
+
+    const capture = collector.captureBeforeAction(
+      () => new Promise<Buffer>(() => {}),
+      () => new Promise<string>(() => {}),
+    );
+
+    await vi.advanceTimersByTimeAsync(5_000);
+    await expect(capture).resolves.toEqual({
+      actionIndex: 0,
+      captures: {},
+    });
   });
 
   it('records logcat entries', () => {

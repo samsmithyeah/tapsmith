@@ -1,16 +1,21 @@
-import "dotenv/config"
 import { defineConfig } from "tapsmith"
 
 export default defineConfig({
   platform: "ios",
-  app: "../test-app/build/Build/Products/Release-iphonesimulator/TapsmithTestApp.app",
+  app: "./fixtures/TapsmithTestApp.app",
   package: "dev.tapsmith.testapp",
-  timeout: 10_000,
+  timeout: 30_000,
+  typingDelay: 10,
   retries: 0,
+  reporter: [["list"], ["github"], ["html", { open: "never" }]],
   screenshot: "only-on-failure",
-  workers: 4,
-  trace: "retain-on-failure",
-  simulator: process.env.TAPSMITH_IOS_SIMULATOR || "iPhone 17",
+  trace: {
+    mode: "retain-on-failure",
+    networkHosts: ["jsonplaceholder.typicode.com", "httpbin.org"],
+  },
+  video: "retain-on-failure",
+  workers: 1,
+  simulator: process.env.TAPSMITH_IOS_SIMULATOR || "iPhone 16",
   projects: [
     {
       name: "authentication",
@@ -19,7 +24,11 @@ export default defineConfig({
     {
       name: "default",
       testMatch: ["**/*.test.ts"],
-      testIgnore: ["**/app-state.test.ts", "**/auth-gate.test.ts", "**/*.android.test.ts"],
+      testIgnore: [
+        "**/app-state.test.ts",
+        "**/auth-gate.test.ts",
+        "**/*.android.test.ts",
+      ],
     },
     {
       name: "authenticated",

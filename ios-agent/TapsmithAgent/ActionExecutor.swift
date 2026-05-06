@@ -73,23 +73,42 @@ class ActionExecutor {
     // MARK: - Text Input
 
     /// Type text into an element. Taps the element first to ensure focus.
-    func typeText(_ element: XCUIElement, text: String) throws {
+    func typeText(_ element: XCUIElement, text: String, delayMs: Int = 0) throws {
         guard element.isHittable else {
             throw AgentError.actionFailed("Element is not hittable — cannot type text")
         }
         element.tap()
-        // Small delay for focus
         Thread.sleep(forTimeInterval: 0.05)
-        element.typeText(text)
+        if !typeViaEventSynthesizer(text, delayMs: delayMs) {
+            throw AgentError.actionFailed("typeText failed to synthesize input")
+        }
     }
 
-    /// Type text without targeting a specific element (types into whatever is focused).
     /// Type text into the currently focused element.
-    /// Uses event synthesis via _XCT_sendString or XCPointerEventPath.typeText.
-    func typeTextWithoutFocus(_ text: String) {
-        if !EventSynthesizer.typeText(text) {
-            NSLog("[ActionExecutor] Event synthesis typeText failed, falling back to app.typeText()")
-            app.typeText(text)
+    @discardableResult
+    func typeTextWithoutFocus(_ text: String, delayMs: Int = 0) -> Bool {
+        typeViaEventSynthesizer(text, delayMs: delayMs)
+    }
+
+    /// Type text via EventSynthesizer (bypasses XCUITest quiescence).
+    /// When delayMs is 0, sends the full string at once for speed.
+    /// When delayMs > 0, types char-by-char with delays.
+    @discardableResult
+    func typeViaEventSynthesizer(_ text: String, delayMs: Int = 0) -> Bool {
+        guard !text.isEmpty else { return true }
+
+        if delayMs > 0 {
+            let delay = TimeInterval(delayMs) / 1000.0
+            var succeeded = true
+            for char in text {
+                if !EventSynthesizer.typeText(String(char)) {
+                    succeeded = false
+                }
+                Thread.sleep(forTimeInterval: delay)
+            }
+            return succeeded
+        } else {
+            return EventSynthesizer.typeText(text)
         }
     }
 

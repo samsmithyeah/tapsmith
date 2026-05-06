@@ -396,6 +396,8 @@ export interface RunOptions {
    */
   beforeEachTest?: (fullName: string) => Promise<void>;
   abortFileOnError?: (error: Error) => boolean;
+  /** @internal — controller whose signal is wired to abortSignal; aborted by abortFileOnError. */
+  _abortFileController?: AbortController;
   /** Pre-resolved worker-scoped fixture values (set by worker-runner). */
   workerFixtures?: Record<string, unknown>;
   /** Test file path — used by trace packager for testFile metadata and source inclusion. */
@@ -585,8 +587,8 @@ async function runSuiteContext(
   const result: SuiteResult = { name: parentPrefix, tests: [], suites: [], durationMs: 0 };
   const suiteStart = Date.now();
 
-  // try/finally ensures device timeout is restored even if a hook or
-  // abortFileOnError throws. Body intentionally not re-indented.
+  // try/finally ensures device timeout is restored even if a hook
+  // throws. Body intentionally not re-indented.
   try {
 
   // Restore or clear app state if test.use({ appState }) was specified for this scope.
@@ -780,13 +782,11 @@ async function runSuiteContext(
     let screenshotPath: string | undefined;
     let tracePath: string | undefined;
     let videoPath: string | undefined;
-    // 2x the assertion timeout: a test may have multiple actions, each with
-    // their own timeout. The test-level timeout is a safety net against hangs.
     // Safety timeout for the test body (hooks run outside this).
-    // 3x the assertion timeout gives headroom for tests with multiple
-    // device operations (clearAppData, launchApp, openDeepLink, etc.)
-    // that each include their own internal waits.
-    const testTimeoutMs = opts.config.timeout * 3;
+    // Use the scope-level timeout override (from test.use({ timeout })) when
+    // it exceeds the default, so tests that need more time actually get it.
+    const defaultTestTimeoutMs = opts.config.timeout * 3;
+    const testTimeoutMs = scopeTimeout ? Math.max(defaultTestTimeoutMs, scopeTimeout) : defaultTestTimeoutMs;
 
     // Trace recording — start if configured
     const traceConfig = resolveTraceConfig(opts.config.trace);
@@ -990,6 +990,13 @@ async function runSuiteContext(
 
       // Fail any in-flight traced action/assertion so it appears in the trace
       traceCollector?.failPendingOperation(error.message);
+
+      // If a WebView/CDP operation is the thing that hit the runner timeout,
+      // close it before screenshot/network teardown so stale async work does
+      // not bleed into the next test.
+      if (error.message.startsWith('Test timed out after ') && opts.device?._disposeWebViewManager) {
+        await opts.device._disposeWebViewManager();
+      }
 
       // Screenshot on failure
       if (opts.config.screenshot !== 'never') {
@@ -1306,7 +1313,8 @@ async function runSuiteContext(
     opts.reporter?.onTestEnd?.(testResult);
 
     if (status === 'failed' && error && opts.abortFileOnError?.(error)) {
-      throw error;
+      opts._abortFileController?.abort();
+      break;
     }
   }
 
@@ -1502,7 +1510,14 @@ export async function runTestFile(
     workerTeardown = resolved.teardown;
   }
 
-  const fileOpts: RunOptions = { ...opts, workerFixtures, testFilePath: filePath };
+  const abortFileController = opts.abortFileOnError ? new AbortController() : undefined;
+  const fileOpts: RunOptions = {
+    ...opts,
+    workerFixtures,
+    testFilePath: filePath,
+    _abortFileController: abortFileController,
+    abortSignal: abortFileController?.signal ?? opts.abortSignal,
+  };
 
   try {
     return await runSuiteContext(rootCtx, '', [], [], fileOpts);

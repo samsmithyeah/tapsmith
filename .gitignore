@@ -28,6 +28,7 @@ agent/local.properties
 Thumbs.db
 
 # Test artifacts
+e2e/fixtures/
 tapsmith-results/
 tapsmith-report/
 blob-report/

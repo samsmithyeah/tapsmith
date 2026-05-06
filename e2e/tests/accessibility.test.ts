@@ -1,8 +1,8 @@
-import { beforeEach, describe, expect, test } from "tapsmith"
+import { beforeAll, describe, expect, test } from "tapsmith"
 import { AccessibilityScreen } from "../screens/accessibility.screen.js"
 
 describe("Accessibility screen", () => {
-  beforeEach(async ({ device }) => {
+  beforeAll(async ({ device }) => {
     await device.restartApp()
     const accessibilityCard = device.getByDescription("Accessibility")
     await accessibilityCard.scrollIntoView()

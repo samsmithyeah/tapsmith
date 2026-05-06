@@ -456,6 +456,7 @@ export class NetworkRouteManager {
   }> = new Map();
   private _requestListeners: Set<(req: TapsmithRequest) => void> = new Set();
   private _responseListeners: Set<(resp: NetworkResponseEventData) => void> = new Set();
+  private _eventsSubscribed = false;
   private _disposed = false;
 
   constructor(client: TapsmithGrpcClient) {
@@ -646,19 +647,33 @@ export class NetworkRouteManager {
     });
   }
 
+  /**
+   * Eagerly subscribe to daemon network events.
+   *
+   * Called during network capture startup so the subscription message
+   * reaches the daemon well before test code calls waitForRequest().
+   * Without this, there is a race: the subscription fires lazily on the
+   * first listener, and a fast HTTP request can beat the daemon processing
+   * the subscribe message.
+   */
+  ensureEventsSubscribed(): void {
+    if (this._eventsSubscribed) return;
+    this._eventsSubscribed = true;
+    const stream = this._ensureStream();
+    stream.write({ subscribeEvents: {} });
+  }
+
   /** Subscribe to request events. */
   addRequestListener(handler: (req: TapsmithRequest) => void): void {
     this._requestListeners.add(handler);
-    if (this._requestListeners.size === 1 && this._responseListeners.size === 0) {
-      const stream = this._ensureStream();
-      stream.write({ subscribeEvents: {} });
-    }
+    this.ensureEventsSubscribed();
   }
 
   /** Unsubscribe from request events. */
   removeRequestListener(handler: (req: TapsmithRequest) => void): void {
     this._requestListeners.delete(handler);
-    if (this._requestListeners.size === 0 && this._responseListeners.size === 0 && this._stream) {
+    if (this._requestListeners.size === 0 && this._responseListeners.size === 0 && this._eventsSubscribed && this._stream) {
+      this._eventsSubscribed = false;
       this._stream.write({ unsubscribeEvents: {} });
     }
   }
@@ -666,16 +681,14 @@ export class NetworkRouteManager {
   /** Subscribe to response events. */
   addResponseListener(handler: (resp: NetworkResponseEventData) => void): void {
     this._responseListeners.add(handler);
-    if (this._responseListeners.size === 1 && this._requestListeners.size === 0) {
-      const stream = this._ensureStream();
-      stream.write({ subscribeEvents: {} });
-    }
+    this.ensureEventsSubscribed();
   }
 
   /** Unsubscribe from response events. */
   removeResponseListener(handler: (resp: NetworkResponseEventData) => void): void {
     this._responseListeners.delete(handler);
-    if (this._responseListeners.size === 0 && this._requestListeners.size === 0 && this._stream) {
+    if (this._responseListeners.size === 0 && this._requestListeners.size === 0 && this._eventsSubscribed && this._stream) {
+      this._eventsSubscribed = false;
       this._stream.write({ unsubscribeEvents: {} });
     }
   }
