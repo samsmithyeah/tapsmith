@@ -14,7 +14,7 @@ env:
   ANDROID_API_LEVEL: "35"
   ANDROID_SYSTEM_IMAGE: "system-images;android-35;google_apis;x86_64"
   AVD_NAME: "Tapsmith_Generic_Phone_API_35"
-  SHARD_TOTAL: 4
+  SHARD_TOTAL: 5
 
 jobs:
   # ─── Build prerequisites (parallel) ────────────────────────────────────
@@ -132,14 +132,14 @@ jobs:
   # ─── Sharded E2E execution ─────────────────────────────────────────────
 
   e2e-test:
-    name: "Shard ${{ matrix.shard }}/4"
+    name: "Shard ${{ matrix.shard }}/5"
     needs: [ build-daemon, build-agent, build-test-app ]
     runs-on: ubuntu-latest
     timeout-minutes: 50
     strategy:
       fail-fast: false
       matrix:
-        shard: [ 1, 2, 3, 4 ]
+        shard: [ 1, 2, 3, 4, 5 ]
     steps:
       - uses: actions/checkout@v4
 

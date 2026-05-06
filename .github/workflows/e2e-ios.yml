@@ -11,7 +11,7 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  SHARD_TOTAL: 8
+  SHARD_TOTAL: 5
 
 jobs:
   # ─── Build prerequisites (parallel) ────────────────────────────────────
@@ -141,14 +141,14 @@ jobs:
   # ─── Sharded E2E execution ─────────────────────────────────────────────
 
   e2e-test:
-    name: "Shard ${{ matrix.shard }}/8"
+    name: "Shard ${{ matrix.shard }}/5"
     needs: [ build-daemon, build-agent, build-test-app ]
     runs-on: macos-latest
     timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
-        shard: [ 1, 2, 3, 4, 5, 6, 7, 8 ]
+        shard: [ 1, 2, 3, 4, 5 ]
     steps:
       - uses: actions/checkout@v4
 
