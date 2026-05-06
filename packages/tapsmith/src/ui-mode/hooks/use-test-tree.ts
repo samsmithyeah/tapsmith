@@ -11,7 +11,20 @@ import type { TestTreeNode, TestNodeStatus } from '../ui-protocol.js';
 export function useTestTree(isRunning: boolean = false) {
   const [files, setFiles] = useState<TestTreeNode[]>([]);
   const [expandedNodes, setExpandedNodes] = useState<Set<string>>(new Set());
-  const [selectedTestId, setSelectedTestId] = useState<string | null>(null);
+  const [selectedTestId, _setSelectedTestId] = useState<string | null>(
+    () => {
+      try { return sessionStorage.getItem('tapsmith-selected-test'); } catch { return null; }
+    },
+  );
+  const setSelectedTestId = useCallback((id: string | null) => {
+    _setSelectedTestId(id);
+    try {
+      if (id) sessionStorage.setItem('tapsmith-selected-test', id);
+      else sessionStorage.removeItem('tapsmith-selected-test');
+    } catch { /* SSR or quota */ }
+  }, []);
+  const selectedTestIdRef = useRef(selectedTestId);
+  selectedTestIdRef.current = selectedTestId;
   const [nameFilter, setNameFilter] = useState('');
   // Pending = play clicked but the worker hasn't fired test-start yet
   // (covers IPC dispatch + ESM import + runner setup). Tracked here so the
@@ -41,6 +54,22 @@ export function useTestTree(isRunning: boolean = false) {
       const next = new Set<string>();
       for (const id of prev) if (validIds.has(id)) next.add(id);
       for (const node of newFiles) if (node.type === 'project') next.add(node.id);
+
+      // Expand ancestors of the restored selection so it's visible.
+      const sel = selectedTestIdRef.current;
+      if (sel && validIds.has(sel)) {
+        (function expandTo(nodes: TestTreeNode[]): boolean {
+          for (const n of nodes) {
+            if (n.id === sel) return true;
+            if (n.children && expandTo(n.children)) {
+              next.add(n.id);
+              return true;
+            }
+          }
+          return false;
+        })(newFiles);
+      }
+
       return next;
     });
   }, []);
