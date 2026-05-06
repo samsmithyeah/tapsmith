@@ -2402,9 +2402,10 @@ impl proto::tapsmith_service_server::TapsmithService for TapsmithServiceImpl {
                 // runners, so we avoid it entirely. simctl openurl to a
                 // running app doesn't trigger navigation (the React Native
                 // scene handler misses it), so we terminate first — making
-                // openurl cold-launch the app with the URL. No "Open in
-                // App?" dialog appears on cold launch. Finally, rebind the
-                // agent to the newly launched process.
+                // openurl cold-launch the app with the URL. Finally, rebind
+                // the agent to the newly launched process; LaunchApp also
+                // accepts SpringBoard's URL-scheme confirmation if the
+                // simulator shows it.
                 let _ = self
                     .send_agent_command_with_timeout(
                         &AgentCommand::TerminateApp {

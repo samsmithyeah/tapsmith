@@ -42,6 +42,20 @@ class CommandHandler {
         return ProcessInfo.processInfo.environment["TAPSMITH_TARGET_BUNDLE_ID"] ?? ""
     }
 
+    /// Accept SpringBoard's custom URL-scheme confirmation if it is covering
+    /// the app after a deep-link launch.
+    @discardableResult
+    private func acceptOpenInAppDialogIfPresent(timeout: TimeInterval = 0.0) -> Bool {
+        let springboard = XCUIApplication(bundleIdentifier: "com.apple.springboard")
+        let openButton = springboard.buttons["Open"]
+        if openButton.waitForExistence(timeout: timeout) {
+            openButton.tap()
+            Thread.sleep(forTimeInterval: 0.25)
+            return true
+        }
+        return false
+    }
+
     /// Dismiss any blocking iOS system dialog currently covering the app
     /// (e.g. "Save Password?", "Allow Notifications?", iCloud Keychain
     /// prompts). Returns true if a dialog was dismissed. Intended for
@@ -58,6 +72,10 @@ class CommandHandler {
     /// permission grant when the intent was to decline.
     @discardableResult
     private func dismissBlockingSystemDialogs() -> Bool {
+        if acceptOpenInAppDialogIfPresent(timeout: 0.1) {
+            return true
+        }
+
         let dismissalLabels = [
             "Not Now",
             "Don’t Allow",
@@ -402,7 +420,12 @@ class CommandHandler {
                     }
                     if timeout >= 1000 {
                         // Element not in current snapshot — poll with wait engine
-                        element = try waitEngine.waitForElement(selector, timeoutMs: timeout, elementFinder: elementFinder)
+                        element = try waitEngine.waitForElement(
+                            selector,
+                            timeoutMs: timeout,
+                            elementFinder: elementFinder,
+                            snapshotFinder: snapshotFinder
+                        )
                     } else {
                         throw error
                     }
@@ -709,7 +732,12 @@ class CommandHandler {
                 try actionExecutor.swipe(xcElem, direction: direction, speed: speed, distance: distance)
             } else if let startElement = params["startElement"] as? [String: Any] {
                 let startSel = SelectorParser.parse(startElement)
-                let startEl = try waitEngine.waitForElement(startSel, timeoutMs: 10000, elementFinder: elementFinder)
+                let startEl = try waitEngine.waitForElement(
+                    startSel,
+                    timeoutMs: 10000,
+                    elementFinder: elementFinder,
+                    snapshotFinder: snapshotFinder
+                )
                 let xcElem = try getXCUIElement(startEl.elementId)
                 try actionExecutor.swipe(xcElem, direction: direction, speed: speed, distance: distance)
             } else {
@@ -735,7 +763,12 @@ class CommandHandler {
             }
             if let container = params["container"] as? [String: Any] {
                 let containerSel = SelectorParser.parse(container)
-                let containerEl = try waitEngine.waitForElement(containerSel, timeoutMs: 10000, elementFinder: elementFinder)
+                let containerEl = try waitEngine.waitForElement(
+                    containerSel,
+                    timeoutMs: 10000,
+                    elementFinder: elementFinder,
+                    snapshotFinder: snapshotFinder
+                )
                 let xcElem = try getXCUIElement(containerEl.elementId)
                 try actionExecutor.scroll(xcElem, direction: direction, targetSelector: targetSelector)
             } else if let elementId = params["elementId"] as? String {
@@ -769,12 +802,22 @@ class CommandHandler {
             do {
                 sourceEl = try snapshotFinder.findElement(sourceSel)
             } catch {
-                sourceEl = try waitEngine.waitForElement(sourceSel, timeoutMs: timeout, elementFinder: elementFinder)
+                sourceEl = try waitEngine.waitForElement(
+                    sourceSel,
+                    timeoutMs: timeout,
+                    elementFinder: elementFinder,
+                    snapshotFinder: snapshotFinder
+                )
             }
             do {
                 targetEl = try snapshotFinder.findElement(targetSel)
             } catch {
-                targetEl = try waitEngine.waitForElement(targetSel, timeoutMs: timeout, elementFinder: elementFinder)
+                targetEl = try waitEngine.waitForElement(
+                    targetSel,
+                    timeoutMs: timeout,
+                    elementFinder: elementFinder,
+                    snapshotFinder: snapshotFinder
+                )
             }
             // Use snapshot bounds to avoid XCUIElement .frame IPC which can
             // trigger quiescence waits and hang/crash the XCTest session.
@@ -872,7 +915,12 @@ class CommandHandler {
         case "waitForElement":
             let selector = SelectorParser.parse(params)
             let timeout = params["timeout"] as? Int64 ?? 10000
-            let element = try waitEngine.waitForElement(selector, timeoutMs: timeout, elementFinder: elementFinder)
+            let element = try waitEngine.waitForElement(
+                selector,
+                timeoutMs: timeout,
+                elementFinder: elementFinder,
+                snapshotFinder: snapshotFinder
+            )
             return element.toDict()
 
         // ─── Clipboard ───
@@ -897,15 +945,10 @@ class CommandHandler {
             targetApp.activate()
             // Brief wait for the app to settle.
             Thread.sleep(forTimeInterval: 0.15)
-            // Quick check for system dialogs without blocking.
-            // Only check one button with a very short timeout to stay within
-            // the daemon's 4-second command timeout for launchApp.
+            // Accept custom URL-scheme confirmation if simctl openurl left
+            // SpringBoard in front of the app before this rebind.
             let springboard = XCUIApplication(bundleIdentifier: "com.apple.springboard")
-            let openButton = springboard.buttons["Open"]
-            if openButton.exists {
-                openButton.tap()
-                Thread.sleep(forTimeInterval: 0.1)
-            }
+            _ = acceptOpenInAppDialogIfPresent(timeout: 1.0)
             // Dismiss "Save Password?" dialog from iOS Passwords framework.
             let notNow = springboard.buttons["Not Now"]
             if notNow.exists {
@@ -962,6 +1005,7 @@ class CommandHandler {
                 Thread.sleep(forTimeInterval: 0.15)
                 targetApp.open(url)
                 Thread.sleep(forTimeInterval: 0.3)
+                _ = acceptOpenInAppDialogIfPresent(timeout: 1.0)
                 return ["success": true]
             } else {
                 throw AgentError.actionFailed(
