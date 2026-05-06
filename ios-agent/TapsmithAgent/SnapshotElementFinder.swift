@@ -257,7 +257,9 @@ class SnapshotElementFinder {
         }
 
         // Evict stale entries if caches have grown too large.
-        pruneCache()
+        lock.lock()
+        pruneCacheLocked()
+        lock.unlock()
 
         return results
     }
@@ -272,10 +274,8 @@ class SnapshotElementFinder {
     }
 
     /// Evict oldest entries when the cache exceeds `maxCacheSize`.
-    /// Must be called while the lock is NOT held — acquires it internally.
-    private func pruneCache() {
-        lock.lock()
-        defer { lock.unlock() }
+    /// Must be called while `lock` is held.
+    private func pruneCacheLocked() {
         while elementCache.count > maxCacheSize, !cacheOrder.isEmpty {
             let oldest = cacheOrder.removeFirst()
             elementCache.removeValue(forKey: oldest)
@@ -364,8 +364,8 @@ class SnapshotElementFinder {
         lock.lock()
         elementCache[elementId] = element
         cacheOrder.append(elementId)
+        pruneCacheLocked()
         lock.unlock()
-        pruneCache()
         return toElementInfo(element, elementId: elementId)
     }
 
@@ -1086,7 +1086,7 @@ class SnapshotElementFinder {
         if frame.width > 0 && frame.height > 0 {
             size = frame.size
         } else {
-            NSLog("[TapsmithSnapshot] WARNING: Could not determine screen size from window frame (%@), using fallback 393x852", NSStringFromCGRect(frame))
+            NSLog("[TapsmithSnapshot] WARNING: Could not determine screen size from window frame (\(frame)), using fallback 393x852")
             size = CGSize(width: 393, height: 852)
         }
 

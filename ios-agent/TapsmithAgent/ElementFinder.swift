@@ -24,9 +24,8 @@ class ElementFinder {
     }
 
     /// Evict oldest entries when the cache exceeds `maxCacheSize`.
-    private func pruneCache() {
-        lock.lock()
-        defer { lock.unlock() }
+    /// Must be called while `lock` is held.
+    private func pruneCacheLocked() {
         while elementCache.count > maxCacheSize, !cacheOrder.isEmpty {
             let oldest = cacheOrder.removeFirst()
             elementCache.removeValue(forKey: oldest)
@@ -236,8 +235,8 @@ class ElementFinder {
         lock.lock()
         elementCache[elementId] = element
         cacheOrder.append(elementId)
+        pruneCacheLocked()
         lock.unlock()
-        pruneCache()
         return toElementInfo(element, elementId: elementId)
     }
 
