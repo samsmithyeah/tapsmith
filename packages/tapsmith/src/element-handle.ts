@@ -420,15 +420,16 @@ export class ElementHandle {
       const childRes = await this._client.findElements(childSelector, this._timeoutMs);
       const childElements = childRes.elements ?? [];
       result = result.filter((parent) => {
-        // If parent has no bounds, we can't determine containment — keep it
-        // (absence of proof isn't proof of absence for hasNot)
         if (!parent.bounds) return true;
-        return !childElements.some((child) => {
-          const r = boundsContain(parent.bounds, child.bounds);
-          // Only exclude when we definitively know the child is contained.
-          // Indeterminate (child has no bounds) should NOT exclude the parent.
-          return r === 'contained';
-        });
+        const results = childElements.map((child) => boundsContain(parent.bounds, child.bounds));
+        // Exclude if any child is definitively contained
+        if (results.some((r) => r === 'contained')) return false;
+        // Mirror the `has` logic: if all results are indeterminate (child
+        // bounds undefined) but the daemon returned children, trust the
+        // daemon's scoping — the child IS present, so exclude the parent.
+        const allIndeterminate = results.length > 0 && results.every((r) => r === 'indeterminate');
+        if (allIndeterminate) return false;
+        return true;
       });
     }
 
@@ -915,34 +916,30 @@ export class ElementHandle {
     const deadline = Date.now() + timeoutMs;
     const POLL_MS = 250;
 
-    while (true) {
-      const el = await this._resolveOne();
-      if (el.checked === checked) return; // Already in desired state
+    const el = await this._resolveOne();
+    if (el.checked === checked) return; // Already in desired state
 
-      const sel = this._selectorForElement(el);
-      const tapBudget = Math.max(0, deadline - Date.now());
-      await this._action(() => this._client.tap(sel, tapBudget), 'setChecked tap failed');
+    // Tap once — for toggleable elements (checkboxes, switches) a second
+    // tap would revert the state, so we must not re-tap.
+    const sel = this._selectorForElement(el);
+    const tapBudget = Math.max(0, deadline - Date.now());
+    await this._action(() => this._client.tap(sel, tapBudget), 'setChecked tap failed');
 
-      // Poll for state change within remaining timeout — animations and
-      // state propagation can take a few frames.
-      const verifyDeadline = Math.min(deadline, Date.now() + 1000);
-      while (Date.now() < verifyDeadline) {
-        await new Promise((r) => setTimeout(r, POLL_MS));
-        try {
-          const after = await this._resolveOne();
-          if (after.checked === checked) return; // State changed successfully
-        } catch (err) {
-          if (!isPollableNotFoundError(err)) throw err;
-        }
-      }
-
-      // State didn't change — retry if we still have time
-      if (Date.now() >= deadline) {
-        throw new Error(
-          `setChecked(${checked}): element ${this._describe()} checked state did not change after tap (still ${!checked})`,
-        );
+    // Poll for the state change until the full deadline — animations
+    // and state propagation can take several frames.
+    while (Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, POLL_MS));
+      try {
+        const after = await this._resolveOne();
+        if (after.checked === checked) return; // State changed successfully
+      } catch (err) {
+        if (!isPollableNotFoundError(err)) throw err;
       }
     }
+
+    throw new Error(
+      `setChecked(${checked}): element ${this._describe()} checked state did not change after tap (still ${!checked})`,
+    );
   }
 
   async selectOption(option: string | { index: number }): Promise<void> {
