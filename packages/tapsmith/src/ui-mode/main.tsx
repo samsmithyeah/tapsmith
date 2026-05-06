@@ -364,9 +364,11 @@ function App() {
         treeRef.current.setTestTree(msg.files);
         break;
       case 'run-state':
+        setIsRunning(msg.isRunning);
         if (msg.isRunning) {
-          setIsRunning(true);
           startRunTimer(msg.startedAt);
+        } else {
+          stopRunTimer();
         }
         break;
       case 'run-start':

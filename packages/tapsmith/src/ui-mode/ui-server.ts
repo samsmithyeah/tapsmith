@@ -199,7 +199,6 @@ export async function startUIServer(
   /** filePath → list of watched entries. chokidar adds the file when the
    * first entry appears and removes it when the last entry is cleared. */
   const watchedEntries = new Map<string, WatchedEntry[]>();
-  const watchedProjects = new Set<string>();
   function entryKey(e: WatchedEntry): string {
     // JSON-encode both fields so a test name containing '::' (or any other
     // delimiter) can't collide with a project-name / filter pair that
@@ -1037,6 +1036,7 @@ export async function startUIServer(
 
       child.on('exit', (code) => {
         activeChild = null;
+        singleWorkerRunningTest = null;
         if (!settled) {
           settled = true;
           reject(new Error(`UI run worker exited with code ${code ?? 0} without sending results`));
@@ -1045,6 +1045,7 @@ export async function startUIServer(
 
       child.on('error', (err) => {
         activeChild = null;
+        singleWorkerRunningTest = null;
         if (!settled) {
           settled = true;
           reject(err);
@@ -2410,8 +2411,6 @@ export async function startUIServer(
             if (allWatched) stopWatching(f, msg.projectName, undefined, false);
             else startWatching(f, msg.projectName, undefined, false);
           }
-          if (allWatched) watchedProjects.delete(msg.projectName);
-          else watchedProjects.add(msg.projectName);
           broadcast({
             type: 'watch-event',
             filePath: 'project',
@@ -2625,11 +2624,9 @@ export async function startUIServer(
     // Send current state to new client
     ws.send(JSON.stringify({ type: 'test-tree', files: testTree } satisfies ServerMessage));
 
-    // If a run is in progress, tell the client before replaying results so
-    // the Running indicator and timer appear immediately.
-    if (isRunning) {
-      ws.send(JSON.stringify({ type: 'run-state', isRunning: true, startedAt: runStartedAt } satisfies ServerMessage));
-    }
+    // Sync run state so the client knows whether a run is in progress.
+    // Sent before test results so the Running indicator appears immediately.
+    ws.send(JSON.stringify({ type: 'run-state', isRunning, startedAt: runStartedAt } satisfies ServerMessage));
 
     // Replay accumulated test results so a reconnecting client (e.g. after
     // the laptop wakes from sleep) sees the same passed/failed statuses it
@@ -2725,14 +2722,22 @@ export async function startUIServer(
     }
 
     // Replay watch state so toggle icons restore on reconnect.
-    for (const projectName of watchedProjects) {
-      ws.send(JSON.stringify({
-        type: 'watch-event', filePath: 'project', projectName, event: 'watch-enabled',
-      } satisfies ServerMessage));
+    // Derive project-level watches from watchedEntries rather than tracking
+    // separately — avoids desync if individual files are unwatched.
+    const replayWatchedProjects = new Set<string>();
+    if (ctx.projects) {
+      for (const project of ctx.projects) {
+        if (project.testFiles.length > 0 && project.testFiles.every((f) => findEntry(f, project.name, undefined) >= 0)) {
+          replayWatchedProjects.add(project.name);
+          ws.send(JSON.stringify({
+            type: 'watch-event', filePath: 'project', projectName: project.name, event: 'watch-enabled',
+          } satisfies ServerMessage));
+        }
+      }
     }
     for (const [filePath, entries] of watchedEntries) {
       for (const entry of entries) {
-        if (entry.projectName && watchedProjects.has(entry.projectName) && !entry.testFilter) continue;
+        if (entry.projectName && replayWatchedProjects.has(entry.projectName) && !entry.testFilter) continue;
         ws.send(JSON.stringify({
           type: 'watch-event', filePath, testFilter: entry.testFilter,
           projectName: entry.projectName, event: 'watch-enabled',
