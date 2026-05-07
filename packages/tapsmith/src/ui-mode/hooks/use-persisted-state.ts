@@ -38,15 +38,16 @@ function usePersistedState<T>(
   return [value, setValue];
 }
 
-export function usePersistedString(key: string, defaultValue: string): [string, (v: string) => void] {
+export function usePersistedString(key: string, defaultValue: string): [string, (v: string | ((prev: string) => string)) => void] {
   return usePersistedState(key, defaultValue, identity);
 }
 
-const jsonSerializer = <T>(): Serializer<T> => ({
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const jsonSerializer: Serializer<any> = {
   serialize: (v) => JSON.stringify(v),
-  deserialize: (raw) => JSON.parse(raw) as T,
-});
+  deserialize: (raw) => JSON.parse(raw),
+};
 
-export function usePersistedJSON<T>(key: string, defaultValue: T): [T, (v: T) => void] {
-  return usePersistedState(key, defaultValue, jsonSerializer<T>());
+export function usePersistedJSON<T>(key: string, defaultValue: T): [T, (v: T | ((prev: T) => T)) => void] {
+  return usePersistedState(key, defaultValue, jsonSerializer);
 }
