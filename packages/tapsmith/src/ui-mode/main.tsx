@@ -93,7 +93,7 @@ function App() {
   const [mcpClientName, setMcpClientName] = useState<string | undefined>();
   const [mcpClientVersion, setMcpClientVersion] = useState<string | undefined>();
   const [mcpToolCalls, setMcpToolCalls] = useState<import('./ui-protocol.js').McpToolCallMessage[]>([]);
-  const [mcpPanelOpen, setMcpPanelOpen] = useState(false);
+  const [mcpPanelOpen, setMcpPanelOpen] = usePersistedJSON<boolean>('tapsmith-mcp-panel', false);
 
   // "Run deps first" toggle — persisted in localStorage
   const [runDepsFirst, setRunDepsFirst] = useState(() => {

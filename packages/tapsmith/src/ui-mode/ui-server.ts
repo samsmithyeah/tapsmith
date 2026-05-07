@@ -45,6 +45,7 @@ import type {
   TraceEventMessage,
   SourceMessage,
   NetworkMessage,
+  McpToolCallMessage,
   UIRunMessage,
   UIRunChildMessage,
   UIDiscoverMessage,
@@ -180,8 +181,10 @@ export async function startUIServer(
   const traceBuffer: TraceEventMessage[] = [];
   const sourceBuffer = new Map<string, SourceMessage>();
   const networkBuffer: NetworkMessage[] = [];
+  const mcpToolCallBuffer: McpToolCallMessage[] = [];
   const MAX_TRACE_BUFFER = 5000;
   const MAX_NETWORK_BUFFER = 2000;
+  const MAX_MCP_BUFFER = 200;
   let traceBufferFull = false;
   let networkBufferFull = false;
 
@@ -492,7 +495,9 @@ export async function startUIServer(
   }
 
   mcpEvents.onToolCall((event) => {
-    broadcast({ type: 'mcp-tool-call', ...event });
+    const mcpMsg: McpToolCallMessage = { type: 'mcp-tool-call', ...event };
+    if (mcpToolCallBuffer.length < MAX_MCP_BUFFER) mcpToolCallBuffer.push(mcpMsg);
+    broadcast(mcpMsg);
   });
 
   mcpEvents.onClientChange((info) => {
@@ -2725,6 +2730,9 @@ export async function startUIServer(
     }
 
     ws.send(JSON.stringify(getMcpStatus()));
+    for (const mcpMsg of mcpToolCallBuffer) {
+      ws.send(JSON.stringify(mcpMsg));
+    }
 
     if (multiWorker && workersInitialized) {
       // Send workers info
@@ -2887,7 +2895,9 @@ export async function startUIServer(
       req.on('end', () => {
         try {
           const event = JSON.parse(body);
-          broadcast({ type: 'mcp-tool-call', ...event });
+          const mcpMsg: McpToolCallMessage = { type: 'mcp-tool-call', ...event };
+    if (mcpToolCallBuffer.length < MAX_MCP_BUFFER) mcpToolCallBuffer.push(mcpMsg);
+    broadcast(mcpMsg);
         } catch { /* ignore malformed */ }
         res.writeHead(200);
         res.end('OK');
