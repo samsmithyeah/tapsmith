@@ -253,16 +253,22 @@ class CommandHandler {
     /// Coordinate synthesis remains the fallback for generic views and for
     /// cases where XCTest reports the semantic element is not hittable.
     private func tapResolvedElement(_ element: ElementInfo) throws {
+        var cachedElement: XCUIElement?
+        var semanticTapError: Error?
+
         if prefersSemanticTap(element) {
             do {
                 let xcElem = try getXCUIElement(element.elementId)
+                cachedElement = xcElem
                 try actionExecutor.tap(xcElem)
                 return
             } catch let error as AgentError {
+                semanticTapError = error
                 NSLog(
                     "[TapsmithCommand] XCUIElement.tap fallback for \(element.elementId): \(error.message)"
                 )
             } catch {
+                semanticTapError = error
                 NSLog(
                     "[TapsmithCommand] XCUIElement.tap fallback for \(element.elementId): \(error.localizedDescription)"
                 )
@@ -274,7 +280,11 @@ class CommandHandler {
             return
         }
 
-        let xcElem = try getXCUIElement(element.elementId)
+        if let semanticTapError {
+            throw semanticTapError
+        }
+
+        let xcElem = try cachedElement ?? getXCUIElement(element.elementId)
         try actionExecutor.tap(xcElem)
     }
 
