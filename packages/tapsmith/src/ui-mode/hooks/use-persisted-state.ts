@@ -10,7 +10,7 @@ const identity: Serializer<string> = {
   deserialize: (v) => v,
 };
 
-export function usePersistedState<T>(
+function usePersistedState<T>(
   key: string,
   defaultValue: T,
   serializer?: Serializer<T>,

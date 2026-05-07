@@ -2694,7 +2694,7 @@ export async function startUIServer(
     }
 
     // Replay the currently-running test (single-worker) so it highlights in
-    // the tree. Multi-worker gets this via worker-status below.
+    // the tree.
     if (singleWorkerRunningTest && !multiWorker) {
       ws.send(JSON.stringify({
         type: 'test-status',
@@ -2750,6 +2750,21 @@ export async function startUIServer(
           failed: w.failed,
           skipped: w.skipped,
         } satisfies ServerMessage));
+      }
+
+      // Replay active tests so they highlight as running in the tree.
+      // worker-status updates the worker panel but not the tree nodes.
+      for (const w of uiWorkers) {
+        if (w.busy && w.currentFile && w.currentTest) {
+          ws.send(JSON.stringify({
+            type: 'test-status',
+            fullName: w.currentTest,
+            filePath: w.currentFile.filePath,
+            status: 'running' as const,
+            projectName: w.currentFile.projectName,
+            workerId: w.id,
+          } satisfies ServerMessage));
+        }
       }
     } else if (ctx.deviceSerial) {
       ws.send(JSON.stringify({
