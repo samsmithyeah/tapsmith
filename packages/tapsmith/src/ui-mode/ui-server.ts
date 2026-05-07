@@ -190,6 +190,15 @@ export async function startUIServer(
     runStartedAt = Date.now();
   }
 
+  function clearRunBuffers(): void {
+    testResults.clear();
+    traceBuffer.length = 0;
+    traceBufferFull = false;
+    sourceBuffer.clear();
+    networkBuffer.length = 0;
+    networkBufferFull = false;
+  }
+
   function markRunEnded(): void {
     isRunning = false;
     runStartedAt = 0;
@@ -687,12 +696,7 @@ export async function startUIServer(
     if (isRunning) return { status: 'failed', passed: 0, failed: 0, skipped: 0, duration: 0 };
 
     markRunStarted();
-    testResults.clear();
-    traceBuffer.length = 0;
-    traceBufferFull = false;
-    sourceBuffer.clear();
-    networkBuffer.length = 0;
-    networkBufferFull = false;
+    clearRunBuffers();
     const project = projectForFile(filePath, explicitProjectName);
     const useOptions = project?.use as RunFileUseOptions | undefined;
     const projectName = project && project.name !== 'default' ? project.name : undefined;
@@ -729,12 +733,7 @@ export async function startUIServer(
   async function runAllFilesSingle(): Promise<TestRunResult> {
     if (isRunning) return { status: 'failed', passed: 0, failed: 0, skipped: 0, duration: 0 };
     markRunStarted();
-    testResults.clear();
-    traceBuffer.length = 0;
-    traceBufferFull = false;
-    sourceBuffer.clear();
-    networkBuffer.length = 0;
-    networkBufferFull = false;
+    clearRunBuffers();
     screenPollActive = true;
 
     broadcast({ type: 'run-start', fileCount: ctx.testFiles.length });
@@ -843,6 +842,7 @@ export async function startUIServer(
     if (!target) return;
 
     markRunStarted();
+    clearRunBuffers();
     screenPollActive = true;
 
     const requiredNames = collectTransitiveDeps(new Set([projectName]), ctx.projects);
@@ -898,6 +898,7 @@ export async function startUIServer(
     if (useParallel()) {
       if (isRunning) return;
       markRunStarted();
+      clearRunBuffers();
       screenPollActive = true;
       parallelRunAborted = false;
 
@@ -931,6 +932,7 @@ export async function startUIServer(
     // Single-worker mode
     if (isRunning) return;
     markRunStarted();
+    clearRunBuffers();
     screenPollActive = true;
 
     broadcast({ type: 'run-start', fileCount: target.testFiles.length });
@@ -1110,6 +1112,7 @@ export async function startUIServer(
     }
 
     markRunStarted();
+    clearRunBuffers();
     screenPollActive = true;
 
     const depNames = collectTransitiveDeps(new Set(project.dependencies), ctx.projects);
@@ -1750,12 +1753,7 @@ export async function startUIServer(
   async function runAllFilesParallel(): Promise<TestRunResult> {
     if (isRunning) return { status: 'failed', passed: 0, failed: 0, skipped: 0, duration: 0 };
     markRunStarted();
-    testResults.clear();
-    traceBuffer.length = 0;
-    traceBufferFull = false;
-    sourceBuffer.clear();
-    networkBuffer.length = 0;
-    networkBufferFull = false;
+    clearRunBuffers();
     screenPollActive = true;
     parallelRunAborted = false;
 
@@ -1864,12 +1862,7 @@ export async function startUIServer(
   async function runFileParallel(filePath: string, testFilter?: string, explicitProjectName?: string): Promise<TestRunResult> {
     if (isRunning) return { status: 'failed', passed: 0, failed: 0, skipped: 0, duration: 0 };
     markRunStarted();
-    testResults.clear();
-    traceBuffer.length = 0;
-    traceBufferFull = false;
-    sourceBuffer.clear();
-    networkBuffer.length = 0;
-    networkBufferFull = false;
+    clearRunBuffers();
     screenPollActive = true;
     parallelRunAborted = false;
 
@@ -2033,6 +2026,7 @@ export async function startUIServer(
       if (!target) return;
 
       markRunStarted();
+      clearRunBuffers();
       screenPollActive = true;
       parallelRunAborted = false;
 
@@ -2113,6 +2107,7 @@ export async function startUIServer(
 
       if (isRunning) return;
       markRunStarted();
+      clearRunBuffers();
       screenPollActive = true;
       parallelRunAborted = false;
 
