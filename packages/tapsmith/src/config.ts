@@ -110,6 +110,13 @@ export interface TapsmithConfig {
   typingDelay?: number;
 
   /**
+   * Interval in milliseconds between the two taps of a double-tap gesture.
+   * Increase if double-taps are being registered as single taps on slow devices.
+   * Defaults to 40.
+   */
+  doubleTapInterval?: number;
+
+  /**
    * iOS simulator name or UDID. Analogous to `avd` for Android.
    * Run `xcrun simctl list devices` to see available simulators.
    */

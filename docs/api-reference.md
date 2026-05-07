@@ -758,12 +758,17 @@ Tap this element.
 await device.getByRole("button", { name: "Submit" }).tap();
 ```
 
-#### `elementHandle.doubleTap(): Promise<void>`
+#### `elementHandle.doubleTap(options?: { intervalMs?: number }): Promise<void>`
 
 Double-tap this element.
 
+- `options.intervalMs?`: `number` — interval in milliseconds between the two taps. Overrides the global `doubleTapInterval` config for this call. Defaults to `40` on Android. On iOS, the interval is used for the coordinate-based EventSynthesizer path; the XCUIElement path handles timing internally.
+
 ```typescript
 await device.getByText("Zoom here", { exact: true }).doubleTap();
+
+// Slower interval for a device that registers double-taps as single taps
+await device.getByText("Zoom here").doubleTap({ intervalMs: 100 });
 ```
 
 #### `elementHandle.longPress(durationMs?: number): Promise<void>`

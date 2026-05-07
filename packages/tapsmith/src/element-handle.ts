@@ -900,9 +900,10 @@ export class ElementHandle {
 
   // ── Element Actions (PILOT-2) ──
 
-  async doubleTap(): Promise<void> {
+  async doubleTap(options?: { intervalMs?: number }): Promise<void> {
     const sel = await this._actionSelector();
-    return this._tracedAction('doubleTap', 'tap', () => this._client.doubleTap(sel, this._timeoutMs), 'Double tap failed');
+    const intervalMs = options?.intervalMs ?? 0;
+    return this._tracedAction('doubleTap', 'tap', () => this._client.doubleTap(sel, this._timeoutMs, intervalMs), 'Double tap failed');
   }
 
   async dragTo(target: ElementHandle): Promise<void> {

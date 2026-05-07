@@ -261,9 +261,10 @@ enum EventSynthesizer {
     }
 
     /// Double-tap at a screen coordinate.
-    static func doubleTap(at point: CGPoint) -> Bool {
+    static func doubleTap(at point: CGPoint, intervalMs: Int = 0) -> Bool {
+        let interval = intervalMs > 0 ? TimeInterval(intervalMs) / 1000.0 : 0.05
         guard synthesizeTap(at: point, duration: 0.05) else { return false }
-        Thread.sleep(forTimeInterval: 0.05)
+        Thread.sleep(forTimeInterval: interval)
         return synthesizeTap(at: point, duration: 0.05)
     }
 

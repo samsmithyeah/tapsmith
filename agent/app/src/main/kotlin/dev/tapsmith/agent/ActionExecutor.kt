@@ -389,7 +389,10 @@ class ActionExecutor(private val device: UiDevice) {
     /**
      * Double-tap on an element's center point.
      */
-    fun doubleTap(element: UiObject2) {
+    fun doubleTap(
+        element: UiObject2,
+        intervalMs: Long = DOUBLE_TAP_INTERVAL_MS,
+    ) {
         try {
             // Perform two rapid taps at the element's center.
             // We use device.click() with a short interval to ensure the gesture
@@ -398,7 +401,7 @@ class ActionExecutor(private val device: UiDevice) {
             val cx = bounds.centerX()
             val cy = bounds.centerY()
             device.click(cx, cy)
-            Thread.sleep(DOUBLE_TAP_INTERVAL_MS)
+            Thread.sleep(if (intervalMs > 0) intervalMs else DOUBLE_TAP_INTERVAL_MS)
             device.click(cx, cy)
         } catch (e: Exception) {
             throw ActionFailedException("Failed to double tap element: ${e.message}")

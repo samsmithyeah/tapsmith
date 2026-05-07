@@ -260,7 +260,8 @@ class CommandHandler(
 
             "doubleTap" -> {
                 val element = resolveElement(params)
-                actionExecutor.doubleTap(elementFinder.getElement(element.elementId))
+                val intervalMs = params.optLong("intervalMs", 0)
+                actionExecutor.doubleTap(elementFinder.getElement(element.elementId), intervalMs)
                 JSONObject().put("success", true)
             }
 
