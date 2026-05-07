@@ -678,12 +678,14 @@ function App() {
       case 'source':
         pendingSourcesRef.current.set(msg.fileName, msg.content);
         // On reconnect, test-start doesn't fire so sources aren't snapshotted
-        // into trace entries. Inject into any existing entries whose file matches.
+        // into trace entries. Inject into any existing entry that doesn't
+        // already have this source. The Source tab only renders the source
+        // matching the test's file, so extra entries are harmless.
         setTestTraces((prev) => {
           let changed = false;
           const next = new Map(prev);
           for (const [k, data] of prev) {
-            if (data.filePath && data.filePath.split('/').pop() === msg.fileName && !data.sources.has(msg.fileName)) {
+            if (!data.sources.has(msg.fileName)) {
               next.set(k, { ...data, sources: new Map([...data.sources, [msg.fileName, msg.content]]) });
               changed = true;
             }

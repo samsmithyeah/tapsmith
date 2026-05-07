@@ -2702,11 +2702,12 @@ export async function startUIServer(
 
     // Replay trace events, source files, and network data so the trace
     // panel restores on reconnect (not just the tree pass/fail icons).
-    for (const sourceMsg of sourceBuffer.values()) {
-      ws.send(JSON.stringify(sourceMsg));
-    }
+    // Trace events go first so entries exist before source injection.
     for (const traceMsg of traceBuffer) {
       ws.send(JSON.stringify(traceMsg));
+    }
+    for (const sourceMsg of sourceBuffer.values()) {
+      ws.send(JSON.stringify(sourceMsg));
     }
     for (const networkMsg of networkBuffer) {
       ws.send(JSON.stringify(networkMsg));
