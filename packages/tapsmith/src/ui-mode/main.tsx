@@ -676,9 +676,20 @@ function App() {
         break;
       }
       case 'source':
-        // Buffer source files — they arrive before test-start, so we snapshot
-        // them into per-test trace data when each test begins.
         pendingSourcesRef.current.set(msg.fileName, msg.content);
+        // On reconnect, test-start doesn't fire so sources aren't snapshotted
+        // into trace entries. Inject into any existing entries whose file matches.
+        setTestTraces((prev) => {
+          let changed = false;
+          const next = new Map(prev);
+          for (const [k, data] of prev) {
+            if (data.filePath && data.filePath.split('/').pop() === msg.fileName && !data.sources.has(msg.fileName)) {
+              next.set(k, { ...data, sources: new Map([...data.sources, [msg.fileName, msg.content]]) });
+              changed = true;
+            }
+          }
+          return changed ? next : prev;
+        });
         break;
       case 'network': {
         const key = msg.testFullName
