@@ -2428,10 +2428,37 @@ impl proto::tapsmith_service_server::TapsmithService for TapsmithServiceImpl {
                     .await;
                 tokio::time::sleep(Duration::from_millis(200)).await;
 
-                if let Err(e) = ios::device::open_url(&serial, &req.uri).await {
-                    return Ok(self
-                        .action_error(request_id, "ACTION_FAILED", e.to_string())
-                        .await);
+                let mut open_url_attempt = 1;
+                loop {
+                    match ios::device::open_url(&serial, &req.uri).await {
+                        Ok(()) => break,
+                        Err(e)
+                            if open_url_attempt == 1
+                                && ios::device::is_retryable_open_url_error(&e.to_string()) =>
+                        {
+                            warn!(
+                                %serial,
+                                uri = %req.uri,
+                                error = %e,
+                                "simctl openurl hit a transient timeout; terminating app and retrying"
+                            );
+                            let _ = self
+                                .send_agent_command_with_timeout(
+                                    &AgentCommand::TerminateApp {
+                                        package: bundle_id.clone(),
+                                    },
+                                    4_000,
+                                )
+                                .await;
+                            tokio::time::sleep(Duration::from_millis(500)).await;
+                            open_url_attempt += 1;
+                        }
+                        Err(e) => {
+                            return Ok(self
+                                .action_error(request_id, "ACTION_FAILED", e.to_string())
+                                .await);
+                        }
+                    }
                 }
                 tokio::time::sleep(Duration::from_millis(500)).await;
 

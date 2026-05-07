@@ -240,7 +240,7 @@ class CommandHandler {
 
     private func prefersSemanticTap(_ element: ElementInfo) -> Bool {
         switch element.role.lowercased() {
-        case "button", "link", "checkbox", "switch", "radiobutton", "tab", "listitem":
+        case "button", "checkbox", "switch", "radiobutton", "tab", "listitem":
             return true
         default:
             return false
