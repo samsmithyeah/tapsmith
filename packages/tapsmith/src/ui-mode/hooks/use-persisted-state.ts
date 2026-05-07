@@ -15,7 +15,7 @@ function usePersistedState<T>(
   defaultValue: T,
   serializer?: Serializer<T>,
 ): [T, (value: T) => void] {
-  const s = serializer as Serializer<T> | undefined;
+  const s = serializer;
   const [value, _setValue] = useState<T>(() => {
     try {
       const raw = sessionStorage.getItem(key);
