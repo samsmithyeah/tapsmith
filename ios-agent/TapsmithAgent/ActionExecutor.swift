@@ -153,7 +153,12 @@ class ActionExecutor {
             throw AgentError.actionFailed("Element has zero frame — cannot swipe")
         }
         let center = CGPoint(x: frame.midX, y: frame.midY)
-        let swipeDistance = min(frame.height, frame.width) * CGFloat(distance)
+        let swipeDistance = try axisDistance(
+            direction: direction,
+            width: frame.width,
+            height: frame.height,
+            ratio: distance
+        )
         try swipeFromCenter(center, direction: direction, distance: swipeDistance, speed: speed)
     }
 
@@ -161,8 +166,25 @@ class ActionExecutor {
     func swipeScreen(direction: String, speed: Int = 5000, distance: Double = 0.5) throws {
         let screenSize = cachedScreenSize ?? app.windows.firstMatch.frame.size
         let center = CGPoint(x: screenSize.width / 2, y: screenSize.height / 2)
-        let swipeDistance = min(screenSize.height, screenSize.width) * CGFloat(distance)
+        let swipeDistance = try axisDistance(
+            direction: direction,
+            width: screenSize.width,
+            height: screenSize.height,
+            ratio: distance
+        )
         try swipeFromCenter(center, direction: direction, distance: swipeDistance, speed: speed)
+    }
+
+    private func axisDistance(direction: String, width: CGFloat, height: CGFloat, ratio: Double) throws -> CGFloat {
+        let clampedRatio = max(0, ratio)
+        switch direction.lowercased() {
+        case "up", "down":
+            return height * CGFloat(clampedRatio)
+        case "left", "right":
+            return width * CGFloat(clampedRatio)
+        default:
+            throw AgentError.actionFailed("Unknown swipe direction: \(direction). Use up/down/left/right.")
+        }
     }
 
     /// Perform a swipe gesture via EventSynthesizer from a center point.

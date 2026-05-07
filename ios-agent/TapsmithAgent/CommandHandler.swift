@@ -238,6 +238,46 @@ class CommandHandler {
         return try elementFinder.getElement(elementId)
     }
 
+    private func prefersSemanticTap(_ element: ElementInfo) -> Bool {
+        switch element.role.lowercased() {
+        case "button", "link", "checkbox", "switch", "radiobutton", "tab", "listitem":
+            return true
+        default:
+            return false
+        }
+    }
+
+    /// Tap a resolved element. Prefer XCTest's element tap for semantic
+    /// interactive controls: synthesized coordinate events can be accepted by
+    /// the daemon but still get swallowed by UIKit/RN gesture recognizers.
+    /// Coordinate synthesis remains the fallback for generic views and for
+    /// cases where XCTest reports the semantic element is not hittable.
+    private func tapResolvedElement(_ element: ElementInfo) throws {
+        if prefersSemanticTap(element) {
+            do {
+                let xcElem = try getXCUIElement(element.elementId)
+                try actionExecutor.tap(xcElem)
+                return
+            } catch let error as AgentError {
+                NSLog(
+                    "[TapsmithCommand] XCUIElement.tap fallback for \(element.elementId): \(error.message)"
+                )
+            } catch {
+                NSLog(
+                    "[TapsmithCommand] XCUIElement.tap fallback for \(element.elementId): \(error.localizedDescription)"
+                )
+            }
+        }
+
+        if let center = snapshotCenter(for: element.elementId) {
+            actionExecutor.tapCoordinates(x: Int(center.x), y: Int(center.y))
+            return
+        }
+
+        let xcElem = try getXCUIElement(element.elementId)
+        try actionExecutor.tap(xcElem)
+    }
+
     /// Tap inside a text input, biased toward the trailing edge so refocusing
     /// during retries keeps the insertion point at the end of the current
     /// value instead of moving it into the middle of existing text.
@@ -455,12 +495,7 @@ class CommandHandler {
                 actionExecutor.tapCoordinates(x: x, y: y)
             } else {
                 let element = try resolveElement(params)
-                if let center = snapshotCenter(for: element.elementId) {
-                    actionExecutor.tapCoordinates(x: Int(center.x), y: Int(center.y))
-                } else {
-                    let xcElem = try getXCUIElement(element.elementId)
-                    try actionExecutor.tap(xcElem)
-                }
+                try tapResolvedElement(element)
             }
             // Force-flush pending touch events: take a snapshot() which does
             // a round-trip through the XCTest daemon. This acts as a barrier,
