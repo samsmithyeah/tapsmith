@@ -181,7 +181,9 @@ export async function startUIServer(
   const sourceBuffer = new Map<string, SourceMessage>();
   const networkBuffer: NetworkMessage[] = [];
   const MAX_TRACE_BUFFER = 5000;
+  const MAX_NETWORK_BUFFER = 2000;
   let traceBufferFull = false;
+  let networkBufferFull = false;
 
   function markRunStarted(): void {
     isRunning = true;
@@ -690,6 +692,7 @@ export async function startUIServer(
     traceBufferFull = false;
     sourceBuffer.clear();
     networkBuffer.length = 0;
+    networkBufferFull = false;
     const project = projectForFile(filePath, explicitProjectName);
     const useOptions = project?.use as RunFileUseOptions | undefined;
     const projectName = project && project.name !== 'default' ? project.name : undefined;
@@ -731,6 +734,7 @@ export async function startUIServer(
     traceBufferFull = false;
     sourceBuffer.clear();
     networkBuffer.length = 0;
+    networkBufferFull = false;
     screenPollActive = true;
 
     broadcast({ type: 'run-start', fileCount: ctx.testFiles.length });
@@ -1041,7 +1045,10 @@ export async function startUIServer(
               entries: response.entries,
               bodies: response.bodies,
             };
-            networkBuffer.push(networkMsg);
+            if (!networkBufferFull) {
+              if (networkBuffer.length >= MAX_NETWORK_BUFFER) networkBufferFull = true;
+              else networkBuffer.push(networkMsg);
+            }
             broadcast(networkMsg);
             break;
           }
@@ -1675,7 +1682,10 @@ export async function startUIServer(
             }
             case 'network': {
               const networkMsg: NetworkMessage = { type: 'network', testFullName: worker.currentTest ?? '', projectName: worker.currentFile?.projectName, entries: msg.entries, bodies: msg.bodies };
-              networkBuffer.push(networkMsg);
+              if (!networkBufferFull) {
+              if (networkBuffer.length >= MAX_NETWORK_BUFFER) networkBufferFull = true;
+              else networkBuffer.push(networkMsg);
+            }
               broadcast(networkMsg);
               break;
             }
@@ -1745,6 +1755,7 @@ export async function startUIServer(
     traceBufferFull = false;
     sourceBuffer.clear();
     networkBuffer.length = 0;
+    networkBufferFull = false;
     screenPollActive = true;
     parallelRunAborted = false;
 
@@ -1858,6 +1869,7 @@ export async function startUIServer(
     traceBufferFull = false;
     sourceBuffer.clear();
     networkBuffer.length = 0;
+    networkBufferFull = false;
     screenPollActive = true;
     parallelRunAborted = false;
 
