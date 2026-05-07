@@ -1004,7 +1004,7 @@ function App() {
           runElapsed={runElapsed}
           mcpClientName={mcpClientName}
           mcpPanelOpen={mcpPanelOpen}
-          onToggleMcpPanel={() => setMcpPanelOpen(!mcpPanelOpen)}
+          onToggleMcpPanel={() => setMcpPanelOpen(prev => !prev)}
         />
       }
       testExplorer={

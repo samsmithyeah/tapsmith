@@ -14,7 +14,7 @@ function usePersistedState<T>(
   key: string,
   defaultValue: T,
   serializer?: Serializer<T>,
-): [T, (value: T) => void] {
+): [T, (value: T | ((prev: T) => T)) => void] {
   const s = serializer;
   const [value, _setValue] = useState<T>(() => {
     try {
@@ -24,12 +24,15 @@ function usePersistedState<T>(
     return defaultValue;
   });
 
-  const setValue = useCallback((next: T) => {
-    _setValue(next);
-    try {
-      const raw = s ? s.serialize(next) : next as unknown as string;
-      sessionStorage.setItem(key, raw);
-    } catch { /* quota or SSR */ }
+  const setValue = useCallback((next: T | ((prev: T) => T)) => {
+    _setValue((prev) => {
+      const resolved = typeof next === 'function' ? (next as (prev: T) => T)(prev) : next;
+      try {
+        const raw = s ? s.serialize(resolved) : resolved as unknown as string;
+        sessionStorage.setItem(key, raw);
+      } catch { /* quota or SSR */ }
+      return resolved;
+    });
   }, [key, s]);
 
   return [value, setValue];
