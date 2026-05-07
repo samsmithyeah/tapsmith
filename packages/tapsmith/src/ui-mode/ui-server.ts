@@ -180,6 +180,8 @@ export async function startUIServer(
   const traceBuffer: TraceEventMessage[] = [];
   const sourceBuffer = new Map<string, SourceMessage>();
   const networkBuffer: NetworkMessage[] = [];
+  const MAX_TRACE_BUFFER = 5000;
+  let traceBufferFull = false;
 
   function markRunStarted(): void {
     isRunning = true;
@@ -685,6 +687,7 @@ export async function startUIServer(
     markRunStarted();
     testResults.clear();
     traceBuffer.length = 0;
+    traceBufferFull = false;
     sourceBuffer.clear();
     networkBuffer.length = 0;
     const project = projectForFile(filePath, explicitProjectName);
@@ -725,6 +728,7 @@ export async function startUIServer(
     markRunStarted();
     testResults.clear();
     traceBuffer.length = 0;
+    traceBufferFull = false;
     sourceBuffer.clear();
     networkBuffer.length = 0;
     screenPollActive = true;
@@ -1012,7 +1016,10 @@ export async function startUIServer(
               hierarchyBefore: response.hierarchyBefore,
               hierarchyAfter: response.hierarchyAfter,
             };
-            traceBuffer.push(traceMsg);
+            if (!traceBufferFull) {
+              if (traceBuffer.length >= MAX_TRACE_BUFFER) traceBufferFull = true;
+              else traceBuffer.push(traceMsg);
+            }
             broadcast(traceMsg);
             break;
           }
@@ -1653,7 +1660,10 @@ export async function startUIServer(
                 hierarchyBefore: msg.hierarchyBefore,
                 hierarchyAfter: msg.hierarchyAfter,
               };
-              traceBuffer.push(traceMsg);
+              if (!traceBufferFull) {
+              if (traceBuffer.length >= MAX_TRACE_BUFFER) traceBufferFull = true;
+              else traceBuffer.push(traceMsg);
+            }
               broadcast(traceMsg);
               break;
             }
@@ -1732,6 +1742,7 @@ export async function startUIServer(
     markRunStarted();
     testResults.clear();
     traceBuffer.length = 0;
+    traceBufferFull = false;
     sourceBuffer.clear();
     networkBuffer.length = 0;
     screenPollActive = true;
@@ -1844,6 +1855,7 @@ export async function startUIServer(
     markRunStarted();
     testResults.clear();
     traceBuffer.length = 0;
+    traceBufferFull = false;
     sourceBuffer.clear();
     networkBuffer.length = 0;
     screenPollActive = true;
