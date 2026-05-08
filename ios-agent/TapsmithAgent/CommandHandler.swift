@@ -238,48 +238,26 @@ class CommandHandler {
         return try elementFinder.getElement(elementId)
     }
 
-    private func prefersSemanticTap(_ element: ElementInfo) -> Bool {
-        switch element.role.lowercased() {
-        case "button", "checkbox", "switch", "radiobutton", "tab", "listitem":
-            return true
-        default:
-            return false
-        }
-    }
 
-    /// Tap a resolved element. Prefer XCTest's element tap for semantic
-    /// interactive controls: synthesized coordinate events can be accepted by
-    /// the daemon but still get swallowed by UIKit/RN gesture recognizers.
-    /// Coordinate synthesis remains the fallback for generic views and for
-    /// cases where XCTest reports the semantic element is not hittable.
+    /// Tap a resolved element. Always attempt XCUIElement.tap() first —
+    /// synthesized coordinate events are unreliable with UIKit/RN gesture
+    /// recognizers regardless of element type. Coordinate synthesis is
+    /// only used as a fallback when XCUIElement.tap() fails (e.g. element
+    /// is not hittable).
     private func tapResolvedElement(_ element: ElementInfo) throws {
-        var semanticTapError: Error?
-
-        if prefersSemanticTap(element) {
-            do {
-                let xcElem = try getXCUIElement(element.elementId)
-                try actionExecutor.tap(xcElem)
-                return
-            } catch let error as AgentError {
-                semanticTapError = error
-                NSLog(
-                    "[TapsmithCommand] XCUIElement.tap fallback for \(element.elementId): \(error.message)"
-                )
-            } catch {
-                semanticTapError = error
-                NSLog(
-                    "[TapsmithCommand] XCUIElement.tap fallback for \(element.elementId): \(error.localizedDescription)"
-                )
-            }
+        do {
+            let xcElem = try getXCUIElement(element.elementId)
+            try actionExecutor.tap(xcElem)
+            return
+        } catch {
+            NSLog(
+                "[TapsmithCommand] XCUIElement.tap failed for \(element.elementId): \(error.localizedDescription), falling back to coordinate tap"
+            )
         }
 
         if let center = snapshotCenter(for: element.elementId) {
             actionExecutor.tapCoordinates(x: Int(center.x), y: Int(center.y))
             return
-        }
-
-        if let semanticTapError {
-            throw semanticTapError
         }
 
         let xcElem = try getXCUIElement(element.elementId)
