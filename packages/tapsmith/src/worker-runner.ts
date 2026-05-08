@@ -200,14 +200,33 @@ async function handleInit(msg: InitMessage): Promise<void> {
   resolvedXctestrunPath = resolvedIosXctestrun;
   resolvedAppPath = resolvedIosAppPath;
   sendProgress('starting Tapsmith agent');
-  await device.startAgent(
-    config.package ?? '',
-    resolvedAgentApk,
-    resolvedAgentTestApk,
-    resolvedIosXctestrun,
-    resolvedIosAppPath,
-    isNetworkTracingEnabled(config.trace),
-  );
+  try {
+    await device.startAgent(
+      config.package ?? '',
+      resolvedAgentApk,
+      resolvedAgentTestApk,
+      resolvedIosXctestrun,
+      resolvedIosAppPath,
+      isNetworkTracingEnabled(config.trace),
+    );
+  } catch (err) {
+    const msg1 = err instanceof Error ? err.message : String(err);
+    if (msg1.includes('xcodebuild exited') || msg1.includes('Timed out waiting for iOS agent')) {
+      process.stderr.write(
+        `Worker ${workerId}: Agent startup failed, retrying once: ${msg1}\n`,
+      );
+      await device.startAgent(
+        config.package ?? '',
+        resolvedAgentApk,
+        resolvedAgentTestApk,
+        resolvedIosXctestrun,
+        resolvedIosAppPath,
+        isNetworkTracingEnabled(config.trace),
+      );
+    } else {
+      throw err;
+    }
+  }
 
   try {
     if (config.package) {
