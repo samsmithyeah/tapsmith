@@ -9,7 +9,8 @@
  * Right: Device pane (always-visible live device mirror)
  */
 
-import { useState, useCallback } from 'preact/hooks';
+import { useCallback } from 'preact/hooks';
+import { usePersistedJSON } from '../hooks/use-persisted-state.js';
 import type { ComponentChildren } from 'preact';
 
 interface LayoutProps {
@@ -24,10 +25,10 @@ interface LayoutProps {
 }
 
 export function Layout({ topBar, testExplorer, filmstrip, actionsPanel, screenshotPanel, detailTabs, devicePane, mcpPanel }: LayoutProps) {
-  const [explorerWidth, setExplorerWidth] = useState(260);
-  const [actionsWidth, setActionsWidth] = useState(380);
-  const [detailHeight, setDetailHeight] = useState(250);
-  const [deviceWidth, setDeviceWidth] = useState(300);
+  const [explorerWidth, setExplorerWidth] = usePersistedJSON('tapsmith-explorer-width', 260);
+  const [actionsWidth, setActionsWidth] = usePersistedJSON('tapsmith-actions-width', 380);
+  const [detailHeight, setDetailHeight] = usePersistedJSON('tapsmith-detail-height', 250);
+  const [deviceWidth, setDeviceWidth] = usePersistedJSON('tapsmith-device-width', 300);
 
   const makeColResize = useCallback((
     getter: () => number,

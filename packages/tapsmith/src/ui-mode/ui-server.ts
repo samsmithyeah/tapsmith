@@ -42,6 +42,10 @@ import type {
   ServerMessage,
   ClientMessage,
   TestTreeNode,
+  TraceEventMessage,
+  SourceMessage,
+  NetworkMessage,
+  McpToolCallMessage,
   UIRunMessage,
   UIRunChildMessage,
   UIDiscoverMessage,
@@ -169,8 +173,42 @@ export async function startUIServer(
   const clients = new Set<WebSocket>();
   let testTree: TestTreeNode[] = [];
   let isRunning = false;
+  let runStartedAt = 0;
+  const runningFiles = new Map<string, { filePath: string; projectName?: string }>();
+  let singleWorkerRunningTest: { fullName: string; filePath: string; projectName?: string } | null = null;
   const failedFiles = new Set<string>();
   const testResults = new Map<string, TestResultEntry>();
+  const traceBuffer: TraceEventMessage[] = [];
+  const sourceBuffer = new Map<string, SourceMessage>();
+  const networkBuffer: NetworkMessage[] = [];
+  const mcpToolCallBuffer: McpToolCallMessage[] = [];
+  const MAX_TRACE_BUFFER = 5000;
+  const MAX_NETWORK_BUFFER = 2000;
+  const MAX_MCP_BUFFER = 200;
+  let traceBufferFull = false;
+  let networkBufferFull = false;
+
+  function markRunStarted(): void {
+    isRunning = true;
+    runStartedAt = Date.now();
+  }
+
+  function clearRunBuffers(): void {
+    testResults.clear();
+    traceBuffer.length = 0;
+    traceBufferFull = false;
+    sourceBuffer.clear();
+    networkBuffer.length = 0;
+    networkBufferFull = false;
+  }
+
+  function markRunEnded(): void {
+    isRunning = false;
+    runStartedAt = 0;
+    singleWorkerRunningTest = null;
+    runningFiles.clear();
+  }
+
   let activeChild: ChildProcess | null = null;
   let screenPollTimer: ReturnType<typeof setTimeout> | null = null;
   let screenSeq = 0;
@@ -457,7 +495,9 @@ export async function startUIServer(
   }
 
   mcpEvents.onToolCall((event) => {
-    broadcast({ type: 'mcp-tool-call', ...event });
+    const mcpMsg: McpToolCallMessage = { type: 'mcp-tool-call', ...event };
+    if (mcpToolCallBuffer.length < MAX_MCP_BUFFER) mcpToolCallBuffer.push(mcpMsg);
+    broadcast(mcpMsg);
   });
 
   mcpEvents.onClientChange((info) => {
@@ -625,6 +665,9 @@ export async function startUIServer(
    * client only updates that project's copy of the file node (multi-device
    * configs share the same file across projects). */
   function broadcastFileStatus(filePath: string, status: 'running' | 'done', projectName?: string): void {
+    const key = JSON.stringify([filePath, projectName]);
+    if (status === 'running') runningFiles.set(key, { filePath, projectName });
+    else runningFiles.delete(key);
     broadcast({ type: 'file-status', filePath, status, projectName });
   }
 
@@ -657,8 +700,8 @@ export async function startUIServer(
   async function runFileSingle(filePath: string, testFilter?: string, explicitProjectName?: string): Promise<TestRunResult> {
     if (isRunning) return { status: 'failed', passed: 0, failed: 0, skipped: 0, duration: 0 };
 
-    isRunning = true;
-    testResults.clear();
+    markRunStarted();
+    clearRunBuffers();
     const project = projectForFile(filePath, explicitProjectName);
     const useOptions = project?.use as RunFileUseOptions | undefined;
     const projectName = project && project.name !== 'default' ? project.name : undefined;
@@ -687,15 +730,15 @@ export async function startUIServer(
       broadcast({ type: 'run-end', ...runResult });
       return runResult;
     } finally {
-      isRunning = false;
+      markRunEnded();
       screenPollActive = false;
     }
   }
 
   async function runAllFilesSingle(): Promise<TestRunResult> {
     if (isRunning) return { status: 'failed', passed: 0, failed: 0, skipped: 0, duration: 0 };
-    isRunning = true;
-    testResults.clear();
+    markRunStarted();
+    clearRunBuffers();
     screenPollActive = true;
 
     broadcast({ type: 'run-start', fileCount: ctx.testFiles.length });
@@ -761,7 +804,7 @@ export async function startUIServer(
       broadcast({ type: 'run-end', ...runResult });
       return runResult;
     } finally {
-      isRunning = false;
+      markRunEnded();
       screenPollActive = false;
     }
   }
@@ -803,7 +846,8 @@ export async function startUIServer(
     const target = ctx.projects.find((p) => p.name === projectName);
     if (!target) return;
 
-    isRunning = true;
+    markRunStarted();
+    clearRunBuffers();
     screenPollActive = true;
 
     const requiredNames = collectTransitiveDeps(new Set([projectName]), ctx.projects);
@@ -846,7 +890,7 @@ export async function startUIServer(
         skipped: totalSkipped,
       });
     } finally {
-      isRunning = false;
+      markRunEnded();
       screenPollActive = false;
     }
   }
@@ -858,7 +902,8 @@ export async function startUIServer(
 
     if (useParallel()) {
       if (isRunning) return;
-      isRunning = true;
+      markRunStarted();
+      clearRunBuffers();
       screenPollActive = true;
       parallelRunAborted = false;
 
@@ -883,7 +928,7 @@ export async function startUIServer(
           skipped: r.skipped,
         });
       } finally {
-        isRunning = false;
+        markRunEnded();
         screenPollActive = false;
       }
       return;
@@ -891,7 +936,8 @@ export async function startUIServer(
 
     // Single-worker mode
     if (isRunning) return;
-    isRunning = true;
+    markRunStarted();
+    clearRunBuffers();
     screenPollActive = true;
 
     broadcast({ type: 'run-start', fileCount: target.testFiles.length });
@@ -907,7 +953,7 @@ export async function startUIServer(
         skipped: r.skipped,
       });
     } finally {
-      isRunning = false;
+      markRunEnded();
       screenPollActive = false;
     }
   }
@@ -941,6 +987,7 @@ export async function startUIServer(
         switch (response.type) {
           case 'test-start': {
             currentTestFullName = response.fullName;
+            singleWorkerRunningTest = { fullName: response.fullName, filePath: response.filePath, projectName };
             broadcast({
               type: 'test-start',
               fullName: response.fullName,
@@ -950,6 +997,7 @@ export async function startUIServer(
             break;
           }
           case 'test-end': {
+            singleWorkerRunningTest = null;
             const result = deserializeTestResult(response.result);
             if (testFilter && result.status === 'skipped' && result.fullName !== testFilter) {
               break;
@@ -968,7 +1016,7 @@ export async function startUIServer(
             break;
           }
           case 'trace-event': {
-            broadcast({
+            const traceMsg: TraceEventMessage = {
               type: 'trace-event',
               testFullName: currentTestFullName,
               projectName,
@@ -978,25 +1026,37 @@ export async function startUIServer(
               screenshotAfter: response.screenshotAfter,
               hierarchyBefore: response.hierarchyBefore,
               hierarchyAfter: response.hierarchyAfter,
-            });
+            };
+            if (!traceBufferFull) {
+              if (traceBuffer.length >= MAX_TRACE_BUFFER) traceBufferFull = true;
+              else traceBuffer.push(traceMsg);
+            }
+            broadcast(traceMsg);
             break;
           }
           case 'source': {
-            broadcast({
+            const sourceMsg: SourceMessage = {
               type: 'source',
               fileName: response.fileName,
               content: response.content,
-            });
+            };
+            sourceBuffer.set(response.fileName, sourceMsg);
+            broadcast(sourceMsg);
             break;
           }
           case 'network': {
-            broadcast({
+            const networkMsg: NetworkMessage = {
               type: 'network',
               testFullName: currentTestFullName,
               projectName,
               entries: response.entries,
               bodies: response.bodies,
-            });
+            };
+            if (!networkBufferFull) {
+              if (networkBuffer.length >= MAX_NETWORK_BUFFER) networkBufferFull = true;
+              else networkBuffer.push(networkMsg);
+            }
+            broadcast(networkMsg);
             break;
           }
           case 'file-done': {
@@ -1015,6 +1075,7 @@ export async function startUIServer(
 
       child.on('exit', (code) => {
         activeChild = null;
+        singleWorkerRunningTest = null;
         if (!settled) {
           settled = true;
           reject(new Error(`UI run worker exited with code ${code ?? 0} without sending results`));
@@ -1023,6 +1084,7 @@ export async function startUIServer(
 
       child.on('error', (err) => {
         activeChild = null;
+        singleWorkerRunningTest = null;
         if (!settled) {
           settled = true;
           reject(err);
@@ -1054,7 +1116,8 @@ export async function startUIServer(
       return;
     }
 
-    isRunning = true;
+    markRunStarted();
+    clearRunBuffers();
     screenPollActive = true;
 
     const depNames = collectTransitiveDeps(new Set(project.dependencies), ctx.projects);
@@ -1130,7 +1193,7 @@ export async function startUIServer(
         skipped: totalSkipped,
       });
     } finally {
-      isRunning = false;
+      markRunEnded();
       screenPollActive = false;
     }
   }
@@ -1601,7 +1664,7 @@ export async function startUIServer(
               break;
             }
             case 'trace-event': {
-              broadcast({
+              const traceMsg: TraceEventMessage = {
                 type: 'trace-event',
                 testFullName: worker.currentTest ?? '',
                 projectName: worker.currentFile?.projectName,
@@ -1611,15 +1674,27 @@ export async function startUIServer(
                 screenshotAfter: msg.screenshotAfter,
                 hierarchyBefore: msg.hierarchyBefore,
                 hierarchyAfter: msg.hierarchyAfter,
-              });
+              };
+              if (!traceBufferFull) {
+              if (traceBuffer.length >= MAX_TRACE_BUFFER) traceBufferFull = true;
+              else traceBuffer.push(traceMsg);
+            }
+              broadcast(traceMsg);
               break;
             }
             case 'source': {
-              broadcast({ type: 'source', fileName: msg.fileName, content: msg.content });
+              const sourceMsg: SourceMessage = { type: 'source', fileName: msg.fileName, content: msg.content };
+              sourceBuffer.set(msg.fileName, sourceMsg);
+              broadcast(sourceMsg);
               break;
             }
             case 'network': {
-              broadcast({ type: 'network', testFullName: worker.currentTest ?? '', projectName: worker.currentFile?.projectName, entries: msg.entries, bodies: msg.bodies });
+              const networkMsg: NetworkMessage = { type: 'network', testFullName: worker.currentTest ?? '', projectName: worker.currentFile?.projectName, entries: msg.entries, bodies: msg.bodies };
+              if (!networkBufferFull) {
+              if (networkBuffer.length >= MAX_NETWORK_BUFFER) networkBufferFull = true;
+              else networkBuffer.push(networkMsg);
+            }
+              broadcast(networkMsg);
               break;
             }
             case 'file-done': {
@@ -1682,8 +1757,8 @@ export async function startUIServer(
 
   async function runAllFilesParallel(): Promise<TestRunResult> {
     if (isRunning) return { status: 'failed', passed: 0, failed: 0, skipped: 0, duration: 0 };
-    isRunning = true;
-    testResults.clear();
+    markRunStarted();
+    clearRunBuffers();
     screenPollActive = true;
     parallelRunAborted = false;
 
@@ -1781,7 +1856,7 @@ export async function startUIServer(
       broadcast({ type: 'run-end', ...runResult });
       return runResult;
     } finally {
-      isRunning = false;
+      markRunEnded();
       screenPollActive = false;
       for (const w of uiWorkers) {
         if (!w.retired) broadcastWorkerStatus(w, 'idle');
@@ -1791,8 +1866,8 @@ export async function startUIServer(
 
   async function runFileParallel(filePath: string, testFilter?: string, explicitProjectName?: string): Promise<TestRunResult> {
     if (isRunning) return { status: 'failed', passed: 0, failed: 0, skipped: 0, duration: 0 };
-    isRunning = true;
-    testResults.clear();
+    markRunStarted();
+    clearRunBuffers();
     screenPollActive = true;
     parallelRunAborted = false;
 
@@ -1820,7 +1895,7 @@ export async function startUIServer(
       broadcast({ type: 'run-end', ...runResult });
       return runResult;
     } finally {
-      isRunning = false;
+      markRunEnded();
       screenPollActive = false;
     }
   }
@@ -1912,7 +1987,7 @@ export async function startUIServer(
    * config). Caller is responsible for ensuring parallel mode is active. */
   async function runBatchParallel(files: TaggedFile[]): Promise<void> {
     if (files.length === 0 || isRunning) return;
-    isRunning = true;
+    markRunStarted();
     screenPollActive = true;
     parallelRunAborted = false;
 
@@ -1933,7 +2008,7 @@ export async function startUIServer(
       broadcast({ type: 'error', message: errMsg });
       broadcast({ type: 'run-end', status: 'failed', duration: 0, passed: 0, failed: files.length, skipped: 0 });
     } finally {
-      isRunning = false;
+      markRunEnded();
       screenPollActive = false;
     }
   }
@@ -1955,7 +2030,8 @@ export async function startUIServer(
       const target = ctx.projects.find((p) => p.name === projectName);
       if (!target) return;
 
-      isRunning = true;
+      markRunStarted();
+      clearRunBuffers();
       screenPollActive = true;
       parallelRunAborted = false;
 
@@ -2017,7 +2093,7 @@ export async function startUIServer(
           skipped: totalSkipped,
         });
       } finally {
-        isRunning = false;
+        markRunEnded();
         screenPollActive = false;
       }
       return;
@@ -2035,7 +2111,8 @@ export async function startUIServer(
       }
 
       if (isRunning) return;
-      isRunning = true;
+      markRunStarted();
+      clearRunBuffers();
       screenPollActive = true;
       parallelRunAborted = false;
 
@@ -2119,7 +2196,7 @@ export async function startUIServer(
           skipped: totalSkipped,
         });
       } finally {
-        isRunning = false;
+        markRunEnded();
         screenPollActive = false;
       }
       return;
@@ -2313,7 +2390,7 @@ export async function startUIServer(
           failedFiles.clear();
           ;(async () => {
             if (useParallel() && files.length > 1) {
-              isRunning = true;
+              markRunStarted();
               screenPollActive = true;
               parallelRunAborted = false;
               await ensureWorkersReady();
@@ -2344,7 +2421,7 @@ export async function startUIServer(
                 broadcast({ type: 'error', message: `Failed to run failed tests: ${errMsg}` });
                 broadcast({ type: 'run-end', status: 'failed', duration: 0, passed: 0, failed: 1, skipped: 0 });
               } finally {
-                isRunning = false;
+                markRunEnded();
                 screenPollActive = false;
               }
             } else {
@@ -2600,6 +2677,11 @@ export async function startUIServer(
 
     // Send current state to new client
     ws.send(JSON.stringify({ type: 'test-tree', files: testTree } satisfies ServerMessage));
+
+    // Sync run state so the client knows whether a run is in progress.
+    // Sent before test results so the Running indicator appears immediately.
+    ws.send(JSON.stringify({ type: 'run-state', isRunning, startedAt: runStartedAt } satisfies ServerMessage));
+
     // Replay accumulated test results so a reconnecting client (e.g. after
     // the laptop wakes from sleep) sees the same passed/failed statuses it
     // had before — `test-tree` ships a tree of 'idle' nodes, and individual
@@ -2617,7 +2699,41 @@ export async function startUIServer(
         projectName: r.projectName,
       } satisfies ServerMessage));
     }
+
+    // Replay trace events, source files, and network data so the trace
+    // panel restores on reconnect (not just the tree pass/fail icons).
+    // Trace events go first so entries exist before source injection.
+    for (const traceMsg of traceBuffer) {
+      ws.send(JSON.stringify(traceMsg));
+    }
+    for (const sourceMsg of sourceBuffer.values()) {
+      ws.send(JSON.stringify(sourceMsg));
+    }
+    for (const networkMsg of networkBuffer) {
+      ws.send(JSON.stringify(networkMsg));
+    }
+
+    // Replay running file statuses so the tree shows which files are mid-run.
+    for (const { filePath, projectName } of runningFiles.values()) {
+      ws.send(JSON.stringify({ type: 'file-status', filePath, status: 'running', projectName } satisfies ServerMessage));
+    }
+
+    // Replay the currently-running test (single-worker) so it highlights in
+    // the tree.
+    if (singleWorkerRunningTest && !multiWorker) {
+      ws.send(JSON.stringify({
+        type: 'test-status',
+        fullName: singleWorkerRunningTest.fullName,
+        filePath: singleWorkerRunningTest.filePath,
+        status: 'running' as const,
+        projectName: singleWorkerRunningTest.projectName,
+      } satisfies ServerMessage));
+    }
+
     ws.send(JSON.stringify(getMcpStatus()));
+    for (const mcpMsg of mcpToolCallBuffer) {
+      ws.send(JSON.stringify(mcpMsg));
+    }
 
     if (multiWorker && workersInitialized) {
       // Send workers info
@@ -2649,17 +2765,34 @@ export async function startUIServer(
         } satisfies ServerMessage));
       }
 
-      // Send current worker statuses
+      // Send current worker statuses (including currentFile/currentTest)
       for (const w of uiWorkers) {
         ws.send(JSON.stringify({
           type: 'worker-status',
           workerId: w.id,
           deviceSerial: w.deviceSerial,
+          currentFile: w.currentFile?.filePath ? path.basename(w.currentFile.filePath) : undefined,
+          currentTest: w.currentTest,
           status: w.retired ? 'error' : w.busy ? 'running' : 'idle',
           passed: w.passed,
           failed: w.failed,
           skipped: w.skipped,
         } satisfies ServerMessage));
+      }
+
+      // Replay active tests so they highlight as running in the tree.
+      // worker-status updates the worker panel but not the tree nodes.
+      for (const w of uiWorkers) {
+        if (w.busy && w.currentFile && w.currentTest) {
+          ws.send(JSON.stringify({
+            type: 'test-status',
+            fullName: w.currentTest,
+            filePath: w.currentFile.filePath,
+            status: 'running' as const,
+            projectName: w.currentFile.projectName,
+            workerId: w.id,
+          } satisfies ServerMessage));
+        }
       }
     } else if (ctx.deviceSerial) {
       ws.send(JSON.stringify({
@@ -2671,6 +2804,30 @@ export async function startUIServer(
         tapsmithVersion: TAPSMITH_VERSION,
         devicePixelRatio: cachedScreenScale(ctx.deviceSerial, ctx.config.platform),
       } satisfies ServerMessage));
+    }
+
+    // Replay watch state so toggle icons restore on reconnect.
+    // Derive project-level watches from watchedEntries rather than tracking
+    // separately — avoids desync if individual files are unwatched.
+    const replayWatchedProjects = new Set<string>();
+    if (ctx.projects) {
+      for (const project of ctx.projects) {
+        if (project.testFiles.length > 0 && project.testFiles.every((f) => findEntry(f, project.name, undefined) >= 0)) {
+          replayWatchedProjects.add(project.name);
+          ws.send(JSON.stringify({
+            type: 'watch-event', filePath: 'project', projectName: project.name, event: 'watch-enabled',
+          } satisfies ServerMessage));
+        }
+      }
+    }
+    for (const [filePath, entries] of watchedEntries) {
+      for (const entry of entries) {
+        if (entry.projectName && replayWatchedProjects.has(entry.projectName) && !entry.testFilter) continue;
+        ws.send(JSON.stringify({
+          type: 'watch-event', filePath, testFilter: entry.testFilter,
+          projectName: entry.projectName, event: 'watch-enabled',
+        } satisfies ServerMessage));
+      }
     }
 
     ws.on('message', (data) => {
@@ -2739,7 +2896,9 @@ export async function startUIServer(
       req.on('end', () => {
         try {
           const event = JSON.parse(body);
-          broadcast({ type: 'mcp-tool-call', ...event });
+          const mcpMsg: McpToolCallMessage = { type: 'mcp-tool-call', ...event };
+    if (mcpToolCallBuffer.length < MAX_MCP_BUFFER) mcpToolCallBuffer.push(mcpMsg);
+    broadcast(mcpMsg);
         } catch { /* ignore malformed */ }
         res.writeHead(200);
         res.end('OK');

@@ -21,6 +21,7 @@ import {
 import { useScreenMirror, useMultiScreenMirror } from './hooks/use-screen-mirror.js';
 import { useTestTree } from './hooks/use-test-tree.js';
 import { useRunTimer } from './hooks/use-run-timer.js';
+import { usePersistedJSON } from './hooks/use-persisted-state.js';
 import { Layout } from './components/Layout.js';
 import { TestExplorer } from './components/TestExplorer.js';
 import { RunControls, type Theme } from './components/RunControls.js';
@@ -85,14 +86,14 @@ function App() {
 
   // Device pane state
   const [selectedWorkerId, setSelectedWorkerId] = useState(0);
-  const [deviceViewMode, setDeviceViewMode] = useState<'all' | number>('all');
+  const [deviceViewMode, setDeviceViewMode] = usePersistedJSON<'all' | number>('tapsmith-device-view', 'all');
 
   // MCP state
   const [mcpSseUrl, setMcpSseUrl] = useState<string | undefined>();
   const [mcpClientName, setMcpClientName] = useState<string | undefined>();
   const [mcpClientVersion, setMcpClientVersion] = useState<string | undefined>();
   const [mcpToolCalls, setMcpToolCalls] = useState<import('./ui-protocol.js').McpToolCallMessage[]>([]);
-  const [mcpPanelOpen, setMcpPanelOpen] = useState(false);
+  const [mcpPanelOpen, setMcpPanelOpen] = usePersistedJSON<boolean>('tapsmith-mcp-panel', false);
 
   // "Run deps first" toggle — persisted in localStorage
   const [runDepsFirst, setRunDepsFirst] = useState(() => {
@@ -362,6 +363,14 @@ function App() {
     switch (msg.type) {
       case 'test-tree':
         treeRef.current.setTestTree(msg.files);
+        break;
+      case 'run-state':
+        setIsRunning(msg.isRunning);
+        if (msg.isRunning) {
+          startRunTimer(msg.startedAt);
+        } else {
+          stopRunTimer();
+        }
         break;
       case 'run-start':
         setIsRunning(true);
@@ -667,9 +676,23 @@ function App() {
         break;
       }
       case 'source':
-        // Buffer source files — they arrive before test-start, so we snapshot
-        // them into per-test trace data when each test begins.
         pendingSourcesRef.current.set(msg.fileName, msg.content);
+        // On reconnect, test-start doesn't fire so sources aren't snapshotted
+        // into trace entries. Inject into matching entries (by filePath basename)
+        // or entries without filePath (created by getOrCreateTrace).
+        setTestTraces((prev) => {
+          let changed = false;
+          const next = new Map(prev);
+          for (const [k, data] of prev) {
+            if (data.sources.has(msg.fileName)) continue;
+            const match = !data.filePath || data.filePath.split('/').pop() === msg.fileName;
+            if (match) {
+              next.set(k, { ...data, sources: new Map([...data.sources, [msg.fileName, msg.content]]) });
+              changed = true;
+            }
+          }
+          return changed ? next : prev;
+        });
         break;
       case 'network': {
         const key = msg.testFullName
@@ -862,14 +885,17 @@ function App() {
     }
   }, [viewedTraceKey, workers.length, send]);
 
-  // When the user clicks a completed test, pin to the last action so they
-  // see the final state rather than the first action.
+  // Pin to the last action when viewing a completed test — whether the user
+  // clicked it manually or the selection was restored on reconnect.  During
+  // a live run auto-follow handles pinning via the trace-event handler, so
+  // we only fire here when no run is in progress.
   useEffect(() => {
-    if (viewedTraceKey && autoFollowRef.current === 'manual' && actionEvents.length > 0) {
+    if (viewedTraceKey && actionEvents.length > 0
+      && (autoFollowRef.current === 'manual' || !isRunning)) {
       setPinnedIndex(actionEvents.length - 1);
       setHoveredIndex(null);
     }
-  }, [viewedTraceKey]);
+  }, [viewedTraceKey, actionEvents.length, isRunning]);
 
   const handleSelectDeviceView = useCallback((mode: 'all' | number) => {
     setDeviceViewMode(mode);

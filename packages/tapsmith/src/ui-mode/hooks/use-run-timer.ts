@@ -9,10 +9,10 @@ export function useRunTimer() {
   const runStartRef = useRef<number>(0);
   const runTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
-  const startRunTimer = useCallback(() => {
+  const startRunTimer = useCallback((startedAt?: number) => {
     if (runTimerRef.current) clearInterval(runTimerRef.current);
-    runStartRef.current = Date.now();
-    setRunElapsed(0);
+    runStartRef.current = startedAt ?? Date.now();
+    setRunElapsed(startedAt ? Date.now() - startedAt : 0);
     runTimerRef.current = setInterval(() => {
       setRunElapsed(Date.now() - runStartRef.current);
     }, 100);

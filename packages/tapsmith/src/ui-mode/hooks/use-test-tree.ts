@@ -7,19 +7,38 @@
 
 import { useState, useCallback, useMemo, useRef, useEffect } from 'preact/hooks';
 import type { TestTreeNode, TestNodeStatus } from '../ui-protocol.js';
+import { usePersistedString, usePersistedJSON } from './use-persisted-state.js';
 
 export function useTestTree(isRunning: boolean = false) {
   const [files, setFiles] = useState<TestTreeNode[]>([]);
-  const [expandedNodes, setExpandedNodes] = useState<Set<string>>(new Set());
-  const [selectedTestId, setSelectedTestId] = useState<string | null>(null);
-  const [nameFilter, setNameFilter] = useState('');
+  const [expandedNodes, _setExpandedNodes] = useState<Set<string>>(() => {
+    try {
+      const raw = sessionStorage.getItem('tapsmith-expanded-nodes');
+      if (raw) return new Set(JSON.parse(raw) as string[]);
+    } catch { /* ignore */ }
+    return new Set<string>();
+  });
+  const setExpandedNodes = useCallback((updater: Set<string> | ((prev: Set<string>) => Set<string>)) => {
+    _setExpandedNodes((prev) => {
+      const next = typeof updater === 'function' ? updater(prev) : updater;
+      try { sessionStorage.setItem('tapsmith-expanded-nodes', JSON.stringify([...next])); } catch { /* quota */ }
+      return next;
+    });
+  }, []);
+  const [selectedTestId, setSelectedTestId] = usePersistedJSON<string | null>('tapsmith-selected-test', null);
+  const selectedTestIdRef = useRef(selectedTestId);
+  selectedTestIdRef.current = selectedTestId;
+  const [nameFilter, setNameFilter] = usePersistedString('tapsmith-name-filter', '');
   // Pending = play clicked but the worker hasn't fired test-start yet
   // (covers IPC dispatch + ESM import + runner setup). Tracked here so the
   // Actions tab can mirror the tree pulse with its own in-progress UI from
   // the moment of the click, not just after test-start arrives.
   const [pendingIds, setPendingIds] = useState<Set<string>>(new Set());
   const pendingSnapshots = useRef<Map<string, TestTreeNode['status']>>(new Map());
-  const [statusFilter, setStatusFilter] = useState<'all' | 'passed' | 'failed' | 'skipped'>('all');
+  const [statusFilter, setStatusFilter] = usePersistedString('tapsmith-status-filter', 'all') as [
+    'all' | 'passed' | 'failed' | 'skipped',
+    (v: 'all' | 'passed' | 'failed' | 'skipped') => void,
+  ];
 
   const setTestTree = useCallback((newFiles: TestTreeNode[]) => {
     setFiles(newFiles);
@@ -41,6 +60,22 @@ export function useTestTree(isRunning: boolean = false) {
       const next = new Set<string>();
       for (const id of prev) if (validIds.has(id)) next.add(id);
       for (const node of newFiles) if (node.type === 'project') next.add(node.id);
+
+      // Expand ancestors of the restored selection so it's visible.
+      const sel = selectedTestIdRef.current;
+      if (sel && validIds.has(sel)) {
+        (function expandTo(nodes: TestTreeNode[]): boolean {
+          for (const n of nodes) {
+            if (n.id === sel) return true;
+            if (n.children && expandTo(n.children)) {
+              next.add(n.id);
+              return true;
+            }
+          }
+          return false;
+        })(newFiles);
+      }
+
       return next;
     });
   }, []);
