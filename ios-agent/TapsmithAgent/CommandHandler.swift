@@ -245,11 +245,13 @@ class CommandHandler {
     /// only used as a fallback when XCUIElement.tap() fails (e.g. element
     /// is not hittable).
     private func tapResolvedElement(_ element: ElementInfo) throws {
+        var firstError: Error?
         do {
             let xcElem = try getXCUIElement(element.elementId)
             try actionExecutor.tap(xcElem)
             return
         } catch {
+            firstError = error
             NSLog(
                 "[TapsmithCommand] XCUIElement.tap failed for \(element.elementId): \(error.localizedDescription), falling back to coordinate tap"
             )
@@ -260,8 +262,7 @@ class CommandHandler {
             return
         }
 
-        let xcElem = try getXCUIElement(element.elementId)
-        try actionExecutor.tap(xcElem)
+        throw firstError!
     }
 
     /// Tap inside a text input, biased toward the trailing edge so refocusing
