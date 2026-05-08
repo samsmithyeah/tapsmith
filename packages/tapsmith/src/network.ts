@@ -488,9 +488,11 @@ export class NetworkRouteManager {
       // write to it. Next ensureStream() call will reconnect.
       this._stream = null;
       // CANCELLED (1) and UNAVAILABLE (14) are expected during teardown
-      // and daemon reconnection — don't spam warnings for them.
+      // and daemon reconnection. RST_STREAM with code 0 is a clean HTTP/2
+      // close (e.g. proxy teardown between test files) that auto-recovers.
       const code = (err as grpc.ServiceError).code;
-      if (code !== 1 && code !== 14) {
+      const isCleanReset = code === 13 && err.message.includes('RST_STREAM with code 0');
+      if (code !== 1 && code !== 14 && !isCleanReset) {
         console.warn('[tapsmith] NetworkRoute stream error:', err.message);
       }
       this._rejectPendingFetches(`NetworkRoute stream error: ${err.message}`);
