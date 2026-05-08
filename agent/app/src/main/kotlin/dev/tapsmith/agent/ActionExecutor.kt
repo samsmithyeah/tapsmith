@@ -27,7 +27,7 @@ class ActionExecutor(private val device: UiDevice) {
 
     companion object {
         /** Interval between taps for double-tap gesture. */
-        private const val DOUBLE_TAP_INTERVAL_MS = 40L
+        private const val DOUBLE_TAP_INTERVAL_MS = 100L
 
         /** Timeout for waiting for dropdown options to appear. */
         private const val DROPDOWN_WAIT_TIMEOUT_MS = 3000L

@@ -1296,7 +1296,7 @@ describe('doubleTap()', () => {
     const sel = _text('Button');
     const handle = new ElementHandle(client, sel, 4000);
     await handle.doubleTap();
-    expect(doubleTap).toHaveBeenCalledWith(sel, 4000, 0);
+    expect(doubleTap).toHaveBeenCalledWith(sel, expect.any(Number), 0);
   });
 
   it('passes intervalMs to client.doubleTap when specified', async () => {
@@ -1305,7 +1305,7 @@ describe('doubleTap()', () => {
     const sel = _text('Button');
     const handle = new ElementHandle(client, sel, 4000);
     await handle.doubleTap({ intervalMs: 100 });
-    expect(doubleTap).toHaveBeenCalledWith(sel, 4000, 100);
+    expect(doubleTap).toHaveBeenCalledWith(sel, expect.any(Number), 100);
   });
 
   it('throws on failure', async () => {
@@ -1332,7 +1332,7 @@ describe('doubleTap()', () => {
     const handle = new ElementHandle(client, sel, 5000);
     await handle.doubleTap();
     expect(findElements).not.toHaveBeenCalled();
-    expect(doubleTap).toHaveBeenCalledWith(sel, 5000, 0);
+    expect(doubleTap).toHaveBeenCalledWith(sel, expect.any(Number), 0);
   });
 });
 
