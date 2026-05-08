@@ -176,7 +176,7 @@ class ActionExecutor {
     }
 
     private func axisDistance(direction: String, width: CGFloat, height: CGFloat, ratio: Double) throws -> CGFloat {
-        let clampedRatio = max(0, ratio)
+        let clampedRatio = min(0.5, max(0, ratio))
         switch direction.lowercased() {
         case "up", "down":
             return height * CGFloat(clampedRatio)

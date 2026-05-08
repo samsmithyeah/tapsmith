@@ -21,23 +21,33 @@ describe("Network capture", () => {
   test("HTTPS request is captured with correct scheme and properties", async ({ device }) => {
     const screen = new ApiCallsScreen(device)
 
-    const requestPromise = device.waitForRequest(
-      (req) => req.url.includes("jsonplaceholder.typicode.com/users/1"),
-      { timeout: 15_000 },
-    )
-    const responsePromise = device.waitForResponse(
-      (resp) => resp.url.includes("jsonplaceholder.typicode.com/users/1"),
-      { timeout: 15_000 },
-    )
+    await device.route("**/users/1", async (route) => {
+      await route.fulfill({
+        json: { id: 1, name: "Tapsmith Capture User" },
+      })
+    })
 
-    await screen.fetchUserButton.tap()
+    try {
+      const requestPromise = device.waitForRequest(
+        (req) => req.url.includes("jsonplaceholder.typicode.com/users/1"),
+        { timeout: 15_000 },
+      )
+      const responsePromise = device.waitForResponse(
+        (resp) => resp.url.includes("jsonplaceholder.typicode.com/users/1"),
+        { timeout: 15_000 },
+      )
 
-    const [request, response] = await Promise.all([requestPromise, responsePromise])
+      await screen.fetchUserButton.tap()
 
-    expect(request.url).toMatch(/^https:\/\//)
-    expect(request.isHttps).toBe(true)
+      const [request, response] = await Promise.all([requestPromise, responsePromise])
 
-    expect(response.url).toMatch(/^https:\/\//)
-    expect(response.status).toBe(200)
+      expect(request.url).toMatch(/^https:\/\//)
+      expect(request.isHttps).toBe(true)
+
+      expect(response.url).toMatch(/^https:\/\//)
+      expect(response.status).toBe(200)
+    } finally {
+      await device.unrouteAll()
+    }
   })
 })
