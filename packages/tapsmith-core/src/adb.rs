@@ -703,12 +703,8 @@ pub async fn setup_iptables_redirect(serial: &str, proxy_port: u16) -> bool {
         format!("iptables -t nat -I OUTPUT -j {IPTABLES_CHAIN}"),
     ];
 
-    for cmd in &commands {
-        if let Err(e) = shell(serial, cmd).await {
-            warn!(%serial, cmd, "iptables command failed: {e}");
-            cleanup_iptables_redirect(serial).await;
-            return false;
-        }
+    if !apply_iptables_commands(serial, &commands).await {
+        return false;
     }
 
     // Verify the chain is actually in the OUTPUT path. On slow CI emulators
@@ -725,19 +721,25 @@ pub async fn setup_iptables_redirect(serial: &str, proxy_port: u16) -> bool {
         _ => {
             warn!(%serial, "iptables verification failed — chain not in OUTPUT, retrying setup");
             cleanup_iptables_redirect(serial).await;
-            // Retry once after a brief settle
             tokio::time::sleep(Duration::from_millis(500)).await;
-            for cmd in &commands {
-                if let Err(e) = shell(serial, cmd).await {
-                    warn!(%serial, cmd, "iptables retry failed: {e}");
-                    cleanup_iptables_redirect(serial).await;
-                    return false;
-                }
+            if !apply_iptables_commands(serial, &commands).await {
+                return false;
             }
         }
     }
 
     info!(%serial, proxy_port, "iptables transparent redirect configured");
+    true
+}
+
+async fn apply_iptables_commands(serial: &str, commands: &[String]) -> bool {
+    for cmd in commands {
+        if let Err(e) = shell(serial, cmd).await {
+            warn!(%serial, cmd, "iptables command failed: {e}");
+            cleanup_iptables_redirect(serial).await;
+            return false;
+        }
+    }
     true
 }
 
