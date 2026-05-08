@@ -111,8 +111,8 @@ export interface TapsmithConfig {
 
   /**
    * Interval in milliseconds between the two taps of a double-tap gesture.
-   * Increase if double-taps are being registered as single taps on slow devices.
-   * Defaults to 100.
+   * Must be a positive number. Increase if double-taps are being registered
+   * as single taps on slow devices. Defaults to 100 when not set.
    */
   doubleTapInterval?: number;
 

@@ -905,7 +905,9 @@ export class ElementHandle {
   async doubleTap(options?: { intervalMs?: number }): Promise<void> {
     const { remainingMs, element } = await this._waitForEnabled();
     const sel = await this._actionSelector(element);
-    const intervalMs = options?.intervalMs ?? this._options.doubleTapInterval ?? 0;
+    // 0 on the wire = "use agent default (100ms)". User-supplied values
+    // must be positive; ≤0 is treated as "use default".
+    const intervalMs = Math.max(0, options?.intervalMs ?? this._options.doubleTapInterval ?? 0);
     return this._tracedAction('doubleTap', 'tap', () => this._client.doubleTap(sel, remainingMs, intervalMs), 'Double tap failed');
   }
 
