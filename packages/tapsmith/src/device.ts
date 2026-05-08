@@ -648,7 +648,8 @@ export class Device {
 
     stream.on('error', (err: Error) => {
       const code = (err as grpc.ServiceError).code;
-      if (code !== grpc.status.CANCELLED) {
+      const isCleanReset = code === grpc.status.INTERNAL && err.message.includes('RST_STREAM with code 0');
+      if (code !== grpc.status.CANCELLED && !isCleanReset) {
         console.warn('[tapsmith] Device log stream error:', err.message);
       }
       clearStream();

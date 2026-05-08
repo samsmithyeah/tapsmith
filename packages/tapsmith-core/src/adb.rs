@@ -703,15 +703,43 @@ pub async fn setup_iptables_redirect(serial: &str, proxy_port: u16) -> bool {
         format!("iptables -t nat -I OUTPUT -j {IPTABLES_CHAIN}"),
     ];
 
-    for cmd in &commands {
+    if !apply_iptables_commands(serial, &commands).await {
+        return false;
+    }
+
+    // Verify the chain is actually in the OUTPUT path. On slow CI emulators
+    // the iptables commands above can report success but the rules may not
+    // be active yet (kernel module loading race). A quick list-check catches
+    // this so the caller can fall back to the HTTP proxy setting.
+    match shell(
+        serial,
+        &format!("iptables -t nat -L OUTPUT -n | grep {IPTABLES_CHAIN}"),
+    )
+    .await
+    {
+        Ok(output) if output.contains(IPTABLES_CHAIN) => {}
+        _ => {
+            warn!(%serial, "iptables verification failed — chain not in OUTPUT, retrying setup");
+            cleanup_iptables_redirect(serial).await;
+            tokio::time::sleep(Duration::from_millis(500)).await;
+            if !apply_iptables_commands(serial, &commands).await {
+                return false;
+            }
+        }
+    }
+
+    info!(%serial, proxy_port, "iptables transparent redirect configured");
+    true
+}
+
+async fn apply_iptables_commands(serial: &str, commands: &[String]) -> bool {
+    for cmd in commands {
         if let Err(e) = shell(serial, cmd).await {
             warn!(%serial, cmd, "iptables command failed: {e}");
             cleanup_iptables_redirect(serial).await;
             return false;
         }
     }
-
-    info!(%serial, proxy_port, "iptables transparent redirect configured");
     true
 }
 

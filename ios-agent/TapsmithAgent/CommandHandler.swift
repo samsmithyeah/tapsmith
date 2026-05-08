@@ -238,6 +238,33 @@ class CommandHandler {
         return try elementFinder.getElement(elementId)
     }
 
+
+    /// Tap a resolved element. Always attempt XCUIElement.tap() first —
+    /// synthesized coordinate events are unreliable with UIKit/RN gesture
+    /// recognizers regardless of element type. Coordinate synthesis is
+    /// only used as a fallback when XCUIElement.tap() fails (e.g. element
+    /// is not hittable).
+    private func tapResolvedElement(_ element: ElementInfo) throws {
+        var firstError: Error?
+        do {
+            let xcElem = try getXCUIElement(element.elementId)
+            try actionExecutor.tap(xcElem)
+            return
+        } catch {
+            firstError = error
+            NSLog(
+                "[TapsmithCommand] XCUIElement.tap failed for \(element.elementId): \(error.localizedDescription), falling back to coordinate tap"
+            )
+        }
+
+        if let center = snapshotCenter(for: element.elementId) {
+            actionExecutor.tapCoordinates(x: Int(center.x), y: Int(center.y))
+            return
+        }
+
+        throw firstError!
+    }
+
     /// Tap inside a text input, biased toward the trailing edge so refocusing
     /// during retries keeps the insertion point at the end of the current
     /// value instead of moving it into the middle of existing text.
@@ -455,12 +482,7 @@ class CommandHandler {
                 actionExecutor.tapCoordinates(x: x, y: y)
             } else {
                 let element = try resolveElement(params)
-                if let center = snapshotCenter(for: element.elementId) {
-                    actionExecutor.tapCoordinates(x: Int(center.x), y: Int(center.y))
-                } else {
-                    let xcElem = try getXCUIElement(element.elementId)
-                    try actionExecutor.tap(xcElem)
-                }
+                try tapResolvedElement(element)
             }
             // Force-flush pending touch events: take a snapshot() which does
             // a round-trip through the XCTest daemon. This acts as a barrier,

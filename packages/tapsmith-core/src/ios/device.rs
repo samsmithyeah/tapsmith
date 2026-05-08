@@ -668,6 +668,13 @@ pub async fn open_url(udid: &str, url: &str) -> Result<()> {
     Ok(())
 }
 
+pub fn is_retryable_open_url_error(message: &str) -> bool {
+    let lower = message.to_lowercase();
+    lower.contains("operation timed out")
+        || lower.contains("nsposixerrordomain, code=60")
+        || lower.contains("nsposixerrordomain code=60")
+}
+
 /// Grant a privacy permission on a simulator.
 /// Service names: camera, photos, location, microphone, contacts, calendar, etc.
 #[instrument]
@@ -986,6 +993,19 @@ pub async fn clear_app_data(udid: &str, bundle_id: &str, app_path: Option<&str>)
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn retryable_open_url_error_matches_simctl_timeout() {
+        let message = "Failed to open URL on B54345BC: An error was encountered processing the command (domain=NSPOSIXErrorDomain, code=60):\nSimulator device failed to open tapsmithtest:///profile.\nOperation timed out";
+        assert!(is_retryable_open_url_error(message));
+    }
+
+    #[test]
+    fn retryable_open_url_error_rejects_non_timeout_failures() {
+        assert!(!is_retryable_open_url_error(
+            "Failed to open URL on ABC: No such file or directory"
+        ));
+    }
 
     /// Real devicectl JSON captured from `xcrun devicectl list devices` with
     /// one unpaired iPhone connected. Used to verify that parsing is robust to

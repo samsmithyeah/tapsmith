@@ -200,14 +200,33 @@ async function handleInit(msg: InitMessage): Promise<void> {
   resolvedXctestrunPath = resolvedIosXctestrun;
   resolvedAppPath = resolvedIosAppPath;
   sendProgress('starting Tapsmith agent');
-  await device.startAgent(
-    config.package ?? '',
-    resolvedAgentApk,
-    resolvedAgentTestApk,
-    resolvedIosXctestrun,
-    resolvedIosAppPath,
-    isNetworkTracingEnabled(config.trace),
-  );
+  try {
+    await device.startAgent(
+      config.package ?? '',
+      resolvedAgentApk,
+      resolvedAgentTestApk,
+      resolvedIosXctestrun,
+      resolvedIosAppPath,
+      isNetworkTracingEnabled(config.trace),
+    );
+  } catch (err) {
+    const msg1 = err instanceof Error ? err.message : String(err);
+    if (msg1.includes('xcodebuild exited') || msg1.includes('Timed out waiting for iOS agent')) {
+      process.stderr.write(
+        `Worker ${workerId}: Agent startup failed, retrying once: ${msg1}\n`,
+      );
+      await device.startAgent(
+        config.package ?? '',
+        resolvedAgentApk,
+        resolvedAgentTestApk,
+        resolvedIosXctestrun,
+        resolvedIosAppPath,
+        isNetworkTracingEnabled(config.trace),
+      );
+    } else {
+      throw err;
+    }
+  }
 
   try {
     if (config.package) {
@@ -323,12 +342,27 @@ async function runFileWithRecovery(
   const projectGrepInvertRe = deserializeRegExpArray(projectGrepInvert);
 
   for (let attempt = 1; attempt <= 2; attempt++) {
+    // On attempt 1, buffer test-end events so we can discard them if a
+    // retry follows. On attempt 2 (or when attempt 1 succeeds), events
+    // flow through to the main process immediately.
+    let bufferedEvents: import('./runner.js').TestResult[] | undefined =
+      attempt === 1 ? [] : undefined;
+    const attemptReporter = {
+      onTestEnd(result: import('./runner.js').TestResult): void {
+        if (bufferedEvents) {
+          bufferedEvents.push(result);
+        } else {
+          reporterProxy.onTestEnd(result);
+        }
+      },
+    };
+
     try {
       const suite = await runTestFile(filePath, {
         config,
         device,
         screenshotDir,
-        reporter: reporterProxy,
+        reporter: attemptReporter,
         beforeEachTest: async (fullName) => {
           await ensureSessionReady(
             sessionContext(undefined),
@@ -349,18 +383,37 @@ async function runFileWithRecovery(
       });
       const infrastructureFailure = findRecoverableInfrastructureFailure(collectResults(suite));
       if (!infrastructureFailure) {
+        // Success — flush any buffered events from attempt 1.
+        if (bufferedEvents) {
+          for (const evt of bufferedEvents) reporterProxy.onTestEnd(evt);
+        }
         return suite;
       }
       if (attempt === 2) {
         throw infrastructureFailure;
       }
+      // Discard buffered events — they reflect an infrastructure failure,
+      // not a real test result.
+      bufferedEvents = undefined;
+      process.stderr.write(
+        `Retrying ${path.basename(filePath)} after infrastructure error (attempt 2 of 2)\n`,
+      );
       await recoverFileSession(filePath, infrastructureFailure);
       continue;
     } catch (err) {
       if (!isRecoverableInfrastructureError(err) || attempt === 2) {
+        // Real failure — flush buffered events so the failure is visible.
+        if (bufferedEvents) {
+          for (const evt of bufferedEvents) reporterProxy.onTestEnd(evt);
+        }
         throw err;
       }
 
+      // Discard buffered events from failed attempt 1.
+      bufferedEvents = undefined;
+      process.stderr.write(
+        `Retrying ${path.basename(filePath)} after infrastructure error (attempt 2 of 2)\n`,
+      );
       await recoverFileSession(filePath, err);
     }
   }

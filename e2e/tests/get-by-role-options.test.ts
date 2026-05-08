@@ -1,13 +1,15 @@
 import { beforeAll, describe, expect, test } from "tapsmith"
 
 describe("getByRole state options", () => {
+  beforeAll(async ({ device }) => {
+    await device.restartApp()
+    await device.getByDescription("Toggles").tap()
+    await expect(device.getByText("Switches", { exact: true })).toBeVisible()
+  })
+
   // ─── checked ───
 
   describe("checked", () => {
-    beforeAll(async ({ device }) => {
-      await device.getByDescription("Toggles").tap()
-    })
-
     test("finds unchecked switch with checked: false", async ({ device }) => {
       const darkMode = device.getByRole("switch", { name: "Dark Mode", checked: false })
       await expect(darkMode).toBeVisible()

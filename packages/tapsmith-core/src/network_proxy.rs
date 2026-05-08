@@ -24,7 +24,7 @@ use rustls::ClientConfig;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::Mutex;
-use tokio_rustls::{TlsAcceptor, TlsConnector};
+use tokio_rustls::TlsConnector;
 use tracing::{debug, info, warn};
 
 use crate::mitm_ca::MitmAuthority;
@@ -589,68 +589,20 @@ fn parse_host_header(header: &str) -> Option<(String, u16)> {
     }
 }
 
-/// Create a 502 error entry for a failed CONNECT attempt.
-fn connect_error_entry(target: &str) -> CapturedEntry {
-    CapturedEntry {
-        method: "CONNECT".to_string(),
-        url: format!("https://{target}"),
-        status_code: 502,
-        content_type: String::new(),
-        request_size: 0,
-        response_size: 0,
-        start_time_ms: now_ms(),
-        duration_ms: 0,
-        request_headers: Vec::new(),
-        response_headers: Vec::new(),
-        request_body: Vec::new(),
-        response_body: Vec::new(),
-        is_https: true,
-        route_action: String::new(),
-    }
-}
-
 /// Handle HTTP CONNECT with MITM TLS interception.
 ///
-/// 1. Connect to upstream server
-/// 2. Tell client the tunnel is established
-/// 3. TLS handshake with upstream (as a client)
-/// 4. TLS accept from our client (using a per-host cert signed by our CA)
-/// 5. Proxy decrypted HTTP traffic between the two TLS streams, capturing everything
+/// We establish the client-side TLS tunnel before dialing upstream. This keeps
+/// `waitForRequest()` and `route.fulfill()` independent from transient upstream
+/// DNS/connectivity stalls: once the app has sent the decrypted HTTP request,
+/// the proxy can emit the request event or synthesize a route response without
+/// waiting for the real server.
 async fn handle_connect(
     mut client: TcpStream,
     target: &str,
     state: Arc<Mutex<ProxyState>>,
     mitm_ca: Arc<MitmAuthority>,
 ) {
-    // Parse hostname (strip port)
-    let hostname = target.split(':').next().unwrap_or(target).to_string();
-    let connect_target = if target.contains(':') {
-        target.to_string()
-    } else {
-        format!("{target}:443")
-    };
-
-    // Connect to the real upstream server
-    let upstream_tcp = match tokio::time::timeout(
-        UPSTREAM_CONNECT_TIMEOUT,
-        TcpStream::connect(&connect_target),
-    )
-    .await
-    {
-        Ok(Ok(s)) => s,
-        Ok(Err(e)) => {
-            debug!("CONNECT failed to {connect_target}: {e}");
-            let _ = client.write_all(b"HTTP/1.1 502 Bad Gateway\r\n\r\n").await;
-            state.lock().await.entries.push(connect_error_entry(target));
-            return;
-        }
-        Err(_) => {
-            debug!("CONNECT timed out to {connect_target}");
-            let _ = client.write_all(b"HTTP/1.1 502 Bad Gateway\r\n\r\n").await;
-            state.lock().await.entries.push(connect_error_entry(target));
-            return;
-        }
-    };
+    let (connect_host, connect_port) = parse_connect_target(target);
 
     // Tell the client the tunnel is established
     if client
@@ -661,27 +613,29 @@ async fn handle_connect(
         return;
     }
 
-    // TLS handshake with upstream using shared root certificates
-    let tls_client_config = state.lock().await.tls_client_config.clone();
-
-    let server_name = match rustls::pki_types::ServerName::try_from(hostname.clone()) {
-        Ok(sn) => sn,
-        Err(e) => {
-            debug!("Invalid server name '{hostname}': {e}");
+    let start = match tokio::time::timeout(
+        CLIENT_READ_TIMEOUT,
+        tokio_rustls::LazyConfigAcceptor::new(rustls::server::Acceptor::default(), client),
+    )
+    .await
+    {
+        Ok(Ok(s)) => s,
+        Ok(Err(e)) => {
+            debug!("CONNECT failed reading TLS ClientHello for {target}: {e}");
+            return;
+        }
+        Err(_) => {
+            debug!("CONNECT timed out reading TLS ClientHello for {target}");
             return;
         }
     };
 
-    let tls_connector = TlsConnector::from(tls_client_config);
-    let upstream_tls = match tls_connector.connect(server_name, upstream_tcp).await {
-        Ok(s) => s,
-        Err(e) => {
-            debug!("TLS handshake with upstream {hostname} failed: {e}");
-            return;
-        }
-    };
+    let hostname = start
+        .client_hello()
+        .server_name()
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| connect_host.clone());
 
-    // Generate a per-host cert signed by our CA and accept TLS from the client
     let server_config = match mitm_ca.server_config_for_host(&hostname).await {
         Ok(cfg) => cfg,
         Err(e) => {
@@ -690,8 +644,7 @@ async fn handle_connect(
         }
     };
 
-    let tls_acceptor = TlsAcceptor::from(server_config);
-    let client_tls = match tls_acceptor.accept(client).await {
+    let client_tls = match start.into_stream(server_config).await {
         Ok(s) => s,
         Err(e) => {
             debug!("TLS handshake with client for {hostname} failed: {e}");
@@ -699,16 +652,267 @@ async fn handle_connect(
         }
     };
 
-    // Both sides are now decrypted — proxy HTTP traffic and capture it.
-    // CONNECT-tunnel path is always HTTPS by definition.
-    handle_mitm_http(
-        client_tls,
-        upstream_tls,
-        &hostname,
+    handle_mitm_https_lazy_upstream(client_tls, &hostname, &connect_host, connect_port, state)
+        .await;
+}
+
+fn parse_connect_target(target: &str) -> (String, u16) {
+    if let Some((host, port)) = target.rsplit_once(':') {
+        if let Ok(port) = port.parse::<u16>() {
+            return (host.to_string(), port);
+        }
+    }
+    (target.to_string(), 443)
+}
+
+fn bad_gateway_response() -> ParsedResponse {
+    let mut resp = ParsedResponse {
+        status_code: 502,
+        headers: vec![
+            ("Content-Length".to_string(), "0".to_string()),
+            ("Connection".to_string(), "close".to_string()),
+        ],
+        body: Vec::new(),
+        raw_bytes: Vec::new(),
+    };
+    resp.raw_bytes = reencode_response(&resp);
+    resp
+}
+
+struct BadGatewayContext<'a> {
+    handler: Option<&'a Arc<dyn NetworkHandler>>,
+    req: &'a ParsedRequest,
+    hostname: &'a str,
+    is_https: bool,
+    start_ms: u64,
+    route_action: &'a str,
+}
+
+async fn write_bad_gateway<C>(
+    client_stream: &mut C,
+    state: &Arc<Mutex<ProxyState>>,
+    ctx: BadGatewayContext<'_>,
+) where
+    C: AsyncWrite + Unpin,
+{
+    let resp = bad_gateway_response();
+    let _ = client_stream.write_all(&resp.raw_bytes).await;
+    if let Some(h) = ctx.handler {
+        h.notify_response(ctx.req, &resp, ctx.hostname, ctx.is_https, ctx.route_action)
+            .await;
+    }
+    record_entry(
         state,
-        /* is_https */ true,
+        ctx.req,
+        &resp,
+        ctx.hostname,
+        ctx.is_https,
+        ctx.start_ms,
+        ctx.route_action,
     )
     .await;
+}
+
+async fn connect_tls_upstream(
+    state: &Arc<Mutex<ProxyState>>,
+    upstream_host: &str,
+    upstream_port: u16,
+    server_name_host: &str,
+) -> Option<tokio_rustls::client::TlsStream<TcpStream>> {
+    let addr = format!("{upstream_host}:{upstream_port}");
+    let upstream_tcp =
+        match tokio::time::timeout(UPSTREAM_CONNECT_TIMEOUT, TcpStream::connect(&addr)).await {
+            Ok(Ok(s)) => s,
+            Ok(Err(e)) => {
+                debug!("CONNECT failed to {addr}: {e}");
+                return None;
+            }
+            Err(_) => {
+                debug!("CONNECT timed out to {addr}");
+                return None;
+            }
+        };
+
+    let tls_client_config = state.lock().await.tls_client_config.clone();
+    let server_name = match rustls::pki_types::ServerName::try_from(server_name_host.to_string()) {
+        Ok(sn) => sn,
+        Err(e) => {
+            debug!("Invalid server name '{server_name_host}': {e}");
+            return None;
+        }
+    };
+
+    match TlsConnector::from(tls_client_config)
+        .connect(server_name, upstream_tcp)
+        .await
+    {
+        Ok(s) => Some(s),
+        Err(e) => {
+            debug!("TLS handshake with upstream {server_name_host} failed: {e}");
+            None
+        }
+    }
+}
+
+/// Proxy decrypted HTTPS traffic, connecting upstream only after the client
+/// request has been parsed and route hooks have had a chance to synthesize a
+/// response. This preserves Playwright-like request timing for `waitForRequest`
+/// and avoids requiring upstream availability for `route.fulfill()`.
+async fn handle_mitm_https_lazy_upstream<C>(
+    mut client_stream: C,
+    hostname: &str,
+    upstream_host: &str,
+    upstream_port: u16,
+    state: Arc<Mutex<ProxyState>>,
+) where
+    C: AsyncRead + AsyncWrite + Unpin,
+{
+    let mut upstream_stream: Option<tokio_rustls::client::TlsStream<TcpStream>> = None;
+
+    loop {
+        let handler = state.lock().await.handler.clone();
+        let start = now_ms();
+
+        let mut req = match read_request(&mut client_stream, hostname).await {
+            ReadOutcome::Ok(r) => r,
+            ReadOutcome::ConnectionClosed | ReadOutcome::Error => return,
+        };
+
+        if let Some(h) = handler.as_ref() {
+            h.notify_request(&req, hostname, true).await;
+        }
+
+        let mut route_action_on_pass: &'static str = "";
+        if let Some(h) = handler.as_ref() {
+            match h.on_request(&mut req, hostname, true).await {
+                RequestOutcome::Synthesized(mut synth) => {
+                    if synth.status_code == 0 {
+                        h.notify_response(&req, &synth, hostname, true, "aborted")
+                            .await;
+                        record_entry(&state, &req, &synth, hostname, true, start, "aborted").await;
+                        return;
+                    }
+                    if synth.raw_bytes.is_empty() {
+                        synth.raw_bytes = reencode_response(&synth);
+                    }
+                    if client_stream.write_all(&synth.raw_bytes).await.is_err() {
+                        return;
+                    }
+                    let close = has_connection_close(&synth.headers);
+                    h.notify_response(&req, &synth, hostname, true, "mocked")
+                        .await;
+                    record_entry(&state, &req, &synth, hostname, true, start, "mocked").await;
+                    if close {
+                        return;
+                    }
+                    continue;
+                }
+                RequestOutcome::Continued => {
+                    req.raw_bytes = reencode_request(&req);
+                    route_action_on_pass = "continued";
+                }
+                RequestOutcome::NotMatched => {}
+            }
+        }
+
+        let (effective_hostname, effective_is_https) = match req.override_host {
+            Some(ref origin) => (origin.host.clone(), origin.is_https),
+            None => (hostname.to_string(), true),
+        };
+
+        let mut resp = if let Some(ref origin) = req.override_host {
+            let url = origin.url(&req.path);
+            match crate::route_handler::fetch_upstream(&url, &req.method, &req.headers, &req.body)
+                .await
+            {
+                Some(r) => r,
+                None => {
+                    write_bad_gateway(
+                        &mut client_stream,
+                        &state,
+                        BadGatewayContext {
+                            handler: handler.as_ref(),
+                            req: &req,
+                            hostname: &effective_hostname,
+                            is_https: effective_is_https,
+                            start_ms: start,
+                            route_action: route_action_on_pass,
+                        },
+                    )
+                    .await;
+                    return;
+                }
+            }
+        } else {
+            if upstream_stream.is_none() {
+                let Some(s) =
+                    connect_tls_upstream(&state, upstream_host, upstream_port, hostname).await
+                else {
+                    write_bad_gateway(
+                        &mut client_stream,
+                        &state,
+                        BadGatewayContext {
+                            handler: handler.as_ref(),
+                            req: &req,
+                            hostname,
+                            is_https: true,
+                            start_ms: start,
+                            route_action: route_action_on_pass,
+                        },
+                    )
+                    .await;
+                    return;
+                };
+                upstream_stream = Some(s);
+            }
+
+            let upstream = upstream_stream.as_mut().expect("upstream initialized");
+            if upstream.write_all(&req.raw_bytes).await.is_err() {
+                return;
+            }
+            match read_response(upstream, hostname).await {
+                ReadOutcome::Ok(r) => r,
+                ReadOutcome::ConnectionClosed | ReadOutcome::Error => return,
+            }
+        };
+
+        if let Some(h) = handler.as_ref() {
+            h.on_response(&req, &effective_hostname, effective_is_https, &mut resp)
+                .await;
+            resp.raw_bytes = reencode_response(&resp);
+        }
+
+        if client_stream.write_all(&resp.raw_bytes).await.is_err() {
+            return;
+        }
+
+        let connection_close = has_connection_close(&resp.headers);
+
+        if let Some(h) = handler.as_ref() {
+            h.notify_response(
+                &req,
+                &resp,
+                &effective_hostname,
+                effective_is_https,
+                route_action_on_pass,
+            )
+            .await;
+        }
+        record_entry(
+            &state,
+            &req,
+            &resp,
+            &effective_hostname,
+            effective_is_https,
+            start,
+            route_action_on_pass,
+        )
+        .await;
+
+        if connection_close {
+            return;
+        }
+    }
 }
 
 /// Outcome of reading a request or response from a stream. `ConnectionClosed`
@@ -2231,29 +2435,6 @@ async fn handle_transparent_tls<S>(
         );
         return;
     }
-    let Some(upstream_tcp) = dial_upstream(upstream_host, dst_port).await else {
-        return;
-    };
-
-    let tls_client_config = state.lock().await.tls_client_config.clone();
-    let server_name = match rustls::pki_types::ServerName::try_from(sni.clone()) {
-        Ok(sn) => sn,
-        Err(e) => {
-            debug!("invalid server name '{sni}': {e}");
-            return;
-        }
-    };
-    let upstream_tls = match TlsConnector::from(tls_client_config)
-        .connect(server_name, upstream_tcp)
-        .await
-    {
-        Ok(s) => s,
-        Err(e) => {
-            debug!("upstream TLS handshake failed for {sni}: {e}");
-            return;
-        }
-    };
-
     // Mint a per-host cert signed by our MITM CA and resume the client
     // handshake using the ClientHello bytes the acceptor already read.
     let server_config = match mitm_ca.server_config_for_host(&sni).await {
@@ -2271,14 +2452,7 @@ async fn handle_transparent_tls<S>(
         }
     };
 
-    handle_mitm_http(
-        client_tls,
-        upstream_tls,
-        &sni,
-        state,
-        /* is_https */ true,
-    )
-    .await;
+    handle_mitm_https_lazy_upstream(client_tls, &sni, upstream_host, dst_port, state).await;
 }
 
 /// Parse host and path from an absolute HTTP URL.
@@ -3127,6 +3301,142 @@ mod tests {
         );
         // raw_bytes must end with the chunked terminator, nothing more.
         assert!(first.raw_bytes.ends_with(b"0\r\n\r\n"));
+    }
+
+    struct SyntheticHttpsHandler {
+        seen_tx: tokio::sync::mpsc::UnboundedSender<String>,
+    }
+
+    #[async_trait::async_trait]
+    impl NetworkHandler for SyntheticHttpsHandler {
+        async fn notify_request(&self, req: &ParsedRequest, hostname: &str, is_https: bool) {
+            let scheme = if is_https { "https" } else { "http" };
+            let _ = self
+                .seen_tx
+                .send(format!("{scheme}://{hostname}{}", req.path));
+        }
+
+        async fn on_request(
+            &self,
+            _req: &mut ParsedRequest,
+            _hostname: &str,
+            _is_https: bool,
+        ) -> RequestOutcome {
+            RequestOutcome::Synthesized(ParsedResponse {
+                status_code: 200,
+                headers: vec![
+                    ("Content-Type".to_string(), "application/json".to_string()),
+                    ("Content-Length".to_string(), "11".to_string()),
+                    ("Connection".to_string(), "close".to_string()),
+                ],
+                body: br#"{"ok":true}"#.to_vec(),
+                raw_bytes: Vec::new(),
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn https_route_fulfill_does_not_require_upstream_connect() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let dir = tempfile::tempdir().unwrap();
+        let ca = Arc::new(
+            MitmAuthority::generate_new(&dir.path().join("ca.pem"), &dir.path().join("ca-key.pem"))
+                .unwrap(),
+        );
+
+        let mut root_store = rustls::RootCertStore::empty();
+        let ca_pem = std::fs::read(ca.ca_pem_path()).unwrap();
+        let mut reader = std::io::BufReader::new(ca_pem.as_slice());
+        for cert in rustls_pemfile::certs(&mut reader) {
+            root_store.add(cert.unwrap()).unwrap();
+        }
+        let client_config = Arc::new(
+            ClientConfig::builder()
+                .with_root_certificates(root_store)
+                .with_no_client_auth(),
+        );
+
+        let (seen_tx, mut seen_rx) = tokio::sync::mpsc::unbounded_channel();
+        let state = Arc::new(Mutex::new(ProxyState {
+            entries: Vec::new(),
+            tls_client_config: client_config.clone(),
+            handler: Some(Arc::new(SyntheticHttpsHandler { seen_tx })),
+            network_hosts: Vec::new(),
+        }));
+
+        let (client_side, server_side) = tokio::io::duplex(65536);
+        let server_state = state.clone();
+        let server_ca = ca.clone();
+        let server = tokio::spawn(async move {
+            let server_config = server_ca
+                .server_config_for_host("example.test")
+                .await
+                .unwrap();
+            let client_tls = tokio_rustls::LazyConfigAcceptor::new(
+                rustls::server::Acceptor::default(),
+                server_side,
+            )
+            .await
+            .unwrap()
+            .into_stream(server_config)
+            .await
+            .unwrap();
+            handle_mitm_https_lazy_upstream(
+                client_tls,
+                "example.test",
+                "192.0.2.1",
+                443,
+                server_state,
+            )
+            .await;
+        });
+
+        let server_name =
+            rustls::pki_types::ServerName::try_from("example.test".to_string()).unwrap();
+        let mut client_tls = TlsConnector::from(client_config)
+            .connect(server_name, client_side)
+            .await
+            .unwrap();
+        client_tls
+            .write_all(b"GET /users/1 HTTP/1.1\r\nHost: example.test\r\n\r\n")
+            .await
+            .unwrap();
+
+        let seen = tokio::time::timeout(std::time::Duration::from_secs(2), seen_rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(seen, "https://example.test/users/1");
+
+        let mut response = Vec::new();
+        let mut buf = [0u8; 1024];
+        loop {
+            match tokio::time::timeout(std::time::Duration::from_secs(2), client_tls.read(&mut buf))
+                .await
+                .unwrap()
+            {
+                Ok(0) => break,
+                Ok(n) => {
+                    response.extend_from_slice(&buf[..n]);
+                    if response.windows(11).any(|w| w == br#"{"ok":true}"#) {
+                        break;
+                    }
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => break,
+                Err(e) => panic!("client read failed: {e}"),
+            }
+        }
+        let response = String::from_utf8(response).unwrap();
+        assert!(response.starts_with("HTTP/1.1 200 OK"));
+        assert!(response.contains(r#"{"ok":true}"#));
+
+        server.await.unwrap();
+        let entries = state.lock().await.entries.clone();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].url, "https://example.test/users/1");
+        assert_eq!(entries[0].status_code, 200);
+        assert_eq!(entries[0].route_action, "mocked");
     }
 
     #[test]
