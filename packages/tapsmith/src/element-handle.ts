@@ -90,6 +90,8 @@ interface ElementHandleOptions {
   traceCapture?: TraceCapture;
   /** Default inter-keystroke delay in ms, from config.typingDelay. */
   typingDelay?: number;
+  /** Default double-tap interval in ms, from config.doubleTapInterval. */
+  doubleTapInterval?: number;
 }
 
 // ─── Helpers ───
@@ -903,7 +905,7 @@ export class ElementHandle {
   async doubleTap(options?: { intervalMs?: number }): Promise<void> {
     const { remainingMs, element } = await this._waitForEnabled();
     const sel = await this._actionSelector(element);
-    const intervalMs = options?.intervalMs ?? 0;
+    const intervalMs = options?.intervalMs ?? this._options.doubleTapInterval ?? 0;
     return this._tracedAction('doubleTap', 'tap', () => this._client.doubleTap(sel, remainingMs, intervalMs), 'Double tap failed');
   }
 

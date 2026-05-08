@@ -263,6 +263,7 @@ export type UseOptions = Partial<Pick<TapsmithConfig,
   | 'launchEmulators'
   | 'resetAppDeepLink'
   | 'resetAppWaitMs'
+  | 'doubleTapInterval'
   | 'baseURL'
   | 'extraHTTPHeaders'
 >> & {
