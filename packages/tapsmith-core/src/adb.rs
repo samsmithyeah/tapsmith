@@ -711,22 +711,24 @@ pub async fn setup_iptables_redirect(serial: &str, proxy_port: u16) -> bool {
     // the iptables commands above can report success but the rules may not
     // be active yet (kernel module loading race). A quick list-check catches
     // this so the caller can fall back to the HTTP proxy setting.
-    match shell(
-        serial,
-        &format!("iptables -t nat -L OUTPUT -n | grep {IPTABLES_CHAIN}"),
-    )
-    .await
-    {
-        Ok(output) if output.contains(IPTABLES_CHAIN) => {}
-        _ => {
-            warn!(%serial, "iptables verification failed — chain not in OUTPUT, retrying setup");
+    if !verify_iptables_chain(serial).await {
+        warn!(%serial, "iptables verification failed — chain not in OUTPUT, retrying setup");
+        cleanup_iptables_redirect(serial).await;
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        if !apply_iptables_commands(serial, &commands).await {
+            return false;
+        }
+        // Re-verify after retry
+        if !verify_iptables_chain(serial).await {
+            warn!(%serial, "iptables verification failed after retry — giving up");
             cleanup_iptables_redirect(serial).await;
-            tokio::time::sleep(Duration::from_millis(500)).await;
-            if !apply_iptables_commands(serial, &commands).await {
-                return false;
-            }
+            return false;
         }
     }
+
+    // Brief settle delay — give the kernel time to fully activate the rules
+    // for new TCP connections before the caller starts routing traffic.
+    tokio::time::sleep(Duration::from_millis(100)).await;
 
     info!(%serial, proxy_port, "iptables transparent redirect configured");
     true
@@ -741,6 +743,32 @@ async fn apply_iptables_commands(serial: &str, commands: &[String]) -> bool {
         }
     }
     true
+}
+
+/// Verify the iptables chain is active in the OUTPUT path. Retries up to 3
+/// times with 200ms sleeps to handle kernel module loading races on slow
+/// CI emulators.
+async fn verify_iptables_chain(serial: &str) -> bool {
+    for attempt in 1..=3 {
+        match shell(
+            serial,
+            &format!("iptables -t nat -L OUTPUT -n | grep {IPTABLES_CHAIN}"),
+        )
+        .await
+        {
+            Ok(output) if output.contains(IPTABLES_CHAIN) => {
+                debug!(%serial, attempt, "iptables chain verified in OUTPUT");
+                return true;
+            }
+            _ => {
+                if attempt < 3 {
+                    debug!(%serial, attempt, "iptables chain not yet visible, retrying");
+                    tokio::time::sleep(Duration::from_millis(200)).await;
+                }
+            }
+        }
+    }
+    false
 }
 
 /// Remove the `TAPSMITH_REDIRECT` iptables chain and its reference from OUTPUT.
