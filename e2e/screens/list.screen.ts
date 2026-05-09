@@ -3,8 +3,8 @@ import { Device } from "tapsmith"
 export class ListScreen {
   constructor(private device: Device) {}
 
-  get itemCount() { return this.device.locator({ id: "item-count" }) }
-  get selectedCount() { return this.device.locator({ id: "selected-count" }) }
+  get itemCount() { return this.device.getByTestId("item-count") }
+  get selectedCount() { return this.device.getByTestId("selected-count") }
   get allItems() { return this.device.getByText("Item ") }
   get firstItem() { return this.device.getByDescription("Item 1") }
 

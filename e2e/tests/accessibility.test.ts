@@ -1,17 +1,27 @@
-import { beforeAll, describe, expect, test } from "tapsmith"
+import { beforeAll, beforeEach, describe, expect, test } from "tapsmith"
 import { AccessibilityScreen } from "../screens/accessibility.screen.js"
 
 describe("Accessibility screen", () => {
   beforeAll(async ({ device }) => {
     await device.restartApp()
-    const accessibilityCard = device.getByDescription("Accessibility")
-    await accessibilityCard.scrollIntoView()
-    await accessibilityCard.tap()
-    await expect(device.getByText("Accessibility Testing", { exact: true })).toBeVisible()
+    const screen = new AccessibilityScreen(device)
+    await screen.navCard.scrollIntoView()
+    await screen.navCard.tap()
+    await expect(screen.heading).toBeVisible()
+  })
+
+  beforeEach(async ({ device }) => {
+    const screen = new AccessibilityScreen(device)
+    if (!(await screen.heading.isVisible())) {
+      await screen.navCard.scrollIntoView()
+      await screen.navCard.tap()
+      await expect(screen.heading).toBeVisible()
+    }
   })
 
   test("shows heading", async ({ device }) => {
-    await expect(device.getByText("Accessibility Testing", { exact: true })).toBeVisible()
+    const screen = new AccessibilityScreen(device)
+    await expect(screen.heading).toBeVisible()
   })
 
   // ─── Roles ───

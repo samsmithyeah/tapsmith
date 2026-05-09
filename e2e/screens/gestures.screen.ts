@@ -3,13 +3,13 @@ import { Device } from "tapsmith"
 export class GesturesScreen {
   constructor(private device: Device) {}
 
-  get lastGesture() { return this.device.locator({ id: "last-gesture" }) }
-  get tapCount() { return this.device.locator({ id: "tap-count" }) }
-  get tapArea() { return this.device.locator({ id: "tap-area" }) }
-  get longPressArea() { return this.device.locator({ id: "long-press-area" }) }
-  get draggable() { return this.device.locator({ id: "draggable" }) }
-  get dropZone() { return this.device.locator({ id: "drop-zone" }) }
-  get pinchArea() { return this.device.locator({ id: "pinch-area" }) }
-  get swipeArea() { return this.device.locator({ id: "swipe-area" }) }
+  get lastGesture() { return this.device.getByTestId("last-gesture") }
+  get tapCount() { return this.device.getByTestId("tap-count") }
+  get tapArea() { return this.device.getByRole("button", { name: "Tap area" }) }
+  get longPressArea() { return this.device.getByRole("button", { name: "Long press area" }) }
+  get draggable() { return this.device.getByDescription("Draggable item") }
+  get dropZone() { return this.device.getByDescription("Drop zone") }
+  get pinchArea() { return this.device.getByDescription("Pinch to zoom area") }
+  get swipeArea() { return this.device.getByDescription("Swipe area") }
   get noGestureText() { return this.device.getByText("Last gesture: None", { exact: true }) }
 }
