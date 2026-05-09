@@ -12,7 +12,7 @@ describe("Accessibility screen", () => {
 
   beforeEach(async ({ device }) => {
     const screen = new AccessibilityScreen(device)
-    if (!(await screen.heading.isVisible())) {
+    if (!(await screen.heading.exists())) {
       await screen.navCard.scrollIntoView()
       await screen.navCard.tap()
       await expect(screen.heading).toBeVisible()
