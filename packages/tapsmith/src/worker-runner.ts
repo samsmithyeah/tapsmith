@@ -364,10 +364,15 @@ async function runFileWithRecovery(
         screenshotDir,
         reporter: attemptReporter,
         beforeEachTest: async (fullName) => {
-          await ensureSessionReady(
+          const recovered = await ensureSessionReady(
             sessionContext(undefined),
             `before test ${fullName}`,
           );
+          if (recovered) {
+            throw new Error(
+              `session recovered before test ${fullName}; retrying file to rerun beforeAll hooks`,
+            );
+          }
         },
         abortFileOnError: isRecoverableInfrastructureError,
         // On retry (attempt 2), bust the ESM import cache so the file's

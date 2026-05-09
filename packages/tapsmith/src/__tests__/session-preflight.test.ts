@@ -37,7 +37,7 @@ function makeContext(overrides: Partial<Parameters<typeof ensureSessionReady>[0]
 describe('session-preflight', () => {
   it('accepts a healthy session', async () => {
     const ctx = makeContext();
-    await expect(ensureSessionReady(ctx, 'startup')).resolves.toBeUndefined();
+    await expect(ensureSessionReady(ctx, 'startup')).resolves.toBe(false);
     expect(ctx.client.ping).toHaveBeenCalledTimes(1);
     expect(ctx.device.waitForIdle).toHaveBeenCalledWith(5_000);
   });
@@ -48,7 +48,7 @@ describe('session-preflight', () => {
       .mockResolvedValueOnce({ version: '0.1.0', agentConnected: false })
       .mockResolvedValueOnce({ version: '0.1.0', agentConnected: true });
 
-    await expect(ensureSessionReady(ctx, 'startup')).resolves.toBeUndefined();
+    await expect(ensureSessionReady(ctx, 'startup')).resolves.toBe(true);
 
     expect(ctx.device.startAgent).toHaveBeenCalledTimes(1);
     expect(ctx.device.launchApp).toHaveBeenCalledWith('com.example.app', {
@@ -65,7 +65,7 @@ describe('session-preflight', () => {
     vi.mocked(ctx.device.startAgent)
       .mockRejectedValueOnce(new Error('Failed to connect to agent socket'));
 
-    await expect(ensureSessionReady(ctx, 'startup', 3)).resolves.toBeUndefined();
+    await expect(ensureSessionReady(ctx, 'startup', 3)).resolves.toBe(true);
 
     expect(ctx.device.startAgent).toHaveBeenCalledTimes(1);
     expect(ctx.client.ping).toHaveBeenCalledTimes(2);
@@ -138,7 +138,7 @@ describe('session-preflight', () => {
       errorMessage: '',
     });
 
-    await expect(ensureSessionReady(ctx, 'startup')).resolves.toBeUndefined();
+    await expect(ensureSessionReady(ctx, 'startup')).resolves.toBe(false);
     expect(ctx.device.pressBack).toHaveBeenCalled();
     expect(ctx.device.startAgent).not.toHaveBeenCalled();
   });
@@ -171,7 +171,7 @@ describe('session-preflight', () => {
         errorMessage: '',
       });
 
-    await expect(ensureSessionReady(ctx, 'startup')).resolves.toBeUndefined();
+    await expect(ensureSessionReady(ctx, 'startup')).resolves.toBe(false);
 
     expect(ctx.client.getUiHierarchy).toHaveBeenCalledTimes(2);
   });
@@ -190,7 +190,7 @@ describe('session-preflight', () => {
         errorMessage: '',
       });
 
-    await expect(ensureSessionReady(ctx, 'startup')).resolves.toBeUndefined();
+    await expect(ensureSessionReady(ctx, 'startup')).resolves.toBe(false);
 
     expect(ctx.device.pressBack).toHaveBeenCalledTimes(1);
     expect(ctx.client.getUiHierarchy).toHaveBeenCalledTimes(2);
@@ -364,7 +364,7 @@ describe('session-preflight', () => {
         errorMessage: '',
       });
 
-    await expect(ensureSessionReady(ctx, 'startup')).resolves.toBeUndefined();
+    await expect(ensureSessionReady(ctx, 'startup')).resolves.toBe(true);
     expect(ctx.device.startAgent).toHaveBeenCalledTimes(1);
     expect(ctx.client.getUiHierarchy).toHaveBeenCalledTimes(3);
   });

@@ -42,17 +42,19 @@ export async function ensureSessionReady(
   ctx: SessionPreflightContext,
   phase: string,
   maxAttempts = DEFAULT_MAX_ATTEMPTS,
-): Promise<void> {
+): Promise<boolean> {
   let lastError: unknown;
+  let recovered = false;
 
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     try {
       await verifySession(ctx);
-      return;
+      return recovered;
     } catch (err) {
       lastError = err;
       if (attempt === maxAttempts) break;
       try {
+        recovered = true;
         await recoverSession(ctx);
       } catch (recoveryErr) {
         // The recovery RPC can hit the same transient agent/ADB transport
