@@ -34,12 +34,6 @@ describe('isRecoverableInfrastructureError', () => {
     expect(isRecoverableInfrastructureError(new Error('connect ECONNREFUSED 127.0.0.1:50051'))).toBe(true);
   });
 
-  it('returns true for pre-test session recovery', () => {
-    expect(isRecoverableInfrastructureError(new Error(
-      'session recovered before test Accessibility screen > image has accessible name',
-    ))).toBe(true);
-  });
-
   it('returns false for assertion errors', () => {
     expect(isRecoverableInfrastructureError(new Error('Expected "Login" to be visible'))).toBe(false);
   });

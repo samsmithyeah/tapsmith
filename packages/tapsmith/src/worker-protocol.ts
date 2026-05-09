@@ -125,7 +125,6 @@ export const RECOVERABLE_INFRASTRUCTURE_PATTERNS = [
   '14 UNAVAILABLE',
   'No connection established',
   'ECONNREFUSED',
-  'session recovered before test',
 ] as const;
 
 /**

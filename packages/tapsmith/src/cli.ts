@@ -2160,15 +2160,10 @@ async function runTestFileWithRecovery(
         screenshotDir: opts.screenshotDir,
         reporter: opts.reporter,
         beforeEachTest: async (fullName) => {
-          const recovered = await ensureSessionReady(
+          await ensureSessionReady(
             opts.sessionContext,
             `before test ${fullName}`,
           );
-          if (recovered) {
-            throw new Error(
-              `session recovered before test ${fullName}; retrying file to rerun beforeAll hooks`,
-            );
-          }
         },
         abortFileOnError: isRecoverableInfrastructureError,
         // In-process retries need the same ESM cache busting as worker

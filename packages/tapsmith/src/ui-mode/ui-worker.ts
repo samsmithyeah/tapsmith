@@ -398,12 +398,7 @@ async function runFileWithRecovery(
           send({ type: 'test-start', workerId, fullName, filePath });
         },
         beforeEachTest: async (fullName: string) => {
-          const recovered = await ensureSessionReady(sessionContext(undefined), `before test ${fullName}`);
-          if (recovered) {
-            throw new Error(
-              `session recovered before test ${fullName}; retrying file to rerun beforeAll hooks`,
-            );
-          }
+          await ensureSessionReady(sessionContext(undefined), `before test ${fullName}`);
         },
         abortFileOnError: isRecoverableInfrastructureError,
         projectUseOptions,
