@@ -624,7 +624,12 @@ async function setupSequentialDevice(
       const msg = err instanceof Error ? err.message : String(err);
       if (msg.includes('xcodebuild exited') || msg.includes('Timed out waiting for iOS agent')) {
         console.error(`Agent startup failed, retrying once: ${msg}`);
-        await startAgent();
+        try {
+          await startAgent();
+        } catch (retryErr) {
+          console.error('Agent startup retry also failed');
+          throw retryErr;
+        }
       } else {
         throw err;
       }
