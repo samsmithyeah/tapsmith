@@ -351,6 +351,7 @@ message DoubleTapRequest {
   string request_id = 1;
   Selector selector = 2;
   uint64 timeout_ms = 3;
+  uint64 interval_ms = 4;
 }
 
 message DragAndDropRequest {

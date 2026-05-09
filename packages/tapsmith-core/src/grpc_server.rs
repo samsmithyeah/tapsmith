@@ -1982,6 +1982,7 @@ impl proto::tapsmith_service_server::TapsmithService for TapsmithServiceImpl {
         let command = AgentCommand::DoubleTap {
             selector: selector_to_json(selector),
             timeout_ms: opt_timeout(req.timeout_ms),
+            interval_ms: opt_timeout(req.interval_ms),
         };
 
         let result = self

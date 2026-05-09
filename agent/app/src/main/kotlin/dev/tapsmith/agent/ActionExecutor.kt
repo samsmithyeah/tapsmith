@@ -27,7 +27,7 @@ class ActionExecutor(private val device: UiDevice) {
 
     companion object {
         /** Interval between taps for double-tap gesture. */
-        private const val DOUBLE_TAP_INTERVAL_MS = 40L
+        private const val DOUBLE_TAP_INTERVAL_MS = 100L
 
         /** Timeout for waiting for dropdown options to appear. */
         private const val DROPDOWN_WAIT_TIMEOUT_MS = 3000L
@@ -389,7 +389,10 @@ class ActionExecutor(private val device: UiDevice) {
     /**
      * Double-tap on an element's center point.
      */
-    fun doubleTap(element: UiObject2) {
+    fun doubleTap(
+        element: UiObject2,
+        intervalMs: Long = DOUBLE_TAP_INTERVAL_MS,
+    ) {
         try {
             // Perform two rapid taps at the element's center.
             // We use device.click() with a short interval to ensure the gesture
@@ -398,7 +401,7 @@ class ActionExecutor(private val device: UiDevice) {
             val cx = bounds.centerX()
             val cy = bounds.centerY()
             device.click(cx, cy)
-            Thread.sleep(DOUBLE_TAP_INTERVAL_MS)
+            Thread.sleep(if (intervalMs > 0) intervalMs else DOUBLE_TAP_INTERVAL_MS)
             device.click(cx, cy)
         } catch (e: Exception) {
             throw ActionFailedException("Failed to double tap element: ${e.message}")

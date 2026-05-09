@@ -134,6 +134,7 @@ pub enum AgentCommand {
     DoubleTap {
         selector: Value,
         timeout_ms: Option<u64>,
+        interval_ms: Option<u64>,
     },
     DragAndDrop {
         source_selector: Value,
@@ -327,10 +328,14 @@ impl AgentCommand {
             AgentCommand::DoubleTap {
                 selector,
                 timeout_ms,
+                interval_ms,
             } => {
                 let mut p = selector.clone();
                 if let Some(t) = timeout_ms {
                     p["timeout"] = json!(t);
+                }
+                if let Some(i) = interval_ms {
+                    p["intervalMs"] = json!(i);
                 }
                 ("doubleTap", p)
             }
@@ -1129,11 +1134,27 @@ mod tests {
         let cmd = AgentCommand::DoubleTap {
             selector: json!({"text": "Button"}),
             timeout_ms: Some(5000),
+            interval_ms: None,
         };
         let j = cmd.to_json("dt1");
         assert_eq!(j["method"], "doubleTap");
         assert_eq!(j["params"]["text"], "Button");
         assert_eq!(j["params"]["timeout"], 5000);
+        assert!(j["params"]["intervalMs"].is_null());
+    }
+
+    #[test]
+    fn to_json_double_tap_with_interval() {
+        let cmd = AgentCommand::DoubleTap {
+            selector: json!({"text": "Button"}),
+            timeout_ms: Some(5000),
+            interval_ms: Some(100),
+        };
+        let j = cmd.to_json("dt2");
+        assert_eq!(j["method"], "doubleTap");
+        assert_eq!(j["params"]["text"], "Button");
+        assert_eq!(j["params"]["timeout"], 5000);
+        assert_eq!(j["params"]["intervalMs"], 100);
     }
 
     #[test]

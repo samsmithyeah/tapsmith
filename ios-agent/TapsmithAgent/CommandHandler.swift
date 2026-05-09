@@ -494,8 +494,9 @@ class CommandHandler {
 
         case "doubleTap":
             let element = try resolveElement(params)
+            let intervalMs = params["intervalMs"] as? Int ?? 0
             if let center = snapshotCenter(for: element.elementId) {
-                actionExecutor.doubleTapCoordinates(x: Int(center.x), y: Int(center.y))
+                actionExecutor.doubleTapCoordinates(x: Int(center.x), y: Int(center.y), intervalMs: intervalMs)
             } else {
                 let xcElem = try getXCUIElement(element.elementId)
                 try actionExecutor.doubleTap(xcElem)

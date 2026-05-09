@@ -140,11 +140,13 @@ export class Device {
   private _logStreamCollector: TraceCollector | null = null;
 
   private _typingDelayMs: number;
+  private _doubleTapIntervalMs: number;
 
-  constructor(client: TapsmithGrpcClient, config?: Partial<Pick<TapsmithConfig, 'timeout' | 'package' | 'platform' | 'simulator' | 'typingDelay'>>) {
+  constructor(client: TapsmithGrpcClient, config?: Partial<Pick<TapsmithConfig, 'timeout' | 'package' | 'platform' | 'simulator' | 'typingDelay' | 'doubleTapInterval'>>) {
     this._client = client;
     this._defaultTimeoutMs = config?.timeout ?? 30_000;
     this._typingDelayMs = config?.typingDelay ?? 0;
+    this._doubleTapIntervalMs = config?.doubleTapInterval ?? 0;
     this.defaultPackageName = config?.package;
     this._platform = config?.platform ?? 'android';
     this._simulatorUdid = config?.simulator;
@@ -299,7 +301,7 @@ export class Device {
       takeScreenshot: () => this._takeScreenshotBuffer(),
       captureHierarchy: () => this._captureHierarchy(),
     } : undefined;
-    return new ElementHandle(this._client, selector, this._defaultTimeoutMs, { traceCapture, typingDelay: this._typingDelayMs });
+    return new ElementHandle(this._client, selector, this._defaultTimeoutMs, { traceCapture, typingDelay: this._typingDelayMs, doubleTapInterval: this._doubleTapIntervalMs });
   }
 
   // ── Device-level actions ──

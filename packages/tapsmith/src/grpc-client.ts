@@ -432,11 +432,12 @@ export class TapsmithGrpcClient {
 
   // ── Element Actions (PILOT-2) ──
 
-  async doubleTap(selector: Selector, timeoutMs?: number): Promise<ActionResponse> {
+  async doubleTap(selector: Selector, timeoutMs?: number, intervalMs?: number): Promise<ActionResponse> {
     return this.call<ActionResponse>('doubleTap', {
       requestId: requestId(),
       selector: this.selectorProto(selector),
       timeoutMs: timeoutMs ?? 0,
+      intervalMs: intervalMs ?? 0,
     });
   }
 

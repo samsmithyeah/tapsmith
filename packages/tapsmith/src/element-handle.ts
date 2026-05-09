@@ -90,6 +90,8 @@ interface ElementHandleOptions {
   traceCapture?: TraceCapture;
   /** Default inter-keystroke delay in ms, from config.typingDelay. */
   typingDelay?: number;
+  /** Default double-tap interval in ms, from config.doubleTapInterval. */
+  doubleTapInterval?: number;
 }
 
 // ─── Helpers ───
@@ -900,9 +902,13 @@ export class ElementHandle {
 
   // ── Element Actions (PILOT-2) ──
 
-  async doubleTap(): Promise<void> {
-    const sel = await this._actionSelector();
-    return this._tracedAction('doubleTap', 'tap', () => this._client.doubleTap(sel, this._timeoutMs), 'Double tap failed');
+  async doubleTap(options?: { intervalMs?: number }): Promise<void> {
+    const { remainingMs, element } = await this._waitForEnabled();
+    const sel = await this._actionSelector(element);
+    // 0 on the wire = "use agent default (100ms)". User-supplied values
+    // must be positive; ≤0 is treated as "use default".
+    const intervalMs = Math.max(0, options?.intervalMs ?? this._options.doubleTapInterval ?? 0);
+    return this._tracedAction('doubleTap', 'tap', () => this._client.doubleTap(sel, remainingMs, intervalMs), 'Double tap failed');
   }
 
   async dragTo(target: ElementHandle): Promise<void> {
