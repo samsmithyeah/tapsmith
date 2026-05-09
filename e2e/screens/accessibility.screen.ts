@@ -7,12 +7,13 @@ export class AccessibilityScreen {
   get heading() { return this.device.getByText("Accessibility Testing", { exact: true }) }
   get navCard() { return this.device.getByDescription("Accessibility") }
 
-  // Roles
-  get roleButton() { return this.device.getByRole("button", { name: "Submit form" }) }
-  get roleLink() { return this.device.getByRole("link", { name: "Visit website" }) }
-  get roleHeader() { return this.device.getByRole("header", { name: "Section header" }) }
-  get roleImage() { return this.device.getByRole("image", { name: "Profile photo" }) }
-  get roleAlert() { return this.device.getByRole("alert", { name: "Warning message" }) }
+  // Roles — accessibilityLabel is used instead of getByRole because RN
+  // accessibilityRole does not map to Android's role attribute (PILOT-XXX)
+  get roleButton() { return this.device.getByDescription("Submit form") }
+  get roleLink() { return this.device.getByDescription("Visit website") }
+  get roleHeader() { return this.device.getByDescription("Section header") }
+  get roleImage() { return this.device.getByDescription("Profile photo") }
+  get roleAlert() { return this.device.getByDescription("Warning message") }
 
   // Content descriptions
   get closeIcon() { return this.device.getByDescription("Close menu") }

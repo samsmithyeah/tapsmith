@@ -54,8 +54,8 @@ export async function ensureSessionReady(
       lastError = err;
       if (attempt === maxAttempts) break;
       try {
-        recovered = true;
         await recoverSession(ctx);
+        recovered = true;
       } catch (recoveryErr) {
         // The recovery RPC can hit the same transient agent/ADB transport
         // blip that caused verification to fail. If the caller allowed more

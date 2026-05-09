@@ -6,9 +6,9 @@ export class SpinnerScreen {
   get heading() { return this.device.getByText("Dropdowns", { exact: true }) }
 
   // Dropdowns
-  get countryDropdown() { return this.device.getByRole("combobox", { name: "Country" }) }
-  get colorDropdown() { return this.device.getByRole("combobox", { name: "Favorite Color" }) }
-  get priorityDropdown() { return this.device.getByRole("combobox", { name: "Priority" }) }
+  get countryDropdown() { return this.device.getByDescription("Country") }
+  get colorDropdown() { return this.device.getByDescription("Favorite Color") }
+  get priorityDropdown() { return this.device.getByDescription("Priority") }
 
   // Selected values
   get selectedCountry() { return this.device.getByTestId("selected-country") }

@@ -65,7 +65,7 @@ describe('session-preflight', () => {
     vi.mocked(ctx.device.startAgent)
       .mockRejectedValueOnce(new Error('Failed to connect to agent socket'));
 
-    await expect(ensureSessionReady(ctx, 'startup', 3)).resolves.toBe(true);
+    await expect(ensureSessionReady(ctx, 'startup', 3)).resolves.toBe(false);
 
     expect(ctx.device.startAgent).toHaveBeenCalledTimes(1);
     expect(ctx.client.ping).toHaveBeenCalledTimes(2);

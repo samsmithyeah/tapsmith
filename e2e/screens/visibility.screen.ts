@@ -24,6 +24,6 @@ export class VisibilityScreen {
 
   // Error state
   get toggleErrorButton() { return this.device.getByRole("button", { name: "Toggle error" }) }
-  get errorMessage() { return this.device.getByRole("alert") }
+  get errorMessage() { return this.device.getByText("An error occurred. Please try again.") }
   get errorText() { return this.device.getByText("An error occurred. Please try again.", { exact: true }) }
 }
