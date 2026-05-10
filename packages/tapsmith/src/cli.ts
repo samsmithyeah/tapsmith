@@ -610,7 +610,7 @@ async function setupSequentialDevice(
     if (cfg.platform === 'ios') {
       console.log(dim(`Starting iOS agent (xctestrun: ${resolvedIosXctestrun ? 'set' : 'NOT SET'})`));
     }
-    await device.startAgent(
+    const startAgent = () => device.startAgent(
       cfg.package ?? '',
       resolvedAgentApk,
       resolvedAgentTestApk,
@@ -618,6 +618,22 @@ async function setupSequentialDevice(
       cfg.platform === 'ios' ? resolvedIosAppPath : undefined,
       networkTracingEnabled,
     );
+    try {
+      await startAgent();
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      if (msg.includes('xcodebuild exited') || msg.includes('Timed out waiting for iOS agent')) {
+        console.error(`Agent startup failed, retrying once: ${msg}`);
+        try {
+          await startAgent();
+        } catch (retryErr) {
+          console.error('Agent startup retry also failed');
+          throw retryErr;
+        }
+      } else {
+        throw err;
+      }
+    }
     if (cfg.platform !== 'ios' && !cfg.package) {
       await ensureSessionReady({
         label: `Device ${cfg.device}`,

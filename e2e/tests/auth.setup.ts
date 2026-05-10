@@ -8,6 +8,7 @@ const PKG = "dev.tapsmith.testapp"
 // Mirrors Playwright's auth.setup.ts pattern.
 // When running under a named project (e.g. "android:auth-setup"),
 // the state file is per-project so multiple platforms can run in parallel.
+test.use({ timeout: 180_000 })
 
 test("authenticate and save app state", async ({ device, projectName }) => {
   const suffix = projectName ? `-${projectName.replace(/[^a-zA-Z0-9]/g, "-")}` : ""
