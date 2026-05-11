@@ -1074,7 +1074,6 @@ function App() {
           showMetadata={viewedTestNode?.type === 'test'}
           inFlightAction={currentTrace?.inFlightAction}
           preflightMessage={preflightMessage}
-          hasTrace={hasTrace}
         />
       }
       screenshotPanel={

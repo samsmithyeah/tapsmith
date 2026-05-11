@@ -283,19 +283,6 @@ html, body, #app {
 
 /* ─── Run Controls (Top Bar) ─── */
 
-.run-controls {
-  display: flex;
-  align-items: center;
-  padding: 6px var(--pad);
-  gap: 12px;
-  background: var(--bg-elev);
-  min-height: 48px;
-}
-
-.rc-left { display: flex; align-items: center; gap: 8px; }
-.rc-center { display: flex; align-items: center; gap: 6px; flex: 1; justify-content: center; }
-.rc-right { display: flex; align-items: center; gap: 12px; }
-
 /* v2 rail sections */
 .rail-brand {
   display: flex;
@@ -1036,59 +1023,6 @@ html, body, #app {
   height: 100%;
 }
 
-.device-pane-header {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 6px 10px;
-  border-bottom: 1px solid var(--border);
-  font-size: 11px;
-  color: var(--fg-dim);
-  flex-shrink: 0;
-}
-
-.device-pane-header-title {
-  font-weight: 600;
-  color: var(--fg);
-  text-transform: uppercase;
-  letter-spacing: 0.5px;
-}
-
-.device-pane-serial {
-  font-family: var(--font-mono);
-  font-size: 10px;
-  color: var(--fg-muted);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.device-pane-workers {
-  display: flex;
-  gap: 4px;
-  padding: 6px 10px;
-  border-bottom: 1px solid var(--border);
-  flex-shrink: 0;
-  flex-wrap: wrap;
-}
-
-.device-pane-worker {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  padding: 3px 8px;
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  background: var(--bg-elev-2);
-  color: var(--fg-dim);
-  cursor: pointer;
-  font-size: 11px;
-  font-family: var(--font-sans);
-  transition: background 0.15s, border-color 0.15s;
-}
-.device-pane-worker:hover { background: var(--bg-hover); color: var(--fg); }
-.device-pane-worker.active { border-color: var(--accent); color: var(--accent); background: var(--accent-bg); }
-
 .device-pane-body {
   flex: 1;
   min-height: 0;
@@ -1111,35 +1045,6 @@ html, body, #app {
 
 @container (min-width: 800px) {
   .device-pane-grid { grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); }
-}
-
-.device-pane-grid-item {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  min-height: 120px;
-}
-
-.device-pane-grid-label {
-  font-size: 10px;
-  font-weight: 600;
-  color: var(--fg-dim);
-  padding: 0 2px;
-}
-
-.device-pane-grid-item .dm-viewport {
-  flex: 1;
-  min-height: 0;
-  align-items: flex-start;
-}
-
-.device-pane-grid-item .dm-canvas {
-  max-width: 100%;
-  max-height: 100%;
-  object-fit: contain;
-  border-radius: 6px;
-  border: 1px solid var(--border);
-  background: #000;
 }
 
 /* Device column (v2) */
