@@ -151,7 +151,7 @@ export function ScreenshotPanel({ event, screenshots, highlightBounds, selectorH
                   : <Camera size={20} />}
             </div>
             <div class="viewer-empty-title">
-              {state === 'running' ? 'Recording trace…'
+              {state === 'running' ? 'Running test…'
                 : state === 'skipped' ? 'Test skipped'
                 : 'No screenshot'}
             </div>

@@ -77,17 +77,22 @@ function getInFlightIcon(item: InFlightAction): [ComponentChildren, string] {
   return ACTION_ICON_MAP[item.label] ?? [<Clock size={ICON_SIZE} />, ''];
 }
 
-interface SelectorParts { fn: string; args: string[] }
+interface SelectorParts { fn: string; args: string[]; optionKey?: string }
 
 function parseSelectorParts(sel: string | undefined): SelectorParts | null {
   if (!sel) return null;
   try {
     const parsed = JSON.parse(sel);
-    if (parsed.text) return { fn: 'text', args: [parsed.text] };
-    if (parsed.role) return { fn: 'role', args: [parsed.role.role, ...(parsed.role.name ? [parsed.role.name] : [])] };
-    if (parsed.contentDesc) return { fn: 'contentDesc', args: [parsed.contentDesc] };
-    if (parsed.testId) return { fn: 'testId', args: [parsed.testId] };
-    if (parsed.resourceId) return { fn: 'id', args: [parsed.resourceId] };
+    if (parsed.text) return { fn: 'getByText', args: [parsed.text] };
+    if (parsed.textContains) return { fn: 'getByText', args: [parsed.textContains] };
+    if (parsed.role) return { fn: 'getByRole', args: [parsed.role.role, ...(parsed.role.name ? [parsed.role.name] : [])] };
+    if (parsed.contentDesc) return { fn: 'getByDescription', args: [parsed.contentDesc] };
+    if (parsed.hint) return { fn: 'getByPlaceholder', args: [parsed.hint] };
+    if (parsed.testId) return { fn: 'getByTestId', args: [parsed.testId] };
+    if (parsed.label) return { fn: 'getByLabel', args: [parsed.label] };
+    if (parsed.resourceId) return { fn: 'locator', args: [parsed.resourceId], optionKey: 'id' };
+    if (parsed.className) return { fn: 'locator', args: [parsed.className], optionKey: 'className' };
+    if (parsed.xpath) return { fn: 'locator', args: [parsed.xpath], optionKey: 'xpath' };
     return null;
   } catch {
     return null;
@@ -97,6 +102,7 @@ function parseSelectorParts(sel: string | undefined): SelectorParts | null {
 function parseSelectorString(sel: string | undefined): string {
   const parts = parseSelectorParts(sel);
   if (!parts) return sel ?? '';
+  if (parts.optionKey) return `${parts.fn}({ ${parts.optionKey}: "${parts.args[0]}" })`;
   return `${parts.fn}(${parts.args.map(a => `"${a}"`).join(', ')})`;
 }
 
@@ -105,6 +111,14 @@ function SelectorDisplay({ sel }: { sel: string | undefined }) {
   if (!parts) {
     const plain = sel ?? '';
     return <span class="action-selector-text">{plain || '—'}</span>;
+  }
+  if (parts.optionKey) {
+    return (
+      <span class="action-selector-text">
+        <span class="sel-fn">{parts.fn}</span>
+        {'({ '}<span class="sel-fn">{parts.optionKey}</span>{': '}<span class="sel-val">"{parts.args[0]}"</span>{' })'}
+      </span>
+    );
   }
   return (
     <span class="action-selector-text">

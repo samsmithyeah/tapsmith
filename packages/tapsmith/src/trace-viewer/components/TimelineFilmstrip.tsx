@@ -65,7 +65,7 @@ export function TimelineFilmstrip({ events, screenshots, metadata, selectedIndex
           ? <LoaderCircle size={13} class="film-empty-icon" style={{ animation: 'spin 1.1s linear infinite' }} />
           : <span class="film-empty-dot" />}
         <span class="film-empty-text">
-          {state === 'running' ? 'Recording trace\u2026'
+          {state === 'running' ? 'Running test\u2026'
             : state === 'skipped' ? 'Skipped'
             : 'Not run yet'}
         </span>
