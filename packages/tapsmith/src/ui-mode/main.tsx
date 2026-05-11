@@ -1,6 +1,7 @@
 import { render } from 'preact';
 import { useState, useCallback, useMemo, useRef, useEffect } from 'preact/hooks';
 import type { ServerMessage, ClientMessage, TestTreeNode, WorkerInfo } from './ui-protocol.js';
+import { inferDevicePlatform, type DevicePlatform } from './ui-protocol.js';
 import type { ActionTraceEvent, AssertionTraceEvent, TraceMetadata } from '../trace/types.js';
 import { sortEventsByStartTime } from '../trace/sort-events.js';
 import { useWebSocket } from './hooks/use-websocket.js';
@@ -36,32 +37,14 @@ import { SelectorTab, handlePickFromScreenshot, handleHoverFromScreenshot } from
 import { parseHierarchyXml } from '../trace-viewer/components/hierarchy-utils.js';
 import type { HierarchyNode, Bounds } from '../trace-viewer/components/hierarchy-utils.js';
 import { uiModeStyles } from './styles/ui-mode.css.js';
+import type { ContainerSummary } from '../trace-viewer/types.js';
 
 type ElementBounds = { left: number; top: number; right: number; bottom: number }
-type DevicePlatform = 'android' | 'ios'
-
-function inferDevicePlatform(...values: Array<string | undefined>): DevicePlatform | undefined {
-  const text = values.filter(Boolean).join(' ');
-  if (/ios|iphone|ipad|simulator/i.test(text)) return 'ios';
-  if (/android|emulator-|pixel|nexus|galaxy|generic_phone|avd/i.test(text)) return 'android';
-  return undefined;
-}
 
 function lastBoundsFrom(actionEvents: readonly (ActionTraceEvent | AssertionTraceEvent)[]): ElementBounds | undefined {
   for (let i = actionEvents.length - 1; i >= 0; i--) {
     if (actionEvents[i].bounds) return actionEvents[i].bounds;
   }
-}
-
-export interface ContainerSummary {
-  name: string
-  nodeType: 'suite' | 'file' | 'project'
-  totalTests: number
-  passed: number
-  failed: number
-  running: number
-  skipped: number
-  idle: number
 }
 
 function buildContainerSummary(node: TestTreeNode): ContainerSummary {

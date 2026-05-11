@@ -1,7 +1,7 @@
 import { useRef, useEffect } from 'preact/hooks';
 import { LoaderCircle, Play } from 'lucide-preact';
 import type { ActionTraceEvent, AssertionTraceEvent, TraceMetadata } from '../../trace/types.js';
-import type { ContainerSummary } from '../../ui-mode/main.js';
+import type { ContainerSummary } from '../types.js';
 import { findNearestScreenshot } from '../../ui-mode/hooks/use-trace-data.js';
 
 // ─── Injected Styles ───
@@ -68,20 +68,20 @@ export function TimelineFilmstrip({ events, screenshots, metadata, selectedIndex
         <span class="film-empty-dot" />
         <span class="film-empty-text">No test selected</span>
       </div>
-    )
+    );
   }
 
   // \u2500\u2500\u2500 Container selected (suite / file / project) \u2500\u2500\u2500
 
   if (nodeType !== 'test' && containerSummary) {
-    const { totalTests, running } = containerSummary
-    const isContainerPending = isTestPending || running > 0
-    const parts: string[] = []
-    if (containerSummary.passed > 0) parts.push(`${containerSummary.passed} passed`)
-    if (containerSummary.failed > 0) parts.push(`${containerSummary.failed} failed`)
-    if (containerSummary.running > 0) parts.push(`${containerSummary.running} running`)
-    if (containerSummary.idle > 0) parts.push(`${containerSummary.idle} not run`)
-    const label = `${containerSummary.name} \u00B7 ${totalTests} ${totalTests === 1 ? 'test' : 'tests'}${parts.length ? ` \u00B7 ${parts.join(', ')}` : ''}`
+    const { totalTests, running } = containerSummary;
+    const isContainerPending = isTestPending || running > 0;
+    const parts: string[] = [];
+    if (containerSummary.passed > 0) parts.push(`${containerSummary.passed} passed`);
+    if (containerSummary.failed > 0) parts.push(`${containerSummary.failed} failed`);
+    if (containerSummary.running > 0) parts.push(`${containerSummary.running} running`);
+    if (containerSummary.idle > 0) parts.push(`${containerSummary.idle} not run`);
+    const label = `${containerSummary.name} \u00B7 ${totalTests} ${totalTests === 1 ? 'test' : 'tests'}${parts.length ? ` \u00B7 ${parts.join(', ')}` : ''}`;
     return (
       <div class="film-empty" data-state={running > 0 ? 'running' : 'idle'}>
         {running > 0
@@ -96,7 +96,7 @@ export function TimelineFilmstrip({ events, screenshots, metadata, selectedIndex
           </button>
         )}
       </div>
-    )
+    );
   }
 
   // \u2500\u2500\u2500 Test selected, no trace yet \u2500\u2500\u2500

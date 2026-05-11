@@ -10,16 +10,8 @@
 import type { RefObject } from 'preact';
 import { useRef, useEffect } from 'preact/hooks';
 import type { WorkerInfo } from '../ui-protocol.js';
+import { inferDevicePlatform } from '../ui-protocol.js';
 import { DeviceMirror } from './DeviceMirror.js';
-
-type DevicePlatform = 'android' | 'ios'
-
-function inferDevicePlatform(...values: Array<string | undefined>): DevicePlatform | undefined {
-  const text = values.filter(Boolean).join(' ');
-  if (/ios|iphone|ipad|simulator/i.test(text)) return 'ios';
-  if (/android|emulator-|pixel|nexus|galaxy|generic_phone|avd/i.test(text)) return 'android';
-  return undefined;
-}
 
 interface DevicePaneProps {
   canvasRef: RefObject<HTMLCanvasElement>

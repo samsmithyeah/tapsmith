@@ -6,6 +6,7 @@ import type { ActionTraceEvent, AssertionTraceEvent, AnyTraceEvent, ConsoleTrace
 import { HierarchyTree } from './HierarchyTree.js';
 import type { Bounds } from './HierarchyTree.js';
 import { NetworkTab } from './NetworkTab.js';
+import { parseSelectorParts } from './ActionsPanel.js';
 
 interface Props {
   event: ActionTraceEvent | AssertionTraceEvent | undefined
@@ -110,24 +111,20 @@ export function DetailTabs({ event, events, hierarchies, sources, metadata, netw
 
 function formatSelectorForCall(sel: string | undefined): ComponentChildren {
   if (!sel) return null;
-  try {
-    const parsed = JSON.parse(sel);
-    let fn = '';
-    const args: string[] = [];
-    if (parsed.text) { fn = 'text'; args.push(parsed.text); }
-    else if (parsed.role) { fn = 'role'; args.push(parsed.role.role); if (parsed.role.name) args.push(parsed.role.name); }
-    else if (parsed.contentDesc) { fn = 'contentDesc'; args.push(parsed.contentDesc); }
-    else if (parsed.testId) { fn = 'testId'; args.push(parsed.testId); }
-    else if (parsed.resourceId) { fn = 'id'; args.push(parsed.resourceId); }
-    else return <span class="call-value mono">{sel}</span>;
+  const parts = parseSelectorParts(sel);
+  if (!parts) return <span class="call-value mono">{sel}</span>;
+  if (parts.optionKey) {
     return (
       <span class="call-value mono">
-        <span class="sel-fn">{fn}</span>({args.map((a, i) => <span key={i}>{i > 0 && ', '}<span class="sel-val">"{a}"</span></span>)})
+        <span class="sel-fn">{parts.fn}</span>({'{ '}<span class="sel-fn">{parts.optionKey}</span>{': '}<span class="sel-val">"{parts.args[0]}"</span>{' }'})
       </span>
     );
-  } catch {
-    return <span class="call-value mono">{sel}</span>;
   }
+  return (
+    <span class="call-value mono">
+      <span class="sel-fn">{parts.fn}</span>({parts.args.map((a, i) => <span key={i}>{i > 0 && ', '}<span class="sel-val">"{a}"</span></span>)})
+    </span>
+  );
 }
 
 function CallTab({ event, metadata }: { event: ActionTraceEvent | AssertionTraceEvent | undefined; metadata: TraceMetadata }) {
@@ -234,40 +231,40 @@ function LogTab({ event }: { event: ActionTraceEvent | AssertionTraceEvent | und
 
 type SourceFilter = 'all' | 'test' | 'device'
 
-const LEVEL_ORDER: ConsoleLevel[] = ['error', 'warn', 'info', 'log', 'debug']
+const LEVEL_ORDER: ConsoleLevel[] = ['error', 'warn', 'info', 'log', 'debug'];
 
 function ConsoleTab({ event, events: consoleEvents }: { event: ActionTraceEvent | AssertionTraceEvent | undefined; events: ConsoleTraceEvent[] }) {
-  const [search, setSearch] = useState('')
-  const [levelFilter, setLevelFilter] = useState<Set<ConsoleLevel>>(new Set(LEVEL_ORDER))
-  const [sourceFilter, setSourceFilter] = useState<SourceFilter>('all')
-  const [scopeToAction, setScopeToAction] = useState(false)
+  const [search, setSearch] = useState('');
+  const [levelFilter, setLevelFilter] = useState<Set<ConsoleLevel>>(new Set(LEVEL_ORDER));
+  const [sourceFilter, setSourceFilter] = useState<SourceFilter>('all');
+  const [scopeToAction, setScopeToAction] = useState(false);
 
   const hasBothSources = useMemo(() => {
-    const sources = new Set(consoleEvents.map(e => e.source))
-    return sources.has('test') && sources.has('device')
-  }, [consoleEvents])
+    const sources = new Set(consoleEvents.map(e => e.source));
+    return sources.has('test') && sources.has('device');
+  }, [consoleEvents]);
 
   const filtered = useMemo(() => {
-    const lf = search.toLowerCase()
+    const lf = search.toLowerCase();
     return consoleEvents.filter(e => {
-      if (!levelFilter.has(e.level as ConsoleLevel)) return false
-      if (sourceFilter !== 'all' && e.source !== sourceFilter) return false
-      if (scopeToAction && event && Math.abs(e.actionIndex - event.actionIndex) > 1) return false
-      if (lf && !e.message.toLowerCase().includes(lf)) return false
-      return true
-    })
-  }, [consoleEvents, search, levelFilter, sourceFilter, scopeToAction, event])
+      if (!levelFilter.has(e.level as ConsoleLevel)) return false;
+      if (sourceFilter !== 'all' && e.source !== sourceFilter) return false;
+      if (scopeToAction && event && Math.abs(e.actionIndex - event.actionIndex) > 1) return false;
+      if (lf && !e.message.toLowerCase().includes(lf)) return false;
+      return true;
+    });
+  }, [consoleEvents, search, levelFilter, sourceFilter, scopeToAction, event]);
 
   const toggleLevel = (level: ConsoleLevel) => {
     setLevelFilter(prev => {
-      const next = new Set(prev)
-      if (next.has(level)) next.delete(level)
-      else next.add(level)
-      return next
-    })
-  }
+      const next = new Set(prev);
+      if (next.has(level)) next.delete(level);
+      else next.add(level);
+      return next;
+    });
+  };
 
-  if (consoleEvents.length === 0) return <div class="no-content">No console output recorded</div>
+  if (consoleEvents.length === 0) return <div class="no-content">No console output recorded</div>;
 
   return (
     <div class="con-container">
@@ -325,7 +322,7 @@ function ConsoleTab({ event, events: consoleEvents }: { event: ActionTraceEvent 
         }
       </div>
     </div>
-  )
+  );
 }
 
 // ─── Source Tab ───

@@ -1,7 +1,7 @@
 import { useState, useRef, useCallback, useEffect } from 'preact/hooks';
 import { Focus, ExternalLink, Download, Camera, LoaderCircle, CircleDot, Play, Layers, ListTree } from 'lucide-preact';
 import type { ActionTraceEvent, AssertionTraceEvent } from '../../trace/types.js';
-import type { ContainerSummary } from '../../ui-mode/main.js';
+import type { ContainerSummary } from '../types.js';
 import { findNearestScreenshot } from '../../ui-mode/hooks/use-trace-data.js';
 
 // ─── Injected Styles ───
@@ -179,20 +179,20 @@ export function ScreenshotPanel({ event, screenshots, highlightBounds, selectorH
           </div>
         </div>
       </div>
-    )
+    );
   }
 
   // ─── Container selected (suite / file / project) ───
 
   if (nodeType !== 'test' && containerSummary) {
-    const { totalTests, passed, failed, running, skipped, idle } = containerSummary
-    const isContainerPending = isTestPending || running > 0
-    const parts: preact.JSX.Element[] = []
-    if (passed > 0) parts.push(<span class="summary-stat passed"><span class="summary-dot" />{passed} passed</span>)
-    if (failed > 0) parts.push(<span class="summary-stat failed"><span class="summary-dot" />{failed} failed</span>)
-    if (running > 0) parts.push(<span class="summary-stat running"><span class="summary-dot" />{running} running</span>)
-    if (skipped > 0) parts.push(<span class="summary-stat skipped"><span class="summary-dot" />{skipped} skipped</span>)
-    if (idle > 0) parts.push(<span class="summary-stat idle"><span class="summary-dot" />{idle} not run</span>)
+    const { totalTests, passed, failed, running, skipped, idle } = containerSummary;
+    const isContainerPending = isTestPending || running > 0;
+    const parts: preact.JSX.Element[] = [];
+    if (passed > 0) parts.push(<span class="summary-stat passed"><span class="summary-dot" />{passed} passed</span>);
+    if (failed > 0) parts.push(<span class="summary-stat failed"><span class="summary-dot" />{failed} failed</span>);
+    if (running > 0) parts.push(<span class="summary-stat running"><span class="summary-dot" />{running} running</span>);
+    if (skipped > 0) parts.push(<span class="summary-stat skipped"><span class="summary-dot" />{skipped} skipped</span>);
+    if (idle > 0) parts.push(<span class="summary-stat idle"><span class="summary-dot" />{idle} not run</span>);
     return (
       <div class="screenshot-panel">
         <div class="screenshot-container viewer-body has-grid">
@@ -211,7 +211,7 @@ export function ScreenshotPanel({ event, screenshots, highlightBounds, selectorH
           </div>
         </div>
       </div>
-    )
+    );
   }
 
   // ─── Test selected, no trace yet ───

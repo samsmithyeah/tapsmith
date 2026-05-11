@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect } from 'preact/hooks';
 import type { ComponentChildren } from 'preact';
-import { Check, X, Type, Clock, ArrowLeft, Play, ExternalLink, MoveHorizontal, ArrowUpDown, CircleDot, ChevronDown, Hand, Pointer, Eye, Keyboard, RotateCcw, Target, Zap, Globe, Send, AlertTriangle } from 'lucide-preact';
+import { Check, X, Type, Clock, Play, ExternalLink, MoveHorizontal, ArrowUpDown, CircleDot, ChevronDown, Hand, Pointer, Eye, Keyboard, RotateCcw, Target, Globe, Send, AlertTriangle } from 'lucide-preact';
 import type { AnyTraceEvent, ActionTraceEvent, AssertionTraceEvent, GroupTraceEvent, TraceMetadata } from '../../trace/types.js';
 import type { InFlightAction } from '../types.js';
 
@@ -77,9 +77,9 @@ function getInFlightIcon(item: InFlightAction): [ComponentChildren, string] {
   return ACTION_ICON_MAP[item.label] ?? [<Clock size={ICON_SIZE} />, ''];
 }
 
-interface SelectorParts { fn: string; args: string[]; optionKey?: string }
+export interface SelectorParts { fn: string; args: string[]; optionKey?: string }
 
-function parseSelectorParts(sel: string | undefined): SelectorParts | null {
+export function parseSelectorParts(sel: string | undefined): SelectorParts | null {
   if (!sel) return null;
   try {
     const parsed = JSON.parse(sel);
@@ -151,11 +151,11 @@ function formatGroupName(name: string): string {
 }
 
 function formatDuration(ms: number): string {
-  if (ms < 1000) return `${ms}ms`
-  return `${(ms / 1000).toFixed(1)}s`
+  if (ms < 1000) return `${ms}ms`;
+  return `${(ms / 1000).toFixed(1)}s`;
 }
 
-export function ActionsPanel({ events, actionEvents, selectedIndex, pinnedIndex, onHover, onPin, metadata, showMetadata, inFlightAction, preflightMessage }: Props) {
+export function ActionsPanel({ events, actionEvents: _actionEvents, selectedIndex, pinnedIndex, onHover, onPin, metadata, showMetadata, inFlightAction, preflightMessage }: Props) {
   const [tab, setTab] = useState<'actions' | 'metadata'>('actions');
   const [filter, setFilter] = useState('');
   const selectedRef = useRef<HTMLDivElement>(null);

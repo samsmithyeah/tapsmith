@@ -12,6 +12,15 @@ import type { AnyTraceEvent } from '../trace/types.js';
 
 // ─── Shared Types ───
 
+export type DevicePlatform = 'android' | 'ios'
+
+export function inferDevicePlatform(...values: Array<string | undefined>): DevicePlatform | undefined {
+  const text = values.filter(Boolean).join(' ');
+  if (/ios|iphone|ipad|simulator/i.test(text)) return 'ios';
+  if (/android|emulator-|pixel|nexus|galaxy|generic_phone|avd/i.test(text)) return 'android';
+  return undefined;
+}
+
 /** Per-worker status used by UI components. */
 export interface WorkerInfo {
   workerId: number
