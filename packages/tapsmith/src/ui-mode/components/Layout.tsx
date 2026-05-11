@@ -23,9 +23,10 @@ interface LayoutProps {
   devicePane?: ComponentChildren
   mcpPanel?: ComponentChildren
   layout?: 'three' | 'device-first' | 'focus'
+  filmstripCollapsed?: boolean
 }
 
-export function Layout({ topBar, testExplorer, filmstrip, actionsPanel, screenshotPanel, detailTabs, devicePane, mcpPanel, layout = 'three' }: LayoutProps) {
+export function Layout({ topBar, testExplorer, filmstrip, actionsPanel, screenshotPanel, detailTabs, devicePane, mcpPanel, layout = 'three', filmstripCollapsed }: LayoutProps) {
   const [explorerWidth, setExplorerWidth] = usePersistedJSON('tapsmith-explorer-width', 280);
   const [actionsWidth, setActionsWidth] = usePersistedJSON('tapsmith-actions-width', 380);
   const [filmstripHeight, setFilmstripHeight] = usePersistedJSON('tapsmith-filmstrip-height', 130);
@@ -133,8 +134,10 @@ export function Layout({ topBar, testExplorer, filmstrip, actionsPanel, screensh
         {/* Content area */}
         <div class="ui-content">
           {/* Timeline filmstrip */}
-          <div class="ui-filmstrip" style={{ height: `${filmstripHeight}px`, minHeight: `${filmstripHeight}px`, '--filmstrip-h': `${filmstripHeight}px` } as Record<string, string>}>{filmstrip}</div>
-          <div class="ui-resize-handle ui-resize-row" onMouseDown={handleFilmstripResize} />
+          <div class="ui-filmstrip" style={filmstripCollapsed
+            ? { height: '38px', minHeight: '38px' }
+            : { height: `${filmstripHeight}px`, minHeight: `${filmstripHeight}px`, '--filmstrip-h': `${filmstripHeight}px` } as Record<string, string>}>{filmstrip}</div>
+          {!filmstripCollapsed && <div class="ui-resize-handle ui-resize-row" onMouseDown={handleFilmstripResize} />}
 
           {/* Middle: Actions + Screenshot */}
           <div class="ui-middle">

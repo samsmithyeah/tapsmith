@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect } from 'preact/hooks';
 import type { ComponentChildren } from 'preact';
-import { Check, X, Type, Clock, ArrowLeft, Play, ExternalLink, MoveHorizontal, ArrowUpDown, CircleDot, ChevronDown, Hand, Pointer, Eye, Keyboard, RotateCcw, Target, Zap, Globe, Send } from 'lucide-preact';
+import { Check, X, Type, Clock, ArrowLeft, Play, ExternalLink, MoveHorizontal, ArrowUpDown, CircleDot, ChevronDown, Hand, Pointer, Eye, Keyboard, RotateCcw, Target, Zap, Globe, Send, AlertTriangle } from 'lucide-preact';
 import type { AnyTraceEvent, ActionTraceEvent, AssertionTraceEvent, GroupTraceEvent, TraceMetadata } from '../../trace/types.js';
 import type { InFlightAction } from '../types.js';
 
@@ -136,6 +136,11 @@ function formatGroupName(name: string): string {
   }
 }
 
+function formatDuration(ms: number): string {
+  if (ms < 1000) return `${ms}ms`
+  return `${(ms / 1000).toFixed(1)}s`
+}
+
 export function ActionsPanel({ events, actionEvents, selectedIndex, pinnedIndex, onHover, onPin, metadata, showMetadata, inFlightAction, preflightMessage }: Props) {
   const [tab, setTab] = useState<'actions' | 'metadata'>('actions');
   const [filter, setFilter] = useState('');
@@ -192,6 +197,17 @@ export function ActionsPanel({ events, actionEvents, selectedIndex, pinnedIndex,
       <div class="actions-header">
         <div class={`actions-header-tab${tab === 'actions' ? ' active' : ''}`} onClick={() => setTab('actions')}>Actions</div>
         {showMetadata && <div class={`actions-header-tab${tab === 'metadata' ? ' active' : ''}`} onClick={() => setTab('metadata')}>Metadata</div>}
+        <span style={{ flex: 1 }} />
+        {metadata.testStatus === 'passed' && (
+          <span class="verdict-pill pass" style={{ marginRight: '10px' }}>
+            <Check size={10} /><span>Passed</span><span class="verdict-dur">{formatDuration(metadata.testDuration)}</span>
+          </span>
+        )}
+        {metadata.testStatus === 'failed' && (
+          <span class="verdict-pill fail" style={{ marginRight: '10px' }}>
+            <AlertTriangle size={10} /><span>Failed</span><span class="verdict-dur">{formatDuration(metadata.testDuration)}</span>
+          </span>
+        )}
       </div>
 
       {tab === 'actions' && (
@@ -229,13 +245,14 @@ export function ActionsPanel({ events, actionEvents, selectedIndex, pinnedIndex,
                 const isSelected = item.actionIndex === selectedIndex;
                 const isPinned = item.actionIndex === pinnedIndex;
                 const isFailed = event.type === 'action' ? !event.success : !event.passed;
+                const isPassed = event.type === 'assertion' && event.passed;
                 const [icon, iconClass] = getIcon(event);
 
                 return (
                   <div
                     key={`a-${item.actionIndex}`}
                     ref={isSelected ? selectedRef : undefined}
-                    class={`action-item act${isSelected ? ' selected' : ''}${isPinned ? ' pinned' : ''}${isFailed ? ' failed' : ''}`}
+                    class={`action-item act${isSelected ? ' selected' : ''}${isPinned ? ' pinned' : ''}${isFailed ? ' failed' : ''}${isPassed ? ' passed' : ''}`}
                     style={{ '--dur-pct': `${(event.duration / maxDur * 100)}%` }}
                     onMouseEnter={() => onHover(item.actionIndex)}
                     onMouseLeave={() => onHover(null)}

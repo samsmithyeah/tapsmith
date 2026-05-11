@@ -1,5 +1,5 @@
 import { useState, useRef, useCallback, useEffect } from 'preact/hooks';
-import { Focus, ExternalLink, Download } from 'lucide-preact';
+import { Focus, ExternalLink, Download, Camera, LoaderCircle, CircleDot, Play } from 'lucide-preact';
 import type { ActionTraceEvent, AssertionTraceEvent } from '../../trace/types.js';
 
 // ─── Injected Styles ───
@@ -42,6 +42,9 @@ interface Props {
   testStatus?: string
   onDownloadTrace?: () => void
   onDownloadVideo?: () => void
+  hasTrace?: boolean
+  onRunTest?: () => void
+  isTestPending?: boolean
 }
 
 type ScreenshotTab = 'before' | 'after' | 'action'
@@ -51,7 +54,7 @@ interface NaturalSize {
   height: number
 }
 
-export function ScreenshotPanel({ event, screenshots, highlightBounds, selectorHighlights, hoverBounds, onScreenshotClick, onScreenshotHover, pickMode, onPickModeToggle, devicePixelRatio, testName, testStatus, onDownloadTrace, onDownloadVideo }: Props) {
+export function ScreenshotPanel({ event, screenshots, highlightBounds, selectorHighlights, hoverBounds, onScreenshotClick, onScreenshotHover, pickMode, onPickModeToggle, devicePixelRatio, testName, testStatus, onDownloadTrace, onDownloadVideo, hasTrace, onRunTest, isTestPending }: Props) {
   injectStyles();
 
   const [tab, setTab] = useState<ScreenshotTab>('action');
@@ -114,6 +117,61 @@ export function ScreenshotPanel({ event, screenshots, highlightBounds, selectorH
   const handleImageMouseLeave = useCallback(() => {
     onScreenshotHover?.(null);
   }, [onScreenshotHover]);
+
+  if (hasTrace === false && testStatus !== 'passed' && testStatus !== 'failed') {
+    const state = testStatus === 'running' ? 'running'
+      : testStatus === 'skipped' ? 'skipped'
+      : 'idle';
+    return (
+      <div class="screenshot-panel">
+        <div class="viewer-head">
+          <div class="viewer-head-meta">
+            {testStatus && (
+              <span class={`te-status-icon ${testStatus === 'passed' ? 'passed' : testStatus === 'failed' ? 'failed' : ''}`}>
+                {testStatus === 'passed' ? '✓' : testStatus === 'failed' ? '✗' : '○'}
+              </span>
+            )}
+            {testName && <span class="viewer-head-title">{testName}</span>}
+          </div>
+          <div class="viewer-head-actions">
+            {onPickModeToggle && (
+              <button class="viewer-pick-btn" disabled title="Pick element">
+                <Focus size={12} /> Pick
+              </button>
+            )}
+          </div>
+        </div>
+        <div class="screenshot-container viewer-body has-grid">
+          <div class="viewer-empty">
+            <div class="viewer-empty-icon">
+              {state === 'running'
+                ? <LoaderCircle size={20} style={{ animation: 'spin 1.1s linear infinite' }} />
+                : state === 'skipped'
+                  ? <CircleDot size={20} />
+                  : <Camera size={20} />}
+            </div>
+            <div class="viewer-empty-title">
+              {state === 'running' ? 'Recording trace…'
+                : state === 'skipped' ? 'Test skipped'
+                : 'No screenshot'}
+            </div>
+            <div class="viewer-empty-sub">
+              {state === 'running' ? 'Screenshots will appear as actions are captured.'
+                : state === 'skipped' ? 'This test was skipped on the last run.'
+                : 'Run this test to capture a trace.'}
+            </div>
+            {state === 'idle' && onRunTest && (
+              <button class="viewer-empty-cta" onClick={onRunTest} disabled={isTestPending}>
+                {isTestPending
+                  ? <><LoaderCircle size={12} style={{ animation: 'spin 1.1s linear infinite' }} /> Running…</>
+                  : <><Play size={12} /> Run this test</>}
+              </button>
+            )}
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   if (!event) {
     return (

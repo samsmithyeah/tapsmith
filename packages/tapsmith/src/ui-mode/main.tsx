@@ -954,6 +954,15 @@ function App() {
     return isPending || isRunning ? 'Waiting for first action…' : undefined;
   }, [viewedTestNode, tree.pendingIds]);
 
+  const hasTrace = actionEvents.length > 0;
+  const isTestPending = !!viewedTestNode && (tree.pendingIds.has(viewedTestNode.id) || viewedTestNode.status === 'running');
+
+  const handleRunSelectedTest = useCallback(() => {
+    if (!viewedTestNode || viewedTestNode.type !== 'test') return;
+    handleSetPending(viewedTestNode.id);
+    handleSend({ type: 'run-test', fullName: viewedTestNode.fullName, filePath: viewedTestNode.filePath, projectName: viewedTestProject });
+  }, [viewedTestNode, viewedTestProject, handleSend, handleSetPending]);
+
   const handleDownloadTrace = useCallback(async () => {
     if (!viewedTestName || !currentTrace?.tracePath) return;
     try {
@@ -990,8 +999,11 @@ function App() {
     }
   }, [viewedTestName, currentTrace]);
 
+  const filmstripCollapsed = !hasTrace && metadata.testStatus !== 'passed' && metadata.testStatus !== 'failed';
+
   return (
     <Layout
+      filmstripCollapsed={filmstripCollapsed}
       topBar={
         <RunControls
           connected={connected}
@@ -1045,6 +1057,9 @@ function App() {
           metadata={metadata}
           selectedIndex={selectedIndex}
           onSelect={handleActionPin}
+          hasTrace={hasTrace}
+          onRunTest={handleRunSelectedTest}
+          isTestPending={isTestPending}
         />
       }
       actionsPanel={
@@ -1059,6 +1074,7 @@ function App() {
           showMetadata={viewedTestNode?.type === 'test'}
           inFlightAction={currentTrace?.inFlightAction}
           preflightMessage={preflightMessage}
+          hasTrace={hasTrace}
         />
       }
       screenshotPanel={
@@ -1079,6 +1095,9 @@ function App() {
               testStatus={metadata.testStatus}
               onDownloadTrace={currentTrace?.tracePath ? handleDownloadTrace : undefined}
               onDownloadVideo={currentTrace?.videoPath ? handleDownloadVideo : undefined}
+              hasTrace={hasTrace}
+              onRunTest={handleRunSelectedTest}
+              isTestPending={isTestPending}
             />
           </div>
         </div>

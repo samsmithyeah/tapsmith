@@ -1,4 +1,5 @@
 import { useRef, useEffect } from 'preact/hooks';
+import { LoaderCircle, Play } from 'lucide-preact';
 import type { ActionTraceEvent, AssertionTraceEvent, TraceMetadata } from '../../trace/types.js';
 
 // ─── Injected Styles ───
@@ -25,6 +26,9 @@ interface Props {
   metadata: TraceMetadata
   selectedIndex: number
   onSelect: (index: number) => void
+  hasTrace?: boolean
+  onRunTest?: () => void
+  isTestPending?: boolean
 }
 
 function formatRelativeTime(ms: number): string {
@@ -34,7 +38,7 @@ function formatRelativeTime(ms: number): string {
   return `${Math.round(seconds)}s`;
 }
 
-export function TimelineFilmstrip({ events, screenshots, metadata, selectedIndex, onSelect }: Props) {
+export function TimelineFilmstrip({ events, screenshots, metadata, selectedIndex, onSelect, hasTrace, onRunTest, isTestPending }: Props) {
   injectStyles();
 
   const selectedRef = useRef<HTMLElement>(null);
@@ -50,6 +54,31 @@ export function TimelineFilmstrip({ events, screenshots, metadata, selectedIndex
   const statusIcon = metadata.testStatus === 'passed' ? '\u2713'
     : metadata.testStatus === 'failed' ? '\u2717'
     : '\u25CB';
+
+  if (hasTrace === false && metadata.testStatus !== 'passed' && metadata.testStatus !== 'failed') {
+    const state = metadata.testStatus === 'running' ? 'running'
+      : metadata.testStatus === 'skipped' ? 'skipped'
+      : 'idle';
+    return (
+      <div class="film-empty" data-state={state}>
+        {state === 'running'
+          ? <LoaderCircle size={13} class="film-empty-icon" style={{ animation: 'spin 1.1s linear infinite' }} />
+          : <span class="film-empty-dot" />}
+        <span class="film-empty-text">
+          {state === 'running' ? 'Recording trace\u2026'
+            : state === 'skipped' ? 'Skipped'
+            : 'Not run yet'}
+        </span>
+        {state !== 'running' && state !== 'skipped' && onRunTest && (
+          <button class="film-empty-cta" onClick={onRunTest} disabled={isTestPending}>
+            {isTestPending
+              ? <><LoaderCircle size={10} style={{ animation: 'spin 1.1s linear infinite' }} /> Running…</>
+              : <><Play size={10} /> Run this test</>}
+          </button>
+        )}
+      </div>
+    );
+  }
 
   const firstTimestamp = events.length > 0 ? events[0].timestamp : 0;
   const hasTestName = !!metadata.testName;
