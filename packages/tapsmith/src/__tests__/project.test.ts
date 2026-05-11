@@ -493,4 +493,62 @@ describe('allocateBucketWorkers()', () => {
     expect(alloc.get('a')).toBe(2);
     expect(alloc.get('b')).toBe(1);
   });
+
+  // ─── budgetCap ───
+
+  it('budgetCap scales down explicit workers to fit within cap', () => {
+    const buckets = bucketizeProjects([
+      makeProject('a', 5, 2),
+      makeProject('b', 5, 2),
+    ]);
+    const alloc = allocateBucketWorkers(4, buckets, 2);
+    expect(alloc.get('a')).toBe(1);
+    expect(alloc.get('b')).toBe(1);
+  });
+
+  it('budgetCap distributes proportionally when scaling down', () => {
+    const buckets = bucketizeProjects([
+      makeProject('a', 5, 4),
+      makeProject('b', 5, 2),
+    ]);
+    const alloc = allocateBucketWorkers(6, buckets, 3);
+    expect(alloc.get('a')).toBe(2);
+    expect(alloc.get('b')).toBe(1);
+  });
+
+  it('budgetCap does nothing when total is within cap', () => {
+    const buckets = bucketizeProjects([
+      makeProject('a', 5, 2),
+      makeProject('b', 5, 1),
+    ]);
+    const alloc = allocateBucketWorkers(3, buckets, 5);
+    expect(alloc.get('a')).toBe(2);
+    expect(alloc.get('b')).toBe(1);
+  });
+
+  it('budgetCap with fewer workers than buckets keeps 1 per bucket', () => {
+    const buckets = bucketizeProjects([
+      makeProject('a', 5, 3),
+      makeProject('b', 5, 3),
+      makeProject('c', 5, 3),
+    ]);
+    const alloc = allocateBucketWorkers(9, buckets, 2);
+    expect(alloc.get('a')).toBe(1);
+    expect(alloc.get('b')).toBe(1);
+    expect(alloc.get('c')).toBe(1);
+    const total = (alloc.get('a') ?? 0) + (alloc.get('b') ?? 0) + (alloc.get('c') ?? 0);
+    expect(total).toBe(3);
+  });
+
+  it('budgetCap scales down mixed explicit and implicit allocation', () => {
+    const buckets = bucketizeProjects([
+      makeProject('explicit', 4, 3),
+      makeProject('implicit', 4),
+    ]);
+    // Without cap: explicit=3, implicit=2, total=5
+    // With cap=3: scale to 3
+    const alloc = allocateBucketWorkers(2, buckets, 3);
+    expect(alloc.get('explicit')).toBe(2);
+    expect(alloc.get('implicit')).toBe(1);
+  });
 });
