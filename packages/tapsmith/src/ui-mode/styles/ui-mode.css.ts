@@ -1682,7 +1682,8 @@ html, body, #app {
 .test-error-banner:hover { background: var(--color-error-border); }
 .test-error-banner-icon { font-weight: 700; flex-shrink: 0; }
 .test-error-banner-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.no-content { color: var(--fg-muted); font-size: 12px; }
+.no-content { display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100%; color: var(--fg-muted); font-size: 12px; padding: 24px; text-align: center; }
+.no-content-note { color: var(--fg-muted); font-size: 11px; margin-top: 6px; opacity: 0.7; }
 
 /* ─── Timeline / Filmstrip ─── */
 

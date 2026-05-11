@@ -314,7 +314,7 @@ function ConsoleTab({ event, events: consoleEvents }: { event: ActionTraceEvent 
       </div>
       <div class="con-list">
         {filtered.length === 0
-          ? <div class="no-content" style="padding: 12px">No matching log entries</div>
+          ? <div class="no-content">No matching log entries</div>
           : filtered.map((ev, i) => (
             <div key={i} class="log-entry">
               <span class={`log-level ${ev.level}`}>{ev.level}</span>
