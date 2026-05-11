@@ -1,6 +1,7 @@
 import { useRef, useEffect } from 'preact/hooks';
 import { LoaderCircle, Play } from 'lucide-preact';
 import type { ActionTraceEvent, AssertionTraceEvent, TraceMetadata } from '../../trace/types.js';
+import type { ContainerSummary } from '../../ui-mode/main.js';
 
 // ─── Injected Styles ───
 
@@ -29,6 +30,9 @@ interface Props {
   hasTrace?: boolean
   onRunTest?: () => void
   isTestPending?: boolean
+  nodeType?: 'test' | 'suite' | 'file' | 'project'
+  containerSummary?: ContainerSummary
+  onRunContainer?: () => void
 }
 
 function formatRelativeTime(ms: number): string {
@@ -38,7 +42,7 @@ function formatRelativeTime(ms: number): string {
   return `${Math.round(seconds)}s`;
 }
 
-export function TimelineFilmstrip({ events, screenshots, metadata, selectedIndex, onSelect, hasTrace, onRunTest, isTestPending }: Props) {
+export function TimelineFilmstrip({ events, screenshots, metadata, selectedIndex, onSelect, hasTrace, onRunTest, isTestPending, nodeType, containerSummary, onRunContainer }: Props) {
   injectStyles();
 
   const selectedRef = useRef<HTMLElement>(null);
@@ -54,6 +58,47 @@ export function TimelineFilmstrip({ events, screenshots, metadata, selectedIndex
   const statusIcon = metadata.testStatus === 'passed' ? '\u2713'
     : metadata.testStatus === 'failed' ? '\u2717'
     : '\u25CB';
+
+  // \u2500\u2500\u2500 Nothing selected \u2500\u2500\u2500
+
+  if (!nodeType) {
+    return (
+      <div class="film-empty" data-state="idle">
+        <span class="film-empty-dot" />
+        <span class="film-empty-text">No test selected</span>
+      </div>
+    )
+  }
+
+  // \u2500\u2500\u2500 Container selected (suite / file / project) \u2500\u2500\u2500
+
+  if (nodeType !== 'test' && containerSummary) {
+    const { totalTests, running } = containerSummary
+    const isContainerPending = isTestPending || running > 0
+    const parts: string[] = []
+    if (containerSummary.passed > 0) parts.push(`${containerSummary.passed} passed`)
+    if (containerSummary.failed > 0) parts.push(`${containerSummary.failed} failed`)
+    if (containerSummary.running > 0) parts.push(`${containerSummary.running} running`)
+    if (containerSummary.idle > 0) parts.push(`${containerSummary.idle} not run`)
+    const label = `${containerSummary.name} \u00B7 ${totalTests} ${totalTests === 1 ? 'test' : 'tests'}${parts.length ? ` \u00B7 ${parts.join(', ')}` : ''}`
+    return (
+      <div class="film-empty" data-state={running > 0 ? 'running' : 'idle'}>
+        {running > 0
+          ? <LoaderCircle size={13} class="film-empty-icon" style={{ animation: 'spin 1.1s linear infinite' }} />
+          : <span class="film-empty-dot" />}
+        <span class="film-empty-text">{label}</span>
+        {onRunContainer && (
+          <button class="film-empty-cta" onClick={onRunContainer} disabled={isContainerPending}>
+            {isContainerPending
+              ? <><LoaderCircle size={10} style={{ animation: 'spin 1.1s linear infinite' }} /> Running\u2026</>
+              : <><Play size={10} /> Run {totalTests} {totalTests === 1 ? 'test' : 'tests'}</>}
+          </button>
+        )}
+      </div>
+    )
+  }
+
+  // \u2500\u2500\u2500 Test selected, no trace yet \u2500\u2500\u2500
 
   if (hasTrace === false && metadata.testStatus !== 'passed' && metadata.testStatus !== 'failed') {
     const state = metadata.testStatus === 'running' ? 'running'

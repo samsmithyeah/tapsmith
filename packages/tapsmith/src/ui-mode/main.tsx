@@ -38,11 +38,47 @@ import type { HierarchyNode, Bounds } from '../trace-viewer/components/hierarchy
 import { uiModeStyles } from './styles/ui-mode.css.js';
 
 type ElementBounds = { left: number; top: number; right: number; bottom: number }
+type DevicePlatform = 'android' | 'ios'
+
+function inferDevicePlatform(...values: Array<string | undefined>): DevicePlatform | undefined {
+  const text = values.filter(Boolean).join(' ');
+  if (/ios|iphone|ipad|simulator/i.test(text)) return 'ios';
+  if (/android|emulator-|pixel|nexus|galaxy|generic_phone|avd/i.test(text)) return 'android';
+  return undefined;
+}
 
 function lastBoundsFrom(actionEvents: readonly (ActionTraceEvent | AssertionTraceEvent)[]): ElementBounds | undefined {
   for (let i = actionEvents.length - 1; i >= 0; i--) {
     if (actionEvents[i].bounds) return actionEvents[i].bounds;
   }
+}
+
+export interface ContainerSummary {
+  name: string
+  nodeType: 'suite' | 'file' | 'project'
+  totalTests: number
+  passed: number
+  failed: number
+  running: number
+  skipped: number
+  idle: number
+}
+
+function buildContainerSummary(node: TestTreeNode): ContainerSummary {
+  const counts = { passed: 0, failed: 0, running: 0, skipped: 0, idle: 0 };
+  function walk(n: TestTreeNode) {
+    if (n.type === 'test') {
+      if (n.status === 'passed') counts.passed++;
+      else if (n.status === 'failed') counts.failed++;
+      else if (n.status === 'running') counts.running++;
+      else if (n.status === 'skipped') counts.skipped++;
+      else counts.idle++;
+    }
+    n.children?.forEach(walk);
+  }
+  node.children?.forEach(walk);
+  const totalTests = counts.passed + counts.failed + counts.running + counts.skipped + counts.idle;
+  return { name: node.name, nodeType: node.type as 'suite' | 'file' | 'project', totalTests, ...counts };
 }
 
 // ─── App ───
@@ -53,6 +89,7 @@ function App() {
   const [isStopping, setIsStopping] = useState(false);
   const [deviceSerial, setDeviceSerial] = useState('');
   const [deviceDpr, setDeviceDpr] = useState<number | undefined>();
+  const [devicePlatform, setDevicePlatform] = useState<'android' | 'ios' | undefined>();
   const [tapsmithVersion, setTapsmithVersion] = useState('');
   const [theme, setTheme] = useState<Theme>(() => {
     const stored = localStorage.getItem('tapsmith-ui-theme');
@@ -215,14 +252,17 @@ function App() {
   const sources = currentTrace?.sources ?? EMPTY_MAP;
   const networkEntries = currentTrace?.network ?? EMPTY_NETWORK;
   const networkBodies = currentTrace?.networkBodies ?? EMPTY_MAP;
+  const viewedTestWorker = (() => {
+    if (!viewedTraceKey) return undefined;
+    const workerId = testWorkerMapRef.current.get(viewedTraceKey);
+    if (workerId == null) return undefined;
+    return workers.find((worker) => worker.workerId === workerId);
+  })();
 
   // Metadata for trace viewer components
   const testDeviceSerial = useMemo(() => {
-    if (viewedTraceKey) {
-      const workerId = testWorkerMapRef.current.get(viewedTraceKey);
-      if (workerId != null && workers[workerId]) {
-        return workers[workerId].displayName || workers[workerId].deviceSerial;
-      }
+    if (viewedTestWorker) {
+      return viewedTestWorker.displayName || viewedTestWorker.deviceSerial;
     }
     // Multi-worker runs: don't fall back to the global deviceSerial — it
     // holds the first worker's serial from the initial `device-info` event,
@@ -230,21 +270,26 @@ function App() {
     // empty hides the label rather than labelling the filmstrip with a
     // sibling worker's name. Single-worker runs have no ambiguity.
     return workers.length > 1 ? '' : deviceSerial;
-  }, [viewedTraceKey, workers, deviceSerial]);
+  }, [viewedTestWorker, workers.length, deviceSerial]);
 
   // DPR for the worker that ran the viewed test — not the currently selected
   // device-mirror tab. Multi-worker mode mixes platforms (iOS @2/3x +
   // Android @1x), so a single global value would mis-scale bounds whenever
   // the viewed trace and the visible mirror belong to different workers.
   const viewedTestDpr = useMemo(() => {
-    if (viewedTraceKey) {
-      const workerId = testWorkerMapRef.current.get(viewedTraceKey);
-      if (workerId != null && workers[workerId]) {
-        return workers[workerId].devicePixelRatio;
-      }
+    if (viewedTestWorker) {
+      return viewedTestWorker.devicePixelRatio;
     }
     return deviceDpr;
-  }, [viewedTraceKey, workers, deviceDpr]);
+  }, [viewedTestWorker, deviceDpr]);
+
+  const viewedTestPlatform = useMemo<DevicePlatform | undefined>(() => {
+    if (viewedTestWorker) {
+      return viewedTestWorker.platform
+        ?? inferDevicePlatform(viewedTestWorker.displayName, viewedTestWorker.deviceSerial, viewedTestProject);
+    }
+    return inferDevicePlatform(viewedTestProject, testDeviceSerial) ?? devicePlatform;
+  }, [viewedTestWorker, viewedTestProject, testDeviceSerial, devicePlatform]);
 
   const metadata = useMemo<TraceMetadata>(() => ({
     version: 1,
@@ -720,11 +765,14 @@ function App() {
           treeRef.current.updateWatchEnabled(msg.filePath, false, msg.testFilter, msg.projectName);
         }
         break;
-      case 'device-info':
+      case 'device-info': {
         setDeviceSerial(msg.serial);
         if (msg.devicePixelRatio != null) setDeviceDpr(msg.devicePixelRatio);
+        const platform = msg.platform ?? inferDevicePlatform(msg.serial, msg.model);
+        if (platform) setDevicePlatform(platform);
         if (msg.tapsmithVersion) setTapsmithVersion(msg.tapsmithVersion);
         break;
+      }
       case 'workers-info':
         setWorkers(msg.workers.map((w) => ({
           ...w,
@@ -963,6 +1011,23 @@ function App() {
     handleSend({ type: 'run-test', fullName: viewedTestNode.fullName, filePath: viewedTestNode.filePath, projectName: viewedTestProject });
   }, [viewedTestNode, viewedTestProject, handleSend, handleSetPending]);
 
+  const containerSummary = useMemo<ContainerSummary | undefined>(() => {
+    if (!viewedTestNode || viewedTestNode.type === 'test') return undefined;
+    return buildContainerSummary(viewedTestNode);
+  }, [viewedTestNode]);
+
+  const handleRunContainer = useCallback(() => {
+    if (!viewedTestNode || viewedTestNode.type === 'test') return;
+    handleSetPending(viewedTestNode.id);
+    if (viewedTestNode.type === 'project') {
+      handleSend({ type: 'run-project', projectName: viewedTestNode.name });
+    } else if (viewedTestNode.type === 'file') {
+      handleSend({ type: 'run-file', filePath: viewedTestNode.filePath, projectName: viewedTestProject });
+    } else {
+      handleSend({ type: 'run-test', fullName: viewedTestNode.fullName, filePath: viewedTestNode.filePath, projectName: viewedTestProject });
+    }
+  }, [viewedTestNode, viewedTestProject, handleSend, handleSetPending]);
+
   const handleDownloadTrace = useCallback(async () => {
     if (!viewedTestName || !currentTrace?.tracePath) return;
     try {
@@ -999,7 +1064,7 @@ function App() {
     }
   }, [viewedTestName, currentTrace]);
 
-  const filmstripCollapsed = !hasTrace && metadata.testStatus !== 'passed' && metadata.testStatus !== 'failed';
+  const filmstripCollapsed = !viewedTestNode || viewedTestNode.type !== 'test' || (!hasTrace && metadata.testStatus !== 'passed' && metadata.testStatus !== 'failed');
 
   return (
     <Layout
@@ -1060,6 +1125,9 @@ function App() {
           hasTrace={hasTrace}
           onRunTest={handleRunSelectedTest}
           isTestPending={isTestPending}
+          nodeType={viewedTestNode?.type}
+          containerSummary={containerSummary}
+          onRunContainer={handleRunContainer}
         />
       }
       actionsPanel={
@@ -1087,6 +1155,9 @@ function App() {
               hoverBounds={hoverBounds}
               onScreenshotClick={pickMode ? handleScreenshotClick : undefined}
               onScreenshotHover={pickMode ? handleScreenshotHover : undefined}
+              nodeType={viewedTestNode?.type}
+              containerSummary={containerSummary}
+              onRunContainer={handleRunContainer}
               pickMode={pickMode}
               onPickModeToggle={handlePickToggle}
               devicePixelRatio={viewedTestDpr}
@@ -1097,6 +1168,7 @@ function App() {
               hasTrace={hasTrace}
               onRunTest={handleRunSelectedTest}
               isTestPending={isTestPending}
+              platform={viewedTestPlatform}
             />
           </div>
         </div>
@@ -1111,6 +1183,7 @@ function App() {
           onSelectDeviceView={handleSelectDeviceView}
           registerCanvas={registerCanvas}
           unregisterCanvas={unregisterCanvas}
+          platform={devicePlatform}
         />
       }
       mcpPanel={mcpPanelOpen ? (

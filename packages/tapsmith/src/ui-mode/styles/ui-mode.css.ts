@@ -1156,6 +1156,7 @@ html, body, #app {
 .dm-viewport {
   flex: 1; display: flex; align-items: center; justify-content: center;
   position: relative; min-height: 0; width: 100%;
+  container-type: inline-size;
 }
 
 .dm-canvas {
@@ -1201,6 +1202,138 @@ html, body, #app {
 }
 .dm-btn:hover { background: var(--bg-hover); color: var(--fg); }
 .dm-btn.active { color: var(--accent); border-color: var(--accent); }
+
+/* ─── Device Skins (CSS-only bezels) ─── */
+
+.dm-frame {
+  display: contents;
+}
+.dm-skin-ios,
+.dm-skin-android {
+  display: inline-flex;
+  position: relative;
+  max-width: 100%;
+  max-height: 100%;
+}
+
+.dm-skin-ios .dm-canvas,
+.dm-skin-android .dm-canvas,
+.dm-skin-ios > img,
+.dm-skin-android > img {
+  border: none;
+  border-radius: 0;
+  display: block;
+}
+
+.screenshot-device-frame {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  max-width: 100%;
+  max-height: 100%;
+  container-type: inline-size;
+}
+.screenshot-device-frame .dm-skin-ios,
+.screenshot-device-frame .dm-skin-android {
+  width: 100%;
+  box-sizing: border-box;
+}
+.screenshot-device-frame .dm-skin-ios > img,
+.screenshot-device-frame .dm-skin-android > img {
+  max-height: var(--screen-max-height, 100%);
+  width: 100%;
+  height: auto;
+}
+
+/* iOS — rounded bezel with Dynamic Island notch */
+.dm-skin-ios {
+  --bezel: var(--skin-ios-bezel, 3cqi);
+  --bezel-radius: var(--skin-ios-bezel-radius, 12cqi);
+  padding: var(--bezel);
+  background: #1a1a1a;
+  border-radius: var(--bezel-radius);
+  box-shadow:
+    inset 0 0 0 1px oklch(0.35 0 0),
+    0 2px 12px rgba(0,0,0,.4);
+}
+.dm-skin-ios .dm-canvas,
+.dm-skin-ios > img {
+  border-radius: calc(var(--bezel-radius) - var(--bezel));
+  position: relative;
+  z-index: 1;
+}
+/* Dynamic Island */
+.dm-skin-ios::after {
+  content: '';
+  position: absolute;
+  top: calc(var(--bezel) + var(--skin-ios-island-offset, 2cqi));
+  left: 50%;
+  transform: translateX(-50%);
+  width: var(--skin-ios-island-width, 22cqi);
+  height: var(--skin-ios-island-height, 6cqi);
+  background: #1a1a1a;
+  border-radius: var(--skin-ios-island-radius, 3cqi);
+  z-index: 2;
+}
+/* Side button hints */
+.dm-skin-ios::before {
+  content: '';
+  position: absolute;
+  right: var(--skin-ios-button-right, -1cqi);
+  top: 20%;
+  width: var(--skin-ios-button-width, 1cqi);
+  height: var(--skin-ios-button-height, 14cqi);
+  border-radius: 0 var(--skin-ios-button-radius, 1cqi) var(--skin-ios-button-radius, 1cqi) 0;
+  background: oklch(0.3 0 0);
+  z-index: 3;
+  pointer-events: none;
+}
+
+/* Android — thinner bezel, punch-hole camera */
+.dm-skin-android {
+  --bezel: var(--skin-android-bezel, 2cqi);
+  --bezel-radius: var(--skin-android-bezel-radius, 7cqi);
+  padding: var(--bezel);
+  padding-top: var(--skin-android-padding-top, 2.5cqi);
+  background: #1a1a1a;
+  border-radius: var(--bezel-radius);
+  box-shadow:
+    inset 0 0 0 1px oklch(0.3 0 0),
+    0 2px 12px rgba(0,0,0,.4);
+}
+.dm-skin-android .dm-canvas,
+.dm-skin-android > img {
+  border-radius: calc(var(--bezel-radius) - var(--bezel));
+  position: relative;
+  z-index: 1;
+}
+/* Punch-hole camera */
+.dm-skin-android::after {
+  content: '';
+  position: absolute;
+  top: calc(var(--bezel) + var(--skin-android-camera-offset, 1.5cqi));
+  left: 50%;
+  transform: translateX(-50%);
+  width: var(--skin-android-camera-size, 2.5cqi);
+  height: var(--skin-android-camera-size, 2.5cqi);
+  background: oklch(0.12 0 0);
+  border-radius: 50%;
+  border: 1px solid oklch(0.25 0 0);
+  z-index: 2;
+}
+/* Power + volume buttons (right side) */
+.dm-skin-android::before {
+  content: '';
+  position: absolute;
+  right: var(--skin-android-button-right, -1cqi);
+  top: 18%;
+  width: var(--skin-android-button-width, 1cqi);
+  height: var(--skin-android-button-height, 11cqi);
+  border-radius: 0 var(--skin-android-button-radius, 1cqi) var(--skin-android-button-radius, 1cqi) 0;
+  background: oklch(0.3 0 0);
+  z-index: 3;
+  pointer-events: none;
+}
 
 /* ─── Trace Viewer Components (ActionsPanel, DetailTabs, etc.) ─── */
 
@@ -1310,7 +1443,7 @@ html, body, #app {
 .screenshot-tab { padding: 6px 16px; cursor: pointer; color: var(--fg-dim); border-bottom: 2px solid transparent; font-size: 12px; }
 .screenshot-tab:hover { color: var(--fg); }
 .screenshot-tab.active { color: var(--fg); border-bottom-color: var(--accent); }
-.screenshot-container { flex: 1; display: flex; align-items: center; justify-content: center; overflow: hidden; padding: 8px; min-height: 0; }
+.screenshot-container { flex: 1; display: flex; align-items: center; justify-content: center; overflow: hidden; padding: 8px; min-height: 0; container-type: inline-size; }
 .screenshot-empty { color: var(--fg-muted); text-align: center; font-size: 13px; }
 
 .screenshot-tab-float {
@@ -1638,6 +1771,25 @@ html, body, #app {
 }
 .viewer-empty-cta:hover:not(:disabled) { background: var(--bg-hover); border-color: var(--fg-dim); }
 .viewer-empty-cta:disabled { opacity: 0.6; cursor: default; }
+
+.viewer-empty-summary {
+  display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: 12px;
+  margin-top: 4px;
+  font-size: 11.5px;
+}
+.summary-stat {
+  display: inline-flex; align-items: center; gap: 5px;
+  color: var(--fg-muted);
+}
+.summary-dot {
+  width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0;
+  background: var(--fg-muted);
+}
+.summary-stat.passed .summary-dot { background: var(--color-success, #22c55e); }
+.summary-stat.failed  .summary-dot { background: var(--color-danger, #ef4444); }
+.summary-stat.running .summary-dot { background: var(--accent, #3b82f6); }
+.summary-stat.skipped .summary-dot { background: var(--fg-muted); }
+.summary-stat.idle    .summary-dot { background: var(--border-strong); }
 
 /* ─── Actions Empty State ─── */
 
