@@ -294,17 +294,13 @@ async fn stream_ios(
 
     std::thread::spawn(move || {
         let reader = std::io::BufReader::new(stdout);
-        let mut first_line = true;
         for line in reader.lines() {
             let line = match line {
                 Ok(l) => l,
                 Err(_) => break,
             };
-            if first_line {
-                first_line = false;
-                if !line.starts_with('{') {
-                    break;
-                }
+            if !line.starts_with('{') {
+                continue;
             }
             if let Some(entry) = parse_ios_ndjson_line(&line) {
                 if line_tx.blocking_send(entry).is_err() {
