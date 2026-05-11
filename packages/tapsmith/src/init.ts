@@ -133,7 +133,7 @@ function displayEnvironment(env: EnvScan): void {
   const lines: string[] = [];
 
   const major = parseInt(env.nodeVersion.split('.')[0], 10);
-  lines.push(major >= 18 ? ok(`Node.js ${env.nodeVersion}`) : fail(`Node.js ${env.nodeVersion} (requires >= 18)`));
+  lines.push(major >= 22 ? ok(`Node.js ${env.nodeVersion}`) : fail(`Node.js ${env.nodeVersion} (requires >= 22)`));
   lines.push(env.daemonBin ? ok('Tapsmith daemon') : fail('Tapsmith daemon not found'));
 
   if (env.agentApk && env.agentTestApk) lines.push(ok('Android agent (bundled)'));

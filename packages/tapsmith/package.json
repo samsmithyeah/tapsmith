@@ -86,6 +86,6 @@
     "@tapsmith/core-linux-x64": "0.1.0"
   },
   "engines": {
-    "node": ">=18"
+    "node": ">=22"
   }
 }

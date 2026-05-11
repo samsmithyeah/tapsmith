@@ -537,7 +537,7 @@ import { buildCodeSnippet, formatCodeSnippetPlain } from '../../trace/code-frame
 
 function buildCodeFrame(sources: Map<string, string>, loc: { file: string; line: number } | undefined): string | null {
   if (!loc || sources.size === 0) return null;
-  const [_filename, content] = [...sources.entries()][0];
+  const content = sources.get(loc.file);
   if (!content) return null;
   const snippet = buildCodeSnippet(content, loc.line);
   return formatCodeSnippetPlain(snippet);
