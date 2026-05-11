@@ -1,3 +1,4 @@
+import './fonts.css';
 import { render } from 'preact';
 import { useState, useCallback, useMemo, useRef, useEffect } from 'preact/hooks';
 import type { ServerMessage, ClientMessage, TestTreeNode, WorkerInfo } from './ui-protocol.js';
