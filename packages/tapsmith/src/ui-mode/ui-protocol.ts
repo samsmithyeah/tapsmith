@@ -127,6 +127,8 @@ export interface TraceEventMessage {
   type: 'trace-event'
   /** The full name of the test this event belongs to. */
   testFullName: string
+  /** Worker that produced this trace event (multi-worker mode only). */
+  workerId?: number
   /** Project the test belongs to. Used to scope trace storage so the same
    * test running under multiple projects (multi-device configs) doesn't
    * collide on a single trace map entry. */

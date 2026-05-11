@@ -98,7 +98,7 @@ function App() {
 
   // Multi-worker state
   const [workers, setWorkers] = useState<WorkerInfo[]>([]);
-  /** Maps test fullName → workerId that ran it. */
+  /** Maps trace key → workerId that ran it. */
   const testWorkerMapRef = useRef<Map<string, number>>(new Map());
   /**
    * Auto-follow control for multi-worker mode.
@@ -593,6 +593,9 @@ function App() {
           ? traceKey(msg.projectName, msg.testFullName)
           : (activeTestRef.current ?? '');
         if (!key) break;
+        if (msg.workerId != null) {
+          testWorkerMapRef.current.set(key, msg.workerId);
+        }
         const ev = msg.event;
         // Skip internal marker events from the visible event lists and from
         // auto-pin — their actionIndex is one past the last real event.
