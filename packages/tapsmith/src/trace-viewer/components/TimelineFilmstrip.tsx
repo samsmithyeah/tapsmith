@@ -2,6 +2,7 @@ import { useRef, useEffect } from 'preact/hooks';
 import { LoaderCircle, Play } from 'lucide-preact';
 import type { ActionTraceEvent, AssertionTraceEvent, TraceMetadata } from '../../trace/types.js';
 import type { ContainerSummary } from '../../ui-mode/main.js';
+import { findNearestScreenshot } from '../../ui-mode/hooks/use-trace-data.js';
 
 // ─── Injected Styles ───
 
@@ -145,7 +146,8 @@ export function TimelineFilmstrip({ events, screenshots, metadata, selectedIndex
           const pad = String(event.actionIndex).padStart(3, '0');
           const afterKey = `screenshots/action-${pad}-after.png`;
           const beforeKey = `screenshots/action-${pad}-before.png`;
-          const url = screenshots.get(afterKey) ?? screenshots.get(beforeKey);
+          const url = screenshots.get(afterKey) ?? screenshots.get(beforeKey)
+            ?? findNearestScreenshot(screenshots, event.actionIndex);
           const isSelected = i === selectedIndex;
           const isFailed = event.type === 'action' ? !event.success : !event.passed;
           const relativeTime = formatRelativeTime(event.timestamp - firstTimestamp);

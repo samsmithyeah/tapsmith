@@ -625,20 +625,9 @@ function App() {
               if (old) try { URL.revokeObjectURL(old); } catch { /* already revoked */ }
               screenshots.set(k, base64ToBlobUrl(msg.screenshotAfter));
             }
-            // For actions without screenshots (e.g. generic toBe assertions),
-            // inherit the most recent screenshot so clicking them still shows
-            // the device state.
-            if (!msg.screenshotBefore && !msg.screenshotAfter) {
-              const prevIdx = ev.actionIndex - 1;
-              if (prevIdx >= 0) {
-                const prevPad = String(prevIdx).padStart(3, '0');
-                const prevAfter = screenshots.get(`screenshots/action-${prevPad}-after.png`)
-                  ?? screenshots.get(`screenshots/action-${prevPad}-before.png`);
-                if (prevAfter) {
-                  screenshots.set(`screenshots/action-${pad}-before.png`, prevAfter);
-                }
-              }
-            }
+            // No-screenshot actions (toBe assertions, query methods) are handled
+            // at render time via findNearestScreenshot() — copying blob URLs
+            // between map entries caused revocation of shared references.
             if (msg.hierarchyBefore) {
               hierarchies.set(`hierarchy/action-${pad}-before.xml`, msg.hierarchyBefore);
             }

@@ -2,6 +2,7 @@ import { useState, useRef, useCallback, useEffect } from 'preact/hooks';
 import { Focus, ExternalLink, Download, Camera, LoaderCircle, CircleDot, Play, Layers, ListTree } from 'lucide-preact';
 import type { ActionTraceEvent, AssertionTraceEvent } from '../../trace/types.js';
 import type { ContainerSummary } from '../../ui-mode/main.js';
+import { findNearestScreenshot } from '../../ui-mode/hooks/use-trace-data.js';
 
 // ─── Injected Styles ───
 
@@ -281,7 +282,8 @@ export function ScreenshotPanel({ event, screenshots, highlightBounds, selectorH
   }
 
   const pad = String(event.actionIndex).padStart(3, '0');
-  const beforeUrl = screenshots.get(`screenshots/action-${pad}-before.png`);
+  const beforeUrl = screenshots.get(`screenshots/action-${pad}-before.png`)
+    ?? findNearestScreenshot(screenshots, event.actionIndex);
   // "After" = the next action's before-screenshot (screen state after this action).
   // This avoids capturing 2 screenshots per action through the agent.
   const nextPad = String(event.actionIndex + 1).padStart(3, '0');
