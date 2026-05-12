@@ -374,13 +374,15 @@ function App() {
   }
 
   // Resizable panel sizes — persisted in localStorage
-  const [leftWidth, setLeftWidth] = useState(() => parseInt(localStorage.getItem('tapsmith-tv-left') ?? '280', 10));
-  const [filmstripHeight, setFilmstripHeight] = useState(() => parseInt(localStorage.getItem('tapsmith-tv-filmstrip') ?? '130', 10));
-  const [rightWidth, setRightWidth] = useState(() => parseInt(localStorage.getItem('tapsmith-tv-right') ?? '580', 10));
+  const [leftWidth, setLeftWidth] = useState(() => parseInt(localStorage.getItem('tapsmith-tv-left') || '280', 10) || 280);
+  const [filmstripHeight, setFilmstripHeight] = useState(() => parseInt(localStorage.getItem('tapsmith-tv-filmstrip') || '130', 10) || 130);
+  const [rightWidth, setRightWidth] = useState(() => parseInt(localStorage.getItem('tapsmith-tv-right') || '580', 10) || 580);
 
-  useEffect(() => { localStorage.setItem('tapsmith-tv-left', String(leftWidth)); }, [leftWidth]);
-  useEffect(() => { localStorage.setItem('tapsmith-tv-filmstrip', String(filmstripHeight)); }, [filmstripHeight]);
-  useEffect(() => { localStorage.setItem('tapsmith-tv-right', String(rightWidth)); }, [rightWidth]);
+  useEffect(() => {
+    localStorage.setItem('tapsmith-tv-left', String(leftWidth));
+    localStorage.setItem('tapsmith-tv-filmstrip', String(filmstripHeight));
+    localStorage.setItem('tapsmith-tv-right', String(rightWidth));
+  }, [leftWidth, filmstripHeight, rightWidth]);
 
   const handleLeftResize = useCallback((delta: number) => {
     const max = Math.max(180, window.innerWidth - 500);
@@ -467,8 +469,7 @@ function App() {
             height: `${filmstripHeight}px`,
             flexShrink: 0,
             "--filmstrip-h": `${filmstripHeight}px`,
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          } as any
+          } as Record<string, unknown>
         }
       >
         <TimelineFilmstrip

@@ -626,7 +626,7 @@ export class Device {
     if (this._cachedDeviceInfo) return this._cachedDeviceInfo;
     try {
       const resp = await this._client.listDevices();
-      const match = resp.devices.find(d => d.serial === serial);
+      const match = resp.devices?.find(d => d.serial === serial);
       this._cachedDeviceInfo = {
         model: match?.model || undefined,
         osVersion: match?.osVersion || undefined,
