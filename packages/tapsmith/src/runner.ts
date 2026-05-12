@@ -119,7 +119,7 @@ export interface TestResult {
   workerIndex?: number;
   /** Project name this test belongs to (only set when projects are configured). */
   project?: string;
-  /** Zero-based attempt number on which this result was recorded (0 = first run). */
+  /** Zero-based attempt number on which this result was recorded (omitted for first run). */
   retry?: number;
 }
 
@@ -891,6 +891,8 @@ async function runSuiteContext(
       });
 
       try {
+
+      try {
         // ── Setup phase (not subject to test timeout) ──
         // Hooks and fixture resolution run outside the test timeout so that
         // slow operations like restartApp() under heavy load don't eat into
@@ -1304,8 +1306,9 @@ async function runSuiteContext(
         }
       }
 
-      // Dispose after trace finalization so getNetworkEntries() is still available
-      requestContext.dispose();
+      } finally {
+        requestContext.dispose();
+      }
 
       if (status === 'passed' || attempt === maxRetries || opts.abortSignal?.aborted) break;
     }

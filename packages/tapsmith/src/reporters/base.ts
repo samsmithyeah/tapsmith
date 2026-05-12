@@ -73,7 +73,7 @@ export function formatSummaryLine(
 }
 
 export function countFlaky(tests: TestResult[]): number {
-  return tests.filter((t) => t.status === 'passed' && t.retry).length;
+  return tests.filter((t) => t.status === 'passed' && t.retry != null && t.retry > 0).length;
 }
 
 export function workerTag(workerIndex: number | undefined): string {

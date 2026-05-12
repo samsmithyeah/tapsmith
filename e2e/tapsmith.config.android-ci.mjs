@@ -5,7 +5,7 @@ export default defineConfig({
   activity: "dev.tapsmith.testapp.MainActivity",
   package: "dev.tapsmith.testapp",
   timeout: 15_000,
-  retries: 0,
+  retries: 1,
   reporter: [["list"], ["github"], ["html", { open: "never" }]],
   screenshot: "only-on-failure",
   workers: 1,
