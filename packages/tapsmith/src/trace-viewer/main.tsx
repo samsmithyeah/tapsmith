@@ -237,11 +237,18 @@ function App() {
 
   // Sort events by start time (timestamp - duration) so concurrent actions
   // appear in the order they actually started, not the order they completed.
-  const sortedEvents = trace ? sortEventsByStartTime(trace.events) : [];
-  const actionEvents = sortedEvents.filter(
-    (e): e is ActionTraceEvent | AssertionTraceEvent =>
-      (e.type === "action" || e.type === "assertion") &&
-      !("action" in e && e.action === "__final_screenshot"),
+  const sortedEvents = useMemo(
+    () => (trace ? sortEventsByStartTime(trace.events) : []),
+    [trace],
+  );
+  const actionEvents = useMemo(
+    () =>
+      sortedEvents.filter(
+        (e): e is ActionTraceEvent | AssertionTraceEvent =>
+          (e.type === "action" || e.type === "assertion") &&
+          !("action" in e && e.action === "__final_screenshot"),
+      ),
+    [sortedEvents],
   );
 
   const handleKeyDown = useCallback(

@@ -41,10 +41,12 @@ async function buildTraceDeviceInfo(opts: RunOptions): Promise<TraceDeviceInfo> 
       ? getSimulatorScreenScale(opts.config.device)
       : undefined,
   };
-  if (opts.device) {
-    const cached = await opts.device._fetchDeviceInfo(serial);
-    if (cached.model) info.model = cached.model;
-    if (cached.osVersion) info.osVersion = cached.osVersion;
+  if (opts.device?._fetchDeviceInfo) {
+    try {
+      const cached = await opts.device._fetchDeviceInfo(serial);
+      if (cached.model) info.model = cached.model;
+      if (cached.osVersion) info.osVersion = cached.osVersion;
+    } catch { /* best-effort enrichment */ }
   }
   return info;
 }
