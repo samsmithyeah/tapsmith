@@ -296,6 +296,10 @@ function wrapAssertionWithTrace(
     let error: string | undefined;
     let caughtErr: unknown;
 
+    // Side-channel for assertion functions to report expected/actual values
+    // so the trace viewer can color-code them separately from the error message.
+    handle._assertionResult = { expected: undefined, actual: undefined };
+
     // Local flag set by the fail handler — immune to interleaving from other actions
     let failedByTimeout = false;
 
@@ -355,6 +359,7 @@ function wrapAssertionWithTrace(
     // Emit event immediately so _actionIndex increments before the runner
     // emits group-end boundaries.  No after-capture — the trace viewer uses
     // the next action's before-screenshot as the "after" view.
+    const { expected: expectedVal, actual: actualVal } = handle._assertionResult;
     trace.collector.addAssertionEvent({
       assertion: (negated ? "not." : "") + name,
       selector: selectorStr,
@@ -363,6 +368,8 @@ function wrapAssertionWithTrace(
       negated,
       duration,
       attempts,
+      expected: expectedVal,
+      actual: actualVal,
       error,
       bounds,
       sourceLocation,
@@ -468,11 +475,13 @@ function createAssertions(
       }, timeout, negated);
 
       if (!negated && !result) {
+        handle._assertionResult = { expected: String(expected), actual: lastText };
         fail(
           `Expected element ${desc} to have text "${expected}", but got "${lastText}"`,
         );
       }
       if (negated && result) {
+        handle._assertionResult = { expected: `not ${String(expected)}`, actual: lastText };
         fail(
           `Expected element ${desc} NOT to have text "${expected}", but it did`,
         );
@@ -587,11 +596,13 @@ function createAssertions(
       }, timeout, negated);
 
       if (!negated && !result) {
+        handle._assertionResult = { expected: '(empty)', actual: lastText };
         fail(
           `Expected element ${desc} to be empty, but it had text "${lastText}"`,
         );
       }
       if (negated && result) {
+        handle._assertionResult = { expected: 'not empty', actual: '(empty)' };
         fail(`Expected element ${desc} NOT to be empty, but it was`);
       }
     },
@@ -638,11 +649,13 @@ function createAssertions(
       }, timeout, negated);
 
       if (!negated && !result) {
+        handle._assertionResult = { expected: `containing ${String(expected)}`, actual: lastText };
         fail(
           `Expected element ${desc} to contain text ${String(expected)}, but got "${lastText}"`,
         );
       }
       if (negated && result) {
+        handle._assertionResult = { expected: `not containing ${String(expected)}`, actual: lastText };
         fail(
           `Expected element ${desc} NOT to contain text ${String(expected)}, but it did`,
         );
@@ -666,11 +679,13 @@ function createAssertions(
       }, timeout, negated);
 
       if (!negated && !result) {
+        handle._assertionResult = { expected: String(count), actual: String(lastCount) };
         fail(
           `Expected element ${desc} to have count ${count}, but found ${lastCount}`,
         );
       }
       if (negated && result) {
+        handle._assertionResult = { expected: `not ${String(count)}`, actual: String(lastCount) };
         fail(`Expected element ${desc} NOT to have count ${count}, but it did`);
       }
     },
@@ -697,11 +712,13 @@ function createAssertions(
       }, timeout, negated);
 
       if (!negated && !result) {
+        handle._assertionResult = { expected: JSON.stringify(value), actual: JSON.stringify(lastValue) };
         fail(
           `Expected element ${desc} to have attribute "${name}" = ${JSON.stringify(value)}, but got ${JSON.stringify(lastValue)}`,
         );
       }
       if (negated && result) {
+        handle._assertionResult = { expected: `not ${JSON.stringify(value)}`, actual: JSON.stringify(lastValue) };
         fail(
           `Expected element ${desc} NOT to have attribute "${name}" = ${JSON.stringify(value)}, but it did`,
         );
@@ -729,11 +746,13 @@ function createAssertions(
       }, timeout, negated);
 
       if (!negated && !result) {
+        handle._assertionResult = { expected: String(name), actual: lastName };
         fail(
           `Expected element ${desc} to have accessible name ${String(name)}, but got "${lastName}"`,
         );
       }
       if (negated && result) {
+        handle._assertionResult = { expected: `not ${String(name)}`, actual: lastName };
         fail(
           `Expected element ${desc} NOT to have accessible name ${String(name)}, but it did`,
         );
@@ -760,11 +779,13 @@ function createAssertions(
       }, timeout, negated);
 
       if (!negated && !result) {
+        handle._assertionResult = { expected: String(description), actual: lastDesc };
         fail(
           `Expected element ${desc} to have accessible description ${String(description)}, but got "${lastDesc}"`,
         );
       }
       if (negated && result) {
+        handle._assertionResult = { expected: `not ${String(description)}`, actual: lastDesc };
         fail(
           `Expected element ${desc} NOT to have accessible description ${String(description)}, but it did`,
         );
@@ -794,11 +815,13 @@ function createAssertions(
       }, timeout, negated);
 
       if (!negated && !result) {
+        handle._assertionResult = { expected: String(role), actual: lastRole };
         fail(
           `Expected element ${desc} to have role "${role}", but got "${lastRole}"`,
         );
       }
       if (negated && result) {
+        handle._assertionResult = { expected: `not ${String(role)}`, actual: lastRole };
         fail(`Expected element ${desc} NOT to have role "${role}", but it did`);
       }
     },
@@ -823,11 +846,13 @@ function createAssertions(
       }, timeout, negated);
 
       if (!negated && !result) {
+        handle._assertionResult = { expected: String(value), actual: lastValue };
         fail(
           `Expected element ${desc} to have value "${value}", but got "${lastValue}"`,
         );
       }
       if (negated && result) {
+        handle._assertionResult = { expected: `not ${String(value)}`, actual: lastValue };
         fail(
           `Expected element ${desc} NOT to have value "${value}", but it did`,
         );
@@ -888,11 +913,13 @@ function createAssertions(
       if (!negated && !result) {
         const ratioInfo =
           requiredRatio > 0 ? ` with ratio >= ${requiredRatio}` : "";
+        handle._assertionResult = { expected: requiredRatio > 0 ? `ratio >= ${requiredRatio}` : 'in viewport', actual: `ratio ${lastRatio}` };
         fail(
           `Expected element ${desc} to be in viewport${ratioInfo}, but viewport ratio was ${lastRatio}`,
         );
       }
       if (negated && result) {
+        handle._assertionResult = { expected: 'not in viewport', actual: `ratio ${lastRatio}` };
         fail(
           `Expected element ${desc} NOT to be in viewport, but it was (ratio: ${lastRatio})`,
         );

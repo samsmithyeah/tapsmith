@@ -533,7 +533,8 @@ function errorTitle(ev: ActionTraceEvent | AssertionTraceEvent): string {
 
 function buildCodeFrame(sources: Map<string, string>, loc: { file: string; line: number } | undefined): string | null {
   if (!loc || sources.size === 0) return null;
-  const content = sources.get(loc.file);
+  const basename = loc.file.split('/').pop()!;
+  const content = sources.get(loc.file) ?? sources.get(basename);
   if (!content) return null;
   const snippet = buildCodeSnippet(content, loc.line);
   return formatCodeSnippetPlain(snippet);
@@ -584,19 +585,35 @@ function ErrorEntry({ ev, isSelected, sources }: { ev: ActionTraceEvent | Assert
   const isAssertion = ev.type === 'assertion';
   const codeFrame = buildCodeFrame(sources, ev.sourceLocation);
 
-  const detailLines: string[] = [];
-  if (ev.selector) detailLines.push(`Locator: ${ev.selector}`);
-  if (isAssertion && ev.expected !== undefined) detailLines.push(`Expected: ${ev.expected}`);
-  if (isAssertion && ev.actual !== undefined) detailLines.push(`Received: ${ev.actual}`);
-  if (ev.error) { detailLines.push(''); detailLines.push(ev.error); }
-  if (codeFrame) { detailLines.push(''); detailLines.push(codeFrame); }
+  const errorLines: string[] = [];
+  if (ev.error) errorLines.push(ev.error);
+  if (codeFrame) { errorLines.push(''); errorLines.push(codeFrame); }
+
+  const hasGrid = ev.selector || (isAssertion && (ev.expected !== undefined || ev.actual !== undefined));
 
   return (
     <div class={`error-entry${isSelected ? ' error-entry-selected' : ''}`}>
       <div class="error-title"><AlertTriangle size={14} class="error-title-icon" />{title}</div>
 
-      {detailLines.length > 0 && (
-        <pre class="error-detail-block">{detailLines.join('\n')}</pre>
+      {hasGrid && (
+        <div class="error-grid">
+          {ev.selector && <>
+            <div class="error-grid-key">Locator</div>
+            <div class="error-grid-value mono">{ev.selector}</div>
+          </>}
+          {isAssertion && ev.expected !== undefined && <>
+            <div class="error-grid-key">Expected</div>
+            <div class="error-grid-value expected">{ev.expected}</div>
+          </>}
+          {isAssertion && ev.actual !== undefined && <>
+            <div class="error-grid-key">Received</div>
+            <div class="error-grid-value received">{ev.actual}</div>
+          </>}
+        </div>
+      )}
+
+      {errorLines.length > 0 && (
+        <pre class="error-detail-block">{errorLines.join('\n')}</pre>
       )}
 
       {log && log.length > 0 && (
