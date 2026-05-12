@@ -2,6 +2,7 @@ import { useState, useRef, useEffect, useMemo } from 'preact/hooks';
 import { usePersistedString } from '../../ui-mode/hooks/use-persisted-state.js';
 import type { ComponentChildren } from 'preact';
 import { AlertTriangle } from 'lucide-preact';
+import { buildCodeSnippet, formatCodeSnippetPlain } from '../../trace/code-frame.js';
 import type { ActionTraceEvent, AssertionTraceEvent, AnyTraceEvent, ConsoleTraceEvent, TraceMetadata, NetworkEntry, ConsoleLevel } from '../../trace/types.js';
 import { HierarchyTree } from './HierarchyTree.js';
 import type { Bounds } from './HierarchyTree.js';
@@ -529,8 +530,6 @@ function errorTitle(ev: ActionTraceEvent | AssertionTraceEvent): string {
   }
   return `Error: ${ev.action}() failed`;
 }
-
-import { buildCodeSnippet, formatCodeSnippetPlain } from '../../trace/code-frame.js';
 
 function buildCodeFrame(sources: Map<string, string>, loc: { file: string; line: number } | undefined): string | null {
   if (!loc || sources.size === 0) return null;

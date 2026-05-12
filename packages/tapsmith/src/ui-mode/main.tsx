@@ -125,6 +125,7 @@ function App() {
     setErrorMessage(msg);
     errorTimerRef.current = setTimeout(() => setErrorMessage(null), 8000);
   }, []);
+  useEffect(() => () => clearTimeout(errorTimerRef.current), []);
 
   // "Run deps first" toggle — persisted in localStorage
   const [runDepsFirst, setRunDepsFirst] = useState(() => {

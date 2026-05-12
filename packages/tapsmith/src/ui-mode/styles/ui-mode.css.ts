@@ -717,7 +717,7 @@ html, body, #app {
   content: '';
   position: absolute;
   top: 0; bottom: 0;
-  left: calc(6px + var(--depth, 0) * 14px - 7px);
+  left: calc(6px + var(--depth, 0) * 16px - 7px);
   width: 1px;
   background: var(--border);
   opacity: 0.5;
