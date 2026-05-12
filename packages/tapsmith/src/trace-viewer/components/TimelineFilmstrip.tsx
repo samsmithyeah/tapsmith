@@ -129,12 +129,14 @@ export function TimelineFilmstrip({ events, screenshots, metadata, selectedIndex
   const firstTimestamp = events.length > 0 ? events[0].timestamp : 0;
   const hasTestName = !!metadata.testName;
   const hasDeviceSerial = !!metadata.device.serial;
+  const fileName = metadata.testFile ? metadata.testFile.split('/').pop() : undefined;
+  const breadcrumb = [metadata.project, fileName].filter(Boolean).join(' \u203a ');
 
   return (
     <div class="timeline">
       <div class="timeline-meta">
         {hasTestName
-          ? <span class={`test-status ${statusClass}`}>{statusIcon} {metadata.testName}</span>
+          ? <span class={`test-status ${statusClass}`}>{statusIcon} {breadcrumb ? <>{breadcrumb}{' \u203a '}</> : null}{metadata.testName}</span>
           : <span class="test-status">No test selected</span>}
         {hasTestName && metadata.testStatus !== 'running' && metadata.testStatus !== 'idle' && (
           <span>{' \u00b7 '}{metadata.testDuration}ms</span>

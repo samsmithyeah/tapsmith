@@ -74,6 +74,7 @@ function App() {
   const [deviceSerial, setDeviceSerial] = useState('');
   const [deviceDpr, setDeviceDpr] = useState<number | undefined>();
   const [devicePlatform, setDevicePlatform] = useState<'android' | 'ios' | undefined>();
+  const [deviceIsEmulator, setDeviceIsEmulator] = useState(false);
   const [tapsmithVersion, setTapsmithVersion] = useState('');
   const [theme, setTheme] = useState<Theme>(() => {
     const stored = localStorage.getItem('tapsmith-ui-theme');
@@ -288,12 +289,13 @@ function App() {
     testDuration: viewedTestNode?.duration ?? 0,
     startTime: 0,
     endTime: viewedTestNode?.duration ?? 0,
-    device: { serial: testDeviceSerial, isEmulator: testDeviceSerial.startsWith('emulator-') },
+    device: { serial: testDeviceSerial, isEmulator: deviceIsEmulator },
     traceConfig: { screenshots: true, snapshots: true, sources: true, network: true },
     actionCount: actionEvents.length,
     screenshotCount: screenshots.size,
     error: viewedTestNode?.error,
-  }), [viewedTestName, viewedTestFile, viewedTestNode, isRunning, actionEvents.length, screenshots.size, testDeviceSerial, tapsmithVersion]);
+    project: viewedTestProject,
+  }), [viewedTestName, viewedTestFile, viewedTestNode, viewedTestProject, isRunning, actionEvents.length, screenshots.size, testDeviceSerial, deviceIsEmulator, tapsmithVersion]);
 
   // Prefer a real completed event at this index; fall back to a synthesized
   // one from the in-flight slot so ScreenshotPanel can render the before-
@@ -743,6 +745,7 @@ function App() {
         break;
       case 'device-info': {
         setDeviceSerial(msg.serial);
+        setDeviceIsEmulator(msg.isEmulator);
         if (msg.devicePixelRatio != null) setDeviceDpr(msg.devicePixelRatio);
         const platform = msg.platform ?? inferDevicePlatform(msg.serial, msg.model);
         if (platform) setDevicePlatform(platform);
