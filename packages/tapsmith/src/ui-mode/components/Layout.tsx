@@ -15,6 +15,7 @@ import type { ComponentChildren } from 'preact';
 
 interface LayoutProps {
   topBar: ComponentChildren
+  errorBanner?: ComponentChildren
   testExplorer: ComponentChildren
   filmstrip: ComponentChildren
   actionsPanel: ComponentChildren
@@ -26,7 +27,7 @@ interface LayoutProps {
   filmstripCollapsed?: boolean
 }
 
-export function Layout({ topBar, testExplorer, filmstrip, actionsPanel, screenshotPanel, detailTabs, devicePane, mcpPanel, layout = 'three', filmstripCollapsed }: LayoutProps) {
+export function Layout({ topBar, errorBanner, testExplorer, filmstrip, actionsPanel, screenshotPanel, detailTabs, devicePane, mcpPanel, layout = 'three', filmstripCollapsed }: LayoutProps) {
   const [explorerWidth, setExplorerWidth] = usePersistedJSON('tapsmith-explorer-width', 280);
   const [actionsWidth, setActionsWidth] = usePersistedJSON('tapsmith-actions-width', 380);
   const [filmstripHeight, setFilmstripHeight] = usePersistedJSON('tapsmith-filmstrip-height', 130);
@@ -124,6 +125,7 @@ export function Layout({ topBar, testExplorer, filmstrip, actionsPanel, screensh
   return (
     <div class="ui-layout">
       <div class="ui-topbar">{topBar}</div>
+      {errorBanner}
       <div class="ui-body">
         {/* Left: Test Explorer */}
         <div class="ui-explorer" style={{ width: `${explorerWidth}px`, minWidth: `${explorerWidth}px` }}>

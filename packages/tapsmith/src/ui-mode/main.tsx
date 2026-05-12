@@ -117,6 +117,15 @@ function App() {
   const [mcpToolCalls, setMcpToolCalls] = useState<import('./ui-protocol.js').McpToolCallMessage[]>([]);
   const [mcpPanelOpen, setMcpPanelOpen] = usePersistedJSON<boolean>('tapsmith-mcp-panel', false);
 
+  // Error banner state — auto-dismisses after 8s or on click
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const errorTimerRef = useRef<ReturnType<typeof setTimeout>>();
+  const showError = useCallback((msg: string) => {
+    clearTimeout(errorTimerRef.current);
+    setErrorMessage(msg);
+    errorTimerRef.current = setTimeout(() => setErrorMessage(null), 8000);
+  }, []);
+
   // "Run deps first" toggle — persisted in localStorage
   const [runDepsFirst, setRunDepsFirst] = useState(() => {
     return localStorage.getItem('tapsmith-ui-run-deps') === 'true';
@@ -781,6 +790,7 @@ function App() {
         break;
       case 'error':
         console.error('[Tapsmith UI]', msg.message);
+        showError(msg.message);
         break;
 
       case 'mcp-status':
@@ -1048,6 +1058,12 @@ function App() {
   return (
     <Layout
       filmstripCollapsed={filmstripCollapsed}
+      errorBanner={errorMessage ? (
+        <div class="test-error-banner" onClick={() => setErrorMessage(null)}>
+          <span class="test-error-banner-icon">!</span>
+          <span class="test-error-banner-text">{errorMessage}</span>
+        </div>
+      ) : undefined}
       topBar={
         <RunControls
           connected={connected}

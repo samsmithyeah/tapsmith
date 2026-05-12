@@ -1532,6 +1532,7 @@ export async function startUIServer(
 
     await new Promise<void>((resolve, reject) => {
       let settled = false;
+      let initialDispatchDone = false;
       const dispatchListeners: Array<{ worker: UIWorkerHandle; messageHandler: (msg: UIWorkerChildMessage) => void; exitHandler: (code: number | null) => void }> = [];
 
       function settleResolve(): void {
@@ -1554,7 +1555,24 @@ export async function startUIServer(
           }
           return;
         }
-        if (fileQueue.length > 0) return;
+        if (fileQueue.length > 0) {
+          // Deadlock guard: every surviving worker is idle yet files
+          // remain — no worker can serve them. Drain and continue.
+          // Skip during initial dispatch — not all workers have been
+          // offered work yet.
+          if (!initialDispatchDone) return;
+          const allDone = activeWorkers.every((w) => w.retired || !w.busy);
+          if (allDone) {
+            for (const f of fileQueue.splice(0)) {
+              broadcastFileStatus(f.filePath, 'done', f.projectName);
+              failed++;
+              anyFailed = true;
+            }
+            broadcast({ type: 'error', message: 'Some test files could not be dispatched to any available worker' });
+          } else {
+            return;
+          }
+        }
         if (activeWorkers.every((w) => w.retired || !w.busy)) {
           settleResolve();
         }
@@ -1612,6 +1630,28 @@ export async function startUIServer(
         worker.process.send(msg);
       }
 
+      function drainUnservableFiles(remaining: UIWorkerHandle[]): TaggedFile[] {
+        if (remaining.length === 0) {
+          return fileQueue.splice(0);
+        }
+        if (!ctx.bucketByProject) return [];
+
+        const orphaned: TaggedFile[] = [];
+        let i = 0;
+        while (i < fileQueue.length) {
+          const f = fileQueue[i];
+          if (!f.projectName) { i++; continue; }
+          const sig = ctx.bucketByProject.get(f.projectName);
+          if (sig && !remaining.some((w) => w.bucketSignature === sig)) {
+            fileQueue.splice(i, 1);
+            orphaned.push(f);
+          } else {
+            i++;
+          }
+        }
+        return orphaned;
+      }
+
       function retireWorker(worker: UIWorkerHandle, reason: string): void {
         if (worker.retired) return;
         worker.retired = true;
@@ -1626,6 +1666,20 @@ export async function startUIServer(
         }
 
         const remaining = activeWorkers.filter((w) => !w.retired);
+
+        // Drain files that no surviving worker can serve (e.g. all iOS
+        // workers died while Android workers are still alive).
+        const orphaned = drainUnservableFiles(remaining);
+        for (const f of orphaned) {
+          broadcastFileStatus(f.filePath, 'done', f.projectName);
+          failed++;
+          anyFailed = true;
+        }
+        if (orphaned.length > 0) {
+          const names = orphaned.map((f) => path.basename(f.filePath)).join(', ');
+          broadcast({ type: 'error', message: `No remaining workers can run: ${names}` });
+        }
+
         if (remaining.length === 0) {
           settled = true;
           reject(new Error(`All workers became unavailable. Last failure: ${reason}`));
@@ -1765,6 +1819,8 @@ export async function startUIServer(
 
         dispatchNext(worker);
       }
+      initialDispatchDone = true;
+      maybeResolve();
     });
 
     return { passed, failed, skipped, duration, anyFailed, failedProjectNames: failedProjectsInDispatch };
@@ -1967,9 +2023,11 @@ export async function startUIServer(
           // Replace in array
           uiWorkers[i] = newWorker;
         } catch (err) {
+          const errMsg = err instanceof Error ? err.message : String(err);
           console.error(
-            `${YELLOW}Failed to respawn worker ${worker.id}: ${err instanceof Error ? err.message : err}${RESET}`,
+            `${YELLOW}Failed to respawn worker ${worker.id}: ${errMsg}${RESET}`,
           );
+          broadcast({ type: 'error', message: `Worker ${worker.id} (${worker.deviceSerial}) failed to respawn: ${errMsg}` });
         }
       })());
     }
