@@ -43,7 +43,7 @@ function suiteToTreeNode(suite: DiscoveredSuite, filePath: string): TestTreeNode
       name: test.name,
       filePath,
       fullName: test.fullName,
-      status: test.skip ? 'skipped' : 'idle',
+      status: 'idle',
     });
   }
 

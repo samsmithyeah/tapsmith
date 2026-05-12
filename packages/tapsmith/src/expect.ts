@@ -19,7 +19,7 @@
 
 import { ElementHandle } from "./element-handle.js";
 import type { ElementInfo } from "./grpc-client.js";
-import { selectorToProto } from "./selectors.js";
+import { selectorToProto, type Selector } from "./selectors.js";
 import { extractSourceLocation, getActiveTraceCollector } from "./trace/trace-collector.js";
 import { WebViewLocator } from "./webview-locator.js";
 
@@ -58,7 +58,30 @@ async function poll(
 }
 
 function selectorDescription(handle: ElementHandle): string {
-  return JSON.stringify(selectorToProto(handle._selector));
+  return formatSelector(handle._selector);
+}
+
+function formatSelector(sel: Selector): string {
+  let base: string;
+  switch (sel.kind.type) {
+    case 'role': {
+      const rv = sel.kind.value;
+      base = rv.name ? `getByRole("${rv.role}", "${rv.name}")` : `getByRole("${rv.role}")`;
+      break;
+    }
+    case 'text': base = `getByText("${sel.kind.value}")`; break;
+    case 'textContains': base = `getByText("${sel.kind.value}")`; break;
+    case 'contentDesc': base = `getByDescription("${sel.kind.value}")`; break;
+    case 'hint': base = `getByPlaceholder("${sel.kind.value}")`; break;
+    case 'testId': base = `getByTestId("${sel.kind.value}")`; break;
+    case 'label': base = `getByLabel("${sel.kind.value}")`; break;
+    case 'id': base = `locator({ id: "${sel.kind.value}" })`; break;
+    case 'className': base = `locator({ className: "${sel.kind.value}" })`; break;
+    case 'xpath': base = `locator({ xpath: "${sel.kind.value}" })`; break;
+    default: base = JSON.stringify(selectorToProto(sel)); break;
+  }
+  if (sel.parent) return `${formatSelector(sel.parent)}.locator(${base})`;
+  return base;
 }
 
 // ─── Role-to-class mapping (mirrors Kotlin roleClassMap) ───
@@ -270,12 +293,17 @@ function wrapAssertionWithTrace(
     const selectorStr = selectorDescription(handle);
     const start = Date.now();
 
-    // Capture before-screenshot (bounds lookup happens after the assertion
-    // so the element is guaranteed to exist and be stable).
+    // Capture before-screenshot and best-effort element bounds so the trace
+    // viewer / UI mode can highlight the element immediately.
     const { captures: beforeCaptures } = await trace.collector.captureBeforeAction(
       trace.takeScreenshot,
       trace.captureHierarchy,
     );
+    let beforeBounds: { left: number; top: number; right: number; bottom: number } | undefined;
+    try {
+      const res = await handle._client.findElement(handle._selector, 100);
+      if (res.found && res.element?.bounds) beforeBounds = res.element.bounds;
+    } catch { /* best-effort */ }
 
     // Stream a "started" lifecycle signal so UI mode can render an in-flight
     // row with a spinner — auto-waiting assertions like toBeVisible can poll
@@ -284,6 +312,7 @@ function wrapAssertionWithTrace(
       assertion: (negated ? "not." : "") + name,
       selector: selectorStr,
       sourceLocation,
+      bounds: beforeBounds,
       soft: false,
       negated,
       hasScreenshotBefore: !!beforeCaptures.screenshotBefore,
@@ -295,6 +324,10 @@ function wrapAssertionWithTrace(
     let passed = true;
     let error: string | undefined;
     let caughtErr: unknown;
+
+    // Side-channel for assertion functions to report expected/actual values
+    // so the trace viewer can color-code them separately from the error message.
+    handle._assertionResult = { expected: undefined, actual: undefined };
 
     // Local flag set by the fail handler — immune to interleaving from other actions
     let failedByTimeout = false;
@@ -340,21 +373,20 @@ function wrapAssertionWithTrace(
     const duration = Date.now() - start;
     const attempts = Math.max(1, Math.round(duration / POLL_INTERVAL_MS));
 
-    // Look up element bounds after assertion completes — the element is
-    // guaranteed to exist (for passing assertions) and the screen is stable.
-    let bounds: { left: number; top: number; right: number; bottom: number } | undefined;
-    if (passed) {
-      try {
-        const res = await handle._client.findElement(handle._selector, 100);
-        if (res.found && res.element?.bounds) {
-          bounds = res.element.bounds;
-        }
-      } catch { /* best-effort */ }
-    }
+    // Re-lookup bounds after assertion — element may have moved during polling.
+    // Fall back to before-bounds if the element is no longer findable.
+    let bounds = beforeBounds;
+    try {
+      const res = await handle._client.findElement(handle._selector, 100);
+      if (res.found && res.element?.bounds) {
+        bounds = res.element.bounds;
+      }
+    } catch { /* best-effort — keep beforeBounds */ }
 
     // Emit event immediately so _actionIndex increments before the runner
     // emits group-end boundaries.  No after-capture — the trace viewer uses
     // the next action's before-screenshot as the "after" view.
+    const { expected: expectedVal, actual: actualVal } = handle._assertionResult;
     trace.collector.addAssertionEvent({
       assertion: (negated ? "not." : "") + name,
       selector: selectorStr,
@@ -363,6 +395,8 @@ function wrapAssertionWithTrace(
       negated,
       duration,
       attempts,
+      expected: expectedVal,
+      actual: actualVal,
       error,
       bounds,
       sourceLocation,
@@ -468,11 +502,13 @@ function createAssertions(
       }, timeout, negated);
 
       if (!negated && !result) {
+        handle._assertionResult = { expected: String(expected), actual: lastText };
         fail(
           `Expected element ${desc} to have text "${expected}", but got "${lastText}"`,
         );
       }
       if (negated && result) {
+        handle._assertionResult = { expected: `not ${String(expected)}`, actual: lastText };
         fail(
           `Expected element ${desc} NOT to have text "${expected}", but it did`,
         );
@@ -587,11 +623,13 @@ function createAssertions(
       }, timeout, negated);
 
       if (!negated && !result) {
+        handle._assertionResult = { expected: '(empty)', actual: lastText };
         fail(
           `Expected element ${desc} to be empty, but it had text "${lastText}"`,
         );
       }
       if (negated && result) {
+        handle._assertionResult = { expected: 'not empty', actual: '(empty)' };
         fail(`Expected element ${desc} NOT to be empty, but it was`);
       }
     },
@@ -638,11 +676,13 @@ function createAssertions(
       }, timeout, negated);
 
       if (!negated && !result) {
+        handle._assertionResult = { expected: `containing ${String(expected)}`, actual: lastText };
         fail(
           `Expected element ${desc} to contain text ${String(expected)}, but got "${lastText}"`,
         );
       }
       if (negated && result) {
+        handle._assertionResult = { expected: `not containing ${String(expected)}`, actual: lastText };
         fail(
           `Expected element ${desc} NOT to contain text ${String(expected)}, but it did`,
         );
@@ -666,11 +706,13 @@ function createAssertions(
       }, timeout, negated);
 
       if (!negated && !result) {
+        handle._assertionResult = { expected: String(count), actual: String(lastCount) };
         fail(
           `Expected element ${desc} to have count ${count}, but found ${lastCount}`,
         );
       }
       if (negated && result) {
+        handle._assertionResult = { expected: `not ${String(count)}`, actual: String(lastCount) };
         fail(`Expected element ${desc} NOT to have count ${count}, but it did`);
       }
     },
@@ -697,11 +739,13 @@ function createAssertions(
       }, timeout, negated);
 
       if (!negated && !result) {
+        handle._assertionResult = { expected: JSON.stringify(value), actual: JSON.stringify(lastValue) };
         fail(
           `Expected element ${desc} to have attribute "${name}" = ${JSON.stringify(value)}, but got ${JSON.stringify(lastValue)}`,
         );
       }
       if (negated && result) {
+        handle._assertionResult = { expected: `not ${JSON.stringify(value)}`, actual: JSON.stringify(lastValue) };
         fail(
           `Expected element ${desc} NOT to have attribute "${name}" = ${JSON.stringify(value)}, but it did`,
         );
@@ -729,11 +773,13 @@ function createAssertions(
       }, timeout, negated);
 
       if (!negated && !result) {
+        handle._assertionResult = { expected: String(name), actual: lastName };
         fail(
           `Expected element ${desc} to have accessible name ${String(name)}, but got "${lastName}"`,
         );
       }
       if (negated && result) {
+        handle._assertionResult = { expected: `not ${String(name)}`, actual: lastName };
         fail(
           `Expected element ${desc} NOT to have accessible name ${String(name)}, but it did`,
         );
@@ -760,11 +806,13 @@ function createAssertions(
       }, timeout, negated);
 
       if (!negated && !result) {
+        handle._assertionResult = { expected: String(description), actual: lastDesc };
         fail(
           `Expected element ${desc} to have accessible description ${String(description)}, but got "${lastDesc}"`,
         );
       }
       if (negated && result) {
+        handle._assertionResult = { expected: `not ${String(description)}`, actual: lastDesc };
         fail(
           `Expected element ${desc} NOT to have accessible description ${String(description)}, but it did`,
         );
@@ -794,11 +842,13 @@ function createAssertions(
       }, timeout, negated);
 
       if (!negated && !result) {
+        handle._assertionResult = { expected: String(role), actual: lastRole };
         fail(
           `Expected element ${desc} to have role "${role}", but got "${lastRole}"`,
         );
       }
       if (negated && result) {
+        handle._assertionResult = { expected: `not ${String(role)}`, actual: lastRole };
         fail(`Expected element ${desc} NOT to have role "${role}", but it did`);
       }
     },
@@ -823,11 +873,13 @@ function createAssertions(
       }, timeout, negated);
 
       if (!negated && !result) {
+        handle._assertionResult = { expected: String(value), actual: lastValue };
         fail(
           `Expected element ${desc} to have value "${value}", but got "${lastValue}"`,
         );
       }
       if (negated && result) {
+        handle._assertionResult = { expected: `not ${String(value)}`, actual: lastValue };
         fail(
           `Expected element ${desc} NOT to have value "${value}", but it did`,
         );
@@ -888,11 +940,13 @@ function createAssertions(
       if (!negated && !result) {
         const ratioInfo =
           requiredRatio > 0 ? ` with ratio >= ${requiredRatio}` : "";
+        handle._assertionResult = { expected: requiredRatio > 0 ? `ratio >= ${requiredRatio}` : 'in viewport', actual: `ratio ${lastRatio}` };
         fail(
           `Expected element ${desc} to be in viewport${ratioInfo}, but viewport ratio was ${lastRatio}`,
         );
       }
       if (negated && result) {
+        handle._assertionResult = { expected: 'not in viewport', actual: `ratio ${lastRatio}` };
         fail(
           `Expected element ${desc} NOT to be in viewport, but it was (ratio: ${lastRatio})`,
         );

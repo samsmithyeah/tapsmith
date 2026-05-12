@@ -155,6 +155,9 @@ export class ElementHandle {
   /** @internal */
   private readonly _options: ElementHandleOptions;
 
+  /** @internal — Side-channel for assertion functions to report expected/actual. */
+  _assertionResult: { expected: string | undefined; actual: string | undefined } = { expected: undefined, actual: undefined };
+
   /** @internal — Trace capture context from the Device, if tracing is active. */
   get _traceCapture(): TraceCapture | undefined {
     return this._options.traceCapture;

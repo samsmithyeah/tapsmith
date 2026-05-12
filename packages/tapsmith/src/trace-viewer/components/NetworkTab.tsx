@@ -354,9 +354,9 @@ export function NetworkTab({ entries, bodies }: Props) {
 
   if (entries.length === 0) {
     return (
-      <div class="net-empty">
+      <div class="no-content">
         No network requests captured
-        <div class="net-empty-note">Enable network capture in your trace config to record HTTP requests.</div>
+        <div class="no-content-note">Enable network capture in your trace config to record HTTP requests.</div>
       </div>
     );
   }

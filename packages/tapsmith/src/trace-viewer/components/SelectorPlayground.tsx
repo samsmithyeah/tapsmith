@@ -26,11 +26,11 @@ interface PickButtonProps {
   onToggle: () => void
 }
 
-export function PickButton({ active, onToggle }: PickButtonProps) {
+function PickButton({ active, onToggle }: PickButtonProps) {
   injectPickStyles()
   return (
     <button
-      class={`sp-pick-float${active ? ' active' : ''}`}
+      class={`sp-pick-float viewer-pick-btn${active ? ' active' : ''}`}
       onClick={onToggle}
       title="Pick element from screenshot"
     >

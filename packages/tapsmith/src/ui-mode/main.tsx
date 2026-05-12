@@ -1,6 +1,8 @@
+import './fonts.css';
 import { render } from 'preact';
 import { useState, useCallback, useMemo, useRef, useEffect } from 'preact/hooks';
 import type { ServerMessage, ClientMessage, TestTreeNode, WorkerInfo } from './ui-protocol.js';
+import { inferDevicePlatform, type DevicePlatform } from './ui-protocol.js';
 import type { ActionTraceEvent, AssertionTraceEvent, TraceMetadata } from '../trace/types.js';
 import { sortEventsByStartTime } from '../trace/sort-events.js';
 import { useWebSocket } from './hooks/use-websocket.js';
@@ -36,6 +38,7 @@ import { SelectorTab, handlePickFromScreenshot, handleHoverFromScreenshot } from
 import { parseHierarchyXml } from '../trace-viewer/components/hierarchy-utils.js';
 import type { HierarchyNode, Bounds } from '../trace-viewer/components/hierarchy-utils.js';
 import { uiModeStyles } from './styles/ui-mode.css.js';
+import type { ContainerSummary } from '../trace-viewer/types.js';
 
 type ElementBounds = { left: number; top: number; right: number; bottom: number }
 
@@ -43,6 +46,23 @@ function lastBoundsFrom(actionEvents: readonly (ActionTraceEvent | AssertionTrac
   for (let i = actionEvents.length - 1; i >= 0; i--) {
     if (actionEvents[i].bounds) return actionEvents[i].bounds;
   }
+}
+
+function buildContainerSummary(node: TestTreeNode): ContainerSummary {
+  const counts = { passed: 0, failed: 0, running: 0, skipped: 0, idle: 0 };
+  function walk(n: TestTreeNode) {
+    if (n.type === 'test') {
+      if (n.status === 'passed') counts.passed++;
+      else if (n.status === 'failed') counts.failed++;
+      else if (n.status === 'running') counts.running++;
+      else if (n.status === 'skipped') counts.skipped++;
+      else counts.idle++;
+    }
+    n.children?.forEach(walk);
+  }
+  node.children?.forEach(walk);
+  const totalTests = counts.passed + counts.failed + counts.running + counts.skipped + counts.idle;
+  return { name: node.name, nodeType: node.type as 'suite' | 'file' | 'project', totalTests, ...counts };
 }
 
 // ─── App ───
@@ -53,6 +73,8 @@ function App() {
   const [isStopping, setIsStopping] = useState(false);
   const [deviceSerial, setDeviceSerial] = useState('');
   const [deviceDpr, setDeviceDpr] = useState<number | undefined>();
+  const [devicePlatform, setDevicePlatform] = useState<'android' | 'ios' | undefined>();
+  const [deviceIsEmulator, setDeviceIsEmulator] = useState(false);
   const [tapsmithVersion, setTapsmithVersion] = useState('');
   const [theme, setTheme] = useState<Theme>(() => {
     const stored = localStorage.getItem('tapsmith-ui-theme');
@@ -61,7 +83,7 @@ function App() {
 
   // Multi-worker state
   const [workers, setWorkers] = useState<WorkerInfo[]>([]);
-  /** Maps test fullName → workerId that ran it. */
+  /** Maps trace key → workerId that ran it. */
   const testWorkerMapRef = useRef<Map<string, number>>(new Map());
   /**
    * Auto-follow control for multi-worker mode.
@@ -94,6 +116,16 @@ function App() {
   const [mcpClientVersion, setMcpClientVersion] = useState<string | undefined>();
   const [mcpToolCalls, setMcpToolCalls] = useState<import('./ui-protocol.js').McpToolCallMessage[]>([]);
   const [mcpPanelOpen, setMcpPanelOpen] = usePersistedJSON<boolean>('tapsmith-mcp-panel', false);
+
+  // Error banner state — auto-dismisses after 8s or on click
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const errorTimerRef = useRef<ReturnType<typeof setTimeout>>();
+  const showError = useCallback((msg: string) => {
+    clearTimeout(errorTimerRef.current);
+    setErrorMessage(msg);
+    errorTimerRef.current = setTimeout(() => setErrorMessage(null), 8000);
+  }, []);
+  useEffect(() => () => clearTimeout(errorTimerRef.current), []);
 
   // "Run deps first" toggle — persisted in localStorage
   const [runDepsFirst, setRunDepsFirst] = useState(() => {
@@ -215,14 +247,17 @@ function App() {
   const sources = currentTrace?.sources ?? EMPTY_MAP;
   const networkEntries = currentTrace?.network ?? EMPTY_NETWORK;
   const networkBodies = currentTrace?.networkBodies ?? EMPTY_MAP;
+  const viewedTestWorker = (() => {
+    if (!viewedTraceKey) return undefined;
+    const workerId = testWorkerMapRef.current.get(viewedTraceKey);
+    if (workerId == null) return undefined;
+    return workers.find((worker) => worker.workerId === workerId);
+  })();
 
   // Metadata for trace viewer components
   const testDeviceSerial = useMemo(() => {
-    if (viewedTraceKey) {
-      const workerId = testWorkerMapRef.current.get(viewedTraceKey);
-      if (workerId != null && workers[workerId]) {
-        return workers[workerId].displayName || workers[workerId].deviceSerial;
-      }
+    if (viewedTestWorker) {
+      return viewedTestWorker.displayName || viewedTestWorker.deviceSerial;
     }
     // Multi-worker runs: don't fall back to the global deviceSerial — it
     // holds the first worker's serial from the initial `device-info` event,
@@ -230,21 +265,26 @@ function App() {
     // empty hides the label rather than labelling the filmstrip with a
     // sibling worker's name. Single-worker runs have no ambiguity.
     return workers.length > 1 ? '' : deviceSerial;
-  }, [viewedTraceKey, workers, deviceSerial]);
+  }, [viewedTestWorker, workers.length, deviceSerial]);
 
   // DPR for the worker that ran the viewed test — not the currently selected
   // device-mirror tab. Multi-worker mode mixes platforms (iOS @2/3x +
   // Android @1x), so a single global value would mis-scale bounds whenever
   // the viewed trace and the visible mirror belong to different workers.
   const viewedTestDpr = useMemo(() => {
-    if (viewedTraceKey) {
-      const workerId = testWorkerMapRef.current.get(viewedTraceKey);
-      if (workerId != null && workers[workerId]) {
-        return workers[workerId].devicePixelRatio;
-      }
+    if (viewedTestWorker) {
+      return viewedTestWorker.devicePixelRatio;
     }
     return deviceDpr;
-  }, [viewedTraceKey, workers, deviceDpr]);
+  }, [viewedTestWorker, deviceDpr]);
+
+  const viewedTestPlatform = useMemo<DevicePlatform | undefined>(() => {
+    if (viewedTestWorker) {
+      return viewedTestWorker.platform
+        ?? inferDevicePlatform(viewedTestWorker.displayName, viewedTestWorker.deviceSerial, viewedTestProject);
+    }
+    return inferDevicePlatform(viewedTestProject, testDeviceSerial) ?? devicePlatform;
+  }, [viewedTestWorker, viewedTestProject, testDeviceSerial, devicePlatform]);
 
   const metadata = useMemo<TraceMetadata>(() => ({
     version: 1,
@@ -259,12 +299,13 @@ function App() {
     testDuration: viewedTestNode?.duration ?? 0,
     startTime: 0,
     endTime: viewedTestNode?.duration ?? 0,
-    device: { serial: testDeviceSerial, isEmulator: testDeviceSerial.startsWith('emulator-') },
+    device: { serial: testDeviceSerial, isEmulator: deviceIsEmulator },
     traceConfig: { screenshots: true, snapshots: true, sources: true, network: true },
     actionCount: actionEvents.length,
     screenshotCount: screenshots.size,
     error: viewedTestNode?.error,
-  }), [viewedTestName, viewedTestFile, viewedTestNode, isRunning, actionEvents.length, screenshots.size, testDeviceSerial, tapsmithVersion]);
+    project: viewedTestProject,
+  }), [viewedTestName, viewedTestFile, viewedTestNode, viewedTestProject, isRunning, actionEvents.length, screenshots.size, testDeviceSerial, deviceIsEmulator, tapsmithVersion]);
 
   // Prefer a real completed event at this index; fall back to a synthesized
   // one from the in-flight slot so ScreenshotPanel can render the before-
@@ -548,6 +589,9 @@ function App() {
           ? traceKey(msg.projectName, msg.testFullName)
           : (activeTestRef.current ?? '');
         if (!key) break;
+        if (msg.workerId != null) {
+          testWorkerMapRef.current.set(key, msg.workerId);
+        }
         const ev = msg.event;
         // Skip internal marker events from the visible event lists and from
         // auto-pin — their actionIndex is one past the last real event.
@@ -577,20 +621,9 @@ function App() {
               if (old) try { URL.revokeObjectURL(old); } catch { /* already revoked */ }
               screenshots.set(k, base64ToBlobUrl(msg.screenshotAfter));
             }
-            // For actions without screenshots (e.g. generic toBe assertions),
-            // inherit the most recent screenshot so clicking them still shows
-            // the device state.
-            if (!msg.screenshotBefore && !msg.screenshotAfter) {
-              const prevIdx = ev.actionIndex - 1;
-              if (prevIdx >= 0) {
-                const prevPad = String(prevIdx).padStart(3, '0');
-                const prevAfter = screenshots.get(`screenshots/action-${prevPad}-after.png`)
-                  ?? screenshots.get(`screenshots/action-${prevPad}-before.png`);
-                if (prevAfter) {
-                  screenshots.set(`screenshots/action-${pad}-before.png`, prevAfter);
-                }
-              }
-            }
+            // No-screenshot actions (toBe assertions, query methods) are handled
+            // at render time via findNearestScreenshot() — copying blob URLs
+            // between map entries caused revocation of shared references.
             if (msg.hierarchyBefore) {
               hierarchies.set(`hierarchy/action-${pad}-before.xml`, msg.hierarchyBefore);
             }
@@ -720,11 +753,15 @@ function App() {
           treeRef.current.updateWatchEnabled(msg.filePath, false, msg.testFilter, msg.projectName);
         }
         break;
-      case 'device-info':
+      case 'device-info': {
         setDeviceSerial(msg.serial);
+        setDeviceIsEmulator(msg.isEmulator);
         if (msg.devicePixelRatio != null) setDeviceDpr(msg.devicePixelRatio);
+        const platform = msg.platform ?? inferDevicePlatform(msg.serial, msg.model);
+        if (platform) setDevicePlatform(platform);
         if (msg.tapsmithVersion) setTapsmithVersion(msg.tapsmithVersion);
         break;
+      }
       case 'workers-info':
         setWorkers(msg.workers.map((w) => ({
           ...w,
@@ -754,6 +791,7 @@ function App() {
         break;
       case 'error':
         console.error('[Tapsmith UI]', msg.message);
+        showError(msg.message);
         break;
 
       case 'mcp-status':
@@ -954,6 +992,32 @@ function App() {
     return isPending || isRunning ? 'Waiting for first action…' : undefined;
   }, [viewedTestNode, tree.pendingIds]);
 
+  const hasTrace = actionEvents.length > 0;
+  const isTestPending = !!viewedTestNode && (tree.pendingIds.has(viewedTestNode.id) || viewedTestNode.status === 'running');
+
+  const handleRunSelectedTest = useCallback(() => {
+    if (!viewedTestNode || viewedTestNode.type !== 'test') return;
+    handleSetPending(viewedTestNode.id);
+    handleSend({ type: 'run-test', fullName: viewedTestNode.fullName, filePath: viewedTestNode.filePath, projectName: viewedTestProject });
+  }, [viewedTestNode, viewedTestProject, handleSend, handleSetPending]);
+
+  const containerSummary = useMemo<ContainerSummary | undefined>(() => {
+    if (!viewedTestNode || viewedTestNode.type === 'test') return undefined;
+    return buildContainerSummary(viewedTestNode);
+  }, [viewedTestNode]);
+
+  const handleRunContainer = useCallback(() => {
+    if (!viewedTestNode || viewedTestNode.type === 'test') return;
+    handleSetPending(viewedTestNode.id);
+    if (viewedTestNode.type === 'project') {
+      handleSend({ type: 'run-project', projectName: viewedTestNode.name });
+    } else if (viewedTestNode.type === 'file') {
+      handleSend({ type: 'run-file', filePath: viewedTestNode.filePath, projectName: viewedTestProject });
+    } else {
+      handleSend({ type: 'run-test', fullName: viewedTestNode.fullName, filePath: viewedTestNode.filePath, projectName: viewedTestProject });
+    }
+  }, [viewedTestNode, viewedTestProject, handleSend, handleSetPending]);
+
   const handleDownloadTrace = useCallback(async () => {
     if (!viewedTestName || !currentTrace?.tracePath) return;
     try {
@@ -990,8 +1054,17 @@ function App() {
     }
   }, [viewedTestName, currentTrace]);
 
+  const filmstripCollapsed = !viewedTestNode || viewedTestNode.type !== 'test' || (!hasTrace && metadata.testStatus !== 'passed' && metadata.testStatus !== 'failed');
+
   return (
     <Layout
+      filmstripCollapsed={filmstripCollapsed}
+      errorBanner={errorMessage ? (
+        <div class="test-error-banner" onClick={() => setErrorMessage(null)}>
+          <span class="test-error-banner-icon">!</span>
+          <span class="test-error-banner-text">{errorMessage}</span>
+        </div>
+      ) : undefined}
       topBar={
         <RunControls
           connected={connected}
@@ -1045,6 +1118,12 @@ function App() {
           metadata={metadata}
           selectedIndex={selectedIndex}
           onSelect={handleActionPin}
+          hasTrace={hasTrace}
+          onRunTest={handleRunSelectedTest}
+          isTestPending={isTestPending}
+          nodeType={viewedTestNode?.type}
+          containerSummary={containerSummary}
+          onRunContainer={handleRunContainer}
         />
       }
       actionsPanel={
@@ -1063,28 +1142,6 @@ function App() {
       }
       screenshotPanel={
         <div class="ui-screen-area">
-          {(currentTrace?.tracePath || currentTrace?.videoPath) && (
-            <div class="ui-screen-header">
-              {currentTrace?.tracePath && (
-                <button
-                  class="ui-download-btn"
-                  onClick={handleDownloadTrace}
-                  title="Download trace for this test"
-                >
-                  {'\u2913'} Trace
-                </button>
-              )}
-              {currentTrace?.videoPath && (
-                <button
-                  class="ui-download-btn"
-                  onClick={handleDownloadVideo}
-                  title="Download video for this test"
-                >
-                  {'\u2913'} Video
-                </button>
-              )}
-            </div>
-          )}
           <div class="ui-screen-content">
             <ScreenshotPanel
               event={selectedEvent}
@@ -1094,9 +1151,20 @@ function App() {
               hoverBounds={hoverBounds}
               onScreenshotClick={pickMode ? handleScreenshotClick : undefined}
               onScreenshotHover={pickMode ? handleScreenshotHover : undefined}
+              nodeType={viewedTestNode?.type}
+              containerSummary={containerSummary}
+              onRunContainer={handleRunContainer}
               pickMode={pickMode}
               onPickModeToggle={handlePickToggle}
               devicePixelRatio={viewedTestDpr}
+              testName={metadata.testName}
+              testStatus={metadata.testStatus}
+              onDownloadTrace={currentTrace?.tracePath ? handleDownloadTrace : undefined}
+              onDownloadVideo={currentTrace?.videoPath ? handleDownloadVideo : undefined}
+              hasTrace={hasTrace}
+              onRunTest={handleRunSelectedTest}
+              isTestPending={isTestPending}
+              platform={viewedTestPlatform}
             />
           </div>
         </div>
@@ -1111,6 +1179,7 @@ function App() {
           onSelectDeviceView={handleSelectDeviceView}
           registerCanvas={registerCanvas}
           unregisterCanvas={unregisterCanvas}
+          platform={devicePlatform}
         />
       }
       mcpPanel={mcpPanelOpen ? (

@@ -16,6 +16,17 @@ import type { ActionCategory } from '../trace/types.js';
  * Sourced from a `lifecycle: 'started'` trace-event in UI mode; the static
  * trace-viewer (.zip archives) leaves this unset.
  */
+export interface ContainerSummary {
+  name: string
+  nodeType: 'suite' | 'file' | 'project'
+  totalTests: number
+  passed: number
+  failed: number
+  running: number
+  skipped: number
+  idle: number
+}
+
 export interface InFlightAction {
   actionIndex: number
   kind: 'action' | 'assertion'

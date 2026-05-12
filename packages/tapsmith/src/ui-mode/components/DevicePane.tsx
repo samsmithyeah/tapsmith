@@ -10,6 +10,7 @@
 import type { RefObject } from 'preact';
 import { useRef, useEffect } from 'preact/hooks';
 import type { WorkerInfo } from '../ui-protocol.js';
+import { inferDevicePlatform } from '../ui-protocol.js';
 import { DeviceMirror } from './DeviceMirror.js';
 
 interface DevicePaneProps {
@@ -21,6 +22,7 @@ interface DevicePaneProps {
   onSelectDeviceView: (mode: 'all' | number) => void
   registerCanvas: (workerId: number, canvas: HTMLCanvasElement) => void
   unregisterCanvas: (workerId: number) => void
+  platform?: 'android' | 'ios'
 }
 
 const DOT_CLASS: Record<WorkerInfo['status'], string> = {
@@ -32,14 +34,17 @@ const DOT_CLASS: Record<WorkerInfo['status'], string> = {
 };
 
 /** Canvas ref callback for the "All" grid — registers/unregisters with multi-mirror hook. */
-function WorkerCanvas({ workerId, label, connected, registerCanvas, unregisterCanvas }: {
+function WorkerCanvas({ workerId, label, deviceSerial, connected, registerCanvas, unregisterCanvas, platform }: {
   workerId: number
   label: string
+  deviceSerial: string
   connected: boolean
   registerCanvas: (id: number, canvas: HTMLCanvasElement) => void
   unregisterCanvas: (id: number) => void
+  platform?: 'android' | 'ios'
 }) {
   const ref = useRef<HTMLCanvasElement>(null);
+  const framePlatform = platform ?? inferDevicePlatform(label, deviceSerial);
 
   useEffect(() => {
     if (ref.current) {
@@ -49,8 +54,8 @@ function WorkerCanvas({ workerId, label, connected, registerCanvas, unregisterCa
   }, [workerId, registerCanvas, unregisterCanvas]);
 
   return (
-    <div class="device-pane-grid-item">
-      <div class="device-pane-grid-label">{label}</div>
+    <div class="device-body-item">
+      <div class="device-body-label">{label}</div>
       <div class="dm-viewport">
         {!connected && (
           <div class="dm-overlay">
@@ -70,7 +75,9 @@ function WorkerCanvas({ workerId, label, connected, registerCanvas, unregisterCa
             </div>
           </div>
         )}
-        <canvas ref={ref} class="dm-canvas" />
+        <div class={`dm-frame${framePlatform ? ` dm-skin-${framePlatform}` : ''}`}>
+          <canvas ref={ref} class="dm-canvas" />
+        </div>
       </div>
     </div>
   );
@@ -80,24 +87,32 @@ export function DevicePane({
   canvasRef,
   connected,
   workers,
-  selectedWorkerId: _selectedWorkerId,
+  selectedWorkerId,
   deviceViewMode,
   onSelectDeviceView,
   registerCanvas,
   unregisterCanvas,
+  platform,
 }: DevicePaneProps) {
   const hasWorkers = workers.length > 1;
+  const selectedWorker = workers.find((worker) => worker.workerId === selectedWorkerId);
+  const mirrorPlatform = selectedWorker
+    ? (selectedWorker.platform ?? inferDevicePlatform(selectedWorker.displayName, selectedWorker.deviceSerial) ?? platform)
+    : platform;
 
   return (
-    <div class="device-pane">
-      <div class="device-pane-header">
-        <span class="device-pane-header-title">Live device mirror</span>
+    <div class="device-col">
+      <div class="device-head">
+        <span class="device-head-title">Live device mirror</span>
+        <span class="device-head-meta">
+          <span class="dot running" />
+        </span>
       </div>
 
       {hasWorkers && (
-        <div class="device-pane-workers">
+        <div class="worker-tabs">
           <button
-            class={`device-pane-worker ${deviceViewMode === 'all' ? 'active' : ''}`}
+            class={`worker-tab ${deviceViewMode === 'all' ? 'active' : ''}`}
             onClick={() => onSelectDeviceView('all')}
           >
             All
@@ -105,11 +120,11 @@ export function DevicePane({
           {workers.map((w) => (
             <button
               key={w.workerId}
-              class={`device-pane-worker ${deviceViewMode === w.workerId ? 'active' : ''}`}
+              class={`worker-tab ${deviceViewMode === w.workerId ? 'active' : ''}`}
               onClick={() => onSelectDeviceView(w.workerId)}
               title={`${w.displayName} (${w.deviceSerial}) — ${w.status}`}
             >
-              <span class={`rc-dot ${connected ? DOT_CLASS[w.status] : 'error'}`} />
+              <span class={`dot ${connected ? DOT_CLASS[w.status] : 'error'}`} />
               {w.displayName}
             </button>
           ))}
@@ -124,14 +139,16 @@ export function DevicePane({
                 key={w.workerId}
                 workerId={w.workerId}
                 label={w.displayName}
+                deviceSerial={w.deviceSerial}
                 connected={connected}
                 registerCanvas={registerCanvas}
                 unregisterCanvas={unregisterCanvas}
+                platform={w.platform}
               />
             ))}
           </div>
         ) : (
-          <DeviceMirror canvasRef={canvasRef} connected={connected} />
+          <DeviceMirror canvasRef={canvasRef} connected={connected} platform={mirrorPlatform} />
         )}
       </div>
     </div>

@@ -10,9 +10,10 @@ import type { RefObject } from 'preact';
 interface DeviceMirrorProps {
   canvasRef: RefObject<HTMLCanvasElement>
   connected: boolean
+  platform?: 'android' | 'ios'
 }
 
-export function DeviceMirror({ canvasRef, connected }: DeviceMirrorProps) {
+export function DeviceMirror({ canvasRef, connected, platform }: DeviceMirrorProps) {
   return (
     <div class="device-mirror">
       <div class="dm-viewport">
@@ -35,10 +36,12 @@ export function DeviceMirror({ canvasRef, connected }: DeviceMirrorProps) {
             </div>
           </div>
         )}
-        <canvas
-          ref={canvasRef}
-          class="dm-canvas"
-        />
+        <div class={`dm-frame${platform ? ` dm-skin-${platform}` : ''}`}>
+          <canvas
+            ref={canvasRef}
+            class="dm-canvas"
+          />
+        </div>
       </div>
     </div>
   );

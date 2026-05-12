@@ -72,6 +72,24 @@ export function base64ToUtf8(base64: string): string {
   }
 }
 
+/**
+ * Walk backwards from `actionIndex` to find the nearest available screenshot.
+ * Used at render time so no-screenshot actions (e.g. toBe assertions, query
+ * methods) display a thumbnail without sharing blob URL references in the map.
+ */
+export function findNearestScreenshot(
+  screenshots: Map<string, string>,
+  actionIndex: number,
+): string | undefined {
+  for (let i = actionIndex - 1; i >= 0; i--) {
+    const pad = String(i).padStart(3, '0');
+    const url = screenshots.get(`screenshots/action-${pad}-after.png`)
+      ?? screenshots.get(`screenshots/action-${pad}-before.png`);
+    if (url) return url;
+  }
+  return undefined;
+}
+
 /** Revoke all blob URLs in a trace's screenshot map to free memory. */
 export function revokeTraceScreenshots(data: TestTraceData): void {
   for (const blobUrl of data.screenshots.values()) {

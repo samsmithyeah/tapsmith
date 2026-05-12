@@ -1516,7 +1516,11 @@ export async function runTestFile(
     workerFixtures,
     testFilePath: filePath,
     _abortFileController: abortFileController,
-    abortSignal: abortFileController?.signal ?? opts.abortSignal,
+    abortSignal: abortFileController
+      ? (opts.abortSignal
+        ? AbortSignal.any([abortFileController.signal, opts.abortSignal])
+        : abortFileController.signal)
+      : opts.abortSignal,
   };
 
   try {

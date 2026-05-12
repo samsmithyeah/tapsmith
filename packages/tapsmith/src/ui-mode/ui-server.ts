@@ -87,12 +87,19 @@ function cachedScreenScale(udid: string, platform?: 'android' | 'ios'): number |
 }
 
 /**
- * Resolve a worker's actual platform. In multi-bucket mode the root config's
- * platform may not match a worker's device (e.g. an iOS worker in a config
- * whose top-level platform is android), so prefer the per-device config.
+ * Resolve a device's configured platform. Initialized UI workers should use
+ * resolveWorkerPlatform() so the value matches the config that launched the
+ * worker daemon.
  */
 function resolveDevicePlatform(ctx: UIServerContext, udid: string): 'android' | 'ios' | undefined {
   return ctx.configByDevice?.get(udid)?.platform ?? ctx.config.platform;
+}
+
+function resolveWorkerPlatform(
+  ctx: UIServerContext,
+  worker: { deviceSerial: string; platform?: 'android' | 'ios' },
+): 'android' | 'ios' | undefined {
+  return worker.platform ?? resolveDevicePlatform(ctx, worker.deviceSerial);
 }
 
 // ─── Types ───
@@ -146,6 +153,8 @@ interface UIWorkerHandle {
   id: number
   process: ChildProcess
   deviceSerial: string
+  /** Effective platform used to launch this worker's daemon. */
+  platform?: 'android' | 'ios'
   /** Friendly display name, e.g. "iPhone 16 #1" for iOS or the serial for Android. */
   displayName: string
   daemonPort: number
@@ -164,6 +173,10 @@ interface UIWorkerHandle {
   bucketSignature?: string
 }
 
+interface UITestResultEntry extends TestResultEntry {
+  workerId?: number
+}
+
 // ─── UI Server ───
 
 export async function startUIServer(
@@ -177,7 +190,7 @@ export async function startUIServer(
   const runningFiles = new Map<string, { filePath: string; projectName?: string }>();
   let singleWorkerRunningTest: { fullName: string; filePath: string; projectName?: string } | null = null;
   const failedFiles = new Set<string>();
-  const testResults = new Map<string, TestResultEntry>();
+  const testResults = new Map<string, UITestResultEntry>();
   const traceBuffer: TraceEventMessage[] = [];
   const sourceBuffer = new Map<string, SourceMessage>();
   const networkBuffer: NetworkMessage[] = [];
@@ -645,7 +658,7 @@ export async function startUIServer(
     if (status === 'failed') failedFiles.add(filePath);
 
     const key = projectName ? `${projectName}::${fullName}` : fullName;
-    testResults.set(key, { fullName, filePath, status, duration, error, tracePath, videoPath, projectName });
+    testResults.set(key, { fullName, filePath, status, duration, error, tracePath, videoPath, projectName, workerId });
 
     broadcast({
       type: 'test-status',
@@ -1302,7 +1315,7 @@ export async function startUIServer(
         // In multi-bucket mode the root config's platform may not match this
         // worker's actual device, so prefer the per-worker config when set.
         const workerPlatform =
-          ctx.configByDevice?.get(serial)?.platform ?? ctx.config.platform;
+          uiWorkers.find((w) => w.deviceSerial === serial)?.platform ?? resolveDevicePlatform(ctx, serial);
         if (workerPlatform === 'ios') {
           if (!simulatorsCache) simulatorsCache = listSimulators();
           const simName = simulatorsCache.find((s) => s.udid === serial)?.name;
@@ -1424,6 +1437,7 @@ export async function startUIServer(
       id,
       process: child,
       deviceSerial,
+      platform: workerConfig.platform,
       displayName: deviceSerial,
       daemonPort,
       agentPort,
@@ -1518,6 +1532,7 @@ export async function startUIServer(
 
     await new Promise<void>((resolve, reject) => {
       let settled = false;
+      let initialDispatchDone = false;
       const dispatchListeners: Array<{ worker: UIWorkerHandle; messageHandler: (msg: UIWorkerChildMessage) => void; exitHandler: (code: number | null) => void }> = [];
 
       function settleResolve(): void {
@@ -1540,7 +1555,24 @@ export async function startUIServer(
           }
           return;
         }
-        if (fileQueue.length > 0) return;
+        if (fileQueue.length > 0) {
+          // Deadlock guard: every surviving worker is idle yet files
+          // remain — no worker can serve them. Drain and continue.
+          // Skip during initial dispatch — not all workers have been
+          // offered work yet.
+          if (!initialDispatchDone) return;
+          const allDone = activeWorkers.every((w) => w.retired || !w.busy);
+          if (allDone) {
+            for (const f of fileQueue.splice(0)) {
+              broadcastFileStatus(f.filePath, 'done', f.projectName);
+              failed++;
+              anyFailed = true;
+            }
+            broadcast({ type: 'error', message: 'Some test files could not be dispatched to any available worker' });
+          } else {
+            return;
+          }
+        }
         if (activeWorkers.every((w) => w.retired || !w.busy)) {
           settleResolve();
         }
@@ -1598,6 +1630,28 @@ export async function startUIServer(
         worker.process.send(msg);
       }
 
+      function drainUnservableFiles(remaining: UIWorkerHandle[]): TaggedFile[] {
+        if (remaining.length === 0) {
+          return fileQueue.splice(0);
+        }
+        if (!ctx.bucketByProject) return [];
+
+        const orphaned: TaggedFile[] = [];
+        let i = 0;
+        while (i < fileQueue.length) {
+          const f = fileQueue[i];
+          if (!f.projectName) { i++; continue; }
+          const sig = ctx.bucketByProject.get(f.projectName);
+          if (sig && !remaining.some((w) => w.bucketSignature === sig)) {
+            fileQueue.splice(i, 1);
+            orphaned.push(f);
+          } else {
+            i++;
+          }
+        }
+        return orphaned;
+      }
+
       function retireWorker(worker: UIWorkerHandle, reason: string): void {
         if (worker.retired) return;
         worker.retired = true;
@@ -1612,6 +1666,20 @@ export async function startUIServer(
         }
 
         const remaining = activeWorkers.filter((w) => !w.retired);
+
+        // Drain files that no surviving worker can serve (e.g. all iOS
+        // workers died while Android workers are still alive).
+        const orphaned = drainUnservableFiles(remaining);
+        for (const f of orphaned) {
+          broadcastFileStatus(f.filePath, 'done', f.projectName);
+          failed++;
+          anyFailed = true;
+        }
+        if (orphaned.length > 0) {
+          const names = orphaned.map((f) => path.basename(f.filePath)).join(', ');
+          broadcast({ type: 'error', message: `No remaining workers can run: ${names}` });
+        }
+
         if (remaining.length === 0) {
           settled = true;
           reject(new Error(`All workers became unavailable. Last failure: ${reason}`));
@@ -1667,6 +1735,7 @@ export async function startUIServer(
               const traceMsg: TraceEventMessage = {
                 type: 'trace-event',
                 testFullName: worker.currentTest ?? '',
+                workerId: worker.id,
                 projectName: worker.currentFile?.projectName,
                 event: msg.event,
                 lifecycle: msg.lifecycle,
@@ -1750,6 +1819,8 @@ export async function startUIServer(
 
         dispatchNext(worker);
       }
+      initialDispatchDone = true;
+      maybeResolve();
     });
 
     return { passed, failed, skipped, duration, anyFailed, failedProjectNames: failedProjectsInDispatch };
@@ -1952,9 +2023,11 @@ export async function startUIServer(
           // Replace in array
           uiWorkers[i] = newWorker;
         } catch (err) {
+          const errMsg = err instanceof Error ? err.message : String(err);
           console.error(
-            `${YELLOW}Failed to respawn worker ${worker.id}: ${err instanceof Error ? err.message : err}${RESET}`,
+            `${YELLOW}Failed to respawn worker ${worker.id}: ${errMsg}${RESET}`,
           );
+          broadcast({ type: 'error', message: `Worker ${worker.id} (${worker.deviceSerial}) failed to respawn: ${errMsg}` });
         }
       })());
     }
@@ -2515,14 +2588,15 @@ export async function startUIServer(
         {
           const worker = uiWorkers.find((w) => w.id === msg.workerId);
           if (worker) {
+            const platform = resolveWorkerPlatform(ctx, worker);
             broadcast({
               type: 'device-info',
               serial: worker.displayName || worker.deviceSerial,
               model: undefined,
               isEmulator: worker.deviceSerial.startsWith('emulator-'),
-              platform: resolveDevicePlatform(ctx, worker.deviceSerial),
+              platform,
               tapsmithVersion: TAPSMITH_VERSION,
-              devicePixelRatio: cachedScreenScale(worker.deviceSerial, resolveDevicePlatform(ctx, worker.deviceSerial)),
+              devicePixelRatio: cachedScreenScale(worker.deviceSerial, platform),
             });
           }
         }
@@ -2533,14 +2607,15 @@ export async function startUIServer(
           selectedWorkerId = msg.mode;
           const worker = uiWorkers.find((w) => w.id === msg.mode);
           if (worker) {
+            const platform = resolveWorkerPlatform(ctx, worker);
             broadcast({
               type: 'device-info',
               serial: worker.displayName || worker.deviceSerial,
               model: undefined,
               isEmulator: worker.deviceSerial.startsWith('emulator-'),
-              platform: resolveDevicePlatform(ctx, worker.deviceSerial),
+              platform,
               tapsmithVersion: TAPSMITH_VERSION,
-              devicePixelRatio: cachedScreenScale(worker.deviceSerial, resolveDevicePlatform(ctx, worker.deviceSerial)),
+              devicePixelRatio: cachedScreenScale(worker.deviceSerial, platform),
             });
           }
         }
@@ -2696,6 +2771,7 @@ export async function startUIServer(
         error: r.error,
         tracePath: r.tracePath,
         videoPath: r.videoPath,
+        workerId: r.workerId,
         projectName: r.projectName,
       } satisfies ServerMessage));
     }
@@ -2740,7 +2816,7 @@ export async function startUIServer(
       ws.send(JSON.stringify({
         type: 'workers-info',
         workers: uiWorkers.map((w) => {
-          const platform = resolveDevicePlatform(ctx, w.deviceSerial);
+          const platform = resolveWorkerPlatform(ctx, w);
           return {
             workerId: w.id,
             deviceSerial: w.deviceSerial,
@@ -2754,14 +2830,15 @@ export async function startUIServer(
       // Send device info for selected worker
       const selectedWorker = uiWorkers.find((w) => w.id === selectedWorkerId);
       if (selectedWorker) {
+        const platform = resolveWorkerPlatform(ctx, selectedWorker);
         ws.send(JSON.stringify({
           type: 'device-info',
           serial: selectedWorker.displayName || selectedWorker.deviceSerial,
           model: undefined,
           isEmulator: selectedWorker.deviceSerial.startsWith('emulator-'),
-          platform: resolveDevicePlatform(ctx, selectedWorker.deviceSerial),
+          platform,
           tapsmithVersion: TAPSMITH_VERSION,
-          devicePixelRatio: cachedScreenScale(selectedWorker.deviceSerial, resolveDevicePlatform(ctx, selectedWorker.deviceSerial)),
+          devicePixelRatio: cachedScreenScale(selectedWorker.deviceSerial, platform),
         } satisfies ServerMessage));
       }
 

@@ -10,7 +10,7 @@ Before you begin, make sure you have the following installed:
 
 | Requirement | Minimum version | How to check |
 |---|---|---|
-| Node.js | 18+ | `node --version` |
+| Node.js | 22+ | `node --version` |
 | ADB (Android Debug Bridge) | Any recent version | `adb --version` |
 | Android device or emulator | Android 8.0+ (API 26+) | `adb devices` |
 
@@ -22,7 +22,7 @@ when configured with `launchEmulators` and `avd`.
 
 | Requirement | Minimum version | How to check |
 |---|---|---|
-| Node.js | 18+ | `node --version` |
+| Node.js | 22+ | `node --version` |
 | Xcode | 15+ | `xcodebuild -version` |
 | iOS Simulator | iOS 17+ | `xcrun simctl list devices` |
 

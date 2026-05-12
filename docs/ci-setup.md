@@ -6,7 +6,7 @@ This guide covers running Tapsmith tests in continuous integration environments.
 
 To run Tapsmith tests in CI, you need:
 
-1. Node.js 18+ installed.
+1. Node.js 22+ installed.
 2. The Tapsmith daemon binary (installed automatically with `npm install tapsmith`).
 3. **Android**: An Android emulator running in headless mode and ADB on the PATH.
 4. **iOS**: A macOS runner with Xcode installed (simulators are managed by Tapsmith).

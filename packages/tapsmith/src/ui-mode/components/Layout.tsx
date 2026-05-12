@@ -15,6 +15,7 @@ import type { ComponentChildren } from 'preact';
 
 interface LayoutProps {
   topBar: ComponentChildren
+  errorBanner?: ComponentChildren
   testExplorer: ComponentChildren
   filmstrip: ComponentChildren
   actionsPanel: ComponentChildren
@@ -22,11 +23,14 @@ interface LayoutProps {
   detailTabs: ComponentChildren
   devicePane?: ComponentChildren
   mcpPanel?: ComponentChildren
+  layout?: 'three' | 'device-first' | 'focus'
+  filmstripCollapsed?: boolean
 }
 
-export function Layout({ topBar, testExplorer, filmstrip, actionsPanel, screenshotPanel, detailTabs, devicePane, mcpPanel }: LayoutProps) {
-  const [explorerWidth, setExplorerWidth] = usePersistedJSON('tapsmith-explorer-width', 260);
+export function Layout({ topBar, errorBanner, testExplorer, filmstrip, actionsPanel, screenshotPanel, detailTabs, devicePane, mcpPanel, layout = 'three', filmstripCollapsed }: LayoutProps) {
+  const [explorerWidth, setExplorerWidth] = usePersistedJSON('tapsmith-explorer-width', 280);
   const [actionsWidth, setActionsWidth] = usePersistedJSON('tapsmith-actions-width', 380);
+  const [filmstripHeight, setFilmstripHeight] = usePersistedJSON('tapsmith-filmstrip-height', 130);
   const [detailHeight, setDetailHeight] = usePersistedJSON('tapsmith-detail-height', 250);
   const [deviceWidth, setDeviceWidth] = usePersistedJSON('tapsmith-device-width', 300);
 
@@ -59,10 +63,8 @@ export function Layout({ topBar, testExplorer, filmstrip, actionsPanel, screensh
 
   const handleExplorerResize = useCallback(
     (e: MouseEvent) => {
-      // Cap against the window so sibling panes retain at least ~300px, but
-      // otherwise let the user drag the explorer as wide as they like.
-      const max = Math.max(180, window.innerWidth - 300);
-      makeColResize(() => explorerWidth, setExplorerWidth, 180, max)(e);
+      const max = Math.max(270, window.innerWidth - 300);
+      makeColResize(() => explorerWidth, setExplorerWidth, 270, max)(e);
     },
     [explorerWidth, makeColResize],
   );
@@ -83,8 +85,6 @@ export function Layout({ topBar, testExplorer, filmstrip, actionsPanel, screensh
     const startHeight = detailHeight;
     const onMove = (ev: MouseEvent) => {
       const delta = startY - ev.clientY;
-      // Cap against the window so the top panes keep at least ~100px of
-      // height, but otherwise let the user drag as tall as they want.
       const max = Math.max(100, window.innerHeight - 100);
       setDetailHeight(Math.max(100, Math.min(max, startHeight + delta)));
     };
@@ -100,9 +100,32 @@ export function Layout({ topBar, testExplorer, filmstrip, actionsPanel, screensh
     document.addEventListener('mouseup', onUp);
   }, [detailHeight]);
 
+  const handleFilmstripResize = useCallback((e: MouseEvent) => {
+    e.preventDefault();
+    const startY = e.clientY;
+    const startHeight = filmstripHeight;
+    const onMove = (ev: MouseEvent) => {
+      const delta = ev.clientY - startY;
+      setFilmstripHeight(Math.max(60, Math.min(300, startHeight + delta)));
+    };
+    const onUp = () => {
+      document.removeEventListener('mousemove', onMove);
+      document.removeEventListener('mouseup', onUp);
+      document.body.style.cursor = '';
+      document.body.style.userSelect = '';
+    };
+    document.body.style.cursor = 'row-resize';
+    document.body.style.userSelect = 'none';
+    document.addEventListener('mousemove', onMove);
+    document.addEventListener('mouseup', onUp);
+  }, [filmstripHeight]);
+
+  const showDevice = layout !== 'focus' && devicePane;
+
   return (
     <div class="ui-layout">
       <div class="ui-topbar">{topBar}</div>
+      {errorBanner}
       <div class="ui-body">
         {/* Left: Test Explorer */}
         <div class="ui-explorer" style={{ width: `${explorerWidth}px`, minWidth: `${explorerWidth}px` }}>
@@ -113,7 +136,10 @@ export function Layout({ topBar, testExplorer, filmstrip, actionsPanel, screensh
         {/* Content area */}
         <div class="ui-content">
           {/* Timeline filmstrip */}
-          <div class="ui-filmstrip">{filmstrip}</div>
+          <div class="ui-filmstrip" style={filmstripCollapsed
+            ? { height: '38px', minHeight: '38px' }
+            : { height: `${filmstripHeight}px`, minHeight: `${filmstripHeight}px`, '--filmstrip-h': `${filmstripHeight}px` } as Record<string, string>}>{filmstrip}</div>
+          {!filmstripCollapsed && <div class="ui-resize-handle ui-resize-row" onMouseDown={handleFilmstripResize} />}
 
           {/* Middle: Actions + Screenshot */}
           <div class="ui-middle">
@@ -134,7 +160,7 @@ export function Layout({ topBar, testExplorer, filmstrip, actionsPanel, screensh
         </div>
 
         {/* Right: Device pane + optional MCP panel */}
-        {devicePane && (
+        {showDevice && (
           <>
             <div class="ui-resize-handle ui-resize-col" onMouseDown={handleDeviceResize} />
             <div class="ui-right-column" style={{ width: `${deviceWidth}px`, minWidth: `${deviceWidth}px` }}>
