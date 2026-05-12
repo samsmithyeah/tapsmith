@@ -1,8 +1,8 @@
 /**
  * Dot reporter — minimal CI output.
  *
- * Outputs a single character per test: · for passed, F for failed,
- * × for skipped. Auto-selected when running in CI environments.
+ * Outputs a single character per test: · passed, F failed, ° skipped,
+ * × retried, ± flaky (passed on retry). Auto-selected in CI.
  *
  * @see PILOT-69
  */
@@ -38,17 +38,25 @@ export class DotReporter implements TapsmithReporter {
 
   onTestEnd(test: TestResult): void {
     let char: string;
-    switch (test.status) {
-      case 'passed':
-        char = green('·');
-        break;
-      case 'failed':
-        char = red('F');
-        this._failed.push(test);
-        break;
-      case 'skipped':
-        char = yellow('×');
-        break;
+    if (test._willRetry) {
+      // Intermediate failure that will be retried
+      char = yellow('×');
+    } else if (test.status === 'passed' && test.retry != null && test.retry > 0) {
+      // Flaky: passed on retry
+      char = yellow('±');
+    } else {
+      switch (test.status) {
+        case 'passed':
+          char = green('·');
+          break;
+        case 'failed':
+          char = red('F');
+          this._failed.push(test);
+          break;
+        case 'skipped':
+          char = yellow('°');
+          break;
+      }
     }
 
     process.stdout.write(char);

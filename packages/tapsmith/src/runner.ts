@@ -121,6 +121,8 @@ export interface TestResult {
   project?: string;
   /** Zero-based attempt number on which this result was recorded (omitted for first run). */
   retry?: number;
+  /** @internal True when this result represents a failed attempt that will be retried. */
+  _willRetry?: boolean;
 }
 
 export interface SuiteResult {
@@ -1311,6 +1313,19 @@ async function runSuiteContext(
       }
 
       if (status === 'passed' || attempt === maxRetries || opts.abortSignal?.aborted) break;
+
+      // Report the intermediate failure so reporters can show each attempt
+      opts.reporter?.onTestEnd?.({
+        name: entry.name,
+        fullName,
+        status,
+        durationMs: Date.now() - attemptStart,
+        error,
+        screenshotPath,
+        project: opts.projectName,
+        retry: attempt,
+        _willRetry: true,
+      });
     }
 
     const testResult: TestResult = {

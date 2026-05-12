@@ -901,9 +901,12 @@ describe('retries', () => {
       config: makeConfig({ retries: 1 }),
       reporter: { onTestEnd: (t: TestResult) => { reported.push(t); } },
     }));
-    expect(reported).toHaveLength(1);
-    expect(reported[0].status).toBe('passed');
-    expect(reported[0].retry).toBe(1);
+    expect(reported).toHaveLength(2);
+    expect(reported[0].status).toBe('failed');
+    expect(reported[0]._willRetry).toBe(true);
+    expect(reported[0].retry).toBe(0);
+    expect(reported[1].status).toBe('passed');
+    expect(reported[1].retry).toBe(1);
   });
 
   it('uses test.use({ retries }) to override config retries', async () => {

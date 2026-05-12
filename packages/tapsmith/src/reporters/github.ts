@@ -10,7 +10,7 @@
 
 import type { TapsmithReporter, FullResult } from '../reporter.js';
 import type { TestResult } from '../runner.js';
-import { formatSummaryLine, countFlaky } from './base.js';
+import { countFlaky } from './base.js';
 
 export class GitHubActionsReporter implements TapsmithReporter {
   onTestEnd(test: TestResult): void {
@@ -66,8 +66,6 @@ export class GitHubActionsReporter implements TapsmithReporter {
       }
     }
 
-    // Also print a plain summary line to stdout
-    process.stdout.write('\n' + formatSummaryLine(passed, failed, skipped, result.duration, result.setupDuration, flaky) + '\n\n');
   }
 }
 
