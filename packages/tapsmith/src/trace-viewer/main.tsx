@@ -141,9 +141,9 @@ function inferPlatform(metadata: TraceMetadata): "android" | "ios" | undefined {
   if (/ios|iphone|ipad|simulator/i.test(text)) return "ios";
   if (/android|emulator-|pixel|nexus|galaxy|generic_phone|avd/i.test(text))
     return "android";
-  // UUID-format serial (8-4-4-4-12 hex) is characteristic of iOS UDIDs
+  // iOS UDIDs: standard UUID (simulators), 40-char hex, or 8-16 hex (physical)
   if (
-    /^[0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{12}$/i.test(
+    /^[0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{12}$|^[0-9A-F]{40}$|^[0-9A-F]{8}-[0-9A-F]{16}$/i.test(
       metadata.device.serial,
     )
   )
@@ -218,7 +218,10 @@ function App() {
           setTrace(data);
           setLoading(false);
           const actionParam = params.get("action");
-          if (actionParam) setPinnedIndex(parseInt(actionParam, 10));
+          if (actionParam) {
+            const idx = parseInt(actionParam, 10);
+            if (!isNaN(idx)) setPinnedIndex(idx);
+          }
         })
         .catch((err) => {
           setError(err.message);
@@ -370,10 +373,14 @@ function App() {
     );
   }
 
-  // Resizable panel sizes (must be before conditional returns — rules of hooks)
-  const [leftWidth, setLeftWidth] = useState(280);
-  const [filmstripHeight, setFilmstripHeight] = useState(130);
-  const [rightWidth, setRightWidth] = useState(580);
+  // Resizable panel sizes — persisted in localStorage
+  const [leftWidth, setLeftWidth] = useState(() => parseInt(localStorage.getItem('tapsmith-tv-left') ?? '280', 10));
+  const [filmstripHeight, setFilmstripHeight] = useState(() => parseInt(localStorage.getItem('tapsmith-tv-filmstrip') ?? '130', 10));
+  const [rightWidth, setRightWidth] = useState(() => parseInt(localStorage.getItem('tapsmith-tv-right') ?? '580', 10));
+
+  useEffect(() => { localStorage.setItem('tapsmith-tv-left', String(leftWidth)); }, [leftWidth]);
+  useEffect(() => { localStorage.setItem('tapsmith-tv-filmstrip', String(filmstripHeight)); }, [filmstripHeight]);
+  useEffect(() => { localStorage.setItem('tapsmith-tv-right', String(rightWidth)); }, [rightWidth]);
 
   const handleLeftResize = useCallback((delta: number) => {
     const max = Math.max(180, window.innerWidth - 500);
@@ -460,7 +467,8 @@ function App() {
             height: `${filmstripHeight}px`,
             flexShrink: 0,
             "--filmstrip-h": `${filmstripHeight}px`,
-          } as Record<string, string>
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          } as any
         }
       >
         <TimelineFilmstrip
