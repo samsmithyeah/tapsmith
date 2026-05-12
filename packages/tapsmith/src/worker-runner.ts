@@ -286,7 +286,7 @@ async function handleRunFile(
     } catch (resetErr) {
       if (!isRecoverableInfrastructureError(resetErr)) throw resetErr;
       process.stderr.write(
-        `Worker ${workerId}: Recovering after file-reset failure for ${path.basename(filePath)}: ${resetErr instanceof Error ? resetErr.message : resetErr}\n`,
+        `Worker ${workerId}: Recovering after file-reset failure for ${path.basename(filePath)}: ${resetErr instanceof Error ? resetErr.message : String(resetErr)}\n`,
       );
       await recoverFileSession(filePath, resetErr);
     }

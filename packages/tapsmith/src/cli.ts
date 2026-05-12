@@ -2069,7 +2069,7 @@ async function main(): Promise<void> {
             } catch (err) {
               if (isRecoverableInfrastructureError(err)) {
                 process.stderr.write(
-                  dim(`Recovering session after reset failure before ${path.basename(file)}: ${err instanceof Error ? err.message : err}\n`),
+                  dim(`Recovering session after reset failure before ${path.basename(file)}: ${err instanceof Error ? err.message : String(err)}\n`),
                 );
                 try {
                   await launchConfiguredApp(resetCtx, `recovery for reset before ${path.basename(file)}`, { allowSoftReset: false });
@@ -2086,7 +2086,18 @@ async function main(): Promise<void> {
             }
             if (!resetOk) {
               console.error(red(`Failed to reset app before ${path.basename(file)}, skipping file.`));
+              reporter.onTestFileStart(file);
+              const skippedResult: TestResult = {
+                name: path.basename(file),
+                fullName: path.basename(file),
+                status: 'skipped',
+                durationMs: 0,
+                project: project.name,
+              };
+              allResults.push(skippedResult);
+              reporter.onTestFileEnd(file, [skippedResult]);
               sequentialExitCode = 1;
+              projectFailed = true;
               continue;
             }
           }
