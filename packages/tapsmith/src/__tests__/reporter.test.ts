@@ -314,7 +314,7 @@ describe('DotReporter', () => {
     const stripped = raw.replace(/\x1b\[\d+m/g, '');
     expect(stripped).toContain('·');
     expect(stripped).toContain('F');
-    expect(stripped).toContain('°');
+    expect(stripped).toContain('○');
   });
 
   it('prints failure summary on onRunEnd', () => {

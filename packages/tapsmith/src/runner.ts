@@ -797,6 +797,7 @@ async function runSuiteContext(
     const videoConfig = resolveVideoConfig(opts.config.video);
 
     for (let attempt = 0; attempt <= maxRetries; attempt++) {
+      if (attempt > 0 && opts.abortSignal?.aborted) break;
       const attemptStart = Date.now();
       // Reset per-attempt state. Only the final attempt's artifacts are
       // reported — prior attempt traces/videos are retained on disk via
