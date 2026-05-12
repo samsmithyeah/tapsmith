@@ -397,14 +397,13 @@ function App() {
   const [filmstripHeight, setFilmstripHeight] = useState(() => parseInt(localStorage.getItem('tapsmith-tv-filmstrip') || '130', 10) || 130);
   const [rightWidth, setRightWidth] = useState(() => parseInt(localStorage.getItem('tapsmith-tv-right') || '580', 10) || 580);
 
-  const persistTimerRef = useRef<ReturnType<typeof setTimeout>>();
   useEffect(() => {
-    clearTimeout(persistTimerRef.current);
-    persistTimerRef.current = setTimeout(() => {
+    const timer = setTimeout(() => {
       localStorage.setItem('tapsmith-tv-left', String(leftWidth));
       localStorage.setItem('tapsmith-tv-filmstrip', String(filmstripHeight));
       localStorage.setItem('tapsmith-tv-right', String(rightWidth));
     }, 300);
+    return () => clearTimeout(timer);
   }, [leftWidth, filmstripHeight, rightWidth]);
 
   const handleLeftResize = useCallback((delta: number) => {
@@ -440,7 +439,7 @@ function App() {
     [currentHierarchyXml],
   );
 
-  const dpr = trace.metadata.device.devicePixelRatio ?? 1;
+  const dpr = trace.metadata.device?.devicePixelRatio ?? 1;
 
   const handleScreenshotClick = useCallback(
     (point: { x: number; y: number }) => {
@@ -531,7 +530,7 @@ function App() {
           onScreenshotHover={pickMode ? handleScreenshotHover : undefined}
           pickMode={pickMode}
           onPickModeToggle={handlePickToggle}
-          devicePixelRatio={trace.metadata.device.devicePixelRatio}
+          devicePixelRatio={trace.metadata.device?.devicePixelRatio}
           nodeType="test"
           hasTrace={true}
           testName={trace.metadata.testName}
