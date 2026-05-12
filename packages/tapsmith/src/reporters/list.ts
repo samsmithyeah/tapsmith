@@ -15,9 +15,11 @@ import {
   dim,
   bold,
   red,
+  yellow,
   formatDuration,
   formatError,
   formatSummaryLine,
+  countFlaky,
   workerTag,
   projectTag,
 } from './base.js';
@@ -50,6 +52,16 @@ export class ListReporter implements TapsmithReporter {
   }
 
   onTestEnd(test: TestResult): void {
+    // Intermediate retry failures: show with ✗ but don't advance the counter
+    if (test._willRetry) {
+      const duration = dim(`(${formatDuration(test.durationMs)})`);
+      const counter = dim(`[${this._testIndex + 1}]`);
+      const worker = this._multipleWorkers ? workerTag(test.workerIndex) : '';
+      const project = this._showProjectTags ? projectTag(test.project) : '';
+      process.stdout.write(`  ${red('✗')} ${counter} ${worker}${project}${test.fullName} ${duration}\n`);
+      return;
+    }
+
     this._testIndex++;
     this._totalTests++;
 
@@ -89,8 +101,20 @@ export class ListReporter implements TapsmithReporter {
     const passed = result.tests.filter((t) => t.status === 'passed').length;
     const failed = result.tests.filter((t) => t.status === 'failed').length;
     const skipped = result.tests.filter((t) => t.status === 'skipped').length;
+    const flaky = countFlaky(result.tests);
 
     process.stdout.write('\n');
+
+    // Print flaky test list (tests that failed then passed on retry)
+    if (flaky > 0) {
+      const flakyTests = result.tests.filter((t) => t.status === 'passed' && t.retry != null && t.retry > 0);
+      process.stdout.write(`  ${yellow(`${flaky} flaky`)}\n`);
+      for (const test of flakyTests) {
+        const worker = this._multipleWorkers ? workerTag(test.workerIndex) : '';
+        const project = this._showProjectTags ? projectTag(test.project) : '';
+        process.stdout.write(`    ${worker}${project}${test.fullName}\n`);
+      }
+    }
 
     // Print failure summary if there are failures
     if (failed > 0) {
@@ -115,6 +139,6 @@ export class ListReporter implements TapsmithReporter {
       }
     }
 
-    process.stdout.write(formatSummaryLine(passed, failed, skipped, result.duration, result.setupDuration) + '\n\n');
+    process.stdout.write(formatSummaryLine(passed, failed, skipped, result.duration, result.setupDuration, flaky) + '\n\n');
   }
 }

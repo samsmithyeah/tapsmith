@@ -75,6 +75,9 @@ export class JUnitReporter implements TapsmithReporter {
           if (test.workerIndex != null) {
             props.push(`<property name="workerIndex" value="${test.workerIndex}"/>`);
           }
+          if (test.retry != null) {
+            props.push(`<property name="retry" value="${test.retry}"/>`);
+          }
           if (props.length > 0) {
             lines.push(`      <properties>${props.join('')}</properties>`);
           }

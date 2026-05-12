@@ -19,6 +19,7 @@ import {
   formatDuration,
   formatError,
   formatSummaryLine,
+  countFlaky,
   workerTag,
   projectTag,
 } from './base.js';
@@ -72,6 +73,7 @@ export class LineReporter implements TapsmithReporter {
     const passed = result.tests.filter((t) => t.status === 'passed').length;
     const failed = result.tests.filter((t) => t.status === 'failed').length;
     const skipped = result.tests.filter((t) => t.status === 'skipped').length;
+    const flaky = countFlaky(result.tests);
 
     // Clear the progress line
     if (this._isTTY) {
@@ -92,6 +94,6 @@ export class LineReporter implements TapsmithReporter {
       }
     }
 
-    process.stdout.write(formatSummaryLine(passed, failed, skipped, result.duration, result.setupDuration) + '\n\n');
+    process.stdout.write(formatSummaryLine(passed, failed, skipped, result.duration, result.setupDuration, flaky) + '\n\n');
   }
 }

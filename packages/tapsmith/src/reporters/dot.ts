@@ -1,8 +1,8 @@
 /**
  * Dot reporter — minimal CI output.
  *
- * Outputs a single character per test: · for passed, F for failed,
- * × for skipped. Auto-selected when running in CI environments.
+ * Outputs a single character per test: · passed, F failed, ○ skipped,
+ * × retried, ± flaky (passed on retry). Auto-selected in CI.
  *
  * @see PILOT-69
  */
@@ -17,6 +17,7 @@ import {
   bold,
   formatError,
   formatSummaryLine,
+  countFlaky,
   workerTag,
   projectTag,
 } from './base.js';
@@ -37,17 +38,25 @@ export class DotReporter implements TapsmithReporter {
 
   onTestEnd(test: TestResult): void {
     let char: string;
-    switch (test.status) {
-      case 'passed':
-        char = green('·');
-        break;
-      case 'failed':
-        char = red('F');
-        this._failed.push(test);
-        break;
-      case 'skipped':
-        char = yellow('×');
-        break;
+    if (test._willRetry) {
+      // Intermediate failure that will be retried
+      char = yellow('×');
+    } else if (test.status === 'passed' && test.retry != null && test.retry > 0) {
+      // Flaky: passed on retry
+      char = yellow('±');
+    } else {
+      switch (test.status) {
+        case 'passed':
+          char = green('·');
+          break;
+        case 'failed':
+          char = red('F');
+          this._failed.push(test);
+          break;
+        case 'skipped':
+          char = yellow('○');
+          break;
+      }
     }
 
     process.stdout.write(char);
@@ -63,6 +72,7 @@ export class DotReporter implements TapsmithReporter {
     const passed = result.tests.filter((t) => t.status === 'passed').length;
     const failed = result.tests.filter((t) => t.status === 'failed').length;
     const skipped = result.tests.filter((t) => t.status === 'skipped').length;
+    const flaky = countFlaky(result.tests);
 
     // End the dot line
     if (this._column > 0) {
@@ -83,6 +93,6 @@ export class DotReporter implements TapsmithReporter {
       }
     }
 
-    process.stdout.write(formatSummaryLine(passed, failed, skipped, result.duration, result.setupDuration) + '\n\n');
+    process.stdout.write(formatSummaryLine(passed, failed, skipped, result.duration, result.setupDuration, flaky) + '\n\n');
   }
 }

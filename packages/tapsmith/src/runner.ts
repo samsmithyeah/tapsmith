@@ -119,6 +119,10 @@ export interface TestResult {
   workerIndex?: number;
   /** Project name this test belongs to (only set when projects are configured). */
   project?: string;
+  /** Zero-based attempt number on which this result was recorded (omitted for first run). */
+  retry?: number;
+  /** @internal True when this result represents a failed attempt that will be retried. */
+  _willRetry?: boolean;
 }
 
 export interface SuiteResult {
@@ -787,515 +791,541 @@ async function runSuiteContext(
     // it exceeds the default, so tests that need more time actually get it.
     const defaultTestTimeoutMs = opts.config.timeout * 3;
     const testTimeoutMs = scopeTimeout ? Math.max(defaultTestTimeoutMs, scopeTimeout) : defaultTestTimeoutMs;
-
-    // Trace recording — start if configured
+    const maxRetries = opts.config.retries;
+    let lastAttempt = 0;
     const traceConfig = resolveTraceConfig(opts.config.trace);
-    const attempt = 0; // TODO: wire up retry count when retries are implemented
-    const recording = shouldRecord(traceConfig.mode, attempt);
-    let traceCollector: TraceCollector | null = null;
-
-    if (recording && opts.device) {
-      const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tapsmith-trace-'));
-      traceCollector = opts.device.tracing._startManaged(traceConfig, tempDir);
-      setActiveTraceCollector(traceCollector);
-
-      // Offset action index so per-test actions don't collide with beforeAll
-      if (beforeAllActionCount > 0) {
-        traceCollector.setActionIndexOffset(beforeAllActionCount);
-      }
-
-      // Start network capture if configured. PILOT-182: iOS traffic
-      // routing is now fully owned by tapsmith-core via the macOS Network
-      // Extension redirector, so there's no CLI-side proxy setup.
-      //
-      // The daemon may surface a non-fatal warning (e.g. "SE not approved
-      // — run tapsmith setup-ios") via the `errorMessage` field even when
-      // `success` is true and the proxy port was allocated. We log it
-      // loudly (once per run — same failure applies to every test) so
-      // users whose trace has no network entries know exactly why and
-      // exactly what to do.
-      if (traceConfig.network) {
-        try {
-          const res = await opts.device._startNetworkCapture();
-          if (!res.success && res.errorMessage) {
-            _warnCaptureOnce('Network capture disabled', res.errorMessage);
-          } else if (res.errorMessage) {
-            _warnCaptureOnce('Network capture warning', res.errorMessage);
-          }
-        } catch (err) {
-          _warnCaptureOnce(
-            'Network capture failed to start',
-            err instanceof Error ? err.message : String(err),
-          );
-        }
-      }
-
-      // Start device log streaming if configured
-      if (traceConfig.deviceLogs && traceCollector) {
-        try {
-          opts.device._startDeviceLogStream(traceCollector);
-        } catch (err) {
-          _warnCaptureOnce(
-            'Device log streaming failed to start',
-            err instanceof Error ? err.message : String(err),
-          );
-        }
-      }
-    }
-
-    // Video recording — bracket the test the same way `trace` does (PILOT-114).
-    // Recording happens regardless of whether trace is enabled. Failures
-    // here are surfaced via _warnCaptureOnce and never abort the run; the
-    // daemon already returns structured errors in `errorMessage` rather
-    // than throwing for missing-ffmpeg / unmatched-AVF-device cases.
     const videoConfig = resolveVideoConfig(opts.config.video);
-    const videoRecording = shouldRecord(videoConfig.mode, attempt);
-    if (videoRecording && opts.device) {
-      try {
-        const res = await opts.device._startVideoRecording(
-          videoConfig.size ? { size: videoConfig.size } : undefined,
-        );
-        if (!res.success) {
-          _warnCaptureOnce(
-            'Video recording failed to start',
-            res.errorMessage || 'unknown error',
-          );
+
+    for (let attempt = 0; attempt <= maxRetries; attempt++) {
+      if (attempt > 0 && opts.abortSignal?.aborted) break;
+      const attemptStart = Date.now();
+      // Reset per-attempt state. Only the final attempt's artifacts are
+      // reported — prior attempt traces/videos are retained on disk via
+      // shouldRetain() but not linked from the TestResult.
+      status = 'passed';
+      error = undefined;
+      screenshotPath = undefined;
+      tracePath = undefined;
+      videoPath = undefined;
+      lastAttempt = attempt;
+
+      // Trace recording — start if configured
+      const recording = shouldRecord(traceConfig.mode, attempt);
+      let traceCollector: TraceCollector | null = null;
+
+      if (recording && opts.device) {
+        const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tapsmith-trace-'));
+        traceCollector = opts.device.tracing._startManaged(traceConfig, tempDir);
+        setActiveTraceCollector(traceCollector);
+
+        // Offset action index so per-test actions don't collide with beforeAll
+        if (beforeAllActionCount > 0) {
+          traceCollector.setActionIndexOffset(beforeAllActionCount);
         }
-      } catch (err) {
-        _warnCaptureOnce(
-          'Video recording failed to start',
-          err instanceof Error ? err.message : String(err),
-        );
-      }
-    }
 
-    // Create request fixture outside try so it's accessible in trace finalization
-    const requestContext = new APIRequestContext({
-      baseURL: opts.config.baseURL,
-      extraHTTPHeaders: opts.config.extraHTTPHeaders,
-    });
-
-    try {
-      // ── Setup phase (not subject to test timeout) ──
-      // Hooks and fixture resolution run outside the test timeout so that
-      // slow operations like restartApp() under heavy load don't eat into
-      // the budget for the actual test assertions.
-
-      // Notify UI mode (lightweight, no device actions) so subsequent trace
-      // events can be tagged to this test. Must run before the group starts
-      // so the test-start message arrives before any group-start events.
-      // Skip when this is the first test and we already fired test-start
-      // before beforeAll — firing it twice makes the client wipe the
-      // beforeAll events that streamed live in the meantime, which is why
-      // the "beforeAll Hooks" section seemed to disappear in UI mode.
-      if (opts.onTestStart && fullName !== beforeAllFirstFullName) {
-        await opts.onTestStart(fullName);
-      }
-
-      // Replay beforeAll events into this test's trace stream.
-      // For the first test (which received beforeAll's live-streamed events),
-      // skip replay to avoid duplicates.
-      if (fullName !== beforeAllFirstFullName && savedBeforeAllEvents.length > 0 && traceCollector) {
-        replayBeforeAllEvents(traceCollector, savedBeforeAllEvents, beforeAllCollector, beforeAllHierarchies);
-      }
-
-      // Open the beforeEach group before running setup work and hooks.
-      // Heavy setup (session readiness, idle waits, user beforeEach hooks)
-      // is captured inside this group so device actions don't appear as
-      // ungrouped top-level events in the trace viewer.
-      const hasBeforeEachWork =
-        !!opts.beforeEachTest || !!opts.device || allBeforeEach.length > 0;
-      if (hasBeforeEachWork) {
-        traceCollector?.startGroup('beforeEach Hooks');
-      }
-
-      // Setup work that may issue device actions (e.g. ensureSessionReady
-      // in UI worker mode). Runs inside the beforeEach group.
-      if (opts.beforeEachTest) {
-        await opts.beforeEachTest(fullName);
-      }
-
-      // Wait for the device to be idle before each test. This ensures
-      // previous test actions (toasts, animations, async operations) have
-      // settled before hooks and assertions start, preventing flakiness
-      // under load (e.g. parallel workers sharing host CPU).
-      if (opts.device) {
-        try {
-          await opts.device.waitForIdle();
-        } catch {
-          // Best effort — don't fail the test if idle wait times out
-        }
-      }
-
-      for (const hook of allBeforeEach) {
-        await invokeHook(hook, opts.device, opts.projectName);
-      }
-      if (hasBeforeEachWork) {
-        traceCollector?.endGroup();
-      }
-
-      // Build fixture context: base (device + request) + worker-scoped + test-scoped
-      const registry = getFixtureRegistry();
-      const baseFixtures: Record<string, unknown> = {
-        ...(opts.device ? { device: opts.device } : {}),
-        request: requestContext,
-        ...(opts.projectName != null ? { projectName: opts.projectName } : {}),
-        platform: resolvePlatformFixture(opts.config),
-        ...(opts.workerFixtures ?? {}),
-      };
-
-      let testFixtureTeardown: (() => Promise<void>) | undefined;
-      let allFixtures = baseFixtures;
-
-      if (!registry.isEmpty) {
-        const resolved = await resolveFixtures(registry, 'test', baseFixtures);
-        allFixtures = resolved.fixtures;
-        testFixtureTeardown = resolved.teardown;
-      }
-
-      // ── Test body (subject to test timeout) ──
-      const testFn = async () => {
-        traceCollector?.startGroup('Test');
-        try {
-          // Call with fixtures if the test function expects arguments
-          if (entry.fn.length > 0) {
-            await (entry.fn as (fixtures: Record<string, unknown>) => void | Promise<void>)(allFixtures);
-          } else {
-            await (entry.fn as () => void | Promise<void>)();
-          }
-        } finally {
-          traceCollector?.endGroup();
-          if (testFixtureTeardown) {
-            await testFixtureTeardown();
-          }
-          requestContext.dispose();
-        }
-      };
-
-      // Wrap only the test body with a timeout — hooks run outside this
-      // so slow setup (restartApp, navigation) under load doesn't cause
-      // spurious timeouts.
-      let testTimer: ReturnType<typeof setTimeout>;
-      await Promise.race([
-        testFn().finally(() => clearTimeout(testTimer)),
-        new Promise<never>((_, reject) => {
-          testTimer = setTimeout(() => reject(new Error(
-            `Test timed out after ${testTimeoutMs}ms`
-          )), testTimeoutMs);
-        }),
-      ]);
-    } catch (err) {
-      status = 'failed';
-      error = err instanceof Error ? err : new Error(String(err));
-
-      // Fail any in-flight traced action/assertion so it appears in the trace
-      traceCollector?.failPendingOperation(error.message);
-
-      // If a WebView/CDP operation is the thing that hit the runner timeout,
-      // close it before screenshot/network teardown so stale async work does
-      // not bleed into the next test.
-      if (error.message.startsWith('Test timed out after ') && opts.device?._disposeWebViewManager) {
-        await opts.device._disposeWebViewManager();
-      }
-
-      // Screenshot on failure
-      if (opts.config.screenshot !== 'never') {
-        screenshotPath = await captureFailureScreenshot(
-          opts.device,
-          opts.screenshotDir,
-          fullName,
-        );
-      }
-    } finally {
-      // Ensure request fixture is cleaned up even if hooks threw before the test body
-      requestContext.dispose();
-
-      // Run afterEach hooks (always)
-      if (allAfterEach.length > 0) {
-        traceCollector?.startGroup('afterEach Hooks');
-        for (const hook of allAfterEach) {
+        // Start network capture if configured. PILOT-182: iOS traffic
+        // routing is now fully owned by tapsmith-core via the macOS Network
+        // Extension redirector, so there's no CLI-side proxy setup.
+        //
+        // The daemon may surface a non-fatal warning (e.g. "SE not approved
+        // — run tapsmith setup-ios") via the `errorMessage` field even when
+        // `success` is true and the proxy port was allocated. We log it
+        // loudly (once per run — same failure applies to every test) so
+        // users whose trace has no network entries know exactly why and
+        // exactly what to do.
+        if (traceConfig.network) {
           try {
-            await invokeHook(hook, opts.device, opts.projectName);
-          } catch (err) {
-            process.stderr.write(`[tapsmith] afterEach hook error: ${err instanceof Error ? err.message : String(err)}\n`);
-          }
-        }
-        traceCollector?.endGroup();
-      }
-    }
-
-    // Clean up route interception between tests so routes don't leak
-    // across tests within the same describe block.
-    if (opts.device?._routeManager?.hasRoutes) {
-      try {
-        await opts.device._routeManager.removeAllRoutes();
-      } catch {
-        // best-effort cleanup
-      }
-    }
-
-    // Collect soft assertion failures (PILOT-43)
-    const softErrors = flushSoftErrors();
-    if (softErrors.length > 0) {
-      const messages = softErrors.map((e) => e.message).join('\n');
-      const softErrorSummary = `${softErrors.length} soft assertion(s) failed:\n${messages}`;
-
-      if (status !== 'failed') {
-        status = 'failed';
-        error = new Error(softErrorSummary);
-      } else if (error) {
-        error.message += `\n\n--- Additionally ---\n${softErrorSummary}`;
-      }
-
-      if (!screenshotPath && opts.config.screenshot !== 'never') {
-        screenshotPath = await captureFailureScreenshot(
-          opts.device,
-          opts.screenshotDir,
-          fullName,
-        );
-      }
-    }
-
-    // Screenshot on success if mode is "always"
-    if (status === 'passed' && opts.config.screenshot === 'always') {
-      screenshotPath = await captureFailureScreenshot(
-        opts.device,
-        opts.screenshotDir,
-        fullName,
-      );
-    }
-
-    // Finalize trace recording
-    if (traceCollector && opts.device) {
-      // Stop device log streaming first — no async cleanup needed
-      opts.device._stopDeviceLogStream();
-
-      // Stop network capture BEFORE disposing the route manager — the
-      // proxy may still have in-flight requests that need the gRPC stream
-      // alive to receive route decisions. Disposing the manager first
-      // would close the stream and cause "NetworkRouteManager disposed"
-      // errors for any request the proxy hasn't finished proxying yet.
-      let rawNetworkEntries: Awaited<ReturnType<typeof opts.device._stopNetworkCapture>>['entries'] | undefined;
-      if (traceConfig.network) {
-        try {
-          const res = await opts.device._stopNetworkCapture();
-          if (res.success) {
-            // Apply user-supplied host filters, if any. On physical iOS
-            // and Android emulators the proxy is system-wide and captures
-            // every app's traffic — this is how users scrub system
-            // services (captive portal, analytics, Google/iCloud sync)
-            // out of their trace archives. iOS simulators filter per-PID
-            // via the macOS Network Extension redirector, so filters are
-            // usually redundant for sim runs but still honoured.
-            const { filterEntriesByHosts } = await import('./trace/filter-hosts.js');
-            rawNetworkEntries = filterEntriesByHosts(res.entries, {
-              allow: traceConfig.networkHosts,
-              deny: traceConfig.networkIgnoreHosts,
-            });
-            if (
-              traceConfig.networkHosts &&
-              traceConfig.networkHosts.length > 0 &&
-              res.entries.length > 0 &&
-              rawNetworkEntries.length === 0
-            ) {
-              console.warn(
-                `[tapsmith] trace.networkHosts allowlist matched 0 of ${res.entries.length} captured entries — trace will have no network data.`,
-              );
+            const res = await opts.device._startNetworkCapture();
+            if (!res.success && res.errorMessage) {
+              _warnCaptureOnce('Network capture disabled', res.errorMessage);
+            } else if (res.errorMessage) {
+              _warnCaptureOnce('Network capture warning', res.errorMessage);
             }
-          } else {
-            console.warn(`[tapsmith] Network capture stopped with error: ${res.errorMessage}`);
-          }
-        } catch (err) {
-          console.warn(`[tapsmith] Failed to stop network capture: ${err instanceof Error ? err.message : err}`);
-        }
-      }
-
-      // Now that the proxy has stopped and in-flight requests have settled,
-      // dispose the route manager (closes the gRPC stream).
-      if (opts.device?._disposeRouteManager) {
-        await opts.device._disposeRouteManager();
-      }
-      if (opts.device?._disposeWebViewManager) {
-        await opts.device._disposeWebViewManager();
-      }
-
-      // Capture a final screenshot so the last action has an "after" view.
-      // The trace viewer uses the next action's before-screenshot as "after",
-      // so this provides the terminal state.
-      if (traceCollector.config.screenshots) {
-        const tracing = opts.device!.tracing;
-        const { actionIndex: finalIdx } = await traceCollector.captureBeforeAction(
-          tracing['_getScreenshot'],
-          tracing['_getHierarchy'],
-        );
-        // Flush to UI mode live stream — emit a lightweight event so the
-        // screenshot buffer reaches the frontend.
-        traceCollector.emitPendingCaptures(finalIdx);
-      }
-
-      const collector = opts.device.tracing._stopManaged();
-      setActiveTraceCollector(null);
-
-      // Map network entries, associating each with the closest preceding action
-      let networkEntries: import('./trace/types.js').NetworkEntry[] | undefined;
-      if (rawNetworkEntries && collector) {
-        // Build sorted list of action timestamps with their indices
-        const actionTimestamps = collector.events
-          .filter((e): e is import('./trace/types.js').ActionTraceEvent | import('./trace/types.js').AssertionTraceEvent =>
-            e.type === 'action' || e.type === 'assertion')
-          .map((e) => ({ timestamp: e.timestamp, actionIndex: e.actionIndex }));
-
-        const findActionIndex = (startTimeMs: number): number => {
-          let best = 0;
-          for (const a of actionTimestamps) {
-            if (a.timestamp <= startTimeMs) {
-              best = a.actionIndex;
-            }
-          }
-          return best;
-        };
-
-        networkEntries = rawNetworkEntries.map((e, i) => {
-          const requestHeaders = e.requestHeadersJson ? JSON.parse(e.requestHeadersJson) : {};
-          const responseHeaders = e.responseHeadersJson ? JSON.parse(e.responseHeadersJson) : {};
-          return {
-            index: i,
-            actionIndex: findActionIndex(e.startTimeMs),
-            startTime: e.startTimeMs,
-            endTime: e.startTimeMs + e.durationMs,
-            method: e.method,
-            url: e.url,
-            status: e.statusCode,
-            contentType: e.contentType,
-            requestSize: e.requestSize,
-            responseSize: e.responseSize,
-            duration: e.durationMs,
-            requestHeaders,
-            responseHeaders,
-            requestBody: decodeHttpBody(e.requestBody, requestHeaders),
-            responseBody: decodeHttpBody(e.responseBody, responseHeaders),
-            routeAction: e.routeAction ? e.routeAction as 'mocked' | 'aborted' | 'continued' | 'fetched' : undefined,
-          };
-        });
-
-      }
-
-      // Merge API request fixture network entries (test-level HTTP calls)
-      const apiEntries = requestContext.getNetworkEntries();
-      if (apiEntries.length > 0) {
-        const deviceEntries = networkEntries ?? [];
-        const offset = deviceEntries.length;
-        const mappedApiEntries = apiEntries.map((e, i) => ({
-          ...e,
-          index: offset + i,
-        }));
-        networkEntries = [...deviceEntries, ...mappedApiEntries];
-      }
-
-      // Notify UI mode with the full set of network entries (device + API)
-      if (networkEntries && opts.onNetworkEntries) {
-        opts.onNetworkEntries(networkEntries);
-      }
-      if (collector) {
-        const retain = shouldRetain(traceConfig.mode, status === 'passed', attempt);
-        if (retain) {
-          // Flush any pending after-action captures before packaging
-          await collector.flushPendingCaptures();
-          try {
-            const outputDir = path.resolve(
-              opts.config.rootDir,
-              opts.config.outputDir,
-              'traces',
-            );
-            const version = getPackageVersion();
-            const sourceFiles = opts.testFilePath && traceConfig.sources
-              ? [opts.testFilePath]
-              : undefined;
-            tracePath = packageTrace(collector, {
-              testFile: opts.testFilePath ?? '',
-              testName: fullName,
-              testStatus: status,
-              testDuration: Date.now() - testStart,
-              startTime: testStart,
-              endTime: Date.now(),
-              device: {
-                serial: opts.config.device ?? 'unknown',
-                isEmulator: (opts.config.device ?? '').startsWith('emulator-'),
-                devicePixelRatio: opts.config.platform === 'ios' && opts.config.device
-                  ? getSimulatorScreenScale(opts.config.device)
-                  : undefined,
-              },
-              tapsmithVersion: version,
-              error: error?.message,
-              outputDir,
-              sourceFiles,
-              networkEntries,
-              project: opts.projectName,
-              appState: scopeAppState || undefined,
-            });
-          } catch {
-            // Trace packaging is best-effort
-          }
-        }
-        collector.cleanup();
-      }
-    } else if (opts.device?._disposeRouteManager) {
-      // No tracing — still need to clean up routes and WebView state.
-      await opts.device._disposeRouteManager();
-      if (opts.device._disposeWebViewManager) {
-        await opts.device._disposeWebViewManager();
-      }
-    }
-
-    // Stop video recording and decide whether to keep the MP4 (PILOT-114).
-    // Always stop if we started — even when retain decides to discard, the
-    // child process must be cleaned up so the next test can start fresh.
-    if (videoRecording && opts.device) {
-      try {
-        const res = await opts.device._stopVideoRecording();
-        const retainVideo = shouldRetain(
-          videoConfig.mode,
-          status === 'passed',
-          attempt,
-        );
-        if (res.success && res.videoPath && retainVideo) {
-          try {
-            const videoDir = path.resolve(
-              opts.config.rootDir,
-              opts.config.outputDir,
-              'videos',
-            );
-            await fsPromises.mkdir(videoDir, { recursive: true });
-            const safeName = fullName.replace(/[^a-zA-Z0-9_-]/g, '_');
-            const filePath = path.join(
-              videoDir,
-              `${safeName}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}.mp4`,
-            );
-            await fsPromises.copyFile(res.videoPath, filePath);
-            await fsPromises.unlink(res.videoPath);
-            videoPath = filePath;
           } catch (err) {
             _warnCaptureOnce(
-              'Video recording failed to write',
+              'Network capture failed to start',
               err instanceof Error ? err.message : String(err),
             );
           }
-        } else if (res.success && res.videoPath) {
-          // Not retaining — clean up the temp file.
-          try {
-            await fsPromises.unlink(res.videoPath);
-          } catch (unlinkErr) {
-            _warnCaptureOnce('Video temp file cleanup failed', unlinkErr instanceof Error ? unlinkErr.message : String(unlinkErr));
-          }
-        } else if (!res.success && res.errorMessage) {
-          _warnCaptureOnce('Video recording stopped with error', res.errorMessage);
         }
-      } catch (err) {
-        _warnCaptureOnce(
-          'Video recording failed to stop',
-          err instanceof Error ? err.message : String(err),
+
+        // Start device log streaming if configured
+        if (traceConfig.deviceLogs && traceCollector) {
+          try {
+            opts.device._startDeviceLogStream(traceCollector);
+          } catch (err) {
+            _warnCaptureOnce(
+              'Device log streaming failed to start',
+              err instanceof Error ? err.message : String(err),
+            );
+          }
+        }
+      }
+
+      // Video recording — bracket the test the same way `trace` does (PILOT-114).
+      // Recording happens regardless of whether trace is enabled. Failures
+      // here are surfaced via _warnCaptureOnce and never abort the run; the
+      // daemon already returns structured errors in `errorMessage` rather
+      // than throwing for missing-ffmpeg / unmatched-AVF-device cases.
+      const videoRecording = shouldRecord(videoConfig.mode, attempt);
+      if (videoRecording && opts.device) {
+        try {
+          const res = await opts.device._startVideoRecording(
+            videoConfig.size ? { size: videoConfig.size } : undefined,
+          );
+          if (!res.success) {
+            _warnCaptureOnce(
+              'Video recording failed to start',
+              res.errorMessage || 'unknown error',
+            );
+          }
+        } catch (err) {
+          _warnCaptureOnce(
+            'Video recording failed to start',
+            err instanceof Error ? err.message : String(err),
+          );
+        }
+      }
+
+      // Create request fixture outside try so it's accessible in trace finalization
+      const requestContext = new APIRequestContext({
+        baseURL: opts.config.baseURL,
+        extraHTTPHeaders: opts.config.extraHTTPHeaders,
+      });
+
+      try {
+        // ── Setup phase (not subject to test timeout) ──
+          // Hooks and fixture resolution run outside the test timeout so that
+          // slow operations like restartApp() under heavy load don't eat into
+          // the budget for the actual test assertions.
+
+          // Notify UI mode on first attempt only — retries re-use the same
+          // test slot in the UI rather than creating duplicate entries.
+          if (attempt === 0 && opts.onTestStart && fullName !== beforeAllFirstFullName) {
+            await opts.onTestStart(fullName);
+          }
+
+          // Replay beforeAll events into this test's trace stream.
+          // For the first test (which received beforeAll's live-streamed events),
+          // skip replay to avoid duplicates.
+          if (fullName !== beforeAllFirstFullName && savedBeforeAllEvents.length > 0 && traceCollector) {
+            replayBeforeAllEvents(traceCollector, savedBeforeAllEvents, beforeAllCollector, beforeAllHierarchies);
+          }
+
+          // Open the beforeEach group before running setup work and hooks.
+          // Heavy setup (session readiness, idle waits, user beforeEach hooks)
+          // is captured inside this group so device actions don't appear as
+          // ungrouped top-level events in the trace viewer.
+          const hasBeforeEachWork =
+            !!opts.beforeEachTest || !!opts.device || allBeforeEach.length > 0;
+          if (hasBeforeEachWork) {
+            traceCollector?.startGroup('beforeEach Hooks');
+          }
+
+          // Setup work that may issue device actions (e.g. ensureSessionReady
+          // in UI worker mode). Runs inside the beforeEach group.
+          if (opts.beforeEachTest) {
+            await opts.beforeEachTest(fullName);
+          }
+
+          // Wait for the device to be idle before each test. This ensures
+          // previous test actions (toasts, animations, async operations) have
+          // settled before hooks and assertions start, preventing flakiness
+          // under load (e.g. parallel workers sharing host CPU).
+          if (opts.device) {
+            try {
+              await opts.device.waitForIdle();
+            } catch {
+              // Best effort — don't fail the test if idle wait times out
+            }
+          }
+
+          for (const hook of allBeforeEach) {
+            await invokeHook(hook, opts.device, opts.projectName);
+          }
+          if (hasBeforeEachWork) {
+            traceCollector?.endGroup();
+          }
+
+          // Build fixture context: base (device + request) + worker-scoped + test-scoped
+          const registry = getFixtureRegistry();
+          const baseFixtures: Record<string, unknown> = {
+            ...(opts.device ? { device: opts.device } : {}),
+            request: requestContext,
+            ...(opts.projectName != null ? { projectName: opts.projectName } : {}),
+            platform: resolvePlatformFixture(opts.config),
+            ...(opts.workerFixtures ?? {}),
+          };
+
+          let testFixtureTeardown: (() => Promise<void>) | undefined;
+          let allFixtures = baseFixtures;
+
+          if (!registry.isEmpty) {
+            const resolved = await resolveFixtures(registry, 'test', baseFixtures);
+            allFixtures = resolved.fixtures;
+            testFixtureTeardown = resolved.teardown;
+          }
+
+          // ── Test body (subject to test timeout) ──
+          const testFn = async () => {
+            traceCollector?.startGroup('Test');
+            try {
+              // Call with fixtures if the test function expects arguments
+              if (entry.fn.length > 0) {
+                await (entry.fn as (fixtures: Record<string, unknown>) => void | Promise<void>)(allFixtures);
+              } else {
+                await (entry.fn as () => void | Promise<void>)();
+              }
+            } finally {
+              traceCollector?.endGroup();
+              if (testFixtureTeardown) {
+                await testFixtureTeardown();
+              }
+            }
+          };
+
+          // Wrap only the test body with a timeout — hooks run outside this
+          // so slow setup (restartApp, navigation) under load doesn't cause
+          // spurious timeouts.
+          let testTimer: ReturnType<typeof setTimeout>;
+          await Promise.race([
+            testFn().finally(() => clearTimeout(testTimer)),
+            new Promise<never>((_, reject) => {
+              testTimer = setTimeout(() => reject(new Error(
+                `Test timed out after ${testTimeoutMs}ms`
+              )), testTimeoutMs);
+            }),
+          ]);
+        } catch (err) {
+          status = 'failed';
+          error = err instanceof Error ? err : new Error(String(err));
+
+          // Fail any in-flight traced action/assertion so it appears in the trace
+          traceCollector?.failPendingOperation(error.message);
+
+          // If a WebView/CDP operation is the thing that hit the runner timeout,
+          // close it before screenshot/network teardown so stale async work does
+          // not bleed into the next test.
+          if (error.message.startsWith('Test timed out after ') && opts.device?._disposeWebViewManager) {
+            await opts.device._disposeWebViewManager();
+          }
+
+          // Screenshot on failure
+          if (opts.config.screenshot !== 'never') {
+            screenshotPath = await captureFailureScreenshot(
+              opts.device,
+              opts.screenshotDir,
+              fullName,
+            );
+          }
+        } finally {
+          // Ensure request fixture is cleaned up even if hooks threw before the test body
+          requestContext.dispose();
+
+          // Run afterEach hooks (always)
+          if (allAfterEach.length > 0) {
+            traceCollector?.startGroup('afterEach Hooks');
+            for (const hook of allAfterEach) {
+              try {
+                await invokeHook(hook, opts.device, opts.projectName);
+              } catch (err) {
+                process.stderr.write(`[tapsmith] afterEach hook error: ${err instanceof Error ? err.message : String(err)}\n`);
+              }
+            }
+            traceCollector?.endGroup();
+          }
+        }
+
+      // Clean up route interception between tests so routes don't leak
+      // across tests within the same describe block.
+      if (opts.device?._routeManager?.hasRoutes) {
+        try {
+          await opts.device._routeManager.removeAllRoutes();
+        } catch {
+          // best-effort cleanup
+        }
+      }
+
+      // Collect soft assertion failures (PILOT-43)
+      const softErrors = flushSoftErrors();
+      if (softErrors.length > 0) {
+        const messages = softErrors.map((e) => e.message).join('\n');
+        const softErrorSummary = `${softErrors.length} soft assertion(s) failed:\n${messages}`;
+
+        if (status !== 'failed') {
+          status = 'failed';
+          error = new Error(softErrorSummary);
+        } else if (error) {
+          error.message += `\n\n--- Additionally ---\n${softErrorSummary}`;
+        }
+
+        if (!screenshotPath && opts.config.screenshot !== 'never') {
+          screenshotPath = await captureFailureScreenshot(
+            opts.device,
+            opts.screenshotDir,
+            fullName,
+          );
+        }
+      }
+
+      // Screenshot on success if mode is "always"
+      if (status === 'passed' && opts.config.screenshot === 'always') {
+        screenshotPath = await captureFailureScreenshot(
+          opts.device,
+          opts.screenshotDir,
+          fullName,
         );
       }
+
+      // Finalize trace recording
+      if (traceCollector && opts.device) {
+        // Stop device log streaming first — no async cleanup needed
+        opts.device._stopDeviceLogStream();
+
+        // Stop network capture BEFORE disposing the route manager — the
+        // proxy may still have in-flight requests that need the gRPC stream
+        // alive to receive route decisions. Disposing the manager first
+        // would close the stream and cause "NetworkRouteManager disposed"
+        // errors for any request the proxy hasn't finished proxying yet.
+        let rawNetworkEntries: Awaited<ReturnType<typeof opts.device._stopNetworkCapture>>['entries'] | undefined;
+        if (traceConfig.network) {
+          try {
+            const res = await opts.device._stopNetworkCapture();
+            if (res.success) {
+              // Apply user-supplied host filters, if any. On physical iOS
+              // and Android emulators the proxy is system-wide and captures
+              // every app's traffic — this is how users scrub system
+              // services (captive portal, analytics, Google/iCloud sync)
+              // out of their trace archives. iOS simulators filter per-PID
+              // via the macOS Network Extension redirector, so filters are
+              // usually redundant for sim runs but still honoured.
+              const { filterEntriesByHosts } = await import('./trace/filter-hosts.js');
+              rawNetworkEntries = filterEntriesByHosts(res.entries, {
+                allow: traceConfig.networkHosts,
+                deny: traceConfig.networkIgnoreHosts,
+              });
+              if (
+                traceConfig.networkHosts &&
+                traceConfig.networkHosts.length > 0 &&
+                res.entries.length > 0 &&
+                rawNetworkEntries.length === 0
+              ) {
+                console.warn(
+                  `[tapsmith] trace.networkHosts allowlist matched 0 of ${res.entries.length} captured entries — trace will have no network data.`,
+                );
+              }
+            } else {
+              console.warn(`[tapsmith] Network capture stopped with error: ${res.errorMessage}`);
+            }
+          } catch (err) {
+            console.warn(`[tapsmith] Failed to stop network capture: ${err instanceof Error ? err.message : err}`);
+          }
+        }
+
+        // Now that the proxy has stopped and in-flight requests have settled,
+        // dispose the route manager (closes the gRPC stream).
+        if (opts.device?._disposeRouteManager) {
+          await opts.device._disposeRouteManager();
+        }
+        if (opts.device?._disposeWebViewManager) {
+          await opts.device._disposeWebViewManager();
+        }
+
+        // Capture a final screenshot so the last action has an "after" view.
+        // The trace viewer uses the next action's before-screenshot as "after",
+        // so this provides the terminal state.
+        if (traceCollector.config.screenshots) {
+          const tracing = opts.device!.tracing;
+          const { actionIndex: finalIdx } = await traceCollector.captureBeforeAction(
+            tracing['_getScreenshot'],
+            tracing['_getHierarchy'],
+          );
+          // Flush to UI mode live stream — emit a lightweight event so the
+          // screenshot buffer reaches the frontend.
+          traceCollector.emitPendingCaptures(finalIdx);
+        }
+
+        const collector = opts.device.tracing._stopManaged();
+        setActiveTraceCollector(null);
+
+        // Map network entries, associating each with the closest preceding action
+        let networkEntries: import('./trace/types.js').NetworkEntry[] | undefined;
+        if (rawNetworkEntries && collector) {
+          // Build sorted list of action timestamps with their indices
+          const actionTimestamps = collector.events
+            .filter((e): e is import('./trace/types.js').ActionTraceEvent | import('./trace/types.js').AssertionTraceEvent =>
+              e.type === 'action' || e.type === 'assertion')
+            .map((e) => ({ timestamp: e.timestamp, actionIndex: e.actionIndex }));
+
+          const findActionIndex = (startTimeMs: number): number => {
+            let best = 0;
+            for (const a of actionTimestamps) {
+              if (a.timestamp <= startTimeMs) {
+                best = a.actionIndex;
+              }
+            }
+            return best;
+          };
+
+          networkEntries = rawNetworkEntries.map((e, i) => {
+            const requestHeaders = e.requestHeadersJson ? JSON.parse(e.requestHeadersJson) : {};
+            const responseHeaders = e.responseHeadersJson ? JSON.parse(e.responseHeadersJson) : {};
+            return {
+              index: i,
+              actionIndex: findActionIndex(e.startTimeMs),
+              startTime: e.startTimeMs,
+              endTime: e.startTimeMs + e.durationMs,
+              method: e.method,
+              url: e.url,
+              status: e.statusCode,
+              contentType: e.contentType,
+              requestSize: e.requestSize,
+              responseSize: e.responseSize,
+              duration: e.durationMs,
+              requestHeaders,
+              responseHeaders,
+              requestBody: decodeHttpBody(e.requestBody, requestHeaders),
+              responseBody: decodeHttpBody(e.responseBody, responseHeaders),
+              routeAction: e.routeAction ? e.routeAction as 'mocked' | 'aborted' | 'continued' | 'fetched' : undefined,
+            };
+          });
+
+        }
+
+        // Merge API request fixture network entries (test-level HTTP calls)
+        const apiEntries = requestContext.getNetworkEntries();
+        if (apiEntries.length > 0) {
+          const deviceEntries = networkEntries ?? [];
+          const offset = deviceEntries.length;
+          const mappedApiEntries = apiEntries.map((e, i) => ({
+            ...e,
+            index: offset + i,
+          }));
+          networkEntries = [...deviceEntries, ...mappedApiEntries];
+        }
+
+        // Notify UI mode with the full set of network entries (device + API)
+        if (networkEntries && opts.onNetworkEntries) {
+          opts.onNetworkEntries(networkEntries);
+        }
+        if (collector) {
+          const retain = shouldRetain(traceConfig.mode, status === 'passed', attempt);
+          if (retain) {
+            // Flush any pending after-action captures before packaging
+            await collector.flushPendingCaptures();
+            try {
+              const outputDir = path.resolve(
+                opts.config.rootDir,
+                opts.config.outputDir,
+                'traces',
+              );
+              const version = getPackageVersion();
+              const sourceFiles = opts.testFilePath && traceConfig.sources
+                ? [opts.testFilePath]
+                : undefined;
+              tracePath = packageTrace(collector, {
+                testFile: opts.testFilePath ?? '',
+                testName: fullName,
+                testStatus: status,
+                testDuration: Date.now() - attemptStart,
+                startTime: attemptStart,
+                endTime: Date.now(),
+                device: {
+                  serial: opts.config.device ?? 'unknown',
+                  isEmulator: (opts.config.device ?? '').startsWith('emulator-'),
+                  devicePixelRatio: opts.config.platform === 'ios' && opts.config.device
+                    ? getSimulatorScreenScale(opts.config.device)
+                    : undefined,
+                },
+                tapsmithVersion: version,
+                error: error?.message,
+                outputDir,
+                sourceFiles,
+                networkEntries,
+                project: opts.projectName,
+                appState: scopeAppState || undefined,
+              });
+            } catch {
+              // Trace packaging is best-effort
+            }
+          }
+          collector.cleanup();
+        }
+      } else if (opts.device?._disposeRouteManager) {
+        // No tracing — still need to clean up routes and WebView state.
+        await opts.device._disposeRouteManager();
+        if (opts.device._disposeWebViewManager) {
+          await opts.device._disposeWebViewManager();
+        }
+      }
+
+      // Stop video recording and decide whether to keep the MP4 (PILOT-114).
+      // Always stop if we started — even when retain decides to discard, the
+      // child process must be cleaned up so the next test can start fresh.
+      if (videoRecording && opts.device) {
+        try {
+          const res = await opts.device._stopVideoRecording();
+          const retainVideo = shouldRetain(
+            videoConfig.mode,
+            status === 'passed',
+            attempt,
+          );
+          if (res.success && res.videoPath && retainVideo) {
+            try {
+              const videoDir = path.resolve(
+                opts.config.rootDir,
+                opts.config.outputDir,
+                'videos',
+              );
+              await fsPromises.mkdir(videoDir, { recursive: true });
+              const safeName = fullName.replace(/[^a-zA-Z0-9_-]/g, '_');
+              const filePath = path.join(
+                videoDir,
+                `${safeName}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}.mp4`,
+              );
+              await fsPromises.copyFile(res.videoPath, filePath);
+              await fsPromises.unlink(res.videoPath);
+              videoPath = filePath;
+            } catch (err) {
+              _warnCaptureOnce(
+                'Video recording failed to write',
+                err instanceof Error ? err.message : String(err),
+              );
+            }
+          } else if (res.success && res.videoPath) {
+            // Not retaining — clean up the temp file.
+            try {
+              await fsPromises.unlink(res.videoPath);
+            } catch (unlinkErr) {
+              _warnCaptureOnce('Video temp file cleanup failed', unlinkErr instanceof Error ? unlinkErr.message : String(unlinkErr));
+            }
+          } else if (!res.success && res.errorMessage) {
+            _warnCaptureOnce('Video recording stopped with error', res.errorMessage);
+          }
+        } catch (err) {
+          _warnCaptureOnce(
+            'Video recording failed to stop',
+            err instanceof Error ? err.message : String(err),
+          );
+        }
+      }
+
+      if (status === 'passed' || attempt === maxRetries || opts.abortSignal?.aborted) break;
+
+      // Report the intermediate failure so reporters can show each attempt
+      opts.reporter?.onTestEnd?.({
+        name: entry.name,
+        fullName,
+        status,
+        durationMs: Date.now() - attemptStart,
+        error,
+        screenshotPath,
+        tracePath,
+        videoPath,
+        project: opts.projectName,
+        retry: attempt,
+        _willRetry: true,
+      });
     }
 
     const testResult: TestResult = {
@@ -1308,6 +1338,7 @@ async function runSuiteContext(
       tracePath,
       videoPath,
       project: opts.projectName,
+      retry: lastAttempt > 0 ? lastAttempt : undefined,
     };
     result.tests.push(testResult);
     opts.reporter?.onTestEnd?.(testResult);
