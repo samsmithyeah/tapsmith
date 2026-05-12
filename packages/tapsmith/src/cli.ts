@@ -2059,21 +2059,15 @@ async function main(): Promise<void> {
               networkTracingEnabled: isNetworkTracingEnabled(projectConfig.trace),
             };
             let resetOk = false;
-            for (let resetAttempt = 1; resetAttempt <= 2; resetAttempt++) {
-              try {
-                await launchConfiguredApp(resetCtx, `reset before ${path.basename(file)}`);
-                const pong = await client!.ping();
-                if (!pong.agentConnected) {
-                  throw new Error('Not connected to agent after app reset');
-                }
-                resetOk = true;
-                break;
-              } catch (err) {
-                if (!isRecoverableInfrastructureError(err) || resetAttempt === 2) {
-                  console.error(red(`Failed to reset app between test files: ${err}`));
-                  sequentialExitCode = 1;
-                  return;
-                }
+            try {
+              await launchConfiguredApp(resetCtx, `reset before ${path.basename(file)}`);
+              const pong = await client!.ping();
+              if (!pong.agentConnected) {
+                throw new Error('Not connected to agent after app reset');
+              }
+              resetOk = true;
+            } catch (err) {
+              if (isRecoverableInfrastructureError(err)) {
                 process.stderr.write(
                   dim(`Recovering session after reset failure before ${path.basename(file)}: ${err instanceof Error ? err.message : err}\n`),
                 );
@@ -2082,11 +2076,9 @@ async function main(): Promise<void> {
                   const recoveryPong = await client!.ping();
                   if (recoveryPong.agentConnected) {
                     resetOk = true;
-                    break;
                   }
                 } catch {
-                  // Recovery failed — loop continues to attempt 2, which
-                  // will hit the resetAttempt === 2 guard and exit gracefully.
+                  // Hard recovery also failed — fall through to skip
                 }
               }
             }
