@@ -338,6 +338,10 @@ export function ActionsPanel({ events, actionEvents: _actionEvents, selectedInde
               <span class="metadata-label">Model</span>
               <span class="metadata-value">{metadata.device.model}</span>
             </>}
+            {metadata.device.osVersion && <>
+              <span class="metadata-label">OS Version</span>
+              <span class="metadata-value">{metadata.device.osVersion}</span>
+            </>}
             <span class="metadata-label">Emulator</span>
             <span class="metadata-value">{metadata.device.isEmulator ? 'Yes' : 'No'}</span>
             <span class="metadata-label">Actions</span>
