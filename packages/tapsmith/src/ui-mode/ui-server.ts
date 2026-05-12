@@ -102,6 +102,14 @@ function resolveWorkerPlatform(
   return worker.platform ?? resolveDevicePlatform(ctx, worker.deviceSerial);
 }
 
+const IOS_SIMULATOR_RE = /^[0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{12}$/i;
+
+function isEmulatorOrSimulator(serial: string, platform?: 'android' | 'ios'): boolean {
+  if (serial.startsWith('emulator-')) return true;
+  if (platform === 'ios' && IOS_SIMULATOR_RE.test(serial)) return true;
+  return false;
+}
+
 // ─── Types ───
 
 export interface UIServerContext {
@@ -2593,7 +2601,7 @@ export async function startUIServer(
               type: 'device-info',
               serial: worker.displayName || worker.deviceSerial,
               model: undefined,
-              isEmulator: worker.deviceSerial.startsWith('emulator-'),
+              isEmulator: isEmulatorOrSimulator(worker.deviceSerial, platform),
               platform,
               tapsmithVersion: TAPSMITH_VERSION,
               devicePixelRatio: cachedScreenScale(worker.deviceSerial, platform),
@@ -2612,7 +2620,7 @@ export async function startUIServer(
               type: 'device-info',
               serial: worker.displayName || worker.deviceSerial,
               model: undefined,
-              isEmulator: worker.deviceSerial.startsWith('emulator-'),
+              isEmulator: isEmulatorOrSimulator(worker.deviceSerial, platform),
               platform,
               tapsmithVersion: TAPSMITH_VERSION,
               devicePixelRatio: cachedScreenScale(worker.deviceSerial, platform),
@@ -2835,7 +2843,7 @@ export async function startUIServer(
           type: 'device-info',
           serial: selectedWorker.displayName || selectedWorker.deviceSerial,
           model: undefined,
-          isEmulator: selectedWorker.deviceSerial.startsWith('emulator-'),
+          isEmulator: isEmulatorOrSimulator(selectedWorker.deviceSerial, platform),
           platform,
           tapsmithVersion: TAPSMITH_VERSION,
           devicePixelRatio: cachedScreenScale(selectedWorker.deviceSerial, platform),
@@ -2876,7 +2884,7 @@ export async function startUIServer(
         type: 'device-info',
         serial: singleWorkerDisplayName ?? ctx.deviceSerial,
         model: undefined,
-        isEmulator: ctx.deviceSerial.startsWith('emulator-'),
+        isEmulator: isEmulatorOrSimulator(ctx.deviceSerial, ctx.config.platform),
         platform: ctx.config.platform,
         tapsmithVersion: TAPSMITH_VERSION,
         devicePixelRatio: cachedScreenScale(ctx.deviceSerial, ctx.config.platform),
@@ -3048,7 +3056,7 @@ export async function startUIServer(
       type: 'device-info',
       serial: singleWorkerDisplayName ?? ctx.deviceSerial,
       model: undefined,
-      isEmulator: ctx.deviceSerial.startsWith('emulator-'),
+      isEmulator: isEmulatorOrSimulator(ctx.deviceSerial, ctx.config.platform),
       platform: ctx.config.platform,
       tapsmithVersion: TAPSMITH_VERSION,
       devicePixelRatio: cachedScreenScale(ctx.deviceSerial, ctx.config.platform),
