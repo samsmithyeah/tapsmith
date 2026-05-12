@@ -279,9 +279,17 @@ async function handleRunFile(
 
   send({ type: 'file-start', workerId, filePath });
 
-  // Reset app between files for isolation
+  // Reset app between files for isolation — retry once on transient errors
   if (config.package) {
-    await launchConfiguredApp(sessionContext(undefined), `file reset for ${path.basename(filePath)}`);
+    try {
+      await launchConfiguredApp(sessionContext(undefined), `file reset for ${path.basename(filePath)}`);
+    } catch (resetErr) {
+      if (!isRecoverableInfrastructureError(resetErr)) throw resetErr;
+      process.stderr.write(
+        `Worker ${workerId}: Recovering after file-reset failure for ${path.basename(filePath)}: ${resetErr instanceof Error ? resetErr.message : resetErr}\n`,
+      );
+      await recoverFileSession(filePath, resetErr);
+    }
   }
 
   const screenshotDir =
