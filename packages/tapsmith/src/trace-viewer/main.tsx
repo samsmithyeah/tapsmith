@@ -63,7 +63,12 @@ function parseTraceZip(buf: Uint8Array): TraceData {
 
   const metadataRaw = files["metadata.json"];
   if (!metadataRaw) throw new Error("Invalid trace: missing metadata.json");
-  const metadata: TraceMetadata = JSON.parse(decoder.decode(metadataRaw));
+  let metadata: TraceMetadata;
+  try {
+    metadata = JSON.parse(decoder.decode(metadataRaw));
+  } catch (e) {
+    throw new Error(`Failed to parse metadata.json: ${e instanceof Error ? e.message : String(e)}`);
+  }
 
   const traceRaw = files["trace.json"];
   const events: AnyTraceEvent[] = traceRaw
@@ -72,7 +77,7 @@ function parseTraceZip(buf: Uint8Array): TraceData {
         .trim()
         .split("\n")
         .filter(Boolean)
-        .map((line) => JSON.parse(line))
+        .flatMap((line) => { try { return [JSON.parse(line)]; } catch { return []; } })
     : [];
 
   const screenshots = new Map<string, string>();
@@ -106,7 +111,7 @@ function parseTraceZip(buf: Uint8Array): TraceData {
         .trim()
         .split("\n")
         .filter(Boolean)
-        .map((line) => JSON.parse(line))
+        .flatMap((line) => { try { return [JSON.parse(line)]; } catch { return []; } })
     : [];
 
   const networkBodies = new Map<string, string>();
