@@ -2056,6 +2056,7 @@ async function main(): Promise<void> {
               iosXctestrunPath: resolvedIosXctestrun,
               iosAppPath: resolvedIosAppPath,
               deviceSerial: projectConfig.device,
+              networkTracingEnabled: isNetworkTracingEnabled(projectConfig.trace),
             };
             let resetOk = false;
             for (let resetAttempt = 1; resetAttempt <= 2; resetAttempt++) {
