@@ -191,7 +191,7 @@ export function ActionsPanel({ events, actionEvents: _actionEvents, selectedInde
 
   // Compute max duration across all actions for the heatmap
   const maxDur = items.reduce((max, item) => {
-    if (item.kind !== 'action') return max;
+    if (item.kind !== 'action' || !('event' in item)) return max;
     return Math.max(max, item.event.duration);
   }, 1);
 

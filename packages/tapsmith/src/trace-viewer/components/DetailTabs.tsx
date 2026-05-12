@@ -525,8 +525,7 @@ function HierarchyTabWrapper({ event, hierarchies, onNodeSelect }: {
 
 function errorTitle(ev: ActionTraceEvent | AssertionTraceEvent): string {
   if (ev.type === 'assertion') {
-    const neg = ev.negated ? 'not.' : '';
-    return `Error: expect(locator).${neg}${ev.assertion}() failed`;
+    return `Error: expect(locator).${ev.assertion}() failed`;
   }
   return `Error: ${ev.action}() failed`;
 }
@@ -582,6 +581,7 @@ function ErrorsTab({ event, events, testError, sources }: {
 function ErrorEntry({ ev, isSelected, sources }: { ev: ActionTraceEvent | AssertionTraceEvent; isSelected: boolean; sources: Map<string, string> }) {
   const title = errorTitle(ev);
   const log = ev.type === 'action' ? ev.log : undefined;
+  const stack = ev.type === 'action' ? ev.errorStack : undefined;
   const isAssertion = ev.type === 'assertion';
   const codeFrame = buildCodeFrame(sources, ev.sourceLocation);
 
@@ -599,7 +599,7 @@ function ErrorEntry({ ev, isSelected, sources }: { ev: ActionTraceEvent | Assert
         <div class="error-grid">
           {ev.selector && <>
             <div class="error-grid-key">Locator</div>
-            <div class="error-grid-value mono">{ev.selector}</div>
+            {formatSelectorForCall(ev.selector)}
           </>}
           {isAssertion && ev.expected !== undefined && <>
             <div class="error-grid-key">Expected</div>
@@ -622,6 +622,13 @@ function ErrorEntry({ ev, isSelected, sources }: { ev: ActionTraceEvent | Assert
           <ul class="error-log-list">
             {log.map((line, i) => <li key={i}>{line}</li>)}
           </ul>
+        </details>
+      )}
+
+      {stack && (
+        <details class="error-stack-details">
+          <summary>Stack trace</summary>
+          <pre class="error-stack">{stack}</pre>
         </details>
       )}
     </div>

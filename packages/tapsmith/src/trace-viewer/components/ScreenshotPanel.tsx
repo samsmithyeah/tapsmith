@@ -1,5 +1,5 @@
 import { useState, useRef, useCallback, useEffect } from 'preact/hooks';
-import { Focus, ExternalLink, Download, Camera, LoaderCircle, CircleDot, Play, Layers, ListTree } from 'lucide-preact';
+import { Focus, Download, Camera, LoaderCircle, CircleDot, Play, Layers, ListTree } from 'lucide-preact';
 import type { ActionTraceEvent, AssertionTraceEvent } from '../../trace/types.js';
 import type { ContainerSummary } from '../types.js';
 import { findNearestScreenshot } from '../../ui-mode/hooks/use-trace-data.js';
@@ -356,7 +356,7 @@ export function ScreenshotPanel({ event, screenshots, highlightBounds, selectorH
           )}
           {onDownloadTrace && (
             <button class="viewer-download-btn" onClick={onDownloadTrace} title="Download trace ZIP">
-              <ExternalLink size={12} /> Trace
+              <Download size={12} /> Trace
             </button>
           )}
           {onDownloadVideo && (
