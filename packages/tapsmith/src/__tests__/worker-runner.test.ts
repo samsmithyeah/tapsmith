@@ -34,6 +34,10 @@ describe('isRecoverableInfrastructureError', () => {
     expect(isRecoverableInfrastructureError(new Error('connect ECONNREFUSED 127.0.0.1:50051'))).toBe(true);
   });
 
+  it('returns true for agent connection dropped', () => {
+    expect(isRecoverableInfrastructureError(new Error('Agent connection dropped (empty response); reconnecting'))).toBe(true);
+  });
+
   it('returns false for assertion errors', () => {
     expect(isRecoverableInfrastructureError(new Error('Expected "Login" to be visible'))).toBe(false);
   });

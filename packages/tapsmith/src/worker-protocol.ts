@@ -113,6 +113,7 @@ export type WorkerToMainMessage =
 export const RECOVERABLE_INFRASTRUCTURE_PATTERNS = [
   'Agent command timed out',
   'Agent returned empty response',
+  'Agent connection dropped',
   'Not connected to agent',
   'Timed out connecting to agent socket',
   'Failed to connect to agent socket',

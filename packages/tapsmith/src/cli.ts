@@ -2046,29 +2046,59 @@ async function main(): Promise<void> {
 
         for (const file of project.testFiles) {
           if (fileIndex > 0 && projectConfig.package) {
+            const resetCtx: import('./session-preflight.js').SessionPreflightContext = {
+              label: `Device ${projectConfig.device}`,
+              config: projectConfig,
+              device: device!,
+              client: client!,
+              agentApkPath: resolvedAgentApk,
+              agentTestApkPath: resolvedAgentTestApk,
+              iosXctestrunPath: resolvedIosXctestrun,
+              iosAppPath: resolvedIosAppPath,
+              deviceSerial: projectConfig.device,
+              networkTracingEnabled: isNetworkTracingEnabled(projectConfig.trace),
+            };
+            let resetOk = false;
             try {
-              await launchConfiguredApp({
-                label: `Device ${projectConfig.device}`,
-                config: projectConfig,
-                device: device!,
-                client: client!,
-                agentApkPath: resolvedAgentApk,
-                agentTestApkPath: resolvedAgentTestApk,
-                iosXctestrunPath: resolvedIosXctestrun,
-                iosAppPath: resolvedIosAppPath,
-                deviceSerial: projectConfig.device,
-              }, `reset before ${path.basename(file)}`);
-
+              await launchConfiguredApp(resetCtx, `reset before ${path.basename(file)}`);
               const pong = await client!.ping();
               if (!pong.agentConnected) {
-                console.error(red('Agent disconnected after app reset. Aborting.'));
-                sequentialExitCode = 1;
-                return;
+                throw new Error('Not connected to agent after app reset');
               }
+              resetOk = true;
             } catch (err) {
-              console.error(red(`Failed to reset app between test files: ${err}`));
+              if (isRecoverableInfrastructureError(err)) {
+                process.stderr.write(
+                  dim(`Recovering session after reset failure before ${path.basename(file)}: ${err instanceof Error ? err.message : String(err)}\n`),
+                );
+                try {
+                  await launchConfiguredApp(resetCtx, `recovery for reset before ${path.basename(file)}`, { allowSoftReset: false });
+                  const recoveryPong = await client!.ping();
+                  if (recoveryPong.agentConnected) {
+                    resetOk = true;
+                  }
+                } catch {
+                  // Hard recovery also failed — fall through to skip
+                }
+              } else {
+                console.error(red(`Failed to reset app between test files: ${err}`));
+              }
+            }
+            if (!resetOk) {
+              console.error(red(`Failed to reset app before ${path.basename(file)}, skipping file.`));
+              reporter.onTestFileStart(file);
+              const skippedResult: TestResult = {
+                name: path.basename(file),
+                fullName: path.basename(file),
+                status: 'skipped',
+                durationMs: 0,
+                project: project.name,
+              };
+              allResults.push(skippedResult);
+              reporter.onTestFileEnd(file, [skippedResult]);
               sequentialExitCode = 1;
-              return;
+              projectFailed = true;
+              continue;
             }
           }
 
