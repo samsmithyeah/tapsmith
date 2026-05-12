@@ -46,6 +46,7 @@ async function buildTraceDeviceInfo(opts: RunOptions): Promise<TraceDeviceInfo> 
       const cached = await opts.device._fetchDeviceInfo(serial);
       if (cached.model) info.model = cached.model;
       if (cached.osVersion) info.osVersion = cached.osVersion;
+      if (cached.isEmulator != null) info.isEmulator = cached.isEmulator;
     } catch { /* best-effort enrichment */ }
   }
   return info;

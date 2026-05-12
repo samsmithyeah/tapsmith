@@ -126,7 +126,7 @@ export class Device {
   readonly tracing: Tracing;
 
   /** @internal — Cached device info from the daemon (model, osVersion, etc.). */
-  _cachedDeviceInfo: { model?: string; osVersion?: string } | null = null;
+  _cachedDeviceInfo: { model?: string; osVersion?: string; isEmulator?: boolean } | null = null;
 
   /** @internal — Network route manager (lazily created). */
   _routeManager: NetworkRouteManager | null = null;
@@ -621,8 +621,8 @@ export class Device {
     };
   }
 
-  /** @internal — Fetch and cache device model/osVersion from the daemon. */
-  async _fetchDeviceInfo(serial: string): Promise<{ model?: string; osVersion?: string }> {
+  /** @internal — Fetch and cache device info from the daemon. */
+  async _fetchDeviceInfo(serial: string): Promise<{ model?: string; osVersion?: string; isEmulator?: boolean }> {
     if (this._cachedDeviceInfo) return this._cachedDeviceInfo;
     try {
       const resp = await this._client.listDevices();
@@ -630,6 +630,7 @@ export class Device {
       this._cachedDeviceInfo = {
         model: match?.model || undefined,
         osVersion: match?.osVersion || undefined,
+        isEmulator: match?.isEmulator,
       };
     } catch {
       this._cachedDeviceInfo = {};
