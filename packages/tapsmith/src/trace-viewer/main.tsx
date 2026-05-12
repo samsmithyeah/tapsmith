@@ -135,6 +135,7 @@ function parseTraceZip(buf: Uint8Array): TraceData {
 // ─── Platform Inference ───
 
 function inferPlatform(metadata: TraceMetadata): "android" | "ios" | undefined {
+  if (!metadata.device) return undefined;
   const text = [metadata.device.serial, metadata.device.model, metadata.project]
     .filter(Boolean)
     .join(" ");
@@ -191,6 +192,18 @@ function App() {
       : "system";
   });
   const selectedIndex = hoveredIndex ?? pinnedIndex;
+  const loadIdRef = useRef(0);
+
+  // Revoke blob URLs from previous trace when loading a new one
+  useEffect(() => {
+    return () => {
+      if (trace) {
+        for (const url of trace.screenshots.values()) {
+          try { URL.revokeObjectURL(url); } catch { /* already revoked */ }
+        }
+      }
+    };
+  }, [trace]);
 
   // Apply theme on mount and changes
   useEffect(() => {
@@ -284,14 +297,17 @@ function App() {
     e.preventDefault();
     const file = e.dataTransfer?.files[0];
     if (file) {
+      const id = ++loadIdRef.current;
       setLoading(true);
       setError(null);
       loadTraceFromFile(file)
         .then((data) => {
+          if (loadIdRef.current !== id) return;
           setTrace(data);
           setLoading(false);
         })
         .catch((err) => {
+          if (loadIdRef.current !== id) return;
           setError(err.message);
           setLoading(false);
         });
@@ -301,14 +317,17 @@ function App() {
   const handleFileInput = (e: Event) => {
     const file = (e.target as HTMLInputElement).files?.[0];
     if (file) {
+      const id = ++loadIdRef.current;
       setLoading(true);
       setError(null);
       loadTraceFromFile(file)
         .then((data) => {
+          if (loadIdRef.current !== id) return;
           setTrace(data);
           setLoading(false);
         })
         .catch((err) => {
+          if (loadIdRef.current !== id) return;
           setError(err.message);
           setLoading(false);
         });
@@ -378,10 +397,14 @@ function App() {
   const [filmstripHeight, setFilmstripHeight] = useState(() => parseInt(localStorage.getItem('tapsmith-tv-filmstrip') || '130', 10) || 130);
   const [rightWidth, setRightWidth] = useState(() => parseInt(localStorage.getItem('tapsmith-tv-right') || '580', 10) || 580);
 
+  const persistTimerRef = useRef<ReturnType<typeof setTimeout>>();
   useEffect(() => {
-    localStorage.setItem('tapsmith-tv-left', String(leftWidth));
-    localStorage.setItem('tapsmith-tv-filmstrip', String(filmstripHeight));
-    localStorage.setItem('tapsmith-tv-right', String(rightWidth));
+    clearTimeout(persistTimerRef.current);
+    persistTimerRef.current = setTimeout(() => {
+      localStorage.setItem('tapsmith-tv-left', String(leftWidth));
+      localStorage.setItem('tapsmith-tv-filmstrip', String(filmstripHeight));
+      localStorage.setItem('tapsmith-tv-right', String(rightWidth));
+    }, 300);
   }, [leftWidth, filmstripHeight, rightWidth]);
 
   const handleLeftResize = useCallback((delta: number) => {
