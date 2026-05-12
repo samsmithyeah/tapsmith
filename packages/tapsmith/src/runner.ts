@@ -893,146 +893,147 @@ async function runSuiteContext(
       });
 
       try {
-
-      try {
         // ── Setup phase (not subject to test timeout) ──
-        // Hooks and fixture resolution run outside the test timeout so that
-        // slow operations like restartApp() under heavy load don't eat into
-        // the budget for the actual test assertions.
+          // Hooks and fixture resolution run outside the test timeout so that
+          // slow operations like restartApp() under heavy load don't eat into
+          // the budget for the actual test assertions.
 
-        // Notify UI mode on first attempt only — retries re-use the same
-        // test slot in the UI rather than creating duplicate entries.
-        if (attempt === 0 && opts.onTestStart && fullName !== beforeAllFirstFullName) {
-          await opts.onTestStart(fullName);
-        }
-
-        // Replay beforeAll events into this test's trace stream.
-        // For the first test (which received beforeAll's live-streamed events),
-        // skip replay to avoid duplicates.
-        if (fullName !== beforeAllFirstFullName && savedBeforeAllEvents.length > 0 && traceCollector) {
-          replayBeforeAllEvents(traceCollector, savedBeforeAllEvents, beforeAllCollector, beforeAllHierarchies);
-        }
-
-        // Open the beforeEach group before running setup work and hooks.
-        // Heavy setup (session readiness, idle waits, user beforeEach hooks)
-        // is captured inside this group so device actions don't appear as
-        // ungrouped top-level events in the trace viewer.
-        const hasBeforeEachWork =
-          !!opts.beforeEachTest || !!opts.device || allBeforeEach.length > 0;
-        if (hasBeforeEachWork) {
-          traceCollector?.startGroup('beforeEach Hooks');
-        }
-
-        // Setup work that may issue device actions (e.g. ensureSessionReady
-        // in UI worker mode). Runs inside the beforeEach group.
-        if (opts.beforeEachTest) {
-          await opts.beforeEachTest(fullName);
-        }
-
-        // Wait for the device to be idle before each test. This ensures
-        // previous test actions (toasts, animations, async operations) have
-        // settled before hooks and assertions start, preventing flakiness
-        // under load (e.g. parallel workers sharing host CPU).
-        if (opts.device) {
-          try {
-            await opts.device.waitForIdle();
-          } catch {
-            // Best effort — don't fail the test if idle wait times out
+          // Notify UI mode on first attempt only — retries re-use the same
+          // test slot in the UI rather than creating duplicate entries.
+          if (attempt === 0 && opts.onTestStart && fullName !== beforeAllFirstFullName) {
+            await opts.onTestStart(fullName);
           }
-        }
 
-        for (const hook of allBeforeEach) {
-          await invokeHook(hook, opts.device, opts.projectName);
-        }
-        if (hasBeforeEachWork) {
-          traceCollector?.endGroup();
-        }
-
-        // Build fixture context: base (device + request) + worker-scoped + test-scoped
-        const registry = getFixtureRegistry();
-        const baseFixtures: Record<string, unknown> = {
-          ...(opts.device ? { device: opts.device } : {}),
-          request: requestContext,
-          ...(opts.projectName != null ? { projectName: opts.projectName } : {}),
-          platform: resolvePlatformFixture(opts.config),
-          ...(opts.workerFixtures ?? {}),
-        };
-
-        let testFixtureTeardown: (() => Promise<void>) | undefined;
-        let allFixtures = baseFixtures;
-
-        if (!registry.isEmpty) {
-          const resolved = await resolveFixtures(registry, 'test', baseFixtures);
-          allFixtures = resolved.fixtures;
-          testFixtureTeardown = resolved.teardown;
-        }
-
-        // ── Test body (subject to test timeout) ──
-        const testFn = async () => {
-          traceCollector?.startGroup('Test');
-          try {
-            // Call with fixtures if the test function expects arguments
-            if (entry.fn.length > 0) {
-              await (entry.fn as (fixtures: Record<string, unknown>) => void | Promise<void>)(allFixtures);
-            } else {
-              await (entry.fn as () => void | Promise<void>)();
-            }
-          } finally {
-            traceCollector?.endGroup();
-            if (testFixtureTeardown) {
-              await testFixtureTeardown();
-            }
+          // Replay beforeAll events into this test's trace stream.
+          // For the first test (which received beforeAll's live-streamed events),
+          // skip replay to avoid duplicates.
+          if (fullName !== beforeAllFirstFullName && savedBeforeAllEvents.length > 0 && traceCollector) {
+            replayBeforeAllEvents(traceCollector, savedBeforeAllEvents, beforeAllCollector, beforeAllHierarchies);
           }
-        };
 
-        // Wrap only the test body with a timeout — hooks run outside this
-        // so slow setup (restartApp, navigation) under load doesn't cause
-        // spurious timeouts.
-        let testTimer: ReturnType<typeof setTimeout>;
-        await Promise.race([
-          testFn().finally(() => clearTimeout(testTimer)),
-          new Promise<never>((_, reject) => {
-            testTimer = setTimeout(() => reject(new Error(
-              `Test timed out after ${testTimeoutMs}ms`
-            )), testTimeoutMs);
-          }),
-        ]);
-      } catch (err) {
-        status = 'failed';
-        error = err instanceof Error ? err : new Error(String(err));
+          // Open the beforeEach group before running setup work and hooks.
+          // Heavy setup (session readiness, idle waits, user beforeEach hooks)
+          // is captured inside this group so device actions don't appear as
+          // ungrouped top-level events in the trace viewer.
+          const hasBeforeEachWork =
+            !!opts.beforeEachTest || !!opts.device || allBeforeEach.length > 0;
+          if (hasBeforeEachWork) {
+            traceCollector?.startGroup('beforeEach Hooks');
+          }
 
-        // Fail any in-flight traced action/assertion so it appears in the trace
-        traceCollector?.failPendingOperation(error.message);
+          // Setup work that may issue device actions (e.g. ensureSessionReady
+          // in UI worker mode). Runs inside the beforeEach group.
+          if (opts.beforeEachTest) {
+            await opts.beforeEachTest(fullName);
+          }
 
-        // If a WebView/CDP operation is the thing that hit the runner timeout,
-        // close it before screenshot/network teardown so stale async work does
-        // not bleed into the next test.
-        if (error.message.startsWith('Test timed out after ') && opts.device?._disposeWebViewManager) {
-          await opts.device._disposeWebViewManager();
-        }
-
-        // Screenshot on failure
-        if (opts.config.screenshot !== 'never') {
-          screenshotPath = await captureFailureScreenshot(
-            opts.device,
-            opts.screenshotDir,
-            fullName,
-          );
-        }
-      } finally {
-        // Run afterEach hooks (always)
-        if (allAfterEach.length > 0) {
-          traceCollector?.startGroup('afterEach Hooks');
-          for (const hook of allAfterEach) {
+          // Wait for the device to be idle before each test. This ensures
+          // previous test actions (toasts, animations, async operations) have
+          // settled before hooks and assertions start, preventing flakiness
+          // under load (e.g. parallel workers sharing host CPU).
+          if (opts.device) {
             try {
-              await invokeHook(hook, opts.device, opts.projectName);
-            } catch (err) {
-              process.stderr.write(`[tapsmith] afterEach hook error: ${err instanceof Error ? err.message : String(err)}\n`);
+              await opts.device.waitForIdle();
+            } catch {
+              // Best effort — don't fail the test if idle wait times out
             }
           }
-          traceCollector?.endGroup();
+
+          for (const hook of allBeforeEach) {
+            await invokeHook(hook, opts.device, opts.projectName);
+          }
+          if (hasBeforeEachWork) {
+            traceCollector?.endGroup();
+          }
+
+          // Build fixture context: base (device + request) + worker-scoped + test-scoped
+          const registry = getFixtureRegistry();
+          const baseFixtures: Record<string, unknown> = {
+            ...(opts.device ? { device: opts.device } : {}),
+            request: requestContext,
+            ...(opts.projectName != null ? { projectName: opts.projectName } : {}),
+            platform: resolvePlatformFixture(opts.config),
+            ...(opts.workerFixtures ?? {}),
+          };
+
+          let testFixtureTeardown: (() => Promise<void>) | undefined;
+          let allFixtures = baseFixtures;
+
+          if (!registry.isEmpty) {
+            const resolved = await resolveFixtures(registry, 'test', baseFixtures);
+            allFixtures = resolved.fixtures;
+            testFixtureTeardown = resolved.teardown;
+          }
+
+          // ── Test body (subject to test timeout) ──
+          const testFn = async () => {
+            traceCollector?.startGroup('Test');
+            try {
+              // Call with fixtures if the test function expects arguments
+              if (entry.fn.length > 0) {
+                await (entry.fn as (fixtures: Record<string, unknown>) => void | Promise<void>)(allFixtures);
+              } else {
+                await (entry.fn as () => void | Promise<void>)();
+              }
+            } finally {
+              traceCollector?.endGroup();
+              if (testFixtureTeardown) {
+                await testFixtureTeardown();
+              }
+            }
+          };
+
+          // Wrap only the test body with a timeout — hooks run outside this
+          // so slow setup (restartApp, navigation) under load doesn't cause
+          // spurious timeouts.
+          let testTimer: ReturnType<typeof setTimeout>;
+          await Promise.race([
+            testFn().finally(() => clearTimeout(testTimer)),
+            new Promise<never>((_, reject) => {
+              testTimer = setTimeout(() => reject(new Error(
+                `Test timed out after ${testTimeoutMs}ms`
+              )), testTimeoutMs);
+            }),
+          ]);
+        } catch (err) {
+          status = 'failed';
+          error = err instanceof Error ? err : new Error(String(err));
+
+          // Fail any in-flight traced action/assertion so it appears in the trace
+          traceCollector?.failPendingOperation(error.message);
+
+          // If a WebView/CDP operation is the thing that hit the runner timeout,
+          // close it before screenshot/network teardown so stale async work does
+          // not bleed into the next test.
+          if (error.message.startsWith('Test timed out after ') && opts.device?._disposeWebViewManager) {
+            await opts.device._disposeWebViewManager();
+          }
+
+          // Screenshot on failure
+          if (opts.config.screenshot !== 'never') {
+            screenshotPath = await captureFailureScreenshot(
+              opts.device,
+              opts.screenshotDir,
+              fullName,
+            );
+          }
+        } finally {
+          // Ensure request fixture is cleaned up even if hooks threw before the test body
+          requestContext.dispose();
+
+          // Run afterEach hooks (always)
+          if (allAfterEach.length > 0) {
+            traceCollector?.startGroup('afterEach Hooks');
+            for (const hook of allAfterEach) {
+              try {
+                await invokeHook(hook, opts.device, opts.projectName);
+              } catch (err) {
+                process.stderr.write(`[tapsmith] afterEach hook error: ${err instanceof Error ? err.message : String(err)}\n`);
+              }
+            }
+            traceCollector?.endGroup();
+          }
         }
-      }
 
       // Clean up route interception between tests so routes don't leak
       // across tests within the same describe block.
@@ -1308,10 +1309,6 @@ async function runSuiteContext(
         }
       }
 
-      } finally {
-        requestContext.dispose();
-      }
-
       if (status === 'passed' || attempt === maxRetries || opts.abortSignal?.aborted) break;
 
       // Report the intermediate failure so reporters can show each attempt
@@ -1322,6 +1319,8 @@ async function runSuiteContext(
         durationMs: Date.now() - attemptStart,
         error,
         screenshotPath,
+        tracePath,
+        videoPath,
         project: opts.projectName,
         retry: attempt,
         _willRetry: true,
