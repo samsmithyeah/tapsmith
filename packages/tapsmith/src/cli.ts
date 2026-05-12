@@ -2080,6 +2080,8 @@ async function main(): Promise<void> {
                 } catch {
                   // Hard recovery also failed — fall through to skip
                 }
+              } else {
+                console.error(red(`Failed to reset app between test files: ${err}`));
               }
             }
             if (!resetOk) {
