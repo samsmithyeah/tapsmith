@@ -193,7 +193,6 @@ function scaleToBudget(
   let remaining = effectiveCap - active.length;
   if (remaining <= 0) return;
 
-  const naturalTotal = active.reduce((s, b) => s + (natural.get(b.signature) ?? 0), 0);
   const ranked = active
     .map((b) => ({
       signature: b.signature,
@@ -201,25 +200,21 @@ function scaleToBudget(
     }))
     .sort((a, b) => b.natural - a.natural);
 
-  while (remaining > 0) {
-    let madeProgress = false;
+  for (const r of ranked) {
+    if (remaining === 0) break;
+    const targetShare = Math.floor((effectiveCap * r.natural) / total);
+    const toAdd = Math.min(remaining, Math.max(0, targetShare - 1));
+    if (toAdd > 0) {
+      result.set(r.signature, 1 + toAdd);
+      remaining -= toAdd;
+    }
+  }
+
+  if (remaining > 0) {
     for (const r of ranked) {
       if (remaining === 0) break;
-      const targetShare = Math.floor((effectiveCap * r.natural) / naturalTotal);
-      const current = result.get(r.signature) ?? 1;
-      if (current < targetShare) {
-        result.set(r.signature, current + 1);
-        remaining--;
-        madeProgress = true;
-      }
-    }
-    if (!madeProgress) {
-      for (const r of ranked) {
-        if (remaining === 0) break;
-        result.set(r.signature, (result.get(r.signature) ?? 0) + 1);
-        remaining--;
-      }
-      break;
+      result.set(r.signature, (result.get(r.signature) ?? 1) + 1);
+      remaining--;
     }
   }
 }
