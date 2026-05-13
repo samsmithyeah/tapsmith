@@ -84,11 +84,15 @@ Supported roles map to platform-native element types:
 | `checkbox` | `CheckBox` | `XCUIElementTypeOther` (React Native) |
 | `switch` | `Switch` | `XCUIElementTypeSwitch` |
 | `radiobutton` | `RadioButton` | `XCUIElementTypeOther` (React Native) |
-| `image` | `ImageView` | `XCUIElementTypeImage` |
+| `heading` | RN `accessibilityRole="header"` / native `isHeading` | `XCUIElementTypeOther` with header trait |
+| `link` | RN `accessibilityRole="link"` | `XCUIElementTypeLink` |
+| `image` | `ImageView` or RN `accessibilityRole="image"` | `XCUIElementTypeImage` |
 | `text` | `TextView` | `XCUIElementTypeStaticText` |
+| `alert` | RN `accessibilityRole="alert"` | `XCUIElementTypeAlert` |
 | `progressbar` | `ProgressBar` | `XCUIElementTypeProgressIndicator` |
 | `slider` | `SeekBar` | `XCUIElementTypeSlider` |
-| `combobox` | `Spinner` | `XCUIElementTypePopUpButton` |
+| `combobox` | RN `accessibilityRole="combobox"` | `XCUIElementTypePopUpButton` |
+| `searchfield` | `SearchView` | `XCUIElementTypeSearchField` |
 | `togglebutton` | `ToggleButton` | `XCUIElementTypeToggle` |
 
 ### `getByText(text, { exact? })`

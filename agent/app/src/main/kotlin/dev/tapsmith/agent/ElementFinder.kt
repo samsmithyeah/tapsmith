@@ -195,6 +195,17 @@ class ElementFinder(private val device: UiDevice) {
                 // "searchfield" so toHaveRole("searchfield") matches.
                 "search" to "searchfield",
             )
+
+        // Roles resolved exclusively via extractRoleDescription(). No
+        // entry in roleClassMap — React Native surfaces these through
+        // AccessibilityNodeInfoCompat.setRoleDescription().
+        val TRAIT_ONLY_ROLES: Set<String> = setOf("alert", "combobox")
+
+        // Roles that CAN be resolved by class (they have roleClassMap
+        // entries) but also have trait-based variants via RN
+        // accessibilityRole. The post-filter accepts both class-matched
+        // AND roleDescription-matched elements.
+        val DUAL_PATH_ROLES: Set<String> = setOf("heading", "link", "image", "searchfield")
     }
 
     /**
@@ -362,6 +373,21 @@ class ElementFinder(private val device: UiDevice) {
     }
 
     /**
+     * For a normalized role, return the set of raw roleDescription values
+     * that should match. Bridges the ROLE_ALIASES gap: e.g., for
+     * "searchfield", returns {"searchfield", "search"} so RN's
+     * roleDescription="search" is accepted.
+     */
+    private fun acceptableRoleDescriptions(normalizedRole: String): Set<String> {
+        return buildSet {
+            add(normalizedRole)
+            for ((alias, target) in ROLE_ALIASES) {
+                if (target == normalizedRole) add(alias)
+            }
+        }
+    }
+
+    /**
      * Find a single element matching the selector.
      * @throws ElementNotFoundException if no element matches
      */
@@ -457,7 +483,19 @@ class ElementFinder(private val device: UiDevice) {
 
         val bySelector =
             buildBySelector(selector)
-                ?: throw InvalidSelectorException("No valid selector criteria provided")
+                ?: if (selector.role != null) {
+                    // Trait-only role: no class constraint. Use
+                    // contentDescription if name is given; otherwise
+                    // broad match. The role post-filter narrows by
+                    // extractRoleDescription().
+                    if (selector.name != null) {
+                        By.desc(selector.name)
+                    } else {
+                        By.clazz(java.util.regex.Pattern.compile(".*"))
+                    }
+                } else {
+                    throw InvalidSelectorException("No valid selector criteria provided")
+                }
 
         val results =
             if (parent != null) {
@@ -503,24 +541,27 @@ class ElementFinder(private val device: UiDevice) {
                 byName
             }
 
-        // Post-filter for trait-derived roles (heading, link). Their
-        // class-set in `roleClassMap` is `["android.widget.TextView"]` —
-        // every TextView on screen passes the BySelector. Without this
-        // narrowing, `getByRole("heading").first()` returns the
-        // document-first TextView (usually NOT a heading), and
-        // `getByRole("heading").all()` returns the entire text content
-        // of the screen. The role attribute we'd assign during
-        // `toElementInfo` (via `extractRoleDescription`) IS the one
-        // that distinguishes these — apply it here so the find-phase
-        // candidate set matches the role attribute the SDK eventually
-        // checks against. Other roles (button, textfield, …) have
-        // class sets that already uniquely identify them and don't
-        // need this filter.
+        // Post-filter for trait-based and dual-path roles. Class-
+        // exclusive roles (button, textfield, …) have BySelector class
+        // sets that uniquely identify them. Trait/dual-path roles need
+        // extractRoleDescription() to disambiguate: "heading" and "link"
+        // share TextView with "text"; trait-only roles (alert, combobox)
+        // have no class mapping at all.
         if (selector.role != null) {
             val normalized = ROLE_ALIASES[selector.role.lowercase()] ?: selector.role.lowercase()
-            if (normalized == "heading" || normalized == "link") {
+            if (normalized in TRAIT_ONLY_ROLES || normalized in DUAL_PATH_ROLES) {
+                val acceptable = acceptableRoleDescriptions(normalized)
+                val ambiguousClassSet = normalized == "heading" || normalized == "link"
                 return byHint.filter { obj ->
-                    extractRoleDescription(obj) == normalized
+                    val roleDesc = extractRoleDescription(obj)
+                    if (roleDesc != null) {
+                        roleDesc in acceptable
+                    } else if (!ambiguousClassSet) {
+                        val classSet = roleClassMap[normalized]
+                        classSet != null && (obj.className ?: "") in classSet
+                    } else {
+                        false
+                    }
                 }
             }
         }
@@ -557,13 +598,23 @@ class ElementFinder(private val device: UiDevice) {
         if (selector.role != null) {
             val lowered = selector.role.lowercase()
             val normalizedRole = ROLE_ALIASES[lowered] ?: lowered
-            val classNames =
-                roleClassMap[normalizedRole]
-                    ?: throw InvalidSelectorException("Unknown role: '${selector.role}'. Known roles: ${roleClassMap.keys.joinToString()}")
+            val classNames = roleClassMap[normalizedRole]
 
-            // Use regex to match any of the class variants
-            val pattern = classNames.joinToString("|") { Regex.escape(it) }
-            by = By.clazz(java.util.regex.Pattern.compile(pattern))
+            if (normalizedRole in DUAL_PATH_ROLES || normalizedRole in TRAIT_ONLY_ROLES) {
+                // Trait/dual-path roles: skip class constraint. RN
+                // surfaces these via roleDescription on generic views
+                // (ReactViewGroup), not via class name. The post-filter
+                // in findUiObjects matches by extractRoleDescription()
+                // and falls back to class membership for dual-path roles.
+            } else if (classNames != null) {
+                val pattern = classNames.joinToString("|") { Regex.escape(it) }
+                by = By.clazz(java.util.regex.Pattern.compile(pattern))
+            } else {
+                val known = (roleClassMap.keys + TRAIT_ONLY_ROLES + DUAL_PATH_ROLES).sorted()
+                throw InvalidSelectorException(
+                    "Unknown role: '${selector.role}'. Known roles: ${known.joinToString()}",
+                )
+            }
 
             // If a name is also given, filter by accessible name (contentDescription
             // or text on the element itself, or text on a descendant). We can't express
