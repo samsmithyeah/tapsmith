@@ -28,6 +28,12 @@ enum RoleMapping {
         // here so getByRole("searchfield") is symmetric and doesn't throw
         // "Unknown role".
         "searchfield": [.searchField],
+        // RN renders these as .other with no distinguishing trait.
+        // The name filter narrows the query; resolveRole won't report
+        // these roles back (no trait to detect), so toHaveRole won't
+        // match — but getByRole(..., { name }) will find the element.
+        "alert": [.other],
+        "combobox": [.other],
     ]
 
     /// Reverse mapping: XCUIElement.ElementType → role name.

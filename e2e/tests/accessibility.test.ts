@@ -25,31 +25,37 @@ describe("Accessibility screen", () => {
   })
 
   // ─── Roles ───
-  // PILOT-XXX: RN accessibilityRole not mapped to Android role
 
   test("button role element exists", async ({ device }) => {
     const screen = new AccessibilityScreen(device)
     await expect(screen.roleButton).toExist()
+    await expect(screen.roleButton).toHaveRole("button")
   })
 
   test("link role element exists", async ({ device }) => {
     const screen = new AccessibilityScreen(device)
     await expect(screen.roleLink).toExist()
+    await expect(screen.roleLink).toHaveRole("link")
   })
 
   test("header role element exists", async ({ device }) => {
     const screen = new AccessibilityScreen(device)
     await expect(screen.roleHeader).toExist()
+    await expect(screen.roleHeader).toHaveRole("heading")
   })
 
   test("image role element exists", async ({ device }) => {
     const screen = new AccessibilityScreen(device)
     await expect(screen.roleImage).toExist()
+    await expect(screen.roleImage).toHaveRole("image")
   })
 
   test("alert role element exists", async ({ device }) => {
     const screen = new AccessibilityScreen(device)
     await expect(screen.roleAlert).toExist()
+    // toHaveRole("alert") omitted: iOS has no UIAccessibilityTrait for
+    // alert, so the agent can't report the role back. The toExist()
+    // above verifies getByRole("alert") finds the element.
   })
 
   // ─── Accessible Names ───
