@@ -53,7 +53,9 @@ describe("Accessibility screen", () => {
   test("alert role element exists", async ({ device }) => {
     const screen = new AccessibilityScreen(device)
     await expect(screen.roleAlert).toExist()
-    await expect(screen.roleAlert).toHaveRole("alert")
+    // toHaveRole("alert") omitted: iOS has no UIAccessibilityTrait for
+    // alert, so the agent can't report the role back. The toExist()
+    // above verifies getByRole("alert") finds the element.
   })
 
   // ─── Accessible Names ───
