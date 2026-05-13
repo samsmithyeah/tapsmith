@@ -92,6 +92,8 @@ export interface DispatcherOptions {
    * worker IDs stay globally unique across concurrent buckets.
    */
   workerIndexBase?: number
+  /** Hard cap on total workers across all buckets. Passed to allocateBucketWorkers. */
+  workerCap?: number
 }
 
 const EXISTING_DEVICE_INIT_TIMEOUT_MS = 90_000;
@@ -264,7 +266,7 @@ async function runMultiBucket(opts: DispatcherOptions): Promise<FullResult> {
     signature: `${i}-${bucketProjects[0].deviceSignature}`,
     projects: bucketProjects,
   }));
-  const allocation = allocateBucketWorkers(opts.workers, bucketEntries);
+  const allocation = allocateBucketWorkers(opts.workers, bucketEntries, opts.workerCap);
   const bucketWorkers = bucketEntries.map((b) => allocation.get(b.signature) ?? 0);
 
   const totalWorkersAcrossBuckets = bucketWorkers.reduce((s, n) => s + n, 0);

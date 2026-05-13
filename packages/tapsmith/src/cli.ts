@@ -1257,6 +1257,7 @@ async function provisionDevicesForBucket(
 async function provisionPerProjectDevices(
   rootConfig: TapsmithConfig,
   projects: import('./project.js').ResolvedProject[],
+  budgetCap?: number,
 ): Promise<PerProjectProvisionResult> {
   const result: PerProjectProvisionResult = {
     deviceSerials: [],
@@ -1275,7 +1276,7 @@ async function provisionPerProjectDevices(
   }
 
   // Allocate workers across buckets
-  const allocation = allocateBucketWorkers(rootConfig.workers, bucketEntries);
+  const allocation = allocateBucketWorkers(rootConfig.workers, bucketEntries, budgetCap);
 
   // Provision each bucket's devices in parallel — Android emulators and
   // iOS simulators both have multi-second cold-start costs, and there's
@@ -1721,20 +1722,22 @@ async function main(): Promise<void> {
   // when buckets or per-project `workers:` push the actual concurrency above
   // the global `config.workers` value.
   const { allocateBucketWorkers, bucketizeProjects } = await import('./project.js');
-  const allocation = allocateBucketWorkers(config.workers, bucketizeProjects(projects));
+  const budgetCap = isExplicitWorkers(config) ? config.workers : undefined;
+  const allocation = allocateBucketWorkers(config.workers, bucketizeProjects(projects), budgetCap);
   const totalWorkers = [...allocation.values()].reduce((s, n) => s + n, 0);
   const maxFilesInAnyWave = Math.max(...projectWaves.map((wave) =>
     wave.reduce((sum, p) => sum + p.testFiles.length, 0),
   ));
   const effectiveWorkers = Math.min(totalWorkers, maxFilesInAnyWave);
 
-  // Only warn when the user explicitly asked for fewer workers than we
-  // ended up running — either via --workers or `workers:` in the config
-  // file. Don't fire on the implicit default of 1.
+  // Warn only when the irreducible minimum (one worker per active bucket)
+  // exceeds the user's explicit --workers value. Per-project `workers:`
+  // inflation is now capped by the budget, so this only fires when there
+  // are genuinely more device buckets than workers.
   if (isExplicitWorkers(config) && totalWorkers > config.workers) {
+    const activeBuckets = [...allocation.values()].filter((n) => n > 0).length;
     process.stderr.write(
-      `Note: requested workers=${config.workers} but running ${totalWorkers} (one per device bucket is the minimum). ` +
-        `Raise the workers budget to speed things up, or set per-project \`workers\` to control the total.\n`,
+      `Note: requested workers=${config.workers} but running ${totalWorkers} (${activeBuckets} device bucket(s) each need at least 1 worker).\n`,
     );
   }
 
@@ -1766,6 +1769,7 @@ async function main(): Promise<void> {
         reporter,
         testFiles,
         workers: totalWorkers,
+        workerCap: budgetCap,
         projects: hasProjects ? projects : undefined,
         projectWaves: hasProjects ? projectWaves : undefined,
       });
@@ -1860,7 +1864,7 @@ async function main(): Promise<void> {
 
       if (isMultiBucketSequential) {
         // Multi-device-target projects: provision per-bucket devices.
-        const perBucket = await provisionPerProjectDevices(config, projects);
+        const perBucket = await provisionPerProjectDevices(config, projects, budgetCap);
         uiDeviceSerials = perBucket.deviceSerials;
         uiConfigByDevice = perBucket.configByDevice;
         uiBucketByDevice = perBucket.bucketByDevice;
@@ -1927,7 +1931,7 @@ async function main(): Promise<void> {
       let watchWorkersOverride: number | undefined;
 
       if (isMultiBucketSequential) {
-        const perBucket = await provisionPerProjectDevices(config, projects);
+        const perBucket = await provisionPerProjectDevices(config, projects, budgetCap);
         watchDeviceSerials = perBucket.deviceSerials;
         watchConfigByDevice = perBucket.configByDevice;
         watchBucketByDevice = perBucket.bucketByDevice;

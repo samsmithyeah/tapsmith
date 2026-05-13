@@ -85,10 +85,14 @@ export function deviceSignature(config: TapsmithConfig): string {
  * 3. Any remaining budget above `implicit.length` is distributed across
  *    implicit buckets proportionally to file count.
  * 4. Any bucket with zero test files gets 0 workers.
+ * 5. When `budgetCap` is set, the total allocation is scaled down to fit
+ *    within the cap. Each active bucket keeps at least 1 worker, so the
+ *    effective minimum is `active.length`.
  */
 export function allocateBucketWorkers(
   totalBudget: number,
   bucketEntries: Array<{ signature: string; projects: ResolvedProject[] }>,
+  budgetCap?: number,
 ): Map<string, number> {
   const result = new Map<string, number>();
 
@@ -114,7 +118,10 @@ export function allocateBucketWorkers(
     }
   }
 
-  if (implicit.length === 0) return result;
+  if (implicit.length === 0) {
+    if (budgetCap !== undefined) scaleToBudget(result, budgetCap, active);
+    return result;
+  }
 
   const implicitFiles = implicit.reduce(
     (sum, b) => sum + b.projects.reduce((s, p) => s + p.testFiles.length, 0),
@@ -147,9 +154,8 @@ export function allocateBucketWorkers(
         }
       }
       if (!madeProgress) {
-        // Distribute leftover workers round-robin by file count. This
-        // handles the rounding gap where Math.floor(fairShare) sums to
-        // less than totalBudget.
+        // Distribute leftover workers round-robin — handles the rounding gap
+        // where Math.floor(fairShare) sums to less than totalBudget.
         for (const r of ranked) {
           if (remaining === 0) break;
           result.set(r.signature, (result.get(r.signature) ?? 1) + 1);
@@ -160,7 +166,57 @@ export function allocateBucketWorkers(
     }
   }
 
+  if (budgetCap !== undefined) scaleToBudget(result, budgetCap, active);
   return result;
+}
+
+/**
+ * Scale an allocation map so its total matches `cap`. Handles both
+ * directions: scales down when over budget, scales up when under.
+ * Each active bucket keeps at least 1 worker; if `cap < active.length`
+ * the effective minimum is `active.length`.
+ */
+function scaleToBudget(
+  result: Map<string, number>,
+  cap: number,
+  active: Array<{ signature: string; projects: ResolvedProject[] }>,
+): void {
+  const total = [...result.values()].reduce((s, n) => s + n, 0);
+  if (total === cap) return;
+
+  const effectiveCap = Math.max(cap, active.length);
+  const natural = new Map(result);
+
+  for (const b of active) {
+    result.set(b.signature, 1);
+  }
+  let remaining = effectiveCap - active.length;
+  if (remaining <= 0) return;
+
+  const ranked = active
+    .map((b) => ({
+      signature: b.signature,
+      natural: natural.get(b.signature) ?? 0,
+    }))
+    .sort((a, b) => b.natural - a.natural);
+
+  for (const r of ranked) {
+    if (remaining === 0) break;
+    const targetShare = Math.floor((effectiveCap * r.natural) / total);
+    const toAdd = Math.min(remaining, Math.max(0, targetShare - 1));
+    if (toAdd > 0) {
+      result.set(r.signature, 1 + toAdd);
+      remaining -= toAdd;
+    }
+  }
+
+  if (remaining > 0) {
+    for (const r of ranked) {
+      if (remaining === 0) break;
+      result.set(r.signature, (result.get(r.signature) ?? 1) + 1);
+      remaining--;
+    }
+  }
 }
 
 /**
