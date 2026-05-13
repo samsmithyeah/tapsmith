@@ -125,6 +125,9 @@ export class Device {
   /** Programmatic tracing API. */
   readonly tracing: Tracing;
 
+  /** @internal — Cached device info from the daemon (model, osVersion, etc.). */
+  _cachedDeviceInfo: { model?: string; osVersion?: string; isEmulator?: boolean } | null = null;
+
   /** @internal — Network route manager (lazily created). */
   _routeManager: NetworkRouteManager | null = null;
 
@@ -616,6 +619,23 @@ export class Device {
       errorMessage: res.errorMessage,
       durationMs: res.durationMs,
     };
+  }
+
+  /** @internal — Fetch and cache device info from the daemon. */
+  async _fetchDeviceInfo(serial: string): Promise<{ model?: string; osVersion?: string; isEmulator?: boolean }> {
+    if (this._cachedDeviceInfo) return this._cachedDeviceInfo;
+    try {
+      const resp = await this._client.listDevices();
+      const match = resp.devices?.find(d => d.serial === serial);
+      this._cachedDeviceInfo = {
+        model: match?.model || undefined,
+        osVersion: match?.osVersion || undefined,
+        isEmulator: match?.isEmulator,
+      };
+    } catch {
+      this._cachedDeviceInfo = {};
+    }
+    return this._cachedDeviceInfo;
   }
 
   // ─── Device Log Streaming (PILOT-193) ───

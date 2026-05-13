@@ -141,7 +141,7 @@ export function TimelineFilmstrip({ events, screenshots, metadata, selectedIndex
         {hasTestName && metadata.testStatus !== 'running' && metadata.testStatus !== 'idle' && (
           <span>{' \u00b7 '}{metadata.testDuration}ms</span>
         )}
-        {hasDeviceSerial && <>{' \u00b7 '}{metadata.device.serial}</>}
+        {hasDeviceSerial && <>{' \u00b7 '}{metadata.device.model || metadata.device.serial}</>}
       </div>
       <div class="timeline-inner">
         {events.map((event, i) => {

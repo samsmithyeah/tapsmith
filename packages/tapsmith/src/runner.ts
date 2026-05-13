@@ -28,6 +28,29 @@ import { packageTrace } from './trace/trace-packager.js';
 import { TraceCollector, setActiveTraceCollector, withActiveTraceCollector } from './trace/trace-collector.js';
 import type { AnyTraceEvent } from './trace/types.js';
 import { getSimulatorScreenScale } from './ios-simulator.js';
+import type { TraceDeviceInfo } from './trace/types.js';
+
+// ─── Trace Device Info ───
+
+async function buildTraceDeviceInfo(opts: RunOptions): Promise<TraceDeviceInfo> {
+  const serial = opts.config.device ?? 'unknown';
+  const info: TraceDeviceInfo = {
+    serial,
+    isEmulator: serial.startsWith('emulator-'),
+    devicePixelRatio: opts.config.platform === 'ios' && opts.config.device
+      ? getSimulatorScreenScale(opts.config.device)
+      : undefined,
+  };
+  if (opts.device?._fetchDeviceInfo) {
+    try {
+      const cached = await opts.device._fetchDeviceInfo(serial);
+      if (cached.model) info.model = cached.model;
+      if (cached.osVersion) info.osVersion = cached.osVersion;
+      if (cached.isEmulator != null) info.isEmulator = cached.isEmulator;
+    } catch { /* best-effort enrichment */ }
+  }
+  return info;
+}
 
 // ─── Result types ───
 
@@ -701,13 +724,7 @@ async function runSuiteContext(
           testDuration: Date.now() - suiteStart,
           startTime: suiteStart,
           endTime: Date.now(),
-          device: {
-            serial: opts.config.device ?? 'unknown',
-            isEmulator: (opts.config.device ?? '').startsWith('emulator-'),
-            devicePixelRatio: opts.config.platform === 'ios' && opts.config.device
-              ? getSimulatorScreenScale(opts.config.device)
-              : undefined,
-          },
+          device: await buildTraceDeviceInfo(opts),
           tapsmithVersion: getPackageVersion(),
           error: beforeAllError.message,
           outputDir,
@@ -1230,13 +1247,7 @@ async function runSuiteContext(
                 testDuration: Date.now() - attemptStart,
                 startTime: attemptStart,
                 endTime: Date.now(),
-                device: {
-                  serial: opts.config.device ?? 'unknown',
-                  isEmulator: (opts.config.device ?? '').startsWith('emulator-'),
-                  devicePixelRatio: opts.config.platform === 'ios' && opts.config.device
-                    ? getSimulatorScreenScale(opts.config.device)
-                    : undefined,
-                },
+                device: await buildTraceDeviceInfo(opts),
                 tapsmithVersion: version,
                 error: error?.message,
                 outputDir,
