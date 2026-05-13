@@ -119,7 +119,7 @@ export function allocateBucketWorkers(
   }
 
   if (implicit.length === 0) {
-    if (budgetCap !== undefined) capToBudget(result, budgetCap, active);
+    if (budgetCap !== undefined) scaleToBudget(result, budgetCap, active);
     return result;
   }
 
@@ -154,6 +154,8 @@ export function allocateBucketWorkers(
         }
       }
       if (!madeProgress) {
+        // Distribute leftover workers round-robin — handles the rounding gap
+        // where Math.floor(fairShare) sums to less than totalBudget.
         for (const r of ranked) {
           if (remaining === 0) break;
           result.set(r.signature, (result.get(r.signature) ?? 1) + 1);
@@ -164,22 +166,23 @@ export function allocateBucketWorkers(
     }
   }
 
-  if (budgetCap !== undefined) capToBudget(result, budgetCap, active);
+  if (budgetCap !== undefined) scaleToBudget(result, budgetCap, active);
   return result;
 }
 
 /**
- * Scale down an allocation map so its total does not exceed `cap`.
+ * Scale an allocation map so its total matches `cap`. Handles both
+ * directions: scales down when over budget, scales up when under.
  * Each active bucket keeps at least 1 worker; if `cap < active.length`
  * the effective minimum is `active.length`.
  */
-function capToBudget(
+function scaleToBudget(
   result: Map<string, number>,
   cap: number,
   active: Array<{ signature: string; projects: ResolvedProject[] }>,
 ): void {
   const total = [...result.values()].reduce((s, n) => s + n, 0);
-  if (total <= cap) return;
+  if (total === cap) return;
 
   const effectiveCap = Math.max(cap, active.length);
   const natural = new Map(result);

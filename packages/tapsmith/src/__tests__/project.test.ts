@@ -516,12 +516,23 @@ describe('allocateBucketWorkers()', () => {
     expect(alloc.get('b')).toBe(1);
   });
 
-  it('budgetCap does nothing when total is within cap', () => {
+  it('budgetCap scales up explicit workers when cap exceeds natural total', () => {
+    const buckets = bucketizeProjects([
+      makeProject('a', 5, 2),
+      makeProject('b', 5, 2),
+    ]);
+    // Natural allocation: a=2, b=2, total=4.  Cap=6 → scale up to 6.
+    const alloc = allocateBucketWorkers(4, buckets, 6);
+    expect(alloc.get('a')).toBe(3);
+    expect(alloc.get('b')).toBe(3);
+  });
+
+  it('budgetCap is a no-op when total already matches cap', () => {
     const buckets = bucketizeProjects([
       makeProject('a', 5, 2),
       makeProject('b', 5, 1),
     ]);
-    const alloc = allocateBucketWorkers(3, buckets, 5);
+    const alloc = allocateBucketWorkers(3, buckets, 3);
     expect(alloc.get('a')).toBe(2);
     expect(alloc.get('b')).toBe(1);
   });

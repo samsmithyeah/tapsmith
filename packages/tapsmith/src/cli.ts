@@ -1257,6 +1257,7 @@ async function provisionDevicesForBucket(
 async function provisionPerProjectDevices(
   rootConfig: TapsmithConfig,
   projects: import('./project.js').ResolvedProject[],
+  budgetCap?: number,
 ): Promise<PerProjectProvisionResult> {
   const result: PerProjectProvisionResult = {
     deviceSerials: [],
@@ -1275,7 +1276,7 @@ async function provisionPerProjectDevices(
   }
 
   // Allocate workers across buckets
-  const allocation = allocateBucketWorkers(rootConfig.workers, bucketEntries);
+  const allocation = allocateBucketWorkers(rootConfig.workers, bucketEntries, budgetCap);
 
   // Provision each bucket's devices in parallel — Android emulators and
   // iOS simulators both have multi-second cold-start costs, and there's
@@ -1863,7 +1864,7 @@ async function main(): Promise<void> {
 
       if (isMultiBucketSequential) {
         // Multi-device-target projects: provision per-bucket devices.
-        const perBucket = await provisionPerProjectDevices(config, projects);
+        const perBucket = await provisionPerProjectDevices(config, projects, budgetCap);
         uiDeviceSerials = perBucket.deviceSerials;
         uiConfigByDevice = perBucket.configByDevice;
         uiBucketByDevice = perBucket.bucketByDevice;
@@ -1930,7 +1931,7 @@ async function main(): Promise<void> {
       let watchWorkersOverride: number | undefined;
 
       if (isMultiBucketSequential) {
-        const perBucket = await provisionPerProjectDevices(config, projects);
+        const perBucket = await provisionPerProjectDevices(config, projects, budgetCap);
         watchDeviceSerials = perBucket.deviceSerials;
         watchConfigByDevice = perBucket.configByDevice;
         watchBucketByDevice = perBucket.bucketByDevice;
