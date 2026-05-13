@@ -1,8 +1,17 @@
-import { beforeAll, describe, expect, test } from "tapsmith"
+import { beforeAll, beforeEach, describe, expect, test } from "tapsmith"
 
 describe("getByRole expanded option", () => {
   beforeAll(async ({ device }) => {
+    await device.restartApp()
     await device.getByDescription("Visibility").tap()
+    await expect(device.getByText("Visibility Testing", { exact: true })).toBeVisible()
+  })
+
+  beforeEach(async ({ device }) => {
+    if (!(await device.getByText("Visibility Testing", { exact: true }).exists())) {
+      await device.getByDescription("Visibility").tap()
+      await expect(device.getByText("Visibility Testing", { exact: true })).toBeVisible()
+    }
   })
 
   test("finds collapsed element with expanded: false", async ({ device }) => {
