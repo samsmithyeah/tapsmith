@@ -484,15 +484,11 @@ class ElementFinder(private val device: UiDevice) {
         val bySelector =
             buildBySelector(selector)
                 ?: if (selector.role != null) {
-                    // Trait-only role: no class constraint. Use
-                    // contentDescription if name is given; otherwise
-                    // broad match. The role post-filter narrows by
-                    // extractRoleDescription().
-                    if (selector.name != null) {
-                        By.desc(selector.name)
-                    } else {
-                        By.clazz(java.util.regex.Pattern.compile(".*"))
-                    }
+                    // Trait/dual-path role: no class constraint. Broad
+                    // match required because BySelector can't express
+                    // desc-OR-text. The byName and role post-filters
+                    // below handle precise matching.
+                    By.clazz(java.util.regex.Pattern.compile(".*"))
                 } else {
                     throw InvalidSelectorException("No valid selector criteria provided")
                 }
@@ -552,13 +548,13 @@ class ElementFinder(private val device: UiDevice) {
             if (normalized in TRAIT_ONLY_ROLES || normalized in DUAL_PATH_ROLES) {
                 val acceptable = acceptableRoleDescriptions(normalized)
                 val ambiguousClassSet = normalized == "heading" || normalized == "link"
+                val classSet = roleClassMap[normalized]?.toSet() ?: emptySet()
                 return byHint.filter { obj ->
                     val roleDesc = extractRoleDescription(obj)
                     if (roleDesc != null) {
                         roleDesc in acceptable
-                    } else if (!ambiguousClassSet) {
-                        val classSet = roleClassMap[normalized]
-                        classSet != null && (obj.className ?: "") in classSet
+                    } else if (!ambiguousClassSet && classSet.isNotEmpty()) {
+                        (obj.className ?: "") in classSet
                     } else {
                         false
                     }
