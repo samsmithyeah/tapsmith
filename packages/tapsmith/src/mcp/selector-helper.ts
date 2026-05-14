@@ -31,8 +31,11 @@ export function parseSelectorToInternal(input: string): Selector {
     case 'id':
       kind = { type: 'id', value: parsed.value };
       break;
+    case 'label':
+      kind = { type: 'label', value: parsed.value };
+      break;
     default:
-      throw new Error(`Unsupported selector type "${parsed.type}" for device actions. Use device.getByRole(), getByText(), getByDescription(), getByPlaceholder(), or getByTestId().`);
+      throw new Error(`Unsupported selector type "${parsed.type}" for device actions. Use device.getByRole(), getByText(), getByDescription(), getByPlaceholder(), getByLabel(), or getByTestId().`);
   }
 
   return makeSelector(kind);

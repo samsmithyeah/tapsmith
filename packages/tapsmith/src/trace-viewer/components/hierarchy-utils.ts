@@ -139,6 +139,10 @@ export const WEBVIEW_TAG_TO_ROLE: Record<string, string> = {
 }
 
 export function getNodeRole(node: HierarchyNode): string {
+  // Agent-injected role (trait-based: heading, alert, link, combobox, etc.)
+  const agentRole = node.attributes.get('tapsmith-role')
+  if (agentRole) return agentRole
+
   // WebView nodes
   if (node.attributes.get('webview') === 'true') {
     const explicitRole = node.attributes.get('webview-role')
@@ -153,25 +157,3 @@ export function getNodeRole(node: HierarchyNode): string {
   return IOS_TYPE_TO_ROLE[iosType] ?? ''
 }
 
-// ─── Selector Generator ───
-
-export function generateSelector(node: HierarchyNode): string {
-  // Android: content-desc, iOS: label (when used as accessibility description)
-  const contentDesc = node.attributes.get('content-desc')
-  if (contentDesc) return `contentDesc("${contentDesc}")`
-
-  // Android: resource-id, iOS: identifier
-  const resourceId = node.attributes.get('resource-id')
-    ?? node.attributes.get('identifier')
-  if (resourceId) return `id("${resourceId}")`
-
-  // Android: text, iOS: label (when used as display text)
-  const text = node.attributes.get('text')
-    ?? node.attributes.get('label')
-  if (text) return `text("${text}")`
-
-  const className = node.attributes.get('class')
-    ?? node.attributes.get('type')
-    ?? node.tagName
-  return `className("${className}")`
-}

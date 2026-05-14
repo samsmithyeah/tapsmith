@@ -49,7 +49,7 @@ class TapsmithAgent : Instrumentation() {
         val elementFinder = ElementFinder(device)
         val actionExecutor = ActionExecutor(device)
         val waitEngine = WaitEngine(device)
-        val hierarchyDumper = HierarchyDumper(device)
+        val hierarchyDumper = HierarchyDumper(device, this)
         val commandHandler =
             CommandHandler(
                 context = targetContext,

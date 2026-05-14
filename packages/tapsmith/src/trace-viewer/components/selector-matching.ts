@@ -1,5 +1,6 @@
 import type { HierarchyNode, Bounds } from './hierarchy-utils.js'
 import { parseBounds, getNodeRole } from './hierarchy-utils.js'
+import { FORM_FIELD_ROLES } from './selector-generation.js'
 
 // ─── Selector Parsing ───
 
@@ -81,6 +82,7 @@ function mapDeviceMethod(method: string, value: string, name?: string): ParsedSe
     case 'Description': return { type: 'contentDesc', value }
     case 'Placeholder': return { type: 'hint', value }
     case 'TestId': return { type: 'testId', value }
+    case 'Label': return { type: 'label', value }
     default: return null
   }
 }
@@ -109,7 +111,7 @@ function getNodeContentDesc(node: HierarchyNode): string {
 }
 
 function getNodeAccessibleName(node: HierarchyNode): string {
-  return node.attributes.get('content-desc') ?? node.attributes.get('label') ?? node.attributes.get('text') ?? ''
+  return node.attributes.get('content-desc') || node.attributes.get('label') || node.attributes.get('text') || ''
 }
 
 function getNodeId(node: HierarchyNode): string {
@@ -153,6 +155,11 @@ function nodeMatchesSelector(node: HierarchyNode, selector: ParsedSelector): boo
       return getNodeClassName(node) === selector.value
     case 'hint':
       return getNodeHint(node) === selector.value
+    case 'label': {
+      const role = getNodeRole(node)
+      if (!FORM_FIELD_ROLES.has(role)) return false
+      return getNodeAccessibleName(node) === selector.value
+    }
     case 'testId': {
       const rid = getNodeId(node)
       return rid === selector.value || rid.endsWith(`:id/${selector.value}`)
