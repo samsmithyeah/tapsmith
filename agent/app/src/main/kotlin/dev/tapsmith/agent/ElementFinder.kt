@@ -501,17 +501,44 @@ class ElementFinder(private val device: UiDevice) {
             }
                 ?: emptyList()
 
+        // Post-filter for trait-based and dual-path roles. These use a
+        // broad By.clazz(".*") initial search, so we filter by trait FIRST
+        // to narrow the set before checking names. Running the name filter
+        // on the full broad result is unreliable — UiObject2.getText() can
+        // return null for View elements whose AccessibilityNodeInfo text
+        // is aggregated from children, causing false negatives.
+        if (selector.role != null) {
+            val normalized = ROLE_ALIASES[selector.role.lowercase()] ?: selector.role.lowercase()
+            if (normalized in TRAIT_ONLY_ROLES || normalized in DUAL_PATH_ROLES) {
+                val acceptable = acceptableRoleDescriptions(normalized)
+                val ambiguousClassSet = normalized == "heading" || normalized == "link"
+                val classSet = roleClassMap[normalized]?.toSet() ?: emptySet()
+                val byTrait =
+                    results.filter { obj ->
+                        val roleDesc = extractRoleDescription(obj)
+                        if (roleDesc != null) {
+                            roleDesc in acceptable
+                        } else if (!ambiguousClassSet && classSet.isNotEmpty()) {
+                            (obj.className ?: "") in classSet
+                        } else {
+                            false
+                        }
+                    }
+                return if (selector.name != null) {
+                    byTrait.filter { matchesAccessibleName(it, selector.name) }
+                } else {
+                    byTrait
+                }
+            }
+        }
+
         // Post-filter by role name: match contentDescription, text, or an
         // exact descendant text segment. We use segment-level equality (not
         // substring `contains`) so "Sign" doesn't false-positive on a
         // container whose descendant reads "Sign out".
         val byName =
             if (selector.role != null && selector.name != null) {
-                results.filter { obj ->
-                    obj.contentDescription == selector.name ||
-                        obj.text == selector.name ||
-                        collectDescendantTextParts(obj).any { it == selector.name }
-                }
+                results.filter { matchesAccessibleName(it, selector.name) }
             } else {
                 results
             }
@@ -536,31 +563,6 @@ class ElementFinder(private val device: UiDevice) {
             } else {
                 byName
             }
-
-        // Post-filter for trait-based and dual-path roles. Class-
-        // exclusive roles (button, textfield, …) have BySelector class
-        // sets that uniquely identify them. Trait/dual-path roles need
-        // extractRoleDescription() to disambiguate: "heading" and "link"
-        // share TextView with "text"; trait-only roles (alert, combobox)
-        // have no class mapping at all.
-        if (selector.role != null) {
-            val normalized = ROLE_ALIASES[selector.role.lowercase()] ?: selector.role.lowercase()
-            if (normalized in TRAIT_ONLY_ROLES || normalized in DUAL_PATH_ROLES) {
-                val acceptable = acceptableRoleDescriptions(normalized)
-                val ambiguousClassSet = normalized == "heading" || normalized == "link"
-                val classSet = roleClassMap[normalized]?.toSet() ?: emptySet()
-                return byHint.filter { obj ->
-                    val roleDesc = extractRoleDescription(obj)
-                    if (roleDesc != null) {
-                        roleDesc in acceptable
-                    } else if (!ambiguousClassSet && classSet.isNotEmpty()) {
-                        (obj.className ?: "") in classSet
-                    } else {
-                        false
-                    }
-                }
-            }
-        }
 
         return byHint
     }
@@ -955,6 +957,15 @@ class ElementFinder(private val device: UiDevice) {
      * RN compositions, while bounding worst-case cost for accidental
      * deep matches.
      */
+    private fun matchesAccessibleName(
+        obj: UiObject2,
+        name: String,
+    ): Boolean {
+        return obj.contentDescription == name ||
+            obj.text == name ||
+            collectDescendantTextParts(obj).any { it == name }
+    }
+
     private fun collectDescendantTextParts(
         obj: UiObject2,
         depth: Int = 0,

@@ -61,6 +61,10 @@ function getWebViewRole(node: HierarchyNode): string | null {
 
 // ─── Selector Generation ───
 
+export const FORM_FIELD_ROLES = new Set([
+  'textfield', 'checkbox', 'switch', 'searchfield', 'seekbar', 'radiobutton', 'spinner',
+])
+
 export interface GeneratedSelector {
   code: string
   label: string
@@ -74,6 +78,8 @@ export function generateSelectors(node: HierarchyNode): GeneratedSelector[] {
   return generateNativeSelectors(node)
 }
 
+// Priority follows Testing Library order:
+// Role → LabelText → Placeholder → Text → TestID → CSS
 function generateWebViewSelectors(node: HierarchyNode): GeneratedSelector[] {
   const selectors: GeneratedSelector[] = []
   const tag = node.attributes.get('webview-tag') ?? ''
@@ -85,7 +91,6 @@ function generateWebViewSelectors(node: HierarchyNode): GeneratedSelector[] {
   const role = getWebViewRole(node)
 
   // 1. Role + name (highest priority)
-  // For inputs, placeholder serves as accessible name when no label/aria-label exists
   const accessibleName = ariaLabel || text || placeholder
   if (role && accessibleName) {
     selectors.push({
@@ -104,34 +109,34 @@ function generateWebViewSelectors(node: HierarchyNode): GeneratedSelector[] {
     })
   }
 
-  // 3. Text content
-  if (text) {
-    selectors.push({
-      code: `webview.getByText("${escapeQuotes(text)}")`,
-      label: 'Text',
-      priority: 3,
-    })
-  }
-
-  // 4. aria-label
+  // 3. Label (aria-label) — Testing Library getByLabelText
   if (ariaLabel) {
     selectors.push({
       code: `webview.getByLabel("${escapeQuotes(ariaLabel)}")`,
       label: 'Label',
-      priority: 4,
+      priority: 3,
     })
   }
 
-  // 5. Placeholder
+  // 4. Placeholder — Testing Library getByPlaceholderText
   if (placeholder) {
     selectors.push({
       code: `webview.getByPlaceholder("${escapeQuotes(placeholder)}")`,
       label: 'Placeholder',
+      priority: 4,
+    })
+  }
+
+  // 5. Text content — Testing Library getByText
+  if (text) {
+    selectors.push({
+      code: `webview.getByText("${escapeQuotes(text)}")`,
+      label: 'Text',
       priority: 5,
     })
   }
 
-  // 6. Test ID
+  // 6. Test ID (last resort for semantic selectors)
   if (testId) {
     selectors.push({
       code: `webview.getByTestId("${escapeQuotes(testId)}")`,
@@ -177,6 +182,8 @@ function generateWebViewSelectors(node: HierarchyNode): GeneratedSelector[] {
     })
 }
 
+// Priority follows Testing Library order:
+// Role → Label → Description → Placeholder → Text → TestID
 function generateNativeSelectors(node: HierarchyNode): GeneratedSelector[] {
   const selectors: GeneratedSelector[] = []
   const role = getRole(node)
@@ -191,7 +198,7 @@ function generateNativeSelectors(node: HierarchyNode): GeneratedSelector[] {
   // Android prefer content-desc, then text.
   const accessibleName = ios ? label : (contentDesc || text)
 
-  // 1. Role + name (highest priority — Testing Library #1)
+  // 1. Role + name (highest priority — Testing Library getByRole)
   if (role && accessibleName) {
     selectors.push({
       code: `device.getByRole("${escapeQuotes(role)}", { name: "${escapeQuotes(accessibleName)}" })`,
@@ -209,25 +216,18 @@ function generateNativeSelectors(node: HierarchyNode): GeneratedSelector[] {
     })
   }
 
-  // 3. Text (Testing Library #2 — visible text)
-  if (text) {
+  // 3. Label — Testing Library getByLabelText (form fields only)
+  // Android: getByLabel matches inputs by contentDescription
+  // iOS: getByLabel matches inputs by accessibilityLabel
+  if (role && FORM_FIELD_ROLES.has(role) && accessibleName) {
     selectors.push({
-      code: `device.getByText("${escapeQuotes(text)}")`,
-      label: 'Text',
+      code: `device.getByLabel("${escapeQuotes(accessibleName)}")`,
+      label: 'Label',
       priority: 3,
     })
   }
 
-  // 4. iOS label as text (when label serves as visible text, not content-desc)
-  if (ios && label && !text) {
-    selectors.push({
-      code: `device.getByText("${escapeQuotes(label)}")`,
-      label: 'Text (label)',
-      priority: 3,
-    })
-  }
-
-  // 5. Description / accessibility label (Testing Library #3)
+  // 4. Description / accessibility label — Testing Library semantic query
   if (contentDesc) {
     selectors.push({
       code: `device.getByDescription("${escapeQuotes(contentDesc)}")`,
@@ -243,7 +243,7 @@ function generateNativeSelectors(node: HierarchyNode): GeneratedSelector[] {
     })
   }
 
-  // 6. Placeholder / hint (Testing Library #4)
+  // 5. Placeholder / hint — Testing Library getByPlaceholderText
   if (hint) {
     selectors.push({
       code: `device.getByPlaceholder("${escapeQuotes(hint)}")`,
@@ -252,13 +252,48 @@ function generateNativeSelectors(node: HierarchyNode): GeneratedSelector[] {
     })
   }
 
-  // 7. Test ID (Testing Library #5)
+  // 6. Text — Testing Library getByText (visible text content)
+  if (text) {
+    selectors.push({
+      code: `device.getByText("${escapeQuotes(text)}")`,
+      label: 'Text',
+      priority: 6,
+    })
+  }
+
+  // iOS label as text (when label serves as visible text, no text attr)
+  if (ios && label && !text) {
+    selectors.push({
+      code: `device.getByText("${escapeQuotes(label)}")`,
+      label: 'Text (label)',
+      priority: 6,
+    })
+  }
+
+  // 7. Test ID (last resort — Testing Library getByTestId)
   const testIdFromResource = extractTestId(resourceId)
   if (testIdFromResource) {
     selectors.push({
       code: `device.getByTestId("${escapeQuotes(testIdFromResource)}")`,
       label: 'Test ID',
-      priority: 6,
+      priority: 7,
+    })
+  }
+
+  // 8. Locator fallbacks for elements with no accessible attributes
+  if (resourceId) {
+    selectors.push({
+      code: `device.locator({ id: "${escapeQuotes(resourceId)}" })`,
+      label: 'Resource ID',
+      priority: 8,
+    })
+  }
+  const className = node.attributes.get('class') ?? node.attributes.get('type') ?? ''
+  if (className) {
+    selectors.push({
+      code: `device.locator({ className: "${escapeQuotes(className)}" })`,
+      label: 'Class name',
+      priority: 9,
     })
   }
 

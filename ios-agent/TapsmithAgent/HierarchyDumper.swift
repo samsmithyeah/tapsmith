@@ -21,7 +21,10 @@ class HierarchyDumper {
         // Use snapshot for fast, single-IPC hierarchy dump (29ms vs 7+ seconds).
         do {
             let snapshot = try app.snapshot()
-            let dict = convertKeys(snapshot.dictionaryRepresentation)
+            var dict = convertKeys(snapshot.dictionaryRepresentation)
+            // Splice trait bits so dumpNode can resolve trait-based roles
+            // (e.g. heading, link, alert from React Native accessibilityRole).
+            SnapshotElementFinder.annotateTraits(dict: &dict, snapshot: snapshot)
             dumpNode(dict, depth: 1, into: &xml)
         } catch {
             NSLog("[HierarchyDumper] Snapshot failed, falling back to XCUIElement traversal: \(error)")
@@ -54,12 +57,19 @@ class HierarchyDumper {
             + "[\(Int(frame.origin.x + frame.width)),\(Int(frame.origin.y + frame.height))]"
         let visible = frame.width > 0 && frame.height > 0
 
+        // Resolve role from traits (heading, link, alert, etc.) and element type.
+        let traits = SnapshotElementFinder.extractTraits(from: node)
+        let role = RoleMapping.resolveRole(for: elType, traits: traits)
+
         xml += "\(indent)<\(typeName)"
         xml += " label=\"\(label)\""
         xml += " identifier=\"\(identifier)\""
         xml += " value=\"\(value)\""
         xml += " placeholderValue=\"\(placeholder)\""
         xml += " type=\"\(typeName)\""
+        if !role.isEmpty {
+            xml += " tapsmith-role=\"\(escapeXML(role))\""
+        }
         xml += " enabled=\"\(isEnabled)\""
         xml += " visible=\"\(visible)\""
         xml += " selected=\"\(isSelected)\""
@@ -119,12 +129,26 @@ class HierarchyDumper {
         let value = escapeXML((element.value as? String) ?? "")
         let placeholder = escapeXML(element.placeholderValue ?? "")
 
+        // Extract traits via KVC for role resolution in the fallback path.
+        let traits: UInt64 = {
+            guard let nsElement = element as? NSObject,
+                  nsElement.responds(to: NSSelectorFromString("traits")) else { return 0 }
+            let raw = nsElement.value(forKey: "traits")
+            if let v = raw as? UInt64 { return v }
+            if let v = raw as? NSNumber { return v.uint64Value }
+            return 0
+        }()
+        let role = RoleMapping.resolveRole(for: element.elementType, traits: traits)
+
         xml += "\(indent)<\(typeName)"
         xml += " label=\"\(label)\""
         xml += " identifier=\"\(identifier)\""
         xml += " value=\"\(value)\""
         xml += " placeholderValue=\"\(placeholder)\""
         xml += " type=\"\(typeName)\""
+        if !role.isEmpty {
+            xml += " tapsmith-role=\"\(escapeXML(role))\""
+        }
         xml += " enabled=\"\(element.isEnabled)\""
         xml += " visible=\"\(element.exists && frame.width > 0 && frame.height > 0)\""
         xml += " selected=\"\(element.isSelected)\""

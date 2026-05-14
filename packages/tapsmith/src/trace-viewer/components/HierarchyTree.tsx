@@ -1,9 +1,10 @@
 import { useState, useMemo, useCallback, useRef, useEffect } from 'preact/hooks';
-import { parseHierarchyXml, parseBounds, generateSelector } from './hierarchy-utils.js';
+import { parseHierarchyXml, parseBounds } from './hierarchy-utils.js';
 import type { HierarchyNode, Bounds } from './hierarchy-utils.js';
+import { generateBestSelector } from './selector-generation.js';
 
 export type { HierarchyNode, Bounds }
-export { parseHierarchyXml, parseBounds, generateSelector }
+export { parseHierarchyXml, parseBounds, generateBestSelector }
 
 interface Props {
   xml: string
@@ -132,7 +133,7 @@ function TreeNode({ node, selectedNode, onSelect, searchLower, defaultExpanded }
 
 function PropertySheet({ node }: { node: HierarchyNode }) {
   const [copied, setCopied] = useState(false);
-  const selector = generateSelector(node);
+  const selector = generateBestSelector(node);
 
   const handleCopy = () => {
     navigator.clipboard.writeText(selector).then(() => {
