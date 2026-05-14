@@ -103,12 +103,17 @@ class HierarchyDumper(
         try {
             val automation = instrumentation.uiAutomation
             for (window in automation.windows) {
-                val root = window.root ?: continue
                 try {
-                    walkNodeInfo(root, roleMap)
+                    val root = window.root ?: continue
+                    try {
+                        walkNodeInfo(root, roleMap)
+                    } finally {
+                        @Suppress("DEPRECATION")
+                        root.recycle()
+                    }
                 } finally {
                     @Suppress("DEPRECATION")
-                    root.recycle()
+                    window.recycle()
                 }
             }
         } catch (e: Exception) {
