@@ -158,8 +158,7 @@ function nodeMatchesSelector(node: HierarchyNode, selector: ParsedSelector): boo
     case 'label': {
       const role = getNodeRole(node)
       if (!FORM_FIELD_ROLES.has(role)) return false
-      const nodeLabel = node.attributes.get('label') ?? node.attributes.get('content-desc') ?? ''
-      return nodeLabel === selector.value
+      return getNodeAccessibleName(node) === selector.value
     }
     case 'testId': {
       const rid = getNodeId(node)

@@ -963,7 +963,7 @@ class ElementFinder(private val device: UiDevice) {
     ): Boolean {
         return obj.contentDescription == name ||
             obj.text == name ||
-            collectDescendantTextParts(obj).any { it == name }
+            collectDescendantText(obj) == name
     }
 
     private fun collectDescendantTextParts(
