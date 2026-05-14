@@ -2991,6 +2991,20 @@ export async function startUIServer(
       return;
     }
 
+    // Daemon discovery for multi-daemon MCP connections
+    if (url.pathname === '/api/daemon-ports' && req.method === 'GET') {
+      const daemons = uiWorkers
+        .filter(w => !w.retired)
+        .map(w => ({
+          address: `127.0.0.1:${w.daemonPort}`,
+          deviceSerial: w.deviceSerial,
+          platform: w.platform,
+        }));
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ daemons }));
+      return;
+    }
+
     res.writeHead(404);
     res.end('Not found');
   });

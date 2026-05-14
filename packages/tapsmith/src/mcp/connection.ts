@@ -1,56 +1,201 @@
+import * as fs from 'node:fs';
 import * as path from 'node:path';
+import * as http from 'node:http';
 import { spawn, type ChildProcess } from 'node:child_process';
-import { TapsmithGrpcClient } from '../grpc-client.js';
+import { TapsmithGrpcClient, type DeviceInfoProto } from '../grpc-client.js';
 import { findDaemonBin } from '../daemon-bin.js';
 import { pickFreePort } from '../port-utils.js';
 import { loadConfig, type TapsmithConfig } from '../config.js';
+import { uiPortFilePath } from './port-file.js';
 
 const DEFAULT_ADDRESS = 'localhost:50051';
 
-let _client: TapsmithGrpcClient | null = null;
-let _daemonProcess: ChildProcess | null = null;
-let _daemonAddress: string | null = null;
-let _ready = false;
+// ─── Connection Pool ───
 
-export function getDaemonAddress(): string | null {
-  return _daemonAddress;
+interface DaemonConnection {
+  client: TapsmithGrpcClient
+  address: string
+  devices: string[]
+  daemonProcess?: ChildProcess
 }
 
-export async function ensureConnected(): Promise<TapsmithGrpcClient> {
-  if (_client && _ready) {
-    const alive = await _client.waitForReady(1_000);
-    if (alive) return _client;
-    _client.close();
-    _client = null;
-    _ready = false;
+let _connections: DaemonConnection[] = [];
+let _deviceIndex: Map<string, DaemonConnection> = new Map();
+let _sessionDevices: Set<string> | null = null;
+let _ready = false;
+let _connectingPromise: Promise<void> | null = null;
+
+export function getSessionDeviceSerials(): Set<string> | null {
+  return _sessionDevices;
+}
+
+export function getAllDaemonAddresses(): string | null {
+  if (_connections.length === 0) return null;
+  return _connections.map(c => c.address).join(',');
+}
+
+export async function ensureConnected(device?: string): Promise<TapsmithGrpcClient> {
+  if (_ready && _connections.length > 0) {
+    if (device) {
+      const conn = _deviceIndex.get(device);
+      if (conn) {
+        const alive = await conn.client.waitForReady(1_000);
+        if (alive) return conn.client;
+        removeConnection(conn);
+      }
+      // Device not found or daemon died — re-discover (new daemons may have started)
+      _ready = false;
+    } else {
+      // No specific device — return default
+      const defaultConn = _connections[0];
+      const alive = await defaultConn.client.waitForReady(1_000);
+      if (alive) return defaultConn.client;
+      removeConnection(defaultConn);
+      // Fall through to re-discover
+      _ready = false;
+    }
   }
 
+  // First-time init (with mutex to prevent concurrent discovery)
+  if (_connectingPromise) {
+    await _connectingPromise;
+    return ensureConnected(device);
+  }
+  _connectingPromise = discover();
+  try {
+    await _connectingPromise;
+  } finally {
+    _connectingPromise = null;
+  }
+
+  if (_connections.length === 0) {
+    throw new Error(
+      'No Tapsmith daemons found or started. Is tapsmith-core installed? ' +
+      'Set TAPSMITH_DAEMON_BIN to an explicit path if it lives elsewhere.',
+    );
+  }
+
+  _ready = true;
+
+  if (device) {
+    const conn = _deviceIndex.get(device);
+    if (conn) return conn.client;
+    const available = [..._deviceIndex.keys()];
+    throw new Error(
+      `Device "${device}" not found in any connected daemon. ` +
+      `Available devices: ${available.length > 0 ? available.join(', ') : '(none)'}`,
+    );
+  }
+
+  return _connections[0].client;
+}
+
+export async function listAllDevices(): Promise<DeviceInfoProto[]> {
+  await ensureConnected();
+  const perConn = await Promise.all(_connections.map(async (conn) => {
+    try {
+      const { devices } = await conn.client.listDevices();
+      return devices;
+    } catch {
+      return [];
+    }
+  }));
+  const all: DeviceInfoProto[] = [];
+  const seen = new Set<string>();
+  for (const devices of perConn) {
+    for (const d of devices) {
+      if (!seen.has(d.serial)) {
+        seen.add(d.serial);
+        all.push(d);
+      }
+    }
+  }
+  return all;
+}
+
+// ─── Discovery ───
+
+async function discover(): Promise<void> {
   const config = await loadConfig().catch(() => null);
 
-  // 1. Try connecting to an existing daemon (e.g. from `tapsmith test --ui`)
-  const address = process.env.TAPSMITH_DAEMON_ADDRESS
-    ?? config?.daemonAddress
-    ?? DEFAULT_ADDRESS;
-  const probe = new TapsmithGrpcClient(address);
-  const existing = await probe.waitForReady(1_000);
-  if (existing) {
-    _client = probe;
-    const { agentConnected } = await _client.ping();
-    if (agentConnected) {
-      log('Connected to existing daemon (agent already running)');
-      _daemonAddress = address;
-      _ready = true;
-      return _client;
-    }
-    log('Connected to existing daemon, starting agent...');
-    await startAgentFromConfig(_client, config);
-    _daemonAddress = address;
-    _ready = true;
-    return _client;
-  }
-  probe.close();
+  // Collect candidate addresses from all sources
+  const candidates = new Set<string>();
 
-  // 2. Start our own daemon
+  // 1. Env var (supports comma-separated for multi-daemon)
+  if (process.env.TAPSMITH_DAEMON_ADDRESS) {
+    for (const addr of process.env.TAPSMITH_DAEMON_ADDRESS.split(',')) {
+      const trimmed = addr.trim();
+      if (trimmed) candidates.add(trimmed);
+    }
+  }
+
+  // 2. Config file
+  if (config?.daemonAddress) {
+    candidates.add(config.daemonAddress);
+  }
+
+  // 3. UI mode discovery — query the UI server for worker daemon ports
+  const uiDaemons = await discoverFromUiServer();
+  for (const addr of uiDaemons.addresses) {
+    candidates.add(addr);
+  }
+  if (uiDaemons.deviceSerials.size > 0) {
+    _sessionDevices = uiDaemons.deviceSerials;
+  }
+
+  // 4. Include existing connections so re-discovery doesn't spawn redundant daemons
+  for (const conn of _connections) {
+    candidates.add(conn.address);
+  }
+
+  // 5. Default address
+  if (candidates.size === 0) {
+    candidates.add(DEFAULT_ADDRESS);
+  }
+
+  // Probe all candidates in parallel
+  const probes = [...candidates].map(async (address) => {
+    let client: TapsmithGrpcClient | undefined;
+    try {
+      client = new TapsmithGrpcClient(address);
+      const alive = await client.waitForReady(1_000);
+      if (alive) return { client, address };
+      client.close();
+    } catch {
+      client?.close();
+    }
+    return null;
+  });
+  const results = await Promise.all(probes);
+  const live = results.filter((r): r is { client: TapsmithGrpcClient; address: string } => r !== null);
+
+  if (live.length > 0) {
+    // Connect to all live daemons in parallel, then batch-update shared state
+    const newConns = await Promise.all(live.map(async ({ client, address }) => {
+      if (_connections.some(c => c.address === address)) {
+        client.close();
+        return null;
+      }
+      try {
+        const { agentConnected } = await client.ping();
+        if (!agentConnected) {
+          await startAgentFromConfig(client, config);
+        }
+        log(`Connected to daemon at ${address}`);
+        return { client, address, devices: [] } as DaemonConnection;
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        log(`Failed to connect to daemon at ${address}: ${msg}`);
+        client.close();
+        return null;
+      }
+    }));
+    _connections.push(...newConns.filter((c): c is DaemonConnection => c !== null));
+    await refreshDeviceIndex();
+    return;
+  }
+
+  // 5. No live daemons — start our own
   log('No daemon found, starting one...');
   const platform = config?.platform;
   const port = String(await pickFreePort());
@@ -58,38 +203,130 @@ export async function ensureConnected(): Promise<TapsmithGrpcClient> {
   const daemonArgs = ['--port', port];
   if (platform) daemonArgs.push('--platform', platform);
 
-  _daemonProcess = spawn(bin, daemonArgs, { stdio: ['ignore', 'ignore', 'pipe'] });
-  _daemonProcess.unref();
-  _daemonProcess.on('error', (err) => { log(`Daemon process error: ${err.message}`); });
-  _daemonProcess.stderr?.on('data', (data: Buffer) => { log(`Daemon: ${data.toString().trim()}`); });
+  const daemonProcess = spawn(bin, daemonArgs, { stdio: ['ignore', 'ignore', 'pipe'] });
+  daemonProcess.unref();
+  daemonProcess.on('error', (err) => { log(`Daemon process error: ${err.message}`); });
+  daemonProcess.stderr?.on('data', (data: Buffer) => { log(`Daemon: ${data.toString().trim()}`); });
 
   const client = new TapsmithGrpcClient(`127.0.0.1:${port}`);
   const started = await client.waitForReady(10_000);
   if (!started) {
-    _daemonProcess.kill();
-    _daemonProcess = null;
-    throw new Error(
-      'Failed to start Tapsmith daemon. Is tapsmith-core installed? ' +
-      'Set TAPSMITH_DAEMON_BIN to an explicit path if it lives elsewhere.',
-    );
+    client.close();
+    daemonProcess.kill();
+    log('Failed to start daemon. Is tapsmith-core installed? Set TAPSMITH_DAEMON_BIN to an explicit path if it lives elsewhere.');
+    return;
   }
 
-  _client = client;
-  _daemonAddress = `127.0.0.1:${port}`;
-  const { version } = await client.ping();
-  log(`Started daemon v${version} on port ${port}`);
+  try {
+    const { version } = await client.ping();
+    log(`Started daemon v${version} on port ${port}`);
+    await setDeviceAndAgent(client, config);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    log(`Daemon started but setup failed: ${msg}`);
+    client.close();
+    daemonProcess.kill();
+    return;
+  }
 
-  // Set device and start agent
-  await setDeviceAndAgent(client, config);
-  _ready = true;
-  return _client;
+  const conn: DaemonConnection = {
+    client,
+    address: `127.0.0.1:${port}`,
+    devices: [],
+    daemonProcess,
+  };
+  _connections.push(conn);
+  await refreshDeviceIndex();
 }
+
+interface UiDiscoveryResult {
+  addresses: string[]
+  deviceSerials: Set<string>
+}
+
+const EMPTY_DISCOVERY: UiDiscoveryResult = { addresses: [], deviceSerials: new Set() };
+
+async function discoverFromUiServer(): Promise<UiDiscoveryResult> {
+  let portFileContent: string;
+  try {
+    portFileContent = (await fs.promises.readFile(uiPortFilePath(), 'utf-8')).trim();
+  } catch {
+    return EMPTY_DISCOVERY;
+  }
+  const uiMcpPort = Number.parseInt(portFileContent, 10);
+  if (!Number.isFinite(uiMcpPort) || uiMcpPort <= 0) return EMPTY_DISCOVERY;
+
+  try {
+    const json = await httpGet(`http://127.0.0.1:${uiMcpPort}/api/daemon-ports`, 2_000);
+    const data = JSON.parse(json) as { daemons?: Array<{ address: string; deviceSerial?: string }> };
+    if (!Array.isArray(data.daemons)) return EMPTY_DISCOVERY;
+    return {
+      addresses: data.daemons.map(d => d.address).filter(Boolean),
+      deviceSerials: new Set(data.daemons.map(d => d.deviceSerial).filter(Boolean) as string[]),
+    };
+  } catch (err) {
+    log(`UI server discovery failed: ${err instanceof Error ? err.message : String(err)}`);
+    return EMPTY_DISCOVERY;
+  }
+}
+
+function httpGet(url: string, timeoutMs: number): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const req = http.get(url, { timeout: timeoutMs }, (res) => {
+      if (res.statusCode !== 200) {
+        res.resume();
+        reject(new Error(`HTTP ${res.statusCode}`));
+        return;
+      }
+      const chunks: Buffer[] = [];
+      res.on('data', (chunk: Buffer) => { chunks.push(chunk); });
+      res.on('end', () => resolve(Buffer.concat(chunks).toString('utf-8')));
+      res.on('error', reject);
+    });
+    req.on('error', reject);
+    req.on('timeout', () => { req.destroy(); reject(new Error('timeout')); });
+  });
+}
+
+// ─── Device Index ───
+
+async function refreshDeviceIndex(): Promise<void> {
+  const results = await Promise.all(_connections.map(async (conn) => {
+    try {
+      const { devices } = await conn.client.listDevices();
+      return { conn, devices };
+    } catch {
+      return { conn, devices: [] as DeviceInfoProto[] };
+    }
+  }));
+  _deviceIndex.clear();
+  for (const { conn, devices } of results) {
+    conn.devices = devices.map(d => d.serial);
+    for (const d of devices) {
+      if (!_deviceIndex.has(d.serial)) {
+        _deviceIndex.set(d.serial, conn);
+      } else if (_deviceIndex.get(d.serial) !== conn) {
+        log(`Device ${d.serial} visible from multiple daemons — using ${_deviceIndex.get(d.serial)!.address}`);
+      }
+    }
+  }
+}
+
+function removeConnection(conn: DaemonConnection): void {
+  conn.client.close();
+  if (conn.daemonProcess) conn.daemonProcess.kill();
+  _connections = _connections.filter(c => c !== conn);
+  for (const [serial, c] of _deviceIndex) {
+    if (c === conn) _deviceIndex.delete(serial);
+  }
+}
+
+// ─── Device & Agent Setup ───
 
 async function setDeviceAndAgent(
   client: TapsmithGrpcClient,
   config: TapsmithConfig | null,
 ): Promise<void> {
-  // Pick a device
   let serial: string | undefined;
 
   if (config?.device) {
@@ -115,7 +352,6 @@ async function startAgentFromConfig(
   client: TapsmithGrpcClient,
   config: TapsmithConfig | null,
 ): Promise<void> {
-  // Check if agent is already connected
   const { agentConnected } = await client.ping();
   if (agentConnected) return;
 
@@ -127,7 +363,6 @@ async function startAgentFromConfig(
     ? path.resolve(rootDir, config.iosXctestrun)
     : undefined;
 
-  // Auto-detect xctestrun for iOS if not configured
   if (!iosXctestrun && config?.platform === 'ios') {
     try {
       const { findSimulatorXctestrun } = await import('../ios-device-resolve.js');
@@ -152,19 +387,20 @@ async function startAgentFromConfig(
   }
 }
 
+// ─── Utilities ───
+
 function log(msg: string): void {
   process.stderr.write(`[tapsmith-mcp] ${msg}\n`);
 }
 
-export function closeClient(): void {
-  if (_client) {
-    _client.close();
-    _client = null;
+export function closeAllClients(): void {
+  for (const conn of _connections) {
+    conn.client.close();
+    if (conn.daemonProcess) conn.daemonProcess.kill();
   }
-  if (_daemonProcess) {
-    _daemonProcess.kill();
-    _daemonProcess = null;
-  }
-  _daemonAddress = null;
+  _connections = [];
+  _deviceIndex = new Map();
+  _sessionDevices = null;
   _ready = false;
+  _connectingPromise = null;
 }

@@ -1,14 +1,19 @@
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-import { ensureConnected } from '../connection.js';
+import { listAllDevices, getSessionDeviceSerials } from '../connection.js';
 
 export function registerListDevicesTool(server: McpServer): void {
   server.tool(
     'tapsmith_list_devices',
-    'List all connected mobile devices and emulators. Shows serial numbers needed for multi-device targeting.',
+    'List all connected mobile devices and emulators across all platforms. Returns serial numbers, platform (android/ios), model, and state. Use serial numbers with the device parameter on other tools (snapshot, tap, etc.) to target a specific device.',
     {},
     async () => {
-      const client = await ensureConnected();
-      const { devices } = await client.listDevices();
+      let devices = await listAllDevices();
+
+      // In UI mode, only show devices that are part of the session
+      const sessionDevices = getSessionDeviceSerials();
+      if (sessionDevices) {
+        devices = devices.filter(d => sessionDevices.has(d.serial));
+      }
 
       const result = devices.map(d => ({
         serial: d.serial,

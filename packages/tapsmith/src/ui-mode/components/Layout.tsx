@@ -33,6 +33,7 @@ export function Layout({ topBar, errorBanner, testExplorer, filmstrip, actionsPa
   const [filmstripHeight, setFilmstripHeight] = usePersistedJSON('tapsmith-filmstrip-height', 130);
   const [detailHeight, setDetailHeight] = usePersistedJSON('tapsmith-detail-height', 250);
   const [deviceWidth, setDeviceWidth] = usePersistedJSON('tapsmith-device-width', 300);
+  const [mcpHeight, setMcpHeight] = usePersistedJSON('tapsmith-mcp-height', 200);
 
   const makeColResize = useCallback((
     getter: () => number,
@@ -120,6 +121,26 @@ export function Layout({ topBar, errorBanner, testExplorer, filmstrip, actionsPa
     document.addEventListener('mouseup', onUp);
   }, [filmstripHeight]);
 
+  const handleMcpResize = useCallback((e: MouseEvent) => {
+    e.preventDefault();
+    const startY = e.clientY;
+    const startHeight = mcpHeight;
+    const onMove = (ev: MouseEvent) => {
+      const delta = ev.clientY - startY;
+      setMcpHeight(Math.max(80, Math.min(window.innerHeight - 200, startHeight + delta)));
+    };
+    const onUp = () => {
+      document.removeEventListener('mousemove', onMove);
+      document.removeEventListener('mouseup', onUp);
+      document.body.style.cursor = '';
+      document.body.style.userSelect = '';
+    };
+    document.body.style.cursor = 'row-resize';
+    document.body.style.userSelect = 'none';
+    document.addEventListener('mousemove', onMove);
+    document.addEventListener('mouseup', onUp);
+  }, [mcpHeight]);
+
   const showDevice = layout !== 'focus' && devicePane;
 
   return (
@@ -165,9 +186,12 @@ export function Layout({ topBar, errorBanner, testExplorer, filmstrip, actionsPa
             <div class="ui-resize-handle ui-resize-col" onMouseDown={handleDeviceResize} />
             <div class="ui-right-column" style={{ width: `${deviceWidth}px`, minWidth: `${deviceWidth}px` }}>
               {mcpPanel && (
-                <div class="ui-mcp-pane">
-                  {mcpPanel}
-                </div>
+                <>
+                  <div class="ui-mcp-pane" style={{ height: `${mcpHeight}px`, minHeight: `${mcpHeight}px` }}>
+                    {mcpPanel}
+                  </div>
+                  <div class="ui-resize-handle ui-resize-row" onMouseDown={handleMcpResize} />
+                </>
               )}
               <div class="ui-device-pane">
                 {devicePane}

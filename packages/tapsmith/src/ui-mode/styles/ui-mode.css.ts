@@ -1906,8 +1906,7 @@ html, body, #app {
 /* ─── MCP Panel ─── */
 
 .ui-mcp-pane {
-  flex: 0 0 200px;
-  border-bottom: 1px solid var(--border);
+  flex: 0 0 auto;
   overflow: hidden;
   display: flex;
   flex-direction: column;
@@ -2069,6 +2068,27 @@ html, body, #app {
 }
 .mcp-detail-value {
   word-break: break-all;
+}
+.mcp-result-block {
+  margin-top: 6px;
+}
+.mcp-result-block:first-child {
+  margin-top: 0;
+}
+.mcp-result-text {
+  margin: 3px 0 0;
+  padding: 6px 8px;
+  max-height: 180px;
+  overflow: auto;
+  background: var(--bg-elev-2);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--fg);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  word-break: break-word;
 }
 
 .mcp-setup {
