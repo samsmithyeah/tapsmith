@@ -104,7 +104,12 @@ class HierarchyDumper(
             val automation = instrumentation.uiAutomation
             for (window in automation.windows) {
                 val root = window.root ?: continue
-                walkNodeInfo(root, roleMap)
+                try {
+                    walkNodeInfo(root, roleMap)
+                } finally {
+                    @Suppress("DEPRECATION")
+                    root.recycle()
+                }
             }
         } catch (e: Exception) {
             Log.w(TAG, "Failed to collect roles from accessibility tree", e)
