@@ -31,6 +31,8 @@ export interface SessionPreflightContext {
   networkTracingEnabled?: boolean
 }
 
+class BlockingDialogError extends Error {}
+
 const DEFAULT_READY_TIMEOUT_MS = 5_000;
 const DEFAULT_MAX_ATTEMPTS = 2;
 /** Time to wait for UIAutomator2 to produce a non-empty hierarchy on cold start. */
@@ -264,7 +266,7 @@ async function waitForAndroidAppHierarchy(
       if (hierarchyContainsPackage(hierarchyXml, packageName)) return;
       const blockingDialog = detectBlockingSystemDialog(hierarchyXml);
       if (blockingDialog) {
-        throw new Error(`blocking system dialog detected (${blockingDialog})`);
+        throw new BlockingDialogError(`blocking system dialog detected (${blockingDialog})`);
       }
       if (isAndroidSystemOverlay(hierarchyXml)) {
         const dismissedHierarchy = await dismissAndroidSystemOverlay(ctx, packageName);
@@ -274,7 +276,7 @@ async function waitForAndroidAppHierarchy(
         }
       }
     } catch (err) {
-      if (err instanceof Error && err.message.includes('blocking system dialog')) throw err;
+      if (err instanceof BlockingDialogError) throw err;
     }
     await new Promise((resolve) => setTimeout(resolve, HIERARCHY_POLL_INTERVAL_MS));
   }
