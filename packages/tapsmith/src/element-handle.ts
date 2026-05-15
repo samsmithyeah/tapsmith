@@ -37,12 +37,11 @@ export interface BoundingBox {
 
 /** Timeout for quick visibility probes in scrollIntoView(). Short so the
  *  loop isn't blocked waiting for an element that's simply off-screen. */
-const SCROLL_PROBE_TIMEOUT_MS = 1000;
+const SCROLL_PROBE_TIMEOUT_MS = 500;
 /** Settle time after swipe-based scrolling.  On iOS, ScrollView momentum
- *  deceleration takes 300-500ms and the first tap during deceleration is
- *  consumed to stop the scroll rather than being delivered to child views.
- *  500ms is the measured safe minimum for iOS. */
-const SCROLL_SETTLE_MS = 500;
+ *  deceleration takes 300-500ms. 300ms settle plus the subsequent stability
+ *  poll loop (which checks position convergence) provides reliable coverage. */
+const SCROLL_SETTLE_MS = 300;
 
 // ─── Locator options (escape hatch for non-accessible queries) ───
 
@@ -157,6 +156,9 @@ export class ElementHandle {
 
   /** @internal — Side-channel for assertion functions to report expected/actual. */
   _assertionResult: { expected: string | undefined; actual: string | undefined } = { expected: undefined, actual: undefined };
+
+  /** @internal — Side-channel for assertion poll loops to report element bounds to the trace wrapper. */
+  _assertionBounds: { left: number; top: number; right: number; bottom: number } | undefined;
 
   /** @internal — Trace capture context from the Device, if tracing is active. */
   get _traceCapture(): TraceCapture | undefined {
@@ -534,7 +536,7 @@ export class ElementHandle {
     if (timeoutMs === 0) return { remainingMs: 0 };
     const MIN_ACTION_BUDGET_MS = 1000;
     const deadline = Date.now() + timeoutMs;
-    const POLL_MS = 250;
+    const POLL_MS = 150;
     let everFound = false;
     while (true) {
       try {
@@ -698,8 +700,8 @@ export class ElementHandle {
     this._emitQueryStarted(`waitFor(${state})`);
     const start = Date.now();
 
-    const POLL_MS = 250;
-    const FIND_TIMEOUT_MS = 500;
+    const POLL_MS = 150;
+    const FIND_TIMEOUT_MS = 300;
     const deadline = start + timeoutMs;
 
     const checkState = async (): Promise<boolean> => {
@@ -798,9 +800,8 @@ export class ElementHandle {
     const trace = this._traceCapture;
     if (!trace) return;
     const sourceLocation = extractSourceLocation(new Error().stack ?? '');
-    const { captures: beforeCaptures } = await trace.collector.captureBeforeAction(
-      trace.takeScreenshot, trace.captureHierarchy,
-    );
+    // Query operations are read-only — skip screenshot/hierarchy capture
+    // since the screen hasn't changed since the last action.
     trace.collector.addActionEvent({
       category: 'other',
       action,
@@ -809,9 +810,9 @@ export class ElementHandle {
       success: true,
       bounds,
       sourceLocation,
-      hasScreenshotBefore: !!beforeCaptures.screenshotBefore,
+      hasScreenshotBefore: false,
       hasScreenshotAfter: false,
-      hasHierarchyBefore: !!beforeCaptures.hierarchyBefore,
+      hasHierarchyBefore: false,
       hasHierarchyAfter: false,
       log: [result],
     });
@@ -829,9 +830,8 @@ export class ElementHandle {
     const sourceLocation = extractSourceLocation(new Error().stack ?? '');
     const errMsg = err instanceof Error ? err.message : String(err);
     const errStack = err instanceof Error ? err.stack : undefined;
-    const { captures: beforeCaptures } = await trace.collector.captureBeforeAction(
-      trace.takeScreenshot, trace.captureHierarchy,
-    );
+    // Query failures don't need their own screenshot — the trace viewer
+    // uses the previous action's screenshot as context.
     trace.collector.addActionEvent({
       category: 'other',
       action,
@@ -841,9 +841,9 @@ export class ElementHandle {
       error: errMsg,
       errorStack: errStack,
       sourceLocation,
-      hasScreenshotBefore: !!beforeCaptures.screenshotBefore,
+      hasScreenshotBefore: false,
       hasScreenshotAfter: false,
-      hasHierarchyBefore: !!beforeCaptures.hierarchyBefore,
+      hasHierarchyBefore: false,
       hasHierarchyAfter: false,
       log: [`${action} failed: ${errMsg}`],
     });
@@ -1072,9 +1072,9 @@ export class ElementHandle {
             // element's position is stable for two consecutive checks.
             if (i > 0) {
               let lastY = res.element.bounds?.top;
-              for (let s = 0; s < 10; s++) {
-                await new Promise((r) => setTimeout(r, 100));
-                const probe = await this._client.findElement(this._selector, 500);
+              for (let s = 0; s < 5; s++) {
+                await new Promise((r) => setTimeout(r, 80));
+                const probe = await this._client.findElement(this._selector, 300);
                 const curY = probe.element?.bounds?.top;
                 if (curY !== undefined && curY === lastY) break;
                 lastY = curY;

@@ -1658,18 +1658,28 @@ async function main(): Promise<void> {
     process.exit(1);
   }
 
-  // Apply sharding — deterministic split within each project. Setup projects
-  // (depended on by others) only run on shards that have tests from their dependents.
+  // Apply sharding — duration-based bin-packing when historical data exists,
+  // falling back to round-robin. Setup projects (depended on by others) only
+  // run on shards that have tests from their dependents.
   if (config.shard) {
     const { current, total } = config.shard;
+    const { readDurations, shardByDuration } = await import('./shard.js');
+    const rawDurations = readDurations(config.rootDir);
+    const durations: Record<string, number> = {};
+    for (const [relPath, dur] of Object.entries(rawDurations)) {
+      durations[path.resolve(config.rootDir, relPath)] = dur;
+    }
+    const hasDurationData = Object.keys(durations).length > 0;
     if (hasProjects) {
       const depTargets = new Set(projects.flatMap((p) => p.dependencies));
-      // First pass: shard non-setup projects
       for (const project of projects) {
         if (depTargets.has(project.name)) continue;
-        project.testFiles = project.testFiles.filter((_, i) => i % total === current - 1);
+        if (hasDurationData) {
+          project.testFiles = shardByDuration(project.testFiles, current, total, durations);
+        } else {
+          project.testFiles = project.testFiles.filter((_, i) => i % total === current - 1);
+        }
       }
-      // Second pass: skip setup projects whose dependents have no files in this shard
       for (const project of projects) {
         if (!depTargets.has(project.name)) continue;
         const hasDependentTests = projects.some(
@@ -1681,13 +1691,17 @@ async function main(): Promise<void> {
       }
       testFiles = projects.flatMap((p) => p.testFiles);
     } else {
-      testFiles = testFiles.filter((_, i) => i % total === current - 1);
+      if (hasDurationData) {
+        testFiles = shardByDuration(testFiles, current, total, durations);
+      } else {
+        testFiles = testFiles.filter((_, i) => i % total === current - 1);
+      }
     }
     if (testFiles.length === 0) {
       console.log(dim(`Shard ${current}/${total}: no test files in this shard.`));
       process.exit(0);
     }
-    console.log(dim(`Shard ${current}/${total}: running ${testFiles.length} file(s)`));
+    console.log(dim(`Shard ${current}/${total}: running ${testFiles.length} file(s)${hasDurationData ? ' (balanced by duration)' : ''}`));
   }
 
   // Re-exec under tsx if we have TypeScript test files and haven't already
@@ -1714,6 +1728,11 @@ async function main(): Promise<void> {
       const { BlobReporter } = await import('./reporters/blob.js');
       reporters.push(new BlobReporter());
     }
+  }
+  // Auto-add durations reporter to track per-file timing for shard balancing
+  {
+    const { DurationsReporter } = await import('./reporters/durations.js');
+    reporters.push(new DurationsReporter());
   }
   const reporter = new ReporterDispatcher(reporters);
 
@@ -2213,6 +2232,8 @@ async function runTestFileWithRecovery(
           await ensureSessionReady(
             opts.sessionContext,
             `before test ${fullName}`,
+            undefined,
+            { lightweight: true },
           );
         },
         abortFileOnError: isRecoverableInfrastructureError,

@@ -44,12 +44,17 @@ export async function ensureSessionReady(
   ctx: SessionPreflightContext,
   phase: string,
   maxAttempts = DEFAULT_MAX_ATTEMPTS,
+  options?: { lightweight?: boolean },
 ): Promise<void> {
   let lastError: unknown;
 
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     try {
-      await verifySession(ctx);
+      if (options?.lightweight) {
+        await verifySessionLightweight(ctx);
+      } else {
+        await verifySession(ctx);
+      }
       return;
     } catch (err) {
       lastError = err;
@@ -159,6 +164,13 @@ export async function launchConfiguredApp(
   await ctx.device.launchApp(ctx.config.package, launchOptions(ctx.config));
 
   await ensureSessionReady(ctx, phase, readinessAttempts);
+}
+
+async function verifySessionLightweight(ctx: SessionPreflightContext): Promise<void> {
+  const pong = await ctx.client.ping();
+  if (!pong.agentConnected) {
+    throw new Error('agent is not connected');
+  }
 }
 
 async function verifySession(ctx: SessionPreflightContext): Promise<void> {

@@ -1879,7 +1879,7 @@ describe("wrapAssertionWithTrace", () => {
     vitestExpect(event.passed).toBe(true);
   });
 
-  it("captures before screenshot (no after — viewer uses next action's before)", async () => {
+  it("skips before/after screenshot capture (assertions use previous action's screenshot)", async () => {
     const collector = makeMockCollector();
     const client = makeMockClient(async () => ({
       requestId: "1",
@@ -1891,7 +1891,7 @@ describe("wrapAssertionWithTrace", () => {
 
     await tapsmithExpect(handle).toBeVisible({ timeout: 50 });
 
-    vitestExpect(collector.captureBeforeAction).toHaveBeenCalledTimes(1);
+    vitestExpect(collector.captureBeforeAction).not.toHaveBeenCalled();
     vitestExpect(collector.captureAfterAction).not.toHaveBeenCalled();
   });
 });

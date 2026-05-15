@@ -24,6 +24,7 @@ export default defineConfig({
   platform: "ios",
   app: "../test-app/ios/build/Build/Products/Release-iphoneos/TapsmithTestApp.app",
   package: "dev.tapsmith.testapp",
+  resetAppDeepLink: "tapsmithtest:///reset",
   timeout: 15_000,
   retries: 0,
   screenshot: "only-on-failure",

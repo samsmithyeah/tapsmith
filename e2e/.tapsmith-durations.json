@@ -1,0 +1,32 @@
+{
+  "files": {
+    "tests/accessibility.test.ts": 63300,
+    "tests/gestures.test.ts": 227799,
+    "tests/is-editable.test.ts": 11600,
+    "tests/network-mocking.test.ts": 214399,
+    "tests/soft-assertions.test.ts": 4500,
+    "tests/webview-selectors.test.ts": 151200,
+    "tests/app-state.test.ts": 122300,
+    "tests/api-calls.test.ts": 82000,
+    "tests/get-by-label.test.ts": 71100,
+    "tests/runner-features.test.ts": 38800,
+    "tests/spinner.test.ts": 29100,
+    "tests/webview.test.ts": 95000,
+    "tests/auth-gate.test.ts": 34200,
+    "tests/api-request-fixture.test.ts": 87199,
+    "tests/get-by-role-expanded.test.ts": 11700,
+    "tests/list.test.ts": 20800,
+    "tests/scroll.test.ts": 15299,
+    "tests/toggles.test.ts": 127400,
+    "tests/device-management.test.ts": 119300,
+    "tests/get-by-role-options.test.ts": 31099,
+    "tests/login.test.ts": 142299,
+    "tests/selector-regressions.test.ts": 477600,
+    "tests/visibility.test.ts": 66900,
+    "tests/dialogs.test.ts": 94200,
+    "tests/home.test.ts": 28000,
+    "tests/network-capture.test.ts": 21100,
+    "tests/slow-load.test.ts": 33000,
+    "tests/wait-for.test.ts": 89500
+  }
+}

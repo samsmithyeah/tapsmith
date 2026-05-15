@@ -46,6 +46,7 @@ const DEVICE_USE = {
 
 export default defineConfig({
   package: "dev.tapsmith.testapp",
+  resetAppDeepLink: "tapsmithtest:///reset",
   timeout: 15_000,
   retries: 0,
   screenshot: "only-on-failure",

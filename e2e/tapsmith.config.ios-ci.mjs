@@ -4,6 +4,7 @@ export default defineConfig({
   platform: "ios",
   app: "./fixtures/TapsmithTestApp.app",
   package: "dev.tapsmith.testapp",
+  resetAppDeepLink: "tapsmithtest:///reset",
   timeout: 30_000,
   typingDelay: 10,
   retries: 1,

@@ -375,6 +375,8 @@ async function runFileWithRecovery(
           await ensureSessionReady(
             sessionContext(undefined),
             `before test ${fullName}`,
+            undefined,
+            { lightweight: true },
           );
         },
         abortFileOnError: isRecoverableInfrastructureError,

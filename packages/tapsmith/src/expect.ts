@@ -24,12 +24,10 @@ import { extractSourceLocation, getActiveTraceCollector } from "./trace/trace-co
 import { WebViewLocator } from "./webview-locator.js";
 
 const DEFAULT_ASSERTION_TIMEOUT_MS = 5_000;
-const POLL_INTERVAL_MS = 250;
-// Short server-side timeout for element lookups inside assertion polls.
-// Must be > 0 because the Rust daemon treats 0 as "use 30s default".
-// 100ms was too aggressive under multi-emulator load and produced false
-// negatives where the UI was visibly present but the lookup timed out.
-const POLL_FIND_TIMEOUT_MS = 500;
+const POLL_INTERVAL_INITIAL_MS = 25;
+const POLL_INTERVAL_MAX_MS = 150;
+const POLL_INTERVAL_MS = POLL_INTERVAL_MAX_MS;
+const POLL_FIND_TIMEOUT_MS = 150;
 
 /**
  * Repeatedly call `check` until it returns the expected value or the timeout
@@ -48,10 +46,14 @@ async function poll(
 ): Promise<boolean> {
   const target = !negated; // true = want check() to be true; false = want false
   const deadline = Date.now() + timeoutMs;
+  let interval = POLL_INTERVAL_INITIAL_MS;
   while (Date.now() < deadline) {
     const value = await check();
     if (value === target) return value;
-    await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS));
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) break;
+    await new Promise((r) => setTimeout(r, Math.min(interval, remaining)));
+    interval = Math.min(interval * 2, POLL_INTERVAL_MAX_MS);
   }
   // Final attempt
   return check();
@@ -293,31 +295,23 @@ function wrapAssertionWithTrace(
     const selectorStr = selectorDescription(handle);
     const start = Date.now();
 
-    // Capture before-screenshot and best-effort element bounds so the trace
-    // viewer / UI mode can highlight the element immediately.
-    const { captures: beforeCaptures } = await trace.collector.captureBeforeAction(
-      trace.takeScreenshot,
-      trace.captureHierarchy,
-    );
-    let beforeBounds: { left: number; top: number; right: number; bottom: number } | undefined;
-    try {
-      const res = await handle._client.findElement(handle._selector, 100);
-      if (res.found && res.element?.bounds) beforeBounds = res.element.bounds;
-    } catch { /* best-effort */ }
-
     // Stream a "started" lifecycle signal so UI mode can render an in-flight
     // row with a spinner — auto-waiting assertions like toBeVisible can poll
     // for up to 30s before emitting their completed event.
+    //
+    // Assertions skip captureBeforeAction — the previous action's screenshot
+    // serves as the visual context, and the assertion's own poll loop already
+    // calls findElement which provides bounds. This avoids an expensive
+    // screenshot + hierarchy capture + extra findElement call per assertion.
     trace.collector._emitAssertionStarted({
       assertion: (negated ? "not." : "") + name,
       selector: selectorStr,
       sourceLocation,
-      bounds: beforeBounds,
       soft: false,
       negated,
-      hasScreenshotBefore: !!beforeCaptures.screenshotBefore,
+      hasScreenshotBefore: false,
       hasScreenshotAfter: false,
-      hasHierarchyBefore: !!beforeCaptures.hierarchyBefore,
+      hasHierarchyBefore: false,
       hasHierarchyAfter: false,
     });
 
@@ -345,9 +339,9 @@ function wrapAssertionWithTrace(
         attempts: Math.max(1, Math.round((Date.now() - start) / POLL_INTERVAL_MS)),
         error: timeoutError,
         sourceLocation,
-        hasScreenshotBefore: !!beforeCaptures.screenshotBefore,
+        hasScreenshotBefore: false,
         hasScreenshotAfter: false,
-        hasHierarchyBefore: !!beforeCaptures.hierarchyBefore,
+        hasHierarchyBefore: false,
         hasHierarchyAfter: false,
       } as Parameters<typeof trace.collector.addAssertionEvent>[0]);
     });
@@ -373,15 +367,10 @@ function wrapAssertionWithTrace(
     const duration = Date.now() - start;
     const attempts = Math.max(1, Math.round(duration / POLL_INTERVAL_MS));
 
-    // Re-lookup bounds after assertion — element may have moved during polling.
-    // Fall back to before-bounds if the element is no longer findable.
-    let bounds = beforeBounds;
-    try {
-      const res = await handle._client.findElement(handle._selector, 100);
-      if (res.found && res.element?.bounds) {
-        bounds = res.element.bounds;
-      }
-    } catch { /* best-effort — keep beforeBounds */ }
+    // Use bounds captured by the assertion's own poll loop (via _assertionBounds
+    // side-channel) instead of making a separate findElement call.
+    const bounds = handle._assertionBounds;
+    handle._assertionBounds = undefined;
 
     // Emit event immediately so _actionIndex increments before the runner
     // emits group-end boundaries.  No after-capture — the trace viewer uses
@@ -400,9 +389,9 @@ function wrapAssertionWithTrace(
       error,
       bounds,
       sourceLocation,
-      hasScreenshotBefore: !!beforeCaptures.screenshotBefore,
+      hasScreenshotBefore: false,
       hasScreenshotAfter: false,
-      hasHierarchyBefore: !!beforeCaptures.hierarchyBefore,
+      hasHierarchyBefore: false,
       hasHierarchyAfter: false,
     } as Parameters<typeof trace.collector.addAssertionEvent>[0]);
 
@@ -450,6 +439,7 @@ function createAssertions(
       const result = await poll(async () => {
         try {
           const res = await handle._client.findElement(handle._selector, POLL_FIND_TIMEOUT_MS);
+          if (res.found && res.element?.bounds) handle._assertionBounds = res.element.bounds;
           return res.found && res.element?.visible === true;
         } catch {
           return false;
@@ -470,6 +460,7 @@ function createAssertions(
       const result = await poll(async () => {
         try {
           const res = await handle._client.findElement(handle._selector, POLL_FIND_TIMEOUT_MS);
+          if (res.found && res.element?.bounds) handle._assertionBounds = res.element.bounds;
           return res.found && res.element?.enabled === true;
         } catch {
           return false;
@@ -492,6 +483,7 @@ function createAssertions(
         try {
           const res = await handle._client.findElement(handle._selector, POLL_FIND_TIMEOUT_MS);
           if (res.found && res.element) {
+            if (res.element.bounds) handle._assertionBounds = res.element.bounds;
             lastText = res.element.text;
             return res.element.text === expected;
           }
@@ -521,6 +513,7 @@ function createAssertions(
       const result = await poll(async () => {
         try {
           const res = await handle._client.findElement(handle._selector, POLL_FIND_TIMEOUT_MS);
+          if (res.found && res.element?.bounds) handle._assertionBounds = res.element.bounds;
           return res.found;
         } catch {
           return false;
@@ -543,6 +536,7 @@ function createAssertions(
       const result = await poll(async () => {
         try {
           const res = await handle._client.findElement(handle._selector, POLL_FIND_TIMEOUT_MS);
+          if (res.found && res.element?.bounds) handle._assertionBounds = res.element.bounds;
           return res.found && res.element?.checked === true;
         } catch {
           return false;
@@ -565,6 +559,7 @@ function createAssertions(
       const result = await poll(async () => {
         try {
           const res = await handle._client.findElement(handle._selector, POLL_FIND_TIMEOUT_MS);
+          if (res.found && res.element?.bounds) handle._assertionBounds = res.element.bounds;
           return res.found && res.element?.enabled === false;
         } catch {
           return false;
@@ -589,6 +584,7 @@ function createAssertions(
       const result = await poll(async () => {
         try {
           const res = await handle._client.findElement(handle._selector, POLL_FIND_TIMEOUT_MS);
+          if (res.found && res.element?.bounds) handle._assertionBounds = res.element.bounds;
           return !res.found || res.element?.visible === false;
         } catch {
           return true;
@@ -613,6 +609,7 @@ function createAssertions(
         try {
           const res = await handle._client.findElement(handle._selector, POLL_FIND_TIMEOUT_MS);
           if (res.found && res.element) {
+            if (res.element.bounds) handle._assertionBounds = res.element.bounds;
             lastText = res.element.text;
             return !res.element.text;
           }
@@ -642,6 +639,7 @@ function createAssertions(
       const result = await poll(async () => {
         try {
           const res = await handle._client.findElement(handle._selector, POLL_FIND_TIMEOUT_MS);
+          if (res.found && res.element?.bounds) handle._assertionBounds = res.element.bounds;
           return res.found && res.element?.focused === true;
         } catch {
           return false;
@@ -666,6 +664,7 @@ function createAssertions(
         try {
           const res = await handle._client.findElement(handle._selector, POLL_FIND_TIMEOUT_MS);
           if (res.found && res.element) {
+            if (res.element.bounds) handle._assertionBounds = res.element.bounds;
             lastText = res.element.text;
             return matchesStringOrRegExp(res.element.text, expected);
           }
@@ -699,6 +698,7 @@ function createAssertions(
         try {
           const res = await handle._client.findElements(handle._selector, POLL_FIND_TIMEOUT_MS);
           lastCount = res.elements?.length ?? 0;
+          if (lastCount > 0 && res.elements[0]?.bounds) handle._assertionBounds = res.elements[0].bounds;
           return lastCount === count;
         } catch {
           return false;
@@ -727,6 +727,7 @@ function createAssertions(
         try {
           const res = await handle._client.findElement(handle._selector, POLL_FIND_TIMEOUT_MS);
           if (res.found && res.element) {
+            if (res.element.bounds) handle._assertionBounds = res.element.bounds;
             lastValue = (res.element as unknown as Record<string, unknown>)[
               name
             ];
@@ -762,7 +763,7 @@ function createAssertions(
         try {
           const res = await handle._client.findElement(handle._selector, POLL_FIND_TIMEOUT_MS);
           if (res.found && res.element) {
-            // On Android, accessible name is contentDescription if set, otherwise text
+            if (res.element.bounds) handle._assertionBounds = res.element.bounds;
             lastName = res.element.contentDescription || res.element.text;
             return matchesExact(lastName, name);
           }
@@ -796,6 +797,7 @@ function createAssertions(
         try {
           const res = await handle._client.findElement(handle._selector, POLL_FIND_TIMEOUT_MS);
           if (res.found && res.element) {
+            if (res.element.bounds) handle._assertionBounds = res.element.bounds;
             lastDesc = res.element.hint;
             return matchesExact(lastDesc, description);
           }
@@ -830,7 +832,7 @@ function createAssertions(
         try {
           const res = await handle._client.findElement(handle._selector, POLL_FIND_TIMEOUT_MS);
           if (res.found && res.element) {
-            // Use the role field from the agent if available, otherwise compute from className
+            if (res.element.bounds) handle._assertionBounds = res.element.bounds;
             lastRole =
               res.element.role || classNameToRole(res.element.className);
             return normalizeRole(lastRole) === expected;
@@ -863,6 +865,7 @@ function createAssertions(
         try {
           const res = await handle._client.findElement(handle._selector, POLL_FIND_TIMEOUT_MS);
           if (res.found && res.element) {
+            if (res.element.bounds) handle._assertionBounds = res.element.bounds;
             lastValue = res.element.text;
             return res.element.text === value;
           }
@@ -895,6 +898,7 @@ function createAssertions(
         try {
           const res = await handle._client.findElement(handle._selector, POLL_FIND_TIMEOUT_MS);
           if (res.found && res.element) {
+            if (res.element.bounds) handle._assertionBounds = res.element.bounds;
             const isTextField =
               res.element.role === "textfield" ||
               EDITABLE_CLASSES.has(res.element.className);
@@ -925,6 +929,7 @@ function createAssertions(
         try {
           const res = await handle._client.findElement(handle._selector, POLL_FIND_TIMEOUT_MS);
           if (res.found && res.element) {
+            if (res.element.bounds) handle._assertionBounds = res.element.bounds;
             lastRatio = res.element.viewportRatio ?? 0;
             if (requiredRatio > 0) {
               return lastRatio >= requiredRatio;
@@ -1663,22 +1668,18 @@ function createWebViewAssertions(
     const selectorStr = `css=${locator._selector}`;
     const start = Date.now();
 
-    const { captures: beforeCaptures } = await traceCtx.collector.captureBeforeAction(
-      traceCtx.takeScreenshot,
-      traceCtx.captureHierarchy,
-    );
-
-    // Stream a "started" lifecycle signal so UI mode can render an in-flight
-    // row with a spinner during the WebView assertion's poll loop.
+    // Assertions skip captureBeforeAction — the previous action's screenshot
+    // serves as the visual context. This avoids expensive screenshot + hierarchy
+    // capture per assertion.
     traceCtx.collector._emitAssertionStarted({
       assertion: (negated ? "not." : "") + name,
       selector: selectorStr,
       sourceLocation,
       soft: false,
       negated,
-      hasScreenshotBefore: !!beforeCaptures.screenshotBefore,
+      hasScreenshotBefore: false,
       hasScreenshotAfter: false,
-      hasHierarchyBefore: !!beforeCaptures.hierarchyBefore,
+      hasHierarchyBefore: false,
       hasHierarchyAfter: false,
     });
 
@@ -1699,9 +1700,9 @@ function createWebViewAssertions(
         attempts: Math.max(1, Math.round((Date.now() - start) / POLL_INTERVAL_MS)),
         error: timeoutError,
         sourceLocation,
-        hasScreenshotBefore: !!beforeCaptures.screenshotBefore,
+        hasScreenshotBefore: false,
         hasScreenshotAfter: false,
-        hasHierarchyBefore: !!beforeCaptures.hierarchyBefore,
+        hasHierarchyBefore: false,
         hasHierarchyAfter: false,
       } as Parameters<typeof traceCtx.collector.addAssertionEvent>[0]);
     });
@@ -1723,11 +1724,6 @@ function createWebViewAssertions(
     const duration = Date.now() - start;
     const attempts = Math.max(1, Math.round(duration / POLL_INTERVAL_MS));
 
-    let bounds: { left: number; top: number; right: number; bottom: number } | undefined;
-    if (passed) {
-      bounds = await locator._handle._getElementBounds(locator._selector, locator._finderJs);
-    }
-
     traceCtx.collector.addAssertionEvent({
       assertion: (negated ? "not." : "") + name,
       selector: selectorStr,
@@ -1737,11 +1733,10 @@ function createWebViewAssertions(
       duration,
       attempts,
       error,
-      bounds,
       sourceLocation,
-      hasScreenshotBefore: !!beforeCaptures.screenshotBefore,
+      hasScreenshotBefore: false,
       hasScreenshotAfter: false,
-      hasHierarchyBefore: !!beforeCaptures.hierarchyBefore,
+      hasHierarchyBefore: false,
       hasHierarchyAfter: false,
     } as Parameters<typeof traceCtx.collector.addAssertionEvent>[0]);
 
