@@ -625,7 +625,7 @@ export function detectBlockingSystemDialog(rawHierarchy: string): string | undef
 
   // Patterns that strongly indicate a system ANR/crash dialog — no ambiguity
   const strongPatterns = [
-    /isn(?:’|&apos;|’)t responding/,
+    /isn(?:'|’|&apos;)t responding/,
     /keeps stopping/,
   ];
 
