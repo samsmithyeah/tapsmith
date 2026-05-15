@@ -291,7 +291,7 @@ export function effectiveConfigForProject(
       merged[key] = value;
     }
   }
-  return merged as unknown as TapsmithConfig;
+  return applyConfigDefaults(merged as unknown as TapsmithConfig, project.use);
 }
 
 // ─── Projects ───
@@ -356,7 +356,7 @@ function applyConfigDefaults(
   config: TapsmithConfig,
   raw: Partial<TapsmithConfig>,
 ): TapsmithConfig {
-  if (raw.launchEmulators === undefined && config.avd) {
+  if (raw.launchEmulators === undefined && raw.avd) {
     config.launchEmulators = true;
   }
   return config;
