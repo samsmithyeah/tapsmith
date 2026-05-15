@@ -62,43 +62,53 @@ export function McpPanel({ sseUrl, clientName, clientVersion, toolCalls, onClear
                   : 'MCP server starting...'}
             </div>
           )
-          : mergedCalls.map(tc => (
-            <div
-              key={tc.id}
-              class={`mcp-entry ${tc.status}${expandedId === tc.id ? ' expanded' : ''}`}
-              onClick={() => setExpandedId(prev => prev === tc.id ? null : tc.id)}
-            >
-              <div class="mcp-entry-header">
-                <span class="mcp-time">{formatTime(tc.timestamp)}</span>
-                <span class="mcp-tool">{tc.tool.replace('tapsmith_', '')}</span>
-                {tc.status === 'started'
-                  ? <span class="mcp-duration running">running…</span>
-                  : tc.durationMs != null && (
-                    <span class="mcp-duration">{formatDuration(tc.durationMs)}</span>
-                  )}
+          : mergedCalls.map(tc => {
+            const hasArgs = Object.keys(tc.args).length > 0;
+            const hasResult = Boolean(tc.resultText);
+            return (
+              <div
+                key={tc.id}
+                class={`mcp-entry ${tc.status}${expandedId === tc.id ? ' expanded' : ''}`}
+                onClick={() => setExpandedId(prev => prev === tc.id ? null : tc.id)}
+              >
+                <div class="mcp-entry-header">
+                  <span class="mcp-time">{formatTime(tc.timestamp)}</span>
+                  <span class="mcp-tool">{tc.tool.replace('tapsmith_', '')}</span>
+                  {tc.status === 'started'
+                    ? <span class="mcp-duration running">running…</span>
+                    : tc.durationMs != null && (
+                      <span class="mcp-duration">{formatDuration(tc.durationMs)}</span>
+                    )}
+                </div>
+                {tc.status === 'started' && (
+                  <div class="mcp-entry-summary mcp-in-progress">
+                    {formatToolArgs(tc.tool, tc.args)}
+                  </div>
+                )}
+                {tc.resultSummary && (
+                  <div class="mcp-entry-summary">
+                    {tc.status === 'error' ? tc.error ?? tc.resultSummary : tc.resultSummary}
+                  </div>
+                )}
+                {expandedId === tc.id && (hasArgs || hasResult) && (
+                  <div class="mcp-entry-detail">
+                    {hasArgs && Object.entries(tc.args).map(([k, v]) => (
+                      <div key={k} class="mcp-detail-row">
+                        <span class="mcp-detail-key">{k}:</span>
+                        <span class="mcp-detail-value">{formatArgValue(v)}</span>
+                      </div>
+                    ))}
+                    {tc.resultText && (
+                      <div class="mcp-result-block">
+                        <div class="mcp-detail-key">result:</div>
+                        <pre class="mcp-result-text">{formatResultText(tc.resultText, tc.resultTruncated)}</pre>
+                      </div>
+                    )}
+                  </div>
+                )}
               </div>
-              {tc.status === 'started' && (
-                <div class="mcp-entry-summary mcp-in-progress">
-                  {formatToolArgs(tc.tool, tc.args)}
-                </div>
-              )}
-              {tc.resultSummary && (
-                <div class="mcp-entry-summary">
-                  {tc.status === 'error' ? tc.error ?? tc.resultSummary : tc.resultSummary}
-                </div>
-              )}
-              {expandedId === tc.id && Object.keys(tc.args).length > 0 && (
-                <div class="mcp-entry-detail">
-                  {Object.entries(tc.args).map(([k, v]) => (
-                    <div key={k} class="mcp-detail-row">
-                      <span class="mcp-detail-key">{k}:</span>
-                      <span class="mcp-detail-value">{formatArgValue(v)}</span>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
-          ))}
+            );
+          })}
       </div>
     </div>
   );
@@ -153,6 +163,10 @@ function formatArgValue(v: unknown): string {
   if (typeof v === 'string') return v.length > 80 ? v.slice(0, 77) + '...' : v;
   if (Array.isArray(v)) return `[${v.length} items]`;
   return String(v);
+}
+
+function formatResultText(result: string, truncated?: boolean): string {
+  return truncated ? `${result}\n... truncated` : result;
 }
 
 function mergeToolCalls(calls: McpToolCallMessage[]): McpToolCallMessage[] {

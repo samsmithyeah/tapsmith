@@ -16,9 +16,9 @@ import { registerListTestsTool } from './tools/list-tests.js';
 import { registerStopTestsTool } from './tools/stop-tests.js';
 import { registerSessionInfoTool } from './tools/session-info.js';
 import { registerWatchTool } from './tools/watch.js';
-import { closeClient } from './connection.js';
+import { closeAllClients } from './connection.js';
 import { uiPortFilePath } from './port-file.js';
-import { McpEventEmitter, nextCallId, summarizeResult } from './events.js';
+import { McpEventEmitter, nextCallId, summarizeResult, truncateResultText } from './events.js';
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import type { TestDispatcher } from './test-dispatcher.js';
 
@@ -107,20 +107,27 @@ function wrapToolsWithEvents(server: McpServer, events: McpEventEmitter): void {
     });
 
     try {
-      const result = await original(request, extra) as { result: CallToolResult };
+      const result = await original(request, extra) as CallToolResult;
       const elapsed = Date.now() - start;
-      const resultText = (result.result?.content ?? [])
+      const resultText = (result.content ?? [])
         .filter((c: { type: string }) => c.type === 'text')
         .map((c) => 'text' in c ? (c as { text: string }).text : '')
         .join('\n');
+      const eventResultText = truncateResultText(resultText);
+      const errorText = result.isError
+        ? eventResultText.resultTruncated
+          ? `${eventResultText.resultText}\n... truncated`
+          : eventResultText.resultText || resultText || 'Unknown tool error'
+        : undefined;
 
       events.emitToolCall({
         id: callId,
         tool: toolName,
         args,
-        status: result.result?.isError ? 'error' : 'completed',
+        status: result.isError ? 'error' : 'completed',
         resultSummary: summarizeResult(toolName, resultText),
-        error: result.result?.isError ? resultText : undefined,
+        ...eventResultText,
+        error: errorText,
         durationMs: elapsed,
         timestamp: start,
       });
@@ -166,7 +173,7 @@ export async function runMcpServer(): Promise<void> {
   await server.connect(transport);
 
   process.on('SIGINT', () => {
-    closeClient();
+    closeAllClients();
     process.exit(0);
   });
 }

@@ -9,10 +9,10 @@ export function registerAppControlTools(server: McpServer): void {
     {
       package: z.string().describe('Android package name or iOS bundle ID'),
       clear_data: z.boolean().optional().describe('Clear app data before launching'),
-      device: z.string().optional().describe('Device serial (optional)'),
+      device: z.string().optional().describe('Device serial from tapsmith_list_devices (optional, uses default device)'),
     },
     async ({ package: pkg, clear_data, device }) => {
-      const client = await ensureConnected();
+      const client = await ensureConnected(device);
       if (device) await client.setDevice(device);
       const { success, errorMessage } = await client.launchApp(pkg, {
         clearData: clear_data ?? false,

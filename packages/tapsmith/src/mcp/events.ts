@@ -4,6 +4,8 @@ export interface McpToolCallEvent {
   args: Record<string, unknown>
   status: 'started' | 'completed' | 'error'
   resultSummary?: string
+  resultText?: string
+  resultTruncated?: boolean
   error?: string
   durationMs?: number
   timestamp: number
@@ -48,6 +50,17 @@ export function nextCallId(): string {
   return `mcp-${++_callCounter}-${Date.now()}`;
 }
 
+export const MCP_EVENT_RESULT_TEXT_LIMIT = 12_000;
+
+export function truncateResultText(result: string): Pick<McpToolCallEvent, 'resultText' | 'resultTruncated'> {
+  if (result.length === 0) return {};
+  if (result.length <= MCP_EVENT_RESULT_TEXT_LIMIT) return { resultText: result };
+  return {
+    resultText: result.slice(0, MCP_EVENT_RESULT_TEXT_LIMIT),
+    resultTruncated: true,
+  };
+}
+
 export function summarizeResult(tool: string, result: string): string {
   switch (tool) {
     case 'tapsmith_snapshot': {
@@ -73,8 +86,13 @@ export function summarizeResult(tool: string, result: string): string {
     }
     case 'tapsmith_list_devices': {
       try {
-        const devices = JSON.parse(result);
-        return `${devices.length} device${devices.length !== 1 ? 's' : ''}`;
+        const devices = JSON.parse(result) as Array<{ platform?: string; model?: string }>;
+        const android = devices.filter(d => d.platform === 'android').length;
+        const ios = devices.filter(d => d.platform === 'ios').length;
+        const parts: string[] = [];
+        if (android) parts.push(`${android} android`);
+        if (ios) parts.push(`${ios} ios`);
+        return parts.length > 0 ? parts.join(', ') : `${devices.length} device${devices.length !== 1 ? 's' : ''}`;
       } catch {
         return result.slice(0, 60);
       }
@@ -100,8 +118,11 @@ export function summarizeResult(tool: string, result: string): string {
       return result.includes('## Steps')
         ? result.match(/## Steps \((\d+) events\)/)?.[0] ?? result.slice(0, 60)
         : result.slice(0, 60);
-    case 'tapsmith_list_tests':
+    case 'tapsmith_list_tests': {
+      const projectsMatch = result.match(/^Projects: (.+)$/m);
+      if (projectsMatch) return `Projects: ${projectsMatch[1]}`;
       return result.match(/(\d+) test file/)?.[0] ?? result.slice(0, 60);
+    }
     case 'tapsmith_list_results': {
       const resMatch = result.match(/(\d+) passed, (\d+) failed, (\d+) skipped/);
       return resMatch ? `${resMatch[1]} passed, ${resMatch[2]} failed, ${resMatch[3]} skipped` : result.slice(0, 60);

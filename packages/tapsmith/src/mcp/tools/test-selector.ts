@@ -11,10 +11,10 @@ export function registerTestSelectorTool(server: McpServer): void {
     'Test a Tapsmith selector against the current screen. Returns whether it matches, how many elements match, and details about each match. Use to validate selectors before putting them in test code.',
     {
       selector: z.string().describe('Tapsmith selector string, e.g. device.getByRole("button", { name: "Login" })'),
-      device: z.string().optional().describe('Device serial (optional, uses default device)'),
+      device: z.string().optional().describe('Device serial from tapsmith_list_devices (optional, uses default device)'),
     },
     async ({ selector, device }) => {
-      const client = await ensureConnected();
+      const client = await ensureConnected(device);
       if (device) await client.setDevice(device);
 
       const parsed = parseSelectorString(selector);

@@ -252,6 +252,8 @@ export interface McpToolCallMessage {
   args: Record<string, unknown>
   status: 'started' | 'completed' | 'error'
   resultSummary?: string
+  resultText?: string
+  resultTruncated?: boolean
   error?: string
   durationMs?: number
   timestamp: number

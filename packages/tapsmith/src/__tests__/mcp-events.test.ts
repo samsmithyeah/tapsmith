@@ -1,5 +1,15 @@
 import { describe, it, expect } from 'vitest';
-import { summarizeResult, nextCallId } from '../mcp/events.js';
+import {
+  MCP_EVENT_RESULT_TEXT_LIMIT,
+  McpEventEmitter,
+  nextCallId,
+  summarizeResult,
+  truncateResultText,
+  type McpToolCallEvent,
+} from '../mcp/events.js';
+import { createMcpServer } from '../mcp/index.js';
+import type { TestDispatcher } from '../mcp/test-dispatcher.js';
+import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 
 describe('summarizeResult()', () => {
   it('summarizes snapshot with element and selector counts', () => {
@@ -21,7 +31,16 @@ describe('summarizeResult()', () => {
     expect(summarizeResult('tapsmith_test_selector', result)).toBe('no match');
   });
 
-  it('summarizes list_devices', () => {
+  it('summarizes list_devices with platform counts', () => {
+    const result = JSON.stringify([
+      { serial: 'emulator-5554', platform: 'android' },
+      { serial: 'emulator-5556', platform: 'android' },
+      { serial: 'ABC-123', platform: 'ios' },
+    ]);
+    expect(summarizeResult('tapsmith_list_devices', result)).toBe('2 android, 1 ios');
+  });
+
+  it('summarizes list_devices without platform', () => {
     const result = JSON.stringify([{ serial: 'emulator-5554' }, { serial: 'abc123' }]);
     expect(summarizeResult('tapsmith_list_devices', result)).toBe('2 devices');
   });
@@ -46,7 +65,12 @@ describe('summarizeResult()', () => {
     expect(summarizeResult('tapsmith_read_trace', '## Steps (12 events)\n...')).toBe('## Steps (12 events)');
   });
 
-  it('summarizes list_tests file count', () => {
+  it('summarizes list_tests with projects', () => {
+    expect(summarizeResult('tapsmith_list_tests', 'Projects: android, ios\n\n[project] android\n  [file] test.ts'))
+      .toBe('Projects: android, ios');
+  });
+
+  it('summarizes list_tests file count fallback', () => {
     expect(summarizeResult('tapsmith_list_tests', '25 test file(s):\n/path/to/test.ts')).toBe('25 test file');
   });
 
@@ -87,3 +111,71 @@ describe('nextCallId()', () => {
     expect(a).toMatch(/^mcp-\d+-\d+$/);
   });
 });
+
+describe('truncateResultText()', () => {
+  it('keeps small text results for UI rendering', () => {
+    expect(truncateResultText('[{"serial":"emulator-5554"}]')).toEqual({
+      resultText: '[{"serial":"emulator-5554"}]',
+    });
+  });
+
+  it('bounds large text results for UI rendering', () => {
+    const result = truncateResultText('a'.repeat(MCP_EVENT_RESULT_TEXT_LIMIT + 1));
+    expect(result.resultText).toHaveLength(MCP_EVENT_RESULT_TEXT_LIMIT);
+    expect(result.resultTruncated).toBe(true);
+  });
+});
+
+describe('MCP tool call event wrapping', () => {
+  it('emits the direct SDK tool result text for UI rendering', async () => {
+    const events = new McpEventEmitter();
+    const toolEvents: McpToolCallEvent[] = [];
+    events.onToolCall(event => toolEvents.push(event));
+
+    const server = createMcpServer({ events, dispatcher: makeDispatcher() });
+    try {
+      const handlers = (server.server as unknown as {
+        _requestHandlers: Map<string, (request: unknown, extra: unknown) => Promise<CallToolResult>>
+      })._requestHandlers;
+      const callTool = handlers.get('tools/call');
+      expect(callTool).toBeDefined();
+
+      await callTool?.({
+        method: 'tools/call',
+        params: { name: 'tapsmith_session_info', arguments: {} },
+      }, {});
+
+      expect(toolEvents).toHaveLength(2);
+      expect(toolEvents[1]).toMatchObject({
+        tool: 'tapsmith_session_info',
+        status: 'completed',
+        resultSummary: 'session info',
+      });
+      expect(toolEvents[1].resultText).toContain('## Session');
+    } finally {
+      server.close();
+    }
+  });
+});
+
+function makeDispatcher(): TestDispatcher {
+  return {
+    runFiles: async () => ({ status: 'passed', passed: 0, failed: 0, skipped: 0, duration: 0 }),
+    runAll: async () => ({ status: 'passed', passed: 0, failed: 0, skipped: 0, duration: 0 }),
+    stop: () => {},
+    isRunning: () => false,
+    getResults: () => [],
+    getTestFiles: () => [],
+    getProjects: () => [],
+    getTestTree: () => [],
+    getSessionInfo: () => ({
+      platform: 'android',
+      package: 'com.example',
+      device: 'emulator-5554',
+      timeout: 5000,
+      retries: 0,
+      projects: [],
+    }),
+    toggleWatch: () => ({ enabled: true }),
+  };
+}

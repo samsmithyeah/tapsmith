@@ -4,19 +4,19 @@ import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import type { TestDispatcher } from '../test-dispatcher.js';
 import { readTraceSummary } from './trace-utils.js';
-import { getDaemonAddress } from '../connection.js';
+import { getAllDaemonAddresses } from '../connection.js';
 
 let _running = false;
 
 export function registerRunTestsTool(server: McpServer, dispatcher?: TestDispatcher): void {
   server.tool(
     'tapsmith_run_tests',
-    'Run Tapsmith test files and return structured results. Reports pass/fail counts and detailed failure information including error messages and trace file paths for debugging. Only one test run can execute at a time.',
+    'Run Tapsmith test files and return structured results. Reports pass/fail counts and detailed failure information including error messages and trace file paths for debugging. Only one test run can execute at a time. Use tapsmith_list_tests first to discover available files, test names, and project names.',
     {
-      files: z.array(z.string()).describe('Test file paths or glob patterns'),
-      test: z.string().optional().describe('Run a specific test by its full name (e.g. "Login screen > submits form"). Only works with a single file.'),
-      project: z.string().optional().describe('Project name to run tests in (use tapsmith_list_tests to see available projects)'),
-      device: z.string().optional().describe('Device serial (optional, ignored in UI mode)'),
+      files: z.array(z.string()).describe('Absolute file paths or glob patterns (e.g. ["/Users/me/project/e2e/tests/login.test.ts"]). Use tapsmith_list_tests to find available files.'),
+      test: z.string().optional().describe('Run a specific test by its full name (e.g. "Login screen > submits form"). Only works with a single file. Use tapsmith_list_tests to see exact test names.'),
+      project: z.string().optional().describe('Project name to target a specific platform/device (e.g. "android", "ios"). Use tapsmith_list_tests to see available projects. Required when the same test file runs on multiple platforms.'),
+      device: z.string().optional().describe('Device serial (optional, ignored in UI mode — use project instead to target a platform)'),
     },
     async ({ files, test: testFilter, project, device }) => {
       if (dispatcher) {
@@ -103,7 +103,7 @@ function runTapsmithProcess(args: string[]): Promise<string> {
       FORCE_COLOR: '0',
       TAPSMITH_REUSE_DAEMON: '1',
     };
-    const daemonAddr = getDaemonAddress();
+    const daemonAddr = getAllDaemonAddresses();
     if (daemonAddr) env.TAPSMITH_DAEMON_ADDRESS = daemonAddr;
 
     const child = spawn(process.execPath, [process.argv[1], ...args], {
