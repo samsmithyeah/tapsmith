@@ -27,7 +27,7 @@ const DEFAULT_ASSERTION_TIMEOUT_MS = 5_000;
 const POLL_INTERVAL_INITIAL_MS = 25;
 const POLL_INTERVAL_MAX_MS = 150;
 const POLL_INTERVAL_MS = POLL_INTERVAL_MAX_MS;
-const POLL_FIND_TIMEOUT_MS = 150;
+const POLL_FIND_TIMEOUT_MS = 250;
 
 /**
  * Repeatedly call `check` until it returns the expected value or the timeout
