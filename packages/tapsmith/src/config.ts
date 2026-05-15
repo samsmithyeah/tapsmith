@@ -291,7 +291,7 @@ export function effectiveConfigForProject(
       merged[key] = value;
     }
   }
-  return merged as unknown as TapsmithConfig;
+  return applyConfigDefaults(merged as unknown as TapsmithConfig, project.use);
 }
 
 // ─── Projects ───
