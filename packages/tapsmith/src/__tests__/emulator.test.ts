@@ -139,6 +139,12 @@ describe('emulator utilities', () => {
         detectBlockingSystemDialog('<hierarchy><node text="Pixel Launcher isn&apos;t responding" /></hierarchy>'),
       ).toContain('Pixel Launcher');
     });
+
+    it('detects ANR with plain ASCII apostrophe (UIAutomator agent format)', () => {
+      expect(
+        detectBlockingSystemDialog('<hierarchy><node text="System UI isn\'t responding" /></hierarchy>'),
+      ).toContain('System UI');
+    });
   });
 
   describe('dismissSystemDialogsViaAdb', () => {

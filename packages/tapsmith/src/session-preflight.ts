@@ -262,6 +262,10 @@ async function waitForAndroidAppHierarchy(
       const h = await ctx.client.getUiHierarchy();
       hierarchyXml = h.hierarchyXml;
       if (hierarchyContainsPackage(hierarchyXml, packageName)) return;
+      const blockingDialog = detectBlockingSystemDialog(hierarchyXml);
+      if (blockingDialog) {
+        throw new Error(`blocking system dialog detected (${blockingDialog})`);
+      }
       if (isAndroidSystemOverlay(hierarchyXml)) {
         const dismissedHierarchy = await dismissAndroidSystemOverlay(ctx, packageName);
         if (dismissedHierarchy) {
@@ -269,8 +273,8 @@ async function waitForAndroidAppHierarchy(
           if (hierarchyContainsPackage(hierarchyXml, packageName)) return;
         }
       }
-    } catch {
-      // Agent may still be settling after a cold launch.
+    } catch (err) {
+      if (err instanceof Error && err.message.includes('blocking system dialog')) throw err;
     }
     await new Promise((resolve) => setTimeout(resolve, HIERARCHY_POLL_INTERVAL_MS));
   }
