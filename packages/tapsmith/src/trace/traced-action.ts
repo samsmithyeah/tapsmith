@@ -46,9 +46,10 @@ export async function tracedAction(
   const selectorStr = selector ? JSON.stringify(selectorToProto(selector)) : undefined;
   const log: string[] = [];
 
-  // Run element bounds lookup and before-captures in parallel — both are
-  // best-effort and independent.  Short timeout on bounds since the element
-  // should already exist (we're about to act on it).
+  // Run bounds lookup, before-capture, and the action concurrently.
+  // The screenshot is fired before the action starts (so it captures the
+  // "before" state) but we don't wait for it — the action proceeds
+  // immediately while the screenshot I/O completes in the background.
   let bounds: { left: number; top: number; right: number; bottom: number } | undefined;
   let point: { x: number; y: number } | undefined;
 
@@ -78,19 +79,17 @@ export async function tracedAction(
       })()
     : Promise.resolve();
 
-  const [, { captures: beforeCaptures }] = await Promise.all([
-    boundsPromise,
-    ctx.collector.captureBeforeAction(ctx.takeScreenshot, ctx.captureHierarchy),
-  ]);
+  // Fire screenshot capture — don't await yet; let it run alongside the action.
+  const capturePromise = ctx.collector.captureBeforeAction(ctx.takeScreenshot, ctx.captureHierarchy);
 
-  // Stream a "started" lifecycle signal so UI mode can render an in-flight
-  // row with a spinner immediately. The matching addActionEvent below will
-  // emit at the same actionIndex with lifecycle='completed'.
+  // Stream a "started" lifecycle signal immediately so UI mode can render
+  // a spinner. Screenshot flags are false since capture is still in flight.
+  await boundsPromise;
   ctx.collector._emitActionStarted({
     category, action, selector: selectorStr, inputValue: extra?.inputValue,
     bounds, point, sourceLocation, log: [...log],
-    hasScreenshotBefore: !!beforeCaptures.screenshotBefore,
-    hasHierarchyBefore: !!beforeCaptures.hierarchyBefore,
+    hasScreenshotBefore: false,
+    hasHierarchyBefore: false,
   });
 
   const start = Date.now();
@@ -109,9 +108,9 @@ export async function tracedAction(
       category, action, selector: selectorStr, inputValue: extra?.inputValue,
       duration: Date.now() - start, success: false, error: timeoutError,
       bounds, point, log: [...log, `Timed out: ${timeoutError}`],
-      hasScreenshotBefore: !!beforeCaptures.screenshotBefore,
+      hasScreenshotBefore: false,
       hasScreenshotAfter: false,
-      hasHierarchyBefore: !!beforeCaptures.hierarchyBefore,
+      hasHierarchyBefore: false,
       hasHierarchyAfter: false,
       sourceLocation,
     });
@@ -150,10 +149,12 @@ export async function tracedAction(
   // actual action time, not action + screenshot overhead.
   const duration = Date.now() - start;
 
+  // Await the screenshot capture that was running alongside the action.
+  const { captures: beforeCaptures } = await capturePromise;
+
   // Emit event immediately so _actionIndex increments before the runner
   // emits group-end boundaries.  No after-capture — the trace viewer uses
   // the next action's before-screenshot as the "after" view (like Playwright).
-  // This halves the screenshot overhead and avoids fire-and-forget reliability issues.
   ctx.collector.addActionEvent({
     category, action, selector: selectorStr, inputValue: extra?.inputValue,
     duration, success, error, errorStack,

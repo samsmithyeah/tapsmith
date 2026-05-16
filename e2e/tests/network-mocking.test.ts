@@ -11,13 +11,11 @@ import { beforeEach, describe, expect, test } from "tapsmith"
 import { ApiCallsScreen } from "../screens/api-calls.screen.js"
 
 describe("Network mocking", () => {
-  // Network interception + real HTTP + iOS restartApp need generous timeout
-  test.use({ timeout: 20_000 })
+  // Network interception + real HTTP need generous timeout
+  test.use({ timeout: 15_000 })
 
   beforeEach(async ({ device }) => {
-    await device.restartApp()
-    await device.getByDescription("API Calls").scrollIntoView()
-    await device.getByDescription("API Calls").tap()
+    await device.openDeepLink("tapsmithtest:///api-calls")
     const screen = new ApiCallsScreen(device)
     await expect(screen.heading).toBeVisible()
   })
@@ -120,10 +118,8 @@ describe("Network mocking", () => {
     await screen.fetchPostsButton.tap()
     await expect(device.getByText("Still Mocked")).toBeVisible({ timeout: 10_000 })
 
-    // Restart to clear UI state
-    await device.restartApp()
-    await device.getByDescription("API Calls").scrollIntoView()
-    await device.getByDescription("API Calls").tap()
+    // Navigate back to clear UI state
+    await device.openDeepLink("tapsmithtest:///api-calls")
     await expect(screen.heading).toBeVisible()
 
     // Remove the route
@@ -149,11 +145,9 @@ describe("Network mocking", () => {
     await screen.fetchPostsButton.tap()
     await expect(device.getByText("Failed to fetch posts")).toBeVisible({ timeout: 10_000 })
 
-    // Remove all routes and restart app
+    // Remove all routes and navigate back to clear UI state
     await device.unrouteAll()
-    await device.restartApp()
-    await device.getByDescription("API Calls").scrollIntoView()
-    await device.getByDescription("API Calls").tap()
+    await device.openDeepLink("tapsmithtest:///api-calls")
     await expect(screen.heading).toBeVisible()
 
     // Now requests should go through
@@ -177,10 +171,8 @@ describe("Network mocking", () => {
     await expect(device.getByText("Once Only")).toBeVisible({ timeout: 10_000 })
     expect(routeHits).toBe(1)
 
-    // Restart app to clear state
-    await device.restartApp()
-    await device.getByDescription("API Calls").scrollIntoView()
-    await device.getByDescription("API Calls").tap()
+    // Navigate back to clear UI state
+    await device.openDeepLink("tapsmithtest:///api-calls")
     await expect(screen.heading).toBeVisible()
 
     // Second call: route should have expired after 1 use.
