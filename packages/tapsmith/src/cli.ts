@@ -65,6 +65,9 @@ function red(s: string): string {
 function yellow(s: string): string {
   return `${YELLOW}${s}${RESET}`;
 }
+function green(s: string): string {
+  return `${GREEN}${s}${RESET}`;
+}
 function bold(s: string): string {
   return `${BOLD}${s}${RESET}`;
 }
@@ -82,6 +85,50 @@ function printTapsmithBanner(): void {
   console.log(banner.split('\n').map((line) => `  ${GREEN}${line}${RESET}`).join('\n'));
   console.log(dim(`  v${getVersion()}`));
   console.log();
+}
+
+function argsAfterCommand(command: string): string[] {
+  const idx = process.argv.indexOf(command);
+  return idx >= 0 ? process.argv.slice(idx + 1) : [];
+}
+
+function commandArgsInclude(command: string, ...flags: string[]): boolean {
+  const wanted = new Set(flags);
+  return argsAfterCommand(command).some((arg) => wanted.has(arg));
+}
+
+function shouldPrintBannerForCommand(args: CliArgs): boolean {
+  if (!args.command || args.version || args.help) return false;
+
+  // Keep protocol and machine-readable surfaces byte-clean.
+  if (args.command === 'mcp-server') return false;
+  if (args.command === 'list-devices' && commandArgsInclude(args.command, '--json')) return false;
+
+  // These commands render command-specific help after the top-level parser
+  // stops, so suppress the decorative banner when the user only asked for help.
+  if (commandArgsInclude(args.command, '--help', '-h')) return false;
+
+  // `init` already owns its banner because the wizard can be called directly
+  // from tests and package consumers.
+  if (args.command === 'init') return false;
+
+  // Test mode prints its banner after TypeScript re-exec and test discovery,
+  // immediately before the launch output.
+  if (args.command === 'test') return false;
+
+  return new Set([
+    'show-trace',
+    'show-report',
+    'merge-reports',
+    'list-devices',
+    'setup-ios',
+    'setup-ios-device',
+    'build-ios-agent',
+    'configure-ios-network',
+    'refresh-ios-network',
+    'verify-ios-network',
+    'doctor',
+  ]).has(args.command);
 }
 
 function warnSequentialUnhealthyDevices(devices: DeviceHealthResult[], progress?: LaunchProgressSink): void {
@@ -1494,8 +1541,8 @@ async function provisionPerProjectDevices(
 }
 
 function printHelp(): void {
-  console.log(`
-${bold('tapsmith')} — Mobile app testing framework
+  printTapsmithBanner();
+  console.log(`${bold('Mobile app testing framework')}
 
 ${bold('Usage:')}
   tapsmith test [files...]           Run test files
@@ -1571,6 +1618,10 @@ async function main(): Promise<void> {
     return;
   }
 
+  if (shouldPrintBannerForCommand(args)) {
+    printTapsmithBanner();
+  }
+
   if (args.command === 'show-report') {
     const reportDir = args.files[0] ?? 'tapsmith-report';
     const reportPath = path.resolve(process.cwd(), reportDir, 'index.html');
@@ -1579,7 +1630,15 @@ async function main(): Promise<void> {
       process.exit(1);
     }
     const cmd = process.platform === 'darwin' ? 'open' : process.platform === 'win32' ? 'start' : 'xdg-open';
-    spawn(cmd, [reportPath], { detached: true, stdio: 'ignore' }).unref();
+    console.log(bold('Opening HTML report'));
+    console.log(dim(reportPath));
+    try {
+      spawn(cmd, [reportPath], { detached: true, stdio: 'ignore' }).unref();
+      console.log(green('✓ opened default browser'));
+    } catch (err) {
+      console.error(red(`Failed to open report: ${err instanceof Error ? err.message : String(err)}`));
+      process.exit(1);
+    }
     return;
   }
 
@@ -1591,7 +1650,10 @@ async function main(): Promise<void> {
     }
     const { showTrace } = await import('./trace/show-trace-server.js');
     try {
+      console.log(bold('Opening trace viewer'));
+      console.log(dim(path.resolve(traceFile)));
       const server = await showTrace({ tracePath: traceFile });
+      console.log(green('✓ trace viewer ready'));
       console.log(dim(`Trace viewer running at http://127.0.0.1:${server.port}/`));
       console.log(dim('Press Ctrl+C to stop.'));
       // Keep alive until Ctrl+C
@@ -1618,6 +1680,9 @@ async function main(): Promise<void> {
     const { mergeBlobs } = await import('./reporters/blob.js');
     const config = await loadConfig(undefined, args.config);
     const result = mergeBlobs(resolvedDir);
+    console.log(bold('Merging blob reports'));
+    console.log(dim(resolvedDir));
+    console.log();
     const reporters = await createReporters(config.reporter ?? 'list');
     const dispatcher = new ReporterDispatcher(reporters);
     dispatcher.onRunStart(config, 0);
@@ -1831,6 +1896,7 @@ async function main(): Promise<void> {
     process.exit(1);
   }
 
+  let shardMessage: string | undefined;
   // Apply sharding — deterministic split within each project. Setup projects
   // (depended on by others) only run on shards that have tests from their dependents.
   if (config.shard) {
@@ -1860,7 +1926,7 @@ async function main(): Promise<void> {
       console.log(dim(`Shard ${current}/${total}: no test files in this shard.`));
       process.exit(0);
     }
-    console.log(dim(`Shard ${current}/${total}: running ${testFiles.length} file(s)`));
+    shardMessage = `Shard ${current}/${total}: running ${testFiles.length} file(s)`;
   }
 
   // Re-exec under tsx if we have TypeScript test files and haven't already
@@ -1923,9 +1989,8 @@ async function main(): Promise<void> {
   const initialProject = projects.find((p) => p.testFiles.length > 0) ?? projects[0];
   const initialEffectiveConfig = initialProject.effectiveConfig;
   const shouldShowLaunchProgress = args.ui || !args.watch;
-  if (shouldShowLaunchProgress) {
-    printTapsmithBanner();
-  }
+  printTapsmithBanner();
+  if (shardMessage) console.log(dim(shardMessage));
   const launchProgress = shouldShowLaunchProgress
     ? new UiLaunchProgress(createUiLaunchSteps({
       config: initialEffectiveConfig,
