@@ -98,18 +98,36 @@ function newestIphoneosXctestrun(productsDir: string): string | undefined {
 }
 
 /**
- * Find the newest simulator-slice xctestrun under Xcode's DerivedData.
+ * Find the newest simulator-slice xctestrun.
  *
- * Simulator builds land in `~/Library/Developer/Xcode/DerivedData/TapsmithAgent-*`
- * with a hashed suffix that rotates whenever Xcode regenerates DerivedData,
- * so we glob rather than pinning a path. `.patched.xctestrun` files are
- * excluded for the same reason as the device variant — the daemon rewrites
- * xctestrun at runtime and re-selecting a patched file stacks suffixes.
+ * Resolution order:
+ *   1. Prebuilt npm package (`@tapsmith/agent-ios-simulator-{arch}`) — ships
+ *      a ready-to-use xctestrun with `__TAPSMITH_PKG__` path placeholders
+ *      that the daemon resolves at runtime.
+ *   2. Xcode DerivedData scan (`~/Library/Developer/Xcode/DerivedData/TapsmithAgent-*`)
+ *      — covers local `xcodebuild build-for-testing` builds.
+ *
+ * `.patched.xctestrun` files are excluded from the DerivedData scan because
+ * the daemon rewrites xctestrun at runtime and re-selecting a patched file
+ * stacks suffixes.
  *
  * Returns `undefined` when no build exists; the CLI turns that into a
  * fix-it message pointing at the simulator build command.
  */
 export function findSimulatorXctestrun(): string | undefined {
+  // 1. Try the prebuilt npm package for the current architecture.
+  const arch = process.arch;
+  const pkg = `@tapsmith/agent-ios-simulator-${arch}`;
+  try {
+    const pkgJsonPath = require.resolve(`${pkg}/package.json`);
+    const pkgDir = path.dirname(pkgJsonPath);
+    const match = newestSimulatorXctestrunIn(pkgDir);
+    if (match) return match;
+  } catch {
+    // Package not installed — fall through.
+  }
+
+  // 2. DerivedData scan (local Xcode builds).
   const root = path.join(os.homedir(), 'Library', 'Developer', 'Xcode', 'DerivedData');
   let dirs: string[];
   try {
@@ -140,4 +158,23 @@ export function findSimulatorXctestrun(): string | undefined {
   if (candidates.length === 0) return undefined;
   candidates.sort((a, b) => fs.statSync(b).mtimeMs - fs.statSync(a).mtimeMs);
   return candidates[0];
+}
+
+function newestSimulatorXctestrunIn(dir: string): string | undefined {
+  let entries: string[];
+  try {
+    entries = fs.readdirSync(dir);
+  } catch {
+    return undefined;
+  }
+  const matches = entries
+    .filter(
+      (e) =>
+        e.endsWith('.xctestrun') &&
+        !e.endsWith('.patched.xctestrun'),
+    )
+    .map((e) => path.join(dir, e));
+  if (matches.length === 0) return undefined;
+  matches.sort((a, b) => fs.statSync(b).mtimeMs - fs.statSync(a).mtimeMs);
+  return matches[0];
 }

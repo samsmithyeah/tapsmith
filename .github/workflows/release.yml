@@ -133,6 +133,59 @@ jobs:
           name: android-agent-test-apk
           path: agent/app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk
 
+  # ─── Build iOS simulator agent for arm64 and x64 ───
+  build-ios-simulator-agent:
+    name: Build iOS simulator agent (${{ matrix.arch }})
+    runs-on: macos-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: arm64
+            xcodebuild-dest: 'platform=iOS Simulator,arch=arm64'
+            npm-pkg: agent-ios-simulator-arm64
+          - arch: x86_64
+            xcodebuild-dest: 'platform=iOS Simulator,arch=x86_64'
+            npm-pkg: agent-ios-simulator-x64
+    defaults:
+      run:
+        working-directory: ios-agent
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build for testing
+        run: |
+          xcodebuild build-for-testing \
+            -project TapsmithAgent.xcodeproj \
+            -scheme TapsmithAgentUITests \
+            -destination '${{ matrix.xcodebuild-dest }}' \
+            -derivedDataPath '.build-sim-${{ matrix.arch }}' \
+            CODE_SIGNING_ALLOWED=NO
+
+      - name: Stage package contents
+        run: |
+          PRODUCTS=".build-sim-${{ matrix.arch }}/Build/Products"
+          PRODUCTS_ABS="$(cd "$PRODUCTS" && pwd)"
+          STAGING="../npm-packages/${{ matrix.npm-pkg }}"
+
+          # Copy xctestrun file(s) and the test runner app bundle
+          cp "$PRODUCTS"/*iphonesimulator*.xctestrun "$STAGING/"
+          cp -R "$PRODUCTS/Debug-iphonesimulator" "$STAGING/"
+
+          # Replace absolute DerivedData paths with __TAPSMITH_PKG__ placeholder
+          for f in "$STAGING"/*.xctestrun; do
+            plutil -convert xml1 "$f"
+            sed -i '' "s|${PRODUCTS_ABS}|__TAPSMITH_PKG__|g" "$f"
+          done
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ios-sim-agent-${{ matrix.npm-pkg }}
+          path: |
+            npm-packages/${{ matrix.npm-pkg }}/*.xctestrun
+            npm-packages/${{ matrix.npm-pkg }}/Debug-iphonesimulator/
+
   # ─── Publish platform-specific binary packages ───
   publish-platform-packages:
     name: Publish @tapsmith/core-*
@@ -194,10 +247,66 @@ jobs:
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
+  # ─── Publish iOS simulator agent packages ───
+  publish-ios-simulator-packages:
+    name: Publish @tapsmith/agent-ios-simulator-*
+    needs: [build-ios-simulator-agent]
+    runs-on: ubuntu-latest
+    strategy:
+      max-parallel: 1
+      matrix:
+        pkg:
+          - agent-ios-simulator-arm64
+          - agent-ios-simulator-x64
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+
+      - name: Download iOS simulator agent
+        uses: actions/download-artifact@v4
+        with:
+          name: ios-sim-agent-${{ matrix.pkg }}
+          path: npm-packages/${{ matrix.pkg }}/
+
+      - name: Set version from tag
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          cd npm-packages/${{ matrix.pkg }}
+          node -e "
+            const fs = require('fs');
+            const pkg = require('./package.json');
+            pkg.version = '$VERSION';
+            fs.writeFileSync('package.json', JSON.stringify(pkg, null, 2) + '\n');
+          "
+
+      - name: Check if package version already exists
+        id: ios_exists
+        working-directory: npm-packages/${{ matrix.pkg }}
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          NAME=$(node -p "require('./package.json').name")
+          if npm view "${NAME}@${VERSION}" version >/dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+            echo "${NAME}@${VERSION} is already published; skipping npm publish."
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Publish
+        if: steps.ios_exists.outputs.exists != 'true'
+        working-directory: npm-packages/${{ matrix.pkg }}
+        run: npm publish --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
   # ─── Publish main tapsmith package ───
   publish-tapsmith:
     name: Publish tapsmith
-    needs: [publish-platform-packages, build-android-agent]
+    needs: [publish-platform-packages, publish-ios-simulator-packages, build-android-agent]
     runs-on: ubuntu-latest
     defaults:
       run:

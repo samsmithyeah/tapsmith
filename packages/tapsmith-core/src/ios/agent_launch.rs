@@ -341,6 +341,12 @@ async fn patch_xctestrun(
         .await
         .context("Failed to copy xctestrun file")?;
 
+    // Resolve __TAPSMITH_PKG__ placeholders left by the prebuilt npm packages.
+    // These replace the CI machine's absolute DerivedData paths at package time;
+    // here we substitute the actual directory containing the xctestrun file so
+    // xcodebuild can find the test runner .app bundle at runtime.
+    resolve_pkg_placeholders(&patched_path, xctestrun_path).await?;
+
     let base = "TestConfigurations:0:TestTargets:0";
     let plist_buddy = "/usr/libexec/PlistBuddy";
 
@@ -407,6 +413,50 @@ async fn patch_xctestrun(
 
     info!("Patched xctestrun at {patched_path}");
     Ok(patched_path)
+}
+
+/// Replace `__TAPSMITH_PKG__` placeholders in a patched xctestrun plist with the
+/// directory that contains the original (unpatched) xctestrun. The prebuilt npm
+/// packages use this placeholder to avoid baking in CI-machine absolute paths.
+///
+/// Converts to XML1 first so a simple text replacement works regardless of
+/// whether the source plist is binary or XML.
+async fn resolve_pkg_placeholders(patched_path: &str, original_path: &str) -> Result<()> {
+    // Read a sample of the file to check for the placeholder before doing
+    // the more expensive convert-and-rewrite cycle.
+    let raw = tokio::fs::read(patched_path)
+        .await
+        .context("Failed to read patched xctestrun")?;
+    if !raw.windows(16).any(|w| w == b"__TAPSMITH_PKG__") {
+        return Ok(());
+    }
+
+    // Ensure XML1 so we can do text replacement.
+    let convert = tokio::process::Command::new("plutil")
+        .args(["-convert", "xml1", patched_path])
+        .output()
+        .await
+        .context("Failed to run plutil")?;
+    if !convert.status.success() {
+        let stderr = String::from_utf8_lossy(&convert.stderr);
+        anyhow::bail!("plutil -convert xml1 failed: {stderr}");
+    }
+
+    let pkg_dir = std::path::Path::new(original_path)
+        .parent()
+        .map(|p| p.to_string_lossy().to_string())
+        .unwrap_or_default();
+
+    let xml = tokio::fs::read_to_string(patched_path)
+        .await
+        .context("Failed to read XML xctestrun")?;
+    let resolved = xml.replace("__TAPSMITH_PKG__", &pkg_dir);
+    tokio::fs::write(patched_path, resolved)
+        .await
+        .context("Failed to write resolved xctestrun")?;
+
+    info!("Resolved __TAPSMITH_PKG__ → {pkg_dir}");
+    Ok(())
 }
 
 /// Strip any `.{mode}.port{N}.patched.xctestrun` suffixes that previous runs
