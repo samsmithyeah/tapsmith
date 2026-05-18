@@ -336,6 +336,26 @@ impl TapsmithServiceImpl {
                 .unwrap_or_else(|| "iOS agent probe failed after relaunch".to_string()));
         }
 
+        // Verify the accessibility tree has content — WaitForIdle on iOS is
+        // just a brief sleep, so the app may still be loading its first screen.
+        if wait_for_idle {
+            let hierarchy = self
+                .send_agent_command_raw(&AgentCommand::GetUiHierarchy {}, 5_000)
+                .await
+                .map_err(|status| status.message().to_string())?;
+            if !hierarchy.success {
+                return Err("iOS agent hierarchy fetch failed after relaunch".to_string());
+            }
+            let xml = hierarchy
+                .data
+                .get("hierarchy")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            if xml.trim().is_empty() {
+                return Err("iOS app hierarchy is empty after relaunch".to_string());
+            }
+        }
+
         Ok(())
     }
 
@@ -347,7 +367,7 @@ impl TapsmithServiceImpl {
         idle_timeout_ms: u64,
     ) -> Result<(), String> {
         let _ = ios::device::terminate_app(serial, package_name).await;
-        tokio::time::sleep(Duration::from_millis(100)).await;
+        tokio::time::sleep(Duration::from_millis(300)).await;
         ios::device::launch_app(serial, package_name)
             .await
             .map_err(|e| e.to_string())?;
@@ -404,7 +424,7 @@ impl TapsmithServiceImpl {
                 4_000,
             )
             .await;
-        tokio::time::sleep(Duration::from_millis(100)).await;
+        tokio::time::sleep(Duration::from_millis(300)).await;
 
         let launch = self
             .send_agent_command_with_timeout(
@@ -421,8 +441,30 @@ impl TapsmithServiceImpl {
                 .unwrap_or_else(|| "iOS agent launch failed".to_string()));
         }
 
-        self.probe_ios_agent_session(wait_for_idle, idle_timeout_ms)
-            .await
+        // Poll for session readiness instead of a single probe — the app may
+        // need a moment to render its UI after launch, especially under CI load.
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        loop {
+            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+            if remaining.is_zero() {
+                return self
+                    .probe_ios_agent_session(wait_for_idle, idle_timeout_ms)
+                    .await;
+            }
+            let capped_idle_timeout = idle_timeout_ms.min(remaining.as_millis() as u64);
+            match self
+                .probe_ios_agent_session(wait_for_idle, capped_idle_timeout)
+                .await
+            {
+                Ok(()) => return Ok(()),
+                Err(err) => {
+                    if tokio::time::Instant::now() >= deadline {
+                        return Err(err);
+                    }
+                    tokio::time::sleep(Duration::from_millis(200)).await;
+                }
+            }
+        }
     }
 
     async fn restart_ios_agent_for_app(
@@ -460,13 +502,13 @@ impl TapsmithServiceImpl {
         // fresh launch — slower but correct.
         if !is_physical {
             let _ = ios::device::terminate_app(serial, package_name).await;
-            tokio::time::sleep(Duration::from_millis(100)).await;
+            tokio::time::sleep(Duration::from_millis(300)).await;
             ios::device::launch_app(serial, package_name)
                 .await
                 .map_err(|e| {
                     format!("Failed to relaunch app via simctl before agent restart: {e}")
                 })?;
-            tokio::time::sleep(Duration::from_millis(100)).await;
+            tokio::time::sleep(Duration::from_millis(300)).await;
         }
 
         let agent_port = self.agent.read().await.port();

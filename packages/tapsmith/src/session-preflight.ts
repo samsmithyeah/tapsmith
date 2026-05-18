@@ -182,12 +182,13 @@ async function verifySession(ctx: SessionPreflightContext): Promise<void> {
           await ctx.device.launchApp(ctx.config.package);
         }
       } catch (err) {
-        // getAppState/launchApp failures are best-effort recovery; let the
-        // test itself surface a clearer error if the app is still broken.
-        // Surface to stderr so a real failure here is debuggable rather than
-        // silently masked until the next test fails for an unrelated reason.
+        // Agent communication failures (timeout, socket disconnect) mean the
+        // session is broken. Throw so ensureSessionReady triggers a proper
+        // recovery (agent restart + app relaunch) instead of letting the test
+        // run against a dead connection.
         const message = err instanceof Error ? err.message : String(err);
-        process.stderr.write(`[tapsmith] iOS verifySession recovery failed (continuing): ${message}\n`);
+        process.stderr.write(`[tapsmith] iOS verifySession recovery failed: ${message}\n`);
+        throw err;
       }
     }
     return;

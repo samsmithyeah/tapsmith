@@ -261,11 +261,66 @@ enum EventSynthesizer {
     }
 
     /// Double-tap at a screen coordinate.
+    /// Synthesizes both taps in a single event record so the gesture is atomic
+    /// and immune to Thread.sleep scheduling jitter under CI load.
     static func doubleTap(at point: CGPoint, intervalMs: Int = 0) -> Bool {
         let interval = intervalMs > 0 ? TimeInterval(intervalMs) / 1000.0 : 0.1
-        guard synthesizeTap(at: point, duration: 0.05) else { return false }
-        Thread.sleep(forTimeInterval: interval)
-        return synthesizeTap(at: point, duration: 0.05)
+        let tapDuration: TimeInterval = 0.05
+
+        guard let pathClass = objc_lookUpClass("XCPointerEventPath"),
+              let recordClass = objc_lookUpClass("XCSynthesizedEventRecord")
+        else { return false }
+
+        let initSel = NSSelectorFromString("initForTouchAtPoint:offset:")
+        let moveSel = NSSelectorFromString("moveToPoint:atOffset:")
+        let liftSel = NSSelectorFromString("liftUpAtOffset:")
+
+        func makeTapPath(offset: TimeInterval) -> NSObject? {
+            let obj = pathClass.alloc() as! NSObject
+            guard obj.responds(to: initSel) else { return nil }
+            let imp = obj.method(for: initSel)
+            typealias F = @convention(c) (NSObject, Selector, CGPoint, TimeInterval) -> NSObject
+            let path = unsafeBitCast(imp, to: F.self)(obj, initSel, point, offset)
+
+            if path.responds(to: moveSel) {
+                let mImp = path.method(for: moveSel)
+                typealias M = @convention(c) (NSObject, Selector, CGPoint, TimeInterval) -> Void
+                unsafeBitCast(mImp, to: M.self)(path, moveSel, point, offset + tapDuration * 0.5)
+            }
+            if path.responds(to: liftSel) {
+                let lImp = path.method(for: liftSel)
+                typealias L = @convention(c) (NSObject, Selector, TimeInterval) -> Void
+                unsafeBitCast(lImp, to: L.self)(path, liftSel, offset + tapDuration)
+            }
+            return path
+        }
+
+        guard let path1 = makeTapPath(offset: 0.0),
+              let path2 = makeTapPath(offset: tapDuration + interval)
+        else { return false }
+
+        let record: NSObject
+        let recordInitSel = NSSelectorFromString("initWithName:interfaceOrientation:")
+        let recordObj = recordClass.alloc() as! NSObject
+        if recordObj.responds(to: recordInitSel) {
+            let imp = recordObj.method(for: recordInitSel)
+            typealias R = @convention(c) (NSObject, Selector, NSString, Int) -> NSObject
+            record = unsafeBitCast(imp, to: R.self)(recordObj, recordInitSel, "tapsmith-double-tap" as NSString, currentOrientation)
+        } else {
+            record = (recordClass as! NSObject.Type).init()
+        }
+
+        let addPathSel = NSSelectorFromString("addPointerEventPath:")
+        if record.responds(to: addPathSel) {
+            record.perform(addPathSel, with: path1)
+            record.perform(addPathSel, with: path2)
+        }
+
+        if dispatchViaDaemonSession(record) { return true }
+        if dispatchSync(record) { return true }
+        if dispatchViaDevice(record) { return true }
+        NSLog("[EventSynth] All dispatch methods failed for double-tap")
+        return false
     }
 
     /// Swipe from one point to another. Used for keyboard dismissal and scrolling.
