@@ -460,12 +460,12 @@ fn replace_in_plist_value(v: &mut plist::Value, from: &str, to: &str) -> bool {
                 false
             }
         }
-        plist::Value::Array(arr) => arr
-            .iter_mut()
-            .fold(false, |acc, item| replace_in_plist_value(item, from, to) || acc),
-        plist::Value::Dictionary(dict) => dict
-            .values_mut()
-            .fold(false, |acc, item| replace_in_plist_value(item, from, to) || acc),
+        plist::Value::Array(arr) => arr.iter_mut().fold(false, |acc, item| {
+            replace_in_plist_value(item, from, to) || acc
+        }),
+        plist::Value::Dictionary(dict) => dict.values_mut().fold(false, |acc, item| {
+            replace_in_plist_value(item, from, to) || acc
+        }),
         _ => false,
     }
 }
