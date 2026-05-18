@@ -141,6 +141,7 @@ async function handleInit(msg: InitMessage): Promise<void> {
       if (config.package && msg.deviceSerial) {
         await waitForPackageIndexed(msg.deviceSerial, config.package);
       }
+      sendProgress('app install complete');
     }
   } else if (config.platform === 'ios' && config.app && msg.deviceSerial) {
     // iOS: install the .app on this device/simulator if not already present.
@@ -155,19 +156,27 @@ async function handleInit(msg: InitMessage): Promise<void> {
     if (isPhys) {
       const alreadyInstalled =
         config.package && (await isAppInstalledOnDevice(msg.deviceSerial, config.package));
-      if (!alreadyInstalled) {
+      if (alreadyInstalled) {
+        sendProgress(`app ${config.package} already installed, skipping app install`);
+      } else {
         sendProgress(`installing ${path.basename(resolvedApp)} on device`);
         await installAppOnDevice(msg.deviceSerial, resolvedApp);
+        sendProgress('app install complete');
       }
     } else {
       const alreadyInstalled = !msg.freshEmulator
         && config.package
         && isAppInstalled(msg.deviceSerial, config.package);
-      if (!alreadyInstalled) {
+      if (alreadyInstalled) {
+        sendProgress(`app ${config.package} already installed, skipping app install`);
+      } else {
         sendProgress(`installing ${path.basename(resolvedApp)}`);
         installApp(msg.deviceSerial, resolvedApp);
+        sendProgress('app install complete');
       }
     }
+  } else {
+    sendProgress('app install skipped');
   }
 
   // Start agent
@@ -227,6 +236,7 @@ async function handleInit(msg: InitMessage): Promise<void> {
       throw err;
     }
   }
+  sendProgress('agent connected');
 
   try {
     if (config.package) {
@@ -235,12 +245,14 @@ async function handleInit(msg: InitMessage): Promise<void> {
         sessionContext(msg.deviceSerial, resolvedAgentApk, resolvedAgentTestApk, resolvedIosXctestrun, resolvedIosAppPath),
         'worker initialization',
       );
+      sendProgress('app launched');
     } else {
       sendProgress('validating session readiness');
       await ensureSessionReady(
         sessionContext(msg.deviceSerial, resolvedAgentApk, resolvedAgentTestApk, resolvedIosXctestrun),
         'worker initialization',
       );
+      sendProgress('session ready');
     }
   } catch (err) {
     throw new Error(

@@ -63,7 +63,10 @@ export function findPidsOnPort(port: string | number): number[] {
  * pattern (`TapsmithAgen`, `tapsmith-core`, `xctest`) so we never touch
  * unrelated user processes.
  */
-export function freeStaleAgentPort(port: number): void {
+export function freeStaleAgentPort(
+  port: number,
+  onProgress?: (event: { port: number; pid: number; command: string }) => void,
+): void {
   const pids = findPidsOnPort(port);
   if (pids.length === 0) return;
 
@@ -72,7 +75,11 @@ export function freeStaleAgentPort(port: number): void {
     try {
       const cmd = execFileSync('ps', ['-p', String(pid), '-o', 'comm='], { encoding: 'utf-8' }).trim();
       if (!stalePatterns.test(cmd)) continue;
-      process.stderr.write(`${DIM}Freeing agent port ${port} from stale ${cmd} (pid ${pid}).${RESET}\n`);
+      if (onProgress) {
+        onProgress({ port, pid, command: cmd });
+      } else {
+        process.stderr.write(`${DIM}Freeing agent port ${port} from stale ${cmd} (pid ${pid}).${RESET}\n`);
+      }
       try { process.kill(pid, 'SIGKILL'); } catch { /* already gone */ }
     } catch {
       // ps failed (process gone) — nothing to do

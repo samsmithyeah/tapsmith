@@ -55,6 +55,11 @@ import type {
 } from './ui-protocol.js';
 import { encodeScreenFrame } from './ui-protocol.js';
 import { RunQueue } from '../watch-queue.js';
+import {
+  forkStdioForLaunchProgress,
+  pipeForkOutputForLaunchProgress,
+  type LaunchProgressSink,
+} from '../launch-progress.js';
 
 // ─── SPA paths ───
 
@@ -148,6 +153,7 @@ export interface UIServerOptions {
    * frontend edits hot-swap without a full rebuild + CLI restart.
    */
   devUrl?: string
+  launchProgress?: LaunchProgressSink
 }
 
 interface TaggedFile {
@@ -257,6 +263,7 @@ export async function startUIServer(
 
   // ─── Multi-worker state ───
   const multiWorker = (ctx.workers ?? 1) > 1 && (ctx.deviceSerials?.length ?? 0) > 1;
+  const launchProgress = options.launchProgress;
   const uiWorkers: UIWorkerHandle[] = [];
   let workersInitialized = false;
   /** Which worker's device to mirror. Defaults to 0. */
@@ -554,13 +561,14 @@ export async function startUIServer(
   async function discoverFile(filePath: string): Promise<TestTreeNode | null> {
     return new Promise((resolve) => {
       const child = fork(resolvedDiscoverScript, [], {
-        stdio: ['ignore', 'inherit', 'inherit', 'ipc'],
+        stdio: forkStdioForLaunchProgress(launchProgress),
         ...(tsxBin ? { execPath: tsxBin } : {}),
         env: {
           ...process.env,
           NODE_PATH: path.resolve(__dirname, '..', '..'),
         },
       });
+      pipeForkOutputForLaunchProgress(child, launchProgress);
 
       let settled = false;
 
@@ -608,8 +616,15 @@ export async function startUIServer(
 
   async function discoverAllFiles(): Promise<void> {
     // Discover all files first
+    launchProgress?.start('test-tree', `discovering ${ctx.testFiles.length} file(s)`);
     const fileNodes = new Map<string, TestTreeNode>();
-    for (const file of ctx.testFiles) {
+    for (let i = 0; i < ctx.testFiles.length; i++) {
+      const file = ctx.testFiles[i];
+      launchProgress?.update('test-tree', {
+        state: 'running',
+        detail: `discovering ${path.basename(file)}`,
+        progress: { done: i, total: ctx.testFiles.length },
+      });
       const tree = await discoverFile(file);
       if (tree) {
         fileNodes.set(file, tree);
@@ -648,6 +663,7 @@ export async function startUIServer(
     }
 
     broadcast({ type: 'test-tree', files: testTree });
+    launchProgress?.complete('test-tree', `${fileNodes.size}/${ctx.testFiles.length} file(s) discovered`);
   }
 
   // ─── Test Execution (shared) ───
@@ -990,13 +1006,14 @@ export async function startUIServer(
   }> {
     return new Promise((resolve, reject) => {
       const child = fork(resolvedRunScript, [], {
-        stdio: ['ignore', 'inherit', 'inherit', 'ipc'],
+        stdio: forkStdioForLaunchProgress(launchProgress),
         ...(tsxBin ? { execPath: tsxBin } : {}),
         env: {
           ...process.env,
           NODE_PATH: path.resolve(__dirname, '..', '..'),
         },
       });
+      pipeForkOutputForLaunchProgress(child, launchProgress);
 
       activeChild = child;
       let settled = false;
@@ -1273,9 +1290,19 @@ export async function startUIServer(
 
     const numWorkers = Math.min(ctx.workers ?? 2, ctx.deviceSerials.length);
 
-    console.log(`${DIM}Initializing ${numWorkers} UI worker(s)...${RESET}`);
+    if (launchProgress) {
+      launchProgress.start('ui-workers', `starting ${numWorkers} UI worker(s)`);
+      launchProgress.update('ui-workers', {
+        state: 'running',
+        progress: { done: 0, total: numWorkers },
+      });
+    } else {
+      console.log(`${DIM}Initializing ${numWorkers} UI worker(s)...${RESET}`);
+    }
 
     const initPromises: Promise<UIWorkerHandle | null>[] = [];
+    let readyWorkerCount = 0;
+    const failedWorkerMessages: string[] = [];
 
     // Collect PIDs listening on all daemon ports in a single lsof call
     // so each worker doesn't need to shell out individually.
@@ -1288,7 +1315,31 @@ export async function startUIServer(
       const agentPort = baseAgentPort + 100 + i;
 
       initPromises.push(
-        initializeOneWorker(i, deviceSerial, daemonPort, agentPort, daemonBin, stalePidsByPort.get(daemonPort)),
+        initializeOneWorker(
+          i,
+          deviceSerial,
+          daemonPort,
+          agentPort,
+          daemonBin,
+          stalePidsByPort.get(daemonPort),
+          {
+            onProgress: (message) => {
+              launchProgress?.update('ui-workers', {
+                state: 'running',
+                detail: `Worker ${i} (${deviceSerial}): ${message}`,
+                progress: { done: readyWorkerCount, total: numWorkers },
+              });
+            },
+            onReady: () => {
+              readyWorkerCount++;
+              launchProgress?.update('ui-workers', {
+                state: 'running',
+                detail: `Worker ${i} (${deviceSerial}): ready`,
+                progress: { done: readyWorkerCount, total: numWorkers },
+              });
+            },
+          },
+        ),
       );
     }
 
@@ -1300,14 +1351,24 @@ export async function startUIServer(
       } else {
         const reason = result.status === 'rejected' ? result.reason : 'null result';
         const serial = ctx.deviceSerials![i];
-        console.error(
-          `${YELLOW}Skipping device ${serial}: ${reason instanceof Error ? reason.message : reason}.${RESET}`,
-        );
+        const reasonText = reason instanceof Error ? reason.message : String(reason);
+        failedWorkerMessages.push(`${serial}: ${reasonText}`);
+        launchProgress?.update('ui-workers', {
+          state: 'running',
+          detail: `Skipping ${serial}: ${reasonText}`,
+          progress: { done: readyWorkerCount, total: numWorkers },
+        });
+        const message = `Skipping device ${serial}: ${reasonText}.`;
+        if (launchProgress) launchProgress.note(message);
+        else console.error(`${YELLOW}${message}${RESET}`);
       }
     }
 
     if (uiWorkers.length === 0) {
-      console.error(`${YELLOW}No workers initialized. Falling back to single-worker mode.${RESET}`);
+      const message = 'No workers initialized. Falling back to single-worker mode.';
+      if (launchProgress) launchProgress.note(message);
+      else console.error(`${YELLOW}${message}${RESET}`);
+      launchProgress?.skip('ui-workers', 'no workers initialized; falling back to single-worker mode');
       return;
     }
 
@@ -1360,7 +1421,19 @@ export async function startUIServer(
     }
 
     workersInitialized = true;
-    console.log(`${DIM}${uiWorkers.length} UI worker(s) ready.${RESET}`);
+    if (launchProgress) {
+      if (failedWorkerMessages.length > 0) {
+        launchProgress.update('ui-workers', {
+          state: 'warning',
+          detail: `${uiWorkers.length}/${numWorkers} UI worker(s) ready; ${failedWorkerMessages.length} failed`,
+          progress: { done: uiWorkers.length, total: numWorkers },
+        });
+      } else {
+        launchProgress.complete('ui-workers', `${uiWorkers.length} UI worker(s) ready`);
+      }
+    } else {
+      console.log(`${DIM}${uiWorkers.length} UI worker(s) ready.${RESET}`);
+    }
   }
 
   async function initializeOneWorker(
@@ -1370,6 +1443,10 @@ export async function startUIServer(
     agentPort: number,
     daemonBin: string,
     stalePids?: number[],
+    events?: {
+      onProgress?: (message: string) => void
+      onReady?: () => void
+    },
   ): Promise<UIWorkerHandle> {
     // Kill any stale daemon on this port from a previous run or another
     // Tapsmith instance so we always get a fresh daemon with the correct
@@ -1428,7 +1505,7 @@ export async function startUIServer(
 
     // Fork ui-worker.ts
     const child = fork(resolvedWorkerScript, [], {
-      stdio: ['ignore', 'inherit', 'inherit', 'ipc'],
+      stdio: forkStdioForLaunchProgress(launchProgress),
       ...(tsxBin ? { execPath: tsxBin } : {}),
       env: {
         ...process.env,
@@ -1436,6 +1513,7 @@ export async function startUIServer(
         TAPSMITH_WORKER_ID: String(id),
       },
     });
+    pipeForkOutputForLaunchProgress(child, launchProgress);
     child.setMaxListeners(20);
     child.on('error', (err) => {
       console.error(`${YELLOW}Worker ${id} process error: ${err.message}${RESET}`);
@@ -1472,11 +1550,13 @@ export async function startUIServer(
 
       const onMessage = (msg: UIWorkerChildMessage) => {
         if (msg.type === 'ready' && msg.workerId === id) {
+          events?.onReady?.();
           clearTimeout(timeout);
           cleanup();
           resolve();
         } else if (msg.type === 'progress' && msg.workerId === id) {
-          console.log(`${DIM}  Worker ${id} (${deviceSerial}): ${msg.message}${RESET}`);
+          if (launchProgress) events?.onProgress?.(msg.message);
+          else console.log(`${DIM}  Worker ${id} (${deviceSerial}): ${msg.message}${RESET}`);
           broadcastWorkerStatus(worker, 'initializing');
         } else if (msg.type === 'error' && msg.workerId === id) {
           clearTimeout(timeout);
@@ -2656,7 +2736,8 @@ export async function startUIServer(
   let spaHtml: string;
   if (options.devUrl) {
     spaHtml = buildDevShellHtml(options.devUrl);
-    console.log(`${YELLOW}UI mode dev shell — loading SPA from ${options.devUrl} (HMR enabled)${RESET}`);
+    if (launchProgress) launchProgress.note(`UI mode dev shell loading SPA from ${options.devUrl} (HMR enabled).`);
+    else console.log(`${YELLOW}UI mode dev shell — loading SPA from ${options.devUrl} (HMR enabled)${RESET}`);
   } else {
     try {
       spaHtml = fs.readFileSync(SPA_HTML_PATH, 'utf-8');
@@ -2931,6 +3012,7 @@ export async function startUIServer(
 
   // ─── Start ───
 
+  launchProgress?.start('ui-server', 'binding local web UI');
   const actualPort = await new Promise<number>((resolve, reject) => {
     const tryPort = options.port ?? 0;
     server.listen(tryPort, '127.0.0.1', () => {
@@ -2943,6 +3025,7 @@ export async function startUIServer(
     });
     server.on('error', reject);
   });
+  launchProgress?.complete('ui-server', `http://127.0.0.1:${actualPort}/`);
   // ─── MCP Server (separate fixed port) ───
 
   const MCP_DEFAULT_PORT = 9274;
@@ -3010,6 +3093,7 @@ export async function startUIServer(
   });
 
   mcpPort = MCP_DEFAULT_PORT;
+  launchProgress?.start('mcp', `binding MCP endpoint on ${MCP_DEFAULT_PORT}`);
   try {
     await new Promise<void>((resolve, reject) => {
       mcpHttpServer.listen(MCP_DEFAULT_PORT, '127.0.0.1', resolve);
@@ -3026,6 +3110,7 @@ export async function startUIServer(
       mcpHttpServer.on('error', reject);
     });
   }
+  launchProgress?.complete('mcp', `http://127.0.0.1:${mcpPort}/mcp`);
 
   // Discover tests
   await discoverAllFiles();
@@ -3040,20 +3125,25 @@ export async function startUIServer(
 
   // Open browser
   const viewerUrl = `http://127.0.0.1:${actualPort}/`;
+  launchProgress?.start('browser', 'opening default browser');
   try {
     const open = await import('open');
     await open.default(viewerUrl);
+    launchProgress?.complete('browser', 'opened default browser');
   } catch {
-    console.log(`Tapsmith UI: ${viewerUrl}`);
+    if (launchProgress) launchProgress.complete('browser', `open manually: ${viewerUrl}`);
+    else console.log(`Tapsmith UI: ${viewerUrl}`);
   }
 
-  const workerLabel = multiWorker && workersInitialized
-    ? `${uiWorkers.length} worker(s) across ${uiWorkers.map((w) => w.deviceSerial).join(', ')}`
-    : `Device: ${ctx.deviceSerial ?? 'unknown'}`;
-
-  console.log(`\x1b[2m${workerLabel} | ${ctx.testFiles.length} test file(s)\x1b[0m`);
-  console.log(`\x1b[1mTapsmith UI mode running at ${viewerUrl}\x1b[0m`);
-  console.log(`\x1b[2mMCP server available at http://127.0.0.1:${mcpPort}/mcp\x1b[0m`);
+  launchProgress?.finish();
+  if (!launchProgress) {
+    const workerLabel = multiWorker && workersInitialized
+      ? `${uiWorkers.length} worker(s) across ${uiWorkers.map((w) => w.deviceSerial).join(', ')}`
+      : `Device: ${ctx.deviceSerial ?? 'unknown'}`;
+    console.log(`\x1b[2m${workerLabel} | ${ctx.testFiles.length} test file(s)\x1b[0m`);
+  }
+  console.log(`\x1b[1mUI mode ready at ${viewerUrl}\x1b[0m`);
+  console.log(`\x1b[2mMCP ready at http://127.0.0.1:${mcpPort}/mcp\x1b[0m`);
 
   // Write port file for standalone MCP server discovery
   const { uiPortFilePath } = await import('../mcp/port-file.js');

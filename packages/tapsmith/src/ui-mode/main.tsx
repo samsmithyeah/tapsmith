@@ -42,6 +42,16 @@ import type { ContainerSummary } from '../trace-viewer/types.js';
 
 type ElementBounds = { left: number; top: number; right: number; bottom: number }
 
+function getResolvedTheme(theme: Theme): 'light' | 'dark' {
+  if (theme !== 'system') return theme;
+  return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+}
+
+function applyTheme(theme: Theme): void {
+  document.documentElement.setAttribute('data-theme', getResolvedTheme(theme));
+  document.body?.removeAttribute('data-theme');
+}
+
 function lastBoundsFrom(actionEvents: readonly (ActionTraceEvent | AssertionTraceEvent)[]): ElementBounds | undefined {
   for (let i = actionEvents.length - 1; i >= 0; i--) {
     if (actionEvents[i].bounds) return actionEvents[i].bounds;
@@ -80,6 +90,20 @@ function App() {
     const stored = localStorage.getItem('tapsmith-ui-theme');
     return (stored === 'light' || stored === 'dark' || stored === 'system') ? stored : 'system';
   });
+
+  useEffect(() => {
+    applyTheme(theme);
+    localStorage.setItem('tapsmith-ui-theme', theme);
+  }, [theme]);
+
+  useEffect(() => {
+    const mq = window.matchMedia('(prefers-color-scheme: dark)');
+    const handler = () => {
+      if (theme === 'system') applyTheme('system');
+    };
+    mq.addEventListener('change', handler);
+    return () => mq.removeEventListener('change', handler);
+  }, [theme]);
 
   // Multi-worker state
   const [workers, setWorkers] = useState<WorkerInfo[]>([]);
@@ -835,11 +859,6 @@ function App() {
 
   const handleThemeChange = useCallback((newTheme: Theme) => {
     setTheme(newTheme);
-    localStorage.setItem('tapsmith-ui-theme', newTheme);
-    const resolved = newTheme === 'system'
-      ? (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light')
-      : newTheme;
-    document.documentElement.setAttribute('data-theme', resolved);
   }, []);
 
   const handleSend = useCallback((msg: ClientMessage) => {
@@ -1228,10 +1247,7 @@ document.head.appendChild(style);
 function applyInitialTheme(): void {
   const stored = localStorage.getItem('tapsmith-ui-theme');
   const theme = (stored === 'light' || stored === 'dark' || stored === 'system') ? stored : 'system';
-  const resolved = theme === 'system'
-    ? (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light')
-    : theme;
-  document.documentElement.setAttribute('data-theme', resolved);
+  applyTheme(theme);
 }
 applyInitialTheme();
 
