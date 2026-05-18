@@ -354,10 +354,10 @@ export class HeadlessTestDispatcher implements TestDispatcher {
     const scripts = this._scripts!;
     const fileNodes = new Map<string, TestTreeNode>();
 
-    for (const file of this._testFiles) {
+    await Promise.all(this._testFiles.map(async (file) => {
       const tree = await discoverFile(file, scripts);
       if (tree) fileNodes.set(file, tree);
-    }
+    }));
 
     if (this._hasRealProjects()) {
       const trees: TestTreeEntry[] = [];
@@ -395,10 +395,14 @@ export class HeadlessTestDispatcher implements TestDispatcher {
     results: import('../runner.js').TestResult[]
     suite: import('../runner.js').SuiteResult
   }> {
+    if (!this._daemonAddress || !this._deviceSerial || !this._serializedConfig) {
+      return Promise.reject(new Error('No device connected. Ensure a device/emulator is available and a daemon is running.'));
+    }
+
     const scripts = this._scripts!;
     return new Promise((resolve, reject) => {
       const child = fork(scripts.watchRunScript, [], {
-        stdio: ['ignore', 'inherit', 'inherit', 'ipc'],
+        stdio: ['ignore', 'ignore', 'inherit', 'ipc'],
         ...(scripts.tsxBin ? { execPath: scripts.tsxBin } : {}),
         env: {
           ...process.env,
@@ -459,18 +463,13 @@ export class HeadlessTestDispatcher implements TestDispatcher {
         }
       });
 
-      if (!this._daemonAddress || !this._deviceSerial || !this._serializedConfig) {
-        settled = true;
-        reject(new Error('No device connected. Ensure a device/emulator is available and a daemon is running.'));
-        return;
-      }
-
+      // Non-null safe: validated at top of _runFileInChild before the fork
       const msg: WatchRunMessage = {
         type: 'run',
-        daemonAddress: this._daemonAddress,
-        deviceSerial: this._deviceSerial,
+        daemonAddress: this._daemonAddress!,
+        deviceSerial: this._deviceSerial!,
         filePath,
-        config: this._serializedConfig,
+        config: this._serializedConfig!,
         screenshotDir: undefined,
         projectUseOptions,
         projectName,

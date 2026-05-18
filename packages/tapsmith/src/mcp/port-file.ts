@@ -21,7 +21,7 @@ export function mcpActivityFilePath(): string {
   }
   if (process.platform !== 'win32') {
     const uid = typeof process.getuid === 'function' ? process.getuid() : 'user';
-    return path.join('/tmp', `tapsmith-mcp-activity-${uid}.ndjson`);
+    return path.join(os.tmpdir(), `tapsmith-mcp-activity-${uid}.ndjson`);
   }
   return path.join(os.homedir() || os.tmpdir(), '.tapsmith', 'mcp-activity.ndjson');
 }

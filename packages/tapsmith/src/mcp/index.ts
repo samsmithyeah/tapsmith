@@ -377,8 +377,23 @@ function startActivityMonitor(activityPath: string): () => void {
     }
   };
 
-  fs.watchFile(activityPath, { interval: 250 }, readNewLines);
-  return () => fs.unwatchFile(activityPath, readNewLines);
+  // fs.watch uses native OS events instead of polling
+  let watcher: fs.FSWatcher | null = null;
+  try {
+    // Ensure the file exists so fs.watch has something to watch
+    if (!fs.existsSync(activityPath)) {
+      fs.mkdirSync(path.dirname(activityPath), { recursive: true });
+      fs.writeFileSync(activityPath, '', 'utf-8');
+    }
+    watcher = fs.watch(activityPath, () => readNewLines());
+  } catch {
+    // Fall back to polling if fs.watch is unavailable (e.g. network filesystems)
+    fs.watchFile(activityPath, { interval: 250 }, readNewLines);
+  }
+  return () => {
+    if (watcher) watcher.close();
+    else fs.unwatchFile(activityPath, readNewLines);
+  };
 }
 
 function writeToolEvent(event: McpToolCallEvent): void {
