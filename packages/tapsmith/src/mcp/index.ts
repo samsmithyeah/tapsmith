@@ -316,9 +316,14 @@ type McpActivityRecord =
   | { type: 'client'; pid: number; cwd: string; timestamp: number; info: McpClientInfo | null }
   | { type: 'tool'; pid: number; cwd: string; event: McpToolCallEvent };
 
+let _activityDirCreated = false;
+
 function appendActivity(activityPath: string, record: McpActivityRecord): void {
   try {
-    fs.mkdirSync(path.dirname(activityPath), { recursive: true });
+    if (!_activityDirCreated) {
+      fs.mkdirSync(path.dirname(activityPath), { recursive: true });
+      _activityDirCreated = true;
+    }
     fs.appendFileSync(activityPath, `${JSON.stringify(record)}\n`, 'utf-8');
   } catch {
     // Activity monitoring is best-effort. Never break MCP protocol handling.

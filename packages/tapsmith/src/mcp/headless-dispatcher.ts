@@ -36,6 +36,7 @@ export class HeadlessTestDispatcher implements TestDispatcher {
   private _testTree: TestTreeEntry[] = [];
   private _testResults = new Map<string, TestResultEntry>();
   private _isRunning = false;
+  private _stopRequested = false;
   private _activeChild: ChildProcess | null = null;
   private _initialized = false;
   private _initPromise: Promise<void> | null = null;
@@ -80,23 +81,27 @@ export class HeadlessTestDispatcher implements TestDispatcher {
     }
 
     this._isRunning = true;
+    this._stopRequested = false;
     this._testResults.clear();
     try {
       let totalPassed = 0, totalFailed = 0, totalSkipped = 0, totalDuration = 0;
       for (const f of validFiles) {
+        if (this._stopRequested) break;
         const proj = this._projectForFile(f, project);
         const useOptions = proj?.use as RunFileUseOptions | undefined;
         const projectName = proj && proj.name !== 'default' ? proj.name : undefined;
-        const { results, suite } = await this._runFileInChild(
-          f, useOptions, projectName, validFiles.length === 1 ? testFilter : undefined,
-        );
-        const passed = results.filter((r) => r.status === 'passed').length;
-        const failed = results.filter((r) => r.status === 'failed').length;
-        const skipped = results.filter((r) => r.status === 'skipped').length;
-        totalPassed += passed;
-        totalFailed += failed;
-        totalSkipped += skipped;
-        totalDuration += suite.durationMs;
+        try {
+          const { results, suite } = await this._runFileInChild(
+            f, useOptions, projectName, validFiles.length === 1 ? testFilter : undefined,
+          );
+          totalPassed += results.filter((r) => r.status === 'passed').length;
+          totalFailed += results.filter((r) => r.status === 'failed').length;
+          totalSkipped += results.filter((r) => r.status === 'skipped').length;
+          totalDuration += suite.durationMs;
+        } catch (err) {
+          totalFailed++;
+          log(`Error running ${path.basename(f)}: ${err instanceof Error ? err.message : err}`);
+        }
       }
       return this._withFailures({
         status: totalFailed > 0 ? 'failed' : 'passed',
@@ -107,6 +112,7 @@ export class HeadlessTestDispatcher implements TestDispatcher {
       });
     } finally {
       this._isRunning = false;
+      this._stopRequested = false;
     }
   }
 
@@ -117,6 +123,7 @@ export class HeadlessTestDispatcher implements TestDispatcher {
     }
 
     this._isRunning = true;
+    this._stopRequested = false;
     this._testResults.clear();
     try {
       let totalPassed = 0, totalFailed = 0, totalSkipped = 0, totalDuration = 0;
@@ -125,7 +132,9 @@ export class HeadlessTestDispatcher implements TestDispatcher {
         const failedProjects = new Set<string>();
 
         for (const wave of this._projectWaves) {
+          if (this._stopRequested) break;
           for (const project of wave) {
+            if (this._stopRequested) break;
             const blockedBy = project.dependencies.find((d) => failedProjects.has(d));
             if (blockedBy) {
               failedProjects.add(project.name);
@@ -137,6 +146,7 @@ export class HeadlessTestDispatcher implements TestDispatcher {
             let projectFailed = false;
 
             for (const file of project.testFiles) {
+              if (this._stopRequested) break;
               try {
                 const { results, suite } = await this._runFileInChild(file, useOptions, projectName);
                 totalPassed += results.filter((r) => r.status === 'passed').length;
@@ -156,6 +166,7 @@ export class HeadlessTestDispatcher implements TestDispatcher {
         }
       } else {
         for (const file of this._testFiles) {
+          if (this._stopRequested) break;
           try {
             const { results, suite } = await this._runFileInChild(file);
             totalPassed += results.filter((r) => r.status === 'passed').length;
@@ -178,10 +189,12 @@ export class HeadlessTestDispatcher implements TestDispatcher {
       });
     } finally {
       this._isRunning = false;
+      this._stopRequested = false;
     }
   }
 
   stop(): void {
+    this._stopRequested = true;
     if (this._activeChild) {
       try { this._activeChild.kill(); } catch { /* already dead */ }
     }
