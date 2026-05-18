@@ -173,8 +173,8 @@ function newestSimulatorXctestrunIn(dir: string): string | undefined {
         e.endsWith('.xctestrun') &&
         !e.endsWith('.patched.xctestrun'),
     )
-    .map((e) => path.join(dir, e));
+    .map((e) => ({ path: path.join(dir, e), mtime: fs.statSync(path.join(dir, e)).mtimeMs }));
   if (matches.length === 0) return undefined;
-  matches.sort((a, b) => fs.statSync(b).mtimeMs - fs.statSync(a).mtimeMs);
-  return matches[0];
+  matches.sort((a, b) => b.mtime - a.mtime);
+  return matches[0].path;
 }
