@@ -180,6 +180,32 @@ describe('formatLaunchTable', () => {
 });
 
 describe('UiLaunchProgress', () => {
+  it('streams row updates without an initial table in non-interactive output', () => {
+    const stream = new CaptureStream();
+    const progress = new UiLaunchProgress(
+      [
+        { id: 'config', label: 'Config', state: 'done', detail: '1 worker | 1 test file' },
+        { id: 'primary-device', label: 'Primary device', state: 'pending', detail: 'select connected Android device' },
+        { id: 'daemon', label: 'Daemon', state: 'pending', detail: 'start tapsmith-core' },
+      ],
+      { stream, forceInteractive: false, color: false, title: 'Preparing test run' },
+    );
+
+    progress.start('primary-device');
+    progress.complete('primary-device', 'emulator-5554 awake and unlocked');
+    progress.complete('daemon', 'connected to tapsmith-core v0.1.1');
+    progress.finish();
+
+    const output = stream.output();
+    expect(output).toContain('Preparing test run\n');
+    expect(output).toContain('✓     Config: 1 worker | 1 test file\n');
+    expect(output).toContain('…     Primary device: select connected Android device\n');
+    expect(output).toContain('✓     Primary device: emulator-5554 awake and unlocked\n');
+    expect(output).toContain('✓     Daemon: connected to tapsmith-core v0.1.1\n');
+    expect(output).not.toContain('STEP');
+    expect(output).not.toContain('DETAILS');
+  });
+
   it('redraws interactive tables with row clearing instead of cursor save/restore', () => {
     const stream = new CaptureStream();
     const progress = new UiLaunchProgress(

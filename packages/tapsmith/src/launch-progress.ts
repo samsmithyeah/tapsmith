@@ -415,9 +415,11 @@ export class UiLaunchProgress implements LaunchProgressSink {
     }
 
     if (this.nonInteractiveSnapshots.size === 0) {
-      this.write(`${formatLaunchTable(this.steps, { color: this.color, title: this.title })}\n`);
+      const titleLine = this.color ? `${BOLD}${this.title}${RESET}` : this.title;
+      this.write(`${titleLine}\n`);
       for (const step of this.steps) {
         this.nonInteractiveSnapshots.set(step.id, `${step.state}|${step.detail}|${statusRaw(step)}`);
+        if (step.state !== 'pending') this.writeNonInteractiveStep(step);
       }
       return;
     }
@@ -427,9 +429,13 @@ export class UiLaunchProgress implements LaunchProgressSink {
       if (this.nonInteractiveSnapshots.get(step.id) === snapshot) continue;
       this.nonInteractiveSnapshots.set(step.id, snapshot);
       if (step.state === 'pending') continue;
-      const status = colorStatus(step.state, statusRaw(step), this.color);
-      this.write(`${padVisible(status, 5)} ${step.label}: ${step.detail}\n`);
+      this.writeNonInteractiveStep(step);
     }
+  }
+
+  private writeNonInteractiveStep(step: LaunchStep): void {
+    const status = colorStatus(step.state, statusRaw(step), this.color);
+    this.write(`${padVisible(status, 5)} ${step.label}: ${step.detail}\n`);
   }
 
   private clearRendered(): void {
