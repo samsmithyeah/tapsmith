@@ -351,8 +351,8 @@ impl TapsmithServiceImpl {
                 .get("hierarchy")
                 .and_then(|v| v.as_str())
                 .unwrap_or("");
-            if xml.trim().is_empty() {
-                return Err("iOS app hierarchy is empty after relaunch".to_string());
+            if !xml.contains("<XCUIElementType") {
+                return Err("iOS app hierarchy contains no elements after relaunch".to_string());
             }
         }
 
