@@ -266,6 +266,8 @@ export interface ProvisionSimulatorsResult {
   clonedSimulators: ClonedSimulator[]
   /** UDIDs that were freshly booted or cloned — need longer init timeouts. */
   freshUdids: Set<string>
+  /** UDIDs reused from a previous run during this provisioning pass. */
+  reusedUdids: string[]
 }
 
 /**
@@ -620,15 +622,27 @@ export function provisionSimulators(opts: {
   appPath?: string
   /** UDIDs of reusable clones from cleanupStaleSimulators() — use before cloning new ones. */
   reusableUdids?: string[]
+  /** Receives human-readable provisioning events. */
+  onProgress?: (message: string, level?: 'info' | 'warning') => void
 }): ProvisionSimulatorsResult {
   const { simulatorName, workers, existingUdids = [], reusableUdids = [] } = opts;
   const existingSet = new Set(existingUdids);
   const allUdids = [...existingUdids];
   const clonedSimulators: ClonedSimulator[] = [];
   const freshUdids = new Set<string>();
+  const reusedUdids: string[] = [];
+  const logProgress = (message: string, level: 'info' | 'warning' = 'info') => {
+    if (opts.onProgress) {
+      opts.onProgress(message, level);
+    } else if (level === 'warning') {
+      process.stderr.write(`${message}\n`);
+    } else {
+      process.stderr.write(`\x1b[2m${message}\x1b[0m\n`);
+    }
+  };
 
   if (allUdids.length >= workers) {
-    return { allUdids: allUdids.slice(0, workers), clonedSimulators, freshUdids };
+    return { allUdids: allUdids.slice(0, workers), clonedSimulators, freshUdids, reusedUdids };
   }
 
   // Determine the primary simulator's runtime so we only reuse/boot
@@ -650,9 +664,8 @@ export function provisionSimulators(opts: {
       deleteSimulator(udid);
       continue;
     }
-    process.stderr.write(
-      `\x1b[2mReusing simulator ${udid} (${sim?.name ?? 'unknown'}) from previous run.\x1b[0m\n`,
-    );
+    logProgress(`Reusing simulator ${udid} (${sim?.name ?? 'unknown'}) from previous run.`);
+    reusedUdids.push(udid);
     allUdids.push(udid);
     // Track as cloned so callers know to manage them
     if (sim) {
@@ -670,7 +683,7 @@ export function provisionSimulators(opts: {
   }
 
   if (allUdids.length >= workers) {
-    return { allUdids: allUdids.slice(0, workers), clonedSimulators, freshUdids };
+    return { allUdids: allUdids.slice(0, workers), clonedSimulators, freshUdids, reusedUdids };
   }
 
   const matching = allSims.filter((s) =>
@@ -684,14 +697,13 @@ export function provisionSimulators(opts: {
   const alreadyBooted = matching.filter((s) => s.state === 'Booted');
   for (const sim of alreadyBooted) {
     if (allUdids.length >= workers) break;
-    process.stderr.write(
-      `\x1b[2mReusing simulator ${sim.udid} (${sim.name}) from previous run.\x1b[0m\n`,
-    );
+    logProgress(`Reusing simulator ${sim.udid} (${sim.name}) from previous run.`);
+    reusedUdids.push(sim.udid);
     allUdids.push(sim.udid);
   }
 
   if (allUdids.length >= workers) {
-    return { allUdids: allUdids.slice(0, workers), clonedSimulators, freshUdids };
+    return { allUdids: allUdids.slice(0, workers), clonedSimulators, freshUdids, reusedUdids };
   }
 
   // Phase 1: boot any shutdown simulators that match the name
@@ -707,7 +719,7 @@ export function provisionSimulators(opts: {
   }
 
   if (allUdids.length >= workers) {
-    return { allUdids: allUdids.slice(0, workers), clonedSimulators, freshUdids };
+    return { allUdids: allUdids.slice(0, workers), clonedSimulators, freshUdids, reusedUdids };
   }
 
   // Phase 2: clone the source simulator to create new instances.
@@ -750,9 +762,7 @@ export function provisionSimulators(opts: {
           clonedSimulators.push({ udid: newUdid, name: createName, cloned: true });
           freshUdids.add(newUdid);
         } catch (err) {
-          process.stderr.write(
-            `Failed to create simulator for worker ${createIndex}: ${err instanceof Error ? err.message : err}\n`,
-          );
+          logProgress(`Failed to create simulator for worker ${createIndex}: ${err instanceof Error ? err.message : err}`, 'warning');
           break;
         }
       }
@@ -772,9 +782,7 @@ export function provisionSimulators(opts: {
           clonedSimulators.push({ udid: newUdid, name: cloneName, cloned: true });
           freshUdids.add(newUdid);
         } catch (err) {
-          process.stderr.write(
-            `Failed to clone simulator for worker ${cloneIndex}: ${err instanceof Error ? err.message : err}\n`,
-          );
+          logProgress(`Failed to clone simulator for worker ${cloneIndex}: ${err instanceof Error ? err.message : err}`, 'warning');
           break;
         }
       }
@@ -795,5 +803,5 @@ export function provisionSimulators(opts: {
     recordClonedSimulators(newlyCloned, simulatorName);
   }
 
-  return { allUdids: allUdids.slice(0, workers), clonedSimulators, freshUdids };
+  return { allUdids: allUdids.slice(0, workers), clonedSimulators, freshUdids, reusedUdids };
 }

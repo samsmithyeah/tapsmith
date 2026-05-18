@@ -1086,8 +1086,18 @@ export async function provisionEmulators(opts: {
   occupiedSerials?: string[]
   workers: number
   avd?: string
+  onProgress?: (message: string, level?: 'info' | 'warning') => void
 }, deps: Partial<ProvisionDeps> = {}): Promise<ProvisionResult> {
-  const { existingSerials, occupiedSerials = existingSerials, workers, avd } = opts;
+  const { existingSerials, occupiedSerials = existingSerials, workers, avd, onProgress } = opts;
+  const logProgress = (message: string, level: 'info' | 'warning' = 'info') => {
+    if (onProgress) {
+      onProgress(message, level);
+    } else if (level === 'warning') {
+      process.stderr.write(`${YELLOW}${message}${RESET}\n`);
+    } else {
+      process.stderr.write(`${DIM}${message}${RESET}\n`);
+    }
+  };
   const resolvedDeps: ProvisionDeps = {
     listAvds: deps.listAvds ?? listAvds,
     getRunningAvdName: deps.getRunningAvdName ?? getRunningAvdName,
@@ -1142,13 +1152,9 @@ export async function provisionEmulators(opts: {
     ? ` (${existingCount} already connected, need ${workers} total)`
     : '';
   if (avd) {
-    process.stderr.write(
-      `${DIM}Launching ${needed} emulator(s) using AVD ${avd}${existingNote}...${RESET}\n`,
-    );
+    logProgress(`Launching ${needed} emulator(s) using AVD ${avd}${existingNote}...`);
   } else {
-    process.stderr.write(
-      `${DIM}Launching ${needed} emulator(s) from available AVDs (${launchCandidates.join(', ')})${existingNote}...${RESET}\n`,
-    );
+    logProgress(`Launching ${needed} emulator(s) from available AVDs (${launchCandidates.join(', ')})${existingNote}...`);
   }
 
   for (let i = 0; i < needed; i++) {
@@ -1160,9 +1166,7 @@ export async function provisionEmulators(opts: {
       const port = findAvailablePort(usedPorts);
       usedPorts.add(port);
       const emu = resolvedDeps.launchEmulator(candidateAvd, port);
-      process.stderr.write(
-        `${DIM}  Starting ${emu.serial} (port ${port}, AVD ${candidateAvd})${RESET}\n`,
-      );
+      logProgress(`Starting ${emu.serial} (port ${port}, AVD ${candidateAvd})`);
 
       try {
         await resolvedDeps.waitForBoot(emu.serial);
@@ -1179,8 +1183,9 @@ export async function provisionEmulators(opts: {
         break;
       } catch (err) {
         badAvds.add(candidateAvd);
-        process.stderr.write(
-          `${YELLOW}Skipping launched emulator ${emu.serial} (${candidateAvd}): ${err instanceof Error ? err.message : err}.${RESET}\n`,
+        logProgress(
+          `Skipping launched emulator ${emu.serial} (${candidateAvd}): ${err instanceof Error ? err.message : err}.`,
+          'warning',
         );
         resolvedDeps.killEmulator(emu.serial);
         try {
@@ -1192,8 +1197,9 @@ export async function provisionEmulators(opts: {
     }
 
     if (!launchedEmulator) {
-      process.stderr.write(
-        `${YELLOW}Unable to provision additional emulator ${i + 1}/${needed}; ${avd ? `AVD ${avd}` : 'all candidate AVDs'} failed health checks.${RESET}\n`,
+      logProgress(
+        `Unable to provision additional emulator ${i + 1}/${needed}; ${avd ? `AVD ${avd}` : 'all candidate AVDs'} failed health checks.`,
+        'warning',
       );
       break;
     }
@@ -1201,7 +1207,7 @@ export async function provisionEmulators(opts: {
 
   if (launched.length > 0) {
     recordLaunchedEmulators(launched);
-    process.stderr.write(`${DIM}Provisioned ${launched.length} healthy emulator(s).${RESET}\n`);
+    logProgress(`Provisioned ${launched.length} healthy emulator(s).`);
   }
 
   const allSerials = [

@@ -47,6 +47,12 @@ import {
 } from './ios-simulator.js';
 import { freeStaleAgentPort, findPidsOnPort } from './port-utils.js';
 import { notifyLegacySudoersIfPresent } from './legacy-cleanup.js';
+import {
+  forkStdioForLaunchProgress,
+  pipeForkOutputForLaunchProgress,
+  type LaunchProgressSink,
+  type LaunchStepId,
+} from './launch-progress.js';
 
 const DIM = '\x1b[2m';
 const YELLOW = '\x1b[33m';
@@ -94,10 +100,49 @@ export interface DispatcherOptions {
   workerIndexBase?: number
   /** Hard cap on total workers across all buckets. Passed to allocateBucketWorkers. */
   workerCap?: number
+  /** Optional startup checklist used by CLI launch output. */
+  launchProgress?: LaunchProgressSink
+  /** Internal barrier hook for multi-bucket launch progress. */
+  beforeDispatch?: () => Promise<void> | void
+  /** Shared worker-ready counter for multi-bucket launch progress. */
+  launchProgressReadyCounter?: { count: number }
+  /** Shared worker total for multi-bucket launch progress. */
+  launchProgressWorkerTotal?: number
+  /** Shared aggregate startup phase counters for multi-bucket launch progress. */
+  launchProgressPhaseCounters?: LaunchPhaseCounters
+}
+
+type LaunchPhaseId = Extract<LaunchStepId, 'daemon' | 'app-install' | 'agent' | 'app-launch'>;
+type LaunchPhaseCounters = Record<LaunchPhaseId, { count: number }>;
+
+const launchPhaseIds: LaunchPhaseId[] = ['daemon', 'app-install', 'agent', 'app-launch'];
+
+function createLaunchPhaseCounters(): LaunchPhaseCounters {
+  return {
+    daemon: { count: 0 },
+    'app-install': { count: 0 },
+    agent: { count: 0 },
+    'app-launch': { count: 0 },
+  };
 }
 
 const EXISTING_DEVICE_INIT_TIMEOUT_MS = 90_000;
 const LAUNCHED_EMULATOR_INIT_TIMEOUT_MS = 180_000;
+
+export class LaunchSetupError extends Error {
+  constructor(message: string, options?: ErrorOptions) {
+    super(message, options);
+    this.name = 'LaunchSetupError';
+  }
+}
+
+export function isLaunchSetupError(err: unknown): err is LaunchSetupError {
+  return err instanceof Error && err.name === 'LaunchSetupError';
+}
+
+function messageFromUnknown(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
 
 /**
  * Module-level Ctrl-C coordination. Multi-bucket runs have two concurrent
@@ -270,15 +315,111 @@ async function runMultiBucket(opts: DispatcherOptions): Promise<FullResult> {
   const bucketWorkers = bucketEntries.map((b) => allocation.get(b.signature) ?? 0);
 
   const totalWorkersAcrossBuckets = bucketWorkers.reduce((s, n) => s + n, 0);
-  process.stderr.write(
-    `${DIM}Running ${opts.testFiles.length} test file(s) across ${totalWorkersAcrossBuckets} worker(s) in ${buckets.length} device bucket(s): ${
-      buckets.map((b, i) => `${b[0].deviceSignature.split('|').slice(0, 2).join(' ')} (${bucketWorkers[i]}w)`).join(', ')
-    }${RESET}\n`,
-  );
-
   const plans = planMultiBucket(opts, allocation);
+  const bucketSummary = buckets
+    .map((b, i) => `${b[0].deviceSignature.split('|').slice(0, 2).join(' ')} (${bucketWorkers[i]}w)`)
+    .join(', ');
+
+  const readyCounter = { count: 0 };
+  const phaseCounters = createLaunchPhaseCounters();
+  let barrierArrived = 0;
+  let barrierFailed = false;
+  let firstLaunchError: unknown;
+  let launchFailureRendered = false;
+  let releaseBarrier!: () => void;
+  const barrier = new Promise<void>((resolve) => { releaseBarrier = resolve; });
+  const renderLaunchFailure = (err: unknown) => {
+    if (!opts.launchProgress || launchFailureRendered) return;
+    launchFailureRendered = true;
+    const failureSummary = messageFromUnknown(err).split('\n')[0];
+    opts.launchProgress.fail(
+      'worker-devices',
+      `${readyCounter.count}/${totalWorkersAcrossBuckets} worker device(s) ready; launch failed`,
+    );
+    for (const phase of launchPhaseIds) {
+      if (phaseCounters[phase].count >= totalWorkersAcrossBuckets) continue;
+      opts.launchProgress.update(phase, {
+        state: 'failed',
+        detail: failureSummary,
+        progress: { done: phaseCounters[phase].count, total: totalWorkersAcrossBuckets },
+      });
+    }
+    opts.launchProgress.fail('ui-workers', failureSummary);
+    opts.launchProgress.finish();
+  };
+
+  const beforeDispatch = async () => {
+    barrierArrived++;
+    if (barrierArrived === plans.length) {
+      opts.launchProgress?.complete(
+        'worker-devices',
+        `${readyCounter.count}/${totalWorkersAcrossBuckets} worker device(s) ready across ${buckets.length} bucket(s)`,
+      );
+      if (readyCounter.count < totalWorkersAcrossBuckets) {
+        opts.launchProgress?.update('ui-workers', {
+          state: 'warning',
+          detail: `${readyCounter.count}/${totalWorkersAcrossBuckets} worker(s) ready; ${totalWorkersAcrossBuckets - readyCounter.count} failed`,
+          progress: { done: readyCounter.count, total: totalWorkersAcrossBuckets },
+        });
+        for (const phase of launchPhaseIds) {
+          if (phaseCounters[phase].count >= totalWorkersAcrossBuckets) continue;
+          opts.launchProgress?.update(phase, {
+            state: 'warning',
+            detail: `${phaseCounters[phase].count}/${totalWorkersAcrossBuckets} completed; ${totalWorkersAcrossBuckets - phaseCounters[phase].count} worker(s) did not finish`,
+            progress: { done: phaseCounters[phase].count, total: totalWorkersAcrossBuckets },
+          });
+        }
+      } else {
+        opts.launchProgress?.complete('ui-workers', `${totalWorkersAcrossBuckets} worker(s) ready`);
+      }
+      opts.launchProgress?.finish();
+      opts.reporter.onRunStart?.(opts.config, opts.testFiles.length);
+      releaseBarrier();
+    }
+    await barrier;
+    if (barrierFailed) {
+      throw firstLaunchError instanceof Error
+        ? firstLaunchError
+        : new LaunchSetupError('A device bucket failed to initialize');
+    }
+  };
+
+  if (opts.launchProgress) {
+    opts.launchProgress.start(
+      'daemon',
+      `starting ${totalWorkersAcrossBuckets} worker daemon(s)`,
+    );
+    opts.launchProgress.start(
+      'worker-devices',
+      `preparing ${totalWorkersAcrossBuckets} worker device(s) in ${buckets.length} device bucket(s)`,
+    );
+    opts.launchProgress.start('ui-workers', `starting ${totalWorkersAcrossBuckets} worker(s)`);
+    opts.launchProgress.update('ui-workers', {
+      state: 'running',
+      detail: bucketSummary,
+      progress: { done: 0, total: totalWorkersAcrossBuckets },
+    });
+  } else {
+    process.stderr.write(
+      `${DIM}Running ${opts.testFiles.length} test file(s) across ${totalWorkersAcrossBuckets} worker(s) in ${buckets.length} device bucket(s): ${bucketSummary}${RESET}\n`,
+    );
+  }
+
   const results = await Promise.all(
-    plans.map((plan) => runParallel(plan.bucketOpts, plan.portOffset)),
+    plans.map((plan) => runParallel({
+      ...plan.bucketOpts,
+      launchProgress: opts.launchProgress,
+      beforeDispatch,
+      launchProgressReadyCounter: readyCounter,
+      launchProgressWorkerTotal: totalWorkersAcrossBuckets,
+      launchProgressPhaseCounters: phaseCounters,
+    }, plan.portOffset).catch((err) => {
+      barrierFailed = true;
+      firstLaunchError ??= err;
+      renderLaunchFailure(err);
+      releaseBarrier();
+      throw err;
+    })),
   );
   return mergeBucketResults(results);
 }
@@ -304,42 +445,150 @@ export async function runParallel(opts: DispatcherOptions, _portOffset = 0): Pro
   const { config, reporter, testFiles } = opts;
   const isIos = config.platform === 'ios';
   const deviceStrategy = resolveDeviceStrategy(config);
+  const launchProgress = opts.launchProgress;
 
   // Display IDs for log lines: globally unique across concurrent buckets.
   // Internal worker.id stays local (it's tied to daemon-port assignment).
   const displayWorkerId = (id: number): number => id + (opts.workerIndexBase ?? 0);
+  // Cap workers at the max files in any single wave — workers in other waves
+  // would sit idle since waves execute sequentially.
+  const maxFilesInWave = opts.projectWaves
+    ? Math.max(...opts.projectWaves.map((wave) =>
+        wave.reduce((sum, p) => sum + p.testFiles.length, 0),
+      ))
+    : testFiles.length;
+  const maxUsefulWorkers = Math.min(opts.workers, maxFilesInWave);
+  const progressWorkerTotal = opts.launchProgressWorkerTotal ?? maxUsefulWorkers;
+  const progressReadyCounter = opts.launchProgressReadyCounter ?? { count: 0 };
+  const phaseCounters = opts.launchProgressPhaseCounters ?? createLaunchPhaseCounters();
+  const phaseCompletedByWorker = new Map<LaunchPhaseId, Set<number>>(
+    launchPhaseIds.map((phase) => [phase, new Set<number>()]),
+  );
+  const phaseSummary = (phase: LaunchPhaseId, count: number, total: number): string => {
+    switch (phase) {
+      case 'daemon':
+        return `${count}/${total} worker daemon(s) ready`;
+      case 'app-install':
+        return `${count}/${total} device app(s) ready`;
+      case 'agent':
+        return `${count}/${total} automation agent(s) connected`;
+      case 'app-launch':
+        return `${count}/${total} app session(s) ready`;
+    }
+  };
+  const markLaunchPhaseComplete = (phase: LaunchPhaseId, workerDisplayId: number, detail?: string) => {
+    const completed = phaseCompletedByWorker.get(phase)!;
+    if (completed.has(workerDisplayId)) return;
+    completed.add(workerDisplayId);
+    phaseCounters[phase].count++;
+    const count = phaseCounters[phase].count;
+    const done = count >= progressWorkerTotal;
+    launchProgress?.update(phase, {
+      state: done ? 'done' : 'running',
+      detail: done
+        ? phaseSummary(phase, progressWorkerTotal, progressWorkerTotal)
+        : (detail ?? phaseSummary(phase, count, progressWorkerTotal)),
+      progress: { done: Math.min(count, progressWorkerTotal), total: progressWorkerTotal },
+    });
+  };
+  const updateLaunchPhaseProgress = (phase: LaunchPhaseId, detail: string) => {
+    launchProgress?.update(phase, {
+      state: 'running',
+      detail,
+      progress: { done: phaseCounters[phase].count, total: progressWorkerTotal },
+    });
+  };
+  const updateWorkerLaunchPhases = (workerDisplayId: number, message: string) => {
+    const workerLabel = `Worker ${workerDisplayId}`;
+    if (message.startsWith('starting worker daemon') || message.startsWith('connecting to daemon')) {
+      updateLaunchPhaseProgress('daemon', `${workerLabel}: ${message}`);
+    } else if (message.startsWith('installing ') || message.includes('already installed')) {
+      if (message.includes('already installed')) {
+        markLaunchPhaseComplete('app-install', workerDisplayId, `${workerLabel}: app already installed`);
+      } else {
+        updateLaunchPhaseProgress('app-install', `${workerLabel}: ${message}`);
+      }
+    } else if (message === 'app install complete' || message === 'app install skipped') {
+      markLaunchPhaseComplete('app-install', workerDisplayId, `${workerLabel}: app ready`);
+    } else if (message === 'starting Tapsmith agent') {
+      updateLaunchPhaseProgress('agent', `${workerLabel}: starting agent`);
+    } else if (message === 'agent connected') {
+      markLaunchPhaseComplete('agent', workerDisplayId, `${workerLabel}: agent connected`);
+    } else if (message.startsWith('launching ') || message === 'validating session readiness') {
+      updateLaunchPhaseProgress('app-launch', `${workerLabel}: ${message}`);
+    } else if (message === 'app launched' || message === 'session ready') {
+      markLaunchPhaseComplete('app-launch', workerDisplayId, `${workerLabel}: session ready`);
+    }
+  };
+  const markAllLaunchPhasesCompleteForWorker = (workerDisplayId: number) => {
+    for (const phase of launchPhaseIds) {
+      markLaunchPhaseComplete(phase, workerDisplayId);
+    }
+  };
+  const markIncompleteLaunchPhases = (state: 'warning' | 'failed', detail: string) => {
+    for (const phase of launchPhaseIds) {
+      const count = phaseCounters[phase].count;
+      if (count >= progressWorkerTotal) continue;
+      launchProgress?.update(phase, {
+        state,
+        detail,
+        progress: { done: count, total: progressWorkerTotal },
+      });
+    }
+  };
+  const updateWorkerProgress = (detail: string) => {
+    launchProgress?.update('ui-workers', {
+      state: 'running',
+      detail,
+      progress: { done: progressReadyCounter.count, total: progressWorkerTotal },
+    });
+  };
+  const note = (message: string) => {
+    if (launchProgress) launchProgress.note(message);
+    else process.stderr.write(`${DIM}${message}${RESET}\n`);
+  };
+
+  if (launchProgress && !opts.bucketLabel) {
+    launchProgress.start('daemon', `starting ${progressWorkerTotal} worker daemon(s)`);
+    launchProgress.start('worker-devices', `preparing ${progressWorkerTotal} worker device(s)`);
+    launchProgress.update('ui-workers', {
+      state: 'pending',
+      progress: { done: 0, total: progressWorkerTotal },
+    });
+  }
 
   // ─── Pre-discovery cleanup ───
   let reusableSimulatorUdids: string[] = [];
+  let reusedSimulatorCount = 0;
 
   if (isIos) {
     if (config.simulator) {
       const staleResult = cleanupStaleSimulators(config.simulator);
       reusableSimulatorUdids = staleResult.reusable;
       if (staleResult.killed.length > 0) {
-        process.stderr.write(
-          `${DIM}Cleaned up ${staleResult.killed.length} stale simulator(s).${RESET}\n`,
-        );
+        note(`Cleaned up ${staleResult.killed.length} stale simulator(s).`);
       }
       if (staleResult.reusable.length > 0) {
-        process.stderr.write(
-          `${DIM}Reusing ${staleResult.reusable.length} simulator(s) from previous run.${RESET}\n`,
-        );
+        if (launchProgress) {
+          launchProgress.update('worker-devices', {
+            state: 'running',
+            detail: `found ${staleResult.reusable.length} reusable simulator(s) from previous run`,
+          });
+        } else {
+          note(`Reusing ${staleResult.reusable.length} simulator(s) from previous run.`);
+        }
       }
     }
   } else {
     const clearedOfflineEmulators = clearOfflineEmulatorTransports();
     for (const serial of clearedOfflineEmulators) {
-      process.stderr.write(
-        `${YELLOW}Cleared stale offline emulator transport ${serial} before device discovery.${RESET}\n`,
-      );
+      if (launchProgress) launchProgress.note(`Cleared stale offline emulator transport ${serial} before device discovery.`);
+      else process.stderr.write(`${YELLOW}Cleared stale offline emulator transport ${serial} before device discovery.${RESET}\n`);
     }
 
     const staleResult = cleanupStaleEmulators(config.avd);
     if (staleResult.killed.length > 0) {
-      process.stderr.write(
-        `${DIM}Cleaned up ${staleResult.killed.length} stale emulator(s).${RESET}\n`,
-      );
+      note(`Cleaned up ${staleResult.killed.length} stale emulator(s).`);
     }
   }
 
@@ -352,19 +601,47 @@ export async function runParallel(opts: DispatcherOptions, _portOffset = 0): Pro
     ? path.resolve(config.rootDir, rawBin)
     : rawBin;
 
-  const firstDaemonPort = baseDaemonPort + 1 + _portOffset;
-  const firstAgentPort = baseAgentPort + 1 + _portOffset;
+  const reportFreedAgentPort = launchProgress
+    ? ({ port, pid }: { port: number; pid: number; command: string }) => launchProgress.update('worker-devices', {
+      state: 'running',
+      detail: `cleared stale agent port ${port} (pid ${pid})`,
+    })
+    : undefined;
 
-  // Free the first agent host port from any leftover stale process before
-  // spawning firstDaemon. The common offender is a leftover iOS `TapsmithAgent`
-  // from a previous iOS run — its host-localhost socket squats on the port
-  // we want to use for `adb forward`, silently shadowing the Android agent
-  // so every command routes to the iOS simulator. Subsequent worker slots
-  // free their own agent port inline during slot allocation below, since
-  // the slot allocator may walk past `opts.workers` when daemon ports are
-  // occupied — freeing only `[0, opts.workers)` upfront would miss them.
-  freeStaleAgentPort(firstAgentPort);
+  let firstDaemonPort: number | undefined;
+  let firstAgentPort: number | undefined;
+  const maxFirstDaemonPortAttempts = Math.min(PORTS_PER_BUCKET, Math.max(maxUsefulWorkers + 10, 10));
 
+  // Worker 0 also walks the reserved bucket port range. Otherwise one stale
+  // daemon on the first port can fail the entire launch while later workers
+  // already know how to skip occupied ports.
+  for (let offset = 0; offset < maxFirstDaemonPortAttempts; offset++) {
+    const candidateDaemonPort = baseDaemonPort + 1 + _portOffset + offset;
+    const candidateAgentPort = baseAgentPort + 1 + _portOffset + offset;
+    freeStaleAgentPort(candidateAgentPort, reportFreedAgentPort);
+    if (await isPortAvailable(candidateDaemonPort)) {
+      firstDaemonPort = candidateDaemonPort;
+      firstAgentPort = candidateAgentPort;
+      break;
+    }
+    const message = `Skipping daemon port ${candidateDaemonPort} (in use), trying next...`;
+    if (launchProgress) {
+      launchProgress.update('worker-devices', { state: 'running', detail: message });
+    } else {
+      note(message);
+    }
+  }
+
+  if (firstDaemonPort === undefined || firstAgentPort === undefined) {
+    launchProgress?.fail('daemon', `no daemon port available near ${baseDaemonPort + 1 + _portOffset}`);
+    throw new LaunchSetupError(
+      `No daemon port available for worker startup.\n` +
+      `Checked ${maxFirstDaemonPortAttempts} port(s) starting at ${baseDaemonPort + 1 + _portOffset}.\n` +
+      `Run: lsof -nP -iTCP -sTCP:LISTEN | grep tapsmith-core`,
+    );
+  }
+
+  updateLaunchPhaseProgress('daemon', `Worker ${displayWorkerId(0)}: starting daemon on localhost:${firstDaemonPort}`);
   const firstDaemon = spawn(
     daemonBin,
     ['--port', String(firstDaemonPort), '--agent-port', String(firstAgentPort)],
@@ -382,9 +659,10 @@ export async function runParallel(opts: DispatcherOptions, _portOffset = 0): Pro
     firstDaemon.kill();
     const portInUse = !(await isPortAvailable(firstDaemonPort));
     const hint = portInUse
-      ? ` Port ${firstDaemonPort} is already in use — another Tapsmith run may be active, or a stale daemon is running. Kill it with: lsof -ti tcp:${firstDaemonPort} | xargs kill`
-      : ` Is tapsmith-core installed? (tried: ${daemonBin})`;
-    throw new Error(`Failed to start worker daemon.${hint}`);
+      ? `Port ${firstDaemonPort} is already in use. Another Tapsmith run may be active, or a stale daemon is running.\nRun: lsof -ti tcp:${firstDaemonPort} | xargs kill`
+      : `Is tapsmith-core installed? Tried: ${daemonBin}`;
+    launchProgress?.fail('daemon', 'failed to start worker daemon');
+    throw new LaunchSetupError(`Failed to start worker daemon.\n${hint}`);
   }
 
   // Verify the daemon we connected to is actually OUR firstDaemon and not a
@@ -399,9 +677,10 @@ export async function runParallel(opts: DispatcherOptions, _portOffset = 0): Pro
   if (firstDaemon.pid !== undefined && !listenerPids.includes(firstDaemon.pid)) {
     firstDaemon.kill();
     const squatterHint = listenerPids.length > 0
-      ? ` Port ${firstDaemonPort} is held by PID ${listenerPids.join(',')} — likely a stale tapsmith-core daemon from a previous run. If no other Tapsmith run is active, kill it with: kill ${listenerPids.join(' ')}`
-      : ` Port ${firstDaemonPort} is held by an unknown process. Try: lsof -ti tcp:${firstDaemonPort} | xargs kill`;
-    throw new Error(`Failed to start worker daemon: spawned process bound to a different port (likely failed to bind).${squatterHint}`);
+      ? `Port ${firstDaemonPort} is held by PID ${listenerPids.join(', ')}. A stale tapsmith-core daemon may be running.\nRun: lsof -ti tcp:${firstDaemonPort} | xargs kill`
+      : `Port ${firstDaemonPort} is held by an unknown process.\nRun: lsof -ti tcp:${firstDaemonPort} | xargs kill`;
+    launchProgress?.fail('daemon', 'spawned process bound to a different port');
+    throw new LaunchSetupError(`Failed to start worker daemon: spawned process bound to a different port.\n${squatterHint}`);
   }
 
   // Discover available devices
@@ -439,9 +718,8 @@ export async function runParallel(opts: DispatcherOptions, _portOffset = 0): Pro
         );
       }
     }
-    process.stderr.write(
-      `${DIM}Physical iOS device: ${deviceSerials[0]}${RESET}\n`,
-    );
+    launchProgress?.update('worker-devices', { state: 'running', detail: `physical iOS device ${deviceSerials[0]}` });
+    if (!launchProgress) process.stderr.write(`${DIM}Physical iOS device: ${deviceSerials[0]}${RESET}\n`);
   } else if (isIos) {
     // ─── iOS simulator discovery & provisioning ───
     // The daemon reports ALL booted iOS simulators. Filter to only those
@@ -456,32 +734,37 @@ export async function runParallel(opts: DispatcherOptions, _portOffset = 0): Pro
     }
     const iosHealthy = filterHealthySimulators(candidateUdids);
     for (const unhealthy of iosHealthy.unhealthySimulators) {
-      process.stderr.write(
-        `${YELLOW}Skipping unhealthy simulator ${unhealthy.udid}: ${unhealthy.reason}.${RESET}\n`,
-      );
+      if (launchProgress) launchProgress.note(`Skipping unhealthy simulator ${unhealthy.udid}: ${unhealthy.reason}.`);
+      else process.stderr.write(`${YELLOW}Skipping unhealthy simulator ${unhealthy.udid}: ${unhealthy.reason}.${RESET}\n`);
     }
     deviceSerials = iosHealthy.healthyUdids;
 
     const neededWorkers = Math.min(opts.workers, testFiles.length);
     if (deviceSerials.length < neededWorkers && config.simulator) {
-      process.stderr.write(
-        `${DIM}Provisioning iOS simulators: have ${deviceSerials.length}, need ${neededWorkers}${RESET}\n`,
-      );
+      const detail = `provisioning iOS simulators: have ${deviceSerials.length}, need ${neededWorkers}`;
+      if (launchProgress) launchProgress.update('worker-devices', { state: 'running', detail });
+      else process.stderr.write(`${DIM}${detail}${RESET}\n`);
       const provision = provisionSimulators({
         simulatorName: config.simulator,
         workers: neededWorkers,
         existingUdids: deviceSerials,
         appPath: config.app ? path.resolve(config.rootDir, config.app) : undefined,
         reusableUdids: reusableSimulatorUdids,
+        onProgress: (message, level) => {
+          if (!launchProgress) return;
+          if (level === 'warning') launchProgress.note(message);
+          else launchProgress.update('worker-devices', { state: 'running', detail: message });
+        },
       });
       clonedSimulators = provision.clonedSimulators;
       freshIosUdids = provision.freshUdids;
       deviceSerials = provision.allUdids;
+      reusedSimulatorCount += provision.reusedUdids.length;
 
       if (clonedSimulators.length > 0) {
-        process.stderr.write(
-          `${DIM}Cloned ${clonedSimulators.length} simulator(s) for parallel workers.${RESET}\n`,
-        );
+        const message = `Cloned ${clonedSimulators.length} simulator(s) for parallel workers.`;
+        if (launchProgress) launchProgress.update('worker-devices', { state: 'running', detail: message });
+        else note(message);
       }
 
       // Re-discover devices so the daemon sees newly booted simulators
@@ -502,9 +785,9 @@ export async function runParallel(opts: DispatcherOptions, _portOffset = 0): Pro
       deviceStrategy,
       config.avd,
     );
-    warnSkippedDevices(prefilteredOnline.skippedDevices);
+    warnSkippedDevices(prefilteredOnline.skippedDevices, launchProgress);
     const healthyOnline = filterHealthyDevices(prefilteredOnline.candidateSerials);
-    warnUnhealthyDevices(healthyOnline.unhealthyDevices);
+    warnUnhealthyDevices(healthyOnline.unhealthyDevices, launchProgress);
     const selectedOnline = selectDevicesForStrategy(
       healthyOnline.healthySerials,
       deviceStrategy,
@@ -514,6 +797,7 @@ export async function runParallel(opts: DispatcherOptions, _portOffset = 0): Pro
       selectedOnline.skippedDevices.filter(
         (device) => !prefilteredOnline.skippedDevices.some((prefiltered) => prefiltered.serial === device.serial),
       ),
+      launchProgress,
     );
 
     if (
@@ -525,16 +809,21 @@ export async function runParallel(opts: DispatcherOptions, _portOffset = 0): Pro
         occupiedSerials: androidDevices.map((d) => d.serial),
         workers: Math.min(opts.workers, testFiles.length),
         avd: config.avd,
+        onProgress: (message, level) => {
+          if (!launchProgress) return;
+          if (level === 'warning') launchProgress.note(message);
+          else launchProgress.update('worker-devices', { state: 'running', detail: message });
+        },
       });
       launchedEmulators = provision.launched;
       const healthyProvisioned = filterHealthyDevices(provision.allSerials);
-      warnUnhealthyDevices(healthyProvisioned.unhealthyDevices);
+      warnUnhealthyDevices(healthyProvisioned.unhealthyDevices, launchProgress);
       const selectedProvisioned = selectDevicesForStrategy(
         healthyProvisioned.healthySerials,
         deviceStrategy,
         config.avd,
       );
-      warnSkippedDevices(selectedProvisioned.skippedDevices);
+      warnSkippedDevices(selectedProvisioned.skippedDevices, launchProgress);
       deviceSerials = selectedProvisioned.selectedSerials;
     } else {
       deviceSerials = selectedOnline.selectedSerials;
@@ -542,7 +831,8 @@ export async function runParallel(opts: DispatcherOptions, _portOffset = 0): Pro
   }
 
   if (deviceSerials.length === 0) {
-    throw new Error(
+    launchProgress?.fail('worker-devices', 'no worker-ready devices found');
+    throw new LaunchSetupError(
       isIos
         ? `No booted iOS simulators found.${config.simulator ? ` Boot a simulator matching '${config.simulator}', or add more simulators for parallel execution.` : ' Set `simulator` in your config and boot at least one.'}`
         : 'No online devices found. Connect a device, start an emulator, ' +
@@ -550,19 +840,29 @@ export async function runParallel(opts: DispatcherOptions, _portOffset = 0): Pro
     );
   }
 
+  if (launchProgress && !opts.bucketLabel) {
+    const reuseSuffix = reusedSimulatorCount > 0 ? ` (${reusedSimulatorCount} reused)` : '';
+    launchProgress.complete(
+      'worker-devices',
+      `${deviceSerials.slice(0, maxUsefulWorkers).length} device(s)${reuseSuffix}: ${deviceSerials.slice(0, maxUsefulWorkers).join(', ')}`,
+    );
+    launchProgress.update('ui-workers', {
+      state: 'running',
+      detail: `starting workers on ${deviceSerials.slice(0, maxUsefulWorkers).join(', ')}`,
+      progress: { done: progressReadyCounter.count, total: progressWorkerTotal },
+    });
+  } else if (launchProgress) {
+    launchProgress.update('worker-devices', {
+      state: 'running',
+      detail: `${opts.bucketLabel}: ${deviceSerials.slice(0, maxUsefulWorkers).join(', ')}`,
+    });
+  }
+
   const workers: WorkerHandle[] = [];
   const allResults: TestResult[] = [];
   const allSuites: SuiteResult[] = [];
   const totalStart = Date.now();
   let setupDuration = 0;
-  // Cap workers at the max files in any single wave — workers in other waves
-  // would sit idle since waves execute sequentially.
-  const maxFilesInWave = opts.projectWaves
-    ? Math.max(...opts.projectWaves.map((wave) =>
-        wave.reduce((sum, p) => sum + p.testFiles.length, 0),
-      ))
-    : testFiles.length;
-  const maxUsefulWorkers = Math.min(opts.workers, maxFilesInWave);
   let firstDaemonAssigned = false;
 
   // Register signal handlers to ensure cleanup on SIGINT/SIGTERM.
@@ -659,29 +959,29 @@ export async function runParallel(opts: DispatcherOptions, _portOffset = 0): Pro
     // For each candidate slot we also free any stale iOS TapsmithAgent squatting
     // on the agent port — the slot loop may walk past opts.workers when daemon
     // ports are occupied, so we cannot rely on a fixed-size upfront sweep.
-    // wid=0 is special: it reuses firstDaemon (already spawned), and its
-    // agent port (firstAgentPort) was freed before that spawn.
-    const availableWorkerSlots: Array<{ workerId: number; daemonPort: number; agentPort: number }> = [];
+    // Worker 0 is special: it reuses firstDaemon (already spawned), and its
+    // port may have walked past stale daemon ports before the spawn.
+    const availableWorkerSlots: Array<{ workerId: number; daemonPort: number; agentPort: number }> = [
+      { workerId: 0, daemonPort: firstDaemonPort, agentPort: firstAgentPort },
+    ];
+    const reservedDaemonPorts = new Set([firstDaemonPort]);
     for (let wid = 0; availableWorkerSlots.length < maxUsefulWorkers && availableWorkerSlots.length < deviceSerials.length && wid < maxUsefulWorkers + 10; wid++) {
       const port = baseDaemonPort + 1 + _portOffset + wid;
       const agentPort = baseAgentPort + 1 + _portOffset + wid;
-      if (wid === 0) {
-        availableWorkerSlots.push({ workerId: availableWorkerSlots.length, daemonPort: port, agentPort });
-        continue;
-      }
-      freeStaleAgentPort(agentPort);
+      if (reservedDaemonPorts.has(port)) continue;
+      freeStaleAgentPort(agentPort, reportFreedAgentPort);
       if (await isPortAvailable(port)) {
         availableWorkerSlots.push({ workerId: availableWorkerSlots.length, daemonPort: port, agentPort });
+        reservedDaemonPorts.add(port);
       } else {
-        process.stderr.write(
-          `${DIM}Skipping port ${port} (in use), trying next...${RESET}\n`,
-        );
+        note(`Skipping port ${port} (in use), trying next...`);
       }
     }
 
     // Initialize all workers in parallel — each has its own daemon, device,
     // and agent so there are no shared resources during init.
     const initPromises: Promise<WorkerHandle>[] = [];
+    const failedWorkerMessages: string[] = [];
 
     for (const slot of availableWorkerSlots) {
       const candidateSerial = deviceSerials[slot.workerId];
@@ -704,6 +1004,25 @@ export async function runParallel(opts: DispatcherOptions, _portOffset = 0): Pro
           daemonPortOverride: slot.daemonPort,
           agentPortOverride: slot.agentPort,
           displayWorkerId: displayWorkerId(slot.workerId),
+          launchProgress,
+          ...(launchProgress ? {
+            onProgress: (message: string) => {
+              updateWorkerLaunchPhases(displayWorkerId(slot.workerId), message);
+              updateWorkerProgress(`Worker ${displayWorkerId(slot.workerId)} (${candidateSerial}): ${message}`);
+            },
+            onDaemonReady: () => {
+              markLaunchPhaseComplete(
+                'daemon',
+                displayWorkerId(slot.workerId),
+                `Worker ${displayWorkerId(slot.workerId)}: daemon ready on localhost:${slot.daemonPort}`,
+              );
+            },
+            onReady: () => {
+              markAllLaunchPhasesCompleteForWorker(displayWorkerId(slot.workerId));
+              progressReadyCounter.count++;
+              updateWorkerProgress(`Worker ${displayWorkerId(slot.workerId)} (${candidateSerial}): ready`);
+            },
+          } : {}),
         }),
       );
     }
@@ -717,25 +1036,57 @@ export async function runParallel(opts: DispatcherOptions, _portOffset = 0): Pro
         workers.push(worker);
       } else {
         const serial = deviceSerials[i];
-        process.stderr.write(
-          `${YELLOW}Skipping device ${serial}: ${result.reason instanceof Error ? result.reason.message : result.reason}.${RESET}\n`,
-        );
+        const reasonText = messageFromUnknown(result.reason);
+        const reasonSummary = reasonText.split('\n')[0];
+        const workerLabel = `Worker ${displayWorkerId(i)} (${serial})`;
+        failedWorkerMessages.push(`${workerLabel}: ${reasonText}`);
+        if (launchProgress) {
+          launchProgress.update('ui-workers', {
+            state: 'running',
+            detail: `${workerLabel} failed: ${reasonSummary}`,
+            progress: { done: progressReadyCounter.count, total: progressWorkerTotal },
+          });
+        } else {
+          process.stderr.write(`${YELLOW}Skipping device ${serial}: ${reasonText}.${RESET}\n`);
+        }
       }
     }
 
     const workerCount = workers.length;
 
     if (workerCount === 0) {
-      throw new Error(
+      const prefix = opts.bucketLabel ? `${opts.bucketLabel}: ` : '';
+      const firstFailure = failedWorkerMessages[0]
+        ?.replace(/^Worker \d+ \([^)]+\): /, '')
+        .split('\n')[0];
+      markIncompleteLaunchPhases('failed', firstFailure ?? `${prefix}worker startup failed`);
+      launchProgress?.fail(
+        'ui-workers',
+        firstFailure
+          ? `${prefix}0/${maxUsefulWorkers} worker(s) ready; ${firstFailure}`
+          : `${prefix}no worker-ready devices`,
+      );
+      throw new LaunchSetupError(
         'No worker-ready devices found. Start healthy emulators or devices, ' +
         'or set `avd` in your config to auto-launch emulators.',
       );
     }
 
     if (workerCount < maxUsefulWorkers) {
-      process.stderr.write(
-        `${YELLOW}Warning: Requested ${maxUsefulWorkers} workers but only ${workerCount} healthy worker-ready device(s) available. Using ${workerCount} worker(s).${RESET}\n`,
+      const message = `Requested ${maxUsefulWorkers} workers but only ${workerCount} healthy worker-ready device(s) available. Using ${workerCount} worker(s).`;
+      markIncompleteLaunchPhases(
+        'warning',
+        `${workerCount}/${maxUsefulWorkers} worker(s) ready; ${maxUsefulWorkers - workerCount} failed`,
       );
+      if (launchProgress) {
+        launchProgress.update('ui-workers', {
+          state: 'warning',
+          detail: `${opts.bucketLabel ? `${opts.bucketLabel}: ` : ''}${workerCount}/${maxUsefulWorkers} worker(s) ready; ${maxUsefulWorkers - workerCount} failed`,
+          progress: { done: progressReadyCounter.count, total: progressWorkerTotal },
+        });
+      } else {
+        process.stderr.write(`${YELLOW}Warning: ${message}${RESET}\n`);
+      }
     }
 
     setupDuration = Date.now() - totalStart;
@@ -743,7 +1094,25 @@ export async function runParallel(opts: DispatcherOptions, _portOffset = 0): Pro
     // Top-level (non-bucket) runs print their own "Running N test files
     // across M workers" line. When this call is one of N concurrent buckets,
     // the parent runMultiBucket prints an aggregated line and we stay quiet.
-    if (!opts.bucketLabel) {
+    if (launchProgress) {
+      if (!opts.bucketLabel) {
+        if (workerCount < maxUsefulWorkers) {
+          launchProgress.update('ui-workers', {
+            state: 'warning',
+            detail: `${workerCount}/${maxUsefulWorkers} worker(s) ready; ${maxUsefulWorkers - workerCount} failed`,
+            progress: { done: workerCount, total: maxUsefulWorkers },
+          });
+        } else {
+          launchProgress.complete('ui-workers', `${workerCount} worker(s) ready`);
+        }
+      }
+      if (opts.beforeDispatch) {
+        await opts.beforeDispatch();
+      } else {
+        launchProgress.finish();
+        reporter.onRunStart?.(config, testFiles.length);
+      }
+    } else if (!opts.bucketLabel) {
       process.stderr.write(
         `${DIM}Running ${testFiles.length} test file(s) across ${workerCount} worker(s)${RESET}\n`,
       );
@@ -1104,6 +1473,10 @@ interface InitializeWorkerOptions {
   agentPortOverride?: number
   /** Globally-unique worker ID used in user-facing log lines. */
   displayWorkerId?: number
+  onProgress?: (message: string) => void
+  onDaemonReady?: () => void
+  onReady?: () => void
+  launchProgress?: LaunchProgressSink
 }
 
 async function initializeWorker(opts: InitializeWorkerOptions): Promise<WorkerHandle> {
@@ -1126,7 +1499,9 @@ async function initializeWorker(opts: InitializeWorkerOptions): Promise<WorkerHa
   let daemonProcess: ChildProcess | undefined;
   if (workerId === 0) {
     daemonProcess = firstDaemon;
+    opts.onDaemonReady?.();
   } else {
+    opts.onProgress?.(`starting worker daemon on localhost:${daemonPort}`);
     daemonProcess = spawn(
       daemonBin,
       ['--port', String(daemonPort), '--agent-port', String(agentPort)],
@@ -1146,16 +1521,18 @@ async function initializeWorker(opts: InitializeWorkerOptions): Promise<WorkerHa
       const hint = portInUse ? ` (port ${daemonPort} is already in use)` : '';
       throw new Error(`worker daemon on port ${daemonPort} did not become ready${hint}`);
     }
+    opts.onDaemonReady?.();
   }
 
   const child = fork(resolvedScript, [], {
-    stdio: ['ignore', 'inherit', 'inherit', 'ipc'],
+    stdio: forkStdioForLaunchProgress(opts.launchProgress),
     ...(tsxBin ? { execPath: tsxBin } : {}),
     env: {
       ...process.env,
       TAPSMITH_WORKER_ID: String(workerId),
     },
   });
+  pipeForkOutputForLaunchProgress(child, opts.launchProgress);
   // Init + dispatch loop each add message/exit listeners; raise the cap to avoid warnings.
   child.setMaxListeners(20);
 
@@ -1189,14 +1566,14 @@ async function initializeWorker(opts: InitializeWorkerOptions): Promise<WorkerHa
 
       const onMessage = (msg: WorkerToMainMessage) => {
         if (msg.type === 'ready' && msg.workerId === worker.id) {
+          opts.onReady?.();
           clearTimeout(timeout);
           cleanup();
           resolve();
         } else if (msg.type === 'progress' && msg.workerId === worker.id) {
           const displayId = opts.displayWorkerId ?? worker.id;
-          process.stderr.write(
-            `${DIM}  Worker ${displayId} (${worker.deviceSerial}): ${msg.message}${RESET}\n`,
-          );
+          if (opts.onProgress) opts.onProgress(msg.message);
+          else process.stderr.write(`${DIM}  Worker ${displayId} (${worker.deviceSerial}): ${msg.message}${RESET}\n`);
         } else if (msg.type === 'error' && msg.workerId === worker.id) {
           clearTimeout(timeout);
           cleanup();
@@ -1260,20 +1637,20 @@ function isPortAvailable(port: number): Promise<boolean> {
   });
 }
 
-function warnUnhealthyDevices(devices: DeviceHealthResult[]): void {
+function warnUnhealthyDevices(devices: DeviceHealthResult[], progress?: LaunchProgressSink): void {
   for (const device of devices) {
     const avd = device.serial.startsWith('emulator-') ? getRunningAvdName(device.serial) : undefined;
     const label = avd ? `${device.serial} (${avd})` : device.serial;
-    process.stderr.write(
-      `${YELLOW}Skipping unhealthy device ${label}: ${device.reason ?? 'unknown health check failure'}.${RESET}\n`,
-    );
+    const message = `Skipping unhealthy device ${label}: ${device.reason ?? 'unknown health check failure'}.`;
+    if (progress) progress.note(message);
+    else process.stderr.write(`${YELLOW}${message}${RESET}\n`);
   }
 }
 
-function warnSkippedDevices(devices: Array<{ serial: string; reason: string }>): void {
+function warnSkippedDevices(devices: Array<{ serial: string; reason: string }>, progress?: LaunchProgressSink): void {
   for (const device of devices) {
-    process.stderr.write(
-      `${YELLOW}Skipping device ${device.serial}: ${device.reason}.${RESET}\n`,
-    );
+    const message = `Skipping device ${device.serial}: ${device.reason}.`;
+    if (progress) progress.note(message);
+    else process.stderr.write(`${YELLOW}${message}${RESET}\n`);
   }
 }

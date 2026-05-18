@@ -523,16 +523,20 @@ describe('provisionSimulators', () => {
     });
     // Manifest has the reusable clone
     mockedReadFileSync.mockReturnValue('[]');
+    const progress: string[] = [];
 
     const result = provisionSimulators({
       simulatorName: 'iPhone 16',
       workers: 2,
       existingUdids: ['PRIMARY'],
       reusableUdids: ['REUSE'],
+      onProgress: (message) => progress.push(message),
     });
 
     expect(result.allUdids).toContain('PRIMARY');
     expect(result.allUdids).toContain('REUSE');
+    expect(result.reusedUdids).toEqual(['REUSE']);
+    expect(progress).toEqual(['Reusing simulator REUSE (iPhone 16 (Tapsmith Worker 1)) from previous run.']);
   });
 
   it('boots shutdown simulators when not enough booted', () => {

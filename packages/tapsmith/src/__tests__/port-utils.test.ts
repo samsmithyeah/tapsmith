@@ -54,6 +54,18 @@ describe('freeStaleAgentPort', () => {
     expect(killSpy).toHaveBeenCalledWith(12345, 'SIGKILL');
   });
 
+  it('reports stale port cleanup through the progress callback when provided', () => {
+    mockPidsAndComm(12345, 'TapsmithAgentUITes');
+    const onProgress = vi.fn();
+    freeStaleAgentPort(18701, onProgress);
+    expect(onProgress).toHaveBeenCalledWith({
+      port: 18701,
+      pid: 12345,
+      command: 'TapsmithAgentUITes',
+    });
+    expect(killSpy).toHaveBeenCalledWith(12345, 'SIGKILL');
+  });
+
   it('kills a stale tapsmith-core daemon on the port', () => {
     mockPidsAndComm(12345, 'tapsmith-core');
     freeStaleAgentPort(18701);

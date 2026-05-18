@@ -12,6 +12,7 @@
 import * as path from 'node:path';
 import * as fs from 'node:fs';
 import { loadConfig, normalizeGrep, resolveDeviceStrategy, EXPLICIT_WORKERS, isExplicitWorkers, type TapsmithConfig } from './config.js';
+import figlet from 'figlet';
 import { TapsmithGrpcClient } from './grpc-client.js';
 import { Device } from './device.js';
 import { runTestFile, collectResults, type TestResult, type SuiteResult } from './runner.js';
@@ -41,14 +42,22 @@ import {
 import { isRecoverableInfrastructureError, serializeRegExpArray } from './worker-protocol.js';
 import { findPidsOnPort, freeStaleAgentPort } from './port-utils.js';
 import { findDaemonBin } from './daemon-bin.js';
+import {
+  createUiLaunchSteps,
+  UiLaunchProgress,
+  type LaunchProgressSink,
+} from './launch-progress.js';
 
 // ─── ANSI helpers ───
 
 const RESET = '\x1b[0m';
 const BOLD = '\x1b[1m';
 const DIM = '\x1b[2m';
+const GREEN = '\x1b[32m';
 const RED = '\x1b[31m';
 const YELLOW = '\x1b[33m';
+
+let activeLaunchProgress: LaunchProgressSink | undefined;
 
 function red(s: string): string {
   return `${RED}${s}${RESET}`;
@@ -63,19 +72,30 @@ function dim(s: string): string {
   return `${DIM}${s}${RESET}`;
 }
 
-function warnSequentialUnhealthyDevices(devices: DeviceHealthResult[]): void {
+function printTapsmithBanner(): void {
+  console.log();
+  const banner = figlet.textSync('Tapsmith', { font: 'Three Point' });
+  console.log(banner.split('\n').map((line) => `  ${GREEN}${line}${RESET}`).join('\n'));
+  console.log(dim(`  v${getVersion()}`));
+  console.log();
+}
+
+function warnSequentialUnhealthyDevices(devices: DeviceHealthResult[], progress?: LaunchProgressSink): void {
   for (const device of devices) {
-    process.stderr.write(
-      `${YELLOW}Skipping unhealthy device ${device.serial}: ${device.reason ?? 'unknown health check failure'}.${RESET}\n`,
-    );
+    const message = `Skipping unhealthy device ${device.serial}: ${device.reason ?? 'unknown health check failure'}.`;
+    if (progress) progress.note(message);
+    else process.stderr.write(`${YELLOW}${message}${RESET}\n`);
   }
 }
 
-function warnSequentialSkippedDevices(devices: Array<{ serial: string; reason: string }>): void {
+function warnSequentialSkippedDevices(
+  devices: Array<{ serial: string; reason: string }>,
+  progress?: LaunchProgressSink,
+): void {
   for (const device of devices) {
-    process.stderr.write(
-      `${YELLOW}Skipping device ${device.serial}: ${device.reason}.${RESET}\n`,
-    );
+    const message = `Skipping device ${device.serial}: ${device.reason}.`;
+    if (progress) progress.note(message);
+    else process.stderr.write(`${YELLOW}${message}${RESET}\n`);
   }
 }
 
@@ -223,8 +243,14 @@ async function checkDeviceHealth(serial: string | undefined): Promise<void> {
 /** Track the daemon process we spawned so we can kill it on exit. */
 let spawnedDaemonProcess: ReturnType<typeof spawn> | undefined;
 
-async function ensureDaemonRunning(address: string, daemonBin?: string, platform?: string): Promise<TapsmithGrpcClient> {
+async function ensureDaemonRunning(
+  address: string,
+  daemonBin?: string,
+  platform?: string,
+  progress?: LaunchProgressSink,
+): Promise<TapsmithGrpcClient> {
   const port = address.split(':').pop() ?? '50051';
+  progress?.start('daemon', `starting tapsmith-core on ${address}`);
 
   // When TAPSMITH_REUSE_DAEMON is set (e.g. from MCP server's tapsmith_run_tests),
   // connect to the existing daemon without killing it. This avoids destroying
@@ -233,7 +259,9 @@ async function ensureDaemonRunning(address: string, daemonBin?: string, platform
     const client = new TapsmithGrpcClient(address);
     const alive = await client.waitForReady(5_000);
     if (alive) {
-      console.log(dim(`Connected to existing Tapsmith daemon v${(await client.ping()).version}`));
+      const version = (await client.ping()).version;
+      if (progress) progress.complete('daemon', `connected to existing tapsmith-core v${version}`);
+      else console.log(dim(`Connected to existing Tapsmith daemon v${version}`));
       return client;
     }
     client.close();
@@ -286,7 +314,12 @@ async function ensureDaemonRunning(address: string, daemonBin?: string, platform
   // listener squatting on this port, the new daemon's `adb forward` is
   // shadowed by the stale socket and every command silently routes to the
   // wrong device — see freeStaleAgentPort for the full rationale.
-  freeStaleAgentPort(18700);
+  freeStaleAgentPort(18700, progress
+    ? ({ port, pid }) => progress.update('daemon', {
+      state: 'running',
+      detail: `cleared stale agent port ${port} (pid ${pid})`,
+    })
+    : undefined);
 
   // Start a fresh daemon
   const resolvedBin = process.env.TAPSMITH_DAEMON_BIN ?? daemonBin ?? findDaemonBin();
@@ -316,11 +349,14 @@ async function ensureDaemonRunning(address: string, daemonBin?: string, platform
   const newClient = new TapsmithGrpcClient(address);
   const started = await newClient.waitForReady(10_000);
   if (!started) {
+    progress?.fail('daemon', 'failed to start tapsmith-core');
     console.error(red('Failed to start Tapsmith daemon. Is tapsmith-core installed?'));
     process.exit(1);
   }
 
-  console.log(dim(`Connected to Tapsmith daemon v${(await newClient.ping()).version}`));
+  const version = (await newClient.ping()).version;
+  if (progress) progress.complete('daemon', `connected to tapsmith-core v${version}`);
+  else console.log(dim(`Connected to Tapsmith daemon v${version}`));
   return newClient;
 }
 
@@ -349,11 +385,14 @@ async function setupSequentialDevice(
   cfg: TapsmithConfig,
   forceInstall: boolean,
   signature: string,
+  progress?: LaunchProgressSink,
 ): Promise<SequentialDeviceState> {
-  const target = await ensureSequentialTargetDevice(cfg);
+  progress?.start('primary-device');
+  const target = await ensureSequentialTargetDevice(cfg, progress);
   const launchedEmulators = target.launched;
 
   if (!target.selectedSerial) {
+    progress?.fail('primary-device', 'no online device found');
     throw new Error(
       'No online devices found. Connect a device, start an emulator, or set `avd` in your config to auto-launch emulators.',
     );
@@ -363,10 +402,11 @@ async function setupSequentialDevice(
 
   // Pre-flight: verify device is responsive before doing anything slow (Android only)
   if (cfg.platform !== 'ios') {
+    progress?.update('primary-device', { state: 'running', detail: `checking ${cfg.device}` });
     await checkDeviceHealth(cfg.device);
   }
 
-  const client = await ensureDaemonRunning(cfg.daemonAddress, cfg.daemonBin, cfg.platform);
+  const client = await ensureDaemonRunning(cfg.daemonAddress, cfg.daemonBin, cfg.platform, progress);
   const device = new Device(client, cfg);
 
   // Tell the daemon whether this session intends to capture network traffic.
@@ -378,9 +418,11 @@ async function setupSequentialDevice(
   const pacNetworkHosts = networkHostsForPac(cfg.trace);
 
   try {
+    progress?.update('primary-device', { state: 'running', detail: `selecting ${cfg.device}` });
     await device.setDevice(cfg.device, networkTracingEnabled, pacNetworkHosts);
-    console.log(dim(`Using device: ${cfg.device}`));
+    if (!progress) console.log(dim(`Using device: ${cfg.device}`));
   } catch (err) {
+    progress?.fail('primary-device', `failed to select ${cfg.device}`);
     throw new Error(`Failed to set device: ${err}`);
   }
 
@@ -410,6 +452,7 @@ async function setupSequentialDevice(
     const { probeCertTrust } = await import('./ios-trust-probe.js');
     const trust = await probeCertTrust(cfg.device);
     if (trust.state === 'untrusted') {
+      progress?.fail('primary-device', 'developer certificate is not trusted');
       console.error();
       console.error('\x1b[31m✗ Tapsmith runner is installed but the developer certificate is not trusted.\x1b[0m');
       console.error();
@@ -429,22 +472,31 @@ async function setupSequentialDevice(
       const { checkHostIpDrift } = await import('./ios-host-ip-check.js');
       const drift = checkHostIpDrift(cfg.device);
       if (!drift.ok && drift.sidecarHostIp && drift.currentHostIp) {
-        console.log();
-        console.log('\x1b[33m⚠ Host IP drift detected.\x1b[0m');
-        console.log(
-          dim(`  Installed profile points at ${drift.sidecarHostIp}, Mac is now ${drift.currentHostIp}.`),
-        );
-        console.log(
-          dim(`  Run \`tapsmith refresh-ios-network ${cfg.device}\` and reinstall the updated`),
-        );
-        console.log(dim('  profile on the device, otherwise traces will come back empty.'));
-        console.log();
+        if (progress) {
+          progress.note(
+            `Host IP drift detected: profile points at ${drift.sidecarHostIp}, Mac is now ${drift.currentHostIp}.`,
+          );
+          progress.note(`Run \`tapsmith refresh-ios-network ${cfg.device}\` and reinstall the updated profile.`);
+        } else {
+          console.log();
+          console.log('\x1b[33m⚠ Host IP drift detected.\x1b[0m');
+          console.log(
+            dim(`  Installed profile points at ${drift.sidecarHostIp}, Mac is now ${drift.currentHostIp}.`),
+          );
+          console.log(
+            dim(`  Run \`tapsmith refresh-ios-network ${cfg.device}\` and reinstall the updated`),
+          );
+          console.log(dim('  profile on the device, otherwise traces will come back empty.'));
+          console.log();
+        }
       }
     }
   }
 
   if (cfg.platform === 'ios') {
+    progress?.complete('primary-device', `${cfg.device} selected`);
     if (cfg.app && cfg.device) {
+      progress?.start('app-install', `checking ${path.basename(cfg.app)}`);
       try {
         const resolvedApp = resolvedIosAppPath!;
         if (targetIsPhysical) {
@@ -453,13 +505,18 @@ async function setupSequentialDevice(
             && cfg.package
             && (await isAppInstalledOnDevice(cfg.device, cfg.package));
           if (alreadyInstalled && !forceInstall) {
-            console.log(dim(`App ${cfg.package} already installed on device, skipping install. Use --force-install to reinstall.`));
+            if (progress) progress.complete('app-install', `${cfg.package} already installed on device`);
+            else console.log(dim(`App ${cfg.package} already installed on device, skipping install. Use --force-install to reinstall.`));
           } else {
             if (alreadyInstalled) {
-              console.log(dim(`Reinstalling iOS app on device: ${path.basename(resolvedApp)}`));
+              if (progress) progress.update('app-install', { state: 'running', detail: `reinstalling ${path.basename(resolvedApp)} on device` });
+              else console.log(dim(`Reinstalling iOS app on device: ${path.basename(resolvedApp)}`));
+            } else {
+              progress?.update('app-install', { state: 'running', detail: `installing ${path.basename(resolvedApp)} on device` });
             }
             await installAppOnDevice(cfg.device, resolvedApp);
-            console.log(dim(`Installed ${path.basename(resolvedApp)} on iOS device ${cfg.device}.`));
+            if (progress) progress.complete('app-install', `installed ${path.basename(resolvedApp)} on ${cfg.device}`);
+            else console.log(dim(`Installed ${path.basename(resolvedApp)} on iOS device ${cfg.device}.`));
           }
         } else {
           const { installApp, isAppInstalled } = await import('./ios-simulator.js');
@@ -467,18 +524,26 @@ async function setupSequentialDevice(
             && cfg.package
             && isAppInstalled(cfg.device, cfg.package);
           if (alreadyInstalled && !forceInstall) {
-            console.log(dim(`App ${cfg.package} already installed, skipping iOS app install. Use --force-install to reinstall.`));
+            if (progress) progress.complete('app-install', `${cfg.package} already installed`);
+            else console.log(dim(`App ${cfg.package} already installed, skipping iOS app install. Use --force-install to reinstall.`));
           } else {
             if (alreadyInstalled) {
-              console.log(dim(`Reinstalling iOS app: ${path.basename(resolvedApp)}`));
+              if (progress) progress.update('app-install', { state: 'running', detail: `reinstalling ${path.basename(resolvedApp)}` });
+              else console.log(dim(`Reinstalling iOS app: ${path.basename(resolvedApp)}`));
+            } else {
+              progress?.update('app-install', { state: 'running', detail: `installing ${path.basename(resolvedApp)}` });
             }
             installApp(cfg.device, resolvedApp);
-            console.log(dim(`Installed ${path.basename(resolvedApp)} on iOS simulator.`));
+            if (progress) progress.complete('app-install', `installed ${path.basename(resolvedApp)}`);
+            else console.log(dim(`Installed ${path.basename(resolvedApp)} on iOS simulator.`));
           }
         }
       } catch (err) {
+        progress?.fail('app-install', `failed to install ${path.basename(resolvedIosAppPath ?? cfg.app)}`);
         throw new Error(`Failed to install iOS app: ${err}`);
       }
+    } else {
+      progress?.skip('app-install', 'no iOS app configured');
     }
     if (cfg.package && cfg.device) {
       // For simulators we fire a best-effort simctl launch so the app is in
@@ -490,7 +555,7 @@ async function setupSequentialDevice(
       if (!targetIsPhysical) {
         try {
           execFileSync('xcrun', ['simctl', 'launch', cfg.device, cfg.package]);
-          console.log(dim(`Launched ${cfg.package} on iOS simulator.`));
+          if (!progress) console.log(dim(`Launched ${cfg.package} on iOS simulator.`));
         } catch {
           // App may already be running
         }
@@ -498,36 +563,48 @@ async function setupSequentialDevice(
     }
   } else {
     try {
+      progress?.update('primary-device', { state: 'running', detail: `waking ${cfg.device}` });
       await device.wake();
       await device.unlock();
-      console.log(dim('Device screen unlocked.'));
+      if (progress) progress.complete('primary-device', `${cfg.device} awake and unlocked`);
+      else console.log(dim('Device screen unlocked.'));
     } catch {
       // Non-fatal — device might already be awake/unlocked
+      progress?.complete('primary-device', `${cfg.device} selected`);
     }
 
     if (cfg.apk) {
+      progress?.start('app-install', `checking ${path.basename(cfg.apk)}`);
       const isInstalled = !deviceJustLaunched
         && cfg.package
         && cfg.device
         && isPackageInstalled(cfg.device, cfg.package);
 
       if (isInstalled && !forceInstall) {
-        console.log(dim(`App ${cfg.package} already installed, skipping APK install. Use --force-install to reinstall.`));
+        if (progress) progress.complete('app-install', `${cfg.package} already installed`);
+        else console.log(dim(`App ${cfg.package} already installed, skipping APK install. Use --force-install to reinstall.`));
       } else {
         const resolvedApk = path.resolve(cfg.rootDir, cfg.apk);
         try {
           if (isInstalled) {
-            console.log(dim(`Reinstalling app APK: ${path.basename(resolvedApk)}`));
+            if (progress) progress.update('app-install', { state: 'running', detail: `reinstalling ${path.basename(resolvedApk)}` });
+            else console.log(dim(`Reinstalling app APK: ${path.basename(resolvedApk)}`));
+          } else {
+            progress?.update('app-install', { state: 'running', detail: `installing ${path.basename(resolvedApk)}` });
           }
           await device.installApk(resolvedApk);
           if (cfg.package && cfg.device) {
             await waitForPackageIndexed(cfg.device, cfg.package);
           }
-          console.log(dim(`Installed app APK: ${path.basename(resolvedApk)}`));
+          if (progress) progress.complete('app-install', `installed ${path.basename(resolvedApk)}`);
+          else console.log(dim(`Installed app APK: ${path.basename(resolvedApk)}`));
         } catch (err) {
+          progress?.fail('app-install', `failed to install ${path.basename(resolvedApk)}`);
           throw new Error(`Failed to install app APK: ${err}`);
         }
       }
+    } else {
+      progress?.skip('app-install', 'no Android APK configured');
     }
   }
 
@@ -543,7 +620,8 @@ async function setupSequentialDevice(
   if (cfg.platform !== 'ios' && traceConfig.mode !== 'off' && traceConfig.network && cfg.device) {
     const restarted = ensureAdbRoot(cfg.device);
     if (restarted) {
-      console.log(dim('Enabled adb root for network capture.'));
+      if (progress) progress.note('Enabled adb root for network capture.');
+      else console.log(dim('Enabled adb root for network capture.'));
     }
   }
 
@@ -571,8 +649,11 @@ async function setupSequentialDevice(
       const found = findDeviceXctestrun(cfg.rootDir);
       if (found) {
         resolvedIosXctestrun = found;
-        console.log(dim(`Auto-detected iOS device xctestrun: ${path.relative(cfg.rootDir, found)}`));
+        const detail = `resolved ${path.relative(cfg.rootDir, found)}`;
+        if (progress) progress.update('agent', { state: 'pending', detail });
+        else console.log(dim(`Auto-detected iOS device xctestrun: ${path.relative(cfg.rootDir, found)}`));
       } else {
+        progress?.fail('agent', 'no device xctestrun found');
         throw new Error(
           'No device xctestrun found under ios-agent/.build-device. ' +
             'Run `tapsmith build-ios-agent` first, or set `iosXctestrun` explicitly.',
@@ -582,8 +663,10 @@ async function setupSequentialDevice(
       const found = findSimulatorXctestrun();
       if (found) {
         resolvedIosXctestrun = found;
-        console.log(dim(`Auto-detected iOS simulator xctestrun: ${found}`));
+        if (progress) progress.update('agent', { state: 'pending', detail: `resolved ${path.basename(found)}` });
+        else console.log(dim(`Auto-detected iOS simulator xctestrun: ${found}`));
       } else {
+        progress?.fail('agent', 'no simulator xctestrun found');
         throw new Error(
           'No simulator xctestrun found under ~/Library/Developer/Xcode/DerivedData/TapsmithAgent-*. ' +
             'Build the simulator agent first (see docs/ios-physical-devices.md for the command) ' +
@@ -602,13 +685,22 @@ async function setupSequentialDevice(
     const info = getProfileExpiryInfo(resolvedIosXctestrun);
     if (info) {
       const warning = formatExpiryWarning(info);
-      if (warning) console.log(`  \x1b[33m⚠\x1b[0m ${warning}`);
+      if (warning) {
+        if (progress) progress.note(warning);
+        else console.log(`  \x1b[33m⚠\x1b[0m ${warning}`);
+      }
     }
   }
 
   try {
+    progress?.start(
+      'agent',
+      cfg.platform === 'ios'
+        ? `starting iOS agent (${resolvedIosXctestrun ? path.basename(resolvedIosXctestrun) : 'xctestrun not set'})`
+        : 'starting Android automation agent',
+    );
     if (cfg.platform === 'ios') {
-      console.log(dim(`Starting iOS agent (xctestrun: ${resolvedIosXctestrun ? 'set' : 'NOT SET'})`));
+      if (!progress) console.log(dim(`Starting iOS agent (xctestrun: ${resolvedIosXctestrun ? 'set' : 'NOT SET'})`));
     }
     const startAgent = () => device.startAgent(
       cfg.package ?? '',
@@ -623,11 +715,13 @@ async function setupSequentialDevice(
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       if (msg.includes('xcodebuild exited') || msg.includes('Timed out waiting for iOS agent')) {
-        console.error(`Agent startup failed, retrying once: ${msg}`);
+        if (progress) progress.update('agent', { state: 'running', detail: 'agent startup failed, retrying once' });
+        else console.error(`Agent startup failed, retrying once: ${msg}`);
         try {
           await startAgent();
         } catch (retryErr) {
-          console.error('Agent startup retry also failed');
+          if (progress) progress.fail('agent', 'agent startup retry failed');
+          else console.error('Agent startup retry also failed');
           throw retryErr;
         }
       } else {
@@ -647,13 +741,16 @@ async function setupSequentialDevice(
         networkTracingEnabled,
       }, 'startup');
     }
-    console.log(dim('Agent connected.'));
+    if (progress) progress.complete('agent', 'agent connected');
+    else console.log(dim('Agent connected.'));
   } catch (err) {
+    progress?.fail('agent', err instanceof Error ? err.message : String(err));
     throw new Error(`Failed to start agent: ${err}`);
   }
 
   if (cfg.package) {
     try {
+      progress?.start('app-launch', `launching ${cfg.package}`);
       await launchConfiguredApp({
         label: `Device ${cfg.device}`,
         config: cfg,
@@ -666,10 +763,14 @@ async function setupSequentialDevice(
         deviceSerial: cfg.device,
         networkTracingEnabled,
       }, 'startup', { readinessAttempts: 3 });
-      console.log(dim(`Launched ${cfg.package}`));
+      if (progress) progress.complete('app-launch', `launched ${cfg.package}`);
+      else console.log(dim(`Launched ${cfg.package}`));
     } catch (err) {
+      progress?.fail('app-launch', `failed to launch ${cfg.package}`);
       throw new Error(`Failed to launch app: ${err}`);
     }
+  } else {
+    progress?.skip('app-launch', 'no package configured');
   }
 
   return {
@@ -735,6 +836,7 @@ function listConnectedDeviceSerials(): string[] {
 
 async function ensureSequentialTargetDevice(
   config: Awaited<ReturnType<typeof loadConfig>>,
+  progress?: LaunchProgressSink,
 ): Promise<{ selectedSerial?: string; launched: LaunchedEmulator[] }> {
   if (config.device) {
     // If the device is an iOS simulator that's already booted, log reuse
@@ -743,9 +845,9 @@ async function ensureSequentialTargetDevice(
       const booted = listBootedSimulators();
       const sim = booted.find((s) => s.udid === config.device);
       if (sim) {
-        process.stderr.write(
-          `${DIM}Reusing simulator ${sim.udid} (${sim.name}) from previous run.${RESET}\n`,
-        );
+        const message = `Reusing simulator ${sim.udid} (${sim.name}) from previous run.`;
+        if (progress) progress.update('primary-device', { state: 'running', detail: `reusing ${sim.name} from previous run` });
+        else process.stderr.write(`${DIM}${message}${RESET}\n`);
       }
     }
     return { selectedSerial: config.device, launched: [] };
@@ -761,7 +863,9 @@ async function ensureSequentialTargetDevice(
       try {
         const { resolvePhysicalIosDevice } = await import('./ios-device-resolve.js');
         const udid = resolvePhysicalIosDevice();
-        process.stderr.write(`${DIM}Auto-detected physical iOS device ${udid}.${RESET}\n`);
+        const message = `Auto-detected physical iOS device ${udid}.`;
+        if (progress) progress.note(message);
+        else process.stderr.write(`${DIM}${message}${RESET}\n`);
         return { selectedSerial: udid, launched: [] };
       } catch (e) {
         console.error(
@@ -778,18 +882,18 @@ async function ensureSequentialTargetDevice(
     // Clean up stale clones from previous runs
     const staleResult = cleanupStaleSimulators(simulatorName);
     if (staleResult.killed.length > 0) {
-      process.stderr.write(
-        `${DIM}Cleaned up ${staleResult.killed.length} stale simulator(s).${RESET}\n`,
-      );
+      const message = `Cleaned up ${staleResult.killed.length} stale simulator(s).`;
+      if (progress) progress.note(message);
+      else process.stderr.write(`${DIM}${message}${RESET}\n`);
     }
 
     // Check for already-booted simulators
     const booted = listBootedSimulators();
     const matching = booted.find((s) => s.name === simulatorName || s.udid === simulatorName);
     if (matching) {
-      process.stderr.write(
-        `${DIM}Reusing simulator ${matching.udid} (${matching.name}) from previous run.${RESET}\n`,
-      );
+      const message = `Reusing simulator ${matching.udid} (${matching.name}) from previous run.`;
+      if (progress) progress.update('primary-device', { state: 'running', detail: `reusing ${matching.name} from previous run` });
+      else process.stderr.write(`${DIM}${message}${RESET}\n`);
       return { selectedSerial: matching.udid, launched: [] };
     }
 
@@ -805,18 +909,18 @@ async function ensureSequentialTargetDevice(
 
   const clearedOfflineEmulators = clearOfflineEmulatorTransports();
   for (const serial of clearedOfflineEmulators) {
-    process.stderr.write(
-      `${YELLOW}Cleared stale offline emulator transport ${serial} before device selection.${RESET}\n`,
-    );
+    const message = `Cleared stale offline emulator transport ${serial} before device selection.`;
+    if (progress) progress.note(message);
+    else process.stderr.write(`${YELLOW}${message}${RESET}\n`);
   }
 
   // Reclaim healthy emulators from previous runs, kill unhealthy ones.
   // cleanupStaleEmulators logs details about each action internally.
   const staleResult = cleanupStaleEmulators(config.avd);
   if (staleResult.killed.length > 0) {
-    process.stderr.write(
-      `${DIM}Cleaned up ${staleResult.killed.length} stale emulator(s).${RESET}\n`,
-    );
+    const message = `Cleaned up ${staleResult.killed.length} stale emulator(s).`;
+    if (progress) progress.note(message);
+    else process.stderr.write(`${DIM}${message}${RESET}\n`);
   }
 
   const deviceStrategy = resolveDeviceStrategy(config);
@@ -826,9 +930,9 @@ async function ensureSequentialTargetDevice(
     deviceStrategy,
     config.avd,
   );
-  warnSequentialSkippedDevices(prefilteredOnline.skippedDevices);
+  warnSequentialSkippedDevices(prefilteredOnline.skippedDevices, progress);
   const healthyOnline = filterHealthyDevices(prefilteredOnline.candidateSerials);
-  warnSequentialUnhealthyDevices(healthyOnline.unhealthyDevices);
+  warnSequentialUnhealthyDevices(healthyOnline.unhealthyDevices, progress);
   const selectedOnline = selectDevicesForStrategy(
     healthyOnline.healthySerials,
     deviceStrategy,
@@ -838,6 +942,7 @@ async function ensureSequentialTargetDevice(
     selectedOnline.skippedDevices.filter(
       (device) => !prefilteredOnline.skippedDevices.some((prefiltered) => prefiltered.serial === device.serial),
     ),
+    progress,
   );
 
   if (selectedOnline.selectedSerials.length > 0) {
@@ -848,20 +953,26 @@ async function ensureSequentialTargetDevice(
     return { selectedSerial: undefined, launched: [] };
   }
 
+  progress?.update('primary-device', { state: 'running', detail: 'launching Android emulator' });
   const provision = await provisionEmulators({
     existingSerials: [],
     occupiedSerials: onlineSerials,
     workers: 1,
     avd: config.avd,
+    onProgress: (message, level) => {
+      if (!progress) return;
+      if (level === 'warning') progress.note(message);
+      else progress.update('primary-device', { state: 'running', detail: message });
+    },
   });
   const healthyProvisioned = filterHealthyDevices(provision.allSerials);
-  warnSequentialUnhealthyDevices(healthyProvisioned.unhealthyDevices);
+  warnSequentialUnhealthyDevices(healthyProvisioned.unhealthyDevices, progress);
   const selectedProvisioned = selectDevicesForStrategy(
     healthyProvisioned.healthySerials,
     deviceStrategy,
     config.avd,
   );
-  warnSequentialSkippedDevices(selectedProvisioned.skippedDevices);
+  warnSequentialSkippedDevices(selectedProvisioned.skippedDevices, progress);
 
   return {
     selectedSerial: selectedProvisioned.selectedSerials[0],
@@ -1048,25 +1159,41 @@ function parseArgs(argv: string[]): CliArgs {
 async function provisionMultiWorkerDevices(
   config: Awaited<ReturnType<typeof loadConfig>>,
   modeName: string,
-  opts?: { quiet?: boolean },
+  opts?: { quiet?: boolean; progress?: LaunchProgressSink },
 ): Promise<{ deviceSerials: string[] | undefined; launched: LaunchedEmulator[] }> {
   let launched: LaunchedEmulator[] = [];
   if (config.workers <= 1) return { deviceSerials: undefined, launched };
+  opts?.progress?.start('worker-devices', `preparing ${config.workers} worker device(s)`);
 
   let serials: string[];
+  let reusedSimulatorCount = 0;
   if (config.platform === 'ios') {
     const { listCompatibleBootedSimulators, provisionSimulators, cleanupStaleSimulators } = await import('./ios-simulator.js');
     let reusableUdids: string[] = [];
     if (config.simulator) {
       const staleResult = cleanupStaleSimulators(config.simulator);
       reusableUdids = staleResult.reusable;
+      if (staleResult.reusable.length > 0 && opts?.progress) {
+        opts.progress.update('worker-devices', {
+          state: 'running',
+          detail: `found ${staleResult.reusable.length} reusable simulator(s) from previous run`,
+        });
+      }
     }
     const compatible = listCompatibleBootedSimulators(config.device!);
     const others = compatible.filter((s) => s.udid !== config.device).slice(0, config.workers - 1);
-    for (const sim of others) {
-      process.stderr.write(
-        `${DIM}Reusing simulator ${sim.udid} (${sim.name}) from previous run.${RESET}\n`,
-      );
+    if (others.length > 0) {
+      reusedSimulatorCount += others.length;
+      if (opts?.progress) {
+        opts.progress.update('worker-devices', {
+          state: 'running',
+          detail: `reusing ${others.length} booted simulator(s) from previous run`,
+        });
+      } else {
+        for (const sim of others) {
+          process.stderr.write(`${DIM}Reusing simulator ${sim.udid} (${sim.name}) from previous run.${RESET}\n`);
+        }
+      }
     }
     serials = [config.device!, ...others.map((s) => s.udid)].filter(Boolean);
 
@@ -1077,7 +1204,13 @@ async function provisionMultiWorkerDevices(
         existingUdids: serials,
         appPath: config.app ? path.resolve(config.rootDir, config.app) : undefined,
         reusableUdids,
+        onProgress: (message, level) => {
+          if (!opts?.progress) return;
+          if (level === 'warning') opts.progress.note(message);
+          else opts.progress.update('worker-devices', { state: 'running', detail: message });
+        },
       });
+      reusedSimulatorCount += provision.reusedUdids.length;
       serials = provision.allUdids;
     }
   } else {
@@ -1091,6 +1224,11 @@ async function provisionMultiWorkerDevices(
         occupiedSerials: allConnected,
         workers: config.workers,
         avd: config.avd,
+        onProgress: (message, level) => {
+          if (!opts?.progress) return;
+          if (level === 'warning') opts.progress.note(message);
+          else opts.progress.update('worker-devices', { state: 'running', detail: message });
+        },
       });
       launched = provision.launched;
       serials = provision.allSerials;
@@ -1098,7 +1236,8 @@ async function provisionMultiWorkerDevices(
   }
 
   if (serials.length < 2) {
-    if (!opts?.quiet) {
+    opts?.progress?.skip('worker-devices', `${serials.length} device(s) available; using single-worker mode`);
+    if (!opts?.quiet && !opts?.progress) {
       process.stderr.write(
         `${YELLOW}Only ${serials.length} device(s) available. ${modeName} needs 2+ devices for parallel. Using single-worker mode.${RESET}\n`,
       );
@@ -1106,6 +1245,8 @@ async function provisionMultiWorkerDevices(
     return { deviceSerials: undefined, launched };
   }
 
+  const reuseSuffix = reusedSimulatorCount > 0 ? ` (${reusedSimulatorCount} reused)` : '';
+  opts?.progress?.complete('worker-devices', `${serials.length} device(s)${reuseSuffix}: ${serials.join(', ')}`);
   return { deviceSerials: serials, launched };
 }
 
@@ -1115,6 +1256,7 @@ interface PerProjectProvisionResult {
   bucketByDevice: Map<string, string>
   bucketByProject: Map<string, string>
   launched: LaunchedEmulator[]
+  reusedSimulatorCount: number
 }
 
 /**
@@ -1159,8 +1301,9 @@ function buildSerializedConfig(cfg: TapsmithConfig): import('./worker-protocol.j
 async function provisionDevicesForBucket(
   effectiveConfig: TapsmithConfig,
   desiredWorkers: number,
-): Promise<{ serials: string[]; launched: LaunchedEmulator[] }> {
-  if (desiredWorkers <= 0) return { serials: [], launched: [] };
+  progress?: LaunchProgressSink,
+): Promise<{ serials: string[]; launched: LaunchedEmulator[]; reusedSimulatorCount: number }> {
+  if (desiredWorkers <= 0) return { serials: [], launched: [], reusedSimulatorCount: 0 };
 
   if (effectiveConfig.platform === 'ios') {
     // Physical-device bucket: no `simulator` set → resolve a paired USB
@@ -1169,12 +1312,12 @@ async function provisionDevicesForBucket(
     // desiredWorkers; the caller's worker allocation is capped elsewhere.
     if (!effectiveConfig.simulator) {
       if (effectiveConfig.device) {
-        return { serials: [effectiveConfig.device], launched: [] };
+        return { serials: [effectiveConfig.device], launched: [], reusedSimulatorCount: 0 };
       }
       const { resolvePhysicalIosDevice } = await import('./ios-device-resolve.js');
       try {
         const udid = resolvePhysicalIosDevice();
-        return { serials: [udid], launched: [] };
+        return { serials: [udid], launched: [], reusedSimulatorCount: 0 };
       } catch (e) {
         throw new Error(
           `iOS physical device bucket failed to resolve: ${(e as Error).message}`,
@@ -1186,6 +1329,12 @@ async function provisionDevicesForBucket(
 
     const stale = cleanupStaleSimulators(effectiveConfig.simulator);
     const reusableUdids = stale.reusable;
+    if (reusableUdids.length > 0 && progress) {
+      progress.update('worker-devices', {
+        state: 'running',
+        detail: `found ${reusableUdids.length} reusable simulator(s) from previous run`,
+      });
+    }
 
     // Find any already-booted matching simulators (no primary required)
     const booted = listBootedSimulators().filter(
@@ -1194,7 +1343,7 @@ async function provisionDevicesForBucket(
     const existing = booted.map((s) => s.udid).slice(0, desiredWorkers);
 
     if (existing.length >= desiredWorkers) {
-      return { serials: existing, launched: [] };
+      return { serials: existing, launched: [], reusedSimulatorCount: 0 };
     }
 
     const provision = provisionSimulators({
@@ -1205,8 +1354,13 @@ async function provisionDevicesForBucket(
         ? path.resolve(effectiveConfig.rootDir, effectiveConfig.app)
         : undefined,
       reusableUdids,
+      onProgress: (message, level) => {
+        if (!progress) return;
+        if (level === 'warning') progress.note(message);
+        else progress.update('worker-devices', { state: 'running', detail: message });
+      },
     });
-    return { serials: provision.allUdids, launched: [] };
+    return { serials: provision.allUdids, launched: [], reusedSimulatorCount: provision.reusedUdids.length };
   }
 
   // Android
@@ -1226,11 +1380,11 @@ async function provisionDevicesForBucket(
   let serials = selected.selectedSerials.slice(0, desiredWorkers);
 
   if (serials.length >= desiredWorkers) {
-    return { serials, launched: [] };
+    return { serials, launched: [], reusedSimulatorCount: 0 };
   }
 
   if (!effectiveConfig.launchEmulators) {
-    return { serials, launched: [] };
+    return { serials, launched: [], reusedSimulatorCount: 0 };
   }
 
   const provision = await provisionEmulators({
@@ -1238,6 +1392,11 @@ async function provisionDevicesForBucket(
     occupiedSerials: allConnected,
     workers: desiredWorkers,
     avd: effectiveConfig.avd,
+    onProgress: (message, level) => {
+      if (!progress) return;
+      if (level === 'warning') progress.note(message);
+      else progress.update('worker-devices', { state: 'running', detail: message });
+    },
   });
   const healthyLaunched = filterHealthyDevices(provision.allSerials);
   const selectedAfter = selectDevicesForStrategy(
@@ -1246,7 +1405,7 @@ async function provisionDevicesForBucket(
     effectiveConfig.avd,
   );
   serials = selectedAfter.selectedSerials.slice(0, desiredWorkers);
-  return { serials, launched: provision.launched };
+  return { serials, launched: provision.launched, reusedSimulatorCount: 0 };
 }
 
 /**
@@ -1258,13 +1417,16 @@ async function provisionPerProjectDevices(
   rootConfig: TapsmithConfig,
   projects: import('./project.js').ResolvedProject[],
   budgetCap?: number,
+  progress?: LaunchProgressSink,
 ): Promise<PerProjectProvisionResult> {
+  progress?.start('worker-devices', 'preparing devices across project targets');
   const result: PerProjectProvisionResult = {
     deviceSerials: [],
     configByDevice: new Map(),
     bucketByDevice: new Map(),
     bucketByProject: new Map(),
     launched: [],
+    reusedSimulatorCount: 0,
   };
 
   const { allocateBucketWorkers, bucketizeProjects } = await import('./project.js');
@@ -1287,7 +1449,11 @@ async function provisionPerProjectDevices(
     if (desiredWorkers === 0) return null;
 
     const bucketEffective = bucketProjects[0].effectiveConfig;
-    const provisioned = await provisionDevicesForBucket(bucketEffective, desiredWorkers);
+    progress?.update(
+      'worker-devices',
+      { state: 'running', detail: `preparing ${desiredWorkers} device(s) for ${bucketProjects.map((p) => p.name).join(', ')}` },
+    );
+    const provisioned = await provisionDevicesForBucket(bucketEffective, desiredWorkers, progress);
 
     if (provisioned.serials.length === 0) {
       throw new Error(
@@ -1295,9 +1461,9 @@ async function provisionPerProjectDevices(
       );
     }
     if (provisioned.serials.length < desiredWorkers) {
-      process.stderr.write(
-        `${YELLOW}Bucket "${bucketProjects.map((p) => p.name).join(',')}" requested ${desiredWorkers} workers but only ${provisioned.serials.length} device(s) could be provisioned.${RESET}\n`,
-      );
+      const message = `Bucket "${bucketProjects.map((p) => p.name).join(',')}" requested ${desiredWorkers} workers but only ${provisioned.serials.length} device(s) could be provisioned.`;
+      if (progress) progress.note(message);
+      else process.stderr.write(`${YELLOW}${message}${RESET}\n`);
     }
 
     return { signature, bucketEffective, provisioned };
@@ -1309,6 +1475,7 @@ async function provisionPerProjectDevices(
     if (!outcome) continue;
     const { signature, bucketEffective, provisioned } = outcome;
     result.launched.push(...provisioned.launched);
+    result.reusedSimulatorCount += provisioned.reusedSimulatorCount;
     const bucketSerialized = buildSerializedConfig(bucketEffective);
     for (const serial of provisioned.serials) {
       result.deviceSerials.push(serial);
@@ -1317,6 +1484,8 @@ async function provisionPerProjectDevices(
     }
   }
 
+  const reuseSuffix = result.reusedSimulatorCount > 0 ? ` (${result.reusedSimulatorCount} reused)` : '';
+  progress?.complete('worker-devices', `${result.deviceSerials.length} device(s)${reuseSuffix}: ${result.deviceSerials.join(', ')}`);
   return result;
 }
 
@@ -1746,12 +1915,29 @@ async function main(): Promise<void> {
   // so this mutation is safe.
   config.workers = totalWorkers;
 
-  if (args.ui) {
-    console.log(`\nLaunching Tapsmith UI mode...\n`);
-  } else if (args.watch) {
+  // Pick the first project's effective config as the initial setup target.
+  // For single-bucket runs this is identical to the root config.
+  const initialProject = projects.find((p) => p.testFiles.length > 0) ?? projects[0];
+  const initialEffectiveConfig = initialProject.effectiveConfig;
+  const shouldShowLaunchProgress = args.ui || !args.watch;
+  if (shouldShowLaunchProgress) {
+    printTapsmithBanner();
+  }
+  const launchProgress = shouldShowLaunchProgress
+    ? new UiLaunchProgress(createUiLaunchSteps({
+      config: initialEffectiveConfig,
+      testFileCount: testFiles.length,
+      workerCount: args.ui ? totalWorkers : effectiveWorkers,
+      mode: args.ui ? 'ui' : 'test',
+      projects: hasProjects ? projects : undefined,
+    }), {
+      title: args.ui ? 'Preparing UI mode' : 'Preparing test run',
+    })
+    : undefined;
+  activeLaunchProgress = launchProgress;
+
+  if (args.watch) {
     console.log(`\nStarting watch mode for ${testFiles.length} test file(s)...\n`);
-  } else {
-    reporter.onRunStart(config, testFiles.length);
   }
 
   // ─── Parallel mode ───
@@ -1772,6 +1958,7 @@ async function main(): Promise<void> {
         workerCap: budgetCap,
         projects: hasProjects ? projects : undefined,
         projectWaves: hasProjects ? projectWaves : undefined,
+        launchProgress,
       });
 
       await reporter.onRunEnd(fullResult);
@@ -1815,19 +2002,16 @@ async function main(): Promise<void> {
     );
   }
 
-  // Pick the first project's effective config as the initial setup target.
-  // For single-bucket runs this is identical to the root config.
-  const initialProject = projects.find((p) => p.testFiles.length > 0) ?? projects[0];
-  const initialEffectiveConfig = initialProject.effectiveConfig;
-
   try {
     try {
       currentSequentialState = await setupSequentialDevice(
         initialEffectiveConfig,
         args.forceInstall,
         initialProject.deviceSignature,
+        launchProgress,
       );
     } catch (err) {
+      launchProgress?.fail('primary-device', (err as Error).message);
       console.error(red((err as Error).message));
       sequentialExitCode = 1;
       return;
@@ -1864,7 +2048,7 @@ async function main(): Promise<void> {
 
       if (isMultiBucketSequential) {
         // Multi-device-target projects: provision per-bucket devices.
-        const perBucket = await provisionPerProjectDevices(config, projects, budgetCap);
+        const perBucket = await provisionPerProjectDevices(config, projects, budgetCap, launchProgress);
         uiDeviceSerials = perBucket.deviceSerials;
         uiConfigByDevice = perBucket.configByDevice;
         uiBucketByDevice = perBucket.bucketByDevice;
@@ -1872,10 +2056,16 @@ async function main(): Promise<void> {
         uiWorkersOverride = perBucket.deviceSerials.length;
         launchedEmulators = [...launchedEmulators, ...perBucket.launched];
       } else {
-        const uiProvision = await provisionMultiWorkerDevices(config, 'UI mode', { quiet: !args.tsxReexec });
+        const uiProvision = await provisionMultiWorkerDevices(config, 'UI mode', {
+          quiet: !args.tsxReexec,
+          progress: launchProgress,
+        });
         uiDeviceSerials = uiProvision.deviceSerials;
         launchedEmulators = [...launchedEmulators, ...uiProvision.launched];
         if (uiDeviceSerials) uiWorkersOverride = config.workers;
+      }
+      if (!uiDeviceSerials || uiDeviceSerials.length <= 1) {
+        launchProgress?.skip('ui-workers', 'single-worker UI session');
       }
 
       const uiServer = await startUIServer({
@@ -1897,6 +2087,7 @@ async function main(): Promise<void> {
       }, {
         port: args.uiPort,
         devUrl: args.uiDevUrl ?? process.env.TAPSMITH_UI_DEV_URL,
+        launchProgress,
       });
 
       // Keep alive until user exits
@@ -1963,6 +2154,11 @@ async function main(): Promise<void> {
         bucketByProject: watchBucketByProject,
       });
       // runWatchMode never returns — exits via cleanup()
+    }
+
+    if (!args.ui && !args.watch) {
+      launchProgress?.finish();
+      reporter.onRunStart(config, testFiles.length);
     }
 
     // Run tests
@@ -2278,7 +2474,29 @@ main().catch(async (err) => {
     const { isDispatcherShuttingDown } = await import('./dispatcher.js');
     if (isDispatcherShuttingDown()) return;
   } catch { /* dispatcher not loaded — fall through */ }
-  console.error(red(`Fatal error: ${err}`));
+
+  activeLaunchProgress?.finish();
+  activeLaunchProgress = undefined;
+
+  let isLaunchFailure = false;
+  try {
+    const { isLaunchSetupError } = await import('./dispatcher.js');
+    isLaunchFailure = isLaunchSetupError(err);
+  } catch { /* dispatcher not loaded — fall through */ }
+
+  const message = err instanceof Error ? err.message : String(err);
+  if (isLaunchFailure) {
+    const [summary, ...detailLines] = message.split('\n');
+    console.error(red(`Test run failed to start: ${summary}`));
+    const details = detailLines.join('\n').trim();
+    if (details) console.error(dim(details));
+    if (process.env.TAPSMITH_DEBUG || process.env.DEBUG) {
+      console.error((err as Error)?.stack ?? err);
+    }
+    process.exit(1);
+  }
+
+  console.error(red(`Fatal error: ${message}`));
   console.error((err as Error)?.stack ?? err);
   process.exit(1);
 });
