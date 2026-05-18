@@ -1,7 +1,7 @@
 import { defineConfig } from "tapsmith";
 
 export default defineConfig({
-  apk: "./fixtures/app-release.apk",
+  apk: "../test-app/android/app/build/outputs/apk/release/app-release.apk",
   activity: "dev.tapsmith.testapp.MainActivity",
   package: "dev.tapsmith.testapp",
   timeout: 15_000,

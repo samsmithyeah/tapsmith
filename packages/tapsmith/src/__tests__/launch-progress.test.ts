@@ -119,6 +119,24 @@ describe('createUiLaunchSteps', () => {
     expect(steps.find((s) => s.id === 'app-install')!.progress).toEqual({ done: 0, total: 3 });
     expect(steps.map((s) => s.id)).not.toContain('ui-server');
   });
+
+  it('shows worker allocation warnings as launch plan rows', () => {
+    const steps = createUiLaunchSteps({
+      config: baseConfig({ apk: 'app-debug.apk', workers: 2 }),
+      testFileCount: 8,
+      workerCount: 2,
+      mode: 'test',
+      workerPlanWarning: 'requested 1 worker; running 2 because 2 device targets need one each',
+    });
+
+    const workerPlan = steps.find((s) => s.id === 'worker-plan');
+    expect(steps.map((s) => s.id).slice(0, 3)).toEqual(['config', 'worker-plan', 'daemon']);
+    expect(workerPlan).toMatchObject({
+      label: 'Worker plan',
+      state: 'warning',
+      detail: 'requested 1 worker; running 2 because 2 device targets need one each',
+    });
+  });
 });
 
 describe('formatLaunchTable', () => {

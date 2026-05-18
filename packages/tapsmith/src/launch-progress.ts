@@ -15,6 +15,7 @@ const CYAN = '\x1b[36m';
 
 export type LaunchStepId =
   | 'config'
+  | 'worker-plan'
   | 'primary-device'
   | 'daemon'
   | 'app-install'
@@ -79,6 +80,7 @@ export interface UiLaunchPlanInput {
   workerCount: number
   mode?: 'ui' | 'test'
   projects?: ResolvedProject[]
+  workerPlanWarning?: string
 }
 
 export interface UiLaunchProgressOptions {
@@ -157,6 +159,15 @@ export function createUiLaunchSteps(input: UiLaunchPlanInput): LaunchStep[] {
   const steps: LaunchStep[] = [
     { id: 'config', label: 'Config', state: 'done', detail: configDetail },
   ];
+
+  if (input.workerPlanWarning) {
+    steps.push({
+      id: 'worker-plan',
+      label: 'Worker plan',
+      state: 'warning',
+      detail: input.workerPlanWarning,
+    });
+  }
 
   if (mode === 'test' && input.workerCount > 1) {
     steps.push(

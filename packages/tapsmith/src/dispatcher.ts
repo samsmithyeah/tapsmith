@@ -877,7 +877,12 @@ export async function runParallel(opts: DispatcherOptions, _portOffset = 0): Pro
     const firstEntry = !dispatcherIsShuttingDown;
     dispatcherIsShuttingDown = true;
     if (firstEntry) {
-      process.stderr.write(`\n${DIM}Interrupted. Shutting down...${RESET}\n`);
+      if (launchProgress) {
+        launchProgress.finish();
+        process.stderr.write(`${DIM}Interrupted. Shutting down...${RESET}\n`);
+      } else {
+        process.stderr.write(`\n${DIM}Interrupted. Shutting down...${RESET}\n`);
+      }
     }
     for (const worker of workers) {
       try { worker.process?.kill(); } catch { /* already dead */ }

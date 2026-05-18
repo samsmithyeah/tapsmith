@@ -72,6 +72,10 @@ function dim(s: string): string {
   return `${DIM}${s}${RESET}`;
 }
 
+function countLabel(count: number, singular: string, plural = `${singular}s`): string {
+  return `${count} ${count === 1 ? singular : plural}`;
+}
+
 function printTapsmithBanner(): void {
   console.log();
   const banner = figlet.textSync('Tapsmith', { font: 'Three Point' });
@@ -1903,11 +1907,10 @@ async function main(): Promise<void> {
   // exceeds the user's explicit --workers value. Per-project `workers:`
   // inflation is now capped by the budget, so this only fires when there
   // are genuinely more device buckets than workers.
+  let workerPlanWarning: string | undefined;
   if (isExplicitWorkers(config) && totalWorkers > config.workers) {
     const activeBuckets = [...allocation.values()].filter((n) => n > 0).length;
-    process.stderr.write(
-      `Note: requested workers=${config.workers} but running ${totalWorkers} (${activeBuckets} device bucket(s) each need at least 1 worker).\n`,
-    );
+    workerPlanWarning = `requested ${countLabel(config.workers, 'worker')}; running ${totalWorkers} because ${countLabel(activeBuckets, 'device target')} ${activeBuckets === 1 ? 'needs a worker' : 'need one each'}`;
   }
 
   // Reflect the effective parallelism on the config so reporters see the
@@ -1930,11 +1933,15 @@ async function main(): Promise<void> {
       workerCount: args.ui ? totalWorkers : effectiveWorkers,
       mode: args.ui ? 'ui' : 'test',
       projects: hasProjects ? projects : undefined,
+      workerPlanWarning,
     }), {
       title: args.ui ? 'Preparing UI mode' : 'Preparing test run',
     })
     : undefined;
   activeLaunchProgress = launchProgress;
+  if (!launchProgress && workerPlanWarning) {
+    process.stderr.write(`Note: ${workerPlanWarning}.\n`);
+  }
 
   if (args.watch) {
     console.log(`\nStarting watch mode for ${testFiles.length} test file(s)...\n`);
