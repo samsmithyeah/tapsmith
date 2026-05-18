@@ -12,7 +12,7 @@ When running `tapsmith test --ui`, an SSE MCP endpoint is hosted alongside the U
 
 This mode has **16 tools** including test discovery, result browsing, watch mode, and session info.
 
-To connect, copy the SSE URL from the MCP panel in the UI, or run:
+To connect, copy the SSE URL from the MCP panel in the UI into any MCP client that supports SSE transport. For Claude Code, you can run:
 
 ```bash
 claude mcp add tapsmith --transport sse http://localhost:9274/mcp
@@ -26,8 +26,36 @@ Run `tapsmith mcp-server` as a standalone subprocess. The agent gets its own dae
 
 This mode has **11 tools** — device interaction and test execution, but no session-aware tools (test tree, results, watch, stop).
 
+Codex CLI:
+
 ```bash
-claude mcp add tapsmith -- tapsmith mcp-server
+codex mcp add tapsmith -- npx tapsmith mcp-server
+```
+
+Claude Code:
+
+```bash
+claude mcp add tapsmith -- npx tapsmith mcp-server
+```
+
+Generic MCP stdio config:
+
+```json
+{
+  "mcpServers": {
+    "tapsmith": {
+      "command": "npx",
+      "args": ["tapsmith", "mcp-server"]
+    }
+  }
+}
+```
+
+To use a non-default Tapsmith config, include the config flag in the server command:
+
+```bash
+codex mcp add tapsmith-ios -- npx tapsmith mcp-server --config tapsmith.config.ios.mjs
+claude mcp add tapsmith-ios -- npx tapsmith mcp-server --config tapsmith.config.ios.mjs
 ```
 
 If a UI server is already running, stdio mode will detect it and suggest connecting via SSE instead.

@@ -17,7 +17,7 @@ import * as path from 'node:path';
 import * as fs from 'node:fs';
 import { watch as chokidarWatch, type FSWatcher } from 'chokidar';
 import { minimatch } from 'minimatch';
-import { normalizeGrep, type TapsmithConfig } from './config.js';
+import { type TapsmithConfig } from './config.js';
 import { findDaemonBin } from './daemon-bin.js';
 import type { Device } from './device.js';
 import { TapsmithGrpcClient } from './grpc-client.js';
@@ -27,7 +27,7 @@ import type { ResolvedProject } from './project.js';
 import {
   deserializeTestResult,
   deserializeSuiteResult,
-  serializeRegExpArray,
+  serializeConfig,
   type SerializedConfig,
   type RunFileUseOptions,
 } from './worker-protocol.js';
@@ -132,29 +132,7 @@ export async function runWatchMode(ctx: WatchModeContext): Promise<void> {
   }
 
 
-  const serializedConfig: SerializedConfig = {
-    timeout: ctx.config.timeout,
-    retries: ctx.config.retries,
-    screenshot: ctx.config.screenshot,
-    rootDir: ctx.config.rootDir,
-    outputDir: ctx.config.outputDir,
-    apk: ctx.config.apk,
-    activity: ctx.config.activity,
-    package: ctx.config.package,
-    agentApk: ctx.config.agentApk,
-    agentTestApk: ctx.config.agentTestApk,
-    trace: typeof ctx.config.trace === 'string' || typeof ctx.config.trace === 'object'
-      ? ctx.config.trace
-      : undefined,
-    platform: ctx.config.platform,
-    app: ctx.config.app,
-    iosXctestrun: ctx.config.iosXctestrun,
-    simulator: ctx.config.simulator,
-    baseURL: ctx.config.baseURL,
-    extraHTTPHeaders: ctx.config.extraHTTPHeaders,
-    grep: serializeRegExpArray(normalizeGrep(ctx.config.grep)),
-    grepInvert: serializeRegExpArray(normalizeGrep(ctx.config.grepInvert)),
-  };
+  const serializedConfig: SerializedConfig = serializeConfig(ctx.config);
 
   // Resolve tsx binary for forking TypeScript files
   const jsScript = path.resolve(__dirname, 'watch-run.js');
