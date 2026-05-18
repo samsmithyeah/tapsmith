@@ -452,20 +452,24 @@ async fn resolve_pkg_placeholders(patched_path: &str, original_path: &str) -> Re
 
 fn replace_in_plist_value(v: &mut plist::Value, from: &str, to: &str) -> bool {
     match v {
-        plist::Value::String(s) => {
-            if s.contains(from) {
-                *s = s.replace(from, to);
-                true
-            } else {
-                false
-            }
+        plist::Value::String(s) if s.contains(from) => {
+            *s = s.replace(from, to);
+            true
         }
-        plist::Value::Array(arr) => arr.iter_mut().fold(false, |acc, item| {
-            replace_in_plist_value(item, from, to) || acc
-        }),
-        plist::Value::Dictionary(dict) => dict.values_mut().fold(false, |acc, item| {
-            replace_in_plist_value(item, from, to) || acc
-        }),
+        plist::Value::Array(arr) => {
+            let mut changed = false;
+            for item in arr.iter_mut() {
+                changed |= replace_in_plist_value(item, from, to);
+            }
+            changed
+        }
+        plist::Value::Dictionary(dict) => {
+            let mut changed = false;
+            for item in dict.values_mut() {
+                changed |= replace_in_plist_value(item, from, to);
+            }
+            changed
+        }
         _ => false,
     }
 }
