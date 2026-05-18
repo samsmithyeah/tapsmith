@@ -1,6 +1,6 @@
 {
   "name": "tapsmith",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Mobile app testing framework — TypeScript SDK and test runner",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -80,10 +80,12 @@
     "vitest": "^3.0.0"
   },
   "optionalDependencies": {
-    "@tapsmith/core-darwin-arm64": "0.1.0",
-    "@tapsmith/core-darwin-x64": "0.1.0",
-    "@tapsmith/core-linux-arm64": "0.1.0",
-    "@tapsmith/core-linux-x64": "0.1.0"
+    "@tapsmith/core-darwin-arm64": "0.1.2",
+    "@tapsmith/core-darwin-x64": "0.1.2",
+    "@tapsmith/core-linux-arm64": "0.1.2",
+    "@tapsmith/core-linux-x64": "0.1.2",
+    "@tapsmith/agent-ios-simulator-arm64": "0.1.2",
+    "@tapsmith/agent-ios-simulator-x64": "0.1.2"
   },
   "engines": {
     "node": ">=22"

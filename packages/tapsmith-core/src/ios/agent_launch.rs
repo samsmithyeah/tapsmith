@@ -341,6 +341,12 @@ async fn patch_xctestrun(
         .await
         .context("Failed to copy xctestrun file")?;
 
+    // Resolve __TAPSMITH_PKG__ placeholders left by the prebuilt npm packages.
+    // These replace the CI machine's absolute DerivedData paths at package time;
+    // here we substitute the actual directory containing the xctestrun file so
+    // xcodebuild can find the test runner .app bundle at runtime.
+    resolve_pkg_placeholders(&patched_path, xctestrun_path).await?;
+
     let base = "TestConfigurations:0:TestTargets:0";
     let plist_buddy = "/usr/libexec/PlistBuddy";
 
@@ -407,6 +413,65 @@ async fn patch_xctestrun(
 
     info!("Patched xctestrun at {patched_path}");
     Ok(patched_path)
+}
+
+/// Replace `__TAPSMITH_PKG__` placeholders in a patched xctestrun plist with the
+/// directory that contains the original (unpatched) xctestrun. The prebuilt npm
+/// packages use this placeholder to avoid baking in CI-machine absolute paths.
+///
+/// Uses the `plist` crate to parse and rewrite the plist properly, avoiding XML
+/// entity-escaping issues that raw text replacement would hit if the resolved
+/// path contained `&`, `<`, or `>`.
+async fn resolve_pkg_placeholders(patched_path: &str, original_path: &str) -> Result<()> {
+    let bytes = tokio::fs::read(patched_path)
+        .await
+        .context("Failed to read patched xctestrun")?;
+    if !bytes.windows(16).any(|w| w == b"__TAPSMITH_PKG__") {
+        return Ok(());
+    }
+
+    let pkg_dir = std::path::Path::new(original_path)
+        .parent()
+        .map(|p| p.to_string_lossy().to_string())
+        .unwrap_or_default();
+
+    let mut value: plist::Value =
+        plist::from_bytes(&bytes).context("Failed to parse xctestrun plist")?;
+
+    if replace_in_plist_value(&mut value, "__TAPSMITH_PKG__", &pkg_dir) {
+        let mut buf = Vec::new();
+        plist::to_writer_xml(&mut buf, &value).context("Failed to serialize plist")?;
+        tokio::fs::write(patched_path, buf)
+            .await
+            .context("Failed to write resolved xctestrun")?;
+        info!("Resolved __TAPSMITH_PKG__ → {pkg_dir}");
+    }
+
+    Ok(())
+}
+
+fn replace_in_plist_value(v: &mut plist::Value, from: &str, to: &str) -> bool {
+    match v {
+        plist::Value::String(s) if s.contains(from) => {
+            *s = s.replace(from, to);
+            true
+        }
+        plist::Value::Array(arr) => {
+            let mut changed = false;
+            for item in arr.iter_mut() {
+                changed |= replace_in_plist_value(item, from, to);
+            }
+            changed
+        }
+        plist::Value::Dictionary(dict) => {
+            let mut changed = false;
+            for item in dict.values_mut() {
+                changed |= replace_in_plist_value(item, from, to);
+            }
+            changed
+        }
+        _ => false,
+    }
 }
 
 /// Strip any `.{mode}.port{N}.patched.xctestrun` suffixes that previous runs
