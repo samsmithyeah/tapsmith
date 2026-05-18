@@ -3125,13 +3125,13 @@ export async function startUIServer(
 
   // Open browser
   const viewerUrl = `http://127.0.0.1:${actualPort}/`;
-  launchProgress?.start('browser', `opening ${viewerUrl}`);
+  launchProgress?.start('browser', 'opening default browser');
   try {
     const open = await import('open');
     await open.default(viewerUrl);
-    launchProgress?.complete('browser', viewerUrl);
+    launchProgress?.complete('browser', 'opened default browser');
   } catch {
-    if (launchProgress) launchProgress.complete('browser', `open ${viewerUrl}`);
+    if (launchProgress) launchProgress.complete('browser', `open manually: ${viewerUrl}`);
     else console.log(`Tapsmith UI: ${viewerUrl}`);
   }
 

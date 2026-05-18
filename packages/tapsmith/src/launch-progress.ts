@@ -238,7 +238,7 @@ export function createUiLaunchSteps(input: UiLaunchPlanInput): LaunchStep[] {
       { id: 'ui-server', label: 'UI server', state: 'pending', detail: 'bind local web UI' },
       { id: 'mcp', label: 'MCP server', state: 'pending', detail: 'bind MCP endpoint' },
       { id: 'test-tree', label: 'Test tree', state: 'pending', detail: `discover ${plural(input.testFileCount, 'file')} for the UI` },
-      { id: 'browser', label: 'Browser', state: 'pending', detail: 'open UI mode' },
+      { id: 'browser', label: 'Browser', state: 'pending', detail: 'open default browser' },
     );
   }
 
