@@ -419,27 +419,15 @@ async fn patch_xctestrun(
 /// directory that contains the original (unpatched) xctestrun. The prebuilt npm
 /// packages use this placeholder to avoid baking in CI-machine absolute paths.
 ///
-/// Converts to XML1 first so a simple text replacement works regardless of
-/// whether the source plist is binary or XML.
+/// Uses the `plist` crate to parse and rewrite the plist properly, avoiding XML
+/// entity-escaping issues that raw text replacement would hit if the resolved
+/// path contained `&`, `<`, or `>`.
 async fn resolve_pkg_placeholders(patched_path: &str, original_path: &str) -> Result<()> {
-    // Read a sample of the file to check for the placeholder before doing
-    // the more expensive convert-and-rewrite cycle.
-    let raw = tokio::fs::read(patched_path)
+    let bytes = tokio::fs::read(patched_path)
         .await
         .context("Failed to read patched xctestrun")?;
-    if !raw.windows(16).any(|w| w == b"__TAPSMITH_PKG__") {
+    if !bytes.windows(16).any(|w| w == b"__TAPSMITH_PKG__") {
         return Ok(());
-    }
-
-    // Ensure XML1 so we can do text replacement.
-    let convert = tokio::process::Command::new("plutil")
-        .args(["-convert", "xml1", patched_path])
-        .output()
-        .await
-        .context("Failed to run plutil")?;
-    if !convert.status.success() {
-        let stderr = String::from_utf8_lossy(&convert.stderr);
-        anyhow::bail!("plutil -convert xml1 failed: {stderr}");
     }
 
     let pkg_dir = std::path::Path::new(original_path)
@@ -447,16 +435,39 @@ async fn resolve_pkg_placeholders(patched_path: &str, original_path: &str) -> Re
         .map(|p| p.to_string_lossy().to_string())
         .unwrap_or_default();
 
-    let xml = tokio::fs::read_to_string(patched_path)
-        .await
-        .context("Failed to read XML xctestrun")?;
-    let resolved = xml.replace("__TAPSMITH_PKG__", &pkg_dir);
-    tokio::fs::write(patched_path, resolved)
-        .await
-        .context("Failed to write resolved xctestrun")?;
+    let mut value: plist::Value =
+        plist::from_bytes(&bytes).context("Failed to parse xctestrun plist")?;
 
-    info!("Resolved __TAPSMITH_PKG__ → {pkg_dir}");
+    if replace_in_plist_value(&mut value, "__TAPSMITH_PKG__", &pkg_dir) {
+        let mut buf = Vec::new();
+        plist::to_writer_xml(&mut buf, &value).context("Failed to serialize plist")?;
+        tokio::fs::write(patched_path, buf)
+            .await
+            .context("Failed to write resolved xctestrun")?;
+        info!("Resolved __TAPSMITH_PKG__ → {pkg_dir}");
+    }
+
     Ok(())
+}
+
+fn replace_in_plist_value(v: &mut plist::Value, from: &str, to: &str) -> bool {
+    match v {
+        plist::Value::String(s) => {
+            if s.contains(from) {
+                *s = s.replace(from, to);
+                true
+            } else {
+                false
+            }
+        }
+        plist::Value::Array(arr) => arr
+            .iter_mut()
+            .fold(false, |acc, item| replace_in_plist_value(item, from, to) || acc),
+        plist::Value::Dictionary(dict) => dict
+            .values_mut()
+            .fold(false, |acc, item| replace_in_plist_value(item, from, to) || acc),
+        _ => false,
+    }
 }
 
 /// Strip any `.{mode}.port{N}.patched.xctestrun` suffixes that previous runs
