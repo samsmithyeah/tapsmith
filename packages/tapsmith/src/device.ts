@@ -438,8 +438,8 @@ export class Device {
       'Terminate app failed');
   }
 
-  async getAppState(packageName: string): Promise<AppState> {
-    const res = await this._client.getAppState(packageName);
+  async getAppState(packageName: string, options?: { timeout?: number }): Promise<AppState> {
+    const res = await this._client.getAppState(packageName, options?.timeout);
     return res.state as AppState;
   }
 

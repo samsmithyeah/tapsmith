@@ -966,8 +966,8 @@ class CommandHandler {
             // If running in background, this brings it to foreground.
             let targetApp = rebindApp(bundleId: targetBundleId(fallback: params))
             targetApp.activate()
-            // Brief wait for the app to settle.
-            Thread.sleep(forTimeInterval: 0.15)
+            // Wait for the app to settle after launch/foregrounding.
+            Thread.sleep(forTimeInterval: 0.5)
             // Accept custom URL-scheme confirmation if simctl openurl left
             // SpringBoard in front of the app before this rebind.
             let springboard = XCUIApplication(bundleIdentifier: "com.apple.springboard")
