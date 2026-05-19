@@ -25,6 +25,10 @@ import type {
 import { loadMcpConfig } from './config-loader.js';
 import type { TestTreeNode, UIDiscoverMessage, UIDiscoverChildMessage } from '../ui-mode/ui-protocol.js';
 
+const DISCOVERY_CONCURRENCY = 4;
+const DISCOVERY_TIMEOUT_MS = 30_000;
+const RUN_CHILD_TIMEOUT_MS = 60 * 60 * 1000;
+
 // ─── HeadlessTestDispatcher ───
 
 export class HeadlessTestDispatcher implements TestDispatcher {
@@ -354,10 +358,13 @@ export class HeadlessTestDispatcher implements TestDispatcher {
     const scripts = this._scripts!;
     const fileNodes = new Map<string, TestTreeNode>();
 
-    await Promise.all(this._testFiles.map(async (file) => {
+    const discovered = await mapWithConcurrency(this._testFiles, DISCOVERY_CONCURRENCY, async (file) => {
       const tree = await discoverFile(file, scripts);
+      return { file, tree };
+    });
+    for (const { file, tree } of discovered) {
       if (tree) fileNodes.set(file, tree);
-    }));
+    }
 
     if (this._hasRealProjects()) {
       const trees: TestTreeEntry[] = [];
@@ -391,10 +398,7 @@ export class HeadlessTestDispatcher implements TestDispatcher {
     projectUseOptions?: RunFileUseOptions,
     projectName?: string,
     testFilter?: string,
-  ): Promise<{
-    results: import('../runner.js').TestResult[]
-    suite: import('../runner.js').SuiteResult
-  }> {
+  ): Promise<RunFileChildResult> {
     if (!this._daemonAddress || !this._deviceSerial || !this._serializedConfig) {
       return Promise.reject(new Error('No device connected. Ensure a device/emulator is available and a daemon is running.'));
     }
@@ -412,6 +416,30 @@ export class HeadlessTestDispatcher implements TestDispatcher {
 
       this._activeChild = child;
       let settled = false;
+      const clearActiveChild = (): void => {
+        if (this._activeChild === child) this._activeChild = null;
+      };
+      const timeout = setTimeout(() => {
+        if (settled) return;
+        settled = true;
+        clearActiveChild();
+        try { child.kill(); } catch { /* already dead */ }
+        reject(new Error(`Watch worker timed out after ${RUN_CHILD_TIMEOUT_MS}ms`));
+      }, RUN_CHILD_TIMEOUT_MS);
+      timeout.unref?.();
+      const resolveOnce = (value: RunFileChildResult): void => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timeout);
+        resolve(value);
+      };
+      const rejectOnce = (err: unknown): void => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timeout);
+        clearActiveChild();
+        reject(err);
+      };
 
       child.on('message', (response: WatchRunChildMessage) => {
         if (settled) return;
@@ -434,33 +462,27 @@ export class HeadlessTestDispatcher implements TestDispatcher {
             break;
           }
           case 'file-done': {
-            settled = true;
             const results = response.results.map(deserializeTestResult);
             const suite = deserializeSuiteResult(response.suite);
-            resolve({ results, suite });
+            resolveOnce({ results, suite });
             break;
           }
           case 'error':
-            settled = true;
-            reject(new Error(response.error.message));
+            rejectOnce(new Error(response.error.message));
             break;
         }
       });
 
       child.on('exit', (code) => {
-        this._activeChild = null;
         if (!settled) {
-          settled = true;
-          reject(new Error(`Watch worker exited with code ${code ?? 0} without sending results`));
+          rejectOnce(new Error(`Watch worker exited with code ${code ?? 0} without sending results`));
+        } else {
+          clearActiveChild();
         }
       });
 
       child.on('error', (err) => {
-        this._activeChild = null;
-        if (!settled) {
-          settled = true;
-          reject(err);
-        }
+        rejectOnce(err);
       });
 
       // Non-null safe: validated at top of _runFileInChild before the fork
@@ -584,6 +606,32 @@ interface ResolvedScripts {
   baseDir: string
 }
 
+type RunFileChildResult = {
+  results: import('../runner.js').TestResult[]
+  suite: import('../runner.js').SuiteResult
+}
+
+async function mapWithConcurrency<T, R>(
+  items: T[],
+  concurrency: number,
+  mapper: (item: T, index: number) => Promise<R>,
+): Promise<R[]> {
+  if (items.length === 0) return [];
+  const limit = Math.min(Math.max(1, concurrency), items.length);
+  const results = new Array<R>(items.length);
+  let nextIndex = 0;
+
+  await Promise.all(Array.from({ length: limit }, async () => {
+    while (true) {
+      const index = nextIndex++;
+      if (index >= items.length) return;
+      results[index] = await mapper(items[index], index);
+    }
+  }));
+
+  return results;
+}
+
 function resolveScripts(): ResolvedScripts {
   // __dirname is either src/mcp/ or dist/mcp/
   // watch-run is at src/watch-run.ts or dist/watch-run.js
@@ -615,7 +663,7 @@ function resolveScripts(): ResolvedScripts {
 function discoverFile(filePath: string, scripts: ResolvedScripts): Promise<TestTreeNode | null> {
   return new Promise((resolve) => {
     const child = fork(scripts.discoverScript, [], {
-      stdio: ['ignore', 'inherit', 'inherit', 'ipc'],
+      stdio: ['ignore', 'ignore', 'inherit', 'ipc'],
       ...(scripts.tsxBin ? { execPath: scripts.tsxBin } : {}),
       env: {
         ...process.env,
@@ -624,30 +672,41 @@ function discoverFile(filePath: string, scripts: ResolvedScripts): Promise<TestT
     });
 
     let settled = false;
+    const timeout = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      log(`Discovery timed out for ${filePath} after ${DISCOVERY_TIMEOUT_MS}ms`);
+      try { child.kill(); } catch { /* already dead */ }
+      resolve(null);
+    }, DISCOVERY_TIMEOUT_MS);
+    timeout.unref?.();
+    const settle = (tree: TestTreeNode | null): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      resolve(tree);
+    };
 
     child.on('message', (response: UIDiscoverChildMessage) => {
       if (settled) return;
-      settled = true;
 
       if (response.type === 'discover-result') {
-        resolve(response.tree);
+        settle(response.tree);
       } else {
         log(`Discovery error for ${filePath}: ${response.error.message}`);
-        resolve(null);
+        settle(null);
       }
     });
 
     child.on('exit', () => {
       if (!settled) {
-        settled = true;
-        resolve(null);
+        settle(null);
       }
     });
 
     child.on('error', () => {
       if (!settled) {
-        settled = true;
-        resolve(null);
+        settle(null);
       }
     });
 

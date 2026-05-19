@@ -38,6 +38,7 @@ const CYAN = '\x1b[36m';
 const YELLOW = '\x1b[33m';
 const RED = '\x1b[31m';
 const RESET = '\x1b[0m';
+const ACTIVITY_MONITOR_MAX_READ_BYTES = 1024 * 1024;
 
 export type {
   TestDispatcher, TestRunResult, TestResultEntry, TestFailureDetail,
@@ -52,6 +53,10 @@ export interface McpServerOptions {
 
 export interface RunMcpServerOptions {
   configFile?: string
+}
+
+export interface RunMcpServerRuntimeOptions {
+  exitOnSigint?: boolean
 }
 
 export function createMcpServer(options?: McpServerOptions): McpServer {
@@ -114,6 +119,7 @@ export function attachMcpClientEventReporting(
 
   // The SDK owns transport callbacks after connect(), so report client identity
   // from the initialize request handler instead of trying to wrap transport I/O.
+  // This private handler map is a maintenance risk across MCP SDK upgrades.
   // eslint-disable-next-line @typescript-eslint/no-explicit-any -- accessing private _requestHandlers
   const handlers = (server.server as any)._requestHandlers as Map<string, (...args: unknown[]) => unknown>;
   const originalInitialize = handlers.get('initialize');
@@ -238,7 +244,10 @@ function printMcpServerHelp(): void {
   process.stdout.write(`  npx tapsmith mcp-server --config tapsmith.config.ios.mjs\n`);
 }
 
-export async function runMcpServer(argv: string[] = []): Promise<void> {
+export async function runMcpServer(
+  argv: string[] = [],
+  runtimeOptions: RunMcpServerRuntimeOptions = {},
+): Promise<void> {
   const options = parseMcpServerArgs(argv);
   if (options.help) {
     printMcpServerHelp();
@@ -248,6 +257,7 @@ export async function runMcpServer(argv: string[] = []): Promise<void> {
   // Discover UI server for event reporting
   const uiPort = discoverUiServerPort();
   const activityPath = mcpActivityFilePath();
+  ensureActivityFile(activityPath);
   const events = new McpEventEmitter();
   const stopActivityMonitor = startActivityMonitor(activityPath);
 
@@ -278,12 +288,31 @@ export async function runMcpServer(argv: string[] = []): Promise<void> {
   // connection on first tool call (no startup cost)
   configureMcpConnection({ configFile: options.configFile });
   const dispatcher = new HeadlessTestDispatcher({ configFile: options.configFile });
+  let cleanedUp = false;
+  const sigintHandler = (): void => {
+    cleanup();
+    if (runtimeOptions.exitOnSigint ?? true) process.exit(0);
+  };
+  function cleanup(): void {
+    if (cleanedUp) return;
+    cleanedUp = true;
+    process.off('SIGINT', sigintHandler);
+    stopActivityMonitor();
+    dispatcher.dispose();
+    closeAllClients();
+  }
+  process.once('SIGINT', sigintHandler);
 
   const server = createMcpServer({ events, dispatcher });
-  attachMcpClientEventReporting(server, events);
+  attachMcpClientEventReporting(server, events, cleanup);
 
   const transport = new StdioServerTransport();
-  await server.connect(transport);
+  try {
+    await server.connect(transport);
+  } catch (err) {
+    cleanup();
+    throw err;
+  }
 
   const banner = figlet.textSync('Tapsmith', { font: 'Three Point' });
   process.stderr.write('\n' + banner.split('\n').map((line) => `  ${GREEN}${line}${RESET}`).join('\n') + '\n');
@@ -304,26 +333,23 @@ export async function runMcpServer(argv: string[] = []): Promise<void> {
   process.stderr.write(`  ${DIM}${CYAN}›${RESET}${DIM} Generic MCP stdio config:${RESET}\n`);
   process.stderr.write(`    { "mcpServers": { "tapsmith": { "command": "npx", "args": ["tapsmith", "mcp-server"] } } }\n\n`);
 
-  process.on('SIGINT', () => {
-    stopActivityMonitor?.();
-    dispatcher.dispose();
-    closeAllClients();
-    process.exit(0);
-  });
 }
 
 type McpActivityRecord =
   | { type: 'client'; pid: number; cwd: string; timestamp: number; info: McpClientInfo | null }
   | { type: 'tool'; pid: number; cwd: string; event: McpToolCallEvent };
 
-let _activityDirCreated = false;
+function ensureActivityFile(activityPath: string): void {
+  try {
+    fs.mkdirSync(path.dirname(activityPath), { recursive: true });
+    if (!fs.existsSync(activityPath)) fs.writeFileSync(activityPath, '', 'utf-8');
+  } catch {
+    // Activity monitoring is best-effort. Never break MCP protocol handling.
+  }
+}
 
 function appendActivity(activityPath: string, record: McpActivityRecord): void {
   try {
-    if (!_activityDirCreated) {
-      fs.mkdirSync(path.dirname(activityPath), { recursive: true });
-      _activityDirCreated = true;
-    }
     fs.appendFileSync(activityPath, `${JSON.stringify(record)}\n`, 'utf-8');
   } catch {
     // Activity monitoring is best-effort. Never break MCP protocol handling.
@@ -348,13 +374,15 @@ function startActivityMonitor(activityPath: string): () => void {
     if (size < offset) offset = 0;
     if (size === offset) return;
 
-    const start = offset;
+    const start = Math.max(offset, size - ACTIVITY_MONITOR_MAX_READ_BYTES);
     offset = size;
+    const length = size - start;
+    if (length <= 0) return;
     let content = '';
     try {
       const fd = fs.openSync(activityPath, 'r');
       try {
-        const buffer = Buffer.alloc(size - start);
+        const buffer = Buffer.alloc(length);
         fs.readSync(fd, buffer, 0, buffer.length, start);
         content = buffer.toString('utf-8');
       } finally {
@@ -380,11 +408,7 @@ function startActivityMonitor(activityPath: string): () => void {
   // fs.watch uses native OS events instead of polling
   let watcher: fs.FSWatcher | null = null;
   try {
-    // Ensure the file exists so fs.watch has something to watch
-    if (!fs.existsSync(activityPath)) {
-      fs.mkdirSync(path.dirname(activityPath), { recursive: true });
-      fs.writeFileSync(activityPath, '', 'utf-8');
-    }
+    ensureActivityFile(activityPath);
     watcher = fs.watch(activityPath, () => readNewLines());
   } catch {
     // Fall back to polling if fs.watch is unavailable (e.g. network filesystems)
