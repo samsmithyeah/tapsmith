@@ -475,7 +475,11 @@ fn is_retryable_adb_transport_error(message: &str) -> bool {
 ///
 /// Returns the on-device path where the cert was installed, so the caller
 /// can clean it up later.
-pub async fn install_ca_cert(serial: &str, ca_pem_path: &str, cert_filename: &str) -> Result<String> {
+pub async fn install_ca_cert(
+    serial: &str,
+    ca_pem_path: &str,
+    cert_filename: &str,
+) -> Result<String> {
     // Check if already running as root (e.g. CLI called `adb root` during setup)
     let already_root = shell_lenient(serial, "id")
         .await
