@@ -240,7 +240,7 @@ export interface ErrorMessage {
 export interface McpStatusMessage {
   type: 'mcp-status'
   running: boolean
-  sseUrl?: string
+  mcpUrl?: string
   clientName?: string
   clientVersion?: string
 }

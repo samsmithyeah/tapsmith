@@ -96,12 +96,12 @@ The UI provides:
 
 ### MCP integration
 
-The UI server exposes an SSE-based [MCP](https://modelcontextprotocol.io/) endpoint that AI coding agents (Claude Code, Cursor, etc.) can connect to. This gives agents 16 tools for test discovery, execution, result browsing, device interaction, and watch mode control -- all sharing the same session as the UI.
+The UI server exposes a [Streamable HTTP](https://modelcontextprotocol.io/) MCP endpoint that AI coding agents (Claude Code, Cursor, Codex, etc.) can connect to. This gives agents 16 tools for test discovery, execution, result browsing, device interaction, and watch mode control -- all sharing the same session as the UI.
 
 To connect an agent:
 
 ```bash
-claude mcp add tapsmith --transport sse http://localhost:<port>/mcp
+claude mcp add tapsmith --transport http http://localhost:<port>/mcp
 ```
 
 Both the UI user and the MCP agent share the same test session. Runs triggered by either side appear in the UI, and mutual exclusion ensures only one test run happens at a time.

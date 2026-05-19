@@ -2,14 +2,14 @@ import { useRef, useEffect, useState, useCallback } from 'preact/hooks';
 import type { McpToolCallMessage } from '../ui-protocol.js';
 
 interface McpPanelProps {
-  sseUrl?: string
+  mcpUrl?: string
   clientName?: string
   clientVersion?: string
   toolCalls: McpToolCallMessage[]
   onClear: () => void
 }
 
-export function McpPanel({ sseUrl, clientName, clientVersion, toolCalls, onClear }: McpPanelProps) {
+export function McpPanel({ mcpUrl, clientName, clientVersion, toolCalls, onClear }: McpPanelProps) {
   const feedRef = useRef<HTMLDivElement>(null);
   const [expandedId, setExpandedId] = useState<string | null>(null);
 
@@ -57,8 +57,8 @@ export function McpPanel({ sseUrl, clientName, clientVersion, toolCalls, onClear
             <div class="mcp-empty">
               {clientName
                 ? 'Waiting for tool calls...'
-                : sseUrl
-                  ? <McpSetupHint sseUrl={sseUrl} />
+                : mcpUrl
+                  ? <McpSetupHint mcpUrl={mcpUrl} />
                   : 'MCP server starting...'}
             </div>
           )
@@ -137,14 +137,14 @@ function CopyableCommand({ label, command }: { label: string; command: string })
   );
 }
 
-function McpSetupHint({ sseUrl }: { sseUrl: string }) {
-  const claudeSseCommand = `claude mcp add tapsmith-ui --transport sse ${sseUrl}`;
+function McpSetupHint({ mcpUrl }: { mcpUrl: string }) {
+  const claudeCommand = `claude mcp add tapsmith-ui --transport http ${mcpUrl}`;
 
   return (
     <div class="mcp-setup">
       <div class="mcp-setup-title">Connect your AI agent</div>
-      <CopyableCommand label="MCP SSE endpoint" command={sseUrl} />
-      <CopyableCommand label="Claude Code SSE" command={claudeSseCommand} />
+      <CopyableCommand label="MCP endpoint" command={mcpUrl} />
+      <CopyableCommand label="Claude Code" command={claudeCommand} />
     </div>
   );
 }
