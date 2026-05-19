@@ -565,9 +565,13 @@ async fn try_install_system_ca(serial: &str, cert_filename: &str, system_path: &
         return false;
     }
 
-    // After remount, the device may need a moment to settle.
-    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-    let _ = run_adb(Some(serial), &["wait-for-device"], DEFAULT_TIMEOUT).await;
+    if run_adb(Some(serial), &["wait-for-device"], DEFAULT_TIMEOUT)
+        .await
+        .is_err()
+    {
+        debug!(%serial, "Device did not become ready after remount");
+        return false;
+    }
 
     if let Err(e) = shell(
         serial,
