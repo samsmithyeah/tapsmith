@@ -493,7 +493,7 @@ export async function startUIServer(
   const mcpEvents = new McpEventEmitter();
   const mcpServer = createMcpServer({ name: 'tapsmith-ui', events: mcpEvents, dispatcher: testDispatcher });
   const mcpTransport = new StreamableHTTPServerTransport({ sessionIdGenerator: () => randomUUID() });
-  mcpServer.connect(mcpTransport);
+  await mcpServer.connect(mcpTransport);
   let mcpClientName: string | undefined;
   let mcpClientVersion: string | undefined;
   let mcpPort = 0;
@@ -3000,7 +3000,15 @@ export async function startUIServer(
 
     // Streamable HTTP endpoint — handles POST (JSON-RPC) + GET (SSE stream) + DELETE (session close)
     if (url.pathname === '/mcp') {
-      await mcpTransport.handleRequest(req, res);
+      try {
+        await mcpTransport.handleRequest(req, res);
+      } catch (error) {
+        console.error('MCP transport error:', error);
+        if (!res.headersSent) {
+          res.writeHead(500);
+          res.end('Internal Server Error');
+        }
+      }
       return;
     }
 
@@ -3141,9 +3149,9 @@ export async function startUIServer(
         ctx.client?.close();
       }
 
+      mcpHttpServer.close();
       mcpTransport.close();
       mcpServer.close();
-      mcpHttpServer.close();
       try { fs.unlinkSync(portFilePath); } catch { /* already gone */ }
       if (watcher) watcher.close();
       for (const ws of clients) ws.close();
