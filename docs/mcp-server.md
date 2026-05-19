@@ -20,6 +20,10 @@ Claude Code:
 claude mcp add tapsmith --transport sse http://localhost:9274/mcp
 ```
 
+Codex CLI:
+
+Codex CLI's URL-based MCP configuration expects Streamable HTTP. Tapsmith UI mode currently exposes SSE, so use stdio mode with Codex until the UI MCP endpoint is migrated to Streamable HTTP.
+
 Generic MCP SSE config:
 
 ```json
