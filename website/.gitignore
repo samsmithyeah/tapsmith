@@ -2,6 +2,8 @@
 dist/
 # generated types
 .astro/
+# synced from docs/ at build time (do not edit directly)
+src/content/docs/
 
 # dependencies
 node_modules/

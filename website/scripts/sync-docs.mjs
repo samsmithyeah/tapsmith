@@ -1,0 +1,174 @@
+#!/usr/bin/env node
+
+// Syncs documentation from docs/ (repo root) into the Starlight content
+// directory. Run before `astro build` or `astro dev` to pick up changes.
+//
+// What it does:
+//   1. Copies each docs/*.md file into src/content/docs/<target>, adding
+//      Starlight frontmatter (title + description) and stripping the
+//      leading `# Heading`.
+//   2. Splits api-reference.md into 11 focused sub-pages under
+//      src/content/docs/reference/api/.
+//   3. Rewrites internal cross-reference links to match Starlight's
+//      URL scheme (e.g. `selectors.md` → `/guides/selectors/`).
+
+import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'node:fs'
+import { dirname, join, resolve } from 'node:path'
+
+const ROOT = resolve(import.meta.dirname, '..', '..')
+const DOCS = join(ROOT, 'docs')
+const OUT = join(ROOT, 'website', 'src', 'content', 'docs')
+
+// ─── File mapping: source → target + frontmatter ───
+
+const FILES = [
+  { src: 'getting-started.md', dest: 'getting-started.md', title: 'Installation & First Test', desc: 'Get up and running with Tapsmith in minutes. Install, configure, and write your first mobile test.' },
+  { src: 'writing-tests.md', dest: 'writing-tests.md', title: 'Writing Tests', desc: 'Learn how to structure tests, use screen objects, manage test state, and follow best practices.' },
+  { src: 'selectors.md', dest: 'guides/selectors.md', title: 'Selectors', desc: 'Choose the right selector strategy for reliable, accessible mobile element queries.' },
+  { src: 'network.md', dest: 'guides/network.md', title: 'Network Interception', desc: 'Mock, modify, and inspect HTTP requests with Playwright-style route handlers.' },
+  { src: 'webview.md', dest: 'guides/webview.md', title: 'WebView Testing', desc: 'Test hybrid apps by switching between native and web contexts.' },
+  { src: 'trace-viewer.md', dest: 'guides/trace-viewer.md', title: 'Trace Viewer', desc: 'Record and inspect step-by-step test execution with screenshots, hierarchy, and network.' },
+  { src: 'watch-and-ui-mode.md', dest: 'guides/watch-and-ui-mode.md', title: 'Watch & UI Mode', desc: 'Interactive development with watch mode and the visual UI runner.' },
+  { src: 'parallel-and-sharding.md', dest: 'guides/parallel-and-sharding.md', title: 'Parallel Execution', desc: 'Run tests across multiple devices with work-stealing distribution and CI sharding.' },
+  { src: 'debugging.md', dest: 'guides/debugging.md', title: 'Debugging', desc: 'Troubleshoot test failures, flaky tests, and common issues.' },
+  { src: 'mcp-server.md', dest: 'guides/mcp-server.md', title: 'MCP Server', desc: 'Integrate Tapsmith with AI coding agents via the Model Context Protocol.' },
+  { src: 'ci-setup.md', dest: 'platform/ci-setup.md', title: 'CI Setup', desc: 'Run Tapsmith tests in GitHub Actions and other CI environments.' },
+  { src: 'ios-physical-devices.md', dest: 'platform/ios-physical-devices.md', title: 'iOS Physical Devices', desc: 'Set up Tapsmith for testing on physical iOS devices.' },
+  { src: 'ios-network-capture.md', dest: 'platform/ios-network-capture.md', title: 'iOS Network Capture', desc: 'Configure HTTPS interception on iOS simulators.' },
+  { src: 'ios-physical-device-network-tracing.md', dest: 'platform/ios-physical-device-network-tracing.md', title: 'iOS Device Network Tracing', desc: 'Network capture on physical iOS devices.' },
+  { src: 'configuration.md', dest: 'reference/configuration.md', title: 'Configuration', desc: 'All tapsmith.config.ts options with defaults and examples.' },
+  { src: 'environment-variables.md', dest: 'reference/environment-variables.md', title: 'Environment Variables', desc: 'Environment variables for the Tapsmith daemon and CI.' },
+]
+
+// ─── API reference split definitions ───
+// Each entry defines a slice of api-reference.md by start/end markers.
+
+const API_SPLITS = [
+  { dest: 'reference/api/locators.md', title: 'Locators', desc: 'Find UI elements with getByText, getByRole, getByDescription, and other locator methods.', startMarker: '## Locators', endMarker: '## Device' },
+  { dest: 'reference/api/device.md', title: 'Device', desc: 'Device-level actions: swipe, press keys, launch apps, manage permissions, and control device state.', startMarker: '## Device', endMarker: '### Network Interception' },
+  { dest: 'reference/api/network.md', title: 'Network', desc: 'Intercept, mock, and modify network requests with the Route API.', startMarker: '### Network Interception', endMarker: '## ElementHandle' },
+  { dest: 'reference/api/element-handle.md', title: 'ElementHandle', desc: 'Tap, type, scroll, drag, and query elements with the lazy locator API.', startMarker: '## ElementHandle', endMarker: '## Assertions' },
+  { dest: 'reference/api/assertions.md', title: 'Assertions', desc: 'Auto-waiting assertions for locators and generic value assertions.', startMarker: '## Assertions', endMarker: '## Test Runner' },
+  { dest: 'reference/api/test-runner.md', title: 'Test Runner', desc: 'Define tests, describe blocks, hooks, fixtures, projects, and configuration.', startMarker: '## Test Runner', endMarker: '## API Request Fixture' },
+  { dest: 'reference/api/request.md', title: 'Request Fixture', desc: 'Make HTTP requests from tests with the request fixture.', startMarker: '## API Request Fixture', endMarker: '## Configuration' },
+  // Skip ## Configuration — it has its own standalone doc
+  { dest: 'reference/api/tracing.md', title: 'Tracing', desc: 'Record step-by-step traces with screenshots, hierarchy, and network.', startMarker: '## Tracing', endMarker: '## Reporters' },
+  { dest: 'reference/api/reporters.md', title: 'Reporters', desc: 'Built-in and custom reporters for test results.', startMarker: '## Reporters', endMarker: '## CLI' },
+  { dest: 'reference/api/cli.md', title: 'CLI', desc: 'Command-line interface, flags, and video recording.', startMarker: '## CLI', endMarker: '## WebView Testing' },
+  { dest: 'reference/api/webview.md', title: 'WebView', desc: 'Test hybrid apps with CSS selectors in WebView contexts.', startMarker: '## WebView Testing', endMarker: null },
+]
+
+// ─── Link rewriting rules ───
+
+const LINK_REWRITES = [
+  [/\(selectors\.md\)/g, '(/guides/selectors/)'],
+  [/\(network\.md\)/g, '(/guides/network/)'],
+  [/\(webview\.md\)/g, '(/guides/webview/)'],
+  [/\(trace-viewer\.md\)/g, '(/guides/trace-viewer/)'],
+  [/\(watch-and-ui-mode\.md\)/g, '(/guides/watch-and-ui-mode/)'],
+  [/\(parallel-and-sharding\.md\)/g, '(/guides/parallel-and-sharding/)'],
+  [/\(debugging\.md\)/g, '(/guides/debugging/)'],
+  [/\(mcp-server\.md\)/g, '(/guides/mcp-server/)'],
+  [/\(ci-setup\.md\)/g, '(/platform/ci-setup/)'],
+  [/\(\.\/ci-setup\.md[^)]*\)/g, '(/platform/ci-setup/)'],
+  [/\(ios-physical-devices\.md\)/g, '(/platform/ios-physical-devices/)'],
+  [/\(\.\/ios-physical-devices\.md\)/g, '(/platform/ios-physical-devices/)'],
+  [/\(ios-network-capture\.md\)/g, '(/platform/ios-network-capture/)'],
+  [/\(\.\/ios-network-capture\.md\)/g, '(/platform/ios-network-capture/)'],
+  [/\(ios-physical-device-network-tracing\.md\)/g, '(/platform/ios-physical-device-network-tracing/)'],
+  [/\(\.\/ios-physical-device-network-tracing\.md\)/g, '(/platform/ios-physical-device-network-tracing/)'],
+  [/\(getting-started\.md\)/g, '(/getting-started/)'],
+  [/\(writing-tests\.md\)/g, '(/writing-tests/)'],
+  [/\(configuration\.md(#[^)]*)??\)/g, '(/reference/configuration/)'],
+  [/\(\.\/configuration\.md[^)]*\)/g, '(/reference/configuration/)'],
+  [/\(environment-variables\.md\)/g, '(/reference/environment-variables/)'],
+  [/\((?:\.\/)?api-reference\.md#video-recording\)/g, '(/reference/api/cli/)'],
+  [/\((?:\.\/)?api-reference\.md[^)]*\)/g, '(/reference/api/locators/)'],
+]
+
+// ─── Helpers ───
+
+function rewriteLinks(content) {
+  for (const [pattern, replacement] of LINK_REWRITES) {
+    content = content.replace(pattern, replacement)
+  }
+  return content
+}
+
+function stripFirstHeading(content) {
+  return content.replace(/^# .+\n+/, '')
+}
+
+function addFrontmatter(content, title, description) {
+  return `---\ntitle: "${title}"\ndescription: "${description}"\n---\n\n${content}`
+}
+
+function ensureDir(filePath) {
+  const dir = dirname(filePath)
+  if (!existsSync(dir)) mkdirSync(dir, { recursive: true })
+}
+
+function writeDoc(destPath, content) {
+  const fullPath = join(OUT, destPath)
+  ensureDir(fullPath)
+  writeFileSync(fullPath, content)
+}
+
+// ─── Sync individual doc files ───
+
+let count = 0
+
+for (const file of FILES) {
+  const srcPath = join(DOCS, file.src)
+  if (!existsSync(srcPath)) {
+    console.warn(`  skip: ${file.src} (not found)`)
+    continue
+  }
+
+  let content = readFileSync(srcPath, 'utf-8')
+  content = stripFirstHeading(content)
+  content = rewriteLinks(content)
+  content = addFrontmatter(content, file.title, file.desc)
+
+  writeDoc(file.dest, content)
+  count++
+}
+
+// ─── Split API reference ───
+
+const apiRefPath = join(DOCS, 'api-reference.md')
+if (existsSync(apiRefPath)) {
+  const apiContent = readFileSync(apiRefPath, 'utf-8')
+  const lines = apiContent.split('\n')
+
+  for (const split of API_SPLITS) {
+    const startIdx = lines.findIndex(l => l.startsWith(split.startMarker))
+    if (startIdx === -1) {
+      console.warn(`  skip api split: ${split.dest} (marker "${split.startMarker}" not found)`)
+      continue
+    }
+
+    let endIdx
+    if (split.endMarker) {
+      endIdx = lines.findIndex((l, i) => i > startIdx && l.startsWith(split.endMarker))
+      if (endIdx === -1) endIdx = lines.length
+    } else {
+      endIdx = lines.length
+    }
+
+    // Extract section, trim trailing --- dividers and blank lines
+    let section = lines.slice(startIdx, endIdx).join('\n').trim()
+    section = section.replace(/\n---\s*$/, '').trim()
+
+    // Demote the section heading (## → remove, content starts clean)
+    section = section.replace(/^##+ .+\n+/, '')
+
+    section = rewriteLinks(section)
+    section = addFrontmatter(section, split.title, split.desc)
+
+    writeDoc(split.dest, section)
+    count++
+  }
+}
+
+console.log(`sync-docs: ${count} files written to src/content/docs/`)
