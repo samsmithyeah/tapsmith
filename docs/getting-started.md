@@ -48,19 +48,34 @@ The interactive setup wizard detects your environment, walks you through platfor
 npx tapsmith init
 ```
 
-The wizard handles:
-- Environment detection (ADB, Xcode, simulators, emulators)
-- Platform selection (Android, iOS, or both)
-- App configuration and package name detection
-- Device setup (emulators, simulators, physical devices)
-- Network capture setup (optional)
-- Config file and example test generation
+The wizard walks through these steps:
+
+1. **Environment detection** — checks for ADB, Xcode, simulators, emulators, and reports what's available
+2. **Platform selection** — choose Android, iOS, or both
+3. **App configuration** — specify your APK/`.app` path; the wizard detects the package name automatically
+4. **Device setup** — choose between connected devices, emulators/simulators, or auto-launch
+5. **Parallel execution** — optionally configure multiple workers with `launchEmulators` and `avd`
+6. **Network capture** — optionally enable HTTPS traffic capture in traces
+7. **File generation** — creates `tapsmith.config.ts` and an example test file
 
 After setup, verify everything is working:
 
 ```bash
 npx tapsmith doctor
 ```
+
+`tapsmith doctor` runs a non-interactive health check and reports the status of each prerequisite:
+
+```
+  ✓ Node.js 22.5.0
+  ✓ Tapsmith daemon found (/Users/you/.npm/.../tapsmith-core)
+  ✓ ADB 35.0.2
+  ✓ Android emulator available (Pixel_9_API_35)
+  ✓ Tapsmith agent APK found
+  ✓ Tapsmith agent test APK found
+```
+
+If anything is missing, `tapsmith doctor` prints the exact command to fix it. Run it whenever tests fail in unexpected ways to rule out setup issues.
 
 ## Manual Configuration
 
@@ -257,6 +272,12 @@ describe("Login flow", () => {
 ## Next Steps
 
 - Learn about choosing the right selectors in the [Selectors Guide](selectors.md).
+- Read the [Writing Tests](writing-tests.md) guide for best practices, screen objects, and test isolation.
 - Browse the complete [API Reference](api-reference.md).
 - Configure Tapsmith for your project in the [Configuration](configuration.md) guide.
+- Set up [Watch and UI Mode](watch-and-ui-mode.md) for fast iteration during development.
+- Mock and inspect network traffic with the [Network Interception](network.md) guide.
+- Test hybrid apps with the [WebView Testing](webview.md) guide.
+- Run tests faster with the [Parallel Execution and Sharding](parallel-and-sharding.md) guide.
 - Set up automated testing in the [CI Setup](ci-setup.md) guide.
+- When things go wrong, check the [Debugging](debugging.md) guide.
