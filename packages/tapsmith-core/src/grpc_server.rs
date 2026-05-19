@@ -3524,19 +3524,21 @@ impl proto::tapsmith_service_server::TapsmithService for TapsmithServiceImpl {
                 }
             }
             Platform::Android => {
-                // Install the CA cert on the Android device (best-effort — may fail on non-rooted devices)
                 let cert_filename = mitm_ca.device_cert_filename().map_err(|e| {
                     Status::internal(format!("Failed to compute CA cert hash: {e}"))
                 })?;
-                let device_cert_path = adb::device_ca_cert_path(&cert_filename);
-                if let Err(e) = adb::install_ca_cert(&serial, &ca_pem_path, &cert_filename).await {
-                    let msg = format!(
-                        "Failed to install CA cert on device: {e} — HTTPS traffic will not be captured"
-                    );
-                    error!("{msg}");
-                    warning = Some(msg);
+                match adb::install_ca_cert(&serial, &ca_pem_path, &cert_filename).await {
+                    Ok(installed_path) => {
+                        *self.proxy_ca_cert_path.write().await = Some(installed_path);
+                    }
+                    Err(e) => {
+                        let msg = format!(
+                            "Failed to install CA cert on device: {e} — HTTPS traffic will not be captured"
+                        );
+                        error!("{msg}");
+                        warning = Some(msg);
+                    }
                 }
-                *self.proxy_ca_cert_path.write().await = Some(device_cert_path);
             }
         }
 

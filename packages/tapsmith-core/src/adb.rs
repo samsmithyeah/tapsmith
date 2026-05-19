@@ -72,16 +72,15 @@ const ADB_READY_COMMAND_TIMEOUT: Duration = Duration::from_secs(5);
 const ADB_READY_PACKAGE_TIMEOUT: Duration = Duration::from_secs(10);
 const ADB_READY_POLL_INTERVAL: Duration = Duration::from_secs(2);
 
+/// System CA certificate directory. Certs here are trusted by all apps
+/// without needing a per-app `network_security_config.xml`. Writable only
+/// on rooted emulators after `adb remount`.
+const SYSTEM_CA_CERT_DIR: &str = "/system/etc/security/cacerts";
+
 /// User-installed CA certificate directory. Apps must include
 /// `<certificates src="user"/>` in their network security config to
-/// trust these on Android API 24+. The Tapsmith test app and user apps
-/// that need MITM interception should configure this — see the docs.
-const DEVICE_CA_CERT_DIR: &str = "/data/misc/user/0/cacerts-added";
-
-/// Build the full on-device path for a CA cert given its filename (e.g. `a1b2c3d4.0`).
-pub fn device_ca_cert_path(filename: &str) -> String {
-    format!("{DEVICE_CA_CERT_DIR}/{filename}")
-}
+/// trust these on Android API 24+.
+const USER_CA_CERT_DIR: &str = "/data/misc/user/0/cacerts-added";
 
 /// List connected ADB devices.
 #[instrument]
@@ -468,11 +467,15 @@ fn is_retryable_adb_transport_error(message: &str) -> bool {
 /// `cert_filename` is the hash-based filename (e.g. `a1b2c3d4.0`) required by
 /// Android's certificate store. See [`crate::mitm_ca::MitmAuthority::device_cert_filename`].
 ///
-/// Attempts `adb root` to gain root access (works on emulator userdebug
-/// images), then copies the PEM certificate into the user CA store.
-/// On physical devices where root is unavailable, logs a warning and
-/// continues — the user will need to install the CA manually.
-pub async fn install_ca_cert(serial: &str, ca_pem_path: &str, cert_filename: &str) -> Result<()> {
+/// On emulators (rooted `userdebug` images), attempts to install into the
+/// **system** CA store so every app trusts the cert without needing a
+/// per-app `network_security_config.xml`. Falls back to the **user** CA
+/// store when the system partition cannot be remounted (physical devices,
+/// production images).
+///
+/// Returns the on-device path where the cert was installed, so the caller
+/// can clean it up later.
+pub async fn install_ca_cert(serial: &str, ca_pem_path: &str, cert_filename: &str) -> Result<String> {
     // Check if already running as root (e.g. CLI called `adb root` during setup)
     let already_root = shell_lenient(serial, "id")
         .await
@@ -515,17 +518,71 @@ pub async fn install_ca_cert(serial: &str, ca_pem_path: &str, cert_filename: &st
     // Push cert to a temp location
     push_file(serial, ca_pem_path, "/data/local/tmp/tapsmith-ca.pem").await?;
 
-    let device_path = device_ca_cert_path(cert_filename);
-    shell(serial, &format!("mkdir -p {DEVICE_CA_CERT_DIR}")).await?;
+    // Try the system CA store first (works on rooted emulators).
+    let system_path = format!("{SYSTEM_CA_CERT_DIR}/{cert_filename}");
+    if try_install_system_ca(serial, cert_filename, &system_path).await {
+        return Ok(system_path);
+    }
+
+    // Fall back to the user CA store (requires network_security_config.xml).
+    let user_path = format!("{USER_CA_CERT_DIR}/{cert_filename}");
+    shell(serial, &format!("mkdir -p {USER_CA_CERT_DIR}")).await?;
     shell(
         serial,
-        &format!("cp /data/local/tmp/tapsmith-ca.pem {device_path}"),
+        &format!("cp /data/local/tmp/tapsmith-ca.pem {user_path}"),
     )
     .await?;
-    shell(serial, &format!("chmod 644 {device_path}")).await?;
+    shell(serial, &format!("chmod 644 {user_path}")).await?;
 
-    info!(%serial, cert_filename, "CA certificate installed on device");
-    Ok(())
+    info!(
+        %serial, cert_filename,
+        "CA certificate installed in user store (apps need network_security_config.xml to trust it)"
+    );
+    Ok(user_path)
+}
+
+/// Try to remount /system and install the CA cert into the system trust store.
+/// Returns `true` on success, `false` if remount or install failed (caller
+/// should fall back to the user store).
+async fn try_install_system_ca(serial: &str, cert_filename: &str, system_path: &str) -> bool {
+    // `adb remount` makes /system writable on userdebug/eng emulator images.
+    let remount_output = match run_adb_lenient(serial, &["remount"]).await {
+        Ok(out) => String::from_utf8_lossy(&out).to_string(),
+        Err(e) => {
+            debug!(%serial, "adb remount failed: {e} — falling back to user CA store");
+            return false;
+        }
+    };
+
+    // Some images print "remount failed" or "Not running as root" even with exit 0.
+    let remount_lower = remount_output.to_lowercase();
+    if remount_lower.contains("failed") || remount_lower.contains("not running as root") {
+        debug!(%serial, output = %remount_output.trim(), "adb remount rejected — falling back to user CA store");
+        return false;
+    }
+
+    // After remount, the device may need a moment to settle.
+    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+    let _ = run_adb(Some(serial), &["wait-for-device"], DEFAULT_TIMEOUT).await;
+
+    if let Err(e) = shell(
+        serial,
+        &format!("cp /data/local/tmp/tapsmith-ca.pem {system_path}"),
+    )
+    .await
+    {
+        debug!(%serial, "Failed to copy CA to system store: {e} — falling back to user CA store");
+        return false;
+    }
+
+    if let Err(e) = shell(serial, &format!("chmod 644 {system_path}")).await {
+        debug!(%serial, "Failed to chmod system CA cert: {e}");
+        let _ = shell(serial, &format!("rm -f {system_path}")).await;
+        return false;
+    }
+
+    info!(%serial, cert_filename, "CA certificate installed in system store (trusted by all apps)");
+    true
 }
 
 /// Run an adb command (with serial targeting) that may fail, returning stdout
