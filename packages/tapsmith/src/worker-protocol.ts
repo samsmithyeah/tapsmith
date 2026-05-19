@@ -7,6 +7,7 @@
  */
 
 import type { TestResult, SuiteResult } from './runner.js';
+import { normalizeGrep, type TapsmithConfig } from './config.js';
 
 // ─── Main → Worker messages ───
 
@@ -165,6 +166,38 @@ export interface SerializedConfig {
   /** RegExp filters for test fullNames. Source/flags are serialized for IPC. */
   grep?: SerializedRegExp[]
   grepInvert?: SerializedRegExp[]
+}
+
+/** Convert a TapsmithConfig into the IPC-safe subset needed by worker child processes. */
+export function serializeConfig(config: TapsmithConfig): SerializedConfig {
+  return {
+    timeout: config.timeout,
+    retries: config.retries,
+    screenshot: config.screenshot,
+    rootDir: config.rootDir,
+    outputDir: config.outputDir,
+    apk: config.apk,
+    activity: config.activity,
+    package: config.package,
+    agentApk: config.agentApk,
+    agentTestApk: config.agentTestApk,
+    trace: typeof config.trace === 'string' || typeof config.trace === 'object'
+      ? config.trace
+      : undefined,
+    video: typeof config.video === 'string' || typeof config.video === 'object'
+      ? config.video
+      : undefined,
+    platform: config.platform,
+    app: config.app,
+    iosXctestrun: config.iosXctestrun,
+    simulator: config.simulator,
+    resetAppDeepLink: config.resetAppDeepLink,
+    resetAppWaitMs: config.resetAppWaitMs,
+    baseURL: config.baseURL,
+    extraHTTPHeaders: config.extraHTTPHeaders,
+    grep: serializeRegExpArray(normalizeGrep(config.grep)),
+    grepInvert: serializeRegExpArray(normalizeGrep(config.grepInvert)),
+  };
 }
 
 /** IPC-safe RegExp representation (RegExp instances don't survive structured clone reliably). */

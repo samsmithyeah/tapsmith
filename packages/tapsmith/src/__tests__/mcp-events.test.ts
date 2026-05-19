@@ -5,9 +5,12 @@ import {
   nextCallId,
   summarizeResult,
   truncateResultText,
+  type McpClientInfo,
   type McpToolCallEvent,
 } from '../mcp/events.js';
-import { createMcpServer } from '../mcp/index.js';
+import { attachMcpClientEventReporting, createMcpServer } from '../mcp/index.js';
+import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import type { TestDispatcher } from '../mcp/test-dispatcher.js';
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 
@@ -154,6 +157,35 @@ describe('MCP tool call event wrapping', () => {
       expect(toolEvents[1].resultText).toContain('## Session');
     } finally {
       server.close();
+    }
+  });
+});
+
+describe('MCP client event reporting', () => {
+  it('emits client connect and disconnect events from the MCP lifecycle', async () => {
+    const events = new McpEventEmitter();
+    const clientEvents: Array<McpClientInfo | null> = [];
+    events.onClientChange(event => clientEvents.push(event));
+
+    const server = createMcpServer({ events, dispatcher: makeDispatcher() });
+    const client = new Client({ name: 'probe-client', version: '1.2.3' }, { capabilities: {} });
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+
+    attachMcpClientEventReporting(server, events);
+    await server.connect(serverTransport);
+
+    try {
+      await client.connect(clientTransport);
+
+      expect(clientEvents[0]).toEqual({
+        name: 'probe-client',
+        version: '1.2.3',
+      });
+
+      await client.close();
+      expect(clientEvents.at(-1)).toBeNull();
+    } finally {
+      await server.close();
     }
   });
 });

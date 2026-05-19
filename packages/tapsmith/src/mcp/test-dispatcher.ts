@@ -53,6 +53,7 @@ export interface SessionInfo {
 }
 
 export interface TestDispatcher {
+  ensureInitialized?(): Promise<void>
   runFiles(files: string[], options?: { testFilter?: string; project?: string }): Promise<TestRunResult>
   runAll(): Promise<TestRunResult>
   stop(): void

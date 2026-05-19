@@ -20,7 +20,7 @@ export function registerRunTestsTool(server: McpServer, dispatcher?: TestDispatc
     },
     async ({ files, test: testFilter, project, device }) => {
       if (dispatcher) {
-        // SSE mode: delegate to UI server's test dispatcher
+        // Dispatcher-backed mode: UI sessions and headless MCP both provide test management.
         if (dispatcher.isRunning()) {
           return {
             content: [{ type: 'text' as const, text: 'A test run is already in progress. Wait for it to finish or use tapsmith_stop_tests to abort.' }],

@@ -5,7 +5,8 @@ import { spawn, type ChildProcess } from 'node:child_process';
 import { TapsmithGrpcClient, type DeviceInfoProto } from '../grpc-client.js';
 import { findDaemonBin } from '../daemon-bin.js';
 import { pickFreePort } from '../port-utils.js';
-import { loadConfig, type TapsmithConfig } from '../config.js';
+import type { TapsmithConfig } from '../config.js';
+import { loadMcpConfig } from './config-loader.js';
 import { uiPortFilePath } from './port-file.js';
 
 const DEFAULT_ADDRESS = 'localhost:50051';
@@ -24,6 +25,11 @@ let _deviceIndex: Map<string, DaemonConnection> = new Map();
 let _sessionDevices: Set<string> | null = null;
 let _ready = false;
 let _connectingPromise: Promise<void> | null = null;
+let _configFile: string | undefined;
+
+export function configureMcpConnection(options?: { configFile?: string }): void {
+  _configFile = options?.configFile;
+}
 
 export function getSessionDeviceSerials(): Set<string> | null {
   return _sessionDevices;
@@ -116,7 +122,7 @@ export async function listAllDevices(): Promise<DeviceInfoProto[]> {
 // ─── Discovery ───
 
 async function discover(): Promise<void> {
-  const config = await loadConfig().catch(() => null);
+  const config = await loadMcpConfig(_configFile).then((result) => result.config).catch(() => null);
 
   // Collect candidate addresses from all sources
   const candidates = new Set<string>();
@@ -403,4 +409,5 @@ export function closeAllClients(): void {
   _sessionDevices = null;
   _ready = false;
   _connectingPromise = null;
+  _configFile = undefined;
 }

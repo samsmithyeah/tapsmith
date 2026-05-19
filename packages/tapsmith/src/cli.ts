@@ -19,7 +19,7 @@ import { runTestFile, collectResults, type TestResult, type SuiteResult } from '
 import { createReporters, ReporterDispatcher, type FullResult } from './reporter.js';
 import { ensureSessionReady, launchConfiguredApp } from './session-preflight.js';
 import { findAgentApk, findAgentTestApk } from './agent-resolve.js';
-import { glob } from 'glob';
+import { discoverTestFiles } from './test-file-discovery.js';
 import { resolveTraceConfig, isNetworkTracingEnabled, networkHostsForPac } from './trace/types.js';
 import { spawn, execFileSync } from 'node:child_process';
 import {
@@ -853,32 +853,6 @@ function teardownSequentialDevice(state: SequentialDeviceState): void {
   preserveEmulatorsForReuse(state.launchedEmulators);
 }
 
-// ─── Test file discovery ───
-
-async function discoverTestFiles(
-  patterns: string[],
-  rootDir: string,
-  explicitFiles?: string[],
-  extraIgnore?: string[],
-): Promise<string[]> {
-  if (explicitFiles && explicitFiles.length > 0) {
-    return explicitFiles.map((f) => path.resolve(rootDir, f));
-  }
-
-  const ignore = ['**/node_modules/**', '**/dist/**', ...(extraIgnore ?? [])];
-  const files: string[] = [];
-  for (const pattern of patterns) {
-    const matches = await glob(pattern, {
-      cwd: rootDir,
-      absolute: true,
-      ignore,
-    });
-    files.push(...matches);
-  }
-
-  return [...new Set(files)].sort();
-}
-
 function listConnectedDeviceSerials(): string[] {
   return listAdbDevices()
     .filter((d) => d.state === 'device')
@@ -1567,7 +1541,7 @@ ${bold('Usage:')}
   tapsmith verify-ios-network <udid>      Verify decrypted HTTPS capture is working on a physical iOS device
   tapsmith init                      Initialize a new Tapsmith project (interactive wizard)
   tapsmith doctor                    Check system health and dependencies
-  tapsmith mcp-server                Run MCP server for LLM/agent integration (stdio transport)
+  tapsmith mcp-server [--config file] Run MCP server for LLM/agent integration (stdio transport)
   tapsmith --version                 Print version
   tapsmith --help                    Show this help
 
@@ -1757,7 +1731,9 @@ async function main(): Promise<void> {
 
   if (args.command === 'mcp-server') {
     const { runMcpServer } = await import('./mcp/index.js');
-    await runMcpServer();
+    const forwardedArgv = process.argv.slice(process.argv.indexOf('mcp-server') + 1)
+      .filter((a) => a !== '--__tsx-reexec');
+    await runMcpServer(forwardedArgv);
     return;
   }
 

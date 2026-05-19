@@ -2436,6 +2436,6 @@ await expect(webview.locator(".loaded")).toBeVisible({ timeout: 10_000 })
 Tapsmith includes a built-in MCP server that lets AI coding agents interact with devices, run tests, and inspect results. It supports two transport modes:
 
 - **SSE mode** (via `tapsmith test --ui`) -- agent shares the UI session with full test tree, results, watch mode, and mutual exclusion. 16 tools available.
-- **Stdio mode** (via `tapsmith mcp-server`) -- standalone agent with its own daemon and device. 11 tools available.
+- **Stdio mode** (client-launched `tapsmith mcp-server`) -- standalone agent with its own headless test session, daemon, and device. Includes test discovery, results, watch mode, stop, and session info. 16 tools available.
 
 See the [MCP Server Guide](mcp-server.md) for setup instructions, the full tool reference, and the recommended workflow.

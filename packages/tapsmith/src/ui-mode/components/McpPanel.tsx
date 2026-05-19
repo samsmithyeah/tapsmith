@@ -138,13 +138,13 @@ function CopyableCommand({ label, command }: { label: string; command: string })
 }
 
 function McpSetupHint({ sseUrl }: { sseUrl: string }) {
-  const sseCommand = `claude mcp add tapsmith --transport sse ${sseUrl}`;
+  const claudeSseCommand = `claude mcp add tapsmith-ui --transport sse ${sseUrl}`;
 
   return (
     <div class="mcp-setup">
       <div class="mcp-setup-title">Connect your AI agent</div>
-      <CopyableCommand label="SSE endpoint" command={sseUrl} />
-      <CopyableCommand label="Claude Code (run in terminal)" command={sseCommand} />
+      <CopyableCommand label="MCP SSE endpoint" command={sseUrl} />
+      <CopyableCommand label="Claude Code SSE" command={claudeSseCommand} />
     </div>
   );
 }

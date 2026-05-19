@@ -18,7 +18,7 @@ import * as path from 'node:path';
 import { execFileSync, fork, spawn, type ChildProcess } from 'node:child_process';
 import { watch as chokidarWatch, type FSWatcher } from 'chokidar';
 import { WebSocketServer, type WebSocket } from 'ws';
-import { createMcpServer } from '../mcp/index.js';
+import { attachMcpClientEventReporting, createMcpServer } from '../mcp/index.js';
 import { McpEventEmitter } from '../mcp/events.js';
 import type { TestDispatcher, TestRunResult, TestResultEntry, TestTreeEntry, SessionInfo } from '../mcp/index.js';
 import { SSEServerTransport } from '@modelcontextprotocol/sdk/server/sse.js';
@@ -35,6 +35,7 @@ import { listPhysicalDevices } from '../ios-devicectl.js';
 import {
   deserializeTestResult,
   deserializeSuiteResult,
+  serializeConfig,
   type SerializedConfig,
   type RunFileUseOptions,
 } from '../worker-protocol.js';
@@ -304,28 +305,11 @@ export async function startUIServer(
   }
 
   const serializedConfig: SerializedConfig = {
-    timeout: ctx.config.timeout,
-    retries: ctx.config.retries,
-    screenshot: ctx.config.screenshot,
-    rootDir: ctx.config.rootDir,
-    outputDir: ctx.config.outputDir,
-    apk: ctx.config.apk,
-    activity: ctx.config.activity,
-    package: ctx.config.package,
-    agentApk: ctx.config.agentApk,
-    agentTestApk: ctx.config.agentTestApk,
+    ...serializeConfig(ctx.config),
+    // UI mode always enables tracing for the trace viewer
     trace: typeof ctx.config.trace === 'string' || typeof ctx.config.trace === 'object'
       ? ctx.config.trace
       : 'on',
-    video: typeof ctx.config.video === 'string' || typeof ctx.config.video === 'object'
-      ? ctx.config.video
-      : undefined,
-    platform: ctx.config.platform,
-    app: ctx.config.app,
-    iosXctestrun: ctx.config.iosXctestrun,
-    simulator: ctx.config.simulator,
-    baseURL: ctx.config.baseURL,
-    extraHTTPHeaders: ctx.config.extraHTTPHeaders,
   };
 
   // Resolve a friendly display name for single-worker mode (e.g. UUID → "iPhone 17").
@@ -506,7 +490,7 @@ export async function startUIServer(
   };
 
   const mcpEvents = new McpEventEmitter();
-  const mcpServer = createMcpServer({ events: mcpEvents, dispatcher: testDispatcher });
+  const mcpServer = createMcpServer({ name: 'tapsmith-ui', events: mcpEvents, dispatcher: testDispatcher });
   let mcpTransport: SSEServerTransport | null = null;
   let mcpClientName: string | undefined;
   let mcpClientVersion: string | undefined;
@@ -534,27 +518,9 @@ export async function startUIServer(
     broadcast(getMcpStatus());
   });
 
-  // Intercept MCP client connection info from the initialize request
-  const origConnect = mcpServer.server.connect.bind(mcpServer.server);
-  mcpServer.server.connect = async function (transport) {
-    const origOnMessage = transport.onmessage;
-    transport.onmessage = (msg, extra) => {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- inspecting raw JSON-RPC
-      const rpc = msg as any;
-      if (rpc.method === 'initialize' && rpc.params?.clientInfo) {
-        mcpEvents.emitClientChange({
-          name: rpc.params.clientInfo.name ?? 'Unknown',
-          version: rpc.params.clientInfo.version ?? '',
-        });
-      }
-      origOnMessage?.(msg, extra);
-    };
-    transport.onclose = () => {
-      mcpEvents.emitClientChange(null);
-      mcpTransport = null;
-    };
-    return origConnect(transport);
-  };
+  attachMcpClientEventReporting(mcpServer, mcpEvents, () => {
+    mcpTransport = null;
+  });
 
   // ─── Test Discovery ───
 
