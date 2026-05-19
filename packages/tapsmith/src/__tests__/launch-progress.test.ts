@@ -1,5 +1,5 @@
 import { Writable } from 'node:stream';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import type { TapsmithConfig } from '../config.js';
 import type { ResolvedProject } from '../project.js';
 import { createUiLaunchSteps, formatLaunchTable, UiLaunchProgress, type LaunchStep } from '../launch-progress.js';
@@ -154,7 +154,8 @@ describe('formatLaunchTable', () => {
 
     const table = formatLaunchTable(steps, { color: false, columns: 90 });
 
-    expect(table).toContain('Preparing UI mode');
+    expect(table).toContain('UI mode');
+    expect(table).toMatch(/^UI mode\n\nSTEP/);
     expect(table).toContain('Config      ✓');
     expect(table).toContain('UI workers  2/4');
     expect(table).toContain('Worker 2: starting Tapsmith agent');
@@ -177,6 +178,36 @@ describe('formatLaunchTable', () => {
     expect(table).toContain('2/4 UI worker(s) ready; 2 failed');
     expect(table).not.toContain('UI workers  ✓');
   });
+
+  it('renders spinner frames for running table rows', () => {
+    const steps: LaunchStep[] = [
+      { id: 'primary-device', label: 'Primary device', state: 'running', detail: 'checking emulator-5554' },
+      {
+        id: 'ui-workers',
+        label: 'UI workers',
+        state: 'running',
+        detail: 'Worker 2: starting Tapsmith agent',
+        progress: { done: 2, total: 4 },
+      },
+    ];
+
+    const table = formatLaunchTable(steps, { color: false, columns: 90, spinnerFrame: '⠙' });
+
+    expect(table).toContain('Primary device  ⠙');
+    expect(table).toContain('UI workers      ⠙ 2/4');
+  });
+
+  it('omits the title block when the title is empty', () => {
+    const steps: LaunchStep[] = [
+      { id: 'config', label: 'Config', state: 'done', detail: '1 worker | 1 test file' },
+    ];
+
+    const table = formatLaunchTable(steps, { color: false, columns: 90, title: '' });
+
+    expect(table).toMatch(/^STEP\s+STATUS\s+DETAILS/);
+    expect(table).not.toContain('UI mode');
+    expect(table).not.toContain('Test run');
+  });
 });
 
 describe('UiLaunchProgress', () => {
@@ -188,7 +219,7 @@ describe('UiLaunchProgress', () => {
         { id: 'primary-device', label: 'Primary device', state: 'pending', detail: 'select connected Android device' },
         { id: 'daemon', label: 'Daemon', state: 'pending', detail: 'start tapsmith-core' },
       ],
-      { stream, forceInteractive: false, color: false, title: 'Preparing test run' },
+      { stream, forceInteractive: false, color: false, title: '' },
     );
 
     progress.start('primary-device');
@@ -197,7 +228,8 @@ describe('UiLaunchProgress', () => {
     progress.finish();
 
     const output = stream.output();
-    expect(output).toContain('Preparing test run\n');
+    expect(output).not.toContain('Test run');
+    expect(output).toMatch(/^✓\s+Config: 1 worker \| 1 test file\n/);
     expect(output).toContain('✓     Config: 1 worker | 1 test file\n');
     expect(output).toContain('…     Primary device: select connected Android device\n');
     expect(output).toContain('✓     Primary device: emulator-5554 awake and unlocked\n');
@@ -217,12 +249,38 @@ describe('UiLaunchProgress', () => {
     );
 
     progress.start('primary-device', 'checking emulator-5554');
+    progress.finish();
 
     const output = stream.output();
     expect(output).not.toContain('\x1b[s');
     expect(output).not.toContain('\x1b[u');
     expect(output).toContain('\x1b[1G');
     expect(output).toContain('\x1b[0J');
+  });
+
+  it('animates running rows in interactive output', () => {
+    vi.useFakeTimers();
+    try {
+      const stream = new CaptureStream();
+      const progress = new UiLaunchProgress(
+        [
+          { id: 'config', label: 'Config', state: 'done', detail: '1 worker | 1 test file' },
+          { id: 'primary-device', label: 'Primary device', state: 'pending', detail: 'select connected Android device' },
+        ],
+        { stream, forceInteractive: true, color: false },
+      );
+
+      progress.start('primary-device', 'checking emulator-5554');
+      expect(stream.output()).toContain('Primary device  ⠋');
+
+      vi.advanceTimersByTime(120);
+
+      expect(stream.output()).toContain('Primary device  ⠙');
+      progress.complete('primary-device', 'ready');
+      progress.finish();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('redraws the table around external stdout writes while active', () => {
@@ -262,6 +320,6 @@ describe('UiLaunchProgress', () => {
 
     const output = chunks.join('');
     expect(output.match(/external log/g)).toHaveLength(1);
-    expect(output).toContain('\x1b[0Jexternal log\nPreparing UI mode');
+    expect(output).toContain('\x1b[0Jexternal log\nUI mode');
   });
 });

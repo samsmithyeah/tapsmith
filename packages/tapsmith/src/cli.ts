@@ -82,8 +82,8 @@ function countLabel(count: number, singular: string, plural = `${singular}s`): s
 function printTapsmithBanner(): void {
   console.log();
   const banner = figlet.textSync('Tapsmith', { font: 'Three Point' });
-  console.log(banner.split('\n').map((line) => `  ${GREEN}${line}${RESET}`).join('\n'));
-  console.log(dim(`  v${getVersion()}`));
+  console.log(banner.split('\n').map((line) => `${GREEN}${line}${RESET}`).join('\n'));
+  console.log(dim(`v${getVersion()}`));
   console.log();
 }
 
@@ -1976,7 +1976,7 @@ async function main(): Promise<void> {
       projects: hasProjects ? projects : undefined,
       workerPlanWarning,
     }), {
-      title: args.ui ? 'Preparing UI mode' : 'Preparing test run',
+      title: args.ui ? 'UI mode' : '',
     })
     : undefined;
   activeLaunchProgress = launchProgress;

@@ -550,8 +550,8 @@ export async function runInit(): Promise<void> {
 async function runInitInner(): Promise<void> {
   console.log();
   const banner = figlet.textSync('Tapsmith', { font: 'Three Point' });
-  console.log(banner.split('\n').map((l) => `  ${GREEN}${l}${RESET}`).join('\n'));
-  console.log(dim(`  v${getVersion()}`));
+  console.log(banner.split('\n').map((l) => `${GREEN}${l}${RESET}`).join('\n'));
+  console.log(dim(`v${getVersion()}`));
 
   // Check for existing config
   const configNames = ['tapsmith.config.ts', 'tapsmith.config.mjs', 'tapsmith.config.js'];
