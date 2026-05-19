@@ -12,17 +12,32 @@ When running `tapsmith test --ui`, an SSE MCP endpoint is hosted alongside the U
 
 This mode has **16 tools** including test discovery, result browsing, watch mode, and session info.
 
-To connect, copy the SSE URL from the MCP panel in the UI into any MCP client that supports SSE transport. For Claude Code, you can run:
+To connect, copy the SSE URL from the MCP panel in the UI into any MCP client that supports SSE transport. Replace the example URL below with the URL shown in the UI.
+
+Claude Code:
 
 ```bash
 claude mcp add tapsmith --transport sse http://localhost:9274/mcp
+```
+
+Generic MCP SSE config:
+
+```json
+{
+  "mcpServers": {
+    "tapsmith": {
+      "transport": "sse",
+      "url": "http://localhost:9274/mcp"
+    }
+  }
+}
 ```
 
 The MCP panel in the UI shows the connection status and a live activity feed of all tool calls.
 
 ### Stdio mode
 
-Run `tapsmith mcp-server` as a standalone subprocess. The agent gets its own headless test session, daemon, and device, fully independent from any UI session.
+Configure your MCP client to launch `tapsmith mcp-server` over stdio. You normally do not run this command directly; Codex, Claude Code, or another MCP client starts it as a subprocess when needed. The agent gets its own headless test session, daemon, and device, fully independent from any UI session.
 
 This mode has **16 tools** including test discovery, result browsing, watch mode, stop, and session info. Test files and projects are discovered lazily on the first test-management tool call.
 
@@ -51,7 +66,7 @@ Generic MCP stdio config:
 }
 ```
 
-To use a non-default Tapsmith config, include the config flag in the server command:
+To use a non-default Tapsmith config, include the config flag in the command your MCP client launches:
 
 ```bash
 codex mcp add tapsmith-ios -- npx tapsmith mcp-server --config tapsmith.config.ios.mjs
@@ -187,7 +202,7 @@ Returns trace metadata (device, platform, test file, duration) followed by a ste
 
 ### Test session tools (both modes)
 
-These tools operate on the current MCP test session. In SSE mode that is the browser UI session; in stdio mode it is the standalone headless session created by `tapsmith mcp-server`.
+These tools operate on the current MCP test session. In SSE mode that is the browser UI session; in stdio mode it is the standalone headless session created by the client-launched `tapsmith mcp-server` subprocess.
 
 #### `tapsmith_list_tests`
 
@@ -255,7 +270,7 @@ Returns a message indicating whether watch mode was enabled or disabled.
 
 ### Headless stdio workflow
 
-1. **Register the server:** `codex mcp add tapsmith -- npx tapsmith mcp-server`
+1. **Add the MCP server config:** `codex mcp add tapsmith -- npx tapsmith mcp-server`
 2. **Understand the environment:** call `tapsmith_session_info` to lazy-load config, connect a device, and show project settings
 3. **Discover tests:** call `tapsmith_list_tests` to get file paths, test names, and project names from the headless session
 4. **Explore the screen:** use `tapsmith_snapshot` and `tapsmith_test_selector` against the headless session's selected device
