@@ -54,6 +54,12 @@ For emulator-managed runs, the recommended path is `launchEmulators + avd`.
 | `video` | `VideoMode \| Partial<VideoConfig>` | `"off"` | Continuous video recording of the device screen. See [VideoMode](#videomode) below. |
 | `grep` | `RegExp \| RegExp[]` | `undefined` | Run only tests whose fullName (`describe > test`) matches at least one of these regular expressions. Mirrors Playwright's `grep` and the `--grep` / `-g` CLI flag. |
 | `grepInvert` | `RegExp \| RegExp[]` | `undefined` | Skip tests whose fullName matches any of these regular expressions. Mirrors Playwright's `grepInvert` and the `--grep-invert` CLI flag. |
+| `baseURL` | `string` | `undefined` | Base URL for the `request` fixture. Relative paths in `request.get("/path")` are resolved against this. |
+| `extraHTTPHeaders` | `Record<string, string>` | `undefined` | Default headers sent with every `request` fixture call (e.g., `Authorization`). Per-request headers override these when names collide. |
+| `doubleTapInterval` | `number` | `100` | Default interval in milliseconds between the two taps in `doubleTap()`. Can be overridden per-call via `doubleTap({ intervalMs: 150 })`. |
+| `resetAppDeepLink` | `string` | `undefined` | Deep link URI to navigate to between test files for a soft app reset. When set, Tapsmith opens this deep link instead of force-stopping and relaunching the app between files. Faster than a full restart when the app has a "reset state" deep link handler. |
+| `resetAppWaitMs` | `number` | `undefined` | Time in milliseconds to wait after navigating the `resetAppDeepLink` before starting the next test file. Gives the app time to finish resetting. |
+| `testIgnore` | `string[]` | `[]` | Glob patterns for excluding test files from discovery. Files matching any pattern are skipped even if they match `testMatch`. |
 
 ### `ScreenshotMode`
 
@@ -494,6 +500,42 @@ In practice, most users set this via the CLI instead:
 ```bash
 npx tapsmith test --shard=1/4
 ```
+
+### Soft App Reset via Deep Link
+
+If your app supports a deep link that resets state (faster than a full force-stop/relaunch cycle), configure it:
+
+```typescript
+import { defineConfig } from "tapsmith";
+
+export default defineConfig({
+  apk: "./app-debug.apk",
+  package: "com.example.myapp",
+  resetAppDeepLink: "myapp://reset",
+  resetAppWaitMs: 1000, // Wait 1s after the deep link for the reset to complete
+});
+```
+
+Between test files, Tapsmith navigates the deep link instead of force-stopping and relaunching the app. This is significantly faster for apps that support it.
+
+### API Request Fixture
+
+Configure defaults for the `request` fixture used in tests:
+
+```typescript
+import { defineConfig } from "tapsmith";
+
+export default defineConfig({
+  apk: "./app-debug.apk",
+  baseURL: "https://api.example.com",
+  extraHTTPHeaders: {
+    Authorization: "Bearer my-ci-token",
+    "X-Test-Run": "true",
+  },
+});
+```
+
+With `baseURL` set, relative paths in `request.get("/users")` resolve to `https://api.example.com/users`. Per-request headers override `extraHTTPHeaders` when names collide.
 
 ## Config File Resolution
 

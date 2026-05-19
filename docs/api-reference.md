@@ -1393,6 +1393,89 @@ describe("authenticated tests", () => {
 });
 ```
 
+### `TestFixtures`
+
+The fixtures object passed to every test function. Destructure the fields you need:
+
+```typescript
+test("example", async ({ device, request, projectName, platform }) => {
+  // device — the primary interface for interacting with the mobile device
+  // request — HTTP client for API calls (seeding data, fetching tokens, etc.)
+  // projectName — current project name (when using multi-project config), or undefined
+  // platform — resolved platform: "android" or "ios"
+});
+```
+
+| Fixture | Type | Description |
+|---|---|---|
+| `device` | `Device` | Primary interface for interacting with the mobile device |
+| `request` | `APIRequestContext` | HTTP client for API calls. See [API Request Fixture](#api-request-fixture). |
+| `projectName` | `string \| undefined` | Name of the current project (from `projects` config). `undefined` when no projects are configured. |
+| `platform` | `'android' \| 'ios'` | Resolved target platform for the current worker. |
+
+### `test.extend<T>(definitions): TestFn`
+
+Create a new test function with additional custom fixtures. Follows the same pattern as Playwright's `test.extend()`.
+
+Each fixture definition is a function that receives all other fixtures and a `use` callback. The fixture sets up its value, passes it to `use()`, and optionally cleans up after `use()` resolves.
+
+```typescript
+import { test as base, expect } from "tapsmith";
+
+// Define a custom fixture that seeds a todo item via the API before each test
+const test = base.extend<{ todoId: string }>({
+  todoId: async ({ request }, use) => {
+    // Setup: create a todo item via the API
+    const res = await request.post("https://api.example.com/todos", {
+      data: { title: "Buy groceries", completed: false },
+    });
+    const { id } = await res.json() as { id: string };
+
+    // Provide the fixture value to the test
+    await use(id);
+
+    // Teardown: clean up after the test (runs even if the test fails)
+    await request.delete(`https://api.example.com/todos/${id}`);
+  },
+});
+
+test("can mark todo as complete", async ({ device, todoId, request }) => {
+  await device.getByText("Refresh").tap();
+  await device.getByText("Buy groceries").tap();
+  await expect(device.getByRole("checkbox")).toBeChecked();
+
+  // Verify the change persisted via the API
+  const res = await request.get(`https://api.example.com/todos/${todoId}`);
+  const todo = await res.json() as { completed: boolean };
+  expect(todo.completed).toBe(true);
+});
+```
+
+> **For authentication**, prefer setup projects with `device.saveAppState()` and `test.use({ appState })` instead of custom fixtures. This mirrors Playwright's `storageState` pattern — authenticate once, save to a file, and restore across all tests. See the [auth state example](#reusable-auth-state) above and the [Authentication patterns](writing-tests.md#authentication-patterns) section in the Writing Tests guide.
+
+**Fixture scopes:**
+
+By default, fixtures have `test` scope (created and torn down for each test). Use a tuple to specify `worker` scope (created once per worker, shared across tests):
+
+```typescript
+const test = base.extend<{ apiToken: string }>({
+  apiToken: [async ({ request }, use) => {
+    const res = await request.post("https://api.example.com/auth/service-token", {
+      data: { clientId: process.env.API_CLIENT_ID },
+    });
+    const { token } = await res.json() as { token: string };
+    await use(token);
+  }, { scope: "worker" }],
+});
+```
+
+| Scope | Lifecycle | Use for |
+|---|---|---|
+| `test` (default) | Created before each test, torn down after | Per-test data (seeded records, temp files) |
+| `worker` | Created once when the worker starts, torn down when it ends | Expensive setup (API tokens, database connections) |
+
+Custom fixtures can depend on other custom fixtures — they're resolved in dependency order automatically.
+
 ### `describe(name: string, fn: () => void): void`
 
 Group tests into a suite.
@@ -1408,33 +1491,36 @@ describe("Login flow", () => {
 
 Focus or skip an entire suite.
 
-### `beforeAll(fn: () => void | Promise<void>): void`
+### `beforeAll(fn: (fixtures) => void | Promise<void>): void`
 
-Run a function once before all tests in the current suite.
+Run a function once before all tests in the current suite. Receives `{ device, projectName }`.
 
 ```typescript
-beforeAll(async () => {
-  // Set up shared state
+beforeAll(async ({ device }) => {
+  // One-time setup for the suite
+  await device.launchApp("com.example.myapp", { clearData: true });
 });
 ```
 
-### `afterAll(fn: () => void | Promise<void>): void`
+### `afterAll(fn: (fixtures) => void | Promise<void>): void`
 
-Run a function once after all tests in the current suite.
+Run a function once after all tests in the current suite. Receives `{ device, projectName }`.
 
-### `beforeEach(fn: () => void | Promise<void>): void`
+### `beforeEach(fn: (fixtures) => void | Promise<void>): void`
 
-Run a function before each test in the current suite. Hooks are inherited by nested suites.
+Run a function before each test in the current suite. Hooks are inherited by nested suites. Receives `{ device, projectName }`.
 
 ```typescript
-beforeEach(async () => {
-  // Reset app state
+beforeEach(async ({ device }) => {
+  await device.restartApp("com.example.myapp");
 });
 ```
 
-### `afterEach(fn: () => void | Promise<void>): void`
+### `afterEach(fn: (fixtures) => void | Promise<void>): void`
 
-Run a function after each test in the current suite. Runs even if the test fails.
+Run a function after each test in the current suite. Runs even if the test fails. Receives `{ device, projectName }`.
+
+> **Note:** Hooks receive `device` and `projectName` only. The `request` fixture is test-scoped and only available inside `test()` callbacks. `platform` is not currently passed to hooks — if you need the platform in a hook, read it from the config or use `projectName` to infer it.
 
 ---
 
@@ -1956,6 +2042,72 @@ npx tapsmith test -g checkout --grep-invert wip  # Checkout tests, excluding wor
 ```
 
 Also configurable in `tapsmith.config.ts` as `grepInvert: RegExp | RegExp[]`, with per-project entries unioned with the root entry.
+
+### `tapsmith test --watch` / `tapsmith test -w`
+
+Watch test files for changes and re-run them automatically. The daemon, device, and agent are kept alive across re-runs, so only the app reset + test execution cost is paid (~1-2s per re-run).
+
+```bash
+npx tapsmith test --watch
+npx tapsmith test -w tests/login.test.ts   # Watch a specific file
+```
+
+See [Watch and UI Mode](watch-and-ui-mode.md) for details.
+
+### `tapsmith test --ui`
+
+Open the interactive UI mode in the browser. Provides a web-based test runner with a test tree, click-to-run, live progress, and an MCP endpoint for AI agent integration.
+
+```bash
+npx tapsmith test --ui
+npx tapsmith test --ui --ui-port 8080   # Use a specific port
+```
+
+See [Watch and UI Mode](watch-and-ui-mode.md) for details.
+
+### `tapsmith test --config <path>` / `tapsmith test -c <path>`
+
+Use a specific config file instead of the default `tapsmith.config.ts`:
+
+```bash
+npx tapsmith test -c tapsmith.config.ci.ts
+npx tapsmith test --config=./configs/ios.config.mjs
+```
+
+### `tapsmith test --force-install`
+
+Force reinstall the APK/app and agent on every run, even if they're already installed. Useful when the app has been updated outside of Tapsmith, or when troubleshooting agent issues.
+
+```bash
+npx tapsmith test --force-install
+```
+
+Without this flag, Tapsmith checks if the package is already installed and skips the install step to save time.
+
+### `tapsmith init`
+
+Run the interactive setup wizard. Detects your environment (ADB, Xcode, simulators, emulators), walks you through platform and app configuration, and generates a `tapsmith.config.ts` file and an example test.
+
+```bash
+npx tapsmith init
+```
+
+### `tapsmith doctor`
+
+Run a non-interactive system health check. Verifies all prerequisites: Node.js version, daemon binary, ADB (Android), agent APKs, Xcode (iOS), simulators, and iOS network capture dependencies. Exits with code 0 if all checks pass, 1 if any hard errors.
+
+```bash
+npx tapsmith doctor
+```
+
+### `tapsmith list-devices [--json]`
+
+Print a table of every device Tapsmith can target: Android (ADB), iOS simulators (simctl), and iOS physical devices (devicectl). Each row shows a one-line status (`Ready` or an imperative fix). `--json` emits machine-readable JSON.
+
+```bash
+npx tapsmith list-devices
+npx tapsmith list-devices --json
+```
 
 ### `tapsmith show-trace <file.zip>`
 
