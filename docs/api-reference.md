@@ -1520,7 +1520,7 @@ beforeEach(async ({ device }) => {
 
 Run a function after each test in the current suite. Runs even if the test fails. Receives `{ device, projectName }`.
 
-> **Note:** Hooks receive `device` and `projectName` but not `request` or `platform`. The `request` fixture is test-scoped and only available inside `test()` callbacks. Use `device` for any device interaction in hooks.
+> **Note:** Hooks receive `device` and `projectName` only. The `request` fixture is test-scoped and only available inside `test()` callbacks. `platform` is not currently passed to hooks — if you need the platform in a hook, read it from the config or use `projectName` to infer it.
 
 ---
 
