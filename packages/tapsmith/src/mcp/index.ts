@@ -330,10 +330,10 @@ export async function runMcpServer(
   }
 
   const banner = figlet.textSync('Tapsmith', { font: 'Three Point' });
-  process.stderr.write('\n' + banner.split('\n').map((line) => `  ${GREEN}${line}${RESET}`).join('\n') + '\n');
+  process.stderr.write('\n' + banner.split('\n').map((line) => `${GREEN}${line}${RESET}`).join('\n') + '\n');
   try {
     const pkg = JSON.parse(fs.readFileSync(path.resolve(__dirname, '../../package.json'), 'utf-8'));
-    process.stderr.write(`  ${DIM}v${pkg.version}${RESET}\n`);
+    process.stderr.write(`${DIM}v${pkg.version}${RESET}\n`);
   } catch { /* version not available */ }
   process.stderr.write(`\n  ${DIM}MCP server running on stdio transport. Waiting for an MCP client on stdin...${RESET}\n`);
   process.stderr.write(`  ${DIM}Stdio clients start this command as a subprocess; another terminal cannot attach to this process.${RESET}\n`);
