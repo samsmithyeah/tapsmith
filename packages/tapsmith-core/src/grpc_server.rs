@@ -339,8 +339,9 @@ impl TapsmithServiceImpl {
         // Verify the accessibility tree has content — WaitForIdle on iOS is
         // just a brief sleep, so the app may still be loading its first screen.
         if wait_for_idle {
+            let hierarchy_timeout = idle_timeout_ms.min(5_000);
             let hierarchy = self
-                .send_agent_command_raw(&AgentCommand::GetUiHierarchy {}, 5_000)
+                .send_agent_command_raw(&AgentCommand::GetUiHierarchy {}, hierarchy_timeout)
                 .await
                 .map_err(|status| status.message().to_string())?;
             if !hierarchy.success {
@@ -529,7 +530,6 @@ impl TapsmithServiceImpl {
                 if msg.contains("exit status: 65") {
                     tracing::warn!("xcodebuild exited 65 (Busy), retrying after delay");
                     tokio::time::sleep(Duration::from_secs(3)).await;
-                    ios::agent_launch::kill_existing_agents_on(serial).await;
                     ios::agent_launch::start_agent_fresh(
                         serial,
                         &config.xctestrun_path,
