@@ -67,6 +67,10 @@ export function createMcpServer(options?: McpServerOptions): McpServer {
     version: '0.1.0',
   });
 
+  if (events) {
+    wrapToolRegistrationsWithEvents(server, events);
+  }
+
   registerSnapshotTool(server);
   registerScreenshotTool(server);
   registerTestSelectorTool(server);
@@ -82,11 +86,6 @@ export function createMcpServer(options?: McpServerOptions): McpServer {
     registerStopTestsTool(server, dispatcher);
     registerSessionInfoTool(server, dispatcher);
     registerWatchTool(server, dispatcher);
-  }
-
-  // Wrap tool handlers with event emission
-  if (events) {
-    wrapToolsWithEvents(server, events);
   }
 
   // Register API reference as a resource
@@ -117,25 +116,16 @@ export function attachMcpClientEventReporting(
 ): void {
   let connected = false;
 
-  // The SDK owns transport callbacks after connect(), so report client identity
-  // from the initialize request handler instead of trying to wrap transport I/O.
-  // This private handler map is a maintenance risk across MCP SDK upgrades.
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- accessing private _requestHandlers
-  const handlers = (server.server as any)._requestHandlers as Map<string, (...args: unknown[]) => unknown>;
-  const originalInitialize = handlers.get('initialize');
-  if (originalInitialize) {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- wrapping internal handler
-    handlers.set('initialize', async (request: any, extra: any) => {
-      const result = await originalInitialize(request, extra);
-      const client = server.server.getClientVersion() ?? request.params?.clientInfo;
-      connected = true;
-      events.emitClientChange({
-        name: client?.name ?? 'Unknown',
-        version: client?.version ?? '',
-      });
-      return result;
+  const previousOnInitialized = server.server.oninitialized;
+  server.server.oninitialized = () => {
+    previousOnInitialized?.();
+    const client = server.server.getClientVersion();
+    connected = true;
+    events.emitClientChange({
+      name: client?.name ?? 'Unknown',
+      version: client?.version ?? '',
     });
-  }
+  };
 
   const previousOnClose = server.server.onclose;
   server.server.onclose = () => {
@@ -148,69 +138,94 @@ export function attachMcpClientEventReporting(
   };
 }
 
-function wrapToolsWithEvents(server: McpServer, events: McpEventEmitter): void {
-  // The SDK sets the tools/call handler during tool registration (before we
-  // get here). Access the internal handler map and wrap the existing handler.
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- accessing private _requestHandlers
-  const handlers = (server.server as any)._requestHandlers as Map<string, (...args: unknown[]) => unknown>;
-  const original = handlers.get('tools/call');
-  if (!original) return;
+function wrapToolRegistrationsWithEvents(server: McpServer, events: McpEventEmitter): void {
+  const originalTool = server.tool.bind(server) as (...args: unknown[]) => unknown;
+  (server as unknown as { tool: (...args: unknown[]) => unknown }).tool = (...args: unknown[]): unknown => {
+    const toolName = typeof args[0] === 'string' ? args[0] : 'unknown_tool';
+    const callbackIndex = lastFunctionIndex(args);
+    if (callbackIndex < 0) return originalTool(...args);
 
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- wrapping internal handler
-  handlers.set('tools/call', async (request: any, extra: any) => {
-    const toolName = request.params?.name as string;
-    const args = (request.params?.arguments ?? {}) as Record<string, unknown>;
-    const callId = nextCallId();
-    const start = Date.now();
+    const callback = args[callbackIndex] as (...callbackArgs: unknown[]) => unknown;
+    const wrappedCallback = (...callbackArgs: unknown[]): Promise<CallToolResult> => {
+      const toolArgs = callbackArgs.length >= 2 && isRecord(callbackArgs[0])
+        ? callbackArgs[0]
+        : {};
+      return callToolWithEvents(events, toolName, toolArgs, () => callback(...callbackArgs));
+    };
+
+    const wrappedArgs = [...args];
+    wrappedArgs[callbackIndex] = wrappedCallback;
+    return originalTool(...wrappedArgs);
+  };
+}
+
+async function callToolWithEvents(
+  events: McpEventEmitter,
+  toolName: string,
+  args: Record<string, unknown>,
+  callback: () => unknown,
+): Promise<CallToolResult> {
+  const callId = nextCallId();
+  const start = Date.now();
+
+  events.emitToolCall({
+    id: callId,
+    tool: toolName,
+    args,
+    status: 'started',
+    timestamp: start,
+  });
+
+  try {
+    const result = await callback() as CallToolResult;
+    const elapsed = Date.now() - start;
+    const resultText = (result.content ?? [])
+      .filter((c: { type: string }) => c.type === 'text')
+      .map((c) => 'text' in c ? (c as { text: string }).text : '')
+      .join('\n');
+    const eventResultText = truncateResultText(resultText);
+    const errorText = result.isError
+      ? eventResultText.resultTruncated
+        ? `${eventResultText.resultText}\n... truncated`
+        : eventResultText.resultText || resultText || 'Unknown tool error'
+      : undefined;
 
     events.emitToolCall({
       id: callId,
       tool: toolName,
       args,
-      status: 'started',
+      status: result.isError ? 'error' : 'completed',
+      resultSummary: summarizeResult(toolName, resultText),
+      ...eventResultText,
+      error: errorText,
+      durationMs: elapsed,
       timestamp: start,
     });
 
-    try {
-      const result = await original(request, extra) as CallToolResult;
-      const elapsed = Date.now() - start;
-      const resultText = (result.content ?? [])
-        .filter((c: { type: string }) => c.type === 'text')
-        .map((c) => 'text' in c ? (c as { text: string }).text : '')
-        .join('\n');
-      const eventResultText = truncateResultText(resultText);
-      const errorText = result.isError
-        ? eventResultText.resultTruncated
-          ? `${eventResultText.resultText}\n... truncated`
-          : eventResultText.resultText || resultText || 'Unknown tool error'
-        : undefined;
+    return result;
+  } catch (err) {
+    events.emitToolCall({
+      id: callId,
+      tool: toolName,
+      args,
+      status: 'error',
+      error: err instanceof Error ? err.message : String(err),
+      durationMs: Date.now() - start,
+      timestamp: start,
+    });
+    throw err;
+  }
+}
 
-      events.emitToolCall({
-        id: callId,
-        tool: toolName,
-        args,
-        status: result.isError ? 'error' : 'completed',
-        resultSummary: summarizeResult(toolName, resultText),
-        ...eventResultText,
-        error: errorText,
-        durationMs: elapsed,
-        timestamp: start,
-      });
+function lastFunctionIndex(items: unknown[]): number {
+  for (let i = items.length - 1; i >= 0; i--) {
+    if (typeof items[i] === 'function') return i;
+  }
+  return -1;
+}
 
-      return result;
-    } catch (err) {
-      events.emitToolCall({
-        id: callId,
-        tool: toolName,
-        args,
-        status: 'error',
-        error: err instanceof Error ? err.message : String(err),
-        durationMs: Date.now() - start,
-        timestamp: start,
-      });
-      throw err;
-    }
-  });
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
 function parseMcpServerArgs(argv: string[]): RunMcpServerOptions & { help?: boolean } {

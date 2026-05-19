@@ -4,7 +4,7 @@ import type { TestDispatcher, TestTreeEntry } from '../test-dispatcher.js';
 export function registerListTestsTool(server: McpServer, dispatcher: TestDispatcher): void {
   server.tool(
     'tapsmith_list_tests',
-    'List all test files, projects, and test names discovered by the current UI session. Returns the full test tree grouped by project (e.g. "android", "ios"), with absolute file paths, describe blocks, and individual test names. Call this before tapsmith_run_tests to get the exact file paths, test names, and project names needed as arguments.',
+    'List all test files, projects, and test names discovered by the current MCP test session. Returns the full test tree grouped by project (e.g. "android", "ios"), with absolute file paths, describe blocks, and individual test names. Call this before tapsmith_run_tests to get the exact file paths, test names, and project names needed as arguments.',
     {},
     async () => {
       await dispatcher.ensureInitialized?.();

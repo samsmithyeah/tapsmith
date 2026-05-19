@@ -22,9 +22,9 @@ The MCP panel in the UI shows the connection status and a live activity feed of 
 
 ### Stdio mode
 
-Run `tapsmith mcp-server` as a standalone subprocess. The agent gets its own daemon and device, fully independent from any UI session.
+Run `tapsmith mcp-server` as a standalone subprocess. The agent gets its own headless test session, daemon, and device, fully independent from any UI session.
 
-This mode has **11 tools** — device interaction and test execution, but no session-aware tools (test tree, results, watch, stop).
+This mode has **16 tools** including test discovery, result browsing, watch mode, stop, and session info. Test files and projects are discovered lazily on the first test-management tool call.
 
 Codex CLI:
 
@@ -58,7 +58,7 @@ codex mcp add tapsmith-ios -- npx tapsmith mcp-server --config tapsmith.config.i
 claude mcp add tapsmith-ios -- npx tapsmith mcp-server --config tapsmith.config.ios.mjs
 ```
 
-If a UI server is already running, stdio mode will detect it and suggest connecting via SSE instead.
+If a UI server is already running, stdio mode will detect it and suggest connecting via SSE instead. Use SSE when you want the agent and browser UI to share one visible session; use stdio when you want a standalone agent-owned session.
 
 ## Tool Reference
 
@@ -155,7 +155,7 @@ Returns a JSON array of device objects with `serial`, `model`, `platform` (andro
 
 #### `tapsmith_run_tests`
 
-Run Tapsmith test files and return structured results. Only one test run can execute at a time. In SSE mode, runs appear in the UI with full progress tracking.
+Run Tapsmith test files and return structured results. Only one test run can execute at a time. In SSE mode, runs appear in the UI with full progress tracking. In stdio mode, runs execute in the headless MCP session and results are available through `tapsmith_list_results`.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
@@ -185,13 +185,13 @@ Read a Tapsmith trace archive (.zip) and return step-by-step test execution data
 
 Returns trace metadata (device, platform, test file, duration) followed by a step-by-step action list with status, selectors, durations, and error details.
 
-### Session tools (SSE mode only)
+### Test session tools (both modes)
 
-These tools are only available when the MCP server is running via `tapsmith test --ui`.
+These tools operate on the current MCP test session. In SSE mode that is the browser UI session; in stdio mode it is the standalone headless session created by `tapsmith mcp-server`.
 
 #### `tapsmith_list_tests`
 
-List all test files, projects, and test names discovered by the current UI session. Call this before `tapsmith_run_tests` to get exact file paths, test names, and project names.
+List all test files, projects, and test names discovered by the current MCP test session. Call this before `tapsmith_run_tests` to get exact file paths, test names, and project names.
 
 No parameters.
 
@@ -239,7 +239,9 @@ Toggle watch mode on a test file. When enabled, the file automatically re-runs o
 
 Returns a message indicating whether watch mode was enabled or disabled.
 
-## Typical workflow
+## Typical workflows
+
+### UI-shared workflow
 
 1. **Start the UI:** `tapsmith test --ui`
 2. **Connect your agent** to the SSE endpoint shown in the MCP panel
@@ -250,6 +252,15 @@ Returns a message indicating whether watch mode was enabled or disabled.
 7. **Review results:** use `tapsmith_list_results` to browse all results, optionally filtering by status or file. Pass `details: true` to see trace steps for failures
 8. **Debug failures:** use `tapsmith_read_trace` with the trace file path from the failure report for step-by-step debugging
 9. **Iterate:** toggle `tapsmith_watch` on files being actively developed for automatic re-runs on save
+
+### Headless stdio workflow
+
+1. **Register the server:** `codex mcp add tapsmith -- npx tapsmith mcp-server`
+2. **Understand the environment:** call `tapsmith_session_info` to lazy-load config, connect a device, and show project settings
+3. **Discover tests:** call `tapsmith_list_tests` to get file paths, test names, and project names from the headless session
+4. **Explore the screen:** use `tapsmith_snapshot` and `tapsmith_test_selector` against the headless session's selected device
+5. **Run tests:** call `tapsmith_run_tests`; results are stored in the headless session for `tapsmith_list_results`
+6. **Iterate:** use `tapsmith_watch` to re-run watched files on save, or `tapsmith_stop_tests` to terminate a running headless test run
 
 ## Selector format
 
