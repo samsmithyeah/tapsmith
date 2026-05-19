@@ -512,7 +512,7 @@ impl TapsmithServiceImpl {
         }
 
         let agent_port = self.agent.read().await.port();
-        let new_iproxy = ios::agent_launch::start_agent_fresh(
+        let new_iproxy = match ios::agent_launch::start_agent_fresh(
             serial,
             &config.xctestrun_path,
             &config.target_package,
@@ -520,7 +520,30 @@ impl TapsmithServiceImpl {
             is_physical,
         )
         .await
-        .map_err(|e| format!("Failed to restart iOS agent: {e}"))?;
+        {
+            Ok(handle) => handle,
+            Err(e) => {
+                let msg = format!("{e}");
+                // Exit status 65 = simulator "Busy" (app still installing/
+                // uninstalling). Retry once after letting the simulator settle.
+                if msg.contains("exit status: 65") {
+                    tracing::warn!("xcodebuild exited 65 (Busy), retrying after delay");
+                    tokio::time::sleep(Duration::from_secs(3)).await;
+                    ios::agent_launch::kill_existing_agents_on(serial).await;
+                    ios::agent_launch::start_agent_fresh(
+                        serial,
+                        &config.xctestrun_path,
+                        &config.target_package,
+                        agent_port,
+                        is_physical,
+                    )
+                    .await
+                    .map_err(|e| format!("Failed to restart iOS agent (retry): {e}"))?
+                } else {
+                    return Err(format!("Failed to restart iOS agent: {e}"));
+                }
+            }
+        };
         if let Some(handle) = new_iproxy {
             // Drop the old handle (closing its tunnel) before storing the new one
             // so the host port is never owned by two iproxy instances at once.

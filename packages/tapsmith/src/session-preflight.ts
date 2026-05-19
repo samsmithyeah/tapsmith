@@ -177,7 +177,7 @@ async function verifySession(ctx: SessionPreflightContext): Promise<void> {
     // post-launch readiness check.
     if (ctx.config.package) {
       try {
-        const state = await ctx.device.getAppState(ctx.config.package);
+        const state = await ctx.device.getAppState(ctx.config.package, { timeout: 10_000 });
         if (state !== 'foreground') {
           await ctx.device.launchApp(ctx.config.package);
         }

@@ -557,11 +557,11 @@ export class TapsmithGrpcClient {
     });
   }
 
-  async getAppState(packageName: string): Promise<GetAppStateResponse> {
+  async getAppState(packageName: string, deadlineMs?: number): Promise<GetAppStateResponse> {
     return this.call<GetAppStateResponse>('getAppState', {
       requestId: requestId(),
       packageName,
-    });
+    }, deadlineMs);
   }
 
   async clearAppData(packageName: string): Promise<ActionResponse> {
