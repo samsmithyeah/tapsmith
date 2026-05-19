@@ -71,7 +71,7 @@ impl RouteInterceptHandler {
             routes: Arc::new(RwLock::new(Vec::new())),
             to_sdk,
             pending: Arc::new(RwLock::new(HashMap::new())),
-            events_subscribed: Arc::new(RwLock::new(false)),
+            events_subscribed: Arc::new(RwLock::new(true)),
         }
     }
 
