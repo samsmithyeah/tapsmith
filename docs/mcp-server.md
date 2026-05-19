@@ -1,36 +1,35 @@
 # MCP Server
 
-Tapsmith includes a built-in [MCP](https://modelcontextprotocol.io/) server that lets AI coding agents run tests, interact with devices, and inspect results through a standardized tool interface.
+Tapsmith includes a built-in [MCP](https://modelcontextprotocol.io/) server that lets AI coding agents run tests, interact with devices, and inspect results through a standardized tool interface. Both modes expose the same **16 tools** for device interaction, test execution, result browsing, watch mode, and session info.
 
 ## Modes
 
 The MCP server operates in two modes:
 
-### SSE mode (recommended)
+### HTTP mode (recommended)
 
-When running `tapsmith test --ui`, an SSE MCP endpoint is hosted alongside the UI. The agent shares the same daemon, device, and test session as the UI — test runs appear in the UI with full progress tracking, and both the agent and user share mutual exclusion (only one run at a time).
+When running `tapsmith test --ui`, a Streamable HTTP MCP endpoint is hosted alongside the UI. The agent shares the same daemon, device, and test session as the UI — test runs appear in the UI with full progress tracking, and both the agent and user share mutual exclusion (only one run at a time).
 
-This mode has **16 tools** including test discovery, result browsing, watch mode, and session info.
-
-To connect, copy the SSE URL from the MCP panel in the UI into any MCP client that supports SSE transport. Replace the example URL below with the URL shown in the UI.
+To connect, copy the MCP URL from the MCP panel in the UI into any MCP client that supports Streamable HTTP transport. Replace the example URL below with the URL shown in the UI.
 
 Claude Code:
 
 ```bash
-claude mcp add tapsmith --transport sse http://localhost:9274/mcp
+claude mcp add tapsmith --transport http http://localhost:9274/mcp
 ```
 
 Codex CLI:
 
-Codex CLI's URL-based MCP configuration expects Streamable HTTP. Tapsmith UI mode currently exposes SSE, so use stdio mode with Codex until the UI MCP endpoint is migrated to Streamable HTTP.
+```bash
+codex mcp add tapsmith http://localhost:9274/mcp
+```
 
-Generic MCP SSE config:
+Generic MCP config:
 
 ```json
 {
   "mcpServers": {
     "tapsmith": {
-      "transport": "sse",
       "url": "http://localhost:9274/mcp"
     }
   }
@@ -41,9 +40,7 @@ The MCP panel in the UI shows the connection status and a live activity feed of 
 
 ### Stdio mode
 
-Configure your MCP client to launch `tapsmith mcp-server` over stdio. You normally do not run this command directly; Codex, Claude Code, or another MCP client starts it as a subprocess when needed. The agent gets its own headless test session, daemon, and device, fully independent from any UI session.
-
-This mode has **16 tools** including test discovery, result browsing, watch mode, stop, and session info. Test files and projects are discovered lazily on the first test-management tool call.
+Configure your MCP client to launch `tapsmith mcp-server` over stdio. You normally do not run this command directly; Codex, Claude Code, or another MCP client starts it as a subprocess when needed. The agent gets its own headless test session, daemon, and device, fully independent from any UI session. Test files and projects are discovered lazily on the first test-management tool call.
 
 Codex CLI:
 
@@ -77,7 +74,7 @@ codex mcp add tapsmith-ios -- npx tapsmith mcp-server --config tapsmith.config.i
 claude mcp add tapsmith-ios -- npx tapsmith mcp-server --config tapsmith.config.ios.mjs
 ```
 
-If a UI server is already running, stdio mode will detect it and suggest connecting via SSE instead. Use SSE when you want the agent and browser UI to share one visible session; use stdio when you want a standalone agent-owned session.
+If a UI server is already running, stdio mode will detect it and suggest connecting via HTTP instead. Use HTTP mode when you want the agent and browser UI to share one visible session; use stdio when you want a standalone agent-owned session.
 
 ## Tool Reference
 
@@ -263,7 +260,7 @@ Returns a message indicating whether watch mode was enabled or disabled.
 ### UI-shared workflow
 
 1. **Start the UI:** `tapsmith test --ui`
-2. **Connect your agent** to the SSE endpoint shown in the MCP panel
+2. **Connect your agent** to the MCP endpoint shown in the MCP panel
 3. **Understand the environment:** call `tapsmith_session_info` to see platform, device, package, and project configuration
 4. **Discover tests:** call `tapsmith_list_tests` to see the full test tree with file paths and test names
 5. **Explore the screen:** use `tapsmith_snapshot` to see the accessibility tree with suggested selectors, then `tapsmith_test_selector` to validate a selector before using it

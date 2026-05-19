@@ -135,7 +135,7 @@ function App() {
   const [deviceViewMode, setDeviceViewMode] = usePersistedJSON<'all' | number>('tapsmith-device-view', 'all');
 
   // MCP state
-  const [mcpSseUrl, setMcpSseUrl] = useState<string | undefined>();
+  const [mcpUrl, setMcpUrl] = useState<string | undefined>();
   const [mcpClientName, setMcpClientName] = useState<string | undefined>();
   const [mcpClientVersion, setMcpClientVersion] = useState<string | undefined>();
   const [mcpToolCalls, setMcpToolCalls] = useState<import('./ui-protocol.js').McpToolCallMessage[]>([]);
@@ -819,7 +819,7 @@ function App() {
         break;
 
       case 'mcp-status':
-        setMcpSseUrl(msg.sseUrl);
+        setMcpUrl(msg.mcpUrl);
         setMcpClientName(msg.clientName);
         setMcpClientVersion(msg.clientVersion);
         break;
@@ -1203,7 +1203,7 @@ function App() {
       }
       mcpPanel={mcpPanelOpen ? (
         <McpPanel
-          sseUrl={mcpSseUrl}
+          mcpUrl={mcpUrl}
           clientName={mcpClientName}
           clientVersion={mcpClientVersion}
           toolCalls={mcpToolCalls}

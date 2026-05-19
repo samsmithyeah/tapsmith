@@ -15,13 +15,14 @@
 import * as http from 'node:http';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
+import { randomUUID } from 'node:crypto';
 import { execFileSync, fork, spawn, type ChildProcess } from 'node:child_process';
 import { watch as chokidarWatch, type FSWatcher } from 'chokidar';
 import { WebSocketServer, type WebSocket } from 'ws';
 import { attachMcpClientEventReporting, createMcpServer } from '../mcp/index.js';
 import { McpEventEmitter } from '../mcp/events.js';
 import type { TestDispatcher, TestRunResult, TestResultEntry, TestTreeEntry, SessionInfo } from '../mcp/index.js';
-import { SSEServerTransport } from '@modelcontextprotocol/sdk/server/sse.js';
+import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import type { TapsmithConfig } from '../config.js';
 import { findDaemonBin } from '../daemon-bin.js';
 import { TapsmithGrpcClient } from '../grpc-client.js';
@@ -491,7 +492,8 @@ export async function startUIServer(
 
   const mcpEvents = new McpEventEmitter();
   const mcpServer = createMcpServer({ name: 'tapsmith-ui', events: mcpEvents, dispatcher: testDispatcher });
-  let mcpTransport: SSEServerTransport | null = null;
+  const mcpTransport = new StreamableHTTPServerTransport({ sessionIdGenerator: () => randomUUID() });
+  await mcpServer.connect(mcpTransport);
   let mcpClientName: string | undefined;
   let mcpClientVersion: string | undefined;
   let mcpPort = 0;
@@ -500,7 +502,7 @@ export async function startUIServer(
     return {
       type: 'mcp-status' as const,
       running: true,
-      sseUrl: mcpPort ? `http://localhost:${mcpPort}/mcp` : undefined,
+      mcpUrl: mcpPort ? `http://localhost:${mcpPort}/mcp` : undefined,
       clientName: mcpClientName,
       clientVersion: mcpClientVersion,
     };
@@ -518,9 +520,7 @@ export async function startUIServer(
     broadcast(getMcpStatus());
   });
 
-  attachMcpClientEventReporting(mcpServer, mcpEvents, () => {
-    mcpTransport = null;
-  });
+  attachMcpClientEventReporting(mcpServer, mcpEvents);
 
   // ─── Test Discovery ───
 
@@ -2995,31 +2995,20 @@ export async function startUIServer(
   // ─── MCP Server (separate fixed port) ───
 
   const MCP_DEFAULT_PORT = 9274;
-  const mcpHttpServer = http.createServer((req, res) => {
+  const mcpHttpServer = http.createServer(async (req, res) => {
     const url = new URL(req.url ?? '/', 'http://localhost');
 
-    // SSE endpoint — GET establishes SSE stream
-    if (url.pathname === '/mcp' && req.method === 'GET') {
-      if (mcpTransport) {
-        // Close old session so the new client can connect
-        mcpTransport.close();
-        mcpTransport = null;
+    // Streamable HTTP endpoint — handles POST (JSON-RPC) + GET (SSE stream) + DELETE (session close)
+    if (url.pathname === '/mcp') {
+      try {
+        await mcpTransport.handleRequest(req, res);
+      } catch (error) {
+        console.error('MCP transport error:', error);
+        if (!res.headersSent) {
+          res.writeHead(500);
+          res.end('Internal Server Error');
+        }
       }
-      mcpTransport = new SSEServerTransport('/mcp/message', res);
-      mcpServer.connect(mcpTransport).catch(() => {
-        mcpTransport = null;
-      });
-      return;
-    }
-
-    // Message endpoint — POST sends JSON-RPC messages
-    if (url.pathname === '/mcp/message' && req.method === 'POST') {
-      if (!mcpTransport) {
-        res.writeHead(400);
-        res.end('No active MCP session');
-        return;
-      }
-      mcpTransport.handlePostMessage(req, res);
       return;
     }
 
@@ -3160,9 +3149,9 @@ export async function startUIServer(
         ctx.client?.close();
       }
 
-      if (mcpTransport) mcpTransport.close();
-      mcpServer.close();
       mcpHttpServer.close();
+      mcpTransport.close();
+      mcpServer.close();
       try { fs.unlinkSync(portFilePath); } catch { /* already gone */ }
       if (watcher) watcher.close();
       for (const ws of clients) ws.close();
