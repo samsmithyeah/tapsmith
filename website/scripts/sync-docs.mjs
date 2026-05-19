@@ -60,31 +60,39 @@ const API_SPLITS = [
 
 // ─── Link rewriting rules ───
 
-const LINK_REWRITES = [
-  [/\(selectors\.md\)/g, '(/guides/selectors/)'],
-  [/\(network\.md\)/g, '(/guides/network/)'],
-  [/\(webview\.md\)/g, '(/guides/webview/)'],
-  [/\(trace-viewer\.md\)/g, '(/guides/trace-viewer/)'],
-  [/\(watch-and-ui-mode\.md\)/g, '(/guides/watch-and-ui-mode/)'],
-  [/\(parallel-and-sharding\.md\)/g, '(/guides/parallel-and-sharding/)'],
-  [/\(debugging\.md\)/g, '(/guides/debugging/)'],
-  [/\(mcp-server\.md\)/g, '(/guides/mcp-server/)'],
-  [/\(ci-setup\.md\)/g, '(/platform/ci-setup/)'],
-  [/\(\.\/ci-setup\.md[^)]*\)/g, '(/platform/ci-setup/)'],
-  [/\(ios-physical-devices\.md\)/g, '(/platform/ios-physical-devices/)'],
-  [/\(\.\/ios-physical-devices\.md\)/g, '(/platform/ios-physical-devices/)'],
-  [/\(ios-network-capture\.md\)/g, '(/platform/ios-network-capture/)'],
-  [/\(\.\/ios-network-capture\.md\)/g, '(/platform/ios-network-capture/)'],
-  [/\(ios-physical-device-network-tracing\.md\)/g, '(/platform/ios-physical-device-network-tracing/)'],
-  [/\(\.\/ios-physical-device-network-tracing\.md\)/g, '(/platform/ios-physical-device-network-tracing/)'],
-  [/\(getting-started\.md\)/g, '(/getting-started/)'],
-  [/\(writing-tests\.md\)/g, '(/writing-tests/)'],
-  [/\(configuration\.md(#[^)]*)??\)/g, '(/reference/configuration/)'],
-  [/\(\.\/configuration\.md[^)]*\)/g, '(/reference/configuration/)'],
-  [/\(environment-variables\.md\)/g, '(/reference/environment-variables/)'],
+// Map from source filename to website path.
+// The rewriter handles both `(file.md)` and `(./file.md)` forms,
+// and strips any trailing `#anchor` since anchors rarely survive the split.
+const LINK_MAP = {
+  'selectors.md':                           '/guides/selectors/',
+  'network.md':                             '/guides/network/',
+  'webview.md':                             '/guides/webview/',
+  'trace-viewer.md':                        '/guides/trace-viewer/',
+  'watch-and-ui-mode.md':                   '/guides/watch-and-ui-mode/',
+  'parallel-and-sharding.md':               '/guides/parallel-and-sharding/',
+  'debugging.md':                           '/guides/debugging/',
+  'mcp-server.md':                          '/guides/mcp-server/',
+  'ci-setup.md':                            '/platform/ci-setup/',
+  'ios-physical-devices.md':                '/platform/ios-physical-devices/',
+  'ios-network-capture.md':                 '/platform/ios-network-capture/',
+  'ios-physical-device-network-tracing.md': '/platform/ios-physical-device-network-tracing/',
+  'getting-started.md':                     '/getting-started/',
+  'writing-tests.md':                       '/writing-tests/',
+  'configuration.md':                       '/reference/configuration/',
+  'environment-variables.md':               '/reference/environment-variables/',
+}
+
+// Build regex-based rewrites from the map
+const LINK_REWRITES = Object.entries(LINK_MAP).map(([file, dest]) => {
+  const escaped = file.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  return [new RegExp(`\\((?:\\.\\/)?(?:docs\\/)?${escaped}(?:#[^)]*)?\\)`, 'g'), `(${dest})`]
+})
+
+// Special cases for api-reference.md (split into multiple pages)
+LINK_REWRITES.push(
   [/\((?:\.\/)?api-reference\.md#video-recording\)/g, '(/reference/api/cli/)'],
-  [/\((?:\.\/)?api-reference\.md[^)]*\)/g, '(/reference/api/locators/)'],
-]
+  [/\((?:\.\/)?api-reference\.md(?:#[^)]*)??\)/g, '(/reference/api/locators/)'],
+)
 
 // ─── Helpers ───
 
