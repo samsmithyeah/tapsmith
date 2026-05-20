@@ -86,6 +86,72 @@ describe('TraceCollector', () => {
     expect(ev.type).toBe('assertion');
   });
 
+  it('records wall durations that include time since the previous action', () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(1000);
+    const collector = new TraceCollector(config, tempDir, 1000);
+
+    vi.setSystemTime(1100);
+    collector.addActionEvent({
+      category: 'tap',
+      action: 'tap',
+      duration: 40,
+      success: true,
+      hasScreenshotBefore: false,
+      hasScreenshotAfter: false,
+      hasHierarchyBefore: false,
+      hasHierarchyAfter: false,
+    });
+
+    vi.setSystemTime(1300);
+    collector.addAssertionEvent({
+      assertion: 'toBeVisible',
+      passed: true,
+      soft: false,
+      negated: false,
+      duration: 25,
+      attempts: 1,
+    });
+
+    const first = collector.events[0] as ActionTraceEvent;
+    expect(first.duration).toBe(40);
+    expect(first.wallDuration).toBe(100);
+    expect(first.gapBefore).toBe(60);
+    expect(first.startTime).toBe(1060);
+    expect(first.endTime).toBe(1100);
+
+    const second = collector.events[1] as AssertionTraceEvent;
+    expect(second.duration).toBe(25);
+    expect(second.wallDuration).toBe(200);
+    expect(second.gapBefore).toBe(175);
+    expect(second.startTime).toBe(1275);
+    expect(second.endTime).toBe(1300);
+  });
+
+  it('allocates trailing trace time to the final action without changing action duration', () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(2000);
+    const collector = new TraceCollector(config, tempDir, 2000);
+
+    vi.setSystemTime(2100);
+    collector.addActionEvent({
+      category: 'tap',
+      action: 'tap',
+      duration: 50,
+      success: true,
+      hasScreenshotBefore: false,
+      hasScreenshotAfter: false,
+      hasHierarchyBefore: false,
+      hasHierarchyAfter: false,
+    });
+    collector.finalizeTimeline(2250);
+
+    const event = collector.events[0] as ActionTraceEvent;
+    expect(event.duration).toBe(50);
+    expect(event.wallDuration).toBe(250);
+    expect(event.trailingTime).toBe(150);
+  });
+
   it('drops empty groups silently', () => {
     const collector = new TraceCollector(config, tempDir);
     collector.startGroup('Login flow');

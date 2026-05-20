@@ -81,10 +81,10 @@ export class Tracing {
       attachments: true,
     });
 
-    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tapsmith-trace-'));
-    this._collector = new TraceCollector(config, tempDir);
-    this._collector.startConsoleCapture();
     this._startTime = Date.now();
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tapsmith-trace-'));
+    this._collector = new TraceCollector(config, tempDir, this._startTime);
+    this._collector.startConsoleCapture();
     this._title = options?.title;
   }
 
@@ -178,9 +178,9 @@ export class Tracing {
       this._collector.cleanup();
     }
 
-    this._collector = new TraceCollector(config, tempDir);
-    this._collector.startConsoleCapture();
     this._startTime = Date.now();
+    this._collector = new TraceCollector(config, tempDir, this._startTime);
+    this._collector.startConsoleCapture();
     return this._collector;
   }
 

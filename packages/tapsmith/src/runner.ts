@@ -674,6 +674,7 @@ async function runSuiteContext(
       // collector and clear the managed one.
       const managedCollector = opts.device.tracing._startManaged(traceConfig, tempDir);
       beforeAllCollector = new TraceCollector(traceConfig, tempDir);
+      beforeAllCollector.setTimelineOrigin(suiteStart);
       const cb = managedCollector.getEventCallback();
       if (cb) beforeAllCollector.setEventCallback(cb);
       opts.device.tracing._stopManaged();
@@ -833,6 +834,7 @@ async function runSuiteContext(
       if (recording && opts.device) {
         const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tapsmith-trace-'));
         traceCollector = opts.device.tracing._startManaged(traceConfig, tempDir);
+        traceCollector.setTimelineOrigin(attemptStart);
         setActiveTraceCollector(traceCollector);
 
         // Offset action index so per-test actions don't collide with beforeAll
@@ -1407,6 +1409,7 @@ async function runSuiteContext(
       const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tapsmith-trace-aa-'));
       const managedCollector = opts.device.tracing._startManaged(traceConfig, tempDir);
       const afterAllCollector = new TraceCollector(traceConfig, tempDir);
+      afterAllCollector.setTimelineOrigin(Date.now());
       const cb = managedCollector.getEventCallback();
       if (cb) afterAllCollector.setEventCallback(cb);
       opts.device.tracing._stopManaged();

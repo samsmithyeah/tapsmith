@@ -12,7 +12,8 @@ import type { AnyTraceEvent, ActionTraceEvent, AssertionTraceEvent } from './typ
 
 function startTimeOf(e: AnyTraceEvent): number {
   if (e.type === 'action' || e.type === 'assertion') {
-    return e.timestamp - ((e as ActionTraceEvent | AssertionTraceEvent).duration ?? 0);
+    const event = e as ActionTraceEvent | AssertionTraceEvent;
+    return event.startTime ?? (event.timestamp - (event.duration ?? 0));
   }
   return e.timestamp;
 }

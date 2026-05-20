@@ -71,7 +71,7 @@ function parseTraceZip(buf: Uint8Array): TraceData {
   }
 
   const traceRaw = files["trace.json"];
-  const events: AnyTraceEvent[] = traceRaw
+  const rawEvents: AnyTraceEvent[] = traceRaw
     ? decoder
         .decode(traceRaw)
         .trim()
@@ -79,6 +79,7 @@ function parseTraceZip(buf: Uint8Array): TraceData {
         .filter(Boolean)
         .flatMap((line) => { try { return [JSON.parse(line)]; } catch { return []; } })
     : [];
+  const events = synthesizeWallDurations(rawEvents, metadata);
 
   const screenshots = new Map<string, string>();
   for (const [name, data] of Object.entries(files)) {
@@ -130,6 +131,46 @@ function parseTraceZip(buf: Uint8Array): TraceData {
     network,
     networkBodies,
   };
+}
+
+function synthesizeWallDurations(events: AnyTraceEvent[], metadata: TraceMetadata): AnyTraceEvent[] {
+  if (events.length === 0 || metadata.startTime <= 0) return events;
+  if (events.every((event) =>
+    (event.type !== "action" && event.type !== "assertion") ||
+    (event.wallDuration !== undefined && event.startTime !== undefined && event.endTime !== undefined)
+  )) {
+    return events;
+  }
+
+  let boundary = metadata.startTime;
+  let lastTimedIndex = -1;
+  let changed = false;
+  const next = events.map((event, index): AnyTraceEvent => {
+    if (event.type !== "action" && event.type !== "assertion") return event;
+    const duration = Math.max(0, event.duration ?? 0);
+    const completedAt = event.endTime ?? event.timestamp;
+    const startedAt = event.startTime ?? Math.max(metadata.startTime, completedAt - duration);
+    const wallDuration = event.wallDuration ?? Math.max(0, completedAt - boundary);
+    const gapBefore = event.gapBefore ?? Math.max(0, startedAt - boundary);
+    boundary = Math.max(boundary, completedAt);
+    lastTimedIndex = index;
+    changed = true;
+    return { ...event, startTime: startedAt, endTime: completedAt, wallDuration, gapBefore };
+  });
+
+  if (lastTimedIndex !== -1 && metadata.endTime > boundary) {
+    const last = next[lastTimedIndex];
+    if (last.type === "action" || last.type === "assertion") {
+      const trailing = metadata.endTime - boundary;
+      next[lastTimedIndex] = {
+        ...last,
+        wallDuration: (last.wallDuration ?? last.duration) + trailing,
+        trailingTime: (last.trailingTime ?? 0) + trailing,
+      };
+    }
+  }
+
+  return changed ? next : events;
 }
 
 // ─── Platform Inference ───

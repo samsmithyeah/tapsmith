@@ -194,7 +194,7 @@ function buildFallbackViewer(): string {
         if (ev.type === 'action') {
           html += '<strong>' + esc(ev.action) + '</strong>'
           if (ev.selector) html += ' <span style="color:#888">' + esc(ev.selector) + '</span>'
-          html += ' <span style="color:#666">' + ev.duration + 'ms</span>'
+          html += ' <span style="color:#666">' + (ev.wallDuration ?? ev.duration) + 'ms</span>'
           if (!ev.success && ev.error) html += '<br><span style="color:#e74c3c">' + esc(ev.error) + '</span>'
         } else if (ev.type === 'assertion') {
           html += '<strong>' + esc(ev.assertion) + '</strong>'

@@ -130,6 +130,7 @@ function formatSelectorForCall(sel: string | undefined): ComponentChildren {
 
 function CallTab({ event, metadata }: { event: ActionTraceEvent | AssertionTraceEvent | undefined; metadata: TraceMetadata }) {
   if (!event) return <div class="no-content">No action selected</div>;
+  const wallDuration = event.wallDuration ?? event.duration;
 
   if (event.type === 'action') {
     return (
@@ -144,8 +145,16 @@ function CallTab({ event, metadata }: { event: ActionTraceEvent | AssertionTrace
           <span class="call-label">Input</span>
           <span class="call-value mono">"{event.inputValue}"</span>
         </>}
-        <span class="call-label">Duration</span>
-        <span class="call-value mono">{event.duration}ms</span>
+        <span class="call-label">Wall time</span>
+        <span class="call-value mono">{wallDuration}ms</span>
+        {wallDuration !== event.duration && <>
+          <span class="call-label">Action time</span>
+          <span class="call-value mono">{event.duration}ms</span>
+        </>}
+        {event.gapBefore !== undefined && event.gapBefore > 0 && <>
+          <span class="call-label">Gap before</span>
+          <span class="call-value mono">{event.gapBefore}ms</span>
+        </>}
         <span class="call-label">Status</span>
         <span class={`call-value ${event.success ? 'success' : 'error'}`}>
           {event.success ? 'passed' : 'failed'}
@@ -190,6 +199,14 @@ function CallTab({ event, metadata }: { event: ActionTraceEvent | AssertionTrace
       <span class={`call-value mono ${event.passed ? '' : 'error'}`}>
         {event.duration}ms{!event.passed ? ' (timed out)' : ''} — {event.attempts} attempt{event.attempts !== 1 ? 's' : ''}
       </span>
+      {wallDuration !== event.duration && <>
+        <span class="call-label">Wall time</span>
+        <span class="call-value mono">{wallDuration}ms</span>
+      </>}
+      {event.gapBefore !== undefined && event.gapBefore > 0 && <>
+        <span class="call-label">Gap before</span>
+        <span class="call-value mono">{event.gapBefore}ms</span>
+      </>}
       {metadata.device.serial && <>
         <span class="call-label">Device</span>
         <span class="call-value">{metadata.device.model ? `${metadata.device.model} · ` : ''}{metadata.device.serial}</span>

@@ -156,6 +156,9 @@ export class TraceCollector {
   readonly config: TraceConfig;
   private _events: AnyTraceEvent[] = [];
   private _actionIndex = 0;
+  private _timelineOrigin: number;
+  private _lastTimelineTimestamp: number;
+  private _lastTimedEvent: ActionTraceEvent | AssertionTraceEvent | null = null;
   private _screenshots: ScreenshotCapture[] = [];
   private _hierarchies: HierarchyCapture[] = [];
   private _groupStack: string[] = [];
@@ -187,9 +190,11 @@ export class TraceCollector {
   /** Pending after-action capture promises that must complete before trace packaging. */
   private _pendingAfterCaptures: Promise<void>[] = [];
 
-  constructor(config: TraceConfig, tempDir: string) {
+  constructor(config: TraceConfig, tempDir: string, timelineOrigin = Date.now()) {
     this.config = config;
     this._tempDir = tempDir;
+    this._timelineOrigin = timelineOrigin;
+    this._lastTimelineTimestamp = timelineOrigin;
     this._originalConsole = {
       log: console.log,
       warn: console.warn,
@@ -238,6 +243,15 @@ export class TraceCollector {
   /** @internal — Set the starting action index (used to offset for beforeAll events). */
   setActionIndexOffset(offset: number): void {
     this._actionIndex = offset;
+  }
+
+  /**
+   * @internal — Set the timestamp that action wall durations should account
+   * from. This should be called before the first action/assertion is emitted.
+   */
+  setTimelineOrigin(timestamp: number): void {
+    this._timelineOrigin = timestamp;
+    this._lastTimelineTimestamp = timestamp;
   }
 
   /** @internal — Get the temp directory path (for reading saved screenshots). */
@@ -491,12 +505,14 @@ export class TraceCollector {
    */
   addActionEvent(event: Omit<ActionTraceEvent, 'type' | 'actionIndex' | 'timestamp'>): void {
     this._flushPendingGroups();
+    const now = Date.now();
     const full = {
       ...event,
       type: 'action',
       actionIndex: this._actionIndex,
-      timestamp: Date.now(),
+      timestamp: now,
     } as ActionTraceEvent;
+    this._applyTimelineTiming(full, now);
     this._events.push(full);
     const pending = this._pendingCaptures.get(this._actionIndex);
     this._pendingCaptures.delete(this._actionIndex);
@@ -509,17 +525,52 @@ export class TraceCollector {
    */
   addAssertionEvent(event: Omit<AssertionTraceEvent, 'type' | 'actionIndex' | 'timestamp'>): void {
     this._flushPendingGroups();
+    const now = Date.now();
     const full = {
       ...event,
       type: 'assertion',
       actionIndex: this._actionIndex,
-      timestamp: Date.now(),
+      timestamp: now,
     } as AssertionTraceEvent;
+    this._applyTimelineTiming(full, now);
     this._events.push(full);
     const pending = this._pendingCaptures.get(this._actionIndex);
     this._pendingCaptures.delete(this._actionIndex);
     this._onEvent?.(full, pending, 'completed');
     this._actionIndex++;
+  }
+
+  private _applyTimelineTiming(
+    event: ActionTraceEvent | AssertionTraceEvent,
+    completedAt: number,
+  ): void {
+    const ownDuration = Math.max(0, event.duration ?? 0);
+    const startedAt = event.startTime ?? Math.max(this._timelineOrigin, completedAt - ownDuration);
+    const previousBoundary = this._lastTimelineTimestamp;
+
+    event.startTime = startedAt;
+    event.endTime = event.endTime ?? completedAt;
+    event.gapBefore = Math.max(0, startedAt - previousBoundary);
+    event.wallDuration = Math.max(0, completedAt - previousBoundary);
+
+    this._lastTimelineTimestamp = Math.max(previousBoundary, completedAt);
+    this._lastTimedEvent = event;
+  }
+
+  /**
+   * @internal — Allocate any remaining trace time after the last action to
+   * that final action. This keeps visible wall durations consistent with the
+   * metadata's test duration while preserving each action's raw `duration`.
+   */
+  finalizeTimeline(endTime: number): void {
+    if (!this._lastTimedEvent) return;
+    const trailing = Math.max(0, endTime - this._lastTimelineTimestamp);
+    if (trailing === 0) return;
+    this._lastTimedEvent.wallDuration = (
+      this._lastTimedEvent.wallDuration ?? this._lastTimedEvent.duration
+    ) + trailing;
+    this._lastTimedEvent.trailingTime = (this._lastTimedEvent.trailingTime ?? 0) + trailing;
+    this._lastTimelineTimestamp = endTime;
   }
 
   /**
