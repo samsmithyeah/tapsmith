@@ -81,8 +81,6 @@ export default defineConfig({
     }),
   ],
   vite: {
-    // @ts-expect-error -- @tailwindcss/vite bundles its own vite types which can
-    // drift from astro's pinned vite. The plugin works fine at runtime.
     plugins: [tailwindcss()],
   },
 })
