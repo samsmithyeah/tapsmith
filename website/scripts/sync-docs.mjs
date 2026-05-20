@@ -231,7 +231,10 @@ const LINK_MAP = {
 // Build regex-based rewrites from the map
 const LINK_REWRITES = Object.entries(LINK_MAP).map(([file, dest]) => {
   const escaped = file.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-  return [new RegExp(`\\((?:\\.\\/)?(?:docs\\/)?${escaped}(?:#[^)]*)?\\)`, 'g'), `(${dest})`]
+  return [
+    new RegExp(`\\((?:\\.\\/)?(?:docs\\/)?${escaped}(#[^)]*)?\\)`, 'g'),
+    (_, anchor) => `(${dest}${anchor || ''})`,
+  ]
 })
 
 // Special cases for api-reference.md (split into multiple pages)
