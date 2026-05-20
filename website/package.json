@@ -13,7 +13,6 @@
     "format:check": "prettier --check 'src/**/*.astro' 'scripts/**/*.mjs' '*.mjs'",
     "format": "prettier --write 'src/**/*.astro' 'scripts/**/*.mjs' '*.mjs'",
     "knip": "knip",
-    "check-docs-fresh": "npm run sync-docs && node scripts/check-docs-fresh.mjs",
     "astro": "astro"
   },
   "dependencies": {
