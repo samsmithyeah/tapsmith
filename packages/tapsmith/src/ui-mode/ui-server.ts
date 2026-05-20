@@ -84,6 +84,7 @@ const TAPSMITH_VERSION = (() => {
 const DIM = '\x1b[2m';
 const YELLOW = '\x1b[33m';
 const RESET = '\x1b[0m';
+const MAX_DISCOVERY_BATCH_CONCURRENCY = 4;
 
 /** Cached screen-scale lookup keyed by UDID — avoids repeated simctl calls. */
 const dprCache = new Map<string, number>();
@@ -256,6 +257,7 @@ export async function startUIServer(
    * testFilter = undefined means "whole file"; projectName = undefined means
    * "whichever project this file resolves to" (non-multi-project configs). */
   interface WatchedEntry { projectName?: string; testFilter?: string }
+  type DiscoveryRefreshResult = { treeChanged: boolean; shouldRun: boolean };
   /** filePath → list of watched entries. chokidar adds the file when the
    * first entry appears and removes it when the last entry is cleared. */
   const watchedEntries = new Map<string, WatchedEntry[]>();
@@ -2579,7 +2581,7 @@ export async function startUIServer(
     return true;
   }
 
-  async function discoverOrRefreshTestFile(filePath: string): Promise<{ treeChanged: boolean; shouldRun: boolean }> {
+  async function discoverOrRefreshTestFile(filePath: string): Promise<DiscoveryRefreshResult> {
     const resolved = path.resolve(filePath);
     if (!isExistingMatchingTestFile(resolved)) {
       return { treeChanged: removeKnownTestFile(resolved), shouldRun: false };
@@ -2593,7 +2595,9 @@ export async function startUIServer(
       : [];
 
     const tree = await discoverFile(resolved);
-    if (!tree) return { treeChanged: false, shouldRun: false };
+    if (!tree) {
+      return { treeChanged: removeKnownTestFile(resolved), shouldRun: false };
+    }
 
     // A file can be deleted or renamed while the forked discovery process is
     // importing it. Re-check after the await so we don't add a stale node.
@@ -2620,6 +2624,27 @@ export async function startUIServer(
       treeChanged: true,
       shouldRun: !wasKnown && (globalWatchWasEnabled || watchedProjects.length > 0),
     };
+  }
+
+  async function discoverBatch(files: string[]): Promise<Array<{ file: string; result: DiscoveryRefreshResult }>> {
+    const results: Array<{ file: string; result: DiscoveryRefreshResult }> = [];
+    let nextIndex = 0;
+    const workerCount = Math.min(MAX_DISCOVERY_BATCH_CONCURRENCY, files.length);
+
+    async function worker(): Promise<void> {
+      for (;;) {
+        const index = nextIndex++;
+        if (index >= files.length) return;
+        const file = files[index];
+        results[index] = {
+          file,
+          result: await discoverOrRefreshTestFile(file),
+        };
+      }
+    }
+
+    await Promise.all(Array.from({ length: workerCount }, () => worker()));
+    return results;
   }
 
   function handleRemovedTestFile(filePath: string): void {
@@ -2655,8 +2680,8 @@ export async function startUIServer(
 
         let treeChanged = false;
         const filesToRun = new Set<string>();
-        for (const file of files) {
-          const result = await discoverOrRefreshTestFile(file);
+        const results = await discoverBatch(files);
+        for (const { file, result } of results) {
           if (result.treeChanged) treeChanged = true;
           if (result.shouldRun) filesToRun.add(file);
         }
