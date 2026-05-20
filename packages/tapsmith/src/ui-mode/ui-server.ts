@@ -2438,11 +2438,17 @@ export async function startUIServer(
     return outputRelative === '' || (!outputRelative.startsWith('..') && !path.isAbsolute(outputRelative));
   }
 
-  function addSortedUnique(files: string[], filePath: string): boolean {
+  function addUnique(files: string[], filePath: string): boolean {
     if (files.includes(filePath)) return false;
     files.push(filePath);
-    files.sort();
     return true;
+  }
+
+  function sortDiscoveredTestFiles(): void {
+    ctx.testFiles.sort();
+    for (const project of ctx.projects ?? []) {
+      project.testFiles.sort();
+    }
   }
 
   function removeFile(files: string[], filePath: string): boolean {
@@ -2605,11 +2611,11 @@ export async function startUIServer(
       return { treeChanged: removeKnownTestFile(resolved), shouldRun: false };
     }
 
-    addSortedUnique(ctx.testFiles, resolved);
+    addUnique(ctx.testFiles, resolved);
     discoveredFileNodes.set(resolved, tree);
 
     for (const project of matchingProjects) {
-      addSortedUnique(project.testFiles, resolved);
+      addUnique(project.testFiles, resolved);
     }
     refreshFileProjectLookup(resolved);
 
@@ -2687,6 +2693,7 @@ export async function startUIServer(
         }
 
         if (treeChanged) {
+          sortDiscoveredTestFiles();
           rebuildTestTreeFromDiscoveredFiles();
           broadcastTestTreeWithCurrentState();
         }
