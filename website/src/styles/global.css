@@ -63,16 +63,16 @@ html {
   box-shadow: 0 4px 24px -4px rgba(0, 0, 0, 0.1);
 }
 
-[aria-current="page"],
-[aria-current="page"]:hover,
-[aria-current="page"]:active {
+[aria-current='page'],
+[aria-current='page']:hover,
+[aria-current='page']:active {
   background: #fef0ea !important;
   color: #b85a30 !important;
 }
 
-:root[data-theme='dark'] [aria-current="page"],
-:root[data-theme='dark'] [aria-current="page"]:hover,
-:root[data-theme='dark'] [aria-current="page"]:active {
+:root[data-theme='dark'] [aria-current='page'],
+:root[data-theme='dark'] [aria-current='page']:hover,
+:root[data-theme='dark'] [aria-current='page']:active {
   background: #3a2018 !important;
   color: #f0a882 !important;
 }

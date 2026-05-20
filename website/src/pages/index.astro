@@ -78,7 +78,7 @@ const threeThings = [
       rel="stylesheet"
     />
     <script is:inline>
-      (function() {
+      ;(function () {
         var stored = localStorage.getItem('starlight-theme')
         var prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches
         var theme = stored === 'dark' || (!stored && prefersDark) ? 'dark' : 'light'
@@ -103,8 +103,43 @@ const threeThings = [
         </nav>
         <div class="tp-header-actions">
           <button class="tp-theme-toggle" type="button" aria-label="Toggle theme">
-            <svg class="tp-icon-sun" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/></svg>
-            <svg class="tp-icon-moon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
+            <svg
+              class="tp-icon-sun"
+              width="16"
+              height="16"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              ><circle cx="12" cy="12" r="5"></circle><line x1="12" y1="1" x2="12" y2="3"
+              ></line><line x1="12" y1="21" x2="12" y2="23"></line><line
+                x1="4.22"
+                y1="4.22"
+                x2="5.64"
+                y2="5.64"></line><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"></line><line
+                x1="1"
+                y1="12"
+                x2="3"
+                y2="12"></line><line x1="21" y1="12" x2="23" y2="12"></line><line
+                x1="4.22"
+                y1="19.78"
+                x2="5.64"
+                y2="18.36"></line><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"></line></svg
+            >
+            <svg
+              class="tp-icon-moon"
+              width="16"
+              height="16"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              ><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"></path></svg
+            >
           </button>
           <a href="/getting-started/" class="tp-btn-solid tp-btn-sm">Get started →</a>
         </div>
@@ -162,8 +197,8 @@ const threeThings = [
       <section class="tp-proof">
         <div class="tp-container tp-proof-inner">
           <p class="tp-proof-text">
-            Open source under the Apache 2.0 licence. Native agents on XCUITest and UIAutomator2,
-            no browser shims or half-working bridges.
+            Open source under the Apache 2.0 licence. Native agents on XCUITest and UIAutomator2, no
+            browser shims or half-working bridges.
           </p>
           <div class="tp-proof-stats">
             <div class="tp-stat">
@@ -190,9 +225,7 @@ const threeThings = [
       <section class="tp-three">
         <div class="tp-container">
           <div class="tp-three-header">
-            <h2 class="tp-h2-large">
-              The pain you're used to, gone.
-            </h2>
+            <h2 class="tp-h2-large">The pain you're used to, gone.</h2>
             <a href="/guides/selectors/" class="tp-btn-ghost tp-btn-guide">Read the guide →</a>
           </div>
           <div class="tp-three-rows">
@@ -225,9 +258,7 @@ const threeThings = [
             <div class="tp-table">
               <div class="tp-table-head">
                 <div class="tp-table-cell tp-table-feature">Feature</div>
-                <div class="tp-table-cell tp-table-col tp-table-us">
-                  Tapsmith
-                </div>
+                <div class="tp-table-cell tp-table-col tp-table-us">Tapsmith</div>
                 <div class="tp-table-cell tp-table-col">Appium</div>
                 <div class="tp-table-cell tp-table-col">Maestro</div>
                 <div class="tp-table-cell tp-table-col">Detox</div>
@@ -343,8 +374,8 @@ const threeThings = [
         <div class="tp-container">
           <p class="tp-eyebrow">Early access</p>
           <blockquote class="tp-blockquote">
-            Tapsmith is in early access. If you've tried it on a real project,
-            we'd love to feature your experience here.
+            Tapsmith is in early access. If you've tried it on a real project, we'd love to feature
+            your experience here.
           </blockquote>
           <div class="tp-attribution">
             <a href="mailto:info@tapsmith.dev" class="tp-btn-ghost tp-btn-sm">
@@ -365,12 +396,16 @@ const threeThings = [
             <div class="tp-devtools-card">
               <h3 class="tp-devtools-title">Trace viewer</h3>
               <p class="tp-devtools-body">
-                Every test run records a full trace. Scrub through a timeline of screenshots,
-                see every tap and gesture overlaid on the screen, inspect every network request
-                and response. When a test fails in CI, download the trace and replay it locally.
-                No guessing, no "works on my machine."
+                Every test run records a full trace. Scrub through a timeline of screenshots, see
+                every tap and gesture overlaid on the screen, inspect every network request and
+                response. When a test fails in CI, download the trace and replay it locally. No
+                guessing, no "works on my machine."
               </p>
-              <img src="/trace-viewer.png" alt="Tapsmith trace viewer showing a failed authentication test with timeline, device screenshot, action log, and error details" class="tp-devtools-img" />
+              <img
+                src="/trace-viewer.png"
+                alt="Tapsmith trace viewer showing a failed authentication test with timeline, device screenshot, action log, and error details"
+                class="tp-devtools-img"
+              />
               <div class="tp-devtools-code">
                 <pre class="tp-snippet-code">npx tapsmith show-trace trace.zip</pre>
               </div>
@@ -378,11 +413,15 @@ const threeThings = [
             <div class="tp-devtools-card">
               <h3 class="tp-devtools-title">UI mode</h3>
               <p class="tp-devtools-body">
-                A browser-based interactive runner. Click any test to run it, see results stream
-                in live, browse traces and screenshots inline, and mirror the device screen, all
+                A browser-based interactive runner. Click any test to run it, see results stream in
+                live, browse traces and screenshots inline, and mirror the device screen, all
                 without leaving the browser.
               </p>
-              <img src="/ui-mode.png" alt="Tapsmith UI mode showing the interactive test runner with test list, live device mirror, and network inspection panel" class="tp-devtools-img" />
+              <img
+                src="/ui-mode.png"
+                alt="Tapsmith UI mode showing the interactive test runner with test list, live device mirror, and network inspection panel"
+                class="tp-devtools-img"
+              />
               <div class="tp-devtools-code">
                 <pre class="tp-snippet-code">npx tapsmith test --ui</pre>
               </div>
@@ -606,15 +645,23 @@ const threeThings = [
         background: transparent;
         color: var(--tp-ink-3);
         cursor: pointer;
-        transition: border-color 0.1s, color 0.1s;
+        transition:
+          border-color 0.1s,
+          color 0.1s;
       }
       .tp-theme-toggle:hover {
         border-color: var(--tp-ink-4);
         color: var(--tp-ink);
       }
-      .tp-icon-moon { display: none; }
-      [data-theme='dark'] .tp-icon-sun { display: none; }
-      [data-theme='dark'] .tp-icon-moon { display: block; }
+      .tp-icon-moon {
+        display: none;
+      }
+      [data-theme='dark'] .tp-icon-sun {
+        display: none;
+      }
+      [data-theme='dark'] .tp-icon-moon {
+        display: block;
+      }
 
       /* ─── Base ─── */
       body {
