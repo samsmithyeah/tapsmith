@@ -365,9 +365,11 @@ const IMAGES_SRC = join(DOCS, 'images')
 const IMAGES_DEST = join(OUT, 'images')
 if (existsSync(IMAGES_SRC)) {
   mkdirSync(IMAGES_DEST, { recursive: true })
-  for (const file of readdirSync(IMAGES_SRC)) {
-    copyFileSync(join(IMAGES_SRC, file), join(IMAGES_DEST, file))
-    count++
+  for (const entry of readdirSync(IMAGES_SRC, { withFileTypes: true })) {
+    if (entry.isFile()) {
+      copyFileSync(join(IMAGES_SRC, entry.name), join(IMAGES_DEST, entry.name))
+      count++
+    }
   }
 }
 

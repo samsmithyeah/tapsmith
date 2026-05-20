@@ -91,7 +91,8 @@ const threeThings = [
     <header class="tp-header">
       <div class="tp-container tp-header-inner">
         <a href="/" class="tp-logo">
-          <img src="/logo.png" alt="Tapsmith" class="tp-logo-img" />
+          <img src="/logo.png" alt="Tapsmith" class="tp-logo-img tp-logo-light" />
+          <img src="/logo-dark.png" alt="Tapsmith" class="tp-logo-img tp-logo-dark" />
         </a>
         <nav class="tp-nav">
           <a href="/getting-started/">Docs</a>
@@ -461,7 +462,16 @@ const threeThings = [
         <div class="tp-footer-top">
           <div class="tp-footer-brand">
             <a href="/" class="tp-logo">
-              <img src="/logo.png" alt="Tapsmith" class="tp-logo-img tp-logo-footer" />
+              <img
+                src="/logo.png"
+                alt="Tapsmith"
+                class="tp-logo-img tp-logo-footer tp-logo-light"
+              />
+              <img
+                src="/logo-dark.png"
+                alt="Tapsmith"
+                class="tp-logo-img tp-logo-footer tp-logo-dark"
+              />
             </a>
             <p class="tp-footer-desc">
               A test framework for native mobile apps that doesn't make you choose between speed and
@@ -629,8 +639,14 @@ const threeThings = [
         background: #e8e4df;
         color: #1e1b18;
       }
-      [data-theme='dark'] .tp-logo-img {
-        content: url('/logo-dark.png');
+      .tp-logo-dark {
+        display: none;
+      }
+      [data-theme='dark'] .tp-logo-light {
+        display: none;
+      }
+      [data-theme='dark'] .tp-logo-dark {
+        display: block;
       }
 
       /* ─── Theme toggle ─── */
@@ -1172,20 +1188,6 @@ const threeThings = [
         margin-top: 12px;
         font-family: var(--tp-font-mono);
       }
-      .tp-positioning {
-        margin-top: 28px;
-        padding: 20px 24px;
-        border-left: 3px solid var(--tp-purple);
-        border-radius: var(--tp-radius-sm);
-        background: var(--tp-bg-2);
-      }
-      .tp-positioning-text {
-        font-size: 14px;
-        color: var(--tp-ink-3);
-        line-height: 1.7;
-        margin: 0;
-      }
-
       /* ─── 6. Snippets ─── */
       .tp-snippets {
         padding: 0 0 120px;
@@ -1340,24 +1342,6 @@ const threeThings = [
       .tp-devtools-code .tp-snippet-code {
         font-size: 13px;
         line-height: 1.5;
-      }
-
-      .tp-devtools-aside {
-        margin-top: 24px;
-        padding: 20px 24px;
-        border-left: 3px solid var(--tp-purple);
-        border-radius: var(--tp-radius-sm);
-        background: var(--tp-bg-2);
-        font-size: 14px;
-        color: var(--tp-ink-3);
-        line-height: 1.6;
-      }
-      .tp-devtools-aside a {
-        color: var(--tp-purple);
-        text-decoration: none;
-      }
-      .tp-devtools-aside a:hover {
-        text-decoration: underline;
       }
 
       /* ─── 8. CTA card ─── */
