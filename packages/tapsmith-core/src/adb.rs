@@ -524,31 +524,41 @@ pub async fn install_ca_cert(
     // Push cert to a temp location
     push_file(serial, ca_pem_path, TMP_CERT).await?;
 
-    // Try the system CA store first (works on rooted emulators).
-    let system_path = format!("{SYSTEM_CA_CERT_DIR}/{cert_filename}");
-    if try_install_system_ca(serial, cert_filename, &system_path).await {
-        let _ = shell(serial, &format!("rm -f {TMP_CERT}")).await;
-        return Ok(system_path);
-    }
+    let result = async {
+        // Try the system CA store first (works on rooted emulators).
+        let system_path = format!("{SYSTEM_CA_CERT_DIR}/{cert_filename}");
+        if try_install_system_ca(serial, cert_filename, &system_path, TMP_CERT).await {
+            return Ok(system_path);
+        }
 
-    // Fall back to the user CA store (requires network_security_config.xml).
-    let user_path = format!("{USER_CA_CERT_DIR}/{cert_filename}");
-    shell(serial, &format!("mkdir -p {USER_CA_CERT_DIR}")).await?;
-    shell(serial, &format!("cp {TMP_CERT} {user_path}")).await?;
-    shell(serial, &format!("chmod 644 {user_path}")).await?;
+        // Fall back to the user CA store (requires network_security_config.xml).
+        let user_path = format!("{USER_CA_CERT_DIR}/{cert_filename}");
+        shell(serial, &format!("mkdir -p {USER_CA_CERT_DIR}")).await?;
+        shell(serial, &format!("cp {TMP_CERT} {user_path}")).await?;
+        shell(serial, &format!("chmod 644 {user_path}")).await?;
+
+        info!(
+            %serial, cert_filename,
+            "CA certificate installed in user store (apps need network_security_config.xml to trust it)"
+        );
+        Ok(user_path)
+    }
+    .await;
+
     let _ = shell(serial, &format!("rm -f {TMP_CERT}")).await;
 
-    info!(
-        %serial, cert_filename,
-        "CA certificate installed in user store (apps need network_security_config.xml to trust it)"
-    );
-    Ok(user_path)
+    result
 }
 
 /// Try to remount /system and install the CA cert into the system trust store.
 /// Returns `true` on success, `false` if remount or install failed (caller
 /// should fall back to the user store).
-async fn try_install_system_ca(serial: &str, cert_filename: &str, system_path: &str) -> bool {
+async fn try_install_system_ca(
+    serial: &str,
+    cert_filename: &str,
+    system_path: &str,
+    tmp_cert_path: &str,
+) -> bool {
     // `adb remount` makes /system writable on userdebug/eng emulator images.
     let remount_output = match run_adb_lenient(serial, &["remount"]).await {
         Ok(out) => String::from_utf8_lossy(&out).to_string(),
@@ -573,12 +583,7 @@ async fn try_install_system_ca(serial: &str, cert_filename: &str, system_path: &
         return false;
     }
 
-    if let Err(e) = shell(
-        serial,
-        &format!("cp /data/local/tmp/tapsmith-ca.pem {system_path}"),
-    )
-    .await
-    {
+    if let Err(e) = shell(serial, &format!("cp {tmp_cert_path} {system_path}")).await {
         debug!(%serial, "Failed to copy CA to system store: {e} — falling back to user CA store");
         return false;
     }
