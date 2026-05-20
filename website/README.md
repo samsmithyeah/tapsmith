@@ -1,49 +1,37 @@
-# Starlight Starter Kit: Basics
+# Tapsmith Website
 
-[![Built with Starlight](https://astro.badg.es/v2/built-with-starlight/tiny.svg)](https://starlight.astro.build)
+The [tapsmith.dev](https://tapsmith.dev) documentation site. Built with [Astro](https://astro.build) + [Starlight](https://starlight.astro.build).
 
-```
-npm create astro@latest -- --template starlight
-```
+## Development
 
-> 🧑‍🚀 **Seasoned astronaut?** Delete this file. Have fun!
-
-## 🚀 Project Structure
-
-Inside of your Astro + Starlight project, you'll see the following folders and files:
-
-```
-.
-├── public/
-├── src/
-│   ├── assets/
-│   ├── content/
-│   │   └── docs/
-│   └── content.config.ts
-├── astro.config.mjs
-├── package.json
-└── tsconfig.json
+```bash
+cd website
+npm ci
+npm run dev       # http://localhost:4321
 ```
 
-Starlight looks for `.md` or `.mdx` files in the `src/content/docs/` directory. Each file is exposed as a route based on its file name.
+## Doc sync
 
-Images can be added to `src/assets/` and embedded in Markdown with a relative link.
+Documentation lives in `docs/` at the repo root. The sync script copies it into the website at build time:
 
-Static assets, like favicons, can be placed in the `public/` directory.
+```bash
+npm run sync-docs
+```
 
-## 🧞 Commands
+This runs automatically as part of `npm run dev` and `npm run build`. Do not edit files in `src/content/docs/` directly — they are gitignored and regenerated on every build.
 
-All commands are run from the root of the project, from a terminal:
+## Scripts
 
-| Command                   | Action                                           |
-| :------------------------ | :----------------------------------------------- |
-| `npm install`             | Installs dependencies                            |
-| `npm run dev`             | Starts local dev server at `localhost:4321`      |
-| `npm run build`           | Build your production site to `./dist/`          |
-| `npm run preview`         | Preview your build locally, before deploying     |
-| `npm run astro ...`       | Run CLI commands like `astro add`, `astro check` |
-| `npm run astro -- --help` | Get help using the Astro CLI                     |
+| Command              | Action                                      |
+| :------------------- | :------------------------------------------ |
+| `npm run dev`        | Start dev server (syncs docs first)         |
+| `npm run build`      | Production build (sync + build + validate)  |
+| `npm run typecheck`  | TypeScript checking                         |
+| `npm run lint`       | ESLint                                      |
+| `npm run format`     | Prettier (write)                            |
+| `npm run format:check` | Prettier (check only)                     |
+| `npm run knip`       | Unused code detection                       |
 
-## 👀 Want to learn more?
+## Deployment
 
-Check out [Starlight’s docs](https://starlight.astro.build/), read [the Astro documentation](https://docs.astro.build), or jump into the [Astro Discord server](https://astro.build/chat).
+Deployed to Cloudflare Pages automatically on `v*` tag push. Can also be triggered manually via the "Deploy Website" workflow in GitHub Actions.
