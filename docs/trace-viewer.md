@@ -58,6 +58,10 @@ test("checkout flow", async ({ device }) => {
 
 ## Viewing Traces
 
+### Online viewer
+
+Open [trace.tapsmith.dev](https://trace.tapsmith.dev) and drag a `.zip` trace file onto the page, or load one via the `?trace=` URL parameter. The viewer runs entirely in your browser — no data is uploaded.
+
 ### Local viewer
 
 ```bash
@@ -65,10 +69,6 @@ npx tapsmith show-trace test-results/traces/trace-my_test.zip
 ```
 
 This starts a local server and opens the trace viewer in your browser.
-
-### Drag and drop
-
-Open the trace viewer without a file, then drag a `.zip` trace file onto the page.
 
 ## Trace Viewer Panels
 
@@ -199,15 +199,19 @@ The format uses `version: 1` for forward compatibility.
 
 ### Viewing CI traces
 
-Download the trace artifact from your CI run and open it:
+Download the trace artifact from your CI run and open it locally:
 
 ```bash
 npx tapsmith show-trace tapsmith-results/traces/trace-login_test.zip
 ```
 
+Or open [trace.tapsmith.dev](https://trace.tapsmith.dev) and drop the downloaded `.zip` file onto the page.
+
 ## Deep Linking
 
 The trace viewer supports URL parameters for sharing specific views:
 
-- `?trace=/path/to/trace.zip` — load a trace file
+- `?trace=https://example.com/trace.zip` — load a trace from a URL
 - `?action=5` — jump to the 5th action
+
+For example: `https://trace.tapsmith.dev?trace=https%3A%2F%2Fexample.com%2Fartifacts%2Ftrace.zip&action=5`
