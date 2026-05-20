@@ -22,15 +22,15 @@ This runs automatically as part of `npm run dev` and `npm run build`. Do not edi
 
 ## Scripts
 
-| Command              | Action                                      |
-| :------------------- | :------------------------------------------ |
-| `npm run dev`        | Start dev server (syncs docs first)         |
-| `npm run build`      | Production build (sync + build + validate)  |
-| `npm run typecheck`  | TypeScript checking                         |
-| `npm run lint`       | ESLint                                      |
-| `npm run format`     | Prettier (write)                            |
-| `npm run format:check` | Prettier (check only)                     |
-| `npm run knip`       | Unused code detection                       |
+| Command                | Action                                     |
+| :--------------------- | :----------------------------------------- |
+| `npm run dev`          | Start dev server (syncs docs first)        |
+| `npm run build`        | Production build (sync + build + validate) |
+| `npm run typecheck`    | TypeScript checking                        |
+| `npm run lint`         | ESLint                                     |
+| `npm run format`       | Prettier (write)                           |
+| `npm run format:check` | Prettier (check only)                      |
+| `npm run knip`         | Unused code detection                      |
 
 ## Deployment
 

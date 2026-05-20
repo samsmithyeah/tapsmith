@@ -266,7 +266,8 @@ function stripFirstHeading(content) {
 }
 
 function addFrontmatter(content, title, description) {
-  return `---\ntitle: "${title}"\ndescription: "${description}"\n---\n\n${content}`
+  const escape = (str) => str.replace(/"/g, '\\"')
+  return `---\ntitle: "${escape(title)}"\ndescription: "${escape(description)}"\n---\n\n${content}`
 }
 
 function ensureDir(filePath) {

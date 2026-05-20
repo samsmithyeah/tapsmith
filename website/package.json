@@ -10,8 +10,8 @@
     "preview": "astro preview",
     "typecheck": "astro check",
     "lint": "eslint .",
-    "format:check": "prettier --check 'src/**/*.astro' 'scripts/**/*.mjs' '*.mjs'",
-    "format": "prettier --write 'src/**/*.astro' 'scripts/**/*.mjs' '*.mjs'",
+    "format:check": "prettier --check .",
+    "format": "prettier --write .",
     "knip": "knip",
     "astro": "astro"
   },
