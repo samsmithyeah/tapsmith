@@ -1,0 +1,41 @@
+{
+  "name": "website",
+  "type": "module",
+  "version": "0.0.1",
+  "scripts": {
+    "sync-docs": "node scripts/sync-docs.mjs",
+    "dev": "npm run sync-docs && astro dev",
+    "start": "npm run sync-docs && astro dev",
+    "build": "npm run sync-docs && astro build",
+    "preview": "astro preview",
+    "typecheck": "astro check",
+    "lint": "eslint .",
+    "format:check": "prettier --check .",
+    "format": "prettier --write .",
+    "knip": "knip",
+    "astro": "astro"
+  },
+  "dependencies": {
+    "@astrojs/starlight": "^0.39.2",
+    "@tailwindcss/vite": "^4.3.0",
+    "astro": "^6.3.1",
+    "sharp": "^0.34.5",
+    "starlight-links-validator": "^0.24.0",
+    "tailwindcss": "^4.3.0"
+  },
+  "overrides": {
+    "@tailwindcss/vite": {
+      "vite": "$vite"
+    }
+  },
+  "devDependencies": {
+    "vite": "^7.3.3",
+    "@astrojs/check": "^0.9.9",
+    "eslint": "^10.4.0",
+    "knip": "^6.14.1",
+    "prettier": "^3.8.3",
+    "prettier-plugin-astro": "^0.14.1",
+    "typescript": "^6.0.3",
+    "typescript-eslint": "^8.59.4"
+  }
+}
