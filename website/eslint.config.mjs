@@ -1,6 +1,6 @@
 import tseslint from 'typescript-eslint'
 
-export default tseslint.config(
+export default [
   {
     ignores: ['dist/**', 'node_modules/**', '.astro/**', 'src/content/docs/**'],
   },
@@ -13,4 +13,4 @@ export default tseslint.config(
       ],
     },
   },
-)
+]
