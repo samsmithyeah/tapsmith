@@ -351,7 +351,7 @@ const threeThings = [
         btn.addEventListener('click', function () {
           document.querySelectorAll('.tp-tab').forEach(function (b) { b.classList.remove('tp-tab-active') })
           btn.classList.add('tp-tab-active')
-          var id = btn.getAttribute('data-tab')
+          const id = btn.getAttribute('data-tab')
           document.querySelectorAll('.tp-snippet-code').forEach(function (pre) {
             pre.hidden = pre.getAttribute('data-snippet') !== id
           })

@@ -12,7 +12,7 @@
 //   3. Rewrites internal cross-reference links to match Starlight's
 //      URL scheme (e.g. `selectors.md` → `/guides/selectors/`).
 
-import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'node:fs'
+import { readFileSync, writeFileSync, mkdirSync, existsSync, rmSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 
 const ROOT = resolve(import.meta.dirname, '..', '..')
@@ -122,6 +122,11 @@ function writeDoc(destPath, content) {
   writeFileSync(fullPath, content)
 }
 
+// ─── Clean output directory to remove stale files ───
+
+if (existsSync(OUT)) rmSync(OUT, { recursive: true, force: true })
+mkdirSync(OUT, { recursive: true })
+
 // ─── Sync individual doc files ───
 
 let count = 0
@@ -147,7 +152,7 @@ for (const file of FILES) {
 const apiRefPath = join(DOCS, 'api-reference.md')
 if (existsSync(apiRefPath)) {
   const apiContent = readFileSync(apiRefPath, 'utf-8')
-  const lines = apiContent.split('\n')
+  const lines = apiContent.split(/\r?\n/)
 
   for (const split of API_SPLITS) {
     const startIdx = lines.findIndex(l => l.startsWith(split.startMarker))
