@@ -248,7 +248,9 @@ export async function startUIServer(
   let screenPollActive = false;
   let watcher: FSWatcher | null = null;
   let discoveryWatcher: FSWatcher | null = null;
-  const discoveryTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  const pendingDiscoveryFiles = new Set<string>();
+  let discoveryTimer: ReturnType<typeof setTimeout> | null = null;
+  let discoveryBatchRunning = false;
   const discoveredFileNodes = new Map<string, TestTreeNode>();
   /** A single watched entry: optional project scope + optional test filter.
    * testFilter = undefined means "whole file"; projectName = undefined means
@@ -2448,6 +2450,15 @@ export async function startUIServer(
     return true;
   }
 
+  function isExistingMatchingTestFile(filePath: string): boolean {
+    try {
+      if (!fs.statSync(filePath).isFile()) return false;
+    } catch {
+      return false;
+    }
+    return !shouldIgnoreDiscoveryPath(filePath) && matchesConfiguredTestFile(filePath);
+  }
+
   function refreshFileProjectLookup(filePath: string): void {
     fileToProject.delete(filePath);
     if (!ctx.projects) return;
@@ -2541,43 +2552,9 @@ export async function startUIServer(
     replayWatchState(broadcast);
   }
 
-  async function handleDiscoveredTestFile(filePath: string): Promise<void> {
+  function removeKnownTestFile(filePath: string): boolean {
     const resolved = path.resolve(filePath);
-    if (ctx.testFiles.includes(resolved) || !matchesConfiguredTestFile(resolved)) return;
-
-    const matchingProjects = matchingProjectsForTestFile(resolved);
-    const globalWatchWasEnabled = isGlobalWholeFileWatchEnabled();
-    const watchedProjects = matchingProjects.filter(isProjectWholeFileWatchEnabled);
-
-    const tree = await discoverFile(resolved);
-    if (!tree) return;
-
-    addSortedUnique(ctx.testFiles, resolved);
-    discoveredFileNodes.set(resolved, tree);
-
-    for (const project of matchingProjects) {
-      addSortedUnique(project.testFiles, resolved);
-    }
-    refreshFileProjectLookup(resolved);
-
-    if (globalWatchWasEnabled) {
-      startWatching(resolved, undefined, undefined, false);
-    }
-    for (const project of watchedProjects) {
-      startWatching(resolved, project.name, undefined, false);
-    }
-
-    rebuildTestTreeFromDiscoveredFiles();
-    broadcastTestTreeWithCurrentState();
-
-    if (globalWatchWasEnabled || watchedProjects.length > 0) {
-      watchQueue.scheduleFiles([resolved]);
-    }
-  }
-
-  function handleRemovedTestFile(filePath: string): void {
-    const resolved = path.resolve(filePath);
-    if (!ctx.testFiles.includes(resolved)) return;
+    if (!ctx.testFiles.includes(resolved)) return false;
 
     removeFile(ctx.testFiles, resolved);
     discoveredFileNodes.delete(resolved);
@@ -2599,6 +2576,56 @@ export async function startUIServer(
       }
     }
     refreshFileProjectLookup(resolved);
+    return true;
+  }
+
+  async function discoverOrRefreshTestFile(filePath: string): Promise<{ treeChanged: boolean; shouldRun: boolean }> {
+    const resolved = path.resolve(filePath);
+    if (!isExistingMatchingTestFile(resolved)) {
+      return { treeChanged: removeKnownTestFile(resolved), shouldRun: false };
+    }
+
+    const wasKnown = ctx.testFiles.includes(resolved);
+    const matchingProjects = matchingProjectsForTestFile(resolved);
+    const globalWatchWasEnabled = !wasKnown && isGlobalWholeFileWatchEnabled();
+    const watchedProjects = !wasKnown
+      ? matchingProjects.filter(isProjectWholeFileWatchEnabled)
+      : [];
+
+    const tree = await discoverFile(resolved);
+    if (!tree) return { treeChanged: false, shouldRun: false };
+
+    // A file can be deleted or renamed while the forked discovery process is
+    // importing it. Re-check after the await so we don't add a stale node.
+    if (!isExistingMatchingTestFile(resolved)) {
+      return { treeChanged: removeKnownTestFile(resolved), shouldRun: false };
+    }
+
+    addSortedUnique(ctx.testFiles, resolved);
+    discoveredFileNodes.set(resolved, tree);
+
+    for (const project of matchingProjects) {
+      addSortedUnique(project.testFiles, resolved);
+    }
+    refreshFileProjectLookup(resolved);
+
+    if (globalWatchWasEnabled) {
+      startWatching(resolved, undefined, undefined, false);
+    }
+    for (const project of watchedProjects) {
+      startWatching(resolved, project.name, undefined, false);
+    }
+
+    return {
+      treeChanged: true,
+      shouldRun: !wasKnown && (globalWatchWasEnabled || watchedProjects.length > 0),
+    };
+  }
+
+  function handleRemovedTestFile(filePath: string): void {
+    const resolved = path.resolve(filePath);
+    pendingDiscoveryFiles.delete(resolved);
+    if (!removeKnownTestFile(resolved)) return;
 
     rebuildTestTreeFromDiscoveredFiles();
     broadcastTestTreeWithCurrentState();
@@ -2608,13 +2635,49 @@ export async function startUIServer(
     const resolved = path.resolve(filePath);
     if (shouldIgnoreDiscoveryPath(resolved) || !matchesConfiguredTestFile(resolved)) return;
 
-    const existing = discoveryTimers.get(resolved);
-    if (existing) clearTimeout(existing);
-    const timer = setTimeout(() => {
-      discoveryTimers.delete(resolved);
-      handleDiscoveredTestFile(resolved).catch(broadcastError);
+    pendingDiscoveryFiles.add(resolved);
+    if (discoveryBatchRunning) return;
+    if (discoveryTimer) clearTimeout(discoveryTimer);
+    discoveryTimer = setTimeout(() => {
+      discoveryTimer = null;
+      flushPendingDiscovery().catch(broadcastError);
     }, 150);
-    discoveryTimers.set(resolved, timer);
+  }
+
+  async function flushPendingDiscovery(): Promise<void> {
+    if (discoveryBatchRunning) return;
+    discoveryBatchRunning = true;
+
+    try {
+      while (pendingDiscoveryFiles.size > 0) {
+        const files = [...pendingDiscoveryFiles].sort();
+        pendingDiscoveryFiles.clear();
+
+        let treeChanged = false;
+        const filesToRun = new Set<string>();
+        for (const file of files) {
+          const result = await discoverOrRefreshTestFile(file);
+          if (result.treeChanged) treeChanged = true;
+          if (result.shouldRun) filesToRun.add(file);
+        }
+
+        if (treeChanged) {
+          rebuildTestTreeFromDiscoveredFiles();
+          broadcastTestTreeWithCurrentState();
+        }
+        if (filesToRun.size > 0) {
+          watchQueue.scheduleFiles([...filesToRun]);
+        }
+      }
+    } finally {
+      discoveryBatchRunning = false;
+      if (pendingDiscoveryFiles.size > 0 && !discoveryTimer) {
+        discoveryTimer = setTimeout(() => {
+          discoveryTimer = null;
+          flushPendingDiscovery().catch(broadcastError);
+        }, 150);
+      }
+    }
   }
 
   function startTestDiscoveryWatcher(): void {
@@ -2633,15 +2696,10 @@ export async function startUIServer(
       scheduleDiscovery(filePath);
     });
     discoveryWatcher.on('change', (filePath) => {
-      if (!ctx.testFiles.includes(path.resolve(filePath))) scheduleDiscovery(filePath);
+      scheduleDiscovery(filePath);
     });
     discoveryWatcher.on('unlink', (filePath) => {
       const resolved = path.resolve(filePath);
-      const timer = discoveryTimers.get(resolved);
-      if (timer) {
-        clearTimeout(timer);
-        discoveryTimers.delete(resolved);
-      }
       handleRemovedTestFile(resolved);
     });
   }
@@ -3394,8 +3452,8 @@ export async function startUIServer(
       try { fs.unlinkSync(portFilePath); } catch { /* already gone */ }
       if (watcher) watcher.close();
       if (discoveryWatcher) discoveryWatcher.close();
-      for (const timer of discoveryTimers.values()) clearTimeout(timer);
-      discoveryTimers.clear();
+      if (discoveryTimer) clearTimeout(discoveryTimer);
+      pendingDiscoveryFiles.clear();
       for (const ws of clients) ws.close();
       wss.close();
       server.close();
