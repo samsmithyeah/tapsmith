@@ -267,6 +267,8 @@ After downloading the artifact, open the trace locally:
 npx tapsmith show-trace tapsmith-results/traces/trace-login_test.zip
 ```
 
+Or drop the `.zip` file onto [trace.tapsmith.dev](https://trace.tapsmith.dev) to view it in the browser without installing anything.
+
 Network capture works in CI as well -- HTTP/HTTPS requests made by the app are recorded in the trace and visible in the Network tab of the trace viewer. **Android** runs need no extra setup; **iOS** runs need `brew install mitmproxy` and (on self-hosted runners) a pre-approved System Extension — see [iOS network capture on CI](#ios-network-capture-on-ci) above.
 
 ### Caching
