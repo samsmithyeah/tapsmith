@@ -588,7 +588,6 @@ async fn try_install_system_ca(
 
     if let Err(e) = shell(serial, &format!("cp {tmp_cert_path} {system_path}")).await {
         debug!(%serial, "Failed to copy CA to system store: {e} — falling back to user CA store");
-        let _ = shell(serial, &format!("rm -f {system_path}")).await;
         return false;
     }
 
@@ -602,9 +601,9 @@ async fn try_install_system_ca(
     true
 }
 
-/// Run an adb command (with serial targeting) that may fail, returning stdout
-/// regardless. Used for commands like `adb root` that can fail on non-rooted
-/// devices.
+/// Run an adb command (with serial targeting) that may fail, returning combined
+/// stdout + stderr regardless of exit code. Used for commands like `adb root`
+/// and `adb remount` where error messages may appear on either stream.
 async fn run_adb_lenient(serial: &str, args: &[&str]) -> Result<Vec<u8>> {
     let mut cmd = Command::new("adb");
     cmd.arg("-s").arg(serial);
@@ -617,7 +616,14 @@ async fn run_adb_lenient(serial: &str, args: &[&str]) -> Result<Vec<u8>> {
         .map_err(|_| anyhow!("adb command timed out after {DEFAULT_TIMEOUT:?}"))?
         .context("Failed to execute adb")?;
 
-    Ok(output.stdout)
+    let mut combined = output.stdout;
+    if !output.stderr.is_empty() {
+        if !combined.is_empty() {
+            combined.push(b'\n');
+        }
+        combined.extend_from_slice(&output.stderr);
+    }
+    Ok(combined)
 }
 
 /// Execute a shell command on the device, returning stdout as a String.
