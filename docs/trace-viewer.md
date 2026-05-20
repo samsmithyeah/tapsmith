@@ -2,6 +2,8 @@
 
 Tapsmith's trace viewer records screenshots, view hierarchy snapshots, console output, and logcat at each test step, then lets you scrub through a timeline to debug failures. It's the mobile-native equivalent of Playwright's Trace Viewer.
 
+<img src="/trace-viewer.png" alt="Trace viewer showing a failed authentication test with timeline, device screenshot, action log, and error details" />
+
 ## Recording Traces
 
 ### Via configuration

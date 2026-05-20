@@ -6,11 +6,13 @@ import tailwindcss from '@tailwindcss/vite'
 
 export default defineConfig({
   site: 'https://tapsmith.dev',
+  router: 'client',
   integrations: [
     starlight({
       title: 'Tapsmith',
       logo: {
-        src: './src/assets/logo.png',
+        light: './src/assets/logo.png',
+        dark: './src/assets/logo-dark.png',
         replacesTitle: true,
       },
       social: [
@@ -36,7 +38,8 @@ export default defineConfig({
             { label: 'Network Interception', slug: 'guides/network' },
             { label: 'WebView Testing', slug: 'guides/webview' },
             { label: 'Trace Viewer', slug: 'guides/trace-viewer' },
-            { label: 'Watch & UI Mode', slug: 'guides/watch-and-ui-mode' },
+            { label: 'Watch Mode', slug: 'guides/watch-mode' },
+            { label: 'UI Mode', slug: 'guides/ui-mode' },
             { label: 'Parallel Execution', slug: 'guides/parallel-and-sharding' },
             { label: 'Debugging', slug: 'guides/debugging' },
             { label: 'MCP Server', slug: 'guides/mcp-server' },

@@ -12,7 +12,15 @@
 //   3. Rewrites internal cross-reference links to match Starlight's
 //      URL scheme (e.g. `selectors.md` → `/guides/selectors/`).
 
-import { readFileSync, writeFileSync, mkdirSync, existsSync, rmSync } from 'node:fs'
+import {
+  readFileSync,
+  writeFileSync,
+  mkdirSync,
+  existsSync,
+  rmSync,
+  readdirSync,
+  copyFileSync,
+} from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 
 const ROOT = resolve(import.meta.dirname, '..', '..')
@@ -59,10 +67,16 @@ const FILES = [
     desc: 'Record and inspect step-by-step test execution with screenshots, hierarchy, and network.',
   },
   {
-    src: 'watch-and-ui-mode.md',
-    dest: 'guides/watch-and-ui-mode.md',
-    title: 'Watch & UI Mode',
-    desc: 'Interactive development with watch mode and the visual UI runner.',
+    src: 'watch-mode.md',
+    dest: 'guides/watch-mode.md',
+    title: 'Watch Mode',
+    desc: 'Fast terminal-based iteration with persistent device sessions.',
+  },
+  {
+    src: 'ui-mode.md',
+    dest: 'guides/ui-mode.md',
+    title: 'UI Mode',
+    desc: 'Browser-based interactive test runner with MCP integration.',
   },
   {
     src: 'parallel-and-sharding.md',
@@ -214,7 +228,9 @@ const LINK_MAP = {
   'network.md': '/guides/network/',
   'webview.md': '/guides/webview/',
   'trace-viewer.md': '/guides/trace-viewer/',
-  'watch-and-ui-mode.md': '/guides/watch-and-ui-mode/',
+  'watch-and-ui-mode.md': '/guides/watch-mode/',
+  'watch-mode.md': '/guides/watch-mode/',
+  'ui-mode.md': '/guides/ui-mode/',
   'parallel-and-sharding.md': '/guides/parallel-and-sharding/',
   'debugging.md': '/guides/debugging/',
   'mcp-server.md': '/guides/mcp-server/',
@@ -339,6 +355,18 @@ if (existsSync(apiRefPath)) {
     section = addFrontmatter(section, split.title, split.desc)
 
     writeDoc(split.dest, section)
+    count++
+  }
+}
+
+// ─── Copy images directory ───
+
+const IMAGES_SRC = join(DOCS, 'images')
+const IMAGES_DEST = join(OUT, 'images')
+if (existsSync(IMAGES_SRC)) {
+  mkdirSync(IMAGES_DEST, { recursive: true })
+  for (const file of readdirSync(IMAGES_SRC)) {
+    copyFileSync(join(IMAGES_SRC, file), join(IMAGES_DEST, file))
     count++
   }
 }

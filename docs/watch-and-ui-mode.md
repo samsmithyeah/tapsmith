@@ -75,6 +75,8 @@ npx tapsmith test --ui
 
 This opens an interactive web-based test runner in your browser. The UI server picks an available port automatically and prints the URL to the terminal.
 
+<img src="/ui-mode.png" alt="UI mode showing the interactive test runner with test list, live device mirror, and network inspection panel" />
+
 To set a specific port:
 
 ```bash
