@@ -1,6 +1,7 @@
 // @ts-check
 import { defineConfig } from 'astro/config'
 import starlight from '@astrojs/starlight'
+import starlightLinksValidator from 'starlight-links-validator'
 import tailwindcss from '@tailwindcss/vite'
 
 export default defineConfig({
@@ -15,6 +16,7 @@ export default defineConfig({
       social: [
         { icon: 'github', label: 'GitHub', href: 'https://github.com/samsmithyeah/tapsmith' },
       ],
+      plugins: [starlightLinksValidator()],
       customCss: ['./src/styles/global.css'],
       expressiveCode: {
         themes: ['github-dark', 'github-light'],
@@ -46,7 +48,10 @@ export default defineConfig({
             { label: 'CI Setup', slug: 'platform/ci-setup' },
             { label: 'iOS Physical Devices', slug: 'platform/ios-physical-devices' },
             { label: 'iOS Network Capture', slug: 'platform/ios-network-capture' },
-            { label: 'iOS Device Network Tracing', slug: 'platform/ios-physical-device-network-tracing' },
+            {
+              label: 'iOS Device Network Tracing',
+              slug: 'platform/ios-physical-device-network-tracing',
+            },
           ],
         },
         {

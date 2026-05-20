@@ -32,15 +32,15 @@ await device.getByLabel("Reorder").dragTo(device.getByText("Pinned"))`,
 }
 
 const comparisonRows = [
-  ['Playwright-style API',              'Y', 'N', 'N', 'P'],
-  ['iOS + Android single suite',        'Y', 'Y', 'Y', 'Y'],
-  ['Auto-waiting on every action',      'Y', 'N', 'Y', 'Y'],
-  ['Network interception (built-in)',   'Y', 'P', 'N', 'N'],
-  ['Trace viewer',                      'Y', 'N', 'N', 'P'],
-  ['Parallel sharding & blob reports',  'Y', 'N', 'P', 'N'],
-  ['TypeScript-first',                  'Y', 'N', 'N', 'P'],
-  ['Interactive UI mode',               'Y', 'N', 'P', 'N'],
-  ['Built-in MCP server',              'Y', 'N', 'N', 'N'],
+  ['Playwright-style API', 'Y', 'N', 'N', 'P'],
+  ['iOS + Android single suite', 'Y', 'Y', 'Y', 'Y'],
+  ['Auto-waiting on every action', 'Y', 'N', 'Y', 'Y'],
+  ['Network interception (built-in)', 'Y', 'P', 'N', 'N'],
+  ['Trace viewer', 'Y', 'N', 'N', 'P'],
+  ['Parallel sharding & blob reports', 'Y', 'N', 'P', 'N'],
+  ['TypeScript-first', 'Y', 'N', 'N', 'P'],
+  ['Interactive UI mode', 'Y', 'N', 'P', 'N'],
+  ['Built-in MCP server', 'Y', 'N', 'N', 'N'],
 ]
 
 const threeThings = [
@@ -63,962 +63,1247 @@ const threeThings = [
 ---
 
 <html lang="en">
-<head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Tapsmith — Playwright-style testing for native mobile apps</title>
-  <meta name="description" content="A test framework for native iOS and Android. Same locators, same auto-waiting, same trace viewer as Playwright — rebuilt for real devices." />
-  <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
-  <link rel="preconnect" href="https://fonts.googleapis.com" />
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
-</head>
-<body>
-
-  <!-- 1. Sticky header -->
-  <header class="tp-header">
-    <div class="tp-container tp-header-inner">
-      <a href="/" class="tp-logo">
-        <img src="/logo.png" alt="Tapsmith" class="tp-logo-img" />
-      </a>
-      <nav class="tp-nav">
-        <a href="/getting-started/">Docs</a>
-        <a href="/reference/api/locators/">API</a>
-        <a href="/guides/network/">Guides</a>
-        <a href="https://github.com/samsmithyeah/tapsmith" target="_blank" rel="noopener">GitHub</a>
-      </nav>
-      <div class="tp-header-actions">
-        <span class="tp-version-chip">v0.1.2</span>
-        <a href="/getting-started/" class="tp-btn-solid tp-btn-sm">Get started →</a>
-      </div>
-    </div>
-  </header>
-
-  <main>
-
-    <!-- 2. Hero -->
-    <section class="tp-hero">
-      <div class="tp-container">
-        <h1 class="tp-hero-h1">
-          Mobile tests that feel<br />
-          <span class="tp-muted">like</span> web tests.
-        </h1>
-
-        <p class="tp-hero-lead">
-          Tapsmith is a test framework for native iOS and Android. We took the
-          parts of Playwright that engineers actually love — the locators, the
-          auto&#8209;waiting, the trace viewer — and rebuilt them for real devices.
-        </p>
-
-        <div class="tp-hero-ctas">
-          <a href="/getting-started/" class="tp-btn-solid">Start in 60 seconds</a>
-          <a href="https://www.npmjs.com/package/tapsmith" class="tp-btn-ghost tp-btn-npm">
-            <span class="tp-npm-dollar">$</span>&nbsp; npm i tapsmith&nbsp;<span class="tp-npm-icon">⧉</span>
-          </a>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Tapsmith — Playwright-style testing for native mobile apps</title>
+    <meta
+      name="description"
+      content="A test framework for native iOS and Android. Same locators, same auto-waiting, same trace viewer as Playwright — rebuilt for real devices."
+    />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap"
+      rel="stylesheet"
+    />
+  </head>
+  <body>
+    <!-- 1. Sticky header -->
+    <header class="tp-header">
+      <div class="tp-container tp-header-inner">
+        <a href="/" class="tp-logo">
+          <img src="/logo.png" alt="Tapsmith" class="tp-logo-img" />
+        </a>
+        <nav class="tp-nav">
+          <a href="/getting-started/">Docs</a>
+          <a href="/reference/api/locators/">API</a>
+          <a href="/guides/network/">Guides</a>
+          <a href="https://github.com/samsmithyeah/tapsmith" target="_blank" rel="noopener"
+            >GitHub</a
+          >
+        </nav>
+        <div class="tp-header-actions">
+          <span class="tp-version-chip">v0.1.2</span>
+          <a href="/getting-started/" class="tp-btn-solid tp-btn-sm">Get started →</a>
         </div>
+      </div>
+    </header>
 
-        <div class="tp-hero-visual">
-          <div class="tp-code-window">
-            <div class="tp-code-chrome">
-              <div class="tp-chrome-dots">
-                <span class="tp-chrome-dot"></span>
-                <span class="tp-chrome-dot"></span>
-                <span class="tp-chrome-dot"></span>
+    <main>
+      <!-- 2. Hero -->
+      <section class="tp-hero">
+        <div class="tp-container">
+          <h1 class="tp-hero-h1">
+            Mobile tests that feel<br />
+            <span class="tp-muted">like</span> web tests.
+          </h1>
+
+          <p class="tp-hero-lead">
+            Tapsmith is a test framework for native iOS and Android. We took the parts of Playwright
+            that engineers actually love — the locators, the auto&#8209;waiting, the trace viewer —
+            and rebuilt them for real devices.
+          </p>
+
+          <div class="tp-hero-ctas">
+            <a href="/getting-started/" class="tp-btn-solid">Start in 60 seconds</a>
+            <a href="https://www.npmjs.com/package/tapsmith" class="tp-btn-ghost tp-btn-npm">
+              <span class="tp-npm-dollar">$</span>&nbsp; npm i tapsmith&nbsp;<span
+                class="tp-npm-icon">⧉</span
+              >
+            </a>
+          </div>
+
+          <div class="tp-hero-visual">
+            <div class="tp-code-window">
+              <div class="tp-code-chrome">
+                <div class="tp-chrome-dots">
+                  <span class="tp-chrome-dot"></span>
+                  <span class="tp-chrome-dot"></span>
+                  <span class="tp-chrome-dot"></span>
+                </div>
+                <span class="tp-code-filename">checkout.test.ts</span>
+                <span class="tp-code-status">
+                  <span class="tp-dot-green"></span>
+                  passed · 1.4s
+                </span>
               </div>
-              <span class="tp-code-filename">checkout.test.ts</span>
-              <span class="tp-code-status">
+              <pre class="tp-code-body"><code set:html={codeSnippet} /></pre>
+            </div>
+            <div class="tp-hero-phone">
+              <img src="/hero-iphone.png" alt="Tapsmith driving an iOS app" class="tp-phone-img" />
+              <div class="tp-device-chip">
                 <span class="tp-dot-green"></span>
-                passed · 1.4s
-              </span>
-            </div>
-            <pre class="tp-code-body"><code set:html={codeSnippet} /></pre>
-          </div>
-          <div class="tp-hero-phone">
-            <img src="/hero-iphone.png" alt="Tapsmith driving an iOS app" class="tp-phone-img" />
-            <div class="tp-device-chip">
-              <span class="tp-dot-green"></span>
-              iPhone 17 Pro · iOS 26.5
+                iPhone 17 Pro · iOS 26.5
+              </div>
             </div>
           </div>
         </div>
-      </div>
-    </section>
+      </section>
 
-    <!-- 3. Proof strip -->
-    <section class="tp-proof">
-      <div class="tp-container tp-proof-inner">
-        <p class="tp-proof-text">
-          Open source under the MIT licence. Native agents on XCUITest
-          and UIAutomator2 — no browser shims or half-working bridges.
-        </p>
-        <div class="tp-proof-stats">
-          <div class="tp-stat">
-            <span class="tp-stat-num">MIT</span>
-            <span class="tp-stat-label">licence</span>
-          </div>
-          <div class="tp-stat">
-            <span class="tp-stat-num">2</span>
-            <span class="tp-stat-label">platforms</span>
-          </div>
-          <div class="tp-stat">
-            <span class="tp-stat-num">TS</span>
-            <span class="tp-stat-label">TypeScript-first</span>
-          </div>
-          <div class="tp-stat">
-            <span class="tp-stat-num">1</span>
-            <span class="tp-stat-label">test suite, both OS</span>
-          </div>
-        </div>
-      </div>
-    </section>
-
-    <!-- 4. Three things -->
-    <section class="tp-three">
-      <div class="tp-container">
-        <div class="tp-three-header">
-          <h2 class="tp-h2-large">Three things mobile testing should feel like — and finally does.</h2>
-          <a href="/guides/selectors/" class="tp-btn-ghost tp-btn-guide">Read the guide →</a>
-        </div>
-        <div class="tp-three-rows">
-          {threeThings.map((item) => (
-            <div class="tp-three-row">
-              <span class="tp-three-num">{item.n}</span>
-              <h3 class="tp-three-title">{item.title}</h3>
-              <p class="tp-three-body">{item.body}</p>
+      <!-- 3. Proof strip -->
+      <section class="tp-proof">
+        <div class="tp-container tp-proof-inner">
+          <p class="tp-proof-text">
+            Open source under the MIT licence. Native agents on XCUITest and UIAutomator2 — no
+            browser shims or half-working bridges.
+          </p>
+          <div class="tp-proof-stats">
+            <div class="tp-stat">
+              <span class="tp-stat-num">MIT</span>
+              <span class="tp-stat-label">licence</span>
             </div>
-          ))}
+            <div class="tp-stat">
+              <span class="tp-stat-num">2</span>
+              <span class="tp-stat-label">platforms</span>
+            </div>
+            <div class="tp-stat">
+              <span class="tp-stat-num">TS</span>
+              <span class="tp-stat-label">TypeScript-first</span>
+            </div>
+            <div class="tp-stat">
+              <span class="tp-stat-num">1</span>
+              <span class="tp-stat-label">test suite, both OS</span>
+            </div>
+          </div>
         </div>
-      </div>
-    </section>
+      </section>
 
-    <!-- 5. Comparison table -->
-    <section class="tp-compare">
-      <div class="tp-container">
-        <div class="tp-compare-header">
-          <p class="tp-eyebrow">How it stacks up</p>
-          <h2 class="tp-h2-large">We've all tried the others.</h2>
-          <p class="tp-compare-desc">
-            This is a snapshot, not a sales pitch. Every tool in this list does
-            something well; we just think the table tilts our way for most teams
-            shipping consumer mobile apps in 2026.
+      <!-- 4. Three things -->
+      <section class="tp-three">
+        <div class="tp-container">
+          <div class="tp-three-header">
+            <h2 class="tp-h2-large">
+              Three things mobile testing should feel like — and finally does.
+            </h2>
+            <a href="/guides/selectors/" class="tp-btn-ghost tp-btn-guide">Read the guide →</a>
+          </div>
+          <div class="tp-three-rows">
+            {
+              threeThings.map((item) => (
+                <div class="tp-three-row">
+                  <span class="tp-three-num">{item.n}</span>
+                  <h3 class="tp-three-title">{item.title}</h3>
+                  <p class="tp-three-body">{item.body}</p>
+                </div>
+              ))
+            }
+          </div>
+        </div>
+      </section>
+
+      <!-- 5. Comparison table -->
+      <section class="tp-compare">
+        <div class="tp-container">
+          <div class="tp-compare-header">
+            <p class="tp-eyebrow">How it stacks up</p>
+            <h2 class="tp-h2-large">We've all tried the others.</h2>
+            <p class="tp-compare-desc">
+              This is a snapshot, not a sales pitch. Every tool in this list does something well; we
+              just think the table tilts our way for most teams shipping consumer mobile apps in
+              2026.
+            </p>
+          </div>
+          <div class="tp-table-wrap">
+            <div class="tp-table">
+              <div class="tp-table-head">
+                <div class="tp-table-cell tp-table-feature">Feature</div>
+                <div class="tp-table-cell tp-table-col tp-table-us">
+                  Tapsmith<span class="tp-us-badge">● us</span>
+                </div>
+                <div class="tp-table-cell tp-table-col">Appium</div>
+                <div class="tp-table-cell tp-table-col">Maestro</div>
+                <div class="tp-table-cell tp-table-col">Detox</div>
+              </div>
+              {
+                comparisonRows.map((row, idx) => (
+                  <div
+                    class:list={[
+                      'tp-table-row',
+                      { 'tp-table-row-last': idx === comparisonRows.length - 1 },
+                    ]}
+                  >
+                    <div class="tp-table-cell tp-table-feature">{row[0]}</div>
+                    <div class="tp-table-cell tp-table-col tp-table-us-col" data-mark={row[1]}>
+                      <span
+                        class:list={[
+                          'tp-mark',
+                          `tp-mark-${row[1].toLowerCase()}`,
+                          'tp-mark-highlight',
+                        ]}
+                      >
+                        {row[1] === 'Y' ? '✓' : row[1] === 'P' ? '◐' : '—'}
+                      </span>
+                    </div>
+                    <div class="tp-table-cell tp-table-col" data-mark={row[2]}>
+                      <span class:list={['tp-mark', `tp-mark-${row[2].toLowerCase()}`]}>
+                        {row[2] === 'Y' ? '✓' : row[2] === 'P' ? '◐' : '—'}
+                      </span>
+                    </div>
+                    <div class="tp-table-cell tp-table-col" data-mark={row[3]}>
+                      <span class:list={['tp-mark', `tp-mark-${row[3].toLowerCase()}`]}>
+                        {row[3] === 'Y' ? '✓' : row[3] === 'P' ? '◐' : '—'}
+                      </span>
+                    </div>
+                    <div class="tp-table-cell tp-table-col" data-mark={row[4]}>
+                      <span class:list={['tp-mark', `tp-mark-${row[4].toLowerCase()}`]}>
+                        {row[4] === 'Y' ? '✓' : row[4] === 'P' ? '◐' : '—'}
+                      </span>
+                    </div>
+                  </div>
+                ))
+              }
+            </div>
+          </div>
+          <p class="tp-table-legend">
+            ✓ supported &nbsp;&nbsp; ◐ partial / via plugin &nbsp;&nbsp; — not available
           </p>
         </div>
-        <div class="tp-table-wrap">
-          <div class="tp-table">
-            <div class="tp-table-head">
-              <div class="tp-table-cell tp-table-feature">Feature</div>
-              <div class="tp-table-cell tp-table-col tp-table-us">Tapsmith<span class="tp-us-badge">● us</span></div>
-              <div class="tp-table-cell tp-table-col">Appium</div>
-              <div class="tp-table-cell tp-table-col">Maestro</div>
-              <div class="tp-table-cell tp-table-col">Detox</div>
+      </section>
+
+      <!-- 6. API snippets -->
+      <section class="tp-snippets">
+        <div class="tp-container">
+          <div class="tp-snippets-header">
+            <h2 class="tp-h2-medium">An API you can guess your way through.</h2>
+            <div class="tp-tabs">
+              <button class="tp-tab tp-tab-active" data-tab="locators" type="button"
+                >Locators</button
+              >
+              <button class="tp-tab" data-tab="network" type="button">Network</button>
+              <button class="tp-tab" data-tab="gestures" type="button">Gestures</button>
             </div>
-            {comparisonRows.map((row, idx) => (
-              <div class:list={['tp-table-row', { 'tp-table-row-last': idx === comparisonRows.length - 1 }]}>
-                <div class="tp-table-cell tp-table-feature">{row[0]}</div>
-                <div class="tp-table-cell tp-table-col tp-table-us-col" data-mark={row[1]}>
-                  <span class:list={['tp-mark', `tp-mark-${row[1].toLowerCase()}`, 'tp-mark-highlight']}>{row[1] === 'Y' ? '✓' : row[1] === 'P' ? '◐' : '—'}</span>
-                </div>
-                <div class="tp-table-cell tp-table-col" data-mark={row[2]}>
-                  <span class:list={['tp-mark', `tp-mark-${row[2].toLowerCase()}`]}>{row[2] === 'Y' ? '✓' : row[2] === 'P' ? '◐' : '—'}</span>
-                </div>
-                <div class="tp-table-cell tp-table-col" data-mark={row[3]}>
-                  <span class:list={['tp-mark', `tp-mark-${row[3].toLowerCase()}`]}>{row[3] === 'Y' ? '✓' : row[3] === 'P' ? '◐' : '—'}</span>
-                </div>
-                <div class="tp-table-cell tp-table-col" data-mark={row[4]}>
-                  <span class:list={['tp-mark', `tp-mark-${row[4].toLowerCase()}`]}>{row[4] === 'Y' ? '✓' : row[4] === 'P' ? '◐' : '—'}</span>
-                </div>
+          </div>
+          <div class="tp-snippet-panel">
+            <pre class="tp-snippet-code" data-snippet="locators">{snippets.locators}</pre>
+            <pre class="tp-snippet-code" data-snippet="network" hidden>{snippets.network}</pre>
+            <pre class="tp-snippet-code" data-snippet="gestures" hidden>{snippets.gestures}</pre>
+          </div>
+        </div>
+      </section>
+
+      <!-- 7. MCP + UI mode -->
+      <section class="tp-devtools">
+        <div class="tp-container">
+          <div class="tp-devtools-header">
+            <p class="tp-eyebrow">Developer tools</p>
+            <h2 class="tp-h2-large">A visual runner and a built&#8209;in MCP server.</h2>
+          </div>
+          <div class="tp-devtools-grid">
+            <div class="tp-devtools-card">
+              <h3 class="tp-devtools-title">UI mode</h3>
+              <p class="tp-devtools-body">
+                A browser-based interactive runner. Click any test to run it, see results stream in
+                live, browse traces and screenshots inline, and mirror the device screen — all
+                without leaving the browser.
+              </p>
+              <div class="tp-devtools-code">
+                <pre class="tp-snippet-code">npx tapsmith test --ui</pre>
               </div>
-            ))}
-          </div>
-        </div>
-        <p class="tp-table-legend">✓ supported &nbsp;&nbsp; ◐ partial / via plugin &nbsp;&nbsp; — not available</p>
-      </div>
-    </section>
-
-    <!-- 6. API snippets -->
-    <section class="tp-snippets">
-      <div class="tp-container">
-        <div class="tp-snippets-header">
-          <h2 class="tp-h2-medium">An API you can guess your way through.</h2>
-          <div class="tp-tabs">
-            <button class="tp-tab tp-tab-active" data-tab="locators" type="button">Locators</button>
-            <button class="tp-tab" data-tab="network" type="button">Network</button>
-            <button class="tp-tab" data-tab="gestures" type="button">Gestures</button>
-          </div>
-        </div>
-        <div class="tp-snippet-panel">
-          <pre class="tp-snippet-code" data-snippet="locators">{snippets.locators}</pre>
-          <pre class="tp-snippet-code" data-snippet="network" hidden>{snippets.network}</pre>
-          <pre class="tp-snippet-code" data-snippet="gestures" hidden>{snippets.gestures}</pre>
-        </div>
-      </div>
-    </section>
-
-    <!-- 7. MCP + UI mode -->
-    <section class="tp-devtools">
-      <div class="tp-container">
-        <div class="tp-devtools-header">
-          <p class="tp-eyebrow">Developer tools</p>
-          <h2 class="tp-h2-large">A visual runner and a built&#8209;in MCP server.</h2>
-        </div>
-        <div class="tp-devtools-grid">
-          <div class="tp-devtools-card">
-            <h3 class="tp-devtools-title">UI mode</h3>
-            <p class="tp-devtools-body">
-              A browser-based interactive runner. Click any test to run it, see
-              results stream in live, browse traces and screenshots inline, and
-              mirror the device screen — all without leaving the browser.
-            </p>
-            <div class="tp-devtools-code">
-              <pre class="tp-snippet-code">npx tapsmith test --ui</pre>
             </div>
-          </div>
-          <div class="tp-devtools-card">
-            <h3 class="tp-devtools-title">MCP server</h3>
-            <p class="tp-devtools-body">
-              16 tools for AI coding agents — snapshot the screen, tap elements,
-              run tests, read traces. Works with Claude Code, Cursor, Codex, and
-              any MCP client over stdio or HTTP.
-            </p>
-            <div class="tp-devtools-code">
-              <pre class="tp-snippet-code">claude mcp add tapsmith -- npx tapsmith mcp-server</pre>
+            <div class="tp-devtools-card">
+              <h3 class="tp-devtools-title">MCP server</h3>
+              <p class="tp-devtools-body">
+                16 tools for AI coding agents — snapshot the screen, tap elements, run tests, read
+                traces. Works with Claude Code, Cursor, Codex, and any MCP client over stdio or
+                HTTP.
+              </p>
+              <div class="tp-devtools-code">
+                <pre
+                  class="tp-snippet-code">claude mcp add tapsmith -- npx tapsmith mcp-server</pre>
+              </div>
             </div>
           </div>
         </div>
-      </div>
-    </section>
+      </section>
 
-    <!-- 8. CTA card -->
-    <section class="tp-cta">
+      <!-- 8. CTA card -->
+      <section class="tp-cta">
+        <div class="tp-container">
+          <div class="tp-cta-card">
+            <div class="tp-cta-left">
+              <h2 class="tp-cta-h2">
+                Spend the rest of the afternoon on something more interesting.
+              </h2>
+              <p class="tp-cta-sub">
+                Install Tapsmith, point it at your app, and your first test runs in under a minute.
+              </p>
+            </div>
+            <div class="tp-cta-right">
+              <a href="/getting-started/" class="tp-btn-solid">Get started →</a>
+              <span class="tp-cta-alt"
+                >or <a href="/getting-started/" class="tp-cta-link"
+                  >read the 5&#8209;min walkthrough</a
+                ></span
+              >
+            </div>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <!-- 9. Footer -->
+    <footer class="tp-footer">
       <div class="tp-container">
-        <div class="tp-cta-card">
-          <div class="tp-cta-left">
-            <h2 class="tp-cta-h2">Spend the rest of the afternoon on something more interesting.</h2>
-            <p class="tp-cta-sub">Install Tapsmith, point it at your app, and your first test runs in under a minute.</p>
+        <div class="tp-footer-top">
+          <div class="tp-footer-brand">
+            <a href="/" class="tp-logo">
+              <img src="/logo.png" alt="Tapsmith" class="tp-logo-img tp-logo-footer" />
+            </a>
+            <p class="tp-footer-desc">
+              A test framework for native mobile apps that doesn't make you choose between speed and
+              reliability.
+            </p>
           </div>
-          <div class="tp-cta-right">
-            <a href="/getting-started/" class="tp-btn-solid">Get started →</a>
-            <span class="tp-cta-alt">or <a href="/getting-started/" class="tp-cta-link">read the 5&#8209;min walkthrough</a></span>
+          <div class="tp-footer-col">
+            <h4>Product</h4>
+            <a href="/getting-started/">Docs</a>
+            <a href="/reference/api/locators/">API reference</a>
+            <a href="/reference/configuration/">Configuration</a>
+            <a href="/platform/ci-setup/">CI setup</a>
+          </div>
+          <div class="tp-footer-col">
+            <h4>Guides</h4>
+            <a href="/guides/selectors/">Selectors</a>
+            <a href="/guides/network/">Network</a>
+            <a href="/guides/trace-viewer/">Trace viewer</a>
+            <a href="/guides/watch-and-ui-mode/">UI mode</a>
+          </div>
+          <div class="tp-footer-col">
+            <h4>Community</h4>
+            <a href="https://github.com/samsmithyeah/tapsmith" target="_blank" rel="noopener"
+              >GitHub</a
+            >
+            <a href="https://github.com/samsmithyeah/tapsmith/issues" target="_blank" rel="noopener"
+              >Issues</a
+            >
+            <a href="https://www.npmjs.com/package/tapsmith" target="_blank" rel="noopener">npm</a>
           </div>
         </div>
-      </div>
-    </section>
-
-  </main>
-
-  <!-- 9. Footer -->
-  <footer class="tp-footer">
-    <div class="tp-container">
-      <div class="tp-footer-top">
-        <div class="tp-footer-brand">
-          <a href="/" class="tp-logo">
-            <img src="/logo.png" alt="Tapsmith" class="tp-logo-img tp-logo-footer" />
-          </a>
-          <p class="tp-footer-desc">A test framework for native mobile apps that doesn't make you choose between speed and reliability.</p>
-        </div>
-        <div class="tp-footer-col">
-          <h4>Product</h4>
-          <a href="/getting-started/">Docs</a>
-          <a href="/reference/api/locators/">API reference</a>
-          <a href="/reference/configuration/">Configuration</a>
-          <a href="/platform/ci-setup/">CI setup</a>
-        </div>
-        <div class="tp-footer-col">
-          <h4>Guides</h4>
-          <a href="/guides/selectors/">Selectors</a>
-          <a href="/guides/network/">Network</a>
-          <a href="/guides/trace-viewer/">Trace viewer</a>
-          <a href="/guides/watch-and-ui-mode/">UI mode</a>
-        </div>
-        <div class="tp-footer-col">
-          <h4>Community</h4>
-          <a href="https://github.com/samsmithyeah/tapsmith" target="_blank" rel="noopener">GitHub</a>
-          <a href="https://github.com/samsmithyeah/tapsmith/issues" target="_blank" rel="noopener">Issues</a>
-          <a href="https://www.npmjs.com/package/tapsmith" target="_blank" rel="noopener">npm</a>
+        <div class="tp-footer-bottom">
+          <span>MIT licence · © 2026 Tapsmith</span>
+          <span class="tp-footer-meta">v0.1.2</span>
         </div>
       </div>
-      <div class="tp-footer-bottom">
-        <span>MIT licence · © 2026 Tapsmith</span>
-        <span class="tp-footer-meta">v0.1.2</span>
-      </div>
-    </div>
-  </footer>
+    </footer>
 
-  <script is:inline>
-    (function () {
-      // Snippet tabs
-      document.querySelectorAll('.tp-tab').forEach(function (btn) {
-        btn.addEventListener('click', function () {
-          document.querySelectorAll('.tp-tab').forEach(function (b) { b.classList.remove('tp-tab-active') })
-          btn.classList.add('tp-tab-active')
-          const id = btn.getAttribute('data-tab')
-          document.querySelectorAll('.tp-snippet-code').forEach(function (pre) {
-            pre.hidden = pre.getAttribute('data-snippet') !== id
+    <script is:inline>
+      ;(function () {
+        // Snippet tabs
+        document.querySelectorAll('.tp-tab').forEach(function (btn) {
+          btn.addEventListener('click', function () {
+            document.querySelectorAll('.tp-tab').forEach(function (b) {
+              b.classList.remove('tp-tab-active')
+            })
+            btn.classList.add('tp-tab-active')
+            const id = btn.getAttribute('data-tab')
+            document.querySelectorAll('.tp-snippet-code').forEach(function (pre) {
+              pre.hidden = pre.getAttribute('data-snippet') !== id
+            })
           })
         })
-      })
-    })()
-  </script>
+      })()
+    </script>
 
-  <style is:global>
-    /* ─── Reset ─── */
-    *, *::before, *::after { box-sizing: border-box; margin: 0; }
+    <style is:global>
+      /* ─── Reset ─── */
+      *,
+      *::before,
+      *::after {
+        box-sizing: border-box;
+        margin: 0;
+      }
 
-    /* ─── Tokens ─── */
-    :root {
-      --tp-purple:        #6C47FF;
-      --tp-purple-soft:   #FBFAFF;
-      --tp-ink:           #0B1020;
-      --tp-ink-2:         #4A4F62;
-      --tp-ink-3:         #5B6175;
-      --tp-ink-4:         #8B91A6;
-      --tp-ink-5:         #CDD0DC;
-      --tp-bg:            #FBFBFD;
-      --tp-bg-2:          #F7F7FB;
-      --tp-surface:       #FFFFFF;
-      --tp-border:        #ECECF1;
-      --tp-border-2:      #F2F2F7;
-      --tp-border-3:      #D8D9E3;
-      --tp-code-bg:       #0B1020;
-      --tp-code-border:   #1A2040;
-      --tp-code-fg:       #C9D1E0;
-      --tp-code-string:   #E0B66C;
-      --tp-code-comment:  #6A718C;
-      --tp-success:       #3FB95C;
-      --tp-warning:       #B8A24E;
-      --tp-font-sans:     'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-      --tp-font-mono:     'JetBrains Mono', ui-monospace, SFMono-Regular, monospace;
-      --tp-radius-sm:     6px;
-      --tp-radius:        8px;
-      --tp-radius-md:     12px;
-      --tp-radius-lg:     14px;
-      --tp-radius-pill:   999px;
-      --tp-shadow-code:   0 30px 80px -20px rgba(11,16,32,0.25);
-      --tp-shadow-phone:  0 30px 60px rgba(11,16,32,0.28);
-      --tp-shadow-chip:   0 10px 30px -10px rgba(11,16,32,0.18);
-    }
+      /* ─── Tokens ─── */
+      :root {
+        --tp-purple: #6c47ff;
+        --tp-purple-soft: #fbfaff;
+        --tp-ink: #0b1020;
+        --tp-ink-2: #4a4f62;
+        --tp-ink-3: #5b6175;
+        --tp-ink-4: #8b91a6;
+        --tp-ink-5: #cdd0dc;
+        --tp-bg: #fbfbfd;
+        --tp-bg-2: #f7f7fb;
+        --tp-surface: #ffffff;
+        --tp-border: #ececf1;
+        --tp-border-2: #f2f2f7;
+        --tp-border-3: #d8d9e3;
+        --tp-code-bg: #0b1020;
+        --tp-code-border: #1a2040;
+        --tp-code-fg: #c9d1e0;
+        --tp-code-string: #e0b66c;
+        --tp-code-comment: #6a718c;
+        --tp-success: #3fb95c;
+        --tp-warning: #b8a24e;
+        --tp-font-sans: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+        --tp-font-mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, monospace;
+        --tp-radius-sm: 6px;
+        --tp-radius: 8px;
+        --tp-radius-md: 12px;
+        --tp-radius-lg: 14px;
+        --tp-radius-pill: 999px;
+        --tp-shadow-code: 0 30px 80px -20px rgba(11, 16, 32, 0.25);
+        --tp-shadow-phone: 0 30px 60px rgba(11, 16, 32, 0.28);
+        --tp-shadow-chip: 0 10px 30px -10px rgba(11, 16, 32, 0.18);
+      }
 
-    /* ─── Base ─── */
-    body {
-      font-family: var(--tp-font-sans);
-      background: var(--tp-bg);
-      color: var(--tp-ink);
-      font-size: 15px;
-      line-height: 1.55;
-      letter-spacing: -0.005em;
-      -webkit-font-smoothing: antialiased;
-      -moz-osx-font-smoothing: grayscale;
-    }
+      /* ─── Base ─── */
+      body {
+        font-family: var(--tp-font-sans);
+        background: var(--tp-bg);
+        color: var(--tp-ink);
+        font-size: 15px;
+        line-height: 1.55;
+        letter-spacing: -0.005em;
+        -webkit-font-smoothing: antialiased;
+        -moz-osx-font-smoothing: grayscale;
+      }
 
-    a { color: inherit; }
-    img { display: block; }
+      a {
+        color: inherit;
+      }
+      img {
+        display: block;
+      }
 
-    .tp-container { max-width: 1200px; margin: 0 auto; padding: 0 56px; }
+      .tp-container {
+        max-width: 1200px;
+        margin: 0 auto;
+        padding: 0 56px;
+      }
 
-    /* ─── 1. Header ─── */
-    .tp-header {
-      position: sticky;
-      top: 0;
-      z-index: 10;
-      background: rgba(251,251,253,0.85);
-      backdrop-filter: blur(12px);
-      -webkit-backdrop-filter: blur(12px);
-      border-bottom: 1px solid var(--tp-border);
-    }
-    .tp-header-inner {
-      height: 64px;
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-    }
-    .tp-logo { display: flex; align-items: center; text-decoration: none; }
-    .tp-logo-img { height: 28px; width: auto; }
-    .tp-logo-footer { height: 24px; }
-    .tp-nav { display: flex; gap: 28px; }
-    .tp-nav a {
-      font-size: 13.5px;
-      font-weight: 500;
-      color: var(--tp-ink-3);
-      text-decoration: none;
-      transition: color 0.1s;
-    }
-    .tp-nav a:hover { color: var(--tp-ink); }
-    .tp-header-actions { display: flex; gap: 10px; align-items: center; }
-    .tp-version-chip {
-      font-family: var(--tp-font-mono);
-      font-size: 12px;
-      color: var(--tp-ink-4);
-    }
+      /* ─── 1. Header ─── */
+      .tp-header {
+        position: sticky;
+        top: 0;
+        z-index: 10;
+        background: rgba(251, 251, 253, 0.85);
+        backdrop-filter: blur(12px);
+        -webkit-backdrop-filter: blur(12px);
+        border-bottom: 1px solid var(--tp-border);
+      }
+      .tp-header-inner {
+        height: 64px;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+      }
+      .tp-logo {
+        display: flex;
+        align-items: center;
+        text-decoration: none;
+      }
+      .tp-logo-img {
+        height: 28px;
+        width: auto;
+      }
+      .tp-logo-footer {
+        height: 24px;
+      }
+      .tp-nav {
+        display: flex;
+        gap: 28px;
+      }
+      .tp-nav a {
+        font-size: 13.5px;
+        font-weight: 500;
+        color: var(--tp-ink-3);
+        text-decoration: none;
+        transition: color 0.1s;
+      }
+      .tp-nav a:hover {
+        color: var(--tp-ink);
+      }
+      .tp-header-actions {
+        display: flex;
+        gap: 10px;
+        align-items: center;
+      }
+      .tp-version-chip {
+        font-family: var(--tp-font-mono);
+        font-size: 12px;
+        color: var(--tp-ink-4);
+      }
 
-    /* ─── Buttons ─── */
-    .tp-btn-solid {
-      display: inline-flex;
-      align-items: center;
-      justify-content: center;
-      height: 44px;
-      padding: 0 22px;
-      border-radius: var(--tp-radius);
-      background: var(--tp-ink);
-      color: #fff;
-      font-size: 14px;
-      font-weight: 500;
-      letter-spacing: -0.005em;
-      text-decoration: none;
-      white-space: nowrap;
-      cursor: pointer;
-      border: none;
-      transition: opacity 0.1s;
-    }
-    .tp-btn-solid:hover { opacity: 0.88; }
-    .tp-btn-ghost {
-      display: inline-flex;
-      align-items: center;
-      justify-content: center;
-      height: 44px;
-      padding: 0 22px;
-      border-radius: var(--tp-radius);
-      background: transparent;
-      color: var(--tp-ink);
-      font-size: 14px;
-      font-weight: 500;
-      text-decoration: none;
-      white-space: nowrap;
-      cursor: pointer;
-      border: 1px solid var(--tp-border-3);
-      transition: border-color 0.1s;
-    }
-    .tp-btn-ghost:hover { border-color: var(--tp-ink-4); }
-    .tp-btn-sm { height: 32px; padding: 0 14px; font-size: 13px; }
+      /* ─── Buttons ─── */
+      .tp-btn-solid {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        height: 44px;
+        padding: 0 22px;
+        border-radius: var(--tp-radius);
+        background: var(--tp-ink);
+        color: #fff;
+        font-size: 14px;
+        font-weight: 500;
+        letter-spacing: -0.005em;
+        text-decoration: none;
+        white-space: nowrap;
+        cursor: pointer;
+        border: none;
+        transition: opacity 0.1s;
+      }
+      .tp-btn-solid:hover {
+        opacity: 0.88;
+      }
+      .tp-btn-ghost {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        height: 44px;
+        padding: 0 22px;
+        border-radius: var(--tp-radius);
+        background: transparent;
+        color: var(--tp-ink);
+        font-size: 14px;
+        font-weight: 500;
+        text-decoration: none;
+        white-space: nowrap;
+        cursor: pointer;
+        border: 1px solid var(--tp-border-3);
+        transition: border-color 0.1s;
+      }
+      .tp-btn-ghost:hover {
+        border-color: var(--tp-ink-4);
+      }
+      .tp-btn-sm {
+        height: 32px;
+        padding: 0 14px;
+        font-size: 13px;
+      }
 
-    /* ─── 2. Hero ─── */
-    .tp-hero { padding: 88px 0 72px; }
+      /* ─── 2. Hero ─── */
+      .tp-hero {
+        padding: 88px 0 72px;
+      }
 
-    .tp-pill {
-      display: inline-flex;
-      align-items: center;
-      gap: 6px;
-      padding: 4px 10px;
-      border: 1px solid var(--tp-border);
-      border-radius: var(--tp-radius-pill);
-      background: #fff;
-      font-size: 12.5px;
-      margin-bottom: 28px;
-    }
-    .tp-dot-purple { width: 6px; height: 6px; border-radius: var(--tp-radius-pill); background: var(--tp-purple); flex-shrink: 0; }
-    .tp-dot-green  { width: 6px; height: 6px; border-radius: var(--tp-radius-pill); background: var(--tp-success); flex-shrink: 0; }
-    .tp-pill-bold { font-weight: 500; color: var(--tp-ink); }
-    .tp-pill-muted { color: var(--tp-ink-4); }
+      .tp-pill {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        padding: 4px 10px;
+        border: 1px solid var(--tp-border);
+        border-radius: var(--tp-radius-pill);
+        background: #fff;
+        font-size: 12.5px;
+        margin-bottom: 28px;
+      }
+      .tp-dot-purple {
+        width: 6px;
+        height: 6px;
+        border-radius: var(--tp-radius-pill);
+        background: var(--tp-purple);
+        flex-shrink: 0;
+      }
+      .tp-dot-green {
+        width: 6px;
+        height: 6px;
+        border-radius: var(--tp-radius-pill);
+        background: var(--tp-success);
+        flex-shrink: 0;
+      }
+      .tp-pill-bold {
+        font-weight: 500;
+        color: var(--tp-ink);
+      }
+      .tp-pill-muted {
+        color: var(--tp-ink-4);
+      }
 
-    .tp-hero-h1 {
-      font-size: 64px;
-      line-height: 1.02;
-      letter-spacing: -0.035em;
-      font-weight: 600;
-      max-width: 880px;
-      margin-bottom: 24px;
-    }
-    .tp-muted { color: var(--tp-ink-4); }
+      .tp-hero-h1 {
+        font-size: 64px;
+        line-height: 1.02;
+        letter-spacing: -0.035em;
+        font-weight: 600;
+        max-width: 880px;
+        margin-bottom: 24px;
+      }
+      .tp-muted {
+        color: var(--tp-ink-4);
+      }
 
-    .tp-hero-lead {
-      font-size: 19px;
-      line-height: 1.55;
-      color: var(--tp-ink-2);
-      max-width: 580px;
-      margin-bottom: 36px;
-    }
+      .tp-hero-lead {
+        font-size: 19px;
+        line-height: 1.55;
+        color: var(--tp-ink-2);
+        max-width: 580px;
+        margin-bottom: 36px;
+      }
 
-    .tp-hero-ctas { display: flex; gap: 12px; margin-bottom: 64px; }
-    .tp-btn-npm .tp-npm-dollar {
-      font-family: var(--tp-font-mono);
-      font-size: 13px;
-      color: var(--tp-ink-3);
-    }
-    .tp-btn-npm .tp-npm-icon {
-      margin-left: 12px;
-      color: var(--tp-ink-4);
-      font-size: 16px;
-    }
+      .tp-hero-ctas {
+        display: flex;
+        gap: 12px;
+        margin-bottom: 64px;
+      }
+      .tp-btn-npm .tp-npm-dollar {
+        font-family: var(--tp-font-mono);
+        font-size: 13px;
+        color: var(--tp-ink-3);
+      }
+      .tp-btn-npm .tp-npm-icon {
+        margin-left: 12px;
+        color: var(--tp-ink-4);
+        font-size: 16px;
+      }
 
-    /* Hero visual */
-    .tp-hero-visual {
-      position: relative;
-      padding-top: 40px;
-      padding-right: 200px;
-    }
+      /* Hero visual */
+      .tp-hero-visual {
+        position: relative;
+        padding-top: 40px;
+        padding-right: 200px;
+      }
 
-    /* Code window (shared style) */
-    .tp-code-window {
-      background: var(--tp-code-bg);
-      border-radius: var(--tp-radius-lg);
-      border: 1px solid var(--tp-code-border);
-      box-shadow: var(--tp-shadow-code);
-      overflow: hidden;
-      position: relative;
-      z-index: 1;
-    }
-    .tp-code-chrome {
-      display: flex;
-      align-items: center;
-      gap: 10px;
-      padding: 12px 18px;
-      border-bottom: 1px solid rgba(255,255,255,0.06);
-    }
-    .tp-chrome-dots { display: flex; gap: 6px; }
-    .tp-chrome-dot {
-      width: 10px;
-      height: 10px;
-      border-radius: var(--tp-radius-pill);
-      background: #3A4060;
-    }
-    .tp-code-filename {
-      font-family: var(--tp-font-mono);
-      font-size: 12px;
-      color: var(--tp-code-comment);
-      margin-left: 8px;
-    }
-    .tp-code-status {
-      margin-left: auto;
-      font-family: var(--tp-font-mono);
-      font-size: 11px;
-      color: var(--tp-ink-3);
-      display: inline-flex;
-      align-items: center;
-      gap: 6px;
-    }
-    .tp-code-body {
-      margin: 0;
-      padding: 24px 26px;
-      font-family: var(--tp-font-mono);
-      font-size: 13.5px;
-      line-height: 1.85;
-      color: var(--tp-code-fg);
-      overflow-x: auto;
-    }
-    .ck { color: #C9D1E0; }
-    .cf { color: #C9D1E0; }
-    .cs { color: var(--tp-code-string); }
-    .cc { color: var(--tp-code-comment); font-style: italic; }
+      /* Code window (shared style) */
+      .tp-code-window {
+        background: var(--tp-code-bg);
+        border-radius: var(--tp-radius-lg);
+        border: 1px solid var(--tp-code-border);
+        box-shadow: var(--tp-shadow-code);
+        overflow: hidden;
+        position: relative;
+        z-index: 1;
+      }
+      .tp-code-chrome {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        padding: 12px 18px;
+        border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+      }
+      .tp-chrome-dots {
+        display: flex;
+        gap: 6px;
+      }
+      .tp-chrome-dot {
+        width: 10px;
+        height: 10px;
+        border-radius: var(--tp-radius-pill);
+        background: #3a4060;
+      }
+      .tp-code-filename {
+        font-family: var(--tp-font-mono);
+        font-size: 12px;
+        color: var(--tp-code-comment);
+        margin-left: 8px;
+      }
+      .tp-code-status {
+        margin-left: auto;
+        font-family: var(--tp-font-mono);
+        font-size: 11px;
+        color: var(--tp-ink-3);
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+      }
+      .tp-code-body {
+        margin: 0;
+        padding: 24px 26px;
+        font-family: var(--tp-font-mono);
+        font-size: 13.5px;
+        line-height: 1.85;
+        color: var(--tp-code-fg);
+        overflow-x: auto;
+      }
+      .ck {
+        color: #c9d1e0;
+      }
+      .cf {
+        color: #c9d1e0;
+      }
+      .cs {
+        color: var(--tp-code-string);
+      }
+      .cc {
+        color: var(--tp-code-comment);
+        font-style: italic;
+      }
 
-    /* Phone overlay */
-    .tp-hero-phone {
-      position: absolute;
-      right: -20px;
-      top: -20px;
-      bottom: -40px;
-      width: 440px;
-      pointer-events: none;
-      display: flex;
-      align-items: center;
-      justify-content: flex-end;
-      z-index: 2;
-    }
-    .tp-phone-img {
-      width: 420px;
-      filter: drop-shadow(var(--tp-shadow-phone));
-      transform: rotate(2deg);
-    }
-    .tp-device-chip {
-      position: absolute;
-      right: 24px;
-      top: 24px;
-      background: #fff;
-      border: 1px solid var(--tp-border);
-      border-radius: var(--tp-radius-pill);
-      padding: 6px 12px;
-      font-family: var(--tp-font-mono);
-      font-size: 11px;
-      color: var(--tp-ink);
-      display: inline-flex;
-      align-items: center;
-      gap: 8px;
-      box-shadow: var(--tp-shadow-chip);
-      pointer-events: auto;
-    }
+      /* Phone overlay */
+      .tp-hero-phone {
+        position: absolute;
+        right: -20px;
+        top: -20px;
+        bottom: -40px;
+        width: 440px;
+        pointer-events: none;
+        display: flex;
+        align-items: center;
+        justify-content: flex-end;
+        z-index: 2;
+      }
+      .tp-phone-img {
+        width: 420px;
+        filter: drop-shadow(var(--tp-shadow-phone));
+        transform: rotate(2deg);
+      }
+      .tp-device-chip {
+        position: absolute;
+        right: 24px;
+        top: 24px;
+        background: #fff;
+        border: 1px solid var(--tp-border);
+        border-radius: var(--tp-radius-pill);
+        padding: 6px 12px;
+        font-family: var(--tp-font-mono);
+        font-size: 11px;
+        color: var(--tp-ink);
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        box-shadow: var(--tp-shadow-chip);
+        pointer-events: auto;
+      }
 
-    /* ─── 3. Proof strip ─── */
-    .tp-proof {
-      border-top: 1px solid var(--tp-border);
-      border-bottom: 1px solid var(--tp-border);
-      background: var(--tp-bg-2);
-    }
-    .tp-proof-inner {
-      padding-top: 40px;
-      padding-bottom: 40px;
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      gap: 40px;
-    }
-    .tp-proof-text {
-      font-size: 14px;
-      color: var(--tp-ink-3);
-      max-width: 420px;
-      margin: 0;
-    }
-    .tp-proof-stats { display: flex; gap: 32px; }
-    .tp-stat { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; }
-    .tp-stat-num {
-      font-size: 20px;
-      font-weight: 500;
-      letter-spacing: -0.02em;
-      color: var(--tp-ink);
-    }
-    .tp-stat-label {
-      font-size: 11px;
-      text-transform: uppercase;
-      letter-spacing: 0.08em;
-      color: var(--tp-ink-4);
-    }
+      /* ─── 3. Proof strip ─── */
+      .tp-proof {
+        border-top: 1px solid var(--tp-border);
+        border-bottom: 1px solid var(--tp-border);
+        background: var(--tp-bg-2);
+      }
+      .tp-proof-inner {
+        padding-top: 40px;
+        padding-bottom: 40px;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 40px;
+      }
+      .tp-proof-text {
+        font-size: 14px;
+        color: var(--tp-ink-3);
+        max-width: 420px;
+        margin: 0;
+      }
+      .tp-proof-stats {
+        display: flex;
+        gap: 32px;
+      }
+      .tp-stat {
+        display: flex;
+        flex-direction: column;
+        align-items: flex-start;
+        gap: 4px;
+      }
+      .tp-stat-num {
+        font-size: 20px;
+        font-weight: 500;
+        letter-spacing: -0.02em;
+        color: var(--tp-ink);
+      }
+      .tp-stat-label {
+        font-size: 11px;
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+        color: var(--tp-ink-4);
+      }
 
-    /* ─── 4. Three things ─── */
-    .tp-three { padding: 120px 0 100px; }
-    .tp-three-header {
-      display: flex;
-      justify-content: space-between;
-      align-items: flex-end;
-      margin-bottom: 56px;
-    }
-    .tp-h2-large {
-      font-size: 38px;
-      line-height: 1.1;
-      letter-spacing: -0.03em;
-      font-weight: 600;
-      max-width: 520px;
-    }
-    .tp-h2-medium {
-      font-size: 32px;
-      font-weight: 600;
-      letter-spacing: -0.03em;
-      max-width: 560px;
-    }
-    .tp-btn-guide { height: 36px; padding: 0 16px; font-size: 13px; }
-    .tp-three-rows { border-top: 1px solid var(--tp-border); }
-    .tp-three-row {
-      display: grid;
-      grid-template-columns: 64px 1fr 1.4fr;
-      gap: 32px;
-      padding: 36px 0;
-      border-bottom: 1px solid var(--tp-border);
-      align-items: flex-start;
-    }
-    .tp-three-num {
-      font-family: var(--tp-font-mono);
-      font-size: 12px;
-      color: var(--tp-ink-4);
-    }
-    .tp-three-title {
-      font-size: 20px;
-      font-weight: 500;
-      letter-spacing: -0.02em;
-      line-height: 1.3;
-    }
-    .tp-three-body {
-      font-size: 15px;
-      color: var(--tp-ink-2);
-      line-height: 1.7;
-    }
+      /* ─── 4. Three things ─── */
+      .tp-three {
+        padding: 120px 0 100px;
+      }
+      .tp-three-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: flex-end;
+        margin-bottom: 56px;
+      }
+      .tp-h2-large {
+        font-size: 38px;
+        line-height: 1.1;
+        letter-spacing: -0.03em;
+        font-weight: 600;
+        max-width: 520px;
+      }
+      .tp-h2-medium {
+        font-size: 32px;
+        font-weight: 600;
+        letter-spacing: -0.03em;
+        max-width: 560px;
+      }
+      .tp-btn-guide {
+        height: 36px;
+        padding: 0 16px;
+        font-size: 13px;
+      }
+      .tp-three-rows {
+        border-top: 1px solid var(--tp-border);
+      }
+      .tp-three-row {
+        display: grid;
+        grid-template-columns: 64px 1fr 1.4fr;
+        gap: 32px;
+        padding: 36px 0;
+        border-bottom: 1px solid var(--tp-border);
+        align-items: flex-start;
+      }
+      .tp-three-num {
+        font-family: var(--tp-font-mono);
+        font-size: 12px;
+        color: var(--tp-ink-4);
+      }
+      .tp-three-title {
+        font-size: 20px;
+        font-weight: 500;
+        letter-spacing: -0.02em;
+        line-height: 1.3;
+      }
+      .tp-three-body {
+        font-size: 15px;
+        color: var(--tp-ink-2);
+        line-height: 1.7;
+      }
 
-    /* ─── 5. Comparison table ─── */
-    .tp-compare { padding: 40px 0 120px; }
-    .tp-compare-header { margin-bottom: 40px; max-width: 620px; }
-    .tp-eyebrow {
-      font-family: var(--tp-font-mono);
-      font-size: 12px;
-      color: var(--tp-purple);
-      text-transform: uppercase;
-      letter-spacing: 0.08em;
-      margin-bottom: 12px;
-    }
-    .tp-compare-desc {
-      font-size: 16px;
-      color: var(--tp-ink-2);
-      line-height: 1.65;
-      margin-top: 14px;
-    }
-    .tp-table-wrap { overflow-x: auto; }
-    .tp-table {
-      border: 1px solid var(--tp-border);
-      border-radius: var(--tp-radius-md);
-      background: #fff;
-      overflow: hidden;
-      min-width: 700px;
-    }
-    .tp-table-head {
-      display: grid;
-      grid-template-columns: 2fr 1fr 1fr 1fr 1fr;
-      background: var(--tp-bg-2);
-      border-bottom: 1px solid var(--tp-border);
-    }
-    .tp-table-head .tp-table-feature {
-      padding: 16px 20px;
-      font-family: var(--tp-font-mono);
-      font-size: 12px;
-      color: var(--tp-ink-3);
-      text-transform: uppercase;
-      letter-spacing: 0.06em;
-    }
-    .tp-table-head .tp-table-col {
-      padding: 16px 20px;
-      font-size: 13px;
-      font-weight: 600;
-      color: var(--tp-ink-3);
-      border-left: 1px solid var(--tp-border);
-    }
-    .tp-table-head .tp-table-us {
-      color: var(--tp-ink);
-      background: #fff;
-    }
-    .tp-us-badge {
-      margin-left: 6px;
-      color: var(--tp-purple);
-      font-size: 11px;
-    }
-    .tp-table-row {
-      display: grid;
-      grid-template-columns: 2fr 1fr 1fr 1fr 1fr;
-      border-bottom: 1px solid var(--tp-border-2);
-    }
-    .tp-table-row-last { border-bottom: none; }
-    .tp-table-row .tp-table-feature {
-      padding: 14px 20px;
-      font-size: 14px;
-      color: var(--tp-ink);
-    }
-    .tp-table-row .tp-table-col {
-      padding: 14px 20px;
-      font-size: 13px;
-      border-left: 1px solid var(--tp-border-2);
-    }
-    .tp-table-us-col { background: var(--tp-purple-soft); }
-    .tp-mark-y { color: var(--tp-success); font-weight: 600; }
-    .tp-mark-y.tp-mark-highlight { color: var(--tp-purple); }
-    .tp-mark-p { color: var(--tp-warning); font-weight: 500; }
-    .tp-mark-n { color: var(--tp-ink-5); }
-    .tp-table-legend {
-      font-size: 12px;
-      color: var(--tp-ink-4);
-      margin-top: 12px;
-      font-family: var(--tp-font-mono);
-    }
+      /* ─── 5. Comparison table ─── */
+      .tp-compare {
+        padding: 40px 0 120px;
+      }
+      .tp-compare-header {
+        margin-bottom: 40px;
+        max-width: 620px;
+      }
+      .tp-eyebrow {
+        font-family: var(--tp-font-mono);
+        font-size: 12px;
+        color: var(--tp-purple);
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+        margin-bottom: 12px;
+      }
+      .tp-compare-desc {
+        font-size: 16px;
+        color: var(--tp-ink-2);
+        line-height: 1.65;
+        margin-top: 14px;
+      }
+      .tp-table-wrap {
+        overflow-x: auto;
+      }
+      .tp-table {
+        border: 1px solid var(--tp-border);
+        border-radius: var(--tp-radius-md);
+        background: #fff;
+        overflow: hidden;
+        min-width: 700px;
+      }
+      .tp-table-head {
+        display: grid;
+        grid-template-columns: 2fr 1fr 1fr 1fr 1fr;
+        background: var(--tp-bg-2);
+        border-bottom: 1px solid var(--tp-border);
+      }
+      .tp-table-head .tp-table-feature {
+        padding: 16px 20px;
+        font-family: var(--tp-font-mono);
+        font-size: 12px;
+        color: var(--tp-ink-3);
+        text-transform: uppercase;
+        letter-spacing: 0.06em;
+      }
+      .tp-table-head .tp-table-col {
+        padding: 16px 20px;
+        font-size: 13px;
+        font-weight: 600;
+        color: var(--tp-ink-3);
+        border-left: 1px solid var(--tp-border);
+      }
+      .tp-table-head .tp-table-us {
+        color: var(--tp-ink);
+        background: #fff;
+      }
+      .tp-us-badge {
+        margin-left: 6px;
+        color: var(--tp-purple);
+        font-size: 11px;
+      }
+      .tp-table-row {
+        display: grid;
+        grid-template-columns: 2fr 1fr 1fr 1fr 1fr;
+        border-bottom: 1px solid var(--tp-border-2);
+      }
+      .tp-table-row-last {
+        border-bottom: none;
+      }
+      .tp-table-row .tp-table-feature {
+        padding: 14px 20px;
+        font-size: 14px;
+        color: var(--tp-ink);
+      }
+      .tp-table-row .tp-table-col {
+        padding: 14px 20px;
+        font-size: 13px;
+        border-left: 1px solid var(--tp-border-2);
+      }
+      .tp-table-us-col {
+        background: var(--tp-purple-soft);
+      }
+      .tp-mark-y {
+        color: var(--tp-success);
+        font-weight: 600;
+      }
+      .tp-mark-y.tp-mark-highlight {
+        color: var(--tp-purple);
+      }
+      .tp-mark-p {
+        color: var(--tp-warning);
+        font-weight: 500;
+      }
+      .tp-mark-n {
+        color: var(--tp-ink-5);
+      }
+      .tp-table-legend {
+        font-size: 12px;
+        color: var(--tp-ink-4);
+        margin-top: 12px;
+        font-family: var(--tp-font-mono);
+      }
 
-    /* ─── 6. Snippets ─── */
-    .tp-snippets { padding: 0 0 120px; }
-    .tp-snippets-header {
-      margin-bottom: 32px;
-      display: flex;
-      align-items: flex-end;
-      justify-content: space-between;
-    }
-    .tp-tabs {
-      display: flex;
-      gap: 4px;
-      padding: 4px;
-      border: 1px solid var(--tp-border);
-      border-radius: var(--tp-radius-pill);
-      background: #fff;
-    }
-    .tp-tab {
-      padding: 6px 14px;
-      border-radius: var(--tp-radius-pill);
-      border: none;
-      cursor: pointer;
-      font-size: 13px;
-      font-weight: 500;
-      font-family: var(--tp-font-sans);
-      background: transparent;
-      color: var(--tp-ink-3);
-      transition: background 0.1s, color 0.1s;
-    }
-    .tp-tab-active {
-      background: var(--tp-ink);
-      color: #fff;
-    }
-    .tp-snippet-panel {
-      background: var(--tp-code-bg);
-      border-radius: var(--tp-radius-lg);
-      padding: 32px 36px;
-      border: 1px solid var(--tp-code-border);
-    }
-    .tp-snippet-code {
-      margin: 0;
-      font-family: var(--tp-font-mono);
-      font-size: 14px;
-      line-height: 1.8;
-      color: var(--tp-code-fg);
-      white-space: pre-wrap;
-    }
+      /* ─── 6. Snippets ─── */
+      .tp-snippets {
+        padding: 0 0 120px;
+      }
+      .tp-snippets-header {
+        margin-bottom: 32px;
+        display: flex;
+        align-items: flex-end;
+        justify-content: space-between;
+      }
+      .tp-tabs {
+        display: flex;
+        gap: 4px;
+        padding: 4px;
+        border: 1px solid var(--tp-border);
+        border-radius: var(--tp-radius-pill);
+        background: #fff;
+      }
+      .tp-tab {
+        padding: 6px 14px;
+        border-radius: var(--tp-radius-pill);
+        border: none;
+        cursor: pointer;
+        font-size: 13px;
+        font-weight: 500;
+        font-family: var(--tp-font-sans);
+        background: transparent;
+        color: var(--tp-ink-3);
+        transition:
+          background 0.1s,
+          color 0.1s;
+      }
+      .tp-tab-active {
+        background: var(--tp-ink);
+        color: #fff;
+      }
+      .tp-snippet-panel {
+        background: var(--tp-code-bg);
+        border-radius: var(--tp-radius-lg);
+        padding: 32px 36px;
+        border: 1px solid var(--tp-code-border);
+      }
+      .tp-snippet-code {
+        margin: 0;
+        font-family: var(--tp-font-mono);
+        font-size: 14px;
+        line-height: 1.8;
+        color: var(--tp-code-fg);
+        white-space: pre-wrap;
+      }
 
-    /* ─── 7. Quote ─── */
-    .tp-quote { padding: 40px 0 120px; }
-    .tp-blockquote {
-      font-size: 30px;
-      line-height: 1.35;
-      font-weight: 500;
-      letter-spacing: -0.025em;
-      color: var(--tp-ink);
-      max-width: 880px;
-      padding: 0;
-    }
-    .tp-quote-mark { color: var(--tp-purple); }
-    .tp-attribution { display: flex; align-items: center; gap: 12px; margin-top: 28px; }
-    .tp-avatar {
-      width: 32px;
-      height: 32px;
-      border-radius: var(--tp-radius-pill);
-      background: #E4E2EE;
-      display: inline-block;
-      flex-shrink: 0;
-    }
-    .tp-attr-name { font-size: 14px; font-weight: 500; color: var(--tp-ink); }
-    .tp-attr-role { font-size: 14px; color: var(--tp-ink-3); }
+      /* ─── 7. Quote ─── */
+      .tp-quote {
+        padding: 40px 0 120px;
+      }
+      .tp-blockquote {
+        font-size: 30px;
+        line-height: 1.35;
+        font-weight: 500;
+        letter-spacing: -0.025em;
+        color: var(--tp-ink);
+        max-width: 880px;
+        padding: 0;
+      }
+      .tp-quote-mark {
+        color: var(--tp-purple);
+      }
+      .tp-attribution {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        margin-top: 28px;
+      }
+      .tp-avatar {
+        width: 32px;
+        height: 32px;
+        border-radius: var(--tp-radius-pill);
+        background: #e4e2ee;
+        display: inline-block;
+        flex-shrink: 0;
+      }
+      .tp-attr-name {
+        font-size: 14px;
+        font-weight: 500;
+        color: var(--tp-ink);
+      }
+      .tp-attr-role {
+        font-size: 14px;
+        color: var(--tp-ink-3);
+      }
 
-    /* ─── 7. Dev tools ─── */
-    .tp-devtools { padding: 0 0 120px; }
-    .tp-devtools-header { margin-bottom: 40px; max-width: 620px; }
-    .tp-devtools-grid {
-      display: grid;
-      grid-template-columns: 1fr 1fr;
-      gap: 24px;
-    }
-    .tp-devtools-card {
-      border: 1px solid var(--tp-border);
-      border-radius: var(--tp-radius-lg);
-      background: var(--tp-surface);
-      padding: 32px;
-      display: flex;
-      flex-direction: column;
-      gap: 16px;
-    }
-    .tp-devtools-title {
-      font-size: 20px;
-      font-weight: 500;
-      letter-spacing: -0.02em;
-    }
-    .tp-devtools-body {
-      font-size: 15px;
-      color: var(--tp-ink-2);
-      line-height: 1.7;
-    }
-    .tp-devtools-code {
-      margin-top: auto;
-      background: var(--tp-code-bg);
-      border-radius: var(--tp-radius);
-      padding: 14px 18px;
-      border: 1px solid var(--tp-code-border);
-    }
-    .tp-devtools-code .tp-snippet-code {
-      font-size: 13px;
-      line-height: 1.5;
-    }
+      /* ─── 7. Dev tools ─── */
+      .tp-devtools {
+        padding: 0 0 120px;
+      }
+      .tp-devtools-header {
+        margin-bottom: 40px;
+        max-width: 620px;
+      }
+      .tp-devtools-grid {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 24px;
+      }
+      .tp-devtools-card {
+        border: 1px solid var(--tp-border);
+        border-radius: var(--tp-radius-lg);
+        background: var(--tp-surface);
+        padding: 32px;
+        display: flex;
+        flex-direction: column;
+        gap: 16px;
+      }
+      .tp-devtools-title {
+        font-size: 20px;
+        font-weight: 500;
+        letter-spacing: -0.02em;
+      }
+      .tp-devtools-body {
+        font-size: 15px;
+        color: var(--tp-ink-2);
+        line-height: 1.7;
+      }
+      .tp-devtools-code {
+        margin-top: auto;
+        background: var(--tp-code-bg);
+        border-radius: var(--tp-radius);
+        padding: 14px 18px;
+        border: 1px solid var(--tp-code-border);
+      }
+      .tp-devtools-code .tp-snippet-code {
+        font-size: 13px;
+        line-height: 1.5;
+      }
 
-    /* ─── 8. CTA card ─── */
-    .tp-cta { padding: 0 0 120px; }
-    .tp-cta-card {
-      border: 1px solid var(--tp-border);
-      border-radius: var(--tp-radius-lg);
-      background: var(--tp-surface);
-      padding: 48px 56px;
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      gap: 40px;
-    }
-    .tp-cta-left { max-width: 520px; }
-    .tp-cta-h2 {
-      font-size: 28px;
-      font-weight: 600;
-      letter-spacing: -0.025em;
-      margin-bottom: 8px;
-    }
-    .tp-cta-sub { font-size: 15px; color: var(--tp-ink-3); }
-    .tp-cta-right { display: flex; flex-direction: column; gap: 10px; align-items: flex-end; flex-shrink: 0; }
-    .tp-cta-alt {
-      font-family: var(--tp-font-mono);
-      font-size: 12px;
-      color: var(--tp-ink-4);
-    }
-    .tp-cta-link { color: var(--tp-ink-4); }
+      /* ─── 8. CTA card ─── */
+      .tp-cta {
+        padding: 0 0 120px;
+      }
+      .tp-cta-card {
+        border: 1px solid var(--tp-border);
+        border-radius: var(--tp-radius-lg);
+        background: var(--tp-surface);
+        padding: 48px 56px;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 40px;
+      }
+      .tp-cta-left {
+        max-width: 520px;
+      }
+      .tp-cta-h2 {
+        font-size: 28px;
+        font-weight: 600;
+        letter-spacing: -0.025em;
+        margin-bottom: 8px;
+      }
+      .tp-cta-sub {
+        font-size: 15px;
+        color: var(--tp-ink-3);
+      }
+      .tp-cta-right {
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+        align-items: flex-end;
+        flex-shrink: 0;
+      }
+      .tp-cta-alt {
+        font-family: var(--tp-font-mono);
+        font-size: 12px;
+        color: var(--tp-ink-4);
+      }
+      .tp-cta-link {
+        color: var(--tp-ink-4);
+      }
 
-    /* ─── 9. Footer ─── */
-    .tp-footer {
-      background: var(--tp-bg);
-      border-top: 1px solid var(--tp-border);
-      padding: 48px 0;
-    }
-    .tp-footer-top {
-      display: grid;
-      grid-template-columns: 1.5fr 1fr 1fr 1fr;
-      gap: 40px;
-      align-items: flex-start;
-    }
-    .tp-footer-brand { display: flex; flex-direction: column; gap: 14px; }
-    .tp-footer-desc {
-      font-size: 13px;
-      color: var(--tp-ink-3);
-      max-width: 240px;
-      line-height: 1.55;
-    }
-    .tp-footer-col { display: flex; flex-direction: column; gap: 10px; }
-    .tp-footer-col h4 {
-      font-size: 12px;
-      font-weight: 600;
-      text-transform: uppercase;
-      letter-spacing: 0.08em;
-      color: var(--tp-ink-4);
-      margin-bottom: 4px;
-    }
-    .tp-footer-col a {
-      font-size: 13px;
-      color: var(--tp-ink-2);
-      text-decoration: none;
-      transition: color 0.1s;
-    }
-    .tp-footer-col a:hover { color: var(--tp-ink); }
-    .tp-footer-bottom {
-      margin-top: 40px;
-      padding-top: 20px;
-      border-top: 1px solid var(--tp-border);
-      display: flex;
-      justify-content: space-between;
-      font-size: 12px;
-      color: var(--tp-ink-4);
-    }
-    .tp-footer-meta { font-family: var(--tp-font-mono); }
+      /* ─── 9. Footer ─── */
+      .tp-footer {
+        background: var(--tp-bg);
+        border-top: 1px solid var(--tp-border);
+        padding: 48px 0;
+      }
+      .tp-footer-top {
+        display: grid;
+        grid-template-columns: 1.5fr 1fr 1fr 1fr;
+        gap: 40px;
+        align-items: flex-start;
+      }
+      .tp-footer-brand {
+        display: flex;
+        flex-direction: column;
+        gap: 14px;
+      }
+      .tp-footer-desc {
+        font-size: 13px;
+        color: var(--tp-ink-3);
+        max-width: 240px;
+        line-height: 1.55;
+      }
+      .tp-footer-col {
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+      }
+      .tp-footer-col h4 {
+        font-size: 12px;
+        font-weight: 600;
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+        color: var(--tp-ink-4);
+        margin-bottom: 4px;
+      }
+      .tp-footer-col a {
+        font-size: 13px;
+        color: var(--tp-ink-2);
+        text-decoration: none;
+        transition: color 0.1s;
+      }
+      .tp-footer-col a:hover {
+        color: var(--tp-ink);
+      }
+      .tp-footer-bottom {
+        margin-top: 40px;
+        padding-top: 20px;
+        border-top: 1px solid var(--tp-border);
+        display: flex;
+        justify-content: space-between;
+        font-size: 12px;
+        color: var(--tp-ink-4);
+      }
+      .tp-footer-meta {
+        font-family: var(--tp-font-mono);
+      }
 
-    /* ─── Responsive ─── */
-    @media (max-width: 900px) {
-      .tp-container { padding: 0 24px; }
-      .tp-hero-h1 { font-size: clamp(40px, 8vw, 64px); }
-      .tp-hero-visual { padding-right: 0; }
-      .tp-hero-phone { display: none; }
-      .tp-three-header { flex-direction: column; gap: 24px; align-items: flex-start; }
-      .tp-three-row { grid-template-columns: 48px 1fr; gap: 16px; }
-      .tp-three-body { grid-column: 2; }
-      .tp-snippets-header { flex-direction: column; gap: 20px; align-items: flex-start; }
-      .tp-proof-inner { flex-direction: column; align-items: flex-start; }
-      .tp-devtools-grid { grid-template-columns: 1fr; }
-      .tp-cta-card { flex-direction: column; text-align: center; padding: 36px 28px; }
-      .tp-cta-right { align-items: center; }
-      .tp-footer-top { grid-template-columns: 1fr 1fr; }
-    }
+      /* ─── Responsive ─── */
+      @media (max-width: 900px) {
+        .tp-container {
+          padding: 0 24px;
+        }
+        .tp-hero-h1 {
+          font-size: clamp(40px, 8vw, 64px);
+        }
+        .tp-hero-visual {
+          padding-right: 0;
+        }
+        .tp-hero-phone {
+          display: none;
+        }
+        .tp-three-header {
+          flex-direction: column;
+          gap: 24px;
+          align-items: flex-start;
+        }
+        .tp-three-row {
+          grid-template-columns: 48px 1fr;
+          gap: 16px;
+        }
+        .tp-three-body {
+          grid-column: 2;
+        }
+        .tp-snippets-header {
+          flex-direction: column;
+          gap: 20px;
+          align-items: flex-start;
+        }
+        .tp-proof-inner {
+          flex-direction: column;
+          align-items: flex-start;
+        }
+        .tp-devtools-grid {
+          grid-template-columns: 1fr;
+        }
+        .tp-cta-card {
+          flex-direction: column;
+          text-align: center;
+          padding: 36px 28px;
+        }
+        .tp-cta-right {
+          align-items: center;
+        }
+        .tp-footer-top {
+          grid-template-columns: 1fr 1fr;
+        }
+      }
 
-    @media (max-width: 640px) {
-      .tp-nav { display: none; }
-      .tp-version-chip { display: none; }
-      .tp-signin { display: none; }
-      .tp-hero-ctas { flex-direction: column; }
-      .tp-proof-stats { flex-wrap: wrap; gap: 24px; }
-      .tp-three-row { grid-template-columns: 1fr; }
-      .tp-three-num { display: block; }
-      .tp-three-body { grid-column: 1; }
-      .tp-table-wrap { margin: 0 -24px; padding: 0 24px; }
-      .tp-footer-top { grid-template-columns: 1fr; }
-      .tp-footer-bottom { flex-direction: column; gap: 8px; }
-      .tp-blockquote { font-size: 22px; }
-      .tp-h2-large { font-size: 28px; }
-      .tp-h2-medium { font-size: 24px; }
-    }
-  </style>
-
-</body>
+      @media (max-width: 640px) {
+        .tp-nav {
+          display: none;
+        }
+        .tp-version-chip {
+          display: none;
+        }
+        .tp-signin {
+          display: none;
+        }
+        .tp-hero-ctas {
+          flex-direction: column;
+        }
+        .tp-proof-stats {
+          flex-wrap: wrap;
+          gap: 24px;
+        }
+        .tp-three-row {
+          grid-template-columns: 1fr;
+        }
+        .tp-three-num {
+          display: block;
+        }
+        .tp-three-body {
+          grid-column: 1;
+        }
+        .tp-table-wrap {
+          margin: 0 -24px;
+          padding: 0 24px;
+        }
+        .tp-footer-top {
+          grid-template-columns: 1fr;
+        }
+        .tp-footer-bottom {
+          flex-direction: column;
+          gap: 8px;
+        }
+        .tp-blockquote {
+          font-size: 22px;
+        }
+        .tp-h2-large {
+          font-size: 28px;
+        }
+        .tp-h2-medium {
+          font-size: 24px;
+        }
+      }
+    </style>
+  </body>
 </html>
