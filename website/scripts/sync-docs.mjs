@@ -259,7 +259,7 @@ function rewriteLinks(content) {
 }
 
 function stripFirstHeading(content) {
-  return content.replace(/^# .+\n+/, '')
+  return content.replace(/^# .+(?:\r?\n)+/, '')
 }
 
 function addFrontmatter(content, title, description) {
