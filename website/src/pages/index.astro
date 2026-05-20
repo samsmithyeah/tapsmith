@@ -277,18 +277,40 @@ const threeThings = [
         <div class="tp-container">
           <div class="tp-snippets-header">
             <h2 class="tp-h2-medium">An API you can guess your way through.</h2>
-            <div class="tp-tabs">
-              <button class="tp-tab tp-tab-active" data-tab="locators" type="button"
-                >Locators</button
+            <div class="tp-tabs" role="tablist" aria-label="Code examples">
+              <button
+                class="tp-tab tp-tab-active"
+                data-tab="locators"
+                type="button"
+                role="tab"
+                aria-selected="true"
+                aria-controls="panel-locators"
+                id="tab-locators">Locators</button
               >
-              <button class="tp-tab" data-tab="network" type="button">Network</button>
-              <button class="tp-tab" data-tab="gestures" type="button">Gestures</button>
+              <button
+                class="tp-tab"
+                data-tab="network"
+                type="button"
+                role="tab"
+                aria-selected="false"
+                aria-controls="panel-network"
+                id="tab-network">Network</button
+              >
+              <button
+                class="tp-tab"
+                data-tab="gestures"
+                type="button"
+                role="tab"
+                aria-selected="false"
+                aria-controls="panel-gestures"
+                id="tab-gestures">Gestures</button
+              >
             </div>
           </div>
           <div class="tp-snippet-panel">
-            <pre class="tp-snippet-code" data-snippet="locators">{snippets.locators}</pre>
-            <pre class="tp-snippet-code" data-snippet="network" hidden>{snippets.network}</pre>
-            <pre class="tp-snippet-code" data-snippet="gestures" hidden>{snippets.gestures}</pre>
+            <pre class="tp-snippet-code" data-snippet="locators" role="tabpanel" id="panel-locators" aria-labelledby="tab-locators">{snippets.locators}</pre>
+            <pre class="tp-snippet-code" data-snippet="network" role="tabpanel" id="panel-network" aria-labelledby="tab-network" hidden>{snippets.network}</pre>
+            <pre class="tp-snippet-code" data-snippet="gestures" role="tabpanel" id="panel-gestures" aria-labelledby="tab-gestures" hidden>{snippets.gestures}</pre>
           </div>
         </div>
       </section>
@@ -405,8 +427,10 @@ const threeThings = [
           btn.addEventListener('click', function () {
             document.querySelectorAll('.tp-tab').forEach(function (b) {
               b.classList.remove('tp-tab-active')
+              b.setAttribute('aria-selected', 'false')
             })
             btn.classList.add('tp-tab-active')
+            btn.setAttribute('aria-selected', 'true')
             const id = btn.getAttribute('data-tab')
             document.querySelectorAll('.tp-snippet-code').forEach(function (pre) {
               pre.hidden = pre.getAttribute('data-snippet') !== id
