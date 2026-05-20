@@ -521,10 +521,10 @@ pub async fn install_ca_cert(
 
     const TMP_CERT: &str = "/data/local/tmp/tapsmith-ca.pem";
 
-    // Push cert to a temp location
-    push_file(serial, ca_pem_path, TMP_CERT).await?;
-
     let result = async {
+        // Push cert to a temp location
+        push_file(serial, ca_pem_path, TMP_CERT).await?;
+
         // Try the system CA store first (works on rooted emulators).
         let system_path = format!("{SYSTEM_CA_CERT_DIR}/{cert_filename}");
         if try_install_system_ca(serial, cert_filename, &system_path, TMP_CERT).await {
@@ -535,7 +535,10 @@ pub async fn install_ca_cert(
         let user_path = format!("{USER_CA_CERT_DIR}/{cert_filename}");
         shell(serial, &format!("mkdir -p {USER_CA_CERT_DIR}")).await?;
         shell(serial, &format!("cp {TMP_CERT} {user_path}")).await?;
-        shell(serial, &format!("chmod 644 {user_path}")).await?;
+        if let Err(e) = shell(serial, &format!("chmod 644 {user_path}")).await {
+            let _ = shell(serial, &format!("rm -f {user_path}")).await;
+            return Err(e);
+        }
 
         info!(
             %serial, cert_filename,
