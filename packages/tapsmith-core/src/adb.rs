@@ -585,6 +585,7 @@ async fn try_install_system_ca(
 
     if let Err(e) = shell(serial, &format!("cp {tmp_cert_path} {system_path}")).await {
         debug!(%serial, "Failed to copy CA to system store: {e} — falling back to user CA store");
+        let _ = shell(serial, &format!("rm -f {system_path}")).await;
         return false;
     }
 
