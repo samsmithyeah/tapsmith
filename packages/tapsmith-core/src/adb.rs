@@ -578,7 +578,10 @@ async fn try_install_system_ca(
         return false;
     }
 
-    if wait_for_device_ready(serial, DEFAULT_TIMEOUT).await.is_err() {
+    if wait_for_device_ready(serial, DEFAULT_TIMEOUT)
+        .await
+        .is_err()
+    {
         debug!(%serial, "Device did not become ready after remount");
         return false;
     }
