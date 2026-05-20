@@ -181,4 +181,4 @@ npx tapsmith test --ui
 
 ## License
 
-MIT
+Apache-2.0

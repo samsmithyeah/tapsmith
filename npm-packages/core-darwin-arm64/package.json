@@ -11,7 +11,7 @@
     "url": "https://github.com/samsmithyeah/tapsmith.git",
     "directory": "npm-packages/core-darwin-arm64"
   },
-  "license": "MIT",
+  "license": "Apache-2.0",
   "scripts": {
     "postinstall": "node -e \"try{require('fs').chmodSync('tapsmith-core',0o755)}catch(e){console.warn('tapsmith: chmod failed:',e.message)}\""
   }

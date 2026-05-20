@@ -37,7 +37,7 @@
     "automation",
     "ui-testing"
   ],
-  "license": "MIT",
+  "license": "Apache-2.0",
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
