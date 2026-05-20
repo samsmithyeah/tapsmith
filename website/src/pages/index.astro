@@ -463,17 +463,18 @@ const threeThings = [
             activate(btn)
           })
           btn.addEventListener('keydown', (e) => {
+            const ke = e as KeyboardEvent
             const idx = tabs.indexOf(btn)
-            if (e.key === 'ArrowRight') {
+            if (ke.key === 'ArrowRight') {
               e.preventDefault()
               activate(tabs[(idx + 1) % tabs.length])
-            } else if (e.key === 'ArrowLeft') {
+            } else if (ke.key === 'ArrowLeft') {
               e.preventDefault()
               activate(tabs[(idx - 1 + tabs.length) % tabs.length])
-            } else if (e.key === 'Home') {
+            } else if (ke.key === 'Home') {
               e.preventDefault()
               activate(tabs[0])
-            } else if (e.key === 'End') {
+            } else if (ke.key === 'End') {
               e.preventDefault()
               activate(tabs[tabs.length - 1])
             }
