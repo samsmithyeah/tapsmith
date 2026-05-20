@@ -571,9 +571,13 @@ async fn try_install_system_ca(
         }
     };
 
-    // Some images print "remount failed" or "Not running as root" even with exit 0.
+    // Remount can fail with various messages depending on image type/Android version.
     let remount_lower = remount_output.to_lowercase();
-    if remount_lower.contains("failed") || remount_lower.contains("not running as root") {
+    if remount_lower.contains("failed")
+        || remount_lower.contains("not running as root")
+        || remount_lower.contains("read-only")
+        || remount_lower.contains("verity")
+    {
         debug!(%serial, output = %remount_output.trim(), "adb remount rejected — falling back to user CA store");
         return false;
     }
