@@ -1008,7 +1008,7 @@ function App() {
   // look frozen during the IPC dispatch + ESM import + hooks-before-
   // first-action gap.
   const preflightMessage = useMemo<string | undefined>(() => {
-    if (!viewedTestNode) return undefined;
+    if (!viewedTestNode || viewedTestNode.type !== 'test') return undefined;
     const isPending = tree.pendingIds.has(viewedTestNode.id);
     const isRunning = viewedTestNode.status === 'running';
     return isPending || isRunning ? 'Waiting for first action…' : undefined;
