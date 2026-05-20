@@ -6,7 +6,6 @@ import tailwindcss from '@tailwindcss/vite'
 
 export default defineConfig({
   site: 'https://tapsmith.dev',
-  router: 'client',
   integrations: [
     starlight({
       title: 'Tapsmith',
