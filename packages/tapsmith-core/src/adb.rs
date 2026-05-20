@@ -519,22 +519,22 @@ pub async fn install_ca_cert(
         let _ = run_adb(Some(serial), &["wait-for-device"], DEFAULT_TIMEOUT).await;
     }
 
-    const TMP_CERT: &str = "/data/local/tmp/tapsmith-ca.pem";
+    let tmp_cert = format!("/data/local/tmp/tapsmith-ca-{cert_filename}.pem");
 
     let result = async {
         // Push cert to a temp location
-        push_file(serial, ca_pem_path, TMP_CERT).await?;
+        push_file(serial, ca_pem_path, &tmp_cert).await?;
 
         // Try the system CA store first (works on rooted emulators).
         let system_path = format!("{SYSTEM_CA_CERT_DIR}/{cert_filename}");
-        if try_install_system_ca(serial, cert_filename, &system_path, TMP_CERT).await {
+        if try_install_system_ca(serial, cert_filename, &system_path, &tmp_cert).await {
             return Ok(system_path);
         }
 
         // Fall back to the user CA store (requires network_security_config.xml).
         let user_path = format!("{USER_CA_CERT_DIR}/{cert_filename}");
         shell(serial, &format!("mkdir -p {USER_CA_CERT_DIR}")).await?;
-        shell(serial, &format!("cp {TMP_CERT} {user_path}")).await?;
+        shell(serial, &format!("cp {tmp_cert} {user_path}")).await?;
         if let Err(e) = shell(serial, &format!("chmod 644 {user_path}")).await {
             let _ = shell(serial, &format!("rm -f {user_path}")).await;
             return Err(e);
@@ -548,7 +548,7 @@ pub async fn install_ca_cert(
     }
     .await;
 
-    let _ = shell(serial, &format!("rm -f {TMP_CERT}")).await;
+    let _ = shell(serial, &format!("rm -f {tmp_cert}")).await;
 
     result
 }
@@ -563,22 +563,8 @@ async fn try_install_system_ca(
     tmp_cert_path: &str,
 ) -> bool {
     // `adb remount` makes /system writable on userdebug/eng emulator images.
-    let remount_output = match run_adb_lenient(serial, &["remount"]).await {
-        Ok(out) => String::from_utf8_lossy(&out).to_string(),
-        Err(e) => {
-            debug!(%serial, "adb remount failed: {e} — falling back to user CA store");
-            return false;
-        }
-    };
-
-    // Remount can fail with various messages depending on image type/Android version.
-    let remount_lower = remount_output.to_lowercase();
-    if remount_lower.contains("failed")
-        || remount_lower.contains("not running as root")
-        || remount_lower.contains("read-only")
-        || remount_lower.contains("verity")
-    {
-        debug!(%serial, output = %remount_output.trim(), "adb remount rejected — falling back to user CA store");
+    if let Err(e) = run_adb_lenient(serial, &["remount"]).await {
+        debug!(%serial, "adb remount failed: {e} — falling back to user CA store");
         return false;
     }
 
@@ -587,6 +573,17 @@ async fn try_install_system_ca(
         .is_err()
     {
         debug!(%serial, "Device did not become ready after remount");
+        return false;
+    }
+
+    // Verify /system is actually writable — parsing remount output is fragile
+    // across Android versions, so just probe with touch.
+    let probe = format!("{SYSTEM_CA_CERT_DIR}/.tapsmith-probe");
+    if shell(serial, &format!("touch {probe} && rm -f {probe}"))
+        .await
+        .is_err()
+    {
+        debug!(%serial, "System CA dir is not writable after remount — falling back to user CA store");
         return false;
     }
 
