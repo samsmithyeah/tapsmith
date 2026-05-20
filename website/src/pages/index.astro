@@ -437,13 +437,13 @@ const threeThings = [
       </div>
     </footer>
 
-    <script is:inline>
-      ;(function () {
-        var tablist = document.querySelector('[role="tablist"]')
-        var tabs = Array.from(tablist.querySelectorAll('[role="tab"]'))
+    <script>
+      const tablist = document.querySelector('[role="tablist"]')
+      if (tablist) {
+        const tabs = Array.from(tablist.querySelectorAll('[role="tab"]'))
 
-        function activate(tab) {
-          tabs.forEach(function (t) {
+        function activate(tab: Element) {
+          tabs.forEach((t) => {
             t.classList.remove('tp-tab-active')
             t.setAttribute('aria-selected', 'false')
             t.setAttribute('tabindex', '-1')
@@ -451,19 +451,19 @@ const threeThings = [
           tab.classList.add('tp-tab-active')
           tab.setAttribute('aria-selected', 'true')
           tab.setAttribute('tabindex', '0')
-          tab.focus()
-          var id = tab.getAttribute('data-tab')
-          document.querySelectorAll('[role="tabpanel"]').forEach(function (panel) {
-            panel.hidden = panel.getAttribute('data-snippet') !== id
+          ;(tab as HTMLElement).focus()
+          const id = tab.getAttribute('data-tab')
+          document.querySelectorAll('[role="tabpanel"]').forEach((panel) => {
+            ;(panel as HTMLElement).hidden = panel.getAttribute('data-snippet') !== id
           })
         }
 
-        tabs.forEach(function (btn) {
-          btn.addEventListener('click', function () {
+        tabs.forEach((btn) => {
+          btn.addEventListener('click', () => {
             activate(btn)
           })
-          btn.addEventListener('keydown', function (e) {
-            var idx = tabs.indexOf(btn)
+          btn.addEventListener('keydown', (e) => {
+            const idx = tabs.indexOf(btn)
             if (e.key === 'ArrowRight') {
               e.preventDefault()
               activate(tabs[(idx + 1) % tabs.length])
@@ -480,11 +480,10 @@ const threeThings = [
           })
         })
 
-        // Set initial tabindex state
-        tabs.forEach(function (t, i) {
+        tabs.forEach((t, i) => {
           t.setAttribute('tabindex', i === 0 ? '0' : '-1')
         })
-      })()
+      }
     </script>
 
     <style is:global>
