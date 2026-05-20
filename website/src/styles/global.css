@@ -66,13 +66,6 @@ html {
 [aria-current='page'],
 [aria-current='page']:hover,
 [aria-current='page']:active {
-  background: #fef0ea !important;
-  color: #b85a30 !important;
-}
-
-:root[data-theme='dark'] [aria-current='page'],
-:root[data-theme='dark'] [aria-current='page']:hover,
-:root[data-theme='dark'] [aria-current='page']:active {
-  background: #3a2018 !important;
-  color: #f0a882 !important;
+  background: var(--sl-color-accent-low) !important;
+  color: var(--sl-color-accent-high) !important;
 }

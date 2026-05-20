@@ -362,7 +362,7 @@ if (existsSync(apiRefPath)) {
 // ─── Copy images directory ───
 
 const IMAGES_SRC = join(DOCS, 'images')
-const IMAGES_DEST = join(OUT, 'images')
+const IMAGES_DEST = join(ROOT, 'website', 'public')
 if (existsSync(IMAGES_SRC)) {
   mkdirSync(IMAGES_DEST, { recursive: true })
   for (const entry of readdirSync(IMAGES_SRC, { withFileTypes: true })) {
