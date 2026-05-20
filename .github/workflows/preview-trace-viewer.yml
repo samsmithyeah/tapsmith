@@ -1,0 +1,60 @@
+name: Preview Trace Viewer
+
+on:
+  pull_request:
+    paths:
+      - 'packages/tapsmith/src/trace-viewer/**'
+      - 'packages/tapsmith/src/trace/**'
+      - 'packages/tapsmith/vite.config.ts'
+      - '.github/workflows/preview-trace-viewer.yml'
+
+concurrency:
+  group: preview-trace-viewer-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  deployments: write
+  pull-requests: write
+
+jobs:
+  deploy-preview:
+    name: Deploy Preview
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: packages/tapsmith
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: packages/tapsmith/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build trace viewer
+        run: npx vite build
+
+      - name: Deploy preview to Cloudflare Pages
+        id: deploy
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          command: pages deploy dist/trace-viewer --project-name=tapsmith-trace --branch=${{ github.head_ref }}
+          workingDirectory: packages/tapsmith
+
+      - name: Comment preview URL on PR
+        uses: marocchino/sticky-pull-request-comment@v2
+        with:
+          header: trace-viewer-preview
+          message: |
+            **Trace Viewer Preview** 🔍
+
+            Deployed to: ${{ steps.deploy.outputs.deployment-url }}
+
+            _Updated: ${{ github.event.pull_request.head.sha }}_
