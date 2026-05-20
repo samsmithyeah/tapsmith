@@ -60,7 +60,7 @@ test("checkout flow", async ({ device }) => {
 
 ### Online viewer
 
-Open [trace.tapsmith.dev](https://trace.tapsmith.dev) and drag a `.zip` trace file onto the page. The viewer runs entirely in your browser — no data is uploaded.
+Open [trace.tapsmith.dev](https://trace.tapsmith.dev) and drag a `.zip` trace file onto the page, or load one via the `?trace=` URL parameter. The viewer runs entirely in your browser — no data is uploaded.
 
 ### Local viewer
 
@@ -214,4 +214,4 @@ The trace viewer supports URL parameters for sharing specific views:
 - `?trace=https://example.com/trace.zip` — load a trace from a URL
 - `?action=5` — jump to the 5th action
 
-For example: `https://trace.tapsmith.dev?trace=https://your-ci.com/artifacts/trace.zip&action=5`
+For example: `https://trace.tapsmith.dev?trace=https%3A%2F%2Fexample.com%2Fartifacts%2Ftrace.zip&action=5`
