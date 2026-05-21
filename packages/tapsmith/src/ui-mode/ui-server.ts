@@ -254,11 +254,31 @@ export async function startUIServer(
   let discoveryTimer: ReturnType<typeof setTimeout> | null = null;
   let discoveryBatchRunning = false;
   const discoveredFileNodes = new Map<string, TestTreeNode>();
+  const resolvedRootDir = path.resolve(ctx.config.rootDir);
+  const resolvedOutputDir = path.resolve(resolvedRootDir, ctx.config.outputDir);
   /** A single watched entry: optional project scope + optional test filter.
    * testFilter = undefined means "whole file"; projectName = undefined means
    * "whichever project this file resolves to" (non-multi-project configs). */
   interface WatchedEntry { projectName?: string; testFilter?: string }
   type DiscoveryRefreshResult = { treeChanged: boolean; shouldRun: boolean };
+  async function forEachWithConcurrency<T>(
+    items: T[],
+    concurrency: number,
+    fn: (item: T, index: number) => Promise<void>,
+  ): Promise<void> {
+    let nextIndex = 0;
+    const workerCount = Math.min(concurrency, items.length);
+
+    async function worker(): Promise<void> {
+      for (;;) {
+        const index = nextIndex++;
+        if (index >= items.length) return;
+        await fn(items[index], index);
+      }
+    }
+
+    await Promise.all(Array.from({ length: workerCount }, () => worker()));
+  }
   /** filePath → list of watched entries. chokidar adds the file when the
    * first entry appears and removes it when the last entry is cleared. */
   const watchedEntries = new Map<string, WatchedEntry[]>();
@@ -631,18 +651,26 @@ export async function startUIServer(
     // Discover all files first
     launchProgress?.start('test-tree', `discovering ${ctx.testFiles.length} file(s)`);
     discoveredFileNodes.clear();
-    for (let i = 0; i < ctx.testFiles.length; i++) {
-      const file = ctx.testFiles[i];
+    const files = [...ctx.testFiles];
+    let completed = 0;
+
+    await forEachWithConcurrency(files, MAX_DISCOVERY_BATCH_CONCURRENCY, async (file) => {
       launchProgress?.update('test-tree', {
         state: 'running',
         detail: `discovering ${path.basename(file)}`,
-        progress: { done: i, total: ctx.testFiles.length },
+        progress: { done: completed, total: files.length },
       });
       const tree = await discoverFile(file);
       if (tree) {
         discoveredFileNodes.set(file, tree);
       }
-    }
+      completed += 1;
+      launchProgress?.update('test-tree', {
+        state: 'running',
+        detail: `discovered ${path.basename(file)}`,
+        progress: { done: completed, total: files.length },
+      });
+    });
 
     rebuildTestTreeFromDiscoveredFiles();
     broadcast({ type: 'test-tree', files: testTree });
@@ -2415,18 +2443,18 @@ export async function startUIServer(
   function matchingProjectsForTestFile(filePath: string): ResolvedProject[] {
     if (!ctx.projects) return [];
     return ctx.projects.filter((project) =>
-      matchesTestFile(filePath, project.testMatch, ctx.config.rootDir, project.testIgnore),
+      matchesTestFile(filePath, project.testMatch, resolvedRootDir, project.testIgnore),
     );
   }
 
   function matchesConfiguredTestFile(filePath: string): boolean {
     if (ctx.projects) return matchingProjectsForTestFile(filePath).length > 0;
-    return matchesTestFile(filePath, ctx.config.testMatch, ctx.config.rootDir);
+    return matchesTestFile(filePath, ctx.config.testMatch, resolvedRootDir);
   }
 
   function shouldIgnoreDiscoveryPath(filePath: string): boolean {
-    const resolved = path.resolve(filePath);
-    const relative = path.relative(ctx.config.rootDir, resolved);
+    const resolved = path.resolve(resolvedRootDir, filePath);
+    const relative = path.relative(resolvedRootDir, resolved);
     if (relative.startsWith('..') || path.isAbsolute(relative)) return true;
 
     const normalizedRelative = relative.split(path.sep).join('/');
@@ -2435,8 +2463,7 @@ export async function startUIServer(
       return true;
     }
 
-    const outputDir = path.resolve(ctx.config.rootDir, ctx.config.outputDir);
-    const outputRelative = path.relative(outputDir, resolved);
+    const outputRelative = path.relative(resolvedOutputDir, resolved);
     return outputRelative === '' || (!outputRelative.startsWith('..') && !path.isAbsolute(outputRelative));
   }
 
@@ -2460,13 +2487,15 @@ export async function startUIServer(
     return true;
   }
 
-  function isExistingMatchingTestFile(filePath: string): boolean {
+  async function isExistingMatchingTestFile(filePath: string): Promise<boolean> {
+    const resolved = path.resolve(resolvedRootDir, filePath);
     try {
-      if (!fs.statSync(filePath).isFile()) return false;
+      const stat = await fs.promises.stat(resolved);
+      if (!stat.isFile()) return false;
     } catch {
       return false;
     }
-    return !shouldIgnoreDiscoveryPath(filePath) && matchesConfiguredTestFile(filePath);
+    return !shouldIgnoreDiscoveryPath(resolved) && matchesConfiguredTestFile(resolved);
   }
 
   function refreshFileProjectLookup(filePath: string): void {
@@ -2563,7 +2592,7 @@ export async function startUIServer(
   }
 
   function removeKnownTestFile(filePath: string): boolean {
-    const resolved = path.resolve(filePath);
+    const resolved = path.resolve(resolvedRootDir, filePath);
     if (!ctx.testFiles.includes(resolved)) return false;
 
     removeFile(ctx.testFiles, resolved);
@@ -2590,8 +2619,8 @@ export async function startUIServer(
   }
 
   async function discoverOrRefreshTestFile(filePath: string): Promise<DiscoveryRefreshResult> {
-    const resolved = path.resolve(filePath);
-    if (!isExistingMatchingTestFile(resolved)) {
+    const resolved = path.resolve(resolvedRootDir, filePath);
+    if (!(await isExistingMatchingTestFile(resolved))) {
       return { treeChanged: removeKnownTestFile(resolved), shouldRun: false };
     }
 
@@ -2609,7 +2638,7 @@ export async function startUIServer(
 
     // A file can be deleted or renamed while the forked discovery process is
     // importing it. Re-check after the await so we don't add a stale node.
-    if (!isExistingMatchingTestFile(resolved)) {
+    if (!(await isExistingMatchingTestFile(resolved))) {
       return { treeChanged: removeKnownTestFile(resolved), shouldRun: false };
     }
 
@@ -2636,27 +2665,17 @@ export async function startUIServer(
 
   async function discoverBatch(files: string[]): Promise<Array<{ file: string; result: DiscoveryRefreshResult }>> {
     const results: Array<{ file: string; result: DiscoveryRefreshResult }> = [];
-    let nextIndex = 0;
-    const workerCount = Math.min(MAX_DISCOVERY_BATCH_CONCURRENCY, files.length);
-
-    async function worker(): Promise<void> {
-      for (;;) {
-        const index = nextIndex++;
-        if (index >= files.length) return;
-        const file = files[index];
-        results[index] = {
-          file,
-          result: await discoverOrRefreshTestFile(file),
-        };
-      }
-    }
-
-    await Promise.all(Array.from({ length: workerCount }, () => worker()));
+    await forEachWithConcurrency(files, MAX_DISCOVERY_BATCH_CONCURRENCY, async (file, index) => {
+      results[index] = {
+        file,
+        result: await discoverOrRefreshTestFile(file),
+      };
+    });
     return results;
   }
 
   function handleRemovedTestFile(filePath: string): void {
-    const resolved = path.resolve(filePath);
+    const resolved = path.resolve(resolvedRootDir, filePath);
     pendingDiscoveryFiles.delete(resolved);
     if (!removeKnownTestFile(resolved)) return;
 
@@ -2665,7 +2684,7 @@ export async function startUIServer(
   }
 
   function scheduleDiscovery(filePath: string): void {
-    const resolved = path.resolve(filePath);
+    const resolved = path.resolve(resolvedRootDir, filePath);
     if (shouldIgnoreDiscoveryPath(resolved) || !matchesConfiguredTestFile(resolved)) return;
 
     pendingDiscoveryFiles.add(resolved);
@@ -2717,7 +2736,7 @@ export async function startUIServer(
   function startTestDiscoveryWatcher(): void {
     if (discoveryWatcher) return;
 
-    const roots = getTestDiscoveryWatchRoots(configuredTestPatterns(), ctx.config.rootDir)
+    const roots = getTestDiscoveryWatchRoots(configuredTestPatterns(), resolvedRootDir)
       .filter((root) => !shouldIgnoreDiscoveryPath(root));
     if (roots.length === 0) return;
 

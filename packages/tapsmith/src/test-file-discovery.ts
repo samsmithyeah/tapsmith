@@ -53,8 +53,15 @@ export function matchesTestIgnore(relativePath: string, extraIgnore?: string[]):
   const relative = normalizeGlobPattern(relativePath).replace(/\/+$/, '');
   if (!relative) return false;
 
-  const ignore = [...DEFAULT_TEST_IGNORE, ...(extraIgnore ?? [])];
-  return ignore.some((pattern) => matchesIgnorePattern(relative, pattern));
+  for (const pattern of DEFAULT_TEST_IGNORE) {
+    if (matchesIgnorePattern(relative, pattern)) return true;
+  }
+  if (extraIgnore) {
+    for (const pattern of extraIgnore) {
+      if (matchesIgnorePattern(relative, pattern)) return true;
+    }
+  }
+  return false;
 }
 
 export function getTestDiscoveryWatchRoots(patterns: string[], rootDir: string): string[] {
