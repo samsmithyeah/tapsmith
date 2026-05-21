@@ -32,32 +32,31 @@ await device.getByLabel("Reorder").dragTo(device.getByText("Pinned"))`,
 }
 
 const comparisonRows = [
-  ['Playwright-style API', 'Y', 'N', 'N', 'P'],
+  ['Playwright-style TypeScript API', 'Y', 'N', 'N', 'P'],
   ['iOS + Android single suite', 'Y', 'Y', 'Y', 'Y'],
   ['Auto-waiting on every action', 'Y', 'N', 'Y', 'Y'],
   ['Network interception (built-in)', 'Y', 'P', 'N', 'N'],
   ['Trace viewer', 'Y', 'N', 'N', 'P'],
   ['Parallel sharding & blob reports', 'Y', 'N', 'P', 'N'],
-  ['TypeScript-first', 'Y', 'N', 'N', 'P'],
-  ['Interactive UI mode', 'Y', 'N', 'P', 'N'],
-  ['Built-in MCP server', 'Y', 'N', 'N', 'N'],
+  ['Interactive UI mode', 'Y', 'N', 'Y', 'N'],
+  ['MCP server for AI agents', 'Y', 'N', 'N', 'N'],
 ]
 
 const threeThings = [
   {
     n: '01',
-    title: 'Write tests in a language your team already speaks.',
-    body: 'If you know Playwright, you already know Tapsmith. Same locators, same expect, same auto‑waiting. The only difference is what they drive.',
+    title: 'Mock the network without a mock server.',
+    body: 'In Detox, mocking an API means setting up a separate server and managing fixtures. In Tapsmith, it’s device.route("**/api/payment", r => r.fulfill({ json })). One line, inline, done.',
   },
   {
     n: '02',
-    title: 'Run them on real iOS and Android — from one suite.',
-    body: 'Tapsmith ships native agents on top of XCUITest and UIAutomator2. No browser shims. No half‑working bridges. The same test file targets both.',
+    title: 'Locators that survive redesigns.',
+    body: 'No fragile XPaths or test IDs sprinkled through production code. getByRole("button", { name: "Sign in" }) finds the element the same way a screen reader does, on both platforms, from one test file.',
   },
   {
     n: '03',
-    title: 'Catch the failure, not just the symptom.',
-    body: 'Every run records a trace: every tap, every network call, every screenshot. When a test fails at 3am, you scrub through it like a video — not dig through logs.',
+    title: 'Replay the failure, don’t reconstruct it.',
+    body: 'Every run records a trace: every tap, every network call, every frame. When a test fails at 3 am, open the trace viewer and scrub through it like a video instead of staring at a stack trace.',
   },
 ]
 ---
@@ -66,10 +65,10 @@ const threeThings = [
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Tapsmith — Playwright-style testing for native mobile apps</title>
+    <title>Tapsmith: Playwright-style testing for native mobile apps</title>
     <meta
       name="description"
-      content="A test framework for native iOS and Android. Same locators, same auto-waiting, same trace viewer as Playwright — rebuilt for real devices."
+      content="A test framework for native iOS and Android. Same locators, same auto-waiting, same trace viewer as Playwright, rebuilt for real devices."
     />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
@@ -78,13 +77,22 @@ const threeThings = [
       href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap"
       rel="stylesheet"
     />
+    <script is:inline>
+      ;(function () {
+        var stored = localStorage.getItem('starlight-theme')
+        var prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches
+        var theme = stored === 'dark' || (!stored && prefersDark) ? 'dark' : 'light'
+        document.documentElement.setAttribute('data-theme', theme)
+      })()
+    </script>
   </head>
   <body>
     <!-- 1. Sticky header -->
     <header class="tp-header">
       <div class="tp-container tp-header-inner">
         <a href="/" class="tp-logo">
-          <img src="/logo.png" alt="Tapsmith" class="tp-logo-img" />
+          <img src="/logo.png" alt="Tapsmith" class="tp-logo-img tp-logo-light" />
+          <img src="/logo-dark.png" alt="Tapsmith" class="tp-logo-img tp-logo-dark" />
         </a>
         <nav class="tp-nav">
           <a href="/getting-started/">Docs</a>
@@ -95,7 +103,45 @@ const threeThings = [
           >
         </nav>
         <div class="tp-header-actions">
-          <span class="tp-version-chip">v0.1.2</span>
+          <button class="tp-theme-toggle" type="button" aria-label="Toggle theme">
+            <svg
+              class="tp-icon-sun"
+              width="16"
+              height="16"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              ><circle cx="12" cy="12" r="5"></circle><line x1="12" y1="1" x2="12" y2="3"
+              ></line><line x1="12" y1="21" x2="12" y2="23"></line><line
+                x1="4.22"
+                y1="4.22"
+                x2="5.64"
+                y2="5.64"></line><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"></line><line
+                x1="1"
+                y1="12"
+                x2="3"
+                y2="12"></line><line x1="21" y1="12" x2="23" y2="12"></line><line
+                x1="4.22"
+                y1="19.78"
+                x2="5.64"
+                y2="18.36"></line><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"></line></svg
+            >
+            <svg
+              class="tp-icon-moon"
+              width="16"
+              height="16"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              ><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"></path></svg
+            >
+          </button>
           <a href="/getting-started/" class="tp-btn-solid tp-btn-sm">Get started →</a>
         </div>
       </div>
@@ -106,18 +152,18 @@ const threeThings = [
       <section class="tp-hero">
         <div class="tp-container">
           <h1 class="tp-hero-h1">
-            Mobile tests that feel<br />
+            Mobile tests that <span class="tp-muted">feel</span><br />
             <span class="tp-muted">like</span> web tests.
           </h1>
 
           <p class="tp-hero-lead">
             Tapsmith is a test framework for native iOS and Android. We took the parts of Playwright
-            that engineers actually love — the locators, the auto&#8209;waiting, the trace viewer —
+            that engineers actually love: the locators, the auto&#8209;waiting, the trace viewer,
             and rebuilt them for real devices.
           </p>
 
           <div class="tp-hero-ctas">
-            <a href="/getting-started/" class="tp-btn-solid">Start in 60 seconds</a>
+            <a href="/getting-started/" class="tp-btn-solid">Get started →</a>
             <a href="https://www.npmjs.com/package/tapsmith" class="tp-btn-ghost tp-btn-npm">
               <span class="tp-npm-dollar">$</span>&nbsp; npm i tapsmith&nbsp;<span
                 class="tp-npm-icon">⧉</span
@@ -143,10 +189,6 @@ const threeThings = [
             </div>
             <div class="tp-hero-phone">
               <img src="/hero-iphone.png" alt="Tapsmith driving an iOS app" class="tp-phone-img" />
-              <div class="tp-device-chip">
-                <span class="tp-dot-green"></span>
-                iPhone 17 Pro · iOS 26.5
-              </div>
             </div>
           </div>
         </div>
@@ -156,8 +198,8 @@ const threeThings = [
       <section class="tp-proof">
         <div class="tp-container tp-proof-inner">
           <p class="tp-proof-text">
-            Open source under the Apache 2.0 licence. Native agents on XCUITest and UIAutomator2 —
-            no browser shims or half-working bridges.
+            Open source under the Apache 2.0 licence. Native agents on XCUITest and UIAutomator2, no
+            browser shims or half-working bridges.
           </p>
           <div class="tp-proof-stats">
             <div class="tp-stat">
@@ -173,8 +215,8 @@ const threeThings = [
               <span class="tp-stat-label">TypeScript-first</span>
             </div>
             <div class="tp-stat">
-              <span class="tp-stat-num">1</span>
-              <span class="tp-stat-label">test suite, both OS</span>
+              <span class="tp-stat-num">Traces</span>
+              <span class="tp-stat-label">every test run</span>
             </div>
           </div>
         </div>
@@ -184,9 +226,7 @@ const threeThings = [
       <section class="tp-three">
         <div class="tp-container">
           <div class="tp-three-header">
-            <h2 class="tp-h2-large">
-              Three things mobile testing should feel like — and finally does.
-            </h2>
+            <h2 class="tp-h2-large">The pain you're used to, gone.</h2>
             <a href="/guides/selectors/" class="tp-btn-ghost tp-btn-guide">Read the guide →</a>
           </div>
           <div class="tp-three-rows">
@@ -219,9 +259,7 @@ const threeThings = [
             <div class="tp-table">
               <div class="tp-table-head">
                 <div class="tp-table-cell tp-table-feature">Feature</div>
-                <div class="tp-table-cell tp-table-col tp-table-us">
-                  Tapsmith<span class="tp-us-badge">● us</span>
-                </div>
+                <div class="tp-table-cell tp-table-col tp-table-us">Tapsmith</div>
                 <div class="tp-table-cell tp-table-col">Appium</div>
                 <div class="tp-table-cell tp-table-col">Maestro</div>
                 <div class="tp-table-cell tp-table-col">Detox</div>
@@ -332,35 +370,61 @@ const threeThings = [
         </div>
       </section>
 
-      <!-- 7. MCP + UI mode -->
+      <!-- 7. Social proof -->
+      <section class="tp-quote">
+        <div class="tp-container">
+          <p class="tp-eyebrow">Early access</p>
+          <blockquote class="tp-blockquote">
+            Tapsmith is in early access. If you've tried it on a real project, we'd love to feature
+            your experience here.
+          </blockquote>
+          <div class="tp-attribution">
+            <a href="mailto:info@tapsmith.dev" class="tp-btn-ghost tp-btn-sm">
+              Share your experience →
+            </a>
+          </div>
+        </div>
+      </section>
+
+      <!-- 8. Trace viewer + UI mode -->
       <section class="tp-devtools">
         <div class="tp-container">
           <div class="tp-devtools-header">
             <p class="tp-eyebrow">Developer tools</p>
-            <h2 class="tp-h2-large">A visual runner and a built&#8209;in MCP server.</h2>
+            <h2 class="tp-h2-large">See exactly what happened, and when.</h2>
           </div>
           <div class="tp-devtools-grid">
+            <div class="tp-devtools-card">
+              <h3 class="tp-devtools-title">Trace viewer</h3>
+              <p class="tp-devtools-body">
+                Every test run records a full trace. Scrub through a timeline of screenshots, see
+                every tap and gesture overlaid on the screen, inspect every network request and
+                response. When a test fails in CI, download the trace and replay it locally. No
+                guessing, no "works on my machine."
+              </p>
+              <img
+                src="/trace-viewer.png"
+                alt="Tapsmith trace viewer showing a failed authentication test with timeline, device screenshot, action log, and error details"
+                class="tp-devtools-img"
+              />
+              <div class="tp-devtools-code">
+                <pre class="tp-snippet-code">npx tapsmith show-trace trace.zip</pre>
+              </div>
+            </div>
             <div class="tp-devtools-card">
               <h3 class="tp-devtools-title">UI mode</h3>
               <p class="tp-devtools-body">
                 A browser-based interactive runner. Click any test to run it, see results stream in
-                live, browse traces and screenshots inline, and mirror the device screen — all
+                live, browse traces and screenshots inline, and mirror the device screen, all
                 without leaving the browser.
               </p>
+              <img
+                src="/ui-mode.png"
+                alt="Tapsmith UI mode showing the interactive test runner with test list, live device mirror, and network inspection panel"
+                class="tp-devtools-img"
+              />
               <div class="tp-devtools-code">
                 <pre class="tp-snippet-code">npx tapsmith test --ui</pre>
-              </div>
-            </div>
-            <div class="tp-devtools-card">
-              <h3 class="tp-devtools-title">MCP server</h3>
-              <p class="tp-devtools-body">
-                16 tools for AI coding agents — snapshot the screen, tap elements, run tests, read
-                traces. Works with Claude Code, Cursor, Codex, and any MCP client over stdio or
-                HTTP.
-              </p>
-              <div class="tp-devtools-code">
-                <pre
-                  class="tp-snippet-code">claude mcp add tapsmith -- npx tapsmith mcp-server</pre>
               </div>
             </div>
           </div>
@@ -376,7 +440,7 @@ const threeThings = [
                 Spend the rest of the afternoon on something more interesting.
               </h2>
               <p class="tp-cta-sub">
-                Install Tapsmith, point it at your app, and your first test runs in under a minute.
+                Install Tapsmith, point it at your app, and write your first test in five minutes.
               </p>
             </div>
             <div class="tp-cta-right">
@@ -398,7 +462,16 @@ const threeThings = [
         <div class="tp-footer-top">
           <div class="tp-footer-brand">
             <a href="/" class="tp-logo">
-              <img src="/logo.png" alt="Tapsmith" class="tp-logo-img tp-logo-footer" />
+              <img
+                src="/logo.png"
+                alt="Tapsmith"
+                class="tp-logo-img tp-logo-footer tp-logo-light"
+              />
+              <img
+                src="/logo-dark.png"
+                alt="Tapsmith"
+                class="tp-logo-img tp-logo-footer tp-logo-dark"
+              />
             </a>
             <p class="tp-footer-desc">
               A test framework for native mobile apps that doesn't make you choose between speed and
@@ -417,7 +490,7 @@ const threeThings = [
             <a href="/guides/selectors/">Selectors</a>
             <a href="/guides/network/">Network</a>
             <a href="/guides/trace-viewer/">Trace viewer</a>
-            <a href="/guides/watch-and-ui-mode/">UI mode</a>
+            <a href="/guides/ui-mode/">UI mode</a>
           </div>
           <div class="tp-footer-col">
             <h4>Community</h4>
@@ -438,6 +511,15 @@ const threeThings = [
     </footer>
 
     <script>
+      document.querySelectorAll('.tp-theme-toggle').forEach((btn) => {
+        btn.addEventListener('click', () => {
+          const current = document.documentElement.getAttribute('data-theme')
+          const next = current === 'dark' ? 'light' : 'dark'
+          document.documentElement.setAttribute('data-theme', next)
+          localStorage.setItem('starlight-theme', next)
+        })
+      })
+
       const tablist = document.querySelector('[role="tablist"]')
       if (tablist) {
         const tabs = Array.from(tablist.querySelectorAll('[role="tab"]'))
@@ -498,24 +580,24 @@ const threeThings = [
 
       /* ─── Tokens ─── */
       :root {
-        --tp-purple: #6c47ff;
-        --tp-purple-soft: #fbfaff;
-        --tp-ink: #0b1020;
-        --tp-ink-2: #4a4f62;
-        --tp-ink-3: #5b6175;
-        --tp-ink-4: #8b91a6;
-        --tp-ink-5: #cdd0dc;
-        --tp-bg: #fbfbfd;
-        --tp-bg-2: #f7f7fb;
+        --tp-accent: #b8562a;
+        --tp-accent-soft: #fef6f3;
+        --tp-ink: #2d2926;
+        --tp-ink-2: #5a5550;
+        --tp-ink-3: #6b6560;
+        --tp-ink-4: #7a746e;
+        --tp-ink-5: #d0ccc8;
+        --tp-bg: #fdfbf9;
+        --tp-bg-2: #f7f5f2;
         --tp-surface: #ffffff;
-        --tp-border: #ececf1;
-        --tp-border-2: #f2f2f7;
-        --tp-border-3: #d8d9e3;
-        --tp-code-bg: #0b1020;
-        --tp-code-border: #1a2040;
-        --tp-code-fg: #c9d1e0;
-        --tp-code-string: #e0b66c;
-        --tp-code-comment: #6a718c;
+        --tp-border: #edebe8;
+        --tp-border-2: #f3f1ee;
+        --tp-border-3: #dad7d3;
+        --tp-code-bg: #1e1b18;
+        --tp-code-border: #302b25;
+        --tp-code-fg: #d4cfc8;
+        --tp-code-string: #e8a86c;
+        --tp-code-comment: #7a7570;
         --tp-success: #3fb95c;
         --tp-warning: #b8a24e;
         --tp-font-sans: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
@@ -528,6 +610,73 @@ const threeThings = [
         --tp-shadow-code: 0 30px 80px -20px rgba(11, 16, 32, 0.25);
         --tp-shadow-phone: 0 30px 60px rgba(11, 16, 32, 0.28);
         --tp-shadow-chip: 0 10px 30px -10px rgba(11, 16, 32, 0.18);
+      }
+
+      [data-theme='dark'] {
+        --tp-accent: #e8914b;
+        --tp-accent-soft: #3a2018;
+        --tp-ink: #e8e4df;
+        --tp-ink-2: #b5b0aa;
+        --tp-ink-3: #9a9590;
+        --tp-ink-4: #8a847e;
+        --tp-ink-5: #3a3530;
+        --tp-bg: #1e1b18;
+        --tp-bg-2: #252220;
+        --tp-surface: #282420;
+        --tp-border: #302b25;
+        --tp-border-2: #282420;
+        --tp-border-3: #3a3530;
+        --tp-code-bg: #141210;
+        --tp-code-border: #252220;
+        --tp-code-fg: #d4cfc8;
+        --tp-code-string: #e8a86c;
+        --tp-code-comment: #7a7570;
+      }
+      [data-theme='dark'] .tp-header {
+        background: rgba(30, 27, 24, 0.85);
+      }
+      [data-theme='dark'] .tp-btn-solid {
+        background: #e8e4df;
+        color: #1e1b18;
+      }
+      .tp-logo-dark {
+        display: none;
+      }
+      [data-theme='dark'] .tp-logo-light {
+        display: none;
+      }
+      [data-theme='dark'] .tp-logo-dark {
+        display: block;
+      }
+
+      /* ─── Theme toggle ─── */
+      .tp-theme-toggle {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        width: 32px;
+        height: 32px;
+        border: 1px solid var(--tp-border-3);
+        border-radius: var(--tp-radius);
+        background: transparent;
+        color: var(--tp-ink-3);
+        cursor: pointer;
+        transition:
+          border-color 0.1s,
+          color 0.1s;
+      }
+      .tp-theme-toggle:hover {
+        border-color: var(--tp-ink-4);
+        color: var(--tp-ink);
+      }
+      .tp-icon-moon {
+        display: none;
+      }
+      [data-theme='dark'] .tp-icon-sun {
+        display: none;
+      }
+      [data-theme='dark'] .tp-icon-moon {
+        display: block;
       }
 
       /* ─── Base ─── */
@@ -560,7 +709,7 @@ const threeThings = [
         position: sticky;
         top: 0;
         z-index: 10;
-        background: rgba(251, 251, 253, 0.85);
+        background: rgba(253, 251, 249, 0.85);
         backdrop-filter: blur(12px);
         -webkit-backdrop-filter: blur(12px);
         border-bottom: 1px solid var(--tp-border);
@@ -668,7 +817,7 @@ const threeThings = [
         padding: 4px 10px;
         border: 1px solid var(--tp-border);
         border-radius: var(--tp-radius-pill);
-        background: #fff;
+        background: var(--tp-surface);
         font-size: 12.5px;
         margin-bottom: 28px;
       }
@@ -676,7 +825,7 @@ const threeThings = [
         width: 6px;
         height: 6px;
         border-radius: var(--tp-radius-pill);
-        background: var(--tp-purple);
+        background: var(--tp-accent);
         flex-shrink: 0;
       }
       .tp-dot-green {
@@ -762,7 +911,7 @@ const threeThings = [
         width: 10px;
         height: 10px;
         border-radius: var(--tp-radius-pill);
-        background: #3a4060;
+        background: #4a4540;
       }
       .tp-code-filename {
         font-family: var(--tp-font-mono);
@@ -789,10 +938,10 @@ const threeThings = [
         overflow-x: auto;
       }
       .ck {
-        color: #c9d1e0;
+        color: #d4cfc8;
       }
       .cf {
-        color: #c9d1e0;
+        color: #d4cfc8;
       }
       .cs {
         color: var(--tp-code-string);
@@ -824,7 +973,7 @@ const threeThings = [
         position: absolute;
         right: 24px;
         top: 24px;
-        background: #fff;
+        background: var(--tp-surface);
         border: 1px solid var(--tp-border);
         border-radius: var(--tp-radius-pill);
         padding: 6px 12px;
@@ -943,12 +1092,11 @@ const threeThings = [
       }
       .tp-compare-header {
         margin-bottom: 40px;
-        max-width: 620px;
       }
       .tp-eyebrow {
         font-family: var(--tp-font-mono);
         font-size: 12px;
-        color: var(--tp-purple);
+        color: var(--tp-accent);
         text-transform: uppercase;
         letter-spacing: 0.08em;
         margin-bottom: 12px;
@@ -965,7 +1113,7 @@ const threeThings = [
       .tp-table {
         border: 1px solid var(--tp-border);
         border-radius: var(--tp-radius-md);
-        background: #fff;
+        background: var(--tp-surface);
         overflow: hidden;
         min-width: 700px;
       }
@@ -992,12 +1140,7 @@ const threeThings = [
       }
       .tp-table-head .tp-table-us {
         color: var(--tp-ink);
-        background: #fff;
-      }
-      .tp-us-badge {
-        margin-left: 6px;
-        color: var(--tp-purple);
-        font-size: 11px;
+        background: var(--tp-surface);
       }
       .tp-table-row {
         display: grid;
@@ -1018,14 +1161,14 @@ const threeThings = [
         border-left: 1px solid var(--tp-border-2);
       }
       .tp-table-us-col {
-        background: var(--tp-purple-soft);
+        background: var(--tp-accent-soft);
       }
       .tp-mark-y {
         color: var(--tp-success);
         font-weight: 600;
       }
       .tp-mark-y.tp-mark-highlight {
-        color: var(--tp-purple);
+        color: var(--tp-accent);
       }
       .tp-mark-p {
         color: var(--tp-warning);
@@ -1040,7 +1183,6 @@ const threeThings = [
         margin-top: 12px;
         font-family: var(--tp-font-mono);
       }
-
       /* ─── 6. Snippets ─── */
       .tp-snippets {
         padding: 0 0 120px;
@@ -1057,7 +1199,7 @@ const threeThings = [
         padding: 4px;
         border: 1px solid var(--tp-border);
         border-radius: var(--tp-radius-pill);
-        background: #fff;
+        background: var(--tp-surface);
       }
       .tp-tab {
         padding: 6px 14px;
@@ -1075,7 +1217,7 @@ const threeThings = [
       }
       .tp-tab-active {
         background: var(--tp-ink);
-        color: #fff;
+        color: var(--tp-bg);
       }
       .tp-snippet-panel {
         background: var(--tp-code-bg);
@@ -1106,7 +1248,7 @@ const threeThings = [
         padding: 0;
       }
       .tp-quote-mark {
-        color: var(--tp-purple);
+        color: var(--tp-accent);
       }
       .tp-attribution {
         display: flex;
@@ -1118,7 +1260,7 @@ const threeThings = [
         width: 32px;
         height: 32px;
         border-radius: var(--tp-radius-pill);
-        background: #e4e2ee;
+        background: #e8e4df;
         display: inline-block;
         flex-shrink: 0;
       }
@@ -1142,17 +1284,32 @@ const threeThings = [
       }
       .tp-devtools-grid {
         display: grid;
-        grid-template-columns: 1fr 1fr;
-        gap: 24px;
+        grid-template-columns: 1fr;
+        gap: 32px;
       }
       .tp-devtools-card {
         border: 1px solid var(--tp-border);
         border-radius: var(--tp-radius-lg);
         background: var(--tp-surface);
         padding: 32px;
-        display: flex;
-        flex-direction: column;
-        gap: 16px;
+        display: grid;
+        grid-template-columns: 320px 1fr;
+        grid-template-rows: auto 1fr auto;
+        gap: 8px 32px;
+      }
+      .tp-devtools-card .tp-devtools-title {
+        grid-column: 1;
+      }
+      .tp-devtools-card .tp-devtools-body {
+        grid-column: 1;
+      }
+      .tp-devtools-card .tp-devtools-img {
+        grid-column: 2;
+        grid-row: 1 / -1;
+        align-self: center;
+      }
+      .tp-devtools-card .tp-devtools-code {
+        grid-column: 1;
       }
       .tp-devtools-title {
         font-size: 20px;
@@ -1163,6 +1320,12 @@ const threeThings = [
         font-size: 15px;
         color: var(--tp-ink-2);
         line-height: 1.7;
+      }
+      .tp-devtools-img {
+        width: 100%;
+        border-radius: var(--tp-radius);
+        border: 1px solid var(--tp-border);
+        box-shadow: 0 4px 24px -4px rgba(0, 0, 0, 0.1);
       }
       .tp-devtools-code {
         margin-top: auto;
@@ -1312,8 +1475,15 @@ const threeThings = [
           flex-direction: column;
           align-items: flex-start;
         }
-        .tp-devtools-grid {
+        .tp-devtools-card {
           grid-template-columns: 1fr;
+        }
+        .tp-devtools-card .tp-devtools-img {
+          grid-column: 1;
+          grid-row: auto;
+        }
+        .tp-devtools-card .tp-devtools-code {
+          grid-column: 1;
         }
         .tp-cta-card {
           flex-direction: column;

@@ -1,0 +1,88 @@
+# UI Mode
+
+Tapsmith's UI mode is a browser-based interactive test runner with built-in MCP integration. Like [watch mode](watch-mode.md), it keeps the daemon, device, and agent alive across re-runs, bringing re-run times down to roughly 1-2 seconds.
+
+## Starting UI mode
+
+```bash
+npx tapsmith test --ui
+```
+
+This opens an interactive web-based test runner in your browser. The UI server picks an available port automatically and prints the URL to the terminal.
+
+<img src="/ui-mode.png" alt="UI mode showing the interactive test runner with test list, live device mirror, and network inspection panel" />
+
+To set a specific port:
+
+```bash
+npx tapsmith test --ui --ui-port 8080
+```
+
+## Features
+
+The UI provides:
+
+- **Interactive test tree** -- tests are listed in a tree structure, grouped by file and `describe` block. When projects are configured, tests are grouped by project first.
+- **Click to run** -- click any test, file, or project node to run it. You can also run the entire suite.
+- **Live progress** -- test results stream into the UI in real time as tests execute. You see pass/fail status, duration, and error details as each test completes.
+- **Result browsing** -- after a run, browse results with error messages, stack traces, screenshots, and trace data inline.
+- **Watch mode toggle** -- toggle file-level watching from the UI. When a file's watch is enabled, it re-runs automatically on save (the same mechanism as `--watch` mode).
+- **Device screen mirror** -- the UI polls and displays the device screen, so you can see what the app looks like without switching windows.
+
+## MCP integration
+
+The UI server exposes a [Streamable HTTP](https://modelcontextprotocol.io/) MCP endpoint that AI coding agents (Claude Code, Cursor, Codex, etc.) can connect to. This gives agents 16 tools for test discovery, execution, result browsing, device interaction, and watch mode control -- all sharing the same session as the UI.
+
+To connect an agent:
+
+```bash
+claude mcp add tapsmith --transport http http://localhost:<port>/mcp
+```
+
+Both the UI user and the MCP agent share the same test session. Runs triggered by either side appear in the UI, and mutual exclusion ensures only one test run happens at a time.
+
+See [MCP Server](mcp-server.md) for the full list of tools and usage patterns.
+
+## Multi-project support
+
+When your config defines multiple projects, the UI groups tests by project name. Each project routes to its own device (Android emulator, iOS simulator, physical device, etc.).
+
+```typescript
+import { defineConfig } from "tapsmith";
+
+export default defineConfig({
+  projects: [
+    {
+      name: "Pixel 6",
+      use: {
+        platform: "android",
+        avd: "Pixel_6_API_34",
+        apk: "./android/app-debug.apk",
+        launchEmulators: true,
+      },
+    },
+    {
+      name: "iPhone 16",
+      use: {
+        platform: "ios",
+        simulator: "iPhone 16",
+        app: "./ios/MyApp.app",
+      },
+    },
+  ],
+});
+```
+
+Running a test from the "Pixel 6" project routes it to the Android emulator; running one from "iPhone 16" routes it to the iOS simulator. The UI handles this routing transparently.
+
+## Multi-worker UI
+
+When `workers > 1`, the UI server initializes persistent worker processes (one per device), the same way watch mode does. Files are dispatched across workers in parallel, and per-worker device screens are displayed in the UI.
+
+```bash
+npx tapsmith test --ui --workers 4
+```
+
+## Mutual exclusion
+
+Only one test run can be active at a time, whether triggered from the UI or from an MCP agent. If you click "Run" in the UI while an MCP agent is already running tests, the run is queued. Both sides see the same results.
