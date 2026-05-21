@@ -31,7 +31,7 @@ export async function discoverTestFiles(
 
 export function relativeTestPath(filePath: string, rootDir: string): string {
   return path
-    .relative(rootDir, path.resolve(filePath))
+    .relative(rootDir, path.resolve(rootDir, filePath))
     .split(path.sep)
     .join('/');
 }

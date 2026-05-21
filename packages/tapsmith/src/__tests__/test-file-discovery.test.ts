@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
   getTestDiscoveryWatchRoots,
   matchesTestFile,
+  relativeTestPath,
 } from '../test-file-discovery.js';
 
 describe('test-file-discovery helpers', () => {
@@ -31,6 +32,11 @@ describe('test-file-discovery helpers', () => {
     const filePath = path.join(rootDir, 'tests', 'smoke-login.test.ts');
 
     expect(matchesTestFile(filePath, ['tests/**/*.test.ts'], rootDir, ['**/smoke-*.test.ts'])).toBe(false);
+  });
+
+  it('resolves relative file paths from the configured rootDir', () => {
+    expect(relativeTestPath('tests/new.test.ts', rootDir)).toBe('tests/new.test.ts');
+    expect(matchesTestFile('tests/new.test.ts', ['tests/**/*.test.ts'], rootDir)).toBe(true);
   });
 
   it('derives watch roots from the static part of glob patterns', () => {
