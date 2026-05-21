@@ -1,6 +1,6 @@
 # Watch Mode
 
-Tapsmith's watch mode provides fast terminal-based iteration by keeping the daemon, device, and agent alive across re-runs. This eliminates the setup overhead that dominates cold test runs, bringing re-run times down to roughly 1--2 seconds.
+Tapsmith's watch mode provides fast terminal-based iteration by keeping the daemon, device, and agent alive across re-runs. This eliminates the setup overhead that dominates cold test runs, bringing re-run times down to roughly 1-2 seconds.
 
 ## Starting watch mode
 

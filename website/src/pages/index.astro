@@ -305,7 +305,7 @@ const threeThings = [
             </div>
           </div>
           <p class="tp-table-legend">
-            ✓ supported &nbsp;&nbsp; ◐ partial / via plugin &nbsp;&nbsp; · not available
+            ✓ supported &nbsp;&nbsp; ◐ partial / via plugin &nbsp;&nbsp; — not available
           </p>
         </div>
       </section>
@@ -580,8 +580,8 @@ const threeThings = [
 
       /* ─── Tokens ─── */
       :root {
-        --tp-purple: #b8562a;
-        --tp-purple-soft: #fef6f3;
+        --tp-accent: #b8562a;
+        --tp-accent-soft: #fef6f3;
         --tp-ink: #2d2926;
         --tp-ink-2: #5a5550;
         --tp-ink-3: #6b6560;
@@ -613,8 +613,8 @@ const threeThings = [
       }
 
       [data-theme='dark'] {
-        --tp-purple: #e8914b;
-        --tp-purple-soft: #3a2018;
+        --tp-accent: #e8914b;
+        --tp-accent-soft: #3a2018;
         --tp-ink: #e8e4df;
         --tp-ink-2: #b5b0aa;
         --tp-ink-3: #9a9590;
@@ -825,7 +825,7 @@ const threeThings = [
         width: 6px;
         height: 6px;
         border-radius: var(--tp-radius-pill);
-        background: var(--tp-purple);
+        background: var(--tp-accent);
         flex-shrink: 0;
       }
       .tp-dot-green {
@@ -1096,7 +1096,7 @@ const threeThings = [
       .tp-eyebrow {
         font-family: var(--tp-font-mono);
         font-size: 12px;
-        color: var(--tp-purple);
+        color: var(--tp-accent);
         text-transform: uppercase;
         letter-spacing: 0.08em;
         margin-bottom: 12px;
@@ -1144,7 +1144,7 @@ const threeThings = [
       }
       .tp-us-badge {
         margin-left: 6px;
-        color: var(--tp-purple);
+        color: var(--tp-accent);
         font-size: 11px;
       }
       .tp-table-row {
@@ -1166,14 +1166,14 @@ const threeThings = [
         border-left: 1px solid var(--tp-border-2);
       }
       .tp-table-us-col {
-        background: var(--tp-purple-soft);
+        background: var(--tp-accent-soft);
       }
       .tp-mark-y {
         color: var(--tp-success);
         font-weight: 600;
       }
       .tp-mark-y.tp-mark-highlight {
-        color: var(--tp-purple);
+        color: var(--tp-accent);
       }
       .tp-mark-p {
         color: var(--tp-warning);
@@ -1253,7 +1253,7 @@ const threeThings = [
         padding: 0;
       }
       .tp-quote-mark {
-        color: var(--tp-purple);
+        color: var(--tp-accent);
       }
       .tp-attribution {
         display: flex;

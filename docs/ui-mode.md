@@ -1,6 +1,6 @@
 # UI Mode
 
-Tapsmith's UI mode is a browser-based interactive test runner with built-in MCP integration. Like [watch mode](watch-mode.md), it keeps the daemon, device, and agent alive across re-runs, bringing re-run times down to roughly 1--2 seconds.
+Tapsmith's UI mode is a browser-based interactive test runner with built-in MCP integration. Like [watch mode](watch-mode.md), it keeps the daemon, device, and agent alive across re-runs, bringing re-run times down to roughly 1-2 seconds.
 
 ## Starting UI mode
 

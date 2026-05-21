@@ -368,7 +368,6 @@ if (existsSync(IMAGES_SRC)) {
   for (const entry of readdirSync(IMAGES_SRC, { withFileTypes: true })) {
     if (entry.isFile()) {
       copyFileSync(join(IMAGES_SRC, entry.name), join(IMAGES_DEST, entry.name))
-      count++
     }
   }
 }
