@@ -1207,6 +1207,8 @@ export async function runParallel(opts: DispatcherOptions, _portOffset = 0): Pro
           worker.process.send(msg);
         }
 
+        const workerTestCounts = new Map<number, number>();
+
         function retireWorker(worker: WorkerHandle, reason: string): void {
           if (worker.retired) return;
           // On Ctrl-C we killed these workers ourselves — don't spam the
@@ -1257,8 +1259,6 @@ export async function runParallel(opts: DispatcherOptions, _portOffset = 0): Pro
 
           maybeResolve();
         }
-
-        const workerTestCounts = new Map<number, number>();
 
         // Remove previous listeners and re-attach for this wave
         for (const worker of workers) {
