@@ -18,6 +18,13 @@ function action(label: string, endTime: number, duration: number): AnyTraceEvent
   } as AnyTraceEvent;
 }
 
+function actionWithStart(label: string, startTime: number, endTime: number, duration: number): AnyTraceEvent {
+  return {
+    ...action(label, endTime, duration),
+    startTime,
+  } as AnyTraceEvent;
+}
+
 function group(kind: 'start' | 'end', name: string, timestamp: number): AnyTraceEvent {
   return {
     type: kind === 'start' ? 'group-start' : 'group-end',
@@ -96,6 +103,17 @@ describe('sortEventsByStartTime', () => {
       'action:a',
       'action:b',
       'action:c',
+    ]);
+  });
+
+  it('uses explicit startTime when present instead of deriving from displayed timing', () => {
+    const events = [
+      actionWithStart('b', 200, 500, 25),
+      actionWithStart('a', 100, 600, 500),
+    ];
+    expect(labels(sortEventsByStartTime(events))).toEqual([
+      'action:a',
+      'action:b',
     ]);
   });
 

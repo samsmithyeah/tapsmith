@@ -97,6 +97,31 @@ export function revokeTraceScreenshots(data: TestTraceData): void {
   }
 }
 
+export function reconcileTraceWallDuration(
+  data: TestTraceData,
+  testDuration: number | undefined,
+): TestTraceData {
+  if (!testDuration || testDuration <= 0 || data.actionEvents.length === 0) return data;
+  const visibleTotal = data.actionEvents.reduce(
+    (sum, event) => sum + (event.wallDuration ?? event.duration),
+    0,
+  );
+  const missing = Math.round(testDuration - visibleTotal);
+  if (missing <= 0) return data;
+
+  const last = data.actionEvents[data.actionEvents.length - 1];
+  const patched = {
+    ...last,
+    wallDuration: (last.wallDuration ?? last.duration) + missing,
+    trailingTime: (last.trailingTime ?? 0) + missing,
+  } satisfies ActionTraceEvent | AssertionTraceEvent;
+
+  const actionEvents = data.actionEvents.slice();
+  actionEvents[actionEvents.length - 1] = patched;
+  const events = data.events.map((event) => event === last ? patched : event);
+  return { ...data, events, actionEvents };
+}
+
 export function emptyTraceData(filePath?: string): TestTraceData {
   return { events: [], actionEvents: [], screenshots: new Map(), hierarchies: new Map(), sources: new Map(), network: [], networkBodies: new Map(), filePath, inFlightAction: null };
 }

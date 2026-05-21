@@ -155,6 +155,10 @@ function formatDuration(ms: number): string {
   return `${(ms / 1000).toFixed(1)}s`;
 }
 
+function displayDuration(event: ActionTraceEvent | AssertionTraceEvent): number {
+  return event.wallDuration ?? event.duration;
+}
+
 export function ActionsPanel({ events, actionEvents: _actionEvents, selectedIndex, pinnedIndex, onHover, onPin, metadata, showMetadata, inFlightAction, preflightMessage }: Props) {
   const [tab, setTab] = useState<'actions' | 'metadata'>('actions');
   const [filter, setFilter] = useState('');
@@ -192,7 +196,7 @@ export function ActionsPanel({ events, actionEvents: _actionEvents, selectedInde
   // Compute max duration across all actions for the heatmap
   const maxDur = items.reduce((max, item) => {
     if (item.kind !== 'action' || !('event' in item)) return max;
-    return Math.max(max, item.event.duration);
+    return Math.max(max, displayDuration(item.event));
   }, 1);
 
   // Index assigned to the in-flight row — slots in right after the last
@@ -261,13 +265,14 @@ export function ActionsPanel({ events, actionEvents: _actionEvents, selectedInde
                 const isFailed = event.type === 'action' ? !event.success : !event.passed;
                 const isPassed = event.type === 'assertion' && event.passed;
                 const [icon, iconClass] = getIcon(event);
+                const shownDuration = displayDuration(event);
 
                 return (
                   <div
                     key={`a-${item.actionIndex}`}
                     ref={isSelected ? selectedRef : undefined}
                     class={`action-item act${isSelected ? ' selected' : ''}${isPinned ? ' pinned' : ''}${isFailed ? ' failed' : ''}${isPassed ? ' passed' : ''}`}
-                    style={{ '--dur-pct': `${(event.duration / maxDur * 100)}%` }}
+                    style={{ '--dur-pct': `${(shownDuration / maxDur * 100)}%` }}
                     onMouseEnter={() => onHover(item.actionIndex)}
                     onMouseLeave={() => onHover(null)}
                     onClick={() => onPin(item.actionIndex)}
@@ -277,7 +282,14 @@ export function ActionsPanel({ events, actionEvents: _actionEvents, selectedInde
                       <span class="action-name">{label}</span>
                       <SelectorDisplay sel={event.selector} />
                     </div>
-                    <span class="action-duration act-dur">{event.duration}ms</span>
+                    <span
+                      class="action-duration act-dur"
+                      title={event.wallDuration !== undefined && event.wallDuration !== event.duration
+                        ? `wall time ${event.wallDuration}ms; action time ${event.duration}ms`
+                        : undefined}
+                    >
+                      {shownDuration}ms
+                    </span>
                   </div>
                 );
               })}

@@ -79,7 +79,7 @@ This starts a local server and opens the trace viewer in your browser.
 Chronological list of all actions and assertions. Each entry shows:
 - Action icon and name (tap, type, swipe, etc.)
 - Selector used
-- Duration in milliseconds
+- Wall-clock duration in milliseconds, including time between trace actions
 - Pass/fail status (red highlight for failures)
 
 Groups from `device.tracing.group()` appear as collapsible sections.
@@ -99,7 +99,7 @@ Shows before/after screenshots for the selected action:
 
 ### Detail Tabs (right)
 
-- **Call** — Action type, selector, bounds, duration, wait time, retry count
+- **Call** — Action type, selector, bounds, wall time, raw action/assertion time, wait time, retry count
 - **Console** — Test code `console.log/warn/error` and device logcat output, color-coded by level
 - **Source** — Test source code with the relevant line highlighted
 - **Hierarchy** — Android view hierarchy XML with searchable tree view

@@ -11,6 +11,7 @@ export interface TraceEvent {
   expected?: unknown
   actual?: unknown
   duration?: number
+  wallDuration?: number
   level?: string
   message?: string
   source?: string
@@ -45,7 +46,8 @@ export function readTraceSummary(tracePath: string, maxSteps = 10): TraceSummary
 
       for (const event of tail) {
         const status = event.error ? 'FAIL' : 'OK';
-        const dur = event.duration ? ` (${event.duration}ms)` : '';
+        const shownDuration = event.wallDuration ?? event.duration;
+        const dur = shownDuration ? ` (${shownDuration}ms)` : '';
         if (event.type === 'action') {
           const sel = event.selector ? ` on ${event.selector}` : '';
           steps.push(`[${status}] ${event.action ?? 'action'}${sel}${dur}`);

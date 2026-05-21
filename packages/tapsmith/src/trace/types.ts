@@ -55,7 +55,7 @@ export interface TraceEvent {
   type: TraceEventType
   /** Monotonic action index (0-based). */
   actionIndex: number
-  /** Wall-clock timestamp (ms since epoch). */
+  /** Wall-clock timestamp (ms since epoch). For completed actions/assertions, this is the completion time. */
   timestamp: number
   /** Device ID for multi-device support. */
   deviceId?: string
@@ -73,6 +73,21 @@ export interface ActionTraceEvent extends TraceEvent {
   inputValue?: string
   /** Duration of the action in milliseconds. */
   duration: number
+  /**
+   * Wall-clock time allocated to this action in the linear trace timeline.
+   * Includes idle/setup time since the previous completed action. In finalized
+   * trace archives, the last action may also include trailing teardown time so
+   * visible action durations add up to the recorded test duration.
+   */
+  wallDuration?: number
+  /** Time between the previous completed action and this action starting. */
+  gapBefore?: number
+  /** Trailing time after this action that was allocated during finalization. */
+  trailingTime?: number
+  /** Best-effort wall-clock timestamp when the action began. */
+  startTime?: number
+  /** Best-effort wall-clock timestamp when the action completed. */
+  endTime?: number
   /** Whether the action succeeded. */
   success: boolean
   /** Error message if the action failed. */
@@ -121,6 +136,21 @@ export interface AssertionTraceEvent extends TraceEvent {
   negated: boolean
   /** Duration of the assertion polling. */
   duration: number
+  /**
+   * Wall-clock time allocated to this assertion in the linear trace timeline.
+   * Includes idle/setup time since the previous completed action/assertion. In
+   * finalized trace archives, the last assertion may also include trailing
+   * teardown time so visible durations add up to the recorded test duration.
+   */
+  wallDuration?: number
+  /** Time between the previous completed action/assertion and this assertion starting. */
+  gapBefore?: number
+  /** Trailing time after this assertion that was allocated during finalization. */
+  trailingTime?: number
+  /** Best-effort wall-clock timestamp when the assertion began. */
+  startTime?: number
+  /** Best-effort wall-clock timestamp when the assertion completed. */
+  endTime?: number
   /** Number of poll attempts. */
   attempts: number
   /** Error message if the assertion failed. */

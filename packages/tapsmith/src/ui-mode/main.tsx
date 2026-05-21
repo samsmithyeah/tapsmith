@@ -11,6 +11,7 @@ import {
   base64ToBlobUrl,
   base64ToUtf8,
   revokeTraceScreenshots,
+  reconcileTraceWallDuration,
   emptyTraceData,
   getOrCreateTrace,
   EMPTY_MAP,
@@ -567,11 +568,13 @@ function App() {
           const needsClear = existing?.inFlightAction != null;
           const hasPath = msg.tracePath || msg.videoPath;
           if (!existing && !hasPath) return prev;
-          if (existing && !needsClear && !hasPath) return prev;
           const data = existing ?? emptyTraceData(msg.filePath);
+          const reconciled = reconcileTraceWallDuration(data, msg.duration);
+          const needsReconcile = reconciled !== data;
+          if (existing && !needsClear && !hasPath && !needsReconcile) return prev;
           const next = new Map(prev);
           next.set(statusKey, {
-            ...data,
+            ...reconciled,
             inFlightAction: null,
             ...(msg.tracePath ? { tracePath: msg.tracePath } : {}),
             ...(msg.videoPath ? { videoPath: msg.videoPath } : {}),
@@ -1005,7 +1008,7 @@ function App() {
   // look frozen during the IPC dispatch + ESM import + hooks-before-
   // first-action gap.
   const preflightMessage = useMemo<string | undefined>(() => {
-    if (!viewedTestNode) return undefined;
+    if (!viewedTestNode || viewedTestNode.type !== 'test') return undefined;
     const isPending = tree.pendingIds.has(viewedTestNode.id);
     const isRunning = viewedTestNode.status === 'running';
     return isPending || isRunning ? 'Waiting for first action…' : undefined;

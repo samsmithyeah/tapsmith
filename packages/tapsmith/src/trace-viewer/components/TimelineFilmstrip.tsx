@@ -126,7 +126,11 @@ export function TimelineFilmstrip({ events, screenshots, metadata, selectedIndex
     );
   }
 
-  const firstTimestamp = events.length > 0 ? events[0].timestamp : 0;
+  const firstTimestamp = metadata.startTime > 0
+    ? metadata.startTime
+    : events.length > 0
+      ? (events[0].startTime ?? events[0].timestamp)
+      : 0;
   const hasTestName = !!metadata.testName;
   const hasDeviceSerial = !!metadata.device.serial;
   const fileName = metadata.testFile ? metadata.testFile.split('/').pop() : undefined;

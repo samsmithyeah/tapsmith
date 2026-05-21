@@ -63,6 +63,10 @@ export function packageTrace(
 ): string {
   const zipData: Zippable = {};
 
+  // Allocate teardown/finalization time to the last visible action so the
+  // action list's wall-clock durations reconcile with metadata.testDuration.
+  collector.finalizeTimeline(options.endTime);
+
   // 1. trace.json — NDJSON event log
   const ndjson = collector.toNDJSON();
   zipData['trace.json'] = new TextEncoder().encode(ndjson);
