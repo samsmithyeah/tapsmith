@@ -66,11 +66,11 @@ export class DotReporter implements TapsmithReporter {
   }
 
   onRunEnd(result: FullResult): void {
+    const failedTests = result.tests.filter((t) => t.status === 'failed');
     const passed = result.tests.filter((t) => t.status === 'passed').length;
-    const failed = result.tests.filter((t) => t.status === 'failed').length;
+    const failed = failedTests.length;
     const skipped = result.tests.filter((t) => t.status === 'skipped').length;
     const flaky = countFlaky(result.tests);
-    const failedTests = result.tests.filter((t) => t.status === 'failed');
 
     // End the dot line
     if (this._column > 0) {

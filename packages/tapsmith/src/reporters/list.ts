@@ -26,14 +26,12 @@ import {
 
 export class ListReporter implements TapsmithReporter {
   private _testIndex = 0;
-  private _totalTests = 0;
   private _parallel = false;
   private _multipleWorkers = false;
   private _showProjectTags = false;
 
   onRunStart(config: TapsmithConfig, fileCount: number): void {
     this._testIndex = 0;
-    this._totalTests = 0;
     this._parallel = config.workers > 1;
     this._multipleWorkers = config.workers > 1;
     // Show inline [project] tags whenever multiple projects exist — the same
@@ -63,7 +61,6 @@ export class ListReporter implements TapsmithReporter {
     }
 
     this._testIndex++;
-    this._totalTests++;
 
     const icon = statusIcon(test.status);
     const duration = dim(`(${formatDuration(test.durationMs)})`);
@@ -91,7 +88,6 @@ export class ListReporter implements TapsmithReporter {
 
   onTestFileRetry(_filePath: string, discardedCount: number): void {
     this._testIndex -= discardedCount;
-    this._totalTests -= discardedCount;
   }
 
   onTestFileEnd(): void {

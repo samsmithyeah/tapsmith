@@ -36,6 +36,7 @@ export class LineReporter implements TapsmithReporter {
   }
 
   onTestEnd(test: TestResult): void {
+    if (test._willRetry) return;
     this._completed++;
 
     if (test.status === 'failed') {
