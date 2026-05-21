@@ -12,15 +12,7 @@
 //   3. Rewrites internal cross-reference links to match Starlight's
 //      URL scheme (e.g. `selectors.md` → `/guides/selectors/`).
 
-import {
-  readFileSync,
-  writeFileSync,
-  mkdirSync,
-  existsSync,
-  rmSync,
-  readdirSync,
-  copyFileSync,
-} from 'node:fs'
+import { readFileSync, writeFileSync, mkdirSync, existsSync, rmSync, cpSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 
 const ROOT = resolve(import.meta.dirname, '..', '..')
@@ -364,12 +356,7 @@ if (existsSync(apiRefPath)) {
 const IMAGES_SRC = join(DOCS, 'images')
 const IMAGES_DEST = join(ROOT, 'website', 'public')
 if (existsSync(IMAGES_SRC)) {
-  mkdirSync(IMAGES_DEST, { recursive: true })
-  for (const entry of readdirSync(IMAGES_SRC, { withFileTypes: true })) {
-    if (entry.isFile()) {
-      copyFileSync(join(IMAGES_SRC, entry.name), join(IMAGES_DEST, entry.name))
-    }
-  }
+  cpSync(IMAGES_SRC, IMAGES_DEST, { recursive: true })
 }
 
 console.log(`sync-docs: ${count} files written to src/content/docs/`)
