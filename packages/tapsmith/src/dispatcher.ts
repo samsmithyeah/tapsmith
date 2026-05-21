@@ -1274,7 +1274,9 @@ export async function runParallel(opts: DispatcherOptions, _portOffset = 0): Pro
                   deserializeTestResult(msg.result),
                   opts.workerIndexBase,
                 );
-                workerTestCounts.set(msg.workerId, (workerTestCounts.get(msg.workerId) ?? 0) + 1);
+                if (!result._willRetry) {
+                  workerTestCounts.set(msg.workerId, (workerTestCounts.get(msg.workerId) ?? 0) + 1);
+                }
                 reporter.onTestEnd?.(result);
                 break;
               }
