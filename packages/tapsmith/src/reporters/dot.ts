@@ -68,6 +68,10 @@ export class DotReporter implements TapsmithReporter {
     }
   }
 
+  onTestFileRetry(_filePath: string, _discardedCount: number): void {
+    this._failed = [];
+  }
+
   onRunEnd(result: FullResult): void {
     const passed = result.tests.filter((t) => t.status === 'passed').length;
     const failed = result.tests.filter((t) => t.status === 'failed').length;

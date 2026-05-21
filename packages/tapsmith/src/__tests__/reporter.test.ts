@@ -129,6 +129,17 @@ describe('ReporterDispatcher', () => {
     stderrSpy.mockRestore();
   });
 
+  it('fans out onTestFileRetry to all reporters', () => {
+    const r1: TapsmithReporter = { onTestFileRetry: vi.fn() };
+    const r2: TapsmithReporter = { onTestFileRetry: vi.fn() };
+    const dispatcher = new ReporterDispatcher([r1, r2]);
+
+    dispatcher.onTestFileRetry('/test.ts', 3);
+
+    expect(r1.onTestFileRetry).toHaveBeenCalledWith('/test.ts', 3);
+    expect(r2.onTestFileRetry).toHaveBeenCalledWith('/test.ts', 3);
+  });
+
   it('handles reporters that only implement some hooks', () => {
     const r1: TapsmithReporter = {}; // no hooks
     const dispatcher = new ReporterDispatcher([r1]);
@@ -268,6 +279,26 @@ describe('ListReporter', () => {
     }));
     const output = stdoutSpy.mock.calls.map((c: unknown[]) => c[0]).join('');
     expect(output).toContain('assertion failed');
+  });
+
+  it('rolls back test counter on file retry so retried tests are not double-counted', () => {
+    reporter.onRunStart!(makeConfig({ workers: 2 }), 2);
+
+    // Attempt 1: two tests stream before an infrastructure failure
+    reporter.onTestEnd!(makeTestResult({ fullName: 'test A', status: 'passed' }));
+    reporter.onTestEnd!(makeTestResult({ fullName: 'test B', status: 'failed', error: new Error('Agent connection dropped') }));
+
+    // Infrastructure retry discards the 2 results
+    reporter.onTestFileRetry!('/file.ts', 2);
+
+    // Attempt 2: same tests re-run successfully
+    reporter.onTestEnd!(makeTestResult({ fullName: 'test A', status: 'passed' }));
+    reporter.onTestEnd!(makeTestResult({ fullName: 'test B', status: 'passed' }));
+
+    const output = stdoutSpy.mock.calls.map((c: unknown[]) => c[0]).join('');
+    // The final test B should have counter [2], not [4]
+    const counterMatches = [...output.matchAll(/\[(\d+)\]/g)].map((m) => m[1]);
+    expect(counterMatches).toEqual(['1', '2', '1', '2']);
   });
 
   it('prints summary on onRunEnd', () => {

@@ -69,6 +69,11 @@ export class LineReporter implements TapsmithReporter {
     }
   }
 
+  onTestFileRetry(_filePath: string, discardedCount: number): void {
+    this._completed -= discardedCount;
+    this._failed = [];
+  }
+
   onRunEnd(result: FullResult): void {
     const passed = result.tests.filter((t) => t.status === 'passed').length;
     const failed = result.tests.filter((t) => t.status === 'failed').length;

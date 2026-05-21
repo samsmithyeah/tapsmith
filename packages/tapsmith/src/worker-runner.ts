@@ -362,27 +362,12 @@ async function runFileWithRecovery(
   const projectGrepInvertRe = deserializeRegExpArray(projectGrepInvert);
 
   for (let attempt = 1; attempt <= 2; attempt++) {
-    // On attempt 1, buffer test-end events so we can discard them if a
-    // retry follows. On attempt 2 (or when attempt 1 succeeds), events
-    // flow through to the main process immediately.
-    let bufferedEvents: import('./runner.js').TestResult[] | undefined =
-      attempt === 1 ? [] : undefined;
-    const attemptReporter = {
-      onTestEnd(result: import('./runner.js').TestResult): void {
-        if (bufferedEvents) {
-          bufferedEvents.push(result);
-        } else {
-          reporterProxy.onTestEnd(result);
-        }
-      },
-    };
-
     try {
       const suite = await runTestFile(filePath, {
         config,
         device,
         screenshotDir,
-        reporter: attemptReporter,
+        reporter: reporterProxy,
         beforeEachTest: async (fullName) => {
           await ensureSessionReady(
             sessionContext(undefined),
@@ -403,18 +388,12 @@ async function runFileWithRecovery(
       });
       const infrastructureFailure = findRecoverableInfrastructureFailure(collectResults(suite));
       if (!infrastructureFailure) {
-        // Success — flush any buffered events from attempt 1.
-        if (bufferedEvents) {
-          for (const evt of bufferedEvents) reporterProxy.onTestEnd(evt);
-        }
         return suite;
       }
       if (attempt === 2) {
         throw infrastructureFailure;
       }
-      // Discard buffered events — they reflect an infrastructure failure,
-      // not a real test result.
-      bufferedEvents = undefined;
+      send({ type: 'file-retry', workerId, filePath });
       process.stderr.write(
         `Retrying ${path.basename(filePath)} after infrastructure error (attempt 2 of 2)\n`,
       );
@@ -422,15 +401,10 @@ async function runFileWithRecovery(
       continue;
     } catch (err) {
       if (!isRecoverableInfrastructureError(err) || attempt === 2) {
-        // Real failure — flush buffered events so the failure is visible.
-        if (bufferedEvents) {
-          for (const evt of bufferedEvents) reporterProxy.onTestEnd(evt);
-        }
         throw err;
       }
 
-      // Discard buffered events from failed attempt 1.
-      bufferedEvents = undefined;
+      send({ type: 'file-retry', workerId, filePath });
       process.stderr.write(
         `Retrying ${path.basename(filePath)} after infrastructure error (attempt 2 of 2)\n`,
       );

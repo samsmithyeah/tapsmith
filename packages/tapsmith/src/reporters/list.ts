@@ -89,6 +89,11 @@ export class ListReporter implements TapsmithReporter {
     }
   }
 
+  onTestFileRetry(_filePath: string, discardedCount: number): void {
+    this._testIndex -= discardedCount;
+    this._totalTests -= discardedCount;
+  }
+
   onTestFileEnd(): void {
     // Reset per-file counter for the next file (sequential mode only —
     // in parallel mode the counter is global since results are interleaved)

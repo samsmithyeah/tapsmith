@@ -90,6 +90,12 @@ export interface FileDoneMessage {
   results: SerializedTestResult[]
 }
 
+export interface FileRetryMessage {
+  type: 'file-retry'
+  workerId: number
+  filePath: string
+}
+
 export interface WorkerErrorMessage {
   type: 'error'
   workerId: number
@@ -102,6 +108,7 @@ export type WorkerToMainMessage =
   | TestEndMessage
   | FileStartMessage
   | FileDoneMessage
+  | FileRetryMessage
   | WorkerErrorMessage
 
 // ─── Infrastructure error detection ───

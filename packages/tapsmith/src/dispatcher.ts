@@ -1253,6 +1253,8 @@ export async function runParallel(opts: DispatcherOptions, _portOffset = 0): Pro
           maybeResolve();
         }
 
+        const fileTestCounts = new Map<string, number>();
+
         // Remove previous listeners and re-attach for this wave
         for (const worker of workers) {
           worker.process.removeAllListeners('message');
@@ -1267,11 +1269,19 @@ export async function runParallel(opts: DispatcherOptions, _portOffset = 0): Pro
                   deserializeTestResult(msg.result),
                   opts.workerIndexBase,
                 );
+                const fileKey = worker.currentFile?.filePath ?? '';
+                fileTestCounts.set(fileKey, (fileTestCounts.get(fileKey) ?? 0) + 1);
                 reporter.onTestEnd?.(result);
                 break;
               }
               case 'file-start':
                 break;
+              case 'file-retry': {
+                const discarded = fileTestCounts.get(msg.filePath) ?? 0;
+                fileTestCounts.set(msg.filePath, 0);
+                reporter.onTestFileRetry?.(msg.filePath, discarded);
+                break;
+              }
               case 'file-done': {
                 worker.currentFile = undefined;
                 const results = msg.results
