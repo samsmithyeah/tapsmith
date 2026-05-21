@@ -26,12 +26,10 @@ const DOTS_PER_LINE = 80;
 
 export class DotReporter implements TapsmithReporter {
   private _column = 0;
-  private _failed: TestResult[] = [];
   private _showProjectTags = false;
 
   onRunStart(config: TapsmithConfig, _fileCount: number): void {
     this._column = 0;
-    this._failed = [];
     this._showProjectTags = config.workers > 1 && (config.projects?.length ?? 0) > 1;
     process.stdout.write('\n');
   }
@@ -51,7 +49,6 @@ export class DotReporter implements TapsmithReporter {
           break;
         case 'failed':
           char = red('F');
-          this._failed.push(test);
           break;
         case 'skipped':
           char = yellow('○');
@@ -68,15 +65,12 @@ export class DotReporter implements TapsmithReporter {
     }
   }
 
-  onTestFileRetry(_filePath: string, _discardedCount: number): void {
-    this._failed = [];
-  }
-
   onRunEnd(result: FullResult): void {
     const passed = result.tests.filter((t) => t.status === 'passed').length;
     const failed = result.tests.filter((t) => t.status === 'failed').length;
     const skipped = result.tests.filter((t) => t.status === 'skipped').length;
     const flaky = countFlaky(result.tests);
+    const failedTests = result.tests.filter((t) => t.status === 'failed');
 
     // End the dot line
     if (this._column > 0) {
@@ -86,9 +80,9 @@ export class DotReporter implements TapsmithReporter {
     process.stdout.write('\n');
 
     // Print failure details
-    if (this._failed.length > 0) {
+    if (failedTests.length > 0) {
       process.stdout.write(bold(red('Failures:\n\n')));
-      for (const test of this._failed) {
+      for (const test of failedTests) {
         const project = this._showProjectTags ? projectTag(test.project) : '';
         process.stdout.write(`  ${red('✗')} ${workerTag(test.workerIndex)}${project}${test.fullName}\n`);
         if (test.error) {
