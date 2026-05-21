@@ -66,6 +66,7 @@ import {
   getTestDiscoveryWatchRoots,
   matchesTestIgnore,
   matchesTestFile,
+  relativeTestPath,
 } from '../test-file-discovery.js';
 
 // ─── SPA paths ───
@@ -86,6 +87,7 @@ const DIM = '\x1b[2m';
 const YELLOW = '\x1b[33m';
 const RESET = '\x1b[0m';
 const MAX_DISCOVERY_BATCH_CONCURRENCY = 4;
+const DISCOVERY_DEBOUNCE_MS = 150;
 
 /** Cached screen-scale lookup keyed by UDID — avoids repeated simctl calls. */
 const dprCache = new Map<string, number>();
@@ -2454,10 +2456,9 @@ export async function startUIServer(
 
   function shouldIgnoreDiscoveryPath(filePath: string): boolean {
     const resolved = path.resolve(resolvedRootDir, filePath);
-    const relative = path.relative(resolvedRootDir, resolved);
-    if (relative.startsWith('..') || path.isAbsolute(relative)) return true;
+    const normalizedRelative = relativeTestPath(resolved, resolvedRootDir);
+    if (normalizedRelative.startsWith('../') || path.isAbsolute(normalizedRelative)) return true;
 
-    const normalizedRelative = relative.split(path.sep).join('/');
     const parts = normalizedRelative.split('/');
     if (parts.includes('.git') || matchesTestIgnore(normalizedRelative)) {
       return true;
@@ -2693,7 +2694,7 @@ export async function startUIServer(
     discoveryTimer = setTimeout(() => {
       discoveryTimer = null;
       flushPendingDiscovery().catch(broadcastError);
-    }, 150);
+    }, DISCOVERY_DEBOUNCE_MS);
   }
 
   async function flushPendingDiscovery(): Promise<void> {
@@ -2728,7 +2729,7 @@ export async function startUIServer(
         discoveryTimer = setTimeout(() => {
           discoveryTimer = null;
           flushPendingDiscovery().catch(broadcastError);
-        }, 150);
+        }, DISCOVERY_DEBOUNCE_MS);
       }
     }
   }
