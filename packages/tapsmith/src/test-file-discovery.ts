@@ -45,11 +45,16 @@ export function matchesTestFile(
   const relative = relativeTestPath(filePath, rootDir);
   if (!relative || relative.startsWith('../') || path.isAbsolute(relative)) return false;
 
-  const ignore = [...DEFAULT_TEST_IGNORE, ...(extraIgnore ?? [])];
-  if (ignore.some((pattern) => minimatch(relative, normalizeGlobPattern(pattern)))) {
-    return false;
-  }
+  if (matchesTestIgnore(relative, extraIgnore)) return false;
   return patterns.some((pattern) => minimatch(relative, normalizeGlobPattern(pattern)));
+}
+
+export function matchesTestIgnore(relativePath: string, extraIgnore?: string[]): boolean {
+  const relative = normalizeGlobPattern(relativePath).replace(/\/+$/, '');
+  if (!relative) return false;
+
+  const ignore = [...DEFAULT_TEST_IGNORE, ...(extraIgnore ?? [])];
+  return ignore.some((pattern) => matchesIgnorePattern(relative, pattern));
 }
 
 export function getTestDiscoveryWatchRoots(patterns: string[], rootDir: string): string[] {
@@ -70,6 +75,12 @@ export function getTestDiscoveryWatchRoots(patterns: string[], rootDir: string):
 
 function normalizeGlobPattern(pattern: string): string {
   return pattern.replaceAll('\\', '/');
+}
+
+function matchesIgnorePattern(relativePath: string, pattern: string): boolean {
+  const normalizedPattern = normalizeGlobPattern(pattern);
+  return minimatch(relativePath, normalizedPattern)
+    || minimatch(`${relativePath}/__tapsmith_ignore_probe__`, normalizedPattern);
 }
 
 function staticDirectoryPrefix(pattern: string): string {

@@ -4,6 +4,7 @@ import * as path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
   getTestDiscoveryWatchRoots,
+  matchesTestIgnore,
   matchesTestFile,
   relativeTestPath,
 } from '../test-file-discovery.js';
@@ -37,6 +38,14 @@ describe('test-file-discovery helpers', () => {
   it('resolves relative file paths from the configured rootDir', () => {
     expect(relativeTestPath('tests/new.test.ts', rootDir)).toBe('tests/new.test.ts');
     expect(matchesTestFile('tests/new.test.ts', ['tests/**/*.test.ts'], rootDir)).toBe(true);
+  });
+
+  it('matches default ignore patterns for directories and descendants', () => {
+    expect(matchesTestIgnore('node_modules')).toBe(true);
+    expect(matchesTestIgnore('node_modules/pkg/new.test.ts')).toBe(true);
+    expect(matchesTestIgnore('dist')).toBe(true);
+    expect(matchesTestIgnore('dist/new.test.ts')).toBe(true);
+    expect(matchesTestIgnore('tests/dist.test.ts')).toBe(false);
   });
 
   it('derives watch roots from the static part of glob patterns', () => {

@@ -64,6 +64,7 @@ import {
 } from '../launch-progress.js';
 import {
   getTestDiscoveryWatchRoots,
+  matchesTestIgnore,
   matchesTestFile,
 } from '../test-file-discovery.js';
 
@@ -2428,8 +2429,9 @@ export async function startUIServer(
     const relative = path.relative(ctx.config.rootDir, resolved);
     if (relative.startsWith('..') || path.isAbsolute(relative)) return true;
 
-    const parts = relative.split(path.sep);
-    if (parts.includes('node_modules') || parts.includes('.git') || parts.includes('dist')) {
+    const normalizedRelative = relative.split(path.sep).join('/');
+    const parts = normalizedRelative.split('/');
+    if (parts.includes('.git') || matchesTestIgnore(normalizedRelative)) {
       return true;
     }
 
@@ -2724,6 +2726,7 @@ export async function startUIServer(
       ignored: (candidate) => shouldIgnoreDiscoveryPath(candidate.toString()),
     });
 
+    discoveryWatcher.on('error', broadcastError);
     discoveryWatcher.on('add', (filePath) => {
       scheduleDiscovery(filePath);
     });
@@ -2748,6 +2751,7 @@ export async function startUIServer(
 
     if (!watcher) {
       watcher = chokidarWatch([], { ignoreInitial: true });
+      watcher.on('error', broadcastError);
       watcher.on('change', (changedPath) => {
         if (watchedEntries.has(changedPath)) {
           broadcast({ type: 'watch-event', filePath: changedPath, event: 'changed' });
