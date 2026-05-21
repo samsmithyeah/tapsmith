@@ -362,6 +362,7 @@ async function runFileWithRecovery(
   const projectGrepInvertRe = deserializeRegExpArray(projectGrepInvert);
 
   for (let attempt = 1; attempt <= 2; attempt++) {
+    let infraError: Error | undefined;
     try {
       const suite = await runTestFile(filePath, {
         config,
@@ -393,23 +394,19 @@ async function runFileWithRecovery(
       if (attempt === 2) {
         throw infrastructureFailure;
       }
-      send({ type: 'file-retry', workerId, filePath });
-      process.stderr.write(
-        `Retrying ${path.basename(filePath)} after infrastructure error (attempt 2 of 2)\n`,
-      );
-      await recoverFileSession(filePath, infrastructureFailure);
-      continue;
+      infraError = infrastructureFailure;
     } catch (err) {
       if (!isRecoverableInfrastructureError(err) || attempt === 2) {
         throw err;
       }
-
-      send({ type: 'file-retry', workerId, filePath });
-      process.stderr.write(
-        `Retrying ${path.basename(filePath)} after infrastructure error (attempt 2 of 2)\n`,
-      );
-      await recoverFileSession(filePath, err);
+      infraError = err instanceof Error ? err : new Error(String(err));
     }
+
+    send({ type: 'file-retry', workerId, filePath });
+    process.stderr.write(
+      `Retrying ${path.basename(filePath)} after infrastructure error (attempt 2 of 2)\n`,
+    );
+    await recoverFileSession(filePath, infraError!);
   }
 
   throw new Error(`Worker ${workerId}: exhausted recovery attempts for ${path.basename(filePath)}`);

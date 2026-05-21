@@ -240,6 +240,7 @@ export interface SerializedTestResult {
   workerIndex: number
   project?: string
   retry?: number
+  _willRetry?: boolean
 }
 
 export interface SerializedSuiteResult {
@@ -266,6 +267,7 @@ export function serializeTestResult(result: TestResult, workerIndex: number): Se
     workerIndex,
     project: result.project,
     retry: result.retry,
+    _willRetry: result._willRetry,
   };
 }
 
@@ -293,6 +295,7 @@ export function deserializeTestResult(s: SerializedTestResult): TestResult & { w
     workerIndex: s.workerIndex,
     project: s.project,
     retry: s.retry,
+    _willRetry: s._willRetry,
   };
 }
 

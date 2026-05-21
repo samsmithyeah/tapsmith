@@ -1225,6 +1225,11 @@ export async function runParallel(opts: DispatcherOptions, _portOffset = 0): Pro
           cleanupWorkerResources(worker);
 
           if (inFlightFile) {
+            const discarded = workerTestCounts.get(worker.id) ?? 0;
+            workerTestCounts.delete(worker.id);
+            if (discarded > 0) {
+              reporter.onTestFileRetry?.(inFlightFile.filePath, discarded);
+            }
             fileQueue.unshift(inFlightFile);
             process.stderr.write(
               `${YELLOW}Worker ${displayWorkerId(worker.id)} (${worker.deviceSerial}) became unavailable: ${reason}. Requeueing ${path.basename(inFlightFile.filePath)} and continuing with remaining workers.${RESET}\n`,
@@ -1274,6 +1279,7 @@ export async function runParallel(opts: DispatcherOptions, _portOffset = 0): Pro
                 break;
               }
               case 'file-start':
+                workerTestCounts.set(msg.workerId, 0);
                 break;
               case 'file-retry': {
                 const discarded = workerTestCounts.get(msg.workerId) ?? 0;
