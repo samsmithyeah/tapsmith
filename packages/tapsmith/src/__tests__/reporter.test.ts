@@ -316,6 +316,29 @@ describe('ListReporter', () => {
     expect(counterMatches).toEqual(['1', '2', '3', '4']);
   });
 
+  it('includes file name in parallel mode output', () => {
+    reporter.onRunStart!(makeConfig({ workers: 2, rootDir: '/project' }), 2);
+    reporter.onTestEnd!(makeTestResult({
+      status: 'passed',
+      fullName: 'my test',
+      filePath: '/project/tests/login.test.ts',
+    }));
+    const output = stdoutSpy.mock.calls.map((c: unknown[]) => c[0]).join('');
+    expect(output).toContain('login.test.ts');
+    expect(output).toContain('my test');
+  });
+
+  it('omits file name in sequential mode since file header is shown', () => {
+    reporter.onRunStart!(makeConfig({ workers: 1 }), 1);
+    reporter.onTestEnd!(makeTestResult({
+      status: 'passed',
+      fullName: 'my test',
+      filePath: '/project/tests/login.test.ts',
+    }));
+    const output = stdoutSpy.mock.calls.map((c: unknown[]) => c[0]).join('');
+    expect(output).not.toContain('login.test.ts');
+  });
+
   it('prints summary on onRunEnd', () => {
     reporter.onRunEnd!(makeFullResult({
       tests: [

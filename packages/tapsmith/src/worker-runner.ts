@@ -311,6 +311,14 @@ async function handleRunFile(
 
   // Create a reporter proxy that sends events back to main process
   const reporterProxy = {
+    onTestStart(fullName: string, testFilePath?: string): void {
+      send({
+        type: 'test-start',
+        workerId,
+        fullName,
+        filePath: testFilePath ?? filePath,
+      });
+    },
     onTestEnd(result: import('./runner.js').TestResult): void {
       send({
         type: 'test-end',

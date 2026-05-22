@@ -1314,6 +1314,9 @@ export async function runParallel(opts: DispatcherOptions, _portOffset = 0): Pro
             if (hasError || worker.retired) return;
 
             switch (msg.type) {
+              case 'test-start':
+                reporter.onTestStart?.(msg.fullName, msg.filePath);
+                break;
               case 'test-end': {
                 handleParallelTestEndMessage(
                   msg,

@@ -146,6 +146,8 @@ export interface TestResult {
   retry?: number;
   /** @internal True when this result represents a failed attempt that will be retried. */
   _willRetry?: boolean;
+  /** Path to the test file this result belongs to. */
+  filePath?: string;
 }
 
 export interface SuiteResult {
@@ -920,8 +922,9 @@ async function runSuiteContext(
 
           // Notify UI mode on first attempt only — retries re-use the same
           // test slot in the UI rather than creating duplicate entries.
-          if (attempt === 0 && opts.onTestStart && fullName !== beforeAllFirstFullName) {
-            await opts.onTestStart(fullName);
+          if (attempt === 0 && fullName !== beforeAllFirstFullName) {
+            if (opts.onTestStart) await opts.onTestStart(fullName);
+            opts.reporter?.onTestStart?.(fullName, opts.testFilePath);
           }
 
           // Replay beforeAll events into this test's trace stream.
@@ -1338,6 +1341,7 @@ async function runSuiteContext(
         project: opts.projectName,
         retry: attempt,
         _willRetry: true,
+        filePath: opts.testFilePath,
       });
     }
 
@@ -1352,6 +1356,7 @@ async function runSuiteContext(
       videoPath,
       project: opts.projectName,
       retry: lastAttempt > 0 ? lastAttempt : undefined,
+      filePath: opts.testFilePath,
     };
     result.tests.push(testResult);
     opts.reporter?.onTestEnd?.(testResult);
