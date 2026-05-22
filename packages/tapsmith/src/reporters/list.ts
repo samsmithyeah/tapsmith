@@ -62,7 +62,7 @@ export class ListReporter implements TapsmithReporter {
   }
 
   onTestEnd(test: TestResult): void {
-    const idx = this._inProgress.findIndex((e) => e.fullName === test.fullName);
+    const idx = this._inProgress.findIndex((e) => e.fullName === test.fullName && e.filePath === (test.filePath ?? ''));
     if (idx !== -1) this._inProgress.splice(idx, 1);
     if (this._isTTY) this._clearInProgress();
 
@@ -181,7 +181,7 @@ export class ListReporter implements TapsmithReporter {
     for (let i = 0; i < this._inProgress.length; i++) {
       const { fullName, filePath } = this._inProgress[i];
       const file = filePath ? `› ${this._relativeFile(filePath)} › ` : '';
-      let line = `     [${this._testIndex + i + 1}] ${file}${fullName}`;
+      let line = `    [${this._testIndex + i + 1}] ${file}${fullName}`;
       if (ttyWidth > 0 && line.length > ttyWidth)
         line = line.slice(0, ttyWidth - 1) + '…';
       lines.push(dim(line));
