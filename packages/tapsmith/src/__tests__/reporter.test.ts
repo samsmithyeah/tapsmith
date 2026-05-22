@@ -281,8 +281,8 @@ describe('ListReporter', () => {
     expect(output).toContain('assertion failed');
   });
 
-  it('rolls back test counter on file retry so retried tests are not double-counted', () => {
-    reporter.onRunStart!(makeConfig({ workers: 2 }), 2);
+  it('rolls back test counter on sequential file retry so retried tests are not double-counted', () => {
+    reporter.onRunStart!(makeConfig({ workers: 1 }), 2);
 
     // Attempt 1: two tests stream before an infrastructure failure
     reporter.onTestEnd!(makeTestResult({ fullName: 'test A', status: 'passed' }));
@@ -301,6 +301,21 @@ describe('ListReporter', () => {
     expect(counterMatches).toEqual(['1', '2', '1', '2']);
   });
 
+  it('keeps parallel counters monotonic when file retry arrives after interleaved output', () => {
+    reporter.onRunStart!(makeConfig({ workers: 2 }), 2);
+
+    reporter.onTestEnd!(makeTestResult({ fullName: 'worker 1 test A', status: 'passed' }));
+    reporter.onTestEnd!(makeTestResult({ fullName: 'worker 2 test A', status: 'passed' }));
+    reporter.onTestEnd!(makeTestResult({ fullName: 'worker 2 test B', status: 'passed' }));
+
+    reporter.onTestFileRetry!('/worker-1-file.ts', 1);
+    reporter.onTestEnd!(makeTestResult({ fullName: 'worker 1 retry test A', status: 'passed' }));
+
+    const output = stdoutSpy.mock.calls.map((c: unknown[]) => c[0]).join('');
+    const counterMatches = [...output.matchAll(/\[(\d+)\]/g)].map((m) => m[1]);
+    expect(counterMatches).toEqual(['1', '2', '3', '4']);
+  });
+
   it('prints summary on onRunEnd', () => {
     reporter.onRunEnd!(makeFullResult({
       tests: [
@@ -317,6 +332,38 @@ describe('ListReporter', () => {
 
   afterEach(() => {
     stdoutSpy.mockRestore();
+  });
+});
+
+describe('LineReporter', () => {
+  let reporter: TapsmithReporter;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  let stdoutSpy: any;
+  let originalIsTTY: boolean | undefined;
+
+  beforeEach(async () => {
+    originalIsTTY = process.stdout.isTTY;
+    Object.defineProperty(process.stdout, 'isTTY', { configurable: true, value: true });
+    const { LineReporter } = await import('../reporters/line.js');
+    reporter = new LineReporter();
+    stdoutSpy = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+  });
+
+  it('keeps parallel progress counters monotonic after file retry notifications', () => {
+    reporter.onRunStart!(makeConfig({ workers: 2 }), 2);
+    reporter.onTestEnd!(makeTestResult({ fullName: 'worker 1 test A', status: 'passed' }));
+    reporter.onTestEnd!(makeTestResult({ fullName: 'worker 2 test A', status: 'passed' }));
+    reporter.onTestFileRetry!('/worker-1-file.ts', 1);
+    reporter.onTestEnd!(makeTestResult({ fullName: 'worker 1 retry test A', status: 'passed' }));
+
+    const output = stdoutSpy.mock.calls.map((c: unknown[]) => c[0]).join('');
+    const counterMatches = [...output.matchAll(/\[(\d+)\]/g)].map((m) => m[1]);
+    expect(counterMatches).toEqual(['1', '2', '3']);
+  });
+
+  afterEach(() => {
+    stdoutSpy.mockRestore();
+    Object.defineProperty(process.stdout, 'isTTY', { configurable: true, value: originalIsTTY });
   });
 });
 
@@ -379,24 +426,35 @@ describe('GitHubActionsReporter', () => {
     stdoutSpy = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
   });
 
-  it('emits ::error annotation for failed tests', () => {
-    reporter.onTestEnd!(makeTestResult({
+  it('emits ::error annotations for final failed tests', async () => {
+    await reporter.onRunEnd!(makeFullResult({ status: 'failed', tests: [makeTestResult({
       status: 'failed',
       fullName: 'login > rejects invalid password',
       error: new Error('Expected element to be visible'),
-    }));
+    })] }));
     const output = stdoutSpy.mock.calls.map((c: unknown[]) => c[0]).join('');
     expect(output).toContain('::error');
     expect(output).toContain('Expected element to be visible');
   });
 
-  it('does not emit annotations for passing tests', () => {
-    reporter.onTestEnd!(makeTestResult({ status: 'passed' }));
+  it('does not emit annotations for passing tests', async () => {
+    await reporter.onRunEnd!(makeFullResult({ tests: [makeTestResult({ status: 'passed' })] }));
     expect(stdoutSpy).not.toHaveBeenCalled();
   });
 
-  it('does not emit annotations for skipped tests', () => {
-    reporter.onTestEnd!(makeTestResult({ status: 'skipped' }));
+  it('does not emit annotations for skipped tests', async () => {
+    await reporter.onRunEnd!(makeFullResult({ tests: [makeTestResult({ status: 'skipped' })] }));
+    expect(stdoutSpy).not.toHaveBeenCalled();
+  });
+
+  it('does not emit annotations for intermediate retry failures', async () => {
+    await reporter.onRunEnd!(makeFullResult({ tests: [makeTestResult({
+      status: 'failed',
+      fullName: 'flaky test',
+      error: new Error('first attempt failed'),
+      retry: 0,
+      _willRetry: true,
+    })] }));
     expect(stdoutSpy).not.toHaveBeenCalled();
   });
 

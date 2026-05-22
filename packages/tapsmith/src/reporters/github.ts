@@ -13,21 +13,13 @@ import type { TestResult } from '../runner.js';
 import { countFlaky } from './base.js';
 
 export class GitHubActionsReporter implements TapsmithReporter {
-  onTestEnd(test: TestResult): void {
-    if (test.status !== 'failed' || !test.error) return;
-
-    // Extract file/line from stack trace if possible
-    const location = extractLocation(test.error);
-    const locationPart = location ? ` file=${location.file},line=${location.line}` : '';
-
-    // Escape the message for GitHub Actions
-    const message = escapeGitHub(test.error.message);
-
-    const workerSuffix = test.workerIndex != null ? ` (worker ${test.workerIndex})` : '';
-    process.stdout.write(`::error${locationPart} title=${escapeGitHub(test.fullName + workerSuffix)}::${message}\n`);
-  }
-
   async onRunEnd(result: FullResult): Promise<void> {
+    for (const test of result.tests) {
+      if (!test._willRetry && test.status === 'failed' && test.error) {
+        emitAnnotation(test);
+      }
+    }
+
     const passed = result.tests.filter((t) => t.status === 'passed').length;
     const failed = result.tests.filter((t) => t.status === 'failed').length;
     const skipped = result.tests.filter((t) => t.status === 'skipped').length;
@@ -65,8 +57,21 @@ export class GitHubActionsReporter implements TapsmithReporter {
         // Best-effort summary writing
       }
     }
-
   }
+}
+
+function emitAnnotation(test: TestResult): void {
+  if (!test.error) return;
+
+  // Extract file/line from stack trace if possible
+  const location = extractLocation(test.error);
+  const locationPart = location ? ` file=${location.file},line=${location.line}` : '';
+
+  // Escape the message for GitHub Actions
+  const message = escapeGitHub(test.error.message);
+
+  const workerSuffix = test.workerIndex != null ? ` (worker ${test.workerIndex})` : '';
+  process.stdout.write(`::error${locationPart} title=${escapeGitHub(test.fullName + workerSuffix)}::${message}\n`);
 }
 
 function extractLocation(error: Error): { file: string; line: number } | null {

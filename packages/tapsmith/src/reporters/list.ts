@@ -87,7 +87,8 @@ export class ListReporter implements TapsmithReporter {
   }
 
   onTestFileRetry(_filePath: string, discardedCount: number): void {
-    this._testIndex -= discardedCount;
+    if (this._parallel) return;
+    this._testIndex = Math.max(0, this._testIndex - discardedCount);
   }
 
   onTestFileEnd(): void {

@@ -27,10 +27,12 @@ import {
 export class LineReporter implements TapsmithReporter {
   private _completed = 0;
   private _isTTY = process.stdout.isTTY ?? false;
+  private _parallel = false;
   private _showProjectTags = false;
 
   onRunStart(config: TapsmithConfig, fileCount: number): void {
     this._completed = 0;
+    this._parallel = config.workers > 1;
     this._showProjectTags = config.workers > 1 && (config.projects?.length ?? 0) > 1;
     process.stdout.write(`\nRunning tests from ${fileCount} file(s)\n\n`);
   }
@@ -68,7 +70,8 @@ export class LineReporter implements TapsmithReporter {
   }
 
   onTestFileRetry(_filePath: string, discardedCount: number): void {
-    this._completed -= discardedCount;
+    if (this._parallel) return;
+    this._completed = Math.max(0, this._completed - discardedCount);
   }
 
   onRunEnd(result: FullResult): void {
