@@ -462,6 +462,27 @@ describe('GitHubActionsReporter', () => {
     expect(stdoutSpy).not.toHaveBeenCalled();
   });
 
+  it('does not emit annotations during live onTestEnd streaming', () => {
+    reporter.onTestEnd?.(makeTestResult({
+      status: 'failed',
+      fullName: 'streamed failure',
+      error: new Error('live failure'),
+    }));
+    expect(stdoutSpy).not.toHaveBeenCalled();
+  });
+
+  it('only emits annotations for failed tests in mixed results', () => {
+    reporter.onTestFileEnd!('/test.ts', [
+      makeTestResult({ status: 'passed', fullName: 'test A' }),
+      makeTestResult({ status: 'failed', fullName: 'test B', error: new Error('fail') }),
+      makeTestResult({ status: 'skipped', fullName: 'test C' }),
+    ]);
+    const output = stdoutSpy.mock.calls.map((c: unknown[]) => c[0]).join('');
+    expect(output).toContain('test B');
+    expect(output).not.toContain('test A');
+    expect(output).not.toContain('test C');
+  });
+
   afterEach(() => {
     stdoutSpy.mockRestore();
   });
