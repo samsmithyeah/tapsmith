@@ -104,6 +104,26 @@ describe('worker-protocol serialization', () => {
       const deserialized = deserializeTestResult(serialized);
       expect(deserialized.retry).toBeUndefined();
     });
+
+    it('round-trips intermediate retry reporter events', () => {
+      const result: TestResult = {
+        name: 'flaky',
+        fullName: 'flaky',
+        status: 'failed',
+        durationMs: 100,
+        error: new Error('first attempt'),
+        retry: 0,
+        _willRetry: true,
+      };
+
+      const serialized = serializeTestResult(result, 1);
+      expect(serialized._willRetry).toBe(true);
+
+      const deserialized = deserializeTestResult(serialized);
+      expect(deserialized._willRetry).toBe(true);
+      expect(deserialized.retry).toBe(0);
+      expect(deserialized.error?.message).toBe('first attempt');
+    });
   });
 
   describe('serializeSuiteResult / deserializeSuiteResult', () => {

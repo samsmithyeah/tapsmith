@@ -26,22 +26,22 @@ import {
 
 export class LineReporter implements TapsmithReporter {
   private _completed = 0;
-  private _failed: TestResult[] = [];
   private _isTTY = process.stdout.isTTY ?? false;
+  private _parallel = false;
   private _showProjectTags = false;
 
   onRunStart(config: TapsmithConfig, fileCount: number): void {
     this._completed = 0;
-    this._failed = [];
+    this._parallel = config.workers > 1;
     this._showProjectTags = config.workers > 1 && (config.projects?.length ?? 0) > 1;
     process.stdout.write(`\nRunning tests from ${fileCount} file(s)\n\n`);
   }
 
   onTestEnd(test: TestResult): void {
+    if (test._willRetry) return;
     this._completed++;
 
     if (test.status === 'failed') {
-      this._failed.push(test);
       // Print failures immediately so they're not lost
       if (this._isTTY) {
         // Clear current line first
@@ -69,6 +69,11 @@ export class LineReporter implements TapsmithReporter {
     }
   }
 
+  onTestFileRetry(_filePath: string, discardedCount: number): void {
+    if (this._parallel) return;
+    this._completed = Math.max(0, this._completed - discardedCount);
+  }
+
   onRunEnd(result: FullResult): void {
     const passed = result.tests.filter((t) => t.status === 'passed').length;
     const failed = result.tests.filter((t) => t.status === 'failed').length;
@@ -83,9 +88,10 @@ export class LineReporter implements TapsmithReporter {
     process.stdout.write('\n');
 
     // Re-print failure summary
-    if (this._failed.length > 0) {
+    const failedTests = result.tests.filter((t) => t.status === 'failed');
+    if (failedTests.length > 0) {
       process.stdout.write(bold(red('Failures:\n\n')));
-      for (const test of this._failed) {
+      for (const test of failedTests) {
         const project = this._showProjectTags ? projectTag(test.project) : '';
         process.stdout.write(`  ${red('✗')} ${workerTag(test.workerIndex)}${project}${test.fullName}\n`);
         if (test.error) {

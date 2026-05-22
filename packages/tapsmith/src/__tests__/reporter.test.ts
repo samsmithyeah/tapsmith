@@ -129,6 +129,17 @@ describe('ReporterDispatcher', () => {
     stderrSpy.mockRestore();
   });
 
+  it('fans out onTestFileRetry to all reporters', () => {
+    const r1: TapsmithReporter = { onTestFileRetry: vi.fn() };
+    const r2: TapsmithReporter = { onTestFileRetry: vi.fn() };
+    const dispatcher = new ReporterDispatcher([r1, r2]);
+
+    dispatcher.onTestFileRetry('/test.ts', 3);
+
+    expect(r1.onTestFileRetry).toHaveBeenCalledWith('/test.ts', 3);
+    expect(r2.onTestFileRetry).toHaveBeenCalledWith('/test.ts', 3);
+  });
+
   it('handles reporters that only implement some hooks', () => {
     const r1: TapsmithReporter = {}; // no hooks
     const dispatcher = new ReporterDispatcher([r1]);
@@ -270,6 +281,41 @@ describe('ListReporter', () => {
     expect(output).toContain('assertion failed');
   });
 
+  it('rolls back test counter on sequential file retry so retried tests are not double-counted', () => {
+    reporter.onRunStart!(makeConfig({ workers: 1 }), 2);
+
+    // Attempt 1: two tests stream before an infrastructure failure
+    reporter.onTestEnd!(makeTestResult({ fullName: 'test A', status: 'passed' }));
+    reporter.onTestEnd!(makeTestResult({ fullName: 'test B', status: 'failed', error: new Error('Agent connection dropped') }));
+
+    // Infrastructure retry discards the 2 results
+    reporter.onTestFileRetry!('/file.ts', 2);
+
+    // Attempt 2: same tests re-run successfully
+    reporter.onTestEnd!(makeTestResult({ fullName: 'test A', status: 'passed' }));
+    reporter.onTestEnd!(makeTestResult({ fullName: 'test B', status: 'passed' }));
+
+    const output = stdoutSpy.mock.calls.map((c: unknown[]) => c[0]).join('');
+    // The final test B should have counter [2], not [4]
+    const counterMatches = [...output.matchAll(/\[(\d+)\]/g)].map((m) => m[1]);
+    expect(counterMatches).toEqual(['1', '2', '1', '2']);
+  });
+
+  it('keeps parallel counters monotonic when file retry arrives after interleaved output', () => {
+    reporter.onRunStart!(makeConfig({ workers: 2 }), 2);
+
+    reporter.onTestEnd!(makeTestResult({ fullName: 'worker 1 test A', status: 'passed' }));
+    reporter.onTestEnd!(makeTestResult({ fullName: 'worker 2 test A', status: 'passed' }));
+    reporter.onTestEnd!(makeTestResult({ fullName: 'worker 2 test B', status: 'passed' }));
+
+    reporter.onTestFileRetry!('/worker-1-file.ts', 1);
+    reporter.onTestEnd!(makeTestResult({ fullName: 'worker 1 retry test A', status: 'passed' }));
+
+    const output = stdoutSpy.mock.calls.map((c: unknown[]) => c[0]).join('');
+    const counterMatches = [...output.matchAll(/\[(\d+)\]/g)].map((m) => m[1]);
+    expect(counterMatches).toEqual(['1', '2', '3', '4']);
+  });
+
   it('prints summary on onRunEnd', () => {
     reporter.onRunEnd!(makeFullResult({
       tests: [
@@ -286,6 +332,38 @@ describe('ListReporter', () => {
 
   afterEach(() => {
     stdoutSpy.mockRestore();
+  });
+});
+
+describe('LineReporter', () => {
+  let reporter: TapsmithReporter;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  let stdoutSpy: any;
+  let originalIsTTY: boolean | undefined;
+
+  beforeEach(async () => {
+    originalIsTTY = process.stdout.isTTY;
+    Object.defineProperty(process.stdout, 'isTTY', { configurable: true, value: true });
+    const { LineReporter } = await import('../reporters/line.js');
+    reporter = new LineReporter();
+    stdoutSpy = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+  });
+
+  it('keeps parallel progress counters monotonic after file retry notifications', () => {
+    reporter.onRunStart!(makeConfig({ workers: 2 }), 2);
+    reporter.onTestEnd!(makeTestResult({ fullName: 'worker 1 test A', status: 'passed' }));
+    reporter.onTestEnd!(makeTestResult({ fullName: 'worker 2 test A', status: 'passed' }));
+    reporter.onTestFileRetry!('/worker-1-file.ts', 1);
+    reporter.onTestEnd!(makeTestResult({ fullName: 'worker 1 retry test A', status: 'passed' }));
+
+    const output = stdoutSpy.mock.calls.map((c: unknown[]) => c[0]).join('');
+    const counterMatches = [...output.matchAll(/\[(\d+)\]/g)].map((m) => m[1]);
+    expect(counterMatches).toEqual(['1', '2', '3']);
+  });
+
+  afterEach(() => {
+    stdoutSpy.mockRestore();
+    Object.defineProperty(process.stdout, 'isTTY', { configurable: true, value: originalIsTTY });
   });
 });
 
@@ -332,6 +410,21 @@ describe('DotReporter', () => {
     expect(output).toContain('oops');
   });
 
+  it('does not erase emitted progress when a file retry is reported', () => {
+    reporter.onRunStart!(makeConfig({ workers: 2 }), 1);
+    reporter.onTestEnd!(makeTestResult({ status: 'passed' }));
+    reporter.onTestEnd!(makeTestResult({ status: 'failed', error: new Error('infra') }));
+
+    const beforeRetry = stdoutSpy.mock.calls.map((c: unknown[]) => c[0]).join('');
+    reporter.onTestFileRetry?.('/file.ts', 2);
+    const afterRetry = stdoutSpy.mock.calls.map((c: unknown[]) => c[0]).join('');
+
+    reporter.onTestEnd!(makeTestResult({ status: 'passed' }));
+    const stripped = stdoutSpy.mock.calls.map((c: unknown[]) => c[0]).join('').replace(/\x1b\[\d+m/g, '');
+    expect(afterRetry).toBe(beforeRetry);
+    expect(stripped).toContain('·F·');
+  });
+
   afterEach(() => {
     stdoutSpy.mockRestore();
   });
@@ -348,25 +441,46 @@ describe('GitHubActionsReporter', () => {
     stdoutSpy = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
   });
 
-  it('emits ::error annotation for failed tests', () => {
-    reporter.onTestEnd!(makeTestResult({
+  it('emits ::error annotations on file completion', () => {
+    reporter.onTestFileEnd!('/test.ts', [makeTestResult({
       status: 'failed',
       fullName: 'login > rejects invalid password',
       error: new Error('Expected element to be visible'),
-    }));
+    })]);
     const output = stdoutSpy.mock.calls.map((c: unknown[]) => c[0]).join('');
     expect(output).toContain('::error');
     expect(output).toContain('Expected element to be visible');
   });
 
   it('does not emit annotations for passing tests', () => {
-    reporter.onTestEnd!(makeTestResult({ status: 'passed' }));
+    reporter.onTestFileEnd!('/test.ts', [makeTestResult({ status: 'passed' })]);
     expect(stdoutSpy).not.toHaveBeenCalled();
   });
 
   it('does not emit annotations for skipped tests', () => {
-    reporter.onTestEnd!(makeTestResult({ status: 'skipped' }));
+    reporter.onTestFileEnd!('/test.ts', [makeTestResult({ status: 'skipped' })]);
     expect(stdoutSpy).not.toHaveBeenCalled();
+  });
+
+  it('does not emit annotations during live onTestEnd streaming', () => {
+    reporter.onTestEnd?.(makeTestResult({
+      status: 'failed',
+      fullName: 'streamed failure',
+      error: new Error('live failure'),
+    }));
+    expect(stdoutSpy).not.toHaveBeenCalled();
+  });
+
+  it('only emits annotations for failed tests in mixed results', () => {
+    reporter.onTestFileEnd!('/test.ts', [
+      makeTestResult({ status: 'passed', fullName: 'test A' }),
+      makeTestResult({ status: 'failed', fullName: 'test B', error: new Error('fail') }),
+      makeTestResult({ status: 'skipped', fullName: 'test C' }),
+    ]);
+    const output = stdoutSpy.mock.calls.map((c: unknown[]) => c[0]).join('');
+    expect(output).toContain('test B');
+    expect(output).not.toContain('test A');
+    expect(output).not.toContain('test C');
   });
 
   afterEach(() => {

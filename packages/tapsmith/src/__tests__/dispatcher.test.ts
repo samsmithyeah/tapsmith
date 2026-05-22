@@ -3,8 +3,12 @@ import {
   planMultiBucket,
   mergeBucketResults,
   PORTS_PER_BUCKET,
+  handleParallelTestEndMessage,
+  handleParallelFileRetryMessage,
+  handleParallelFileDoneMessage,
   type DispatcherOptions,
 } from '../dispatcher.js';
+import { serializeTestResult, serializeSuiteResult } from '../worker-protocol.js';
 import type { ResolvedProject } from '../project.js';
 import type { TapsmithConfig } from '../config.js';
 import type { FullResult } from '../reporter.js';
@@ -214,6 +218,104 @@ describe('planMultiBucket()', () => {
     const iosWaves = plans[1].bucketOpts.projectWaves ?? [];
     expect(iosWaves).toHaveLength(1);
     expect(iosWaves[0].map((p) => p.name)).toEqual(['b-ios']);
+  });
+});
+
+// ─── parallel worker message accounting ───
+
+describe('parallel worker message accounting', () => {
+  function makeTest(id: string, overrides: Partial<TestResult> = {}): TestResult {
+    return {
+      name: id,
+      fullName: id,
+      status: 'passed',
+      durationMs: 10,
+      ...overrides,
+    };
+  }
+
+  function makeSuite(tests: TestResult[]): SuiteResult {
+    return { name: '', tests, suites: [], durationMs: 10 };
+  }
+
+  it('discards only final streamed results on retry and keeps file-done results canonical', () => {
+    const workerTestCounts = new Map<number, number>();
+    const reportedTests: TestResult[] = [];
+    const retryEvents: Array<{ filePath: string; discardedCount: number }> = [];
+    const reporter = {
+      onTestEnd(test: TestResult): void {
+        reportedTests.push(test);
+      },
+      onTestFileRetry(filePath: string, discardedCount: number): void {
+        retryEvents.push({ filePath, discardedCount });
+      },
+    };
+
+    workerTestCounts.set(0, 0);
+    handleParallelTestEndMessage({
+      type: 'test-end',
+      workerId: 0,
+      result: serializeTestResult(makeTest('first kept'), 0),
+    }, workerTestCounts, reporter, 10);
+    handleParallelTestEndMessage({
+      type: 'test-end',
+      workerId: 0,
+      result: serializeTestResult(makeTest('test-level retry', {
+        status: 'failed',
+        error: new Error('first attempt'),
+        retry: 0,
+        _willRetry: true,
+      }), 0),
+    }, workerTestCounts, reporter, 10);
+    handleParallelTestEndMessage({
+      type: 'test-end',
+      workerId: 0,
+      result: serializeTestResult(makeTest('infra failure', {
+        status: 'failed',
+        error: new Error('Agent connection dropped'),
+      }), 0),
+    }, workerTestCounts, reporter, 10);
+
+    expect(reportedTests.map((t) => t.fullName)).toEqual([
+      'first kept',
+      'test-level retry',
+      'infra failure',
+    ]);
+    expect(reportedTests.map((t) => t.workerIndex)).toEqual([10, 10, 10]);
+    expect(workerTestCounts.get(0)).toBe(2);
+
+    const discarded = handleParallelFileRetryMessage({
+      type: 'file-retry',
+      workerId: 0,
+      filePath: '/test.ts',
+    }, workerTestCounts, reporter);
+
+    expect(discarded).toBe(2);
+    expect(workerTestCounts.get(0)).toBe(0);
+    expect(retryEvents).toEqual([{ filePath: '/test.ts', discardedCount: 2 }]);
+
+    const retryResult = makeTest('retry kept');
+    handleParallelTestEndMessage({
+      type: 'test-end',
+      workerId: 0,
+      result: serializeTestResult(retryResult, 0),
+    }, workerTestCounts, reporter, 10);
+
+    const { results, suite } = handleParallelFileDoneMessage({
+      type: 'file-done',
+      workerId: 0,
+      filePath: '/test.ts',
+      results: [serializeTestResult(retryResult, 0)],
+      suite: serializeSuiteResult(makeSuite([retryResult]), 0),
+    }, workerTestCounts, 10);
+    const allResults: TestResult[] = [];
+    allResults.push(...results);
+
+    expect(workerTestCounts.has(0)).toBe(false);
+    expect(allResults.map((t) => t.fullName)).toEqual(['retry kept']);
+    expect(allResults[0].workerIndex).toBe(10);
+    expect(suite.tests.map((t) => t.fullName)).toEqual(['retry kept']);
+    expect(suite.tests[0].workerIndex).toBe(10);
   });
 });
 

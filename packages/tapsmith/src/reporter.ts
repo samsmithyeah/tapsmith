@@ -29,6 +29,7 @@ export interface TapsmithReporter {
   onTestFileStart?(filePath: string): void
   onTestEnd?(test: TestResult): void
   onTestFileEnd?(filePath: string, results: TestResult[]): void
+  onTestFileRetry?(filePath: string, discardedCount: number): void
   onRunEnd?(result: FullResult): Promise<void> | void
   onError?(error: Error): void
 }
@@ -90,6 +91,16 @@ export class ReporterDispatcher implements TapsmithReporter {
         r.onTestFileEnd?.(filePath, results);
       } catch (err) {
         this._logError('onTestFileEnd', err);
+      }
+    }
+  }
+
+  onTestFileRetry(filePath: string, discardedCount: number): void {
+    for (const r of this._reporters) {
+      try {
+        r.onTestFileRetry?.(filePath, discardedCount);
+      } catch (err) {
+        this._logError('onTestFileRetry', err);
       }
     }
   }

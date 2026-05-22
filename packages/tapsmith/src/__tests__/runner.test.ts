@@ -897,7 +897,7 @@ describe('retries', () => {
       if (callCount === 1) throw new Error('first attempt');
     });
     const ctx = popContext();
-    await runSuiteContext(ctx, '', [], [], makeOpts({
+    const result = await runSuiteContext(ctx, '', [], [], makeOpts({
       config: makeConfig({ retries: 1 }),
       reporter: { onTestEnd: (t: TestResult) => { reported.push(t); } },
     }));
@@ -907,6 +907,12 @@ describe('retries', () => {
     expect(reported[0].retry).toBe(0);
     expect(reported[1].status).toBe('passed');
     expect(reported[1].retry).toBe(1);
+
+    const canonical = collectResults(result);
+    expect(canonical).toHaveLength(1);
+    expect(canonical[0].status).toBe('passed');
+    expect(canonical[0].retry).toBe(1);
+    expect(canonical[0]._willRetry).toBeUndefined();
   });
 
   it('uses test.use({ retries }) to override config retries', async () => {

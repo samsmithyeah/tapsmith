@@ -201,6 +201,51 @@ function applyWorkerIndexBaseToSuite(
   };
 }
 
+export function handleParallelTestEndMessage(
+  msg: Extract<WorkerToMainMessage, { type: 'test-end' }>,
+  workerTestCounts: Map<number, number>,
+  reporter: TapsmithReporter,
+  workerIndexBase?: number,
+): TestResult {
+  const result = applyWorkerIndexBase(
+    deserializeTestResult(msg.result),
+    workerIndexBase,
+  );
+  if (!result._willRetry) {
+    workerTestCounts.set(msg.workerId, (workerTestCounts.get(msg.workerId) ?? 0) + 1);
+  }
+  reporter.onTestEnd?.(result);
+  return result;
+}
+
+export function handleParallelFileRetryMessage(
+  msg: Extract<WorkerToMainMessage, { type: 'file-retry' }>,
+  workerTestCounts: Map<number, number>,
+  reporter: TapsmithReporter,
+): number {
+  const discarded = workerTestCounts.get(msg.workerId) ?? 0;
+  workerTestCounts.set(msg.workerId, 0);
+  reporter.onTestFileRetry?.(msg.filePath, discarded);
+  return discarded;
+}
+
+export function handleParallelFileDoneMessage(
+  msg: Extract<WorkerToMainMessage, { type: 'file-done' }>,
+  workerTestCounts: Map<number, number>,
+  workerIndexBase?: number,
+): { results: TestResult[]; suite: SuiteResult } {
+  workerTestCounts.delete(msg.workerId);
+  return {
+    results: msg.results
+      .map(deserializeTestResult)
+      .map((r) => applyWorkerIndexBase(r, workerIndexBase)),
+    suite: applyWorkerIndexBaseToSuite(
+      deserializeSuiteResult(msg.suite),
+      workerIndexBase,
+    ),
+  };
+}
+
 /**
  * How many ports each bucket reserves. Big enough to cover any reasonable
  * worker count without colliding with the next bucket's range.
@@ -1207,6 +1252,8 @@ export async function runParallel(opts: DispatcherOptions, _portOffset = 0): Pro
           worker.process.send(msg);
         }
 
+        const workerTestCounts = new Map<number, number>();
+
         function retireWorker(worker: WorkerHandle, reason: string): void {
           if (worker.retired) return;
           // On Ctrl-C we killed these workers ourselves — don't spam the
@@ -1225,6 +1272,11 @@ export async function runParallel(opts: DispatcherOptions, _portOffset = 0): Pro
           cleanupWorkerResources(worker);
 
           if (inFlightFile) {
+            const discarded = workerTestCounts.get(worker.id) ?? 0;
+            workerTestCounts.delete(worker.id);
+            if (discarded > 0) {
+              reporter.onTestFileRetry?.(inFlightFile.filePath, discarded);
+            }
             fileQueue.unshift(inFlightFile);
             process.stderr.write(
               `${YELLOW}Worker ${displayWorkerId(worker.id)} (${worker.deviceSerial}) became unavailable: ${reason}. Requeueing ${path.basename(inFlightFile.filePath)} and continuing with remaining workers.${RESET}\n`,
@@ -1263,22 +1315,26 @@ export async function runParallel(opts: DispatcherOptions, _portOffset = 0): Pro
 
             switch (msg.type) {
               case 'test-end': {
-                const result = applyWorkerIndexBase(
-                  deserializeTestResult(msg.result),
+                handleParallelTestEndMessage(
+                  msg,
+                  workerTestCounts,
+                  reporter,
                   opts.workerIndexBase,
                 );
-                reporter.onTestEnd?.(result);
                 break;
               }
               case 'file-start':
+                workerTestCounts.set(msg.workerId, 0);
                 break;
+              case 'file-retry': {
+                handleParallelFileRetryMessage(msg, workerTestCounts, reporter);
+                break;
+              }
               case 'file-done': {
                 worker.currentFile = undefined;
-                const results = msg.results
-                  .map(deserializeTestResult)
-                  .map((r) => applyWorkerIndexBase(r, opts.workerIndexBase));
-                const suite = applyWorkerIndexBaseToSuite(
-                  deserializeSuiteResult(msg.suite),
+                const { results, suite } = handleParallelFileDoneMessage(
+                  msg,
+                  workerTestCounts,
                   opts.workerIndexBase,
                 );
                 allResults.push(...results);

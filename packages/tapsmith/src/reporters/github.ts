@@ -13,18 +13,12 @@ import type { TestResult } from '../runner.js';
 import { countFlaky } from './base.js';
 
 export class GitHubActionsReporter implements TapsmithReporter {
-  onTestEnd(test: TestResult): void {
-    if (test.status !== 'failed' || !test.error) return;
-
-    // Extract file/line from stack trace if possible
-    const location = extractLocation(test.error);
-    const locationPart = location ? ` file=${location.file},line=${location.line}` : '';
-
-    // Escape the message for GitHub Actions
-    const message = escapeGitHub(test.error.message);
-
-    const workerSuffix = test.workerIndex != null ? ` (worker ${test.workerIndex})` : '';
-    process.stdout.write(`::error${locationPart} title=${escapeGitHub(test.fullName + workerSuffix)}::${message}\n`);
+  onTestFileEnd(_filePath: string, results: TestResult[]): void {
+    for (const test of results) {
+      if (test.status === 'failed' && test.error) {
+        emitAnnotation(test);
+      }
+    }
   }
 
   async onRunEnd(result: FullResult): Promise<void> {
@@ -65,8 +59,21 @@ export class GitHubActionsReporter implements TapsmithReporter {
         // Best-effort summary writing
       }
     }
-
   }
+}
+
+function emitAnnotation(test: TestResult): void {
+  if (!test.error) return;
+
+  // Extract file/line from stack trace if possible
+  const location = extractLocation(test.error);
+  const locationPart = location ? ` file=${location.file},line=${location.line}` : '';
+
+  // Escape the message for GitHub Actions
+  const message = escapeGitHub(test.error.message);
+
+  const workerSuffix = test.workerIndex != null ? ` (worker ${test.workerIndex})` : '';
+  process.stdout.write(`::error${locationPart} title=${escapeGitHub(test.fullName + workerSuffix)}::${message}\n`);
 }
 
 function extractLocation(error: Error): { file: string; line: number } | null {
