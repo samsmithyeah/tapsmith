@@ -1291,6 +1291,7 @@ export async function runParallel(opts: DispatcherOptions, _portOffset = 0): Pro
               }
               case 'file-done': {
                 worker.currentFile = undefined;
+                workerTestCounts.delete(msg.workerId);
                 const results = msg.results
                   .map(deserializeTestResult)
                   .map((r) => applyWorkerIndexBase(r, opts.workerIndexBase));
