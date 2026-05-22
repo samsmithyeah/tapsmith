@@ -10,7 +10,6 @@
  * @see PILOT-67
  */
 
-import * as path from 'node:path';
 import type { TapsmithReporter, FullResult } from '../reporter.js';
 import type { TapsmithConfig } from '../config.js';
 import type { TestResult } from '../runner.js';
@@ -28,51 +27,53 @@ import {
   projectTag,
 } from './base.js';
 
+interface InProgressEntry {
+  fullName: string
+  filePath: string
+}
+
 export class ListReporter implements TapsmithReporter {
   private _testIndex = 0;
-  private _parallel = false;
   private _multipleWorkers = false;
   private _showProjectTags = false;
   private _isTTY = process.stdout.isTTY ?? false;
   private _rootDir = '';
-  private _inProgress = new Map<string, string>();
+  private _inProgress: InProgressEntry[] = [];
+  private _linesRendered = 0;
 
   onRunStart(config: TapsmithConfig, fileCount: number): void {
     this._testIndex = 0;
-    this._parallel = config.workers > 1;
     this._multipleWorkers = config.workers > 1;
     this._showProjectTags = (config.projects?.length ?? 0) > 1;
     this._rootDir = config.rootDir;
-    this._inProgress.clear();
+    this._inProgress = [];
+    this._linesRendered = 0;
     process.stdout.write(`\nRunning tests from ${fileCount} file(s)\n\n`);
   }
 
-  onTestFileStart(filePath: string): void {
-    if (this._parallel) return;
-    const relative = this._relativeFile(filePath);
-    process.stdout.write(`  ${bold(relative)}\n`);
+  onTestFileStart(_filePath: string): void {
+    // File names are shown inline with each test row (Playwright-style).
   }
 
   onTestStart(fullName: string, filePath?: string): void {
-    if (!this._isTTY) return;
-    this._inProgress.set(fullName, filePath ?? '');
-    this._renderInProgress();
+    if (this._isTTY) this._clearInProgress();
+    this._inProgress.push({ fullName, filePath: filePath ?? '' });
+    if (this._isTTY) this._printInProgress();
   }
 
   onTestEnd(test: TestResult): void {
-    this._inProgress.delete(test.fullName);
-    if (this._isTTY) {
-      this._clearInProgress();
-    }
+    const idx = this._inProgress.findIndex((e) => e.fullName === test.fullName);
+    if (idx !== -1) this._inProgress.splice(idx, 1);
+    if (this._isTTY) this._clearInProgress();
 
     if (test._willRetry) {
       const duration = dim(`(${formatDuration(test.durationMs)})`);
       const counter = dim(`[${this._testIndex + 1}]`);
       const worker = this._multipleWorkers ? workerTag(test.workerIndex) : '';
       const project = this._showProjectTags ? projectTag(test.project) : '';
-      const file = this._parallel ? this._fileSegment(test.filePath) : '';
+      const file = this._fileSegment(test.filePath);
       process.stdout.write(`  ${red('✗')} ${counter} ${worker}${project}${file}${test.fullName} ${duration}\n`);
-      if (this._isTTY) this._renderInProgress();
+      if (this._isTTY) this._printInProgress();
       return;
     }
 
@@ -83,7 +84,7 @@ export class ListReporter implements TapsmithReporter {
     const counter = dim(`[${this._testIndex}]`);
     const worker = this._multipleWorkers ? workerTag(test.workerIndex) : '';
     const project = this._showProjectTags ? projectTag(test.project) : '';
-    const file = this._parallel ? this._fileSegment(test.filePath) : '';
+    const file = this._fileSegment(test.filePath);
     process.stdout.write(`  ${icon} ${counter} ${worker}${project}${file}${test.fullName} ${duration}\n`);
 
     if (test.error) {
@@ -102,18 +103,15 @@ export class ListReporter implements TapsmithReporter {
       process.stdout.write(`        ${dim(`Video:      ${test.videoPath}`)}\n`);
     }
 
-    if (this._isTTY) this._renderInProgress();
+    if (this._isTTY) this._printInProgress();
   }
 
-  onTestFileRetry(_filePath: string, discardedCount: number): void {
-    if (this._parallel) return;
-    this._testIndex = Math.max(0, this._testIndex - discardedCount);
+  onTestFileRetry(_filePath: string, _discardedCount: number): void {
+    // No-op: retried tests get new global indices.
   }
 
   onTestFileEnd(): void {
-    if (!this._parallel) {
-      this._testIndex = 0;
-    }
+    // No-op: global counters, no per-file reset.
   }
 
   onRunEnd(result: FullResult): void {
@@ -173,19 +171,20 @@ export class ListReporter implements TapsmithReporter {
 
   private _fileSegment(filePath: string | undefined): string {
     if (!filePath) return '';
-    const relative = this._relativeFile(filePath);
-    return dim(`› ${path.basename(relative)} › `);
+    return dim(`› ${this._relativeFile(filePath)} › `);
   }
 
-  private _linesRendered = 0;
-
-  private _renderInProgress(): void {
-    if (this._inProgress.size === 0) return;
+  private _printInProgress(): void {
+    if (this._inProgress.length === 0) return;
+    const ttyWidth = process.stdout.columns || 0;
     const lines: string[] = [];
-    for (const [fullName, filePath] of this._inProgress) {
-      const counter = dim(`[${this._testIndex + 1}]`);
-      const file = filePath ? this._fileSegment(filePath) : '';
-      lines.push(dim(`     ${counter} ${file}${fullName}`));
+    for (let i = 0; i < this._inProgress.length; i++) {
+      const { fullName, filePath } = this._inProgress[i];
+      const file = filePath ? `› ${this._relativeFile(filePath)} › ` : '';
+      let line = `     [${this._testIndex + i + 1}] ${file}${fullName}`;
+      if (ttyWidth > 0 && line.length > ttyWidth)
+        line = line.slice(0, ttyWidth - 1) + '…';
+      lines.push(dim(line));
     }
     const output = lines.join('\n') + '\n';
     process.stdout.write(output);
