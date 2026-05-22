@@ -441,44 +441,24 @@ describe('GitHubActionsReporter', () => {
     stdoutSpy = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
   });
 
-  it('emits ::error annotations for final failed tests', async () => {
-    await reporter.onRunEnd!(makeFullResult({ status: 'failed', tests: [makeTestResult({
+  it('emits ::error annotations on file completion', () => {
+    reporter.onTestFileEnd!('/test.ts', [makeTestResult({
       status: 'failed',
       fullName: 'login > rejects invalid password',
       error: new Error('Expected element to be visible'),
-    })] }));
+    })]);
     const output = stdoutSpy.mock.calls.map((c: unknown[]) => c[0]).join('');
     expect(output).toContain('::error');
     expect(output).toContain('Expected element to be visible');
   });
 
-  it('does not emit annotations from live onTestEnd events', () => {
-    reporter.onTestEnd?.(makeTestResult({
-      status: 'failed',
-      fullName: 'live failed attempt',
-      error: new Error('live failure'),
-    }));
+  it('does not emit annotations for passing tests', () => {
+    reporter.onTestFileEnd!('/test.ts', [makeTestResult({ status: 'passed' })]);
     expect(stdoutSpy).not.toHaveBeenCalled();
   });
 
-  it('does not emit annotations for passing tests', async () => {
-    await reporter.onRunEnd!(makeFullResult({ tests: [makeTestResult({ status: 'passed' })] }));
-    expect(stdoutSpy).not.toHaveBeenCalled();
-  });
-
-  it('does not emit annotations for skipped tests', async () => {
-    await reporter.onRunEnd!(makeFullResult({ tests: [makeTestResult({ status: 'skipped' })] }));
-    expect(stdoutSpy).not.toHaveBeenCalled();
-  });
-
-  it('does not emit annotations for intermediate retry failures', async () => {
-    await reporter.onRunEnd!(makeFullResult({ tests: [makeTestResult({
-      status: 'failed',
-      fullName: 'flaky test',
-      error: new Error('first attempt failed'),
-      retry: 0,
-      _willRetry: true,
-    })] }));
+  it('does not emit annotations for skipped tests', () => {
+    reporter.onTestFileEnd!('/test.ts', [makeTestResult({ status: 'skipped' })]);
     expect(stdoutSpy).not.toHaveBeenCalled();
   });
 

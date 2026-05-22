@@ -13,13 +13,15 @@ import type { TestResult } from '../runner.js';
 import { countFlaky } from './base.js';
 
 export class GitHubActionsReporter implements TapsmithReporter {
-  async onRunEnd(result: FullResult): Promise<void> {
-    for (const test of result.tests) {
-      if (!test._willRetry && test.status === 'failed' && test.error) {
+  onTestFileEnd(_filePath: string, results: TestResult[]): void {
+    for (const test of results) {
+      if (test.status === 'failed' && test.error) {
         emitAnnotation(test);
       }
     }
+  }
 
+  async onRunEnd(result: FullResult): Promise<void> {
     const passed = result.tests.filter((t) => t.status === 'passed').length;
     const failed = result.tests.filter((t) => t.status === 'failed').length;
     const skipped = result.tests.filter((t) => t.status === 'skipped').length;
