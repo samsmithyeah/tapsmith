@@ -410,6 +410,21 @@ describe('DotReporter', () => {
     expect(output).toContain('oops');
   });
 
+  it('does not erase emitted progress when a file retry is reported', () => {
+    reporter.onRunStart!(makeConfig({ workers: 2 }), 1);
+    reporter.onTestEnd!(makeTestResult({ status: 'passed' }));
+    reporter.onTestEnd!(makeTestResult({ status: 'failed', error: new Error('infra') }));
+
+    const beforeRetry = stdoutSpy.mock.calls.map((c: unknown[]) => c[0]).join('');
+    reporter.onTestFileRetry?.('/file.ts', 2);
+    const afterRetry = stdoutSpy.mock.calls.map((c: unknown[]) => c[0]).join('');
+
+    reporter.onTestEnd!(makeTestResult({ status: 'passed' }));
+    const stripped = stdoutSpy.mock.calls.map((c: unknown[]) => c[0]).join('').replace(/\x1b\[\d+m/g, '');
+    expect(afterRetry).toBe(beforeRetry);
+    expect(stripped).toContain('·F·');
+  });
+
   afterEach(() => {
     stdoutSpy.mockRestore();
   });
@@ -435,6 +450,15 @@ describe('GitHubActionsReporter', () => {
     const output = stdoutSpy.mock.calls.map((c: unknown[]) => c[0]).join('');
     expect(output).toContain('::error');
     expect(output).toContain('Expected element to be visible');
+  });
+
+  it('does not emit annotations from live onTestEnd events', () => {
+    reporter.onTestEnd?.(makeTestResult({
+      status: 'failed',
+      fullName: 'live failed attempt',
+      error: new Error('live failure'),
+    }));
+    expect(stdoutSpy).not.toHaveBeenCalled();
   });
 
   it('does not emit annotations for passing tests', async () => {
