@@ -1894,8 +1894,10 @@ import type {
 interface TapsmithReporter {
   onRunStart?(config: TapsmithConfig, fileCount: number): void;
   onTestFileStart?(filePath: string): void;
+  onTestStart?(fullName: string, filePath?: string): void;
   onTestEnd?(test: TestResult): void;
   onTestFileEnd?(filePath: string, results: TestResult[]): void;
+  onTestFileRetry?(filePath: string, discardedCount: number): void;
   onRunEnd?(result: FullResult): Promise<void> | void;
   onError?(error: Error): void;
 }
@@ -1914,6 +1916,7 @@ interface TestResult {
   tracePath?: string; // path to the trace archive (.zip) when tracing is enabled
   videoPath?: string; // path to the recorded MP4 when `video` is enabled and retained
   workerIndex?: number; // set in parallel mode — index of the worker that ran this test
+  filePath?: string; // path to the test file this result belongs to
 }
 ```
 

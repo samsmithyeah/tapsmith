@@ -70,6 +70,14 @@ export interface WorkerProgressMessage {
   message: string
 }
 
+export interface TestStartMessage {
+  type: 'test-start'
+  workerId: number
+  fullName: string
+  filePath: string
+  projectName?: string
+}
+
 export interface TestEndMessage {
   type: 'test-end'
   workerId: number
@@ -105,6 +113,7 @@ export interface WorkerErrorMessage {
 export type WorkerToMainMessage =
   | ReadyMessage
   | WorkerProgressMessage
+  | TestStartMessage
   | TestEndMessage
   | FileStartMessage
   | FileDoneMessage
@@ -241,6 +250,7 @@ export interface SerializedTestResult {
   project?: string
   retry?: number
   _willRetry?: boolean
+  filePath?: string
 }
 
 export interface SerializedSuiteResult {
@@ -268,6 +278,7 @@ export function serializeTestResult(result: TestResult, workerIndex: number): Se
     project: result.project,
     retry: result.retry,
     _willRetry: result._willRetry,
+    filePath: result.filePath,
   };
 }
 
@@ -296,6 +307,7 @@ export function deserializeTestResult(s: SerializedTestResult): TestResult & { w
     project: s.project,
     retry: s.retry,
     _willRetry: s._willRetry,
+    filePath: s.filePath,
   };
 }
 

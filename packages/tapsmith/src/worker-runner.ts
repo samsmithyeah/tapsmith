@@ -29,6 +29,7 @@ import {
   deserializeRegExpArray,
 } from './worker-protocol.js';
 import { ensureSessionReady, launchConfiguredApp, type SessionPreflightContext } from './session-preflight.js';
+import type { TapsmithReporter } from './reporter.js';
 
 let workerId = -1;
 let device: Device | undefined;
@@ -311,6 +312,15 @@ async function handleRunFile(
 
   // Create a reporter proxy that sends events back to main process
   const reporterProxy = {
+    onTestStart(fullName: string, testFilePath?: string): void {
+      send({
+        type: 'test-start',
+        workerId,
+        fullName,
+        filePath: testFilePath ?? filePath,
+        projectName,
+      });
+    },
     onTestEnd(result: import('./runner.js').TestResult): void {
       send({
         type: 'test-end',
@@ -344,7 +354,7 @@ async function handleRunFile(
 async function runFileWithRecovery(
   filePath: string,
   screenshotDir: string | undefined,
-  reporterProxy: { onTestEnd(result: import('./runner.js').TestResult): void },
+  reporterProxy: TapsmithReporter,
   projectUseOptions?: import('./worker-protocol.js').RunFileUseOptions,
   projectName?: string,
   projectGrep?: import('./worker-protocol.js').SerializedRegExp[],

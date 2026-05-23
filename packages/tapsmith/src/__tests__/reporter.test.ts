@@ -45,6 +45,10 @@ function makeConfig(overrides: Partial<TapsmithConfig> = {}): TapsmithConfig {
   };
 }
 
+function stripAnsi(value: string): string {
+  return value.replace(/\x1b\[[0-9;]*m/g, '');
+}
+
 // ─── ReporterDispatcher ───
 
 describe('ReporterDispatcher', () => {
@@ -78,6 +82,18 @@ describe('ReporterDispatcher', () => {
 
     dispatcher.onTestFileStart('/path/to/test.ts');
     expect(r1.onTestFileStart).toHaveBeenCalledWith('/path/to/test.ts');
+  });
+
+  it('fans out onTestStart metadata to all reporters', () => {
+    const r1: TapsmithReporter = { onTestStart: vi.fn() };
+    const r2: TapsmithReporter = { onTestStart: vi.fn() };
+    const dispatcher = new ReporterDispatcher([r1, r2]);
+    const info = { workerIndex: 3, project: 'ios' };
+
+    dispatcher.onTestStart('suite > test', '/path/to/test.ts', info);
+
+    expect(r1.onTestStart).toHaveBeenCalledWith('suite > test', '/path/to/test.ts', info);
+    expect(r2.onTestStart).toHaveBeenCalledWith('suite > test', '/path/to/test.ts', info);
   });
 
   it('fans out onTestFileEnd to all reporters', () => {
@@ -258,9 +274,9 @@ describe('ListReporter', () => {
     stdoutSpy = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
   });
 
-  it('prints file header on onTestFileStart', () => {
+  it('onTestFileStart is a no-op (file names are shown inline)', () => {
     reporter.onTestFileStart!('/path/to/test.ts');
-    expect(stdoutSpy).toHaveBeenCalledWith(expect.stringContaining('test.ts'));
+    expect(stdoutSpy).not.toHaveBeenCalled();
   });
 
   it('prints test result with status icon', () => {
@@ -281,24 +297,23 @@ describe('ListReporter', () => {
     expect(output).toContain('assertion failed');
   });
 
-  it('rolls back test counter on sequential file retry so retried tests are not double-counted', () => {
+  it('assigns monotonic counters across file retries', () => {
     reporter.onRunStart!(makeConfig({ workers: 1 }), 2);
 
     // Attempt 1: two tests stream before an infrastructure failure
     reporter.onTestEnd!(makeTestResult({ fullName: 'test A', status: 'passed' }));
     reporter.onTestEnd!(makeTestResult({ fullName: 'test B', status: 'failed', error: new Error('Agent connection dropped') }));
 
-    // Infrastructure retry discards the 2 results
+    // Infrastructure retry discards the 2 results — counter keeps going
     reporter.onTestFileRetry!('/file.ts', 2);
 
-    // Attempt 2: same tests re-run successfully
+    // Attempt 2: retried tests continue the global counter
     reporter.onTestEnd!(makeTestResult({ fullName: 'test A', status: 'passed' }));
     reporter.onTestEnd!(makeTestResult({ fullName: 'test B', status: 'passed' }));
 
     const output = stdoutSpy.mock.calls.map((c: unknown[]) => c[0]).join('');
-    // The final test B should have counter [2], not [4]
     const counterMatches = [...output.matchAll(/\[(\d+)\]/g)].map((m) => m[1]);
-    expect(counterMatches).toEqual(['1', '2', '1', '2']);
+    expect(counterMatches).toEqual(['1', '2', '3', '4']);
   });
 
   it('keeps parallel counters monotonic when file retry arrives after interleaved output', () => {
@@ -314,6 +329,55 @@ describe('ListReporter', () => {
     const output = stdoutSpy.mock.calls.map((c: unknown[]) => c[0]).join('');
     const counterMatches = [...output.matchAll(/\[(\d+)\]/g)].map((m) => m[1]);
     expect(counterMatches).toEqual(['1', '2', '3', '4']);
+  });
+
+  it('includes relative file path in output', () => {
+    reporter.onRunStart!(makeConfig({ workers: 2, rootDir: '/project' }), 2);
+    reporter.onTestEnd!(makeTestResult({
+      status: 'passed',
+      fullName: 'my test',
+      filePath: '/project/tests/login.test.ts',
+    }));
+    const output = stdoutSpy.mock.calls.map((c: unknown[]) => c[0]).join('');
+    expect(output).toContain('› tests/login.test.ts ›');
+    expect(output).toContain('my test');
+  });
+
+  it('includes file name inline in sequential mode', () => {
+    reporter.onRunStart!(makeConfig({ workers: 1, rootDir: '/project' }), 1);
+    reporter.onTestEnd!(makeTestResult({
+      status: 'passed',
+      fullName: 'my test',
+      filePath: '/project/tests/login.test.ts',
+    }));
+    const output = stdoutSpy.mock.calls.map((c: unknown[]) => c[0]).join('');
+    expect(output).toContain('tests/login.test.ts');
+    expect(output).toContain('my test');
+  });
+
+  it('includes worker and project in TTY in-progress rows', async () => {
+    const originalIsTTY = process.stdout.isTTY;
+    Object.defineProperty(process.stdout, 'isTTY', { configurable: true, value: true });
+    try {
+      const { ListReporter } = await import('../reporters/list.js');
+      const ttyReporter = new ListReporter();
+      stdoutSpy.mockClear();
+
+      ttyReporter.onRunStart!(makeConfig({
+        workers: 2,
+        rootDir: '/project',
+        projects: [{ name: 'android' }, { name: 'ios' }],
+      }), 2);
+      ttyReporter.onTestStart!('suite > my test', '/project/tests/login.test.ts', {
+        workerIndex: 3,
+        project: 'ios',
+      });
+
+      const output = stripAnsi(stdoutSpy.mock.calls.map((c: unknown[]) => c[0]).join(''));
+      expect(output).toContain('[1] [worker 3] [ios] › tests/login.test.ts › suite > my test');
+    } finally {
+      Object.defineProperty(process.stdout, 'isTTY', { configurable: true, value: originalIsTTY });
+    }
   });
 
   it('prints summary on onRunEnd', () => {

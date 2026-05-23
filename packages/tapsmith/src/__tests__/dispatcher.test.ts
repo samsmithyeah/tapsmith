@@ -3,6 +3,7 @@ import {
   planMultiBucket,
   mergeBucketResults,
   PORTS_PER_BUCKET,
+  handleParallelTestStartMessage,
   handleParallelTestEndMessage,
   handleParallelFileRetryMessage,
   handleParallelFileDoneMessage,
@@ -237,6 +238,37 @@ describe('parallel worker message accounting', () => {
   function makeSuite(tests: TestResult[]): SuiteResult {
     return { name: '', tests, suites: [], durationMs: 10 };
   }
+
+  it('adds worker base and project metadata to parallel test start events', () => {
+    const starts: Array<{
+      fullName: string
+      filePath: string | undefined
+      info: { workerIndex?: number; project?: string } | undefined
+    }> = [];
+    const reporter = {
+      onTestStart(
+        fullName: string,
+        filePath?: string,
+        info?: { workerIndex?: number; project?: string },
+      ): void {
+        starts.push({ fullName, filePath, info });
+      },
+    };
+
+    handleParallelTestStartMessage({
+      type: 'test-start',
+      workerId: 1,
+      fullName: 'suite > test',
+      filePath: '/test.ts',
+      projectName: 'ios',
+    }, reporter, 10);
+
+    expect(starts).toEqual([{
+      fullName: 'suite > test',
+      filePath: '/test.ts',
+      info: { workerIndex: 11, project: 'ios' },
+    }]);
+  });
 
   it('discards only final streamed results on retry and keeps file-done results canonical', () => {
     const workerTestCounts = new Map<number, number>();

@@ -218,6 +218,17 @@ export function handleParallelTestEndMessage(
   return result;
 }
 
+export function handleParallelTestStartMessage(
+  msg: Extract<WorkerToMainMessage, { type: 'test-start' }>,
+  reporter: TapsmithReporter,
+  workerIndexBase?: number,
+): void {
+  reporter.onTestStart?.(msg.fullName, msg.filePath, {
+    workerIndex: msg.workerId + (workerIndexBase ?? 0),
+    project: msg.projectName,
+  });
+}
+
 export function handleParallelFileRetryMessage(
   msg: Extract<WorkerToMainMessage, { type: 'file-retry' }>,
   workerTestCounts: Map<number, number>,
@@ -1314,6 +1325,9 @@ export async function runParallel(opts: DispatcherOptions, _portOffset = 0): Pro
             if (hasError || worker.retired) return;
 
             switch (msg.type) {
+              case 'test-start':
+                handleParallelTestStartMessage(msg, reporter, opts.workerIndexBase);
+                break;
               case 'test-end': {
                 handleParallelTestEndMessage(
                   msg,
