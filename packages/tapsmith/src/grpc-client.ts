@@ -388,10 +388,10 @@ export class TapsmithGrpcClient {
     }, 120_000);
   }
 
-  async listDevices(): Promise<ListDevicesResponse> {
+  async listDevices(deadlineMs?: number): Promise<ListDevicesResponse> {
     return this.call<ListDevicesResponse>('listDevices', {
       requestId: requestId(),
-    });
+    }, deadlineMs);
   }
 
   async setDevice(

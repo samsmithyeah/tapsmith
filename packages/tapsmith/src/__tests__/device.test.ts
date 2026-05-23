@@ -65,6 +65,20 @@ function makeMockClient(overrides: Partial<TapsmithGrpcClient> = {}): TapsmithGr
     restartApp: vi.fn(async () => successResponse()),
     saveAppState: vi.fn(async () => successResponse()),
     restoreAppState: vi.fn(async () => successResponse()),
+    listDevices: vi.fn(async () => ({ requestId: '1', devices: [] })),
+    setDevice: vi.fn(async () => successResponse()),
+    startNetworkCapture: vi.fn(async () => ({
+      requestId: '1',
+      success: true,
+      proxyPort: 12345,
+      errorMessage: '',
+    })),
+    stopNetworkCapture: vi.fn(async () => ({
+      requestId: '1',
+      success: true,
+      entries: [],
+      errorMessage: '',
+    })),
     waitForIdle: vi.fn(async () => successResponse()),
     takeScreenshot: vi.fn(async () => ({
       requestId: '1',
@@ -476,6 +490,43 @@ describe('Device.currentActivity()', () => {
     const device = new Device(client);
     const activity = await device.currentActivity();
     expect(activity).toBe('.MainActivity');
+  });
+});
+
+// ─── setDevice() ───
+
+describe('Device.setDevice()', () => {
+  it('uses a longer deadline for the device refresh before selection', async () => {
+    const listDevices = vi.fn(async () => ({ requestId: '1', devices: [] }));
+    const setDevice = vi.fn(async () => successResponse());
+    const client = makeMockClient({ listDevices, setDevice });
+    const device = new Device(client);
+
+    await device.setDevice('SIM-UDID', true, ['example.test']);
+
+    expect(listDevices).toHaveBeenCalledWith(120_000);
+    expect(setDevice).toHaveBeenCalledWith('SIM-UDID', true, ['example.test']);
+  });
+});
+
+// ─── route() ───
+
+describe('Device.route()', () => {
+  it('fails fast when network capture startup failed', async () => {
+    const client = makeMockClient({
+      startNetworkCapture: vi.fn(async () => ({
+        requestId: '1',
+        success: false,
+        proxyPort: 0,
+        errorMessage: 'proxy unavailable',
+      })),
+    });
+    const device = new Device(client);
+
+    await device._startNetworkCapture();
+
+    await expect(device.route('**/posts*', async () => undefined))
+      .rejects.toThrow('Network capture disabled: proxy unavailable');
   });
 });
 

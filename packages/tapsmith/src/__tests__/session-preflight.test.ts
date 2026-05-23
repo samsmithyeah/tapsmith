@@ -44,12 +44,14 @@ describe('session-preflight', () => {
 
   it('restarts the session once when the agent is disconnected', async () => {
     const ctx = makeContext();
+    const onRecovery = vi.fn();
     vi.mocked(ctx.client.ping)
       .mockResolvedValueOnce({ version: '0.1.0', agentConnected: false })
       .mockResolvedValueOnce({ version: '0.1.0', agentConnected: true });
 
-    await expect(ensureSessionReady(ctx, 'startup')).resolves.toBeUndefined();
+    await expect(ensureSessionReady(ctx, 'startup', undefined, { onRecovery })).resolves.toBeUndefined();
 
+    expect(onRecovery).toHaveBeenCalledTimes(1);
     expect(ctx.device.startAgent).toHaveBeenCalledTimes(1);
     expect(ctx.device.launchApp).toHaveBeenCalledWith('com.example.app', {
       activity: '.MainActivity',

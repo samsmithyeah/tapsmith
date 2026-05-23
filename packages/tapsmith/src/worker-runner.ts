@@ -380,10 +380,25 @@ async function runFileWithRecovery(
         screenshotDir,
         reporter: reporterProxy,
         beforeEachTest: async (fullName) => {
+          let recovered = false;
+          let recoveryReason = '';
           await ensureSessionReady(
             sessionContext(undefined),
             `before test ${fullName}`,
+            undefined,
+            {
+              onRecovery: (err) => {
+                recovered = true;
+                recoveryReason = err instanceof Error ? err.message : String(err);
+              },
+            },
           );
+          if (recovered) {
+            const detail = recoveryReason ? `: ${recoveryReason}` : '';
+            throw new Error(
+              `session recovered during before test ${fullName}; retrying file so beforeAll hooks run against the recovered app${detail}`,
+            );
+          }
         },
         abortFileOnError: isRecoverableInfrastructureError,
         // On retry (attempt 2), bust the ESM import cache so the file's

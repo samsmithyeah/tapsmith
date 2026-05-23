@@ -3717,7 +3717,14 @@ impl proto::tapsmith_service_server::TapsmithService for TapsmithServiceImpl {
                 // with 10.0.2.2 because it works at the ADB transport level.
                 let device_port = host_port;
                 if let Err(e) = adb::reverse_port(&serial, device_port, host_port).await {
-                    error!("Failed to set up adb reverse: {e}");
+                    let msg = format!("Failed to set up adb reverse for network capture: {e}");
+                    error!("{msg}");
+                    return Ok(Response::new(proto::StartNetworkCaptureResponse {
+                        request_id,
+                        success: false,
+                        proxy_port: 0,
+                        error_message: msg,
+                    }));
                 }
 
                 info!(%serial, device_port, host_port, "Configuring Android proxy");
@@ -3744,7 +3751,20 @@ impl proto::tapsmith_service_server::TapsmithService for TapsmithServiceImpl {
                     )
                     .await
                     {
-                        error!("Failed to set device proxy: {e}");
+                        let msg = format!("Failed to configure Android HTTP proxy: {e}");
+                        error!("{msg}");
+                        return Ok(Response::new(proto::StartNetworkCaptureResponse {
+                            request_id,
+                            success: false,
+                            proxy_port: 0,
+                            error_message: msg,
+                        }));
+                    }
+                    if warning.is_none() {
+                        warning = Some(
+                            "iptables redirect unavailable; using Android system HTTP proxy fallback"
+                                .to_string(),
+                        );
                     }
                 }
                 *self.proxy_reverse_port.write().await = Some(device_port);
