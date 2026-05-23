@@ -165,10 +165,9 @@ export class ListReporter implements TapsmithReporter {
 
   private _relativeFile(filePath: string): string {
     if (!filePath) return '';
-    if (this._rootDir && filePath.startsWith(this._rootDir)) {
-      return filePath.slice(this._rootDir.length + 1);
-    }
-    return filePath.replace(process.cwd() + '/', '');
+    const root = this._rootDir || process.cwd();
+    const prefix = root.endsWith('/') ? root : root + '/';
+    return filePath.startsWith(prefix) ? filePath.slice(prefix.length) : filePath;
   }
 
   private _fileSegment(filePath: string | undefined): string {
