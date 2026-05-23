@@ -10,7 +10,7 @@
  * @see PILOT-67
  */
 
-import type { TapsmithReporter, FullResult } from '../reporter.js';
+import type { TapsmithReporter, FullResult, TestStartInfo } from '../reporter.js';
 import type { TapsmithConfig } from '../config.js';
 import type { TestResult } from '../runner.js';
 import {
@@ -30,6 +30,8 @@ import {
 interface InProgressEntry {
   fullName: string
   filePath: string
+  workerIndex?: number
+  project?: string
 }
 
 export class ListReporter implements TapsmithReporter {
@@ -55,14 +57,24 @@ export class ListReporter implements TapsmithReporter {
     // File names are shown inline with each test row (Playwright-style).
   }
 
-  onTestStart(fullName: string, filePath?: string): void {
+  onTestStart(fullName: string, filePath?: string, info?: TestStartInfo): void {
     if (this._isTTY) this._clearInProgress();
-    this._inProgress.push({ fullName, filePath: filePath ?? '' });
+    this._inProgress.push({
+      fullName,
+      filePath: filePath ?? '',
+      workerIndex: info?.workerIndex,
+      project: info?.project,
+    });
     if (this._isTTY) this._printInProgress();
   }
 
   onTestEnd(test: TestResult): void {
-    const idx = this._inProgress.findIndex((e) => e.fullName === test.fullName && e.filePath === (test.filePath ?? ''));
+    const idx = this._inProgress.findIndex((e) => (
+      e.fullName === test.fullName
+      && e.filePath === (test.filePath ?? '')
+      && (e.workerIndex == null || test.workerIndex == null || e.workerIndex === test.workerIndex)
+      && (e.project == null || test.project == null || e.project === test.project)
+    ));
     if (idx !== -1) this._inProgress.splice(idx, 1);
     if (this._isTTY) this._clearInProgress();
 
@@ -180,9 +192,11 @@ export class ListReporter implements TapsmithReporter {
     const ttyWidth = process.stdout.columns || 0;
     const lines: string[] = [];
     for (let i = 0; i < this._inProgress.length; i++) {
-      const { fullName, filePath } = this._inProgress[i];
+      const { fullName, filePath, workerIndex, project: projectName } = this._inProgress[i];
+      const worker = this._multipleWorkers && workerIndex != null ? `[worker ${workerIndex}] ` : '';
+      const project = this._showProjectTags && projectName ? `[${projectName}] ` : '';
       const file = filePath ? `› ${this._relativeFile(filePath)} › ` : '';
-      let line = `    [${this._testIndex + i + 1}] ${file}${fullName}`;
+      let line = `    [${this._testIndex + i + 1}] ${worker}${project}${file}${fullName}`;
       if (ttyWidth > 0 && line.length > ttyWidth)
         line = line.slice(0, ttyWidth - 1) + '…';
       lines.push(dim(line));

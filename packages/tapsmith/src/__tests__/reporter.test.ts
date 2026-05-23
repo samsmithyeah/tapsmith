@@ -45,6 +45,10 @@ function makeConfig(overrides: Partial<TapsmithConfig> = {}): TapsmithConfig {
   };
 }
 
+function stripAnsi(value: string): string {
+  return value.replace(/\x1b\[[0-9;]*m/g, '');
+}
+
 // ─── ReporterDispatcher ───
 
 describe('ReporterDispatcher', () => {
@@ -78,6 +82,18 @@ describe('ReporterDispatcher', () => {
 
     dispatcher.onTestFileStart('/path/to/test.ts');
     expect(r1.onTestFileStart).toHaveBeenCalledWith('/path/to/test.ts');
+  });
+
+  it('fans out onTestStart metadata to all reporters', () => {
+    const r1: TapsmithReporter = { onTestStart: vi.fn() };
+    const r2: TapsmithReporter = { onTestStart: vi.fn() };
+    const dispatcher = new ReporterDispatcher([r1, r2]);
+    const info = { workerIndex: 3, project: 'ios' };
+
+    dispatcher.onTestStart('suite > test', '/path/to/test.ts', info);
+
+    expect(r1.onTestStart).toHaveBeenCalledWith('suite > test', '/path/to/test.ts', info);
+    expect(r2.onTestStart).toHaveBeenCalledWith('suite > test', '/path/to/test.ts', info);
   });
 
   it('fans out onTestFileEnd to all reporters', () => {
@@ -337,6 +353,31 @@ describe('ListReporter', () => {
     const output = stdoutSpy.mock.calls.map((c: unknown[]) => c[0]).join('');
     expect(output).toContain('tests/login.test.ts');
     expect(output).toContain('my test');
+  });
+
+  it('includes worker and project in TTY in-progress rows', async () => {
+    const originalIsTTY = process.stdout.isTTY;
+    Object.defineProperty(process.stdout, 'isTTY', { configurable: true, value: true });
+    try {
+      const { ListReporter } = await import('../reporters/list.js');
+      const ttyReporter = new ListReporter();
+      stdoutSpy.mockClear();
+
+      ttyReporter.onRunStart!(makeConfig({
+        workers: 2,
+        rootDir: '/project',
+        projects: [{ name: 'android' }, { name: 'ios' }],
+      }), 2);
+      ttyReporter.onTestStart!('suite > my test', '/project/tests/login.test.ts', {
+        workerIndex: 3,
+        project: 'ios',
+      });
+
+      const output = stripAnsi(stdoutSpy.mock.calls.map((c: unknown[]) => c[0]).join(''));
+      expect(output).toContain('[1] [worker 3] [ios] › tests/login.test.ts › suite > my test');
+    } finally {
+      Object.defineProperty(process.stdout, 'isTTY', { configurable: true, value: originalIsTTY });
+    }
   });
 
   it('prints summary on onRunEnd', () => {

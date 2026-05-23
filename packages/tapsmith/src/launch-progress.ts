@@ -546,6 +546,7 @@ export class UiLaunchProgress implements LaunchProgressSink {
     if (this.finished) return;
     const step = this.byId.get(id);
     if (!step) return;
+    if (step.state === "done" && patch.state === "running") return;
     if (patch.state) step.state = patch.state;
     if (patch.detail !== undefined) step.detail = patch.detail;
     if (patch.progress) step.progress = { ...patch.progress };

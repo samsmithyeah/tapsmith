@@ -238,6 +238,38 @@ describe('UiLaunchProgress', () => {
     expect(output).not.toContain('DETAILS');
   });
 
+  it('does not regress completed progress rows back to running', () => {
+    const stream = new CaptureStream();
+    const progress = new UiLaunchProgress(
+      [
+        { id: 'daemon', label: 'Worker daemons', state: 'pending', detail: 'start 2 worker daemons', progress: { done: 0, total: 2 } },
+      ],
+      { stream, forceInteractive: false, color: false, title: '' },
+    );
+
+    progress.start('daemon', 'starting 2 worker daemon(s)');
+    progress.update('daemon', {
+      state: 'running',
+      detail: 'Worker 1: daemon ready on localhost:50101',
+      progress: { done: 1, total: 2 },
+    });
+    progress.update('daemon', {
+      state: 'done',
+      detail: '2/2 worker daemon(s) ready',
+      progress: { done: 2, total: 2 },
+    });
+    progress.update('daemon', {
+      state: 'running',
+      detail: 'Worker 1: connecting to daemon on localhost:50102',
+      progress: { done: 2, total: 2 },
+    });
+    progress.finish();
+
+    const output = stream.output();
+    expect(output).toContain('✓     Worker daemons: 2/2 worker daemon(s) ready\n');
+    expect(output).not.toContain('Worker 1: connecting to daemon on localhost:50102');
+  });
+
   it('redraws interactive tables with row clearing instead of cursor save/restore', () => {
     const stream = new CaptureStream();
     const progress = new UiLaunchProgress(

@@ -925,7 +925,7 @@ async function runSuiteContext(
           // test slot in the UI rather than creating duplicate entries.
           if (attempt === 0 && fullName !== beforeAllFirstFullName) {
             if (opts.onTestStart) await opts.onTestStart(fullName);
-            opts.reporter?.onTestStart?.(fullName, opts.testFilePath);
+            opts.reporter?.onTestStart?.(fullName, opts.testFilePath, { project: opts.projectName });
           }
 
           // Replay beforeAll events into this test's trace stream.

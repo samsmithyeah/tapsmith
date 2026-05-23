@@ -75,6 +75,7 @@ export interface TestStartMessage {
   workerId: number
   fullName: string
   filePath: string
+  projectName?: string
 }
 
 export interface TestEndMessage {
