@@ -794,6 +794,7 @@ async function runSuiteContext(
         status: 'skipped',
         durationMs: 0,
         project: opts.projectName,
+        filePath: opts.testFilePath,
       };
       result.tests.push(skippedResult);
       opts.reporter?.onTestEnd?.(skippedResult);

@@ -106,8 +106,10 @@ export class ListReporter implements TapsmithReporter {
     if (this._isTTY) this._printInProgress();
   }
 
-  onTestFileRetry(_filePath: string, _discardedCount: number): void {
-    // No-op: retried tests get new global indices.
+  onTestFileRetry(filePath: string, _discardedCount: number): void {
+    if (this._isTTY) this._clearInProgress();
+    this._inProgress = this._inProgress.filter((e) => e.filePath !== filePath);
+    if (this._isTTY) this._printInProgress();
   }
 
   onTestFileEnd(): void {
