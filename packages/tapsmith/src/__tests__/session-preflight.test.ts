@@ -124,11 +124,28 @@ describe('session-preflight', () => {
     await expect(launchConfiguredApp(ctx, 'file reset')).resolves.toBeUndefined();
 
     expect(ctx.device.openDeepLink).toHaveBeenNthCalledWith(1, 'example:///__reset');
-    expect(ctx.device.openDeepLink).toHaveBeenNthCalledWith(2, 'example:///');
+    expect(ctx.device.openDeepLink).toHaveBeenCalledTimes(1);
     expect(ctx.device.waitForIdle).toHaveBeenNthCalledWith(1, 321);
-    expect(ctx.device.waitForIdle).toHaveBeenNthCalledWith(2, 321);
     expect(ctx.device.restartApp).not.toHaveBeenCalled();
     expect(ctx.device.clearAppData).not.toHaveBeenCalled();
+  });
+
+  it('uses soft reset on Android when configured', async () => {
+    const ctx = makeContext({
+      config: {
+        package: 'com.example.app',
+        activity: '.MainActivity',
+        platform: 'android',
+        resetAppDeepLink: 'example:///__reset',
+      },
+    });
+
+    await expect(launchConfiguredApp(ctx, 'file reset')).resolves.toBeUndefined();
+
+    expect(ctx.device.openDeepLink).toHaveBeenCalledWith('example:///__reset');
+    expect(ctx.device.terminateApp).not.toHaveBeenCalled();
+    expect(ctx.device.clearAppData).not.toHaveBeenCalled();
+    expect(ctx.device.launchApp).not.toHaveBeenCalled();
   });
 
   it('dismisses system overlay via pressBack when app is underneath', async () => {
@@ -237,13 +254,13 @@ describe('session-preflight', () => {
     expect(ctx.client.ping).toHaveBeenCalled();
   });
 
-  it('iOS soft reset skips home deep link when reset URL has no path', async () => {
+  it('iOS soft reset does not infer a second home deep link', async () => {
     const ctx = makeContext({
       config: {
         package: 'com.example.app',
         activity: undefined,
         platform: 'ios',
-        resetAppDeepLink: 'example:///',
+        resetAppDeepLink: 'example://reset',
       },
     });
     vi.mocked(ctx.client.getUiHierarchy).mockResolvedValue({
@@ -254,9 +271,8 @@ describe('session-preflight', () => {
 
     await expect(launchConfiguredApp(ctx, 'file reset')).resolves.toBeUndefined();
 
-    // Only one deep link call — home URL equals reset URL so it's skipped
     expect(ctx.device.openDeepLink).toHaveBeenCalledTimes(1);
-    expect(ctx.device.openDeepLink).toHaveBeenCalledWith('example:///');
+    expect(ctx.device.openDeepLink).toHaveBeenCalledWith('example://reset');
   });
 
   it('iOS soft reset uses default wait time when resetAppWaitMs not set', async () => {
@@ -299,7 +315,7 @@ describe('session-preflight', () => {
 
     await expect(launchConfiguredApp(ctx, 'file reset')).resolves.toBeUndefined();
 
-    expect(ctx.device.openDeepLink).toHaveBeenCalledTimes(2);
+    expect(ctx.device.openDeepLink).toHaveBeenCalledTimes(1);
   });
 
   it('iOS soft reset is skipped when allowSoftReset is false', async () => {

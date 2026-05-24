@@ -11,6 +11,7 @@
  */
 import { beforeEach, describe, expect, test } from "tapsmith"
 import { ApiCallsScreen } from "../screens/api-calls.screen.js"
+import { resetApp } from "../utils/app-reset.js"
 
 describe("request fixture", () => {
   test.use({ timeout: 15_000 })
@@ -57,9 +58,7 @@ describe("request fixture", () => {
 
   describe("combined device + request", () => {
     beforeEach(async ({ device }) => {
-      await device.restartApp()
-      await device.getByDescription("API Calls").scrollIntoView()
-      await device.getByDescription("API Calls").tap()
+      await resetApp(device, "/api-calls")
       const screen = new ApiCallsScreen(device)
       await expect(screen.heading).toBeVisible()
     })

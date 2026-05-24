@@ -1,9 +1,12 @@
 import { defineConfig } from "tapsmith"
 
+const RESET_APP_DEEP_LINK = "tapsmithtest:///__reset"
+
 export default defineConfig({
   platform: "ios",
   app: "./fixtures/TapsmithTestApp.app",
   package: "dev.tapsmith.testapp",
+  resetAppDeepLink: RESET_APP_DEEP_LINK,
   timeout: 30_000,
   typingDelay: 10,
   retries: 1,

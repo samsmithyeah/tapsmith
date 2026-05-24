@@ -271,6 +271,7 @@ async function handleInit(msg: InitMessage): Promise<void> {
     await launchConfiguredApp(
       sessionContext(msg.deviceSerial, resolvedAgentApk, resolvedAgentTestApk, resolvedIosXctestrun),
       'warmup',
+      { allowSoftReset: false },
     );
     await device.waitForIdle();
   }

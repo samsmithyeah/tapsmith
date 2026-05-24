@@ -1,6 +1,8 @@
 import "dotenv/config"
 import { defineConfig } from "tapsmith"
 
+const RESET_APP_DEEP_LINK = "tapsmithtest:///__reset"
+
 // ─── Multi-device config ───
 //
 // Demonstrates the device-per-project feature: one `tapsmith test` invocation
@@ -39,6 +41,7 @@ const IOS_USE = {
 
 export default defineConfig({
   package: "dev.tapsmith.testapp",
+  resetAppDeepLink: RESET_APP_DEEP_LINK,
   timeout: 10_000,
   retries: 0,
   screenshot: "only-on-failure",

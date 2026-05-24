@@ -290,6 +290,7 @@ async function handleInit(msg: UIWorkerInitMessage): Promise<void> {
     await launchConfiguredApp(
       sessionContext(msg.deviceSerial, resolvedAgentApk, resolvedAgentTestApk, resolvedIosXctestrun),
       'warmup',
+      { allowSoftReset: false },
     );
     await device.waitForIdle();
   }

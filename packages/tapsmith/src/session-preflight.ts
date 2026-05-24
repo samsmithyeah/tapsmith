@@ -90,13 +90,13 @@ export async function launchConfiguredApp(
   }
 
   const allowSoftReset = options.allowSoftReset ?? true;
-  if (ctx.config.platform === 'ios') {
-    if (allowSoftReset && ctx.config.resetAppDeepLink) {
-      await softResetAppViaDeepLink(ctx);
-      await ensureSessionReady(ctx, phase, readinessAttempts);
-      return;
-    }
+  if (allowSoftReset && ctx.config.resetAppDeepLink) {
+    await softResetAppViaDeepLink(ctx);
+    await ensureSessionReady(ctx, phase, readinessAttempts);
+    return;
+  }
 
+  if (ctx.config.platform === 'ios') {
     // On iOS, clear data then restart for isolation between test files.
     // clearAppData removes AsyncStorage (including React Navigation state).
     // restartApp handles terminate → relaunch atomically through the daemon
@@ -353,17 +353,6 @@ async function softResetAppViaDeepLink(ctx: SessionPreflightContext): Promise<vo
   } catch {
     await new Promise((resolve) => setTimeout(resolve, waitMs));
   }
-
-  const homeDeepLink = getHomeDeepLink(resetDeepLink);
-  if (!homeDeepLink || homeDeepLink === resetDeepLink) return;
-
-  await ctx.device.openDeepLink(homeDeepLink);
-
-  try {
-    await ctx.device.waitForIdle(waitMs);
-  } catch {
-    await new Promise((resolve) => setTimeout(resolve, waitMs));
-  }
 }
 
 async function dismissBlockingSystemUi(ctx: SessionPreflightContext): Promise<void> {
@@ -417,16 +406,4 @@ async function waitForHierarchy(
 function formatError(err: unknown): string {
   if (err instanceof Error) return err.message;
   return String(err);
-}
-
-function getHomeDeepLink(uri: string): string | null {
-  try {
-    const parsed = new URL(uri);
-    parsed.pathname = '/';
-    parsed.search = '';
-    parsed.hash = '';
-    return parsed.toString();
-  } catch {
-    return null;
-  }
 }

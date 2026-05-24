@@ -10,6 +10,7 @@ export default function RootLayout() {
         }}
       >
         <Stack.Screen name="index" options={{ title: "Tapsmith Test App" }} />
+        <Stack.Screen name="__reset" options={{ headerShown: false }} />
         <Stack.Screen name="login" options={{ title: "Login Form" }} />
         <Stack.Screen name="profile" options={{ title: "Profile" }} />
         <Stack.Screen name="list" options={{ title: "List" }} />

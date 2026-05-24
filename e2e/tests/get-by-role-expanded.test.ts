@@ -1,9 +1,9 @@
 import { beforeAll, beforeEach, describe, expect, test } from "tapsmith"
+import { resetApp } from "../utils/app-reset.js"
 
 describe("getByRole expanded option", () => {
   beforeAll(async ({ device }) => {
-    await device.restartApp()
-    await device.getByDescription("Visibility").tap()
+    await resetApp(device, "/visibility")
     await expect(device.getByText("Visibility Testing", { exact: true })).toBeVisible()
   })
 

@@ -4,10 +4,11 @@
  * are easy to triage.
  */
 import { beforeEach, describe, expect, test } from "tapsmith"
+import { resetApp } from "../utils/app-reset.js"
 
 describe("Selector & assertion regressions", () => {
   beforeEach(async ({ device }) => {
-    await device.restartApp()
+    await resetApp(device)
   })
 
   // ─── PILOT-131: testId() now resolves to resource-id ───

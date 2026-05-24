@@ -92,7 +92,8 @@ export interface TapsmithConfig {
   /**
    * Optional deep link used to soft-reset the app between files on platforms
    * where hard restarts are slow or unstable. Intended for app-specific test
-   * hooks such as a reset route in a first-party test app.
+   * hooks such as a reset route in a first-party test app. The route should
+   * clear app state and navigate to the desired start screen itself.
    */
   resetAppDeepLink?: string;
 

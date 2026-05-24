@@ -1,10 +1,10 @@
 import { beforeEach, describe, expect, test } from "tapsmith"
 import { GesturesScreen } from "../screens/gestures.screen.js"
+import { resetApp } from "../utils/app-reset.js"
 
 describe("Gestures screen", () => {
   beforeEach(async ({ device }) => {
-    await device.restartApp()
-    await device.getByDescription("Gestures").tap()
+    await resetApp(device, "/gestures")
     await expect(device.getByText("Gesture Testing", { exact: true })).toBeVisible()
   })
 
