@@ -9,12 +9,30 @@
  */
 import { createServer, type Server } from "node:http"
 import type { AddressInfo } from "node:net"
-import { afterAll, beforeAll, beforeEach, describe, expect, test } from "tapsmith"
+import {
+  afterAll,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  test,
+  type Device,
+  type Route,
+} from "tapsmith"
 import { ApiCallsScreen } from "../screens/api-calls.screen.js"
-import { resetApp } from "../utils/app-reset.js"
+
+async function restartApiCallsScreen(device: Device) {
+  // Android route interception installs proxy routing at test start, so this
+  // suite needs a fresh app process after network capture is active.
+  await device.restartApp()
+  await device.getByDescription("API Calls").scrollIntoView()
+  await device.getByDescription("API Calls").tap()
+  const screen = new ApiCallsScreen(device)
+  await expect(screen.heading).toBeVisible()
+}
 
 describe("Network mocking", () => {
-  // Network interception + real HTTP need generous timeout
+  // Network interception + real HTTP + restartApp need generous timeout
   test.use({ timeout: 20_000 })
 
   let crossOriginServer: Server | undefined
@@ -57,9 +75,7 @@ describe("Network mocking", () => {
   })
 
   beforeEach(async ({ device }) => {
-    await resetApp(device, "/api-calls")
-    const screen = new ApiCallsScreen(device)
-    await expect(screen.heading).toBeVisible()
+    await restartApiCallsScreen(device)
   })
 
   test("route.fulfill() — mock a JSON response", async ({ device }) => {
@@ -148,7 +164,7 @@ describe("Network mocking", () => {
   test("device.unroute() — remove specific route", async ({ device }) => {
     const screen = new ApiCallsScreen(device)
 
-    const handler = async (route: import("tapsmith").Route) => {
+    const handler = async (route: Route) => {
       await route.fulfill({
         json: [{ id: 1, title: "Still Mocked", body: "body" }],
       })
@@ -160,9 +176,8 @@ describe("Network mocking", () => {
     await screen.fetchPostsButton.tap()
     await expect(device.getByText("Still Mocked")).toBeVisible({ timeout: 10_000 })
 
-    // Reset to clear UI state
-    await resetApp(device, "/api-calls")
-    await expect(screen.heading).toBeVisible()
+    // Restart to clear UI state without dropping Android proxy routing.
+    await restartApiCallsScreen(device)
 
     // Remove the route
     await device.unroute("**/posts*", handler)
@@ -187,10 +202,9 @@ describe("Network mocking", () => {
     await screen.fetchPostsButton.tap()
     await expect(device.getByText("Failed to fetch posts")).toBeVisible({ timeout: 10_000 })
 
-    // Remove all routes and reset app
+    // Remove all routes and restart app
     await device.unrouteAll()
-    await resetApp(device, "/api-calls")
-    await expect(screen.heading).toBeVisible()
+    await restartApiCallsScreen(device)
 
     // Now requests should go through
     await screen.fetchPostsButton.tap()
@@ -213,9 +227,8 @@ describe("Network mocking", () => {
     await expect(device.getByText("Once Only")).toBeVisible({ timeout: 10_000 })
     expect(routeHits).toBe(1)
 
-    // Reset app to clear state
-    await resetApp(device, "/api-calls")
-    await expect(screen.heading).toBeVisible()
+    // Restart app to clear state without dropping Android proxy routing.
+    await restartApiCallsScreen(device)
 
     // Second call: route should have expired after 1 use.
     await screen.fetchPostsButton.tap()
