@@ -93,6 +93,9 @@ export async function launchConfiguredApp(
   if (allowSoftReset && ctx.config.resetAppDeepLink) {
     await softResetAppViaDeepLink(ctx);
     await ensureSessionReady(ctx, phase, readinessAttempts);
+    if (ctx.config.platform === 'ios') {
+      await waitForIosAppReady(ctx);
+    }
     return;
   }
 

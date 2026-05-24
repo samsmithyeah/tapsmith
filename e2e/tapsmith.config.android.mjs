@@ -1,6 +1,5 @@
 import { defineConfig } from "tapsmith";
-
-const RESET_APP_DEEP_LINK = "tapsmithtest:///__reset";
+import { RESET_APP_DEEP_LINK } from "./reset-app-deep-link.mjs";
 
 export default defineConfig({
   apk: "../test-app/android/app/build/outputs/apk/release/app-release.apk",

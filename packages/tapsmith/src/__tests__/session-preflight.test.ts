@@ -126,6 +126,7 @@ describe('session-preflight', () => {
     expect(ctx.device.openDeepLink).toHaveBeenNthCalledWith(1, 'example:///__reset');
     expect(ctx.device.openDeepLink).toHaveBeenCalledTimes(1);
     expect(ctx.device.waitForIdle).toHaveBeenNthCalledWith(1, 321);
+    expect(ctx.client.getUiHierarchy).toHaveBeenCalledTimes(1);
     expect(ctx.device.restartApp).not.toHaveBeenCalled();
     expect(ctx.device.clearAppData).not.toHaveBeenCalled();
   });

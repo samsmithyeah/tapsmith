@@ -1,5 +1,13 @@
 import AsyncStorage from "@react-native-async-storage/async-storage"
-import { createContext, useCallback, useContext, useEffect, useRef, useState, type ReactNode } from "react"
+import {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react"
 
 export const AUTH_KEY = "tapsmith_auth_email"
 

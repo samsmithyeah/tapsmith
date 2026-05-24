@@ -1,6 +1,5 @@
 import type { Device } from "tapsmith"
-
-export const RESET_APP_DEEP_LINK = "tapsmithtest:///__reset"
+import { RESET_APP_DEEP_LINK } from "../reset-app-deep-link.mjs"
 
 export function resetAppDeepLink(path = "/") {
   const url = new URL(RESET_APP_DEEP_LINK)

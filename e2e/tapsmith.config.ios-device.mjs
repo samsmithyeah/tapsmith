@@ -19,8 +19,7 @@
  */
 import "dotenv/config"
 import { defineConfig } from "tapsmith"
-
-const RESET_APP_DEEP_LINK = "tapsmithtest:///__reset"
+import { RESET_APP_DEEP_LINK } from "./reset-app-deep-link.mjs"
 
 export default defineConfig({
   platform: "ios",
