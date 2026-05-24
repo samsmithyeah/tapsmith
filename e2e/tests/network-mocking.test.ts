@@ -7,12 +7,53 @@
  * Run with --trace on to see route badges in the trace viewer:
  *   npx tapsmith test tests/network-mocking.test.ts --trace on
  */
-import { beforeEach, describe, expect, test } from "tapsmith"
+import { createServer, type Server } from "node:http"
+import type { AddressInfo } from "node:net"
+import { afterAll, beforeAll, beforeEach, describe, expect, test } from "tapsmith"
 import { ApiCallsScreen } from "../screens/api-calls.screen.js"
 
 describe("Network mocking", () => {
   // Network interception + real HTTP + iOS restartApp need generous timeout
   test.use({ timeout: 20_000 })
+
+  let crossOriginServer: Server | undefined
+  let crossOriginUserUrl = ""
+
+  beforeAll(async () => {
+    crossOriginServer = createServer((req, res) => {
+      if (req.url === "/cross-origin-user") {
+        res.writeHead(200, { "content-type": "application/json" })
+        res.end(JSON.stringify({
+          id: 1,
+          name: "Tapsmith Redirect User",
+          email: "redirect@example.test",
+          phone: "555-0100",
+        }))
+        return
+      }
+
+      res.writeHead(404, { "content-type": "text/plain" })
+      res.end("not found")
+    })
+
+    await new Promise<void>((resolve, reject) => {
+      const onError = (err: Error) => reject(err)
+      crossOriginServer!.once("error", onError)
+      crossOriginServer!.listen(0, "127.0.0.1", () => {
+        crossOriginServer!.off("error", onError)
+        const address = crossOriginServer!.address() as AddressInfo
+        crossOriginUserUrl = `http://127.0.0.1:${address.port}/cross-origin-user`
+        resolve()
+      })
+    })
+  })
+
+  afterAll(async () => {
+    if (!crossOriginServer) return
+    await new Promise<void>((resolve, reject) => {
+      crossOriginServer!.close((err) => err ? reject(err) : resolve())
+    })
+  })
 
   beforeEach(async ({ device }) => {
     await device.restartApp()
@@ -193,17 +234,18 @@ describe("Network mocking", () => {
   test("route.continue({ url }) — cross-origin redirect", async ({ device }) => {
     const screen = new ApiCallsScreen(device)
 
-    // Redirect the user request from jsonplaceholder to httpbin.org.
-    // httpbin returns valid 200 JSON but with no "name" field, so
-    // the User section renders but without jsonplaceholder's data.
+    // Redirect the user request from jsonplaceholder to a deterministic local
+    // origin so this test exercises cross-origin continue without depending on
+    // a public service.
     await device.route("**/users/1", async (route) => {
-      await route.continue({ url: "https://httpbin.org/get" })
+      await route.continue({ url: crossOriginUserUrl })
     })
 
     await screen.fetchUserButton.tap()
     await expect(screen.userHeading).toBeVisible({ timeout: 10_000 })
+    await expect(device.getByText("Tapsmith Redirect User")).toBeVisible()
     // jsonplaceholder user 1 is "Leanne Graham" — if cross-origin
-    // redirect worked, that name won't appear (httpbin doesn't have it)
+    // redirect worked, that name won't appear.
     await expect(device.getByText("Leanne Graham")).not.toBeVisible()
 
     await device.unrouteAll()

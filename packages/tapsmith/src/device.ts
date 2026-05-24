@@ -47,6 +47,7 @@ const WEBVIEW_RPC_TIMEOUT_MS = 5_000;
 const WEBVIEW_RETRY_INTERVAL_MS = 500;
 const WEBVIEW_CONNECT_ATTEMPT_TIMEOUT_MS = 5_000;
 const WEBVIEW_CONNECT_LOG_LIMIT = 80;
+const DEVICE_SELECTION_TIMEOUT_MS = 120_000;
 
 type WebViewInfo = Awaited<ReturnType<TapsmithGrpcClient['listWebViews']>>['webviews'][number];
 
@@ -130,6 +131,8 @@ export class Device {
 
   /** @internal — Network route manager (lazily created). */
   _routeManager: NetworkRouteManager | null = null;
+  private _networkCaptureActive = false;
+  private _networkCaptureError: string | undefined;
 
   /** @internal — Active WebView handle, if in WebView context. */
   _activeWebView: WebViewHandle | null = null;
@@ -355,7 +358,7 @@ export class Device {
     networkHosts: string[] = [],
   ): Promise<void> {
     // Refresh the daemon's device registry so newly-launched emulators are visible
-    await this._client.listDevices();
+    await this._client.listDevices(DEVICE_SELECTION_TIMEOUT_MS);
     const res = await this._client.setDevice(serial, networkTracingEnabled, networkHosts);
     if (!res.success) {
       throw new Error(res.errorMessage || 'Set device failed');
@@ -580,9 +583,21 @@ export class Device {
     success: boolean
     errorMessage: string
   }> {
-    const res = await this._client.startNetworkCapture();
+    let res: Awaited<ReturnType<TapsmithGrpcClient['startNetworkCapture']>>;
+    try {
+      res = await this._client.startNetworkCapture();
+    } catch (err) {
+      this._networkCaptureActive = false;
+      this._networkCaptureError = err instanceof Error ? err.message : String(err);
+      throw err;
+    }
     if (res.success) {
+      this._networkCaptureActive = true;
+      this._networkCaptureError = undefined;
       this._ensureRouteManager().ensureEventsSubscribed();
+    } else {
+      this._networkCaptureActive = false;
+      this._networkCaptureError = res.errorMessage || 'Network capture failed to start';
     }
     return {
       proxyPort: res.proxyPort,
@@ -593,7 +608,12 @@ export class Device {
 
   /** @internal — Stop network capture and return entries (used by the runner). */
   async _stopNetworkCapture(): Promise<ReturnType<TapsmithGrpcClient['stopNetworkCapture']>> {
-    return this._client.stopNetworkCapture();
+    try {
+      return await this._client.stopNetworkCapture();
+    } finally {
+      this._networkCaptureActive = false;
+      this._networkCaptureError = undefined;
+    }
   }
 
   /** @internal — Start video recording on the device (used by the runner, PILOT-114). */
@@ -708,6 +728,11 @@ export class Device {
   ): Promise<void> {
     const start = Date.now();
     const source = extractSourceLocation(new Error().stack ?? '');
+    if (!this._networkCaptureActive && this._networkCaptureError) {
+      const error = `Network capture disabled: ${this._networkCaptureError}`;
+      this._emitNetworkAction('route', formatPattern(url), start, false, error, source);
+      throw new Error(error);
+    }
     await this._ensureRouteManager().addRoute(url, handler, options);
     this._emitNetworkAction('route', formatPattern(url), start, true, undefined, source);
   }

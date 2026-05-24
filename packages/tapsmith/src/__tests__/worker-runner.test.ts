@@ -98,6 +98,14 @@ describe('isRecoverableInfrastructureError', () => {
     expect(isRecoverableInfrastructureError(new Error('connect ECONNREFUSED 127.0.0.1:50051'))).toBe(true);
   });
 
+  it('returns true when per-test preflight recovered the session', () => {
+    expect(isRecoverableInfrastructureError(new Error('session recovered during before test suite > test'))).toBe(true);
+  });
+
+  it('returns true when network capture is disabled before a route test', () => {
+    expect(isRecoverableInfrastructureError(new Error('Network capture disabled: proxy unavailable'))).toBe(true);
+  });
+
   it('returns true for agent connection dropped', () => {
     expect(isRecoverableInfrastructureError(new Error('Agent connection dropped (empty response); reconnecting'))).toBe(true);
   });

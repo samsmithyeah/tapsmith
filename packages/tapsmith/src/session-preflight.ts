@@ -31,6 +31,10 @@ export interface SessionPreflightContext {
   networkTracingEnabled?: boolean
 }
 
+export interface EnsureSessionReadyOptions {
+  onRecovery?: (error: unknown) => void
+}
+
 class BlockingDialogError extends Error {}
 
 const DEFAULT_READY_TIMEOUT_MS = 5_000;
@@ -44,6 +48,7 @@ export async function ensureSessionReady(
   ctx: SessionPreflightContext,
   phase: string,
   maxAttempts = DEFAULT_MAX_ATTEMPTS,
+  options: EnsureSessionReadyOptions = {},
 ): Promise<void> {
   let lastError: unknown;
 
@@ -54,6 +59,7 @@ export async function ensureSessionReady(
     } catch (err) {
       lastError = err;
       if (attempt === maxAttempts) break;
+      options.onRecovery?.(err);
       try {
         await recoverSession(ctx);
       } catch (recoveryErr) {
