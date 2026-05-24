@@ -22,13 +22,27 @@ import {
 import { ApiCallsScreen } from "../screens/api-calls.screen.js"
 
 async function restartApiCallsScreen(device: Device) {
-  // Android route interception installs proxy routing at test start, so this
-  // suite needs a fresh app process after network capture is active.
+  // Keep the previous hard-restart isolation for this proxy-sensitive suite.
+  // The soft reset path produced Android traces with route() registered but
+  // zero captured network entries after the first capture cycle.
   await device.restartApp()
   await device.getByDescription("API Calls").scrollIntoView()
   await device.getByDescription("API Calls").tap()
   const screen = new ApiCallsScreen(device)
   await expect(screen.heading).toBeVisible()
+}
+
+function routeFetchNoCacheOptions(route: Route) {
+  const headers = { ...route.request().headers }
+  delete headers["if-none-match"]
+  delete headers["if-modified-since"]
+  headers["cache-control"] = "no-cache"
+  headers.pragma = "no-cache"
+
+  const url = new URL(route.request().url)
+  url.searchParams.set("tapsmith-route-fetch", "1")
+
+  return { headers, url: url.toString() }
 }
 
 describe("Network mocking", () => {
@@ -148,7 +162,7 @@ describe("Network mocking", () => {
     const screen = new ApiCallsScreen(device)
 
     await device.route("**/users/1", async (route) => {
-      const response = await route.fetch()
+      const response = await route.fetch(routeFetchNoCacheOptions(route))
       const data = response.json() as Record<string, unknown>
       data.name = "Tapsmith Modified User"
       await route.fulfill({ json: data })
