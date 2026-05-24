@@ -20,14 +20,21 @@ import {
   type Route,
 } from "tapsmith"
 import { ApiCallsScreen } from "../screens/api-calls.screen.js"
+import { resetApp } from "../utils/app-reset.js"
 
-async function restartApiCallsScreen(device: Device) {
-  // Keep the previous hard-restart isolation for this proxy-sensitive suite.
-  // The soft reset path produced Android traces with route() registered but
-  // zero captured network entries after the first capture cycle.
-  await device.restartApp()
-  await device.getByDescription("API Calls").scrollIntoView()
-  await device.getByDescription("API Calls").tap()
+type TestPlatform = "android" | "ios"
+
+async function resetApiCallsScreen(device: Device, platform: TestPlatform) {
+  if (platform === "android") {
+    // Android traces from the soft-reset path showed route() registered but
+    // zero captured network entries after the first capture cycle.
+    await device.restartApp()
+    await device.getByDescription("API Calls").scrollIntoView()
+    await device.getByDescription("API Calls").tap()
+  } else {
+    await resetApp(device, "/api-calls")
+  }
+
   const screen = new ApiCallsScreen(device)
   await expect(screen.heading).toBeVisible()
 }
@@ -46,7 +53,7 @@ function routeFetchNoCacheOptions(route: Route) {
 }
 
 describe("Network mocking", () => {
-  // Network interception + real HTTP + restartApp need generous timeout
+  // Network interception + real HTTP need generous timeout.
   test.use({ timeout: 20_000 })
 
   let crossOriginServer: Server | undefined
@@ -88,8 +95,8 @@ describe("Network mocking", () => {
     })
   })
 
-  beforeEach(async ({ device }) => {
-    await restartApiCallsScreen(device)
+  beforeEach(async ({ device, platform }) => {
+    await resetApiCallsScreen(device, platform)
   })
 
   test("route.fulfill() — mock a JSON response", async ({ device }) => {
@@ -175,7 +182,7 @@ describe("Network mocking", () => {
     await device.unrouteAll()
   })
 
-  test("device.unroute() — remove specific route", async ({ device }) => {
+  test("device.unroute() — remove specific route", async ({ device, platform }) => {
     const screen = new ApiCallsScreen(device)
 
     const handler = async (route: Route) => {
@@ -190,8 +197,8 @@ describe("Network mocking", () => {
     await screen.fetchPostsButton.tap()
     await expect(device.getByText("Still Mocked")).toBeVisible({ timeout: 10_000 })
 
-    // Restart to clear UI state without dropping Android proxy routing.
-    await restartApiCallsScreen(device)
+    // Reset to clear UI state without dropping registered routes.
+    await resetApiCallsScreen(device, platform)
 
     // Remove the route
     await device.unroute("**/posts*", handler)
@@ -203,7 +210,7 @@ describe("Network mocking", () => {
     await expect(device.getByText("Still Mocked")).not.toBeVisible()
   })
 
-  test("device.unrouteAll() — remove all routes", async ({ device }) => {
+  test("device.unrouteAll() — remove all routes", async ({ device, platform }) => {
     await device.route("**/posts*", async (route) => {
       await route.abort()
     })
@@ -216,16 +223,16 @@ describe("Network mocking", () => {
     await screen.fetchPostsButton.tap()
     await expect(device.getByText("Failed to fetch posts")).toBeVisible({ timeout: 10_000 })
 
-    // Remove all routes and restart app
+    // Remove all routes and reset the app state.
     await device.unrouteAll()
-    await restartApiCallsScreen(device)
+    await resetApiCallsScreen(device, platform)
 
     // Now requests should go through
     await screen.fetchPostsButton.tap()
     await expect(screen.postsHeading).toBeVisible({ timeout: 10_000 })
   })
 
-  test("route with times option — limited invocations", async ({ device }) => {
+  test("route with times option — limited invocations", async ({ device, platform }) => {
     const screen = new ApiCallsScreen(device)
     let routeHits = 0
 
@@ -241,8 +248,8 @@ describe("Network mocking", () => {
     await expect(device.getByText("Once Only")).toBeVisible({ timeout: 10_000 })
     expect(routeHits).toBe(1)
 
-    // Restart app to clear state without dropping Android proxy routing.
-    await restartApiCallsScreen(device)
+    // Reset app to clear state without dropping route registrations.
+    await resetApiCallsScreen(device, platform)
 
     // Second call: route should have expired after 1 use.
     await screen.fetchPostsButton.tap()
