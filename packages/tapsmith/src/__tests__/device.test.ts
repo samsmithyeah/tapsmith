@@ -1,4 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
+import { EventEmitter } from 'node:events';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
@@ -141,6 +142,23 @@ function makeTraceCollector(tempDir: string): TraceCollector {
     network: false,
     deviceLogs: true,
   }, tempDir);
+}
+
+class FakeRouteStream extends EventEmitter {
+  public writes: unknown[] = [];
+
+  write(msg: unknown): boolean {
+    this.writes.push(msg);
+    const routeId = (msg as { registerRoute?: { routeId?: string } }).registerRoute?.routeId;
+    if (routeId) {
+      queueMicrotask(() => {
+        this.emit('data', {
+          registerRouteResponse: { routeId, success: true, errorMessage: '' },
+        });
+      });
+    }
+    return true;
+  }
 }
 
 function deviceLogMessages(collector: TraceCollector): (string | undefined)[] {
@@ -527,6 +545,31 @@ describe('Device.route()', () => {
 
     await expect(device.route('**/posts*', async () => undefined))
       .rejects.toThrow('Network capture disabled: proxy unavailable');
+  });
+
+  it('clears cached startup failure when network capture stops', async () => {
+    const stream = new FakeRouteStream();
+    const client = makeMockClient({
+      startNetworkCapture: vi.fn(async () => ({
+        requestId: '1',
+        success: false,
+        proxyPort: 0,
+        errorMessage: 'proxy unavailable',
+      })),
+      networkRouteStream: vi.fn(
+        () => stream as unknown as ReturnType<TapsmithGrpcClient['networkRouteStream']>,
+      ),
+    });
+    const device = new Device(client);
+
+    await device._startNetworkCapture();
+    await expect(device.route('**/posts*', async () => undefined))
+      .rejects.toThrow('Network capture disabled: proxy unavailable');
+
+    await device._stopNetworkCapture();
+
+    await expect(device.route('**/posts*', async () => undefined)).resolves.toBeUndefined();
+    expect(stream.writes).toHaveLength(1);
   });
 });
 

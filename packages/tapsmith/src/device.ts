@@ -612,6 +612,7 @@ export class Device {
       return await this._client.stopNetworkCapture();
     } finally {
       this._networkCaptureActive = false;
+      this._networkCaptureError = undefined;
     }
   }
 

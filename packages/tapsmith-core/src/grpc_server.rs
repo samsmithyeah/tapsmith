@@ -3455,7 +3455,7 @@ impl proto::tapsmith_service_server::TapsmithService for TapsmithServiceImpl {
         let serial = self.active_serial().await?;
         let platform = self.require_platform().await?;
         let ca_pem_path = mitm_ca.ca_pem_path().to_string_lossy().to_string();
-        let mut warning: Option<String> = None;
+        let mut warnings: Vec<String> = Vec::new();
 
         let is_ios_physical = self.is_active_ios_physical().await;
 
@@ -3467,7 +3467,7 @@ impl proto::tapsmith_service_server::TapsmithService for TapsmithServiceImpl {
                         "Failed to install CA cert on simulator: {e} — HTTPS traffic will not be captured"
                     );
                     error!("{msg}");
-                    warning = Some(msg);
+                    warnings.push(msg);
                 }
             }
             Platform::Ios => {
@@ -3508,7 +3508,7 @@ impl proto::tapsmith_service_server::TapsmithService for TapsmithServiceImpl {
                                     meta.host_ip, current_ip
                                 );
                                 warn!("{msg}");
-                                warning = Some(msg);
+                                warnings.push(msg);
                             }
                         }
                     }
@@ -3536,7 +3536,7 @@ impl proto::tapsmith_service_server::TapsmithService for TapsmithServiceImpl {
                             "Failed to install CA cert on device: {e} — HTTPS traffic will not be captured"
                         );
                         error!("{msg}");
-                        warning = Some(msg);
+                        warnings.push(msg);
                     }
                 }
             }
@@ -3663,13 +3663,11 @@ impl proto::tapsmith_service_server::TapsmithService for TapsmithServiceImpl {
                             match ios::system_proxy::set_system_proxy(host_port).await {
                                 Ok(service) => {
                                     *self.ios_system_proxy_service.write().await = Some(service);
-                                    if warning.is_none() {
-                                        warning = Some(
-                                            "Using macOS system proxy fallback — \
-                                             not PID-isolated (affects all host traffic)"
-                                                .to_string(),
-                                        );
-                                    }
+                                    warnings.push(
+                                        "Using macOS system proxy fallback — \
+                                         not PID-isolated (affects all host traffic)"
+                                            .to_string(),
+                                    );
                                 }
                                 Err(proxy_err) => {
                                     let msg = format!(
@@ -3760,12 +3758,10 @@ impl proto::tapsmith_service_server::TapsmithService for TapsmithServiceImpl {
                             error_message: msg,
                         }));
                     }
-                    if warning.is_none() {
-                        warning = Some(
-                            "iptables redirect unavailable; using Android system HTTP proxy fallback"
-                                .to_string(),
-                        );
-                    }
+                    warnings.push(
+                        "iptables redirect unavailable; using Android system HTTP proxy fallback"
+                            .to_string(),
+                    );
                 }
                 *self.proxy_reverse_port.write().await = Some(device_port);
             }
@@ -3790,7 +3786,7 @@ impl proto::tapsmith_service_server::TapsmithService for TapsmithServiceImpl {
             request_id,
             success: true,
             proxy_port: host_port as u32,
-            error_message: warning.unwrap_or_default(),
+            error_message: warnings.join("\n"),
         }))
     }
 
