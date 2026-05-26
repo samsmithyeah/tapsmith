@@ -1111,18 +1111,20 @@ async function runSuiteContext(
 
       // Finalize trace recording
       if (traceCollector && opts.device) {
+        const device = opts.device;
+
         // Stop device log streaming first — no async cleanup needed
-        opts.device._stopDeviceLogStream();
+        device._stopDeviceLogStream();
 
         // Drain per-test network entries BEFORE disposing the route manager —
         // the proxy may still have in-flight requests that need the gRPC
         // stream alive to receive route decisions. The daemon keeps the
         // proxy/routing alive here; runTestFile performs the hard teardown
         // once after the file so soft-reset tests do not churn device routing.
-        let rawNetworkEntries: Awaited<ReturnType<typeof opts.device._stopNetworkCapture>>['entries'] | undefined;
-        if (opts.device && traceConfig.network) {
+        let rawNetworkEntries: Awaited<ReturnType<typeof device._stopNetworkCapture>>['entries'] | undefined;
+        if (traceConfig.network) {
           try {
-            const res = await opts.device._stopNetworkCapture({ keepRunning: true });
+            const res = await device._stopNetworkCapture({ keepRunning: true });
             if (res.success) {
               // Apply user-supplied host filters, if any. On physical iOS
               // and Android emulators the proxy is system-wide and captures
@@ -1157,18 +1159,18 @@ async function runSuiteContext(
         // Keep the route stream installed while network capture is being
         // reused across tests. Registered routes were removed above, and the
         // file-level hard teardown disposes the stream after stopping capture.
-        if (!traceConfig.network && opts.device?._disposeRouteManager) {
-          await opts.device._disposeRouteManager();
+        if (!traceConfig.network && device._disposeRouteManager) {
+          await device._disposeRouteManager();
         }
-        if (opts.device?._disposeWebViewManager) {
-          await opts.device._disposeWebViewManager();
+        if (device._disposeWebViewManager) {
+          await device._disposeWebViewManager();
         }
 
         // Capture a final screenshot so the last action has an "after" view.
         // The trace viewer uses the next action's before-screenshot as "after",
         // so this provides the terminal state.
         if (traceCollector.config.screenshots) {
-          const tracing = opts.device!.tracing;
+          const tracing = device.tracing;
           const { actionIndex: finalIdx } = await traceCollector.captureBeforeAction(
             tracing['_getScreenshot'],
             tracing['_getHierarchy'],
@@ -1178,7 +1180,7 @@ async function runSuiteContext(
           traceCollector.emitPendingCaptures(finalIdx);
         }
 
-        const collector = opts.device.tracing._stopManaged();
+        const collector = device.tracing._stopManaged();
         setActiveTraceCollector(null);
 
         // Map network entries, associating each with the closest preceding action
