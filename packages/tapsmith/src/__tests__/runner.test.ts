@@ -294,6 +294,27 @@ describe('runner execution', () => {
     expect(result.tests[0].status).toBe('passed');
   });
 
+  it('passes platform fixture to beforeEach hooks', async () => {
+    const seenPlatforms: string[] = [];
+    const mockDevice = { waitForIdle: vi.fn(async () => {}) };
+
+    pushContext();
+    tapsmithBeforeEach(async ({ platform }) => {
+      seenPlatforms.push(platform);
+    });
+    tapsmithTest('uses platform in hook', async () => {});
+    const ctx = popContext();
+
+    const result = await runSuiteContext(ctx, '', [], [], makeOpts({
+      config: makeConfig({ platform: 'ios' }),
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- focused runner hook fixture mock
+      device: mockDevice as any,
+    }));
+
+    expect(result.tests[0].status).toBe('passed');
+    expect(seenPlatforms).toEqual(['ios']);
+  });
+
   it('starts device log streaming for each traced test collector', async () => {
     const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'tapsmith-runner-logs-'));
     let activeLogCollector: TraceCollector | null = null;

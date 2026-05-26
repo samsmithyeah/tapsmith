@@ -3714,15 +3714,41 @@ impl proto::tapsmith_service_server::TapsmithService for TapsmithServiceImpl {
                 // the device. More reliable than `settings put global http_proxy`
                 // with 10.0.2.2 because it works at the ADB transport level.
                 let device_port = host_port;
-                if let Err(e) = adb::reverse_port(&serial, device_port, host_port).await {
-                    let msg = format!("Failed to set up adb reverse for network capture: {e}");
-                    error!("{msg}");
-                    return Ok(Response::new(proto::StartNetworkCaptureResponse {
-                        request_id,
-                        success: false,
-                        proxy_port: 0,
-                        error_message: msg,
-                    }));
+                if let Err(first_err) = adb::reverse_port(&serial, device_port, host_port).await {
+                    warn!(
+                        %serial,
+                        device_port,
+                        host_port,
+                        "adb reverse setup failed; removing any stale reverse mapping and retrying: {first_err}"
+                    );
+                    if let Err(remove_err) = adb::remove_reverse_with_timeout(
+                        &serial,
+                        device_port,
+                        ANDROID_PROXY_CLEANUP_TIMEOUT,
+                    )
+                    .await
+                    {
+                        warn!(
+                            %serial,
+                            device_port,
+                            "Failed to remove stale adb reverse mapping before retry: {remove_err}"
+                        );
+                    }
+
+                    if let Err(retry_err) = adb::reverse_port(&serial, device_port, host_port).await
+                    {
+                        let msg = format!(
+                            "Failed to set up adb reverse for network capture: {retry_err} \
+                             (initial error: {first_err})"
+                        );
+                        error!("{msg}");
+                        return Ok(Response::new(proto::StartNetworkCaptureResponse {
+                            request_id,
+                            success: false,
+                            proxy_port: 0,
+                            error_message: msg,
+                        }));
+                    }
                 }
 
                 info!(%serial, device_port, host_port, "Configuring Android proxy");

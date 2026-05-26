@@ -542,10 +542,19 @@ function passesTestFilter(fullName: string, opts: RunOptions): boolean {
 // not count parameters with default values or rest parameters, so hooks like
 // `async ({ device } = {}) => …` would be mis-classified as zero-arg. In
 // practice this is fine because hooks are simple `async ({ device }) => …`.
-async function invokeHook(fn: HookFn, device?: Device, projectName?: string): Promise<void> {
+async function invokeHook(
+  fn: HookFn,
+  config: TapsmithConfig,
+  device?: Device,
+  projectName?: string,
+): Promise<void> {
   if (fn.length > 0 && device) {
-    // Hooks receive device + projectName; request fixture is test-scoped only.
-    await (fn as (fixtures: { device: Device; projectName?: string }) => void | Promise<void>)({ device, projectName });
+    // Hooks receive device + project metadata; request fixture is test-scoped only.
+    await (fn as (fixtures: { device: Device; projectName?: string; platform: Platform }) => void | Promise<void>)({
+      device,
+      projectName,
+      platform: resolvePlatformFixture(config),
+    });
   } else {
     await (fn as () => void | Promise<void>)();
   }
@@ -688,13 +697,13 @@ async function runSuiteContext(
     if (beforeAllCollector) {
       await withActiveTraceCollector(beforeAllCollector, async () => {
         for (const hook of ctx.beforeAll) {
-          await invokeHook(hook, opts.device, opts.projectName);
+          await invokeHook(hook, opts.config, opts.device, opts.projectName);
         }
       });
       beforeAllCollector.endGroup();
     } else {
       for (const hook of ctx.beforeAll) {
-        await invokeHook(hook, opts.device, opts.projectName);
+        await invokeHook(hook, opts.config, opts.device, opts.projectName);
       }
     }
   } catch (err) {
@@ -964,7 +973,7 @@ async function runSuiteContext(
           }
 
           for (const hook of allBeforeEach) {
-            await invokeHook(hook, opts.device, opts.projectName);
+            await invokeHook(hook, opts.config, opts.device, opts.projectName);
           }
           if (hasBeforeEachWork) {
             traceCollector?.endGroup();
@@ -1050,7 +1059,7 @@ async function runSuiteContext(
             traceCollector?.startGroup('afterEach Hooks');
             for (const hook of allAfterEach) {
               try {
-                await invokeHook(hook, opts.device, opts.projectName);
+                await invokeHook(hook, opts.config, opts.device, opts.projectName);
               } catch (err) {
                 process.stderr.write(`[tapsmith] afterEach hook error: ${err instanceof Error ? err.message : String(err)}\n`);
               }
@@ -1424,7 +1433,7 @@ async function runSuiteContext(
       await withActiveTraceCollector(afterAllCollector, async () => {
         for (const hook of ctx.afterAll) {
           try {
-            await invokeHook(hook, opts.device, opts.projectName);
+            await invokeHook(hook, opts.config, opts.device, opts.projectName);
           } catch (err) {
             process.stderr.write(`[tapsmith] afterAll hook error: ${err instanceof Error ? err.message : String(err)}\n`);
           }
@@ -1435,7 +1444,7 @@ async function runSuiteContext(
     } else {
       for (const hook of ctx.afterAll) {
         try {
-          await invokeHook(hook, opts.device, opts.projectName);
+          await invokeHook(hook, opts.config, opts.device, opts.projectName);
         } catch (err) {
           process.stderr.write(`[tapsmith] afterAll hook error: ${err instanceof Error ? err.message : String(err)}\n`);
         }
@@ -1444,7 +1453,7 @@ async function runSuiteContext(
   } else {
     for (const hook of ctx.afterAll) {
       try {
-        await invokeHook(hook, opts.device, opts.projectName);
+        await invokeHook(hook, opts.config, opts.device, opts.projectName);
       } catch (err) {
         process.stderr.write(`[tapsmith] afterAll hook error: ${err instanceof Error ? err.message : String(err)}\n`);
       }
