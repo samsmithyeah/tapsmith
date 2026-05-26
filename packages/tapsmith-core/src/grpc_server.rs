@@ -4315,14 +4315,14 @@ impl proto::tapsmith_service_server::TapsmithService for TapsmithServiceImpl {
                         .args([
                             "czf",
                             local_path,
-                            "-C",
-                            &scratch_path,
-                            ".",
                             "--exclude=./Library/Caches",
                             "--exclude=./Library/WebKit",
                             "--exclude=./Library/SplashBoard",
                             "--exclude=./Library/Saved Application State",
                             "--exclude=./tmp",
+                            "-C",
+                            &scratch_path,
+                            ".",
                         ])
                         .output()
                         .await;
@@ -4380,14 +4380,14 @@ impl proto::tapsmith_service_server::TapsmithService for TapsmithServiceImpl {
                     .args([
                         "czf",
                         local_path,
-                        "-C",
-                        &container,
-                        ".",
                         "--exclude=./Library/Caches",
                         "--exclude=./Library/WebKit",
                         "--exclude=./Library/SplashBoard",
                         "--exclude=./Library/Saved Application State",
                         "--exclude=./tmp",
+                        "-C",
+                        &container,
+                        ".",
                     ])
                     .output()
                     .await;
@@ -4437,21 +4437,31 @@ impl proto::tapsmith_service_server::TapsmithService for TapsmithServiceImpl {
 
                 // 3. Create tar.gz archive on device, excluding cache
                 // directories that don't carry meaningful app state.
-                let excludes = "--exclude=./cache --exclude=./code_cache";
-                let tar_result = if is_root {
-                    adb::shell_with_timeout(
-                        &serial,
-                        &format!("tar czf {device_tmp} -C {data_dir} {excludes} ."),
-                        tar_timeout,
-                    )
-                    .await
-                } else {
-                    adb::shell_with_timeout(
-                        &serial,
-                        &format!("run-as {pkg} tar czf {device_tmp} -C {data_dir} {excludes} ."),
-                        tar_timeout,
-                    )
-                    .await
+                // Older Toybox builds (pre-Android 10) lack --exclude, so
+                // fall back to archiving everything if the first attempt fails.
+                let tar_cmd = |excludes: &str| {
+                    let prefix = if is_root {
+                        String::new()
+                    } else {
+                        format!("run-as {pkg} ")
+                    };
+                    format!("{prefix}tar czf {device_tmp} {excludes}-C {data_dir} .")
+                };
+                let tar_result = adb::shell_with_timeout(
+                    &serial,
+                    &tar_cmd("--exclude=./cache --exclude=./code_cache "),
+                    tar_timeout,
+                )
+                .await;
+                let tar_result = match tar_result {
+                    Ok(_) => Ok(()),
+                    Err(_) => {
+                        debug!("tar with --exclude failed, retrying without exclusions");
+                        let _ = adb::shell_lenient(&serial, &format!("rm -f {device_tmp}")).await;
+                        adb::shell_with_timeout(&serial, &tar_cmd(""), tar_timeout)
+                            .await
+                            .map(|_| ())
+                    }
                 };
 
                 if let Err(e) = tar_result {
