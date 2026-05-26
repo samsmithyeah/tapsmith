@@ -9,7 +9,7 @@ function normalizeTarget(value: string | string[] | undefined): Href {
 
   try {
     const decoded = decodeURIComponent(raw)
-    if (decoded.startsWith("/") && !decoded.startsWith("//")) {
+    if (decoded.startsWith("/") && !decoded.startsWith("//") && !decoded.startsWith("/__reset")) {
       return decoded as Href
     }
   } catch {
