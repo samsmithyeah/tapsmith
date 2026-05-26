@@ -1120,7 +1120,7 @@ async function runSuiteContext(
         // proxy/routing alive here; runTestFile performs the hard teardown
         // once after the file so soft-reset tests do not churn device routing.
         let rawNetworkEntries: Awaited<ReturnType<typeof opts.device._stopNetworkCapture>>['entries'] | undefined;
-        if (traceConfig.network) {
+        if (opts.device && traceConfig.network) {
           try {
             const res = await opts.device._stopNetworkCapture({ keepRunning: true });
             if (res.success) {
