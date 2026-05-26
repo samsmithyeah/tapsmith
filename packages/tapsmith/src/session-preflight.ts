@@ -91,12 +91,17 @@ export async function launchConfiguredApp(
 
   const allowSoftReset = options.allowSoftReset ?? true;
   if (allowSoftReset && ctx.config.resetAppDeepLink) {
-    await softResetAppViaDeepLink(ctx);
-    await ensureSessionReady(ctx, phase, readinessAttempts);
-    if (ctx.config.platform === 'ios') {
-      await waitForIosAppReady(ctx);
+    try {
+      await softResetAppViaDeepLink(ctx);
+      await ensureSessionReady(ctx, phase, readinessAttempts);
+      if (ctx.config.platform === 'ios') {
+        await waitForIosAppReady(ctx);
+      }
+      return;
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      process.stderr.write(`[tapsmith] Soft reset failed, falling back to hard reset: ${message}\n`);
     }
-    return;
   }
 
   if (ctx.config.platform === 'ios') {

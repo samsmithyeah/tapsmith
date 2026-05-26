@@ -131,6 +131,24 @@ describe('session-preflight', () => {
     expect(ctx.device.clearAppData).not.toHaveBeenCalled();
   });
 
+  it('falls back to iOS hard reset when soft reset fails', async () => {
+    const ctx = makeContext({
+      config: {
+        package: 'com.example.app',
+        activity: undefined,
+        platform: 'ios',
+        resetAppDeepLink: 'example:///__reset',
+      },
+    });
+    vi.mocked(ctx.device.openDeepLink).mockRejectedValueOnce(new Error('deep link failed'));
+
+    await expect(launchConfiguredApp(ctx, 'file reset')).resolves.toBeUndefined();
+
+    expect(ctx.device.openDeepLink).toHaveBeenCalledWith('example:///__reset');
+    expect(ctx.device.clearAppData).toHaveBeenCalledWith('com.example.app');
+    expect(ctx.device.restartApp).toHaveBeenCalledWith('com.example.app');
+  });
+
   it('uses soft reset on Android when configured', async () => {
     const ctx = makeContext({
       config: {
@@ -147,6 +165,28 @@ describe('session-preflight', () => {
     expect(ctx.device.terminateApp).not.toHaveBeenCalled();
     expect(ctx.device.clearAppData).not.toHaveBeenCalled();
     expect(ctx.device.launchApp).not.toHaveBeenCalled();
+  });
+
+  it('falls back to Android hard reset when soft reset fails', async () => {
+    const ctx = makeContext({
+      config: {
+        package: 'com.example.app',
+        activity: '.MainActivity',
+        platform: 'android',
+        resetAppDeepLink: 'example:///__reset',
+      },
+    });
+    vi.mocked(ctx.device.openDeepLink).mockRejectedValueOnce(new Error('deep link failed'));
+
+    await expect(launchConfiguredApp(ctx, 'file reset')).resolves.toBeUndefined();
+
+    expect(ctx.device.openDeepLink).toHaveBeenCalledWith('example:///__reset');
+    expect(ctx.device.terminateApp).toHaveBeenCalledWith('com.example.app');
+    expect(ctx.device.clearAppData).toHaveBeenCalledWith('com.example.app');
+    expect(ctx.device.launchApp).toHaveBeenCalledWith('com.example.app', {
+      activity: '.MainActivity',
+      waitForIdle: false,
+    });
   });
 
   it('dismisses system overlay via pressBack when app is underneath', async () => {

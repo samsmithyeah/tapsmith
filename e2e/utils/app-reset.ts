@@ -5,8 +5,9 @@ const RESET_APP_WAIT_MS = 750
 
 export function resetAppDeepLink(path = "/") {
   const url = new URL(RESET_APP_DEEP_LINK)
-  if (path !== "/") {
-    url.searchParams.set("path", path)
+  const targetPath = path.startsWith("/") ? path : `/${path}`
+  if (targetPath !== "/") {
+    url.searchParams.set("path", targetPath)
   }
   return url.toString()
 }
