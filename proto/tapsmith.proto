@@ -606,6 +606,10 @@ message StartNetworkCaptureResponse {
 
 message StopNetworkCaptureRequest {
   string request_id = 1;
+  // When true, return and clear captured entries without tearing down the
+  // proxy/routing configuration. The caller must later call StopNetworkCapture
+  // with keep_running=false to restore device proxy state.
+  bool keep_running = 2;
 }
 
 message CapturedNetworkEntry {

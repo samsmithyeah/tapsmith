@@ -359,13 +359,23 @@ impl NetworkProxy {
         state.entries.clear();
     }
 
+    /// Return captured entries and clear the buffer without stopping the
+    /// proxy listener or device routing. Used by the runner to finalize a
+    /// test trace while keeping capture stable for the next test.
+    pub async fn drain_entries(&self) -> Vec<CapturedEntry> {
+        // Give in-flight requests a moment to complete, matching `stop`.
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        let mut state = self.state.lock().await;
+        std::mem::take(&mut state.entries)
+    }
+
     /// Stop the proxy and return all captured entries.
     pub async fn stop(self) -> Vec<CapturedEntry> {
         let _ = self.shutdown_tx.send(());
         // Give in-flight requests a moment to complete
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-        let state = self.state.lock().await;
-        state.entries.clone()
+        let mut state = self.state.lock().await;
+        std::mem::take(&mut state.entries)
     }
 }
 
@@ -3437,6 +3447,44 @@ mod tests {
         assert_eq!(entries[0].url, "https://example.test/users/1");
         assert_eq!(entries[0].status_code, 200);
         assert_eq!(entries[0].route_action, "mocked");
+    }
+
+    #[tokio::test]
+    async fn drain_entries_returns_and_clears_without_stopping_proxy() {
+        let dir = tempfile::tempdir().unwrap();
+        let ca = Arc::new(
+            MitmAuthority::generate_new(&dir.path().join("ca.pem"), &dir.path().join("ca-key.pem"))
+                .unwrap(),
+        );
+        let proxy = NetworkProxy::start(ca).await.unwrap();
+        let port = proxy.port();
+
+        proxy.state.lock().await.entries.push(CapturedEntry {
+            method: "GET".to_string(),
+            url: "https://example.test/users/1".to_string(),
+            status_code: 200,
+            content_type: "application/json".to_string(),
+            request_size: 0,
+            response_size: 2,
+            start_time_ms: 1,
+            duration_ms: 2,
+            request_headers: Vec::new(),
+            response_headers: Vec::new(),
+            request_body: Vec::new(),
+            response_body: b"{}".to_vec(),
+            is_https: true,
+            route_action: String::new(),
+        });
+
+        let entries = proxy.drain_entries().await;
+
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].url, "https://example.test/users/1");
+        assert!(proxy.state.lock().await.entries.is_empty());
+        assert_eq!(proxy.port(), port);
+
+        let remaining = proxy.stop().await;
+        assert!(remaining.is_empty());
     }
 
     #[test]

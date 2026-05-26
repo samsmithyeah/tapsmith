@@ -3805,6 +3805,28 @@ impl proto::tapsmith_service_server::TapsmithService for TapsmithServiceImpl {
     ) -> Result<Response<proto::StopNetworkCaptureResponse>, Status> {
         let req = request.into_inner();
         let request_id = Self::request_id(&req.request_id);
+        let keep_running = req.keep_running;
+
+        if keep_running {
+            let proxy_guard = self.network_proxy.read().await;
+            let Some(proxy) = proxy_guard.as_ref() else {
+                return Ok(Response::new(proto::StopNetworkCaptureResponse {
+                    request_id,
+                    success: false,
+                    entries: Vec::new(),
+                    error_message: "Network capture is not running".to_string(),
+                }));
+            };
+
+            let captured = proxy.drain_entries().await;
+            let entries = captured_entries_to_proto(captured);
+            return Ok(Response::new(proto::StopNetworkCaptureResponse {
+                request_id,
+                success: true,
+                entries,
+                error_message: String::new(),
+            }));
+        }
 
         let proxy = self.network_proxy.write().await.take();
         let Some(proxy) = proxy else {
@@ -3901,31 +3923,7 @@ impl proto::tapsmith_service_server::TapsmithService for TapsmithServiceImpl {
         }
 
         let captured = proxy.stop().await;
-        let entries: Vec<proto::CapturedNetworkEntry> = captured
-            .into_iter()
-            .map(|e| proto::CapturedNetworkEntry {
-                method: e.method,
-                url: e.url,
-                status_code: e.status_code,
-                content_type: e.content_type,
-                request_size: e.request_size,
-                response_size: e.response_size,
-                start_time_ms: e.start_time_ms,
-                duration_ms: e.duration_ms,
-                request_headers_json: crate::network_proxy::headers_to_json_object(
-                    &e.request_headers,
-                )
-                .to_string(),
-                response_headers_json: crate::network_proxy::headers_to_json_object(
-                    &e.response_headers,
-                )
-                .to_string(),
-                request_body: e.request_body,
-                response_body: e.response_body,
-                is_https: e.is_https,
-                route_action: e.route_action,
-            })
-            .collect();
+        let entries = captured_entries_to_proto(captured);
 
         Ok(Response::new(proto::StopNetworkCaptureResponse {
             request_id,
@@ -5479,6 +5477,34 @@ fn android_reverse_port_candidates(host_port: u16) -> Vec<u16> {
     }
 
     ports
+}
+
+fn captured_entries_to_proto(
+    captured: Vec<crate::network_proxy::CapturedEntry>,
+) -> Vec<proto::CapturedNetworkEntry> {
+    captured
+        .into_iter()
+        .map(|e| proto::CapturedNetworkEntry {
+            method: e.method,
+            url: e.url,
+            status_code: e.status_code,
+            content_type: e.content_type,
+            request_size: e.request_size,
+            response_size: e.response_size,
+            start_time_ms: e.start_time_ms,
+            duration_ms: e.duration_ms,
+            request_headers_json: crate::network_proxy::headers_to_json_object(&e.request_headers)
+                .to_string(),
+            response_headers_json: crate::network_proxy::headers_to_json_object(
+                &e.response_headers,
+            )
+            .to_string(),
+            request_body: e.request_body,
+            response_body: e.response_body,
+            is_https: e.is_https,
+            route_action: e.route_action,
+        })
+        .collect()
 }
 
 async fn setup_android_reverse_with_fallback(

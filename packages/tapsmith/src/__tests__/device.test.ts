@@ -571,6 +571,21 @@ describe('Device.route()', () => {
     await expect(device.route('**/posts*', async () => undefined)).resolves.toBeUndefined();
     expect(stream.writes).toHaveLength(1);
   });
+
+  it('passes keepRunning through when stopping network capture', async () => {
+    const stopNetworkCapture = vi.fn(async () => ({
+      requestId: '1',
+      success: true,
+      entries: [],
+      errorMessage: '',
+    }));
+    const client = makeMockClient({ stopNetworkCapture });
+    const device = new Device(client);
+
+    await device._stopNetworkCapture({ keepRunning: true });
+
+    expect(stopNetworkCapture).toHaveBeenCalledWith({ keepRunning: true });
+  });
 });
 
 // ─── terminateApp() ───

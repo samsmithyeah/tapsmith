@@ -670,7 +670,7 @@ export class TapsmithGrpcClient {
     });
   }
 
-  async stopNetworkCapture(): Promise<{
+  async stopNetworkCapture(options?: { keepRunning?: boolean }): Promise<{
     success: boolean;
     entries: Array<{
       method: string;
@@ -692,6 +692,7 @@ export class TapsmithGrpcClient {
   }> {
     return this.call('stopNetworkCapture', {
       requestId: requestId(),
+      keepRunning: options?.keepRunning ?? false,
     }, 30_000);
   }
 
