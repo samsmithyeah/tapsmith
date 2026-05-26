@@ -4,8 +4,7 @@
  * Verifies that HTTPS requests from the app are captured with the correct
  * `https://` URL scheme — not `http://`.
  */
-import { beforeEach, describe, expect, test } from "tapsmith"
-import { ApiCallsScreen } from "../screens/api-calls.screen.js"
+import { beforeEach, describe, expect, test } from "../fixtures.js"
 import { resetApp } from "../utils/app-reset.js"
 
 describe("Network capture", () => {
@@ -13,13 +12,10 @@ describe("Network capture", () => {
 
   beforeEach(async ({ device }) => {
     await resetApp(device, "/api-calls")
-    const screen = new ApiCallsScreen(device)
-    await expect(screen.heading).toBeVisible()
+    await expect(device.getByText("API Calls", { exact: true })).toBeVisible()
   })
 
-  test("HTTPS request is captured with correct scheme and properties", async ({ device }) => {
-    const screen = new ApiCallsScreen(device)
-
+  test("HTTPS request is captured with correct scheme and properties", async ({ device, apiCallsScreen }) => {
     await device.route("**/users/1", async (route) => {
       await route.fulfill({
         json: { id: 1, name: "Tapsmith Capture User" },
@@ -36,7 +32,7 @@ describe("Network capture", () => {
         { timeout: 15_000 },
       )
 
-      await screen.fetchUserButton.tap()
+      await apiCallsScreen.fetchUserButton.tap()
 
       const [request, response] = await Promise.all([requestPromise, responsePromise])
 

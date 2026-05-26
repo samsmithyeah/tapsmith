@@ -9,8 +9,7 @@
  *
  *   npx tapsmith test tests/api-request-fixture.test.ts --trace on
  */
-import { beforeEach, describe, expect, test } from "tapsmith"
-import { ApiCallsScreen } from "../screens/api-calls.screen.js"
+import { beforeEach, describe, expect, test } from "../fixtures.js"
 import { resetApp } from "../utils/app-reset.js"
 
 describe("request fixture", () => {
@@ -59,20 +58,18 @@ describe("request fixture", () => {
   describe("combined device + request", () => {
     beforeEach(async ({ device }) => {
       await resetApp(device, "/api-calls")
-      const screen = new ApiCallsScreen(device)
-      await expect(screen.heading).toBeVisible()
+      await expect(device.getByText("API Calls", { exact: true })).toBeVisible()
     })
 
-    test("seed data via API then verify app can fetch same endpoint", async ({ device, request }) => {
+    test("seed data via API then verify app can fetch same endpoint", async ({ apiCallsScreen, request }) => {
       // Use the request fixture to verify the API is reachable
       const apiRes = await request.get("https://jsonplaceholder.typicode.com/users/1")
       expect(apiRes.ok).toBe(true)
       const user = (await apiRes.json()) as { name: string }
 
       // Now verify the app can also hit a similar endpoint via the UI
-      const screen = new ApiCallsScreen(device)
-      await screen.fetchUserButton.tap()
-      await expect(screen.userHeading).toBeVisible({ timeout: 10_000 })
+      await apiCallsScreen.fetchUserButton.tap()
+      await expect(apiCallsScreen.userHeading).toBeVisible({ timeout: 10_000 })
     })
   })
 })

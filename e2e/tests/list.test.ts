@@ -1,34 +1,29 @@
-import { beforeAll, describe, expect, test } from "tapsmith";
-import { ListScreen } from "../screens/list.screen.js";
+import { beforeAll, describe, expect, test } from "../fixtures.js";
 
 describe("List screen", () => {
   beforeAll(async ({ device }) => {
-    await device.getByDescription("List").tap();
+    await device.openDeepLink("tapsmithtest:///list");
   });
 
   // ─── Element Counting ───
 
-  test("shows item count", async ({ device }) => {
-    const screen = new ListScreen(device);
-    await expect(screen.itemCount).toHaveText("30 items");
+  test("shows item count", async ({ listScreen }) => {
+    await expect(listScreen.itemCount).toHaveText("30 items");
   });
 
-  test("shows initial selected count", async ({ device }) => {
-    const screen = new ListScreen(device);
-    await expect(screen.selectedCount).toContainText("0 selected");
+  test("shows initial selected count", async ({ listScreen }) => {
+    await expect(listScreen.selectedCount).toContainText("0 selected");
   });
 
   // ─── Positional Selection ───
 
-  test("first() selects the first matching element", async ({ device }) => {
-    const screen = new ListScreen(device);
-    const info = screen.allItems.first();
+  test("first() selects the first matching element", async ({ listScreen }) => {
+    const info = listScreen.allItems.first();
     await expect(info).toHaveText("Item 1");
   });
 
-  test("nth() selects item at specific index", async ({ device }) => {
-    const screen = new ListScreen(device);
-    const items = await screen.allItems.all();
+  test("nth() selects item at specific index", async ({ listScreen }) => {
+    const items = await listScreen.allItems.all();
     expect(items.length).toBeGreaterThan(1);
     const secondText = await items[1].getText();
     expect(secondText.length).toBeGreaterThan(0);
@@ -46,20 +41,18 @@ describe("List screen", () => {
 
   // ─── Selection ───
 
-  test("tapping an item selects and deselects it", async ({ device }) => {
-    const screen = new ListScreen(device);
-    await screen.firstItem.tap();
-    await expect(screen.selectedCount).toContainText("1 selected");
+  test("tapping an item selects and deselects it", async ({ listScreen }) => {
+    await listScreen.firstItem.tap();
+    await expect(listScreen.selectedCount).toContainText("1 selected");
 
-    await screen.firstItem.tap();
-    await expect(screen.selectedCount).toContainText("0 selected");
+    await listScreen.firstItem.tap();
+    await expect(listScreen.selectedCount).toContainText("0 selected");
   });
 
   // ─── all() ───
 
-  test("all() returns array of element handles", async ({ device }) => {
-    const screen = new ListScreen(device);
-    const items = await screen.allItems.all();
+  test("all() returns array of element handles", async ({ listScreen }) => {
+    const items = await listScreen.allItems.all();
     expect(items.length).toBeGreaterThan(0);
     const firstText = await items[0].getText();
     expect(firstText.length).toBeGreaterThan(0);

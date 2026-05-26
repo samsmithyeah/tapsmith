@@ -1,50 +1,42 @@
-import { beforeAll, describe, expect, test } from "tapsmith"
-import { LoginScreen } from "../screens/login.screen.js"
+import { beforeAll, describe, expect, test } from "../fixtures.js"
 
 describe("Login screen", () => {
   beforeAll(async ({ device }) => {
-    await device.getByDescription("Login Form").tap()
+    await device.openDeepLink("tapsmithtest:///login")
   })
 
   // ─── Layout & Visibility ───
 
-  test("shows the sign in heading", async ({ device }) => {
-    const login = new LoginScreen(device)
-    await expect(login.heading).toBeVisible()
+  test("shows the sign in heading", async ({ loginScreen }) => {
+    await expect(loginScreen.heading).toBeVisible()
   })
 
-  test("shows email and password fields", async ({ device }) => {
-    const login = new LoginScreen(device)
-    await expect(login.emailField).toBeVisible()
-    await expect(login.passwordField).toBeVisible()
+  test("shows email and password fields", async ({ loginScreen }) => {
+    await expect(loginScreen.emailField).toBeVisible()
+    await expect(loginScreen.passwordField).toBeVisible()
   })
 
-  test("email field is editable", async ({ device }) => {
-    const login = new LoginScreen(device)
-    await expect(login.emailField).toBeEnabled()
+  test("email field is editable", async ({ loginScreen }) => {
+    await expect(loginScreen.emailField).toBeEnabled()
   })
 
-  test("sign in button starts disabled", async ({ device }) => {
-    const login = new LoginScreen(device)
-    await expect(login.signInButton).toBeDisabled()
+  test("sign in button starts disabled", async ({ loginScreen }) => {
+    await expect(loginScreen.signInButton).toBeDisabled()
   })
 
-  test("forgot password link is visible", async ({ device }) => {
-    const login = new LoginScreen(device)
-    await expect(login.forgotPasswordLink).toBeVisible()
+  test("forgot password link is visible", async ({ loginScreen }) => {
+    await expect(loginScreen.forgotPasswordLink).toBeVisible()
   })
 
   // ─── Text Input ───
 
-  test("can type into email field", async ({ device }) => {
-    const login = new LoginScreen(device)
-    await login.emailField.type("test@example.com")
-    await expect(login.emailField).toHaveValue("test@example.com")
+  test("can type into email field", async ({ loginScreen }) => {
+    await loginScreen.emailField.type("test@example.com")
+    await expect(loginScreen.emailField).toHaveValue("test@example.com")
   })
 
-  test("can type into password field", async ({ device }) => {
-    const login = new LoginScreen(device)
-    await login.passwordField.type("password123")
+  test("can type into password field", async ({ loginScreen }) => {
+    await loginScreen.passwordField.type("password123")
   })
 
   // ─── Focus & Keyboard ───
@@ -64,30 +56,27 @@ describe("Login screen", () => {
 
   // ─── Clear & Retype ───
 
-  test("clearAndType() replaces existing text", async ({ device }) => {
-    const login = new LoginScreen(device)
-    await login.emailField.clearAndType("wrong@email.com")
-    await expect(login.emailField).toContainText("wrong@email.com")
+  test("clearAndType() replaces existing text", async ({ loginScreen }) => {
+    await loginScreen.emailField.clearAndType("wrong@email.com")
+    await expect(loginScreen.emailField).toContainText("wrong@email.com")
   })
 
-  test("clear() empties the field", async ({ device }) => {
-    const login = new LoginScreen(device)
-    await login.emailField.type("hello")
-    await login.emailField.clear()
-    await expect(login.emailField).toBeEmpty()
+  test("clear() empties the field", async ({ loginScreen }) => {
+    await loginScreen.emailField.type("hello")
+    await loginScreen.emailField.clear()
+    await expect(loginScreen.emailField).toBeEmpty()
   })
 
   // ─── Form Submission ───
 
-  test("can type credentials and submit", async ({ device }) => {
-    const login = new LoginScreen(device)
-    await login.emailField.clearAndType("test@example.com")
-    await login.passwordField.clearAndType("password123")
-    await expect(login.signInButton).toBeEnabled()
+  test("can type credentials and submit", async ({ device, loginScreen }) => {
+    await loginScreen.emailField.clearAndType("test@example.com")
+    await loginScreen.passwordField.clearAndType("password123")
+    await expect(loginScreen.signInButton).toBeEnabled()
     // hideKeyboard mirrors auth.setup.ts — without it, the keyboard
     // intercepts the submit tap on some iOS configurations.
     await device.hideKeyboard()
-    await login.signInButton.tap()
+    await loginScreen.signInButton.tap()
     await expect(device.getByText("Login successful!", { exact: true })).toBeVisible()
   })
 })

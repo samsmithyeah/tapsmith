@@ -1,100 +1,85 @@
-import { beforeAll, describe, expect, test } from "tapsmith"
-import { VisibilityScreen } from "../screens/visibility.screen.js"
+import { beforeAll, describe, expect, test } from "../fixtures.js"
 
 describe("Visibility screen", () => {
   beforeAll(async ({ device }) => {
-    await device.getByDescription("Visibility").tap()
+    await device.openDeepLink("tapsmithtest:///visibility")
   })
 
   // ─── Dismissable Banner ───
 
-  test("banner is visible on load", async ({ device }) => {
-    const screen = new VisibilityScreen(device)
-    await expect(screen.banner).toBeVisible()
-    await expect(screen.banner).toExist()
+  test("banner is visible on load", async ({ visibilityScreen }) => {
+    await expect(visibilityScreen.banner).toBeVisible()
+    await expect(visibilityScreen.banner).toExist()
   })
 
-  test("dismissing banner hides it", async ({ device }) => {
-    const screen = new VisibilityScreen(device)
-    await screen.dismissBannerButton.tap()
-    await expect(screen.banner).not.toBeVisible()
+  test("dismissing banner hides it", async ({ visibilityScreen }) => {
+    await visibilityScreen.dismissBannerButton.tap()
+    await expect(visibilityScreen.banner).not.toBeVisible()
   })
 
-  test("show banner button restores it", async ({ device }) => {
-    const screen = new VisibilityScreen(device)
-    await screen.showBannerButton.tap()
-    await expect(screen.banner).toBeVisible()
+  test("show banner button restores it", async ({ visibilityScreen }) => {
+    await visibilityScreen.showBannerButton.tap()
+    await expect(visibilityScreen.banner).toBeVisible()
   })
 
   // ─── Expandable Section ───
 
-  test("expand toggle is visible", async ({ device }) => {
-    const screen = new VisibilityScreen(device)
-    await expect(screen.expandToggle).toBeVisible()
+  test("expand toggle is visible", async ({ visibilityScreen }) => {
+    await expect(visibilityScreen.expandToggle).toBeVisible()
   })
 
-  test("expanded content does not exist by default", async ({ device }) => {
-    const screen = new VisibilityScreen(device)
-    await expect(screen.expandedContent).not.toExist()
+  test("expanded content does not exist by default", async ({ visibilityScreen }) => {
+    await expect(visibilityScreen.expandedContent).not.toExist()
   })
 
-  test("expanding reveals content", async ({ device }) => {
-    const screen = new VisibilityScreen(device)
-    await screen.expandToggle.tap()
-    await expect(screen.expandedContent).toBeVisible()
+  test("expanding reveals content", async ({ visibilityScreen }) => {
+    await visibilityScreen.expandToggle.tap()
+    await expect(visibilityScreen.expandedContent).toBeVisible()
   })
 
-  test("collapsing hides content", async ({ device }) => {
-    const screen = new VisibilityScreen(device)
-    await screen.expandToggle.tap()
-    await expect(screen.expandedContent).not.toExist()
+  test("collapsing hides content", async ({ visibilityScreen }) => {
+    await visibilityScreen.expandToggle.tap()
+    await expect(visibilityScreen.expandedContent).not.toExist()
   })
 
   // ─── Dynamic List ───
 
-  test("dynamic list shows 3 items initially", async ({ device }) => {
-    const screen = new VisibilityScreen(device)
-    await expect(screen.itemCount(3)).toBeVisible()
+  test("dynamic list shows 3 items initially", async ({ visibilityScreen }) => {
+    await expect(visibilityScreen.itemCount(3)).toBeVisible()
   })
 
-  test("adding an item increases the count", async ({ device }) => {
-    const screen = new VisibilityScreen(device)
-    await screen.addItemButton.tap()
-    await expect(screen.itemCount(4)).toBeVisible()
+  test("adding an item increases the count", async ({ visibilityScreen }) => {
+    await visibilityScreen.addItemButton.tap()
+    await expect(visibilityScreen.itemCount(4)).toBeVisible()
   })
 
-  test("deleting an item decreases the count", async ({ device }) => {
-    const screen = new VisibilityScreen(device)
-    await screen.deleteButton.first().tap()
-    await expect(screen.itemCount(3)).toBeVisible()
+  test("deleting an item decreases the count", async ({ visibilityScreen }) => {
+    await visibilityScreen.deleteButton.first().tap()
+    await expect(visibilityScreen.itemCount(3)).toBeVisible()
   })
 
   // ─── Loading State ───
 
-  test("content loaded is shown initially", async ({ device }) => {
-    const screen = new VisibilityScreen(device)
-    await expect(screen.contentLoaded).toBeVisible()
+  test("content loaded is shown initially", async ({ visibilityScreen }) => {
+    await expect(visibilityScreen.contentLoaded).toBeVisible()
   })
 
-  test("loading indicator appears and then disappears", async ({ device }) => {
-    const screen = new VisibilityScreen(device)
+  test("loading indicator appears and then disappears", async ({ device, visibilityScreen }) => {
     await device.swipe("up")
-    await screen.startLoadingButton.tap()
-    await expect(screen.loadingIndicator).toBeVisible()
-    await expect(screen.contentLoaded).toBeVisible({ timeout: 5000 })
+    await visibilityScreen.startLoadingButton.tap()
+    await expect(visibilityScreen.loadingIndicator).toBeVisible()
+    await expect(visibilityScreen.contentLoaded).toBeVisible({ timeout: 5000 })
   })
 
   // ─── Error State ───
 
-  test("triggering error shows the error message", async ({ device }) => {
-    const screen = new VisibilityScreen(device)
-    await screen.toggleErrorButton.tap()
-    await expect(screen.errorText).toBeVisible()
+  test("triggering error shows the error message", async ({ visibilityScreen }) => {
+    await visibilityScreen.toggleErrorButton.tap()
+    await expect(visibilityScreen.errorText).toBeVisible()
   })
 
-  test("clearing error hides the message", async ({ device }) => {
-    const screen = new VisibilityScreen(device)
-    await screen.toggleErrorButton.tap()
-    await expect(screen.errorMessage).not.toBeVisible()
+  test("clearing error hides the message", async ({ visibilityScreen }) => {
+    await visibilityScreen.toggleErrorButton.tap()
+    await expect(visibilityScreen.errorMessage).not.toBeVisible()
   })
 })

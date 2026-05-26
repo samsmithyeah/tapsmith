@@ -1,33 +1,27 @@
-import { beforeAll, describe, expect, test } from "tapsmith"
-import { ScrollScreen } from "../screens/scroll.screen.js"
+import { beforeAll, describe, expect, test } from "../fixtures.js"
 
 describe("Scroll screen", () => {
   beforeAll(async ({ device }) => {
-    await device.getByDescription("Scroll").scrollIntoView()
-    await device.getByDescription("Scroll").tap()
+    await device.openDeepLink("tapsmithtest:///scroll")
   })
 
-  test("shows heading and description", async ({ device }) => {
-    const screen = new ScrollScreen(device)
-    await expect(screen.heading).toBeVisible()
+  test("shows heading and description", async ({ scrollScreen }) => {
+    await expect(scrollScreen.heading).toBeVisible()
   })
 
-  test("first section is visible", async ({ device }) => {
-    const screen = new ScrollScreen(device)
-    await expect(screen.sectionA).toBeVisible()
-    await expect(screen.firstItem).toBeVisible()
+  test("first section is visible", async ({ scrollScreen }) => {
+    await expect(scrollScreen.sectionA).toBeVisible()
+    await expect(scrollScreen.firstItem).toBeVisible()
   })
 
-  test("first item has correct accessible name", async ({ device }) => {
-    const screen = new ScrollScreen(device)
-    await expect(screen.firstItem).toHaveAccessibleName("Item A-1")
+  test("first item has correct accessible name", async ({ scrollScreen }) => {
+    await expect(scrollScreen.firstItem).toHaveAccessibleName("Item A-1")
   })
 
   // ─── Element Screenshots ───
 
-  test("can take element screenshot", async ({ device }) => {
-    const screen = new ScrollScreen(device)
-    const png = await screen.sectionA.screenshot()
+  test("can take element screenshot", async ({ scrollScreen }) => {
+    const png = await scrollScreen.sectionA.screenshot()
     expect(png.length).toBeGreaterThan(0)
   })
 

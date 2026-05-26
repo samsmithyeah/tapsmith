@@ -1,57 +1,46 @@
-import { beforeAll, beforeEach, describe, expect, test } from "tapsmith"
-import { AccessibilityScreen } from "../screens/accessibility.screen.js"
+import { beforeAll, beforeEach, describe, expect, test } from "../fixtures.js"
 import { resetApp } from "../utils/app-reset.js"
 
 describe("Accessibility screen", () => {
   beforeAll(async ({ device }) => {
     await resetApp(device, "/accessibility")
-    const screen = new AccessibilityScreen(device)
-    await expect(screen.heading).toBeVisible()
+    await expect(device.getByText("Accessibility Testing", { exact: true })).toBeVisible()
   })
 
   beforeEach(async ({ device }) => {
-    const screen = new AccessibilityScreen(device)
-    if (!(await screen.heading.exists())) {
-      await screen.navCard.scrollIntoView()
-      await screen.navCard.tap()
-      await expect(screen.heading).toBeVisible()
+    if (!(await device.getByText("Accessibility Testing", { exact: true }).exists())) {
+      await resetApp(device, "/accessibility")
     }
   })
 
-  test("shows heading", async ({ device }) => {
-    const screen = new AccessibilityScreen(device)
-    await expect(screen.heading).toBeVisible()
+  test("shows heading", async ({ accessibilityScreen }) => {
+    await expect(accessibilityScreen.heading).toBeVisible()
   })
 
   // ─── Roles ───
 
-  test("button role element exists", async ({ device }) => {
-    const screen = new AccessibilityScreen(device)
-    await expect(screen.roleButton).toExist()
-    await expect(screen.roleButton).toHaveRole("button")
+  test("button role element exists", async ({ accessibilityScreen }) => {
+    await expect(accessibilityScreen.roleButton).toExist()
+    await expect(accessibilityScreen.roleButton).toHaveRole("button")
   })
 
-  test("link role element exists", async ({ device }) => {
-    const screen = new AccessibilityScreen(device)
-    await expect(screen.roleLink).toExist()
-    await expect(screen.roleLink).toHaveRole("link")
+  test("link role element exists", async ({ accessibilityScreen }) => {
+    await expect(accessibilityScreen.roleLink).toExist()
+    await expect(accessibilityScreen.roleLink).toHaveRole("link")
   })
 
-  test("header role element exists", async ({ device }) => {
-    const screen = new AccessibilityScreen(device)
-    await expect(screen.roleHeader).toExist()
-    await expect(screen.roleHeader).toHaveRole("heading")
+  test("header role element exists", async ({ accessibilityScreen }) => {
+    await expect(accessibilityScreen.roleHeader).toExist()
+    await expect(accessibilityScreen.roleHeader).toHaveRole("heading")
   })
 
-  test("image role element exists", async ({ device }) => {
-    const screen = new AccessibilityScreen(device)
-    await expect(screen.roleImage).toExist()
-    await expect(screen.roleImage).toHaveRole("image")
+  test("image role element exists", async ({ accessibilityScreen }) => {
+    await expect(accessibilityScreen.roleImage).toExist()
+    await expect(accessibilityScreen.roleImage).toHaveRole("image")
   })
 
-  test("alert role element exists", async ({ device }) => {
-    const screen = new AccessibilityScreen(device)
-    await expect(screen.roleAlert).toExist()
+  test("alert role element exists", async ({ accessibilityScreen }) => {
+    await expect(accessibilityScreen.roleAlert).toExist()
     // toHaveRole("alert") omitted: iOS has no UIAccessibilityTrait for
     // alert, so the agent can't report the role back. The toExist()
     // above verifies getByRole("alert") finds the element.
@@ -59,39 +48,33 @@ describe("Accessibility screen", () => {
 
   // ─── Accessible Names ───
 
-  test("button has accessible name 'Submit form'", async ({ device }) => {
-    const screen = new AccessibilityScreen(device)
-    await expect(screen.roleButton).toHaveAccessibleName("Submit form")
+  test("button has accessible name 'Submit form'", async ({ accessibilityScreen }) => {
+    await expect(accessibilityScreen.roleButton).toHaveAccessibleName("Submit form")
   })
 
-  test("image has accessible name 'Profile photo'", async ({ device }) => {
-    const screen = new AccessibilityScreen(device)
-    await expect(screen.roleImage).toHaveAccessibleName("Profile photo")
+  test("image has accessible name 'Profile photo'", async ({ accessibilityScreen }) => {
+    await expect(accessibilityScreen.roleImage).toHaveAccessibleName("Profile photo")
   })
 
   // ─── Content Descriptions ───
 
-  test("close icon has content description", async ({ device }) => {
-    const screen = new AccessibilityScreen(device)
-    await expect(screen.closeIcon).toBeVisible()
+  test("close icon has content description", async ({ accessibilityScreen }) => {
+    await expect(accessibilityScreen.closeIcon).toBeVisible()
   })
 
-  test("cart icon has content description", async ({ device }) => {
-    const screen = new AccessibilityScreen(device)
-    await expect(screen.cartIcon).toBeVisible()
+  test("cart icon has content description", async ({ accessibilityScreen }) => {
+    await expect(accessibilityScreen.cartIcon).toBeVisible()
   })
 
-  test("avatar has content description", async ({ device }) => {
-    const screen = new AccessibilityScreen(device)
-    await expect(screen.avatar).toBeVisible()
-    await expect(screen.avatar).toHaveAccessibleName("User avatar")
+  test("avatar has content description", async ({ accessibilityScreen }) => {
+    await expect(accessibilityScreen.avatar).toBeVisible()
+    await expect(accessibilityScreen.avatar).toHaveAccessibleName("User avatar")
   })
 
   // ─── Grouped Elements ───
 
-  test("grouped profile is visible after scrolling", async ({ device }) => {
-    const screen = new AccessibilityScreen(device)
+  test("grouped profile is visible after scrolling", async ({ device, accessibilityScreen }) => {
     await device.swipe("up")
-    await expect(screen.groupedProfile).toBeVisible()
+    await expect(accessibilityScreen.groupedProfile).toBeVisible()
   })
 })

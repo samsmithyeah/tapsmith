@@ -1,87 +1,77 @@
-import { beforeAll, describe, expect, test } from "tapsmith"
-import { VisibilityScreen } from "../screens/visibility.screen.js"
+import { beforeAll, describe, expect, test } from "../fixtures.js"
 
 describe("waitFor", () => {
   beforeAll(async ({ device }) => {
-    await device.getByDescription("Visibility").tap()
+    await device.openDeepLink("tapsmithtest:///visibility")
   })
 
   // ─── state: visible (default) ───
 
-  test("waitFor() resolves when element is already visible", async ({ device }) => {
-    const screen = new VisibilityScreen(device)
-    await screen.banner.waitFor()
+  test("waitFor() resolves when element is already visible", async ({ visibilityScreen }) => {
+    await visibilityScreen.banner.waitFor()
   })
 
-  test("waitFor({ state: 'visible' }) waits for element to appear", async ({ device }) => {
-    const screen = new VisibilityScreen(device)
+  test("waitFor({ state: 'visible' }) waits for element to appear", async ({ visibilityScreen }) => {
     // Dismiss the banner, then show it again and wait for it
-    await screen.dismissBannerButton.tap()
-    await screen.showBannerButton.tap()
-    await screen.banner.waitFor({ state: "visible" })
-    await expect(screen.banner).toBeVisible()
+    await visibilityScreen.dismissBannerButton.tap()
+    await visibilityScreen.showBannerButton.tap()
+    await visibilityScreen.banner.waitFor({ state: "visible" })
+    await expect(visibilityScreen.banner).toBeVisible()
   })
 
   // ─── state: hidden ───
 
-  test("waitFor({ state: 'hidden' }) resolves when element is not present", async ({ device }) => {
-    const screen = new VisibilityScreen(device)
+  test("waitFor({ state: 'hidden' }) resolves when element is not present", async ({ visibilityScreen }) => {
     // Expanded content doesn't exist yet — hidden should resolve immediately
-    await screen.expandedContent.waitFor({ state: "hidden" })
+    await visibilityScreen.expandedContent.waitFor({ state: "hidden" })
   })
 
-  test("waitFor({ state: 'hidden' }) waits for element to disappear", async ({ device }) => {
-    const screen = new VisibilityScreen(device)
+  test("waitFor({ state: 'hidden' }) waits for element to disappear", async ({ device, visibilityScreen }) => {
     await device.swipe("up")
     // Start loading — the loading indicator appears then disappears after ~2s
-    await screen.startLoadingButton.tap()
-    await expect(screen.loadingIndicator).toBeVisible()
-    await screen.loadingIndicator.waitFor({ state: "hidden", timeout: 5000 })
-    await expect(screen.contentLoaded).toBeVisible()
+    await visibilityScreen.startLoadingButton.tap()
+    await expect(visibilityScreen.loadingIndicator).toBeVisible()
+    await visibilityScreen.loadingIndicator.waitFor({ state: "hidden", timeout: 5000 })
+    await expect(visibilityScreen.contentLoaded).toBeVisible()
   })
 
   // ─── state: attached ───
 
-  test("waitFor({ state: 'attached' }) resolves when element exists regardless of visibility", async ({ device }) => {
-    const screen = new VisibilityScreen(device)
+  test("waitFor({ state: 'attached' }) resolves when element exists regardless of visibility", async ({ device, visibilityScreen }) => {
     await device.swipe("down")
     // Banner is visible — attached should resolve
-    await screen.banner.waitFor({ state: "attached" })
+    await visibilityScreen.banner.waitFor({ state: "attached" })
   })
 
-  test("waitFor({ state: 'attached' }) waits for element to be added to hierarchy", async ({ device }) => {
-    const screen = new VisibilityScreen(device)
+  test("waitFor({ state: 'attached' }) waits for element to be added to hierarchy", async ({ visibilityScreen }) => {
     // Expand the section — the content gets added to the hierarchy
-    await screen.expandToggle.tap()
-    await screen.expandedContent.waitFor({ state: "attached" })
-    await expect(screen.expandedContent).toExist()
+    await visibilityScreen.expandToggle.tap()
+    await visibilityScreen.expandedContent.waitFor({ state: "attached" })
+    await expect(visibilityScreen.expandedContent).toExist()
   })
 
   // ─── state: detached ───
 
-  test("waitFor({ state: 'detached' }) resolves when element does not exist", async ({ device }) => {
-    const screen = new VisibilityScreen(device)
+  test("waitFor({ state: 'detached' }) resolves when element does not exist", async ({ visibilityScreen }) => {
     // Error message doesn't exist yet
-    await screen.errorMessage.waitFor({ state: "detached" })
+    await visibilityScreen.errorMessage.waitFor({ state: "detached" })
   })
 
-  test("waitFor({ state: 'detached' }) waits for element to be removed from hierarchy", async ({ device }) => {
-    const screen = new VisibilityScreen(device)
+  test("waitFor({ state: 'detached' }) waits for element to be removed from hierarchy", async ({ visibilityScreen }) => {
     // Collapse the expanded section — content gets removed entirely
-    await screen.expandToggle.tap()
-    await screen.expandedContent.waitFor({ state: "detached" })
-    const exists = await screen.expandedContent.exists()
+    await visibilityScreen.expandToggle.tap()
+    await visibilityScreen.expandedContent.waitFor({ state: "detached" })
+    const exists = await visibilityScreen.expandedContent.exists()
     expect(exists).toBe(false)
   })
 
   // ─── timeout ───
 
-  test("waitFor() throws when timeout expires", async ({ device }) => {
-    const screen = new VisibilityScreen(device)
+  test("waitFor() throws when timeout expires", async ({ visibilityScreen }) => {
     // Error message doesn't exist — waiting for 'visible' should time out
     let error: Error | undefined
     try {
-      await screen.errorMessage.waitFor({ state: "visible", timeout: 1000 })
+      await visibilityScreen.errorMessage.waitFor({ state: "visible", timeout: 1000 })
     } catch (e) {
       error = e as Error
     }
