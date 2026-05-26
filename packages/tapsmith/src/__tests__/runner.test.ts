@@ -24,7 +24,7 @@ import type { TapsmithConfig } from '../config.js';
 import { Tracing } from '../trace/tracing.js';
 import type { TraceCollector } from '../trace/trace-collector.js';
 
-const { pushContext, popContext, runSuiteContext, resolvePlatformFixture } = _internal;
+const { pushContext, popContext, runSuiteContext, resolvePlatformFixture, resetFixtureRegistry } = _internal;
 
 /** Minimal config sufficient for runSuiteContext. */
 function makeConfig(overrides: Partial<TapsmithConfig> = {}): TapsmithConfig {
@@ -303,6 +303,144 @@ describe('runner execution', () => {
       seenPlatforms.push(platform);
     });
     tapsmithTest('uses platform in hook', async () => {});
+    const ctx = popContext();
+
+    const result = await runSuiteContext(ctx, '', [], [], makeOpts({
+      config: makeConfig({ platform: 'ios' }),
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- focused runner hook fixture mock
+      device: mockDevice as any,
+    }));
+
+    expect(result.tests[0].status).toBe('passed');
+    expect(seenPlatforms).toEqual(['ios']);
+  });
+
+  it('passes custom fixtures from test.extend() to beforeEach hooks', async () => {
+    const seenValues: string[] = [];
+    const mockDevice = { waitForIdle: vi.fn(async () => {}) };
+
+    try {
+      const extended = tapsmithTest.extend<{ greeting: string }>({
+        greeting: async (_fixtures, use) => { await use('hello from fixture'); },
+      });
+
+      pushContext();
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- testing runtime fixture injection
+      tapsmithBeforeEach(async (fixtures: any) => {
+        seenValues.push(fixtures.greeting);
+      });
+      extended('uses custom fixture in hook', async () => {});
+      const ctx = popContext();
+
+      const result = await runSuiteContext(ctx, '', [], [], makeOpts({
+        config: makeConfig({ platform: 'android' }),
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any -- focused runner hook fixture mock
+        device: mockDevice as any,
+      }));
+
+      expect(result.tests[0].status).toBe('passed');
+      expect(seenValues).toEqual(['hello from fixture']);
+    } finally {
+      resetFixtureRegistry();
+    }
+  });
+
+  it('passes custom fixtures from test.extend() to afterEach hooks', async () => {
+    const seenValues: string[] = [];
+    const mockDevice = { waitForIdle: vi.fn(async () => {}) };
+
+    try {
+      const extended = tapsmithTest.extend<{ greeting: string }>({
+        greeting: async (_fixtures, use) => { await use('hello after'); },
+      });
+
+      pushContext();
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- testing runtime fixture injection
+      tapsmithAfterEach(async (fixtures: any) => {
+        seenValues.push(fixtures.greeting);
+      });
+      extended('custom fixture available in afterEach', async () => {});
+      const ctx = popContext();
+
+      const result = await runSuiteContext(ctx, '', [], [], makeOpts({
+        config: makeConfig({ platform: 'android' }),
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any -- focused runner hook fixture mock
+        device: mockDevice as any,
+      }));
+
+      expect(result.tests[0].status).toBe('passed');
+      expect(seenValues).toEqual(['hello after']);
+    } finally {
+      resetFixtureRegistry();
+    }
+  });
+
+  it('passes worker-scoped fixtures to beforeAll hooks', async () => {
+    const seenValues: string[] = [];
+    const mockDevice = { waitForIdle: vi.fn(async () => {}) };
+
+    pushContext();
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- testing runtime fixture injection
+    tapsmithBeforeAll(async (fixtures: any) => {
+      seenValues.push(fixtures.workerVal);
+    });
+    tapsmithTest('after beforeAll with worker fixtures', async () => {});
+    const ctx = popContext();
+
+    const result = await runSuiteContext(ctx, '', [], [], makeOpts({
+      config: makeConfig({ platform: 'android' }),
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- focused runner hook fixture mock
+      device: mockDevice as any,
+      workerFixtures: { workerVal: 'from-worker' },
+    }));
+
+    expect(result.tests[0].status).toBe('passed');
+    expect(seenValues).toEqual(['from-worker']);
+  });
+
+  it('tears down test fixtures after afterEach hooks', async () => {
+    const order: string[] = [];
+    const mockDevice = { waitForIdle: vi.fn(async () => {}) };
+
+    try {
+      tapsmithTest.extend<{ tracked: string }>({
+        tracked: async (_fixtures, use) => {
+          order.push('fixture-setup');
+          await use('value');
+          order.push('fixture-teardown');
+        },
+      });
+
+      pushContext();
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- testing runtime fixture injection
+      tapsmithAfterEach(async (_fixtures: any) => {
+        order.push('afterEach');
+      });
+      tapsmithTest('teardown order', async () => { order.push('test-body'); });
+      const ctx = popContext();
+
+      const result = await runSuiteContext(ctx, '', [], [], makeOpts({
+        config: makeConfig({ platform: 'android' }),
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any -- focused runner hook fixture mock
+        device: mockDevice as any,
+      }));
+
+      expect(result.tests[0].status).toBe('passed');
+      expect(order).toEqual(['fixture-setup', 'test-body', 'afterEach', 'fixture-teardown']);
+    } finally {
+      resetFixtureRegistry();
+    }
+  });
+
+  it('test.beforeEach() registers hooks same as standalone', async () => {
+    const seenPlatforms: string[] = [];
+    const mockDevice = { waitForIdle: vi.fn(async () => {}) };
+
+    pushContext();
+    tapsmithTest.beforeEach(async ({ platform }) => {
+      seenPlatforms.push(platform);
+    });
+    tapsmithTest('hook via test.beforeEach', async () => {});
     const ctx = popContext();
 
     const result = await runSuiteContext(ctx, '', [], [], makeOpts({

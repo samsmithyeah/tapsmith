@@ -279,6 +279,10 @@ export interface TestFn {
   extend: <T extends Record<string, unknown>>(
     definitions: FixtureDefinitions<T, BuiltinFixtures & T>,
   ) => TestFn;
+  beforeAll: (fn: HookFn) => void;
+  afterAll: (fn: HookFn) => void;
+  beforeEach: (fn: HookFn) => void;
+  afterEach: (fn: HookFn) => void;
 }
 
 export interface DescribeFn {
@@ -318,6 +322,10 @@ function createTestFn(registry: FixtureRegistry): TestFn {
         activeFixtureRegistry = merged;
         return createTestFn(merged);
       },
+      beforeAll: (hookFn: HookFn) => { currentContext().beforeAll.push(hookFn); },
+      afterAll: (hookFn: HookFn) => { currentContext().afterAll.push(hookFn); },
+      beforeEach: (hookFn: HookFn) => { currentContext().beforeEach.push(hookFn); },
+      afterEach: (hookFn: HookFn) => { currentContext().afterEach.push(hookFn); },
     },
   );
   return fn;
@@ -544,17 +552,10 @@ function passesTestFilter(fullName: string, opts: RunOptions): boolean {
 // practice this is fine because hooks are simple `async ({ device }) => …`.
 async function invokeHook(
   fn: HookFn,
-  config: TapsmithConfig,
-  device?: Device,
-  projectName?: string,
+  fixtures: Record<string, unknown>,
 ): Promise<void> {
-  if (fn.length > 0 && device) {
-    // Hooks receive device + project metadata; request fixture is test-scoped only.
-    await (fn as (fixtures: { device: Device; projectName?: string; platform: Platform }) => void | Promise<void>)({
-      device,
-      projectName,
-      platform: resolvePlatformFixture(config),
-    });
+  if (fn.length > 0) {
+    await (fn as (fixtures: Record<string, unknown>) => void | Promise<void>)(fixtures);
   } else {
     await (fn as () => void | Promise<void>)();
   }
@@ -693,17 +694,24 @@ async function runSuiteContext(
       beforeAllCollector.startGroup('beforeAll Hooks');
     }
   }
+  const suiteFixtures: Record<string, unknown> = {
+    ...(opts.device ? { device: opts.device } : {}),
+    ...(opts.projectName != null ? { projectName: opts.projectName } : {}),
+    platform: resolvePlatformFixture(opts.config),
+    ...(opts.workerFixtures ?? {}),
+  };
+
   try {
     if (beforeAllCollector) {
       await withActiveTraceCollector(beforeAllCollector, async () => {
         for (const hook of ctx.beforeAll) {
-          await invokeHook(hook, opts.config, opts.device, opts.projectName);
+          await invokeHook(hook, suiteFixtures);
         }
       });
       beforeAllCollector.endGroup();
     } else {
       for (const hook of ctx.beforeAll) {
-        await invokeHook(hook, opts.config, opts.device, opts.projectName);
+        await invokeHook(hook, suiteFixtures);
       }
     }
   } catch (err) {
@@ -924,6 +932,15 @@ async function runSuiteContext(
         extraHTTPHeaders: opts.config.extraHTTPHeaders,
       });
 
+      // Declare fixture state outside try so afterEach hooks and teardown
+      // are accessible in the finally block.
+      const baseFixtures: Record<string, unknown> = {
+        ...suiteFixtures,
+        request: requestContext,
+      };
+      let testFixtureTeardown: (() => Promise<void>) | undefined;
+      let allFixtures: Record<string, unknown> = baseFixtures;
+
       try {
         // ── Setup phase (not subject to test timeout) ──
           // Hooks and fixture resolution run outside the test timeout so that
@@ -944,12 +961,16 @@ async function runSuiteContext(
             replayBeforeAllEvents(traceCollector, savedBeforeAllEvents, beforeAllCollector, beforeAllHierarchies);
           }
 
+          // Resolve test-scoped fixtures BEFORE hooks so beforeEach/afterEach
+          // can access custom fixtures (matching Playwright's behavior).
+          const registry = getFixtureRegistry();
+
           // Open the beforeEach group before running setup work and hooks.
           // Heavy setup (session readiness, idle waits, user beforeEach hooks)
           // is captured inside this group so device actions don't appear as
           // ungrouped top-level events in the trace viewer.
           const hasBeforeEachWork =
-            !!opts.beforeEachTest || !!opts.device || allBeforeEach.length > 0;
+            !!opts.beforeEachTest || !!opts.device || allBeforeEach.length > 0 || !registry.isEmpty;
           if (hasBeforeEachWork) {
             traceCollector?.startGroup('beforeEach Hooks');
           }
@@ -972,30 +993,17 @@ async function runSuiteContext(
             }
           }
 
-          for (const hook of allBeforeEach) {
-            await invokeHook(hook, opts.config, opts.device, opts.projectName);
-          }
-          if (hasBeforeEachWork) {
-            traceCollector?.endGroup();
-          }
-
-          // Build fixture context: base (device + request) + worker-scoped + test-scoped
-          const registry = getFixtureRegistry();
-          const baseFixtures: Record<string, unknown> = {
-            ...(opts.device ? { device: opts.device } : {}),
-            request: requestContext,
-            ...(opts.projectName != null ? { projectName: opts.projectName } : {}),
-            platform: resolvePlatformFixture(opts.config),
-            ...(opts.workerFixtures ?? {}),
-          };
-
-          let testFixtureTeardown: (() => Promise<void>) | undefined;
-          let allFixtures = baseFixtures;
-
           if (!registry.isEmpty) {
             const resolved = await resolveFixtures(registry, 'test', baseFixtures);
             allFixtures = resolved.fixtures;
             testFixtureTeardown = resolved.teardown;
+          }
+
+          for (const hook of allBeforeEach) {
+            await invokeHook(hook, allFixtures);
+          }
+          if (hasBeforeEachWork) {
+            traceCollector?.endGroup();
           }
 
           // ── Test body (subject to test timeout) ──
@@ -1010,9 +1018,6 @@ async function runSuiteContext(
               }
             } finally {
               traceCollector?.endGroup();
-              if (testFixtureTeardown) {
-                await testFixtureTeardown();
-              }
             }
           };
 
@@ -1051,21 +1056,26 @@ async function runSuiteContext(
             );
           }
         } finally {
-          // Ensure request fixture is cleaned up even if hooks threw before the test body
-          requestContext.dispose();
-
-          // Run afterEach hooks (always)
+          // Run afterEach hooks (always, with full fixtures available)
           if (allAfterEach.length > 0) {
             traceCollector?.startGroup('afterEach Hooks');
             for (const hook of allAfterEach) {
               try {
-                await invokeHook(hook, opts.config, opts.device, opts.projectName);
+                await invokeHook(hook, allFixtures);
               } catch (err) {
                 process.stderr.write(`[tapsmith] afterEach hook error: ${err instanceof Error ? err.message : String(err)}\n`);
               }
             }
             traceCollector?.endGroup();
           }
+
+          // Tear down test-scoped fixtures after afterEach hooks have run
+          if (testFixtureTeardown) {
+            await testFixtureTeardown();
+          }
+
+          // Ensure request fixture is cleaned up
+          requestContext.dispose();
         }
 
       // Clean up route interception between tests so routes don't leak
@@ -1436,7 +1446,7 @@ async function runSuiteContext(
       await withActiveTraceCollector(afterAllCollector, async () => {
         for (const hook of ctx.afterAll) {
           try {
-            await invokeHook(hook, opts.config, opts.device, opts.projectName);
+            await invokeHook(hook, suiteFixtures);
           } catch (err) {
             process.stderr.write(`[tapsmith] afterAll hook error: ${err instanceof Error ? err.message : String(err)}\n`);
           }
@@ -1447,7 +1457,7 @@ async function runSuiteContext(
     } else {
       for (const hook of ctx.afterAll) {
         try {
-          await invokeHook(hook, opts.config, opts.device, opts.projectName);
+          await invokeHook(hook, suiteFixtures);
         } catch (err) {
           process.stderr.write(`[tapsmith] afterAll hook error: ${err instanceof Error ? err.message : String(err)}\n`);
         }
@@ -1456,7 +1466,7 @@ async function runSuiteContext(
   } else {
     for (const hook of ctx.afterAll) {
       try {
-        await invokeHook(hook, opts.config, opts.device, opts.projectName);
+        await invokeHook(hook, suiteFixtures);
       } catch (err) {
         process.stderr.write(`[tapsmith] afterAll hook error: ${err instanceof Error ? err.message : String(err)}\n`);
       }
@@ -1664,4 +1674,5 @@ function discoverSuiteContext(ctx: SuiteContext, parentPrefix: string): Discover
 }
 
 /** @internal — exposed for unit testing only. */
-export const _internal = { pushContext, popContext, runSuiteContext, resolvePlatformFixture };
+function resetFixtureRegistry(): void { activeFixtureRegistry = new FixtureRegistry(); }
+export const _internal = { pushContext, popContext, runSuiteContext, resolvePlatformFixture, resetFixtureRegistry };

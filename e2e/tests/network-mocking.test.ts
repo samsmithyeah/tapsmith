@@ -12,7 +12,6 @@ import type { AddressInfo } from "node:net"
 import {
   afterAll,
   beforeAll,
-  beforeEach,
   describe,
   expect,
   test,
@@ -91,8 +90,9 @@ describe("Network mocking", () => {
     })
   })
 
-  beforeEach(async ({ device }) => {
-    await resetApiCallsScreen(device)
+  test.beforeEach(async ({ device, apiCallsScreen }) => {
+    await resetApp(device, "/api-calls")
+    await expect(apiCallsScreen.heading).toBeVisible()
   })
 
   test("route.fulfill() — mock a JSON response", async ({ device, apiCallsScreen }) => {

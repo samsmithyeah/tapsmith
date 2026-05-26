@@ -4,15 +4,15 @@
  * Verifies that HTTPS requests from the app are captured with the correct
  * `https://` URL scheme — not `http://`.
  */
-import { beforeEach, describe, expect, test } from "../fixtures.js"
+import { describe, expect, test } from "../fixtures.js"
 import { resetApp } from "../utils/app-reset.js"
 
 describe("Network capture", () => {
   test.use({ timeout: 20_000 })
 
-  beforeEach(async ({ device }) => {
+  test.beforeEach(async ({ device, apiCallsScreen }) => {
     await resetApp(device, "/api-calls")
-    await expect(device.getByText("API Calls", { exact: true })).toBeVisible()
+    await expect(apiCallsScreen.heading).toBeVisible()
   })
 
   test("HTTPS request is captured with correct scheme and properties", async ({ device, apiCallsScreen }) => {

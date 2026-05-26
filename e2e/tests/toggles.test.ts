@@ -1,10 +1,10 @@
-import { beforeEach, describe, expect, test } from "../fixtures.js"
+import { describe, expect, test } from "../fixtures.js"
 import { resetApp } from "../utils/app-reset.js"
 
 describe("Toggles screen", () => {
-  beforeEach(async ({ device }) => {
+  test.beforeEach(async ({ device, togglesScreen }) => {
     await resetApp(device, "/toggles")
-    await expect(device.getByText("Switches", { exact: true })).toBeVisible()
+    await expect(togglesScreen.switchesHeading).toBeVisible()
   })
 
   // ─── Switches ───

@@ -9,7 +9,7 @@
  *
  *   npx tapsmith test tests/api-request-fixture.test.ts --trace on
  */
-import { beforeEach, describe, expect, test } from "../fixtures.js"
+import { describe, expect, test } from "../fixtures.js"
 import { resetApp } from "../utils/app-reset.js"
 
 describe("request fixture", () => {
@@ -56,9 +56,9 @@ describe("request fixture", () => {
   })
 
   describe("combined device + request", () => {
-    beforeEach(async ({ device }) => {
+    test.beforeEach(async ({ device, apiCallsScreen }) => {
       await resetApp(device, "/api-calls")
-      await expect(device.getByText("API Calls", { exact: true })).toBeVisible()
+      await expect(apiCallsScreen.heading).toBeVisible()
     })
 
     test("seed data via API then verify app can fetch same endpoint", async ({ apiCallsScreen, request }) => {

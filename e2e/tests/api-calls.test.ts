@@ -6,7 +6,7 @@
  *
  *   npx tapsmith test tests/api-calls.test.ts --trace on
  */
-import { beforeEach, describe, expect, test } from "../fixtures.js"
+import { describe, expect, test } from "../fixtures.js"
 import { resetApp } from "../utils/app-reset.js"
 
 describe("API Calls screen", () => {
@@ -15,9 +15,9 @@ describe("API Calls screen", () => {
   // under the default 10s timeout.
   test.use({ timeout: 15_000 })
 
-  beforeEach(async ({ device }) => {
+  test.beforeEach(async ({ device, apiCallsScreen }) => {
     await resetApp(device, "/api-calls")
-    await expect(device.getByText("API Calls", { exact: true })).toBeVisible()
+    await expect(apiCallsScreen.heading).toBeVisible()
   })
 
   test("fetches and displays posts", async ({ apiCallsScreen }) => {
