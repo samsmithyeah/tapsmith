@@ -22,19 +22,8 @@ import {
 import { ApiCallsScreen } from "../screens/api-calls.screen.js"
 import { resetApp } from "../utils/app-reset.js"
 
-type TestPlatform = "android" | "ios"
-
-async function resetApiCallsScreen(device: Device, platform: TestPlatform) {
-  if (platform === "android") {
-    // Android traces from the soft-reset path showed route() registered but
-    // zero captured network entries after the first capture cycle.
-    await device.restartApp()
-    await device.getByDescription("API Calls").scrollIntoView()
-    await device.getByDescription("API Calls").tap()
-  } else {
-    await resetApp(device, "/api-calls")
-  }
-
+async function resetApiCallsScreen(device: Device) {
+  await resetApp(device, "/api-calls")
   const screen = new ApiCallsScreen(device)
   await expect(screen.heading).toBeVisible()
 }
@@ -104,8 +93,8 @@ describe("Network mocking", () => {
     })
   })
 
-  beforeEach(async ({ device, platform }) => {
-    await resetApiCallsScreen(device, platform)
+  beforeEach(async ({ device }) => {
+    await resetApiCallsScreen(device)
   })
 
   test("route.fulfill() — mock a JSON response", async ({ device }) => {
@@ -191,7 +180,7 @@ describe("Network mocking", () => {
     await device.unrouteAll()
   })
 
-  test("device.unroute() — remove specific route", async ({ device, platform }) => {
+  test("device.unroute() — remove specific route", async ({ device }) => {
     const screen = new ApiCallsScreen(device)
 
     const handler = async (route: Route) => {
@@ -207,7 +196,7 @@ describe("Network mocking", () => {
     await expect(device.getByText("Still Mocked")).toBeVisible({ timeout: 10_000 })
 
     // Reset to clear UI state without dropping registered routes.
-    await resetApiCallsScreen(device, platform)
+    await resetApiCallsScreen(device)
 
     // Remove the route
     await device.unroute("**/posts*", handler)
@@ -219,7 +208,7 @@ describe("Network mocking", () => {
     await expect(device.getByText("Still Mocked")).not.toBeVisible()
   })
 
-  test("device.unrouteAll() — remove all routes", async ({ device, platform }) => {
+  test("device.unrouteAll() — remove all routes", async ({ device }) => {
     await device.route("**/posts*", async (route) => {
       await route.abort()
     })
@@ -234,14 +223,14 @@ describe("Network mocking", () => {
 
     // Remove all routes and reset the app state.
     await device.unrouteAll()
-    await resetApiCallsScreen(device, platform)
+    await resetApiCallsScreen(device)
 
     // Now requests should go through
     await screen.fetchPostsButton.tap()
     await expect(screen.postsHeading).toBeVisible({ timeout: 10_000 })
   })
 
-  test("route with times option — limited invocations", async ({ device, platform }) => {
+  test("route with times option — limited invocations", async ({ device }) => {
     const screen = new ApiCallsScreen(device)
     let routeHits = 0
 
@@ -258,7 +247,7 @@ describe("Network mocking", () => {
     expect(routeHits).toBe(1)
 
     // Reset app to clear state without dropping route registrations.
-    await resetApiCallsScreen(device, platform)
+    await resetApiCallsScreen(device)
 
     // Second call: route should have expired after 1 use.
     await screen.fetchPostsButton.tap()
