@@ -3808,6 +3808,10 @@ impl proto::tapsmith_service_server::TapsmithService for TapsmithServiceImpl {
         let keep_running = req.keep_running;
 
         if keep_running {
+            // Give in-flight requests a moment to complete before draining,
+            // without holding the network_proxy lock during the wait.
+            tokio::time::sleep(Duration::from_millis(100)).await;
+
             let proxy_guard = self.network_proxy.read().await;
             let Some(proxy) = proxy_guard.as_ref() else {
                 return Ok(Response::new(proto::StopNetworkCaptureResponse {

@@ -363,8 +363,6 @@ impl NetworkProxy {
     /// proxy listener or device routing. Used by the runner to finalize a
     /// test trace while keeping capture stable for the next test.
     pub async fn drain_entries(&self) -> Vec<CapturedEntry> {
-        // Give in-flight requests a moment to complete, matching `stop`.
-        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
         let mut state = self.state.lock().await;
         std::mem::take(&mut state.entries)
     }
