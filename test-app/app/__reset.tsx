@@ -1,5 +1,5 @@
 import { type Href, router, useLocalSearchParams } from "expo-router"
-import { useEffect, useMemo, useRef, useState } from "react"
+import { useEffect, useMemo, useState } from "react"
 import { ActivityIndicator, StyleSheet, Text, View } from "react-native"
 import { useAuth } from "./auth-context"
 
@@ -22,14 +22,10 @@ function normalizeTarget(value: string | string[] | undefined): Href {
 export default function ResetScreen() {
   const params = useLocalSearchParams<{ path?: string | string[] }>()
   const target = useMemo(() => normalizeTarget(params.path), [params.path])
-  const didReset = useRef(false)
   const [resetError, setResetError] = useState<string | null>(null)
   const { resetAppState } = useAuth()
 
   useEffect(() => {
-    if (didReset.current) return
-    didReset.current = true
-
     let mounted = true
     async function reset() {
       try {
