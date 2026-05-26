@@ -5483,6 +5483,16 @@ fn android_reverse_port_candidates(host_port: u16) -> Vec<u16> {
     ports
 }
 
+fn is_terminal_adb_reverse_error(error: &str) -> bool {
+    let msg = error.to_ascii_lowercase();
+    msg.contains("device offline")
+        || msg.contains("device not found")
+        || (msg.contains("device '") && msg.contains("' not found"))
+        || msg.contains("no devices/emulators found")
+        || msg.contains("more than one device/emulator")
+        || msg.contains("multiple devices")
+}
+
 fn captured_entries_to_proto(
     captured: Vec<crate::network_proxy::CapturedEntry>,
 ) -> Vec<proto::CapturedNetworkEntry> {
@@ -5532,6 +5542,11 @@ async fn setup_android_reverse_with_fallback(
                 return Ok(device_port);
             }
             Err(first_err) => {
+                let first_err = first_err.to_string();
+                if is_terminal_adb_reverse_error(&first_err) {
+                    return Err(first_err);
+                }
+
                 warn!(
                     %serial,
                     device_port,
@@ -5634,6 +5649,29 @@ mod tests {
         for (idx, port) in ports.iter().enumerate() {
             assert!(!ports[..idx].contains(port));
         }
+    }
+
+    #[test]
+    fn terminal_adb_reverse_error_matches_unavailable_devices() {
+        assert!(is_terminal_adb_reverse_error(
+            "adb command failed (exit exit status: 1): adb: device offline"
+        ));
+        assert!(is_terminal_adb_reverse_error(
+            "adb command failed (exit exit status: 1): error: device 'emulator-5554' not found"
+        ));
+        assert!(is_terminal_adb_reverse_error(
+            "adb command failed (exit exit status: 1): error: no devices/emulators found"
+        ));
+        assert!(is_terminal_adb_reverse_error(
+            "adb command failed (exit exit status: 1): error: more than one device/emulator"
+        ));
+    }
+
+    #[test]
+    fn terminal_adb_reverse_error_ignores_port_specific_failures() {
+        assert!(!is_terminal_adb_reverse_error(
+            "adb command failed (exit exit status: 1): cannot bind listener: Address already in use"
+        ));
     }
 
     // ─── selector_to_json ───
