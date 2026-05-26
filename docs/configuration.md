@@ -57,8 +57,8 @@ For emulator-managed runs, the recommended path is `launchEmulators + avd`.
 | `baseURL` | `string` | `undefined` | Base URL for the `request` fixture. Relative paths in `request.get("/path")` are resolved against this. |
 | `extraHTTPHeaders` | `Record<string, string>` | `undefined` | Default headers sent with every `request` fixture call (e.g., `Authorization`). Per-request headers override these when names collide. |
 | `doubleTapInterval` | `number` | `100` | Default interval in milliseconds between the two taps in `doubleTap()`. Can be overridden per-call via `doubleTap({ intervalMs: 150 })`. |
-| `resetAppDeepLink` | `string` | `undefined` | Deep link URI to navigate to between test files for a soft app reset. When set, Tapsmith opens this deep link instead of force-stopping and relaunching the app between files. Faster than a full restart when the app has a "reset state" deep link handler. |
-| `resetAppWaitMs` | `number` | `undefined` | Time in milliseconds to wait after navigating the `resetAppDeepLink` before starting the next test file. Gives the app time to finish resetting. |
+| `resetAppDeepLink` | `string` | `undefined` | Deep link URI to navigate to between test files for a soft app reset. When set, Tapsmith opens this deep link instead of force-stopping and relaunching the app between files. Faster than a full restart when the app has a reset route that clears state and navigates to the desired start screen. Do not expose this route in production builds. |
+| `resetAppWaitMs` | `number` | `750` | Time in milliseconds to wait after navigating the `resetAppDeepLink` before starting the next test file. Gives the app time to finish resetting. |
 | `testIgnore` | `string[]` | `[]` | Glob patterns for excluding test files from discovery. Files matching any pattern are skipped even if they match `testMatch`. |
 
 ### `ScreenshotMode`
@@ -516,7 +516,7 @@ export default defineConfig({
 });
 ```
 
-Between test files, Tapsmith navigates the deep link instead of force-stopping and relaunching the app. This is significantly faster for apps that support it.
+Between test files, Tapsmith navigates the deep link instead of force-stopping and relaunching the app. The deep link handler should clear app state and land on whatever screen your tests expect to start from. Keep this handler out of production builds, for example behind a test-only build flavor or equivalent guard. This is significantly faster for apps that support it.
 
 ### API Request Fixture
 

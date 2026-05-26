@@ -1,9 +1,11 @@
 import { defineConfig } from "tapsmith"
+import { RESET_APP_DEEP_LINK } from "./reset-app-deep-link.mjs"
 
 export default defineConfig({
   platform: "ios",
   app: "./fixtures/TapsmithTestApp.app",
   package: "dev.tapsmith.testapp",
+  resetAppDeepLink: RESET_APP_DEEP_LINK,
   timeout: 30_000,
   typingDelay: 10,
   retries: 1,

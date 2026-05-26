@@ -1,10 +1,10 @@
 import { beforeEach, describe, expect, test } from "tapsmith"
 import { DialogsScreen } from "../screens/dialogs.screen.js"
+import { resetApp } from "../utils/app-reset.js"
 
 describe("Dialogs screen", () => {
   beforeEach(async ({ device }) => {
-    await device.restartApp()
-    await device.getByDescription("Dialogs").tap()
+    await resetApp(device, "/dialogs")
     await expect(device.getByText("Dialogs & Overlays", { exact: true })).toBeVisible()
   })
 

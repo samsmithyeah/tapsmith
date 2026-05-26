@@ -294,6 +294,27 @@ describe('runner execution', () => {
     expect(result.tests[0].status).toBe('passed');
   });
 
+  it('passes platform fixture to beforeEach hooks', async () => {
+    const seenPlatforms: string[] = [];
+    const mockDevice = { waitForIdle: vi.fn(async () => {}) };
+
+    pushContext();
+    tapsmithBeforeEach(async ({ platform }) => {
+      seenPlatforms.push(platform);
+    });
+    tapsmithTest('uses platform in hook', async () => {});
+    const ctx = popContext();
+
+    const result = await runSuiteContext(ctx, '', [], [], makeOpts({
+      config: makeConfig({ platform: 'ios' }),
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- focused runner hook fixture mock
+      device: mockDevice as any,
+    }));
+
+    expect(result.tests[0].status).toBe('passed');
+    expect(seenPlatforms).toEqual(['ios']);
+  });
+
   it('starts device log streaming for each traced test collector', async () => {
     const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'tapsmith-runner-logs-'));
     let activeLogCollector: TraceCollector | null = null;
@@ -357,6 +378,61 @@ describe('runner execution', () => {
           .map((event) => event.message);
         expect(deviceMessages).toEqual([`device-log-${i + 1}`]);
       }
+    } finally {
+      fs.rmSync(tempRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('drains network capture between traced tests without hard teardown', async () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'tapsmith-runner-network-'));
+    const tracing = new Tracing(async () => undefined, async () => undefined);
+    const mockDevice = {
+      tracing,
+      waitForIdle: vi.fn(async () => {}),
+      _startNetworkCapture: vi.fn(async () => ({
+        success: true,
+        proxyPort: 12345,
+        errorMessage: '',
+      })),
+      _stopNetworkCapture: vi.fn(async () => ({
+        success: true,
+        entries: [],
+        errorMessage: '',
+      })),
+      _stopDeviceLogStream: vi.fn(),
+      _disposeRouteManager: vi.fn(async () => {}),
+      _disposeWebViewManager: vi.fn(async () => {}),
+    };
+
+    try {
+      pushContext();
+      tapsmithTest('first traced test', async () => {});
+      tapsmithTest('second traced test', async () => {});
+      const ctx = popContext();
+
+      const result = await runSuiteContext(ctx, '', [], [], makeOpts({
+        config: makeConfig({
+          rootDir: tempRoot,
+          outputDir: 'out',
+          trace: {
+            mode: 'on',
+            network: true,
+            screenshots: false,
+            snapshots: false,
+            sources: false,
+            deviceLogs: false,
+          },
+        }),
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any -- focused runner lifecycle mock
+        device: mockDevice as any,
+      }));
+
+      expect(result.tests.map((t) => t.status)).toEqual(['passed', 'passed']);
+      expect(mockDevice._startNetworkCapture).toHaveBeenCalledTimes(2);
+      expect(mockDevice._stopNetworkCapture).toHaveBeenCalledTimes(2);
+      expect(mockDevice._stopNetworkCapture).toHaveBeenNthCalledWith(1, { keepRunning: true });
+      expect(mockDevice._stopNetworkCapture).toHaveBeenNthCalledWith(2, { keepRunning: true });
+      expect(mockDevice._disposeRouteManager).not.toHaveBeenCalled();
     } finally {
       fs.rmSync(tempRoot, { recursive: true, force: true });
     }

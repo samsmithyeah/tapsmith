@@ -1,10 +1,10 @@
 import { beforeEach, describe, expect, test } from "tapsmith"
 import { TogglesScreen } from "../screens/toggles.screen.js"
+import { resetApp } from "../utils/app-reset.js"
 
 describe("Toggles screen", () => {
   beforeEach(async ({ device }) => {
-    await device.restartApp()
-    await device.getByDescription("Toggles").tap()
+    await resetApp(device, "/toggles")
     const screen = new TogglesScreen(device)
     await expect(screen.switchesHeading).toBeVisible()
   })

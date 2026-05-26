@@ -9,11 +9,49 @@
  */
 import { createServer, type Server } from "node:http"
 import type { AddressInfo } from "node:net"
-import { afterAll, beforeAll, beforeEach, describe, expect, test } from "tapsmith"
+import {
+  afterAll,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  test,
+  type Device,
+  type Route,
+} from "tapsmith"
 import { ApiCallsScreen } from "../screens/api-calls.screen.js"
+import { resetApp } from "../utils/app-reset.js"
+
+async function resetApiCallsScreen(device: Device) {
+  await resetApp(device, "/api-calls")
+  const screen = new ApiCallsScreen(device)
+  await expect(screen.heading).toBeVisible()
+}
+
+function routeFetchNoCacheOptions(route: Route) {
+  const headers = { ...route.request().headers }
+  for (const key of Object.keys(headers)) {
+    const lower = key.toLowerCase()
+    if (
+      lower === "if-none-match" ||
+      lower === "if-modified-since" ||
+      lower === "cache-control" ||
+      lower === "pragma"
+    ) {
+      delete headers[key]
+    }
+  }
+  headers["cache-control"] = "no-cache"
+  headers.pragma = "no-cache"
+
+  const url = new URL(route.request().url)
+  url.searchParams.set("tapsmith-route-fetch", "1")
+
+  return { headers, url: url.toString() }
+}
 
 describe("Network mocking", () => {
-  // Network interception + real HTTP + iOS restartApp need generous timeout
+  // Network interception + real HTTP need generous timeout.
   test.use({ timeout: 20_000 })
 
   let crossOriginServer: Server | undefined
@@ -56,11 +94,7 @@ describe("Network mocking", () => {
   })
 
   beforeEach(async ({ device }) => {
-    await device.restartApp()
-    await device.getByDescription("API Calls").scrollIntoView()
-    await device.getByDescription("API Calls").tap()
-    const screen = new ApiCallsScreen(device)
-    await expect(screen.heading).toBeVisible()
+    await resetApiCallsScreen(device)
   })
 
   test("route.fulfill() — mock a JSON response", async ({ device }) => {
@@ -133,7 +167,7 @@ describe("Network mocking", () => {
     const screen = new ApiCallsScreen(device)
 
     await device.route("**/users/1", async (route) => {
-      const response = await route.fetch()
+      const response = await route.fetch(routeFetchNoCacheOptions(route))
       const data = response.json() as Record<string, unknown>
       data.name = "Tapsmith Modified User"
       await route.fulfill({ json: data })
@@ -149,7 +183,7 @@ describe("Network mocking", () => {
   test("device.unroute() — remove specific route", async ({ device }) => {
     const screen = new ApiCallsScreen(device)
 
-    const handler = async (route: import("tapsmith").Route) => {
+    const handler = async (route: Route) => {
       await route.fulfill({
         json: [{ id: 1, title: "Still Mocked", body: "body" }],
       })
@@ -161,11 +195,8 @@ describe("Network mocking", () => {
     await screen.fetchPostsButton.tap()
     await expect(device.getByText("Still Mocked")).toBeVisible({ timeout: 10_000 })
 
-    // Restart to clear UI state
-    await device.restartApp()
-    await device.getByDescription("API Calls").scrollIntoView()
-    await device.getByDescription("API Calls").tap()
-    await expect(screen.heading).toBeVisible()
+    // Reset to clear UI state without dropping registered routes.
+    await resetApiCallsScreen(device)
 
     // Remove the route
     await device.unroute("**/posts*", handler)
@@ -190,12 +221,9 @@ describe("Network mocking", () => {
     await screen.fetchPostsButton.tap()
     await expect(device.getByText("Failed to fetch posts")).toBeVisible({ timeout: 10_000 })
 
-    // Remove all routes and restart app
+    // Remove all routes and reset the app state.
     await device.unrouteAll()
-    await device.restartApp()
-    await device.getByDescription("API Calls").scrollIntoView()
-    await device.getByDescription("API Calls").tap()
-    await expect(screen.heading).toBeVisible()
+    await resetApiCallsScreen(device)
 
     // Now requests should go through
     await screen.fetchPostsButton.tap()
@@ -218,11 +246,8 @@ describe("Network mocking", () => {
     await expect(device.getByText("Once Only")).toBeVisible({ timeout: 10_000 })
     expect(routeHits).toBe(1)
 
-    // Restart app to clear state
-    await device.restartApp()
-    await device.getByDescription("API Calls").scrollIntoView()
-    await device.getByDescription("API Calls").tap()
-    await expect(screen.heading).toBeVisible()
+    // Reset app to clear state without dropping route registrations.
+    await resetApiCallsScreen(device)
 
     // Second call: route should have expired after 1 use.
     await screen.fetchPostsButton.tap()

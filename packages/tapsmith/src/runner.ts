@@ -542,10 +542,19 @@ function passesTestFilter(fullName: string, opts: RunOptions): boolean {
 // not count parameters with default values or rest parameters, so hooks like
 // `async ({ device } = {}) => …` would be mis-classified as zero-arg. In
 // practice this is fine because hooks are simple `async ({ device }) => …`.
-async function invokeHook(fn: HookFn, device?: Device, projectName?: string): Promise<void> {
+async function invokeHook(
+  fn: HookFn,
+  config: TapsmithConfig,
+  device?: Device,
+  projectName?: string,
+): Promise<void> {
   if (fn.length > 0 && device) {
-    // Hooks receive device + projectName; request fixture is test-scoped only.
-    await (fn as (fixtures: { device: Device; projectName?: string }) => void | Promise<void>)({ device, projectName });
+    // Hooks receive device + project metadata; request fixture is test-scoped only.
+    await (fn as (fixtures: { device: Device; projectName?: string; platform: Platform }) => void | Promise<void>)({
+      device,
+      projectName,
+      platform: resolvePlatformFixture(config),
+    });
   } else {
     await (fn as () => void | Promise<void>)();
   }
@@ -688,13 +697,13 @@ async function runSuiteContext(
     if (beforeAllCollector) {
       await withActiveTraceCollector(beforeAllCollector, async () => {
         for (const hook of ctx.beforeAll) {
-          await invokeHook(hook, opts.device, opts.projectName);
+          await invokeHook(hook, opts.config, opts.device, opts.projectName);
         }
       });
       beforeAllCollector.endGroup();
     } else {
       for (const hook of ctx.beforeAll) {
-        await invokeHook(hook, opts.device, opts.projectName);
+        await invokeHook(hook, opts.config, opts.device, opts.projectName);
       }
     }
   } catch (err) {
@@ -964,7 +973,7 @@ async function runSuiteContext(
           }
 
           for (const hook of allBeforeEach) {
-            await invokeHook(hook, opts.device, opts.projectName);
+            await invokeHook(hook, opts.config, opts.device, opts.projectName);
           }
           if (hasBeforeEachWork) {
             traceCollector?.endGroup();
@@ -1050,7 +1059,7 @@ async function runSuiteContext(
             traceCollector?.startGroup('afterEach Hooks');
             for (const hook of allAfterEach) {
               try {
-                await invokeHook(hook, opts.device, opts.projectName);
+                await invokeHook(hook, opts.config, opts.device, opts.projectName);
               } catch (err) {
                 process.stderr.write(`[tapsmith] afterEach hook error: ${err instanceof Error ? err.message : String(err)}\n`);
               }
@@ -1102,18 +1111,20 @@ async function runSuiteContext(
 
       // Finalize trace recording
       if (traceCollector && opts.device) {
-        // Stop device log streaming first — no async cleanup needed
-        opts.device._stopDeviceLogStream();
+        const device = opts.device;
 
-        // Stop network capture BEFORE disposing the route manager — the
-        // proxy may still have in-flight requests that need the gRPC stream
-        // alive to receive route decisions. Disposing the manager first
-        // would close the stream and cause "NetworkRouteManager disposed"
-        // errors for any request the proxy hasn't finished proxying yet.
-        let rawNetworkEntries: Awaited<ReturnType<typeof opts.device._stopNetworkCapture>>['entries'] | undefined;
+        // Stop device log streaming first — no async cleanup needed
+        device._stopDeviceLogStream();
+
+        // Drain per-test network entries BEFORE disposing the route manager —
+        // the proxy may still have in-flight requests that need the gRPC
+        // stream alive to receive route decisions. The daemon keeps the
+        // proxy/routing alive here; runTestFile performs the hard teardown
+        // once after the file so soft-reset tests do not churn device routing.
+        let rawNetworkEntries: Awaited<ReturnType<typeof device._stopNetworkCapture>>['entries'] | undefined;
         if (traceConfig.network) {
           try {
-            const res = await opts.device._stopNetworkCapture();
+            const res = await device._stopNetworkCapture({ keepRunning: true });
             if (res.success) {
               // Apply user-supplied host filters, if any. On physical iOS
               // and Android emulators the proxy is system-wide and captures
@@ -1145,20 +1156,21 @@ async function runSuiteContext(
           }
         }
 
-        // Now that the proxy has stopped and in-flight requests have settled,
-        // dispose the route manager (closes the gRPC stream).
-        if (opts.device?._disposeRouteManager) {
-          await opts.device._disposeRouteManager();
+        // Keep the route stream installed while network capture is being
+        // reused across tests. Registered routes were removed above, and the
+        // file-level hard teardown disposes the stream after stopping capture.
+        if (!traceConfig.network && device._disposeRouteManager) {
+          await device._disposeRouteManager();
         }
-        if (opts.device?._disposeWebViewManager) {
-          await opts.device._disposeWebViewManager();
+        if (device._disposeWebViewManager) {
+          await device._disposeWebViewManager();
         }
 
         // Capture a final screenshot so the last action has an "after" view.
         // The trace viewer uses the next action's before-screenshot as "after",
         // so this provides the terminal state.
         if (traceCollector.config.screenshots) {
-          const tracing = opts.device!.tracing;
+          const tracing = device.tracing;
           const { actionIndex: finalIdx } = await traceCollector.captureBeforeAction(
             tracing['_getScreenshot'],
             tracing['_getHierarchy'],
@@ -1168,7 +1180,7 @@ async function runSuiteContext(
           traceCollector.emitPendingCaptures(finalIdx);
         }
 
-        const collector = opts.device.tracing._stopManaged();
+        const collector = device.tracing._stopManaged();
         setActiveTraceCollector(null);
 
         // Map network entries, associating each with the closest preceding action
@@ -1424,7 +1436,7 @@ async function runSuiteContext(
       await withActiveTraceCollector(afterAllCollector, async () => {
         for (const hook of ctx.afterAll) {
           try {
-            await invokeHook(hook, opts.device, opts.projectName);
+            await invokeHook(hook, opts.config, opts.device, opts.projectName);
           } catch (err) {
             process.stderr.write(`[tapsmith] afterAll hook error: ${err instanceof Error ? err.message : String(err)}\n`);
           }
@@ -1435,7 +1447,7 @@ async function runSuiteContext(
     } else {
       for (const hook of ctx.afterAll) {
         try {
-          await invokeHook(hook, opts.device, opts.projectName);
+          await invokeHook(hook, opts.config, opts.device, opts.projectName);
         } catch (err) {
           process.stderr.write(`[tapsmith] afterAll hook error: ${err instanceof Error ? err.message : String(err)}\n`);
         }
@@ -1444,7 +1456,7 @@ async function runSuiteContext(
   } else {
     for (const hook of ctx.afterAll) {
       try {
-        await invokeHook(hook, opts.device, opts.projectName);
+        await invokeHook(hook, opts.config, opts.device, opts.projectName);
       } catch (err) {
         process.stderr.write(`[tapsmith] afterAll hook error: ${err instanceof Error ? err.message : String(err)}\n`);
       }
@@ -1577,8 +1589,22 @@ export async function runTestFile(
   try {
     return await runSuiteContext(rootCtx, '', [], [], fileOpts);
   } finally {
-    if (workerTeardown) {
-      await workerTeardown();
+    try {
+      if (workerTeardown) {
+        await workerTeardown();
+      }
+    } finally {
+      const traceConfig = resolveTraceConfig(fileOpts.config.trace);
+      if (fileOpts.device && traceConfig.mode !== 'off' && traceConfig.network) {
+        try {
+          await fileOpts.device._stopNetworkCapture({ keepRunning: false });
+        } catch {
+          // Best-effort final teardown; the daemon also cleans up on shutdown.
+        }
+      }
+      if (fileOpts.device?._disposeRouteManager) {
+        await fileOpts.device._disposeRouteManager();
+      }
     }
   }
 }

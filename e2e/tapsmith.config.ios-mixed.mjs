@@ -27,6 +27,7 @@
  */
 import "dotenv/config"
 import { defineConfig } from "tapsmith"
+import { RESET_APP_DEEP_LINK } from "./reset-app-deep-link.mjs"
 
 const SIM_USE = {
   platform: "ios",
@@ -46,6 +47,7 @@ const DEVICE_USE = {
 
 export default defineConfig({
   package: "dev.tapsmith.testapp",
+  resetAppDeepLink: RESET_APP_DEEP_LINK,
   timeout: 15_000,
   retries: 0,
   screenshot: "only-on-failure",

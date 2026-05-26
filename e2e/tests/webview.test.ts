@@ -10,14 +10,13 @@
  * remounts between tests for debug socket stability on CI.
  */
 import { beforeAll, describe, expect, test } from "tapsmith"
+import { resetApp } from "../utils/app-reset.js"
 
 describe("WebView testing", () => {
   test.use({ timeout: 90_000 })
 
   beforeAll(async ({ device }) => {
-    await device.restartApp()
-    await device.getByDescription("WebView").scrollIntoView()
-    await device.getByDescription("WebView").tap()
+    await resetApp(device, "/webview")
     await expect(device.getByText("Embedded WebView")).toBeVisible()
   })
 

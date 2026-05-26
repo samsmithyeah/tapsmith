@@ -607,9 +607,9 @@ export class Device {
   }
 
   /** @internal — Stop network capture and return entries (used by the runner). */
-  async _stopNetworkCapture(): Promise<ReturnType<TapsmithGrpcClient['stopNetworkCapture']>> {
+  async _stopNetworkCapture(options?: { keepRunning?: boolean }): Promise<ReturnType<TapsmithGrpcClient['stopNetworkCapture']>> {
     try {
-      return await this._client.stopNetworkCapture();
+      return await this._client.stopNetworkCapture(options);
     } finally {
       this._networkCaptureActive = false;
       this._networkCaptureError = undefined;
