@@ -23,6 +23,10 @@ use crate::route_handler::RouteInterceptHandler;
 use crate::screenshot;
 
 const ANDROID_PROXY_CLEANUP_TIMEOUT: Duration = Duration::from_secs(5);
+const ANDROID_REVERSE_PORT_FALLBACK_BASE: u16 = 41_000;
+const ANDROID_REVERSE_PORT_FALLBACK_SPAN: u16 = 20_000;
+const ANDROID_REVERSE_PORT_FALLBACK_COUNT: usize = 8;
+const ANDROID_REVERSE_PORT_FALLBACK_STEP: u32 = 997;
 const WEBVIEW_ADB_TIMEOUT: Duration = Duration::from_secs(5);
 const WEBVIEW_ADB_CLEANUP_TIMEOUT: Duration = Duration::from_secs(2);
 
@@ -3710,46 +3714,25 @@ impl proto::tapsmith_service_server::TapsmithService for TapsmithServiceImpl {
                 );
             }
             Platform::Android => {
-                // Use `adb reverse` to make the proxy reachable as 127.0.0.1:{port} on
-                // the device. More reliable than `settings put global http_proxy`
-                // with 10.0.2.2 because it works at the ADB transport level.
-                let device_port = host_port;
-                if let Err(first_err) = adb::reverse_port(&serial, device_port, host_port).await {
-                    warn!(
-                        %serial,
-                        device_port,
-                        host_port,
-                        "adb reverse setup failed; removing any stale reverse mapping and retrying: {first_err}"
-                    );
-                    if let Err(remove_err) = adb::remove_reverse_with_timeout(
-                        &serial,
-                        device_port,
-                        ANDROID_PROXY_CLEANUP_TIMEOUT,
-                    )
-                    .await
-                    {
-                        warn!(
-                            %serial,
-                            device_port,
-                            "Failed to remove stale adb reverse mapping before retry: {remove_err}"
-                        );
-                    }
-
-                    if let Err(retry_err) = adb::reverse_port(&serial, device_port, host_port).await
-                    {
-                        let msg = format!(
-                            "Failed to set up adb reverse for network capture: {retry_err} \
-                             (initial error: {first_err})"
-                        );
-                        error!("{msg}");
-                        return Ok(Response::new(proto::StartNetworkCaptureResponse {
-                            request_id,
-                            success: false,
-                            proxy_port: 0,
-                            error_message: msg,
-                        }));
-                    }
-                }
+                // Use `adb reverse` to make the proxy reachable as
+                // 127.0.0.1:{device_port} on the device. The host proxy port
+                // is OS-assigned and only known to be free on the host; the
+                // same number can still be occupied on the device. Try it
+                // first for continuity, then fall back to alternate device
+                // ports while forwarding all of them to the same host port.
+                let device_port =
+                    match setup_android_reverse_with_fallback(&serial, host_port).await {
+                        Ok(port) => port,
+                        Err(msg) => {
+                            error!("{msg}");
+                            return Ok(Response::new(proto::StartNetworkCaptureResponse {
+                                request_id,
+                                success: false,
+                                proxy_port: 0,
+                                error_message: msg,
+                            }));
+                        }
+                    };
 
                 info!(%serial, device_port, host_port, "Configuring Android proxy");
 
@@ -5481,6 +5464,103 @@ fn parse_resolved_activity(output: &str, package_name: &str) -> Option<String> {
     }
 }
 
+fn android_reverse_port_candidates(host_port: u16) -> Vec<u16> {
+    let mut ports = Vec::with_capacity(ANDROID_REVERSE_PORT_FALLBACK_COUNT + 1);
+    ports.push(host_port);
+
+    let span = u32::from(ANDROID_REVERSE_PORT_FALLBACK_SPAN);
+    let mut offset = (u32::from(host_port) * 37) % span;
+    for _ in 0..ANDROID_REVERSE_PORT_FALLBACK_COUNT {
+        let port = ANDROID_REVERSE_PORT_FALLBACK_BASE + offset as u16;
+        if !ports.contains(&port) {
+            ports.push(port);
+        }
+        offset = (offset + ANDROID_REVERSE_PORT_FALLBACK_STEP) % span;
+    }
+
+    ports
+}
+
+async fn setup_android_reverse_with_fallback(
+    serial: &str,
+    host_port: u16,
+) -> std::result::Result<u16, String> {
+    let candidates = android_reverse_port_candidates(host_port);
+    let mut errors = Vec::new();
+
+    for (idx, device_port) in candidates.iter().copied().enumerate() {
+        match adb::reverse_port(serial, device_port, host_port).await {
+            Ok(()) => {
+                if idx > 0 {
+                    info!(
+                        %serial,
+                        device_port,
+                        host_port,
+                        "adb reverse configured on fallback device port"
+                    );
+                }
+                return Ok(device_port);
+            }
+            Err(first_err) => {
+                warn!(
+                    %serial,
+                    device_port,
+                    host_port,
+                    "adb reverse setup failed; removing any stale reverse mapping and retrying: {first_err}"
+                );
+                errors.push(format!("tcp:{device_port}: {first_err}"));
+
+                if let Err(remove_err) = adb::remove_reverse_with_timeout(
+                    serial,
+                    device_port,
+                    ANDROID_PROXY_CLEANUP_TIMEOUT,
+                )
+                .await
+                {
+                    warn!(
+                        %serial,
+                        device_port,
+                        "Failed to remove stale adb reverse mapping before retry: {remove_err}"
+                    );
+                }
+
+                match adb::reverse_port(serial, device_port, host_port).await {
+                    Ok(()) => {
+                        if idx > 0 {
+                            info!(
+                                %serial,
+                                device_port,
+                                host_port,
+                                "adb reverse configured on fallback device port after cleanup"
+                            );
+                        }
+                        return Ok(device_port);
+                    }
+                    Err(retry_err) => {
+                        warn!(
+                            %serial,
+                            device_port,
+                            host_port,
+                            "adb reverse retry failed: {retry_err}"
+                        );
+                        errors.push(format!("tcp:{device_port} after cleanup: {retry_err}"));
+                    }
+                }
+            }
+        }
+    }
+
+    Err(format!(
+        "Failed to set up adb reverse for network capture after trying device ports {}: {}",
+        candidates
+            .iter()
+            .map(|p| p.to_string())
+            .collect::<Vec<_>>()
+            .join(", "),
+        errors.join("; ")
+    ))
+}
+
 /// Best-effort TCP connect from this process out to `host:port`, for testing
 /// whether our own LAN listener is reachable from the network interface.
 ///
@@ -5507,6 +5587,24 @@ async fn self_probe_lan_listener(lan_ip: std::net::Ipv4Addr, port: u16) -> bool 
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn android_reverse_port_candidates_start_with_host_port_then_fallbacks() {
+        let host_port = 52_341;
+        let ports = android_reverse_port_candidates(host_port);
+
+        assert_eq!(ports[0], host_port);
+        assert!(ports.len() > 1);
+        for port in &ports[1..] {
+            assert!(*port >= ANDROID_REVERSE_PORT_FALLBACK_BASE);
+            assert!(
+                *port < ANDROID_REVERSE_PORT_FALLBACK_BASE + ANDROID_REVERSE_PORT_FALLBACK_SPAN
+            );
+        }
+        for (idx, port) in ports.iter().enumerate() {
+            assert!(!ports[..idx].contains(port));
+        }
+    }
 
     // ─── selector_to_json ───
 
