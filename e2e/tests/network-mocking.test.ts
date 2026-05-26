@@ -41,8 +41,17 @@ async function resetApiCallsScreen(device: Device, platform: TestPlatform) {
 
 function routeFetchNoCacheOptions(route: Route) {
   const headers = { ...route.request().headers }
-  delete headers["if-none-match"]
-  delete headers["if-modified-since"]
+  for (const key of Object.keys(headers)) {
+    const lower = key.toLowerCase()
+    if (
+      lower === "if-none-match" ||
+      lower === "if-modified-since" ||
+      lower === "cache-control" ||
+      lower === "pragma"
+    ) {
+      delete headers[key]
+    }
+  }
   headers["cache-control"] = "no-cache"
   headers.pragma = "no-cache"
 
