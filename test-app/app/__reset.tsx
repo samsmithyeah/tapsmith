@@ -31,7 +31,9 @@ export default function ResetScreen() {
       try {
         await resetAppState()
         if (!mounted) return
-        router.dismissAll()
+        if (router.canDismiss()) {
+          router.dismissAll()
+        }
         router.replace(target)
       } catch (error) {
         if (!mounted) return
