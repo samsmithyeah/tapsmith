@@ -3,6 +3,7 @@ import { Device } from "tapsmith"
 export class GesturesScreen {
   constructor(private device: Device) {}
 
+  get heading() { return this.device.getByText("Gesture Testing", { exact: true }) }
   get lastGesture() { return this.device.getByTestId("last-gesture") }
   get tapCount() { return this.device.getByTestId("tap-count") }
   get tapArea() { return this.device.getByRole("button", { name: "Tap area" }) }

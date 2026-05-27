@@ -1,10 +1,10 @@
-import { beforeEach, describe, expect, test } from "../fixtures.js"
+import { describe, expect, test } from "../fixtures.js"
 import { resetApp } from "../utils/app-reset.js"
 
 describe("Dialogs screen", () => {
-  beforeEach(async ({ device }) => {
+  test.beforeEach(async ({ device, dialogsScreen }) => {
     await resetApp(device, "/dialogs")
-    await expect(device.getByText("Dialogs & Overlays", { exact: true })).toBeVisible()
+    await expect(dialogsScreen.heading).toBeVisible()
   })
 
   // ─── Toast ───

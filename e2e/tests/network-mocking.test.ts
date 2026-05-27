@@ -15,15 +15,9 @@ import {
   describe,
   expect,
   test,
-  type Device,
   type Route,
 } from "../fixtures.js"
 import { resetApp } from "../utils/app-reset.js"
-
-async function resetApiCallsScreen(device: Device) {
-  await resetApp(device, "/api-calls")
-  await expect(device.getByText("API Calls", { exact: true })).toBeVisible()
-}
 
 function routeFetchNoCacheOptions(route: Route) {
   const headers = { ...route.request().headers }
@@ -182,7 +176,8 @@ describe("Network mocking", () => {
     await expect(device.getByText("Still Mocked")).toBeVisible({ timeout: 10_000 })
 
     // Reset to clear UI state without dropping registered routes.
-    await resetApiCallsScreen(device)
+    await resetApp(device, "/api-calls")
+    await expect(apiCallsScreen.heading).toBeVisible()
 
     // Remove the route
     await device.unroute("**/posts*", handler)
@@ -208,7 +203,8 @@ describe("Network mocking", () => {
 
     // Remove all routes and reset the app state.
     await device.unrouteAll()
-    await resetApiCallsScreen(device)
+    await resetApp(device, "/api-calls")
+    await expect(apiCallsScreen.heading).toBeVisible()
 
     // Now requests should go through
     await apiCallsScreen.fetchPostsButton.tap()
@@ -231,7 +227,8 @@ describe("Network mocking", () => {
     expect(routeHits).toBe(1)
 
     // Reset app to clear state without dropping route registrations.
-    await resetApiCallsScreen(device)
+    await resetApp(device, "/api-calls")
+    await expect(apiCallsScreen.heading).toBeVisible()
 
     // Second call: route should have expired after 1 use.
     await apiCallsScreen.fetchPostsButton.tap()

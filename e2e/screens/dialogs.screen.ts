@@ -3,6 +3,8 @@ import { Device } from "tapsmith"
 export class DialogsScreen {
   constructor(private device: Device) {}
 
+  get heading() { return this.device.getByText("Dialogs & Overlays", { exact: true }) }
+
   // Toast
   get showToastButton() { return this.device.getByRole("button", { name: "Show toast" }) }
   get showErrorToastButton() { return this.device.getByRole("button", { name: "Show error toast" }) }

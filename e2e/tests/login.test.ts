@@ -41,14 +41,13 @@ describe("Login screen", () => {
 
   // ─── Focus & Keyboard ───
 
-  test("focusing and blurring email field toggles keyboard", async ({ device }) => {
-    const emailField = device.getByRole("textfield", { name: "Email" })
-    await emailField.focus()
-    await expect(emailField).toBeFocused()
+  test("focusing and blurring email field toggles keyboard", async ({ device, loginScreen }) => {
+    await loginScreen.emailField.focus()
+    await expect(loginScreen.emailField).toBeFocused()
     let shown = await device.isKeyboardShown()
     expect(shown).toBe(true)
 
-    await emailField.blur()
+    await loginScreen.emailField.blur()
     await device.hideKeyboard()
     shown = await device.isKeyboardShown()
     expect(shown).toBe(false)

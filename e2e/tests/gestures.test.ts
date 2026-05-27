@@ -1,14 +1,14 @@
-import { beforeEach, describe, expect, test } from "../fixtures.js"
+import { describe, expect, test } from "../fixtures.js"
 import { resetApp } from "../utils/app-reset.js"
 
 describe("Gestures screen", () => {
-  beforeEach(async ({ device }) => {
+  test.beforeEach(async ({ device, gesturesScreen }) => {
     await resetApp(device, "/gestures")
-    await expect(device.getByText("Gesture Testing", { exact: true })).toBeVisible()
+    await expect(gesturesScreen.heading).toBeVisible()
   })
 
-  test("shows heading and initial state", async ({ device, gesturesScreen }) => {
-    await expect(device.getByText("Gesture Testing", { exact: true })).toBeVisible()
+  test("shows heading and initial state", async ({ gesturesScreen }) => {
+    await expect(gesturesScreen.heading).toBeVisible()
     await expect(gesturesScreen.lastGesture).toHaveText("Last gesture: None")
     await expect(gesturesScreen.tapCount).toHaveText("Tap count: 0")
   })
@@ -22,22 +22,21 @@ describe("Gestures screen", () => {
 
   // ─── Double Tap ───
 
-  test("double tap registers double tap gesture", async ({ device, gesturesScreen }) => {
-    await device.locator({ id: "tap-area" }).doubleTap()
+  test("double tap registers double tap gesture", async ({ gesturesScreen }) => {
+    await gesturesScreen.tapArea.doubleTap()
     await expect(gesturesScreen.lastGesture).toContainText("Double tap")
   })
 
   // ─── Long Press ───
 
-  test("long press changes state", async ({ device, gesturesScreen }) => {
-    await device.locator({ id: "long-press-area" }).longPress()
+  test("long press changes state", async ({ gesturesScreen }) => {
+    await gesturesScreen.longPressArea.longPress()
     await expect(gesturesScreen.lastGesture).toHaveText("Last gesture: Long press")
   })
 
-  test("long press with custom duration", async ({ device, gesturesScreen }) => {
-    // Reset by tapping
+  test("long press with custom duration", async ({ gesturesScreen }) => {
     await gesturesScreen.longPressArea.tap()
-    await device.locator({ id: "long-press-area" }).longPress(2000)
+    await gesturesScreen.longPressArea.longPress(2000)
     await expect(gesturesScreen.lastGesture).toHaveText("Last gesture: Long press")
   })
 
@@ -48,8 +47,8 @@ describe("Gestures screen", () => {
     await expect(gesturesScreen.dropZone).toBeVisible()
   })
 
-  test("can drag element to drop zone", async ({ device, gesturesScreen }) => {
-    await device.locator({ id: "draggable" }).dragTo(device.locator({ id: "drop-zone" }))
+  test("can drag element to drop zone", async ({ gesturesScreen }) => {
+    await gesturesScreen.draggable.dragTo(gesturesScreen.dropZone)
     await expect(gesturesScreen.lastGesture).toHaveText("Last gesture: Drag")
   })
 
@@ -59,12 +58,12 @@ describe("Gestures screen", () => {
     await expect(gesturesScreen.pinchArea).toBeVisible()
   })
 
-  test("pinchIn gesture on pinch area", async ({ device }) => {
-    await device.locator({ id: "pinch-area" }).pinchIn({ scale: 0.5 })
+  test("pinchIn gesture on pinch area", async ({ gesturesScreen }) => {
+    await gesturesScreen.pinchArea.pinchIn({ scale: 0.5 })
   })
 
-  test("pinchOut gesture on pinch area", async ({ device }) => {
-    await device.locator({ id: "pinch-area" }).pinchOut({ scale: 2.0 })
+  test("pinchOut gesture on pinch area", async ({ gesturesScreen }) => {
+    await gesturesScreen.pinchArea.pinchOut({ scale: 2.0 })
   })
 
   // ─── Swipe ───
