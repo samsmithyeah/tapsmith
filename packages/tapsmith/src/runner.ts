@@ -1648,7 +1648,21 @@ export async function runTestFile(
     rootCtx.useOptions = { ...opts.projectUseOptions, ...rootCtx.useOptions };
   }
 
-  const registry = getFixtureRegistry();
+  // Build a merged registry from all per-test/hook registries in the file.
+  // Using getFixtureRegistry() (the mutable global) would only reflect the
+  // last syncRegistry() call, missing worker fixtures from earlier extends.
+  const allEntryRegistries = new Set<FixtureRegistry>();
+  const collectFromCtx = (ctx: SuiteContext) => {
+    for (const t of ctx.tests) if (t.registry) allEntryRegistries.add(t.registry);
+    for (const h of [...ctx.beforeAll, ...ctx.afterAll, ...ctx.beforeEach, ...ctx.afterEach]) {
+      if (h.registry) allEntryRegistries.add(h.registry);
+    }
+  };
+  collectFromCtx(rootCtx);
+  let fileRegistry = new FixtureRegistry();
+  for (const r of allEntryRegistries) {
+    fileRegistry = fileRegistry.merge(r);
+  }
 
   // Resolve worker-scoped fixtures once for the entire file
   const baseFixtures: Record<string, unknown> = {
@@ -1659,8 +1673,8 @@ export async function runTestFile(
   let workerFixtures: Record<string, unknown> = opts.workerFixtures ?? {};
   let workerTeardown: (() => Promise<void>) | undefined;
 
-  if (!registry.isEmpty) {
-    const resolved = await resolveFixtures(registry, 'worker', {
+  if (!fileRegistry.isEmpty) {
+    const resolved = await resolveFixtures(fileRegistry, 'worker', {
       ...baseFixtures,
       ...workerFixtures,
     });

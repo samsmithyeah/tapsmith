@@ -247,6 +247,24 @@ describe('lazy fixture resolution', () => {
     expect(fixtures.b).toBe('b-val');
     await teardown();
   });
+
+  it('falls back to all fixtures when a dep has non-destructured params', async () => {
+    const order: string[] = [];
+    const registry = new FixtureRegistry();
+    registry.register({
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test fixture mock: non-destructured access
+      base: async (_fixtures: any, use: any) => { order.push('base'); await use('base-val'); },
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test fixture mock: non-destructured access
+      child: async (fixtures: any, use: any) => { order.push('child'); await use(`child-${fixtures.base}`); },
+    } as FixtureDefinitions<{ base: string; child: string }, BuiltinFixtures & { base: string; child: string }>);
+
+    // child has unknown deps (non-destructured), so requesting only ['child']
+    // should fall back to resolving all fixtures
+    const { fixtures, teardown } = await resolveFixtures(registry, 'test', {}, ['child']);
+    expect(order).toEqual(['base', 'child']);
+    expect(fixtures.child).toBe('child-base-val');
+    await teardown();
+  });
 });
 
 describe('FixtureRegistry.collectDeps', () => {

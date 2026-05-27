@@ -43,7 +43,9 @@ export type FixtureDefinitions<T extends Record<string, unknown>, F = any> = {
 export interface ResolvedFixture<T = unknown> {
   fn: FixtureFn<T, Record<string, unknown>>
   scope: FixtureScope
-  deps: string[]
+  /** Parsed dependency names, or null if the function takes params but doesn't
+   *  destructure them (meaning deps are unknown). */
+  deps: string[] | null
 }
 
 // ─── Built-in fixtures ───
@@ -69,10 +71,10 @@ export class FixtureRegistry {
     for (const [name, def] of Object.entries(definitions)) {
       if (Array.isArray(def)) {
         const [fn, opts] = def as [FixtureFn<unknown, Record<string, unknown>>, { scope: FixtureScope }];
-        this._fixtures.set(name, { fn, scope: opts.scope, deps: fixtureParameterNames(fn) });
+        this._fixtures.set(name, { fn, scope: opts.scope, deps: fixtureDepsFromFn(fn) });
       } else {
         const fn = def as FixtureFn<unknown, Record<string, unknown>>;
-        this._fixtures.set(name, { fn, scope: 'test', deps: fixtureParameterNames(fn) });
+        this._fixtures.set(name, { fn, scope: 'test', deps: fixtureDepsFromFn(fn) });
       }
     }
   }
@@ -105,31 +107,34 @@ export class FixtureRegistry {
 
   /**
    * Collect transitive dependencies for the given fixture names, filtered to a
-   * scope. Returns names in dependency-first (setup) order.
+   * scope. Returns names in dependency-first (setup) order, or null if any
+   * fixture in the chain has unknown deps (lazy resolution must fall back).
    */
-  collectDeps(names: string[], scope: FixtureScope): string[] {
+  collectDeps(names: string[], scope: FixtureScope): string[] | null {
     const ordered: string[] = [];
     const visited = new Set<string>();
     const visiting = new Set<string>();
 
-    const visit = (name: string) => {
+    const visit = (name: string): boolean => {
       const fixture = this._fixtures.get(name);
-      if (!fixture || fixture.scope !== scope) return;
+      if (!fixture || fixture.scope !== scope) return true;
       if (visiting.has(name)) {
         throw new Error(`Circular fixture dependency detected: ${[...visiting, name].join(' -> ')}`);
       }
-      if (visited.has(name)) return;
+      if (visited.has(name)) return true;
+      if (fixture.deps === null) return false;
       visiting.add(name);
       for (const dep of fixture.deps) {
-        visit(dep);
+        if (!visit(dep)) return false;
       }
       visiting.delete(name);
       visited.add(name);
       ordered.push(name);
+      return true;
     };
 
     for (const name of names) {
-      visit(name);
+      if (!visit(name)) return null;
     }
     return ordered;
   }
@@ -173,9 +178,9 @@ export async function resolveFixtures(
   const fixtures: Record<string, unknown> = { ...baseFixtures };
   const teardowns: (() => Promise<void>)[] = [];
 
-  const fixturesToResolve: [string, ResolvedFixture][] = requestedNames
-    ? registry.collectDeps(requestedNames, scope)
-        .map(name => [name, registry.get(name)!] as [string, ResolvedFixture])
+  const depOrder = requestedNames ? registry.collectDeps(requestedNames, scope) : null;
+  const fixturesToResolve: [string, ResolvedFixture][] = depOrder
+    ? depOrder.map(name => [name, registry.get(name)!] as [string, ResolvedFixture])
     : [...registry.byScope(scope)];
 
   try {
@@ -472,6 +477,28 @@ export function fixtureParameterNames(fn: Function): string[] {
   const names = innerFixtureParameterNames(fn);
   (fn as unknown as Record<symbol, string[]>)[signatureSymbol] = names;
   return names;
+}
+
+/**
+ * Determine fixture dependencies from a fixture function's signature.
+ * - Destructured first param `({ foo, bar }, use)` → `['foo', 'bar']`
+ * - `_`-prefixed first param `(_fixtures, use)` → `[]` (explicitly unused)
+ * - Plain first param `(fixtures, use)` → `null` (unknown deps)
+ * - No params `() => ...` → `[]`
+ */
+// eslint-disable-next-line @typescript-eslint/no-unsafe-function-type -- Function.toString() is the input
+function fixtureDepsFromFn(fn: Function): string[] | null {
+  const names = fixtureParameterNames(fn);
+  if (names.length > 0) return names;
+  const text = filterOutComments(fn.toString());
+  const paramList = extractParamList(text);
+  if (!paramList) return [];
+  const firstParam = splitByComma(paramList)[0].trim();
+  if (firstParam.startsWith('{')) return [];
+  // Strip type annotations and defaults: `fixtures: any = {}` → `fixtures`
+  const ident = firstParam.replace(/[:=].*/, '').trim();
+  if (ident.startsWith('_')) return [];
+  return null;
 }
 
 /**
