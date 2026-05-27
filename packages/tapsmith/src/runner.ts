@@ -976,8 +976,9 @@ async function runSuiteContext(
           // Heavy setup (session readiness, idle waits, user beforeEach hooks)
           // is captured inside this group so device actions don't appear as
           // ungrouped top-level events in the trace viewer.
+          const hasTestScopedFixtures = registry.byScope('test').size > 0;
           const hasBeforeEachWork =
-            !!opts.beforeEachTest || !!opts.device || allBeforeEach.length > 0 || !registry.isEmpty;
+            !!opts.beforeEachTest || !!opts.device || allBeforeEach.length > 0 || hasTestScopedFixtures;
           if (hasBeforeEachWork) {
             traceCollector?.startGroup('beforeEach Hooks');
           }
@@ -1000,7 +1001,7 @@ async function runSuiteContext(
             }
           }
 
-          if (!registry.isEmpty) {
+          if (hasTestScopedFixtures) {
             const resolved = await resolveFixtures(registry, 'test', baseFixtures);
             allFixtures = resolved.fixtures;
             testFixtureTeardown = resolved.teardown;
