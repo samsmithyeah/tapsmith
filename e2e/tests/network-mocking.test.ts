@@ -10,23 +10,12 @@
 import { createServer, type Server } from "node:http"
 import type { AddressInfo } from "node:net"
 import {
-  afterAll,
-  beforeAll,
-  beforeEach,
   describe,
   expect,
   test,
-  type Device,
   type Route,
-} from "tapsmith"
-import { ApiCallsScreen } from "../screens/api-calls.screen.js"
+} from "../fixtures.js"
 import { resetApp } from "../utils/app-reset.js"
-
-async function resetApiCallsScreen(device: Device) {
-  await resetApp(device, "/api-calls")
-  const screen = new ApiCallsScreen(device)
-  await expect(screen.heading).toBeVisible()
-}
 
 function routeFetchNoCacheOptions(route: Route) {
   const headers = { ...route.request().headers }
@@ -57,7 +46,7 @@ describe("Network mocking", () => {
   let crossOriginServer: Server | undefined
   let crossOriginUserUrl = ""
 
-  beforeAll(async () => {
+  test.beforeAll(async () => {
     crossOriginServer = createServer((req, res) => {
       if (req.url === "/cross-origin-user") {
         res.writeHead(200, { "content-type": "application/json" })
@@ -86,20 +75,19 @@ describe("Network mocking", () => {
     })
   })
 
-  afterAll(async () => {
+  test.afterAll(async () => {
     if (!crossOriginServer) return
     await new Promise<void>((resolve, reject) => {
       crossOriginServer!.close((err) => err ? reject(err) : resolve())
     })
   })
 
-  beforeEach(async ({ device }) => {
-    await resetApiCallsScreen(device)
+  test.beforeEach(async ({ device, apiCallsScreen }) => {
+    await resetApp(device, "/api-calls")
+    await expect(apiCallsScreen.heading).toBeVisible()
   })
 
-  test("route.fulfill() — mock a JSON response", async ({ device }) => {
-    const screen = new ApiCallsScreen(device)
-
+  test("route.fulfill() — mock a JSON response", async ({ device, apiCallsScreen }) => {
     await device.route("**/posts*", async (route) => {
       await route.fulfill({
         json: [
@@ -108,16 +96,14 @@ describe("Network mocking", () => {
       })
     })
 
-    await screen.fetchPostsButton.tap()
-    await expect(screen.postsHeading).toBeVisible({ timeout: 10_000 })
+    await apiCallsScreen.fetchPostsButton.tap()
+    await expect(apiCallsScreen.postsHeading).toBeVisible({ timeout: 10_000 })
     await expect(device.getByText("Mocked Post Title")).toBeVisible()
 
     await device.unrouteAll()
   })
 
-  test("route.fulfill() — mock error status", async ({ device }) => {
-    const screen = new ApiCallsScreen(device)
-
+  test("route.fulfill() — mock error status", async ({ device, apiCallsScreen }) => {
     await device.route("**/users/1", async (route) => {
       await route.fulfill({
         status: 500,
@@ -126,46 +112,40 @@ describe("Network mocking", () => {
       })
     })
 
-    await screen.fetchUserButton.tap()
+    await apiCallsScreen.fetchUserButton.tap()
     // The app should show an error since it received a 500
     await expect(device.getByText("Failed to fetch user")).toBeVisible({ timeout: 10_000 })
 
     await device.unrouteAll()
   })
 
-  test("route.abort() — block a request", async ({ device }) => {
-    const screen = new ApiCallsScreen(device)
-
+  test("route.abort() — block a request", async ({ device, apiCallsScreen }) => {
     await device.route("**/posts*", async (route) => {
       await route.abort()
     })
 
-    await screen.fetchPostsButton.tap()
+    await apiCallsScreen.fetchPostsButton.tap()
     // The app should show an error since the request was aborted
     await expect(device.getByText("Failed to fetch posts")).toBeVisible({ timeout: 10_000 })
 
     await device.unrouteAll()
   })
 
-  test("route.continue() — passthrough with no modifications", async ({ device }) => {
-    const screen = new ApiCallsScreen(device)
-
+  test("route.continue() — passthrough with no modifications", async ({ device, apiCallsScreen }) => {
     let intercepted = false
     await device.route("**/posts*", async (route) => {
       intercepted = true
       await route.continue()
     })
 
-    await screen.fetchPostsButton.tap()
-    await expect(screen.postsHeading).toBeVisible({ timeout: 10_000 })
+    await apiCallsScreen.fetchPostsButton.tap()
+    await expect(apiCallsScreen.postsHeading).toBeVisible({ timeout: 10_000 })
     expect(intercepted).toBe(true)
 
     await device.unrouteAll()
   })
 
-  test("route.fetch() — modify real response", async ({ device }) => {
-    const screen = new ApiCallsScreen(device)
-
+  test("route.fetch() — modify real response", async ({ device, apiCallsScreen }) => {
     await device.route("**/users/1", async (route) => {
       const response = await route.fetch(routeFetchNoCacheOptions(route))
       const data = response.json() as Record<string, unknown>
@@ -173,16 +153,14 @@ describe("Network mocking", () => {
       await route.fulfill({ json: data })
     })
 
-    await screen.fetchUserButton.tap()
-    await expect(screen.userHeading).toBeVisible({ timeout: 10_000 })
+    await apiCallsScreen.fetchUserButton.tap()
+    await expect(apiCallsScreen.userHeading).toBeVisible({ timeout: 10_000 })
     await expect(device.getByText("Tapsmith Modified User")).toBeVisible()
 
     await device.unrouteAll()
   })
 
-  test("device.unroute() — remove specific route", async ({ device }) => {
-    const screen = new ApiCallsScreen(device)
-
+  test("device.unroute() — remove specific route", async ({ device, apiCallsScreen }) => {
     const handler = async (route: Route) => {
       await route.fulfill({
         json: [{ id: 1, title: "Still Mocked", body: "body" }],
@@ -192,23 +170,24 @@ describe("Network mocking", () => {
     await device.route("**/posts*", handler)
 
     // First call should be mocked
-    await screen.fetchPostsButton.tap()
+    await apiCallsScreen.fetchPostsButton.tap()
     await expect(device.getByText("Still Mocked")).toBeVisible({ timeout: 10_000 })
 
     // Reset to clear UI state without dropping registered routes.
-    await resetApiCallsScreen(device)
+    await resetApp(device, "/api-calls")
+    await expect(apiCallsScreen.heading).toBeVisible()
 
     // Remove the route
     await device.unroute("**/posts*", handler)
 
     // Second call should go through to the real server
-    await screen.fetchPostsButton.tap()
-    await expect(screen.postsHeading).toBeVisible({ timeout: 10_000 })
+    await apiCallsScreen.fetchPostsButton.tap()
+    await expect(apiCallsScreen.postsHeading).toBeVisible({ timeout: 10_000 })
     // Real jsonplaceholder doesn't have "Still Mocked"
     await expect(device.getByText("Still Mocked")).not.toBeVisible()
   })
 
-  test("device.unrouteAll() — remove all routes", async ({ device }) => {
+  test("device.unrouteAll() — remove all routes", async ({ device, apiCallsScreen }) => {
     await device.route("**/posts*", async (route) => {
       await route.abort()
     })
@@ -217,21 +196,20 @@ describe("Network mocking", () => {
     })
 
     // Verify routes work
-    const screen = new ApiCallsScreen(device)
-    await screen.fetchPostsButton.tap()
+    await apiCallsScreen.fetchPostsButton.tap()
     await expect(device.getByText("Failed to fetch posts")).toBeVisible({ timeout: 10_000 })
 
     // Remove all routes and reset the app state.
     await device.unrouteAll()
-    await resetApiCallsScreen(device)
+    await resetApp(device, "/api-calls")
+    await expect(apiCallsScreen.heading).toBeVisible()
 
     // Now requests should go through
-    await screen.fetchPostsButton.tap()
-    await expect(screen.postsHeading).toBeVisible({ timeout: 10_000 })
+    await apiCallsScreen.fetchPostsButton.tap()
+    await expect(apiCallsScreen.postsHeading).toBeVisible({ timeout: 10_000 })
   })
 
-  test("route with times option — limited invocations", async ({ device }) => {
-    const screen = new ApiCallsScreen(device)
+  test("route with times option — limited invocations", async ({ device, apiCallsScreen }) => {
     let routeHits = 0
 
     await device.route("**/posts*", async (route) => {
@@ -242,23 +220,22 @@ describe("Network mocking", () => {
     }, { times: 1 })
 
     // First call: mocked
-    await screen.fetchPostsButton.tap()
+    await apiCallsScreen.fetchPostsButton.tap()
     await expect(device.getByText("Once Only")).toBeVisible({ timeout: 10_000 })
     expect(routeHits).toBe(1)
 
     // Reset app to clear state without dropping route registrations.
-    await resetApiCallsScreen(device)
+    await resetApp(device, "/api-calls")
+    await expect(apiCallsScreen.heading).toBeVisible()
 
     // Second call: route should have expired after 1 use.
-    await screen.fetchPostsButton.tap()
+    await apiCallsScreen.fetchPostsButton.tap()
     await new Promise((resolve) => setTimeout(resolve, 1_000))
     expect(routeHits).toBe(1)
     await expect(device.getByText("Once Only")).not.toBeVisible({ timeout: 1_000 })
   })
 
-  test("route.continue({ url }) — cross-origin redirect", async ({ device }) => {
-    const screen = new ApiCallsScreen(device)
-
+  test("route.continue({ url }) — cross-origin redirect", async ({ device, apiCallsScreen }) => {
     // Redirect the user request from jsonplaceholder to a deterministic local
     // origin so this test exercises cross-origin continue without depending on
     // a public service.
@@ -266,8 +243,8 @@ describe("Network mocking", () => {
       await route.continue({ url: crossOriginUserUrl })
     })
 
-    await screen.fetchUserButton.tap()
-    await expect(screen.userHeading).toBeVisible({ timeout: 10_000 })
+    await apiCallsScreen.fetchUserButton.tap()
+    await expect(apiCallsScreen.userHeading).toBeVisible({ timeout: 10_000 })
     await expect(device.getByText("Tapsmith Redirect User")).toBeVisible()
     // jsonplaceholder user 1 is "Leanne Graham" — if cross-origin
     // redirect worked, that name won't appear.
@@ -276,9 +253,7 @@ describe("Network mocking", () => {
     await device.unrouteAll()
   })
 
-  test("multiple routes — last registered wins", async ({ device }) => {
-    const screen = new ApiCallsScreen(device)
-
+  test("multiple routes — last registered wins", async ({ device, apiCallsScreen }) => {
     // First: broad route that would abort everything
     await device.route("**/*", async (route) => {
       await route.abort()
@@ -291,7 +266,7 @@ describe("Network mocking", () => {
       })
     })
 
-    await screen.fetchPostsButton.tap()
+    await apiCallsScreen.fetchPostsButton.tap()
     await expect(device.getByText("Priority Route Won")).toBeVisible({ timeout: 10_000 })
 
     await device.unrouteAll()

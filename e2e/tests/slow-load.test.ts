@@ -1,44 +1,37 @@
-import { beforeAll, describe, expect, test } from "tapsmith"
-import { SlowLoadScreen } from "../screens/slow-load.screen.js"
+import { describe, expect, test } from "../fixtures.js"
 
 describe("Slow load screen", () => {
-  beforeAll(async ({ device }) => {
-    await device.getByDescription("Slow Load").scrollIntoView()
-    await device.getByDescription("Slow Load").tap()
+  test.beforeAll(async ({ device }) => {
+    await device.openDeepLink("tapsmithtest:///slow-load")
   })
 
-  test("shows heading and description", async ({ device }) => {
-    const screen = new SlowLoadScreen(device)
-    await expect(screen.heading).toBeVisible()
+  test("shows heading and description", async ({ slowLoadScreen }) => {
+    await expect(slowLoadScreen.heading).toBeVisible()
   })
 
   // ─── Data Fetching ───
 
-  test("load buttons are visible", async ({ device }) => {
-    const screen = new SlowLoadScreen(device)
-    await expect(screen.load2sButton).toBeVisible()
-    await expect(screen.load5sButton).toBeVisible()
-    await expect(screen.loadFailButton).toBeVisible()
+  test("load buttons are visible", async ({ slowLoadScreen }) => {
+    await expect(slowLoadScreen.load2sButton).toBeVisible()
+    await expect(slowLoadScreen.load5sButton).toBeVisible()
+    await expect(slowLoadScreen.loadFailButton).toBeVisible()
   })
 
-  test("2s load shows data after loading", async ({ device }) => {
-    const screen = new SlowLoadScreen(device)
-    await screen.load2sButton.tap()
-    await expect(screen.profileHeading).toBeVisible({ timeout: 15_000 })
-    await expect(screen.profileName).toBeVisible()
+  test("2s load shows data after loading", async ({ slowLoadScreen }) => {
+    await slowLoadScreen.load2sButton.tap()
+    await expect(slowLoadScreen.profileHeading).toBeVisible({ timeout: 15_000 })
+    await expect(slowLoadScreen.profileName).toBeVisible()
   })
 
-  test("data rows show correct content", async ({ device }) => {
-    const screen = new SlowLoadScreen(device)
-    await expect(screen.profileHeading).toBeVisible()
-    await expect(screen.emailLabel).toBeVisible()
-    await expect(screen.emailValue).toBeVisible()
+  test("data rows show correct content", async ({ slowLoadScreen }) => {
+    await expect(slowLoadScreen.profileHeading).toBeVisible()
+    await expect(slowLoadScreen.emailLabel).toBeVisible()
+    await expect(slowLoadScreen.emailValue).toBeVisible()
   })
 
-  test("failed load shows error", async ({ device }) => {
-    const screen = new SlowLoadScreen(device)
-    await screen.loadFailButton.tap()
-    await expect(screen.errorMessage).toBeVisible({ timeout: 10000 })
+  test("failed load shows error", async ({ slowLoadScreen }) => {
+    await slowLoadScreen.loadFailButton.tap()
+    await expect(slowLoadScreen.errorMessage).toBeVisible({ timeout: 10000 })
   })
 
   // ─── Polling Counter ───

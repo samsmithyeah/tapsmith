@@ -20,7 +20,7 @@ import type { Device } from './device.js';
 import type { TapsmithReporter } from './reporter.js';
 import { APIRequestContext } from './api-request.js';
 import { flushSoftErrors } from './expect.js';
-import { FixtureRegistry, resolveFixtures, type FixtureDefinitions, type BuiltinFixtures } from './fixtures.js';
+import { FixtureRegistry, resolveFixtures, fixtureParameterNames, functionHasParameters, type FixtureDefinitions, type BuiltinFixtures } from './fixtures.js';
 import { resolveTraceConfig } from './trace/types.js';
 import { shouldRecord, shouldRetain } from './trace/trace-mode.js';
 import { resolveVideoConfig } from './video/types.js';
@@ -196,6 +196,12 @@ interface TestEntry {
   fn: TestCallback;
   only: boolean;
   skip: boolean;
+  registry?: FixtureRegistry;
+}
+
+interface HookEntry {
+  fn: HookFn
+  registry?: FixtureRegistry
 }
 
 interface SuiteEntry {
@@ -203,6 +209,7 @@ interface SuiteEntry {
   fn: () => void;
   only: boolean;
   skip: boolean;
+  ctx?: SuiteContext;
 }
 
 // ─── Global registration state ───
@@ -210,10 +217,10 @@ interface SuiteEntry {
 interface SuiteContext {
   tests: TestEntry[];
   suites: SuiteEntry[];
-  beforeAll: HookFn[];
-  afterAll: HookFn[];
-  beforeEach: HookFn[];
-  afterEach: HookFn[];
+  beforeAll: HookEntry[];
+  afterAll: HookEntry[];
+  beforeEach: HookEntry[];
+  afterEach: HookEntry[];
   useOptions?: UseOptions;
 }
 
@@ -246,12 +253,37 @@ function popContext(): SuiteContext {
   return contextStack.pop()!;
 }
 
+function materializeSuiteEntry(entry: SuiteEntry): SuiteContext {
+  if (entry.ctx) return entry.ctx;
+  pushContext();
+  try {
+    entry.fn();
+    entry.ctx = popContext();
+    return entry.ctx;
+  } catch (err) {
+    popContext();
+    throw err;
+  }
+}
+
+function collectFixtureRegistries(ctx: SuiteContext, registries: Set<FixtureRegistry>): void {
+  for (const t of ctx.tests) {
+    if (t.registry) registries.add(t.registry);
+  }
+  for (const h of [...ctx.beforeAll, ...ctx.afterAll, ...ctx.beforeEach, ...ctx.afterEach]) {
+    if (h.registry) registries.add(h.registry);
+  }
+  for (const suite of ctx.suites) {
+    collectFixtureRegistries(materializeSuiteEntry(suite), registries);
+  }
+}
+
 // ─── Public registration API ───
 
-export interface TestFn {
-  (name: string, fn: TestCallback): void;
-  only: (name: string, fn: TestCallback) => void;
-  skip: (name: string, fn: TestCallback) => void;
+export interface TestFn<Fixtures extends object = TestFixtures> {
+  (name: string, fn: ((fixtures: Fixtures) => void | Promise<void>) | (() => void | Promise<void>)): void;
+  only: (name: string, fn: ((fixtures: Fixtures) => void | Promise<void>) | (() => void | Promise<void>)) => void;
+  skip: (name: string, fn: ((fixtures: Fixtures) => void | Promise<void>) | (() => void | Promise<void>)) => void;
   /**
    * Override configuration options for all tests in the current describe scope.
    * Overrides cascade — inner describe blocks inherit and can further override.
@@ -277,8 +309,12 @@ export interface TestFn {
    * ```
    */
   extend: <T extends Record<string, unknown>>(
-    definitions: FixtureDefinitions<T, BuiltinFixtures & T>,
-  ) => TestFn;
+    definitions: FixtureDefinitions<T, Fixtures & T>,
+  ) => TestFn<Fixtures & T>;
+  beforeAll: (fn: ((fixtures: Fixtures) => void | Promise<void>) | (() => void | Promise<void>)) => void;
+  afterAll: (fn: ((fixtures: Fixtures) => void | Promise<void>) | (() => void | Promise<void>)) => void;
+  beforeEach: (fn: ((fixtures: Fixtures) => void | Promise<void>) | (() => void | Promise<void>)) => void;
+  afterEach: (fn: ((fixtures: Fixtures) => void | Promise<void>) | (() => void | Promise<void>)) => void;
 }
 
 export interface DescribeFn {
@@ -287,19 +323,24 @@ export interface DescribeFn {
   skip: (name: string, fn: () => void) => void;
 }
 
-function createTestFn(registry: FixtureRegistry): TestFn {
-  const fn: TestFn = Object.assign(
+function createTestFn<F extends object = TestFixtures>(registry: FixtureRegistry): TestFn<F> {
+  const syncRegistry = () => { activeFixtureRegistry = registry; };
+  const fn = Object.assign(
     (name: string, testFn: TestCallback) => {
-      currentContext().tests.push({ name, fn: testFn, only: false, skip: false });
+      syncRegistry();
+      currentContext().tests.push({ name, fn: testFn, only: false, skip: false, registry });
     },
     {
       only: (name: string, testFn: TestCallback) => {
-        currentContext().tests.push({ name, fn: testFn, only: true, skip: false });
+        syncRegistry();
+        currentContext().tests.push({ name, fn: testFn, only: true, skip: false, registry });
       },
       skip: (name: string, testFn: TestCallback) => {
-        currentContext().tests.push({ name, fn: testFn, only: false, skip: true });
+        syncRegistry();
+        currentContext().tests.push({ name, fn: testFn, only: false, skip: true, registry });
       },
       use: (options: UseOptions) => {
+        syncRegistry();
         if (options.timeout !== undefined && options.timeout <= 0) {
           throw new Error('test.use() timeout must be a positive number');
         }
@@ -310,16 +351,23 @@ function createTestFn(registry: FixtureRegistry): TestFn {
         ctx.useOptions = { ...ctx.useOptions, ...options };
       },
       extend: <T extends Record<string, unknown>>(
-        definitions: FixtureDefinitions<T, BuiltinFixtures & T>,
-      ): TestFn => {
+        definitions: FixtureDefinitions<T, F & T>,
+      ): TestFn<F & T> => {
         const childRegistry = new FixtureRegistry();
-        childRegistry.register(definitions);
+        // Cast needed: register() is typed for BuiltinFixtures but F may be a wider fixture set
+        childRegistry.register(definitions as FixtureDefinitions<T, BuiltinFixtures & T>);
         const merged = registry.merge(childRegistry);
         activeFixtureRegistry = merged;
-        return createTestFn(merged);
+        return createTestFn<F & T>(merged);
       },
+      beforeAll: (hookFn: HookFn) => { syncRegistry(); currentContext().beforeAll.push({ fn: hookFn, registry }); },
+      afterAll: (hookFn: HookFn) => { syncRegistry(); currentContext().afterAll.push({ fn: hookFn, registry }); },
+      beforeEach: (hookFn: HookFn) => { syncRegistry(); currentContext().beforeEach.push({ fn: hookFn, registry }); },
+      afterEach: (hookFn: HookFn) => { syncRegistry(); currentContext().afterEach.push({ fn: hookFn, registry }); },
     },
-  );
+  // Object.assign can't infer the generic F — cast through unknown is safe
+  // because each property is typed correctly in the object literal above.
+  ) as unknown as TestFn<F>;
   return fn;
 }
 
@@ -340,19 +388,19 @@ export const describe: DescribeFn = Object.assign(
 );
 
 export function beforeAll(fn: HookFn): void {
-  currentContext().beforeAll.push(fn);
+  currentContext().beforeAll.push({ fn });
 }
 
 export function afterAll(fn: HookFn): void {
-  currentContext().afterAll.push(fn);
+  currentContext().afterAll.push({ fn });
 }
 
 export function beforeEach(fn: HookFn): void {
-  currentContext().beforeEach.push(fn);
+  currentContext().beforeEach.push({ fn });
 }
 
 export function afterEach(fn: HookFn): void {
-  currentContext().afterEach.push(fn);
+  currentContext().afterEach.push({ fn });
 }
 
 // ─── Helpers ───
@@ -543,20 +591,48 @@ function passesTestFilter(fullName: string, opts: RunOptions): boolean {
 // `async ({ device } = {}) => …` would be mis-classified as zero-arg. In
 // practice this is fine because hooks are simple `async ({ device }) => …`.
 async function invokeHook(
-  fn: HookFn,
-  config: TapsmithConfig,
-  device?: Device,
-  projectName?: string,
+  entry: HookEntry,
+  fixtures: Record<string, unknown>,
 ): Promise<void> {
-  if (fn.length > 0 && device) {
-    // Hooks receive device + project metadata; request fixture is test-scoped only.
-    await (fn as (fixtures: { device: Device; projectName?: string; platform: Platform }) => void | Promise<void>)({
-      device,
-      projectName,
-      platform: resolvePlatformFixture(config),
-    });
+  if (entry.fn.length > 0) {
+    await (entry.fn as (fixtures: Record<string, unknown>) => void | Promise<void>)(fixtures);
   } else {
-    await (fn as () => void | Promise<void>)();
+    await (entry.fn as () => void | Promise<void>)();
+  }
+}
+
+const builtinFixtureNames = new Set(['device', 'request', 'projectName', 'platform']);
+
+function validateHookFixtures(
+  hook: HookEntry,
+  testRegistry: FixtureRegistry,
+  hookType: string,
+): void {
+  if (!hook.registry || hook.registry === testRegistry) return;
+  for (const name of fixtureParameterNames(hook.fn)) {
+    if (!testRegistry.has(name) && !builtinFixtureNames.has(name)) {
+      process.stderr.write(
+        `[tapsmith] ${hookType} hook expects fixture "${name}" which is not available in this test's fixture registry. ` +
+        `The hook was registered with a different test.extend() than the test it is running against.\n`,
+      );
+    }
+  }
+}
+
+function validateBeforeAllHookFixtures(
+  hook: HookEntry,
+  registry: FixtureRegistry,
+  hookType: string,
+): void {
+  for (const name of fixtureParameterNames(hook.fn)) {
+    if (builtinFixtureNames.has(name)) continue;
+    const fixture = registry.get(name);
+    if (fixture && fixture.scope === 'test') {
+      process.stderr.write(
+        `[tapsmith] ${hookType} hook references test-scoped fixture "${name}". ` +
+        `Only worker-scoped fixtures and builtins (device, request, etc.) are available in ${hookType} hooks.\n`,
+      );
+    }
   }
 }
 
@@ -601,8 +677,8 @@ function replayBeforeAllEvents(
 async function runSuiteContext(
   ctx: SuiteContext,
   parentPrefix: string,
-  parentBeforeEach: HookFn[],
-  parentAfterEach: HookFn[],
+  parentBeforeEach: HookEntry[],
+  parentAfterEach: HookEntry[],
   parentOpts: RunOptions,
 ): Promise<SuiteResult> {
   // Apply test.use() overrides for this scope (cascading from parent).
@@ -693,17 +769,29 @@ async function runSuiteContext(
       beforeAllCollector.startGroup('beforeAll Hooks');
     }
   }
+  const suiteFixtures: Record<string, unknown> = {
+    ...(opts.device ? { device: opts.device } : {}),
+    ...(opts.projectName != null ? { projectName: opts.projectName } : {}),
+    platform: resolvePlatformFixture(opts.config),
+    ...(opts.workerFixtures ?? {}),
+  };
+
+  const suiteRegistry = getFixtureRegistry();
+  for (const hook of ctx.beforeAll) {
+    validateBeforeAllHookFixtures(hook, hook.registry ?? suiteRegistry, 'beforeAll');
+  }
+
   try {
     if (beforeAllCollector) {
       await withActiveTraceCollector(beforeAllCollector, async () => {
         for (const hook of ctx.beforeAll) {
-          await invokeHook(hook, opts.config, opts.device, opts.projectName);
+          await invokeHook(hook, suiteFixtures);
         }
       });
       beforeAllCollector.endGroup();
     } else {
       for (const hook of ctx.beforeAll) {
-        await invokeHook(hook, opts.config, opts.device, opts.projectName);
+        await invokeHook(hook, suiteFixtures);
       }
     }
   } catch (err) {
@@ -924,6 +1012,17 @@ async function runSuiteContext(
         extraHTTPHeaders: opts.config.extraHTTPHeaders,
       });
 
+      // Declare fixture state outside try so afterEach hooks and teardown
+      // are accessible in the finally block.
+      // Prefer the per-test registry (set by test.extend()) over the global one.
+      const registry = entry.registry ?? getFixtureRegistry();
+      const baseFixtures: Record<string, unknown> = {
+        ...suiteFixtures,
+        request: requestContext,
+      };
+      let testFixtureTeardown: (() => Promise<void>) | undefined;
+      let allFixtures: Record<string, unknown> = baseFixtures;
+
       try {
         // ── Setup phase (not subject to test timeout) ──
           // Hooks and fixture resolution run outside the test timeout so that
@@ -948,8 +1047,9 @@ async function runSuiteContext(
           // Heavy setup (session readiness, idle waits, user beforeEach hooks)
           // is captured inside this group so device actions don't appear as
           // ungrouped top-level events in the trace viewer.
+          const hasTestScopedFixtures = registry.byScope('test').size > 0;
           const hasBeforeEachWork =
-            !!opts.beforeEachTest || !!opts.device || allBeforeEach.length > 0;
+            !!opts.beforeEachTest || !!opts.device || allBeforeEach.length > 0 || hasTestScopedFixtures;
           if (hasBeforeEachWork) {
             traceCollector?.startGroup('beforeEach Hooks');
           }
@@ -972,30 +1072,40 @@ async function runSuiteContext(
             }
           }
 
+          if (hasTestScopedFixtures) {
+            // Collect the fixture names destructured by the test and its hooks.
+            // If any function takes a fixtures parameter without destructuring
+            // (e.g. `(fixtures) => fixtures.foo`), we can't determine which
+            // fixtures it needs, so we fall back to resolving all of them.
+            const requestedNames = new Set<string>();
+            let canBeLazy = true;
+            const fns = [entry.fn, ...allBeforeEach.map(h => h.fn), ...allAfterEach.map(h => h.fn)];
+            for (const fn of fns) {
+              const names = fixtureParameterNames(fn);
+              if (names.length > 0) {
+                for (const name of names)
+                  requestedNames.add(name);
+              } else if (functionHasParameters(fn)) {
+                // Function takes parameters but doesn't destructure — resolve all
+                canBeLazy = false;
+                break;
+              }
+            }
+
+            const resolved = await resolveFixtures(
+              registry, 'test', baseFixtures,
+              canBeLazy ? [...requestedNames] : undefined,
+            );
+            allFixtures = resolved.fixtures;
+            testFixtureTeardown = resolved.teardown;
+          }
+
           for (const hook of allBeforeEach) {
-            await invokeHook(hook, opts.config, opts.device, opts.projectName);
+            validateHookFixtures(hook, registry, 'beforeEach');
+            await invokeHook(hook, allFixtures);
           }
           if (hasBeforeEachWork) {
             traceCollector?.endGroup();
-          }
-
-          // Build fixture context: base (device + request) + worker-scoped + test-scoped
-          const registry = getFixtureRegistry();
-          const baseFixtures: Record<string, unknown> = {
-            ...(opts.device ? { device: opts.device } : {}),
-            request: requestContext,
-            ...(opts.projectName != null ? { projectName: opts.projectName } : {}),
-            platform: resolvePlatformFixture(opts.config),
-            ...(opts.workerFixtures ?? {}),
-          };
-
-          let testFixtureTeardown: (() => Promise<void>) | undefined;
-          let allFixtures = baseFixtures;
-
-          if (!registry.isEmpty) {
-            const resolved = await resolveFixtures(registry, 'test', baseFixtures);
-            allFixtures = resolved.fixtures;
-            testFixtureTeardown = resolved.teardown;
           }
 
           // ── Test body (subject to test timeout) ──
@@ -1010,9 +1120,6 @@ async function runSuiteContext(
               }
             } finally {
               traceCollector?.endGroup();
-              if (testFixtureTeardown) {
-                await testFixtureTeardown();
-              }
             }
           };
 
@@ -1051,20 +1158,28 @@ async function runSuiteContext(
             );
           }
         } finally {
-          // Ensure request fixture is cleaned up even if hooks threw before the test body
-          requestContext.dispose();
-
-          // Run afterEach hooks (always)
-          if (allAfterEach.length > 0) {
-            traceCollector?.startGroup('afterEach Hooks');
-            for (const hook of allAfterEach) {
-              try {
-                await invokeHook(hook, opts.config, opts.device, opts.projectName);
-              } catch (err) {
-                process.stderr.write(`[tapsmith] afterEach hook error: ${err instanceof Error ? err.message : String(err)}\n`);
+          try {
+            // Run afterEach hooks (always, with full fixtures available)
+            if (allAfterEach.length > 0) {
+              traceCollector?.startGroup('afterEach Hooks');
+              for (const hook of allAfterEach) {
+                try {
+                  validateHookFixtures(hook, registry, 'afterEach');
+                  await invokeHook(hook, allFixtures);
+                } catch (err) {
+                  process.stderr.write(`[tapsmith] afterEach hook error: ${err instanceof Error ? err.message : String(err)}\n`);
+                }
               }
+              traceCollector?.endGroup();
             }
-            traceCollector?.endGroup();
+
+            // Tear down test-scoped fixtures after afterEach hooks have run
+            if (testFixtureTeardown) {
+              await testFixtureTeardown();
+            }
+          } finally {
+            // Ensure request fixture is cleaned up even if teardown throws
+            requestContext.dispose();
           }
         }
 
@@ -1390,18 +1505,14 @@ async function runSuiteContext(
 
     if (shouldSkip) {
       // Mark all tests in skipped suite as skipped (we still need to discover them)
-      pushContext();
-      suiteEntry.fn();
-      const childCtx = popContext();
+      const childCtx = materializeSuiteEntry(suiteEntry);
       const prefix = parentPrefix ? `${parentPrefix} > ${suiteEntry.name}` : suiteEntry.name;
       const skippedResult = skipAll(childCtx, prefix);
       result.suites.push(skippedResult);
       continue;
     }
 
-    pushContext();
-    suiteEntry.fn();
-    const childCtx = popContext();
+    const childCtx = materializeSuiteEntry(suiteEntry);
     const prefix = parentPrefix ? `${parentPrefix} > ${suiteEntry.name}` : suiteEntry.name;
     const childResult = await runSuiteContext(childCtx, prefix, allBeforeEach, allAfterEach, opts);
     result.suites.push(childResult);
@@ -1409,6 +1520,9 @@ async function runSuiteContext(
 
   // Run afterAll hooks with tracing (same pattern as beforeAll).
   // Events are streamed to the UI tagged with the last test that ran.
+  for (const hook of ctx.afterAll) {
+    validateBeforeAllHookFixtures(hook, hook.registry ?? suiteRegistry, 'afterAll');
+  }
   if (ctx.afterAll.length > 0 && opts.device) {
     const traceConfig = resolveTraceConfig(opts.config.trace);
     if (shouldRecord(traceConfig.mode, 0)) {
@@ -1436,7 +1550,7 @@ async function runSuiteContext(
       await withActiveTraceCollector(afterAllCollector, async () => {
         for (const hook of ctx.afterAll) {
           try {
-            await invokeHook(hook, opts.config, opts.device, opts.projectName);
+            await invokeHook(hook, suiteFixtures);
           } catch (err) {
             process.stderr.write(`[tapsmith] afterAll hook error: ${err instanceof Error ? err.message : String(err)}\n`);
           }
@@ -1447,7 +1561,7 @@ async function runSuiteContext(
     } else {
       for (const hook of ctx.afterAll) {
         try {
-          await invokeHook(hook, opts.config, opts.device, opts.projectName);
+          await invokeHook(hook, suiteFixtures);
         } catch (err) {
           process.stderr.write(`[tapsmith] afterAll hook error: ${err instanceof Error ? err.message : String(err)}\n`);
         }
@@ -1456,7 +1570,7 @@ async function runSuiteContext(
   } else {
     for (const hook of ctx.afterAll) {
       try {
-        await invokeHook(hook, opts.config, opts.device, opts.projectName);
+        await invokeHook(hook, suiteFixtures);
       } catch (err) {
         process.stderr.write(`[tapsmith] afterAll hook error: ${err instanceof Error ? err.message : String(err)}\n`);
       }
@@ -1486,9 +1600,7 @@ function skipAll(ctx: SuiteContext, prefix: string): SuiteResult {
     result.tests.push({ name: t.name, fullName, status: 'skipped', durationMs: 0 });
   }
   for (const s of ctx.suites) {
-    pushContext();
-    s.fn();
-    const childCtx = popContext();
+    const childCtx = materializeSuiteEntry(s);
     const childPrefix = prefix ? `${prefix} > ${s.name}` : s.name;
     result.suites.push(skipAll(childCtx, childPrefix));
   }
@@ -1506,9 +1618,7 @@ function failAll(ctx: SuiteContext, prefix: string, error: Error, project?: stri
     result.tests.push({ name: t.name, fullName, status: 'failed', durationMs: 0, error, project, screenshotPath, tracePath });
   }
   for (const s of ctx.suites) {
-    pushContext();
-    s.fn();
-    const childCtx = popContext();
+    const childCtx = materializeSuiteEntry(s);
     const childPrefix = prefix ? `${prefix} > ${s.name}` : s.name;
     result.suites.push(failAll(childCtx, childPrefix, error, project, screenshotPath, tracePath));
   }
@@ -1534,7 +1644,10 @@ export async function runTestFile(
   filePath: string,
   opts: RunOptions,
 ): Promise<SuiteResult> {
-  // Reset context and fixture registry
+  // Reset context and fixture registry for the new file. Registration
+  // calls (test(), test.beforeEach(), etc.) sync activeFixtureRegistry
+  // back to the extended test's registry, so even cached ESM imports
+  // that skip test.extend() re-execution will restore the correct registry.
   contextStack = [];
   activeFixtureRegistry = new FixtureRegistry();
   pushContext();
@@ -1553,7 +1666,15 @@ export async function runTestFile(
     rootCtx.useOptions = { ...opts.projectUseOptions, ...rootCtx.useOptions };
   }
 
-  const registry = getFixtureRegistry();
+  // Build a merged registry from all per-test/hook registries in the file.
+  // Using getFixtureRegistry() (the mutable global) would only reflect the
+  // last syncRegistry() call, missing worker fixtures from earlier extends.
+  const allEntryRegistries = new Set<FixtureRegistry>();
+  collectFixtureRegistries(rootCtx, allEntryRegistries);
+  let fileRegistry = new FixtureRegistry();
+  for (const r of allEntryRegistries) {
+    fileRegistry = fileRegistry.merge(r);
+  }
 
   // Resolve worker-scoped fixtures once for the entire file
   const baseFixtures: Record<string, unknown> = {
@@ -1564,8 +1685,8 @@ export async function runTestFile(
   let workerFixtures: Record<string, unknown> = opts.workerFixtures ?? {};
   let workerTeardown: (() => Promise<void>) | undefined;
 
-  if (!registry.isEmpty) {
-    const resolved = await resolveFixtures(registry, 'worker', {
+  if (!fileRegistry.isEmpty) {
+    const resolved = await resolveFixtures(fileRegistry, 'worker', {
       ...baseFixtures,
       ...workerFixtures,
     });
@@ -1653,10 +1774,7 @@ function discoverSuiteContext(ctx: SuiteContext, parentPrefix: string): Discover
   const suites: DiscoveredSuite[] = [];
   for (const entry of ctx.suites) {
     const suitePrefix = parentPrefix ? `${parentPrefix} > ${entry.name}` : entry.name;
-    // Execute the describe callback to register nested tests/suites
-    pushContext();
-    entry.fn();
-    const childCtx = popContext();
+    const childCtx = materializeSuiteEntry(entry);
     suites.push(discoverSuiteContext(childCtx, suitePrefix));
   }
 
@@ -1664,4 +1782,5 @@ function discoverSuiteContext(ctx: SuiteContext, parentPrefix: string): Discover
 }
 
 /** @internal — exposed for unit testing only. */
-export const _internal = { pushContext, popContext, runSuiteContext, resolvePlatformFixture };
+function resetFixtureRegistry(): void { activeFixtureRegistry = new FixtureRegistry(); }
+export const _internal = { pushContext, popContext, runSuiteContext, resolvePlatformFixture, resetFixtureRegistry };

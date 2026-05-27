@@ -1413,11 +1413,11 @@ test("example", async ({ device, request, projectName, platform }) => {
 | `projectName` | `string \| undefined` | Name of the current project (from `projects` config). `undefined` when no projects are configured. |
 | `platform` | `'android' \| 'ios'` | Resolved target platform for the current worker. |
 
-### `test.extend<T>(definitions): TestFn`
+### `test.extend<T>(definitions): TestFn<Fixtures & T>`
 
-Create a new test function with additional custom fixtures. Follows the same pattern as Playwright's `test.extend()`.
+Create a new test function with additional custom fixtures. Returns a new `TestFn` with the extended fixture types. Follows the same pattern as Playwright's `test.extend()`.
 
-Each fixture definition is a function that receives all other fixtures and a `use` callback. The fixture sets up its value, passes it to `use()`, and optionally cleans up after `use()` resolves.
+Each fixture definition is a function that receives all other fixtures and a `use` callback. The fixture sets up its value, passes it to `use()`, and optionally cleans up after `use()` resolves. **Fixture functions must destructure their first parameter** (e.g., `({ request }, use)`) so the framework can track dependencies for lazy resolution.
 
 ```typescript
 import { test as base, expect } from "tapsmith";
@@ -1476,6 +1476,8 @@ const test = base.extend<{ apiToken: string }>({
 
 Custom fixtures can depend on other custom fixtures — they're resolved in dependency order automatically.
 
+**Lazy resolution:** Only fixtures that are destructured by the test function and its hooks are resolved. If a test destructures `{ device, todoId }`, only `todoId` (and its transitive dependencies) will be set up — other fixtures defined in `test.extend()` are skipped. This matches Playwright's behavior.
+
 ### `describe(name: string, fn: () => void): void`
 
 Group tests into a suite.
@@ -1493,7 +1495,7 @@ Focus or skip an entire suite.
 
 ### `beforeAll(fn: (fixtures) => void | Promise<void>): void`
 
-Run a function once before all tests in the current suite. Receives `{ device, projectName }`.
+Run a function once before all tests in the current suite. Receives builtin fixtures (`device`, `projectName`, `platform`) and any worker-scoped custom fixtures.
 
 ```typescript
 beforeAll(async ({ device }) => {
@@ -1504,11 +1506,11 @@ beforeAll(async ({ device }) => {
 
 ### `afterAll(fn: (fixtures) => void | Promise<void>): void`
 
-Run a function once after all tests in the current suite. Receives `{ device, projectName }`.
+Run a function once after all tests in the current suite. Receives the same fixtures as `beforeAll`.
 
 ### `beforeEach(fn: (fixtures) => void | Promise<void>): void`
 
-Run a function before each test in the current suite. Hooks are inherited by nested suites. Receives `{ device, projectName }`.
+Run a function before each test in the current suite. Hooks are inherited by nested suites. Receives builtin fixtures (`device`, `request`, `projectName`, `platform`).
 
 ```typescript
 beforeEach(async ({ device }) => {
@@ -1518,9 +1520,27 @@ beforeEach(async ({ device }) => {
 
 ### `afterEach(fn: (fixtures) => void | Promise<void>): void`
 
-Run a function after each test in the current suite. Runs even if the test fails. Receives `{ device, projectName }`.
+Run a function after each test in the current suite. Runs even if the test fails. Receives the same fixtures as `beforeEach`.
 
-> **Note:** Hooks receive `device` and `projectName` only. The `request` fixture is test-scoped and only available inside `test()` callbacks. `platform` is not currently passed to hooks — if you need the platform in a hook, read it from the config or use `projectName` to infer it.
+### `test.beforeAll(fn)` / `test.afterAll(fn)` / `test.beforeEach(fn)` / `test.afterEach(fn)`
+
+Hook methods on the extended test function. Use these instead of standalone hooks when you need custom fixtures in your hooks:
+
+```typescript
+const test = base.extend<{ authScreen: AuthScreen }>({
+  authScreen: async ({ device }, use) => {
+    await use(new AuthScreen(device))
+  },
+});
+
+// Custom fixtures are available in test.beforeEach/afterEach
+test.beforeEach(async ({ device, authScreen }) => {
+  await device.openDeepLink("myapp:///login");
+  await expect(authScreen.heading).toBeVisible();
+});
+```
+
+> **Note:** `beforeAll`/`afterAll` hooks (both standalone and `test.beforeAll`) only receive worker-scoped fixtures and builtins — not test-scoped fixtures, which are created per-test. `beforeEach`/`afterEach` hooks registered via `test.beforeEach()`/`test.afterEach()` receive all fixtures including test-scoped custom fixtures.
 
 ---
 

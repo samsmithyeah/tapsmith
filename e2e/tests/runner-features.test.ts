@@ -1,5 +1,4 @@
-import { beforeAll, describe, expect, test } from "tapsmith"
-import { SlowLoadScreen } from "../screens/slow-load.screen.js"
+import { describe, expect, test } from "../fixtures.js"
 
 // ─── test.use() ───
 //
@@ -8,19 +7,17 @@ import { SlowLoadScreen } from "../screens/slow-load.screen.js"
 // so traces show clean results.
 
 describe("test.use() timeout override", () => {
-  beforeAll(async ({ device }) => {
-    await device.getByDescription("Slow Load").scrollIntoView()
-    await device.getByDescription("Slow Load").tap()
+  test.beforeAll(async ({ device }) => {
+    await device.openDeepLink("tapsmithtest:///slow-load")
   })
 
   describe("overridden timeout finds slow element", () => {
     // 8s timeout is enough for the 5s element
     test.use({ timeout: 8000 })
 
-    test("5s element appears within overridden 8s timeout", async ({ device }) => {
-      const screen = new SlowLoadScreen(device)
-      await screen.load5sButton.tap()
-      await expect(screen.profileHeading).toBeVisible()
+    test("5s element appears within overridden 8s timeout", async ({ slowLoadScreen }) => {
+      await slowLoadScreen.load5sButton.tap()
+      await expect(slowLoadScreen.profileHeading).toBeVisible()
     })
   })
 
@@ -28,10 +25,9 @@ describe("test.use() timeout override", () => {
     // 3s timeout is enough for the 2s element
     test.use({ timeout: 3000 })
 
-    test("2s element appears within overridden 3s timeout", async ({ device }) => {
-      const screen = new SlowLoadScreen(device)
-      await screen.load2sButton.tap()
-      await expect(screen.profileHeading).toBeVisible()
+    test("2s element appears within overridden 3s timeout", async ({ slowLoadScreen }) => {
+      await slowLoadScreen.load2sButton.tap()
+      await expect(slowLoadScreen.profileHeading).toBeVisible()
     })
   })
 
@@ -44,10 +40,9 @@ describe("test.use() timeout override", () => {
       // If cascading didn't work and the outer 2s applied, this would fail.
       test.use({ timeout: 8000 })
 
-      test("inner 8s timeout overrides outer 2s for 5s element", async ({ device }) => {
-        const screen = new SlowLoadScreen(device)
-        await screen.load5sButton.tap()
-        await expect(screen.profileHeading).toBeVisible()
+      test("inner 8s timeout overrides outer 2s for 5s element", async ({ slowLoadScreen }) => {
+        await slowLoadScreen.load5sButton.tap()
+        await expect(slowLoadScreen.profileHeading).toBeVisible()
       })
     })
   })
