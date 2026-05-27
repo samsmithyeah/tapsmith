@@ -284,12 +284,16 @@ describe('fixtureParameterNames', () => {
     expect(filterOutComments('hello // world\nfoo')).toBe('hello foo');
     expect(filterOutComments('hello /* world */ foo')).toBe('hello  foo');
     expect(filterOutComments('a /* b // c */ d')).toBe('a  d');
+    expect(filterOutComments('const url = "http://example.com"')).toBe('const url = "http://example.com"');
+    expect(filterOutComments("const s = 'a // b'")).toBe("const s = 'a // b'");
+    expect(filterOutComments('const t = `http://${host}`')).toBe('const t = `http://${host}`');
   });
 
   it('splitByComma respects nesting', () => {
     expect(splitByComma('a, b, c')).toEqual(['a', 'b', 'c']);
     expect(splitByComma('a, { b, c }, d')).toEqual(['a', '{ b, c }', 'd']);
     expect(splitByComma('a, [b, c], d')).toEqual(['a', '[b, c]', 'd']);
+    expect(splitByComma('a, (b, c), d')).toEqual(['a', '(b, c)', 'd']);
   });
 
   it('returns empty for rest properties', () => {

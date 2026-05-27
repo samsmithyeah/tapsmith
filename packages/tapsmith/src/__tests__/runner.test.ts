@@ -474,7 +474,7 @@ describe('runner execution', () => {
       pushContext();
       // Register a beforeEach via testA that destructures 'foo'
       // eslint-disable-next-line @typescript-eslint/no-explicit-any -- testing runtime fixture mismatch warning
-      testA.beforeEach(async (fixtures: any) => { void fixtures.foo; });
+      testA.beforeEach(async ({ foo }: any) => { void foo; });
       // Register a test via testB — its registry has 'bar' but not 'foo'
       testB('test with different fixtures', async () => {});
       const ctx = popContext();

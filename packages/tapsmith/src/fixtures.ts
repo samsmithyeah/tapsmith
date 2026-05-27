@@ -235,22 +235,43 @@ const signatureSymbol = Symbol('signature');
 function filterOutComments(s: string): string {
   const result: string[] = [];
   let commentState: 'none' | 'singleline' | 'multiline' = 'none';
+  let stringState: 'none' | 'single' | 'double' | 'template' = 'none';
   for (let i = 0; i < s.length; ++i) {
+    if (commentState === 'none') {
+      if (stringState === 'none') {
+        if (s[i] === "'" && s[i - 1] !== '\\') {
+          stringState = 'single';
+        } else if (s[i] === '"' && s[i - 1] !== '\\') {
+          stringState = 'double';
+        } else if (s[i] === '`' && s[i - 1] !== '\\') {
+          stringState = 'template';
+        } else if (s[i] === '/' && s[i + 1] === '/') {
+          commentState = 'singleline';
+          continue;
+        } else if (s[i] === '/' && s[i + 1] === '*') {
+          commentState = 'multiline';
+          i++;
+          continue;
+        }
+      } else {
+        if (stringState === 'single' && s[i] === "'" && s[i - 1] !== '\\') {
+          stringState = 'none';
+        } else if (stringState === 'double' && s[i] === '"' && s[i - 1] !== '\\') {
+          stringState = 'none';
+        } else if (stringState === 'template' && s[i] === '`' && s[i - 1] !== '\\') {
+          stringState = 'none';
+        }
+      }
+    }
+
     if (commentState === 'singleline') {
       if (s[i] === '\n')
         commentState = 'none';
     } else if (commentState === 'multiline') {
       if (s[i - 1] === '*' && s[i] === '/')
         commentState = 'none';
-    } else if (commentState === 'none') {
-      if (s[i] === '/' && s[i + 1] === '/') {
-        commentState = 'singleline';
-      } else if (s[i] === '/' && s[i + 1] === '*') {
-        commentState = 'multiline';
-        i += 2;
-      } else {
-        result.push(s[i]);
-      }
+    } else {
+      result.push(s[i]);
     }
   }
   return result.join('');
@@ -261,8 +282,8 @@ function splitByComma(s: string): string[] {
   const stack: string[] = [];
   let start = 0;
   for (let i = 0; i < s.length; i++) {
-    if (s[i] === '{' || s[i] === '[') {
-      stack.push(s[i] === '{' ? '}' : ']');
+    if (s[i] === '{' || s[i] === '[' || s[i] === '(') {
+      stack.push(s[i] === '{' ? '}' : s[i] === '[' ? ']' : ')');
     } else if (s[i] === stack[stack.length - 1]) {
       stack.pop();
     } else if (!stack.length && s[i] === ',') {
@@ -291,8 +312,13 @@ function innerFixtureParameterNames(fn: Function): string[] {
   if (firstParam[0] !== '{' || firstParam[firstParam.length - 1] !== '}')
     return [];
   const props = splitByComma(firstParam.substring(1, firstParam.length - 1)).map(prop => {
+    const eq = prop.indexOf('=');
     const colon = prop.indexOf(':');
-    return colon === -1 ? prop.trim() : prop.substring(0, colon).trim();
+    if (colon !== -1 && (eq === -1 || colon < eq))
+      return prop.substring(0, colon).trim();
+    if (eq !== -1)
+      return prop.substring(0, eq).trim();
+    return prop.trim();
   });
   const restProperty = props.find(prop => prop.startsWith('...'));
   if (restProperty)

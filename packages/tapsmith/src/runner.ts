@@ -579,7 +579,7 @@ function validateHookFixtures(
   hookType: string,
 ): void {
   if (!hook.registry || hook.registry === testRegistry) return;
-  for (const name of hook.registry.names()) {
+  for (const name of fixtureParameterNames(hook.fn)) {
     if (!testRegistry.has(name) && name !== 'device' && name !== 'request' && name !== 'projectName' && name !== 'platform') {
       process.stderr.write(
         `[tapsmith] ${hookType} hook expects fixture "${name}" which is not available in this test's fixture registry. ` +
