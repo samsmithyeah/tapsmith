@@ -83,6 +83,11 @@ export class FixtureRegistry {
     return this._fixtures.get(name);
   }
 
+  /** Check if a fixture is registered by name. */
+  has(name: string): boolean {
+    return this._fixtures.has(name);
+  }
+
   /** Get all fixture names. */
   names(): string[] {
     return [...this._fixtures.keys()];

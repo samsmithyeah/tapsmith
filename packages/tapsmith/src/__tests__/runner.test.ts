@@ -453,6 +453,47 @@ describe('runner execution', () => {
     expect(seenPlatforms).toEqual(['ios']);
   });
 
+  it('warns when a hook destructures a fixture not in the test registry', async () => {
+    const warnings: string[] = [];
+    const origWrite = process.stderr.write;
+    process.stderr.write = ((chunk: string | Uint8Array) => {
+      warnings.push(typeof chunk === 'string' ? chunk : new TextDecoder().decode(chunk));
+      return true;
+    }) as typeof process.stderr.write;
+
+    const mockDevice = { waitForIdle: vi.fn(async () => {}) };
+
+    try {
+      const testA = tapsmithTest.extend<{ foo: string }>({
+        foo: async (_fixtures, use) => { await use('foo-value'); },
+      });
+      const testB = tapsmithTest.extend<{ bar: string }>({
+        bar: async (_fixtures, use) => { await use('bar-value'); },
+      });
+
+      pushContext();
+      // Register a beforeEach via testA that destructures 'foo'
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- testing runtime fixture mismatch warning
+      testA.beforeEach(async (fixtures: any) => { void fixtures.foo; });
+      // Register a test via testB — its registry has 'bar' but not 'foo'
+      testB('test with different fixtures', async () => {});
+      const ctx = popContext();
+
+      const result = await runSuiteContext(ctx, '', [], [], makeOpts({
+        config: makeConfig({ platform: 'android' }),
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any -- focused runner hook fixture mock
+        device: mockDevice as any,
+      }));
+
+      expect(result.tests[0].status).toBe('passed');
+      const hookWarning = warnings.find(w => w.includes('fixture "foo" which is not available'));
+      expect(hookWarning).toBeDefined();
+    } finally {
+      process.stderr.write = origWrite;
+      resetFixtureRegistry();
+    }
+  });
+
   it('starts device log streaming for each traced test collector', async () => {
     const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'tapsmith-runner-logs-'));
     let activeLogCollector: TraceCollector | null = null;

@@ -573,6 +573,22 @@ async function invokeHook(
   }
 }
 
+function validateHookFixtures(
+  hook: HookEntry,
+  testRegistry: FixtureRegistry,
+  hookType: string,
+): void {
+  if (!hook.registry || hook.registry === testRegistry) return;
+  for (const name of hook.registry.names()) {
+    if (!testRegistry.has(name) && name !== 'device' && name !== 'request' && name !== 'projectName' && name !== 'platform') {
+      process.stderr.write(
+        `[tapsmith] ${hookType} hook expects fixture "${name}" which is not available in this test's fixture registry. ` +
+        `The hook was registered with a different test.extend() than the test it is running against.\n`,
+      );
+    }
+  }
+}
+
 /**
  * Replay saved beforeAll trace events through a test's event callback.
  * Reads screenshots from the beforeAll collector's temp dir so they appear
@@ -1014,6 +1030,9 @@ async function runSuiteContext(
           }
 
           for (const hook of allBeforeEach) {
+            if (entry.registry) {
+              validateHookFixtures(hook, entry.registry, 'beforeEach');
+            }
             await invokeHook(hook, allFixtures);
           }
           if (hasBeforeEachWork) {
@@ -1076,6 +1095,9 @@ async function runSuiteContext(
               traceCollector?.startGroup('afterEach Hooks');
               for (const hook of allAfterEach) {
                 try {
+                  if (entry.registry) {
+                    validateHookFixtures(hook, entry.registry, 'afterEach');
+                  }
                   await invokeHook(hook, allFixtures);
                 } catch (err) {
                   process.stderr.write(`[tapsmith] afterEach hook error: ${err instanceof Error ? err.message : String(err)}\n`);
