@@ -4445,11 +4445,15 @@ impl proto::tapsmith_service_server::TapsmithService for TapsmithServiceImpl {
                     } else {
                         format!("run-as {pkg} ")
                     };
-                    format!("{prefix}tar czf {device_tmp} {excludes}-C {data_dir} .")
+                    if excludes.is_empty() {
+                        format!("{prefix}tar czf {device_tmp} -C {data_dir} .")
+                    } else {
+                        format!("{prefix}tar czf {device_tmp} {excludes} -C {data_dir} .")
+                    }
                 };
                 let tar_result = adb::shell_with_timeout(
                     &serial,
-                    &tar_cmd("--exclude=./cache --exclude=./code_cache "),
+                    &tar_cmd("--exclude=./cache --exclude=./code_cache"),
                     tar_timeout,
                 )
                 .await;
