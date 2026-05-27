@@ -43,6 +43,7 @@ export {
   type FixtureScope,
   type FixtureDefinitions,
   type BuiltinFixtures,
+  fixtureParameterNames,
 } from './fixtures.js';
 
 // API request fixture

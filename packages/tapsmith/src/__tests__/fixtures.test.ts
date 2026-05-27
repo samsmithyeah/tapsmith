@@ -1,6 +1,8 @@
 import { describe, it, expect, vi } from 'vitest';
-import { FixtureRegistry, resolveFixtures } from '../fixtures.js';
+import { FixtureRegistry, resolveFixtures, fixtureParameterNames, _testUtils } from '../fixtures.js';
 import type { FixtureDefinitions, BuiltinFixtures } from '../fixtures.js';
+
+const { filterOutComments, splitByComma } = _testUtils;
 
 describe('FixtureRegistry', () => {
   it('registers and retrieves fixtures', () => {
@@ -160,5 +162,68 @@ describe('resolveFixtures', () => {
     } as FixtureDefinitions<{ broken: string }, BuiltinFixtures & { broken: string }>);
 
     await expect(resolveFixtures(registry, 'test', {})).rejects.toThrow('setup failed');
+  });
+});
+
+describe('fixtureParameterNames', () => {
+  it('extracts names from arrow function with destructuring', () => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test fixture mock
+    const fn = async ({ foo, bar }: any) => { void foo; void bar; };
+    expect(fixtureParameterNames(fn)).toEqual(['foo', 'bar']);
+  });
+
+  it('extracts names from regular function', () => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test fixture mock
+    const fn = async function({ device, request }: any) { void device; void request; };
+    expect(fixtureParameterNames(fn)).toEqual(['device', 'request']);
+  });
+
+  it('returns empty array for no-arg function', () => {
+    const fn = async () => {};
+    expect(fixtureParameterNames(fn)).toEqual([]);
+  });
+
+  it('handles renamed parameters (extracts key, not value)', () => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test fixture mock
+    const fn = async ({ foo: myFoo, bar }: any) => { void myFoo; void bar; };
+    expect(fixtureParameterNames(fn)).toEqual(['foo', 'bar']);
+  });
+
+  it('handles default values', () => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test fixture mock
+    const fn = async ({ foo = 'default', bar }: any) => { void foo; void bar; };
+    expect(fixtureParameterNames(fn)).toContain('bar');
+  });
+
+  it('strips comments from function body', () => {
+    expect(filterOutComments('hello // world\nfoo')).toBe('hello foo');
+    expect(filterOutComments('hello /* world */ foo')).toBe('hello  foo');
+    expect(filterOutComments('a /* b // c */ d')).toBe('a  d');
+  });
+
+  it('splitByComma respects nesting', () => {
+    expect(splitByComma('a, b, c')).toEqual(['a', 'b', 'c']);
+    expect(splitByComma('a, { b, c }, d')).toEqual(['a', '{ b, c }', 'd']);
+    expect(splitByComma('a, [b, c], d')).toEqual(['a', '[b, c]', 'd']);
+  });
+
+  it('returns empty for rest properties', () => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test fixture mock
+    const fn = async ({ ...all }: any) => { void all; };
+    expect(fixtureParameterNames(fn)).toEqual([]);
+  });
+
+  it('returns empty for non-destructured parameter', () => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test fixture mock
+    const fn = async (fixtures: any) => { void fixtures; };
+    expect(fixtureParameterNames(fn)).toEqual([]);
+  });
+
+  it('caches results on the function object', () => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test fixture mock
+    const fn = async ({ foo }: any) => { void foo; };
+    const first = fixtureParameterNames(fn);
+    const second = fixtureParameterNames(fn);
+    expect(first).toBe(second); // same reference (cached)
   });
 });

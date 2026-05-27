@@ -199,3 +199,95 @@ export async function resolveFixtures(
     },
   };
 }
+
+// ─── Fixture parameter name parsing ───
+
+const signatureSymbol = Symbol('signature');
+
+function filterOutComments(s: string): string {
+  const result: string[] = [];
+  let commentState: 'none' | 'singleline' | 'multiline' = 'none';
+  for (let i = 0; i < s.length; ++i) {
+    if (commentState === 'singleline') {
+      if (s[i] === '\n')
+        commentState = 'none';
+    } else if (commentState === 'multiline') {
+      if (s[i - 1] === '*' && s[i] === '/')
+        commentState = 'none';
+    } else if (commentState === 'none') {
+      if (s[i] === '/' && s[i + 1] === '/') {
+        commentState = 'singleline';
+      } else if (s[i] === '/' && s[i + 1] === '*') {
+        commentState = 'multiline';
+        i += 2;
+      } else {
+        result.push(s[i]);
+      }
+    }
+  }
+  return result.join('');
+}
+
+function splitByComma(s: string): string[] {
+  const result: string[] = [];
+  const stack: string[] = [];
+  let start = 0;
+  for (let i = 0; i < s.length; i++) {
+    if (s[i] === '{' || s[i] === '[') {
+      stack.push(s[i] === '{' ? '}' : ']');
+    } else if (s[i] === stack[stack.length - 1]) {
+      stack.pop();
+    } else if (!stack.length && s[i] === ',') {
+      const token = s.substring(start, i).trim();
+      if (token)
+        result.push(token);
+      start = i + 1;
+    }
+  }
+  const lastToken = s.substring(start).trim();
+  if (lastToken)
+    result.push(lastToken);
+  return result;
+}
+
+// eslint-disable-next-line @typescript-eslint/no-unsafe-function-type -- Function.toString() is the input
+function innerFixtureParameterNames(fn: Function): string[] {
+  const text = filterOutComments(fn.toString());
+  const match = text.match(/(?:async)?(?:\s+function)?[^(]*\(([^)]*)/);
+  if (!match)
+    return [];
+  const trimmedParams = match[1].trim();
+  if (!trimmedParams)
+    return [];
+  const [firstParam] = splitByComma(trimmedParams);
+  if (firstParam[0] !== '{' || firstParam[firstParam.length - 1] !== '}')
+    return [];
+  const props = splitByComma(firstParam.substring(1, firstParam.length - 1)).map(prop => {
+    const colon = prop.indexOf(':');
+    return colon === -1 ? prop.trim() : prop.substring(0, colon).trim();
+  });
+  const restProperty = props.find(prop => prop.startsWith('...'));
+  if (restProperty)
+    return [];
+  return props;
+}
+
+/**
+ * Parse the destructured parameter names from a function signature.
+ * Used for lazy fixture resolution — only fixtures that are actually
+ * destructured by the test/hook function are resolved.
+ *
+ * Ported from Playwright's fixture parameter parsing.
+ */
+// eslint-disable-next-line @typescript-eslint/no-unsafe-function-type -- Function.toString() is the input
+export function fixtureParameterNames(fn: Function): string[] {
+  const cached = (fn as unknown as Record<symbol, string[]>)[signatureSymbol];
+  if (cached)
+    return cached;
+  const names = innerFixtureParameterNames(fn);
+  (fn as unknown as Record<symbol, string[]>)[signatureSymbol] = names;
+  return names;
+}
+
+/** @internal Exported for testing only. */
+export const _testUtils = { filterOutComments, splitByComma };
