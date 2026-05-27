@@ -1544,15 +1544,19 @@ export async function runTestFile(
   filePath: string,
   opts: RunOptions,
 ): Promise<SuiteResult> {
-  // Reset context and fixture registry
+  // Reset context stack (tests/hooks) for the new file.
   contextStack = [];
-  activeFixtureRegistry = new FixtureRegistry();
   pushContext();
 
   // Import the test file — this registers tests/suites via side effects
   // and may call test.extend() to register fixtures.
   // Node.js caches ESM imports by URL. Persistent processes (UI workers)
   // that re-run the same file must bust the cache with a unique query.
+  // Only reset the fixture registry when busting the cache, since cached
+  // imports won't re-execute test.extend() to repopulate it.
+  if (opts.bustImportCache) {
+    activeFixtureRegistry = new FixtureRegistry();
+  }
   const importUrl = opts.bustImportCache ? `${filePath}?t=${Date.now()}` : filePath;
   await import(importUrl);
 
