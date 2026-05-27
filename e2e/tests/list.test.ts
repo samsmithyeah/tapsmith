@@ -1,7 +1,7 @@
-import { beforeAll, describe, expect, test } from "../fixtures.js";
+import { describe, expect, test } from "../fixtures.js";
 
 describe("List screen", () => {
-  beforeAll(async ({ device }) => {
+  test.beforeAll(async ({ device }) => {
     await device.openDeepLink("tapsmithtest:///list");
   });
 

@@ -10,8 +10,6 @@
 import { createServer, type Server } from "node:http"
 import type { AddressInfo } from "node:net"
 import {
-  afterAll,
-  beforeAll,
   describe,
   expect,
   test,
@@ -48,7 +46,7 @@ describe("Network mocking", () => {
   let crossOriginServer: Server | undefined
   let crossOriginUserUrl = ""
 
-  beforeAll(async () => {
+  test.beforeAll(async () => {
     crossOriginServer = createServer((req, res) => {
       if (req.url === "/cross-origin-user") {
         res.writeHead(200, { "content-type": "application/json" })
@@ -77,7 +75,7 @@ describe("Network mocking", () => {
     })
   })
 
-  afterAll(async () => {
+  test.afterAll(async () => {
     if (!crossOriginServer) return
     await new Promise<void>((resolve, reject) => {
       crossOriginServer!.close((err) => err ? reject(err) : resolve())

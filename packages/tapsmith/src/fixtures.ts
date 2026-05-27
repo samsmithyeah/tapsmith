@@ -232,31 +232,31 @@ export async function resolveFixtures(
 
 const signatureSymbol = Symbol('signature');
 
+// Count consecutive backslashes before index to determine if a quote is escaped.
+// An odd count means the quote is escaped; even (including zero) means it's real.
+function isEscaped(s: string, index: number): boolean {
+  let count = 0;
+  let j = index - 1;
+  while (j >= 0 && s[j] === '\\') {
+    count++;
+    j--;
+  }
+  return count % 2 === 1;
+}
+
 function filterOutComments(s: string): string {
   const result: string[] = [];
   let commentState: 'none' | 'singleline' | 'multiline' = 'none';
   let stringState: 'none' | 'single' | 'double' | 'template' = 'none';
 
-  // Count consecutive backslashes before index to determine if quote is escaped.
-  // An odd count means the quote is escaped; even (including zero) means it's real.
-  const isEscaped = (index: number) => {
-    let count = 0;
-    let j = index - 1;
-    while (j >= 0 && s[j] === '\\') {
-      count++;
-      j--;
-    }
-    return count % 2 === 1;
-  };
-
   for (let i = 0; i < s.length; ++i) {
     if (commentState === 'none') {
       if (stringState === 'none') {
-        if (s[i] === "'" && !isEscaped(i)) {
+        if (s[i] === "'" && !isEscaped(s, i)) {
           stringState = 'single';
-        } else if (s[i] === '"' && !isEscaped(i)) {
+        } else if (s[i] === '"' && !isEscaped(s, i)) {
           stringState = 'double';
-        } else if (s[i] === '`' && !isEscaped(i)) {
+        } else if (s[i] === '`' && !isEscaped(s, i)) {
           stringState = 'template';
         } else if (s[i] === '/' && s[i + 1] === '/') {
           commentState = 'singleline';
@@ -267,11 +267,11 @@ function filterOutComments(s: string): string {
           continue;
         }
       } else {
-        if (stringState === 'single' && s[i] === "'" && !isEscaped(i)) {
+        if (stringState === 'single' && s[i] === "'" && !isEscaped(s, i)) {
           stringState = 'none';
-        } else if (stringState === 'double' && s[i] === '"' && !isEscaped(i)) {
+        } else if (stringState === 'double' && s[i] === '"' && !isEscaped(s, i)) {
           stringState = 'none';
-        } else if (stringState === 'template' && s[i] === '`' && !isEscaped(i)) {
+        } else if (stringState === 'template' && s[i] === '`' && !isEscaped(s, i)) {
           stringState = 'none';
         }
       }
@@ -294,16 +294,33 @@ function splitByComma(s: string): string[] {
   const result: string[] = [];
   const stack: string[] = [];
   let start = 0;
+  let stringState: 'none' | 'single' | 'double' | 'template' = 'none';
   for (let i = 0; i < s.length; i++) {
-    if (s[i] === '{' || s[i] === '[' || s[i] === '(') {
-      stack.push(s[i] === '{' ? '}' : s[i] === '[' ? ']' : ')');
-    } else if (s[i] === stack[stack.length - 1]) {
-      stack.pop();
-    } else if (!stack.length && s[i] === ',') {
-      const token = s.substring(start, i).trim();
-      if (token)
-        result.push(token);
-      start = i + 1;
+    if (stringState === 'none') {
+      if (s[i] === "'" && !isEscaped(s, i)) {
+        stringState = 'single';
+      } else if (s[i] === '"' && !isEscaped(s, i)) {
+        stringState = 'double';
+      } else if (s[i] === '`' && !isEscaped(s, i)) {
+        stringState = 'template';
+      } else if (s[i] === '{' || s[i] === '[' || s[i] === '(') {
+        stack.push(s[i] === '{' ? '}' : s[i] === '[' ? ']' : ')');
+      } else if (s[i] === stack[stack.length - 1]) {
+        stack.pop();
+      } else if (!stack.length && s[i] === ',') {
+        const token = s.substring(start, i).trim();
+        if (token)
+          result.push(token);
+        start = i + 1;
+      }
+    } else {
+      if (stringState === 'single' && s[i] === "'" && !isEscaped(s, i)) {
+        stringState = 'none';
+      } else if (stringState === 'double' && s[i] === '"' && !isEscaped(s, i)) {
+        stringState = 'none';
+      } else if (stringState === 'template' && s[i] === '`' && !isEscaped(s, i)) {
+        stringState = 'none';
+      }
     }
   }
   const lastToken = s.substring(start).trim();
@@ -325,14 +342,31 @@ function innerFixtureParameterNames(fn: Function): string[] {
     return [];
   let braceCount = 0;
   let closingBraceIndex = -1;
+  let stringState: 'none' | 'single' | 'double' | 'template' = 'none';
   for (let i = 0; i < trimmedParams.length; i++) {
-    if (trimmedParams[i] === '{') {
-      braceCount++;
-    } else if (trimmedParams[i] === '}') {
-      braceCount--;
-      if (braceCount === 0) {
-        closingBraceIndex = i;
-        break;
+    if (stringState === 'none') {
+      if (trimmedParams[i] === "'" && !isEscaped(trimmedParams, i)) {
+        stringState = 'single';
+      } else if (trimmedParams[i] === '"' && !isEscaped(trimmedParams, i)) {
+        stringState = 'double';
+      } else if (trimmedParams[i] === '`' && !isEscaped(trimmedParams, i)) {
+        stringState = 'template';
+      } else if (trimmedParams[i] === '{') {
+        braceCount++;
+      } else if (trimmedParams[i] === '}') {
+        braceCount--;
+        if (braceCount === 0) {
+          closingBraceIndex = i;
+          break;
+        }
+      }
+    } else {
+      if (stringState === 'single' && trimmedParams[i] === "'" && !isEscaped(trimmedParams, i)) {
+        stringState = 'none';
+      } else if (stringState === 'double' && trimmedParams[i] === '"' && !isEscaped(trimmedParams, i)) {
+        stringState = 'none';
+      } else if (stringState === 'template' && trimmedParams[i] === '`' && !isEscaped(trimmedParams, i)) {
+        stringState = 'none';
       }
     }
   }

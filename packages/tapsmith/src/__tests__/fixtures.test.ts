@@ -286,6 +286,12 @@ describe('fixtureParameterNames', () => {
     expect(fixtureParameterNames(fn)).toEqual(['foo', 'bar']);
   });
 
+  it('handles default values with braces or commas in string literals', () => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test fixture mock
+    const fn = async ({ foo = 'a, b }', bar }: any) => { void foo; void bar; };
+    expect(fixtureParameterNames(fn)).toEqual(['foo', 'bar']);
+  });
+
   it('strips comments from function body', () => {
     expect(filterOutComments('hello // world\nfoo')).toBe('hello foo');
     expect(filterOutComments('hello /* world */ foo')).toBe('hello  foo');
@@ -301,6 +307,7 @@ describe('fixtureParameterNames', () => {
     expect(splitByComma('a, { b, c }, d')).toEqual(['a', '{ b, c }', 'd']);
     expect(splitByComma('a, [b, c], d')).toEqual(['a', '[b, c]', 'd']);
     expect(splitByComma('a, (b, c), d')).toEqual(['a', '(b, c)', 'd']);
+    expect(splitByComma('a, "b, c", d')).toEqual(['a', '"b, c"', 'd']);
   });
 
   it('returns empty for rest properties', () => {

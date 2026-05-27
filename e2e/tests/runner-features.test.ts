@@ -1,4 +1,4 @@
-import { beforeAll, describe, expect, test } from "../fixtures.js"
+import { describe, expect, test } from "../fixtures.js"
 
 // ─── test.use() ───
 //
@@ -7,7 +7,7 @@ import { beforeAll, describe, expect, test } from "../fixtures.js"
 // so traces show clean results.
 
 describe("test.use() timeout override", () => {
-  beforeAll(async ({ device }) => {
+  test.beforeAll(async ({ device }) => {
     await device.openDeepLink("tapsmithtest:///slow-load")
   })
 
