@@ -309,9 +309,10 @@ impl TapsmithServiceImpl {
                 "Agent timed out ({msg}); recovery also failed: {e}"
             )));
         }
+        let params = Self::agent_params(&*self.agent.read().await)?;
         agent_comms::send_with_persistent_cache(
             &self.agent_stream,
-            &Self::agent_params(&*self.agent.read().await)?,
+            &params,
             command,
             Duration::from_secs(30),
         )

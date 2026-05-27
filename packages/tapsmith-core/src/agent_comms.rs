@@ -120,7 +120,11 @@ async fn try_send_persistent(
         .map_err(|e| SendError::PostSend(anyhow!(e).context("Failed to serialize command")))?;
     debug!(payload = %payload, "Sending command to agent (persistent)");
 
-    // Write — failures before flush mean the agent didn't see the command
+    // Write phase. The agent uses newline-delimited reads (`read_line`),
+    // so it cannot process a command until the `\n` arrives. Payload-only
+    // or newline-only writes into a broken pipe are therefore safe to
+    // retry (Connect). Once flush succeeds the full message is in the
+    // kernel send buffer and may reach the agent — classify as PostSend.
     if let Err(e) = stream.writer.write_all(payload.as_bytes()).await {
         return Err(SendError::Connect(
             anyhow!(e).context("Failed to write to agent socket"),
@@ -132,7 +136,7 @@ async fn try_send_persistent(
         ));
     }
     if let Err(e) = stream.writer.flush().await {
-        return Err(SendError::Connect(
+        return Err(SendError::PostSend(
             anyhow!(e).context("Failed to flush agent socket"),
         ));
     }
@@ -175,11 +179,12 @@ pub async fn send_with_persistent_cache(
     let mut guard = cache.lock().await;
 
     // Discard stale stream if port changed
-    if let Some(ref s) = *guard {
-        if s.host_port != params.host_port {
-            debug!("Agent port changed, dropping cached stream");
-            *guard = None;
-        }
+    if guard
+        .as_ref()
+        .is_some_and(|s| s.host_port != params.host_port)
+    {
+        debug!("Agent port changed, dropping cached stream");
+        *guard = None;
     }
 
     // First attempt: use cached stream or connect
