@@ -249,10 +249,10 @@ function popContext(): SuiteContext {
 
 // ─── Public registration API ───
 
-export interface TestFn {
-  (name: string, fn: TestCallback): void;
-  only: (name: string, fn: TestCallback) => void;
-  skip: (name: string, fn: TestCallback) => void;
+export interface TestFn<Fixtures extends object = TestFixtures> {
+  (name: string, fn: ((fixtures: Fixtures) => void | Promise<void>) | (() => void | Promise<void>)): void;
+  only: (name: string, fn: ((fixtures: Fixtures) => void | Promise<void>) | (() => void | Promise<void>)) => void;
+  skip: (name: string, fn: ((fixtures: Fixtures) => void | Promise<void>) | (() => void | Promise<void>)) => void;
   /**
    * Override configuration options for all tests in the current describe scope.
    * Overrides cascade — inner describe blocks inherit and can further override.
@@ -278,12 +278,12 @@ export interface TestFn {
    * ```
    */
   extend: <T extends Record<string, unknown>>(
-    definitions: FixtureDefinitions<T, BuiltinFixtures & T>,
-  ) => TestFn;
-  beforeAll: (fn: HookFn) => void;
-  afterAll: (fn: HookFn) => void;
-  beforeEach: (fn: HookFn) => void;
-  afterEach: (fn: HookFn) => void;
+    definitions: FixtureDefinitions<T, Fixtures & T>,
+  ) => TestFn<Fixtures & T>;
+  beforeAll: (fn: ((fixtures: Fixtures) => void | Promise<void>) | (() => void | Promise<void>)) => void;
+  afterAll: (fn: ((fixtures: Fixtures) => void | Promise<void>) | (() => void | Promise<void>)) => void;
+  beforeEach: (fn: ((fixtures: Fixtures) => void | Promise<void>) | (() => void | Promise<void>)) => void;
+  afterEach: (fn: ((fixtures: Fixtures) => void | Promise<void>) | (() => void | Promise<void>)) => void;
 }
 
 export interface DescribeFn {
@@ -292,9 +292,9 @@ export interface DescribeFn {
   skip: (name: string, fn: () => void) => void;
 }
 
-function createTestFn(registry: FixtureRegistry): TestFn {
+function createTestFn<F extends object = TestFixtures>(registry: FixtureRegistry): TestFn<F> {
   const syncRegistry = () => { activeFixtureRegistry = registry; };
-  const fn: TestFn = Object.assign(
+  const fn = Object.assign(
     (name: string, testFn: TestCallback) => {
       syncRegistry();
       currentContext().tests.push({ name, fn: testFn, only: false, skip: false, registry });
@@ -320,20 +320,21 @@ function createTestFn(registry: FixtureRegistry): TestFn {
         ctx.useOptions = { ...ctx.useOptions, ...options };
       },
       extend: <T extends Record<string, unknown>>(
-        definitions: FixtureDefinitions<T, BuiltinFixtures & T>,
-      ): TestFn => {
+        definitions: FixtureDefinitions<T, F & T>,
+      ): TestFn<F & T> => {
         const childRegistry = new FixtureRegistry();
-        childRegistry.register(definitions);
+        // Cast needed: register() is typed for BuiltinFixtures but F may be a wider fixture set
+        childRegistry.register(definitions as FixtureDefinitions<T, BuiltinFixtures & T>);
         const merged = registry.merge(childRegistry);
         activeFixtureRegistry = merged;
-        return createTestFn(merged);
+        return createTestFn<F & T>(merged);
       },
       beforeAll: (hookFn: HookFn) => { syncRegistry(); currentContext().beforeAll.push(hookFn); },
       afterAll: (hookFn: HookFn) => { syncRegistry(); currentContext().afterAll.push(hookFn); },
       beforeEach: (hookFn: HookFn) => { syncRegistry(); currentContext().beforeEach.push(hookFn); },
       afterEach: (hookFn: HookFn) => { syncRegistry(); currentContext().afterEach.push(hookFn); },
     },
-  );
+  ) as unknown as TestFn<F>;
   return fn;
 }
 
