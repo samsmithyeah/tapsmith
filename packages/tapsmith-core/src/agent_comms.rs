@@ -187,37 +187,47 @@ pub async fn send_with_persistent_cache(
         *guard = None;
     }
 
-    // First attempt: use cached stream or connect
-    if guard.is_none() {
-        *guard = Some(connect_persistent(params.host_port).await?);
-    }
-
-    let stream = guard.as_mut().unwrap();
-    match try_send_persistent(stream, command, timeout).await {
-        Ok(resp) => return Ok(resp),
-        Err(SendError::PostSend(e)) => {
-            *guard = None;
-            return Err(e);
+    // Retry loop: allow one retry for any Connect-class error, whether
+    // from the initial connect or from a broken cached stream. This
+    // matches the old per-command code's single-retry behaviour, which
+    // is important right after restartApp when the agent's socket is
+    // briefly down.
+    let mut retried = false;
+    loop {
+        // Establish connection if needed
+        if guard.is_none() {
+            match connect_persistent(params.host_port).await {
+                Ok(s) => *guard = Some(s),
+                Err(e) => {
+                    let err: anyhow::Error = e.into();
+                    if !retried {
+                        retried = true;
+                        warn!("Agent connect failed, retrying: {err}");
+                        continue;
+                    }
+                    return Err(err);
+                }
+            }
         }
-        Err(SendError::Connect(e)) => {
-            warn!("Persistent stream failed, reconnecting: {e}");
-            *guard = None;
+
+        let stream = guard.as_mut().unwrap();
+        match try_send_persistent(stream, command, timeout).await {
+            Ok(resp) => return Ok(resp),
+            Err(SendError::PostSend(e)) => {
+                *guard = None;
+                return Err(e);
+            }
+            Err(SendError::Connect(e)) => {
+                *guard = None;
+                if !retried {
+                    retried = true;
+                    warn!("Persistent stream failed, reconnecting: {e}");
+                    continue;
+                }
+                return Err(e);
+            }
         }
     }
-
-    // Retry with fresh connection
-    *guard = Some(
-        connect_persistent(params.host_port)
-            .await
-            .map_err(anyhow::Error::from)?,
-    );
-    let stream = guard.as_mut().unwrap();
-    try_send_persistent(stream, command, timeout)
-        .await
-        .map_err(|e| {
-            *guard = None;
-            anyhow::Error::from(e)
-        })
 }
 
 // ─── Agent Command Protocol ───
