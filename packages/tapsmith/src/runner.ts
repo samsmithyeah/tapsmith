@@ -199,6 +199,11 @@ interface TestEntry {
   registry?: FixtureRegistry;
 }
 
+interface HookEntry {
+  fn: HookFn
+  registry?: FixtureRegistry
+}
+
 interface SuiteEntry {
   name: string;
   fn: () => void;
@@ -211,10 +216,10 @@ interface SuiteEntry {
 interface SuiteContext {
   tests: TestEntry[];
   suites: SuiteEntry[];
-  beforeAll: HookFn[];
-  afterAll: HookFn[];
-  beforeEach: HookFn[];
-  afterEach: HookFn[];
+  beforeAll: HookEntry[];
+  afterAll: HookEntry[];
+  beforeEach: HookEntry[];
+  afterEach: HookEntry[];
   useOptions?: UseOptions;
 }
 
@@ -329,10 +334,10 @@ function createTestFn<F extends object = TestFixtures>(registry: FixtureRegistry
         activeFixtureRegistry = merged;
         return createTestFn<F & T>(merged);
       },
-      beforeAll: (hookFn: HookFn) => { syncRegistry(); currentContext().beforeAll.push(hookFn); },
-      afterAll: (hookFn: HookFn) => { syncRegistry(); currentContext().afterAll.push(hookFn); },
-      beforeEach: (hookFn: HookFn) => { syncRegistry(); currentContext().beforeEach.push(hookFn); },
-      afterEach: (hookFn: HookFn) => { syncRegistry(); currentContext().afterEach.push(hookFn); },
+      beforeAll: (hookFn: HookFn) => { syncRegistry(); currentContext().beforeAll.push({ fn: hookFn, registry }); },
+      afterAll: (hookFn: HookFn) => { syncRegistry(); currentContext().afterAll.push({ fn: hookFn, registry }); },
+      beforeEach: (hookFn: HookFn) => { syncRegistry(); currentContext().beforeEach.push({ fn: hookFn, registry }); },
+      afterEach: (hookFn: HookFn) => { syncRegistry(); currentContext().afterEach.push({ fn: hookFn, registry }); },
     },
   ) as unknown as TestFn<F>;
   return fn;
@@ -355,19 +360,19 @@ export const describe: DescribeFn = Object.assign(
 );
 
 export function beforeAll(fn: HookFn): void {
-  currentContext().beforeAll.push(fn);
+  currentContext().beforeAll.push({ fn });
 }
 
 export function afterAll(fn: HookFn): void {
-  currentContext().afterAll.push(fn);
+  currentContext().afterAll.push({ fn });
 }
 
 export function beforeEach(fn: HookFn): void {
-  currentContext().beforeEach.push(fn);
+  currentContext().beforeEach.push({ fn });
 }
 
 export function afterEach(fn: HookFn): void {
-  currentContext().afterEach.push(fn);
+  currentContext().afterEach.push({ fn });
 }
 
 // ─── Helpers ───
@@ -558,13 +563,13 @@ function passesTestFilter(fullName: string, opts: RunOptions): boolean {
 // `async ({ device } = {}) => …` would be mis-classified as zero-arg. In
 // practice this is fine because hooks are simple `async ({ device }) => …`.
 async function invokeHook(
-  fn: HookFn,
+  entry: HookEntry,
   fixtures: Record<string, unknown>,
 ): Promise<void> {
-  if (fn.length > 0) {
-    await (fn as (fixtures: Record<string, unknown>) => void | Promise<void>)(fixtures);
+  if (entry.fn.length > 0) {
+    await (entry.fn as (fixtures: Record<string, unknown>) => void | Promise<void>)(fixtures);
   } else {
-    await (fn as () => void | Promise<void>)();
+    await (entry.fn as () => void | Promise<void>)();
   }
 }
 
@@ -609,8 +614,8 @@ function replayBeforeAllEvents(
 async function runSuiteContext(
   ctx: SuiteContext,
   parentPrefix: string,
-  parentBeforeEach: HookFn[],
-  parentAfterEach: HookFn[],
+  parentBeforeEach: HookEntry[],
+  parentAfterEach: HookEntry[],
   parentOpts: RunOptions,
 ): Promise<SuiteResult> {
   // Apply test.use() overrides for this scope (cascading from parent).
