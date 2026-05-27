@@ -20,7 +20,7 @@ import type { Device } from './device.js';
 import type { TapsmithReporter } from './reporter.js';
 import { APIRequestContext } from './api-request.js';
 import { flushSoftErrors } from './expect.js';
-import { FixtureRegistry, resolveFixtures, type FixtureDefinitions, type BuiltinFixtures } from './fixtures.js';
+import { FixtureRegistry, resolveFixtures, fixtureParameterNames, type FixtureDefinitions, type BuiltinFixtures } from './fixtures.js';
 import { resolveTraceConfig } from './trace/types.js';
 import { shouldRecord, shouldRetain } from './trace/trace-mode.js';
 import { resolveVideoConfig } from './video/types.js';
@@ -1024,7 +1024,29 @@ async function runSuiteContext(
           }
 
           if (hasTestScopedFixtures) {
-            const resolved = await resolveFixtures(registry, 'test', baseFixtures);
+            // Collect the fixture names destructured by the test and its hooks.
+            // If any function takes a fixtures parameter without destructuring
+            // (e.g. `(fixtures) => fixtures.foo`), we can't determine which
+            // fixtures it needs, so we fall back to resolving all of them.
+            const requestedNames = new Set<string>();
+            let canBeLazy = true;
+            const fns = [entry.fn, ...allBeforeEach.map(h => h.fn), ...allAfterEach.map(h => h.fn)];
+            for (const fn of fns) {
+              const names = fixtureParameterNames(fn);
+              if (names.length > 0) {
+                for (const name of names)
+                  requestedNames.add(name);
+              } else if (fn.length > 0) {
+                // Function takes parameters but doesn't destructure — resolve all
+                canBeLazy = false;
+                break;
+              }
+            }
+
+            const resolved = await resolveFixtures(
+              registry, 'test', baseFixtures,
+              canBeLazy ? [...requestedNames] : undefined,
+            );
             allFixtures = resolved.fixtures;
             testFixtureTeardown = resolved.teardown;
           }

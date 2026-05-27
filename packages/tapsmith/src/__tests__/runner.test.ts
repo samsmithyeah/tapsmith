@@ -1189,6 +1189,37 @@ describe('retries', () => {
     expect(flat[0].status).toBe('failed');
   });
 
+  it('only resolves fixtures that the test destructures', async () => {
+    const resolved: string[] = [];
+    const mockDevice = { waitForIdle: vi.fn(async () => {}) };
+
+    try {
+      const extended = tapsmithTest.extend<{ used: string; unused: string }>({
+        used: async (_fixtures, use) => { resolved.push('used'); await use('used-val'); },
+        unused: async (_fixtures, use) => { resolved.push('unused'); await use('unused-val'); },
+      });
+
+      pushContext();
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- testing lazy fixture resolution
+      extended('lazy test', async ({ used }: any) => {
+        void used;
+      });
+      const ctx = popContext();
+
+      const result = await runSuiteContext(ctx, '', [], [], makeOpts({
+        config: makeConfig({ platform: 'android' }),
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any -- focused runner hook fixture mock
+        device: mockDevice as any,
+      }));
+
+      expect(result.tests[0].status).toBe('passed');
+      expect(resolved).toEqual(['used']);
+      expect(resolved).not.toContain('unused');
+    } finally {
+      resetFixtureRegistry();
+    }
+  });
+
   it('stops retrying when abort signal fires', async () => {
     let callCount = 0;
     const ac = new AbortController();
