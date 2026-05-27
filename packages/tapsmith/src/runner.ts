@@ -593,6 +593,23 @@ function validateHookFixtures(
   }
 }
 
+function validateBeforeAllHookFixtures(
+  hook: HookEntry,
+  registry: FixtureRegistry,
+  hookType: string,
+): void {
+  for (const name of fixtureParameterNames(hook.fn)) {
+    if (builtinFixtureNames.has(name)) continue;
+    const fixture = registry.get(name);
+    if (fixture && fixture.scope === 'test') {
+      process.stderr.write(
+        `[tapsmith] ${hookType} hook references test-scoped fixture "${name}". ` +
+        `Only worker-scoped fixtures and builtins (device, request, etc.) are available in ${hookType} hooks.\n`,
+      );
+    }
+  }
+}
+
 /**
  * Replay saved beforeAll trace events through a test's event callback.
  * Reads screenshots from the beforeAll collector's temp dir so they appear
@@ -732,6 +749,11 @@ async function runSuiteContext(
     platform: resolvePlatformFixture(opts.config),
     ...(opts.workerFixtures ?? {}),
   };
+
+  const suiteRegistry = getFixtureRegistry();
+  for (const hook of ctx.beforeAll) {
+    validateBeforeAllHookFixtures(hook, hook.registry ?? suiteRegistry, 'beforeAll');
+  }
 
   try {
     if (beforeAllCollector) {
@@ -1476,6 +1498,9 @@ async function runSuiteContext(
 
   // Run afterAll hooks with tracing (same pattern as beforeAll).
   // Events are streamed to the UI tagged with the last test that ran.
+  for (const hook of ctx.afterAll) {
+    validateBeforeAllHookFixtures(hook, hook.registry ?? suiteRegistry, 'afterAll');
+  }
   if (ctx.afterAll.length > 0 && opts.device) {
     const traceConfig = resolveTraceConfig(opts.config.trace);
     if (shouldRecord(traceConfig.mode, 0)) {

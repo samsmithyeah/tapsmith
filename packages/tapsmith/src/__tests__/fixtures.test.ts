@@ -293,6 +293,18 @@ describe('FixtureRegistry.collectDeps', () => {
     const deps = registry.collectDeps(['top'], 'test');
     expect(deps).toEqual(['root', 'left', 'right', 'top']);
   });
+
+  it('throws on circular dependencies', () => {
+    const registry = new FixtureRegistry();
+    registry.register({
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test fixture mock
+      a: async ({ b }: any, use: any) => { await use(b); },
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test fixture mock
+      b: async ({ a }: any, use: any) => { await use(a); },
+    } as FixtureDefinitions<{ a: string; b: string }, BuiltinFixtures & { a: string; b: string }>);
+
+    expect(() => registry.collectDeps(['a'], 'test')).toThrow('Circular fixture dependency detected');
+  });
 });
 
 describe('fixtureParameterNames', () => {

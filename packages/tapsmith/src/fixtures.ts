@@ -110,15 +110,21 @@ export class FixtureRegistry {
   collectDeps(names: string[], scope: FixtureScope): string[] {
     const ordered: string[] = [];
     const visited = new Set<string>();
+    const visiting = new Set<string>();
 
     const visit = (name: string) => {
-      if (visited.has(name)) return;
-      visited.add(name);
       const fixture = this._fixtures.get(name);
       if (!fixture || fixture.scope !== scope) return;
+      if (visiting.has(name)) {
+        throw new Error(`Circular fixture dependency detected: ${[...visiting, name].join(' -> ')}`);
+      }
+      if (visited.has(name)) return;
+      visiting.add(name);
       for (const dep of fixture.deps) {
         visit(dep);
       }
+      visiting.delete(name);
+      visited.add(name);
       ordered.push(name);
     };
 
@@ -249,6 +255,10 @@ export async function resolveFixtures(
 }
 
 // ─── Fixture parameter name parsing ───
+//
+// Known limitation: nested template literals (e.g., `a ${`nested`} b`) are not
+// handled — the inner backtick toggles the string state incorrectly. This is
+// acceptable because fixture function signatures never contain nested templates.
 
 const signatureSymbol = Symbol('signature');
 

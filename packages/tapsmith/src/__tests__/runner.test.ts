@@ -513,6 +513,41 @@ describe('runner execution', () => {
     expect(order).toEqual(['beforeAll', 'test']);
   });
 
+  it('warns when beforeAll hook references test-scoped fixture', async () => {
+    const warnings: string[] = [];
+    const origWrite = process.stderr.write;
+    process.stderr.write = ((chunk: string | Uint8Array) => {
+      warnings.push(typeof chunk === 'string' ? chunk : new TextDecoder().decode(chunk));
+      return true;
+    }) as typeof process.stderr.write;
+
+    const mockDevice = { waitForIdle: vi.fn(async () => {}) };
+
+    try {
+      const extended = tapsmithTest.extend<{ myScreen: string }>({
+        myScreen: async (_fixtures, use) => { await use('screen-value'); },
+      });
+
+      pushContext();
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- testing scope validation warning
+      extended.beforeAll(async ({ myScreen }: any) => { void myScreen; });
+      extended('test after beforeAll', async () => {});
+      const ctx = popContext();
+
+      await runSuiteContext(ctx, '', [], [], makeOpts({
+        config: makeConfig({ platform: 'android' }),
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any -- focused runner hook fixture mock
+        device: mockDevice as any,
+      }));
+
+      const warning = warnings.find(w => w.includes('test-scoped fixture "myScreen"'));
+      expect(warning).toBeDefined();
+    } finally {
+      process.stderr.write = origWrite;
+      resetFixtureRegistry();
+    }
+  });
+
   it('test.afterAll() registers hooks same as standalone afterAll', async () => {
     const order: string[] = [];
     const mockDevice = { waitForIdle: vi.fn(async () => {}) };
