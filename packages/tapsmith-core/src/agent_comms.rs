@@ -210,15 +210,19 @@ pub async fn send_with_persistent_cache(
             }
         }
 
-        let stream = guard.as_mut().unwrap();
-        match try_send_persistent(stream, command, timeout).await {
-            Ok(resp) => return Ok(resp),
+        // Take the stream out during I/O so that if this future is
+        // cancelled mid-await, the stream is dropped rather than left
+        // in a half-read state that would desync the next command.
+        let mut stream = guard.take().unwrap();
+        match try_send_persistent(&mut stream, command, timeout).await {
+            Ok(resp) => {
+                *guard = Some(stream);
+                return Ok(resp);
+            }
             Err(SendError::PostSend(e)) => {
-                *guard = None;
                 return Err(e);
             }
             Err(SendError::Connect(e)) => {
-                *guard = None;
                 if !retried {
                     retried = true;
                     warn!("Persistent stream failed, reconnecting: {e}");
