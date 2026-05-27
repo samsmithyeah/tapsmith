@@ -11,6 +11,7 @@ use tracing::{debug, error, info, instrument, warn};
 use uuid::Uuid;
 
 use crate::adb;
+use crate::agent_comms;
 use crate::agent_comms::{AgentCommand, AgentConnection, AgentResponse, ConnectionParams};
 use crate::device::DeviceManager;
 use crate::device_logs;
@@ -33,6 +34,7 @@ const WEBVIEW_ADB_CLEANUP_TIMEOUT: Duration = Duration::from_secs(2);
 pub struct TapsmithServiceImpl {
     device_manager: Arc<RwLock<DeviceManager>>,
     agent: Arc<RwLock<AgentConnection>>,
+    agent_stream: agent_comms::AgentStreamCache,
     network_proxy: Arc<RwLock<Option<NetworkProxy>>>,
     /// Serial/UDID of the device whose proxy settings were modified (for cleanup).
     proxy_device_serial: Arc<RwLock<Option<String>>>,
@@ -110,6 +112,7 @@ impl TapsmithServiceImpl {
         Self {
             device_manager,
             agent,
+            agent_stream: agent_comms::new_agent_stream_cache(),
             network_proxy: Arc::new(RwLock::new(None)),
             proxy_device_serial: Arc::new(RwLock::new(None)),
             proxy_platform: Arc::new(RwLock::new(None)),
@@ -218,7 +221,14 @@ impl TapsmithServiceImpl {
 
     async fn send_agent_command(&self, command: &AgentCommand) -> Result<AgentResponse, Status> {
         let params = Self::agent_params(&*self.agent.read().await)?;
-        let raw = AgentConnection::send_with_params(&params, command).await;
+        let timeout = Duration::from_secs(30);
+        let raw = agent_comms::send_with_persistent_cache(
+            &self.agent_stream,
+            &params,
+            command,
+            timeout,
+        )
+        .await;
         self.recover_agent_on_timeout(command, raw).await
     }
 
@@ -237,9 +247,14 @@ impl TapsmithServiceImpl {
             Duration::from_secs(30)
         };
         let params = Self::agent_params(&*self.agent.read().await)?;
-        AgentConnection::send_with_params_and_timeout(&params, command, timeout)
-            .await
-            .map_err(|e| Status::internal(e.to_string()))
+        agent_comms::send_with_persistent_cache(
+            &self.agent_stream,
+            &params,
+            command,
+            timeout,
+        )
+        .await
+        .map_err(|e| Status::internal(e.to_string()))
     }
 
     async fn send_agent_command_with_timeout(
@@ -252,9 +267,14 @@ impl TapsmithServiceImpl {
         } else {
             Duration::from_secs(30)
         };
-
         let params = Self::agent_params(&*self.agent.read().await)?;
-        let raw = AgentConnection::send_with_params_and_timeout(&params, command, timeout).await;
+        let raw = agent_comms::send_with_persistent_cache(
+            &self.agent_stream,
+            &params,
+            command,
+            timeout,
+        )
+        .await;
         self.recover_agent_on_timeout(command, raw).await
     }
 
@@ -301,14 +321,18 @@ impl TapsmithServiceImpl {
                 "Agent timed out ({msg}); recovery also failed: {e}"
             )));
         }
-        let params = Self::agent_params(&*self.agent.read().await)?;
-        AgentConnection::send_with_params(&params, command)
-            .await
-            .map_err(|e| {
-                Status::internal(format!(
-                    "Agent timed out ({msg}); post-recovery retry also failed: {e}"
-                ))
-            })
+        agent_comms::send_with_persistent_cache(
+            &self.agent_stream,
+            &Self::agent_params(&*self.agent.read().await)?,
+            command,
+            Duration::from_secs(30),
+        )
+        .await
+        .map_err(|e| {
+            Status::internal(format!(
+                "Agent timed out ({msg}); post-recovery retry also failed: {e}"
+            ))
+        })
     }
 
     async fn probe_ios_agent_session(
