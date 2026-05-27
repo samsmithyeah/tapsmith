@@ -43,6 +43,7 @@ export type FixtureDefinitions<T extends Record<string, unknown>, F = any> = {
 export interface ResolvedFixture<T = unknown> {
   fn: FixtureFn<T, Record<string, unknown>>
   scope: FixtureScope
+  deps: string[]
 }
 
 // ─── Built-in fixtures ───
@@ -68,12 +69,10 @@ export class FixtureRegistry {
     for (const [name, def] of Object.entries(definitions)) {
       if (Array.isArray(def)) {
         const [fn, opts] = def as [FixtureFn<unknown, Record<string, unknown>>, { scope: FixtureScope }];
-        this._fixtures.set(name, { fn, scope: opts.scope });
+        this._fixtures.set(name, { fn, scope: opts.scope, deps: fixtureParameterNames(fn) });
       } else {
-        this._fixtures.set(name, {
-          fn: def as FixtureFn<unknown, Record<string, unknown>>,
-          scope: 'test',
-        });
+        const fn = def as FixtureFn<unknown, Record<string, unknown>>;
+        this._fixtures.set(name, { fn, scope: 'test', deps: fixtureParameterNames(fn) });
       }
     }
   }
@@ -102,6 +101,31 @@ export class FixtureRegistry {
       }
     }
     return result;
+  }
+
+  /**
+   * Collect transitive dependencies for the given fixture names, filtered to a
+   * scope. Returns names in dependency-first (setup) order.
+   */
+  collectDeps(names: string[], scope: FixtureScope): string[] {
+    const ordered: string[] = [];
+    const visited = new Set<string>();
+
+    const visit = (name: string) => {
+      if (visited.has(name)) return;
+      visited.add(name);
+      const fixture = this._fixtures.get(name);
+      if (!fixture || fixture.scope !== scope) return;
+      for (const dep of fixture.deps) {
+        visit(dep);
+      }
+      ordered.push(name);
+    };
+
+    for (const name of names) {
+      visit(name);
+    }
+    return ordered;
   }
 
   /** Whether any fixtures are registered. */
@@ -138,13 +162,17 @@ export async function resolveFixtures(
   registry: FixtureRegistry,
   scope: FixtureScope,
   baseFixtures: Record<string, unknown>,
+  requestedNames?: string[],
 ): Promise<{ fixtures: Record<string, unknown>; teardown: () => Promise<void> }> {
   const fixtures: Record<string, unknown> = { ...baseFixtures };
   const teardowns: (() => Promise<void>)[] = [];
 
-  const scopedFixtures = registry.byScope(scope);
+  const fixturesToResolve: [string, ResolvedFixture][] = requestedNames
+    ? registry.collectDeps(requestedNames, scope)
+        .map(name => [name, registry.get(name)!] as [string, ResolvedFixture])
+    : [...registry.byScope(scope)];
 
-  for (const [name, def] of scopedFixtures) {
+  for (const [name, def] of fixturesToResolve) {
     // Create the use/teardown promise pair
     let resolveUse: (value: unknown) => void;
     let resolveTeardown: () => void;

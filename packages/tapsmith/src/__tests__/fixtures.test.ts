@@ -165,6 +165,91 @@ describe('resolveFixtures', () => {
   });
 });
 
+describe('lazy fixture resolution', () => {
+  it('resolves only requested fixtures and their deps', async () => {
+    const order: string[] = [];
+    const registry = new FixtureRegistry();
+    registry.register({
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test fixture mock
+      base: async (_fixtures: any, use: any) => { order.push('base'); await use('base-val'); },
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test fixture mock
+      dep: async ({ base }: any, use: any) => { order.push('dep'); await use(`dep-val-${base}`); },
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test fixture mock
+      unused: async (_fixtures: any, use: any) => { order.push('unused'); await use('unused-val'); },
+    } as FixtureDefinitions<{ base: string; dep: string; unused: string }, BuiltinFixtures & { base: string; dep: string; unused: string }>);
+
+    const { fixtures, teardown } = await resolveFixtures(registry, 'test', {}, ['dep']);
+    expect(order).toEqual(['base', 'dep']);
+    expect(fixtures.dep).toBe('dep-val-base-val');
+    expect(fixtures.base).toBe('base-val');
+    expect(fixtures.unused).toBeUndefined();
+    await teardown();
+  });
+
+  it('resolves all fixtures when requestedNames is omitted', async () => {
+    const order: string[] = [];
+    const registry = new FixtureRegistry();
+    registry.register({
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test fixture mock
+      a: async (_fixtures: any, use: any) => { order.push('a'); await use('a-val'); },
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test fixture mock
+      b: async (_fixtures: any, use: any) => { order.push('b'); await use('b-val'); },
+    } as FixtureDefinitions<{ a: string; b: string }, BuiltinFixtures & { a: string; b: string }>);
+
+    const { fixtures, teardown } = await resolveFixtures(registry, 'test', {});
+    expect(order).toEqual(['a', 'b']);
+    expect(fixtures.a).toBe('a-val');
+    expect(fixtures.b).toBe('b-val');
+    await teardown();
+  });
+});
+
+describe('FixtureRegistry.collectDeps', () => {
+  it('returns deps in dependency-first order', () => {
+    const registry = new FixtureRegistry();
+    registry.register({
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test fixture mock
+      base: async (_fixtures: any, use: any) => { await use('b'); },
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test fixture mock
+      mid: async ({ base }: any, use: any) => { await use(base); },
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test fixture mock
+      top: async ({ mid }: any, use: any) => { await use(mid); },
+    } as FixtureDefinitions<{ base: string; mid: string; top: string }, BuiltinFixtures & { base: string; mid: string; top: string }>);
+
+    expect(registry.collectDeps(['top'], 'test')).toEqual(['base', 'mid', 'top']);
+  });
+
+  it('skips fixtures of different scope', () => {
+    const registry = new FixtureRegistry();
+    registry.register({
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test fixture mock
+      workerLevel: [async (_fixtures: any, use: any) => { await use('w'); }, { scope: 'worker' }],
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test fixture mock
+      testLevel: async ({ workerLevel }: any, use: any) => { await use(workerLevel); },
+    } as FixtureDefinitions<{ workerLevel: string; testLevel: string }, BuiltinFixtures & { workerLevel: string; testLevel: string }>);
+
+    // When collecting test-scoped deps, the worker-scoped dep is skipped
+    expect(registry.collectDeps(['testLevel'], 'test')).toEqual(['testLevel']);
+  });
+
+  it('handles diamond dependencies without duplicates', () => {
+    const registry = new FixtureRegistry();
+    registry.register({
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test fixture mock
+      root: async (_f: any, use: any) => { await use('r'); },
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test fixture mock
+      left: async ({ root }: any, use: any) => { await use(root); },
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test fixture mock
+      right: async ({ root }: any, use: any) => { await use(root); },
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test fixture mock
+      top: async ({ left, right }: any, use: any) => { await use(`${left}-${right}`); },
+    } as FixtureDefinitions<{ root: string; left: string; right: string; top: string }, BuiltinFixtures & { root: string; left: string; right: string; top: string }>);
+
+    const deps = registry.collectDeps(['top'], 'test');
+    expect(deps).toEqual(['root', 'left', 'right', 'top']);
+  });
+});
+
 describe('fixtureParameterNames', () => {
   it('extracts names from arrow function with destructuring', () => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test fixture mock
