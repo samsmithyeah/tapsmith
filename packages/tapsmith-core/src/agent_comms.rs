@@ -1673,4 +1673,158 @@ mod tests {
         let post: anyhow::Error = SendError::PostSend(anyhow!("post-send failure")).into();
         assert!(post.to_string().contains("post-send failure"));
     }
+
+    // ─── Persistent stream cache ───
+
+    #[tokio::test]
+    async fn persistent_cache_reuses_connection() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let accept_count = Arc::new(AtomicUsize::new(0));
+        let accept_count_clone = accept_count.clone();
+
+        tokio::spawn(async move {
+            while let Ok((stream, _)) = listener.accept().await {
+                accept_count_clone.fetch_add(1, Ordering::SeqCst);
+                let (read_half, mut write_half) = stream.into_split();
+                let mut reader = BufReader::new(read_half);
+                tokio::spawn(async move {
+                    loop {
+                        let mut line = String::new();
+                        match reader.read_line(&mut line).await {
+                            Ok(0) => break,
+                            Ok(_) => {
+                                let parsed: Value = serde_json::from_str(line.trim()).unwrap();
+                                let id = parsed["id"].as_str().unwrap_or("null");
+                                let resp = format!(
+                                    r#"{{"id":"{}","result":{{"ok":true}}}}"#,
+                                    id
+                                );
+                                let _ = write_half
+                                    .write_all(format!("{}\n", resp).as_bytes())
+                                    .await;
+                                let _ = write_half.flush().await;
+                            }
+                            Err(_) => break,
+                        }
+                    }
+                });
+            }
+        });
+
+        let cache = new_agent_stream_cache();
+        let params = ConnectionParams { host_port: port };
+        let cmd = AgentCommand::Screenshot {};
+
+        let r1 = send_with_persistent_cache(&cache, &params, &cmd, Duration::from_secs(2)).await;
+        assert!(r1.is_ok(), "first send failed: {:?}", r1.err());
+
+        let r2 = send_with_persistent_cache(&cache, &params, &cmd, Duration::from_secs(2)).await;
+        assert!(r2.is_ok(), "second send failed: {:?}", r2.err());
+
+        assert_eq!(
+            accept_count.load(Ordering::SeqCst),
+            1,
+            "expected 1 connection, got more"
+        );
+    }
+
+    #[tokio::test]
+    async fn persistent_cache_reconnects_on_broken_stream() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let accept_count = Arc::new(AtomicUsize::new(0));
+        let accept_count_clone = accept_count.clone();
+
+        tokio::spawn(async move {
+            while let Ok((stream, _)) = listener.accept().await {
+                accept_count_clone.fetch_add(1, Ordering::SeqCst);
+                let (read_half, mut write_half) = stream.into_split();
+                let mut reader = BufReader::new(read_half);
+                let mut line = String::new();
+                if reader.read_line(&mut line).await.is_ok() && !line.is_empty() {
+                    let parsed: Value = serde_json::from_str(line.trim()).unwrap();
+                    let id = parsed["id"].as_str().unwrap_or("null");
+                    let resp = format!(r#"{{"id":"{}","result":{{"ok":true}}}}"#, id);
+                    let _ = write_half
+                        .write_all(format!("{}\n", resp).as_bytes())
+                        .await;
+                    let _ = write_half.flush().await;
+                }
+                drop(write_half);
+            }
+        });
+
+        let cache = new_agent_stream_cache();
+        let params = ConnectionParams { host_port: port };
+        let cmd = AgentCommand::Screenshot {};
+
+        let r1 = send_with_persistent_cache(&cache, &params, &cmd, Duration::from_secs(2)).await;
+        assert!(r1.is_ok(), "first send failed: {:?}", r1.err());
+
+        let r2 = send_with_persistent_cache(&cache, &params, &cmd, Duration::from_secs(2)).await;
+        assert!(
+            r2.is_ok(),
+            "second send failed (should have reconnected): {:?}",
+            r2.err()
+        );
+
+        assert_eq!(accept_count.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn persistent_cache_invalidates_on_port_change() {
+        let listener1 = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port1 = listener1.local_addr().unwrap().port();
+        let listener2 = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port2 = listener2.local_addr().unwrap().port();
+
+        fn spawn_echo_agent(listener: tokio::net::TcpListener) {
+            tokio::spawn(async move {
+                while let Ok((stream, _)) = listener.accept().await {
+                    let (read_half, mut write_half) = stream.into_split();
+                    let mut reader = BufReader::new(read_half);
+                    tokio::spawn(async move {
+                        loop {
+                            let mut line = String::new();
+                            match reader.read_line(&mut line).await {
+                                Ok(0) | Err(_) => break,
+                                Ok(_) => {
+                                    let parsed: Value =
+                                        serde_json::from_str(line.trim()).unwrap();
+                                    let id = parsed["id"].as_str().unwrap_or("null");
+                                    let resp = format!(
+                                        r#"{{"id":"{}","result":{{"ok":true}}}}"#,
+                                        id
+                                    );
+                                    let _ = write_half
+                                        .write_all(format!("{}\n", resp).as_bytes())
+                                        .await;
+                                    let _ = write_half.flush().await;
+                                }
+                            }
+                        }
+                    });
+                }
+            });
+        }
+
+        spawn_echo_agent(listener1);
+        spawn_echo_agent(listener2);
+
+        let cache = new_agent_stream_cache();
+        let cmd = AgentCommand::Screenshot {};
+
+        let params1 = ConnectionParams { host_port: port1 };
+        let r1 = send_with_persistent_cache(&cache, &params1, &cmd, Duration::from_secs(2)).await;
+        assert!(r1.is_ok());
+
+        let params2 = ConnectionParams { host_port: port2 };
+        let r2 = send_with_persistent_cache(&cache, &params2, &cmd, Duration::from_secs(2)).await;
+        assert!(r2.is_ok());
+    }
 }
