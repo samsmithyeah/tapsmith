@@ -1,8 +1,10 @@
+use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{anyhow, bail, Context, Result};
 use serde_json::{json, Value};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::net::TcpStream;
 use tracing::{debug, info, warn};
 
@@ -72,6 +74,150 @@ impl From<SendError> for anyhow::Error {
             SendError::Connect(e) | SendError::PostSend(e) => e,
         }
     }
+}
+
+/// A reusable TCP connection to the on-device agent. Split into owned
+/// halves so the `BufReader` retains any buffered data across calls.
+pub(crate) struct PersistentStream {
+    reader: BufReader<OwnedReadHalf>,
+    writer: OwnedWriteHalf,
+    host_port: u16,
+}
+
+pub type AgentStreamCache = Arc<tokio::sync::Mutex<Option<PersistentStream>>>;
+
+pub fn new_agent_stream_cache() -> AgentStreamCache {
+    Arc::new(tokio::sync::Mutex::new(None))
+}
+
+pub async fn clear_stream_cache(cache: &AgentStreamCache) {
+    *cache.lock().await = None;
+}
+
+async fn connect_persistent(host_port: u16) -> Result<PersistentStream, SendError> {
+    let addr = format!("127.0.0.1:{}", host_port);
+    let stream = tokio::time::timeout(Duration::from_secs(5), TcpStream::connect(&addr))
+        .await
+        .map_err(|_| SendError::Connect(anyhow!("Timed out connecting to agent socket")))?
+        .map_err(|e| {
+            SendError::Connect(anyhow!(e).context("Failed to connect to agent socket"))
+        })?;
+    stream.set_nodelay(true).ok();
+    let (read_half, write_half) = stream.into_split();
+    Ok(PersistentStream {
+        reader: BufReader::new(read_half),
+        writer: write_half,
+        host_port,
+    })
+}
+
+async fn try_send_persistent(
+    stream: &mut PersistentStream,
+    command: &AgentCommand,
+    timeout: Duration,
+) -> std::result::Result<AgentResponse, SendError> {
+    let request_id = uuid::Uuid::new_v4().to_string();
+    let json_msg = command.to_json(&request_id);
+    let payload = serde_json::to_string(&json_msg)
+        .map_err(|e| SendError::PostSend(anyhow!(e).context("Failed to serialize command")))?;
+    debug!(payload = %payload, "Sending command to agent (persistent)");
+
+    // Write — failures before flush mean the agent didn't see the command
+    if let Err(e) = stream.writer.write_all(payload.as_bytes()).await {
+        return Err(SendError::Connect(
+            anyhow!(e).context("Failed to write to agent socket"),
+        ));
+    }
+    if let Err(e) = stream.writer.write_all(b"\n").await {
+        return Err(SendError::Connect(
+            anyhow!(e).context("Failed to write newline to agent socket"),
+        ));
+    }
+    if let Err(e) = stream.writer.flush().await {
+        return Err(SendError::Connect(
+            anyhow!(e).context("Failed to flush agent socket"),
+        ));
+    }
+
+    // Read — once flushed, the agent may have the command
+    let read_timeout = timeout + READ_TIMEOUT_HEADROOM;
+    let mut line = String::new();
+    let read_result =
+        tokio::time::timeout(read_timeout, stream.reader.read_line(&mut line)).await;
+
+    match read_result {
+        Err(_) => Err(SendError::PostSend(anyhow!(
+            "Agent command timed out after {read_timeout:?}"
+        ))),
+        Ok(Err(e)) => Err(SendError::PostSend(
+            anyhow!(e).context("Failed to read from agent socket"),
+        )),
+        Ok(Ok(_)) => {
+            let line = line.trim();
+            if line.is_empty() {
+                return Err(SendError::Connect(
+                    anyhow!("{}", EMPTY_RESPONSE_MARKER)
+                        .context("Agent connection dropped (empty response); reconnecting"),
+                ));
+            }
+            debug!(response = %line, "Received response from agent (persistent)");
+            let raw: Value = serde_json::from_str(line).map_err(|e| {
+                SendError::PostSend(
+                    anyhow!(e).context("Failed to parse agent response as JSON"),
+                )
+            })?;
+            Ok(AgentResponse::from_json(&raw))
+        }
+    }
+}
+
+pub async fn send_with_persistent_cache(
+    cache: &AgentStreamCache,
+    params: &ConnectionParams,
+    command: &AgentCommand,
+    timeout: Duration,
+) -> Result<AgentResponse> {
+    let mut guard = cache.lock().await;
+
+    // Discard stale stream if port changed
+    if let Some(ref s) = *guard {
+        if s.host_port != params.host_port {
+            debug!("Agent port changed, dropping cached stream");
+            *guard = None;
+        }
+    }
+
+    // First attempt: use cached stream or connect
+    if guard.is_none() {
+        *guard = Some(connect_persistent(params.host_port).await?);
+    }
+
+    let stream = guard.as_mut().unwrap();
+    match try_send_persistent(stream, command, timeout).await {
+        Ok(resp) => return Ok(resp),
+        Err(SendError::PostSend(e)) => {
+            *guard = None;
+            return Err(e);
+        }
+        Err(SendError::Connect(e)) => {
+            warn!("Persistent stream failed, reconnecting: {e}");
+            *guard = None;
+        }
+    }
+
+    // Retry with fresh connection
+    *guard = Some(
+        connect_persistent(params.host_port)
+            .await
+            .map_err(anyhow::Error::from)?,
+    );
+    let stream = guard.as_mut().unwrap();
+    try_send_persistent(stream, command, timeout)
+        .await
+        .map_err(|e| {
+            *guard = None;
+            anyhow::Error::from(e)
+        })
 }
 
 // ─── Agent Command Protocol ───
