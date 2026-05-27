@@ -84,13 +84,13 @@ pub(crate) struct PersistentStream {
     host_port: u16,
 }
 
-pub type AgentStreamCache = Arc<tokio::sync::Mutex<Option<PersistentStream>>>;
+pub(crate) type AgentStreamCache = Arc<tokio::sync::Mutex<Option<PersistentStream>>>;
 
-pub fn new_agent_stream_cache() -> AgentStreamCache {
+pub(crate) fn new_agent_stream_cache() -> AgentStreamCache {
     Arc::new(tokio::sync::Mutex::new(None))
 }
 
-pub async fn clear_stream_cache(cache: &AgentStreamCache) {
+pub(crate) async fn clear_stream_cache(cache: &AgentStreamCache) {
     *cache.lock().await = None;
 }
 
@@ -145,9 +145,24 @@ async fn try_send_persistent(
         Err(_) => Err(SendError::PostSend(anyhow!(
             "Agent command timed out after {read_timeout:?}"
         ))),
-        Ok(Err(e)) => Err(SendError::PostSend(
-            anyhow!(e).context("Failed to read from agent socket"),
-        )),
+        Ok(Err(e)) => {
+            // Connection-reset/broken-pipe on read means the TCP
+            // connection died — same situation as an empty-response
+            // EOF. The agent may or may not have processed the
+            // command, but the connection is definitely gone. Classify
+            // as Connect so the caller can reconnect and retry.
+            use std::io::ErrorKind::*;
+            let kind = e.kind();
+            if matches!(kind, ConnectionReset | ConnectionAborted | BrokenPipe) {
+                Err(SendError::Connect(
+                    anyhow!(e).context("Agent connection lost during read"),
+                ))
+            } else {
+                Err(SendError::PostSend(
+                    anyhow!(e).context("Failed to read from agent socket"),
+                ))
+            }
+        }
         Ok(Ok(_)) => {
             let line = line.trim();
             if line.is_empty() {
@@ -160,12 +175,22 @@ async fn try_send_persistent(
             let raw: Value = serde_json::from_str(line).map_err(|e| {
                 SendError::PostSend(anyhow!(e).context("Failed to parse agent response as JSON"))
             })?;
+            // Verify response ID matches to detect desync from a
+            // late response on a reused connection.
+            match raw.get("id").and_then(|v| v.as_str()) {
+                Some(resp_id) if resp_id != request_id => {
+                    return Err(SendError::PostSend(anyhow!(
+                        "Response ID mismatch: expected '{request_id}', got '{resp_id}'"
+                    )));
+                }
+                _ => {}
+            }
             Ok(AgentResponse::from_json(&raw))
         }
     }
 }
 
-pub async fn send_with_persistent_cache(
+pub(crate) async fn send_with_persistent_cache(
     cache: &AgentStreamCache,
     params: &ConnectionParams,
     command: &AgentCommand,
