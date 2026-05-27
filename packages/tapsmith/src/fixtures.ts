@@ -186,15 +186,22 @@ export async function resolveFixtures(
         resolveTeardown = resolve;
       });
 
+      let hasUsed = false;
       // Run the fixture function in the background
       const fixturePromise = def.fn(fixtures, async (value: unknown) => {
+        hasUsed = true;
         resolveUse!(value);
         // Wait for teardown signal
         await teardownPromise;
       }).catch((err) => {
-        fixtureError = err;
-        // Resolve use in case the fixture errored before calling use()
-        resolveUse!(undefined);
+        if (!hasUsed) {
+          fixtureError = err;
+          // Resolve use in case the fixture errored before calling use()
+          resolveUse!(undefined);
+        } else {
+          // Error after use() — rethrow so teardown handler sees it
+          throw err;
+        }
       });
 
       // Wait for the fixture to provide its value

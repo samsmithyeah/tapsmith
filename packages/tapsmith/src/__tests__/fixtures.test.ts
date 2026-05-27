@@ -182,6 +182,32 @@ describe('resolveFixtures', () => {
     await expect(resolveFixtures(registry, 'test', {})).rejects.toThrow('boom');
     expect(teardownCalled).toHaveBeenCalledOnce();
   });
+
+  it('surfaces errors thrown during fixture teardown (after use)', async () => {
+    const stderrMessages: string[] = [];
+    const origWrite = process.stderr.write;
+    process.stderr.write = ((chunk: string | Uint8Array) => {
+      stderrMessages.push(typeof chunk === 'string' ? chunk : new TextDecoder().decode(chunk));
+      return true;
+    }) as typeof process.stderr.write;
+
+    try {
+      const registry = new FixtureRegistry();
+      registry.register({
+        leaky: async (_f, use) => {
+          await use('value');
+          throw new Error('teardown explosion');
+        },
+      } as FixtureDefinitions<{ leaky: string }, BuiltinFixtures & { leaky: string }>);
+
+      const { fixtures, teardown } = await resolveFixtures(registry, 'test', {});
+      expect(fixtures.leaky).toBe('value');
+      await teardown();
+      expect(stderrMessages.some(m => m.includes('teardown explosion'))).toBe(true);
+    } finally {
+      process.stderr.write = origWrite;
+    }
+  });
 });
 
 describe('lazy fixture resolution', () => {
