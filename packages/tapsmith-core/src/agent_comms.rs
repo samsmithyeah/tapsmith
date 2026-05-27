@@ -116,23 +116,18 @@ async fn try_send_persistent(
 ) -> std::result::Result<AgentResponse, SendError> {
     let request_id = uuid::Uuid::new_v4().to_string();
     let json_msg = command.to_json(&request_id);
-    let payload = serde_json::to_string(&json_msg)
+    let mut payload = serde_json::to_string(&json_msg)
         .map_err(|e| SendError::PostSend(anyhow!(e).context("Failed to serialize command")))?;
     debug!(payload = %payload, "Sending command to agent (persistent)");
+    payload.push('\n');
 
-    // Write phase. The agent uses newline-delimited reads (`read_line`),
-    // so it cannot process a command until the `\n` arrives. Payload-only
-    // or newline-only writes into a broken pipe are therefore safe to
-    // retry (Connect). Once flush succeeds the full message is in the
-    // kernel send buffer and may reach the agent — classify as PostSend.
+    // Write phase. Single write avoids two TCP packets with NODELAY.
+    // Write failure means the connection is dead — safe to retry
+    // (Connect). Flush pushes the full message to the kernel send
+    // buffer where it may reach the agent — classify as PostSend.
     if let Err(e) = stream.writer.write_all(payload.as_bytes()).await {
         return Err(SendError::Connect(
             anyhow!(e).context("Failed to write to agent socket"),
-        ));
-    }
-    if let Err(e) = stream.writer.write_all(b"\n").await {
-        return Err(SendError::Connect(
-            anyhow!(e).context("Failed to write newline to agent socket"),
         ));
     }
     if let Err(e) = stream.writer.flush().await {
