@@ -313,6 +313,7 @@ impl TapsmithServiceImpl {
             error = %msg,
             "iOS agent command timed out on physical device, restarting agent and retrying"
         );
+        agent_comms::clear_stream_cache(&self.agent_stream).await;
         if let Err(e) = self
             .restart_ios_agent_for_app(&serial, &config.target_package, false, 5_000)
             .await
@@ -395,6 +396,7 @@ impl TapsmithServiceImpl {
         wait_for_idle: bool,
         idle_timeout_ms: u64,
     ) -> Result<(), String> {
+        agent_comms::clear_stream_cache(&self.agent_stream).await;
         let _ = ios::device::terminate_app(serial, package_name).await;
         tokio::time::sleep(Duration::from_millis(300)).await;
         ios::device::launch_app(serial, package_name)
@@ -512,6 +514,7 @@ impl TapsmithServiceImpl {
 
         let is_physical = self.is_active_ios_physical().await;
 
+        agent_comms::clear_stream_cache(&self.agent_stream).await;
         ios::agent_launch::kill_existing_agents_on(serial).await;
 
         // Physical iOS: re-prime the Wi-Fi MITM proxy before xcodebuild so
@@ -1879,6 +1882,7 @@ impl proto::tapsmith_service_server::TapsmithService for TapsmithServiceImpl {
                 // existing host port is free when start_agent tries to bind
                 // a fresh tunnel. Without this, a re-started agent on the
                 // same physical device would fight its own leftover tunnel.
+                agent_comms::clear_stream_cache(&self.agent_stream).await;
                 *self.ios_iproxy.write().await = None;
 
                 // Re-affirm the server-wide tracing flag. SetDevice is the
@@ -1989,6 +1993,7 @@ impl proto::tapsmith_service_server::TapsmithService for TapsmithServiceImpl {
                 }
 
                 // Launch the agent instrumentation
+                agent_comms::clear_stream_cache(&self.agent_stream).await;
                 let instrument_cmd = if req.target_package.is_empty() {
                     "am instrument -w dev.tapsmith.agent/.TapsmithAgent".to_string()
                 } else {
