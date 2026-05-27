@@ -403,7 +403,7 @@ describe('runner execution', () => {
     const mockDevice = { waitForIdle: vi.fn(async () => {}) };
 
     try {
-      tapsmithTest.extend<{ tracked: string }>({
+      const extended = tapsmithTest.extend<{ tracked: string }>({
         tracked: async (_fixtures, use) => {
           order.push('fixture-setup');
           await use('value');
@@ -416,7 +416,7 @@ describe('runner execution', () => {
       tapsmithAfterEach(async (_fixtures: any) => {
         order.push('afterEach');
       });
-      tapsmithTest('teardown order', async () => { order.push('test-body'); });
+      extended('teardown order', async () => { order.push('test-body'); });
       const ctx = popContext();
 
       const result = await runSuiteContext(ctx, '', [], [], makeOpts({

@@ -292,18 +292,23 @@ export interface DescribeFn {
 }
 
 function createTestFn(registry: FixtureRegistry): TestFn {
+  const syncRegistry = () => { activeFixtureRegistry = registry; };
   const fn: TestFn = Object.assign(
     (name: string, testFn: TestCallback) => {
+      syncRegistry();
       currentContext().tests.push({ name, fn: testFn, only: false, skip: false });
     },
     {
       only: (name: string, testFn: TestCallback) => {
+        syncRegistry();
         currentContext().tests.push({ name, fn: testFn, only: true, skip: false });
       },
       skip: (name: string, testFn: TestCallback) => {
+        syncRegistry();
         currentContext().tests.push({ name, fn: testFn, only: false, skip: true });
       },
       use: (options: UseOptions) => {
+        syncRegistry();
         if (options.timeout !== undefined && options.timeout <= 0) {
           throw new Error('test.use() timeout must be a positive number');
         }
@@ -322,10 +327,10 @@ function createTestFn(registry: FixtureRegistry): TestFn {
         activeFixtureRegistry = merged;
         return createTestFn(merged);
       },
-      beforeAll: (hookFn: HookFn) => { currentContext().beforeAll.push(hookFn); },
-      afterAll: (hookFn: HookFn) => { currentContext().afterAll.push(hookFn); },
-      beforeEach: (hookFn: HookFn) => { currentContext().beforeEach.push(hookFn); },
-      afterEach: (hookFn: HookFn) => { currentContext().afterEach.push(hookFn); },
+      beforeAll: (hookFn: HookFn) => { syncRegistry(); currentContext().beforeAll.push(hookFn); },
+      afterAll: (hookFn: HookFn) => { syncRegistry(); currentContext().afterAll.push(hookFn); },
+      beforeEach: (hookFn: HookFn) => { syncRegistry(); currentContext().beforeEach.push(hookFn); },
+      afterEach: (hookFn: HookFn) => { syncRegistry(); currentContext().afterEach.push(hookFn); },
     },
   );
   return fn;
@@ -1544,19 +1549,18 @@ export async function runTestFile(
   filePath: string,
   opts: RunOptions,
 ): Promise<SuiteResult> {
-  // Reset context stack (tests/hooks) for the new file.
+  // Reset context and fixture registry for the new file. Registration
+  // calls (test(), test.beforeEach(), etc.) sync activeFixtureRegistry
+  // back to the extended test's registry, so even cached ESM imports
+  // that skip test.extend() re-execution will restore the correct registry.
   contextStack = [];
+  activeFixtureRegistry = new FixtureRegistry();
   pushContext();
 
   // Import the test file — this registers tests/suites via side effects
   // and may call test.extend() to register fixtures.
   // Node.js caches ESM imports by URL. Persistent processes (UI workers)
   // that re-run the same file must bust the cache with a unique query.
-  // Only reset the fixture registry when busting the cache, since cached
-  // imports won't re-execute test.extend() to repopulate it.
-  if (opts.bustImportCache) {
-    activeFixtureRegistry = new FixtureRegistry();
-  }
   const importUrl = opts.bustImportCache ? `${filePath}?t=${Date.now()}` : filePath;
   await import(importUrl);
 
