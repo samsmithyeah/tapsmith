@@ -163,6 +163,25 @@ describe('resolveFixtures', () => {
 
     await expect(resolveFixtures(registry, 'test', {})).rejects.toThrow('setup failed');
   });
+
+  it('tears down already-resolved fixtures when a later fixture fails', async () => {
+    const teardownCalled = vi.fn();
+    const registry = new FixtureRegistry();
+    registry.register({
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test fixture mock
+      good: async (_f: any, use: any) => {
+        await use('ok');
+        teardownCalled();
+      },
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test fixture mock
+      bad: async (_f: any, _use: any) => {
+        throw new Error('boom');
+      },
+    } as FixtureDefinitions<{ good: string; bad: string }, BuiltinFixtures & { good: string; bad: string }>);
+
+    await expect(resolveFixtures(registry, 'test', {})).rejects.toThrow('boom');
+    expect(teardownCalled).toHaveBeenCalledOnce();
+  });
 });
 
 describe('lazy fixture resolution', () => {

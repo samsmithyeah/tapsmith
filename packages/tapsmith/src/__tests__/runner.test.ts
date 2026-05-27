@@ -1258,6 +1258,38 @@ describe('retries', () => {
     }
   });
 
+  it('resolves all fixtures when test uses non-destructured param with default', async () => {
+    const resolved: string[] = [];
+    const mockDevice = { waitForIdle: vi.fn(async () => {}) };
+
+    try {
+      const extended = tapsmithTest.extend<{ a: string; b: string }>({
+        a: async (_fixtures, use) => { resolved.push('a'); await use('a-val'); },
+        b: async (_fixtures, use) => { resolved.push('b'); await use('b-val'); },
+      });
+
+      pushContext();
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- testing non-destructured param with default
+      extended('non-destructured default', async (fixtures: any = {}) => {
+        void fixtures;
+      });
+      const ctx = popContext();
+
+      const result = await runSuiteContext(ctx, '', [], [], makeOpts({
+        config: makeConfig({ platform: 'android' }),
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any -- focused runner hook fixture mock
+        device: mockDevice as any,
+      }));
+
+      expect(result.tests[0].status).toBe('passed');
+      // Both fixtures should be resolved since we can't determine which are needed
+      expect(resolved).toContain('a');
+      expect(resolved).toContain('b');
+    } finally {
+      resetFixtureRegistry();
+    }
+  });
+
   it('stops retrying when abort signal fires', async () => {
     let callCount = 0;
     const ac = new AbortController();

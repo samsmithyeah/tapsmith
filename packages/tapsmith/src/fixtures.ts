@@ -172,44 +172,57 @@ export async function resolveFixtures(
         .map(name => [name, registry.get(name)!] as [string, ResolvedFixture])
     : [...registry.byScope(scope)];
 
-  for (const [name, def] of fixturesToResolve) {
-    // Create the use/teardown promise pair
-    let resolveUse: (value: unknown) => void;
-    let resolveTeardown: () => void;
-    let fixtureError: unknown;
+  try {
+    for (const [name, def] of fixturesToResolve) {
+      // Create the use/teardown promise pair
+      let resolveUse: (value: unknown) => void;
+      let resolveTeardown: () => void;
+      let fixtureError: unknown;
 
-    const usePromise = new Promise<unknown>((resolve) => {
-      resolveUse = resolve;
-    });
-    const teardownPromise = new Promise<void>((resolve) => {
-      resolveTeardown = resolve;
-    });
+      const usePromise = new Promise<unknown>((resolve) => {
+        resolveUse = resolve;
+      });
+      const teardownPromise = new Promise<void>((resolve) => {
+        resolveTeardown = resolve;
+      });
 
-    // Run the fixture function in the background
-    const fixturePromise = def.fn(fixtures, async (value: unknown) => {
-      resolveUse!(value);
-      // Wait for teardown signal
-      await teardownPromise;
-    }).catch((err) => {
-      fixtureError = err;
-      // Resolve use in case the fixture errored before calling use()
-      resolveUse!(undefined);
-    });
+      // Run the fixture function in the background
+      const fixturePromise = def.fn(fixtures, async (value: unknown) => {
+        resolveUse!(value);
+        // Wait for teardown signal
+        await teardownPromise;
+      }).catch((err) => {
+        fixtureError = err;
+        // Resolve use in case the fixture errored before calling use()
+        resolveUse!(undefined);
+      });
 
-    // Wait for the fixture to provide its value
-    const value = await usePromise;
+      // Wait for the fixture to provide its value
+      const value = await usePromise;
 
-    if (fixtureError) {
-      throw fixtureError;
+      if (fixtureError) {
+        throw fixtureError;
+      }
+
+      fixtures[name] = value;
+
+      // Queue teardown (run in reverse order)
+      teardowns.unshift(async () => {
+        resolveTeardown!();
+        await fixturePromise;
+      });
     }
-
-    fixtures[name] = value;
-
-    // Queue teardown (run in reverse order)
-    teardowns.unshift(async () => {
-      resolveTeardown!();
-      await fixturePromise;
-    });
+  } catch (err) {
+    // Tear down already-resolved fixtures to prevent resource leaks
+    for (const fn of teardowns) {
+      try {
+        await fn();
+      } catch (teardownErr) {
+        const msg = teardownErr instanceof Error ? teardownErr.message : String(teardownErr);
+        process.stderr.write(`[tapsmith] fixture teardown error during cleanup: ${msg}\n`);
+      }
+    }
+    throw err;
   }
 
   return {
@@ -402,6 +415,19 @@ export function fixtureParameterNames(fn: Function): string[] {
   const names = innerFixtureParameterNames(fn);
   (fn as unknown as Record<symbol, string[]>)[signatureSymbol] = names;
   return names;
+}
+
+/**
+ * Check whether a function has any parameters, including those with default
+ * values (which make `fn.length === 0`). Used by lazy resolution to detect
+ * `(fixtures = {}) => ...` patterns that fn.length misses.
+ */
+// eslint-disable-next-line @typescript-eslint/no-unsafe-function-type -- Function.toString() is the input
+export function functionHasParameters(fn: Function): boolean {
+  if (fn.length > 0) return true;
+  const text = filterOutComments(fn.toString());
+  const match = text.match(/(?:async)?(?:\s+function)?[^(]*\(([^)]*)\)/);
+  return match ? match[1].trim().length > 0 : false;
 }
 
 /** @internal Exported for testing only. */

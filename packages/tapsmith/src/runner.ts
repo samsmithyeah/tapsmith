@@ -20,7 +20,7 @@ import type { Device } from './device.js';
 import type { TapsmithReporter } from './reporter.js';
 import { APIRequestContext } from './api-request.js';
 import { flushSoftErrors } from './expect.js';
-import { FixtureRegistry, resolveFixtures, fixtureParameterNames, type FixtureDefinitions, type BuiltinFixtures } from './fixtures.js';
+import { FixtureRegistry, resolveFixtures, fixtureParameterNames, functionHasParameters, type FixtureDefinitions, type BuiltinFixtures } from './fixtures.js';
 import { resolveTraceConfig } from './trace/types.js';
 import { shouldRecord, shouldRetain } from './trace/trace-mode.js';
 import { resolveVideoConfig } from './video/types.js';
@@ -1040,7 +1040,7 @@ async function runSuiteContext(
               if (names.length > 0) {
                 for (const name of names)
                   requestedNames.add(name);
-              } else if (fn.length > 0) {
+              } else if (functionHasParameters(fn)) {
                 // Function takes parameters but doesn't destructure — resolve all
                 canBeLazy = false;
                 break;
