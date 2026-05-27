@@ -313,8 +313,10 @@ function filterOutComments(s: string): string {
     }
 
     if (commentState === 'singleline') {
-      if (s[i] === '\n')
+      if (s[i] === '\n') {
         commentState = 'none';
+        result.push('\n');
+      }
     } else if (commentState === 'multiline') {
       if (s[i - 1] === '*' && s[i] === '/')
         commentState = 'none';

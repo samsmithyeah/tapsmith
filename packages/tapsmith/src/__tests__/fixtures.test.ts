@@ -384,7 +384,7 @@ describe('fixtureParameterNames', () => {
   });
 
   it('strips comments from function body', () => {
-    expect(filterOutComments('hello // world\nfoo')).toBe('hello foo');
+    expect(filterOutComments('hello // world\nfoo')).toBe('hello \nfoo');
     expect(filterOutComments('hello /* world */ foo')).toBe('hello  foo');
     expect(filterOutComments('a /* b // c */ d')).toBe('a  d');
     expect(filterOutComments('const url = "http://example.com"')).toBe('const url = "http://example.com"');
