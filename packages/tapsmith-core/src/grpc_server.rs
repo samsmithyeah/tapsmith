@@ -4312,7 +4312,18 @@ impl proto::tapsmith_service_server::TapsmithService for TapsmithServiceImpl {
                         let _ = tokio::fs::create_dir_all(parent).await;
                     }
                     let output = tokio::process::Command::new("tar")
-                        .args(["czf", local_path, "-C", &scratch_path, "."])
+                        .args([
+                            "czf",
+                            local_path,
+                            "--exclude=./Library/Caches",
+                            "--exclude=./Library/WebKit",
+                            "--exclude=./Library/SplashBoard",
+                            "--exclude=./Library/Saved Application State",
+                            "--exclude=./tmp",
+                            "-C",
+                            &scratch_path,
+                            ".",
+                        ])
                         .output()
                         .await;
                     return match output {
@@ -4357,12 +4368,27 @@ impl proto::tapsmith_service_server::TapsmithService for TapsmithServiceImpl {
                 // Terminate the app to flush data
                 let _ = ios::device::terminate_app(&serial, pkg).await;
 
-                // Create tar.gz archive of the data container
+                // Create tar.gz archive of the data container, excluding
+                // caches and ephemeral data that inflates the archive
+                // without contributing to app state (auth tokens, prefs,
+                // databases). A React Native app container can have tens
+                // of MB in Library/Caches and Library/WebKit alone.
                 if let Some(parent) = std::path::Path::new(local_path).parent() {
                     let _ = tokio::fs::create_dir_all(parent).await;
                 }
                 let output = tokio::process::Command::new("tar")
-                    .args(["czf", local_path, "-C", &container, "."])
+                    .args([
+                        "czf",
+                        local_path,
+                        "--exclude=./Library/Caches",
+                        "--exclude=./Library/WebKit",
+                        "--exclude=./Library/SplashBoard",
+                        "--exclude=./Library/Saved Application State",
+                        "--exclude=./tmp",
+                        "-C",
+                        &container,
+                        ".",
+                    ])
                     .output()
                     .await;
 
@@ -4409,21 +4435,37 @@ impl proto::tapsmith_service_server::TapsmithService for TapsmithServiceImpl {
                     .map(|out| out.contains("uid=0"))
                     .unwrap_or(false);
 
-                // 3. Create tar.gz archive on device
-                let tar_result = if is_root {
-                    adb::shell_with_timeout(
-                        &serial,
-                        &format!("tar czf {device_tmp} -C {data_dir} ."),
-                        tar_timeout,
-                    )
-                    .await
-                } else {
-                    adb::shell_with_timeout(
-                        &serial,
-                        &format!("run-as {pkg} tar czf {device_tmp} -C {data_dir} ."),
-                        tar_timeout,
-                    )
-                    .await
+                // 3. Create tar.gz archive on device, excluding cache
+                // directories that don't carry meaningful app state.
+                // Older Toybox builds (pre-Android 10) lack --exclude, so
+                // fall back to archiving everything if the first attempt fails.
+                let tar_cmd = |excludes: &str| {
+                    let prefix = if is_root {
+                        String::new()
+                    } else {
+                        format!("run-as {pkg} ")
+                    };
+                    if excludes.is_empty() {
+                        format!("{prefix}tar czf {device_tmp} -C {data_dir} .")
+                    } else {
+                        format!("{prefix}tar czf {device_tmp} {excludes} -C {data_dir} .")
+                    }
+                };
+                let tar_result = adb::shell_with_timeout(
+                    &serial,
+                    &tar_cmd("--exclude=./cache --exclude=./code_cache"),
+                    tar_timeout,
+                )
+                .await;
+                let tar_result = match tar_result {
+                    Ok(_) => Ok(()),
+                    Err(_) => {
+                        debug!("tar with --exclude failed, retrying without exclusions");
+                        let _ = adb::shell_lenient(&serial, &format!("rm -f {device_tmp}")).await;
+                        adb::shell_with_timeout(&serial, &tar_cmd(""), tar_timeout)
+                            .await
+                            .map(|_| ())
+                    }
                 };
 
                 if let Err(e) = tar_result {
@@ -4620,11 +4662,9 @@ impl proto::tapsmith_service_server::TapsmithService for TapsmithServiceImpl {
                     }
                     return Ok(Self::success_action_response(request_id));
                 }
-                // iOS simulator: terminate the app, nuke the data container
-                // via rm -rf + mkdir (more thorough than selective clearing),
+                // iOS simulator: terminate the app, clear the data container,
                 // then extract the saved archive.
                 let _ = ios::device::terminate_app(&serial, pkg).await;
-                tokio::time::sleep(Duration::from_millis(500)).await;
 
                 let container = match ios::device::get_app_container(&serial, pkg).await {
                     Ok(path) => path,

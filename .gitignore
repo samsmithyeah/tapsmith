@@ -45,4 +45,7 @@ pilot-report/
 *-session-prompt.md
 .claude
 
+# Worktrees
+.worktrees/
+
 repomix-output.xml
