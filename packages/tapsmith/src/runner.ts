@@ -196,6 +196,7 @@ interface TestEntry {
   fn: TestCallback;
   only: boolean;
   skip: boolean;
+  registry?: FixtureRegistry;
 }
 
 interface SuiteEntry {
@@ -296,16 +297,16 @@ function createTestFn(registry: FixtureRegistry): TestFn {
   const fn: TestFn = Object.assign(
     (name: string, testFn: TestCallback) => {
       syncRegistry();
-      currentContext().tests.push({ name, fn: testFn, only: false, skip: false });
+      currentContext().tests.push({ name, fn: testFn, only: false, skip: false, registry });
     },
     {
       only: (name: string, testFn: TestCallback) => {
         syncRegistry();
-        currentContext().tests.push({ name, fn: testFn, only: true, skip: false });
+        currentContext().tests.push({ name, fn: testFn, only: true, skip: false, registry });
       },
       skip: (name: string, testFn: TestCallback) => {
         syncRegistry();
-        currentContext().tests.push({ name, fn: testFn, only: false, skip: true });
+        currentContext().tests.push({ name, fn: testFn, only: false, skip: true, registry });
       },
       use: (options: UseOptions) => {
         syncRegistry();
@@ -968,7 +969,8 @@ async function runSuiteContext(
 
           // Resolve test-scoped fixtures BEFORE hooks so beforeEach/afterEach
           // can access custom fixtures (matching Playwright's behavior).
-          const registry = getFixtureRegistry();
+          // Prefer the per-test registry (set by test.extend()) over the global one.
+          const registry = entry.registry ?? getFixtureRegistry();
 
           // Open the beforeEach group before running setup work and hooks.
           // Heavy setup (session readiness, idle waits, user beforeEach hooks)
@@ -1061,26 +1063,28 @@ async function runSuiteContext(
             );
           }
         } finally {
-          // Run afterEach hooks (always, with full fixtures available)
-          if (allAfterEach.length > 0) {
-            traceCollector?.startGroup('afterEach Hooks');
-            for (const hook of allAfterEach) {
-              try {
-                await invokeHook(hook, allFixtures);
-              } catch (err) {
-                process.stderr.write(`[tapsmith] afterEach hook error: ${err instanceof Error ? err.message : String(err)}\n`);
+          try {
+            // Run afterEach hooks (always, with full fixtures available)
+            if (allAfterEach.length > 0) {
+              traceCollector?.startGroup('afterEach Hooks');
+              for (const hook of allAfterEach) {
+                try {
+                  await invokeHook(hook, allFixtures);
+                } catch (err) {
+                  process.stderr.write(`[tapsmith] afterEach hook error: ${err instanceof Error ? err.message : String(err)}\n`);
+                }
               }
+              traceCollector?.endGroup();
             }
-            traceCollector?.endGroup();
-          }
 
-          // Tear down test-scoped fixtures after afterEach hooks have run
-          if (testFixtureTeardown) {
-            await testFixtureTeardown();
+            // Tear down test-scoped fixtures after afterEach hooks have run
+            if (testFixtureTeardown) {
+              await testFixtureTeardown();
+            }
+          } finally {
+            // Ensure request fixture is cleaned up even if teardown throws
+            requestContext.dispose();
           }
-
-          // Ensure request fixture is cleaned up
-          requestContext.dispose();
         }
 
       // Clean up route interception between tests so routes don't leak
