@@ -146,17 +146,25 @@ async fn try_send_persistent(
             "Agent command timed out after {read_timeout:?}"
         ))),
         Ok(Err(e)) => {
-            // Connection-reset/broken-pipe on read means the TCP
-            // connection died — same situation as an empty-response
-            // EOF. The agent may or may not have processed the
-            // command, but the connection is definitely gone. Classify
-            // as Connect so the caller can reconnect and retry.
+            // Connection-reset/broken-pipe on read: the TCP connection
+            // died after we flushed the command. Probe whether the
+            // agent is still listening — if so, the old connection was
+            // stale and it's safe to retry on a fresh one. If the
+            // agent is gone, it may have processed the command before
+            // crashing, so treat as PostSend (no retry).
             use std::io::ErrorKind::*;
             let kind = e.kind();
             if matches!(kind, ConnectionReset | ConnectionAborted | BrokenPipe) {
-                Err(SendError::Connect(
-                    anyhow!(e).context("Agent connection lost during read"),
-                ))
+                let addr = format!("127.0.0.1:{}", stream.host_port);
+                if probe_agent_alive(&addr).await {
+                    Err(SendError::Connect(
+                        anyhow!(e).context("Agent connection lost during read"),
+                    ))
+                } else {
+                    Err(SendError::PostSend(
+                        anyhow!(e).context("Agent connection lost and agent is unreachable"),
+                    ))
+                }
             } else {
                 Err(SendError::PostSend(
                     anyhow!(e).context("Failed to read from agent socket"),
@@ -166,10 +174,18 @@ async fn try_send_persistent(
         Ok(Ok(_)) => {
             let line = line.trim();
             if line.is_empty() {
-                return Err(SendError::Connect(
-                    anyhow!("{}", EMPTY_RESPONSE_MARKER)
-                        .context("Agent connection dropped (empty response); reconnecting"),
-                ));
+                let addr = format!("127.0.0.1:{}", stream.host_port);
+                return if probe_agent_alive(&addr).await {
+                    Err(SendError::Connect(
+                        anyhow!("{}", EMPTY_RESPONSE_MARKER)
+                            .context("Agent connection dropped (empty response); reconnecting"),
+                    ))
+                } else {
+                    Err(SendError::PostSend(
+                        anyhow!("{}", EMPTY_RESPONSE_MARKER)
+                            .context("Agent connection dropped (empty response) and agent is unreachable"),
+                    ))
+                };
             }
             debug!(response = %line, "Received response from agent (persistent)");
             let raw: Value = serde_json::from_str(line).map_err(|e| {
@@ -1694,7 +1710,9 @@ mod tests {
             r2.err()
         );
 
-        assert_eq!(accept_count.load(Ordering::SeqCst), 2);
+        // 3 accepts: (1) initial command, (2) probe_agent_alive liveness
+        // check after broken stream, (3) reconnected command
+        assert_eq!(accept_count.load(Ordering::SeqCst), 3);
     }
 
     #[tokio::test]
