@@ -215,6 +215,10 @@ export async function resolveFixtures(
         }
       });
 
+      // Mark as handled to prevent unhandledRejection warnings/crashes —
+      // the rejection is caught later via `await fixturePromise` in teardown.
+      fixturePromise.catch(() => {});
+
       // Wait for the fixture to provide its value
       const value = await usePromise;
 
@@ -265,7 +269,8 @@ export async function resolveFixtures(
 // handled — the inner backtick toggles the string state incorrectly. This is
 // acceptable because fixture function signatures never contain nested templates.
 
-const signatureSymbol = Symbol('signature');
+// eslint-disable-next-line @typescript-eslint/no-unsafe-function-type -- WeakMap key must be Function
+const signatureCache = new WeakMap<Function, string[]>();
 
 // Count consecutive backslashes before index to determine if a quote is escaped.
 // An odd count means the quote is escaped; even (including zero) means it's real.
@@ -473,11 +478,11 @@ function innerFixtureParameterNames(fn: Function): string[] {
  */
 // eslint-disable-next-line @typescript-eslint/no-unsafe-function-type -- Function.toString() is the input
 export function fixtureParameterNames(fn: Function): string[] {
-  const cached = (fn as unknown as Record<symbol, string[]>)[signatureSymbol];
+  const cached = signatureCache.get(fn);
   if (cached)
     return cached;
   const names = innerFixtureParameterNames(fn);
-  (fn as unknown as Record<symbol, string[]>)[signatureSymbol] = names;
+  signatureCache.set(fn, names);
   return names;
 }
 
