@@ -339,6 +339,8 @@ function createTestFn<F extends object = TestFixtures>(registry: FixtureRegistry
       beforeEach: (hookFn: HookFn) => { syncRegistry(); currentContext().beforeEach.push({ fn: hookFn, registry }); },
       afterEach: (hookFn: HookFn) => { syncRegistry(); currentContext().afterEach.push({ fn: hookFn, registry }); },
     },
+  // Object.assign can't infer the generic F — cast through unknown is safe
+  // because each property is typed correctly in the object literal above.
   ) as unknown as TestFn<F>;
   return fn;
 }
@@ -573,6 +575,8 @@ async function invokeHook(
   }
 }
 
+const builtinFixtureNames = new Set(['device', 'request', 'projectName', 'platform']);
+
 function validateHookFixtures(
   hook: HookEntry,
   testRegistry: FixtureRegistry,
@@ -580,7 +584,7 @@ function validateHookFixtures(
 ): void {
   if (!hook.registry || hook.registry === testRegistry) return;
   for (const name of fixtureParameterNames(hook.fn)) {
-    if (!testRegistry.has(name) && name !== 'device' && name !== 'request' && name !== 'projectName' && name !== 'platform') {
+    if (!testRegistry.has(name) && !builtinFixtureNames.has(name)) {
       process.stderr.write(
         `[tapsmith] ${hookType} hook expects fixture "${name}" which is not available in this test's fixture registry. ` +
         `The hook was registered with a different test.extend() than the test it is running against.\n`,

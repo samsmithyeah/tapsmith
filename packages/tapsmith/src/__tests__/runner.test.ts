@@ -494,6 +494,44 @@ describe('runner execution', () => {
     }
   });
 
+  it('test.beforeAll() registers hooks same as standalone beforeAll', async () => {
+    const order: string[] = [];
+    const mockDevice = { waitForIdle: vi.fn(async () => {}) };
+
+    pushContext();
+    tapsmithTest.beforeAll(async () => { order.push('beforeAll'); });
+    tapsmithTest('after test.beforeAll', async () => { order.push('test'); });
+    const ctx = popContext();
+
+    const result = await runSuiteContext(ctx, '', [], [], makeOpts({
+      config: makeConfig({ platform: 'android' }),
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- focused runner hook fixture mock
+      device: mockDevice as any,
+    }));
+
+    expect(result.tests[0].status).toBe('passed');
+    expect(order).toEqual(['beforeAll', 'test']);
+  });
+
+  it('test.afterAll() registers hooks same as standalone afterAll', async () => {
+    const order: string[] = [];
+    const mockDevice = { waitForIdle: vi.fn(async () => {}) };
+
+    pushContext();
+    tapsmithTest.afterAll(async () => { order.push('afterAll'); });
+    tapsmithTest('before test.afterAll', async () => { order.push('test'); });
+    const ctx = popContext();
+
+    const result = await runSuiteContext(ctx, '', [], [], makeOpts({
+      config: makeConfig({ platform: 'android' }),
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- focused runner hook fixture mock
+      device: mockDevice as any,
+    }));
+
+    expect(result.tests[0].status).toBe('passed');
+    expect(order).toEqual(['test', 'afterAll']);
+  });
+
   it('starts device log streaming for each traced test collector', async () => {
     const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'tapsmith-runner-logs-'));
     let activeLogCollector: TraceCollector | null = null;

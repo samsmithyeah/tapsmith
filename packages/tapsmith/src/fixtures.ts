@@ -236,14 +236,27 @@ function filterOutComments(s: string): string {
   const result: string[] = [];
   let commentState: 'none' | 'singleline' | 'multiline' = 'none';
   let stringState: 'none' | 'single' | 'double' | 'template' = 'none';
+
+  // Count consecutive backslashes before index to determine if quote is escaped.
+  // An odd count means the quote is escaped; even (including zero) means it's real.
+  const isEscaped = (index: number) => {
+    let count = 0;
+    let j = index - 1;
+    while (j >= 0 && s[j] === '\\') {
+      count++;
+      j--;
+    }
+    return count % 2 === 1;
+  };
+
   for (let i = 0; i < s.length; ++i) {
     if (commentState === 'none') {
       if (stringState === 'none') {
-        if (s[i] === "'" && s[i - 1] !== '\\') {
+        if (s[i] === "'" && !isEscaped(i)) {
           stringState = 'single';
-        } else if (s[i] === '"' && s[i - 1] !== '\\') {
+        } else if (s[i] === '"' && !isEscaped(i)) {
           stringState = 'double';
-        } else if (s[i] === '`' && s[i - 1] !== '\\') {
+        } else if (s[i] === '`' && !isEscaped(i)) {
           stringState = 'template';
         } else if (s[i] === '/' && s[i + 1] === '/') {
           commentState = 'singleline';
@@ -254,11 +267,11 @@ function filterOutComments(s: string): string {
           continue;
         }
       } else {
-        if (stringState === 'single' && s[i] === "'" && s[i - 1] !== '\\') {
+        if (stringState === 'single' && s[i] === "'" && !isEscaped(i)) {
           stringState = 'none';
-        } else if (stringState === 'double' && s[i] === '"' && s[i - 1] !== '\\') {
+        } else if (stringState === 'double' && s[i] === '"' && !isEscaped(i)) {
           stringState = 'none';
-        } else if (stringState === 'template' && s[i] === '`' && s[i - 1] !== '\\') {
+        } else if (stringState === 'template' && s[i] === '`' && !isEscaped(i)) {
           stringState = 'none';
         }
       }
@@ -308,10 +321,24 @@ function innerFixtureParameterNames(fn: Function): string[] {
   const trimmedParams = match[1].trim();
   if (!trimmedParams)
     return [];
-  const [firstParam] = splitByComma(trimmedParams);
-  if (firstParam[0] !== '{' || firstParam[firstParam.length - 1] !== '}')
+  if (trimmedParams[0] !== '{')
     return [];
-  const props = splitByComma(firstParam.substring(1, firstParam.length - 1)).map(prop => {
+  let braceCount = 0;
+  let closingBraceIndex = -1;
+  for (let i = 0; i < trimmedParams.length; i++) {
+    if (trimmedParams[i] === '{') {
+      braceCount++;
+    } else if (trimmedParams[i] === '}') {
+      braceCount--;
+      if (braceCount === 0) {
+        closingBraceIndex = i;
+        break;
+      }
+    }
+  }
+  if (closingBraceIndex === -1)
+    return [];
+  const props = splitByComma(trimmedParams.substring(1, closingBraceIndex)).map(prop => {
     const eq = prop.indexOf('=');
     const colon = prop.indexOf(':');
     if (colon !== -1 && (eq === -1 || colon < eq))

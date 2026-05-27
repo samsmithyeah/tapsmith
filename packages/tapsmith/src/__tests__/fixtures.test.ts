@@ -280,6 +280,12 @@ describe('fixtureParameterNames', () => {
     expect(fixtureParameterNames(fn)).toContain('bar');
   });
 
+  it('handles destructuring with default value on the parameter itself', () => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test fixture mock
+    const fn = async ({ foo, bar }: any = {}) => { void foo; void bar; };
+    expect(fixtureParameterNames(fn)).toEqual(['foo', 'bar']);
+  });
+
   it('strips comments from function body', () => {
     expect(filterOutComments('hello // world\nfoo')).toBe('hello foo');
     expect(filterOutComments('hello /* world */ foo')).toBe('hello  foo');
@@ -287,6 +293,7 @@ describe('fixtureParameterNames', () => {
     expect(filterOutComments('const url = "http://example.com"')).toBe('const url = "http://example.com"');
     expect(filterOutComments("const s = 'a // b'")).toBe("const s = 'a // b'");
     expect(filterOutComments('const t = `http://${host}`')).toBe('const t = `http://${host}`');
+    expect(filterOutComments("const s = 'a \\\\'; // comment")).toBe("const s = 'a \\\\'; ");
   });
 
   it('splitByComma respects nesting', () => {
