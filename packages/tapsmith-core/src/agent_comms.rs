@@ -99,9 +99,7 @@ async fn connect_persistent(host_port: u16) -> Result<PersistentStream, SendErro
     let stream = tokio::time::timeout(Duration::from_secs(5), TcpStream::connect(&addr))
         .await
         .map_err(|_| SendError::Connect(anyhow!("Timed out connecting to agent socket")))?
-        .map_err(|e| {
-            SendError::Connect(anyhow!(e).context("Failed to connect to agent socket"))
-        })?;
+        .map_err(|e| SendError::Connect(anyhow!(e).context("Failed to connect to agent socket")))?;
     stream.set_nodelay(true).ok();
     let (read_half, write_half) = stream.into_split();
     Ok(PersistentStream {
@@ -142,8 +140,7 @@ async fn try_send_persistent(
     // Read — once flushed, the agent may have the command
     let read_timeout = timeout + READ_TIMEOUT_HEADROOM;
     let mut line = String::new();
-    let read_result =
-        tokio::time::timeout(read_timeout, stream.reader.read_line(&mut line)).await;
+    let read_result = tokio::time::timeout(read_timeout, stream.reader.read_line(&mut line)).await;
 
     match read_result {
         Err(_) => Err(SendError::PostSend(anyhow!(
@@ -162,9 +159,7 @@ async fn try_send_persistent(
             }
             debug!(response = %line, "Received response from agent (persistent)");
             let raw: Value = serde_json::from_str(line).map_err(|e| {
-                SendError::PostSend(
-                    anyhow!(e).context("Failed to parse agent response as JSON"),
-                )
+                SendError::PostSend(anyhow!(e).context("Failed to parse agent response as JSON"))
             })?;
             Ok(AgentResponse::from_json(&raw))
         }
@@ -690,6 +685,7 @@ impl AgentConnection {
 
     /// Send a command using pre-extracted connection params (no lock needed).
     /// This is the lock-free counterpart of `send_command`.
+    #[allow(dead_code)]
     pub async fn send_with_params(
         params: &ConnectionParams,
         command: &AgentCommand,
@@ -700,6 +696,7 @@ impl AgentConnection {
     /// Send a command with a specific timeout using pre-extracted connection
     /// params (no lock needed). This is the lock-free counterpart of
     /// `send_command_with_timeout`.
+    #[allow(dead_code)]
     pub async fn send_with_params_and_timeout(
         params: &ConnectionParams,
         command: &AgentCommand,
@@ -1002,6 +999,7 @@ impl AgentConnection {
 /// full TCP connect → write → read cycle using only the pre-extracted
 /// `ConnectionParams`, so the caller can release the `RwLock` before calling
 /// this function.
+#[allow(dead_code)]
 async fn try_send_with_params(
     params: &ConnectionParams,
     command: &AgentCommand,
@@ -1698,13 +1696,9 @@ mod tests {
                             Ok(_) => {
                                 let parsed: Value = serde_json::from_str(line.trim()).unwrap();
                                 let id = parsed["id"].as_str().unwrap_or("null");
-                                let resp = format!(
-                                    r#"{{"id":"{}","result":{{"ok":true}}}}"#,
-                                    id
-                                );
-                                let _ = write_half
-                                    .write_all(format!("{}\n", resp).as_bytes())
-                                    .await;
+                                let resp = format!(r#"{{"id":"{}","result":{{"ok":true}}}}"#, id);
+                                let _ =
+                                    write_half.write_all(format!("{}\n", resp).as_bytes()).await;
                                 let _ = write_half.flush().await;
                             }
                             Err(_) => break,
@@ -1750,9 +1744,7 @@ mod tests {
                     let parsed: Value = serde_json::from_str(line.trim()).unwrap();
                     let id = parsed["id"].as_str().unwrap_or("null");
                     let resp = format!(r#"{{"id":"{}","result":{{"ok":true}}}}"#, id);
-                    let _ = write_half
-                        .write_all(format!("{}\n", resp).as_bytes())
-                        .await;
+                    let _ = write_half.write_all(format!("{}\n", resp).as_bytes()).await;
                     let _ = write_half.flush().await;
                 }
                 drop(write_half);
@@ -1794,13 +1786,10 @@ mod tests {
                             match reader.read_line(&mut line).await {
                                 Ok(0) | Err(_) => break,
                                 Ok(_) => {
-                                    let parsed: Value =
-                                        serde_json::from_str(line.trim()).unwrap();
+                                    let parsed: Value = serde_json::from_str(line.trim()).unwrap();
                                     let id = parsed["id"].as_str().unwrap_or("null");
-                                    let resp = format!(
-                                        r#"{{"id":"{}","result":{{"ok":true}}}}"#,
-                                        id
-                                    );
+                                    let resp =
+                                        format!(r#"{{"id":"{}","result":{{"ok":true}}}}"#, id);
                                     let _ = write_half
                                         .write_all(format!("{}\n", resp).as_bytes())
                                         .await;

@@ -222,13 +222,9 @@ impl TapsmithServiceImpl {
     async fn send_agent_command(&self, command: &AgentCommand) -> Result<AgentResponse, Status> {
         let params = Self::agent_params(&*self.agent.read().await)?;
         let timeout = Duration::from_secs(30);
-        let raw = agent_comms::send_with_persistent_cache(
-            &self.agent_stream,
-            &params,
-            command,
-            timeout,
-        )
-        .await;
+        let raw =
+            agent_comms::send_with_persistent_cache(&self.agent_stream, &params, command, timeout)
+                .await;
         self.recover_agent_on_timeout(command, raw).await
     }
 
@@ -247,14 +243,9 @@ impl TapsmithServiceImpl {
             Duration::from_secs(30)
         };
         let params = Self::agent_params(&*self.agent.read().await)?;
-        agent_comms::send_with_persistent_cache(
-            &self.agent_stream,
-            &params,
-            command,
-            timeout,
-        )
-        .await
-        .map_err(|e| Status::internal(e.to_string()))
+        agent_comms::send_with_persistent_cache(&self.agent_stream, &params, command, timeout)
+            .await
+            .map_err(|e| Status::internal(e.to_string()))
     }
 
     async fn send_agent_command_with_timeout(
@@ -268,13 +259,9 @@ impl TapsmithServiceImpl {
             Duration::from_secs(30)
         };
         let params = Self::agent_params(&*self.agent.read().await)?;
-        let raw = agent_comms::send_with_persistent_cache(
-            &self.agent_stream,
-            &params,
-            command,
-            timeout,
-        )
-        .await;
+        let raw =
+            agent_comms::send_with_persistent_cache(&self.agent_stream, &params, command, timeout)
+                .await;
         self.recover_agent_on_timeout(command, raw).await
     }
 
