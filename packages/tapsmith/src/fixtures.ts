@@ -342,47 +342,87 @@ function splitByComma(s: string): string[] {
   return result;
 }
 
-// eslint-disable-next-line @typescript-eslint/no-unsafe-function-type -- Function.toString() is the input
-function innerFixtureParameterNames(fn: Function): string[] {
-  const text = filterOutComments(fn.toString());
-  const match = text.match(/(?:async)?(?:\s+function)?[^(]*\(([^)]*)/);
-  if (!match)
-    return [];
-  const trimmedParams = match[1].trim();
-  if (!trimmedParams)
-    return [];
-  if (trimmedParams[0] !== '{')
-    return [];
-  let braceCount = 0;
-  let closingBraceIndex = -1;
+/** Find the matching closing paren for the opening `(` at `start`, respecting
+ *  nested parens and string literals. Returns the index of `)` or -1. */
+function findMatchingParen(text: string, start: number): number {
+  let depth = 1;
   let stringState: 'none' | 'single' | 'double' | 'template' = 'none';
-  for (let i = 0; i < trimmedParams.length; i++) {
+  for (let i = start + 1; i < text.length; i++) {
     if (stringState === 'none') {
-      if (trimmedParams[i] === "'" && !isEscaped(trimmedParams, i)) {
+      if (text[i] === "'" && !isEscaped(text, i)) {
         stringState = 'single';
-      } else if (trimmedParams[i] === '"' && !isEscaped(trimmedParams, i)) {
+      } else if (text[i] === '"' && !isEscaped(text, i)) {
         stringState = 'double';
-      } else if (trimmedParams[i] === '`' && !isEscaped(trimmedParams, i)) {
+      } else if (text[i] === '`' && !isEscaped(text, i)) {
         stringState = 'template';
-      } else if (trimmedParams[i] === '{') {
-        braceCount++;
-      } else if (trimmedParams[i] === '}') {
-        braceCount--;
-        if (braceCount === 0) {
-          closingBraceIndex = i;
-          break;
-        }
+      } else if (text[i] === '(') {
+        depth++;
+      } else if (text[i] === ')') {
+        depth--;
+        if (depth === 0) return i;
       }
     } else {
-      if (stringState === 'single' && trimmedParams[i] === "'" && !isEscaped(trimmedParams, i)) {
+      if (stringState === 'single' && text[i] === "'" && !isEscaped(text, i)) {
         stringState = 'none';
-      } else if (stringState === 'double' && trimmedParams[i] === '"' && !isEscaped(trimmedParams, i)) {
+      } else if (stringState === 'double' && text[i] === '"' && !isEscaped(text, i)) {
         stringState = 'none';
-      } else if (stringState === 'template' && trimmedParams[i] === '`' && !isEscaped(trimmedParams, i)) {
+      } else if (stringState === 'template' && text[i] === '`' && !isEscaped(text, i)) {
         stringState = 'none';
       }
     }
   }
+  return -1;
+}
+
+/** Find the matching closing brace for the opening `{` at the start of `s`,
+ *  respecting nested braces and string literals. Returns the index or -1. */
+function findMatchingBrace(s: string): number {
+  let braceCount = 0;
+  let stringState: 'none' | 'single' | 'double' | 'template' = 'none';
+  for (let i = 0; i < s.length; i++) {
+    if (stringState === 'none') {
+      if (s[i] === "'" && !isEscaped(s, i)) {
+        stringState = 'single';
+      } else if (s[i] === '"' && !isEscaped(s, i)) {
+        stringState = 'double';
+      } else if (s[i] === '`' && !isEscaped(s, i)) {
+        stringState = 'template';
+      } else if (s[i] === '{') {
+        braceCount++;
+      } else if (s[i] === '}') {
+        braceCount--;
+        if (braceCount === 0) return i;
+      }
+    } else {
+      if (stringState === 'single' && s[i] === "'" && !isEscaped(s, i)) {
+        stringState = 'none';
+      } else if (stringState === 'double' && s[i] === '"' && !isEscaped(s, i)) {
+        stringState = 'none';
+      } else if (stringState === 'template' && s[i] === '`' && !isEscaped(s, i)) {
+        stringState = 'none';
+      }
+    }
+  }
+  return -1;
+}
+
+/** Extract the full parameter list string from a function's toString(). */
+function extractParamList(text: string): string | null {
+  const openParen = text.indexOf('(');
+  if (openParen === -1) return null;
+  const closeParen = findMatchingParen(text, openParen);
+  if (closeParen === -1) return null;
+  const params = text.substring(openParen + 1, closeParen).trim();
+  return params.length > 0 ? params : null;
+}
+
+// eslint-disable-next-line @typescript-eslint/no-unsafe-function-type -- Function.toString() is the input
+function innerFixtureParameterNames(fn: Function): string[] {
+  const text = filterOutComments(fn.toString());
+  const trimmedParams = extractParamList(text);
+  if (!trimmedParams || trimmedParams[0] !== '{')
+    return [];
+  const closingBraceIndex = findMatchingBrace(trimmedParams);
   if (closingBraceIndex === -1)
     return [];
   const props = splitByComma(trimmedParams.substring(1, closingBraceIndex)).map(prop => {
@@ -426,8 +466,7 @@ export function fixtureParameterNames(fn: Function): string[] {
 export function functionHasParameters(fn: Function): boolean {
   if (fn.length > 0) return true;
   const text = filterOutComments(fn.toString());
-  const match = text.match(/(?:async)?(?:\s+function)?[^(]*\(([^)]*)\)/);
-  return match ? match[1].trim().length > 0 : false;
+  return extractParamList(text) !== null;
 }
 
 /** @internal Exported for testing only. */

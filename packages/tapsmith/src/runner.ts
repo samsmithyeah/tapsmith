@@ -966,6 +966,8 @@ async function runSuiteContext(
 
       // Declare fixture state outside try so afterEach hooks and teardown
       // are accessible in the finally block.
+      // Prefer the per-test registry (set by test.extend()) over the global one.
+      const registry = entry.registry ?? getFixtureRegistry();
       const baseFixtures: Record<string, unknown> = {
         ...suiteFixtures,
         request: requestContext,
@@ -992,11 +994,6 @@ async function runSuiteContext(
           if (fullName !== beforeAllFirstFullName && savedBeforeAllEvents.length > 0 && traceCollector) {
             replayBeforeAllEvents(traceCollector, savedBeforeAllEvents, beforeAllCollector, beforeAllHierarchies);
           }
-
-          // Resolve test-scoped fixtures BEFORE hooks so beforeEach/afterEach
-          // can access custom fixtures (matching Playwright's behavior).
-          // Prefer the per-test registry (set by test.extend()) over the global one.
-          const registry = entry.registry ?? getFixtureRegistry();
 
           // Open the beforeEach group before running setup work and hooks.
           // Heavy setup (session readiness, idle waits, user beforeEach hooks)
@@ -1056,9 +1053,7 @@ async function runSuiteContext(
           }
 
           for (const hook of allBeforeEach) {
-            if (entry.registry) {
-              validateHookFixtures(hook, entry.registry, 'beforeEach');
-            }
+            validateHookFixtures(hook, registry, 'beforeEach');
             await invokeHook(hook, allFixtures);
           }
           if (hasBeforeEachWork) {
@@ -1121,9 +1116,7 @@ async function runSuiteContext(
               traceCollector?.startGroup('afterEach Hooks');
               for (const hook of allAfterEach) {
                 try {
-                  if (entry.registry) {
-                    validateHookFixtures(hook, entry.registry, 'afterEach');
-                  }
+                  validateHookFixtures(hook, registry, 'afterEach');
                   await invokeHook(hook, allFixtures);
                 } catch (err) {
                   process.stderr.write(`[tapsmith] afterEach hook error: ${err instanceof Error ? err.message : String(err)}\n`);
