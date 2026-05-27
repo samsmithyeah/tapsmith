@@ -209,6 +209,7 @@ interface SuiteEntry {
   fn: () => void;
   only: boolean;
   skip: boolean;
+  ctx?: SuiteContext;
 }
 
 // ─── Global registration state ───
@@ -250,6 +251,31 @@ function pushContext(): SuiteContext {
 
 function popContext(): SuiteContext {
   return contextStack.pop()!;
+}
+
+function materializeSuiteEntry(entry: SuiteEntry): SuiteContext {
+  if (entry.ctx) return entry.ctx;
+  pushContext();
+  try {
+    entry.fn();
+    entry.ctx = popContext();
+    return entry.ctx;
+  } catch (err) {
+    popContext();
+    throw err;
+  }
+}
+
+function collectFixtureRegistries(ctx: SuiteContext, registries: Set<FixtureRegistry>): void {
+  for (const t of ctx.tests) {
+    if (t.registry) registries.add(t.registry);
+  }
+  for (const h of [...ctx.beforeAll, ...ctx.afterAll, ...ctx.beforeEach, ...ctx.afterEach]) {
+    if (h.registry) registries.add(h.registry);
+  }
+  for (const suite of ctx.suites) {
+    collectFixtureRegistries(materializeSuiteEntry(suite), registries);
+  }
 }
 
 // ─── Public registration API ───
@@ -1479,18 +1505,14 @@ async function runSuiteContext(
 
     if (shouldSkip) {
       // Mark all tests in skipped suite as skipped (we still need to discover them)
-      pushContext();
-      suiteEntry.fn();
-      const childCtx = popContext();
+      const childCtx = materializeSuiteEntry(suiteEntry);
       const prefix = parentPrefix ? `${parentPrefix} > ${suiteEntry.name}` : suiteEntry.name;
       const skippedResult = skipAll(childCtx, prefix);
       result.suites.push(skippedResult);
       continue;
     }
 
-    pushContext();
-    suiteEntry.fn();
-    const childCtx = popContext();
+    const childCtx = materializeSuiteEntry(suiteEntry);
     const prefix = parentPrefix ? `${parentPrefix} > ${suiteEntry.name}` : suiteEntry.name;
     const childResult = await runSuiteContext(childCtx, prefix, allBeforeEach, allAfterEach, opts);
     result.suites.push(childResult);
@@ -1578,9 +1600,7 @@ function skipAll(ctx: SuiteContext, prefix: string): SuiteResult {
     result.tests.push({ name: t.name, fullName, status: 'skipped', durationMs: 0 });
   }
   for (const s of ctx.suites) {
-    pushContext();
-    s.fn();
-    const childCtx = popContext();
+    const childCtx = materializeSuiteEntry(s);
     const childPrefix = prefix ? `${prefix} > ${s.name}` : s.name;
     result.suites.push(skipAll(childCtx, childPrefix));
   }
@@ -1598,9 +1618,7 @@ function failAll(ctx: SuiteContext, prefix: string, error: Error, project?: stri
     result.tests.push({ name: t.name, fullName, status: 'failed', durationMs: 0, error, project, screenshotPath, tracePath });
   }
   for (const s of ctx.suites) {
-    pushContext();
-    s.fn();
-    const childCtx = popContext();
+    const childCtx = materializeSuiteEntry(s);
     const childPrefix = prefix ? `${prefix} > ${s.name}` : s.name;
     result.suites.push(failAll(childCtx, childPrefix, error, project, screenshotPath, tracePath));
   }
@@ -1652,13 +1670,7 @@ export async function runTestFile(
   // Using getFixtureRegistry() (the mutable global) would only reflect the
   // last syncRegistry() call, missing worker fixtures from earlier extends.
   const allEntryRegistries = new Set<FixtureRegistry>();
-  const collectFromCtx = (ctx: SuiteContext) => {
-    for (const t of ctx.tests) if (t.registry) allEntryRegistries.add(t.registry);
-    for (const h of [...ctx.beforeAll, ...ctx.afterAll, ...ctx.beforeEach, ...ctx.afterEach]) {
-      if (h.registry) allEntryRegistries.add(h.registry);
-    }
-  };
-  collectFromCtx(rootCtx);
+  collectFixtureRegistries(rootCtx, allEntryRegistries);
   let fileRegistry = new FixtureRegistry();
   for (const r of allEntryRegistries) {
     fileRegistry = fileRegistry.merge(r);
@@ -1762,10 +1774,7 @@ function discoverSuiteContext(ctx: SuiteContext, parentPrefix: string): Discover
   const suites: DiscoveredSuite[] = [];
   for (const entry of ctx.suites) {
     const suitePrefix = parentPrefix ? `${parentPrefix} > ${entry.name}` : entry.name;
-    // Execute the describe callback to register nested tests/suites
-    pushContext();
-    entry.fn();
-    const childCtx = popContext();
+    const childCtx = materializeSuiteEntry(entry);
     suites.push(discoverSuiteContext(childCtx, suitePrefix));
   }
 

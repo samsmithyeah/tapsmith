@@ -482,7 +482,7 @@ export function fixtureParameterNames(fn: Function): string[] {
 /**
  * Determine fixture dependencies from a fixture function's signature.
  * - Destructured first param `({ foo, bar }, use)` → `['foo', 'bar']`
- * - `_`-prefixed first param `(_fixtures, use)` → `[]` (explicitly unused)
+ * - Unused `_`-prefixed first param `(_fixtures, use)` → `[]`
  * - Plain first param `(fixtures, use)` → `null` (unknown deps)
  * - No params `() => ...` → `[]`
  */
@@ -497,8 +497,16 @@ function fixtureDepsFromFn(fn: Function): string[] | null {
   if (firstParam.startsWith('{')) return [];
   // Strip type annotations and defaults: `fixtures: any = {}` → `fixtures`
   const ident = firstParam.replace(/[:=].*/, '').trim();
-  if (ident.startsWith('_')) return [];
+  if (ident.startsWith('_') && !functionBodyReferencesIdentifier(text, ident)) return [];
   return null;
+}
+
+function functionBodyReferencesIdentifier(text: string, ident: string): boolean {
+  const openParen = text.indexOf('(');
+  const closeParen = openParen === -1 ? -1 : findMatchingParen(text, openParen);
+  const body = closeParen === -1 ? text : text.slice(closeParen + 1);
+  const escaped = ident.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return new RegExp(`(^|[^A-Za-z0-9_$])${escaped}([^A-Za-z0-9_$]|$)`).test(body);
 }
 
 /**

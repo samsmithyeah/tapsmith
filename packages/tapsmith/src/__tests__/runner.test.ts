@@ -2,6 +2,7 @@ import { describe, it, expect, vi } from 'vitest';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { unzipSync } from 'fflate';
 
 // We need to test the runner's registration and execution logic.
@@ -15,6 +16,7 @@ import {
   beforeEach as tapsmithBeforeEach,
   afterEach as tapsmithAfterEach,
   collectResults,
+  runTestFile,
   _internal,
   type SuiteResult,
   type TestResult,
@@ -396,6 +398,45 @@ describe('runner execution', () => {
 
     expect(result.tests[0].status).toBe('passed');
     expect(seenValues).toEqual(['from-worker']);
+  });
+
+  it('resolves worker fixtures from extended tests inside describe blocks', async () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tapsmith-runner-worker-fixtures-'));
+    const filePath = path.join(tempDir, 'nested-worker-fixtures.mjs');
+    const runnerUrl = pathToFileURL(path.resolve('src/runner.ts')).href;
+
+    try {
+      fs.writeFileSync(filePath, `
+        import { test as base, describe } from ${JSON.stringify(runnerUrl)};
+
+        const testA = base.extend({
+          workerA: [async ({}, use) => { await use('worker-a'); }, { scope: 'worker' }],
+        });
+        const testB = base.extend({
+          workerB: [async ({}, use) => { await use('worker-b'); }, { scope: 'worker' }],
+        });
+
+        describe('nested', () => {
+          testA('uses worker A', async ({ workerA }) => {
+            if (workerA !== 'worker-a') throw new Error('workerA was ' + workerA);
+          });
+        });
+
+        testB('uses worker B', async ({ workerB }) => {
+          if (workerB !== 'worker-b') throw new Error('workerB was ' + workerB);
+        });
+      `);
+
+      const result = await runTestFile(pathToFileURL(filePath).href, makeOpts({
+        config: makeConfig({ platform: 'android' }),
+        bustImportCache: true,
+      }));
+
+      expect(collectResults(result).map(t => t.status)).toEqual(['passed', 'passed']);
+    } finally {
+      fs.rmSync(tempDir, { recursive: true, force: true });
+      resetFixtureRegistry();
+    }
   });
 
   it('tears down test fixtures after afterEach hooks', async () => {

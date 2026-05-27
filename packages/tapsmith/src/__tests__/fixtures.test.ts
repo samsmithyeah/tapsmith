@@ -265,6 +265,22 @@ describe('lazy fixture resolution', () => {
     expect(fixtures.child).toBe('child-base-val');
     await teardown();
   });
+
+  it('falls back when an underscore-prefixed fixture param is still used', async () => {
+    const order: string[] = [];
+    const registry = new FixtureRegistry();
+    registry.register({
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test fixture mock
+      base: async (_fixtures: any, use: any) => { order.push('base'); await use('base-val'); },
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test fixture mock: underscore param is referenced
+      child: async (_fixtures: any, use: any) => { order.push('child'); await use(`child-${_fixtures.base}`); },
+    } as FixtureDefinitions<{ base: string; child: string }, BuiltinFixtures & { base: string; child: string }>);
+
+    const { fixtures, teardown } = await resolveFixtures(registry, 'test', {}, ['child']);
+    expect(order).toEqual(['base', 'child']);
+    expect(fixtures.child).toBe('child-base-val');
+    await teardown();
+  });
 });
 
 describe('FixtureRegistry.collectDeps', () => {
