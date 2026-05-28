@@ -37,22 +37,24 @@ async fn clear_prior_xcresults(derived_data_path: &Path) -> Result<()> {
 }
 
 fn diagnose_xcodebuild_stderr(stderr: &str) -> String {
-    if stderr.contains("device is locked") || stderr.contains("Device is locked") {
+    // Xcode/iOS error wording varies in casing across versions, so match
+    // case-insensitively on a single lowercased copy.
+    let lower = stderr.to_lowercase();
+    if lower.contains("device is locked") {
         return "The device is locked. Unlock it and try again.".to_string();
     }
-    if stderr.contains("not paired") {
+    if lower.contains("not paired") {
         return "The device is not paired with this Mac. \
                 Open Finder, select the device, and click Trust."
             .to_string();
     }
-    if stderr.contains("Developer Mode disabled")
-        || stderr.contains("Developer Mode is not enabled")
+    if lower.contains("developer mode disabled") || lower.contains("developer mode is not enabled")
     {
         return "Developer Mode is not enabled on the device. \
                 Go to Settings → Privacy & Security → Developer Mode and enable it."
             .to_string();
     }
-    if stderr.contains("No profiles for") || stderr.contains("No signing certificate") {
+    if lower.contains("no profiles for") || lower.contains("no signing certificate") {
         return "Code signing failed. Run `npx tapsmith build-ios-agent` to build \
                 a signed agent for this device."
             .to_string();
