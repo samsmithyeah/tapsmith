@@ -396,11 +396,15 @@ export class WebViewHandle {
         }
       });
       ws.on('message', (data) => {
-        let msg = JSON.parse(data.toString()) as CDPResponse;
-
-        // ios-webkit-debug-proxy wraps responses in Target.dispatchMessageFromTarget
-        if (msg.method === 'Target.dispatchMessageFromTarget' && msg.params?.message) {
-          msg = JSON.parse(msg.params.message as string) as CDPResponse;
+        let msg: CDPResponse;
+        try {
+          msg = JSON.parse(data.toString()) as CDPResponse;
+          // ios-webkit-debug-proxy wraps responses in Target.dispatchMessageFromTarget
+          if (msg.method === 'Target.dispatchMessageFromTarget' && msg.params?.message) {
+            msg = JSON.parse(msg.params.message as string) as CDPResponse;
+          }
+        } catch {
+          return;
         }
 
         if (msg.id !== undefined) {
