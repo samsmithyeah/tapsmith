@@ -105,14 +105,16 @@ class WaitEngine {
                 // Phase 3: Verify positional stability.
                 //
                 // Most elements are already static by the time they're found, so
-                // confirm with two frame reads up front and skip the settle wait
-                // entirely when they match. Each XCUIElement.frame read forces a
-                // fresh accessibility query (~tens of ms on React Native), so the
-                // gap between the two reads is itself a meaningful sampling window
-                // — an element mid-animation will report different frames. Only
-                // when motion is detected do we pay the bounded stability window,
-                // polling at a short interval and exiting as soon as it settles.
+                // confirm with two frame reads and skip the settle wait when they
+                // match. Sleep one display frame (~16ms at 60Hz) between the reads
+                // so motion is detected reliably regardless of how fast the
+                // accessibility query returns — it's sub-millisecond on native
+                // UIKit/SwiftUI and fast simulators, where two back-to-back reads
+                // would otherwise catch the same animation frame and falsely
+                // report stability. Only when motion is detected do we pay the
+                // bounded stability window, polling until it settles.
                 let firstFrame = element.frame
+                Thread.sleep(forTimeInterval: 0.016)
                 let secondFrame = element.frame
                 if firstFrame != secondFrame {
                     var lastFrame = secondFrame
