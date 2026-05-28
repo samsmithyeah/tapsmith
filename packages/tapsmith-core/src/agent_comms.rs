@@ -182,8 +182,9 @@ async fn try_send_persistent(
                     ))
                 } else {
                     Err(SendError::PostSend(
-                        anyhow!("{}", EMPTY_RESPONSE_MARKER)
-                            .context("Agent connection dropped (empty response) and agent is unreachable"),
+                        anyhow!("{}", EMPTY_RESPONSE_MARKER).context(
+                            "Agent connection dropped (empty response) and agent is unreachable",
+                        ),
                     ))
                 };
             }
