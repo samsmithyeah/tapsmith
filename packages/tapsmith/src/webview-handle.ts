@@ -303,14 +303,22 @@ export class WebViewHandle {
   private _discoverProxyTarget(): Promise<string | null> {
     return new Promise((resolve) => {
       if (!this._ws) { resolve(null); return; }
-      const timeout = setTimeout(() => resolve(null), 2000);
+      const cleanup = () => {
+        clearTimeout(timeout);
+        this._ws?.removeListener('message', handler);
+      };
+      const timeout = setTimeout(() => { cleanup(); resolve(null); }, 2000);
       const handler = (data: Buffer) => {
-        const msg = JSON.parse(data.toString()) as CDPResponse;
+        let msg: CDPResponse;
+        try {
+          msg = JSON.parse(data.toString()) as CDPResponse;
+        } catch {
+          return;
+        }
         if (msg.method === 'Target.targetCreated') {
           const info = (msg.params as Record<string, Record<string, string>> | undefined)?.targetInfo;
           if (info?.type === 'page') {
-            clearTimeout(timeout);
-            this._ws?.removeListener('message', handler);
+            cleanup();
             resolve(info.targetId);
           }
         }
