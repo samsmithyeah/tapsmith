@@ -13,6 +13,7 @@ mod platform;
 mod route_handler;
 mod screenshot;
 mod signal;
+mod timing;
 mod video;
 
 use std::net::SocketAddr;

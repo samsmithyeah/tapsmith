@@ -102,17 +102,28 @@ class WaitEngine {
                     }
                 }
 
-                // Phase 3: Verify positional stability
-                let stabilityMs = Self.stabilityWindowMs
-                let stabilityDeadline = CFAbsoluteTimeGetCurrent() + Double(stabilityMs) / 1000.0
+                // Phase 3: Verify positional stability.
+                //
+                // Most elements are already static by the time they're found, so
+                // confirm with two frame reads up front and skip the settle wait
+                // entirely when they match. Each XCUIElement.frame read forces a
+                // fresh accessibility query (~tens of ms on React Native), so the
+                // gap between the two reads is itself a meaningful sampling window
+                // — an element mid-animation will report different frames. Only
+                // when motion is detected do we pay the bounded stability window,
+                // polling at a short interval and exiting as soon as it settles.
                 var lastFrame = element.frame
-                while CFAbsoluteTimeGetCurrent() < stabilityDeadline {
-                    Thread.sleep(forTimeInterval: Double(stabilityMs) / 1000.0)
-                    let currentFrame = element.frame
-                    if lastFrame == currentFrame {
-                        break
+                if element.frame != lastFrame {
+                    let stabilityDeadline =
+                        CFAbsoluteTimeGetCurrent() + Double(Self.stabilityWindowMs) / 1000.0
+                    while CFAbsoluteTimeGetCurrent() < stabilityDeadline {
+                        Thread.sleep(forTimeInterval: 0.03)
+                        let currentFrame = element.frame
+                        if currentFrame == lastFrame {
+                            break
+                        }
+                        lastFrame = currentFrame
                     }
-                    lastFrame = currentFrame
                 }
             }
 

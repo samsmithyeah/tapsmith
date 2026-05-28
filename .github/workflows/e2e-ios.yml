@@ -240,8 +240,49 @@ jobs:
 
       - name: Run E2E tests
         working-directory: e2e
+        env:
+          # Capture a per-shard timing breakdown (agent boot vs. per-command
+          # device latency vs. app reset) for performance tracking. The daemon
+          # appends one line per event when this var is set; it's a no-op
+          # otherwise, so this adds only negligible file I/O.
+          TAPSMITH_TIMING_LOG: ${{ runner.temp }}/ios-timing-${{ matrix.shard }}.log
         run: |
           npx tapsmith test -c tapsmith.config.ios-ci.mjs --shard=${{ matrix.shard }}/${{ env.SHARD_TOTAL }} --workers 1
+
+      - name: Summarize iOS timing breakdown
+        if: always()
+        run: |
+          LOG="${{ runner.temp }}/ios-timing-${{ matrix.shard }}.log"
+          if [ ! -f "$LOG" ]; then
+            echo "No timing log produced for shard ${{ matrix.shard }}."
+            exit 0
+          fi
+          {
+            echo "### iOS timing — shard ${{ matrix.shard }}/${{ env.SHARD_TOTAL }}"
+            echo '```'
+            echo "Boot / reset:"
+            grep -E "kind=boot|kind=reset" "$LOG" || true
+            echo
+            echo "Per-command (count / total_ms / avg_ms), sorted by total:"
+            grep "kind=cmd" "$LOG" \
+              | sed -E 's/.*name=([a-zA-Z]+) dur_ms=([0-9]+).*/\1 \2/' \
+              | awk '{c[$1]++; s[$1]+=$2}
+                     END {for (k in c) printf "  %-16s n=%-5d total=%-8d avg=%.0f\n", k, c[k], s[k], s[k]/c[k]}' \
+              | sort -t= -k3 -rn
+            echo
+            grep "kind=cmd" "$LOG" | sed -E 's/.*dur_ms=([0-9]+).*/\1/' \
+              | awk '{s+=$1} END {printf "  Total command time: %d ms across %d commands\n", s, NR}'
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload timing log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ios-timing-${{ matrix.shard }}
+          retention-days: 7
+          path: ${{ runner.temp }}/ios-timing-${{ matrix.shard }}.log
+          if-no-files-found: ignore
 
       - name: Upload blob report
         if: always()
