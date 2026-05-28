@@ -112,8 +112,10 @@ class WaitEngine {
                 // — an element mid-animation will report different frames. Only
                 // when motion is detected do we pay the bounded stability window,
                 // polling at a short interval and exiting as soon as it settles.
-                var lastFrame = element.frame
-                if element.frame != lastFrame {
+                let firstFrame = element.frame
+                let secondFrame = element.frame
+                if firstFrame != secondFrame {
+                    var lastFrame = secondFrame
                     let stabilityDeadline =
                         CFAbsoluteTimeGetCurrent() + Double(Self.stabilityWindowMs) / 1000.0
                     while CFAbsoluteTimeGetCurrent() < stabilityDeadline {

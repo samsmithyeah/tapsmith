@@ -18,6 +18,13 @@ fn timing_path() -> Option<&'static str> {
         .as_deref()
 }
 
+/// Whether timing capture is enabled. Cheap (reads a cached `OnceLock`).
+/// Callers should gate any non-trivial work that only exists to build a
+/// timing line behind this, since macro arguments are evaluated eagerly.
+pub fn enabled() -> bool {
+    timing_path().is_some()
+}
+
 /// Append one timing line to the configured log file. No-op when
 /// `TAPSMITH_TIMING_LOG` is unset. Opens-appends per call: this is low
 /// frequency (one line per agent command) so the simplicity is worth it, and

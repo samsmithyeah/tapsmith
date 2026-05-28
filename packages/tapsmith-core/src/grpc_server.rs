@@ -113,6 +113,12 @@ fn log_agent_command_timing(
     started: std::time::Instant,
     result: &Result<AgentResponse>,
 ) {
+    // Gate eagerly: `to_json` clones the selector, so skip it entirely when
+    // timing is off (the macro would otherwise build the args before the
+    // env-var check inside `timing::log`).
+    if !crate::timing::enabled() {
+        return;
+    }
     let method = command
         .to_json("t")
         .get("method")
