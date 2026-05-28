@@ -11,6 +11,11 @@ class WaitEngine {
     private let app: XCUIApplication
 
     private static let stabilityWindowMs: UInt64 = 150
+    /// Cumulative time a moving element's frame must hold steady before it's
+    /// considered settled. Must be < stabilityWindowMs so the early-exit can
+    /// fire within the window; the gap absorbs single dropped frames on slow
+    /// CI simulators that would otherwise read as a false settle.
+    private static let requiredStableSeconds: TimeInterval = 0.10
     private static let defaultIdleTimeout: TimeInterval = 5.0
     private static let defaultElementTimeout: TimeInterval = 10.0
 
@@ -112,18 +117,26 @@ class WaitEngine {
                 // UIKit/SwiftUI and fast simulators, where two back-to-back reads
                 // would otherwise catch the same animation frame and falsely
                 // report stability. Only when motion is detected do we pay the
-                // bounded stability window, polling until it settles.
+                // bounded stability window, requiring a cumulative period of no
+                // movement before proceeding — a single matching read isn't
+                // enough, since a slow CI simulator can drop a frame mid-animation
+                // and momentarily look static. Capped by stabilityWindowMs so a
+                // genuinely-animating element can't block past the original budget.
                 let firstFrame = element.frame
                 Thread.sleep(forTimeInterval: 0.016)
                 let secondFrame = element.frame
                 if firstFrame != secondFrame {
                     var lastFrame = secondFrame
-                    let stabilityDeadline =
-                        CFAbsoluteTimeGetCurrent() + Double(Self.stabilityWindowMs) / 1000.0
+                    let now0 = CFAbsoluteTimeGetCurrent()
+                    var stableSince = now0
+                    let stabilityDeadline = now0 + Double(Self.stabilityWindowMs) / 1000.0
                     while CFAbsoluteTimeGetCurrent() < stabilityDeadline {
                         Thread.sleep(forTimeInterval: 0.03)
                         let currentFrame = element.frame
-                        if currentFrame == lastFrame {
+                        let now = CFAbsoluteTimeGetCurrent()
+                        if currentFrame != lastFrame {
+                            stableSince = now
+                        } else if now - stableSince >= Self.requiredStableSeconds {
                             break
                         }
                         lastFrame = currentFrame
