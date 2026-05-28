@@ -59,56 +59,52 @@ export async function tracedAction(
   // When the batched captureTraceState is available (iOS), use a single
   // round-trip for screenshot + hierarchy + element bounds instead of 3
   // separate gRPC calls that each trigger their own app.snapshot() IPC.
-  const useBatched = !!ctx.captureTraceState;
-  let beforeCaptures: { screenshotBefore?: unknown; hierarchyBefore?: unknown };
+  let beforeCaptures: { screenshotBefore?: unknown; hierarchyBefore?: unknown } = {};
+  let batchSuccess = false;
 
-  if (useBatched) {
+  if (ctx.captureTraceState) {
     const batchStart = Date.now();
-    let batchResult: CaptureTraceStateResponse | undefined;
     try {
-      batchResult = await ctx.captureTraceState!({
+      const batchResult = await ctx.captureTraceState({
         screenshot: ctx.collector.config.screenshots,
         hierarchy: ctx.collector.config.snapshots,
         elementSelector: selector,
       });
-      if (!batchResult) {
-        log.push('Batch trace state capture failed (connection error or timeout)');
-      } else if (!batchResult.success) {
-        log.push(`Batch trace state capture failed: ${batchResult.errorMessage}`);
+      if (batchResult?.success) {
+        batchSuccess = true;
+        const screenshotData = batchResult.screenshotData?.length
+          ? batchResult.screenshotData : undefined;
+        const hierarchyXml = batchResult.hierarchyXml || undefined;
+
+        const { captures } = await ctx.collector.captureBeforeAction(
+          () => Promise.resolve(screenshotData as Buffer | undefined),
+          () => Promise.resolve(hierarchyXml),
+        );
+        beforeCaptures = captures;
+
+        if (batchResult.elementFound && batchResult.element?.bounds) {
+          bounds = batchResult.element.bounds;
+          log.push(`Element found at [${bounds.left},${bounds.top}][${bounds.right},${bounds.bottom}] (${Date.now() - batchStart}ms)`);
+          if (category === 'tap') {
+            point = {
+              x: (bounds.left + bounds.right) / 2,
+              y: (bounds.top + bounds.bottom) / 2,
+            };
+            log.push(`Tap target: (${point.x}, ${point.y})`);
+          }
+        } else if (selector) {
+          log.push(`Element lookup returned no match (${Date.now() - batchStart}ms)`);
+        }
+      } else {
+        log.push(`Batch trace state capture failed: ${batchResult?.errorMessage ?? 'no response'}`);
       }
     } catch (err) {
-      log.push(`Batch trace state capture failed with error: ${err instanceof Error ? err.message : String(err)}`);
+      log.push(`Batch trace state capture failed: ${err instanceof Error ? err.message : String(err)}`);
     }
+  }
 
-    // Feed the pre-fetched data into the collector via callbacks that
-    // resolve immediately (no extra network round-trips).
-    const screenshotData = batchResult?.success && batchResult.screenshotData?.length
-      ? batchResult.screenshotData : undefined;
-    const hierarchyXml = batchResult?.success && batchResult.hierarchyXml
-      ? batchResult.hierarchyXml : undefined;
-
-    const { captures } = await ctx.collector.captureBeforeAction(
-      () => Promise.resolve(screenshotData as Buffer | undefined),
-      () => Promise.resolve(hierarchyXml),
-    );
-    beforeCaptures = captures;
-
-    // Extract element bounds from the batched response
-    if (batchResult?.elementFound && batchResult.element?.bounds) {
-      bounds = batchResult.element.bounds;
-      log.push(`Element found at [${bounds.left},${bounds.top}][${bounds.right},${bounds.bottom}] (${Date.now() - batchStart}ms)`);
-      if (category === 'tap') {
-        point = {
-          x: (bounds.left + bounds.right) / 2,
-          y: (bounds.top + bounds.bottom) / 2,
-        };
-        log.push(`Tap target: (${point.x}, ${point.y})`);
-      }
-    } else if (selector && batchResult?.success) {
-      log.push(`Element lookup returned no match (${Date.now() - batchStart}ms)`);
-    }
-  } else {
-    // Original path: 3 parallel gRPC calls (Android, or fallback)
+  if (!batchSuccess) {
+    // Individual parallel calls (Android, or iOS fallback on batch failure)
     const boundsPromise = (selector && ctx.findElement)
       ? (async () => {
           const lookupStart = Date.now();
