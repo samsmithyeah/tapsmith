@@ -1688,10 +1688,7 @@ impl proto::tapsmith_service_server::TapsmithService for TapsmithServiceImpl {
         let req = request.into_inner();
         let request_id = Self::request_id(&req.request_id);
 
-        let selector_json = req
-            .element_selector
-            .as_ref()
-            .map(selector_to_json);
+        let selector_json = req.element_selector.as_ref().map(selector_to_json);
 
         let command = AgentCommand::CaptureTraceState {
             screenshot: req.screenshot,
@@ -1727,9 +1724,7 @@ impl proto::tapsmith_service_server::TapsmithService for TapsmithServiceImpl {
                     .unwrap_or(false);
 
                 let element = if element_found {
-                    resp.data
-                        .get("element")
-                        .and_then(parse_element_info)
+                    resp.data.get("element").and_then(parse_element_info)
                 } else {
                     None
                 };
