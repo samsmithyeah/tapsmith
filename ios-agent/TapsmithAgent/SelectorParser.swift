@@ -42,14 +42,10 @@ enum SelectorParser {
     }
 
     /// Check whether the params contain any selector field.
+    /// The daemon merges selector fields into params alongside meta keys
+    /// like "screenshot" and "hierarchy", so any other key is a selector.
     static func hasSelector(_ params: [String: Any]) -> Bool {
-        let keys = ["role", "text", "textContains", "contentDesc", "hint",
-                     "className", "testId", "resourceId", "id", "xpath", "label"]
-        return keys.contains { key in
-            if let str = params[key] as? String, !str.isEmpty { return true }
-            if params[key] is [String: Any] { return true }
-            return false
-        }
+        params.keys.contains { $0 != "screenshot" && $0 != "hierarchy" }
     }
 
     /// Return nil for empty strings.
