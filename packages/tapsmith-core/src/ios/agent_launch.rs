@@ -36,6 +36,30 @@ async fn clear_prior_xcresults(derived_data_path: &Path) -> Result<()> {
     }
 }
 
+fn diagnose_xcodebuild_stderr(stderr: &str) -> String {
+    if stderr.contains("device is locked") || stderr.contains("Device is locked") {
+        return "The device is locked. Unlock it and try again.".to_string();
+    }
+    if stderr.contains("not paired") || stderr.contains("is not paired") {
+        return "The device is not paired with this Mac. \
+                Open Finder, select the device, and click Trust."
+            .to_string();
+    }
+    if stderr.contains("Developer Mode disabled")
+        || stderr.contains("Developer Mode is not enabled")
+    {
+        return "Developer Mode is not enabled on the device. \
+                Go to Settings → Privacy & Security → Developer Mode and enable it."
+            .to_string();
+    }
+    if stderr.contains("No profiles for") || stderr.contains("No signing certificate") {
+        return "Code signing failed. Run `npx tapsmith build-ios-agent` to build \
+                a signed agent for this device."
+            .to_string();
+    }
+    String::new()
+}
+
 /// Launch the TapsmithAgent XCUITest runner on an iOS simulator or physical device.
 ///
 /// This is the iOS equivalent of Android's `am instrument -w dev.tapsmith.agent/.TapsmithAgent`.
@@ -196,6 +220,8 @@ async fn start_agent_impl(
 
     let stderr_tail: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
     let stderr_tail_writer = stderr_tail.clone();
+    let fatal_hint: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
+    let fatal_hint_writer = fatal_hint.clone();
 
     tokio::spawn(async move {
         use tokio::io::{AsyncBufReadExt, BufReader};
@@ -212,6 +238,10 @@ async fn start_agent_impl(
             let mut reader = BufReader::new(stderr).lines();
             while let Ok(Some(line)) = reader.next_line().await {
                 info!(target: "xcodebuild::stderr", "{}", line);
+                let hint = diagnose_xcodebuild_stderr(&line);
+                if !hint.is_empty() {
+                    *fatal_hint_writer.lock().await = Some(hint);
+                }
                 let mut tail = stderr_tail_writer.lock().await;
                 tail.push(line);
                 if tail.len() > 20 {
@@ -238,12 +268,23 @@ async fn start_agent_impl(
             drop(iproxy_handle);
             let tail = stderr_tail.lock().await;
             let last_lines = tail.join("\n");
-            let target_kind = if is_physical { "device" } else { "simulator" };
-            bail!(
-                "Timed out waiting for iOS agent to start on {target_kind} {udid} after 150s. \
-                 Killed xcodebuild. Check that the XCUITest bundle is built correctly.\n\
-                 xcodebuild stderr (last lines):\n{last_lines}"
-            );
+            let hint = diagnose_xcodebuild_stderr(&last_lines);
+            if hint.is_empty() {
+                let target_kind = if is_physical { "device" } else { "simulator" };
+                bail!(
+                    "Timed out waiting for iOS agent to start on {target_kind} {udid} after 150s. \
+                     Killed xcodebuild. Check that the XCUITest bundle is built correctly.\n\
+                     xcodebuild stderr (last lines):\n{last_lines}"
+                );
+            } else {
+                bail!("{hint}");
+            }
+        }
+
+        if let Some(hint) = fatal_hint.lock().await.as_ref() {
+            let _ = child.kill().await;
+            drop(iproxy_handle);
+            bail!("{hint}");
         }
 
         // If xcodebuild exited, the agent won't come up — fail immediately.
@@ -253,11 +294,17 @@ async fn start_agent_impl(
                 drop(iproxy_handle);
                 let tail = stderr_tail.lock().await;
                 let last_lines = tail.join("\n");
-                let target_kind = if is_physical { "device" } else { "simulator" };
-                bail!(
-                    "xcodebuild exited with {status} before the iOS agent became \
-                     ready on {target_kind} {udid}.\nxcodebuild stderr (last lines):\n{last_lines}"
-                );
+                let hint = diagnose_xcodebuild_stderr(&last_lines);
+                if hint.is_empty() {
+                    let target_kind = if is_physical { "device" } else { "simulator" };
+                    bail!(
+                        "xcodebuild exited with {status} before the iOS agent became \
+                         ready on {target_kind} {udid}.\n\
+                         xcodebuild stderr (last lines):\n{last_lines}"
+                    );
+                } else {
+                    bail!("{hint}");
+                }
             }
             Ok(None) => {} // still running, continue probing
             Err(e) => {

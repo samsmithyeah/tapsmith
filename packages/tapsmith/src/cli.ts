@@ -795,8 +795,9 @@ async function setupSequentialDevice(
     if (progress) progress.complete('agent', 'agent connected');
     else console.log(dim('Agent connected.'));
   } catch (err) {
-    progress?.fail('agent', err instanceof Error ? err.message : String(err));
-    throw new Error(`Failed to start agent: ${err}`);
+    const agentErr = err instanceof Error ? err.message : String(err);
+    progress?.fail('agent', agentErr);
+    throw new Error(`Failed to start agent: ${agentErr}`);
   }
 
   if (cfg.package) {
@@ -2059,8 +2060,11 @@ async function main(): Promise<void> {
         launchProgress,
       );
     } catch (err) {
-      launchProgress?.fail('primary-device', (err as Error).message);
-      console.error(red((err as Error).message));
+      const msg = (err as Error).message
+      if (!launchProgress?.isComplete('primary-device')) {
+        launchProgress?.fail('primary-device', msg)
+      }
+      console.error(red(msg));
       sequentialExitCode = 1;
       return;
     }
