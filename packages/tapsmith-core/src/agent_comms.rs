@@ -653,7 +653,10 @@ impl AgentCommand {
                 hierarchy,
                 selector,
             } => {
-                let mut p = selector.clone().unwrap_or_else(|| json!({}));
+                let mut p = match selector.clone() {
+                    Some(Value::Object(map)) => Value::Object(map),
+                    _ => json!({}),
+                };
                 p["screenshot"] = json!(screenshot);
                 p["hierarchy"] = json!(hierarchy);
                 ("captureTraceState", p)

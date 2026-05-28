@@ -71,8 +71,13 @@ export async function tracedAction(
         hierarchy: ctx.collector.config.snapshots,
         elementSelector: selector,
       });
-    } catch {
-      // Fall through — captures will be empty, which is fine (best-effort)
+      if (!batchResult) {
+        log.push('Batch trace state capture failed (connection error or timeout)');
+      } else if (!batchResult.success) {
+        log.push(`Batch trace state capture failed: ${batchResult.errorMessage}`);
+      }
+    } catch (err) {
+      log.push(`Batch trace state capture failed with error: ${err instanceof Error ? err.message : String(err)}`);
     }
 
     // Feed the pre-fetched data into the collector via callbacks that

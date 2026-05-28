@@ -943,12 +943,17 @@ class CommandHandler {
                 let pngData = screenshot.pngRepresentation
                 result["screenshotData"] = pngData.base64EncodedString()
             }
-            if wantHierarchy, let snapshot = snapshot {
-                result["hierarchyXml"] = hierarchyDumper.dump(from: snapshot)
+            if wantHierarchy {
+                if let snapshot = snapshot {
+                    result["hierarchyXml"] = hierarchyDumper.dump(from: snapshot)
+                } else {
+                    result["hierarchyXml"] = hierarchyDumper.dump()
+                }
             }
-            if hasSelector, let snapshot = snapshot {
+            if hasSelector {
                 let selector = SelectorParser.parse(params)
-                if let element = try? snapshotFinder.findElement(selector, fromSnapshot: snapshot) {
+                if let snapshot = snapshot,
+                   let element = try? snapshotFinder.findElement(selector, fromSnapshot: snapshot) {
                     result["elementFound"] = true
                     result["element"] = element.toDict()
                 } else {
