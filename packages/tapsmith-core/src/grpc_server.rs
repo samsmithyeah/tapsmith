@@ -5035,11 +5035,11 @@ impl proto::tapsmith_service_server::TapsmithService for TapsmithServiceImpl {
                             }
                         }
                     }
-                    let port = proxy_guard.as_ref().unwrap().port();
+                    let device_port = proxy_guard.as_ref().unwrap().device_port();
                     drop(proxy_guard);
 
-                    // Query the proxy's HTTP endpoint for available targets
-                    match query_cdp_json(port).await {
+                    // Query the device-specific port for inspectable WebView targets
+                    match query_cdp_json(device_port).await {
                         Ok(targets) => {
                             let webviews = targets
                                 .into_iter()

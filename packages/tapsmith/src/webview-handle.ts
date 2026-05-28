@@ -40,6 +40,8 @@ interface CDPResponse {
   id: number
   result?: Record<string, unknown>
   error?: { code: number; message: string }
+  method?: string
+  params?: Record<string, unknown>
 }
 
 interface CDPTarget {
@@ -69,6 +71,9 @@ export class WebViewHandle {
   private _inspector: WebKitInspectorClient | null = null;
   private _inspectorAppId: string | null = null;
   private _inspectorPageId: number | null = null;
+
+  // ios-webkit-debug-proxy target routing (physical iOS via CDP proxy)
+  private _proxyTargetId: string | null = null;
 
   /** @internal — Platform for bounds lookup (WebView class name differs). */
   _platform: 'android' | 'ios' = 'android';
@@ -280,13 +285,42 @@ export class WebViewHandle {
 
     await this._connectWebSocket(wsUrl);
     this._throwIfClosed();
+
+    // ios-webkit-debug-proxy uses Target domain routing: after connect it
+    // sends Target.targetCreated events, and all commands must go through
+    // Target.sendMessageToTarget. Detect this by waiting briefly for the
+    // target events.
+    if (this._platform === 'ios') {
+      const proxyTarget = await this._discoverProxyTarget();
+      if (proxyTarget) this._proxyTargetId = proxyTarget;
+    }
+
     await this._send('Runtime.enable', {}, Math.min(this._timeoutMs, WEB_SOCKET_CONNECT_TIMEOUT_MS));
     this._throwIfClosed();
     await this._send('Page.enable', {}, Math.min(this._timeoutMs, WEB_SOCKET_CONNECT_TIMEOUT_MS));
   }
 
+  private _discoverProxyTarget(): Promise<string | null> {
+    return new Promise((resolve) => {
+      if (!this._ws) { resolve(null); return; }
+      const timeout = setTimeout(() => resolve(null), 2000);
+      const handler = (data: Buffer) => {
+        const msg = JSON.parse(data.toString()) as CDPResponse;
+        if (msg.method === 'Target.targetCreated') {
+          const info = (msg.params as Record<string, Record<string, string>> | undefined)?.targetInfo;
+          if (info?.type === 'page') {
+            clearTimeout(timeout);
+            this._ws?.removeListener('message', handler);
+            resolve(info.targetId);
+          }
+        }
+      };
+      this._ws.on('message', handler);
+    });
+  }
+
   private async _fetchTargets(): Promise<CDPTarget[]> {
-    // Retry with backoff for up to 10s. The outer loop in _webviewAndroid
+    // Retry with backoff for up to 10s. The outer loop in _webviewCdp
     // owns the full timeout and re-lists WebViews / re-forwards ports
     // between attempts, so we keep this window short.
     const deadline = Date.now() + Math.min(this._timeoutMs, 10_000);
@@ -353,7 +387,13 @@ export class WebViewHandle {
         }
       });
       ws.on('message', (data) => {
-        const msg = JSON.parse(data.toString()) as CDPResponse;
+        let msg = JSON.parse(data.toString()) as CDPResponse;
+
+        // ios-webkit-debug-proxy wraps responses in Target.dispatchMessageFromTarget
+        if (msg.method === 'Target.dispatchMessageFromTarget' && msg.params?.message) {
+          msg = JSON.parse(msg.params.message as string) as CDPResponse;
+        }
+
         if (msg.id !== undefined) {
           const pending = this._pending.get(msg.id);
           if (pending) {
@@ -405,7 +445,18 @@ export class WebViewHandle {
         resolve: (v) => { clearTimeout(timeout); resolve(v); },
         reject: (e) => { clearTimeout(timeout); reject(e); },
       });
-      this._ws!.send(JSON.stringify({ id, method, params }));
+
+      if (this._proxyTargetId) {
+        const innerMsg = JSON.stringify({ id, method, params });
+        const wrapperId = ++this._msgId;
+        this._ws!.send(JSON.stringify({
+          id: wrapperId,
+          method: 'Target.sendMessageToTarget',
+          params: { targetId: this._proxyTargetId, message: innerMsg },
+        }));
+      } else {
+        this._ws!.send(JSON.stringify({ id, method, params }));
+      }
     });
   }
 
