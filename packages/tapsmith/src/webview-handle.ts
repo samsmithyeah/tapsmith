@@ -302,10 +302,11 @@ export class WebViewHandle {
 
   private _discoverProxyTarget(): Promise<string | null> {
     return new Promise((resolve) => {
-      if (!this._ws) { resolve(null); return; }
+      const ws = this._ws;
+      if (!ws) { resolve(null); return; }
       const cleanup = () => {
         clearTimeout(timeout);
-        this._ws?.removeListener('message', handler);
+        ws.removeListener('message', handler);
       };
       const timeout = setTimeout(() => { cleanup(); resolve(null); }, 2000);
       const handler = (data: Buffer) => {
@@ -323,7 +324,7 @@ export class WebViewHandle {
           }
         }
       };
-      this._ws.on('message', handler);
+      ws.on('message', handler);
     });
   }
 

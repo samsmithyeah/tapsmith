@@ -218,7 +218,7 @@ async fn start_agent_impl(
     let stderr = child.stderr.take();
 
     use std::sync::Arc;
-    use tokio::sync::Mutex;
+    use std::sync::Mutex;
 
     let stderr_tail: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
     let stderr_tail_writer = stderr_tail.clone();
@@ -242,9 +242,9 @@ async fn start_agent_impl(
                 info!(target: "xcodebuild::stderr", "{}", line);
                 let hint = diagnose_xcodebuild_stderr(&line);
                 if !hint.is_empty() {
-                    *fatal_hint_writer.lock().await = Some(hint);
+                    *fatal_hint_writer.lock().unwrap() = Some(hint);
                 }
-                let mut tail = stderr_tail_writer.lock().await;
+                let mut tail = stderr_tail_writer.lock().unwrap();
                 tail.push(line);
                 if tail.len() > 20 {
                     tail.remove(0);
@@ -268,7 +268,7 @@ async fn start_agent_impl(
             // returning. `drop(iproxy_handle)` is explicit rather than letting
             // scope-drop do it so reviewers can see the cleanup point.
             drop(iproxy_handle);
-            let tail = stderr_tail.lock().await;
+            let tail = stderr_tail.lock().unwrap();
             let last_lines = tail.join("\n");
             let hint = diagnose_xcodebuild_stderr(&last_lines);
             if hint.is_empty() {
@@ -283,7 +283,7 @@ async fn start_agent_impl(
             }
         }
 
-        let hint = fatal_hint.lock().await.clone();
+        let hint = fatal_hint.lock().unwrap().clone();
         if let Some(hint) = hint {
             let _ = child.kill().await;
             drop(iproxy_handle);
@@ -295,7 +295,7 @@ async fn start_agent_impl(
         match child.try_wait() {
             Ok(Some(status)) => {
                 drop(iproxy_handle);
-                let tail = stderr_tail.lock().await;
+                let tail = stderr_tail.lock().unwrap();
                 let last_lines = tail.join("\n");
                 let hint = diagnose_xcodebuild_stderr(&last_lines);
                 if hint.is_empty() {
