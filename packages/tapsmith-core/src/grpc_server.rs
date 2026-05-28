@@ -11,6 +11,7 @@ use tracing::{debug, error, info, instrument, warn};
 use uuid::Uuid;
 
 use crate::adb;
+use crate::agent_comms;
 use crate::agent_comms::{AgentCommand, AgentConnection, AgentResponse, ConnectionParams};
 use crate::device::DeviceManager;
 use crate::device_logs;
@@ -33,6 +34,7 @@ const WEBVIEW_ADB_CLEANUP_TIMEOUT: Duration = Duration::from_secs(2);
 pub struct TapsmithServiceImpl {
     device_manager: Arc<RwLock<DeviceManager>>,
     agent: Arc<RwLock<AgentConnection>>,
+    agent_stream: agent_comms::AgentStreamCache,
     network_proxy: Arc<RwLock<Option<NetworkProxy>>>,
     /// Serial/UDID of the device whose proxy settings were modified (for cleanup).
     proxy_device_serial: Arc<RwLock<Option<String>>>,
@@ -110,6 +112,7 @@ impl TapsmithServiceImpl {
         Self {
             device_manager,
             agent,
+            agent_stream: agent_comms::new_agent_stream_cache(),
             network_proxy: Arc::new(RwLock::new(None)),
             proxy_device_serial: Arc::new(RwLock::new(None)),
             proxy_platform: Arc::new(RwLock::new(None)),
@@ -218,7 +221,10 @@ impl TapsmithServiceImpl {
 
     async fn send_agent_command(&self, command: &AgentCommand) -> Result<AgentResponse, Status> {
         let params = Self::agent_params(&*self.agent.read().await)?;
-        let raw = AgentConnection::send_with_params(&params, command).await;
+        let timeout = Duration::from_secs(30);
+        let raw =
+            agent_comms::send_with_persistent_cache(&self.agent_stream, &params, command, timeout)
+                .await;
         self.recover_agent_on_timeout(command, raw).await
     }
 
@@ -237,7 +243,7 @@ impl TapsmithServiceImpl {
             Duration::from_secs(30)
         };
         let params = Self::agent_params(&*self.agent.read().await)?;
-        AgentConnection::send_with_params_and_timeout(&params, command, timeout)
+        agent_comms::send_with_persistent_cache(&self.agent_stream, &params, command, timeout)
             .await
             .map_err(|e| Status::internal(e.to_string()))
     }
@@ -252,9 +258,10 @@ impl TapsmithServiceImpl {
         } else {
             Duration::from_secs(30)
         };
-
         let params = Self::agent_params(&*self.agent.read().await)?;
-        let raw = AgentConnection::send_with_params_and_timeout(&params, command, timeout).await;
+        let raw =
+            agent_comms::send_with_persistent_cache(&self.agent_stream, &params, command, timeout)
+                .await;
         self.recover_agent_on_timeout(command, raw).await
     }
 
@@ -293,6 +300,7 @@ impl TapsmithServiceImpl {
             error = %msg,
             "iOS agent command timed out on physical device, restarting agent and retrying"
         );
+        agent_comms::clear_stream_cache(&self.agent_stream).await;
         if let Err(e) = self
             .restart_ios_agent_for_app(&serial, &config.target_package, false, 5_000)
             .await
@@ -302,13 +310,18 @@ impl TapsmithServiceImpl {
             )));
         }
         let params = Self::agent_params(&*self.agent.read().await)?;
-        AgentConnection::send_with_params(&params, command)
-            .await
-            .map_err(|e| {
-                Status::internal(format!(
-                    "Agent timed out ({msg}); post-recovery retry also failed: {e}"
-                ))
-            })
+        agent_comms::send_with_persistent_cache(
+            &self.agent_stream,
+            &params,
+            command,
+            Duration::from_secs(30),
+        )
+        .await
+        .map_err(|e| {
+            Status::internal(format!(
+                "Agent timed out ({msg}); post-recovery retry also failed: {e}"
+            ))
+        })
     }
 
     async fn probe_ios_agent_session(
@@ -371,6 +384,7 @@ impl TapsmithServiceImpl {
         wait_for_idle: bool,
         idle_timeout_ms: u64,
     ) -> Result<(), String> {
+        agent_comms::clear_stream_cache(&self.agent_stream).await;
         let _ = ios::device::terminate_app(serial, package_name).await;
         tokio::time::sleep(Duration::from_millis(300)).await;
         ios::device::launch_app(serial, package_name)
@@ -488,6 +502,7 @@ impl TapsmithServiceImpl {
 
         let is_physical = self.is_active_ios_physical().await;
 
+        agent_comms::clear_stream_cache(&self.agent_stream).await;
         ios::agent_launch::kill_existing_agents_on(serial).await;
 
         // Physical iOS: re-prime the Wi-Fi MITM proxy before xcodebuild so
@@ -1770,6 +1785,7 @@ impl proto::tapsmith_service_server::TapsmithService for TapsmithServiceImpl {
                 // ensure_ios_physical_proxy can acquire its own locks without
                 // deadlocking against our write guard.
                 drop(dm);
+                agent_comms::clear_stream_cache(&self.agent_stream).await;
                 // Persist the CLI's tracing flag on the server so subsequent
                 // call sites (start_agent, recovery restarts) can check it
                 // without re-plumbing the bool through every request. The
@@ -1855,6 +1871,7 @@ impl proto::tapsmith_service_server::TapsmithService for TapsmithServiceImpl {
                 // existing host port is free when start_agent tries to bind
                 // a fresh tunnel. Without this, a re-started agent on the
                 // same physical device would fight its own leftover tunnel.
+                agent_comms::clear_stream_cache(&self.agent_stream).await;
                 *self.ios_iproxy.write().await = None;
 
                 // Re-affirm the server-wide tracing flag. SetDevice is the
@@ -1965,6 +1982,7 @@ impl proto::tapsmith_service_server::TapsmithService for TapsmithServiceImpl {
                 }
 
                 // Launch the agent instrumentation
+                agent_comms::clear_stream_cache(&self.agent_stream).await;
                 let instrument_cmd = if req.target_package.is_empty() {
                     "am instrument -w dev.tapsmith.agent/.TapsmithAgent".to_string()
                 } else {

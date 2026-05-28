@@ -1,8 +1,10 @@
+use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{anyhow, bail, Context, Result};
 use serde_json::{json, Value};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::net::TcpStream;
 use tracing::{debug, info, warn};
 
@@ -70,6 +72,201 @@ impl From<SendError> for anyhow::Error {
     fn from(value: SendError) -> Self {
         match value {
             SendError::Connect(e) | SendError::PostSend(e) => e,
+        }
+    }
+}
+
+/// A reusable TCP connection to the on-device agent. Split into owned
+/// halves so the `BufReader` retains any buffered data across calls.
+pub(crate) struct PersistentStream {
+    reader: BufReader<OwnedReadHalf>,
+    writer: OwnedWriteHalf,
+    host_port: u16,
+}
+
+pub(crate) type AgentStreamCache = Arc<tokio::sync::Mutex<Option<PersistentStream>>>;
+
+pub(crate) fn new_agent_stream_cache() -> AgentStreamCache {
+    Arc::new(tokio::sync::Mutex::new(None))
+}
+
+pub(crate) async fn clear_stream_cache(cache: &AgentStreamCache) {
+    *cache.lock().await = None;
+}
+
+async fn connect_persistent(host_port: u16) -> Result<PersistentStream, SendError> {
+    let addr = format!("127.0.0.1:{}", host_port);
+    let stream = tokio::time::timeout(Duration::from_secs(5), TcpStream::connect(&addr))
+        .await
+        .map_err(|_| SendError::Connect(anyhow!("Timed out connecting to agent socket")))?
+        .map_err(|e| SendError::Connect(anyhow!(e).context("Failed to connect to agent socket")))?;
+    stream.set_nodelay(true).ok();
+    let (read_half, write_half) = stream.into_split();
+    Ok(PersistentStream {
+        reader: BufReader::new(read_half),
+        writer: write_half,
+        host_port,
+    })
+}
+
+async fn try_send_persistent(
+    stream: &mut PersistentStream,
+    command: &AgentCommand,
+    timeout: Duration,
+) -> std::result::Result<AgentResponse, SendError> {
+    let request_id = uuid::Uuid::new_v4().to_string();
+    let json_msg = command.to_json(&request_id);
+    let mut payload = serde_json::to_string(&json_msg)
+        .map_err(|e| SendError::PostSend(anyhow!(e).context("Failed to serialize command")))?;
+    debug!(payload = %payload, "Sending command to agent (persistent)");
+    payload.push('\n');
+
+    // Write phase. Single write avoids two TCP packets with NODELAY.
+    // Write failure means the connection is dead — safe to retry
+    // (Connect). Flush pushes the full message to the kernel send
+    // buffer where it may reach the agent — classify as PostSend.
+    if let Err(e) = stream.writer.write_all(payload.as_bytes()).await {
+        return Err(SendError::Connect(
+            anyhow!(e).context("Failed to write to agent socket"),
+        ));
+    }
+    if let Err(e) = stream.writer.flush().await {
+        return Err(SendError::PostSend(
+            anyhow!(e).context("Failed to flush agent socket"),
+        ));
+    }
+
+    // Read — once flushed, the agent may have the command
+    let read_timeout = timeout + READ_TIMEOUT_HEADROOM;
+    let mut line = String::new();
+    let read_result = tokio::time::timeout(read_timeout, stream.reader.read_line(&mut line)).await;
+
+    match read_result {
+        Err(_) => Err(SendError::PostSend(anyhow!(
+            "Agent command timed out after {read_timeout:?}"
+        ))),
+        Ok(Err(e)) => {
+            // Connection-reset/broken-pipe on read: the TCP connection
+            // died after we flushed the command. Probe whether the
+            // agent is still listening — if so, the old connection was
+            // stale and it's safe to retry on a fresh one. If the
+            // agent is gone, it may have processed the command before
+            // crashing, so treat as PostSend (no retry).
+            use std::io::ErrorKind::*;
+            let kind = e.kind();
+            if matches!(kind, ConnectionReset | ConnectionAborted | BrokenPipe) {
+                let addr = format!("127.0.0.1:{}", stream.host_port);
+                if probe_agent_alive(&addr).await {
+                    Err(SendError::Connect(
+                        anyhow!(e).context("Agent connection lost during read"),
+                    ))
+                } else {
+                    Err(SendError::PostSend(
+                        anyhow!(e).context("Agent connection lost and agent is unreachable"),
+                    ))
+                }
+            } else {
+                Err(SendError::PostSend(
+                    anyhow!(e).context("Failed to read from agent socket"),
+                ))
+            }
+        }
+        Ok(Ok(_)) => {
+            let line = line.trim();
+            if line.is_empty() {
+                let addr = format!("127.0.0.1:{}", stream.host_port);
+                return if probe_agent_alive(&addr).await {
+                    Err(SendError::Connect(
+                        anyhow!("{}", EMPTY_RESPONSE_MARKER)
+                            .context("Agent connection dropped (empty response); reconnecting"),
+                    ))
+                } else {
+                    Err(SendError::PostSend(
+                        anyhow!("{}", EMPTY_RESPONSE_MARKER).context(
+                            "Agent connection dropped (empty response) and agent is unreachable",
+                        ),
+                    ))
+                };
+            }
+            debug!(response = %line, "Received response from agent (persistent)");
+            let raw: Value = serde_json::from_str(line).map_err(|e| {
+                SendError::PostSend(anyhow!(e).context("Failed to parse agent response as JSON"))
+            })?;
+            // Verify response ID matches to detect desync from a
+            // late response on a reused connection.
+            match raw.get("id").and_then(|v| v.as_str()) {
+                Some(resp_id) if resp_id != request_id => {
+                    return Err(SendError::PostSend(anyhow!(
+                        "Response ID mismatch: expected '{request_id}', got '{resp_id}'"
+                    )));
+                }
+                _ => {}
+            }
+            Ok(AgentResponse::from_json(&raw))
+        }
+    }
+}
+
+pub(crate) async fn send_with_persistent_cache(
+    cache: &AgentStreamCache,
+    params: &ConnectionParams,
+    command: &AgentCommand,
+    timeout: Duration,
+) -> Result<AgentResponse> {
+    let mut guard = cache.lock().await;
+
+    // Discard stale stream if port changed
+    if guard
+        .as_ref()
+        .is_some_and(|s| s.host_port != params.host_port)
+    {
+        debug!("Agent port changed, dropping cached stream");
+        *guard = None;
+    }
+
+    // Retry loop: allow one retry for any Connect-class error, whether
+    // from the initial connect or from a broken cached stream. This
+    // matches the old per-command code's single-retry behaviour, which
+    // is important right after restartApp when the agent's socket is
+    // briefly down.
+    let mut retried = false;
+    loop {
+        // Establish connection if needed
+        if guard.is_none() {
+            match connect_persistent(params.host_port).await {
+                Ok(s) => *guard = Some(s),
+                Err(e) => {
+                    let err: anyhow::Error = e.into();
+                    if !retried {
+                        retried = true;
+                        warn!("Agent connect failed, retrying: {err}");
+                        continue;
+                    }
+                    return Err(err);
+                }
+            }
+        }
+
+        // Take the stream out during I/O so that if this future is
+        // cancelled mid-await, the stream is dropped rather than left
+        // in a half-read state that would desync the next command.
+        let mut stream = guard.take().unwrap();
+        match try_send_persistent(&mut stream, command, timeout).await {
+            Ok(resp) => {
+                *guard = Some(stream);
+                return Ok(resp);
+            }
+            Err(SendError::PostSend(e)) => {
+                return Err(e);
+            }
+            Err(SendError::Connect(e)) => {
+                if !retried {
+                    retried = true;
+                    warn!("Persistent stream failed, reconnecting: {e}");
+                    continue;
+                }
+                return Err(e);
+            }
         }
     }
 }
@@ -542,35 +739,6 @@ impl AgentConnection {
         })
     }
 
-    /// Send a command using pre-extracted connection params (no lock needed).
-    /// This is the lock-free counterpart of `send_command`.
-    pub async fn send_with_params(
-        params: &ConnectionParams,
-        command: &AgentCommand,
-    ) -> Result<AgentResponse> {
-        Self::send_with_params_and_timeout(params, command, DEFAULT_COMMAND_TIMEOUT).await
-    }
-
-    /// Send a command with a specific timeout using pre-extracted connection
-    /// params (no lock needed). This is the lock-free counterpart of
-    /// `send_command_with_timeout`.
-    pub async fn send_with_params_and_timeout(
-        params: &ConnectionParams,
-        command: &AgentCommand,
-        timeout: Duration,
-    ) -> Result<AgentResponse> {
-        match try_send_with_params(params, command, timeout).await {
-            Ok(resp) => Ok(resp),
-            Err(SendError::Connect(e)) => {
-                warn!("Agent connect failed, retrying once: {e}");
-                try_send_with_params(params, command, timeout)
-                    .await
-                    .map_err(Into::into)
-            }
-            Err(SendError::PostSend(e)) => Err(e),
-        }
-    }
-
     /// Establish port forwarding and verify the agent is reachable.
     /// For Android, sets up ADB port forwarding.
     /// For iOS simulators, no forwarding is needed (shared localhost).
@@ -630,10 +798,7 @@ impl AgentConnection {
     }
 
     /// Send a command to the agent and wait for a response.
-    ///
-    /// Note: production code uses `send_with_params` (lock-free). This method
-    /// is retained for tests that exercise the retry/classification logic with
-    /// a direct `AgentConnection` instance.
+    /// Retained for tests that exercise the retry/classification logic.
     #[allow(dead_code)]
     pub async fn send_command(&mut self, command: &AgentCommand) -> Result<AgentResponse> {
         self.send_command_with_timeout(command, DEFAULT_COMMAND_TIMEOUT)
@@ -848,81 +1013,6 @@ impl AgentConnection {
             Err(e) => {
                 bail!("Failed to reconnect to agent: {e}");
             }
-        }
-    }
-}
-
-/// Lock-free counterpart of `AgentConnection::try_send_command`. Performs the
-/// full TCP connect → write → read cycle using only the pre-extracted
-/// `ConnectionParams`, so the caller can release the `RwLock` before calling
-/// this function.
-async fn try_send_with_params(
-    params: &ConnectionParams,
-    command: &AgentCommand,
-    timeout: Duration,
-) -> std::result::Result<AgentResponse, SendError> {
-    let addr = format!("127.0.0.1:{}", params.host_port);
-    let mut stream = tokio::time::timeout(Duration::from_secs(5), async {
-        TcpStream::connect(&addr).await
-    })
-    .await
-    .map_err(|_| SendError::Connect(anyhow!("Timed out connecting to agent socket")))?
-    .map_err(|e| SendError::Connect(anyhow!(e).context("Failed to connect to agent socket")))?;
-
-    let io_result: Result<AgentResponse> = async {
-        let request_id = uuid::Uuid::new_v4().to_string();
-        let json_msg = command.to_json(&request_id);
-        let payload = serde_json::to_string(&json_msg).context("Failed to serialize command")?;
-        debug!(payload = %payload, "Sending command to agent");
-
-        stream
-            .write_all(payload.as_bytes())
-            .await
-            .context("Failed to write to agent socket")?;
-        stream
-            .write_all(b"\n")
-            .await
-            .context("Failed to write newline to agent socket")?;
-        stream.flush().await?;
-
-        let read_timeout = timeout + READ_TIMEOUT_HEADROOM;
-        let reader = BufReader::new(&mut stream);
-        let mut line = String::new();
-
-        tokio::time::timeout(read_timeout, async {
-            let mut reader = reader;
-            reader
-                .read_line(&mut line)
-                .await
-                .context("Failed to read from agent socket")
-        })
-        .await
-        .map_err(|_| anyhow!("Agent command timed out after {read_timeout:?}"))??;
-
-        let line = line.trim();
-        if line.is_empty() {
-            bail!("{}", EMPTY_RESPONSE_MARKER);
-        }
-
-        debug!(response = %line, "Received response from agent");
-
-        let raw: Value =
-            serde_json::from_str(line).context("Failed to parse agent response as JSON")?;
-
-        Ok(AgentResponse::from_json(&raw))
-    }
-    .await;
-
-    match io_result {
-        Ok(resp) => Ok(resp),
-        Err(e) => {
-            if is_empty_response(&e) && probe_agent_alive(&addr).await {
-                warn!("Agent returned empty response but is still reachable — treating as stale connection and retrying");
-                return Err(SendError::Connect(e.context(
-                    "Agent connection dropped (empty response); reconnecting",
-                )));
-            }
-            Err(SendError::PostSend(e))
         }
     }
 }
@@ -1526,5 +1616,152 @@ mod tests {
 
         let post: anyhow::Error = SendError::PostSend(anyhow!("post-send failure")).into();
         assert!(post.to_string().contains("post-send failure"));
+    }
+
+    // ─── Persistent stream cache ───
+
+    #[tokio::test]
+    async fn persistent_cache_reuses_connection() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let accept_count = Arc::new(AtomicUsize::new(0));
+        let accept_count_clone = accept_count.clone();
+
+        tokio::spawn(async move {
+            while let Ok((stream, _)) = listener.accept().await {
+                accept_count_clone.fetch_add(1, Ordering::SeqCst);
+                let (read_half, mut write_half) = stream.into_split();
+                let mut reader = BufReader::new(read_half);
+                tokio::spawn(async move {
+                    loop {
+                        let mut line = String::new();
+                        match reader.read_line(&mut line).await {
+                            Ok(0) => break,
+                            Ok(_) => {
+                                let parsed: Value = serde_json::from_str(line.trim()).unwrap();
+                                let id = parsed["id"].as_str().unwrap_or("null");
+                                let resp = format!(r#"{{"id":"{}","result":{{"ok":true}}}}"#, id);
+                                let _ =
+                                    write_half.write_all(format!("{}\n", resp).as_bytes()).await;
+                                let _ = write_half.flush().await;
+                            }
+                            Err(_) => break,
+                        }
+                    }
+                });
+            }
+        });
+
+        let cache = new_agent_stream_cache();
+        let params = ConnectionParams { host_port: port };
+        let cmd = AgentCommand::Screenshot {};
+
+        let r1 = send_with_persistent_cache(&cache, &params, &cmd, Duration::from_secs(2)).await;
+        assert!(r1.is_ok(), "first send failed: {:?}", r1.err());
+
+        let r2 = send_with_persistent_cache(&cache, &params, &cmd, Duration::from_secs(2)).await;
+        assert!(r2.is_ok(), "second send failed: {:?}", r2.err());
+
+        assert_eq!(
+            accept_count.load(Ordering::SeqCst),
+            1,
+            "expected 1 connection, got more"
+        );
+    }
+
+    #[tokio::test]
+    async fn persistent_cache_reconnects_on_broken_stream() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let accept_count = Arc::new(AtomicUsize::new(0));
+        let accept_count_clone = accept_count.clone();
+
+        tokio::spawn(async move {
+            while let Ok((stream, _)) = listener.accept().await {
+                accept_count_clone.fetch_add(1, Ordering::SeqCst);
+                let (read_half, mut write_half) = stream.into_split();
+                let mut reader = BufReader::new(read_half);
+                let mut line = String::new();
+                if reader.read_line(&mut line).await.is_ok() && !line.is_empty() {
+                    let parsed: Value = serde_json::from_str(line.trim()).unwrap();
+                    let id = parsed["id"].as_str().unwrap_or("null");
+                    let resp = format!(r#"{{"id":"{}","result":{{"ok":true}}}}"#, id);
+                    let _ = write_half.write_all(format!("{}\n", resp).as_bytes()).await;
+                    let _ = write_half.flush().await;
+                }
+                drop(write_half);
+            }
+        });
+
+        let cache = new_agent_stream_cache();
+        let params = ConnectionParams { host_port: port };
+        let cmd = AgentCommand::Screenshot {};
+
+        let r1 = send_with_persistent_cache(&cache, &params, &cmd, Duration::from_secs(2)).await;
+        assert!(r1.is_ok(), "first send failed: {:?}", r1.err());
+
+        let r2 = send_with_persistent_cache(&cache, &params, &cmd, Duration::from_secs(2)).await;
+        assert!(
+            r2.is_ok(),
+            "second send failed (should have reconnected): {:?}",
+            r2.err()
+        );
+
+        // 3 accepts: (1) initial command, (2) probe_agent_alive liveness
+        // check after broken stream, (3) reconnected command
+        assert_eq!(accept_count.load(Ordering::SeqCst), 3);
+    }
+
+    #[tokio::test]
+    async fn persistent_cache_invalidates_on_port_change() {
+        let listener1 = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port1 = listener1.local_addr().unwrap().port();
+        let listener2 = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port2 = listener2.local_addr().unwrap().port();
+
+        fn spawn_echo_agent(listener: tokio::net::TcpListener) {
+            tokio::spawn(async move {
+                while let Ok((stream, _)) = listener.accept().await {
+                    let (read_half, mut write_half) = stream.into_split();
+                    let mut reader = BufReader::new(read_half);
+                    tokio::spawn(async move {
+                        loop {
+                            let mut line = String::new();
+                            match reader.read_line(&mut line).await {
+                                Ok(0) | Err(_) => break,
+                                Ok(_) => {
+                                    let parsed: Value = serde_json::from_str(line.trim()).unwrap();
+                                    let id = parsed["id"].as_str().unwrap_or("null");
+                                    let resp =
+                                        format!(r#"{{"id":"{}","result":{{"ok":true}}}}"#, id);
+                                    let _ = write_half
+                                        .write_all(format!("{}\n", resp).as_bytes())
+                                        .await;
+                                    let _ = write_half.flush().await;
+                                }
+                            }
+                        }
+                    });
+                }
+            });
+        }
+
+        spawn_echo_agent(listener1);
+        spawn_echo_agent(listener2);
+
+        let cache = new_agent_stream_cache();
+        let cmd = AgentCommand::Screenshot {};
+
+        let params1 = ConnectionParams { host_port: port1 };
+        let r1 = send_with_persistent_cache(&cache, &params1, &cmd, Duration::from_secs(2)).await;
+        assert!(r1.is_ok());
+
+        let params2 = ConnectionParams { host_port: port2 };
+        let r2 = send_with_persistent_cache(&cache, &params2, &cmd, Duration::from_secs(2)).await;
+        assert!(r2.is_ok());
     }
 }
