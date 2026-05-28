@@ -1785,6 +1785,7 @@ impl proto::tapsmith_service_server::TapsmithService for TapsmithServiceImpl {
                 // ensure_ios_physical_proxy can acquire its own locks without
                 // deadlocking against our write guard.
                 drop(dm);
+                agent_comms::clear_stream_cache(&self.agent_stream).await;
                 // Persist the CLI's tracing flag on the server so subsequent
                 // call sites (start_agent, recovery restarts) can check it
                 // without re-plumbing the bool through every request. The
