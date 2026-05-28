@@ -40,7 +40,7 @@ fn diagnose_xcodebuild_stderr(stderr: &str) -> String {
     if stderr.contains("device is locked") || stderr.contains("Device is locked") {
         return "The device is locked. Unlock it and try again.".to_string();
     }
-    if stderr.contains("not paired") || stderr.contains("is not paired") {
+    if stderr.contains("not paired") {
         return "The device is not paired with this Mac. \
                 Open Finder, select the device, and click Trust."
             .to_string();
@@ -281,7 +281,8 @@ async fn start_agent_impl(
             }
         }
 
-        if let Some(hint) = fatal_hint.lock().await.as_ref() {
+        let hint = fatal_hint.lock().await.clone();
+        if let Some(hint) = hint {
             let _ = child.kill().await;
             drop(iproxy_handle);
             bail!("{hint}");

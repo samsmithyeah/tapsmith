@@ -2060,9 +2060,9 @@ async function main(): Promise<void> {
         launchProgress,
       );
     } catch (err) {
-      const msg = (err as Error).message
+      const msg = err instanceof Error ? err.message : String(err);
       if (!launchProgress?.isComplete('primary-device')) {
-        launchProgress?.fail('primary-device', msg)
+        launchProgress?.fail('primary-device', msg);
       }
       console.error(red(msg));
       sequentialExitCode = 1;

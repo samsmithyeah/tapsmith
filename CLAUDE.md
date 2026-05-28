@@ -86,7 +86,7 @@ Releases are triggered by pushing a `v*` tag (e.g., `git tag v0.2.0 && git push 
 ## TypeScript conventions
 
 - **ESM with `.js` extensions** in all imports (even for `.ts` files) — required by Node16 module resolution
-- **No semicolons** (ESLint enforced)
+- **Semicolons required** (`semi: ['error', 'always']` in ESLint)
 - **Strict TypeScript** — `strict: true` in tsconfig
 - **`_prefix`** for internal/private members (e.g., `_client`, `_selector`)
 - **Section dividers**: `// ─── Name ───` in major files

@@ -59,7 +59,7 @@ export function resolvePhysicalIosDevice(): string {
  * the filename exceeds the 255-byte POSIX limit.
  */
 export function findDeviceXctestrun(startDir: string): string | undefined {
-  const candidates: string[] = []
+  const candidates: string[] = [];
 
   // 1. Walk up from startDir looking for `ios-agent/.build-device/Build/Products`
   //    (monorepo / local dev layout).
@@ -84,8 +84,13 @@ export function findDeviceXctestrun(startDir: string): string | undefined {
   }
 
   if (candidates.length === 0) return undefined;
-  // Pick the most recently modified across all candidate locations.
-  candidates.sort((a, b) => fs.statSync(b).mtimeMs - fs.statSync(a).mtimeMs);
+  candidates.sort((a, b) => {
+    try {
+      return fs.statSync(b).mtimeMs - fs.statSync(a).mtimeMs;
+    } catch {
+      return 0;
+    }
+  });
   return candidates[0];
 }
 
