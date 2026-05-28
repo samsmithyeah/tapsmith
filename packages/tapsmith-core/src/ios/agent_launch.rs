@@ -234,7 +234,11 @@ async fn start_agent_impl(
             }
         }
     });
-    tokio::spawn(async move {
+    // Bound to a JoinHandle so the exit/timeout paths can await it before
+    // reading stderr_tail/fatal_hint — otherwise try_wait() can observe the
+    // process exit before this task has drained the final (often diagnostic)
+    // stderr lines, and we'd miss the friendly error message.
+    let stderr_reader = tokio::spawn(async move {
         use tokio::io::{AsyncBufReadExt, BufReader};
         if let Some(stderr) = stderr {
             let mut reader = BufReader::new(stderr).lines();
@@ -268,6 +272,9 @@ async fn start_agent_impl(
             // returning. `drop(iproxy_handle)` is explicit rather than letting
             // scope-drop do it so reviewers can see the cleanup point.
             drop(iproxy_handle);
+            // Killing closed the stderr pipe — let the reader drain the last
+            // lines before we read the tail.
+            let _ = stderr_reader.await;
             let tail = stderr_tail.lock().unwrap();
             let last_lines = tail.join("\n");
             let hint = diagnose_xcodebuild_stderr(&last_lines);
@@ -295,6 +302,9 @@ async fn start_agent_impl(
         match child.try_wait() {
             Ok(Some(status)) => {
                 drop(iproxy_handle);
+                // The process exited and closed its stderr pipe — let the
+                // reader drain the final lines before we read the tail.
+                let _ = stderr_reader.await;
                 let tail = stderr_tail.lock().unwrap();
                 let last_lines = tail.join("\n");
                 let hint = diagnose_xcodebuild_stderr(&last_lines);

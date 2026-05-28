@@ -74,6 +74,9 @@ export class WebViewHandle {
 
   // ios-webkit-debug-proxy target routing (physical iOS via CDP proxy)
   private _proxyTargetId: string | null = null;
+  private _proxyTargetPromise: Promise<string | null> | null = null;
+  private _proxyTargetResolve: ((value: string | null) => void) | null = null;
+  private _proxyTargetTimeout: ReturnType<typeof setTimeout> | null = null;
 
   /** @internal — Platform for bounds lookup (WebView class name differs). */
   _platform: 'android' | 'ios' = 'android';
@@ -283,16 +286,21 @@ export class WebViewHandle {
       throw new Error('WebView target did not expose a CDP WebSocket URL');
     }
 
+    // ios-webkit-debug-proxy uses Target domain routing: as soon as the
+    // socket opens it sends Target.targetCreated events, and all commands
+    // must then go through Target.sendMessageToTarget. Arm the discovery
+    // promise BEFORE connecting so the main message handler captures the
+    // event even if it arrives immediately on connect (it would otherwise
+    // race a listener registered after connect).
+    if (this._platform === 'ios') {
+      this._armProxyTargetDiscovery();
+    }
+
     await this._connectWebSocket(wsUrl);
     this._throwIfClosed();
 
-    // ios-webkit-debug-proxy uses Target domain routing: after connect it
-    // sends Target.targetCreated events, and all commands must go through
-    // Target.sendMessageToTarget. Detect this by waiting briefly for the
-    // target events.
     if (this._platform === 'ios') {
-      const proxyTarget = await this._discoverProxyTarget();
-      if (proxyTarget) this._proxyTargetId = proxyTarget;
+      this._proxyTargetId = await (this._proxyTargetPromise ?? Promise.resolve(null));
     }
 
     await this._send('Runtime.enable', {}, Math.min(this._timeoutMs, WEB_SOCKET_CONNECT_TIMEOUT_MS));
@@ -300,32 +308,26 @@ export class WebViewHandle {
     await this._send('Page.enable', {}, Math.min(this._timeoutMs, WEB_SOCKET_CONNECT_TIMEOUT_MS));
   }
 
-  private _discoverProxyTarget(): Promise<string | null> {
-    return new Promise((resolve) => {
-      const ws = this._ws;
-      if (!ws) { resolve(null); return; }
-      const cleanup = () => {
-        clearTimeout(timeout);
-        ws.removeListener('message', handler);
-      };
-      const timeout = setTimeout(() => { cleanup(); resolve(null); }, 2000);
-      const handler = (data: Buffer) => {
-        let msg: CDPResponse;
-        try {
-          msg = JSON.parse(data.toString()) as CDPResponse;
-        } catch {
-          return;
-        }
-        if (msg.method === 'Target.targetCreated') {
-          const info = (msg.params as Record<string, Record<string, string>> | undefined)?.targetInfo;
-          if (info?.type === 'page') {
-            cleanup();
-            resolve(info.targetId);
-          }
-        }
-      };
-      ws.on('message', handler);
+  /** @internal — Arm the deferred Target.targetCreated discovery (iOS proxy). */
+  private _armProxyTargetDiscovery(): void {
+    this._proxyTargetPromise = new Promise((resolve) => {
+      this._proxyTargetResolve = resolve;
+      this._proxyTargetTimeout = setTimeout(() => {
+        this._resolveProxyTarget(null);
+      }, 2000);
     });
+  }
+
+  /** @internal — Resolve the pending proxy-target promise once and clean up. */
+  private _resolveProxyTarget(targetId: string | null): void {
+    if (this._proxyTargetTimeout) {
+      clearTimeout(this._proxyTargetTimeout);
+      this._proxyTargetTimeout = null;
+    }
+    if (this._proxyTargetResolve) {
+      this._proxyTargetResolve(targetId);
+      this._proxyTargetResolve = null;
+    }
   }
 
   private async _fetchTargets(): Promise<CDPTarget[]> {
@@ -404,6 +406,15 @@ export class WebViewHandle {
             msg = JSON.parse(msg.params.message as string) as CDPResponse;
           }
         } catch {
+          return;
+        }
+
+        // Capture the iOS proxy's page target as soon as it's announced.
+        if (msg.method === 'Target.targetCreated') {
+          const info = (msg.params as Record<string, Record<string, string>> | undefined)?.targetInfo;
+          if (info?.type === 'page' && this._proxyTargetResolve) {
+            this._resolveProxyTarget(info.targetId);
+          }
           return;
         }
 
@@ -894,6 +905,8 @@ export class WebViewHandle {
   async close(): Promise<void> {
     if (this._closed) return;
     this._closed = true;
+    // Resolve any pending proxy-target discovery so _connect doesn't hang.
+    this._resolveProxyTarget(null);
     if (this._inspector) {
       this._inspector.close();
       this._inspector = null;
