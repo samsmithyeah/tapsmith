@@ -14,8 +14,16 @@ use std::sync::OnceLock;
 
 fn timing_path() -> Option<&'static str> {
     static PATH: OnceLock<Option<String>> = OnceLock::new();
-    PATH.get_or_init(|| std::env::var("TAPSMITH_TIMING_LOG").ok())
-        .as_deref()
+    PATH.get_or_init(|| {
+        let path = std::env::var("TAPSMITH_TIMING_LOG").ok()?;
+        // Create the parent directory once, up front, so per-write opens don't
+        // fail silently when the caller points at a not-yet-existing dir.
+        if let Some(parent) = std::path::Path::new(&path).parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        Some(path)
+    })
+    .as_deref()
 }
 
 /// Whether timing capture is enabled. Cheap (reads a cached `OnceLock`).
