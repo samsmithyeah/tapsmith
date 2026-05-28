@@ -9,7 +9,7 @@
 import type { TraceCollector } from './trace-collector.js';
 import { extractSourceLocation } from './trace-collector.js';
 import type { ActionCategory } from './types.js';
-import type { ActionResponse, ElementInfo } from '../grpc-client.js';
+import type { ActionResponse, ElementInfo, CaptureTraceStateResponse } from '../grpc-client.js';
 import type { Selector } from '../selectors.js';
 import { selectorToProto } from '../selectors.js';
 
@@ -20,6 +20,11 @@ export interface TraceContext {
   takeScreenshot: () => Promise<Buffer | undefined>
   captureHierarchy: () => Promise<string | undefined>
   findElement?: (selector: Selector, timeoutMs: number) => Promise<{ found: boolean; element?: ElementInfo }>
+  captureTraceState?: (options: {
+    screenshot?: boolean;
+    hierarchy?: boolean;
+    elementSelector?: Selector;
+  }) => Promise<CaptureTraceStateResponse | undefined>
 }
 
 // ─── Shared helper ───
@@ -46,42 +51,89 @@ export async function tracedAction(
   const selectorStr = selector ? JSON.stringify(selectorToProto(selector)) : undefined;
   const log: string[] = [];
 
-  // Run element bounds lookup and before-captures in parallel — both are
-  // best-effort and independent.  Short timeout on bounds since the element
-  // should already exist (we're about to act on it).
   let bounds: { left: number; top: number; right: number; bottom: number } | undefined;
   let point: { x: number; y: number } | undefined;
 
   log.push('Capturing before screenshot + hierarchy');
 
-  const boundsPromise = (selector && ctx.findElement)
-    ? (async () => {
-        const lookupStart = Date.now();
-        try {
-          const res = await ctx.findElement!(selector, 100);
-          if (res.found && res.element?.bounds) {
-            bounds = res.element.bounds;
-            log.push(`Element found at [${bounds.left},${bounds.top}][${bounds.right},${bounds.bottom}] (${Date.now() - lookupStart}ms)`);
-            if (category === 'tap') {
-              point = {
-                x: (bounds.left + bounds.right) / 2,
-                y: (bounds.top + bounds.bottom) / 2,
-              };
-              log.push(`Tap target: (${point.x}, ${point.y})`);
-            }
-          } else {
-            log.push(`Element lookup returned no match (${Date.now() - lookupStart}ms)`);
-          }
-        } catch {
-          log.push(`Element lookup failed (${Date.now() - lookupStart}ms)`);
-        }
-      })()
-    : Promise.resolve();
+  // When the batched captureTraceState is available (iOS), use a single
+  // round-trip for screenshot + hierarchy + element bounds instead of 3
+  // separate gRPC calls that each trigger their own app.snapshot() IPC.
+  const useBatched = !!ctx.captureTraceState;
+  let beforeCaptures: { screenshotBefore?: unknown; hierarchyBefore?: unknown };
 
-  const [, { captures: beforeCaptures }] = await Promise.all([
-    boundsPromise,
-    ctx.collector.captureBeforeAction(ctx.takeScreenshot, ctx.captureHierarchy),
-  ]);
+  if (useBatched) {
+    const batchStart = Date.now();
+    let batchResult: CaptureTraceStateResponse | undefined;
+    try {
+      batchResult = await ctx.captureTraceState!({
+        screenshot: ctx.collector.config.screenshots,
+        hierarchy: ctx.collector.config.snapshots,
+        elementSelector: selector,
+      });
+    } catch {
+      // Fall through — captures will be empty, which is fine (best-effort)
+    }
+
+    // Feed the pre-fetched data into the collector via callbacks that
+    // resolve immediately (no extra network round-trips).
+    const screenshotData = batchResult?.success && batchResult.screenshotData?.length
+      ? batchResult.screenshotData : undefined;
+    const hierarchyXml = batchResult?.success && batchResult.hierarchyXml
+      ? batchResult.hierarchyXml : undefined;
+
+    const { captures } = await ctx.collector.captureBeforeAction(
+      () => Promise.resolve(screenshotData as Buffer | undefined),
+      () => Promise.resolve(hierarchyXml),
+    );
+    beforeCaptures = captures;
+
+    // Extract element bounds from the batched response
+    if (batchResult?.elementFound && batchResult.element?.bounds) {
+      bounds = batchResult.element.bounds;
+      log.push(`Element found at [${bounds.left},${bounds.top}][${bounds.right},${bounds.bottom}] (${Date.now() - batchStart}ms)`);
+      if (category === 'tap') {
+        point = {
+          x: (bounds.left + bounds.right) / 2,
+          y: (bounds.top + bounds.bottom) / 2,
+        };
+        log.push(`Tap target: (${point.x}, ${point.y})`);
+      }
+    } else if (selector && batchResult?.success) {
+      log.push(`Element lookup returned no match (${Date.now() - batchStart}ms)`);
+    }
+  } else {
+    // Original path: 3 parallel gRPC calls (Android, or fallback)
+    const boundsPromise = (selector && ctx.findElement)
+      ? (async () => {
+          const lookupStart = Date.now();
+          try {
+            const res = await ctx.findElement!(selector, 100);
+            if (res.found && res.element?.bounds) {
+              bounds = res.element.bounds;
+              log.push(`Element found at [${bounds.left},${bounds.top}][${bounds.right},${bounds.bottom}] (${Date.now() - lookupStart}ms)`);
+              if (category === 'tap') {
+                point = {
+                  x: (bounds.left + bounds.right) / 2,
+                  y: (bounds.top + bounds.bottom) / 2,
+                };
+                log.push(`Tap target: (${point.x}, ${point.y})`);
+              }
+            } else {
+              log.push(`Element lookup returned no match (${Date.now() - lookupStart}ms)`);
+            }
+          } catch {
+            log.push(`Element lookup failed (${Date.now() - lookupStart}ms)`);
+          }
+        })()
+      : Promise.resolve();
+
+    const [, { captures }] = await Promise.all([
+      boundsPromise,
+      ctx.collector.captureBeforeAction(ctx.takeScreenshot, ctx.captureHierarchy),
+    ]);
+    beforeCaptures = captures;
+  }
 
   // Stream a "started" lifecycle signal so UI mode can render an in-flight
   // row with a spinner immediately. The matching addActionEvent below will

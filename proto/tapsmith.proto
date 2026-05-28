@@ -62,6 +62,7 @@ service TapsmithService {
 
   // ─── Trace Support (PILOT-85) ───
   rpc GetLogcat(GetLogcatRequest) returns (GetLogcatResponse);
+  rpc CaptureTraceState(CaptureTraceStateRequest) returns (CaptureTraceStateResponse);
 
   // ─── Device Log Streaming (PILOT-193) ───
   // Server-side stream that tails device logs (Android logcat / iOS
@@ -574,6 +575,23 @@ message GetLogcatResponse {
   string request_id = 1;
   string logcat = 2;         // raw logcat output
   string error_message = 3;
+}
+
+message CaptureTraceStateRequest {
+  string request_id = 1;
+  bool screenshot = 2;
+  bool hierarchy = 3;
+  Selector element_selector = 4;  // optional — omit to skip element lookup
+}
+
+message CaptureTraceStateResponse {
+  string request_id = 1;
+  bool success = 2;
+  string error_message = 3;
+  bytes screenshot_data = 4;
+  string hierarchy_xml = 5;
+  bool element_found = 6;
+  ElementInfo element = 7;
 }
 
 // ─── Device Log Streaming (PILOT-193) ───

@@ -68,6 +68,16 @@ export interface UiHierarchyResponse {
   errorMessage: string;
 }
 
+export interface CaptureTraceStateResponse {
+  requestId: string;
+  success: boolean;
+  errorMessage: string;
+  screenshotData: Buffer;
+  hierarchyXml: string;
+  elementFound: boolean;
+  element?: ElementInfo;
+}
+
 export interface DeviceInfoProto {
   serial: string;
   model: string;
@@ -372,6 +382,22 @@ export class TapsmithGrpcClient {
     return this.call<UiHierarchyResponse>('getUiHierarchy', {
       requestId: requestId(),
     });
+  }
+
+  async captureTraceState(options: {
+    screenshot?: boolean;
+    hierarchy?: boolean;
+    elementSelector?: Selector;
+  }): Promise<CaptureTraceStateResponse> {
+    const request: Record<string, unknown> = {
+      requestId: requestId(),
+      screenshot: options.screenshot ?? false,
+      hierarchy: options.hierarchy ?? false,
+    };
+    if (options.elementSelector) {
+      request.elementSelector = this.selectorProto(options.elementSelector);
+    }
+    return this.call<CaptureTraceStateResponse>('captureTraceState', request, 5_000);
   }
 
   async waitForIdle(timeoutMs?: number): Promise<ActionResponse> {

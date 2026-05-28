@@ -78,6 +78,11 @@ export interface TraceCapture {
   collector: TraceCollector
   takeScreenshot: () => Promise<Buffer | undefined>
   captureHierarchy: () => Promise<string | undefined>
+  captureTraceState?: (options: {
+    screenshot?: boolean;
+    hierarchy?: boolean;
+    elementSelector?: import('../selectors.js').Selector;
+  }) => Promise<import('../grpc-client.js').CaptureTraceStateResponse | undefined>
 }
 
 // ─── Types ───

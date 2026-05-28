@@ -241,6 +241,10 @@ export class Device {
       takeScreenshot: () => this._takeScreenshotBuffer(),
       captureHierarchy: () => this._captureHierarchy(),
       findElement: (sel: Selector, timeout: number) => this._client.findElement(sel, timeout),
+      ...(this._platform === 'ios' ? {
+        captureTraceState: (opts: { screenshot?: boolean; hierarchy?: boolean; elementSelector?: Selector }) =>
+          this._client.captureTraceState(opts).catch(() => undefined),
+      } : {}),
     } : undefined;
     return tracedAction(ctx, action, category, selector, fn, fallbackMsg, extra);
   }
@@ -306,6 +310,10 @@ export class Device {
       collector: this._traceCollector,
       takeScreenshot: () => this._takeScreenshotBuffer(),
       captureHierarchy: () => this._captureHierarchy(),
+      ...(this._platform === 'ios' ? {
+        captureTraceState: (opts: { screenshot?: boolean; hierarchy?: boolean; elementSelector?: Selector }) =>
+          this._client.captureTraceState(opts).catch(() => undefined),
+      } : {}),
     } : undefined;
     return new ElementHandle(this._client, selector, this._defaultTimeoutMs, { traceCapture, typingDelay: this._typingDelayMs, doubleTapInterval: this._doubleTapIntervalMs });
   }
@@ -1160,6 +1168,10 @@ export class Device {
         collector: this._traceCollector,
         takeScreenshot: () => this._takeScreenshotBuffer(),
         captureHierarchy: () => this._captureHierarchy(),
+        ...(this._platform === 'ios' ? {
+          captureTraceState: (opts: { screenshot?: boolean; hierarchy?: boolean; elementSelector?: Selector }) =>
+            this._client.captureTraceState(opts).catch(() => undefined),
+        } : {}),
       };
     }
   }

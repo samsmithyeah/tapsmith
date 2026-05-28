@@ -41,6 +41,17 @@ enum SelectorParser {
         )
     }
 
+    /// Check whether the params contain any selector field.
+    static func hasSelector(_ params: [String: Any]) -> Bool {
+        let keys = ["role", "text", "textContains", "contentDesc", "hint",
+                     "className", "testId", "resourceId", "id", "xpath", "label"]
+        return keys.contains { key in
+            if let str = params[key] as? String, !str.isEmpty { return true }
+            if params[key] is [String: Any] { return true }
+            return false
+        }
+    }
+
     /// Return nil for empty strings.
     private static func nonEmpty(_ str: String?) -> String? {
         guard let s = str, !s.isEmpty else { return nil }

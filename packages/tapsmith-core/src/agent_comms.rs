@@ -193,6 +193,11 @@ pub enum AgentCommand {
     GetAppState {
         package: String,
     },
+    CaptureTraceState {
+        screenshot: bool,
+        hierarchy: bool,
+        selector: Option<Value>,
+    },
     #[allow(dead_code)]
     DismissSystemDialog,
 }
@@ -445,6 +450,16 @@ impl AgentCommand {
             AgentCommand::GetColorScheme {} => ("getColorScheme", json!({})),
             AgentCommand::GetAppState { package } => {
                 ("getAppState", json!({ "bundleId": package }))
+            }
+            AgentCommand::CaptureTraceState {
+                screenshot,
+                hierarchy,
+                selector,
+            } => {
+                let mut p = selector.clone().unwrap_or_else(|| json!({}));
+                p["screenshot"] = json!(screenshot);
+                p["hierarchy"] = json!(hierarchy);
+                ("captureTraceState", p)
             }
             AgentCommand::DismissSystemDialog => ("dismissSystemDialogs", json!({})),
         };
@@ -1526,5 +1541,32 @@ mod tests {
 
         let post: anyhow::Error = SendError::PostSend(anyhow!("post-send failure")).into();
         assert!(post.to_string().contains("post-send failure"));
+    }
+
+    #[test]
+    fn to_json_capture_trace_state() {
+        let cmd = AgentCommand::CaptureTraceState {
+            screenshot: true,
+            hierarchy: true,
+            selector: Some(json!({"text": "Login"})),
+        };
+        let j = cmd.to_json("cts1");
+        assert_eq!(j["method"], "captureTraceState");
+        assert_eq!(j["params"]["screenshot"], true);
+        assert_eq!(j["params"]["hierarchy"], true);
+        assert_eq!(j["params"]["text"], "Login");
+    }
+
+    #[test]
+    fn to_json_capture_trace_state_no_selector() {
+        let cmd = AgentCommand::CaptureTraceState {
+            screenshot: true,
+            hierarchy: false,
+            selector: None,
+        };
+        let j = cmd.to_json("cts2");
+        assert_eq!(j["method"], "captureTraceState");
+        assert_eq!(j["params"]["screenshot"], true);
+        assert_eq!(j["params"]["hierarchy"], false);
     }
 }

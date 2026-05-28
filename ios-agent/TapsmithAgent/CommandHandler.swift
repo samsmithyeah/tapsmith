@@ -928,6 +928,35 @@ class CommandHandler {
             let xml = hierarchyDumper.dump()
             return ["hierarchy": xml]
 
+        case "captureTraceState":
+            var result: [String: Any] = ["success": true]
+            let wantScreenshot = params["screenshot"] as? Bool ?? false
+            let wantHierarchy = params["hierarchy"] as? Bool ?? false
+            let hasSelector = SelectorParser.hasSelector(params)
+
+            // Take one shared snapshot for hierarchy + element lookup.
+            let snapshot: XCUIElementSnapshot? = (wantHierarchy || hasSelector)
+                ? (try? snapshotFinder.takeSnapshot()) : nil
+
+            if wantScreenshot {
+                let screenshot = XCUIScreen.main.screenshot()
+                let pngData = screenshot.pngRepresentation
+                result["screenshotData"] = pngData.base64EncodedString()
+            }
+            if wantHierarchy, let snapshot = snapshot {
+                result["hierarchyXml"] = hierarchyDumper.dump(from: snapshot)
+            }
+            if hasSelector, let snapshot = snapshot {
+                let selector = SelectorParser.parse(params)
+                if let element = try? snapshotFinder.findElement(selector, fromSnapshot: snapshot) {
+                    result["elementFound"] = true
+                    result["element"] = element.toDict()
+                } else {
+                    result["elementFound"] = false
+                }
+            }
+            return result
+
         // ─── Wait ───
 
         case "waitForIdle":

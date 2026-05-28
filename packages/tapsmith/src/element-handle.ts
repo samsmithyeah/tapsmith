@@ -863,6 +863,7 @@ export class ElementHandle {
       takeScreenshot: trace.takeScreenshot,
       captureHierarchy: trace.captureHierarchy,
       findElement: (sel: Selector, timeout: number) => this._client.findElement(sel, timeout),
+      captureTraceState: trace.captureTraceState,
     } : undefined;
     return tracedAction(ctx, action, category, this._selector, fn, fallbackMsg, extra);
   }
