@@ -645,9 +645,15 @@ impl TapsmithServiceImpl {
         // Simulator runtimes, not real hardware. Jump straight to the full
         // agent restart path, which works for both target kinds.
         if is_physical {
-            return self
+            let res = self
                 .restart_ios_agent_for_app(serial, package_name, wait_for_idle, idle_timeout_ms)
                 .await;
+            crate::timing::timing_log!(
+                "kind=reset name=agent_restart dur_ms={} ok={}",
+                reset_start.elapsed().as_millis(),
+                res.is_ok()
+            );
+            return res;
         }
 
         let t1 = std::time::Instant::now();
@@ -674,8 +680,15 @@ impl TapsmithServiceImpl {
                     elapsed_ms = t1.elapsed().as_millis() as u64,
                     "simctl relaunch lost the iOS accessibility session; falling back to agent restart"
                 );
-                self.restart_ios_agent_for_app(serial, package_name, wait_for_idle, idle_timeout_ms)
-                    .await
+                let res = self
+                    .restart_ios_agent_for_app(serial, package_name, wait_for_idle, idle_timeout_ms)
+                    .await;
+                crate::timing::timing_log!(
+                    "kind=reset name=agent_restart dur_ms={} ok={}",
+                    reset_start.elapsed().as_millis(),
+                    res.is_ok()
+                );
+                res
             }
         }
     }

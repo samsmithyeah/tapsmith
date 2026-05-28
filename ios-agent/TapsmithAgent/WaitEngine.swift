@@ -127,13 +127,15 @@ class WaitEngine {
                 let secondFrame = element.frame
                 if firstFrame != secondFrame {
                     var lastFrame = secondFrame
-                    let now0 = CFAbsoluteTimeGetCurrent()
+                    // Monotonic clock: unaffected by wall-clock/NTP adjustments
+                    // that could otherwise skew this elapsed-time loop.
+                    let now0 = ProcessInfo.processInfo.systemUptime
                     var stableSince = now0
                     let stabilityDeadline = now0 + Double(Self.stabilityWindowMs) / 1000.0
-                    while CFAbsoluteTimeGetCurrent() < stabilityDeadline {
+                    while ProcessInfo.processInfo.systemUptime < stabilityDeadline {
                         Thread.sleep(forTimeInterval: 0.03)
                         let currentFrame = element.frame
-                        let now = CFAbsoluteTimeGetCurrent()
+                        let now = ProcessInfo.processInfo.systemUptime
                         if currentFrame != lastFrame {
                             stableSince = now
                         } else if now - stableSince >= Self.requiredStableSeconds {

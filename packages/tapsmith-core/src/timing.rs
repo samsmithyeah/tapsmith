@@ -47,7 +47,11 @@ pub fn log(fields: std::fmt::Arguments<'_>) {
         .append(true)
         .open(path)
     {
-        let _ = writeln!(f, "[TIMING] pid={pid} {fields}");
+        // Format the whole line first, then emit it in a single `write_all`.
+        // Under O_APPEND a one-shot write keeps concurrent writers' lines from
+        // interleaving, which `writeln!`'s multiple syscalls would allow.
+        let line = format!("[TIMING] pid={pid} {fields}\n");
+        let _ = f.write_all(line.as_bytes());
     }
 }
 
