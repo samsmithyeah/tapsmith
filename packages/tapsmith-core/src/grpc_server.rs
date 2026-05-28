@@ -4586,48 +4586,10 @@ impl proto::tapsmith_service_server::TapsmithService for TapsmithServiceImpl {
                             )
                             .await);
                     }
-                    // Wipe the container by uninstalling + reinstalling the
-                    // app. `devicectl copy to --remove-existing-content`
-                    // alone would leave the app running and racing with
-                    // our writes; wiping via reinstall is the same pattern
-                    // we use for `clearAppData` and avoids every possible
-                    // "process is holding files" edge case. After the
-                    // reinstall the container is empty, so the subsequent
-                    // copy just lays the saved state on top.
-                    let app_path = self
-                        .ios_agent_config
-                        .read()
-                        .await
-                        .as_ref()
-                        .and_then(|c| c.app_path.clone());
-                    let Some(app_path) = app_path else {
-                        return Ok(self
-                            .action_error(
-                                request_id,
-                                "APP_STATE_RESTORE_FAILED",
-                                "device.restoreAppState on a physical iOS device requires \
-                                 the app bundle path cached at startAgent time. Tapsmith's \
-                                 CLI passes this automatically when `app` is set."
-                                    .to_string(),
-                            )
-                            .await);
-                    };
-                    if let Err(e) = ios::device::uninstall_app_on_device(&serial, pkg).await {
-                        warn!(error = %e, "Pre-restore uninstall failed, continuing");
-                    }
-                    if let Err(e) = ios::device::install_app_on_device(&serial, &app_path).await {
-                        return Ok(self
-                            .action_error(
-                                request_id,
-                                "APP_STATE_RESTORE_FAILED",
-                                format!("Pre-restore reinstall failed: {e}"),
-                            )
-                            .await);
-                    }
-                    // Give LaunchServices a moment to re-register the
-                    // freshly installed bundle before devicectl re-enters
-                    // its sandbox to push the container contents.
-                    tokio::time::sleep(std::time::Duration::from_millis(1_500)).await;
+                    // Terminate the app so it doesn't race with the
+                    // container write, then push the saved state with
+                    // --remove-existing-content to replace any stale data.
+                    let _ = ios::device::terminate_app(&serial, pkg).await;
                     if let Err(e) =
                         ios::device::copy_app_container_to_device(&serial, pkg, &sources).await
                     {
@@ -4640,26 +4602,6 @@ impl proto::tapsmith_service_server::TapsmithService for TapsmithServiceImpl {
                             .await);
                     }
                     info!(%pkg, %local_path, "iOS physical app state restored");
-                    // Reinstalling + pushing the container replaces the app
-                    // bundle under the running XCUITest runner. The agent's
-                    // cached XCUIApplication references become stale in a
-                    // way that causes snapshots to return partial trees
-                    // after the next launch — elements present in the
-                    // hierarchy dump are missing from findElement. Restart
-                    // the agent entirely so the new test session starts
-                    // against fresh XCUITest bindings.
-                    if let Err(e) = self
-                        .restart_ios_agent_for_app(&serial, pkg, false, 10_000)
-                        .await
-                    {
-                        return Ok(self
-                            .action_error(
-                                request_id,
-                                "APP_STATE_RESTORE_FAILED",
-                                format!("Agent restart after restore failed: {e}"),
-                            )
-                            .await);
-                    }
                     return Ok(Self::success_action_response(request_id));
                 }
                 // iOS simulator: terminate the app, clear the data container,
