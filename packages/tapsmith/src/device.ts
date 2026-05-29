@@ -30,7 +30,7 @@ import {
 import { ElementHandle, locatorOptionsToSelector, type LocatorOptions } from './element-handle.js';
 import type { TapsmithConfig } from './config.js';
 import { Tracing } from './trace/tracing.js';
-import { type TraceCollector, getActiveTraceCollector, extractSourceLocation } from './trace/trace-collector.js';
+import { type TraceCollector, getActiveTraceCollector, extractSourceLocation, extractStack } from './trace/trace-collector.js';
 import type { ActionCategory, ConsoleLevel } from './trace/types.js';
 import { tracedAction } from './trace/traced-action.js';
 import {
@@ -880,7 +880,8 @@ export class Device {
       return this._connectWebView(packageName);
     }
 
-    const sourceLocation = extractSourceLocation(new Error().stack ?? '');
+    const stack = extractStack(new Error().stack ?? '');
+    const sourceLocation = stack[0];
     const targetPackageName = packageName ?? this.defaultPackageName;
     const selector = targetPackageName ? `package=${targetPackageName}` : undefined;
     const { captures: beforeCaptures } = await collector.captureBeforeAction(
@@ -897,6 +898,7 @@ export class Device {
       action: 'connect',
       selector,
       sourceLocation,
+      stack,
       log: connectLog,
       hasScreenshotBefore: !!beforeCaptures.screenshotBefore,
       hasHierarchyBefore: !!beforeCaptures.hierarchyBefore,
@@ -921,6 +923,7 @@ export class Device {
         hasHierarchyBefore: !!beforeCaptures.hierarchyBefore,
         hasHierarchyAfter: false,
         sourceLocation,
+        stack,
       });
     });
 
@@ -944,6 +947,7 @@ export class Device {
           hasHierarchyBefore: !!beforeCaptures.hierarchyBefore,
           hasHierarchyAfter: false,
           sourceLocation,
+          stack,
         });
       }
       throw err;
@@ -966,6 +970,7 @@ export class Device {
       hasHierarchyBefore: !!beforeCaptures.hierarchyBefore,
       hasHierarchyAfter: false,
       sourceLocation,
+      stack,
     });
 
     return handle;

@@ -22,7 +22,7 @@ import {
   _label,
 } from './selectors.js';
 import type { TapsmithGrpcClient, ElementInfo, ActionResponse } from './grpc-client.js';
-import { type TraceCapture, extractSourceLocation } from './trace/trace-collector.js';
+import { type TraceCapture, extractStack } from './trace/trace-collector.js';
 import type { ActionCategory } from './trace/types.js';
 import { tracedAction } from './trace/traced-action.js';
 
@@ -778,12 +778,14 @@ export class ElementHandle {
   private _emitQueryStarted(action: string): void {
     const trace = this._traceCapture;
     if (!trace) return;
-    const sourceLocation = extractSourceLocation(new Error().stack ?? '');
+    const stack = extractStack(new Error().stack ?? '');
+    const sourceLocation = stack[0];
     trace.collector._emitActionStarted({
       category: 'other',
       action,
       selector: JSON.stringify(selectorToProto(this._selector)),
       sourceLocation,
+      stack,
       log: [],
       hasScreenshotBefore: false,
       hasHierarchyBefore: false,
@@ -797,7 +799,8 @@ export class ElementHandle {
   private async _traceQuery(action: string, result: string, durationMs: number, bounds?: ElementInfo['bounds']): Promise<void> {
     const trace = this._traceCapture;
     if (!trace) return;
-    const sourceLocation = extractSourceLocation(new Error().stack ?? '');
+    const stack = extractStack(new Error().stack ?? '');
+    const sourceLocation = stack[0];
     const { captures: beforeCaptures } = await trace.collector.captureBeforeAction(
       trace.takeScreenshot, trace.captureHierarchy,
     );
@@ -809,6 +812,7 @@ export class ElementHandle {
       success: true,
       bounds,
       sourceLocation,
+      stack,
       hasScreenshotBefore: !!beforeCaptures.screenshotBefore,
       hasScreenshotAfter: false,
       hasHierarchyBefore: !!beforeCaptures.hierarchyBefore,
@@ -826,7 +830,8 @@ export class ElementHandle {
   private async _traceQueryFailed(action: string, err: unknown, durationMs: number): Promise<void> {
     const trace = this._traceCapture;
     if (!trace) return;
-    const sourceLocation = extractSourceLocation(new Error().stack ?? '');
+    const stack = extractStack(new Error().stack ?? '');
+    const sourceLocation = stack[0];
     const errMsg = err instanceof Error ? err.message : String(err);
     const errStack = err instanceof Error ? err.stack : undefined;
     const { captures: beforeCaptures } = await trace.collector.captureBeforeAction(
@@ -841,6 +846,7 @@ export class ElementHandle {
       error: errMsg,
       errorStack: errStack,
       sourceLocation,
+      stack,
       hasScreenshotBefore: !!beforeCaptures.screenshotBefore,
       hasScreenshotAfter: false,
       hasHierarchyBefore: !!beforeCaptures.hierarchyBefore,

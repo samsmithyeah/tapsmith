@@ -2,7 +2,7 @@ import { WebSocket } from 'ws';
 import type { TapsmithGrpcClient } from './grpc-client.js';
 import { WebViewLocator } from './webview-locator.js';
 import type { TraceCollector } from './trace/trace-collector.js';
-import { extractSourceLocation } from './trace/trace-collector.js';
+import { extractStack } from './trace/trace-collector.js';
 import type { WebKitInspectorClient } from './webkit-inspector.js';
 
 const POLL_INTERVAL_MS = 250;
@@ -159,7 +159,8 @@ export class WebViewHandle {
     const ctx = this._traceCtx;
     if (!ctx) return fn(Date.now() + this._timeoutMs);
 
-    const sourceLocation = extractSourceLocation(new Error().stack ?? '');
+    const stack = extractStack(new Error().stack ?? '');
+    const sourceLocation = stack[0];
     const selectorStr = selector ? `css=${selector}` : undefined;
 
     const { captures: beforeCaptures } = await ctx.collector.captureBeforeAction(
@@ -174,6 +175,7 @@ export class WebViewHandle {
       action,
       selector: selectorStr,
       sourceLocation,
+      stack,
       log: [`webview.${action}(${selectorStr ?? ''})`],
       hasScreenshotBefore: !!beforeCaptures.screenshotBefore,
       hasHierarchyBefore: !!beforeCaptures.hierarchyBefore,
@@ -199,6 +201,7 @@ export class WebViewHandle {
         hasHierarchyBefore: !!beforeCaptures.hierarchyBefore,
         hasHierarchyAfter: false,
         sourceLocation,
+        stack,
       });
     });
 
@@ -218,6 +221,7 @@ export class WebViewHandle {
           hasHierarchyBefore: !!beforeCaptures.hierarchyBefore,
           hasHierarchyAfter: false,
           sourceLocation,
+          stack,
         });
       }
       throw err;
@@ -251,6 +255,7 @@ export class WebViewHandle {
       hasHierarchyBefore: !!beforeCaptures.hierarchyBefore,
       hasHierarchyAfter: false,
       sourceLocation,
+      stack,
     });
 
     return result;
