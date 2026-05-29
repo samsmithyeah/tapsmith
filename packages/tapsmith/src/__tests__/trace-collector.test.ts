@@ -525,6 +525,24 @@ describe('extractStack', () => {
   })
 })
 
+describe('addActionEvent preserves stack', () => {
+  it('keeps the stack array on the emitted event', () => {
+    const c = new TraceCollector(
+      { screenshots: false, snapshots: false, sources: true, network: false, deviceLogs: false },
+      '/tmp/ts-test-' + process.pid,
+    )
+    c.addActionEvent({
+      category: 'tap', action: 'tap', duration: 1, success: true,
+      hasScreenshotBefore: false, hasScreenshotAfter: false,
+      hasHierarchyBefore: false, hasHierarchyAfter: false,
+      sourceLocation: { file: '/p/a.ts', line: 1 },
+      stack: [{ file: '/p/a.ts', line: 1 }, { file: '/p/b.ts', line: 2 }],
+    })
+    const ev = c.events.find((e) => e.type === 'action') as ActionTraceEvent
+    expect(ev.stack).toEqual([{ file: '/p/a.ts', line: 1 }, { file: '/p/b.ts', line: 2 }])
+  })
+})
+
 describe('extractSourceLocation', () => {
   it('extracts file, line, column from a stack trace', () => {
     const stack = `Error: test
