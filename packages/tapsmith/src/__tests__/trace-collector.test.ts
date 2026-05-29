@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as os from 'node:os';
-import { TraceCollector, extractSourceLocation } from '../trace/trace-collector.js';
+import { TraceCollector, extractSourceLocation, extractStack } from '../trace/trace-collector.js';
 import type { TraceConfig, ActionTraceEvent, AssertionTraceEvent, ConsoleTraceEvent, GroupTraceEvent } from '../trace/types.js';
 
 describe('TraceCollector', () => {
@@ -488,6 +488,42 @@ describe('TraceCollector', () => {
     expect(consoleEvents[0].level).toBe('log');
   });
 });
+
+describe('extractStack', () => {
+  it('returns all user-code frames in order, top first', () => {
+    const stack = [
+      'Error',
+      '    at Object.tap (/proj/node_modules/tapsmith/dist/element-handle.js:10:5)',
+      '    at loginHelper (/proj/tests/helpers/login.ts:8:3)',
+      '    at /proj/tests/auth.test.ts:42:7',
+    ].join('\n')
+    const frames = extractStack(stack)
+    expect(frames).toEqual([
+      { file: '/proj/tests/helpers/login.ts', line: 8, column: 3 },
+      { file: '/proj/tests/auth.test.ts', line: 42, column: 7 },
+    ])
+  })
+
+  it('filters SDK, node_modules, and node internal frames', () => {
+    const stack = [
+      'Error',
+      '    at /proj/packages/tapsmith/src/device.ts:700:1',
+      '    at node:internal/process/task_queues:95:5',
+      '    at internal/main/run_main_module:23:47',
+      '    at /proj/tests/x.test.ts:3:1',
+    ].join('\n')
+    expect(extractStack(stack)).toEqual([{ file: '/proj/tests/x.test.ts', line: 3, column: 1 }])
+  })
+
+  it('extractSourceLocation returns the first frame from extractStack', () => {
+    const stack = 'Error\n    at /proj/a.ts:1:2\n    at /proj/b.ts:3:4'
+    expect(extractSourceLocation(stack)).toEqual(extractStack(stack)[0])
+  })
+
+  it('returns [] for an empty stack', () => {
+    expect(extractStack('')).toEqual([])
+  })
+})
 
 describe('extractSourceLocation', () => {
   it('extracts file, line, column from a stack trace', () => {

@@ -108,26 +108,29 @@ export interface CaptureBeforeAfter {
 const STACK_FRAME_RE = /at\s+(?:.+\s+)?\(?(.+):(\d+):(\d+)\)?$/;
 
 /**
- * Extract the caller's source location from a stack trace.
- * Skips frames inside the tapsmith SDK.
+ * Extract all user-code frames from a stack trace, top frame first.
+ * Skips frames inside the tapsmith SDK, node_modules, and node internals.
+ */
+export function extractStack(stack: string): SourceLocation[] {
+  const frames: SourceLocation[] = []
+  for (const line of stack.split('\n')) {
+    const match = STACK_FRAME_RE.exec(line.trim())
+    if (!match) continue
+    const file = match[1]
+    if (file.includes('/tapsmith/src/') || file.includes('/tapsmith/dist/')) continue
+    if (file.includes('node_modules')) continue
+    if (file.startsWith('node:') || file.startsWith('internal/')) continue
+    frames.push({ file, line: parseInt(match[2], 10), column: parseInt(match[3], 10) })
+  }
+  return frames
+}
+
+/**
+ * Extract the caller's source location (the top user-code frame) from a stack
+ * trace. Convenience wrapper over {@link extractStack}.
  */
 export function extractSourceLocation(stack: string): SourceLocation | undefined {
-  const lines = stack.split('\n');
-  for (const line of lines) {
-    const match = STACK_FRAME_RE.exec(line.trim());
-    if (!match) continue;
-    const file = match[1];
-    // Skip internal frames
-    if (file.includes('/tapsmith/src/') || file.includes('/tapsmith/dist/')) continue;
-    if (file.includes('node_modules')) continue;
-    if (file.startsWith('node:') || file.startsWith('internal/')) continue;
-    return {
-      file,
-      line: parseInt(match[2], 10),
-      column: parseInt(match[3], 10),
-    };
-  }
-  return undefined;
+  return extractStack(stack)[0]
 }
 
 // ─── TraceCollector ───
