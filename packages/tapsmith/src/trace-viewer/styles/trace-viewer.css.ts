@@ -198,6 +198,7 @@ html, body, #app {
 .rail-brand-text {
   display: flex;
   flex-direction: column;
+  align-items: flex-start;
   gap: 2px;
 }
 .rail-wordmark {
