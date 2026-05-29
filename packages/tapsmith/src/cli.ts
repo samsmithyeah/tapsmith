@@ -154,7 +154,7 @@ function warnSequentialSkippedDevices(
 
 function getVersion(): string {
   try {
-    const pkgPath = path.resolve(__dirname, '../package.json');
+    const pkgPath = path.resolve(import.meta.dirname, '../package.json');
     const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf-8'));
     return pkg.version ?? '0.0.0';
   } catch {
@@ -175,7 +175,7 @@ function needsTsx(testFiles: string[]): boolean {
 
 function reExecWithTsx(args: string[]): never {
   // Find tsx binary — first check local node_modules, then global
-  const tapsmithPkgDir = path.resolve(__dirname, '..');
+  const tapsmithPkgDir = path.resolve(import.meta.dirname, '..');
   const localTsx = path.join(tapsmithPkgDir, 'node_modules', '.bin', 'tsx');
   const tsxBin = fs.existsSync(localTsx) ? localTsx : 'tsx';
 

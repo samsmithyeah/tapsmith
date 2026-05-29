@@ -407,7 +407,7 @@ export function afterEach(fn: HookFn): void {
 
 function getPackageVersion(): string {
   try {
-    const pkgPath = path.resolve(__dirname, '../package.json');
+    const pkgPath = path.resolve(import.meta.dirname, '../package.json');
     const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf-8'));
     return pkg.version ?? '0.0.0';
   } catch {

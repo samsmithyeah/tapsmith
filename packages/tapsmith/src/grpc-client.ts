@@ -202,9 +202,9 @@ export interface ScrollOptions {
 // ─── Client ───
 
 const PROTO_PATH = (() => {
-  const bundled = path.resolve(__dirname, 'proto/tapsmith.proto');
+  const bundled = path.resolve(import.meta.dirname, 'proto/tapsmith.proto');
   if (fs.existsSync(bundled)) return bundled;
-  return path.resolve(__dirname, '../../../proto/tapsmith.proto');
+  return path.resolve(import.meta.dirname, '../../../proto/tapsmith.proto');
 })();
 const DEFAULT_ADDRESS = 'localhost:50051';
 
