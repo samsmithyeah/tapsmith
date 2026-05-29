@@ -7,7 +7,7 @@ import {
   useRef,
   useMemo,
 } from "preact/hooks";
-import { unzipSync, strFromU8 } from "fflate";
+import { unzipSync } from "fflate";
 import type {
   AnyTraceEvent,
   ActionTraceEvent,

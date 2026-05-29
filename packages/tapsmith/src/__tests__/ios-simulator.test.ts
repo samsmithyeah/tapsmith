@@ -1,7 +1,6 @@
-import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
+import { describe, expect, it, vi, beforeEach } from 'vitest';
 import * as childProcess from 'node:child_process';
 import * as fs from 'node:fs';
-import * as os from 'node:os';
 
 vi.mock('node:child_process');
 vi.mock('node:fs');
@@ -31,7 +30,6 @@ import {
   listBootedSimulators,
   listCompatibleBootedSimulators,
   bootSimulator,
-  shutdownSimulator,
   installApp,
   isAppInstalled,
   findSimulator,
@@ -50,18 +48,6 @@ import {
 import type { SimulatorInfo } from '../ios-simulator.js';
 
 // ─── Fixtures ───
-
-function makeSim(overrides: Partial<SimulatorInfo> = {}): SimulatorInfo {
-  return {
-    udid: 'AAAA-1111',
-    name: 'iPhone 16',
-    state: 'Booted',
-    isAvailable: true,
-    runtime: 'com.apple.CoreSimulator.SimRuntime.iOS-26-4',
-    deviceType: 'com.apple.CoreSimulator.SimDeviceType.iPhone-16',
-    ...overrides,
-  };
-}
 
 function makeSimctlOutput(sims: Array<Partial<SimulatorInfo & { deviceTypeIdentifier?: string }>>): string {
   const devices: Record<string, unknown[]> = {};
@@ -362,8 +348,7 @@ describe('probeSimulatorHealth', () => {
 
 describe('filterHealthySimulators', () => {
   it('separates healthy from unhealthy', () => {
-    const origImpl = mockedExecFileSync.getMockImplementation();
-    mockedExecFileSync.mockImplementation((cmd: string, args: string[], opts: unknown) => {
+    mockedExecFileSync.mockImplementation((cmd: string, args: string[]) => {
       if (cmd === 'xcrun' && (args as string[])?.[0] === 'simctl' && (args as string[])?.[1] === 'list') {
         return makeSimctlOutput([
           { udid: 'A', state: 'Booted' },

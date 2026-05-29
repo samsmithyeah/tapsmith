@@ -4,41 +4,6 @@ import { parseHierarchyXml } from './hierarchy-utils.js';
 import { generateSelectors, generateBestSelector, type GeneratedSelector } from './selector-generation.js';
 import { parseSelectorString, findMatchingNodes, getNodeBounds, hitTest } from './selector-matching.js';
 
-// ─── Pick Button (lives in screenshot panel) ───
-
-const PICK_BUTTON_STYLES = `
-  .sp-pick-float { position: absolute; top: 8px; left: 8px; z-index: 10; display: flex; align-items: center; justify-content: center; width: 28px; height: 28px; border-radius: 4px; border: 1px solid var(--color-border); background: var(--color-bg-secondary); color: var(--color-text-muted); cursor: pointer; font-size: 14px; opacity: 0.85; transition: all 0.15s; }
-  .sp-pick-float:hover { opacity: 1; background: var(--color-bg-hover); color: var(--color-text-secondary); }
-  .sp-pick-float.active { opacity: 1; background: var(--color-accent); color: var(--color-btn-text); border-color: var(--color-accent); }
-`;
-
-let pickStylesInjected = false;
-function injectPickStyles() {
-  if (pickStylesInjected) return;
-  pickStylesInjected = true;
-  const el = document.createElement('style');
-  el.textContent = PICK_BUTTON_STYLES;
-  document.head.appendChild(el);
-}
-
-interface PickButtonProps {
-  active: boolean
-  onToggle: () => void
-}
-
-function PickButton({ active, onToggle }: PickButtonProps) {
-  injectPickStyles();
-  return (
-    <button
-      class={`sp-pick-float viewer-pick-btn${active ? ' active' : ''}`}
-      onClick={onToggle}
-      title="Pick element from screenshot"
-    >
-      ⊙
-    </button>
-  );
-}
-
 // ─── Selector Tab (lives in detail tabs) ───
 
 const SELECTOR_TAB_STYLES = `
