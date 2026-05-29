@@ -1,8 +1,8 @@
-import { useState, useCallback, useEffect, useMemo } from 'preact/hooks'
-import type { HierarchyNode, Bounds } from './hierarchy-utils.js'
-import { parseHierarchyXml } from './hierarchy-utils.js'
-import { generateSelectors, generateBestSelector, type GeneratedSelector } from './selector-generation.js'
-import { parseSelectorString, findMatchingNodes, getNodeBounds, hitTest } from './selector-matching.js'
+import { useState, useCallback, useEffect, useMemo } from 'preact/hooks';
+import type { HierarchyNode, Bounds } from './hierarchy-utils.js';
+import { parseHierarchyXml } from './hierarchy-utils.js';
+import { generateSelectors, generateBestSelector, type GeneratedSelector } from './selector-generation.js';
+import { parseSelectorString, findMatchingNodes, getNodeBounds, hitTest } from './selector-matching.js';
 
 // ─── Pick Button (lives in screenshot panel) ───
 
@@ -10,15 +10,15 @@ const PICK_BUTTON_STYLES = `
   .sp-pick-float { position: absolute; top: 8px; left: 8px; z-index: 10; display: flex; align-items: center; justify-content: center; width: 28px; height: 28px; border-radius: 4px; border: 1px solid var(--color-border); background: var(--color-bg-secondary); color: var(--color-text-muted); cursor: pointer; font-size: 14px; opacity: 0.85; transition: all 0.15s; }
   .sp-pick-float:hover { opacity: 1; background: var(--color-bg-hover); color: var(--color-text-secondary); }
   .sp-pick-float.active { opacity: 1; background: var(--color-accent); color: var(--color-btn-text); border-color: var(--color-accent); }
-`
+`;
 
-let pickStylesInjected = false
+let pickStylesInjected = false;
 function injectPickStyles() {
-  if (pickStylesInjected) return
-  pickStylesInjected = true
-  const el = document.createElement('style')
-  el.textContent = PICK_BUTTON_STYLES
-  document.head.appendChild(el)
+  if (pickStylesInjected) return;
+  pickStylesInjected = true;
+  const el = document.createElement('style');
+  el.textContent = PICK_BUTTON_STYLES;
+  document.head.appendChild(el);
 }
 
 interface PickButtonProps {
@@ -27,7 +27,7 @@ interface PickButtonProps {
 }
 
 function PickButton({ active, onToggle }: PickButtonProps) {
-  injectPickStyles()
+  injectPickStyles();
   return (
     <button
       class={`sp-pick-float viewer-pick-btn${active ? ' active' : ''}`}
@@ -36,7 +36,7 @@ function PickButton({ active, onToggle }: PickButtonProps) {
     >
       ⊙
     </button>
-  )
+  );
 }
 
 // ─── Selector Tab (lives in detail tabs) ───
@@ -65,15 +65,15 @@ const SELECTOR_TAB_STYLES = `
   .st-pick-hint code { background: var(--color-bg-tertiary); padding: 1px 5px; border-radius: 3px; font-size: 11px; }
   .st-setup-hint { padding: 4px 10px 6px; font-size: 11px; color: var(--color-text-faint); font-family: 'SF Mono', 'Cascadia Code', Consolas, monospace; }
   .st-setup-hint code { color: var(--color-text-muted); }
-`
+`;
 
-let stStylesInjected = false
+let stStylesInjected = false;
 function injectStStyles() {
-  if (stStylesInjected) return
-  stStylesInjected = true
-  const el = document.createElement('style')
-  el.textContent = SELECTOR_TAB_STYLES
-  document.head.appendChild(el)
+  if (stStylesInjected) return;
+  stStylesInjected = true;
+  const el = document.createElement('style');
+  el.textContent = SELECTOR_TAB_STYLES;
+  document.head.appendChild(el);
 }
 
 interface SelectorTabProps {
@@ -85,71 +85,71 @@ interface SelectorTabProps {
 }
 
 export function SelectorTab({ hierarchyXml, pickedNode, onHighlightsChange, selector, onSelectorChange }: SelectorTabProps) {
-  injectStStyles()
+  injectStStyles();
 
-  const [copiedIdx, setCopiedIdx] = useState<number | null>(null)
+  const [copiedIdx, setCopiedIdx] = useState<number | null>(null);
 
   const roots = useMemo(
     () => hierarchyXml ? parseHierarchyXml(hierarchyXml) : [],
     [hierarchyXml],
-  )
+  );
 
   const generatedSelectors = useMemo<GeneratedSelector[]>(
     () => pickedNode ? generateSelectors(pickedNode) : [],
     [pickedNode],
-  )
+  );
 
-  const isWebViewPick = pickedNode?.attributes.get('webview') === 'true'
+  const isWebViewPick = pickedNode?.attributes.get('webview') === 'true';
 
   const matchCount = useMemo(() => {
-    if (!selector.trim() || roots.length === 0) return null
-    const parsed = parseSelectorString(selector)
-    if (!parsed) return null
-    return findMatchingNodes(roots, parsed).length
-  }, [selector, roots])
+    if (!selector.trim() || roots.length === 0) return null;
+    const parsed = parseSelectorString(selector);
+    if (!parsed) return null;
+    return findMatchingNodes(roots, parsed).length;
+  }, [selector, roots]);
 
   useEffect(() => {
     if (!selector.trim() || roots.length === 0) {
-      onHighlightsChange([])
-      return
+      onHighlightsChange([]);
+      return;
     }
-    const parsed = parseSelectorString(selector)
+    const parsed = parseSelectorString(selector);
     if (!parsed) {
-      onHighlightsChange([])
-      return
+      onHighlightsChange([]);
+      return;
     }
-    const matches = findMatchingNodes(roots, parsed)
-    const bounds = matches.map(getNodeBounds).filter((b): b is Bounds => b !== null)
-    onHighlightsChange(bounds)
-  }, [selector, roots, onHighlightsChange])
+    const matches = findMatchingNodes(roots, parsed);
+    const bounds = matches.map(getNodeBounds).filter((b): b is Bounds => b !== null);
+    onHighlightsChange(bounds);
+  }, [selector, roots, onHighlightsChange]);
 
   const handleInput = useCallback((e: Event) => {
-    onSelectorChange((e.target as HTMLInputElement).value)
-  }, [onSelectorChange])
+    onSelectorChange((e.target as HTMLInputElement).value);
+  }, [onSelectorChange]);
 
   const handleCopy = useCallback((code: string, idx: number) => {
-    if (!navigator.clipboard) return
+    if (!navigator.clipboard) return;
     navigator.clipboard.writeText(code).then(() => {
-      setCopiedIdx(idx)
-      setTimeout(() => setCopiedIdx(null), 1500)
-    })
-  }, [])
+      setCopiedIdx(idx);
+      setTimeout(() => setCopiedIdx(null), 1500);
+    });
+  }, []);
 
   const handleSelectOption = useCallback((code: string) => {
-    onSelectorChange(code)
-  }, [onSelectorChange])
+    onSelectorChange(code);
+  }, [onSelectorChange]);
 
   const countLabel = matchCount === null
     ? ''
     : matchCount === 1
       ? '1 match'
-      : `${matchCount} matches`
+      : `${matchCount} matches`;
 
   const countClass = matchCount === null
     ? 'st-count'
     : matchCount > 0
       ? 'st-count has-matches'
-      : 'st-count no-matches'
+      : 'st-count no-matches';
 
   return (
     <div class="st-container">
@@ -182,7 +182,7 @@ export function SelectorTab({ hierarchyXml, pickedNode, onHighlightsChange, sele
                 <span class="st-option-label">{s.label}</span>
                 <button
                   class="st-option-copy"
-                  onClick={(e) => { e.stopPropagation(); handleCopy(s.code, i) }}
+                  onClick={(e) => { e.stopPropagation(); handleCopy(s.code, i); }}
                 >
                   {copiedIdx === i ? 'Copied!' : 'Copy'}
                 </button>
@@ -197,7 +197,7 @@ export function SelectorTab({ hierarchyXml, pickedNode, onHighlightsChange, sele
         )}
       </div>
     </div>
-  )
+  );
 }
 
 // ─── Pick Handler (called from parent on screenshot click) ───
@@ -207,11 +207,11 @@ export function handlePickFromScreenshot(
   clickX: number,
   clickY: number,
 ): { node: HierarchyNode; selector: string; bounds: Bounds } | null {
-  const node = hitTest(roots, clickX, clickY)
-  if (!node) return null
-  const bounds = getNodeBounds(node)
-  if (!bounds) return null
-  return { node, selector: generateBestSelector(node), bounds }
+  const node = hitTest(roots, clickX, clickY);
+  if (!node) return null;
+  const bounds = getNodeBounds(node);
+  if (!bounds) return null;
+  return { node, selector: generateBestSelector(node), bounds };
 }
 
 // ─── Hover Handler (called from parent on screenshot mousemove) ───
@@ -221,7 +221,7 @@ export function handleHoverFromScreenshot(
   x: number,
   y: number,
 ): Bounds | null {
-  const node = hitTest(roots, x, y)
-  if (!node) return null
-  return getNodeBounds(node)
+  const node = hitTest(roots, x, y);
+  if (!node) return null;
+  return getNodeBounds(node);
 }

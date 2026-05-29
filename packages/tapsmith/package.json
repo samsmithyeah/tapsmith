@@ -16,10 +16,10 @@
     "build:trace-viewer": "vite build",
     "build:ui-mode": "vite build --config vite.config.ui-mode.ts",
     "dev:ui-mode": "vite --config vite.config.ui-mode.ts",
-    "lint": "eslint src/ --ignore-pattern src/trace-viewer/",
+    "lint": "eslint src/",
     "knip": "knip",
     "test": "vitest run",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "tsc --noEmit && tsc -p tsconfig.apps.json",
     "prepublishOnly": "npm run build"
   },
   "files": [

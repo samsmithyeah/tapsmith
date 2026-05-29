@@ -1,5 +1,5 @@
 import "./fonts.css";
-import { render } from "preact";
+import { render, type JSX } from "preact";
 import {
   useState,
   useEffect,
@@ -86,7 +86,7 @@ function parseTraceZip(buf: Uint8Array): TraceData {
     if (name.startsWith("screenshots/") && name.endsWith(".png")) {
       screenshots.set(
         name,
-        URL.createObjectURL(new Blob([data], { type: "image/png" })),
+        URL.createObjectURL(new Blob([data as Uint8Array<ArrayBuffer>], { type: "image/png" })),
       );
     }
   }
@@ -532,7 +532,7 @@ function App() {
             height: `${filmstripHeight}px`,
             flexShrink: 0,
             "--filmstrip-h": `${filmstripHeight}px`,
-          } as Record<string, unknown>
+          } as JSX.CSSProperties
         }
       >
         <TimelineFilmstrip

@@ -3,8 +3,8 @@ import { parseHierarchyXml, parseBounds } from './hierarchy-utils.js';
 import type { HierarchyNode, Bounds } from './hierarchy-utils.js';
 import { generateBestSelector } from './selector-generation.js';
 
-export type { HierarchyNode, Bounds }
-export { parseHierarchyXml, parseBounds, generateBestSelector }
+export type { HierarchyNode, Bounds };
+export { parseHierarchyXml, parseBounds, generateBestSelector };
 
 interface Props {
   xml: string
