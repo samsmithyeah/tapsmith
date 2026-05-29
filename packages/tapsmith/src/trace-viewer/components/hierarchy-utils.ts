@@ -17,28 +17,28 @@ export interface Bounds {
 // ─── XML Parser ───
 
 export function parseHierarchyXml(xml: string): HierarchyNode[] {
-  const roots: HierarchyNode[] = []
-  const stack: HierarchyNode[] = []
+  const roots: HierarchyNode[] = [];
+  const stack: HierarchyNode[] = [];
 
-  const tagRe = /<(\/?)([a-zA-Z_][\w.]*)((?:\s+[\w:.-]+="[^"]*")*)\s*(\/?)>/g
-  let match: RegExpExecArray | null
+  const tagRe = /<(\/?)([a-zA-Z_][\w.]*)((?:\s+[\w:.-]+="[^"]*")*)\s*(\/?)>/g;
+  let match: RegExpExecArray | null;
 
   while ((match = tagRe.exec(xml)) !== null) {
-    const isClosing = match[1] === '/'
-    const tagName = match[2]
-    const attrsStr = match[3]
-    const isSelfClosing = match[4] === '/'
+    const isClosing = match[1] === '/';
+    const tagName = match[2];
+    const attrsStr = match[3];
+    const isSelfClosing = match[4] === '/';
 
     if (isClosing) {
-      if (stack.length > 0) stack.pop()
-      continue
+      if (stack.length > 0) stack.pop();
+      continue;
     }
 
-    const attributes = new Map<string, string>()
-    const attrRe = /([\w:.-]+)="([^"]*)"/g
-    let attrMatch: RegExpExecArray | null
+    const attributes = new Map<string, string>();
+    const attrRe = /([\w:.-]+)="([^"]*)"/g;
+    let attrMatch: RegExpExecArray | null;
     while ((attrMatch = attrRe.exec(attrsStr)) !== null) {
-      attributes.set(attrMatch[1], attrMatch[2])
+      attributes.set(attrMatch[1], attrMatch[2]);
     }
 
     const node: HierarchyNode = {
@@ -46,33 +46,33 @@ export function parseHierarchyXml(xml: string): HierarchyNode[] {
       attributes,
       children: [],
       depth: stack.length,
-    }
+    };
 
     if (stack.length > 0) {
-      stack[stack.length - 1].children.push(node)
+      stack[stack.length - 1].children.push(node);
     } else {
-      roots.push(node)
+      roots.push(node);
     }
 
     if (!isSelfClosing) {
-      stack.push(node)
+      stack.push(node);
     }
   }
 
-  return roots
+  return roots;
 }
 
 // ─── Bounds Parser ───
 
 export function parseBounds(boundsStr: string): Bounds | null {
-  const match = boundsStr.match(/^\[(\d+),(\d+)\]\[(\d+),(\d+)\]$/)
-  if (!match) return null
+  const match = boundsStr.match(/^\[(\d+),(\d+)\]\[(\d+),(\d+)\]$/);
+  if (!match) return null;
   return {
     left: parseInt(match[1], 10),
     top: parseInt(match[2], 10),
     right: parseInt(match[3], 10),
     bottom: parseInt(match[4], 10),
-  }
+  };
 }
 
 // ─── Role Mapping ───
@@ -106,7 +106,7 @@ export const ANDROID_CLASS_TO_ROLE: Record<string, string> = {
   'android.widget.ProgressBar': 'progressbar',
   'android.widget.SeekBar': 'seekbar',
   'com.google.android.material.slider.Slider': 'seekbar',
-}
+};
 
 export const IOS_TYPE_TO_ROLE: Record<string, string> = {
   'XCUIElementTypeButton': 'button',
@@ -122,7 +122,7 @@ export const IOS_TYPE_TO_ROLE: Record<string, string> = {
   'XCUIElementTypeProgressIndicator': 'progressbar',
   'XCUIElementTypePicker': 'spinner',
   'XCUIElementTypeRadioButton': 'radiobutton',
-}
+};
 
 export const WEBVIEW_TAG_TO_ROLE: Record<string, string> = {
   button: 'button',
@@ -136,24 +136,24 @@ export const WEBVIEW_TAG_TO_ROLE: Record<string, string> = {
   li: 'listitem',
   progress: 'progressbar',
   dialog: 'dialog',
-}
+};
 
 export function getNodeRole(node: HierarchyNode): string {
   // Agent-injected role (trait-based: heading, alert, link, combobox, etc.)
-  const agentRole = node.attributes.get('tapsmith-role')
-  if (agentRole) return agentRole
+  const agentRole = node.attributes.get('tapsmith-role');
+  if (agentRole) return agentRole;
 
   // WebView nodes
   if (node.attributes.get('webview') === 'true') {
-    const explicitRole = node.attributes.get('webview-role')
-    if (explicitRole) return explicitRole
-    const tag = node.attributes.get('webview-tag') ?? ''
-    return WEBVIEW_TAG_TO_ROLE[tag] ?? ''
+    const explicitRole = node.attributes.get('webview-role');
+    if (explicitRole) return explicitRole;
+    const tag = node.attributes.get('webview-tag') ?? '';
+    return WEBVIEW_TAG_TO_ROLE[tag] ?? '';
   }
 
-  const className = node.attributes.get('class')
-  if (className) return ANDROID_CLASS_TO_ROLE[className] ?? ''
-  const iosType = node.attributes.get('type') ?? node.tagName
-  return IOS_TYPE_TO_ROLE[iosType] ?? ''
+  const className = node.attributes.get('class');
+  if (className) return ANDROID_CLASS_TO_ROLE[className] ?? '';
+  const iosType = node.attributes.get('type') ?? node.tagName;
+  return IOS_TYPE_TO_ROLE[iosType] ?? '';
 }
 

@@ -325,7 +325,7 @@ function App() {
     startTime: 0,
     endTime: viewedTestNode?.duration ?? 0,
     device: { serial: testDeviceSerial, isEmulator: deviceIsEmulator },
-    traceConfig: { screenshots: true, snapshots: true, sources: true, network: true },
+    traceConfig: { screenshots: true, snapshots: true, sources: true, network: true, deviceLogs: false },
     actionCount: actionEvents.length,
     screenshotCount: screenshots.size,
     error: viewedTestNode?.error,
@@ -595,7 +595,7 @@ function App() {
           setTestTraces((prev) => {
             const trace = prev.get(statusKey);
             if (trace) {
-              const failIdx = trace.actionEvents.findLastIndex((e) => e.status === 'failed');
+              const failIdx = trace.actionEvents.findLastIndex((e) => (e.type === 'action' ? !e.success : !e.passed));
               if (failIdx !== -1) {
                 setPinnedIndex(failIdx);
                 setHoveredIndex(null);
