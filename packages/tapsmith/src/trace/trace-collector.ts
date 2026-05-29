@@ -112,17 +112,17 @@ const STACK_FRAME_RE = /at\s+(?:.+\s+)?\(?(.+):(\d+):(\d+)\)?$/;
  * Skips frames inside the tapsmith SDK, node_modules, and node internals.
  */
 export function extractStack(stack: string): SourceLocation[] {
-  const frames: SourceLocation[] = []
+  const frames: SourceLocation[] = [];
   for (const line of stack.split('\n')) {
-    const match = STACK_FRAME_RE.exec(line.trim())
-    if (!match) continue
-    const file = match[1]
-    if (file.includes('/tapsmith/src/') || file.includes('/tapsmith/dist/')) continue
-    if (file.includes('node_modules')) continue
-    if (file.startsWith('node:') || file.startsWith('internal/')) continue
-    frames.push({ file, line: parseInt(match[2], 10), column: parseInt(match[3], 10) })
+    const match = STACK_FRAME_RE.exec(line.trim());
+    if (!match) continue;
+    const file = match[1];
+    if (file.includes('/tapsmith/src/') || file.includes('/tapsmith/dist/')) continue;
+    if (file.includes('node_modules')) continue;
+    if (file.startsWith('node:') || file.startsWith('internal/')) continue;
+    frames.push({ file, line: parseInt(match[2], 10), column: parseInt(match[3], 10) });
   }
-  return frames
+  return frames;
 }
 
 /**
@@ -130,7 +130,7 @@ export function extractStack(stack: string): SourceLocation[] {
  * trace. Convenience wrapper over {@link extractStack}.
  */
 export function extractSourceLocation(stack: string): SourceLocation | undefined {
-  return extractStack(stack)[0]
+  return extractStack(stack)[0];
 }
 
 // ─── TraceCollector ───

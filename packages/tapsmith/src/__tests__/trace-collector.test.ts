@@ -496,13 +496,13 @@ describe('extractStack', () => {
       '    at Object.tap (/proj/node_modules/tapsmith/dist/element-handle.js:10:5)',
       '    at loginHelper (/proj/tests/helpers/login.ts:8:3)',
       '    at /proj/tests/auth.test.ts:42:7',
-    ].join('\n')
-    const frames = extractStack(stack)
+    ].join('\n');
+    const frames = extractStack(stack);
     expect(frames).toEqual([
       { file: '/proj/tests/helpers/login.ts', line: 8, column: 3 },
       { file: '/proj/tests/auth.test.ts', line: 42, column: 7 },
-    ])
-  })
+    ]);
+  });
 
   it('filters SDK, node_modules, and node internal frames', () => {
     const stack = [
@@ -511,37 +511,37 @@ describe('extractStack', () => {
       '    at node:internal/process/task_queues:95:5',
       '    at internal/main/run_main_module:23:47',
       '    at /proj/tests/x.test.ts:3:1',
-    ].join('\n')
-    expect(extractStack(stack)).toEqual([{ file: '/proj/tests/x.test.ts', line: 3, column: 1 }])
-  })
+    ].join('\n');
+    expect(extractStack(stack)).toEqual([{ file: '/proj/tests/x.test.ts', line: 3, column: 1 }]);
+  });
 
   it('extractSourceLocation returns the first frame from extractStack', () => {
-    const stack = 'Error\n    at /proj/a.ts:1:2\n    at /proj/b.ts:3:4'
-    expect(extractSourceLocation(stack)).toEqual(extractStack(stack)[0])
-  })
+    const stack = 'Error\n    at /proj/a.ts:1:2\n    at /proj/b.ts:3:4';
+    expect(extractSourceLocation(stack)).toEqual(extractStack(stack)[0]);
+  });
 
   it('returns [] for an empty stack', () => {
-    expect(extractStack('')).toEqual([])
-  })
-})
+    expect(extractStack('')).toEqual([]);
+  });
+});
 
 describe('addActionEvent preserves stack', () => {
   it('keeps the stack array on the emitted event', () => {
     const c = new TraceCollector(
-      { screenshots: false, snapshots: false, sources: true, network: false, deviceLogs: false },
+      { mode: 'on', screenshots: false, snapshots: false, sources: true, attachments: true, network: false, deviceLogs: false },
       '/tmp/ts-test-' + process.pid,
-    )
+    );
     c.addActionEvent({
       category: 'tap', action: 'tap', duration: 1, success: true,
       hasScreenshotBefore: false, hasScreenshotAfter: false,
       hasHierarchyBefore: false, hasHierarchyAfter: false,
       sourceLocation: { file: '/p/a.ts', line: 1 },
       stack: [{ file: '/p/a.ts', line: 1 }, { file: '/p/b.ts', line: 2 }],
-    })
-    const ev = c.events.find((e) => e.type === 'action') as ActionTraceEvent
-    expect(ev.stack).toEqual([{ file: '/p/a.ts', line: 1 }, { file: '/p/b.ts', line: 2 }])
-  })
-})
+    });
+    const ev = c.events.find((e) => e.type === 'action') as ActionTraceEvent;
+    expect(ev.stack).toEqual([{ file: '/p/a.ts', line: 1 }, { file: '/p/b.ts', line: 2 }]);
+  });
+});
 
 describe('extractSourceLocation', () => {
   it('extracts file, line, column from a stack trace', () => {
