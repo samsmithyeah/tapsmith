@@ -219,9 +219,9 @@ export class ListReporter implements TapsmithReporter {
 
   private _clearInProgress(): void {
     if (this._linesRendered === 0) return;
-    for (let i = 0; i < this._linesRendered; i++) {
-      this._write('\x1b[1A\x1b[2K');
-    }
+    // Combine the per-line "cursor up + erase line" escapes into one write to
+    // avoid extra write calls and terminal flicker.
+    this._write('\x1b[1A\x1b[2K'.repeat(this._linesRendered));
     this._linesRendered = 0;
   }
 
