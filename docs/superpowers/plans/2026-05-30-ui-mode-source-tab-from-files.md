@@ -520,7 +520,7 @@ git commit -m "Load sources.json (path-keyed) in offline trace viewer"
 ## Task 8: Add `path` to the source WebSocket/IPC messages
 
 **Files:**
-- Modify: `packages/tapsmith/src/ui-mode/ui-protocol.ts:214-218` (`SourceMessage`) and the two child source-message types (the members with `type: 'source'` in the `UIRunChildMessage` and `UIWorkerChildMessage` unions — search the file for `type: 'source'`).
+- Modify: `packages/tapsmith/src/ui-mode/ui-protocol.ts:214-218` (`SourceMessage`, server→client), `:483-487` (`UIRunSourceMessage`, child→server), `:612-617` (`UIWorkerSourceMessage`, child→server, has `workerId`).
 - Modify: `packages/tapsmith/src/ui-mode/ui-server.ts:1088-1096, 1855-1858, 219, 3211-3213`
 
 - [ ] **Step 1: Add `path` to `SourceMessage`** (lines 214-218):
@@ -536,7 +536,28 @@ export interface SourceMessage {
 }
 ```
 
-- [ ] **Step 2: Add `path` to the two child source-message types.** Search `ui-protocol.ts` for the two interfaces whose body contains `type: 'source'` (one for `ui-run`, one for `ui-worker` — the latter also has `workerId`). Add `path: string` to each, beside `fileName`.
+- [ ] **Step 2: Add `path` to the two child source-message types.**
+
+`UIRunSourceMessage` (lines 483-487):
+```ts
+export interface UIRunSourceMessage {
+  type: 'source'
+  path: string
+  fileName: string
+  content: string
+}
+```
+
+`UIWorkerSourceMessage` (lines 612-617):
+```ts
+export interface UIWorkerSourceMessage {
+  type: 'source'
+  workerId: number
+  path: string
+  fileName: string
+  content: string
+}
+```
 
 - [ ] **Step 3: Carry `path` through the server's two `source` cases.**
 
@@ -1035,4 +1056,4 @@ git commit -m "Document per-frame source display in the Source tab"
 
 - **Spec coverage:** full stacks (Tasks 1-4), run-time snapshot keyed by abs path (Tasks 5-6, 9), both contexts — offline zip (Tasks 6-7) + live WS (Tasks 8-10), SourceTab + stack pane + resolution priority + pre-run preview + fallback (Task 11), tests throughout, size cap 2 MB (Tasks 6, 9), `file:line` display (Task 11). All spec sections map to tasks.
 - **Type consistency:** `extractStack`/`collectReferencedFiles`/`streamSourcesForEvent`/`resolveSourceView` names are used identically across definition, callers, and tests. `SourceMessage` gains `path` consistently across protocol, server, and both child senders.
-- **Known soft spots flagged for the implementer:** exact line of the two child source-message types in `ui-protocol.ts` (search `type: 'source'`); exact `--color-*` variable names in `ui-mode.css.ts` (verify against `:root`); the `device` shape in the packager test (mirror existing packager tests if the cast complains). Task 3 Step 2 notes the action-event test may pass immediately because `addActionEvent` spreads `...event` — that is expected and the test stands as a regression guard.
+- **Known soft spots flagged for the implementer:** exact `--color-*` variable names in `ui-mode.css.ts` (verify against `:root`); the `device` shape in the packager test (mirror existing packager tests if the cast complains). Task 3 Step 2 notes the action-event test may pass immediately because `addActionEvent` spreads `...event` — that is expected and the test stands as a regression guard.
