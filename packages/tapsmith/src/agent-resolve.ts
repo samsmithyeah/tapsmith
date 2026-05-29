@@ -17,11 +17,11 @@ const MONOREPO_RELATIVE_TEST_PATHS = [
 ];
 
 function findFirst(filename: string, relativePaths: string[]): string | undefined {
-  const bundled = path.resolve(__dirname, 'agents/android', filename);
+  const bundled = path.resolve(import.meta.dirname, 'agents/android', filename);
   if (fs.existsSync(bundled)) return bundled;
 
   for (const rel of relativePaths) {
-    const candidate = path.resolve(__dirname, rel, filename);
+    const candidate = path.resolve(import.meta.dirname, rel, filename);
     if (fs.existsSync(candidate)) return candidate;
   }
   return undefined;

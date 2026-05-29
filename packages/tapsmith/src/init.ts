@@ -24,7 +24,7 @@ const enquirer = new Enquirer();
 function getVersion(): string {
   try {
     const pkg = JSON.parse(
-      fs.readFileSync(path.resolve(__dirname, '../package.json'), 'utf8'),
+      fs.readFileSync(path.resolve(import.meta.dirname, '../package.json'), 'utf8'),
     );
     return pkg.version ?? '0.0.0';
   } catch {

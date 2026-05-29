@@ -11,7 +11,10 @@
 
 import { execFileSync } from 'node:child_process';
 import * as fs from 'node:fs';
+import { createRequire } from 'node:module';
 import * as path from 'node:path';
+
+const require = createRequire(import.meta.url);
 
 const BIN_NAME = 'tapsmith-core';
 
@@ -55,18 +58,17 @@ export function findDaemonBin(): string {
   }
 
   // Monorepo release build relative to this module's install dir.
-  // `import.meta.url` isn't available in CJS builds, so walk up from
-  // __dirname (dist/) to find a sibling `packages/tapsmith-core`.
+  // Walk up from this module's directory to find a sibling `packages/tapsmith-core`.
   try {
     // dist/cli.js lives at packages/tapsmith/dist/cli.js; from dist, up 3 dirs
     // is the repo root, then packages/tapsmith-core/target/release.
-    const dist = path.dirname(__filename);
+    const dist = import.meta.dirname;
     candidates.push(
       path.resolve(dist, '../../tapsmith-core/target/release', BIN_NAME),
       path.resolve(dist, '../../../packages/tapsmith-core/target/release', BIN_NAME),
     );
   } catch {
-    // __dirname/filename may not be defined in some ESM shims — skip.
+    // import.meta.dirname may not be defined in some ESM shims — skip.
   }
 
   for (const candidate of candidates) {

@@ -9,7 +9,7 @@ import * as http from 'node:http';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 
-const VIEWER_HTML_PATH = path.resolve(__dirname, '../trace-viewer/index.html');
+const VIEWER_HTML_PATH = path.resolve(import.meta.dirname, '../trace-viewer/index.html');
 
 
 export interface ShowTraceOptions {
@@ -55,7 +55,7 @@ export async function showTrace(options: ShowTraceOptions): Promise<{ port: numb
 
     // Serve vendored fflate browser ESM bundle from node_modules
     if (url.pathname === '/vendor/fflate.js') {
-      const fflatePath = path.resolve(__dirname, '../node_modules/fflate/esm/browser.js');
+      const fflatePath = path.resolve(import.meta.dirname, '../node_modules/fflate/esm/browser.js');
       if (!fs.existsSync(fflatePath)) {
         res.writeHead(404);
         res.end('fflate bundle not found');

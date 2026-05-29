@@ -71,11 +71,11 @@ import {
 
 // ─── SPA paths ───
 
-const SPA_HTML_PATH = path.resolve(__dirname, 'index.html');
+const SPA_HTML_PATH = path.resolve(import.meta.dirname, 'index.html');
 
 const TAPSMITH_VERSION = (() => {
   try {
-    const pkgPath = path.resolve(__dirname, '../../package.json');
+    const pkgPath = path.resolve(import.meta.dirname, '../../package.json');
     const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf-8'));
     return (pkg.version as string) ?? '0.0.0';
   } catch {
@@ -368,28 +368,28 @@ export async function startUIServer(
   })();
 
   // Resolve tsx binary for forking TypeScript files
-  const jsScript = path.resolve(__dirname, 'ui-run.js');
-  const tsScript = path.resolve(__dirname, 'ui-run.ts');
+  const jsScript = path.resolve(import.meta.dirname, 'ui-run.js');
+  const tsScript = path.resolve(import.meta.dirname, 'ui-run.ts');
   const useTypeScript = !fs.existsSync(jsScript) && fs.existsSync(tsScript);
   const resolvedRunScript = useTypeScript ? tsScript : jsScript;
 
-  const jsWorkerScript = path.resolve(__dirname, 'ui-worker.js');
-  const tsWorkerScript = path.resolve(__dirname, 'ui-worker.ts');
+  const jsWorkerScript = path.resolve(import.meta.dirname, 'ui-worker.js');
+  const tsWorkerScript = path.resolve(import.meta.dirname, 'ui-worker.ts');
   const resolvedWorkerScript = !fs.existsSync(jsWorkerScript) && fs.existsSync(tsWorkerScript)
     ? tsWorkerScript
     : jsWorkerScript;
 
-  const jsDiscoverScript = path.resolve(__dirname, 'ui-discover.js');
-  const tsDiscoverScript = path.resolve(__dirname, 'ui-discover.ts');
+  const jsDiscoverScript = path.resolve(import.meta.dirname, 'ui-discover.js');
+  const tsDiscoverScript = path.resolve(import.meta.dirname, 'ui-discover.ts');
   const resolvedDiscoverScript = !fs.existsSync(jsDiscoverScript) && fs.existsSync(tsDiscoverScript)
     ? tsDiscoverScript
     : jsDiscoverScript;
 
   let tsxBin: string | undefined;
   if (useTypeScript || resolvedDiscoverScript.endsWith('.ts') || resolvedWorkerScript.endsWith('.ts')) {
-    // __dirname is packages/tapsmith/{src,dist}/ui-mode — the package root
+    // import.meta.dirname is packages/tapsmith/{src,dist}/ui-mode — the package root
     // (where node_modules lives) is two levels up in both cases.
-    const tapsmithPkgDir = path.resolve(__dirname, '..', '..');
+    const tapsmithPkgDir = path.resolve(import.meta.dirname, '..', '..');
     const localTsx = path.join(tapsmithPkgDir, 'node_modules', '.bin', 'tsx');
     tsxBin = fs.existsSync(localTsx) ? localTsx : 'tsx';
   }
@@ -565,7 +565,7 @@ export async function startUIServer(
         ...(tsxBin ? { execPath: tsxBin } : {}),
         env: {
           ...process.env,
-          NODE_PATH: path.resolve(__dirname, '..', '..'),
+          NODE_PATH: path.resolve(import.meta.dirname, '..', '..'),
         },
       });
       pipeForkOutputForLaunchProgress(child, launchProgress);
@@ -1023,7 +1023,7 @@ export async function startUIServer(
         ...(tsxBin ? { execPath: tsxBin } : {}),
         env: {
           ...process.env,
-          NODE_PATH: path.resolve(__dirname, '..', '..'),
+          NODE_PATH: path.resolve(import.meta.dirname, '..', '..'),
         },
       });
       pipeForkOutputForLaunchProgress(child, launchProgress);
@@ -1522,7 +1522,7 @@ export async function startUIServer(
       ...(tsxBin ? { execPath: tsxBin } : {}),
       env: {
         ...process.env,
-        NODE_PATH: path.resolve(__dirname, '..', '..'),
+        NODE_PATH: path.resolve(import.meta.dirname, '..', '..'),
         TAPSMITH_WORKER_ID: String(id),
       },
     });

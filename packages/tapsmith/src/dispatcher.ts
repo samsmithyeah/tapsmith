@@ -962,18 +962,18 @@ export async function runParallel(opts: DispatcherOptions, _portOffset = 0): Pro
 
   try {
     // Fork worker processes.
-    // When running under tsx (TypeScript test files), __dirname points to src/
+    // When running under tsx (TypeScript test files), import.meta.dirname points to src/
     // and we need to fork with tsx as the loader. When running from compiled JS,
-    // __dirname points to dist/ and we can fork directly.
-    const jsScript = path.resolve(__dirname, 'worker-runner.js');
-    const tsScript = path.resolve(__dirname, 'worker-runner.ts');
+    // import.meta.dirname points to dist/ and we can fork directly.
+    const jsScript = path.resolve(import.meta.dirname, 'worker-runner.js');
+    const tsScript = path.resolve(import.meta.dirname, 'worker-runner.ts');
     const useTypeScript = !fs.existsSync(jsScript) && fs.existsSync(tsScript);
     const resolvedScript = useTypeScript ? tsScript : jsScript;
 
     // When forking a .ts file, we need tsx to handle it.
     let tsxBin: string | undefined;
     if (useTypeScript) {
-      const tapsmithPkgDir = path.resolve(__dirname, '..');
+      const tapsmithPkgDir = path.resolve(import.meta.dirname, '..');
       const localTsx = path.join(tapsmithPkgDir, 'node_modules', '.bin', 'tsx');
       tsxBin = fs.existsSync(localTsx) ? localTsx : 'tsx';
     }

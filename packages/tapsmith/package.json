@@ -2,6 +2,7 @@
   "name": "tapsmith",
   "version": "0.1.2",
   "description": "Mobile app testing framework — TypeScript SDK and test runner",
+  "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "bin": {
@@ -41,8 +42,6 @@
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
-      "import": "./dist/index.js",
-      "require": "./dist/index.js",
       "default": "./dist/index.js"
     }
   },
