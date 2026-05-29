@@ -4,10 +4,10 @@ export const uiModeStyles = `
 /* ─── Design Tokens ─── */
 
 :root {
-  --accent-h: 38;
-  --accent: oklch(0.78 0.15 var(--accent-h));
-  --accent-dim: oklch(0.65 0.12 var(--accent-h));
-  --accent-bg: oklch(0.78 0.15 var(--accent-h) / 0.12);
+  --accent-h: 57;
+  --accent: oklch(0.74 0.135 var(--accent-h));
+  --accent-dim: oklch(0.64 0.115 var(--accent-h));
+  --accent-bg: oklch(0.74 0.135 var(--accent-h) / 0.14);
   --pass: oklch(0.78 0.15 155);
   --fail: oklch(0.68 0.2 25);
   --skip: oklch(0.7 0.02 250);
@@ -28,50 +28,51 @@ export const uiModeStyles = `
 }
 
 [data-theme="dark"], :root {
-  --bg: oklch(0.18 0.005 250);
-  --bg-elev: oklch(0.21 0.006 250);
-  --bg-elev-2: oklch(0.24 0.007 250);
-  --bg-hover: oklch(0.26 0.008 250);
-  --bg-active: oklch(0.3 0.01 250);
-  --border: oklch(0.3 0.008 250);
-  --border-strong: oklch(0.4 0.012 250);
-  --fg: oklch(0.96 0.005 250);
-  --fg-dim: oklch(0.74 0.008 250);
-  --fg-muted: oklch(0.56 0.008 250);
+  /* Warm neutral palette — matches the Tapsmith website dark theme (#1e1b18 / #e8e4df / #302b25) */
+  --bg: oklch(0.21 0.006 66);
+  --bg-elev: oklch(0.235 0.007 66);
+  --bg-elev-2: oklch(0.265 0.008 66);
+  --bg-hover: oklch(0.29 0.009 66);
+  --bg-active: oklch(0.33 0.011 66);
+  --border: oklch(0.295 0.012 70);
+  --border-strong: oklch(0.4 0.013 68);
+  --fg: oklch(0.921 0.008 74);
+  --fg-dim: oklch(0.74 0.008 72);
+  --fg-muted: oklch(0.56 0.008 70);
   --shadow: 0 1px 2px rgba(0,0,0,.4), 0 8px 24px rgba(0,0,0,.25);
-  --grid-line: oklch(0.26 0.008 250 / 0.5);
+  --grid-line: oklch(0.29 0.009 66 / 0.5);
 
   /* Legacy aliases */
   --bg-primary: var(--bg);
   --bg-secondary: var(--bg-elev);
   --bg-tertiary: var(--bg-elev-2);
-  --bg-selected: oklch(0.25 0.03 240);
+  --bg-selected: oklch(0.3 0.035 57);
   --border-light: var(--border-strong);
   --color-text: var(--fg);
   --color-text-muted: var(--fg-dim);
   --color-text-faint: var(--fg-muted);
-  --color-text-faintest: oklch(0.4 0.006 250);
+  --color-text-faintest: oklch(0.42 0.007 70);
   --color-topbar-bg: var(--bg-elev);
   --color-bg: var(--bg);
   --color-bg-secondary: var(--bg-elev);
   --color-bg-tertiary: var(--bg-elev-2);
   --color-bg-hover: var(--bg-hover);
-  --color-bg-selected: oklch(0.25 0.03 240);
-  --color-bg-group: oklch(0.2 0.01 240);
+  --color-bg-selected: oklch(0.3 0.035 57);
+  --color-bg-group: oklch(0.235 0.007 66);
   --color-border: var(--border);
   --color-text-primary: var(--fg);
-  --color-text-secondary: oklch(0.85 0.005 250);
-  --color-accent-hover: oklch(0.83 0.14 var(--accent-h));
+  --color-text-secondary: oklch(0.85 0.007 73);
+  --color-accent-hover: oklch(0.81 0.13 var(--accent-h));
   --color-accent-dim: var(--accent-dim);
   --color-string: oklch(0.75 0.1 50);
   --color-keyword: oklch(0.72 0.12 240);
   --color-function: oklch(0.82 0.08 90);
   --color-number: oklch(0.78 0.1 145);
   --color-attr: oklch(0.8 0.1 220);
-  --color-highlight: oklch(0.78 0.15 var(--accent-h) / 0.12);
+  --color-highlight: oklch(0.74 0.135 var(--accent-h) / 0.12);
   --color-error-bg: oklch(0.22 0.03 25);
   --color-error-border: oklch(0.4 0.08 25 / 0.4);
-  --color-spinner-track: oklch(0.3 0.005 250);
+  --color-spinner-track: oklch(0.32 0.006 66);
 }
 
 [data-theme="light"] {
@@ -294,16 +295,31 @@ html, body, #app {
   height: 100%;
   flex-shrink: 0;
 }
-.rail-brand-mark {
-  width: 22px; height: 22px;
-  border-radius: 6px;
-  background: var(--accent);
-  display: grid; place-items: center;
-  color: #1a1200;
-  font-weight: 700;
-  font-size: 13px;
-  box-shadow: 0 0 0 1px oklch(0.78 0.15 var(--accent-h) / 0.3), inset 0 1px 0 rgba(255,255,255,.25);
+.rail-brand-lockup {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
 }
+.rail-mark {
+  height: 26px;
+  width: auto;
+  display: block;
+  flex-shrink: 0;
+}
+.rail-brand-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.rail-wordmark {
+  height: 15px;
+  width: auto;
+  display: block;
+}
+/* Dark is the default theme; show the dark-variant wordmark unless light is active */
+.rail-wordmark-light { display: none; }
+[data-theme="light"] .rail-wordmark-light { display: block; }
+[data-theme="light"] .rail-wordmark-dark { display: none; }
 .rail-brand-sub {
   color: var(--fg-muted);
   font-weight: 400;
@@ -327,12 +343,6 @@ html, body, #app {
   flex-shrink: 0;
 }
 
-.rc-logo-text {
-  font-weight: 700;
-  font-size: 15px;
-  color: var(--accent);
-  letter-spacing: -0.3px;
-}
 .rc-mode {
   font-size: 11px;
   color: var(--fg-dim);

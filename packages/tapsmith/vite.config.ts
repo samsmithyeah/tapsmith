@@ -14,6 +14,8 @@ export default defineConfig({
   build: {
     outDir: resolve(__dirname, 'dist/trace-viewer'),
     emptyOutDir: false,
+    // Inline all assets (e.g. the brand logo PNGs) as base64 so the output stays a single HTML file.
+    assetsInlineLimit: 100_000_000,
     rollupOptions: {
       input: resolve(__dirname, 'src/trace-viewer/index.html'),
     },
