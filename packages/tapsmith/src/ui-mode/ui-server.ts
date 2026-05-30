@@ -1088,10 +1088,11 @@ export async function startUIServer(
           case 'source': {
             const sourceMsg: SourceMessage = {
               type: 'source',
+              path: response.path,
               fileName: response.fileName,
               content: response.content,
             };
-            sourceBuffer.set(response.fileName, sourceMsg);
+            sourceBuffer.set(response.path, sourceMsg);
             broadcast(sourceMsg);
             break;
           }
@@ -1853,8 +1854,8 @@ export async function startUIServer(
               break;
             }
             case 'source': {
-              const sourceMsg: SourceMessage = { type: 'source', fileName: msg.fileName, content: msg.content };
-              sourceBuffer.set(msg.fileName, sourceMsg);
+              const sourceMsg: SourceMessage = { type: 'source', path: msg.path, fileName: msg.fileName, content: msg.content };
+              sourceBuffer.set(msg.path, sourceMsg);
               broadcast(sourceMsg);
               break;
             }
