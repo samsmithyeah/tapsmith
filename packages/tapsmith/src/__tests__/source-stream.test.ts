@@ -9,7 +9,9 @@ describe('streamSourcesForEvent', () => {
   it('reads and emits each referenced file once', () => {
     const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'ts-ss-'));
     try {
-      const f = path.join(tmp, 'a.ts');
+      // Stack frame paths are always forward-slash normalized by extractStack
+      // at runtime, so mirror that here for cross-platform consistency.
+      const f = path.join(tmp, 'a.ts').replace(/\\/g, '/');
       fs.writeFileSync(f, 'const a = 1\n');
       const sent = new Set<string>();
       const emitted: Array<{ path: string; fileName: string; content: string }> = [];

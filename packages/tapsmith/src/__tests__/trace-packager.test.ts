@@ -126,7 +126,8 @@ describe('trace packager', () => {
     const files = unzipSync(zipData);
     expect(files['sources.json']).toBeDefined();
     const sources = JSON.parse(strFromU8(files['sources.json']));
-    expect(sources[sourceFile]).toBe('test("hello", () => {})');
+    // sources.json keys are forward-slash normalized by packageTrace.
+    expect(sources[sourceFile.replace(/\\/g, '/')]).toBe('test("hello", () => {})');
   });
 
   it('records failed test metadata', () => {
@@ -199,7 +200,8 @@ describe('packageTrace sources.json', () => {
 
       const files = unzipSync(new Uint8Array(fs.readFileSync(zipPath)));
       const sources = JSON.parse(new TextDecoder().decode(files['sources.json']));
-      expect(sources[srcFile]).toBe('export const x = 1\n');
+      // sources.json keys are forward-slash normalized by packageTrace.
+      expect(sources[srcFile.replace(/\\/g, '/')]).toBe('export const x = 1\n');
     } finally {
       fs.rmSync(tmp, { recursive: true, force: true });
     }
