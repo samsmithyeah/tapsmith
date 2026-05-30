@@ -119,6 +119,10 @@ function App() {
   const autoFollowRef = useRef<'auto' | `worker:${number}` | 'manual'>('auto');
 
   const { testTraces, setTestTraces, activeTestRef, pendingSourcesRef } = useTraceData();
+  // Pre-run source preview: keyed by normalised absolute path (forward slashes).
+  const [previewSources, setPreviewSources] = useState<Map<string, string>>(new Map());
+  // Tracks which paths have already been requested to avoid duplicate sends.
+  const requestedSourcesRef = useRef<Set<string>>(new Set());
   const [pinnedIndex, setPinnedIndex] = useState(0);
   const [hoveredIndex, setHoveredIndex] = useState<number | null>(null);
   const selectedIndex = hoveredIndex ?? pinnedIndex;
@@ -269,7 +273,13 @@ function App() {
   );
   const screenshots = currentTrace?.screenshots ?? EMPTY_MAP;
   const hierarchies = currentTrace?.hierarchies ?? EMPTY_MAP;
-  const sources = currentTrace?.sources ?? EMPTY_MAP;
+  const previewSourcesForView = useMemo(() => {
+    if (viewedTestNode?.type !== 'test') return EMPTY_MAP;
+    const key = viewedTestFile.replace(/\\/g, '/');
+    const content = previewSources.get(key);
+    return content !== undefined ? new Map([[key, content]]) : EMPTY_MAP;
+  }, [viewedTestNode, viewedTestFile, previewSources]);
+  const sources = currentTrace?.sources ?? previewSourcesForView;
   const networkEntries = currentTrace?.network ?? EMPTY_NETWORK;
   const networkBodies = currentTrace?.networkBodies ?? EMPTY_MAP;
   const viewedTestWorker = (() => {
@@ -737,6 +747,12 @@ function App() {
       }
       case 'source':
         pendingSourcesRef.current.set(msg.path, msg.content);
+        setPreviewSources((prev) => {
+          if (prev.get(msg.path) === msg.content) return prev;
+          const next = new Map(prev);
+          next.set(msg.path, msg.content);
+          return next;
+        });
         setTestTraces((prev) => {
           let changed = false;
           const next = new Map(prev);
@@ -956,6 +972,18 @@ function App() {
       setHoveredIndex(null);
     }
   }, [viewedTraceKey, actionEvents.length, isRunning]);
+
+  // Pre-run preview: when a test is selected but not yet run, fetch its source
+  // file from disk so the Source tab shows it (no line highlight until a run).
+  useEffect(() => {
+    if (viewedTestNode?.type !== 'test') return;
+    const filePath = viewedTestNode.filePath;
+    if (!filePath) return;
+    const key = filePath.replace(/\\/g, '/');
+    if (previewSources.has(key) || requestedSourcesRef.current.has(key)) return;
+    requestedSourcesRef.current.add(key);
+    send({ type: 'request-source', path: filePath });
+  }, [viewedTestNode, previewSources, send]);
 
   const handleSelectDeviceView = useCallback((mode: 'all' | number) => {
     setDeviceViewMode(mode);

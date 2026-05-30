@@ -349,6 +349,12 @@ export interface RequestHierarchyCommand {
   type: 'request-hierarchy'
 }
 
+export interface RequestSourceCommand {
+  type: 'request-source'
+  /** Absolute path of the source file to read from disk. */
+  path: string
+}
+
 export interface TapCoordinatesCommand {
   type: 'tap-coordinates'
   /** X coordinate normalized to 0–1 range. */
@@ -390,6 +396,7 @@ export type ClientMessage =
   | StopRunCommand
   | ToggleWatchCommand
   | RequestHierarchyCommand
+  | RequestSourceCommand
   | TapCoordinatesCommand
   | SetFilterCommand
   | SelectWorkerCommand

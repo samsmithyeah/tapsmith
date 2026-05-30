@@ -411,6 +411,23 @@ export async function startUIServer(
     broadcast({ type: 'error', message });
   }
 
+  function sendSourceFromDisk(filePath: string): void {
+    const MAX_SOURCE_BYTES = 2 * 1024 * 1024;
+    try {
+      if (fs.statSync(filePath).size > MAX_SOURCE_BYTES) return;
+      const content = fs.readFileSync(filePath, 'utf-8');
+      const sourceMsg: SourceMessage = {
+        type: 'source',
+        path: filePath.replace(/\\/g, '/'),
+        fileName: path.basename(filePath),
+        content,
+      };
+      broadcast(sourceMsg);
+    } catch {
+      // best-effort — file may be unreadable or missing
+    }
+  }
+
   function broadcastBinary(data: Buffer): void {
     for (const ws of clients) {
       if (ws.readyState === ws.OPEN) {
@@ -3004,6 +3021,9 @@ export async function startUIServer(
         }).catch(() => {});
         break;
       }
+      case 'request-source':
+        sendSourceFromDisk(msg.path);
+        break;
       case 'tap-coordinates':
         console.log(`[Tapsmith UI] Tap at (${msg.x.toFixed(2)}, ${msg.y.toFixed(2)}) — coordinate tap not yet implemented`);
         break;
