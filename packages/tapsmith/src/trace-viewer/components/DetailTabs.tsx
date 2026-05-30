@@ -478,7 +478,7 @@ function StackTraceView({ stack, selected, onSelect }: { stack: SourceLocation[]
           title={`${frame.file}:${frame.line}`}
           onClick={() => onSelect(i)}
         >
-          <span class="source-stack-file">{frame.file.split('/').pop()}</span>
+          <span class="source-stack-file">{frame.file.replace(/\\/g, '/').split('/').pop()}</span>
           <span class="source-stack-line">:{frame.line}</span>
         </div>
       ))}
@@ -494,7 +494,12 @@ function SourceTab({ event, sources }: { event: ActionTraceEvent | AssertionTrac
   const eventKey = event ? `${event.type}-${event.actionIndex}` : 'none';
   useEffect(() => { setSelectedFrame(0); }, [eventKey]);
 
-  const { filename, content, highlightLine } = resolveSourceView(stack, sources, selectedFrame, !!event);
+  // Guard against a one-render window where selectedFrame is stale (out of
+  // bounds) right after switching to an event with a shorter stack, before the
+  // reset effect runs — otherwise resolveSourceView would briefly show nothing.
+  const activeFrame = selectedFrame < stack.length ? selectedFrame : 0;
+
+  const { filename, content, highlightLine } = resolveSourceView(stack, sources, activeFrame, !!event);
 
   useEffect(() => {
     highlightRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' });
@@ -507,10 +512,10 @@ function SourceTab({ event, sources }: { event: ActionTraceEvent | AssertionTrac
       <div class={`source-tab${showStack ? ' has-stack' : ''}`}>
         <div class="source-main">
           <div class="no-content">
-            {filename ? `Source not captured for ${filename.split('/').pop()}` : 'No source files in trace'}
+            {filename ? `Source not captured for ${filename.replace(/\\/g, '/').split('/').pop()}` : 'No source files in trace'}
           </div>
         </div>
-        {showStack && <StackTraceView stack={stack} selected={selectedFrame} onSelect={setSelectedFrame} />}
+        {showStack && <StackTraceView stack={stack} selected={activeFrame} onSelect={setSelectedFrame} />}
       </div>
     );
   }
@@ -550,7 +555,7 @@ function SourceTab({ event, sources }: { event: ActionTraceEvent | AssertionTrac
           ))}
         </div>
       </div>
-      {showStack && <StackTraceView stack={stack} selected={selectedFrame} onSelect={setSelectedFrame} />}
+      {showStack && <StackTraceView stack={stack} selected={activeFrame} onSelect={setSelectedFrame} />}
     </div>
   );
 }

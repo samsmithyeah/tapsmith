@@ -745,7 +745,9 @@ function App() {
             // During a run, attribute sources to the active test. On reconnect
             // replay (no active test) inject into every entry so files resolve.
             if (activeTestRef.current === k || activeTestRef.current === null) {
-              next.set(k, { ...data, sources: new Map([...data.sources, [msg.path, msg.content]]) });
+              const sources = new Map(data.sources);
+              sources.set(msg.path, msg.content);
+              next.set(k, { ...data, sources });
               changed = true;
             }
           }
