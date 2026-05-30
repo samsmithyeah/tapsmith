@@ -541,11 +541,10 @@ function App() {
           if (existing) revokeTraceScreenshots(existing);
           const next = new Map(prev);
           const data = emptyTraceData(msg.filePath);
-          // Match pending source by test file basename
-          const basename = msg.filePath.split('/').pop() ?? '';
-          const sourceContent = pendingSourcesRef.current.get(basename);
+          // Seed the test file from the pending pool (pre-run preview).
+          const sourceContent = pendingSourcesRef.current.get(msg.filePath);
           if (sourceContent) {
-            data.sources = new Map([[basename, sourceContent]]);
+            data.sources = new Map([[msg.filePath, sourceContent]]);
           }
           next.set(key, data);
           return next;
@@ -736,18 +735,16 @@ function App() {
         break;
       }
       case 'source':
-        pendingSourcesRef.current.set(msg.fileName, msg.content);
-        // On reconnect, test-start doesn't fire so sources aren't snapshotted
-        // into trace entries. Inject into matching entries (by filePath basename)
-        // or entries without filePath (created by getOrCreateTrace).
+        pendingSourcesRef.current.set(msg.path, msg.content);
         setTestTraces((prev) => {
           let changed = false;
           const next = new Map(prev);
           for (const [k, data] of prev) {
-            if (data.sources.has(msg.fileName)) continue;
-            const match = !data.filePath || data.filePath.split('/').pop() === msg.fileName;
-            if (match) {
-              next.set(k, { ...data, sources: new Map([...data.sources, [msg.fileName, msg.content]]) });
+            if (data.sources.has(msg.path)) continue;
+            // During a run, attribute sources to the active test. On reconnect
+            // replay (no active test) inject into every entry so files resolve.
+            if (activeTestRef.current === k || activeTestRef.current === null) {
+              next.set(k, { ...data, sources: new Map([...data.sources, [msg.path, msg.content]]) });
               changed = true;
             }
           }
