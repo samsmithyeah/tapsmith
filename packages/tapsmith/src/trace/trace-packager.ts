@@ -120,7 +120,10 @@ export function packageTrace(
   //    that ran. Capped per file to keep the archive small.
   if (collector.config.sources) {
     const MAX_SOURCE_BYTES = 2 * 1024 * 1024;
-    const referenced = new Set<string>(options.sourceFiles ?? []);
+    const referenced = new Set<string>();
+    if (options.sourceFiles) {
+      for (const f of options.sourceFiles) referenced.add(f.replace(/\\/g, '/'));
+    }
     for (const f of collectReferencedFiles(collector.events)) referenced.add(f);
     const sources: Record<string, string> = {};
     for (const sourcePath of referenced) {

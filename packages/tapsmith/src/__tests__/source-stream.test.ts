@@ -8,15 +8,19 @@ import type { AnyTraceEvent } from '../trace/types.js';
 describe('streamSourcesForEvent', () => {
   it('reads and emits each referenced file once', () => {
     const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'ts-ss-'));
-    const f = path.join(tmp, 'a.ts');
-    fs.writeFileSync(f, 'const a = 1\n');
-    const sent = new Set<string>();
-    const emitted: Array<{ path: string; fileName: string; content: string }> = [];
-    const emit = (p: string, fn: string, content: string) => emitted.push({ path: p, fileName: fn, content });
-    const ev = { type: 'action', stack: [{ file: f, line: 1 }, { file: f, line: 2 }] } as unknown as AnyTraceEvent;
-    streamSourcesForEvent(ev, sent, emit);
-    streamSourcesForEvent(ev, sent, emit);
-    expect(emitted).toEqual([{ path: f, fileName: 'a.ts', content: 'const a = 1\n' }]);
+    try {
+      const f = path.join(tmp, 'a.ts');
+      fs.writeFileSync(f, 'const a = 1\n');
+      const sent = new Set<string>();
+      const emitted: Array<{ path: string; fileName: string; content: string }> = [];
+      const emit = (p: string, fn: string, content: string) => emitted.push({ path: p, fileName: fn, content });
+      const ev = { type: 'action', stack: [{ file: f, line: 1 }, { file: f, line: 2 }] } as unknown as AnyTraceEvent;
+      streamSourcesForEvent(ev, sent, emit);
+      streamSourcesForEvent(ev, sent, emit);
+      expect(emitted).toEqual([{ path: f, fileName: 'a.ts', content: 'const a = 1\n' }]);
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
   });
 
   it('ignores events without a stack and missing files', () => {

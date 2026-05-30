@@ -175,32 +175,33 @@ describe('trace packager', () => {
 describe('packageTrace sources.json', () => {
   it('writes referenced source files keyed by absolute path', () => {
     const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'ts-pkg-'));
-    const srcFile = path.join(tmp, 'helper.ts');
-    fs.writeFileSync(srcFile, 'export const x = 1\n');
+    try {
+      const srcFile = path.join(tmp, 'helper.ts');
+      fs.writeFileSync(srcFile, 'export const x = 1\n');
 
-    const device: TraceDeviceInfo = { serial: 'test', isEmulator: false };
-    const c = new TraceCollector(
-      { mode: 'on', screenshots: false, snapshots: false, sources: true, attachments: false, network: false, deviceLogs: false },
-      tmp,
-    );
-    c.addActionEvent({
-      category: 'tap', action: 'tap', duration: 1, success: true,
-      hasScreenshotBefore: false, hasScreenshotAfter: false,
-      hasHierarchyBefore: false, hasHierarchyAfter: false,
-      sourceLocation: { file: srcFile, line: 1 }, stack: [{ file: srcFile, line: 1 }],
-    });
+      const device: TraceDeviceInfo = { serial: 'test', isEmulator: false };
+      const c = new TraceCollector(
+        { mode: 'on', screenshots: false, snapshots: false, sources: true, attachments: false, network: false, deviceLogs: false },
+        tmp,
+      );
+      c.addActionEvent({
+        category: 'tap', action: 'tap', duration: 1, success: true,
+        hasScreenshotBefore: false, hasScreenshotAfter: false,
+        hasHierarchyBefore: false, hasHierarchyAfter: false,
+        sourceLocation: { file: srcFile, line: 1 }, stack: [{ file: srcFile, line: 1 }],
+      });
 
-    const zipPath = packageTrace(c, {
-      testFile: srcFile, testName: 't', testStatus: 'passed', testDuration: 1,
-      startTime: 1, endTime: 2, device,
-      tapsmithVersion: '0.0.0', outputDir: tmp, sourceFiles: [srcFile],
-    });
+      const zipPath = packageTrace(c, {
+        testFile: srcFile, testName: 't', testStatus: 'passed', testDuration: 1,
+        startTime: 1, endTime: 2, device,
+        tapsmithVersion: '0.0.0', outputDir: tmp, sourceFiles: [srcFile],
+      });
 
-    const files = unzipSync(new Uint8Array(fs.readFileSync(zipPath)));
-    const sources = JSON.parse(new TextDecoder().decode(files['sources.json']));
-    expect(sources[srcFile]).toBe('export const x = 1\n');
-
-    // cleanup
-    fs.rmSync(tmp, { recursive: true, force: true });
+      const files = unzipSync(new Uint8Array(fs.readFileSync(zipPath)));
+      const sources = JSON.parse(new TextDecoder().decode(files['sources.json']));
+      expect(sources[srcFile]).toBe('export const x = 1\n');
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
   });
 });

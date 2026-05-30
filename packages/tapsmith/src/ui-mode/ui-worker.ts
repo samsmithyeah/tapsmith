@@ -328,7 +328,7 @@ async function handleRunFile(
   // Send test source file
   try {
     const sourceContent = fs.readFileSync(filePath, 'utf-8');
-    send({ type: 'source', workerId, path: filePath, fileName: path.basename(filePath), content: sourceContent });
+    send({ type: 'source', workerId, path: filePath.replace(/\\/g, '/'), fileName: path.basename(filePath), content: sourceContent });
   } catch {
     // best-effort
   }

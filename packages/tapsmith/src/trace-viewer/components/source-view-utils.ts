@@ -11,8 +11,8 @@ export function resolveSourceView(
     return { filename: frame.file, content: sources.get(frame.file), highlightLine: frame.line };
   }
   if (!hasEvent && sources.size > 0) {
-    const [filename, content] = [...sources.entries()][0];
-    return { filename, content };
+    const first = sources.entries().next().value;
+    if (first) return { filename: first[0], content: first[1] };
   }
   if (frame) return { filename: frame.file };
   return {};

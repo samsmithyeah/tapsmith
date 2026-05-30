@@ -157,7 +157,7 @@ async function handleRun(msg: UIRunMessage): Promise<void> {
   // Send test source file so the Source tab can display it
   try {
     const sourceContent = fs.readFileSync(msg.filePath, 'utf-8');
-    send({ type: 'source', path: msg.filePath, fileName: path.basename(msg.filePath), content: sourceContent });
+    send({ type: 'source', path: msg.filePath.replace(/\\/g, '/'), fileName: path.basename(msg.filePath), content: sourceContent });
   } catch {
     // best-effort
   }

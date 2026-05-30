@@ -542,9 +542,10 @@ function App() {
           const next = new Map(prev);
           const data = emptyTraceData(msg.filePath);
           // Seed the test file from the pending pool (pre-run preview).
-          const sourceContent = pendingSourcesRef.current.get(msg.filePath);
+          const normalizedPath = msg.filePath.replace(/\\/g, '/');
+          const sourceContent = pendingSourcesRef.current.get(normalizedPath);
           if (sourceContent) {
-            data.sources = new Map([[msg.filePath, sourceContent]]);
+            data.sources = new Map([[normalizedPath, sourceContent]]);
           }
           next.set(key, data);
           return next;

@@ -523,6 +523,11 @@ describe('extractStack', () => {
   it('returns [] for an empty stack', () => {
     expect(extractStack('')).toEqual([]);
   });
+
+  it('normalizes Windows backslash paths to forward slashes', () => {
+    const stack = 'Error\n    at loginHelper (C:\\proj\\tests\\helpers\\login.ts:8:3)';
+    expect(extractStack(stack)).toEqual([{ file: 'C:/proj/tests/helpers/login.ts', line: 8, column: 3 }]);
+  });
 });
 
 describe('addActionEvent preserves stack', () => {

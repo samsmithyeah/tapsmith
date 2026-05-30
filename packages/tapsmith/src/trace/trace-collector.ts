@@ -116,7 +116,7 @@ export function extractStack(stack: string): SourceLocation[] {
   for (const line of stack.split('\n')) {
     const match = STACK_FRAME_RE.exec(line.trim());
     if (!match) continue;
-    const file = match[1];
+    const file = match[1].replace(/\\/g, '/');
     if (file.includes('/tapsmith/src/') || file.includes('/tapsmith/dist/')) continue;
     if (file.includes('node_modules')) continue;
     if (file.startsWith('node:') || file.startsWith('internal/')) continue;
