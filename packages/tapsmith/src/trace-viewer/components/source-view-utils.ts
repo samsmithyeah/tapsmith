@@ -7,8 +7,20 @@ export function resolveSourceView(
   hasEvent: boolean,
 ): { filename?: string; content?: string; highlightLine?: number } {
   const frame = stack[selectedFrame];
-  if (frame && sources.has(frame.file)) {
-    return { filename: frame.file, content: sources.get(frame.file), highlightLine: frame.line };
+  if (frame) {
+    const exact = sources.get(frame.file);
+    if (exact !== undefined) {
+      return { filename: frame.file, content: exact, highlightLine: frame.line };
+    }
+    // Case-insensitive fallback: on macOS/Windows the casing of a stack-frame
+    // path can differ from the captured key (e.g. drive letter `c:` vs `C:`)
+    // even though they point at the same file.
+    const lower = frame.file.toLowerCase();
+    for (const [key, content] of sources) {
+      if (key.toLowerCase() === lower) {
+        return { filename: key, content, highlightLine: frame.line };
+      }
+    }
   }
   if (!hasEvent && sources.size > 0) {
     const first = sources.entries().next().value;

@@ -19,4 +19,14 @@ describe('resolveSourceView', () => {
   it('returns empty when nothing available', () => {
     expect(resolveSourceView([], new Map(), 0, true)).toEqual({});
   });
+  it('resolves via a case-insensitive fallback when exact casing differs', () => {
+    const sources = new Map([['/p/a.ts', 'A'], ['/p/h.ts', 'H']]);
+    expect(resolveSourceView([{ file: '/P/A.ts', line: 5 }], sources, 0, true))
+      .toEqual({ filename: '/p/a.ts', content: 'A', highlightLine: 5 });
+  });
+  it('prefers an exact match over the case-insensitive fallback', () => {
+    const sources = new Map([['/p/a.ts', 'lower'], ['/P/A.ts', 'upper']]);
+    expect(resolveSourceView([{ file: '/P/A.ts', line: 1 }], sources, 0, true))
+      .toEqual({ filename: '/P/A.ts', content: 'upper', highlightLine: 1 });
+  });
 });
