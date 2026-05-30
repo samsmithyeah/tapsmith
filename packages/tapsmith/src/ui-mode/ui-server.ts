@@ -415,14 +415,18 @@ export async function startUIServer(
     const MAX_SOURCE_BYTES = 2 * 1024 * 1024;
     // Only serve known test files — never an arbitrary client-supplied path.
     // Guards against path traversal / arbitrary file reads over the WebSocket.
-    if (!ctx.testFiles.includes(filePath)) return;
+    // Resolve both sides so separator/relative-path differences (e.g. Windows)
+    // can't bypass the allowlist, and read from the trusted matched entry.
+    const resolved = path.resolve(filePath);
+    const match = ctx.testFiles.find((f) => path.resolve(f) === resolved);
+    if (!match) return;
     try {
-      if (fs.statSync(filePath).size > MAX_SOURCE_BYTES) return;
-      const content = fs.readFileSync(filePath, 'utf-8');
+      if (fs.statSync(match).size > MAX_SOURCE_BYTES) return;
+      const content = fs.readFileSync(match, 'utf-8');
       const sourceMsg: SourceMessage = {
         type: 'source',
-        path: filePath.replace(/\\/g, '/'),
-        fileName: path.basename(filePath),
+        path: match.replace(/\\/g, '/'),
+        fileName: path.basename(match),
         content,
       };
       broadcast(sourceMsg);
