@@ -157,7 +157,9 @@ export function collectReferencedFiles(events: readonly AnyTraceEvent[]): string
   const files = new Set<string>();
   for (const ev of events) {
     if ((ev.type === 'action' || ev.type === 'assertion') && ev.stack) {
-      for (const frame of ev.stack) files.add(frame.file);
+      for (const frame of ev.stack) {
+        if (frame?.file) files.add(frame.file);
+      }
     }
   }
   return [...files];
