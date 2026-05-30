@@ -24,7 +24,9 @@ export function streamSourcesForEvent(
       const stat = fs.statSync(frame.file);
       if (!stat.isFile() || stat.size > MAX_SOURCE_BYTES) continue;
       const content = fs.readFileSync(frame.file, 'utf-8');
-      emit(frame.file, path.basename(frame.file), content);
+      // Emit a forward-slash-normalized key so it matches the path-keyed
+      // sources map on the client regardless of the recording platform.
+      emit(frame.file.replace(/\\/g, '/'), path.basename(frame.file), content);
     } catch {
       // best-effort — file may be unreadable or transient
     }
