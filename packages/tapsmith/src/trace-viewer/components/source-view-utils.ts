@@ -22,8 +22,8 @@ export function resolveSourceView(
       }
     }
   }
-  if (!hasEvent && sources.size > 0) {
-    const first = sources.entries().next().value;
+  if (!hasEvent) {
+    const [first] = sources;
     if (first) return { filename: first[0], content: first[1] };
   }
   if (frame) return { filename: frame.file };
