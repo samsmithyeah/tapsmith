@@ -471,7 +471,7 @@ function StackTraceView({ stack, selected, onSelect }: { stack: SourceLocation[]
   return (
     <div class="source-stack">
       <div class="source-stack-title">Call stack</div>
-      {stack.map((frame, i) => frame && (
+      {stack.map((frame, i) => frame?.file && (
         <div
           key={i}
           class={`source-stack-frame${i === selected ? ' selected' : ''}`}
