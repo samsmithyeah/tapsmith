@@ -412,22 +412,25 @@ export async function startUIServer(
   }
 
   function sendSourceFromDisk(filePath: string): void {
+    // A malformed WebSocket message could omit `path` or send a non-string;
+    // path.resolve(undefined) would throw and take down the server.
+    if (typeof filePath !== 'string') return;
     const MAX_SOURCE_BYTES = 2 * 1024 * 1024;
     // Only serve known test files — never an arbitrary client-supplied path.
     // Guards against path traversal / arbitrary file reads over the WebSocket.
     // Resolve both sides so separator/relative-path differences (e.g. Windows)
     // can't bypass the allowlist, and read from the trusted matched entry.
     const resolved = path.resolve(filePath);
-    const match = ctx.testFiles.find((f) => path.resolve(f) === resolved);
-    if (!match) return;
+    const isKnown = ctx.testFiles.some((f) => path.resolve(f) === resolved);
+    if (!isKnown) return;
     try {
-      const stat = fs.statSync(match);
+      const stat = fs.statSync(resolved);
       if (!stat.isFile() || stat.size > MAX_SOURCE_BYTES) return;
-      const content = fs.readFileSync(match, 'utf-8');
+      const content = fs.readFileSync(resolved, 'utf-8');
       const sourceMsg: SourceMessage = {
         type: 'source',
-        path: match.replace(/\\/g, '/'),
-        fileName: path.basename(match),
+        path: resolved.replace(/\\/g, '/'),
+        fileName: path.basename(resolved),
         content,
       };
       broadcast(sourceMsg);

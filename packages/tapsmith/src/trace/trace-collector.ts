@@ -8,6 +8,7 @@
 
 import * as fs from 'node:fs';
 import * as path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import type {
   ActionTraceEvent,
   AssertionTraceEvent,
@@ -116,11 +117,23 @@ export function extractStack(stack: string): SourceLocation[] {
   for (const line of stack.split('\n')) {
     const match = STACK_FRAME_RE.exec(line.trim());
     if (!match) continue;
-    const file = match[1].replace(/\\/g, '/');
+    let file = match[1];
+    // ESM stack frames reference modules by file:// URL — the runner loads
+    // tests via import(pathToFileURL(absPath).href), so user-code frames look
+    // like `file:///Users/.../test.ts`. Convert to a plain absolute path so
+    // fs.statSync/readFileSync can later read the file off disk.
+    if (file.startsWith('file://')) {
+      try {
+        file = fileURLToPath(file);
+      } catch {
+        continue;
+      }
+    }
+    file = file.replace(/\\/g, '/');
     // Match the SDK's own location specifically so a user project that happens
     // to be named "tapsmith" isn't mistaken for the SDK and filtered out.
     if (file.includes('/packages/tapsmith/src/') || file.includes('/packages/tapsmith/dist/') || file.includes('/node_modules/tapsmith/')) continue;
-    if (file.includes('node_modules')) continue;
+    if (file.includes('/node_modules/')) continue;
     if (file.startsWith('node:') || file.startsWith('internal/')) continue;
     frames.push({ file, line: parseInt(match[2], 10), column: parseInt(match[3], 10) });
   }

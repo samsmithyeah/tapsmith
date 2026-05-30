@@ -102,8 +102,12 @@ function parseTraceZip(buf: Uint8Array): TraceData {
   const sourcesRaw = files["sources.json"];
   if (sourcesRaw) {
     try {
-      const parsed = JSON.parse(decoder.decode(sourcesRaw)) as Record<string, string>;
-      for (const [p, content] of Object.entries(parsed)) sources.set(p, content);
+      const parsed = JSON.parse(decoder.decode(sourcesRaw)) as unknown;
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+        for (const [p, content] of Object.entries(parsed)) {
+          if (typeof content === "string") sources.set(p, content);
+        }
+      }
     } catch {
       // Ignore malformed sources.json — Source tab will show "not captured".
     }

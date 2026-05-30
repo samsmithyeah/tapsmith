@@ -274,7 +274,7 @@ function App() {
   const screenshots = currentTrace?.screenshots ?? EMPTY_MAP;
   const hierarchies = currentTrace?.hierarchies ?? EMPTY_MAP;
   const previewSourcesForView = useMemo(() => {
-    if (viewedTestNode?.type !== 'test') return EMPTY_MAP;
+    if (viewedTestNode?.type !== 'test' || !viewedTestFile) return EMPTY_MAP;
     const key = viewedTestFile.replace(/\\/g, '/');
     const content = previewSources.get(key);
     return content !== undefined ? new Map([[key, content]]) : EMPTY_MAP;
