@@ -528,6 +528,16 @@ describe('extractStack', () => {
     const stack = 'Error\n    at loginHelper (C:\\proj\\tests\\helpers\\login.ts:8:3)';
     expect(extractStack(stack)).toEqual([{ file: 'C:/proj/tests/helpers/login.ts', line: 8, column: 3 }]);
   });
+
+  it('normalizes file:// URLs (ESM runner loads tests via import(file://))', () => {
+    const stack = 'Error\n    at Object.<anonymous> (file:///Users/me/proj/tests/login.test.ts:12:7)';
+    expect(extractStack(stack)).toEqual([{ file: '/Users/me/proj/tests/login.test.ts', line: 12, column: 7 }]);
+  });
+
+  it('decodes percent-encoded characters in file:// URLs', () => {
+    const stack = 'Error\n    at Object.<anonymous> (file:///Users/me/my%20proj/tests/a.test.ts:1:1)';
+    expect(extractStack(stack)).toEqual([{ file: '/Users/me/my proj/tests/a.test.ts', line: 1, column: 1 }]);
+  });
 });
 
 describe('addActionEvent preserves stack', () => {
