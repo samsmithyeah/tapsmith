@@ -128,7 +128,8 @@ export function packageTrace(
     const sources: Record<string, string> = {};
     for (const sourcePath of referenced) {
       try {
-        if (fs.statSync(sourcePath).size > MAX_SOURCE_BYTES) continue;
+        const stat = fs.statSync(sourcePath);
+        if (!stat.isFile() || stat.size > MAX_SOURCE_BYTES) continue;
         sources[sourcePath] = fs.readFileSync(sourcePath, 'utf-8');
       } catch {
         // Skip unreadable / missing source files

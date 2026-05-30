@@ -421,7 +421,8 @@ export async function startUIServer(
     const match = ctx.testFiles.find((f) => path.resolve(f) === resolved);
     if (!match) return;
     try {
-      if (fs.statSync(match).size > MAX_SOURCE_BYTES) return;
+      const stat = fs.statSync(match);
+      if (!stat.isFile() || stat.size > MAX_SOURCE_BYTES) return;
       const content = fs.readFileSync(match, 'utf-8');
       const sourceMsg: SourceMessage = {
         type: 'source',

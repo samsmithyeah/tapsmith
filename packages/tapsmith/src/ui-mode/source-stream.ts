@@ -21,7 +21,8 @@ export function streamSourcesForEvent(
     if (sent.has(frame.file)) continue;
     sent.add(frame.file);
     try {
-      if (fs.statSync(frame.file).size > MAX_SOURCE_BYTES) continue;
+      const stat = fs.statSync(frame.file);
+      if (!stat.isFile() || stat.size > MAX_SOURCE_BYTES) continue;
       const content = fs.readFileSync(frame.file, 'utf-8');
       emit(frame.file, path.basename(frame.file), content);
     } catch {
