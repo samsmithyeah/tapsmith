@@ -18,7 +18,7 @@ export function streamSourcesForEvent(
   if (event.type !== 'action' && event.type !== 'assertion') return;
   if (!event.stack) return;
   for (const frame of event.stack) {
-    if (sent.has(frame.file)) continue;
+    if (!frame.file || sent.has(frame.file)) continue;
     sent.add(frame.file);
     try {
       const stat = fs.statSync(frame.file);
