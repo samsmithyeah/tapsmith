@@ -133,6 +133,21 @@ export function extractSourceLocation(stack: string): SourceLocation | undefined
   return extractStack(stack)[0];
 }
 
+/**
+ * Collect the unique set of absolute file paths referenced by the stacks of all
+ * action/assertion events. Used to snapshot exactly the source files the trace
+ * can display.
+ */
+export function collectReferencedFiles(events: readonly AnyTraceEvent[]): string[] {
+  const files = new Set<string>();
+  for (const ev of events) {
+    if ((ev.type === 'action' || ev.type === 'assertion') && ev.stack) {
+      for (const frame of ev.stack) files.add(frame.file);
+    }
+  }
+  return [...files];
+}
+
 // ─── TraceCollector ───
 
 /** Callback for live trace event streaming (UI mode). */

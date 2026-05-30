@@ -2,8 +2,8 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as os from 'node:os';
-import { TraceCollector, extractSourceLocation, extractStack } from '../trace/trace-collector.js';
-import type { TraceConfig, ActionTraceEvent, AssertionTraceEvent, ConsoleTraceEvent, GroupTraceEvent } from '../trace/types.js';
+import { TraceCollector, extractSourceLocation, extractStack, collectReferencedFiles } from '../trace/trace-collector.js';
+import type { TraceConfig, ActionTraceEvent, AssertionTraceEvent, ConsoleTraceEvent, GroupTraceEvent, AnyTraceEvent } from '../trace/types.js';
 
 describe('TraceCollector', () => {
   let tempDir: string;
@@ -578,5 +578,17 @@ describe('extractSourceLocation', () => {
 
     const loc = extractSourceLocation(stack);
     expect(loc).toBeUndefined();
+  });
+});
+
+describe('collectReferencedFiles', () => {
+  it('returns the unique set of files across action and assertion stacks', () => {
+    const events = [
+      { type: 'action', stack: [{ file: '/p/a.ts', line: 1 }, { file: '/p/h.ts', line: 2 }] },
+      { type: 'assertion', stack: [{ file: '/p/h.ts', line: 9 }] },
+      { type: 'console' },
+      { type: 'action' },
+    ] as unknown as AnyTraceEvent[];
+    expect(collectReferencedFiles(events).sort()).toEqual(['/p/a.ts', '/p/h.ts']);
   });
 });
