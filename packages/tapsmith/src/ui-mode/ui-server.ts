@@ -413,6 +413,9 @@ export async function startUIServer(
 
   function sendSourceFromDisk(filePath: string): void {
     const MAX_SOURCE_BYTES = 2 * 1024 * 1024;
+    // Only serve known test files — never an arbitrary client-supplied path.
+    // Guards against path traversal / arbitrary file reads over the WebSocket.
+    if (!ctx.testFiles.includes(filePath)) return;
     try {
       if (fs.statSync(filePath).size > MAX_SOURCE_BYTES) return;
       const content = fs.readFileSync(filePath, 'utf-8');
