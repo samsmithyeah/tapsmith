@@ -26,6 +26,7 @@ import { ensureSessionReady, launchConfiguredApp, type SessionPreflightContext }
 import type { AnyTraceEvent } from '../trace/types.js';
 import { isNetworkTracingEnabled, networkHostsForPac } from '../trace/types.js';
 import { encodeNetworkBodies } from './encode-bodies.js';
+import { streamSourcesForEvent } from './source-stream.js';
 import type {
   UIWorkerMessage,
   UIWorkerChildMessage,
@@ -116,7 +117,10 @@ function setupTraceStreaming(dev: Device): void {
   const collector = dev.tracing._currentCollector;
   if (!collector) return;
 
+  const sentSources = new Set<string>();
   collector.setEventCallback((event: AnyTraceEvent, screenshots, lifecycle) => {
+    streamSourcesForEvent(event, sentSources, (p, fileName, content) =>
+      send({ type: 'source', workerId, path: p, fileName, content }));
     const msg: UIWorkerTraceEventMessage = {
       type: 'trace-event',
       workerId,
@@ -324,7 +328,7 @@ async function handleRunFile(
   // Send test source file
   try {
     const sourceContent = fs.readFileSync(filePath, 'utf-8');
-    send({ type: 'source', workerId, fileName: path.basename(filePath), content: sourceContent });
+    send({ type: 'source', workerId, path: filePath, fileName: path.basename(filePath), content: sourceContent });
   } catch {
     // best-effort
   }
