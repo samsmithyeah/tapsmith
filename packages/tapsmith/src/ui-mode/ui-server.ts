@@ -421,7 +421,13 @@ export async function startUIServer(
     // Resolve both sides so separator/relative-path differences (e.g. Windows)
     // can't bypass the allowlist, and read from the trusted matched entry.
     const resolved = path.resolve(filePath);
-    const isKnown = ctx.testFiles.some((f) => path.resolve(f) === resolved);
+    // On case-insensitive filesystems (macOS/Windows) a path that differs only
+    // in casing (e.g. drive letter `c:` vs `C:`) still refers to the same file,
+    // so compare case-insensitively there to avoid rejecting a known test file.
+    const caseInsensitiveFs = process.platform === 'darwin' || process.platform === 'win32';
+    const eq = (a: string, b: string): boolean =>
+      caseInsensitiveFs ? a.toLowerCase() === b.toLowerCase() : a === b;
+    const isKnown = ctx.testFiles.some((f) => eq(path.resolve(f), resolved));
     if (!isKnown) return;
     try {
       const stat = fs.statSync(resolved);

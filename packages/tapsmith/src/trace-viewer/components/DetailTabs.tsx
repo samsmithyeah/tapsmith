@@ -481,7 +481,7 @@ function StackTraceView({ stack, selected, onSelect }: { stack: SourceLocation[]
           onClick={() => onSelect(i)}
           onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onSelect(i); } }}
         >
-          <span class="source-stack-file">{frame.file.replace(/\\/g, '/').split('/').pop()}</span>
+          <span class="source-stack-file">{frame.file?.replace(/\\/g, '/').split('/').pop() ?? ''}</span>
           <span class="source-stack-line">:{frame.line}</span>
         </div>
       ))}
