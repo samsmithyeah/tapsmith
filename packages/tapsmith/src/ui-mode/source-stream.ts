@@ -10,6 +10,11 @@ import type { AnyTraceEvent } from '../trace/types.js';
 
 const MAX_SOURCE_BYTES = 2 * 1024 * 1024;
 
+// Transient fs error codes worth retrying on a later event (a momentary lock,
+// fd exhaustion). Any other error (ENOENT, EACCES, EISDIR, …) is treated as
+// permanent for this run, so we stop re-stat'ing the file.
+const TRANSIENT_FS_CODES = new Set(['EBUSY', 'EAGAIN', 'EMFILE', 'ENFILE']);
+
 export function streamSourcesForEvent(
   event: AnyTraceEvent,
   sent: Set<string>,
@@ -35,10 +40,12 @@ export function streamSourcesForEvent(
       // sources map on the client regardless of the recording platform.
       emit(frame.file.replace(/\\/g, '/'), path.basename(frame.file), content);
     } catch (err) {
-      // ENOENT = the file is permanently gone, so mark it sent to avoid
-      // re-stat'ing it on every later event. Other errors (e.g. a transient
-      // lock) are left unsent so they can be retried on a subsequent event.
-      if ((err as NodeJS.ErrnoException)?.code === 'ENOENT') sent.add(frame.file);
+      // Mark the file sent for any permanent failure (missing, no permission,
+      // is-a-directory, …) so we don't re-stat/read it on every later event.
+      // Only genuinely transient errors (a momentary lock, fd exhaustion) are
+      // left unsent so they can be retried on a subsequent event.
+      const code = (err as NodeJS.ErrnoException)?.code;
+      if (!code || !TRANSIENT_FS_CODES.has(code)) sent.add(frame.file);
     }
   }
 }
