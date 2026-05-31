@@ -256,6 +256,9 @@ export async function startUIServer(
   let discoveryTimer: ReturnType<typeof setTimeout> | null = null;
   let discoveryBatchRunning = false;
   const discoveredFileNodes = new Map<string, TestTreeNode>();
+  // Normalised paths whose source we've served to clients (Source-tab preview).
+  // Edits to these are re-broadcast so a not-yet-run test's source stays live.
+  const servedSourcePaths = new Set<string>();
   const resolvedRootDir = path.resolve(ctx.config.rootDir);
   const resolvedOutputDir = path.resolve(resolvedRootDir, ctx.config.outputDir);
   /** A single watched entry: optional project scope + optional test filter.
@@ -435,12 +438,14 @@ export async function startUIServer(
       const stat = fs.statSync(resolved);
       if (!stat.isFile() || stat.size > MAX_SOURCE_BYTES) return;
       const content = fs.readFileSync(resolved, 'utf-8');
+      const normalizedPath = resolved.replace(/\\/g, '/');
       const sourceMsg: SourceMessage = {
         type: 'source',
-        path: resolved.replace(/\\/g, '/'),
+        path: normalizedPath,
         fileName: path.basename(resolved),
         content,
       };
+      servedSourcePaths.add(normalizedPath);
       broadcast(sourceMsg);
     } catch {
       // best-effort — file may be unreadable or missing
@@ -2789,6 +2794,13 @@ export async function startUIServer(
     });
     discoveryWatcher.on('change', (filePath) => {
       scheduleDiscovery(filePath);
+      // Re-serve the source so a Source-tab preview of a not-yet-run test
+      // reflects the edit. (For a test that has run, the client merges the
+      // trace's captured sources over previews, so this is ignored there.)
+      const resolved = path.resolve(resolvedRootDir, filePath);
+      if (servedSourcePaths.has(resolved.replace(/\\/g, '/'))) {
+        sendSourceFromDisk(resolved);
+      }
     });
     discoveryWatcher.on('unlink', (filePath) => {
       const resolved = path.resolve(filePath);
