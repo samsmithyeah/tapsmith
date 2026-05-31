@@ -1495,7 +1495,7 @@ Focus or skip an entire suite.
 
 ### `beforeAll(fn: (fixtures) => void | Promise<void>): void`
 
-Run a function once before all tests in the current suite. Receives builtin fixtures (`device`, `projectName`, `platform`) and any worker-scoped custom fixtures.
+Run a function once before all tests in the current suite. Receives builtin fixtures (`device`, `projectName`, `platform`), worker-scoped custom fixtures, and any test-scoped custom fixtures it destructures (see the note below).
 
 ```typescript
 beforeAll(async ({ device }) => {
@@ -1540,7 +1540,7 @@ test.beforeEach(async ({ device, authScreen }) => {
 });
 ```
 
-> **Note:** `beforeAll`/`afterAll` hooks (both standalone and `test.beforeAll`) only receive worker-scoped fixtures and builtins — not test-scoped fixtures, which are created per-test. `beforeEach`/`afterEach` hooks registered via `test.beforeEach()`/`test.afterEach()` receive all fixtures including test-scoped custom fixtures.
+> **Note:** Test-scoped custom fixtures work in `beforeAll`/`afterAll` as well as `beforeEach`/`afterEach`. As in Playwright, each `beforeAll`/`afterAll` hook gets its **own** test-fixture scope: the fixtures it destructures are set up just before the hook runs and torn down immediately after (even if the hook throws). They are therefore not shared with the tests in the suite — for a single instance shared across the whole worker, declare the fixture with `{ scope: "worker" }` instead.
 
 ---
 

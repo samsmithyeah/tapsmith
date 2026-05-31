@@ -554,37 +554,39 @@ describe('runner execution', () => {
     expect(order).toEqual(['beforeAll', 'test']);
   });
 
-  it('warns when beforeAll hook references test-scoped fixture', async () => {
-    const warnings: string[] = [];
-    const origWrite = process.stderr.write;
-    process.stderr.write = ((chunk: string | Uint8Array) => {
-      warnings.push(typeof chunk === 'string' ? chunk : new TextDecoder().decode(chunk));
-      return true;
-    }) as typeof process.stderr.write;
-
+  it('resolves test-scoped fixtures for beforeAll hooks and tears them down', async () => {
+    // Playwright parity: each beforeAll gets its own test-fixture scope, set up
+    // before the hook and torn down after — so test-scoped fixtures (e.g. page
+    // objects) work in beforeAll without being forced to worker scope.
+    const order: string[] = [];
+    const seen: string[] = [];
     const mockDevice = { waitForIdle: vi.fn(async () => {}) };
 
     try {
       const extended = tapsmithTest.extend<{ myScreen: string }>({
-        myScreen: async (_fixtures, use) => { await use('screen-value'); },
+        myScreen: async (_fixtures, use) => {
+          order.push('setup');
+          await use('screen-value');
+          order.push('teardown');
+        },
       });
 
       pushContext();
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- testing scope validation warning
-      extended.beforeAll(async ({ myScreen }: any) => { void myScreen; });
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- testing runtime fixture injection
+      extended.beforeAll(async ({ myScreen }: any) => { seen.push(myScreen); order.push('beforeAll'); });
       extended('test after beforeAll', async () => {});
       const ctx = popContext();
 
-      await runSuiteContext(ctx, '', [], [], makeOpts({
+      const result = await runSuiteContext(ctx, '', [], [], makeOpts({
         config: makeConfig({ platform: 'android' }),
         // eslint-disable-next-line @typescript-eslint/no-explicit-any -- focused runner hook fixture mock
         device: mockDevice as any,
       }));
 
-      const warning = warnings.find(w => w.includes('test-scoped fixture "myScreen"'));
-      expect(warning).toBeDefined();
+      expect(result.tests[0].status).toBe('passed');
+      expect(seen).toEqual(['screen-value']);
+      expect(order).toEqual(['setup', 'beforeAll', 'teardown']);
     } finally {
-      process.stderr.write = origWrite;
       resetFixtureRegistry();
     }
   });
