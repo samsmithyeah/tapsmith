@@ -285,7 +285,17 @@ function App() {
       ? new Map([[previewKey, previewContent]])
       : EMPTY_MAP;
   }, [previewKey, previewContent]);
-  const sources = currentTrace?.sources ?? previewSourcesForView;
+  // For a live trace, merge the session-wide previewSources (every streamed
+  // source) under the trace's own snapshot. Sources are path-keyed with
+  // identical on-disk content, so the union resolves any file the selected
+  // step's call stack references — including files streamed by other workers
+  // during parallel runs — instead of copying the map into every trace on
+  // every 'source' message. Pre-run (no trace) keeps the scoped 1-file view.
+  const sources = useMemo(() => {
+    if (!currentTrace) return previewSourcesForView;
+    if (previewSources.size === 0) return currentTrace.sources;
+    return new Map([...previewSources, ...currentTrace.sources]);
+  }, [currentTrace, previewSources, previewSourcesForView]);
   const networkEntries = currentTrace?.network ?? EMPTY_NETWORK;
   const networkBodies = currentTrace?.networkBodies ?? EMPTY_MAP;
   const viewedTestWorker = (() => {
@@ -752,31 +762,20 @@ function App() {
         break;
       }
       case 'source':
+        // Keep every streamed source in two session-wide, path-keyed stores:
+        // pendingSourcesRef (snapshotted into a trace at its test-start) and
+        // previewSources (merged in at read time — see the `sources` memo).
+        // We deliberately DON'T copy the file into each trace's own map here:
+        // that was O(traces) per message. Because sources are path-keyed with
+        // identical on-disk content, the read-time merge resolves any file a
+        // trace needs — including files streamed by other workers during
+        // parallel runs — without the per-message fan-out.
         pendingSourcesRef.current.set(msg.path, msg.content);
         setPreviewSources((prev) => {
           if (prev.get(msg.path) === msg.content) return prev;
           const next = new Map(prev);
           next.set(msg.path, msg.content);
           return next;
-        });
-        setTestTraces((prev) => {
-          let changed = false;
-          const next = new Map(prev);
-          for (const [k, data] of prev) {
-            if (data.sources.has(msg.path)) continue;
-            // Attribute to every trace, not just the active one. Sources are
-            // keyed by absolute path and identical paths map to identical
-            // on-disk content, so sharing is harmless — and during multi-worker
-            // parallel runs activeTestRef only follows one worker, so scoping to
-            // it would misattribute (or drop) files streamed for other workers'
-            // concurrently-running tests. The Source tab only renders files the
-            // selected step's call stack references, so extra entries are inert.
-            const sources = new Map(data.sources);
-            sources.set(msg.path, msg.content);
-            next.set(k, { ...data, sources });
-            changed = true;
-          }
-          return changed ? next : prev;
         });
         break;
       case 'network': {
