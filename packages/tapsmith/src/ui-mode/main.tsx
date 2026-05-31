@@ -758,14 +758,17 @@ function App() {
           const next = new Map(prev);
           for (const [k, data] of prev) {
             if (data.sources.has(msg.path)) continue;
-            // During a run, attribute sources to the active test. On reconnect
-            // replay (no active test) inject into every entry so files resolve.
-            if (activeTestRef.current === k || activeTestRef.current === null) {
-              const sources = new Map(data.sources);
-              sources.set(msg.path, msg.content);
-              next.set(k, { ...data, sources });
-              changed = true;
-            }
+            // Attribute to every trace, not just the active one. Sources are
+            // keyed by absolute path and identical paths map to identical
+            // on-disk content, so sharing is harmless — and during multi-worker
+            // parallel runs activeTestRef only follows one worker, so scoping to
+            // it would misattribute (or drop) files streamed for other workers'
+            // concurrently-running tests. The Source tab only renders files the
+            // selected step's call stack references, so extra entries are inert.
+            const sources = new Map(data.sources);
+            sources.set(msg.path, msg.content);
+            next.set(k, { ...data, sources });
+            changed = true;
           }
           return changed ? next : prev;
         });
