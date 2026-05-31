@@ -5,7 +5,7 @@ import * as os from 'node:os';
 import { unzipSync, strFromU8 } from 'fflate';
 import { TraceCollector } from '../trace/trace-collector.js';
 import { packageTrace } from '../trace/trace-packager.js';
-import type { TraceConfig } from '../trace/types.js';
+import type { TraceConfig, TraceDeviceInfo } from '../trace/types.js';
 
 describe('trace packager', () => {
   let tempDir: string;
@@ -124,8 +124,10 @@ describe('trace packager', () => {
 
     const zipData = new Uint8Array(fs.readFileSync(zipPath));
     const files = unzipSync(zipData);
-    expect(files['sources/test.ts']).toBeDefined();
-    expect(strFromU8(files['sources/test.ts'])).toBe('test("hello", () => {})');
+    expect(files['sources.json']).toBeDefined();
+    const sources = JSON.parse(strFromU8(files['sources.json']));
+    // sources.json keys are forward-slash normalized by packageTrace.
+    expect(sources[sourceFile.replace(/\\/g, '/')]).toBe('test("hello", () => {})');
   });
 
   it('records failed test metadata', () => {
@@ -168,5 +170,40 @@ describe('trace packager', () => {
     const metadata = JSON.parse(strFromU8(files['metadata.json']));
     expect(metadata.testStatus).toBe('failed');
     expect(metadata.error).toBe('Element not found');
+  });
+});
+
+describe('packageTrace sources.json', () => {
+  it('writes referenced source files keyed by absolute path', () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'ts-pkg-'));
+    try {
+      const srcFile = path.join(tmp, 'helper.ts');
+      fs.writeFileSync(srcFile, 'export const x = 1\n');
+
+      const device: TraceDeviceInfo = { serial: 'test', isEmulator: false };
+      const c = new TraceCollector(
+        { mode: 'on', screenshots: false, snapshots: false, sources: true, attachments: false, network: false, deviceLogs: false },
+        tmp,
+      );
+      c.addActionEvent({
+        category: 'tap', action: 'tap', duration: 1, success: true,
+        hasScreenshotBefore: false, hasScreenshotAfter: false,
+        hasHierarchyBefore: false, hasHierarchyAfter: false,
+        sourceLocation: { file: srcFile, line: 1 }, stack: [{ file: srcFile, line: 1 }],
+      });
+
+      const zipPath = packageTrace(c, {
+        testFile: srcFile, testName: 't', testStatus: 'passed', testDuration: 1,
+        startTime: 1, endTime: 2, device,
+        tapsmithVersion: '0.0.0', outputDir: tmp, sourceFiles: [srcFile],
+      });
+
+      const files = unzipSync(new Uint8Array(fs.readFileSync(zipPath)));
+      const sources = JSON.parse(new TextDecoder().decode(files['sources.json']));
+      // sources.json keys are forward-slash normalized by packageTrace.
+      expect(sources[srcFile.replace(/\\/g, '/')]).toBe('export const x = 1\n');
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
   });
 });

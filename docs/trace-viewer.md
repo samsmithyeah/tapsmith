@@ -101,7 +101,7 @@ Shows before/after screenshots for the selected action:
 
 - **Call** — Action type, selector, bounds, wall time, raw action/assertion time, wait time, retry count
 - **Console** — Test code `console.log/warn/error` and device logcat output, color-coded by level
-- **Source** — Test source code with the relevant line highlighted
+- **Source** — The actual source file for the selected step — test, helper, page object, or fixture — with the relevant line highlighted. When a step has a multi-frame call stack, a clickable call-stack pane lets you walk up the stack and view each frame's file. Files are captured at run time, so the code shown matches what actually ran even if you edit afterwards.
 - **Hierarchy** — Android view hierarchy XML with searchable tree view
 - **Network** — HTTP requests captured during the test (see [Network Capture](#network-capture) below)
 - **Errors** — Error message, stack trace, and assertion expected/actual values
@@ -175,7 +175,7 @@ trace.zip/
   trace.json         # NDJSON event log
   screenshots/       # PNGs (action-003-before.png, action-003-after.png)
   hierarchy/         # View hierarchy XML snapshots
-  sources/           # Test source files
+  sources.json       # Source files referenced by step call stacks, keyed by absolute path
   network.json       # NDJSON network request log (when network capture is enabled)
   network/           # Large request/response body files
 ```

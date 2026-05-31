@@ -30,7 +30,7 @@ import {
 import { ElementHandle, locatorOptionsToSelector, type LocatorOptions } from './element-handle.js';
 import type { TapsmithConfig } from './config.js';
 import { Tracing } from './trace/tracing.js';
-import { type TraceCollector, getActiveTraceCollector, extractSourceLocation } from './trace/trace-collector.js';
+import { type TraceCollector, getActiveTraceCollector, extractStack } from './trace/trace-collector.js';
 import type { ActionCategory, ConsoleLevel } from './trace/types.js';
 import { tracedAction } from './trace/traced-action.js';
 import {
@@ -727,14 +727,15 @@ export class Device {
     options?: { times?: number },
   ): Promise<void> {
     const start = Date.now();
-    const source = extractSourceLocation(new Error().stack ?? '');
+    const stack = extractStack(new Error().stack ?? '');
+    const source = stack[0];
     if (!this._networkCaptureActive && this._networkCaptureError) {
       const error = `Network capture disabled: ${this._networkCaptureError}`;
-      this._emitNetworkAction('route', formatPattern(url), start, false, error, source);
+      this._emitNetworkAction('route', formatPattern(url), start, false, error, source, stack);
       throw new Error(error);
     }
     await this._ensureRouteManager().addRoute(url, handler, options);
-    this._emitNetworkAction('route', formatPattern(url), start, true, undefined, source);
+    this._emitNetworkAction('route', formatPattern(url), start, true, undefined, source, stack);
   }
 
   /**
@@ -747,18 +748,20 @@ export class Device {
   ): Promise<void> {
     if (!this._routeManager) return;
     const start = Date.now();
-    const source = extractSourceLocation(new Error().stack ?? '');
+    const stack = extractStack(new Error().stack ?? '');
+    const source = stack[0];
     await this._routeManager.removeRoute(url, handler);
-    this._emitNetworkAction('unroute', formatPattern(url), start, true, undefined, source);
+    this._emitNetworkAction('unroute', formatPattern(url), start, true, undefined, source, stack);
   }
 
   /** Remove all registered route handlers. */
   async unrouteAll(): Promise<void> {
     if (!this._routeManager) return;
     const start = Date.now();
-    const source = extractSourceLocation(new Error().stack ?? '');
+    const stack = extractStack(new Error().stack ?? '');
+    const source = stack[0];
     await this._routeManager.removeAllRoutes();
-    this._emitNetworkAction('unrouteAll', undefined, start, true, undefined, source);
+    this._emitNetworkAction('unrouteAll', undefined, start, true, undefined, source, stack);
   }
 
   /**
@@ -880,7 +883,8 @@ export class Device {
       return this._connectWebView(packageName);
     }
 
-    const sourceLocation = extractSourceLocation(new Error().stack ?? '');
+    const stack = extractStack(new Error().stack ?? '');
+    const sourceLocation = stack[0];
     const targetPackageName = packageName ?? this.defaultPackageName;
     const selector = targetPackageName ? `package=${targetPackageName}` : undefined;
     const { captures: beforeCaptures } = await collector.captureBeforeAction(
@@ -897,6 +901,7 @@ export class Device {
       action: 'connect',
       selector,
       sourceLocation,
+      stack,
       log: connectLog,
       hasScreenshotBefore: !!beforeCaptures.screenshotBefore,
       hasHierarchyBefore: !!beforeCaptures.hierarchyBefore,
@@ -921,6 +926,7 @@ export class Device {
         hasHierarchyBefore: !!beforeCaptures.hierarchyBefore,
         hasHierarchyAfter: false,
         sourceLocation,
+        stack,
       });
     });
 
@@ -944,6 +950,7 @@ export class Device {
           hasHierarchyBefore: !!beforeCaptures.hierarchyBefore,
           hasHierarchyAfter: false,
           sourceLocation,
+          stack,
         });
       }
       throw err;
@@ -966,6 +973,7 @@ export class Device {
       hasHierarchyBefore: !!beforeCaptures.hierarchyBefore,
       hasHierarchyAfter: false,
       sourceLocation,
+      stack,
     });
 
     return handle;
@@ -1187,6 +1195,7 @@ export class Device {
     success: boolean,
     error?: string,
     sourceLocation?: import('./trace/types.js').SourceLocation,
+    stack?: import('./trace/types.js').SourceLocation[],
   ): void {
     const collector = this._traceCollector;
     if (!collector) return;
@@ -1203,6 +1212,7 @@ export class Device {
       hasHierarchyBefore: false,
       hasHierarchyAfter: false,
       sourceLocation,
+      stack,
     });
   }
 

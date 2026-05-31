@@ -3,7 +3,7 @@ import { render } from 'preact';
 import { useState, useCallback, useMemo, useRef, useEffect } from 'preact/hooks';
 import type { ServerMessage, ClientMessage, TestTreeNode, WorkerInfo } from './ui-protocol.js';
 import { inferDevicePlatform, type DevicePlatform } from './ui-protocol.js';
-import type { ActionTraceEvent, AssertionTraceEvent, TraceMetadata } from '../trace/types.js';
+import type { ActionTraceEvent, AssertionTraceEvent, TraceMetadata, SourceLocation } from '../trace/types.js';
 import { sortEventsByStartTime } from '../trace/sort-events.js';
 import { useWebSocket } from './hooks/use-websocket.js';
 import {
@@ -34,6 +34,7 @@ import { McpPanel } from './components/McpPanel.js';
 import { ActionsPanel } from '../trace-viewer/components/ActionsPanel.js';
 import { ScreenshotPanel } from '../trace-viewer/components/ScreenshotPanel.js';
 import { DetailTabs } from '../trace-viewer/components/DetailTabs.js';
+import { findTestDeclarationLine, findSuiteDeclarationLine } from '../trace-viewer/components/source-view-utils.js';
 import { TimelineFilmstrip } from '../trace-viewer/components/TimelineFilmstrip.js';
 import { SelectorTab, handlePickFromScreenshot, handleHoverFromScreenshot } from '../trace-viewer/components/SelectorPlayground.js';
 import { parseHierarchyXml } from '../trace-viewer/components/hierarchy-utils.js';
@@ -119,6 +120,10 @@ function App() {
   const autoFollowRef = useRef<'auto' | `worker:${number}` | 'manual'>('auto');
 
   const { testTraces, setTestTraces, activeTestRef, pendingSourcesRef } = useTraceData();
+  // Pre-run source preview: keyed by normalised absolute path (forward slashes).
+  const [previewSources, setPreviewSources] = useState<Map<string, string>>(new Map());
+  // Tracks which paths have already been requested to avoid duplicate sends.
+  const requestedSourcesRef = useRef<Set<string>>(new Set());
   const [pinnedIndex, setPinnedIndex] = useState(0);
   const [hoveredIndex, setHoveredIndex] = useState<number | null>(null);
   const selectedIndex = hoveredIndex ?? pinnedIndex;
@@ -269,7 +274,52 @@ function App() {
   );
   const screenshots = currentTrace?.screenshots ?? EMPTY_MAP;
   const hierarchies = currentTrace?.hierarchies ?? EMPTY_MAP;
-  const sources = currentTrace?.sources ?? EMPTY_MAP;
+  // Resolve the single previewed source string outside useMemo (a plain O(1)
+  // Map.get) so the 1-entry Map below is only reallocated when the key or its
+  // content actually changes — not on every previewSources mutation.
+  // Preview the source file for any test-bearing node: a file (no highlight),
+  // a suite (highlight its `describe(...)`), or a test (highlight its `test(...)`).
+  const previewable = viewedTestNode?.type === 'file'
+    || viewedTestNode?.type === 'suite'
+    || viewedTestNode?.type === 'test';
+  const previewKey = previewable && viewedTestNode?.filePath
+    ? viewedTestNode.filePath.replace(/\\/g, '/')
+    : undefined;
+  const previewContent = previewKey !== undefined ? previewSources.get(previewKey) : undefined;
+  const previewSourcesForView = useMemo(() => {
+    return previewKey !== undefined && previewContent !== undefined
+      ? new Map([[previewKey, previewContent]])
+      : EMPTY_MAP;
+  }, [previewKey, previewContent]);
+  // For a live trace, merge the session-wide previewSources (every streamed
+  // source) under the trace's own snapshot. Sources are path-keyed with
+  // identical on-disk content, so the union resolves any file the selected
+  // step's call stack references — including files streamed by other workers
+  // during parallel runs — instead of copying the map into every trace on
+  // every 'source' message. Pre-run (no trace) keeps the scoped 1-file view.
+  const sources = useMemo(() => {
+    if (!currentTrace) return previewSourcesForView;
+    if (previewSources.size === 0) return currentTrace.sources;
+    // Build on previewSources, then let the trace's own snapshot win on key
+    // collisions — same precedence as a spread merge, without allocating the
+    // intermediate arrays a spread of both maps would create.
+    const merged = new Map(previewSources);
+    for (const [path, content] of currentTrace.sources) merged.set(path, content);
+    return merged;
+  }, [currentTrace, previewSources, previewSourcesForView]);
+  // Pre-run preview: highlight the selected node's declaration line in its
+  // source file — `test(...)` for a test, `describe(...)` for a suite. A file
+  // node shows the source with nothing highlighted. Skipped once a trace
+  // exists (events drive the view).
+  const previewHighlight = useMemo<SourceLocation | undefined>(() => {
+    if (currentTrace || previewKey === undefined || previewContent === undefined) return undefined;
+    const line = viewedTestNode?.type === 'test'
+      ? findTestDeclarationLine(previewContent, viewedTestNode.name)
+      : viewedTestNode?.type === 'suite'
+        ? findSuiteDeclarationLine(previewContent, viewedTestNode.name)
+        : undefined;
+    return line !== undefined ? { file: previewKey, line } : undefined;
+  }, [currentTrace, previewKey, previewContent, viewedTestNode]);
   const networkEntries = currentTrace?.network ?? EMPTY_NETWORK;
   const networkBodies = currentTrace?.networkBodies ?? EMPTY_MAP;
   const viewedTestWorker = (() => {
@@ -541,11 +591,11 @@ function App() {
           if (existing) revokeTraceScreenshots(existing);
           const next = new Map(prev);
           const data = emptyTraceData(msg.filePath);
-          // Match pending source by test file basename
-          const basename = msg.filePath.split('/').pop() ?? '';
-          const sourceContent = pendingSourcesRef.current.get(basename);
+          // Seed the test file from the pending pool (pre-run preview).
+          const normalizedPath = msg.filePath.replace(/\\/g, '/');
+          const sourceContent = pendingSourcesRef.current.get(normalizedPath);
           if (sourceContent) {
-            data.sources = new Map([[basename, sourceContent]]);
+            data.sources = new Map([[normalizedPath, sourceContent]]);
           }
           next.set(key, data);
           return next;
@@ -736,22 +786,20 @@ function App() {
         break;
       }
       case 'source':
-        pendingSourcesRef.current.set(msg.fileName, msg.content);
-        // On reconnect, test-start doesn't fire so sources aren't snapshotted
-        // into trace entries. Inject into matching entries (by filePath basename)
-        // or entries without filePath (created by getOrCreateTrace).
-        setTestTraces((prev) => {
-          let changed = false;
+        // Keep every streamed source in two session-wide, path-keyed stores:
+        // pendingSourcesRef (snapshotted into a trace at its test-start) and
+        // previewSources (merged in at read time — see the `sources` memo).
+        // We deliberately DON'T copy the file into each trace's own map here:
+        // that was O(traces) per message. Because sources are path-keyed with
+        // identical on-disk content, the read-time merge resolves any file a
+        // trace needs — including files streamed by other workers during
+        // parallel runs — without the per-message fan-out.
+        pendingSourcesRef.current.set(msg.path, msg.content);
+        setPreviewSources((prev) => {
+          if (prev.get(msg.path) === msg.content) return prev;
           const next = new Map(prev);
-          for (const [k, data] of prev) {
-            if (data.sources.has(msg.fileName)) continue;
-            const match = !data.filePath || data.filePath.split('/').pop() === msg.fileName;
-            if (match) {
-              next.set(k, { ...data, sources: new Map([...data.sources, [msg.fileName, msg.content]]) });
-              changed = true;
-            }
-          }
-          return changed ? next : prev;
+          next.set(msg.path, msg.content);
+          return next;
         });
         break;
       case 'network': {
@@ -956,6 +1004,19 @@ function App() {
       setHoveredIndex(null);
     }
   }, [viewedTraceKey, actionEvents.length, isRunning]);
+
+  // Pre-run preview: when a file/suite/test is selected but not yet run, fetch
+  // its source file from disk so the Source tab shows it (the matching
+  // declaration line is highlighted for suites/tests; files show no highlight).
+  useEffect(() => {
+    if (!previewable) return;
+    const filePath = viewedTestNode?.filePath;
+    if (!filePath) return;
+    const key = filePath.replace(/\\/g, '/');
+    if (previewSources.has(key) || requestedSourcesRef.current.has(key)) return;
+    requestedSourcesRef.current.add(key);
+    send({ type: 'request-source', path: filePath });
+  }, [previewable, viewedTestNode, previewSources, send]);
 
   const handleSelectDeviceView = useCallback((mode: 'all' | number) => {
     setDeviceViewMode(mode);
@@ -1224,6 +1285,7 @@ function App() {
           networkBodies={networkBodies}
           onHierarchyNodeSelect={setHierarchyHighlight}
           pickMode={pickMode}
+          previewHighlight={previewHighlight}
           locatorTab={
             <SelectorTab
               hierarchyXml={currentHierarchyXml}

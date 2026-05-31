@@ -110,6 +110,9 @@ export interface ActionTraceEvent extends TraceEvent {
   hasHierarchyAfter: boolean
   /** Source location where the action was called. */
   sourceLocation?: SourceLocation
+  /** Full user-code call stack at the time of the action (top frame first).
+   * `sourceLocation` is `stack[0]`. */
+  stack?: SourceLocation[]
   /** Wait time before the element was found (ms). */
   waitTime?: number
   /** Number of retries before success. */
@@ -159,6 +162,9 @@ export interface AssertionTraceEvent extends TraceEvent {
   bounds?: { left: number; top: number; right: number; bottom: number }
   /** Source location. */
   sourceLocation?: SourceLocation
+  /** Full user-code call stack at the time of the assertion (top frame first).
+   * `sourceLocation` is `stack[0]`. */
+  stack?: SourceLocation[]
   /** Whether a "before" screenshot was captured. */
   hasScreenshotBefore?: boolean
   /** Whether an "after" screenshot was captured. */

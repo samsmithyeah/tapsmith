@@ -256,6 +256,9 @@ export async function startUIServer(
   let discoveryTimer: ReturnType<typeof setTimeout> | null = null;
   let discoveryBatchRunning = false;
   const discoveredFileNodes = new Map<string, TestTreeNode>();
+  // Normalised paths whose source we've served to clients (Source-tab preview).
+  // Edits to these are re-broadcast so a not-yet-run test's source stays live.
+  const servedSourcePaths = new Set<string>();
   const resolvedRootDir = path.resolve(ctx.config.rootDir);
   const resolvedOutputDir = path.resolve(resolvedRootDir, ctx.config.outputDir);
   /** A single watched entry: optional project scope + optional test filter.
@@ -409,6 +412,44 @@ export async function startUIServer(
   function broadcastError(err: unknown): void {
     const message = err instanceof Error ? err.message : String(err);
     broadcast({ type: 'error', message });
+  }
+
+  function sendSourceFromDisk(filePath: string): void {
+    // A malformed WebSocket message could omit `path` or send a non-string;
+    // path.resolve(undefined) would throw and take down the server.
+    if (typeof filePath !== 'string') return;
+    const MAX_SOURCE_BYTES = 2 * 1024 * 1024;
+    // Only serve known test files — never an arbitrary client-supplied path.
+    // Guards against path traversal / arbitrary file reads over the WebSocket.
+    // Resolve both sides so separator/relative-path differences (e.g. Windows)
+    // can't bypass the allowlist, and read from the trusted matched entry.
+    // Anchor relative paths to the project root (not process.cwd(), which may
+    // differ from where tests were discovered). Absolute paths are unaffected.
+    const resolved = path.resolve(resolvedRootDir, filePath);
+    // On case-insensitive filesystems (macOS/Windows) a path that differs only
+    // in casing (e.g. drive letter `c:` vs `C:`) still refers to the same file,
+    // so compare case-insensitively there to avoid rejecting a known test file.
+    const caseInsensitiveFs = process.platform === 'darwin' || process.platform === 'win32';
+    const eq = (a: string, b: string): boolean =>
+      caseInsensitiveFs ? a.toLowerCase() === b.toLowerCase() : a === b;
+    const isKnown = ctx.testFiles.some((f) => eq(path.resolve(resolvedRootDir, f), resolved));
+    if (!isKnown) return;
+    try {
+      const stat = fs.statSync(resolved);
+      if (!stat.isFile() || stat.size > MAX_SOURCE_BYTES) return;
+      const content = fs.readFileSync(resolved, 'utf-8');
+      const normalizedPath = resolved.replace(/\\/g, '/');
+      const sourceMsg: SourceMessage = {
+        type: 'source',
+        path: normalizedPath,
+        fileName: path.basename(resolved),
+        content,
+      };
+      servedSourcePaths.add(normalizedPath);
+      broadcast(sourceMsg);
+    } catch {
+      // best-effort — file may be unreadable or missing
+    }
   }
 
   function broadcastBinary(data: Buffer): void {
@@ -1088,10 +1129,11 @@ export async function startUIServer(
           case 'source': {
             const sourceMsg: SourceMessage = {
               type: 'source',
+              path: response.path,
               fileName: response.fileName,
               content: response.content,
             };
-            sourceBuffer.set(response.fileName, sourceMsg);
+            sourceBuffer.set(response.path, sourceMsg);
             broadcast(sourceMsg);
             break;
           }
@@ -1853,8 +1895,8 @@ export async function startUIServer(
               break;
             }
             case 'source': {
-              const sourceMsg: SourceMessage = { type: 'source', fileName: msg.fileName, content: msg.content };
-              sourceBuffer.set(msg.fileName, sourceMsg);
+              const sourceMsg: SourceMessage = { type: 'source', path: msg.path, fileName: msg.fileName, content: msg.content };
+              sourceBuffer.set(msg.path, sourceMsg);
               broadcast(sourceMsg);
               break;
             }
@@ -2752,6 +2794,13 @@ export async function startUIServer(
     });
     discoveryWatcher.on('change', (filePath) => {
       scheduleDiscovery(filePath);
+      // Re-serve the source so a Source-tab preview of a not-yet-run test
+      // reflects the edit. (For a test that has run, the client merges the
+      // trace's captured sources over previews, so this is ignored there.)
+      const resolved = path.resolve(resolvedRootDir, filePath);
+      if (servedSourcePaths.has(resolved.replace(/\\/g, '/'))) {
+        sendSourceFromDisk(resolved);
+      }
     });
     discoveryWatcher.on('unlink', (filePath) => {
       const resolved = path.resolve(filePath);
@@ -3003,6 +3052,9 @@ export async function startUIServer(
         }).catch(() => {});
         break;
       }
+      case 'request-source':
+        sendSourceFromDisk(msg.path);
+        break;
       case 'tap-coordinates':
         console.log(`[Tapsmith UI] Tap at (${msg.x.toFixed(2)}, ${msg.y.toFixed(2)}) — coordinate tap not yet implemented`);
         break;

@@ -213,6 +213,9 @@ export interface DeviceInfoMessage {
 
 export interface SourceMessage {
   type: 'source'
+  /** Absolute path of the source file — unique key for the client sources map. */
+  path: string
+  /** Basename for display. */
   fileName: string
   content: string
 }
@@ -346,6 +349,12 @@ export interface RequestHierarchyCommand {
   type: 'request-hierarchy'
 }
 
+export interface RequestSourceCommand {
+  type: 'request-source'
+  /** Absolute path of the source file to read from disk. */
+  path: string
+}
+
 export interface TapCoordinatesCommand {
   type: 'tap-coordinates'
   /** X coordinate normalized to 0–1 range. */
@@ -387,6 +396,7 @@ export type ClientMessage =
   | StopRunCommand
   | ToggleWatchCommand
   | RequestHierarchyCommand
+  | RequestSourceCommand
   | TapCoordinatesCommand
   | SetFilterCommand
   | SelectWorkerCommand
@@ -482,6 +492,7 @@ export interface UIRunTraceEventMessage {
 
 export interface UIRunSourceMessage {
   type: 'source'
+  path: string
   fileName: string
   content: string
 }
@@ -612,6 +623,7 @@ export interface UIWorkerTraceEventMessage {
 export interface UIWorkerSourceMessage {
   type: 'source'
   workerId: number
+  path: string
   fileName: string
   content: string
 }

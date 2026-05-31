@@ -9,7 +9,7 @@
  */
 
 import type { NetworkEntry } from './trace/types.js';
-import { getActiveTraceCollector, extractSourceLocation } from './trace/trace-collector.js';
+import { getActiveTraceCollector, extractStack } from './trace/trace-collector.js';
 
 // ─── Types ───
 
@@ -154,7 +154,8 @@ export class APIRequestContext {
 
   private async _fetch(method: string, url: string, options?: APIRequestOptions): Promise<TapsmithAPIResponse> {
     // Capture source location before any async work
-    const sourceLocation = extractSourceLocation(new Error().stack ?? '');
+    const stack = extractStack(new Error().stack ?? '');
+    const sourceLocation = stack[0];
 
     // Resolve URL
     const resolvedUrl = this._resolveUrl(url, options?.params);
@@ -209,6 +210,7 @@ export class APIRequestContext {
           action: `request.${method.toLowerCase()}`,
           selector: resolvedUrl.toString(),
           sourceLocation,
+          stack,
           log: [`${method} ${resolvedUrl.toString()}`],
           hasScreenshotBefore: false,
           hasHierarchyBefore: false,
@@ -248,6 +250,7 @@ export class APIRequestContext {
           hasHierarchyBefore: false,
           hasHierarchyAfter: false,
           sourceLocation,
+          stack,
         });
 
         // Also record a NetworkEntry so failed requests appear in the Network tab
@@ -312,6 +315,7 @@ export class APIRequestContext {
         hasHierarchyBefore: false,
         hasHierarchyAfter: false,
         sourceLocation,
+        stack,
       });
 
       const requestHeaders: Record<string, string> = { ...headers };

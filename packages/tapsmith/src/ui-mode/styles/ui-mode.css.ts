@@ -1643,6 +1643,35 @@ html, body, #app {
 .source-line-number { min-width: 40px; text-align: right; padding-right: 12px; color: var(--fg-muted); user-select: none; font-variant-numeric: tabular-nums; }
 .source-line-content { flex: 1; }
 .source-line.highlight { background: var(--accent-bg); }
+.source-tab.has-stack { flex-direction: row; }
+.source-main { flex: 1; min-width: 0; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
+.source-stack {
+  width: 240px;
+  flex-shrink: 0;
+  overflow-y: auto;
+  border-left: 1px solid var(--border);
+  font-size: 12px;
+}
+.source-stack-title {
+  padding: 6px 10px;
+  color: var(--fg-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  font-size: 11px;
+}
+.source-stack-frame {
+  display: flex;
+  gap: 2px;
+  padding: 4px 10px;
+  cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.source-stack-frame:hover { background: var(--bg-hover); }
+.source-stack-frame.selected { background: var(--bg-active); }
+.source-stack-file { color: var(--fg); }
+.source-stack-line { color: var(--fg-muted); }
 
 /* Error blocks */
 .error-block { display: flex; flex-direction: column; gap: 16px; }

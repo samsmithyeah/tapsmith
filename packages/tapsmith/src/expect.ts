@@ -20,7 +20,7 @@
 import { ElementHandle } from "./element-handle.js";
 import type { ElementInfo } from "./grpc-client.js";
 import { selectorToProto, type Selector } from "./selectors.js";
-import { extractSourceLocation, getActiveTraceCollector } from "./trace/trace-collector.js";
+import { extractStack, getActiveTraceCollector } from "./trace/trace-collector.js";
 import { WebViewLocator } from "./webview-locator.js";
 
 const DEFAULT_ASSERTION_TIMEOUT_MS = 5_000;
@@ -289,7 +289,8 @@ function wrapAssertionWithTrace(
   if (!trace) return fn;
 
   return async (...args: unknown[]) => {
-    const sourceLocation = extractSourceLocation(new Error().stack ?? "");
+    const stack = extractStack(new Error().stack ?? "");
+    const sourceLocation = stack[0];
     const selectorStr = selectorDescription(handle);
     const start = Date.now();
 
@@ -312,6 +313,7 @@ function wrapAssertionWithTrace(
       assertion: (negated ? "not." : "") + name,
       selector: selectorStr,
       sourceLocation,
+      stack,
       bounds: beforeBounds,
       soft: false,
       negated,
@@ -345,6 +347,7 @@ function wrapAssertionWithTrace(
         attempts: Math.max(1, Math.round((Date.now() - start) / POLL_INTERVAL_MS)),
         error: timeoutError,
         sourceLocation,
+        stack,
         hasScreenshotBefore: !!beforeCaptures.screenshotBefore,
         hasScreenshotAfter: false,
         hasHierarchyBefore: !!beforeCaptures.hierarchyBefore,
@@ -400,6 +403,7 @@ function wrapAssertionWithTrace(
       error,
       bounds,
       sourceLocation,
+      stack,
       hasScreenshotBefore: !!beforeCaptures.screenshotBefore,
       hasScreenshotAfter: false,
       hasHierarchyBefore: !!beforeCaptures.hierarchyBefore,
@@ -1205,6 +1209,7 @@ function createGenericAssertions(
   const trace = (name: string, pass: boolean, expected?: unknown) => {
     const collector = getActiveTraceCollector();
     if (!collector) return;
+    const stack = extractStack(new Error().stack ?? '');
     const finalPass = negated ? !pass : pass;
     collector.addAssertionEvent({
       assertion: (negated ? 'not.' : '') + name,
@@ -1216,7 +1221,8 @@ function createGenericAssertions(
       expected: expected !== undefined ? formatValue(expected) : undefined,
       actual: formatValue(actual),
       error: finalPass ? undefined : `Expected ${formatValue(actual)} ${negated ? 'not ' : ''}${name}${expected !== undefined ? ' ' + formatValue(expected) : ''}`,
-      sourceLocation: extractSourceLocation(new Error().stack ?? ''),
+      sourceLocation: stack[0],
+      stack,
     });
   };
 
@@ -1659,7 +1665,8 @@ function createWebViewAssertions(
     const traceCtx = locator._handle._traceCtx;
     if (!traceCtx) return fn();
 
-    const sourceLocation = extractSourceLocation(new Error().stack ?? "");
+    const stack = extractStack(new Error().stack ?? "");
+    const sourceLocation = stack[0];
     const selectorStr = `css=${locator._selector}`;
     const start = Date.now();
 
@@ -1674,6 +1681,7 @@ function createWebViewAssertions(
       assertion: (negated ? "not." : "") + name,
       selector: selectorStr,
       sourceLocation,
+      stack,
       soft: false,
       negated,
       hasScreenshotBefore: !!beforeCaptures.screenshotBefore,
@@ -1699,6 +1707,7 @@ function createWebViewAssertions(
         attempts: Math.max(1, Math.round((Date.now() - start) / POLL_INTERVAL_MS)),
         error: timeoutError,
         sourceLocation,
+        stack,
         hasScreenshotBefore: !!beforeCaptures.screenshotBefore,
         hasScreenshotAfter: false,
         hasHierarchyBefore: !!beforeCaptures.hierarchyBefore,
@@ -1739,6 +1748,7 @@ function createWebViewAssertions(
       error,
       bounds,
       sourceLocation,
+      stack,
       hasScreenshotBefore: !!beforeCaptures.screenshotBefore,
       hasScreenshotAfter: false,
       hasHierarchyBefore: !!beforeCaptures.hierarchyBefore,

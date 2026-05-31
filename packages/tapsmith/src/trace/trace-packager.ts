@@ -9,6 +9,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { zipSync, type Zippable } from 'fflate';
 import type { TraceCollector, HierarchyCapture } from './trace-collector.js';
+import { collectReferencedFiles } from './trace-collector.js';
 import type { TraceMetadata, TraceDeviceInfo, NetworkEntry } from './types.js';
 
 export interface PackageOptions {
@@ -114,16 +115,28 @@ export function packageTrace(
     zipData[hierarchy.archivePath] = new TextEncoder().encode(hierarchy.xml);
   }
 
-  // 5. Source files (optional)
-  if (collector.config.sources && options.sourceFiles) {
-    for (const sourcePath of options.sourceFiles) {
+  // 5. Source files (optional) — snapshot every file referenced by an action's
+  //    stack, keyed by absolute path, so the Source tab shows the exact code
+  //    that ran. Capped per file to keep the archive small.
+  if (collector.config.sources) {
+    const MAX_SOURCE_BYTES = 2 * 1024 * 1024;
+    const referenced = new Set<string>();
+    if (options.sourceFiles) {
+      for (const f of options.sourceFiles) referenced.add(path.resolve(f).replace(/\\/g, '/'));
+    }
+    for (const f of collectReferencedFiles(collector.events)) referenced.add(path.resolve(f).replace(/\\/g, '/'));
+    const sources: Record<string, string> = {};
+    for (const sourcePath of referenced) {
       try {
-        const content = fs.readFileSync(sourcePath, 'utf-8');
-        const basename = path.basename(sourcePath);
-        zipData[`sources/${basename}`] = new TextEncoder().encode(content);
+        const stat = fs.statSync(sourcePath);
+        if (!stat.isFile() || stat.size > MAX_SOURCE_BYTES) continue;
+        sources[sourcePath] = fs.readFileSync(sourcePath, 'utf-8');
       } catch {
-        // Skip unreadable source files
+        // Skip unreadable / missing source files
       }
+    }
+    if (Object.keys(sources).length > 0) {
+      zipData['sources.json'] = new TextEncoder().encode(JSON.stringify(sources));
     }
   }
 
