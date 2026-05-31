@@ -21,11 +21,16 @@ interface Props {
   onHierarchyNodeSelect?: (bounds: Bounds | null) => void
   locatorTab?: ComponentChildren
   pickMode?: boolean
+  /**
+   * Source line to highlight when there is no selected event (e.g. previewing
+   * a test that hasn't run yet). Ignored once a real event drives the view.
+   */
+  previewHighlight?: SourceLocation
 }
 
 type DetailTab = 'call' | 'log' | 'console' | 'source' | 'hierarchy' | 'locator' | 'errors' | 'network'
 
-export function DetailTabs({ event, events, hierarchies, sources, metadata, networkEntries, networkBodies, onHierarchyNodeSelect, locatorTab, pickMode }: Props) {
+export function DetailTabs({ event, events, hierarchies, sources, metadata, networkEntries, networkBodies, onHierarchyNodeSelect, locatorTab, pickMode, previewHighlight }: Props) {
   const testError = metadata.error;
   const [tab, setTab] = usePersistedString('tapsmith-detail-tab', 'call') as [DetailTab, (v: DetailTab) => void];
 
@@ -99,7 +104,7 @@ export function DetailTabs({ event, events, hierarchies, sources, metadata, netw
         {tab === 'call' && <CallTab event={event} metadata={metadata} />}
         {tab === 'log' && <LogTab event={event} />}
         {tab === 'console' && <ConsoleTab event={event} events={consoleEvents} />}
-        {tab === 'source' && <SourceTab event={event} sources={sources} />}
+        {tab === 'source' && <SourceTab event={event} sources={sources} previewHighlight={previewHighlight} />}
         {tab === 'hierarchy' && <HierarchyTabWrapper event={event} hierarchies={hierarchies} onNodeSelect={onHierarchyNodeSelect} />}
         {tab === 'locator' && locatorTab}
         {tab === 'network' && <NetworkTab entries={networkEntries} bodies={networkBodies} />}
@@ -489,11 +494,13 @@ function StackTraceView({ stack, selected, onSelect }: { stack: SourceLocation[]
   );
 }
 
-function SourceTab({ event, sources }: { event: ActionTraceEvent | AssertionTraceEvent | undefined; sources: Map<string, string> }) {
+function SourceTab({ event, sources, previewHighlight }: { event: ActionTraceEvent | AssertionTraceEvent | undefined; sources: Map<string, string>; previewHighlight?: SourceLocation }) {
   const highlightRef = useRef<HTMLDivElement>(null);
   const [selectedFrame, setSelectedFrame] = useState(0);
 
-  const stack = event?.stack ?? (event?.sourceLocation ? [event.sourceLocation] : []);
+  // With no event (e.g. previewing a test before it runs) fall back to the
+  // preview highlight so the test's `test(...)` line is still highlighted.
+  const stack = event?.stack ?? (event?.sourceLocation ? [event.sourceLocation] : previewHighlight ? [previewHighlight] : []);
   const eventKey = event ? `${event.type}-${event.actionIndex}` : 'none';
   useEffect(() => { setSelectedFrame(0); }, [eventKey]);
 

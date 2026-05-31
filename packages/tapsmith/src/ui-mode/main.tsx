@@ -3,7 +3,7 @@ import { render } from 'preact';
 import { useState, useCallback, useMemo, useRef, useEffect } from 'preact/hooks';
 import type { ServerMessage, ClientMessage, TestTreeNode, WorkerInfo } from './ui-protocol.js';
 import { inferDevicePlatform, type DevicePlatform } from './ui-protocol.js';
-import type { ActionTraceEvent, AssertionTraceEvent, TraceMetadata } from '../trace/types.js';
+import type { ActionTraceEvent, AssertionTraceEvent, TraceMetadata, SourceLocation } from '../trace/types.js';
 import { sortEventsByStartTime } from '../trace/sort-events.js';
 import { useWebSocket } from './hooks/use-websocket.js';
 import {
@@ -34,6 +34,7 @@ import { McpPanel } from './components/McpPanel.js';
 import { ActionsPanel } from '../trace-viewer/components/ActionsPanel.js';
 import { ScreenshotPanel } from '../trace-viewer/components/ScreenshotPanel.js';
 import { DetailTabs } from '../trace-viewer/components/DetailTabs.js';
+import { findTestDeclarationLine, findSuiteDeclarationLine } from '../trace-viewer/components/source-view-utils.js';
 import { TimelineFilmstrip } from '../trace-viewer/components/TimelineFilmstrip.js';
 import { SelectorTab, handlePickFromScreenshot, handleHoverFromScreenshot } from '../trace-viewer/components/SelectorPlayground.js';
 import { parseHierarchyXml } from '../trace-viewer/components/hierarchy-utils.js';
@@ -276,8 +277,13 @@ function App() {
   // Resolve the single previewed source string outside useMemo (a plain O(1)
   // Map.get) so the 1-entry Map below is only reallocated when the key or its
   // content actually changes — not on every previewSources mutation.
-  const previewKey = viewedTestNode?.type === 'test' && viewedTestFile
-    ? viewedTestFile.replace(/\\/g, '/')
+  // Preview the source file for any test-bearing node: a file (no highlight),
+  // a suite (highlight its `describe(...)`), or a test (highlight its `test(...)`).
+  const previewable = viewedTestNode?.type === 'file'
+    || viewedTestNode?.type === 'suite'
+    || viewedTestNode?.type === 'test';
+  const previewKey = previewable && viewedTestNode?.filePath
+    ? viewedTestNode.filePath.replace(/\\/g, '/')
     : undefined;
   const previewContent = previewKey !== undefined ? previewSources.get(previewKey) : undefined;
   const previewSourcesForView = useMemo(() => {
@@ -296,6 +302,19 @@ function App() {
     if (previewSources.size === 0) return currentTrace.sources;
     return new Map([...previewSources, ...currentTrace.sources]);
   }, [currentTrace, previewSources, previewSourcesForView]);
+  // Pre-run preview: highlight the selected node's declaration line in its
+  // source file — `test(...)` for a test, `describe(...)` for a suite. A file
+  // node shows the source with nothing highlighted. Skipped once a trace
+  // exists (events drive the view).
+  const previewHighlight = useMemo<SourceLocation | undefined>(() => {
+    if (currentTrace || previewKey === undefined || previewContent === undefined) return undefined;
+    const line = viewedTestNode?.type === 'test'
+      ? findTestDeclarationLine(previewContent, viewedTestNode.name)
+      : viewedTestNode?.type === 'suite'
+        ? findSuiteDeclarationLine(previewContent, viewedTestNode.name)
+        : undefined;
+    return line !== undefined ? { file: previewKey, line } : undefined;
+  }, [currentTrace, previewKey, previewContent, viewedTestNode]);
   const networkEntries = currentTrace?.network ?? EMPTY_NETWORK;
   const networkBodies = currentTrace?.networkBodies ?? EMPTY_MAP;
   const viewedTestWorker = (() => {
@@ -981,17 +1000,18 @@ function App() {
     }
   }, [viewedTraceKey, actionEvents.length, isRunning]);
 
-  // Pre-run preview: when a test is selected but not yet run, fetch its source
-  // file from disk so the Source tab shows it (no line highlight until a run).
+  // Pre-run preview: when a file/suite/test is selected but not yet run, fetch
+  // its source file from disk so the Source tab shows it (the matching
+  // declaration line is highlighted for suites/tests; files show no highlight).
   useEffect(() => {
-    if (viewedTestNode?.type !== 'test') return;
-    const filePath = viewedTestNode.filePath;
+    if (!previewable) return;
+    const filePath = viewedTestNode?.filePath;
     if (!filePath) return;
     const key = filePath.replace(/\\/g, '/');
     if (previewSources.has(key) || requestedSourcesRef.current.has(key)) return;
     requestedSourcesRef.current.add(key);
     send({ type: 'request-source', path: filePath });
-  }, [viewedTestNode, previewSources, send]);
+  }, [previewable, viewedTestNode, previewSources, send]);
 
   const handleSelectDeviceView = useCallback((mode: 'all' | number) => {
     setDeviceViewMode(mode);
@@ -1260,6 +1280,7 @@ function App() {
           networkBodies={networkBodies}
           onHierarchyNodeSelect={setHierarchyHighlight}
           pickMode={pickMode}
+          previewHighlight={previewHighlight}
           locatorTab={
             <SelectorTab
               hierarchyXml={currentHierarchyXml}

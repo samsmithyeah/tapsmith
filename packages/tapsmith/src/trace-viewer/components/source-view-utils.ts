@@ -1,5 +1,33 @@
 import type { SourceLocation } from '../../trace/types.js';
 
+/**
+ * Locate the 1-based line of a `<fnName>('name', ...)` declaration in source,
+ * so the Source tab can highlight a node that hasn't run yet (no trace, so no
+ * captured sourceLocation). Matches `fnName(`, `fnName.only(`, `fnName.skip(`,
+ * etc. followed by the exact name in matching quotes/backticks. Returns
+ * undefined for dynamic/interpolated names that aren't a literal match.
+ */
+function findDeclarationLine(content: string, fnName: string, name: string): number | undefined {
+  if (!name) return undefined;
+  const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const re = new RegExp(`\\b${fnName}\\s*(?:\\.\\w+)?\\s*\\(\\s*(['"\`])${escaped}\\1`);
+  const lines = content.split('\n');
+  for (let i = 0; i < lines.length; i++) {
+    if (re.test(lines[i])) return i + 1;
+  }
+  return undefined;
+}
+
+/** Find the 1-based line of `test('name', ...)`. @see findDeclarationLine */
+export function findTestDeclarationLine(content: string, testName: string): number | undefined {
+  return findDeclarationLine(content, 'test', testName);
+}
+
+/** Find the 1-based line of `describe('name', ...)`. @see findDeclarationLine */
+export function findSuiteDeclarationLine(content: string, suiteName: string): number | undefined {
+  return findDeclarationLine(content, 'describe', suiteName);
+}
+
 export function resolveSourceView(
   stack: SourceLocation[],
   sources: Map<string, string>,

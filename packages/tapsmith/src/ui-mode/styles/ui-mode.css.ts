@@ -1644,7 +1644,7 @@ html, body, #app {
 .source-line-content { flex: 1; }
 .source-line.highlight { background: var(--accent-bg); }
 .source-tab.has-stack { flex-direction: row; }
-.source-tab.has-stack .source-main { flex: 1; min-width: 0; display: flex; flex-direction: column; overflow: hidden; }
+.source-main { flex: 1; min-width: 0; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
 .source-stack {
   width: 240px;
   flex-shrink: 0;
