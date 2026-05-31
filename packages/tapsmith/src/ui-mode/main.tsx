@@ -300,7 +300,12 @@ function App() {
   const sources = useMemo(() => {
     if (!currentTrace) return previewSourcesForView;
     if (previewSources.size === 0) return currentTrace.sources;
-    return new Map([...previewSources, ...currentTrace.sources]);
+    // Build on previewSources, then let the trace's own snapshot win on key
+    // collisions — same precedence as a spread merge, without allocating the
+    // intermediate arrays a spread of both maps would create.
+    const merged = new Map(previewSources);
+    for (const [path, content] of currentTrace.sources) merged.set(path, content);
+    return merged;
   }, [currentTrace, previewSources, previewSourcesForView]);
   // Pre-run preview: highlight the selected node's declaration line in its
   // source file — `test(...)` for a test, `describe(...)` for a suite. A file
