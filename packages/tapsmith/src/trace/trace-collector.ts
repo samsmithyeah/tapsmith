@@ -124,7 +124,12 @@ export function extractStack(stack: string): SourceLocation[] {
     // fs.statSync/readFileSync can later read the file off disk.
     if (file.startsWith('file://')) {
       try {
-        file = fileURLToPath(file);
+        // Strip any ?query / #fragment first — ESM loaders (tsx, vite, jiti)
+        // append cache-busting queries like `?t=123` to import URLs, and
+        // fileURLToPath would otherwise fold them into the path so the file
+        // can't be found on disk.
+        const url = new URL(file);
+        file = fileURLToPath(`${url.protocol}//${url.host}${url.pathname}`);
       } catch {
         continue;
       }

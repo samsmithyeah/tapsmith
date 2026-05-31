@@ -538,6 +538,11 @@ describe('extractStack', () => {
     const stack = 'Error\n    at Object.<anonymous> (file:///Users/me/my%20proj/tests/a.test.ts:1:1)';
     expect(extractStack(stack)).toEqual([{ file: '/Users/me/my proj/tests/a.test.ts', line: 1, column: 1 }]);
   });
+
+  it('strips ?query and #fragment from file:// URLs (loader cache-busting)', () => {
+    const stack = 'Error\n    at Object.<anonymous> (file:///Users/me/proj/tests/a.test.ts?t=1700000000000:4:9)';
+    expect(extractStack(stack)).toEqual([{ file: '/Users/me/proj/tests/a.test.ts', line: 4, column: 9 }]);
+  });
 });
 
 describe('addActionEvent preserves stack', () => {
