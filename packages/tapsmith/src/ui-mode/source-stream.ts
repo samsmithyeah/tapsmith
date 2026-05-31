@@ -34,8 +34,11 @@ export function streamSourcesForEvent(
       // Emit a forward-slash-normalized key so it matches the path-keyed
       // sources map on the client regardless of the recording platform.
       emit(frame.file.replace(/\\/g, '/'), path.basename(frame.file), content);
-    } catch {
-      // best-effort — leave unsent so a transient failure can be retried
+    } catch (err) {
+      // ENOENT = the file is permanently gone, so mark it sent to avoid
+      // re-stat'ing it on every later event. Other errors (e.g. a transient
+      // lock) are left unsent so they can be retried on a subsequent event.
+      if ((err as NodeJS.ErrnoException)?.code === 'ENOENT') sent.add(frame.file);
     }
   }
 }

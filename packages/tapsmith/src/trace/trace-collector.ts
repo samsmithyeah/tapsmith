@@ -130,13 +130,13 @@ export function extractStack(stack: string): SourceLocation[] {
       }
     }
     file = file.replace(/\\/g, '/');
-    // Match the SDK's own location specifically so a user project that happens
-    // to be named "tapsmith" isn't mistaken for the SDK and filtered out.
-    // Compare lowercased: on case-insensitive filesystems (macOS/Windows) the
-    // path's casing can vary with how the project was cloned/navigated.
-    const lowerFile = file.toLowerCase();
-    if (lowerFile.includes('/packages/tapsmith/src/') || lowerFile.includes('/packages/tapsmith/dist/') || lowerFile.includes('/node_modules/tapsmith/')) continue;
-    if (lowerFile.includes('/node_modules/')) continue;
+    // Filter out frames inside the SDK itself and dependencies. The `(^|/)`
+    // anchor matches both absolute and relative paths; the `i` flag keeps it
+    // robust on case-insensitive filesystems (macOS/Windows) where the path's
+    // casing can vary with how the project was cloned/navigated. Matching
+    // packages/tapsmith/(src|dist) specifically (not bare "tapsmith") avoids
+    // misclassifying a user project that happens to be named "tapsmith".
+    if (/(^|\/)(packages\/tapsmith\/(src|dist)|node_modules)\//i.test(file)) continue;
     if (file.startsWith('node:') || file.startsWith('internal/')) continue;
     frames.push({ file, line: parseInt(match[2], 10), column: parseInt(match[3], 10) });
   }
