@@ -505,7 +505,9 @@ function SourceTab({ event, sources }: { event: ActionTraceEvent | AssertionTrac
   const { filename, content, highlightLine } = resolveSourceView(stack, sources, activeFrame, !!event);
 
   useEffect(() => {
-    highlightRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    // Instant (not smooth) scroll: in a trace viewer the user steps through
+    // actions rapidly, and smooth scrolling lags/bounces behind the clicks.
+    highlightRef.current?.scrollIntoView({ block: 'center' });
   }, [highlightLine, filename]);
 
   const showStack = stack.length > 1;
