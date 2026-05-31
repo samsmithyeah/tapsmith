@@ -273,12 +273,18 @@ function App() {
   );
   const screenshots = currentTrace?.screenshots ?? EMPTY_MAP;
   const hierarchies = currentTrace?.hierarchies ?? EMPTY_MAP;
+  // Resolve the single previewed source string outside useMemo (a plain O(1)
+  // Map.get) so the 1-entry Map below is only reallocated when the key or its
+  // content actually changes — not on every previewSources mutation.
+  const previewKey = viewedTestNode?.type === 'test' && viewedTestFile
+    ? viewedTestFile.replace(/\\/g, '/')
+    : undefined;
+  const previewContent = previewKey !== undefined ? previewSources.get(previewKey) : undefined;
   const previewSourcesForView = useMemo(() => {
-    if (viewedTestNode?.type !== 'test' || !viewedTestFile) return EMPTY_MAP;
-    const key = viewedTestFile.replace(/\\/g, '/');
-    const content = previewSources.get(key);
-    return content !== undefined ? new Map([[key, content]]) : EMPTY_MAP;
-  }, [viewedTestNode, viewedTestFile, previewSources]);
+    return previewKey !== undefined && previewContent !== undefined
+      ? new Map([[previewKey, previewContent]])
+      : EMPTY_MAP;
+  }, [previewKey, previewContent]);
   const sources = currentTrace?.sources ?? previewSourcesForView;
   const networkEntries = currentTrace?.network ?? EMPTY_NETWORK;
   const networkBodies = currentTrace?.networkBodies ?? EMPTY_MAP;
