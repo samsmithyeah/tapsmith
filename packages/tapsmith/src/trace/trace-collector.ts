@@ -127,9 +127,12 @@ export function extractStack(stack: string): SourceLocation[] {
         // Strip any ?query / #fragment first — ESM loaders (tsx, vite, jiti)
         // append cache-busting queries like `?t=123` to import URLs, and
         // fileURLToPath would otherwise fold them into the path so the file
-        // can't be found on disk.
+        // can't be found on disk. Clear search/hash on the URL object and let
+        // fileURLToPath do the conversion rather than rebuilding the string.
         const url = new URL(file);
-        file = fileURLToPath(`${url.protocol}//${url.host}${url.pathname}`);
+        url.search = '';
+        url.hash = '';
+        file = fileURLToPath(url);
       } catch {
         continue;
       }
