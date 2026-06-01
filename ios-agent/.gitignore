@@ -11,3 +11,6 @@ DerivedData/
 
 # tapsmith build-ios-agent output (signed device runner + xctestrun)
 .build-device/
+
+# Simulator agent build output (xcodebuild -derivedDataPath .build-sim; used by CI)
+.build-sim/
