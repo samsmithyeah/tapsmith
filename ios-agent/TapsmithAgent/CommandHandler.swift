@@ -968,10 +968,22 @@ class CommandHandler {
             targetApp.activate()
             // Wait for the app to settle after launch/foregrounding.
             Thread.sleep(forTimeInterval: 0.5)
-            // Accept custom URL-scheme confirmation if simctl openurl left
-            // SpringBoard in front of the app before this rebind.
+            // Accept the custom URL-scheme "Open in <app>?" confirmation that
+            // simctl openurl raises the first time an untrusted scheme is opened
+            // on a fresh simulator. The prompt can appear later than a single
+            // check would catch on a slow sim — and can reappear across the
+            // terminate→openurl cycle — so we re-check over a bounded window and
+            // dismiss it whenever it shows, instead of once. The common
+            // already-trusted case never prompts and exits as soon as the app is
+            // foreground (typically on the first iteration).
             let springboard = XCUIApplication(bundleIdentifier: "com.apple.springboard")
-            _ = acceptOpenInAppDialogIfPresent(timeout: 1.0)
+            let openDialogDeadline = Date().addingTimeInterval(8.0)
+            repeat {
+                if !acceptOpenInAppDialogIfPresent(timeout: 0.5),
+                   targetApp.state == .runningForeground {
+                    break
+                }
+            } while Date() < openDialogDeadline
             // Dismiss "Save Password?" dialog from iOS Passwords framework.
             let notNow = springboard.buttons["Not Now"]
             if notNow.exists {
