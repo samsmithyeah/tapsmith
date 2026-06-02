@@ -1071,7 +1071,7 @@ html, body, #app {
   border-bottom: 1px solid var(--border);
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  gap: 8px;
 }
 .device-head-title {
   font-size: 10.5px;
@@ -1179,15 +1179,19 @@ html, body, #app {
 .dm-canvas.interactive:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .dm-canvas.locked { cursor: not-allowed; }
 .mirror-lock-toggle {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   background: none;
   border: none;
   cursor: pointer;
-  font-size: 13px;
-  line-height: 1;
-  padding: 2px 6px;
-  opacity: 0.7;
+  padding: 2px;
+  border-radius: 5px;
 }
-.mirror-lock-toggle:hover { opacity: 1; }
+.mirror-lock-toggle.unlocked { color: var(--fg-dim); }
+.mirror-lock-toggle.locked { color: var(--accent); }
+.mirror-lock-toggle:hover { background: var(--bg-elev-2); }
 
 .dm-overlay {
   position: absolute; inset: 0;

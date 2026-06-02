@@ -138,9 +138,20 @@ export function DevicePane({
           type="button"
           class={`mirror-lock-toggle ${locked ? 'locked' : 'unlocked'}`}
           onClick={onToggleLock}
+          aria-label={locked ? 'Interaction locked — click to unlock' : 'Interaction unlocked — click to lock'}
           title={locked ? 'Interaction locked — click to unlock' : 'Interaction unlocked — click to lock'}
         >
-          {locked ? '🔒' : '🔓'}
+          {locked ? (
+            <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <rect x="5" y="11" width="14" height="10" rx="2" />
+              <path d="M8 11V7a4 4 0 0 1 8 0v4" />
+            </svg>
+          ) : (
+            <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <rect x="5" y="11" width="14" height="10" rx="2" />
+              <path d="M8 11V7a4 4 0 0 1 7.5-2.5" />
+            </svg>
+          )}
         </button>
       </div>
 
