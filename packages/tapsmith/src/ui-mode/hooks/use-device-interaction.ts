@@ -1,0 +1,99 @@
+/**
+ * use-device-interaction — pointer + keyboard handling for the interactive
+ * device mirror. Classifies a pointer interaction as tap / long-press / swipe,
+ * normalizes coordinates against the rendered canvas rect, and forwards
+ * gestures to the UI server via the WebSocket `send`.
+ */
+
+import { useRef, useCallback } from 'preact/hooks';
+import type { ClientMessage } from '../ui-protocol.js';
+
+export const TAP_MOVE_THRESHOLD = 10; // CSS px
+export const LONG_PRESS_MS = 500;
+
+export type GestureKind = 'tap' | 'long-press' | 'swipe';
+
+export function classifyGesture(g: { dx: number; dy: number; durationMs: number }): GestureKind {
+  const dist = Math.hypot(g.dx, g.dy);
+  if (dist >= TAP_MOVE_THRESHOLD) return 'swipe';
+  if (g.durationMs >= LONG_PRESS_MS) return 'long-press';
+  return 'tap';
+}
+
+export function normalizePoint(clientX: number, clientY: number, rect: DOMRect): { x: number; y: number } {
+  const clamp = (v: number) => Math.min(1, Math.max(0, v));
+  return {
+    x: clamp((clientX - rect.left) / rect.width),
+    y: clamp((clientY - rect.top) / rect.height),
+  };
+}
+
+const PRINTABLE = /^.$/u; // single-character (printable) keydown
+
+export interface DeviceInteractionOptions {
+  send: (msg: ClientMessage) => void;
+  /** Whether interaction is currently allowed (unlocked). */
+  enabled: boolean;
+  /** True when interacting overrides an engaged lock during a run. */
+  force?: boolean;
+  /** Target worker id (multi-worker). */
+  workerId?: number;
+}
+
+export function useDeviceInteraction(opts: DeviceInteractionOptions) {
+  const optsRef = useRef(opts);
+  optsRef.current = opts;
+  const start = useRef<{ x: number; y: number; nx: number; ny: number; t: number } | null>(null);
+
+  const onPointerDown = useCallback((e: PointerEvent) => {
+    const o = optsRef.current;
+    if (!o.enabled) return;
+    const canvas = e.currentTarget as HTMLCanvasElement;
+    const rect = canvas.getBoundingClientRect();
+    if (rect.width === 0 || rect.height === 0) return;
+    const n = normalizePoint(e.clientX, e.clientY, rect);
+    start.current = { x: e.clientX, y: e.clientY, nx: n.x, ny: n.y, t: performance.now() };
+    canvas.setPointerCapture(e.pointerId);
+    canvas.focus();
+  }, []);
+
+  const onPointerUp = useCallback((e: PointerEvent) => {
+    const o = optsRef.current;
+    const s = start.current;
+    start.current = null;
+    if (!o.enabled || !s) return;
+    const canvas = e.currentTarget as HTMLCanvasElement;
+    const rect = canvas.getBoundingClientRect();
+    const end = normalizePoint(e.clientX, e.clientY, rect);
+    const durationMs = Math.round(performance.now() - s.t);
+    const kind = classifyGesture({ dx: e.clientX - s.x, dy: e.clientY - s.y, durationMs });
+    const force = o.force;
+    const workerId = o.workerId;
+    if (kind === 'tap') {
+      o.send({ type: 'mirror-tap', x: s.nx, y: s.ny, workerId, force });
+    } else if (kind === 'long-press') {
+      o.send({ type: 'mirror-long-press', x: s.nx, y: s.ny, durationMs, workerId, force });
+    } else {
+      o.send({ type: 'mirror-swipe', fromX: s.nx, fromY: s.ny, toX: end.x, toY: end.y, durationMs, workerId, force });
+    }
+  }, []);
+
+  const onKeyDown = useCallback((e: KeyboardEvent) => {
+    const o = optsRef.current;
+    if (!o.enabled) return;
+    const force = o.force;
+    const workerId = o.workerId;
+    if (e.key === 'Enter') {
+      o.send({ type: 'mirror-press-key', key: 'ENTER', workerId, force });
+      e.preventDefault();
+    } else if (e.key === 'Backspace') {
+      o.send({ type: 'mirror-press-key', key: 'DEL', workerId, force });
+      e.preventDefault();
+    } else if (PRINTABLE.test(e.key) && !e.metaKey && !e.ctrlKey && !e.altKey) {
+      o.send({ type: 'mirror-input-text', text: e.key, workerId, force });
+      e.preventDefault();
+    }
+  }, []);
+
+  return { onPointerDown, onPointerUp, onKeyDown };
+}
