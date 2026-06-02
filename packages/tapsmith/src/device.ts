@@ -328,6 +328,33 @@ export class Device {
     return this.pressKey('BACK');
   }
 
+  /**
+   * Tap at raw screen coordinates (logical points). Prefer selector-based
+   * `tap()` in tests; this is for coordinate-driven interaction.
+   */
+  async tapXY(x: number, y: number): Promise<void> {
+    return this._tracedAction('tapXY', 'tap', undefined,
+      () => this._client.tapXY(x, y), 'Coordinate tap failed');
+  }
+
+  /** Long-press at raw screen coordinates (logical points). */
+  async longPressXY(x: number, y: number, options?: { duration?: number }): Promise<void> {
+    return this._tracedAction('longPressXY', 'tap', undefined,
+      () => this._client.longPressXY(x, y, options?.duration), 'Coordinate long-press failed');
+  }
+
+  /** Drag/swipe from one point to another (logical points). */
+  async dragXY(from: { x: number; y: number }, to: { x: number; y: number }, options?: { duration?: number }): Promise<void> {
+    return this._tracedAction('dragXY', 'swipe', undefined,
+      () => this._client.dragXY(from.x, from.y, to.x, to.y, options?.duration), 'Coordinate drag failed');
+  }
+
+  /** Type text into whatever currently has focus (no selector). */
+  async inputText(text: string): Promise<void> {
+    return this._tracedAction('inputText', 'type', undefined,
+      () => this._client.inputText(text), 'Input text failed', { inputValue: text });
+  }
+
   // ── Utilities ──
 
   async takeScreenshot(): Promise<ScreenshotResponse> {
