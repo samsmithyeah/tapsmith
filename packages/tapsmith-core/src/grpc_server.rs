@@ -5374,38 +5374,72 @@ impl proto::tapsmith_service_server::TapsmithService for TapsmithServiceImpl {
         }
     }
 
-    // ─── Coordinate gesture stubs (implemented in Task 3) ───
+    // ─── Coordinate gesture handlers ───
 
+    #[instrument(skip_all, fields(request_id))]
     async fn tap_coordinates(
         &self,
-        _request: Request<proto::TapCoordinatesRequest>,
+        request: Request<proto::TapCoordinatesRequest>,
     ) -> Result<Response<proto::ActionResponse>, Status> {
-        Err(Status::unimplemented("tap_coordinates not yet implemented"))
+        let req = request.into_inner();
+        let request_id = Self::request_id(&req.request_id);
+        let command = AgentCommand::TapCoordinates { x: req.x, y: req.y };
+        let result = self.send_agent_command_with_timeout(&command, 0).await;
+        self.make_action_response(request_id, result).await
     }
 
+    #[instrument(skip_all, fields(request_id))]
     async fn long_press_coordinates(
         &self,
-        _request: Request<proto::LongPressCoordinatesRequest>,
+        request: Request<proto::LongPressCoordinatesRequest>,
     ) -> Result<Response<proto::ActionResponse>, Status> {
-        Err(Status::unimplemented(
-            "long_press_coordinates not yet implemented",
-        ))
+        let req = request.into_inner();
+        let request_id = Self::request_id(&req.request_id);
+        let command = AgentCommand::LongPressCoordinates {
+            x: req.x,
+            y: req.y,
+            duration_ms: if req.duration_ms > 0 {
+                req.duration_ms
+            } else {
+                1000
+            },
+        };
+        let result = self.send_agent_command_with_timeout(&command, 0).await;
+        self.make_action_response(request_id, result).await
     }
 
+    #[instrument(skip_all, fields(request_id))]
     async fn drag_coordinates(
         &self,
-        _request: Request<proto::DragCoordinatesRequest>,
+        request: Request<proto::DragCoordinatesRequest>,
     ) -> Result<Response<proto::ActionResponse>, Status> {
-        Err(Status::unimplemented(
-            "drag_coordinates not yet implemented",
-        ))
+        let req = request.into_inner();
+        let request_id = Self::request_id(&req.request_id);
+        let command = AgentCommand::DragCoordinates {
+            from_x: req.from_x,
+            from_y: req.from_y,
+            to_x: req.to_x,
+            to_y: req.to_y,
+            duration_ms: if req.duration_ms > 0 {
+                req.duration_ms
+            } else {
+                300
+            },
+        };
+        let result = self.send_agent_command_with_timeout(&command, 0).await;
+        self.make_action_response(request_id, result).await
     }
 
+    #[instrument(skip_all, fields(request_id))]
     async fn input_text(
         &self,
-        _request: Request<proto::InputTextRequest>,
+        request: Request<proto::InputTextRequest>,
     ) -> Result<Response<proto::ActionResponse>, Status> {
-        Err(Status::unimplemented("input_text not yet implemented"))
+        let req = request.into_inner();
+        let request_id = Self::request_id(&req.request_id);
+        let command = AgentCommand::InputText { text: req.text };
+        let result = self.send_agent_command_with_timeout(&command, 0).await;
+        self.make_action_response(request_id, result).await
     }
 }
 

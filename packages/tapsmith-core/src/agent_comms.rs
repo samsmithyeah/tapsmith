@@ -312,18 +312,15 @@ pub enum AgentCommand {
         distance: Option<f32>,
         timeout_ms: Option<u64>,
     },
-    #[allow(dead_code)]
     TapCoordinates {
         x: f32,
         y: f32,
     },
-    #[allow(dead_code)]
     LongPressCoordinates {
         x: f32,
         y: f32,
         duration_ms: u64,
     },
-    #[allow(dead_code)]
     DragCoordinates {
         from_x: f32,
         from_y: f32,
@@ -331,7 +328,6 @@ pub enum AgentCommand {
         to_y: f32,
         duration_ms: u64,
     },
-    #[allow(dead_code)]
     InputText {
         text: String,
     },
