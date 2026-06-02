@@ -16,8 +16,14 @@
  * false-trigger. Timestamps are injected so the logic is unit-testable.
  */
 
-/** Default no-paint-while-fed window before a tile is considered stalled (ms). */
+/** A tile that painted before but hasn't repainted for this long (while still
+ * fed) is frozen on a stale frame — the real stall case. */
 export const VIDEO_STALL_MS = 2000;
+
+/** A tile that has NEVER painted is still starting up; only fall back after
+ * this much continuous feeding with no first frame (a genuinely broken stream).
+ * Generous because multi-worker grid video can take seconds to its first frame. */
+export const VIDEO_STARTUP_MS = 10_000;
 
 export class VideoStallWatch {
   /** First time we saw input for a worker (cleared on remove). */
@@ -50,19 +56,33 @@ export class VideoStallWatch {
   }
 
   /**
-   * Workers currently fed (input within `stallMs`) but not painting (no output
-   * for more than `stallMs`, and fed for at least `stallMs` so startup isn't
-   * flagged). Each is reported once until it paints again.
+   * Workers to fall back to screenshots for. Two cases, both requiring that the
+   * server is still actively feeding the worker (input within `stallMs`):
+   *   - painted before but frozen: no output for more than `stallMs`;
+   *   - never painted: still being fed after more than `startupMs` (broken stream).
+   * A worker that simply hasn't produced its first frame yet (within `startupMs`)
+   * is NOT flagged — it's starting up. Each is reported once until it paints again.
    */
-  collectStalled(now: number, stallMs: number = VIDEO_STALL_MS): number[] {
+  collectStalled(
+    now: number,
+    stallMs: number = VIDEO_STALL_MS,
+    startupMs: number = VIDEO_STARTUP_MS,
+  ): number[] {
     const stalled: number[] = [];
     for (const [id, lastIn] of this.lastInput) {
       if (this.reported.has(id)) continue;
       if (now - lastIn > stallMs) continue; // not actively fed → server stopped
-      const firstIn = this.firstInput.get(id) ?? now;
-      if (now - firstIn <= stallMs) continue; // give the decoder startup time
       const outTs = this.lastOutput.get(id);
-      if (outTs === undefined || now - outTs > stallMs) {
+      if (outTs === undefined) {
+        // Never painted: only fall back once startup has dragged on far past a
+        // normal first-frame delay, so a slow-starting tile isn't killed.
+        const firstIn = this.firstInput.get(id) ?? now;
+        if (now - firstIn > startupMs) {
+          this.reported.add(id);
+          stalled.push(id);
+        }
+      } else if (now - outTs > stallMs) {
+        // Painted before, then froze while still fed — the real stall case.
         this.reported.add(id);
         stalled.push(id);
       }
