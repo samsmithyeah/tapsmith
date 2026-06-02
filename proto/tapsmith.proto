@@ -77,6 +77,11 @@ service TapsmithService {
   // Cancel the stream to stop.
   rpc StreamDeviceLogs(StreamDeviceLogsRequest) returns (stream DeviceLogEntry);
 
+  // ─── Live Screen Streaming ───
+  // Server-side stream of H.264 (Annex-B) video frames of the device screen
+  // for the UI-mode live mirror. Cancel the stream to stop capture.
+  rpc StreamScreen(StreamScreenRequest) returns (stream ScreenVideoFrame);
+
   // ─── Network Capture (PILOT-164) ───
   rpc StartNetworkCapture(StartNetworkCaptureRequest) returns (StartNetworkCaptureResponse);
   rpc StopNetworkCapture(StopNetworkCaptureRequest) returns (StopNetworkCaptureResponse);
@@ -644,6 +649,26 @@ message DeviceLogEntry {
   string tag = 3;             // Android tag / iOS subsystem
   uint64 timestamp_ms = 4;    // epoch milliseconds
   int32 pid = 5;
+}
+
+// ─── Live Screen Streaming ───
+
+message StreamScreenRequest {
+  string request_id = 1;
+  // Max long-edge in pixels (0 = device native). Capture is scaled down to
+  // this for latency/bandwidth.
+  uint32 max_size = 2;
+  // Target bitrate in bits/sec (0 = a sensible default).
+  uint32 bit_rate = 3;
+}
+
+message ScreenVideoFrame {
+  // One H.264 access unit in Annex-B (start-code-delimited NAL units).
+  bytes data = 1;
+  // True when this access unit contains an IDR (keyframe).
+  bool keyframe = 2;
+  // True when this access unit carries SPS/PPS (decoder (re)configuration).
+  bool config = 3;
 }
 
 // ─── Network Capture (PILOT-164) ───
