@@ -61,18 +61,20 @@ impl Parser {
             }
             let mut seen_vcl = false;
             let mut flush_at: Option<usize> = None;
-            let mut offset = 0;
             for nal in &nals {
                 let t = nal_type(nal);
                 let is_vcl = t == 1 || t == 5;
                 if is_vcl && seen_vcl {
-                    flush_at = Some(offset);
+                    // Byte offset of this NAL within self.buf via pointer
+                    // arithmetic — NOT a running sum of nal.len(), which would be
+                    // skewed by any bytes before the first start code and corrupt
+                    // the drain index.
+                    flush_at = Some((nal.as_ptr() as usize) - (self.buf.as_ptr() as usize));
                     break;
                 }
                 if is_vcl {
                     seen_vcl = true;
                 }
-                offset += nal.len();
             }
             match flush_at {
                 Some(at) => {
@@ -158,6 +160,24 @@ mod tests {
         assert_eq!(aus.len(), 1);
         assert!(aus[0].keyframe);
         assert!(aus[0].config);
+    }
+
+    #[test]
+    fn leading_bytes_before_first_start_code_dont_skew_flush() {
+        // Bytes before the first start code must not throw off the drain index:
+        // the flushed AU should be exactly everything up to the next VCL NAL.
+        let mut p = Parser::new();
+        let junk = vec![0xAAu8];
+        let n1 = nal(true, 1, &[1]);
+        let n2 = nal(true, 1, &[2]);
+        let mut buf = junk.clone();
+        buf.extend(&n1);
+        let mut aus = p.push(&buf);
+        aus.extend(p.push(&n2)); // second VCL flushes the first access unit
+        assert_eq!(aus.len(), 1);
+        let mut expected = junk.clone();
+        expected.extend(&n1);
+        assert_eq!(aus[0].data, expected);
     }
 
     #[test]

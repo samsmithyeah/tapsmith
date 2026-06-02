@@ -428,15 +428,19 @@ enum EventSynthesizer {
         }
 
         let recordInitSel = NSSelectorFromString("initWithName:interfaceOrientation:")
+        let recordAllocSel = NSSelectorFromString("alloc")
         let record: NSObject
-        // Check the selector at the class level BEFORE allocating: allocating
-        // without initializing leaves an object ARC later releases as if it were
-        // initialized (undefined behavior / crash).
-        if (recordClass as! NSObject.Type).instancesRespond(to: recordInitSel) {
-            let recordObj = recordClass.alloc() as! NSObject
-            let imp = recordObj.method(for: recordInitSel)
-            typealias RMethod = @convention(c) (NSObject, Selector, NSString, Int) -> NSObject
-            record = unsafeBitCast(imp, to: RMethod.self)(recordObj, recordInitSel, "tapsmith-swipe-path" as NSString, currentOrientation)
+        // Allocate as a RAW pointer so ARC never manages the uninitialized
+        // instance (init via IMP consumes alloc's +1) — same double-free
+        // avoidance as the pointer path above.
+        if (recordClass as! NSObject.Type).instancesRespond(to: recordInitSel),
+           let meta = object_getClass(recordClass),
+           let allocImp = class_getMethodImplementation(meta, recordAllocSel),
+           let initImp = class_getMethodImplementation(recordClass, recordInitSel) {
+            typealias AllocFn = @convention(c) (AnyClass, Selector) -> UnsafeMutableRawPointer
+            typealias RMethod = @convention(c) (UnsafeMutableRawPointer, Selector, NSString, Int) -> NSObject
+            let raw = unsafeBitCast(allocImp, to: AllocFn.self)(recordClass, recordAllocSel)
+            record = unsafeBitCast(initImp, to: RMethod.self)(raw, recordInitSel, "tapsmith-swipe-path" as NSString, currentOrientation)
         } else {
             record = (recordClass as! NSObject.Type).init()
         }
@@ -497,16 +501,20 @@ enum EventSynthesizer {
         }
 
         let recordInitSel = NSSelectorFromString("initWithName:interfaceOrientation:")
+        let recordAllocSel = NSSelectorFromString("alloc")
         let record: NSObject
-        // Check the selector at the class level BEFORE allocating: allocating
-        // without initializing leaves an object ARC later releases as if it were
-        // initialized (undefined behavior / crash).
-        if (recordClass as! NSObject.Type).instancesRespond(to: recordInitSel) {
-            let recordObj = recordClass.alloc() as! NSObject
-            let imp = recordObj.method(for: recordInitSel)
-            typealias RMethod = @convention(c) (NSObject, Selector, NSString, Int) -> NSObject
-            record = unsafeBitCast(imp, to: RMethod.self)(
-                recordObj,
+        // Allocate as a RAW pointer so ARC never manages the uninitialized
+        // instance (init via IMP consumes alloc's +1) — same double-free
+        // avoidance as the pointer path above.
+        if (recordClass as! NSObject.Type).instancesRespond(to: recordInitSel),
+           let meta = object_getClass(recordClass),
+           let allocImp = class_getMethodImplementation(meta, recordAllocSel),
+           let initImp = class_getMethodImplementation(recordClass, recordInitSel) {
+            typealias AllocFn = @convention(c) (AnyClass, Selector) -> UnsafeMutableRawPointer
+            typealias RMethod = @convention(c) (UnsafeMutableRawPointer, Selector, NSString, Int) -> NSObject
+            let raw = unsafeBitCast(allocImp, to: AllocFn.self)(recordClass, recordAllocSel)
+            record = unsafeBitCast(initImp, to: RMethod.self)(
+                raw,
                 recordInitSel,
                 "tapsmith-drag" as NSString,
                 currentOrientation

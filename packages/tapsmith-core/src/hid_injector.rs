@@ -79,7 +79,10 @@ impl HidInjector {
             .arg(udid)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
+            // Inherit (don't pipe) stderr: we never drain it, and a piped buffer
+            // could fill and block the helper. Inheriting also surfaces the
+            // helper's `fatal <msg>` startup diagnostics in the daemon log.
+            .stderr(Stdio::inherit())
             .kill_on_drop(true)
             .spawn()
             .map_err(|e| anyhow::anyhow!("spawn {:?} failed: {e}", self.helper_path))?;

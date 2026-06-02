@@ -65,6 +65,7 @@ static MouseNSEventFn gMouseFn = NULL;
 static IndigoMessage *makeTouchMessage(double xRatio, double yRatio, int direction) {
   CGPoint p = CGPointMake(xRatio, yRatio);
   IndigoMessage *base = gMouseFn(&p, NULL, 0x32, direction, 0x0);
+  if (!base) return NULL;  // private API returned nothing — don't deref/crash
   base->payload.touch.xRatio = xRatio;
   base->payload.touch.yRatio = yRatio;
 
@@ -151,6 +152,7 @@ int main(int argc, char **argv) {
 
     BOOL (^sendTouch)(double, double, int) = ^BOOL(double rx, double ry, int dir) {
       IndigoMessage *m = makeTouchMessage(rx, ry, dir);
+      if (!m) return NO;  // couldn't build the touch message — report failure
       __block NSError *serr = nil;
       dispatch_semaphore_t sem = dispatch_semaphore_create(0);
       void (^completion)(NSError *) = ^(NSError *e) { serr = e; dispatch_semaphore_signal(sem); };
