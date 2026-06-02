@@ -1176,6 +1176,7 @@ html, body, #app {
 }
 .dm-canvas.tap-mode { cursor: crosshair; border-color: var(--accent); }
 .dm-canvas.interactive { cursor: pointer; touch-action: none; outline: none; }
+.dm-canvas.interactive:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .dm-canvas.locked { cursor: not-allowed; }
 .mirror-lock-toggle {
   background: none;
