@@ -24,6 +24,9 @@ interface DevicePaneProps {
   onSelectDeviceView: (mode: 'all' | number) => void
   registerCanvas: (workerId: number, canvas: HTMLCanvasElement) => void
   unregisterCanvas: (workerId: number) => void
+  registerVideoCanvas: (workerId: number, canvas: HTMLCanvasElement) => void
+  unregisterVideoCanvas: (workerId: number) => void
+  videoEnabled: boolean
   platform?: 'android' | 'ios'
   interactive: boolean
   locked: boolean
@@ -41,13 +44,16 @@ const DOT_CLASS: Record<WorkerInfo['status'], string> = {
 };
 
 /** Canvas ref callback for the "All" grid — registers/unregisters with multi-mirror hook. */
-function WorkerCanvas({ workerId, label, deviceSerial, connected, registerCanvas, unregisterCanvas, platform, interactive, force, send }: {
+function WorkerCanvas({ workerId, label, deviceSerial, connected, registerCanvas, unregisterCanvas, registerVideoCanvas, unregisterVideoCanvas, videoEnabled, platform, interactive, force, send }: {
   workerId: number
   label: string
   deviceSerial: string
   connected: boolean
   registerCanvas: (id: number, canvas: HTMLCanvasElement) => void
   unregisterCanvas: (id: number) => void
+  registerVideoCanvas: (id: number, canvas: HTMLCanvasElement) => void
+  unregisterVideoCanvas: (id: number) => void
+  videoEnabled: boolean
   platform?: 'android' | 'ios'
   interactive: boolean
   force: boolean
@@ -57,12 +63,33 @@ function WorkerCanvas({ workerId, label, deviceSerial, connected, registerCanvas
   const framePlatform = platform ?? inferDevicePlatform(label, deviceSerial);
   const interaction = useDeviceInteraction({ send, enabled: interactive, force, workerId });
 
+  // Screenshot canvas registration for ALL tiles. iOS tiles render screenshots
+  // here; Android tiles fall back to screenshots if their video errors (the
+  // server resumes polling on stop/error).
   useEffect(() => {
     if (ref.current) {
       registerCanvas(workerId, ref.current);
     }
     return () => unregisterCanvas(workerId);
   }, [workerId, registerCanvas, unregisterCanvas]);
+
+  // Live H.264 video for Android tiles when WebCodecs is available. Registers
+  // the SAME canvas with the video decoder and asks the server to start the
+  // per-worker stream (the server pauses screenshot polling for active-video
+  // workers). On unmount / view-change, unregister and stop the stream so the
+  // server resumes screenshot polling. iOS / non-android / no-WebCodecs tiles
+  // skip this entirely and stay on the screenshot path above.
+  useEffect(() => {
+    if (!videoEnabled || framePlatform !== 'android') return;
+    if (ref.current) {
+      registerVideoCanvas(workerId, ref.current);
+    }
+    send({ type: 'start-video', workerId });
+    return () => {
+      unregisterVideoCanvas(workerId);
+      send({ type: 'stop-video', workerId });
+    };
+  }, [workerId, framePlatform, videoEnabled, registerVideoCanvas, unregisterVideoCanvas, send]);
 
   return (
     <div class="device-body-item">
@@ -112,6 +139,9 @@ export function DevicePane({
   onSelectDeviceView,
   registerCanvas,
   unregisterCanvas,
+  registerVideoCanvas,
+  unregisterVideoCanvas,
+  videoEnabled,
   platform,
   interactive,
   locked,
@@ -180,6 +210,9 @@ export function DevicePane({
                 connected={connected}
                 registerCanvas={registerCanvas}
                 unregisterCanvas={unregisterCanvas}
+                registerVideoCanvas={registerVideoCanvas}
+                unregisterVideoCanvas={unregisterVideoCanvas}
+                videoEnabled={videoEnabled}
                 platform={w.platform}
                 interactive={interactive}
                 force={force}

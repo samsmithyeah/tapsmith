@@ -23,6 +23,7 @@ import {
 } from './hooks/use-trace-data.js';
 import { useScreenMirror, useMultiScreenMirror } from './hooks/use-screen-mirror.js';
 import { useVideoMirror } from './hooks/use-video-mirror.js';
+import { useMultiVideoMirror } from './hooks/use-multi-video-mirror.js';
 import { useTestTree } from './hooks/use-test-tree.js';
 import { useRunTimer } from './hooks/use-run-timer.js';
 import { usePersistedJSON } from './hooks/use-persisted-state.js';
@@ -174,10 +175,15 @@ function App() {
   const { canvasRef, handleBinaryFrame } = useScreenMirror();
   const { registerCanvas, unregisterCanvas, handleBinaryFrame: handleMultiBinaryFrame } = useMultiScreenMirror();
   const videoMirror = useVideoMirror();
+  const multiVideo = useMultiVideoMirror();
   // Ref so handleMessage (empty dep array) can reset the decoder without
   // depending on the mirror object.
   const videoMirrorRef = useRef(videoMirror);
   videoMirrorRef.current = videoMirror;
+  // Stable ref for the multi-worker video hook so the WS binary callback can
+  // route per-worker frames without depending on the (per-render) hook object.
+  const multiVideoRef = useRef(multiVideo);
+  multiVideoRef.current = multiVideo;
 
   // Whether any project has dependencies (controls visibility of the toggle)
   const hasProjectDeps = useMemo(() => {
@@ -910,9 +916,14 @@ function App() {
   const handleScreenFrame = useCallback((data: ArrayBuffer) => {
     const frame = decodeBinaryFrame(data);
     if (frame.kind === 'video') {
-      // Video targets the single / selected mirror only. Point the video
-      // decoder at the one visible canvas (the same element the screenshot
-      // mirror renders to) so both paths draw to it, then hand off the chunk.
+      // In the multi-worker "All" grid, route by workerId to the per-worker
+      // decoder (each grid tile registered its own video canvas). Otherwise
+      // point the single decoder at the one visible canvas (the same element
+      // the screenshot mirror renders to) so both paths draw to it.
+      if (deviceViewModeRef.current === 'all' && workersLenRef.current > 1) {
+        multiVideoRef.current.handleVideoFrame(frame.workerId, frame.payload, frame.keyframe, frame.config);
+        return;
+      }
       const vm = videoMirrorRef.current;
       vm.canvasRef.current = canvasRef.current;
       vm.handleVideoFrame(frame.payload, frame.keyframe, frame.config);
@@ -1325,6 +1336,9 @@ function App() {
           onSelectDeviceView={handleSelectDeviceView}
           registerCanvas={registerCanvas}
           unregisterCanvas={unregisterCanvas}
+          registerVideoCanvas={multiVideo.registerVideoCanvas}
+          unregisterVideoCanvas={multiVideo.unregisterVideoCanvas}
+          videoEnabled={videoMirror.hasVideoDecoder()}
           platform={devicePlatform}
           interactive={mirrorInteractive}
           locked={mirrorLocked}
