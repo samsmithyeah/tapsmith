@@ -393,13 +393,20 @@ enum EventSynthesizer {
         typealias InitMethod = @convention(c) (NSObject, Selector, CGPoint, TimeInterval) -> NSObject
         let path = unsafeBitCast(initImp, to: InitMethod.self)(pathObj, initSel, points[0].0, 0.0)
 
+        // XCPointerEventPath requires strictly increasing offsets — coincident
+        // timestamps (e.g. a coalesced move and the release rounding to the same
+        // ms on the client) would otherwise yield an invalid, no-op gesture that
+        // never engages the scroll/pan recognizer. Enforce monotonicity here.
+        var lastOffset: TimeInterval = 0
         let moveSel = NSSelectorFromString("moveToPoint:atOffset:")
         if path.responds(to: moveSel) {
             let moveImp = path.method(for: moveSel)
             typealias MoveMethod = @convention(c) (NSObject, Selector, CGPoint, TimeInterval) -> Void
             let moveFunc = unsafeBitCast(moveImp, to: MoveMethod.self)
             for (point, offset) in points.dropFirst() {
-                moveFunc(path, moveSel, point, offset)
+                let o = max(offset, lastOffset + 0.001)
+                lastOffset = o
+                moveFunc(path, moveSel, point, o)
             }
         }
 
@@ -407,7 +414,7 @@ enum EventSynthesizer {
         if path.responds(to: liftSel) {
             let liftImp = path.method(for: liftSel)
             typealias LiftMethod = @convention(c) (NSObject, Selector, TimeInterval) -> Void
-            unsafeBitCast(liftImp, to: LiftMethod.self)(path, liftSel, (points.last?.1 ?? 0) + 0.01)
+            unsafeBitCast(liftImp, to: LiftMethod.self)(path, liftSel, lastOffset + 0.01)
         }
 
         let recordObj = recordClass.alloc() as! NSObject
