@@ -73,16 +73,27 @@ pub fn start(serial: String, max_size: Option<u32>, bit_rate: Option<u32>) -> Sc
             let mut readbuf = vec![0u8; 64 * 1024];
             let mut stop = false;
             loop {
-                let n = match stdout.read(&mut readbuf).await {
-                    Ok(0) => {
-                        debug!("screenrecord segment ended; respawning");
+                // Race the read against the receiver closing: on a static screen
+                // screenrecord emits no bytes, so a plain `read` would block here
+                // indefinitely after the consumer drops — leaking the process
+                // (CPU/battery) until the 180s segment ends. `tx.closed()` wakes
+                // us immediately when the receiver is gone.
+                let n = tokio::select! {
+                    _ = tx.closed() => {
+                        stop = true;
                         break;
                     }
-                    Ok(n) => n,
-                    Err(e) => {
-                        warn!(error = %e, "screenrecord read error; respawning");
-                        break;
-                    }
+                    res = stdout.read(&mut readbuf) => match res {
+                        Ok(0) => {
+                            debug!("screenrecord segment ended; respawning");
+                            break;
+                        }
+                        Ok(n) => n,
+                        Err(e) => {
+                            warn!(error = %e, "screenrecord read error; respawning");
+                            break;
+                        }
+                    },
                 };
                 for au in parser.push(&readbuf[..n]) {
                     if tx.send(au).await.is_err() {

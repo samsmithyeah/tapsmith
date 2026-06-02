@@ -22,7 +22,10 @@ class CommandHandler {
 
     // Interactive-mirror live-drag: iOS can't stream touches, so buffer the
     // path during the drag and dispatch it as one gesture on touchUp.
+    // touchDown/Move/Up/Cancel arrive on gRPC pool threads, so all access to
+    // touchPath is guarded by touchPathLock (Swift Array is not thread-safe).
     private var touchPath: [(CGPoint, TimeInterval)] = []
+    private let touchPathLock = NSLock()
 
     init(
         app: XCUIApplication,
@@ -758,26 +761,38 @@ class CommandHandler {
         case "touchDown":
             let x = (params["x"] as? NSNumber)?.doubleValue ?? 0
             let y = (params["y"] as? NSNumber)?.doubleValue ?? 0
+            touchPathLock.lock()
             touchPath = [(CGPoint(x: x, y: y), 0.0)]
+            touchPathLock.unlock()
             return ["success": true]
 
         case "touchMove":
             let x = (params["x"] as? NSNumber)?.doubleValue ?? 0
             let y = (params["y"] as? NSNumber)?.doubleValue ?? 0
             let tMs = (params["t"] as? NSNumber)?.doubleValue ?? 0
+            touchPathLock.lock()
             if !touchPath.isEmpty {
                 touchPath.append((CGPoint(x: x, y: y), tMs / 1000.0))
             }
+            touchPathLock.unlock()
             return ["success": true]
 
         case "touchUp":
             let x = (params["x"] as? NSNumber)?.doubleValue ?? 0
             let y = (params["y"] as? NSNumber)?.doubleValue ?? 0
             let tMs = (params["t"] as? NSNumber)?.doubleValue ?? 0
+            // Copy + clear the path under the lock, then synthesize OUTSIDE the
+            // lock (event synthesis is slow and must not block other threads).
+            touchPathLock.lock()
+            var pathToReplay: [(CGPoint, TimeInterval)] = []
             if !touchPath.isEmpty {
                 touchPath.append((CGPoint(x: x, y: y), tMs / 1000.0))
-                _ = EventSynthesizer.swipePath(touchPath)
+                pathToReplay = touchPath
                 touchPath = []
+            }
+            touchPathLock.unlock()
+            if !pathToReplay.isEmpty {
+                _ = EventSynthesizer.swipePath(pathToReplay)
             }
             // Settle like the existing swipe path.
             Thread.sleep(forTimeInterval: 0.2)
@@ -785,7 +800,9 @@ class CommandHandler {
             return ["success": true]
 
         case "touchCancel":
+            touchPathLock.lock()
             touchPath = []
+            touchPathLock.unlock()
             return ["success": true]
 
         // ─── Swipe / Scroll ───
