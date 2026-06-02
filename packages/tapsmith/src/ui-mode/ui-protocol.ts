@@ -401,6 +401,41 @@ export interface MirrorPressKeyCommand {
   force?: boolean
 }
 
+export interface MirrorTouchStartCommand {
+  type: 'mirror-touch-start'
+  /** X normalized to 0–1. */
+  x: number
+  /** Y normalized to 0–1. */
+  y: number
+  workerId?: number
+  force?: boolean
+}
+
+export interface MirrorTouchMoveCommand {
+  type: 'mirror-touch-move'
+  x: number
+  y: number
+  /** Milliseconds since touch-start. */
+  tMs: number
+  workerId?: number
+  force?: boolean
+}
+
+export interface MirrorTouchEndCommand {
+  type: 'mirror-touch-end'
+  x: number
+  y: number
+  tMs: number
+  workerId?: number
+  force?: boolean
+}
+
+export interface MirrorTouchCancelCommand {
+  type: 'mirror-touch-cancel'
+  workerId?: number
+  force?: boolean
+}
+
 export interface SetFilterCommand {
   type: 'set-filter'
   name?: string
@@ -440,6 +475,10 @@ export type ClientMessage =
   | MirrorSwipeCommand
   | MirrorInputTextCommand
   | MirrorPressKeyCommand
+  | MirrorTouchStartCommand
+  | MirrorTouchMoveCommand
+  | MirrorTouchEndCommand
+  | MirrorTouchCancelCommand
   | SetFilterCommand
   | SelectWorkerCommand
   | SelectWorkerViewCommand
