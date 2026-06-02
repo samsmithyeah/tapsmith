@@ -1,4 +1,5 @@
 use std::path::PathBuf;
+use std::process::Command;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Use a vendored protoc by default so builds do not depend on runner/container
@@ -46,6 +47,42 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .compile_protos(&protos, &includes)?;
 
     println!("cargo:rerun-if-changed={}", proto_path.display());
+
+    // ─── iOS HID helper (macOS only) ───
+    // Compile the native `tapsmith-ios-hid` helper next to the daemon binary so
+    // the daemon resolves it as a sibling and the release workflow bundles it
+    // into the macOS @tapsmith/core-* packages. CoreSimulator/SimulatorKit are
+    // dlopen'd by the helper at runtime, so only public frameworks are linked.
+    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("macos") {
+        // OUT_DIR = target/<profile>/build/<crate>-<hash>/out; the profile dir
+        // (where tapsmith-core lands) is four ancestors up.
+        let out_dir = std::env::var("OUT_DIR")?;
+        let profile_dir = PathBuf::from(&out_dir)
+            .ancestors()
+            .nth(3)
+            .ok_or("could not derive profile dir from OUT_DIR")?
+            .to_path_buf();
+        let helper_out = profile_dir.join("tapsmith-ios-hid");
+        let arch = match std::env::var("CARGO_CFG_TARGET_ARCH").as_deref() {
+            Ok("x86_64") => "x86_64",
+            _ => "arm64",
+        };
+        let status = Command::new("clang")
+            .args(["-fobjc-arc", "-arch", arch])
+            .args(["-framework", "Foundation", "-framework", "CoreGraphics"])
+            .arg("-o")
+            .arg(&helper_out)
+            .arg("native/tapsmith-ios-hid.m")
+            .arg("native/hid_protocol.c")
+            .status()
+            .map_err(|e| format!("failed to run clang for tapsmith-ios-hid: {e}"))?;
+        if !status.success() {
+            return Err(format!("clang failed to build tapsmith-ios-hid: {status}").into());
+        }
+        println!("cargo:rerun-if-changed=native/tapsmith-ios-hid.m");
+        println!("cargo:rerun-if-changed=native/hid_protocol.c");
+        println!("cargo:rerun-if-changed=native/hid_protocol.h");
+    }
 
     Ok(())
 }
