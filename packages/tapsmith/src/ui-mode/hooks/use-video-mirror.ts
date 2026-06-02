@@ -3,7 +3,7 @@
  * canvas via WebCodecs VideoDecoder. The caller falls back to screenshot
  * polling when VideoDecoder is unavailable or the decoder errors.
  */
-import { useRef, useCallback } from 'preact/hooks';
+import { useRef, useCallback, useEffect } from 'preact/hooks';
 
 /** True when the browser can decode H.264 video frames. */
 export function hasVideoDecoder(): boolean {
@@ -44,6 +44,10 @@ export function useVideoMirror() {
     configuredRef.current = false;
     sawKeyRef.current = false;
   }, []);
+
+  // Close the decoder on unmount — hardware decoder sessions are a limited
+  // OS/browser resource and would otherwise leak.
+  useEffect(() => reset, [reset]);
 
   const handleVideoFrame = useCallback((payload: ArrayBuffer, keyframe: boolean, config: boolean) => {
     if (!hasVideoDecoder()) return;

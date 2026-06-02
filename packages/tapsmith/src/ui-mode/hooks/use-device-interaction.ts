@@ -48,7 +48,9 @@ export interface DeviceInteractionOptions {
 export function useDeviceInteraction(opts: DeviceInteractionOptions) {
   const optsRef = useRef(opts);
   optsRef.current = opts;
-  const start = useRef<{ x: number; y: number; nx: number; ny: number; t: number } | null>(null);
+  // `rect` is cached at pointerdown and reused for the whole gesture so we don't
+  // call getBoundingClientRect() on every move (forced synchronous layout).
+  const start = useRef<{ x: number; y: number; nx: number; ny: number; t: number; rect: DOMRect } | null>(null);
   const dragging = useRef(false);
   const pendingMove = useRef<{ x: number; y: number; tMs: number } | null>(null);
   const rafId = useRef<number | null>(null);
@@ -60,7 +62,7 @@ export function useDeviceInteraction(opts: DeviceInteractionOptions) {
     const rect = canvas.getBoundingClientRect();
     if (rect.width === 0 || rect.height === 0) return;
     const n = normalizePoint(e.clientX, e.clientY, rect);
-    start.current = { x: e.clientX, y: e.clientY, nx: n.x, ny: n.y, t: performance.now() };
+    start.current = { x: e.clientX, y: e.clientY, nx: n.x, ny: n.y, t: performance.now(), rect };
     dragging.current = false;
     canvas.setPointerCapture(e.pointerId);
     // Focus the canvas so it receives keydown events for text input.
@@ -80,8 +82,7 @@ export function useDeviceInteraction(opts: DeviceInteractionOptions) {
     const o = optsRef.current;
     const s = start.current;
     if (!o.enabled || !s) return;
-    const canvas = e.currentTarget as HTMLCanvasElement;
-    const n = normalizePoint(e.clientX, e.clientY, canvas.getBoundingClientRect());
+    const n = normalizePoint(e.clientX, e.clientY, s.rect);
     const tMs = Math.round(performance.now() - s.t);
     if (!dragging.current) {
       const dist = Math.hypot(e.clientX - s.x, e.clientY - s.y);
@@ -98,8 +99,7 @@ export function useDeviceInteraction(opts: DeviceInteractionOptions) {
     const s = start.current;
     start.current = null;
     if (!o.enabled || !s) { dragging.current = false; return; }
-    const canvas = e.currentTarget as HTMLCanvasElement;
-    const end = normalizePoint(e.clientX, e.clientY, canvas.getBoundingClientRect());
+    const end = normalizePoint(e.clientX, e.clientY, s.rect);
     const tMs = Math.round(performance.now() - s.t);
 
     if (dragging.current) {

@@ -54,6 +54,7 @@ pub fn start(serial: String, max_size: Option<u32>, bit_rate: Option<u32>) -> Sc
             if tx.is_closed() {
                 break;
             }
+            let segment_started = tokio::time::Instant::now();
             let mut child = match adb::screenrecord_h264_spawn(&serial, size, bit_rate) {
                 Ok(c) => c,
                 Err(e) => {
@@ -98,6 +99,13 @@ pub fn start(serial: String, max_size: Option<u32>, bit_rate: Option<u32>) -> Sc
             let _ = child.wait().await;
             if stop {
                 break;
+            }
+            // Back off if the segment died almost immediately: screenrecord
+            // exiting on error (device locked/unauthorized/unsupported opts)
+            // would otherwise respawn in a tight loop and peg the CPU. Normal
+            // ~180s segments and the first spawn are unaffected.
+            if segment_started.elapsed() < std::time::Duration::from_secs(1) {
+                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
             }
         }
         debug!("screen stream task exited");

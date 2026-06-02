@@ -386,9 +386,12 @@ enum EventSynthesizer {
               let recordClass = objc_lookUpClass("XCSynthesizedEventRecord")
         else { return false }
 
-        let pathObj = pathClass.alloc() as! NSObject
         let initSel = NSSelectorFromString("initForTouchAtPoint:offset:")
-        guard pathObj.responds(to: initSel) else { return false }
+        // Verify the selector at the class level BEFORE allocating, so a failed
+        // check never leaves an allocated-but-uninitialized object for ARC to
+        // release (undefined behavior / crash).
+        guard (pathClass as! NSObject.Type).instancesRespond(to: initSel) else { return false }
+        let pathObj = pathClass.alloc() as! NSObject
         let initImp = pathObj.method(for: initSel)
         typealias InitMethod = @convention(c) (NSObject, Selector, CGPoint, TimeInterval) -> NSObject
         let path = unsafeBitCast(initImp, to: InitMethod.self)(pathObj, initSel, points[0].0, 0.0)
@@ -447,9 +450,12 @@ enum EventSynthesizer {
               let recordClass = objc_lookUpClass("XCSynthesizedEventRecord")
         else { return false }
 
-        let pathObj = pathClass.alloc() as! NSObject
         let initSel = NSSelectorFromString("initForTouchAtPoint:offset:")
-        guard pathObj.responds(to: initSel) else { return false }
+        // Verify the selector at the class level BEFORE allocating, so a failed
+        // check never leaves an allocated-but-uninitialized object for ARC to
+        // release (undefined behavior / crash).
+        guard (pathClass as! NSObject.Type).instancesRespond(to: initSel) else { return false }
+        let pathObj = pathClass.alloc() as! NSObject
 
         let initImp = pathObj.method(for: initSel)
         typealias InitMethod = @convention(c) (NSObject, Selector, CGPoint, TimeInterval) -> NSObject
