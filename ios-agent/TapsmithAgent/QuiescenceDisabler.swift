@@ -376,6 +376,59 @@ enum EventSynthesizer {
         return dispatchSync(record) || dispatchViaDevice(record) || dispatchViaDaemonSession(record)
     }
 
+    /// Replay an arbitrary touch path as one synthesized gesture. `points` is
+    /// [(location, offsetSeconds)] with the touch-down at the first entry
+    /// (offset 0). Used by the interactive mirror's live-drag on iOS, where a
+    /// touch cannot be streamed live — the full path is dispatched on release.
+    static func swipePath(_ points: [(CGPoint, TimeInterval)]) -> Bool {
+        guard points.count >= 2,
+              let pathClass = objc_lookUpClass("XCPointerEventPath"),
+              let recordClass = objc_lookUpClass("XCSynthesizedEventRecord")
+        else { return false }
+
+        let pathObj = pathClass.alloc() as! NSObject
+        let initSel = NSSelectorFromString("initForTouchAtPoint:offset:")
+        guard pathObj.responds(to: initSel) else { return false }
+        let initImp = pathObj.method(for: initSel)
+        typealias InitMethod = @convention(c) (NSObject, Selector, CGPoint, TimeInterval) -> NSObject
+        let path = unsafeBitCast(initImp, to: InitMethod.self)(pathObj, initSel, points[0].0, 0.0)
+
+        let moveSel = NSSelectorFromString("moveToPoint:atOffset:")
+        if path.responds(to: moveSel) {
+            let moveImp = path.method(for: moveSel)
+            typealias MoveMethod = @convention(c) (NSObject, Selector, CGPoint, TimeInterval) -> Void
+            let moveFunc = unsafeBitCast(moveImp, to: MoveMethod.self)
+            for (point, offset) in points.dropFirst() {
+                moveFunc(path, moveSel, point, offset)
+            }
+        }
+
+        let liftSel = NSSelectorFromString("liftUpAtOffset:")
+        if path.responds(to: liftSel) {
+            let liftImp = path.method(for: liftSel)
+            typealias LiftMethod = @convention(c) (NSObject, Selector, TimeInterval) -> Void
+            unsafeBitCast(liftImp, to: LiftMethod.self)(path, liftSel, (points.last?.1 ?? 0) + 0.01)
+        }
+
+        let recordObj = recordClass.alloc() as! NSObject
+        let recordInitSel = NSSelectorFromString("initWithName:interfaceOrientation:")
+        let record: NSObject
+        if recordObj.responds(to: recordInitSel) {
+            let imp = recordObj.method(for: recordInitSel)
+            typealias RMethod = @convention(c) (NSObject, Selector, NSString, Int) -> NSObject
+            record = unsafeBitCast(imp, to: RMethod.self)(recordObj, recordInitSel, "tapsmith-swipe-path" as NSString, currentOrientation)
+        } else {
+            record = (recordClass as! NSObject.Type).init()
+        }
+
+        let addPathSel = NSSelectorFromString("addPointerEventPath:")
+        if record.responds(to: addPathSel) {
+            record.perform(addPathSel, with: path)
+        }
+
+        return dispatchSync(record) || dispatchViaDevice(record) || dispatchViaDaemonSession(record)
+    }
+
     /// Drag from one point to another using a touch-down, short hold, move, and lift.
     /// Unlike swipe(), this intentionally avoids async fallback dispatchers because
     /// they are the part that tends to wedge the XCTest session on Xcode 26.

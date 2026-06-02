@@ -20,6 +20,10 @@ class CommandHandler {
     /// Cache of last clipboard text set via setClipboard.
     private var lastClipboardText = ""
 
+    // Interactive-mirror live-drag: iOS can't stream touches, so buffer the
+    // path during the drag and dispatch it as one gesture on touchUp.
+    private var touchPath: [(CGPoint, TimeInterval)] = []
+
     init(
         app: XCUIApplication,
         elementFinder: ElementFinder,
@@ -747,6 +751,41 @@ class CommandHandler {
                 )
             }
             try? focusElementForTyping(element, settleTime: 0.1)
+            return ["success": true]
+
+        // ─── Interactive Mirror Live-Drag (buffered touch path) ───
+
+        case "touchDown":
+            let x = (params["x"] as? NSNumber)?.doubleValue ?? 0
+            let y = (params["y"] as? NSNumber)?.doubleValue ?? 0
+            touchPath = [(CGPoint(x: x, y: y), 0.0)]
+            return ["success": true]
+
+        case "touchMove":
+            let x = (params["x"] as? NSNumber)?.doubleValue ?? 0
+            let y = (params["y"] as? NSNumber)?.doubleValue ?? 0
+            let tMs = (params["t"] as? NSNumber)?.doubleValue ?? 0
+            if !touchPath.isEmpty {
+                touchPath.append((CGPoint(x: x, y: y), tMs / 1000.0))
+            }
+            return ["success": true]
+
+        case "touchUp":
+            let x = (params["x"] as? NSNumber)?.doubleValue ?? 0
+            let y = (params["y"] as? NSNumber)?.doubleValue ?? 0
+            let tMs = (params["t"] as? NSNumber)?.doubleValue ?? 0
+            if !touchPath.isEmpty {
+                touchPath.append((CGPoint(x: x, y: y), tMs / 1000.0))
+                _ = EventSynthesizer.swipePath(touchPath)
+                touchPath = []
+            }
+            // Settle like the existing swipe path.
+            Thread.sleep(forTimeInterval: 0.2)
+            RunLoop.current.run(mode: .default, before: Date(timeIntervalSinceNow: 0.01))
+            return ["success": true]
+
+        case "touchCancel":
+            touchPath = []
             return ["success": true]
 
         // ─── Swipe / Scroll ───
