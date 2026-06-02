@@ -379,6 +379,10 @@ pub enum AgentCommand {
     OpenDeepLink {
         url: String,
         package: String,
+        deliver_in_process: bool,
+    },
+    AcceptOpenInAppDialog {
+        timeout_ms: Option<u64>,
     },
     HideKeyboard {},
     IsKeyboardShown {},
@@ -630,8 +634,24 @@ impl AgentCommand {
             AgentCommand::TerminateApp { package } => {
                 ("terminateApp", json!({ "bundleId": package }))
             }
-            AgentCommand::OpenDeepLink { url, package } => {
-                ("openDeepLink", json!({ "url": url, "bundleId": package }))
+            AgentCommand::OpenDeepLink {
+                url,
+                package,
+                deliver_in_process,
+            } => (
+                "openDeepLink",
+                json!({
+                    "url": url,
+                    "bundleId": package,
+                    "deliverInProcess": deliver_in_process,
+                }),
+            ),
+            AgentCommand::AcceptOpenInAppDialog { timeout_ms } => {
+                let mut p = json!({});
+                if let Some(t) = timeout_ms {
+                    p["timeout"] = json!(t);
+                }
+                ("acceptOpenInAppDialog", p)
             }
             AgentCommand::HideKeyboard {} => ("hideKeyboard", json!({})),
             AgentCommand::IsKeyboardShown {} => ("isKeyboardShown", json!({})),
@@ -1361,6 +1381,30 @@ mod tests {
         assert_eq!(j["method"], "elementScreenshot");
         assert_eq!(j["params"]["resourceId"], "profile_image");
         assert_eq!(j["params"]["timeout"], 5000);
+    }
+
+    #[test]
+    fn to_json_open_deep_link() {
+        let cmd = AgentCommand::OpenDeepLink {
+            url: "tapsmithtest:///login".into(),
+            package: "dev.tapsmith.testapp".into(),
+            deliver_in_process: false,
+        };
+        let j = cmd.to_json("dl1");
+        assert_eq!(j["method"], "openDeepLink");
+        assert_eq!(j["params"]["url"], "tapsmithtest:///login");
+        assert_eq!(j["params"]["bundleId"], "dev.tapsmith.testapp");
+        assert_eq!(j["params"]["deliverInProcess"], false);
+    }
+
+    #[test]
+    fn to_json_accept_open_in_app_dialog() {
+        let cmd = AgentCommand::AcceptOpenInAppDialog {
+            timeout_ms: Some(750),
+        };
+        let j = cmd.to_json("open-dialog");
+        assert_eq!(j["method"], "acceptOpenInAppDialog");
+        assert_eq!(j["params"]["timeout"], 750);
     }
 
     #[test]

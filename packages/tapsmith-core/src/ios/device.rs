@@ -1001,6 +1001,13 @@ mod tests {
     }
 
     #[test]
+    fn retryable_open_url_error_matches_daemon_timeout() {
+        assert!(is_retryable_open_url_error(
+            "Operation timed out opening URL on B54345BC: tapsmithtest:///profile"
+        ));
+    }
+
+    #[test]
     fn retryable_open_url_error_rejects_non_timeout_failures() {
         assert!(!is_retryable_open_url_error(
             "Failed to open URL on ABC: No such file or directory"

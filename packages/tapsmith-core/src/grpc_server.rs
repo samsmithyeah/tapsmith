@@ -30,6 +30,9 @@ const ANDROID_REVERSE_PORT_FALLBACK_COUNT: usize = 8;
 const ANDROID_REVERSE_PORT_FALLBACK_STEP: u32 = 997;
 const WEBVIEW_ADB_TIMEOUT: Duration = Duration::from_secs(5);
 const WEBVIEW_ADB_CLEANUP_TIMEOUT: Duration = Duration::from_secs(2);
+const IOS_OPEN_URL_PROMPT_TIMEOUT: Duration = Duration::from_secs(28);
+const IOS_OPEN_DIALOG_ACCEPT_TIMEOUT_MS: u64 = 300;
+const IOS_OPEN_DEEP_LINK_VERIFY_TIMEOUT_MS: u64 = 12_000;
 
 pub struct TapsmithServiceImpl {
     device_manager: Arc<RwLock<DeviceManager>>,
@@ -263,6 +266,86 @@ impl TapsmithServiceImpl {
             agent_comms::send_with_persistent_cache(&self.agent_stream, &params, command, timeout)
                 .await;
         self.recover_agent_on_timeout(command, raw).await
+    }
+
+    async fn accept_ios_open_in_app_dialog(&self) {
+        let result = self
+            .send_agent_command_with_timeout(
+                &AgentCommand::AcceptOpenInAppDialog {
+                    timeout_ms: Some(IOS_OPEN_DIALOG_ACCEPT_TIMEOUT_MS),
+                },
+                IOS_OPEN_DIALOG_ACCEPT_TIMEOUT_MS + 1_000,
+            )
+            .await;
+
+        match result {
+            Ok(resp) if resp.success => {
+                if resp
+                    .data
+                    .get("dismissed")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false)
+                {
+                    debug!("Accepted iOS Open-in-app confirmation dialog");
+                }
+            }
+            Ok(resp) => {
+                debug!(
+                    error = ?resp.error,
+                    "iOS Open-in-app dialog accept command returned failure"
+                );
+            }
+            Err(e) => {
+                debug!(error = %e, "Failed to probe iOS Open-in-app dialog");
+            }
+        }
+    }
+
+    async fn open_ios_simulator_url_with_prompt_handling(
+        &self,
+        serial: &str,
+        uri: &str,
+    ) -> anyhow::Result<()> {
+        self.accept_ios_open_in_app_dialog().await;
+
+        let serial_for_open = serial.to_string();
+        let uri_for_open = uri.to_string();
+        let mut open_url =
+            tokio::spawn(
+                async move { ios::device::open_url(&serial_for_open, &uri_for_open).await },
+            );
+        let deadline = tokio::time::Instant::now() + IOS_OPEN_URL_PROMPT_TIMEOUT;
+
+        while !open_url.is_finished() {
+            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+            if remaining <= Duration::from_millis(500) {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(500)).await;
+            if open_url.is_finished() {
+                break;
+            }
+            self.accept_ios_open_in_app_dialog().await;
+        }
+
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        if remaining.is_zero() {
+            open_url.abort();
+            return Err(anyhow::anyhow!(
+                "Operation timed out opening URL on {serial}: {uri}"
+            ));
+        }
+
+        match tokio::time::timeout(remaining, &mut open_url).await {
+            Ok(Ok(result)) => result,
+            Ok(Err(e)) => Err(anyhow::anyhow!("simctl openurl task failed: {e}")),
+            Err(_) => {
+                open_url.abort();
+                Err(anyhow::anyhow!(
+                    "Operation timed out opening URL on {serial}: {uri}"
+                ))
+            }
+        }
     }
 
     /// If the agent command failed with a "timed out" error AND the active
@@ -2491,21 +2574,21 @@ impl proto::tapsmith_service_server::TapsmithService for TapsmithServiceImpl {
                     let command = AgentCommand::OpenDeepLink {
                         url: req.uri.clone(),
                         package: bundle_id,
+                        deliver_in_process: true,
                     };
                     let result = self.send_agent_command(&command).await;
                     return self.make_action_response(request_id, result).await;
                 }
 
-                // Simulator: terminate → simctl openurl → rebind agent.
+                // Simulator: terminate -> simctl openurl -> verify/rebind agent.
                 //
                 // XCUIApplication.open(url:) hangs on quiescence on slow CI
                 // runners, so we avoid it entirely. simctl openurl to a
                 // running app doesn't trigger navigation (the React Native
                 // scene handler misses it), so we terminate first — making
-                // openurl cold-launch the app with the URL. Finally, rebind
-                // the agent to the newly launched process; LaunchApp also
-                // accepts SpringBoard's URL-scheme confirmation if the
-                // simulator shows it.
+                // openurl cold-launch the app with the URL. Fresh simulators
+                // can show "Open in <app>?" and block simctl itself, so the
+                // daemon taps that dialog while openurl is still pending.
                 let _ = self
                     .send_agent_command_with_timeout(
                         &AgentCommand::TerminateApp {
@@ -2518,7 +2601,10 @@ impl proto::tapsmith_service_server::TapsmithService for TapsmithServiceImpl {
 
                 let mut open_url_attempt = 1;
                 loop {
-                    match ios::device::open_url(&serial, &req.uri).await {
+                    match self
+                        .open_ios_simulator_url_with_prompt_handling(&serial, &req.uri)
+                        .await
+                    {
                         Ok(()) => break,
                         Err(e)
                             if open_url_attempt == 1
@@ -2550,18 +2636,15 @@ impl proto::tapsmith_service_server::TapsmithService for TapsmithServiceImpl {
                 }
                 tokio::time::sleep(Duration::from_millis(500)).await;
 
-                // Rebind agent to the cold-launched process and dismiss
-                // any system dialogs. LaunchApp calls activate() which
-                // connects to the running process without navigating away
-                // from the deep link destination.
-                let _ = self
-                    .send_agent_command_with_timeout(
-                        &AgentCommand::LaunchApp { package: bundle_id },
-                        8_000,
-                    )
+                let command = AgentCommand::OpenDeepLink {
+                    url: req.uri,
+                    package: bundle_id,
+                    deliver_in_process: false,
+                };
+                let result = self
+                    .send_agent_command_with_timeout(&command, IOS_OPEN_DEEP_LINK_VERIFY_TIMEOUT_MS)
                     .await;
-
-                Ok(Self::success_action_response(request_id))
+                self.make_action_response(request_id, result).await
             }
             Platform::Android => {
                 if req.uri.contains('\'') {
