@@ -237,6 +237,26 @@ class CommandHandler(
                 JSONObject().put("success", true)
             }
 
+            "touchDown" -> {
+                actionExecutor.touchDown(params.optInt("x", 0), params.optInt("y", 0))
+                JSONObject().put("success", true)
+            }
+
+            "touchMove" -> {
+                actionExecutor.touchMove(params.optInt("x", 0), params.optInt("y", 0))
+                JSONObject().put("success", true)
+            }
+
+            "touchUp" -> {
+                actionExecutor.touchUp(params.optInt("x", 0), params.optInt("y", 0))
+                JSONObject().put("success", true)
+            }
+
+            "touchCancel" -> {
+                actionExecutor.touchCancel()
+                JSONObject().put("success", true)
+            }
+
             "pressKey" -> {
                 val key = params.getString("key")
                 actionExecutor.pressKey(key)

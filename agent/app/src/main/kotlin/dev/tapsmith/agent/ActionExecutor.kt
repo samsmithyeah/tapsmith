@@ -1,6 +1,10 @@
 package dev.tapsmith.agent
 
+import android.os.SystemClock
+import android.view.InputDevice
 import android.view.KeyEvent
+import android.view.MotionEvent
+import androidx.test.platform.app.InstrumentationRegistry
 import androidx.test.uiautomator.By
 import androidx.test.uiautomator.Direction
 import androidx.test.uiautomator.UiDevice
@@ -301,6 +305,58 @@ class ActionExecutor(private val device: UiDevice) {
         // UIAutomator swipe is step-based (~5ms/step). Convert duration to steps.
         val steps = (durationMs / 5).toInt().coerceIn(5, 200)
         device.swipe(x1, y1, x2, y2, steps)
+    }
+
+    // ─── Streamed touch (interactive mirror live-drag) ───
+    private var touchDownTime = 0L
+    private var touchActive = false
+
+    private fun injectTouch(
+        action: Int,
+        x: Int,
+        y: Int,
+        eventTime: Long,
+    ) {
+        val event = MotionEvent.obtain(touchDownTime, eventTime, action, x.toFloat(), y.toFloat(), 0)
+        event.source = InputDevice.SOURCE_TOUCHSCREEN
+        try {
+            // sync=false: fire-and-forget keeps the move stream low-latency.
+            InstrumentationRegistry.getInstrumentation().uiAutomation.injectInputEvent(event, false)
+        } finally {
+            event.recycle()
+        }
+    }
+
+    fun touchDown(
+        x: Int,
+        y: Int,
+    ) {
+        touchDownTime = SystemClock.uptimeMillis()
+        touchActive = true
+        injectTouch(MotionEvent.ACTION_DOWN, x, y, touchDownTime)
+    }
+
+    fun touchMove(
+        x: Int,
+        y: Int,
+    ) {
+        if (!touchActive) return
+        injectTouch(MotionEvent.ACTION_MOVE, x, y, SystemClock.uptimeMillis())
+    }
+
+    fun touchUp(
+        x: Int,
+        y: Int,
+    ) {
+        if (!touchActive) return
+        injectTouch(MotionEvent.ACTION_UP, x, y, SystemClock.uptimeMillis())
+        touchActive = false
+    }
+
+    fun touchCancel() {
+        if (!touchActive) return
+        injectTouch(MotionEvent.ACTION_CANCEL, 0, 0, SystemClock.uptimeMillis())
+        touchActive = false
     }
 
     /**
