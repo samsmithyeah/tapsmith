@@ -95,7 +95,7 @@ pub struct TapsmithServiceImpl {
     /// `tapsmith-ios-hid` helper per simulator; touch handlers route iOS-sim
     /// streamed touch here, falling back to the agent if it's unavailable.
     #[cfg(target_os = "macos")]
-    hid_injector: std::sync::Arc<crate::hid_injector::HidInjector>,
+    hid_injector: Arc<crate::hid_injector::HidInjector>,
 }
 
 /// Stored iOS agent launch config for restart.
@@ -139,7 +139,7 @@ impl TapsmithServiceImpl {
             webkit_debug_proxy: Arc::new(RwLock::new(None)),
             video_recording: Arc::new(RwLock::new(None)),
             #[cfg(target_os = "macos")]
-            hid_injector: std::sync::Arc::new(crate::hid_injector::HidInjector::new()),
+            hid_injector: Arc::new(crate::hid_injector::HidInjector::new()),
         }
     }
 
@@ -1182,6 +1182,13 @@ impl TapsmithServiceImpl {
     /// Returns true if it was injected via HID; false means the caller should
     /// fall back to the agent command. `is_down` ensures the helper is spawned
     /// before the first event of a gesture.
+    ///
+    /// Fallback is per-event: if the helper dies mid-gesture, the failing event
+    /// (and the rest of the gesture) routes to the agent. A gesture that started
+    /// on HID and finishes on the agent could in theory leave a dangling HID
+    /// touch, but in practice `ensure` only fails at `down` (before any contact)
+    /// and a live helper does not die mid-drag — so a split gesture is a
+    /// degenerate case, not the normal path.
     #[cfg(target_os = "macos")]
     async fn try_hid_touch(&self, line: &str, is_down: bool) -> bool {
         let udid = {
