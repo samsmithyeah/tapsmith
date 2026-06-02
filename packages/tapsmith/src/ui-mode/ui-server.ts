@@ -3182,9 +3182,14 @@ export async function startUIServer(
         try {
           const stream = t.client.screenStream(720, 6_000_000);
           videoStreams.set(workerId, stream as never);
-          videoWorkers.add(workerId);
           broadcast({ type: 'video-status', workerId, streaming: true });
           stream.on('data', (f: { data: Buffer; keyframe: boolean; config: boolean }) => {
+            // Keep polling screenshots until the FIRST video frame actually
+            // arrives — screenrecord spawn + first keyframe can take a couple
+            // seconds, and pausing screenshots up front leaves the mirror black
+            // for that whole window. Marking the worker video-served only now
+            // lets screenshots bridge the gap, then video takes over the canvas.
+            if (!videoWorkers.has(workerId)) videoWorkers.add(workerId);
             const data = Buffer.isBuffer(f.data) ? f.data : Buffer.from(f.data);
             broadcastBinary(encodeVideoFrame(workerId, f.keyframe, f.config, data));
           });

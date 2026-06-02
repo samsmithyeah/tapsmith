@@ -24,6 +24,8 @@ interface DevicePaneProps {
   onSelectDeviceView: (mode: 'all' | number) => void
   registerCanvas: (workerId: number, canvas: HTMLCanvasElement) => void
   unregisterCanvas: (workerId: number) => void
+  /** Single-view mirror is starting and hasn't painted its first frame yet. */
+  mirrorLoading: boolean
   platform?: 'android' | 'ios'
   interactive: boolean
   locked: boolean
@@ -115,6 +117,7 @@ export function DevicePane({
   onSelectDeviceView,
   registerCanvas,
   unregisterCanvas,
+  mirrorLoading,
   platform,
   interactive,
   locked,
@@ -194,6 +197,7 @@ export function DevicePane({
           <DeviceMirror
             canvasRef={canvasRef}
             connected={connected}
+            loading={mirrorLoading}
             platform={mirrorPlatform}
             interactive={interactive}
             force={force}

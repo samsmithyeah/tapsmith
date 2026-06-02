@@ -140,6 +140,18 @@ function App() {
   // Device pane state
   const [selectedWorkerId, setSelectedWorkerId] = useState(0);
   const [deviceViewMode, setDeviceViewMode] = usePersistedJSON<'all' | number>('tapsmith-device-view', 'all');
+  // Single-view mirror loading: true from when a device is selected until its
+  // first frame paints (bridges the video/screenshot warmup so we show the
+  // loading placeholder instead of a black canvas). Cleared in handleScreenFrame.
+  const [mirrorLoading, setMirrorLoading] = useState(false);
+  const firstFrameRef = useRef(false);
+  // Re-arm the loading placeholder whenever the mirrored single device changes
+  // (a fresh device must repaint before we hide the placeholder). The grid uses
+  // its own per-tile placeholder, so this only applies to the single view.
+  useEffect(() => {
+    firstFrameRef.current = false;
+    setMirrorLoading(connected && deviceViewMode !== 'all');
+  }, [deviceViewMode, selectedWorkerId, connected]);
 
   // MCP state
   const [mcpUrl, setMcpUrl] = useState<string | undefined>();
@@ -910,6 +922,11 @@ function App() {
   const workersLenRef = useRef(workers.length);
   workersLenRef.current = workers.length;
   const handleScreenFrame = useCallback((data: ArrayBuffer) => {
+    // First frame for the current device → hide the loading placeholder.
+    if (!firstFrameRef.current) {
+      firstFrameRef.current = true;
+      setMirrorLoading(false);
+    }
     const frame = decodeBinaryFrame(data);
     if (frame.kind === 'video') {
       // Video only streams for the single-device view (the "All" grid uses
@@ -1327,6 +1344,7 @@ function App() {
           onSelectDeviceView={handleSelectDeviceView}
           registerCanvas={registerCanvas}
           unregisterCanvas={unregisterCanvas}
+          mirrorLoading={mirrorLoading}
           platform={devicePlatform}
           interactive={mirrorInteractive}
           locked={mirrorLocked}
