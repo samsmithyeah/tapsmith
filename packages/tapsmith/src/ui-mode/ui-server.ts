@@ -307,6 +307,9 @@ export async function startUIServer(
   let workersInitialized = false;
   /** Which worker's device to mirror. Defaults to 0. */
   let selectedWorkerId = 0;
+  let lastMirrorInteraction = 0;
+  const INTERACTION_WINDOW_MS = 2000;
+  const INTERACTIVE_POLL_MS = 90;
   /** Screen view mode: 'all' polls all workers, number polls a specific worker. */
   let screenViewMode: 'all' | number = 'all';
   /** Last known frame dimensions per worker ID, used to convert normalized coords. */
@@ -2475,7 +2478,8 @@ export async function startUIServer(
 
   function scheduleScreenPoll(): void {
     if (screenPollTimer) clearTimeout(screenPollTimer);
-    const interval = screenPollActive ? 150 : 500;
+    const interacting = Date.now() - lastMirrorInteraction < INTERACTION_WINDOW_MS;
+    const interval = interacting ? INTERACTIVE_POLL_MS : (screenPollActive ? 150 : 500);
     screenPollTimer = setTimeout(pollScreen, interval);
   }
 
@@ -3099,18 +3103,21 @@ export async function startUIServer(
         sendSourceFromDisk(msg.path);
         break;
       case 'mirror-tap': {
+        lastMirrorInteraction = Date.now();
         const t = resolveGestureTarget(msg.workerId);
         const p = normalizedToLogical(msg.x, msg.y, t.dims, t.dpr);
         if (t.client && p) t.client.tapXY(p.x, p.y).catch(() => {});
         break;
       }
       case 'mirror-long-press': {
+        lastMirrorInteraction = Date.now();
         const t = resolveGestureTarget(msg.workerId);
         const p = normalizedToLogical(msg.x, msg.y, t.dims, t.dpr);
         if (t.client && p) t.client.longPressXY(p.x, p.y, msg.durationMs).catch(() => {});
         break;
       }
       case 'mirror-swipe': {
+        lastMirrorInteraction = Date.now();
         const t = resolveGestureTarget(msg.workerId);
         const from = normalizedToLogical(msg.fromX, msg.fromY, t.dims, t.dpr);
         const to = normalizedToLogical(msg.toX, msg.toY, t.dims, t.dpr);
@@ -3120,13 +3127,42 @@ export async function startUIServer(
         break;
       }
       case 'mirror-input-text': {
+        lastMirrorInteraction = Date.now();
         const t = resolveGestureTarget(msg.workerId);
         if (t.client) t.client.inputText(msg.text).catch(() => {});
         break;
       }
       case 'mirror-press-key': {
+        lastMirrorInteraction = Date.now();
         const t = resolveGestureTarget(msg.workerId);
         if (t.client) t.client.pressKey(msg.key).catch(() => {});
+        break;
+      }
+      case 'mirror-touch-start': {
+        lastMirrorInteraction = Date.now();
+        const t = resolveGestureTarget(msg.workerId);
+        const p = normalizedToLogical(msg.x, msg.y, t.dims, t.dpr);
+        if (t.client && p) t.client.touchDown(p.x, p.y, 0).catch(() => {});
+        break;
+      }
+      case 'mirror-touch-move': {
+        lastMirrorInteraction = Date.now();
+        const t = resolveGestureTarget(msg.workerId);
+        const p = normalizedToLogical(msg.x, msg.y, t.dims, t.dpr);
+        if (t.client && p) t.client.touchMove(p.x, p.y, msg.tMs).catch(() => {});
+        break;
+      }
+      case 'mirror-touch-end': {
+        lastMirrorInteraction = Date.now();
+        const t = resolveGestureTarget(msg.workerId);
+        const p = normalizedToLogical(msg.x, msg.y, t.dims, t.dpr);
+        if (t.client && p) t.client.touchUp(p.x, p.y, msg.tMs).catch(() => {});
+        break;
+      }
+      case 'mirror-touch-cancel': {
+        lastMirrorInteraction = Date.now();
+        const t = resolveGestureTarget(msg.workerId);
+        if (t.client) t.client.touchCancel().catch(() => {});
         break;
       }
       case 'select-worker':
