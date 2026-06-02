@@ -908,15 +908,25 @@ function App() {
     onConnectionChange: handleConnectionChange,
   });
 
-  // Interactive mirror lock. Auto-locks while the active worker runs; the user
-  // can override (unlock) at any time. The override clears when the run ends.
-  const [mirrorOverride, setMirrorOverride] = useState(false);
+  // Interactive mirror lock preference:
+  //   'auto' — locked only while the active worker is running (default)
+  //   'on'   — user explicitly locked; stays locked even after the run ends
+  //   'off'  — user unlocked during a run; resets to 'auto' when the run ends
+  //            (so the next run auto-locks again)
+  const [mirrorLockPref, setMirrorLockPref] = useState<'auto' | 'on' | 'off'>('auto');
   const activeWorker = workers.find((w) => w.workerId === selectedWorkerId);
   const runningOnActive = activeWorker ? activeWorker.status === 'running' : isRunning;
+  // An unlock-override is per-run: once the run ends, fall back to 'auto'.
+  // An explicit lock ('on') is sticky and survives the run ending.
   useEffect(() => {
-    if (!runningOnActive && mirrorOverride) setMirrorOverride(false);
-  }, [runningOnActive, mirrorOverride]);
-  const mirrorInteractive = !(runningOnActive && !mirrorOverride);
+    if (!runningOnActive && mirrorLockPref === 'off') setMirrorLockPref('auto');
+  }, [runningOnActive, mirrorLockPref]);
+  const mirrorLocked = mirrorLockPref === 'on'
+    ? true
+    : mirrorLockPref === 'off'
+      ? false
+      : runningOnActive;
+  const mirrorInteractive = !mirrorLocked;
 
   const handleThemeChange = useCallback((newTheme: Theme) => {
     setTheme(newTheme);
@@ -1274,9 +1284,9 @@ function App() {
           unregisterCanvas={unregisterCanvas}
           platform={devicePlatform}
           interactive={mirrorInteractive}
-          locked={runningOnActive && !mirrorOverride}
-          force={mirrorOverride}
-          onToggleLock={() => setMirrorOverride((v) => !v)}
+          locked={mirrorLocked}
+          force={runningOnActive && mirrorInteractive}
+          onToggleLock={() => setMirrorLockPref(mirrorLocked ? 'off' : 'on')}
           send={send}
         />
       }

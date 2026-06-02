@@ -131,19 +131,17 @@ export function DevicePane({
         <span class="device-head-meta">
           <span class="dot running" />
         </span>
-        {/* The lock only has meaning while a run is active on this device:
-            locked = run in progress (not overridden), force = overriding mid-run.
-            When idle, both are false and the mirror is freely interactive. */}
-        {(locked || force) && (
-          <button
-            type="button"
-            class={`mirror-lock-toggle ${locked ? 'locked' : 'unlocked'}`}
-            onClick={onToggleLock}
-            title={locked ? 'Mirror locked (run in progress) — click to interact anyway' : 'Interacting during run — click to re-lock'}
-          >
-            {locked ? '🔒' : '🖱️'}
-          </button>
-        )}
+        {/* Always-visible lock toggle. Off (interactive) by default; auto-locks
+            while a run is active, but the user can lock/unlock at any time. An
+            explicit lock sticks past the run; an unlock-override is per-run. */}
+        <button
+          type="button"
+          class={`mirror-lock-toggle ${locked ? 'locked' : 'unlocked'}`}
+          onClick={onToggleLock}
+          title={locked ? 'Interaction locked — click to unlock' : 'Interaction unlocked — click to lock'}
+        >
+          {locked ? '🔒' : '🔓'}
+        </button>
       </div>
 
       {hasWorkers && (
