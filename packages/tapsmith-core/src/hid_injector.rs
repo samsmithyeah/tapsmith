@@ -67,12 +67,24 @@ impl HidInjector {
     /// Returns Err if the helper can't start or never reports `ready` — the
     /// caller then falls back to the agent path.
     pub async fn ensure(&self, udid: &str) -> anyhow::Result<()> {
-        // Fast path. Crucially, do NOT hold the map lock across the spawn +
-        // handshake below: a helper that hangs before printing `ready` (e.g.
-        // CoreSimulator blocking) would otherwise freeze every other touch and
-        // shutdown — across all devices — for the full timeout.
-        if self.helpers.lock().await.contains_key(udid) {
-            return Ok(());
+        // Fast path: reuse a live helper. Verify it's still running with
+        // try_wait() — a dead helper (simulator reload/crash) would otherwise
+        // linger in the map and make the next gesture's first event fail and
+        // fall back to the slow agent path. Crucially, do NOT hold the map lock
+        // across the spawn + handshake below: a helper that hangs before
+        // printing `ready` (e.g. CoreSimulator blocking) would otherwise freeze
+        // every other touch and shutdown — across all devices — for the timeout.
+        {
+            let mut map = self.helpers.lock().await;
+            if let Some(helper) = map.get_mut(udid) {
+                match helper.child.try_wait() {
+                    Ok(None) => return Ok(()), // still running
+                    _ => {
+                        // Exited or un-waitable → drop it and respawn below.
+                        map.remove(udid);
+                    }
+                }
+            }
         }
 
         let mut child = tokio::process::Command::new(&self.helper_path)

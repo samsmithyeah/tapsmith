@@ -2457,11 +2457,16 @@ export async function startUIServer(
    * the first frame or stale after a device rotation, breaking touch mapping.
    * Uses a low-rate dims-only screenshot (device pixels — NOT the downscaled
    * video frame size) and does NOT broadcast it, so the video display is
-   * unaffected. Throttled to once every 3s.
+   * unaffected. Throttled (see interval below) since it only needs to catch a
+   * rare mid-stream rotation — initial dims are set before video starts.
    */
   async function refreshVideoWorkerDims(): Promise<void> {
     if (videoWorkers.size === 0) return;
-    if (Date.now() - lastVideoDimsRefresh < 3000) return;
+    // Infrequent: a screenshot mid-stream briefly hitches the H.264 video, and
+    // the initial dims are already set before video starts (screenshot polling
+    // runs until the first video frame). This refresh only catches the rare
+    // mid-stream device rotation, so 10s is plenty.
+    if (Date.now() - lastVideoDimsRefresh < 10000) return;
     lastVideoDimsRefresh = Date.now();
     const targets: { id: number; client: import('../grpc-client.js').TapsmithGrpcClient }[] =
       multiWorker && workersInitialized
