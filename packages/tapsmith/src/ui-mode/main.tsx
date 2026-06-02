@@ -2,7 +2,7 @@ import './fonts.css';
 import { render } from 'preact';
 import { useState, useCallback, useMemo, useRef, useEffect } from 'preact/hooks';
 import type { ServerMessage, ClientMessage, TestTreeNode, WorkerInfo } from './ui-protocol.js';
-import { inferDevicePlatform, type DevicePlatform } from './ui-protocol.js';
+import { inferDevicePlatform, decodeBinaryFrame, type DevicePlatform } from './ui-protocol.js';
 import type { ActionTraceEvent, AssertionTraceEvent, TraceMetadata, SourceLocation } from '../trace/types.js';
 import { sortEventsByStartTime } from '../trace/sort-events.js';
 import { useWebSocket } from './hooks/use-websocket.js';
@@ -22,6 +22,7 @@ import {
   type InFlightAction,
 } from './hooks/use-trace-data.js';
 import { useScreenMirror, useMultiScreenMirror } from './hooks/use-screen-mirror.js';
+import { useVideoMirror } from './hooks/use-video-mirror.js';
 import { useTestTree } from './hooks/use-test-tree.js';
 import { useRunTimer } from './hooks/use-run-timer.js';
 import { usePersistedJSON } from './hooks/use-persisted-state.js';
@@ -172,6 +173,11 @@ function App() {
   treeRef.current = tree;
   const { canvasRef, handleBinaryFrame } = useScreenMirror();
   const { registerCanvas, unregisterCanvas, handleBinaryFrame: handleMultiBinaryFrame } = useMultiScreenMirror();
+  const videoMirror = useVideoMirror();
+  // Ref so handleMessage (empty dep array) can reset the decoder without
+  // depending on the mirror object.
+  const videoMirrorRef = useRef(videoMirror);
+  videoMirrorRef.current = videoMirror;
 
   // Whether any project has dependencies (controls visibility of the toggle)
   const hasProjectDeps = useMemo(() => {
@@ -881,6 +887,13 @@ function App() {
           return next.length > 200 ? next.slice(-200) : next;
         });
         break;
+
+      case 'video-status':
+        // Server stopped (or failed to start) the stream — drop the decoder so
+        // any stale frames are cleared and the screenshots the server resumes
+        // sending render onto a clean canvas.
+        if (!msg.streaming) videoMirrorRef.current.reset();
+        break;
     }
   }, []);
 
@@ -895,12 +908,24 @@ function App() {
   const workersLenRef = useRef(workers.length);
   workersLenRef.current = workers.length;
   const handleScreenFrame = useCallback((data: ArrayBuffer) => {
+    const frame = decodeBinaryFrame(data);
+    if (frame.kind === 'video') {
+      // Video targets the single / selected mirror only. Point the video
+      // decoder at the one visible canvas (the same element the screenshot
+      // mirror renders to) so both paths draw to it, then hand off the chunk.
+      const vm = videoMirrorRef.current;
+      vm.canvasRef.current = canvasRef.current;
+      vm.handleVideoFrame(frame.payload, frame.keyframe, frame.config);
+      return;
+    }
+    // Screenshot frame → existing screen-mirror handler(s). The grid uses the
+    // multi-mirror; everything else uses the single mirror.
     if (deviceViewModeRef.current === 'all' && workersLenRef.current > 1) {
       handleMultiBinaryFrame(data);
     } else {
       handleBinaryFrame(data);
     }
-  }, [handleBinaryFrame, handleMultiBinaryFrame]);
+  }, [handleBinaryFrame, handleMultiBinaryFrame, canvasRef]);
 
   const { send } = useWebSocket({
     onMessage: handleMessage,
@@ -927,6 +952,24 @@ function App() {
       ? false
       : runningOnActive;
   const mirrorInteractive = !mirrorLocked;
+
+  // Live H.264 video for the single / selected mirror. Only request video when
+  // WebCodecs can decode it AND we're not showing the multi-worker grid (the
+  // grid stays on screenshots). When no start-video is sent, the server keeps
+  // polling screenshots, so the screenshot path is the natural fallback.
+  // Cleanup stops video for the old worker and drops the decoder so the next
+  // worker reconfigures from its own keyframe.
+  useEffect(() => {
+    if (!connected) return;
+    const showingGrid = deviceViewMode === 'all' && workers.length > 1;
+    if (!videoMirrorRef.current.hasVideoDecoder() || showingGrid) return;
+    const workerId = typeof deviceViewMode === 'number' ? deviceViewMode : selectedWorkerId;
+    send({ type: 'start-video', workerId });
+    return () => {
+      videoMirrorRef.current.reset();
+      send({ type: 'stop-video', workerId });
+    };
+  }, [connected, deviceViewMode, selectedWorkerId, workers.length, send]);
 
   const handleThemeChange = useCallback((newTheme: Theme) => {
     setTheme(newTheme);
