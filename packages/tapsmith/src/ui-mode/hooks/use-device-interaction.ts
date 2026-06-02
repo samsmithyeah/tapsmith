@@ -28,7 +28,9 @@ export function normalizePoint(clientX: number, clientY: number, rect: DOMRect):
   };
 }
 
-const PRINTABLE = /^.$/u; // single-character (printable) keydown
+// Matches any single Unicode code point (incl. space and emoji from the OS
+// picker); excludes named keys like 'Enter'/'Tab'/'ArrowLeft' which are longer.
+const PRINTABLE = /^.$/u;
 
 export interface DeviceInteractionOptions {
   send: (msg: ClientMessage) => void;
@@ -54,7 +56,15 @@ export function useDeviceInteraction(opts: DeviceInteractionOptions) {
     const n = normalizePoint(e.clientX, e.clientY, rect);
     start.current = { x: e.clientX, y: e.clientY, nx: n.x, ny: n.y, t: performance.now() };
     canvas.setPointerCapture(e.pointerId);
+    // Focus the canvas so it receives keydown events for text input.
     canvas.focus();
+  }, []);
+
+  // If the OS takes over the gesture (e.g. a second touch, parent scroll, or
+  // sleep), pointerup never fires — clear start so a stale point can't be
+  // misclassified as a long-press on the next pointerup.
+  const onPointerCancel = useCallback(() => {
+    start.current = null;
   }, []);
 
   const onPointerUp = useCallback((e: PointerEvent) => {
@@ -83,11 +93,13 @@ export function useDeviceInteraction(opts: DeviceInteractionOptions) {
     if (!o.enabled) return;
     const force = o.force;
     const workerId = o.workerId;
+    // Key names are lowercased by both agents; 'Enter'/'Backspace' match their
+    // pressKey maps ('enter'/'return', 'delete'/'backspace'). 'DEL' would NOT.
     if (e.key === 'Enter') {
-      o.send({ type: 'mirror-press-key', key: 'ENTER', workerId, force });
+      o.send({ type: 'mirror-press-key', key: 'Enter', workerId, force });
       e.preventDefault();
     } else if (e.key === 'Backspace') {
-      o.send({ type: 'mirror-press-key', key: 'DEL', workerId, force });
+      o.send({ type: 'mirror-press-key', key: 'Backspace', workerId, force });
       e.preventDefault();
     } else if (PRINTABLE.test(e.key) && !e.metaKey && !e.ctrlKey && !e.altKey) {
       o.send({ type: 'mirror-input-text', text: e.key, workerId, force });
@@ -95,5 +107,5 @@ export function useDeviceInteraction(opts: DeviceInteractionOptions) {
     }
   }, []);
 
-  return { onPointerDown, onPointerUp, onKeyDown };
+  return { onPointerDown, onPointerUp, onPointerCancel, onKeyDown };
 }
