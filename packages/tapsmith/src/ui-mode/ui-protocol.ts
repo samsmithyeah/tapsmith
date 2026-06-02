@@ -363,6 +363,52 @@ export interface TapCoordinatesCommand {
   y: number
 }
 
+export interface MirrorTapCommand {
+  type: 'mirror-tap'
+  /** X normalized to 0–1. */
+  x: number
+  /** Y normalized to 0–1. */
+  y: number
+  /** Target worker (multi-worker mode). Defaults to the selected worker. */
+  workerId?: number
+  /** True when the user overrode the lock to interact during a run. */
+  force?: boolean
+}
+
+export interface MirrorLongPressCommand {
+  type: 'mirror-long-press'
+  x: number
+  y: number
+  durationMs: number
+  workerId?: number
+  force?: boolean
+}
+
+export interface MirrorSwipeCommand {
+  type: 'mirror-swipe'
+  fromX: number
+  fromY: number
+  toX: number
+  toY: number
+  durationMs: number
+  workerId?: number
+  force?: boolean
+}
+
+export interface MirrorInputTextCommand {
+  type: 'mirror-input-text'
+  text: string
+  workerId?: number
+  force?: boolean
+}
+
+export interface MirrorPressKeyCommand {
+  type: 'mirror-press-key'
+  key: string
+  workerId?: number
+  force?: boolean
+}
+
 export interface SetFilterCommand {
   type: 'set-filter'
   name?: string
@@ -398,6 +444,11 @@ export type ClientMessage =
   | RequestHierarchyCommand
   | RequestSourceCommand
   | TapCoordinatesCommand
+  | MirrorTapCommand
+  | MirrorLongPressCommand
+  | MirrorSwipeCommand
+  | MirrorInputTextCommand
+  | MirrorPressKeyCommand
   | SetFilterCommand
   | SelectWorkerCommand
   | SelectWorkerViewCommand
