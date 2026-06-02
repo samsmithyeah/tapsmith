@@ -50,6 +50,7 @@ export function DeviceMirror({ canvasRef, connected, platform, interactive, forc
             class={`dm-canvas ${interactive ? 'interactive' : 'locked'}`}
             tabIndex={interactive ? 0 : -1}
             onPointerDown={interactive ? interaction.onPointerDown : undefined}
+            onPointerMove={interactive ? interaction.onPointerMove : undefined}
             onPointerUp={interactive ? interaction.onPointerUp : undefined}
             onPointerCancel={interactive ? interaction.onPointerCancel : undefined}
             onKeyDown={interactive ? interaction.onKeyDown : undefined}
