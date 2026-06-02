@@ -3210,6 +3210,9 @@ export async function startUIServer(
           try { stream.cancel(); } catch { /* already closed */ }
           videoStreams.delete(workerId);
           videoWorkers.delete(workerId);
+          // Notify all clients (symmetry with start-video's streaming:true) so
+          // other browser sessions reset their decoder and fall back to screenshots.
+          broadcast({ type: 'video-status', workerId, streaming: false, reason: 'stopped' });
         }
         break;
       }
