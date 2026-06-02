@@ -4,6 +4,8 @@ mod device;
 mod device_logs;
 mod grpc_server;
 mod h264;
+#[cfg(target_os = "macos")]
+mod hid_injector;
 mod ios;
 #[cfg(target_os = "macos")]
 mod ios_redirect;

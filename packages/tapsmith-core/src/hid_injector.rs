@@ -1,0 +1,210 @@
+//! Manages per-simulator `tapsmith-ios-hid` helper processes for live HID touch
+//! injection into the iOS simulator. See
+//! docs/superpowers/specs/2026-06-02-ios-live-touch-hid-design.md.
+//!
+//! `ensure` spawns a helper lazily on the first touch-down for a UDID and
+//! reuses it for subsequent events (persistent client = low streaming latency).
+//! `send` writes one protocol line. Any failure drops the child so the next
+//! gesture re-spawns it; the caller falls back to the agent path on `ensure`
+//! failure. macOS-only (CoreSimulator).
+
+// The public surface (`HidInjector` + methods) is wired into the gRPC touch
+// handlers in a follow-up task; until then it is unreferenced in this binary
+// crate, which `cargo clippy -- -D warnings` would otherwise reject.
+#![allow(dead_code)]
+
+use std::collections::HashMap;
+use std::path::PathBuf;
+use std::process::Stdio;
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::process::{Child, ChildStdin};
+use tokio::sync::Mutex;
+use tracing::{debug, info, warn};
+
+struct Helper {
+    child: Child,
+    stdin: ChildStdin,
+}
+
+pub struct HidInjector {
+    helper_path: PathBuf,
+    helpers: Mutex<HashMap<String, Helper>>,
+}
+
+/// Resolve the helper binary as a sibling of the daemon executable (npm package
+/// layout and local cargo builds both place it there), falling back to the bare
+/// name on `PATH`.
+fn resolve_helper_path() -> PathBuf {
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            let sibling = dir.join("tapsmith-ios-hid");
+            if sibling.exists() {
+                return sibling;
+            }
+        }
+    }
+    PathBuf::from("tapsmith-ios-hid")
+}
+
+impl Default for HidInjector {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl HidInjector {
+    pub fn new() -> Self {
+        Self {
+            helper_path: resolve_helper_path(),
+            helpers: Mutex::new(HashMap::new()),
+        }
+    }
+
+    #[cfg(test)]
+    fn with_helper_path(helper_path: PathBuf) -> Self {
+        Self {
+            helper_path,
+            helpers: Mutex::new(HashMap::new()),
+        }
+    }
+
+    /// Ensure a helper is running for `udid`. Idempotent: reuses a live child.
+    /// Returns Err if the helper can't start or never reports `ready` — the
+    /// caller then falls back to the agent path.
+    pub async fn ensure(&self, udid: &str) -> anyhow::Result<()> {
+        let mut map = self.helpers.lock().await;
+        if map.contains_key(udid) {
+            return Ok(());
+        }
+        let mut child = tokio::process::Command::new(&self.helper_path)
+            .arg(udid)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .kill_on_drop(true)
+            .spawn()
+            .map_err(|e| anyhow::anyhow!("spawn {:?} failed: {e}", self.helper_path))?;
+
+        let stdin = child
+            .stdin
+            .take()
+            .ok_or_else(|| anyhow::anyhow!("helper has no stdin"))?;
+        let stdout = child
+            .stdout
+            .take()
+            .ok_or_else(|| anyhow::anyhow!("helper has no stdout"))?;
+        let mut reader = BufReader::new(stdout).lines();
+
+        match reader.next_line().await {
+            Ok(Some(line)) if line.starts_with("ready") => {
+                info!(udid, %line, "iOS HID helper ready");
+            }
+            Ok(Some(line)) => {
+                let _ = child.start_kill();
+                return Err(anyhow::anyhow!("helper did not report ready: {line}"));
+            }
+            Ok(None) => {
+                let _ = child.start_kill();
+                return Err(anyhow::anyhow!("helper exited before reporting ready"));
+            }
+            Err(e) => {
+                let _ = child.start_kill();
+                return Err(anyhow::anyhow!("reading helper ready line: {e}"));
+            }
+        }
+
+        // Drain remaining stdout so its pipe never fills and blocks the helper.
+        tokio::spawn(async move {
+            let mut reader = reader;
+            while let Ok(Some(l)) = reader.next_line().await {
+                if l.starts_with("err") {
+                    debug!(line = %l, "iOS HID helper event error");
+                }
+            }
+        });
+
+        map.insert(udid.to_string(), Helper { child, stdin });
+        Ok(())
+    }
+
+    /// Write one protocol line to the helper for `udid`. On write failure the
+    /// child is dropped so the next gesture re-spawns it.
+    pub async fn send(&self, udid: &str, line: &str) -> anyhow::Result<()> {
+        let mut map = self.helpers.lock().await;
+        let helper = map
+            .get_mut(udid)
+            .ok_or_else(|| anyhow::anyhow!("no helper running for {udid}"))?;
+        let payload = format!("{line}\n");
+        if let Err(e) = helper.stdin.write_all(payload.as_bytes()).await {
+            map.remove(udid);
+            return Err(anyhow::anyhow!("write to helper failed: {e}"));
+        }
+        let _ = helper.stdin.flush().await;
+        Ok(())
+    }
+
+    /// Stop the helper for `udid` (device deselect / sim shutdown).
+    pub async fn shutdown(&self, udid: &str) {
+        let mut map = self.helpers.lock().await;
+        if let Some(mut helper) = map.remove(udid) {
+            let _ = helper.child.start_kill();
+            warn!(udid, "iOS HID helper stopped");
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+    use std::os::unix::fs::PermissionsExt;
+
+    /// Write an executable stub helper script and return its path (kept alive by
+    /// the returned tempdir).
+    fn stub_helper(body: &str) -> (tempfile::TempDir, PathBuf) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("tapsmith-ios-hid");
+        let mut f = std::fs::File::create(&path).unwrap();
+        write!(f, "#!/bin/sh\n{body}").unwrap();
+        let mut perms = std::fs::metadata(&path).unwrap().permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(&path, perms).unwrap();
+        (dir, path)
+    }
+
+    #[tokio::test]
+    async fn ensure_then_send_succeeds_and_is_idempotent() {
+        // Stub: print ready, then echo "ok" for every stdin line.
+        let (_dir, path) =
+            stub_helper("echo 'ready 1170 2532 3'\nwhile IFS= read -r line; do echo ok; done\n");
+        let injector = HidInjector::with_helper_path(path);
+
+        injector.ensure("UDID-1").await.unwrap();
+        // Second ensure reuses the same child (no error, no new spawn).
+        injector.ensure("UDID-1").await.unwrap();
+        injector.send("UDID-1", "d 100 200").await.unwrap();
+        injector.send("UDID-1", "m 100 150").await.unwrap();
+
+        injector.shutdown("UDID-1").await;
+    }
+
+    #[tokio::test]
+    async fn ensure_fails_when_helper_never_reports_ready() {
+        // Stub exits immediately without printing "ready".
+        let (_dir, path) = stub_helper("exit 1\n");
+        let injector = HidInjector::with_helper_path(path);
+        let result = injector.ensure("UDID-2").await;
+        assert!(
+            result.is_err(),
+            "ensure should fail when helper isn't ready"
+        );
+    }
+
+    #[tokio::test]
+    async fn send_without_ensure_errors() {
+        let (_dir, path) = stub_helper("echo 'ready 1 1 1'\ncat >/dev/null\n");
+        let injector = HidInjector::with_helper_path(path);
+        let result = injector.send("UNKNOWN", "d 1 2").await;
+        assert!(result.is_err(), "send to unknown udid should error");
+    }
+}
