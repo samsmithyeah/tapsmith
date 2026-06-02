@@ -9,9 +9,10 @@
 
 import type { RefObject } from 'preact';
 import { useRef, useEffect } from 'preact/hooks';
-import type { WorkerInfo } from '../ui-protocol.js';
+import type { WorkerInfo, ClientMessage } from '../ui-protocol.js';
 import { inferDevicePlatform } from '../ui-protocol.js';
 import { DeviceMirror } from './DeviceMirror.js';
+import { useDeviceInteraction } from '../hooks/use-device-interaction.js';
 
 interface DevicePaneProps {
   canvasRef: RefObject<HTMLCanvasElement>
@@ -23,6 +24,11 @@ interface DevicePaneProps {
   registerCanvas: (workerId: number, canvas: HTMLCanvasElement) => void
   unregisterCanvas: (workerId: number) => void
   platform?: 'android' | 'ios'
+  interactive: boolean
+  locked: boolean
+  force: boolean
+  onToggleLock: () => void
+  send: (msg: ClientMessage) => void
 }
 
 const DOT_CLASS: Record<WorkerInfo['status'], string> = {
@@ -34,7 +40,7 @@ const DOT_CLASS: Record<WorkerInfo['status'], string> = {
 };
 
 /** Canvas ref callback for the "All" grid — registers/unregisters with multi-mirror hook. */
-function WorkerCanvas({ workerId, label, deviceSerial, connected, registerCanvas, unregisterCanvas, platform }: {
+function WorkerCanvas({ workerId, label, deviceSerial, connected, registerCanvas, unregisterCanvas, platform, interactive, force, send }: {
   workerId: number
   label: string
   deviceSerial: string
@@ -42,9 +48,13 @@ function WorkerCanvas({ workerId, label, deviceSerial, connected, registerCanvas
   registerCanvas: (id: number, canvas: HTMLCanvasElement) => void
   unregisterCanvas: (id: number) => void
   platform?: 'android' | 'ios'
+  interactive: boolean
+  force: boolean
+  send: (msg: ClientMessage) => void
 }) {
   const ref = useRef<HTMLCanvasElement>(null);
   const framePlatform = platform ?? inferDevicePlatform(label, deviceSerial);
+  const interaction = useDeviceInteraction({ send, enabled: interactive, force, workerId });
 
   useEffect(() => {
     if (ref.current) {
@@ -76,7 +86,15 @@ function WorkerCanvas({ workerId, label, deviceSerial, connected, registerCanvas
           </div>
         )}
         <div class={`dm-frame${framePlatform ? ` dm-skin-${framePlatform}` : ''}`}>
-          <canvas ref={ref} class="dm-canvas" />
+          <canvas
+            ref={ref}
+            class={`dm-canvas ${interactive ? 'interactive' : 'locked'}`}
+            tabIndex={interactive ? 0 : -1}
+            onPointerDown={interactive ? interaction.onPointerDown : undefined}
+            onPointerUp={interactive ? interaction.onPointerUp : undefined}
+            onPointerCancel={interactive ? interaction.onPointerCancel : undefined}
+            onKeyDown={interactive ? interaction.onKeyDown : undefined}
+          />
         </div>
       </div>
     </div>
@@ -93,6 +111,11 @@ export function DevicePane({
   registerCanvas,
   unregisterCanvas,
   platform,
+  interactive,
+  locked,
+  force,
+  onToggleLock,
+  send,
 }: DevicePaneProps) {
   const hasWorkers = workers.length > 1;
   const selectedWorker = workers.find((worker) => worker.workerId === selectedWorkerId);
@@ -107,6 +130,13 @@ export function DevicePane({
         <span class="device-head-meta">
           <span class="dot running" />
         </span>
+        <button
+          class={`mirror-lock-toggle ${locked ? 'locked' : 'unlocked'}`}
+          onClick={onToggleLock}
+          title={locked ? 'Mirror locked (run in progress) — click to interact anyway' : 'Mirror interactive — click to lock'}
+        >
+          {locked ? '🔒' : '🖱️'}
+        </button>
       </div>
 
       {hasWorkers && (
@@ -144,11 +174,22 @@ export function DevicePane({
                 registerCanvas={registerCanvas}
                 unregisterCanvas={unregisterCanvas}
                 platform={w.platform}
+                interactive={interactive}
+                force={force}
+                send={send}
               />
             ))}
           </div>
         ) : (
-          <DeviceMirror canvasRef={canvasRef} connected={connected} platform={mirrorPlatform} />
+          <DeviceMirror
+            canvasRef={canvasRef}
+            connected={connected}
+            platform={mirrorPlatform}
+            interactive={interactive}
+            force={force}
+            workerId={typeof deviceViewMode === 'number' ? deviceViewMode : selectedWorkerId}
+            send={send}
+          />
         )}
       </div>
     </div>

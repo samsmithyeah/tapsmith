@@ -1175,6 +1175,18 @@ html, body, #app {
   border-radius: 8px; border: 2px solid var(--border); background: #000;
 }
 .dm-canvas.tap-mode { cursor: crosshair; border-color: var(--accent); }
+.dm-canvas.interactive { cursor: pointer; touch-action: none; outline: none; }
+.dm-canvas.locked { cursor: not-allowed; }
+.mirror-lock-toggle {
+  background: none;
+  border: none;
+  cursor: pointer;
+  font-size: 13px;
+  line-height: 1;
+  padding: 2px 6px;
+  opacity: 0.7;
+}
+.mirror-lock-toggle:hover { opacity: 1; }
 
 .dm-overlay {
   position: absolute; inset: 0;

@@ -908,6 +908,16 @@ function App() {
     onConnectionChange: handleConnectionChange,
   });
 
+  // Interactive mirror lock. Auto-locks while the active worker runs; the user
+  // can override (unlock) at any time. The override clears when the run ends.
+  const [mirrorOverride, setMirrorOverride] = useState(false);
+  const activeWorker = workers.find((w) => w.workerId === selectedWorkerId);
+  const runningOnActive = activeWorker ? activeWorker.status === 'running' : isRunning;
+  useEffect(() => {
+    if (!runningOnActive && mirrorOverride) setMirrorOverride(false);
+  }, [runningOnActive, mirrorOverride]);
+  const mirrorInteractive = !(runningOnActive && !mirrorOverride);
+
   const handleThemeChange = useCallback((newTheme: Theme) => {
     setTheme(newTheme);
   }, []);
@@ -1263,6 +1273,11 @@ function App() {
           registerCanvas={registerCanvas}
           unregisterCanvas={unregisterCanvas}
           platform={devicePlatform}
+          interactive={mirrorInteractive}
+          locked={runningOnActive && !mirrorOverride}
+          force={mirrorOverride}
+          onToggleLock={() => setMirrorOverride((v) => !v)}
+          send={send}
         />
       }
       mcpPanel={mcpPanelOpen ? (

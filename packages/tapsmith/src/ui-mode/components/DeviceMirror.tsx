@@ -6,14 +6,22 @@
  */
 
 import type { RefObject } from 'preact';
+import { useDeviceInteraction } from '../hooks/use-device-interaction.js';
+import type { ClientMessage } from '../ui-protocol.js';
 
 interface DeviceMirrorProps {
   canvasRef: RefObject<HTMLCanvasElement>
   connected: boolean
   platform?: 'android' | 'ios'
+  interactive: boolean
+  force: boolean
+  workerId: number
+  send: (msg: ClientMessage) => void
 }
 
-export function DeviceMirror({ canvasRef, connected, platform }: DeviceMirrorProps) {
+export function DeviceMirror({ canvasRef, connected, platform, interactive, force, workerId, send }: DeviceMirrorProps) {
+  const interaction = useDeviceInteraction({ send, enabled: interactive, force, workerId });
+
   return (
     <div class="device-mirror">
       <div class="dm-viewport">
@@ -39,7 +47,12 @@ export function DeviceMirror({ canvasRef, connected, platform }: DeviceMirrorPro
         <div class={`dm-frame${platform ? ` dm-skin-${platform}` : ''}`}>
           <canvas
             ref={canvasRef}
-            class="dm-canvas"
+            class={`dm-canvas ${interactive ? 'interactive' : 'locked'}`}
+            tabIndex={interactive ? 0 : -1}
+            onPointerDown={interactive ? interaction.onPointerDown : undefined}
+            onPointerUp={interactive ? interaction.onPointerUp : undefined}
+            onPointerCancel={interactive ? interaction.onPointerCancel : undefined}
+            onKeyDown={interactive ? interaction.onKeyDown : undefined}
           />
         </div>
       </div>
