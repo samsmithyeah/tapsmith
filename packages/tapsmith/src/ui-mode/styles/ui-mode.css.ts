@@ -1298,6 +1298,7 @@ html, body, #app {
   background: #1a1a1a;
   border-radius: var(--skin-ios-island-radius, 3cqi);
   z-index: 2;
+  pointer-events: none;
 }
 /* Side button hints */
 .dm-skin-ios::before {
@@ -1344,6 +1345,7 @@ html, body, #app {
   border-radius: 50%;
   border: 1px solid oklch(0.25 0 0);
   z-index: 2;
+  pointer-events: none;
 }
 /* Power + volume buttons (right side) */
 .dm-skin-android::before {
