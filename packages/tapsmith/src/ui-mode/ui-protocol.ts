@@ -355,14 +355,6 @@ export interface RequestSourceCommand {
   path: string
 }
 
-export interface TapCoordinatesCommand {
-  type: 'tap-coordinates'
-  /** X coordinate normalized to 0–1 range. */
-  x: number
-  /** Y coordinate normalized to 0–1 range. */
-  y: number
-}
-
 export interface MirrorTapCommand {
   type: 'mirror-tap'
   /** X normalized to 0–1. */
@@ -443,7 +435,6 @@ export type ClientMessage =
   | ToggleWatchCommand
   | RequestHierarchyCommand
   | RequestSourceCommand
-  | TapCoordinatesCommand
   | MirrorTapCommand
   | MirrorLongPressCommand
   | MirrorSwipeCommand

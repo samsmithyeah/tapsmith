@@ -309,6 +309,8 @@ export async function startUIServer(
   let selectedWorkerId = 0;
   /** Screen view mode: 'all' polls all workers, number polls a specific worker. */
   let screenViewMode: 'all' | number = 'all';
+  /** Last known frame dimensions per worker ID, used to convert normalized coords. */
+  const lastFrameDims = new Map<number, { width: number; height: number }>();
   /** Set to true while a parallel run is in progress, to signal stop. */
   let parallelRunAborted = false;
 
@@ -2432,6 +2434,7 @@ export async function startUIServer(
       // Read dimensions from the PNG IHDR chunk (bytes 16-23: width + height as big-endian uint32)
       const width = data.length >= 24 ? data.readUInt32BE(16) : 1080;
       const height = data.length >= 24 ? data.readUInt32BE(20) : 1920;
+      lastFrameDims.set(workerId, { width, height });
       const frame = encodeScreenFrame(screenSeq++, workerId, width, height, data);
       broadcastBinary(frame);
     }
@@ -2914,6 +2917,46 @@ export async function startUIServer(
     }
   });
 
+  // ─── Mirror Gesture Helpers ───
+
+  /** Resolve the gRPC client + devicePixelRatio for a mirror gesture target. */
+  function resolveGestureTarget(workerId?: number): {
+    client: import('../grpc-client.js').TapsmithGrpcClient | undefined
+    dpr: number
+    dims: { width: number; height: number } | undefined
+  } {
+    if (multiWorker && workersInitialized) {
+      const id = workerId ?? selectedWorkerId;
+      const worker = uiWorkers.find((w) => w.id === id && !w.retired);
+      const platform = worker ? resolveWorkerPlatform(ctx, worker) : undefined;
+      return {
+        client: worker?.screenClient,
+        dpr: (worker && cachedScreenScale(worker.deviceSerial, platform)) || 1,
+        dims: lastFrameDims.get(id),
+      };
+    }
+    return {
+      client: ctx.client,
+      dpr: cachedScreenScale(ctx.deviceSerial ?? '', ctx.config.platform) || 1,
+      dims: lastFrameDims.get(0),
+    };
+  }
+
+  /** Convert a normalized (0–1) point to logical points for the target. */
+  function normalizedToLogical(
+    nx: number,
+    ny: number,
+    dims: { width: number; height: number } | undefined,
+    dpr: number,
+  ): { x: number; y: number } | undefined {
+    if (!dims) return undefined;
+    const clamp = (v: number) => Math.min(1, Math.max(0, v));
+    return {
+      x: (clamp(nx) * dims.width) / dpr,
+      y: (clamp(ny) * dims.height) / dpr,
+    };
+  }
+
   // ─── Command Handler ───
 
   function handleCommand(msg: ClientMessage): void {
@@ -3055,9 +3098,37 @@ export async function startUIServer(
       case 'request-source':
         sendSourceFromDisk(msg.path);
         break;
-      case 'tap-coordinates':
-        console.log(`[Tapsmith UI] Tap at (${msg.x.toFixed(2)}, ${msg.y.toFixed(2)}) — coordinate tap not yet implemented`);
+      case 'mirror-tap': {
+        const t = resolveGestureTarget(msg.workerId);
+        const p = normalizedToLogical(msg.x, msg.y, t.dims, t.dpr);
+        if (t.client && p) t.client.tapXY(p.x, p.y).catch(() => {});
         break;
+      }
+      case 'mirror-long-press': {
+        const t = resolveGestureTarget(msg.workerId);
+        const p = normalizedToLogical(msg.x, msg.y, t.dims, t.dpr);
+        if (t.client && p) t.client.longPressXY(p.x, p.y, msg.durationMs).catch(() => {});
+        break;
+      }
+      case 'mirror-swipe': {
+        const t = resolveGestureTarget(msg.workerId);
+        const from = normalizedToLogical(msg.fromX, msg.fromY, t.dims, t.dpr);
+        const to = normalizedToLogical(msg.toX, msg.toY, t.dims, t.dpr);
+        if (t.client && from && to) {
+          t.client.dragXY(from.x, from.y, to.x, to.y, msg.durationMs).catch(() => {});
+        }
+        break;
+      }
+      case 'mirror-input-text': {
+        const t = resolveGestureTarget(msg.workerId);
+        if (t.client) t.client.inputText(msg.text).catch(() => {});
+        break;
+      }
+      case 'mirror-press-key': {
+        const t = resolveGestureTarget(msg.workerId);
+        if (t.client) t.client.pressKey(msg.key).catch(() => {});
+        break;
+      }
       case 'select-worker':
         selectedWorkerId = msg.workerId;
         screenViewMode = msg.workerId;
