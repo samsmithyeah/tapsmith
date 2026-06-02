@@ -55,7 +55,7 @@ import type {
   UIWorkerChildMessage,
   UIWorkerMessage,
 } from './ui-protocol.js';
-import { encodeScreenFrame } from './ui-protocol.js';
+import { encodeScreenFrame, encodeVideoFrame } from './ui-protocol.js';
 import { RunQueue } from '../watch-queue.js';
 import {
   forkStdioForLaunchProgress,
@@ -314,6 +314,10 @@ export async function startUIServer(
   let screenViewMode: 'all' | number = 'all';
   /** Last known frame dimensions per worker ID, used to convert normalized coords. */
   const lastFrameDims = new Map<number, { width: number; height: number }>();
+  /** Active H.264 video streams per worker ID. */
+  const videoStreams = new Map<number, import('@grpc/grpc-js').ClientReadableStream<unknown>>();
+  /** Workers currently served by video — skip screenshot polling for these. */
+  const videoWorkers = new Set<number>();
   /** Set to true while a parallel run is in progress, to signal stop. */
   let parallelRunAborted = false;
 
@@ -2451,13 +2455,15 @@ export async function startUIServer(
 
     try {
       if (multiWorker && workersInitialized && screenViewMode === 'all') {
-        // Poll ALL non-retired workers in parallel
-        const activeWorkers = uiWorkers.filter((w) => !w.retired && w.screenClient);
+        // Poll ALL non-retired workers in parallel, skipping any served by video
+        const activeWorkers = uiWorkers.filter(
+          (w) => !w.retired && w.screenClient && !videoWorkers.has(w.id),
+        );
         await Promise.allSettled(
           activeWorkers.map((w) => pollSingleWorker(w.id, w.screenClient!)),
         );
-      } else {
-        // Single-worker mode or specific worker selected
+      } else if (!videoWorkers.has(selectedWorkerId)) {
+        // Single-worker mode or specific worker selected (skip if served by video)
         const pollClient = multiWorker && workersInitialized
           ? uiWorkers.find((w) => w.id === selectedWorkerId && !w.retired)?.screenClient
           : ctx.client;
@@ -3165,6 +3171,48 @@ export async function startUIServer(
         if (t.client) t.client.touchCancel().catch(() => {});
         break;
       }
+      case 'start-video': {
+        const workerId = msg.workerId;
+        if (videoStreams.has(workerId)) break;
+        const t = resolveGestureTarget(workerId);
+        if (!t.client) {
+          broadcast({ type: 'video-status', workerId, streaming: false, reason: 'no-client' });
+          break;
+        }
+        try {
+          const stream = t.client.screenStream(720, 6_000_000);
+          videoStreams.set(workerId, stream as never);
+          videoWorkers.add(workerId);
+          broadcast({ type: 'video-status', workerId, streaming: true });
+          stream.on('data', (f: { data: Buffer; keyframe: boolean; config: boolean }) => {
+            const data = Buffer.isBuffer(f.data) ? f.data : Buffer.from(f.data);
+            broadcastBinary(encodeVideoFrame(workerId, f.keyframe, f.config, data));
+          });
+          const cleanup = (reason: string): void => {
+            if (!videoStreams.has(workerId)) return;
+            videoStreams.delete(workerId);
+            videoWorkers.delete(workerId);
+            broadcast({ type: 'video-status', workerId, streaming: false, reason });
+          };
+          stream.on('error', () => cleanup('stream-error'));
+          stream.on('end', () => cleanup('ended'));
+        } catch {
+          videoStreams.delete(workerId);
+          videoWorkers.delete(workerId);
+          broadcast({ type: 'video-status', workerId, streaming: false, reason: 'start-failed' });
+        }
+        break;
+      }
+      case 'stop-video': {
+        const workerId = msg.workerId;
+        const stream = videoStreams.get(workerId);
+        if (stream) {
+          try { stream.cancel(); } catch { /* already closed */ }
+          videoStreams.delete(workerId);
+          videoWorkers.delete(workerId);
+        }
+        break;
+      }
       case 'select-worker':
         selectedWorkerId = msg.workerId;
         screenViewMode = msg.workerId;
@@ -3484,6 +3532,14 @@ export async function startUIServer(
 
     ws.on('close', () => {
       clients.delete(ws);
+      // No viewers left — stop all video streams so screenrecord stops on the device.
+      if (clients.size === 0) {
+        for (const stream of videoStreams.values()) {
+          try { stream.cancel(); } catch { /* already closed */ }
+        }
+        videoStreams.clear();
+        videoWorkers.clear();
+      }
     });
   });
 
@@ -3638,6 +3694,13 @@ export async function startUIServer(
     port: actualPort,
     close: () => {
       if (screenPollTimer) clearTimeout(screenPollTimer);
+
+      // Cancel any active video streams so screenrecord stops on the device.
+      for (const stream of videoStreams.values()) {
+        try { stream.cancel(); } catch { /* already closed */ }
+      }
+      videoStreams.clear();
+      videoWorkers.clear();
 
       // Clean up workers
       if (multiWorker) {
