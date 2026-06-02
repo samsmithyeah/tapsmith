@@ -5,7 +5,7 @@
  * gestures to the UI server via the WebSocket `send`.
  */
 
-import { useRef, useCallback } from 'preact/hooks';
+import { useRef, useCallback, useEffect } from 'preact/hooks';
 import type { ClientMessage } from '../ui-protocol.js';
 
 export const TAP_MOVE_THRESHOLD = 10; // CSS px
@@ -107,14 +107,13 @@ export function useDeviceInteraction(opts: DeviceInteractionOptions) {
       return;
     }
 
-    const durationMs = tMs;
-    const kind = classifyGesture({ dx: e.clientX - s.x, dy: e.clientY - s.y, durationMs });
+    const kind = classifyGesture({ dx: e.clientX - s.x, dy: e.clientY - s.y, durationMs: tMs });
     const force = o.force;
     const workerId = o.workerId;
     if (kind === 'tap') {
       o.send({ type: 'mirror-tap', x: s.nx, y: s.ny, workerId, force });
     } else if (kind === 'long-press') {
-      o.send({ type: 'mirror-long-press', x: s.nx, y: s.ny, durationMs, workerId, force });
+      o.send({ type: 'mirror-long-press', x: s.nx, y: s.ny, durationMs: tMs, workerId, force });
     } else {
       o.send({ type: 'mirror-touch-start', x: s.nx, y: s.ny, workerId, force });
       o.send({ type: 'mirror-touch-end', x: end.x, y: end.y, tMs, workerId, force });
@@ -152,6 +151,24 @@ export function useDeviceInteraction(opts: DeviceInteractionOptions) {
       o.send({ type: 'mirror-input-text', text: e.key, workerId, force });
       e.preventDefault();
     }
+  }, []);
+
+  // If interaction is disabled mid-drag (e.g. a run starts while dragging), the
+  // captured pointer's up/cancel handlers are detached — cancel the in-flight
+  // touch so the device isn't left with a finger held down.
+  useEffect(() => {
+    if (!opts.enabled && dragging.current) {
+      opts.send({ type: 'mirror-touch-cancel', workerId: opts.workerId, force: opts.force });
+      dragging.current = false;
+      if (rafId.current != null) { cancelAnimationFrame(rafId.current); rafId.current = null; }
+      pendingMove.current = null;
+      start.current = null;
+    }
+  }, [opts.enabled, opts.send, opts.workerId, opts.force]);
+
+  // Cancel any pending coalesced-move frame on unmount.
+  useEffect(() => () => {
+    if (rafId.current != null) cancelAnimationFrame(rafId.current);
   }, []);
 
   return { onPointerDown, onPointerMove, onPointerUp, onPointerCancel, onKeyDown };
