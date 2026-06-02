@@ -14,7 +14,7 @@ double hid_normalize(double point, double extentPt) {
 }
 
 HidEvent hid_parse_line(const char *line) {
-  HidEvent e = { HID_INVALID, 0.0, 0.0 };
+  HidEvent e = { .cmd = HID_INVALID, .x = 0.0, .y = 0.0 };
   if (!line) return e;
 
   while (*line && isspace((unsigned char)*line)) line++;
