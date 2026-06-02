@@ -170,6 +170,8 @@ Drag/swipe from one point to another in logical points. `options.duration` speci
 await device.dragXY({ x: 50, y: 200 }, { x: 50, y: 600 }, { duration: 400 });
 ```
 
+> **Platform note:** `duration` is honored on Android (it scales the gesture's step count). On iOS the drag is performed via a fixed-duration synthesized gesture, so `duration` currently has no effect on speed.
+
 ### `device.inputText(text: string): Promise<void>`
 
 Type `text` into whatever element currently has focus (no selector). Useful for inserting text without first tapping a field.
