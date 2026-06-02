@@ -19,7 +19,7 @@ use std::process::Stdio;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStdin};
 use tokio::sync::Mutex;
-use tracing::{debug, info, warn};
+use tracing::{debug, info};
 
 struct Helper {
     child: Child,
@@ -95,19 +95,29 @@ impl HidInjector {
             .ok_or_else(|| anyhow::anyhow!("helper has no stdout"))?;
         let mut reader = BufReader::new(stdout).lines();
 
-        match reader.next_line().await {
-            Ok(Some(line)) if line.starts_with("ready") => {
+        // Bound the handshake: a helper that hangs before printing `ready` (e.g.
+        // CoreSimulator blocking on device lookup) must not hold the map mutex
+        // forever and freeze every other touch/shutdown call. On timeout we kill
+        // the child and fall back like the other failure arms.
+        let ready =
+            tokio::time::timeout(std::time::Duration::from_secs(5), reader.next_line()).await;
+        match ready {
+            Err(_elapsed) => {
+                let _ = child.start_kill();
+                return Err(anyhow::anyhow!("helper startup timed out"));
+            }
+            Ok(Ok(Some(line))) if line.starts_with("ready") => {
                 info!(udid, %line, "iOS HID helper ready");
             }
-            Ok(Some(line)) => {
+            Ok(Ok(Some(line))) => {
                 let _ = child.start_kill();
                 return Err(anyhow::anyhow!("helper did not report ready: {line}"));
             }
-            Ok(None) => {
+            Ok(Ok(None)) => {
                 let _ = child.start_kill();
                 return Err(anyhow::anyhow!("helper exited before reporting ready"));
             }
-            Err(e) => {
+            Ok(Err(e)) => {
                 let _ = child.start_kill();
                 return Err(anyhow::anyhow!("reading helper ready line: {e}"));
             }
@@ -139,6 +149,9 @@ impl HidInjector {
             map.remove(udid);
             return Err(anyhow::anyhow!("write to helper failed: {e}"));
         }
+        // ChildStdin is an unbuffered pipe, so flush() is a no-op; called
+        // defensively in case the underlying impl ever buffers. write_all above
+        // already pushed the bytes into the kernel pipe buffer.
         let _ = helper.stdin.flush().await;
         Ok(())
     }
@@ -148,7 +161,7 @@ impl HidInjector {
         let mut map = self.helpers.lock().await;
         if let Some(mut helper) = map.remove(udid) {
             let _ = helper.child.start_kill();
-            warn!(udid, "iOS HID helper stopped");
+            debug!(udid, "iOS HID helper stopped");
         }
     }
 }
@@ -197,6 +210,25 @@ mod tests {
         assert!(
             result.is_err(),
             "ensure should fail when helper isn't ready"
+        );
+    }
+
+    #[tokio::test]
+    async fn ensure_fails_when_first_line_is_not_ready() {
+        // Stub prints a non-ready line, then reads stdin (so it stays alive).
+        let (_dir, path) = stub_helper("echo 'not-ready oh no'\ncat >/dev/null\n");
+        let injector = HidInjector::with_helper_path(path);
+        let result = injector.ensure("UDID-3").await;
+        assert!(
+            result.is_err(),
+            "ensure should fail on a non-ready first line"
+        );
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("did not report ready"),
+            "error should name the non-ready handshake"
         );
     }
 
