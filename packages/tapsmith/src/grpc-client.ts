@@ -154,6 +154,12 @@ export interface DeviceLogEntry {
   pid: number;
 }
 
+export interface ScreenVideoFrame {
+  data: Buffer
+  keyframe: boolean
+  config: boolean
+}
+
 export interface WebViewInfo {
   socketName: string;
   pid: number;
@@ -829,6 +835,20 @@ export class TapsmithGrpcClient {
       requestId: requestId(),
       packageName,
     }) as grpc.ClientReadableStream<DeviceLogEntry>;
+  }
+
+  /**
+   * Server-stream of H.264 access units (Annex-B) for the live mirror.
+   * Cancel the returned stream to stop capture on the device.
+   * @internal
+   */
+  screenStream(maxSize = 0, bitRate = 0): grpc.ClientReadableStream<ScreenVideoFrame> {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- dynamic RPC dispatch on proto-loaded client
+    return (this.client as any).streamScreen({
+      requestId: requestId(),
+      maxSize,
+      bitRate,
+    }) as grpc.ClientReadableStream<ScreenVideoFrame>;
   }
 
   // ── Network Route Interception ──
