@@ -387,14 +387,21 @@ enum EventSynthesizer {
         else { return false }
 
         let initSel = NSSelectorFromString("initForTouchAtPoint:offset:")
-        // Verify the selector at the class level BEFORE allocating, so a failed
-        // check never leaves an allocated-but-uninitialized object for ARC to
-        // release (undefined behavior / crash).
-        guard (pathClass as! NSObject.Type).instancesRespond(to: initSel) else { return false }
-        let pathObj = pathClass.alloc() as! NSObject
-        let initImp = pathObj.method(for: initSel)
-        typealias InitMethod = @convention(c) (NSObject, Selector, CGPoint, TimeInterval) -> NSObject
-        let path = unsafeBitCast(initImp, to: InitMethod.self)(pathObj, initSel, points[0].0, 0.0)
+        // Allocate via the runtime as a RAW pointer so ARC never manages the
+        // uninitialized instance: `init` (called through its IMP) consumes the
+        // +1 from `alloc` and returns the fully-initialized, ARC-managed object.
+        // Capturing the alloc result as an NSObject instead would let ARC release
+        // that +1 a second time (init already consumed it) — a double-free.
+        let allocSel = NSSelectorFromString("alloc")
+        guard (pathClass as! NSObject.Type).instancesRespond(to: initSel),
+              let meta = object_getClass(pathClass),
+              let allocImp = class_getMethodImplementation(meta, allocSel),
+              let initImp = class_getMethodImplementation(pathClass, initSel)
+        else { return false }
+        typealias AllocFn = @convention(c) (AnyClass, Selector) -> UnsafeMutableRawPointer
+        typealias InitMethod = @convention(c) (UnsafeMutableRawPointer, Selector, CGPoint, TimeInterval) -> NSObject
+        let raw = unsafeBitCast(allocImp, to: AllocFn.self)(pathClass, allocSel)
+        let path = unsafeBitCast(initImp, to: InitMethod.self)(raw, initSel, points[0].0, 0.0)
 
         // XCPointerEventPath requires strictly increasing offsets — coincident
         // timestamps (e.g. a coalesced move and the release rounding to the same
@@ -451,15 +458,21 @@ enum EventSynthesizer {
         else { return false }
 
         let initSel = NSSelectorFromString("initForTouchAtPoint:offset:")
-        // Verify the selector at the class level BEFORE allocating, so a failed
-        // check never leaves an allocated-but-uninitialized object for ARC to
-        // release (undefined behavior / crash).
-        guard (pathClass as! NSObject.Type).instancesRespond(to: initSel) else { return false }
-        let pathObj = pathClass.alloc() as! NSObject
-
-        let initImp = pathObj.method(for: initSel)
-        typealias InitMethod = @convention(c) (NSObject, Selector, CGPoint, TimeInterval) -> NSObject
-        let path = unsafeBitCast(initImp, to: InitMethod.self)(pathObj, initSel, start, 0.0)
+        // Allocate via the runtime as a RAW pointer so ARC never manages the
+        // uninitialized instance: `init` (called through its IMP) consumes the
+        // +1 from `alloc` and returns the fully-initialized, ARC-managed object.
+        // Capturing the alloc result as an NSObject instead would let ARC release
+        // that +1 a second time (init already consumed it) — a double-free.
+        let allocSel = NSSelectorFromString("alloc")
+        guard (pathClass as! NSObject.Type).instancesRespond(to: initSel),
+              let meta = object_getClass(pathClass),
+              let allocImp = class_getMethodImplementation(meta, allocSel),
+              let initImp = class_getMethodImplementation(pathClass, initSel)
+        else { return false }
+        typealias AllocFn = @convention(c) (AnyClass, Selector) -> UnsafeMutableRawPointer
+        typealias InitMethod = @convention(c) (UnsafeMutableRawPointer, Selector, CGPoint, TimeInterval) -> NSObject
+        let raw = unsafeBitCast(allocImp, to: AllocFn.self)(pathClass, allocSel)
+        let path = unsafeBitCast(initImp, to: InitMethod.self)(raw, initSel, start, 0.0)
 
         let moveSel = NSSelectorFromString("moveToPoint:atOffset:")
         if path.responds(to: moveSel) {
