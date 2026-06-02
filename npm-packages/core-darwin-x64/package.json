@@ -4,7 +4,7 @@
   "description": "Tapsmith daemon binary for macOS x64",
   "os": ["darwin"],
   "cpu": ["x64"],
-  "files": ["tapsmith-core"],
+  "files": ["tapsmith-core", "tapsmith-ios-hid"],
   "preferUnplugged": true,
   "repository": {
     "type": "git",

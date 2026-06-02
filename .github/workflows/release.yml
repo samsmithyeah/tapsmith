@@ -81,16 +81,24 @@ jobs:
           if command -v strip &> /dev/null; then
             strip "$BINARY" 2>/dev/null || true
           fi
+          HELPER=target/${{ matrix.target }}/release/tapsmith-ios-hid
+          if [ -f "$HELPER" ] && command -v strip &> /dev/null; then
+            strip "$HELPER" 2>/dev/null || true
+          fi
 
       - name: Ad-hoc codesign (macOS)
         if: runner.os == 'macOS'
-        run: codesign -s - target/${{ matrix.target }}/release/tapsmith-core
+        run: |
+          codesign -s - target/${{ matrix.target }}/release/tapsmith-core
+          codesign -s - target/${{ matrix.target }}/release/tapsmith-ios-hid
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: daemon-${{ matrix.npm-pkg }}
-          path: packages/tapsmith-core/target/${{ matrix.target }}/release/tapsmith-core
+          path: |
+            packages/tapsmith-core/target/${{ matrix.target }}/release/tapsmith-core
+            packages/tapsmith-core/target/${{ matrix.target }}/release/tapsmith-ios-hid
 
   # ─── Build Android agent APKs ───
   build-android-agent:
@@ -214,7 +222,11 @@ jobs:
           path: npm-packages/${{ matrix.pkg }}/
 
       - name: Make binary executable
-        run: chmod +x npm-packages/${{ matrix.pkg }}/tapsmith-core
+        run: |
+          chmod +x npm-packages/${{ matrix.pkg }}/tapsmith-core
+          if [ -f npm-packages/${{ matrix.pkg }}/tapsmith-ios-hid ]; then
+            chmod +x npm-packages/${{ matrix.pkg }}/tapsmith-ios-hid
+          fi
 
       - name: Set version from tag
         run: |
