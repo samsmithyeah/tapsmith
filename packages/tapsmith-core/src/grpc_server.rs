@@ -5373,6 +5373,40 @@ impl proto::tapsmith_service_server::TapsmithService for TapsmithServiceImpl {
             }
         }
     }
+
+    // ─── Coordinate gesture stubs (implemented in Task 3) ───
+
+    async fn tap_coordinates(
+        &self,
+        _request: Request<proto::TapCoordinatesRequest>,
+    ) -> Result<Response<proto::ActionResponse>, Status> {
+        Err(Status::unimplemented("tap_coordinates not yet implemented"))
+    }
+
+    async fn long_press_coordinates(
+        &self,
+        _request: Request<proto::LongPressCoordinatesRequest>,
+    ) -> Result<Response<proto::ActionResponse>, Status> {
+        Err(Status::unimplemented(
+            "long_press_coordinates not yet implemented",
+        ))
+    }
+
+    async fn drag_coordinates(
+        &self,
+        _request: Request<proto::DragCoordinatesRequest>,
+    ) -> Result<Response<proto::ActionResponse>, Status> {
+        Err(Status::unimplemented(
+            "drag_coordinates not yet implemented",
+        ))
+    }
+
+    async fn input_text(
+        &self,
+        _request: Request<proto::InputTextRequest>,
+    ) -> Result<Response<proto::ActionResponse>, Status> {
+        Err(Status::unimplemented("input_text not yet implemented"))
+    }
 }
 
 /// Extract port number from a WebSocket URL like `ws://localhost:9222/devtools/page/1`

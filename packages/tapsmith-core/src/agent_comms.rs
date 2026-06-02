@@ -312,6 +312,29 @@ pub enum AgentCommand {
         distance: Option<f32>,
         timeout_ms: Option<u64>,
     },
+    #[allow(dead_code)]
+    TapCoordinates {
+        x: f32,
+        y: f32,
+    },
+    #[allow(dead_code)]
+    LongPressCoordinates {
+        x: f32,
+        y: f32,
+        duration_ms: u64,
+    },
+    #[allow(dead_code)]
+    DragCoordinates {
+        from_x: f32,
+        from_y: f32,
+        to_x: f32,
+        to_y: f32,
+        duration_ms: u64,
+    },
+    #[allow(dead_code)]
+    InputText {
+        text: String,
+    },
     Scroll {
         container: Option<Value>,
         direction: String,
@@ -490,6 +513,28 @@ impl AgentCommand {
                 }
                 ("swipe", p)
             }
+            AgentCommand::TapCoordinates { x, y } => ("tap", json!({"x": x, "y": y})),
+            AgentCommand::LongPressCoordinates { x, y, duration_ms } => (
+                "longPress",
+                json!({"x": x, "y": y, "duration": duration_ms}),
+            ),
+            AgentCommand::DragCoordinates {
+                from_x,
+                from_y,
+                to_x,
+                to_y,
+                duration_ms,
+            } => (
+                "swipe",
+                json!({
+                    "fromX": from_x,
+                    "fromY": from_y,
+                    "toX": to_x,
+                    "toY": to_y,
+                    "durationMs": duration_ms
+                }),
+            ),
+            AgentCommand::InputText { text } => ("typeText", json!({"text": text})),
             AgentCommand::Scroll {
                 container,
                 direction,
@@ -1370,6 +1415,59 @@ mod tests {
         };
         let j = cmd.to_json("my-custom-id-123");
         assert_eq!(j["id"], "my-custom-id-123");
+    }
+
+    // ─── Coordinate Gesture Commands ───
+
+    #[test]
+    fn serializes_tap_coordinates() {
+        let cmd = AgentCommand::TapCoordinates { x: 100.0, y: 200.0 };
+        let j = cmd.to_json("tc1");
+        assert_eq!(j["method"], "tap");
+        assert_eq!(j["params"]["x"], 100.0);
+        assert_eq!(j["params"]["y"], 200.0);
+    }
+
+    #[test]
+    fn serializes_long_press_coordinates() {
+        let cmd = AgentCommand::LongPressCoordinates {
+            x: 10.0,
+            y: 20.0,
+            duration_ms: 800,
+        };
+        let j = cmd.to_json("lpc1");
+        assert_eq!(j["method"], "longPress");
+        assert_eq!(j["params"]["x"], 10.0);
+        assert_eq!(j["params"]["y"], 20.0);
+        assert_eq!(j["params"]["duration"], 800);
+    }
+
+    #[test]
+    fn serializes_drag_coordinates() {
+        let cmd = AgentCommand::DragCoordinates {
+            from_x: 1.0,
+            from_y: 2.0,
+            to_x: 3.0,
+            to_y: 4.0,
+            duration_ms: 300,
+        };
+        let j = cmd.to_json("dc1");
+        assert_eq!(j["method"], "swipe");
+        assert_eq!(j["params"]["fromX"], 1.0);
+        assert_eq!(j["params"]["fromY"], 2.0);
+        assert_eq!(j["params"]["toX"], 3.0);
+        assert_eq!(j["params"]["toY"], 4.0);
+        assert_eq!(j["params"]["durationMs"], 300);
+    }
+
+    #[test]
+    fn serializes_input_text() {
+        let cmd = AgentCommand::InputText {
+            text: "hello".to_string(),
+        };
+        let j = cmd.to_json("it1");
+        assert_eq!(j["method"], "typeText");
+        assert_eq!(j["params"]["text"], "hello");
     }
 
     // ─── AgentResponse::from_json ───
