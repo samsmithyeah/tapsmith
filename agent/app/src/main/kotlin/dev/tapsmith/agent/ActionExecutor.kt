@@ -1,10 +1,10 @@
 package dev.tapsmith.agent
 
+import android.app.Instrumentation
 import android.os.SystemClock
 import android.view.InputDevice
 import android.view.KeyEvent
 import android.view.MotionEvent
-import androidx.test.platform.app.InstrumentationRegistry
 import androidx.test.uiautomator.By
 import androidx.test.uiautomator.Direction
 import androidx.test.uiautomator.UiDevice
@@ -14,7 +14,10 @@ import androidx.test.uiautomator.Until
 /**
  * Executes UI actions: tap, long press, text input, swipe, scroll, and key presses.
  */
-class ActionExecutor(private val device: UiDevice) {
+class ActionExecutor(
+    private val device: UiDevice,
+    private val instrumentation: Instrumentation,
+) {
     /** Tracks ASCII control-char code points we've already warned about,
      *  so the log fires once per code point per agent lifetime. */
     private val warnedDroppedControlChars = java.util.concurrent.ConcurrentHashMap.newKeySet<Int>()
@@ -321,7 +324,9 @@ class ActionExecutor(private val device: UiDevice) {
         event.source = InputDevice.SOURCE_TOUCHSCREEN
         try {
             // sync=false: fire-and-forget keeps the move stream low-latency.
-            InstrumentationRegistry.getInstrumentation().uiAutomation.injectInputEvent(event, false)
+            // Use the agent's own Instrumentation (this process is a custom
+            // Instrumentation, not registered with InstrumentationRegistry).
+            instrumentation.uiAutomation.injectInputEvent(event, false)
         } finally {
             event.recycle()
         }
