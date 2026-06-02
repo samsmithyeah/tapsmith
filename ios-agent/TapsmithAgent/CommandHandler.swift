@@ -747,6 +747,19 @@ class CommandHandler {
         // ─── Swipe / Scroll ───
 
         case "swipe":
+            if let fromX = (params["fromX"] as? NSNumber)?.intValue,
+               let fromY = (params["fromY"] as? NSNumber)?.intValue,
+               let toX = (params["toX"] as? NSNumber)?.intValue,
+               let toY = (params["toY"] as? NSNumber)?.intValue {
+                try actionExecutor.drag(
+                    from: CGPoint(x: fromX, y: fromY),
+                    to: CGPoint(x: toX, y: toY)
+                )
+                // Match the settle used by the direction-based swipe below.
+                Thread.sleep(forTimeInterval: 0.2)
+                RunLoop.current.run(mode: .default, before: Date(timeIntervalSinceNow: 0.01))
+                return ["success": true]
+            }
             let direction = params["direction"] as? String ?? "up"
             let speed = params["speed"] as? Int ?? 5000
             let distance = params["distance"] as? Double ?? 0.5
