@@ -311,7 +311,12 @@ class ActionExecutor(
     }
 
     // ─── Streamed touch (interactive mirror live-drag) ───
+    // @Volatile: touch events arrive on gRPC pool threads; ensure writes are
+    // visible across threads.
+    @Volatile
     private var touchDownTime = 0L
+
+    @Volatile
     private var touchActive = false
 
     private fun injectTouch(

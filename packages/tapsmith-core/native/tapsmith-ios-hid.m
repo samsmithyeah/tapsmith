@@ -173,7 +173,7 @@ int main(int argc, char **argv) {
 
     // Process stdin events. Track the last point so a bare `c` can lift there.
     double lastX = 0, lastY = 0;
-    char buf[256];
+    char buf[1024];
     while (fgets(buf, sizeof(buf), stdin)) {
       HidEvent ev = hid_parse_line(buf);
       BOOL ok = NO;

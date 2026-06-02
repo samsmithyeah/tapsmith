@@ -35,13 +35,15 @@ export function avcCodecFromAnnexB(data: Uint8Array): string | undefined {
 export function useVideoMirror() {
   const decoderRef = useRef<VideoDecoder | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
-  const configuredRef = useRef(false);
+  // The codec string the decoder is currently configured with (null = not yet
+  // configured). Tracked so we reconfigure if it changes mid-stream.
+  const configuredCodecRef = useRef<string | null>(null);
   const sawKeyRef = useRef(false);
 
   const reset = useCallback(() => {
     try { decoderRef.current?.close(); } catch { /* already closed */ }
     decoderRef.current = null;
-    configuredRef.current = false;
+    configuredCodecRef.current = null;
     sawKeyRef.current = false;
   }, []);
 
@@ -69,13 +71,17 @@ export function useVideoMirror() {
       });
     }
     const dec = decoderRef.current;
-    if (config && !configuredRef.current) {
+    if (config) {
       const codec = avcCodecFromAnnexB(bytes);
-      if (!codec) return;
-      dec.configure({ codec, optimizeForLatency: true } as VideoDecoderConfig);
-      configuredRef.current = true;
+      // (Re)configure on the first config NAL and whenever the codec changes
+      // mid-stream — e.g. device rotation / resolution change emits a new SPS;
+      // ignoring it would leave the decoder mis-configured and corrupt output.
+      if (codec && codec !== configuredCodecRef.current) {
+        dec.configure({ codec, optimizeForLatency: true } as VideoDecoderConfig);
+        configuredCodecRef.current = codec;
+      }
     }
-    if (!configuredRef.current) return;
+    if (configuredCodecRef.current === null) return;
     if (!sawKeyRef.current && !keyframe) return; // wait for the first keyframe
     if (keyframe) sawKeyRef.current = true;
     try {

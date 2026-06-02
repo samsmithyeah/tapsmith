@@ -52,6 +52,13 @@ impl Parser {
 
     /// Feed bytes; return any access units completed by this push.
     pub fn push(&mut self, bytes: &[u8]) -> Vec<AccessUnit> {
+        // Guard against unbounded growth: a corrupted stream that never yields a
+        // second VCL NAL would otherwise accumulate forever. 5 MB is far larger
+        // than any real access unit, so dropping the backlog only loses a
+        // already-broken segment (the next keyframe resynchronizes).
+        if self.buf.len() > 5 * 1024 * 1024 {
+            self.buf.clear();
+        }
         self.buf.extend_from_slice(bytes);
         let mut out = Vec::new();
         loop {

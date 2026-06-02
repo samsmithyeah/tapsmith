@@ -399,9 +399,11 @@ enum EventSynthesizer {
               let initImp = class_getMethodImplementation(pathClass, initSel)
         else { return false }
         typealias AllocFn = @convention(c) (AnyClass, Selector) -> UnsafeMutableRawPointer
-        typealias InitMethod = @convention(c) (UnsafeMutableRawPointer, Selector, CGPoint, TimeInterval) -> NSObject
+        // Return Unmanaged so we explicitly consume init's +1 (takeRetainedValue)
+        // — a bare NSObject return leaks it — and handle a nil-returning init.
+        typealias InitMethod = @convention(c) (UnsafeMutableRawPointer, Selector, CGPoint, TimeInterval) -> Unmanaged<NSObject>?
         let raw = unsafeBitCast(allocImp, to: AllocFn.self)(pathClass, allocSel)
-        let path = unsafeBitCast(initImp, to: InitMethod.self)(raw, initSel, points[0].0, 0.0)
+        guard let path = unsafeBitCast(initImp, to: InitMethod.self)(raw, initSel, points[0].0, 0.0)?.takeRetainedValue() else { return false }
 
         // XCPointerEventPath requires strictly increasing offsets — coincident
         // timestamps (e.g. a coalesced move and the release rounding to the same
@@ -438,9 +440,10 @@ enum EventSynthesizer {
            let allocImp = class_getMethodImplementation(meta, recordAllocSel),
            let initImp = class_getMethodImplementation(recordClass, recordInitSel) {
             typealias AllocFn = @convention(c) (AnyClass, Selector) -> UnsafeMutableRawPointer
-            typealias RMethod = @convention(c) (UnsafeMutableRawPointer, Selector, NSString, Int) -> NSObject
+            typealias RMethod = @convention(c) (UnsafeMutableRawPointer, Selector, NSString, Int) -> Unmanaged<NSObject>?
             let raw = unsafeBitCast(allocImp, to: AllocFn.self)(recordClass, recordAllocSel)
-            record = unsafeBitCast(initImp, to: RMethod.self)(raw, recordInitSel, "tapsmith-swipe-path" as NSString, currentOrientation)
+            guard let r = unsafeBitCast(initImp, to: RMethod.self)(raw, recordInitSel, "tapsmith-swipe-path" as NSString, currentOrientation)?.takeRetainedValue() else { return false }
+            record = r
         } else {
             record = (recordClass as! NSObject.Type).init()
         }
@@ -474,9 +477,11 @@ enum EventSynthesizer {
               let initImp = class_getMethodImplementation(pathClass, initSel)
         else { return false }
         typealias AllocFn = @convention(c) (AnyClass, Selector) -> UnsafeMutableRawPointer
-        typealias InitMethod = @convention(c) (UnsafeMutableRawPointer, Selector, CGPoint, TimeInterval) -> NSObject
+        // Return Unmanaged so we explicitly consume init's +1 (takeRetainedValue)
+        // — a bare NSObject return leaks it — and handle a nil-returning init.
+        typealias InitMethod = @convention(c) (UnsafeMutableRawPointer, Selector, CGPoint, TimeInterval) -> Unmanaged<NSObject>?
         let raw = unsafeBitCast(allocImp, to: AllocFn.self)(pathClass, allocSel)
-        let path = unsafeBitCast(initImp, to: InitMethod.self)(raw, initSel, start, 0.0)
+        guard let path = unsafeBitCast(initImp, to: InitMethod.self)(raw, initSel, start, 0.0)?.takeRetainedValue() else { return false }
 
         let moveSel = NSSelectorFromString("moveToPoint:atOffset:")
         if path.responds(to: moveSel) {
@@ -511,14 +516,15 @@ enum EventSynthesizer {
            let allocImp = class_getMethodImplementation(meta, recordAllocSel),
            let initImp = class_getMethodImplementation(recordClass, recordInitSel) {
             typealias AllocFn = @convention(c) (AnyClass, Selector) -> UnsafeMutableRawPointer
-            typealias RMethod = @convention(c) (UnsafeMutableRawPointer, Selector, NSString, Int) -> NSObject
+            typealias RMethod = @convention(c) (UnsafeMutableRawPointer, Selector, NSString, Int) -> Unmanaged<NSObject>?
             let raw = unsafeBitCast(allocImp, to: AllocFn.self)(recordClass, recordAllocSel)
-            record = unsafeBitCast(initImp, to: RMethod.self)(
+            guard let r = unsafeBitCast(initImp, to: RMethod.self)(
                 raw,
                 recordInitSel,
                 "tapsmith-drag" as NSString,
                 currentOrientation
-            )
+            )?.takeRetainedValue() else { return false }
+            record = r
         } else {
             record = (recordClass as! NSObject.Type).init()
         }
