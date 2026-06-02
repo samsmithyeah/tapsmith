@@ -250,6 +250,9 @@ export async function startUIServer(
   let screenPollTimer: ReturnType<typeof setTimeout> | null = null;
   let screenSeq = 0;
   let screenPollActive = false;
+  // Throttle for the dims-only screenshot that keeps video workers' device-pixel
+  // dimensions fresh (their screenshot polling is paused — see refreshVideoWorkerDims).
+  let lastVideoDimsRefresh = 0;
   let watcher: FSWatcher | null = null;
   let discoveryWatcher: FSWatcher | null = null;
   const pendingDiscoveryFiles = new Set<string>();
@@ -2447,6 +2450,44 @@ export async function startUIServer(
     }
   }
 
+  /**
+   * Keep `lastFrameDims` (device-pixel dimensions, used to map normalized touch
+   * coords to logical points) fresh for workers served by video. Their normal
+   * screenshot polling is paused, so without this the dims would be empty before
+   * the first frame or stale after a device rotation, breaking touch mapping.
+   * Uses a low-rate dims-only screenshot (device pixels — NOT the downscaled
+   * video frame size) and does NOT broadcast it, so the video display is
+   * unaffected. Throttled to once every 3s.
+   */
+  async function refreshVideoWorkerDims(): Promise<void> {
+    if (videoWorkers.size === 0) return;
+    if (Date.now() - lastVideoDimsRefresh < 3000) return;
+    lastVideoDimsRefresh = Date.now();
+    const targets: { id: number; client: import('../grpc-client.js').TapsmithGrpcClient }[] =
+      multiWorker && workersInitialized
+        ? uiWorkers
+            .filter((w) => !w.retired && w.screenClient && videoWorkers.has(w.id))
+            .map((w) => ({ id: w.id, client: w.screenClient! }))
+        : ctx.client && videoWorkers.has(selectedWorkerId)
+          ? [{ id: selectedWorkerId, client: ctx.client }]
+          : [];
+    await Promise.allSettled(
+      targets.map(async ({ id, client }) => {
+        try {
+          const r = await client.takeScreenshot();
+          if (r.success && r.data) {
+            const data = Buffer.isBuffer(r.data) ? r.data : Buffer.from(r.data);
+            if (data.length >= 24) {
+              lastFrameDims.set(id, { width: data.readUInt32BE(16), height: data.readUInt32BE(20) });
+            }
+          }
+        } catch {
+          // Device busy — keep the last known dims.
+        }
+      }),
+    );
+  }
+
   async function pollScreen(): Promise<void> {
     if (clients.size === 0) {
       scheduleScreenPoll();
@@ -2475,6 +2516,8 @@ export async function startUIServer(
 
         await pollSingleWorker(selectedWorkerId, pollClient);
       }
+      // Keep video workers' device dims fresh (throttled; no broadcast).
+      await refreshVideoWorkerDims();
     } catch {
       // Device may be busy — skip frame
     }

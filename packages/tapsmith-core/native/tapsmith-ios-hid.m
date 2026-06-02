@@ -25,6 +25,7 @@
 #import <objc/message.h>
 #import <dlfcn.h>
 #import <mach/mach_time.h>
+#include <locale.h>
 #include "hid_protocol.h"
 
 #pragma pack(push, 4)
@@ -94,6 +95,10 @@ static id msgSend_id(id self, SEL op) {
 }
 
 int main(int argc, char **argv) {
+  // Parse coordinates with '.' as the decimal separator regardless of the host
+  // locale: strtod() (in hid_parse_line) is LC_NUMERIC-dependent and would
+  // mis-parse "12.5" on comma-decimal locales (e.g. fr_FR).
+  setlocale(LC_NUMERIC, "C");
   @autoreleasepool {
     if (argc < 2) { fprintf(stderr, "fatal usage: %s <udid>\n", argv[0]); return 1; }
     NSString *udid = [NSString stringWithUTF8String:argv[1]];
