@@ -82,13 +82,21 @@ class CommandHandler {
         return exists
     }
 
+    private func safeAppState(_ app: XCUIApplication) -> XCUIApplication.State {
+        var state: XCUIApplication.State = .unknown
+        _ = ObjCExceptionCatcher.catchException {
+            state = app.state
+        }
+        return state
+    }
+
     /// Dismiss SpringBoard's "Open in <app>?" confirmation and wait for the
     /// app to render after a deep-link launch.
     private func waitForDeepLinkDestination(_ app: XCUIApplication, timeout: TimeInterval) -> Bool {
         let springboard = XCUIApplication(bundleIdentifier: "com.apple.springboard")
         let deadline = Date(timeIntervalSinceNow: timeout)
         while Date() < deadline {
-            if app.state == .runningForeground {
+            if safeAppState(app) == .runningForeground {
                 if appHasRenderedContent(app) && !openInAppDialogExists(springboard) {
                     return true
                 }
@@ -1067,7 +1075,7 @@ class CommandHandler {
             // the target app is foreground.
             let deliverInProcess = params["deliverInProcess"] as? Bool ?? true
             let targetApp = XCUIApplication(bundleIdentifier: bundleId)
-            _ = targetApp.state
+            _ = safeAppState(targetApp)
             QuiescenceDisabler.disable(for: targetApp)
 
             if deliverInProcess {

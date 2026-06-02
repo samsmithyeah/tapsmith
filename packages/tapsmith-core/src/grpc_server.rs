@@ -328,8 +328,21 @@ impl TapsmithServiceImpl {
             self.accept_ios_open_in_app_dialog().await;
         }
 
+        if open_url.is_finished() {
+            let result = open_url
+                .await
+                .map_err(|e| anyhow::anyhow!("simctl openurl task failed: {e}"))?;
+            return result;
+        }
+
         let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
         if remaining.is_zero() {
+            if open_url.is_finished() {
+                let result = open_url
+                    .await
+                    .map_err(|e| anyhow::anyhow!("simctl openurl task failed: {e}"))?;
+                return result;
+            }
             open_url.abort();
             return Err(anyhow::anyhow!(
                 "Operation timed out opening URL on {serial}: {uri}"
