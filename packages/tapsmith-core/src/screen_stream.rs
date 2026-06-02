@@ -40,10 +40,10 @@ pub fn start(serial: String, max_size: Option<u32>, bit_rate: Option<u32>) -> Sc
         // A square `--size` would letterboxes a portrait screen, so we scale the
         // real resolution. If the query fails, fall back to native (None).
         let size: Option<(u32, u32)> = match adb::display_size(&serial).await {
-            Ok((dw, dh)) => Some(match max_size {
-                Some(m) => fit_size(dw, dh, m),
-                None => (dw, dh),
-            }),
+            // Always route through fit_size so dimensions are even (H.264 requires
+            // it — odd native/override dims make screenrecord fail). With no cap,
+            // use the long edge so it only rounds to even, never downscales.
+            Ok((dw, dh)) => Some(fit_size(dw, dh, max_size.unwrap_or_else(|| dw.max(dh)))),
             Err(e) => {
                 warn!(error = %e, "failed to query display size; using native resolution");
                 None

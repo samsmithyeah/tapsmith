@@ -417,10 +417,13 @@ enum EventSynthesizer {
             unsafeBitCast(liftImp, to: LiftMethod.self)(path, liftSel, lastOffset + 0.01)
         }
 
-        let recordObj = recordClass.alloc() as! NSObject
         let recordInitSel = NSSelectorFromString("initWithName:interfaceOrientation:")
         let record: NSObject
-        if recordObj.responds(to: recordInitSel) {
+        // Check the selector at the class level BEFORE allocating: allocating
+        // without initializing leaves an object ARC later releases as if it were
+        // initialized (undefined behavior / crash).
+        if (recordClass as! NSObject.Type).instancesRespond(to: recordInitSel) {
+            let recordObj = recordClass.alloc() as! NSObject
             let imp = recordObj.method(for: recordInitSel)
             typealias RMethod = @convention(c) (NSObject, Selector, NSString, Int) -> NSObject
             record = unsafeBitCast(imp, to: RMethod.self)(recordObj, recordInitSel, "tapsmith-swipe-path" as NSString, currentOrientation)
@@ -474,10 +477,13 @@ enum EventSynthesizer {
             unsafeBitCast(liftImp, to: LiftMethod.self)(path, liftSel, holdDuration + 0.24)
         }
 
-        let recordObj = recordClass.alloc() as! NSObject
         let recordInitSel = NSSelectorFromString("initWithName:interfaceOrientation:")
         let record: NSObject
-        if recordObj.responds(to: recordInitSel) {
+        // Check the selector at the class level BEFORE allocating: allocating
+        // without initializing leaves an object ARC later releases as if it were
+        // initialized (undefined behavior / crash).
+        if (recordClass as! NSObject.Type).instancesRespond(to: recordInitSel) {
+            let recordObj = recordClass.alloc() as! NSObject
             let imp = recordObj.method(for: recordInitSel)
             typealias RMethod = @convention(c) (NSObject, Selector, NSString, Int) -> NSObject
             record = unsafeBitCast(imp, to: RMethod.self)(

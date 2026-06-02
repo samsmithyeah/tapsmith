@@ -21,6 +21,9 @@ export function classifyGesture(g: { dx: number; dy: number; durationMs: number 
 }
 
 export function normalizePoint(clientX: number, clientY: number, rect: DOMRect): { x: number; y: number } {
+  // Guard a zero-size rect (e.g. canvas not yet laid out) so we never divide by
+  // zero and send NaN coordinates to the server.
+  if (rect.width === 0 || rect.height === 0) return { x: 0, y: 0 };
   const clamp = (v: number) => Math.min(1, Math.max(0, v));
   return {
     x: clamp((clientX - rect.left) / rect.width),
@@ -141,10 +144,10 @@ export function useDeviceInteraction(opts: DeviceInteractionOptions) {
     const workerId = o.workerId;
     // Key names are lowercased by both agents; 'Enter'/'Backspace' match their
     // pressKey maps ('enter'/'return', 'delete'/'backspace'). 'DEL' would NOT.
-    if (e.key === 'Enter') {
+    if (e.key === 'Enter' && !e.metaKey && !e.ctrlKey && !e.altKey) {
       o.send({ type: 'mirror-press-key', key: 'Enter', workerId, force });
       e.preventDefault();
-    } else if (e.key === 'Backspace') {
+    } else if (e.key === 'Backspace' && !e.metaKey && !e.ctrlKey && !e.altKey) {
       o.send({ type: 'mirror-press-key', key: 'Backspace', workerId, force });
       e.preventDefault();
     } else if (PRINTABLE.test(e.key) && !e.metaKey && !e.ctrlKey && !e.altKey) {

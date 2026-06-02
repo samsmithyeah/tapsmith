@@ -791,13 +791,13 @@ class CommandHandler {
         // ─── Swipe / Scroll ───
 
         case "swipe":
-            if let fromX = (params["fromX"] as? NSNumber)?.intValue,
-               let fromY = (params["fromY"] as? NSNumber)?.intValue,
-               let toX = (params["toX"] as? NSNumber)?.intValue,
-               let toY = (params["toY"] as? NSNumber)?.intValue {
+            if let fromX = (params["fromX"] as? NSNumber)?.doubleValue,
+               let fromY = (params["fromY"] as? NSNumber)?.doubleValue,
+               let toX = (params["toX"] as? NSNumber)?.doubleValue,
+               let toY = (params["toY"] as? NSNumber)?.doubleValue {
                 try actionExecutor.drag(
-                    from: CGPoint(x: fromX, y: fromY),
-                    to: CGPoint(x: toX, y: toY)
+                    from: CGPoint(x: CGFloat(fromX), y: CGFloat(fromY)),
+                    to: CGPoint(x: CGFloat(toX), y: CGFloat(toY))
                 )
                 // Match the settle used by the direction-based swipe below.
                 Thread.sleep(forTimeInterval: 0.2)

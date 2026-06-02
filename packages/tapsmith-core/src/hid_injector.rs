@@ -67,10 +67,14 @@ impl HidInjector {
     /// Returns Err if the helper can't start or never reports `ready` — the
     /// caller then falls back to the agent path.
     pub async fn ensure(&self, udid: &str) -> anyhow::Result<()> {
-        let mut map = self.helpers.lock().await;
-        if map.contains_key(udid) {
+        // Fast path. Crucially, do NOT hold the map lock across the spawn +
+        // handshake below: a helper that hangs before printing `ready` (e.g.
+        // CoreSimulator blocking) would otherwise freeze every other touch and
+        // shutdown — across all devices — for the full timeout.
+        if self.helpers.lock().await.contains_key(udid) {
             return Ok(());
         }
+
         let mut child = tokio::process::Command::new(&self.helper_path)
             .arg(udid)
             .stdin(Stdio::piped())
@@ -90,10 +94,7 @@ impl HidInjector {
             .ok_or_else(|| anyhow::anyhow!("helper has no stdout"))?;
         let mut reader = BufReader::new(stdout).lines();
 
-        // Bound the handshake: a helper that hangs before printing `ready` (e.g.
-        // CoreSimulator blocking on device lookup) must not hold the map mutex
-        // forever and freeze every other touch/shutdown call. On timeout we kill
-        // the child and fall back like the other failure arms.
+        // Bound the handshake so a stuck helper fails fast (caller falls back).
         let ready =
             tokio::time::timeout(std::time::Duration::from_secs(5), reader.next_line()).await;
         match ready {
@@ -116,6 +117,15 @@ impl HidInjector {
                 let _ = child.start_kill();
                 return Err(anyhow::anyhow!("reading helper ready line: {e}"));
             }
+        }
+
+        // Re-acquire the lock to install the helper. If another `ensure` for the
+        // same udid won the race while we were spawning, drop ours and keep
+        // theirs (kill_on_drop also reaps the loser's child).
+        let mut map = self.helpers.lock().await;
+        if map.contains_key(udid) {
+            let _ = child.start_kill();
+            return Ok(());
         }
 
         // Drain remaining stdout so its pipe never fills and blocks the helper.

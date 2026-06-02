@@ -306,7 +306,7 @@ class ActionExecutor(
         durationMs: Long = 300,
     ) {
         // UIAutomator swipe is step-based (~5ms/step). Convert duration to steps.
-        val steps = (durationMs / 5).toInt().coerceIn(5, 200)
+        val steps = (durationMs / 5).coerceIn(5L, 200L).toInt()
         device.swipe(x1, y1, x2, y2, steps)
     }
 
