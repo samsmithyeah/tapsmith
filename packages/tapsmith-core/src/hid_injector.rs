@@ -180,6 +180,33 @@ mod tests {
         (dir, path)
     }
 
+    /// Compile and run the pure-C protocol unit test (`native/hid_protocol_test.c`)
+    /// so its coverage of the parser/normalizer runs under `cargo test` in CI,
+    /// not just by manual `clang` invocation. Skips cleanly if `clang` is absent.
+    #[test]
+    fn c_protocol_unit_test_passes() {
+        use std::process::Command;
+        let manifest = env!("CARGO_MANIFEST_DIR");
+        let dir = tempfile::tempdir().unwrap();
+        let bin = dir.path().join("hid_protocol_test");
+        let build = Command::new("clang")
+            .arg("-o")
+            .arg(&bin)
+            .arg(format!("{manifest}/native/hid_protocol_test.c"))
+            .arg(format!("{manifest}/native/hid_protocol.c"))
+            .status();
+        let build = match build {
+            Ok(s) => s,
+            Err(_) => return, // no clang on PATH — skip rather than fail
+        };
+        assert!(build.success(), "C protocol test failed to compile");
+        let run = Command::new(&bin).status().unwrap();
+        assert!(
+            run.success(),
+            "C protocol unit test (hid_protocol_test.c) failed"
+        );
+    }
+
     #[tokio::test]
     async fn ensure_then_send_succeeds_and_is_idempotent() {
         // Stub: print ready, then echo "ok" for every stdin line.

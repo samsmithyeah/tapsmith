@@ -90,7 +90,8 @@ jobs:
         if: runner.os == 'macOS'
         run: |
           codesign -s - target/${{ matrix.target }}/release/tapsmith-core
-          codesign -s - target/${{ matrix.target }}/release/tapsmith-ios-hid
+          HELPER=target/${{ matrix.target }}/release/tapsmith-ios-hid
+          if [ -f "$HELPER" ]; then codesign -s - "$HELPER"; fi
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
