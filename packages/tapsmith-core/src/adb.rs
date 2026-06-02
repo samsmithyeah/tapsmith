@@ -284,8 +284,6 @@ pub async fn screenrecord_spawn(
 /// Spawn `adb exec-out screenrecord --output-format=h264 -` streaming raw
 /// H.264 (Annex-B) to the child's stdout. The caller reads stdout and kills the
 /// child to stop. `max_size` caps the long edge; `bit_rate` in bits/sec.
-// TODO(Task 4): remove once the StreamScreen gRPC handler drives the stream.
-#[allow(dead_code)]
 #[instrument]
 pub fn screenrecord_h264_spawn(
     serial: &str,

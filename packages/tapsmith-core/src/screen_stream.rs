@@ -9,16 +9,12 @@ use tracing::{debug, warn};
 
 /// Handle to a running screen stream. Drop it to stop capture (the spawned
 /// task observes the closed channel, kills the child, and exits).
-// TODO(Task 4): remove once the StreamScreen gRPC handler consumes this.
-#[allow(dead_code)]
 pub struct ScreenStreamHandle {
     pub rx: mpsc::Receiver<h264::AccessUnit>,
 }
 
 /// Start streaming H.264 access units from the device. Drop the returned
 /// handle (its `rx`) to stop.
-// TODO(Task 4): remove once the StreamScreen gRPC handler calls this.
-#[allow(dead_code)]
 pub fn start(serial: String, max_size: Option<u32>, bit_rate: Option<u32>) -> ScreenStreamHandle {
     let (tx, rx) = mpsc::channel::<h264::AccessUnit>(64);
     tokio::spawn(async move {

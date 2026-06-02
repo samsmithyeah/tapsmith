@@ -5509,9 +5509,53 @@ impl proto::tapsmith_service_server::TapsmithService for TapsmithServiceImpl {
 
     async fn stream_screen(
         &self,
-        _request: Request<proto::StreamScreenRequest>,
+        request: Request<proto::StreamScreenRequest>,
     ) -> Result<Response<Self::StreamScreenStream>, Status> {
-        Err(Status::unimplemented("stream_screen not yet implemented"))
+        let req = request.into_inner();
+        let serial = self.active_serial().await?;
+        let platform = self.require_platform().await?;
+        // Android-only for now (iOS capture is a separate follow-up).
+        if platform != Platform::Android {
+            return Err(Status::unimplemented(
+                "Video streaming is currently Android-only",
+            ));
+        }
+        let max_size = if req.max_size > 0 {
+            Some(req.max_size)
+        } else {
+            Some(720)
+        };
+        let bit_rate = if req.bit_rate > 0 {
+            Some(req.bit_rate)
+        } else {
+            Some(6_000_000)
+        };
+
+        info!(
+            serial = %serial,
+            max_size = ?max_size,
+            bit_rate = ?bit_rate,
+            "Starting screen video stream"
+        );
+
+        let mut handle = crate::screen_stream::start(serial, max_size, bit_rate);
+        let (out_tx, out_rx) =
+            tokio::sync::mpsc::channel::<Result<proto::ScreenVideoFrame, Status>>(64);
+        tokio::spawn(async move {
+            while let Some(au) = handle.rx.recv().await {
+                let frame = proto::ScreenVideoFrame {
+                    data: au.data,
+                    keyframe: au.keyframe,
+                    config: au.config,
+                };
+                if out_tx.send(Ok(frame)).await.is_err() {
+                    break; // client cancelled
+                }
+            }
+            drop(handle);
+        });
+        let output_stream = tokio_stream::wrappers::ReceiverStream::new(out_rx);
+        Ok(Response::new(Box::pin(output_stream)))
     }
 }
 
