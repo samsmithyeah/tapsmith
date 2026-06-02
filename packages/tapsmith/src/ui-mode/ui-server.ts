@@ -2921,7 +2921,7 @@ export async function startUIServer(
 
   /** Resolve the gRPC client + devicePixelRatio for a mirror gesture target. */
   function resolveGestureTarget(workerId?: number): {
-    client: import('../grpc-client.js').TapsmithGrpcClient | undefined
+    client: TapsmithGrpcClient | undefined
     dpr: number
     dims: { width: number; height: number } | undefined
   } {
