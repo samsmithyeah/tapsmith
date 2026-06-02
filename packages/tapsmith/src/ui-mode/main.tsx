@@ -175,7 +175,17 @@ function App() {
   const { canvasRef, handleBinaryFrame } = useScreenMirror();
   const { registerCanvas, unregisterCanvas, handleBinaryFrame: handleMultiBinaryFrame } = useMultiScreenMirror();
   const videoMirror = useVideoMirror();
-  const multiVideo = useMultiVideoMirror();
+  // `send` is defined further down (after the WebSocket hook); route the grid
+  // video stall-watchdog through a ref so a frozen Android tile falls back to
+  // screenshots promptly instead of sitting on a stale frame.
+  const sendRef = useRef<((msg: ClientMessage) => void) | null>(null);
+  const multiVideo = useMultiVideoMirror((workerId) => {
+    // Logged so a real-world stall is confirmable in the console (the watchdog
+    // doubles as instrumentation): if this fires during a frozen tile, the
+    // freeze was a decoder stall and input was unaffected.
+    console.warn(`[tapsmith] video stalled for worker ${workerId}; falling back to screenshots`);
+    sendRef.current?.({ type: 'stop-video', workerId });
+  });
   // Ref so handleMessage (empty dep array) can reset the decoder without
   // depending on the mirror object.
   const videoMirrorRef = useRef(videoMirror);
@@ -943,6 +953,8 @@ function App() {
     onBinaryMessage: handleScreenFrame,
     onConnectionChange: handleConnectionChange,
   });
+  // Expose `send` to the grid video stall-watchdog (created before `send`).
+  sendRef.current = send;
 
   // Interactive mirror lock preference:
   //   'auto' — locked only while the active worker is running (default)
