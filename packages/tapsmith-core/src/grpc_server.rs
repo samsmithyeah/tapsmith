@@ -5501,6 +5501,18 @@ impl proto::tapsmith_service_server::TapsmithService for TapsmithServiceImpl {
         let result = self.send_agent_command_with_timeout(&command, 0).await;
         self.make_action_response(request_id, result).await
     }
+
+    // ─── Live Screen Streaming ───
+
+    type StreamScreenStream =
+        Pin<Box<dyn Stream<Item = Result<proto::ScreenVideoFrame, Status>> + Send + 'static>>;
+
+    async fn stream_screen(
+        &self,
+        _request: Request<proto::StreamScreenRequest>,
+    ) -> Result<Response<Self::StreamScreenStream>, Status> {
+        Err(Status::unimplemented("stream_screen not yet implemented"))
+    }
 }
 
 /// Extract port number from a WebSocket URL like `ws://localhost:9222/devtools/page/1`

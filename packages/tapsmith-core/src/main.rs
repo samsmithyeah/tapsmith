@@ -3,6 +3,7 @@ mod agent_comms;
 mod device;
 mod device_logs;
 mod grpc_server;
+mod h264;
 mod ios;
 #[cfg(target_os = "macos")]
 mod ios_redirect;
