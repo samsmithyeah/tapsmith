@@ -476,8 +476,11 @@ class CommandHandler {
         // ─── Tap Actions ───
 
         case "tap":
-            let x = params["x"] as? Int ?? -1
-            let y = params["y"] as? Int ?? -1
+            // Coordinates arrive as JSON numbers (NSNumber) and may be
+            // fractional logical points (coordinate taps from the SDK /
+            // UI-mode mirror), so `as? Int` would fail — go via NSNumber.
+            let x = (params["x"] as? NSNumber)?.intValue ?? -1
+            let y = (params["y"] as? NSNumber)?.intValue ?? -1
             if x >= 0 && y >= 0 {
                 actionExecutor.tapCoordinates(x: x, y: y)
             } else {
@@ -505,9 +508,11 @@ class CommandHandler {
             return ["success": true]
 
         case "longPress":
-            let duration = params["duration"] as? Int64 ?? 1000
-            let x = params["x"] as? Int ?? -1
-            let y = params["y"] as? Int ?? -1
+            // NSNumber coercion: JSON numbers aren't directly castable to Int/
+            // Int64, and coordinates may be fractional logical points.
+            let duration = (params["duration"] as? NSNumber)?.int64Value ?? 1000
+            let x = (params["x"] as? NSNumber)?.intValue ?? -1
+            let y = (params["y"] as? NSNumber)?.intValue ?? -1
             if x >= 0 && y >= 0 {
                 actionExecutor.longPressCoordinates(x: x, y: y, durationMs: duration)
             } else {
