@@ -553,9 +553,7 @@ impl AgentCommand {
             AgentCommand::TouchMove { x, y, t_ms } => {
                 ("touchMove", json!({"x": x, "y": y, "t": t_ms}))
             }
-            AgentCommand::TouchUp { x, y, t_ms } => {
-                ("touchUp", json!({"x": x, "y": y, "t": t_ms}))
-            }
+            AgentCommand::TouchUp { x, y, t_ms } => ("touchUp", json!({"x": x, "y": y, "t": t_ms})),
             AgentCommand::TouchCancel {} => ("touchCancel", json!({})),
             AgentCommand::Scroll {
                 container,
@@ -1494,7 +1492,11 @@ mod tests {
 
     #[test]
     fn serializes_touch_down() {
-        let cmd = AgentCommand::TouchDown { x: 12.0, y: 34.0, t_ms: 0 };
+        let cmd = AgentCommand::TouchDown {
+            x: 12.0,
+            y: 34.0,
+            t_ms: 0,
+        };
         let j = cmd.to_json("id");
         assert_eq!(j["method"], "touchDown");
         assert_eq!(j["params"]["x"], 12.0);
@@ -1504,7 +1506,11 @@ mod tests {
 
     #[test]
     fn serializes_touch_move() {
-        let cmd = AgentCommand::TouchMove { x: 1.0, y: 2.0, t_ms: 50 };
+        let cmd = AgentCommand::TouchMove {
+            x: 1.0,
+            y: 2.0,
+            t_ms: 50,
+        };
         let j = cmd.to_json("id");
         assert_eq!(j["method"], "touchMove");
         assert_eq!(j["params"]["x"], 1.0);
@@ -1514,7 +1520,11 @@ mod tests {
 
     #[test]
     fn serializes_touch_up() {
-        let cmd = AgentCommand::TouchUp { x: 3.0, y: 4.0, t_ms: 120 };
+        let cmd = AgentCommand::TouchUp {
+            x: 3.0,
+            y: 4.0,
+            t_ms: 120,
+        };
         let j = cmd.to_json("id");
         assert_eq!(j["method"], "touchUp");
         assert_eq!(j["params"]["x"], 3.0);
