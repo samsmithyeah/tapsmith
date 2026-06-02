@@ -337,6 +337,41 @@ export class TapsmithGrpcClient {
     return this.call<ActionResponse>('swipe', request);
   }
 
+  async tapXY(x: number, y: number): Promise<ActionResponse> {
+    return this.call<ActionResponse>('tapCoordinates', {
+      requestId: requestId(),
+      x,
+      y,
+    });
+  }
+
+  async longPressXY(x: number, y: number, durationMs?: number): Promise<ActionResponse> {
+    return this.call<ActionResponse>('longPressCoordinates', {
+      requestId: requestId(),
+      x,
+      y,
+      durationMs: durationMs ?? 0,
+    });
+  }
+
+  async dragXY(fromX: number, fromY: number, toX: number, toY: number, durationMs?: number): Promise<ActionResponse> {
+    return this.call<ActionResponse>('dragCoordinates', {
+      requestId: requestId(),
+      fromX,
+      fromY,
+      toX,
+      toY,
+      durationMs: durationMs ?? 0,
+    });
+  }
+
+  async inputText(text: string): Promise<ActionResponse> {
+    return this.call<ActionResponse>('inputText', {
+      requestId: requestId(),
+      text,
+    });
+  }
+
   async scroll(
     container: Selector,
     direction: string,
