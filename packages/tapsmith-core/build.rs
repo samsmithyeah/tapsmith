@@ -54,8 +54,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // into the macOS @tapsmith/core-* packages. CoreSimulator/SimulatorKit are
     // dlopen'd by the helper at runtime, so only public frameworks are linked.
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("macos") {
-        // OUT_DIR = target/<profile>/build/<crate>-<hash>/out; the profile dir
-        // (where tapsmith-core lands) is four ancestors up.
+        // OUT_DIR = target/<profile>/build/<crate>-<hash>/out (with an extra
+        // <triple> segment under --target). ancestors() counts from the path
+        // itself (nth(0) = out), so nth(3) is the profile dir where the daemon
+        // binary lands — correct for both native and --target builds.
         let out_dir = std::env::var("OUT_DIR")?;
         let profile_dir = PathBuf::from(&out_dir)
             .ancestors()
