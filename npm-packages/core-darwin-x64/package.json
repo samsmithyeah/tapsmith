@@ -13,6 +13,6 @@
   },
   "license": "Apache-2.0",
   "scripts": {
-    "postinstall": "node -e \"try{require('fs').chmodSync('tapsmith-core',0o755)}catch(e){console.warn('tapsmith: chmod failed:',e.message)}\""
+    "postinstall": "node -e \"for(const f of ['tapsmith-core','tapsmith-ios-hid']){try{require('fs').chmodSync(f,0o755)}catch(e){console.warn('tapsmith: chmod '+f+' failed:',e.message)}}\""
   }
 }
