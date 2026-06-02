@@ -372,6 +372,22 @@ export class TapsmithGrpcClient {
     });
   }
 
+  async touchDown(x: number, y: number, tMs = 0): Promise<ActionResponse> {
+    return this.call<ActionResponse>('touchDown', { requestId: requestId(), x, y, tMs });
+  }
+
+  async touchMove(x: number, y: number, tMs = 0): Promise<ActionResponse> {
+    return this.call<ActionResponse>('touchMove', { requestId: requestId(), x, y, tMs });
+  }
+
+  async touchUp(x: number, y: number, tMs = 0): Promise<ActionResponse> {
+    return this.call<ActionResponse>('touchUp', { requestId: requestId(), x, y, tMs });
+  }
+
+  async touchCancel(): Promise<ActionResponse> {
+    return this.call<ActionResponse>('touchCancel', { requestId: requestId() });
+  }
+
   async scroll(
     container: Selector,
     direction: string,
