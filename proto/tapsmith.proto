@@ -13,6 +13,10 @@ service TapsmithService {
   rpc ClearText(ClearTextRequest) returns (ActionResponse);
   rpc ClearAndType(ClearAndTypeRequest) returns (ActionResponse);
   rpc Swipe(SwipeRequest) returns (ActionResponse);
+  rpc TapCoordinates(TapCoordinatesRequest) returns (ActionResponse);
+  rpc LongPressCoordinates(LongPressCoordinatesRequest) returns (ActionResponse);
+  rpc DragCoordinates(DragCoordinatesRequest) returns (ActionResponse);
+  rpc InputText(InputTextRequest) returns (ActionResponse);
   rpc Scroll(ScrollRequest) returns (ActionResponse);
   rpc PressKey(PressKeyRequest) returns (ActionResponse);
   rpc TakeScreenshot(ScreenshotRequest) returns (ScreenshotResponse);
@@ -235,6 +239,37 @@ message SwipeRequest {
   float speed = 4;
   float distance = 5;
   uint64 timeout_ms = 6;
+}
+
+// Coordinate-based gestures. Coordinates are logical points (Android: pixels,
+// since devicePixelRatio == 1; iOS: points). Used by the SDK coordinate API
+// and UI mode's interactive mirror.
+message TapCoordinatesRequest {
+  string request_id = 1;
+  float x = 2;
+  float y = 3;
+}
+
+message LongPressCoordinatesRequest {
+  string request_id = 1;
+  float x = 2;
+  float y = 3;
+  uint64 duration_ms = 4;
+}
+
+message DragCoordinatesRequest {
+  string request_id = 1;
+  float from_x = 2;
+  float from_y = 3;
+  float to_x = 4;
+  float to_y = 5;
+  uint64 duration_ms = 6;
+}
+
+// Type text into whatever currently has focus (focusless typing).
+message InputTextRequest {
+  string request_id = 1;
+  string text = 2;
 }
 
 message ScrollRequest {
