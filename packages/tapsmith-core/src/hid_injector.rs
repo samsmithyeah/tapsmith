@@ -8,11 +8,6 @@
 //! gesture re-spawns it; the caller falls back to the agent path on `ensure`
 //! failure. macOS-only (CoreSimulator).
 
-// The public surface (`HidInjector` + methods) is wired into the gRPC touch
-// handlers in a follow-up task; until then it is unreferenced in this binary
-// crate, which `cargo clippy -- -D warnings` would otherwise reject.
-#![allow(dead_code)]
-
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::process::Stdio;

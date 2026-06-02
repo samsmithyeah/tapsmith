@@ -91,6 +91,11 @@ pub struct TapsmithServiceImpl {
     /// lifetime of one test, released by `StopVideoRecording`. Dropping the
     /// handle (e.g. on session teardown) hard-kills the underlying recorder.
     video_recording: Arc<RwLock<Option<crate::video::RecordingHandle>>>,
+    /// iOS-simulator live HID touch injector (macOS only). Lazily spawns one
+    /// `tapsmith-ios-hid` helper per simulator; touch handlers route iOS-sim
+    /// streamed touch here, falling back to the agent if it's unavailable.
+    #[cfg(target_os = "macos")]
+    hid_injector: std::sync::Arc<crate::hid_injector::HidInjector>,
 }
 
 /// Stored iOS agent launch config for restart.
@@ -133,6 +138,8 @@ impl TapsmithServiceImpl {
             #[cfg(target_os = "macos")]
             webkit_debug_proxy: Arc::new(RwLock::new(None)),
             video_recording: Arc::new(RwLock::new(None)),
+            #[cfg(target_os = "macos")]
+            hid_injector: std::sync::Arc::new(crate::hid_injector::HidInjector::new()),
         }
     }
 
@@ -1170,6 +1177,52 @@ impl TapsmithServiceImpl {
 
         Ok(parse_component_name(&output))
     }
+
+    /// Try to handle a streamed-touch event via the iOS-simulator HID path.
+    /// Returns true if it was injected via HID; false means the caller should
+    /// fall back to the agent command. `is_down` ensures the helper is spawned
+    /// before the first event of a gesture.
+    #[cfg(target_os = "macos")]
+    async fn try_hid_touch(&self, line: &str, is_down: bool) -> bool {
+        let udid = {
+            let dm = self.device_manager.read().await;
+            match dm.active_device() {
+                Some(d) if d.platform == Platform::Ios && d.is_emulator => d.serial.clone(),
+                _ => return false,
+            }
+        };
+        if is_down {
+            if let Err(e) = self.hid_injector.ensure(&udid).await {
+                warn!(%udid, error = %e, "iOS HID helper unavailable; falling back to agent");
+                return false;
+            }
+        }
+        match self.hid_injector.send(&udid, line).await {
+            Ok(()) => true,
+            Err(e) => {
+                warn!(%udid, error = %e, "iOS HID send failed; falling back to agent");
+                false
+            }
+        }
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    async fn try_hid_touch(&self, _line: &str, _is_down: bool) -> bool {
+        false
+    }
+
+    /// Build a synthetic success ActionResponse (used when a touch event was
+    /// handled out-of-band by the HID injector, bypassing the agent).
+    #[allow(clippy::result_large_err)] // Status is tonic's standard error type
+    fn hid_ok_response(request_id: String) -> Result<Response<proto::ActionResponse>, Status> {
+        Ok(Response::new(proto::ActionResponse {
+            request_id,
+            success: true,
+            error_type: String::new(),
+            error_message: String::new(),
+            screenshot: Vec::new(),
+        }))
+    }
 }
 
 /// Convert a protobuf Selector into a JSON value for the agent protocol.
@@ -1779,12 +1832,24 @@ impl proto::tapsmith_service_server::TapsmithService for TapsmithServiceImpl {
             .await
             .map_err(|e| Status::internal(e.to_string()))?;
 
+        // Capture the previously-active serial so we can release a stale iOS
+        // HID helper for the old simulator once the active device switches.
+        #[cfg(target_os = "macos")]
+        let previous_serial = dm.active_serial().map(String::from);
+
         match dm.set_active(&req.serial) {
             Ok(()) => {
                 // Drop the device_manager lock before the async pre-start so
                 // ensure_ios_physical_proxy can acquire its own locks without
                 // deadlocking against our write guard.
                 drop(dm);
+                // Best-effort: shut down the HID helper for the device we just
+                // switched away from (no-op if there wasn't one). The helper
+                // also dies via kill_on_drop on daemon exit.
+                #[cfg(target_os = "macos")]
+                if let Some(prev) = previous_serial.filter(|p| p != &req.serial) {
+                    self.hid_injector.shutdown(&prev).await;
+                }
                 agent_comms::clear_stream_cache(&self.agent_stream).await;
                 // Persist the CLI's tracing flag on the server so subsequent
                 // call sites (start_agent, recovery restarts) can check it
@@ -5449,6 +5514,12 @@ impl proto::tapsmith_service_server::TapsmithService for TapsmithServiceImpl {
     ) -> Result<Response<proto::ActionResponse>, Status> {
         let req = request.into_inner();
         let request_id = Self::request_id(&req.request_id);
+        if self
+            .try_hid_touch(&format!("d {} {}", req.x, req.y), true)
+            .await
+        {
+            return Self::hid_ok_response(request_id);
+        }
         let command = AgentCommand::TouchDown {
             x: req.x,
             y: req.y,
@@ -5465,6 +5536,12 @@ impl proto::tapsmith_service_server::TapsmithService for TapsmithServiceImpl {
     ) -> Result<Response<proto::ActionResponse>, Status> {
         let req = request.into_inner();
         let request_id = Self::request_id(&req.request_id);
+        if self
+            .try_hid_touch(&format!("m {} {}", req.x, req.y), false)
+            .await
+        {
+            return Self::hid_ok_response(request_id);
+        }
         let command = AgentCommand::TouchMove {
             x: req.x,
             y: req.y,
@@ -5481,6 +5558,12 @@ impl proto::tapsmith_service_server::TapsmithService for TapsmithServiceImpl {
     ) -> Result<Response<proto::ActionResponse>, Status> {
         let req = request.into_inner();
         let request_id = Self::request_id(&req.request_id);
+        if self
+            .try_hid_touch(&format!("u {} {}", req.x, req.y), false)
+            .await
+        {
+            return Self::hid_ok_response(request_id);
+        }
         let command = AgentCommand::TouchUp {
             x: req.x,
             y: req.y,
@@ -5497,6 +5580,9 @@ impl proto::tapsmith_service_server::TapsmithService for TapsmithServiceImpl {
     ) -> Result<Response<proto::ActionResponse>, Status> {
         let req = request.into_inner();
         let request_id = Self::request_id(&req.request_id);
+        if self.try_hid_touch("c", false).await {
+            return Self::hid_ok_response(request_id);
+        }
         let command = AgentCommand::TouchCancel {};
         let result = self.send_agent_command_with_timeout(&command, 0).await;
         self.make_action_response(request_id, result).await
