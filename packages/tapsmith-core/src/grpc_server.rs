@@ -286,7 +286,7 @@ impl TapsmithServiceImpl {
                     .and_then(|v| v.as_bool())
                     .unwrap_or(false)
                 {
-                    debug!("Accepted iOS Open-in-app confirmation dialog");
+                    info!("Accepted iOS Open-in-app confirmation dialog");
                 }
             }
             Ok(resp) => {
@@ -306,8 +306,6 @@ impl TapsmithServiceImpl {
         serial: &str,
         uri: &str,
     ) -> anyhow::Result<()> {
-        self.accept_ios_open_in_app_dialog().await;
-
         let serial_for_open = serial.to_string();
         let uri_for_open = uri.to_string();
         let mut open_url =
@@ -315,6 +313,7 @@ impl TapsmithServiceImpl {
                 async move { ios::device::open_url(&serial_for_open, &uri_for_open).await },
             );
         let deadline = tokio::time::Instant::now() + IOS_OPEN_URL_PROMPT_TIMEOUT;
+        self.accept_ios_open_in_app_dialog().await;
 
         while !open_url.is_finished() {
             let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());

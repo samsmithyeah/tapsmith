@@ -100,13 +100,9 @@ class CommandHandler {
                 if appHasRenderedContent(app) && !openInAppDialogExists(springboard) {
                     return true
                 }
-                _ = ObjCExceptionCatcher.catchException {
-                    _ = self.acceptOpenInAppDialogIfPresent(timeout: 0.1)
-                }
+                _ = self.acceptOpenInAppDialogIfPresent(timeout: 0.1)
             } else {
-                _ = ObjCExceptionCatcher.catchException {
-                    _ = self.acceptOpenInAppDialogIfPresent(timeout: 0.3)
-                }
+                _ = self.acceptOpenInAppDialogIfPresent(timeout: 0.3)
             }
             Thread.sleep(forTimeInterval: 0.2)
         }

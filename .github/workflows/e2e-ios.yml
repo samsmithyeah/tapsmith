@@ -240,8 +240,27 @@ jobs:
 
       - name: Run E2E tests
         working-directory: e2e
+        env:
+          TAPSMITH_DAEMON_LOG: /tmp/tapsmith-daemon-ios-${{ matrix.shard }}.log
         run: |
           npx tapsmith test -c tapsmith.config.ios-ci.mjs --shard=${{ matrix.shard }}/${{ env.SHARD_TOTAL }} --workers 1
+
+      - name: Print daemon deep-link diagnostics
+        if: always()
+        run: |
+          found=0
+          mkdir -p e2e/tapsmith-results
+          for log in /tmp/tapsmith-daemon-ios-${{ matrix.shard }}*.log; do
+            [ -e "$log" ] || continue
+            found=1
+            cp "$log" "e2e/tapsmith-results/$(basename "$log")"
+            echo "::group::$(basename "$log") deep-link excerpts"
+            grep -Ei "Open-in-app|openurl hit|Operation timed out opening URL|simctl openurl task failed|Failed to open URL" "$log" || true
+            echo "::endgroup::"
+          done
+          if [ "$found" -eq 0 ]; then
+            echo "No daemon logs found."
+          fi
 
       - name: Upload blob report
         if: always()

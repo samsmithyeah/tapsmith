@@ -78,6 +78,19 @@ interface WorkerHandle {
   retired?: boolean
 }
 
+function daemonStdio(workerId: number): 'ignore' | ['ignore', number, number] {
+  const baseLogPath = process.env.TAPSMITH_DAEMON_LOG;
+  if (!baseLogPath) return 'ignore';
+
+  const parsed = path.parse(baseLogPath);
+  const logPath = workerId === 0
+    ? baseLogPath
+    : path.join(parsed.dir, `${parsed.name}.worker-${workerId}${parsed.ext}`);
+  fs.mkdirSync(path.dirname(logPath), { recursive: true });
+  const fd = fs.openSync(logPath, 'a');
+  return ['ignore', fd, fd];
+}
+
 export interface DispatcherOptions {
   config: TapsmithConfig
   reporter: TapsmithReporter
@@ -701,7 +714,7 @@ export async function runParallel(opts: DispatcherOptions, _portOffset = 0): Pro
   const firstDaemon = spawn(
     daemonBin,
     ['--port', String(firstDaemonPort), '--agent-port', String(firstAgentPort)],
-    { stdio: 'ignore' },
+    { stdio: daemonStdio(0) },
   );
   firstDaemon.unref();
   firstDaemon.on('error', () => {
@@ -1580,7 +1593,7 @@ async function initializeWorker(opts: InitializeWorkerOptions): Promise<WorkerHa
     daemonProcess = spawn(
       daemonBin,
       ['--port', String(daemonPort), '--agent-port', String(agentPort)],
-      { stdio: 'ignore' },
+      { stdio: daemonStdio(workerId) },
     );
     daemonProcess.unref();
     daemonProcess.on('error', (err) => {
