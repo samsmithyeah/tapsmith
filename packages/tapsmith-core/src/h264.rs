@@ -3,13 +3,11 @@
 //! flags. Not a full parser — just enough to frame the stream for WebCodecs.
 
 /// nal_unit_type of an Annex-B NAL unit *including* its start code.
-#[allow(dead_code)]
 pub fn nal_type(nal_with_start: &[u8]) -> u8 {
     let body = strip_start_code(nal_with_start);
     body.first().map(|b| b & 0x1F).unwrap_or(0)
 }
 
-#[allow(dead_code)]
 fn strip_start_code(b: &[u8]) -> &[u8] {
     if b.starts_with(&[0, 0, 0, 1]) {
         &b[4..]
@@ -21,7 +19,6 @@ fn strip_start_code(b: &[u8]) -> &[u8] {
 }
 
 /// Split an Annex-B buffer into NAL units, each slice including its start code.
-#[allow(dead_code)]
 pub fn split_nal_units(buf: &[u8]) -> Vec<&[u8]> {
     let mut starts = Vec::new();
     let mut i = 0;
@@ -44,19 +41,16 @@ pub fn split_nal_units(buf: &[u8]) -> Vec<&[u8]> {
 
 /// Incremental Annex-B → access-unit assembler. Flushes an access unit when a
 /// new VCL slice (type 1/5) begins after the current AU already contains one.
-#[allow(dead_code)]
 pub struct Parser {
     buf: Vec<u8>,
 }
 
 impl Parser {
-    #[allow(dead_code)]
     pub fn new() -> Self {
         Self { buf: Vec::new() }
     }
 
     /// Feed bytes; return any access units completed by this push.
-    #[allow(dead_code)]
     pub fn push(&mut self, bytes: &[u8]) -> Vec<AccessUnit> {
         self.buf.extend_from_slice(bytes);
         let mut out = Vec::new();
@@ -91,8 +85,6 @@ impl Parser {
         }
         out
     }
-
-    #[allow(dead_code)]
     fn make_au(bytes: &[u8]) -> AccessUnit {
         let mut keyframe = false;
         let mut config = false;
@@ -118,7 +110,6 @@ impl Default for Parser {
 }
 
 /// A coalesced H.264 access unit ready to forward to the client.
-#[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq)]
 pub struct AccessUnit {
     /// Annex-B bytes (start codes + NAL units) for this access unit.

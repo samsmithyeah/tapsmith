@@ -12,6 +12,7 @@ mod network_proxy;
 mod pac;
 mod platform;
 mod route_handler;
+mod screen_stream;
 mod screenshot;
 mod signal;
 mod video;
