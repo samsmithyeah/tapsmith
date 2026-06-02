@@ -49,6 +49,7 @@ pub fn start(serial: String, max_size: Option<u32>, bit_rate: Option<u32>) -> Sc
                 None
             }
         };
+        let mut consecutive_fast_failures = 0u32;
         loop {
             // Stop if the consumer dropped the receiver.
             if tx.is_closed() {
@@ -114,9 +115,21 @@ pub fn start(serial: String, max_size: Option<u32>, bit_rate: Option<u32>) -> Sc
             // Back off if the segment died almost immediately: screenrecord
             // exiting on error (device locked/unauthorized/unsupported opts)
             // would otherwise respawn in a tight loop and peg the CPU. Normal
-            // ~180s segments and the first spawn are unaffected.
+            // ~180s segments and the first spawn are unaffected. Give up after
+            // several consecutive immediate failures so a persistently broken
+            // device doesn't respawn (and log-flood) forever.
             if segment_started.elapsed() < std::time::Duration::from_secs(1) {
+                consecutive_fast_failures += 1;
+                if consecutive_fast_failures >= 5 {
+                    warn!(
+                        serial = %serial,
+                        "screenrecord exited immediately 5 times in a row; stopping screen stream"
+                    );
+                    break;
+                }
                 tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+            } else {
+                consecutive_fast_failures = 0;
             }
         }
         debug!("screen stream task exited");

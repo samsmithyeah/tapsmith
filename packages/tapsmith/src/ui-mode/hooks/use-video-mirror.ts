@@ -77,8 +77,15 @@ export function useVideoMirror() {
       // mid-stream — e.g. device rotation / resolution change emits a new SPS;
       // ignoring it would leave the decoder mis-configured and corrupt output.
       if (codec && codec !== configuredCodecRef.current) {
-        dec.configure({ codec, optimizeForLatency: true } as VideoDecoderConfig);
-        configuredCodecRef.current = codec;
+        // configure() can throw synchronously for an unsupported codec — catch
+        // it so it doesn't crash the WS handler; reset to fall back gracefully.
+        try {
+          dec.configure({ codec, optimizeForLatency: true } as VideoDecoderConfig);
+          configuredCodecRef.current = codec;
+        } catch {
+          reset();
+          return;
+        }
       }
     }
     if (configuredCodecRef.current === null) return;
