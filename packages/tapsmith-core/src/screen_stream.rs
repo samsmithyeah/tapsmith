@@ -13,17 +13,48 @@ pub struct ScreenStreamHandle {
     pub rx: mpsc::Receiver<h264::AccessUnit>,
 }
 
+/// Scale a device resolution down so its long edge is at most `max`, preserving
+/// aspect ratio, with even dimensions (H.264 requires even width/height).
+fn fit_size(dw: u32, dh: u32, max: u32) -> (u32, u32) {
+    let long = dw.max(dh);
+    let (mut w, mut h) = if long > max && long > 0 {
+        let s = max as f64 / long as f64;
+        (
+            ((dw as f64) * s).round() as u32,
+            ((dh as f64) * s).round() as u32,
+        )
+    } else {
+        (dw, dh)
+    };
+    w -= w % 2;
+    h -= h % 2;
+    (w.max(2), h.max(2))
+}
+
 /// Start streaming H.264 access units from the device. Drop the returned
-/// handle (its `rx`) to stop.
+/// handle (its `rx`) to stop. `max_size` caps the long edge (aspect-preserved).
 pub fn start(serial: String, max_size: Option<u32>, bit_rate: Option<u32>) -> ScreenStreamHandle {
     let (tx, rx) = mpsc::channel::<h264::AccessUnit>(64);
     tokio::spawn(async move {
+        // Resolve the capture size once, preserving the device aspect ratio.
+        // A square `--size` would letterboxes a portrait screen, so we scale the
+        // real resolution. If the query fails, fall back to native (None).
+        let size: Option<(u32, u32)> = match adb::display_size(&serial).await {
+            Ok((dw, dh)) => Some(match max_size {
+                Some(m) => fit_size(dw, dh, m),
+                None => (dw, dh),
+            }),
+            Err(e) => {
+                warn!(error = %e, "failed to query display size; using native resolution");
+                None
+            }
+        };
         loop {
             // Stop if the consumer dropped the receiver.
             if tx.is_closed() {
                 break;
             }
-            let mut child = match adb::screenrecord_h264_spawn(&serial, max_size, bit_rate) {
+            let mut child = match adb::screenrecord_h264_spawn(&serial, size, bit_rate) {
                 Ok(c) => c,
                 Err(e) => {
                     warn!(error = %e, "screenrecord spawn failed; stopping screen stream");
@@ -72,4 +103,26 @@ pub fn start(serial: String, max_size: Option<u32>, bit_rate: Option<u32>) -> Sc
         debug!("screen stream task exited");
     });
     ScreenStreamHandle { rx }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::fit_size;
+
+    #[test]
+    fn portrait_scales_to_cap_preserving_aspect_even_dims() {
+        // 1080x2400 capped at 720 long edge → 324x720 (aspect kept, even).
+        assert_eq!(fit_size(1080, 2400, 720), (324, 720));
+    }
+
+    #[test]
+    fn landscape_scales_on_width() {
+        assert_eq!(fit_size(2400, 1080, 720), (720, 324));
+    }
+
+    #[test]
+    fn smaller_than_cap_is_unchanged_but_even() {
+        assert_eq!(fit_size(540, 960, 1080), (540, 960));
+        assert_eq!(fit_size(541, 961, 1080), (540, 960)); // rounded to even
+    }
 }

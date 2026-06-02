@@ -283,11 +283,13 @@ pub async fn screenrecord_spawn(
 
 /// Spawn `adb exec-out screenrecord --output-format=h264 -` streaming raw
 /// H.264 (Annex-B) to the child's stdout. The caller reads stdout and kills the
-/// child to stop. `max_size` caps the long edge; `bit_rate` in bits/sec.
+/// child to stop. `size` is the exact output `(width, height)` (must preserve
+/// the device aspect ratio — a square box letterboxes a portrait screen);
+/// `None` = native resolution. `bit_rate` in bits/sec.
 #[instrument]
 pub fn screenrecord_h264_spawn(
     serial: &str,
-    max_size: Option<u32>,
+    size: Option<(u32, u32)>,
     bit_rate: Option<u32>,
 ) -> Result<tokio::process::Child> {
     let mut cmd = Command::new("adb");
@@ -297,8 +299,8 @@ pub fn screenrecord_h264_spawn(
         .arg("screenrecord");
     cmd.arg("--output-format=h264");
     cmd.arg("--time-limit").arg("180");
-    if let Some(s) = max_size {
-        cmd.arg("--size").arg(format!("{s}x{s}"));
+    if let Some((w, h)) = size {
+        cmd.arg("--size").arg(format!("{w}x{h}"));
     }
     if let Some(b) = bit_rate {
         cmd.arg("--bit-rate").arg(b.to_string());
@@ -313,6 +315,25 @@ pub fn screenrecord_h264_spawn(
         .spawn()
         .context("Failed to spawn adb screenrecord (h264)")?;
     Ok(child)
+}
+
+/// Query the device display size via `adb shell wm size`. Returns
+/// `(width, height)` in pixels, preferring an override size when one is set.
+#[instrument]
+pub async fn display_size(serial: &str) -> Result<(u32, u32)> {
+    // Output: "Physical size: 1080x2400" and optionally "Override size: WxH".
+    let out = shell(serial, "wm size").await?;
+    let line = out
+        .lines()
+        .find(|l| l.contains("Override size"))
+        .or_else(|| out.lines().find(|l| l.contains("Physical size")))
+        .or_else(|| out.lines().next())
+        .unwrap_or("");
+    let dims = line.rsplit(':').next().unwrap_or("").trim();
+    let (w, h) = dims
+        .split_once('x')
+        .with_context(|| format!("Unexpected `wm size` output: {out:?}"))?;
+    Ok((w.trim().parse()?, h.trim().parse()?))
 }
 
 /// Check if a package is installed on the device.
