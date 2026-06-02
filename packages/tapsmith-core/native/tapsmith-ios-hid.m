@@ -156,8 +156,13 @@ int main(int argc, char **argv) {
       void (^completion)(NSError *) = ^(NSError *e) { serr = e; dispatch_semaphore_signal(sem); };
       ((void(*)(id, SEL, IndigoMessage *, BOOL, dispatch_queue_t, void(^)(NSError *)))objc_msgSend)(
           hidClient, sendSel, m, YES, cq, completion);
-      dispatch_semaphore_wait(sem, dispatch_time(DISPATCH_TIME_NOW, 2 * NSEC_PER_SEC));
-      return serr == nil;
+      // A timeout must NOT be reported as success: on timeout serr is still nil
+      // (the completion never fired) but the event was not delivered, so check
+      // the wait's return code too. If the block fires late it safely writes to
+      // the ARC-retained __block serr box and signals an unwaited semaphore — a
+      // harmless no-op nobody reads.
+      long rc = dispatch_semaphore_wait(sem, dispatch_time(DISPATCH_TIME_NOW, 2 * NSEC_PER_SEC));
+      return rc == 0 && serr == nil;
     };
 
     // Announce readiness; the daemon reads this line to confirm the helper is up.
