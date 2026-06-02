@@ -39,20 +39,37 @@ export function useVideoMirror() {
   // configured). Tracked so we reconfigure if it changes mid-stream.
   const configuredCodecRef = useRef<string | null>(null);
   const sawKeyRef = useRef(false);
+  // Latched when decoding fails (unsupported codec / corrupt stream): stops us
+  // recreating + re-failing a decoder every frame (which would peg the CPU and
+  // flood the console). Cleared only by an external reset (new/restarted stream).
+  const failedRef = useRef(false);
 
-  const reset = useCallback(() => {
+  const teardown = useCallback(() => {
     try { decoderRef.current?.close(); } catch { /* already closed */ }
     decoderRef.current = null;
     configuredCodecRef.current = null;
     sawKeyRef.current = false;
   }, []);
 
+  // Internal failure: tear down AND latch so we stop attempting this stream.
+  const failStream = useCallback(() => {
+    teardown();
+    failedRef.current = true;
+  }, [teardown]);
+
+  // External reset (device switch / stream (re)start): tear down and clear the
+  // failure latch so the new stream can be decoded.
+  const reset = useCallback(() => {
+    teardown();
+    failedRef.current = false;
+  }, [teardown]);
+
   // Close the decoder on unmount — hardware decoder sessions are a limited
   // OS/browser resource and would otherwise leak.
   useEffect(() => reset, [reset]);
 
   const handleVideoFrame = useCallback((payload: ArrayBuffer, keyframe: boolean, config: boolean) => {
-    if (!hasVideoDecoder()) return;
+    if (!hasVideoDecoder() || failedRef.current) return;
     const bytes = new Uint8Array(payload);
     if (!decoderRef.current) {
       decoderRef.current = new VideoDecoder({
@@ -67,7 +84,7 @@ export function useVideoMirror() {
           }
           frame.close();
         },
-        error: () => { reset(); },
+        error: () => { failStream(); },
       });
     }
     const dec = decoderRef.current;
@@ -78,12 +95,13 @@ export function useVideoMirror() {
       // ignoring it would leave the decoder mis-configured and corrupt output.
       if (codec && codec !== configuredCodecRef.current) {
         // configure() can throw synchronously for an unsupported codec — catch
-        // it so it doesn't crash the WS handler; reset to fall back gracefully.
+        // it so it doesn't crash the WS handler; latch failure (don't retry it
+        // every frame) and fall back to screenshots.
         try {
           dec.configure({ codec, optimizeForLatency: true } as VideoDecoderConfig);
           configuredCodecRef.current = codec;
         } catch {
-          reset();
+          failStream();
           return;
         }
       }
@@ -97,8 +115,8 @@ export function useVideoMirror() {
         timestamp: performance.now() * 1000,
         data: bytes,
       }));
-    } catch { reset(); }
-  }, [reset]);
+    } catch { failStream(); }
+  }, [failStream]);
 
   return { canvasRef, handleVideoFrame, reset, hasVideoDecoder };
 }
