@@ -331,6 +331,22 @@ pub enum AgentCommand {
     InputText {
         text: String,
     },
+    TouchDown {
+        x: f32,
+        y: f32,
+        t_ms: u64,
+    },
+    TouchMove {
+        x: f32,
+        y: f32,
+        t_ms: u64,
+    },
+    TouchUp {
+        x: f32,
+        y: f32,
+        t_ms: u64,
+    },
+    TouchCancel {},
     Scroll {
         container: Option<Value>,
         direction: String,
@@ -531,6 +547,16 @@ impl AgentCommand {
                 }),
             ),
             AgentCommand::InputText { text } => ("typeText", json!({"text": text})),
+            AgentCommand::TouchDown { x, y, t_ms } => {
+                ("touchDown", json!({"x": x, "y": y, "t": t_ms}))
+            }
+            AgentCommand::TouchMove { x, y, t_ms } => {
+                ("touchMove", json!({"x": x, "y": y, "t": t_ms}))
+            }
+            AgentCommand::TouchUp { x, y, t_ms } => {
+                ("touchUp", json!({"x": x, "y": y, "t": t_ms}))
+            }
+            AgentCommand::TouchCancel {} => ("touchCancel", json!({})),
             AgentCommand::Scroll {
                 container,
                 direction,
@@ -1464,6 +1490,43 @@ mod tests {
         let j = cmd.to_json("it1");
         assert_eq!(j["method"], "typeText");
         assert_eq!(j["params"]["text"], "hello");
+    }
+
+    #[test]
+    fn serializes_touch_down() {
+        let cmd = AgentCommand::TouchDown { x: 12.0, y: 34.0, t_ms: 0 };
+        let j = cmd.to_json("id");
+        assert_eq!(j["method"], "touchDown");
+        assert_eq!(j["params"]["x"], 12.0);
+        assert_eq!(j["params"]["y"], 34.0);
+        assert_eq!(j["params"]["t"], 0);
+    }
+
+    #[test]
+    fn serializes_touch_move() {
+        let cmd = AgentCommand::TouchMove { x: 1.0, y: 2.0, t_ms: 50 };
+        let j = cmd.to_json("id");
+        assert_eq!(j["method"], "touchMove");
+        assert_eq!(j["params"]["x"], 1.0);
+        assert_eq!(j["params"]["y"], 2.0);
+        assert_eq!(j["params"]["t"], 50);
+    }
+
+    #[test]
+    fn serializes_touch_up() {
+        let cmd = AgentCommand::TouchUp { x: 3.0, y: 4.0, t_ms: 120 };
+        let j = cmd.to_json("id");
+        assert_eq!(j["method"], "touchUp");
+        assert_eq!(j["params"]["x"], 3.0);
+        assert_eq!(j["params"]["y"], 4.0);
+        assert_eq!(j["params"]["t"], 120);
+    }
+
+    #[test]
+    fn serializes_touch_cancel() {
+        let cmd = AgentCommand::TouchCancel {};
+        let j = cmd.to_json("id");
+        assert_eq!(j["method"], "touchCancel");
     }
 
     // ─── AgentResponse::from_json ───

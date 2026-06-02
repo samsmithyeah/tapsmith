@@ -5441,6 +5441,66 @@ impl proto::tapsmith_service_server::TapsmithService for TapsmithServiceImpl {
         let result = self.send_agent_command_with_timeout(&command, 0).await;
         self.make_action_response(request_id, result).await
     }
+
+    #[instrument(skip_all, fields(request_id))]
+    async fn touch_down(
+        &self,
+        request: Request<proto::TouchPointRequest>,
+    ) -> Result<Response<proto::ActionResponse>, Status> {
+        let req = request.into_inner();
+        let request_id = Self::request_id(&req.request_id);
+        let command = AgentCommand::TouchDown {
+            x: req.x,
+            y: req.y,
+            t_ms: req.t_ms,
+        };
+        let result = self.send_agent_command_with_timeout(&command, 0).await;
+        self.make_action_response(request_id, result).await
+    }
+
+    #[instrument(skip_all, fields(request_id))]
+    async fn touch_move(
+        &self,
+        request: Request<proto::TouchPointRequest>,
+    ) -> Result<Response<proto::ActionResponse>, Status> {
+        let req = request.into_inner();
+        let request_id = Self::request_id(&req.request_id);
+        let command = AgentCommand::TouchMove {
+            x: req.x,
+            y: req.y,
+            t_ms: req.t_ms,
+        };
+        let result = self.send_agent_command_with_timeout(&command, 0).await;
+        self.make_action_response(request_id, result).await
+    }
+
+    #[instrument(skip_all, fields(request_id))]
+    async fn touch_up(
+        &self,
+        request: Request<proto::TouchPointRequest>,
+    ) -> Result<Response<proto::ActionResponse>, Status> {
+        let req = request.into_inner();
+        let request_id = Self::request_id(&req.request_id);
+        let command = AgentCommand::TouchUp {
+            x: req.x,
+            y: req.y,
+            t_ms: req.t_ms,
+        };
+        let result = self.send_agent_command_with_timeout(&command, 0).await;
+        self.make_action_response(request_id, result).await
+    }
+
+    #[instrument(skip_all, fields(request_id))]
+    async fn touch_cancel(
+        &self,
+        request: Request<proto::TouchCancelRequest>,
+    ) -> Result<Response<proto::ActionResponse>, Status> {
+        let req = request.into_inner();
+        let request_id = Self::request_id(&req.request_id);
+        let command = AgentCommand::TouchCancel {};
+        let result = self.send_agent_command_with_timeout(&command, 0).await;
+        self.make_action_response(request_id, result).await
+    }
 }
 
 /// Extract port number from a WebSocket URL like `ws://localhost:9222/devtools/page/1`
