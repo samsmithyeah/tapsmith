@@ -191,18 +191,27 @@ class CommandHandler(
             }
 
             "swipe" -> {
-                val direction = params.getString("direction")
-                val speed = params.optInt("speed", 5000)
-                val distance = params.optDouble("distance", 0.5)
-                val elementId = params.optString("elementId", null)
-                if (elementId != null) {
-                    actionExecutor.swipe(elementFinder.getElement(elementId), direction, speed, distance)
-                } else if (params.has("startElement")) {
-                    val startSel = parseSelectorParams(params.getJSONObject("startElement"))
-                    val startEl = waitEngine.waitForElement(startSel, 10000L, elementFinder)
-                    actionExecutor.swipe(elementFinder.getElement(startEl.elementId), direction, speed, distance)
+                if (params.has("fromX")) {
+                    val x1 = params.getInt("fromX")
+                    val y1 = params.getInt("fromY")
+                    val x2 = params.getInt("toX")
+                    val y2 = params.getInt("toY")
+                    val durationMs = params.optLong("durationMs", 300L)
+                    actionExecutor.swipeCoordinates(x1, y1, x2, y2, durationMs)
                 } else {
-                    actionExecutor.swipeScreen(direction, speed, distance)
+                    val direction = params.getString("direction")
+                    val speed = params.optInt("speed", 5000)
+                    val distance = params.optDouble("distance", 0.5)
+                    val elementId = params.optString("elementId", null)
+                    if (elementId != null) {
+                        actionExecutor.swipe(elementFinder.getElement(elementId), direction, speed, distance)
+                    } else if (params.has("startElement")) {
+                        val startSel = parseSelectorParams(params.getJSONObject("startElement"))
+                        val startEl = waitEngine.waitForElement(startSel, 10000L, elementFinder)
+                        actionExecutor.swipe(elementFinder.getElement(startEl.elementId), direction, speed, distance)
+                    } else {
+                        actionExecutor.swipeScreen(direction, speed, distance)
+                    }
                 }
                 JSONObject().put("success", true)
             }

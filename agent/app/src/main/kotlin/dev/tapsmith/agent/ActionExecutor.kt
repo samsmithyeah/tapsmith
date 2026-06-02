@@ -288,6 +288,22 @@ class ActionExecutor(private val device: UiDevice) {
     }
 
     /**
+     * Swipe between two raw screen coordinates (pixels). Used by the
+     * interactive mirror and the SDK coordinate API.
+     */
+    fun swipeCoordinates(
+        x1: Int,
+        y1: Int,
+        x2: Int,
+        y2: Int,
+        durationMs: Long = 300,
+    ) {
+        // UIAutomator swipe is step-based (~5ms/step). Convert duration to steps.
+        val steps = (durationMs / 5).toInt().coerceIn(5, 200)
+        device.swipe(x1, y1, x2, y2, steps)
+    }
+
+    /**
      * Scroll a container in a direction, optionally until a target element becomes visible.
      */
     fun scroll(
