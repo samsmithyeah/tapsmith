@@ -921,6 +921,10 @@ function App() {
   deviceViewModeRef.current = deviceViewMode;
   const workersLenRef = useRef(workers.length);
   workersLenRef.current = workers.length;
+  // Latest workers list for effects that look up a device's platform without
+  // wanting `workers` in their dependency array (avoids needless re-runs).
+  const workersRef = useRef(workers);
+  workersRef.current = workers;
   const handleScreenFrame = useCallback((data: ArrayBuffer) => {
     // First frame for the current device → hide the loading placeholder.
     if (!firstFrameRef.current) {
@@ -973,9 +977,11 @@ function App() {
   const mirrorInteractive = !mirrorLocked;
 
   // Live H.264 video for the single / selected mirror. Only request video when
-  // WebCodecs can decode it AND we're not showing the multi-worker grid (the
-  // grid stays on screenshots). When no start-video is sent, the server keeps
-  // polling screenshots, so the screenshot path is the natural fallback.
+  // WebCodecs can decode it, the target device is Android (video is Android-only
+  // server-side — requesting it for iOS just fails and falls back, wasting a
+  // gRPC stream and logging errors), and we're not showing the multi-worker grid
+  // (the grid stays on screenshots). When no start-video is sent, the server
+  // keeps polling screenshots, so the screenshot path is the natural fallback.
   // Cleanup stops video for the old worker and drops the decoder so the next
   // worker reconfigures from its own keyframe.
   useEffect(() => {
@@ -983,12 +989,20 @@ function App() {
     const showingGrid = deviceViewMode === 'all' && workers.length > 1;
     if (!videoMirrorRef.current.hasVideoDecoder() || showingGrid) return;
     const workerId = typeof deviceViewMode === 'number' ? deviceViewMode : selectedWorkerId;
+    // Video is Android-only server-side; requesting it for an iOS device just
+    // fails and falls back to screenshots, so skip it. (workersRef avoids adding
+    // the workers array to the deps.)
+    const worker = workersRef.current.find((w) => w.workerId === workerId);
+    const targetPlatform = worker?.platform
+      ?? inferDevicePlatform(worker?.displayName ?? '', worker?.deviceSerial ?? '')
+      ?? devicePlatform;
+    if (targetPlatform !== 'android') return;
     send({ type: 'start-video', workerId });
     return () => {
       videoMirrorRef.current.reset();
       send({ type: 'stop-video', workerId });
     };
-  }, [connected, deviceViewMode, selectedWorkerId, workers.length, send]);
+  }, [connected, deviceViewMode, selectedWorkerId, workers.length, devicePlatform, send]);
 
   const handleThemeChange = useCallback((newTheme: Theme) => {
     setTheme(newTheme);
