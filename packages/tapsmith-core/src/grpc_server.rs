@@ -5631,23 +5631,18 @@ impl proto::tapsmith_service_server::TapsmithService for TapsmithServiceImpl {
             "Starting screen video stream"
         );
 
-        let mut handle = crate::screen_stream::start(serial, max_size, bit_rate);
-        let (out_tx, out_rx) =
-            tokio::sync::mpsc::channel::<Result<proto::ScreenVideoFrame, Status>>(64);
-        tokio::spawn(async move {
-            while let Some(au) = handle.rx.recv().await {
-                let frame = proto::ScreenVideoFrame {
-                    data: au.data,
-                    keyframe: au.keyframe,
-                    config: au.config,
-                };
-                if out_tx.send(Ok(frame)).await.is_err() {
-                    break; // client cancelled
-                }
-            }
-            drop(handle);
+        // Map the access-unit receiver straight into the gRPC frame stream — no
+        // extra task or channel needed. When the client cancels, the stream is
+        // dropped, which drops handle.rx and signals screen_stream to stop.
+        use tokio_stream::StreamExt;
+        let handle = crate::screen_stream::start(serial, max_size, bit_rate);
+        let output_stream = tokio_stream::wrappers::ReceiverStream::new(handle.rx).map(|au| {
+            Ok(proto::ScreenVideoFrame {
+                data: au.data,
+                keyframe: au.keyframe,
+                config: au.config,
+            })
         });
-        let output_stream = tokio_stream::wrappers::ReceiverStream::new(out_rx);
         Ok(Response::new(Box::pin(output_stream)))
     }
 }
