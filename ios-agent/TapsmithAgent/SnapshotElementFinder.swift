@@ -14,6 +14,7 @@ class SnapshotElementFinder {
     /// Bounds from snapshot — used for coordinate-based actions (fast, no quiescence).
     private var boundsCache: [String: CGRect] = [:]
     private var cacheOrder: [String] = []
+    private var focusedTextInputHint: FocusedTextInputHint?
     private let lock = NSLock()
 
     /// Maximum number of cached elements before eviction. Prevents unbounded
@@ -26,6 +27,13 @@ class SnapshotElementFinder {
         let identifier: String
         let label: String
         let frame: CGRect
+    }
+
+    private struct FocusedTextInputHint {
+        let identifier: String
+        let label: String
+        let frame: CGRect
+        let point: CGPoint?
     }
 
     /// Parsed snapshot node from the accessibility tree.
@@ -118,6 +126,7 @@ class SnapshotElementFinder {
         // Keyboard = elementType 56 (XCUIElement.ElementType.keyboard).
         let keyboardVisibleInSnapshot = hasKeyboardInTree(snapshotDict)
         let liveFocusedTextInput = keyboardVisibleInSnapshot ? findLiveFocusedTextInput() : nil
+        let focusedHint = keyboardVisibleInSnapshot ? currentFocusedTextInputHint() : nil
 
         // Flatten and search (pre-order — `.first()` callers depend on it).
         // Wrapper suppression happens inline via an ancestor stack so the
@@ -132,7 +141,8 @@ class SnapshotElementFinder {
             otherAncestors: &otherAncestors,
             suppressed: &suppressed,
             keyboardVisibleInSnapshot: keyboardVisibleInSnapshot,
-            liveFocusedTextInput: liveFocusedTextInput
+            liveFocusedTextInput: liveFocusedTextInput,
+            focusedHint: focusedHint
         )
         if !suppressed.isEmpty {
             matches = matches.enumerated()
@@ -188,7 +198,8 @@ class SnapshotElementFinder {
                 nodeDict,
                 elementType: elType,
                 keyboardVisibleInSnapshot: keyboardVisibleInSnapshot,
-                liveFocusedTextInput: liveFocusedTextInput
+                liveFocusedTextInput: liveFocusedTextInput,
+                focusedHint: focusedHint
             )
 
             // For text fields, prefer the "value" property (typed text) over "label"
@@ -274,6 +285,42 @@ class SnapshotElementFinder {
         elementCache.removeAll()
         boundsCache.removeAll()
         cacheOrder.removeAll()
+        focusedTextInputHint = nil
+        lock.unlock()
+    }
+
+    func recordFocusedTextInputHint(_ element: ElementInfo) {
+        let frame = CGRect(
+            x: CGFloat(element.bounds.left),
+            y: CGFloat(element.bounds.top),
+            width: CGFloat(element.bounds.width),
+            height: CGFloat(element.bounds.height)
+        )
+        let point = CGPoint(x: CGFloat(element.bounds.centerX), y: CGFloat(element.bounds.centerY))
+        lock.lock()
+        focusedTextInputHint = FocusedTextInputHint(
+            identifier: element.resourceId ?? "",
+            label: element.contentDescription ?? "",
+            frame: frame,
+            point: point
+        )
+        lock.unlock()
+    }
+
+    func recordFocusedTextInputHint(at point: CGPoint) {
+        lock.lock()
+        focusedTextInputHint = FocusedTextInputHint(
+            identifier: "",
+            label: "",
+            frame: .zero,
+            point: point
+        )
+        lock.unlock()
+    }
+
+    func clearFocusedTextInputHint() {
+        lock.lock()
+        focusedTextInputHint = nil
         lock.unlock()
     }
 
@@ -438,11 +485,19 @@ class SnapshotElementFinder {
         return nil
     }
 
+    private func currentFocusedTextInputHint() -> FocusedTextInputHint? {
+        lock.lock()
+        let hint = focusedTextInputHint
+        lock.unlock()
+        return hint
+    }
+
     private func resolvedSnapshotFocus(
         _ node: [String: Any],
         elementType: XCUIElement.ElementType,
         keyboardVisibleInSnapshot: Bool,
-        liveFocusedTextInput: LiveFocusedTextInput?
+        liveFocusedTextInput: LiveFocusedTextInput?,
+        focusedHint: FocusedTextInputHint?
     ) -> Bool {
         let snapshotFocused = (node["hasFocus"] as? Bool)
             ?? (node["hasKeyboardFocus"] as? Bool)
@@ -452,6 +507,14 @@ class SnapshotElementFinder {
                 node,
                 elementType: elementType,
                 liveFocusedTextInput: liveFocusedTextInput
+           ) {
+            return true
+        }
+        if keyboardVisibleInSnapshot,
+           matchesFocusedTextInputHint(
+                node,
+                elementType: elementType,
+                focusedHint: focusedHint
            ) {
             return true
         }
@@ -479,6 +542,34 @@ class SnapshotElementFinder {
 
         guard framesApproximatelyEqual(frame, live.frame) else { return false }
         return live.label.isEmpty || label == live.label || title == live.label
+    }
+
+    private func matchesFocusedTextInputHint(
+        _ node: [String: Any],
+        elementType: XCUIElement.ElementType,
+        focusedHint: FocusedTextInputHint?
+    ) -> Bool {
+        guard let hint = focusedHint else { return false }
+        guard isTextFieldType(elementType) else { return false }
+
+        let frame = parseFrame(node)
+        if let point = hint.point,
+           frame.insetBy(dx: -2, dy: -2).contains(point) {
+            return true
+        }
+
+        let identifier = node["identifier"] as? String ?? ""
+        let label = node["label"] as? String ?? ""
+        let title = node["title"] as? String ?? ""
+
+        if !hint.identifier.isEmpty || !identifier.isEmpty {
+            guard identifier == hint.identifier else { return false }
+            return framesApproximatelyEqual(frame, hint.frame)
+                || (!hint.label.isEmpty && (label == hint.label || title == hint.label))
+        }
+
+        guard framesApproximatelyEqual(frame, hint.frame) else { return false }
+        return hint.label.isEmpty || label == hint.label || title == hint.label
     }
 
     private func framesApproximatelyEqual(_ lhs: CGRect, _ rhs: CGRect) -> Bool {
@@ -743,7 +834,8 @@ class SnapshotElementFinder {
         otherAncestors: inout [WrapperAncestor],
         suppressed: inout Set<Int>,
         keyboardVisibleInSnapshot: Bool,
-        liveFocusedTextInput: LiveFocusedTextInput?
+        liveFocusedTextInput: LiveFocusedTextInput?,
+        focusedHint: FocusedTextInputHint?
     ) {
         // Pre-order: parent first, then descendants. Callers (e.g.
         // `.first()`) rely on document/snapshot order, so we must NOT
@@ -755,7 +847,8 @@ class SnapshotElementFinder {
             nodeDict,
             selector: selector,
             keyboardVisibleInSnapshot: keyboardVisibleInSnapshot,
-            liveFocusedTextInput: liveFocusedTextInput
+            liveFocusedTextInput: liveFocusedTextInput,
+            focusedHint: focusedHint
         ) {
             let myId = nodeDict["identifier"] as? String ?? ""
             let myLabel = nodeDict["label"] as? String ?? ""
@@ -806,7 +899,8 @@ class SnapshotElementFinder {
                     otherAncestors: &otherAncestors,
                     suppressed: &suppressed,
                     keyboardVisibleInSnapshot: keyboardVisibleInSnapshot,
-                    liveFocusedTextInput: liveFocusedTextInput
+                    liveFocusedTextInput: liveFocusedTextInput,
+                    focusedHint: focusedHint
                 )
             }
         }
@@ -820,7 +914,8 @@ class SnapshotElementFinder {
         _ node: [String: Any],
         selector: ElementSelector,
         keyboardVisibleInSnapshot: Bool,
-        liveFocusedTextInput: LiveFocusedTextInput?
+        liveFocusedTextInput: LiveFocusedTextInput?,
+        focusedHint: FocusedTextInputHint?
     ) -> Bool {
         let label = node["label"] as? String ?? ""
         let title = node["title"] as? String ?? ""
@@ -932,7 +1027,8 @@ class SnapshotElementFinder {
                 node,
                 elementType: elType,
                 keyboardVisibleInSnapshot: keyboardVisibleInSnapshot,
-                liveFocusedTextInput: liveFocusedTextInput
+                liveFocusedTextInput: liveFocusedTextInput,
+                focusedHint: focusedHint
             )
             if isFocused != wantFocused { return false }
         }

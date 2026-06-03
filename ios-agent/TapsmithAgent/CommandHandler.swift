@@ -317,6 +317,7 @@ class CommandHandler {
             let screen = snapshotFinder.screenSize
             if x >= 0 && y >= 0 && x <= screen.width && y <= screen.height {
                 actionExecutor.tapCoordinates(x: Int(x), y: Int(y))
+                snapshotFinder.recordFocusedTextInputHint(element)
                 waitForKeyboardAppearance(maxWait: settleTime)
                 return
             }
@@ -327,6 +328,7 @@ class CommandHandler {
             throw AgentError.actionFailed("Element is not hittable — cannot type text")
         }
         xcElem.tap()
+        snapshotFinder.recordFocusedTextInputHint(element)
         waitForKeyboardAppearance(maxWait: settleTime)
     }
 
@@ -523,9 +525,11 @@ class CommandHandler {
             let y = (params["y"] as? NSNumber)?.intValue ?? -1
             if x >= 0 && y >= 0 {
                 actionExecutor.tapCoordinates(x: x, y: y)
+                snapshotFinder.recordFocusedTextInputHint(at: CGPoint(x: CGFloat(x), y: CGFloat(y)))
             } else {
                 let element = try resolveElement(params)
                 try tapResolvedElement(element)
+                snapshotFinder.recordFocusedTextInputHint(element)
             }
             // Force-flush pending touch events: take a snapshot() which does
             // a round-trip through the XCTest daemon. This acts as a barrier,
@@ -584,6 +588,9 @@ class CommandHandler {
                 var selectorParams = params
                 selectorParams.removeValue(forKey: "text")
                 selectorParams.removeValue(forKey: "typingDelayMs")
+                if isFocusedOnlySelector {
+                    waitForKeyboardAppearance(maxWait: 1.0)
+                }
                 let element = try resolveElement(selectorParams)
                 if !isFocusedOnlySelector {
                     try focusElementForTyping(element, settleTime: 0.5)
@@ -1000,6 +1007,7 @@ class CommandHandler {
                 let xcElem = try getXCUIElement(element.elementId)
                 try actionExecutor.focus(xcElem)
             }
+            snapshotFinder.recordFocusedTextInputHint(element)
             return ["success": true]
 
         case "blur":
@@ -1009,6 +1017,7 @@ class CommandHandler {
             // app.windows.firstMatch.frame.size read inside blur().
             actionExecutor.cachedScreenSize = snapshotFinder.screenSize
             try actionExecutor.blur(xcElem)
+            snapshotFinder.clearFocusedTextInputHint()
             return ["success": true]
 
         case "highlight":
@@ -1214,6 +1223,7 @@ class CommandHandler {
             let kbSnapshot = try? app.snapshot()
             let kbDict = kbSnapshot.map { $0.dictionaryRepresentation } ?? [:]
             guard hasKeyboardInSnapshot(kbDict) else {
+                snapshotFinder.clearFocusedTextInputHint()
                 return ["success": true]
             }
 
@@ -1243,6 +1253,7 @@ class CommandHandler {
                 duration: 0.05
             )
             Thread.sleep(forTimeInterval: 0.3)
+            snapshotFinder.clearFocusedTextInputHint()
             return ["success": true]
 
         // ─── Color Scheme ───
