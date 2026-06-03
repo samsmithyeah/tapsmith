@@ -272,6 +272,7 @@ async function handleInit(msg: UIWorkerInitMessage): Promise<void> {
       await launchConfiguredApp(
         sessionContext(msg.deviceSerial, resolvedAgentApk, resolvedAgentTestApk, resolvedIosXctestrun),
         'UI worker initialization',
+        { allowSoftReset: false },
       );
     } else {
       sendProgress('validating session readiness');

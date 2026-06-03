@@ -14,6 +14,11 @@ const workerRunnerMocks = vi.hoisted(() => {
   };
 });
 
+const sessionPreflightMocks = vi.hoisted(() => ({
+  ensureSessionReady: vi.fn(async () => {}),
+  launchConfiguredApp: vi.fn(async () => {}),
+}));
+
 vi.mock('../runner.js', () => ({
   runTestFile: workerRunnerMocks.runTestFile,
   collectResults: workerRunnerMocks.collectResults,
@@ -49,10 +54,7 @@ vi.mock('../ios-simulator.js', () => ({
   rebootSimulator: vi.fn(),
 }));
 
-vi.mock('../session-preflight.js', () => ({
-  ensureSessionReady: vi.fn(async () => {}),
-  launchConfiguredApp: vi.fn(async () => {}),
-}));
+vi.mock('../session-preflight.js', () => sessionPreflightMocks);
 
 function makeSerializedConfig(overrides: Partial<SerializedConfig> = {}): SerializedConfig {
   return {
@@ -188,9 +190,16 @@ describe('worker-runner IPC reporting', () => {
         workerId: 0,
         deviceSerial: 'device-1',
         daemonPort: 19_000,
-        config: makeSerializedConfig(),
+        config: makeSerializedConfig({ package: 'com.example.app' }),
       } satisfies MainToWorkerMessage);
       await ready;
+
+      expect(sessionPreflightMocks.launchConfiguredApp).toHaveBeenNthCalledWith(
+        1,
+        expect.any(Object),
+        'worker initialization',
+        { allowSoftReset: false },
+      );
 
       const done = waitForMessage((msg) => msg.type === 'file-done');
       emitWorkerMessage({
@@ -218,6 +227,8 @@ describe('worker-runner IPC reporting', () => {
       }
       workerRunnerMocks.runTestFile.mockReset();
       workerRunnerMocks.collectResults.mockClear();
+      sessionPreflightMocks.launchConfiguredApp.mockClear();
+      sessionPreflightMocks.ensureSessionReady.mockClear();
     }
   });
 });
