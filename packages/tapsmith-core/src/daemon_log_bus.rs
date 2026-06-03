@@ -64,19 +64,26 @@ struct MessageVisitor {
 }
 
 impl Visit for MessageVisitor {
+    // String-valued fields arrive here directly, giving us the raw, unescaped
+    // value — no Debug quoting/escaping to undo.
+    fn record_str(&mut self, field: &Field, value: &str) {
+        if field.name() == "message" {
+            self.message = value.to_string();
+        } else {
+            if !self.message.is_empty() {
+                self.message.push(' ');
+            }
+            self.message.push_str(&format!("{}={value}", field.name()));
+        }
+    }
+
     fn record_debug(&mut self, field: &Field, value: &dyn std::fmt::Debug) {
         if field.name() == "message" {
+            // The log message is `fmt::Arguments`, whose Debug output is the
+            // formatted text with no surrounding quotes.
             self.message = format!("{value:?}");
-            // tracing wraps the message in Debug quotes when it's a string literal;
-            // strip a single surrounding pair if present.
-            if self.message.starts_with('"')
-                && self.message.ends_with('"')
-                && self.message.len() >= 2
-            {
-                self.message = self.message[1..self.message.len() - 1].to_string();
-            }
         } else {
-            // Append structured fields as `key=value` so they aren't lost.
+            // Append non-string structured fields as `key=value` so they aren't lost.
             if !self.message.is_empty() {
                 self.message.push(' ');
             }

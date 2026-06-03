@@ -720,7 +720,7 @@ export class Device {
 
     stream.on('error', (err: Error) => {
       const code = (err as grpc.ServiceError).code;
-      const isCleanReset = code === grpc.status.INTERNAL && err.message.includes('RST_STREAM with code 0');
+      const isCleanReset = code === grpc.status.INTERNAL && err.message?.includes('RST_STREAM with code 0');
       if (code !== grpc.status.CANCELLED && !isCleanReset) {
         console.warn('[tapsmith] Device log stream error:', err.message);
       }
@@ -769,7 +769,7 @@ export class Device {
 
     stream.on('error', (err: Error) => {
       const code = (err as grpc.ServiceError).code;
-      const isCleanReset = code === grpc.status.INTERNAL && err.message.includes('RST_STREAM with code 0');
+      const isCleanReset = code === grpc.status.INTERNAL && err.message?.includes('RST_STREAM with code 0');
       if (code !== grpc.status.CANCELLED && !isCleanReset) {
         console.warn('[tapsmith] Daemon log stream error:', err.message);
       }
