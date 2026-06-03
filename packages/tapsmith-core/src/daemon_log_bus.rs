@@ -57,10 +57,16 @@ impl DaemonLogLayer {
     }
 }
 
-/// Extracts the `message` field (and any other formatted fields) from an event.
+/// Extracts the `message` field and any other formatted fields from an event.
+///
+/// `message` and the structured fields are stored separately and combined only
+/// at the end: `tracing` does not guarantee field visit order, so accumulating
+/// into a single string risks a `message` visit overwriting fields recorded
+/// before it (silent data loss).
 #[derive(Default)]
 struct MessageVisitor {
-    message: String,
+    message: Option<String>,
+    fields: Vec<String>,
 }
 
 impl Visit for MessageVisitor {
@@ -68,12 +74,9 @@ impl Visit for MessageVisitor {
     // value — no Debug quoting/escaping to undo.
     fn record_str(&mut self, field: &Field, value: &str) {
         if field.name() == "message" {
-            self.message = value.to_string();
+            self.message = Some(value.to_string());
         } else {
-            if !self.message.is_empty() {
-                self.message.push(' ');
-            }
-            self.message.push_str(&format!("{}={value}", field.name()));
+            self.fields.push(format!("{}={value}", field.name()));
         }
     }
 
@@ -81,14 +84,10 @@ impl Visit for MessageVisitor {
         if field.name() == "message" {
             // The log message is `fmt::Arguments`, whose Debug output is the
             // formatted text with no surrounding quotes.
-            self.message = format!("{value:?}");
+            self.message = Some(format!("{value:?}"));
         } else {
-            // Append non-string structured fields as `key=value` so they aren't lost.
-            if !self.message.is_empty() {
-                self.message.push(' ');
-            }
-            self.message
-                .push_str(&format!("{}={value:?}", field.name()));
+            // Keep non-string structured fields as `key=value` so they aren't lost.
+            self.fields.push(format!("{}={value:?}", field.name()));
         }
     }
 }
@@ -101,6 +100,16 @@ where
         let mut visitor = MessageVisitor::default();
         event.record(&mut visitor);
 
+        // Combine once all fields are visited: message first, then any
+        // structured fields, regardless of the order they were recorded in.
+        let mut message = visitor.message.unwrap_or_default();
+        if !visitor.fields.is_empty() {
+            if !message.is_empty() {
+                message.push(' ');
+            }
+            message.push_str(&visitor.fields.join(" "));
+        }
+
         let now_ms = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map(|d| d.as_millis() as u64)
@@ -108,7 +117,7 @@ where
 
         self.bus.publish(DaemonLogEntry {
             level: event.metadata().level().to_string().to_lowercase(),
-            message: visitor.message,
+            message,
             target: event.metadata().target().to_string(),
             request_id: String::new(), // a later task fills this from the span scope
             timestamp_ms: now_ms,
@@ -134,5 +143,35 @@ mod tests {
         let entry = rx.try_recv().expect("entry should be published");
         assert_eq!(entry.level, "info");
         assert_eq!(entry.message, "hello daemon");
+    }
+
+    #[tokio::test]
+    async fn keeps_message_and_structured_fields() {
+        let bus = DaemonLogBus::new(16);
+        let mut rx = bus.subscribe();
+        let subscriber = tracing_subscriber::registry().with(DaemonLogLayer::new(bus.clone()));
+
+        tracing::subscriber::with_default(subscriber, || {
+            // Mixes the message with both a string field and a non-string field;
+            // none must be dropped regardless of visit order.
+            tracing::info!(serial = "emu-1", count = 3, "starting");
+        });
+
+        let entry = rx.try_recv().expect("entry should be published");
+        assert!(
+            entry.message.contains("starting"),
+            "message: {}",
+            entry.message
+        );
+        assert!(
+            entry.message.contains("serial=emu-1"),
+            "message: {}",
+            entry.message
+        );
+        assert!(
+            entry.message.contains("count=3"),
+            "message: {}",
+            entry.message
+        );
     }
 }
