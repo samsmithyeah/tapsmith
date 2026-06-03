@@ -272,6 +272,36 @@ class CommandHandler {
         throw firstError!
     }
 
+    /// Double-tap a resolved element. Prefer XCUIElement.doubleTap() because
+    /// UIKit/RN gesture recognizers handle it more consistently than raw
+    /// coordinate double-taps on CI simulators. Use coordinate synthesis only
+    /// as a fallback when the cached XCUIElement path is unavailable.
+    private func doubleTapResolvedElement(_ element: ElementInfo, intervalMs: Int) throws {
+        var firstError: Error?
+        do {
+            let xcElem = try getXCUIElement(element.elementId)
+            try actionExecutor.doubleTap(xcElem)
+            return
+        } catch {
+            firstError = error
+            let message = "[TapsmithCommand] XCUIElement.doubleTap failed " +
+                "for \(element.elementId): \(error.localizedDescription), " +
+                "falling back to coordinate doubleTap"
+            NSLog(message)
+        }
+
+        if let center = snapshotCenter(for: element.elementId) {
+            actionExecutor.doubleTapCoordinates(
+                x: Int(center.x),
+                y: Int(center.y),
+                intervalMs: intervalMs
+            )
+            return
+        }
+
+        throw firstError!
+    }
+
     /// Tap inside a text input, biased toward the trailing edge so refocusing
     /// during retries keeps the insertion point at the end of the current
     /// value instead of moving it into the middle of existing text.
@@ -505,12 +535,7 @@ class CommandHandler {
         case "doubleTap":
             let element = try resolveElement(params)
             let intervalMs = params["intervalMs"] as? Int ?? 0
-            if let center = snapshotCenter(for: element.elementId) {
-                actionExecutor.doubleTapCoordinates(x: Int(center.x), y: Int(center.y), intervalMs: intervalMs)
-            } else {
-                let xcElem = try getXCUIElement(element.elementId)
-                try actionExecutor.doubleTap(xcElem)
-            }
+            try doubleTapResolvedElement(element, intervalMs: intervalMs)
             touchBarrier()
             return ["success": true]
 

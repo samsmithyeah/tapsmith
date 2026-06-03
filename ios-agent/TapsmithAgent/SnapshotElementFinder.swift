@@ -875,7 +875,7 @@ class SnapshotElementFinder {
             || selector.contentDesc != nil || selector.testId != nil
             || selector.id != nil || selector.hint != nil
             || selector.role != nil || selector.className != nil
-            || selector.label != nil
+            || selector.label != nil || selector.focused == true
         if !hasAnySelector { return false }
 
         return true
