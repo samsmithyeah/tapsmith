@@ -107,6 +107,10 @@ class SnapshotElementFinder {
         // works.
         SnapshotElementFinder.annotateTraits(dict: &snapshotDict, snapshot: resolvedSnapshot)
 
+        // Check once if keyboard is visible (for focus detection).
+        // Keyboard = elementType 56 (XCUIElement.ElementType.keyboard).
+        let keyboardVisibleInSnapshot = hasKeyboardInTree(snapshotDict)
+
         // Flatten and search (pre-order — `.first()` callers depend on it).
         // Wrapper suppression happens inline via an ancestor stack so the
         // whole walk is O(N + wrapperMatches) rather than O(matches²).
@@ -118,16 +122,13 @@ class SnapshotElementFinder {
             selector: selector,
             results: &matches,
             otherAncestors: &otherAncestors,
-            suppressed: &suppressed
+            suppressed: &suppressed,
+            keyboardVisibleInSnapshot: keyboardVisibleInSnapshot
         )
         if !suppressed.isEmpty {
             matches = matches.enumerated()
                 .compactMap { (i, m) in suppressed.contains(i) ? nil : m }
         }
-
-        // Check once if keyboard is visible (for focus detection).
-        // Keyboard = elementType 56 (XCUIElement.ElementType.keyboard).
-        let keyboardVisibleInSnapshot = hasKeyboardInTree(snapshotDict)
 
         let screenSize = self.screenSize
 
@@ -160,9 +161,6 @@ class SnapshotElementFinder {
                 value: value,
                 selected: isSelected
             )
-            let snapshotFocused = (nodeDict["hasFocus"] as? Bool)
-                ?? (nodeDict["hasKeyboardFocus"] as? Bool)
-
             // Cache the snapshot bounds for fast coordinate-based actions.
             lock.lock()
             boundsCache[elementId] = frame
@@ -178,14 +176,11 @@ class SnapshotElementFinder {
             // For text fields, detect focus by checking if a keyboard is visible
             // in the same snapshot. This avoids live XCUIElement property access
             // which triggers quiescence waits on Xcode 26.
-            let resolvedFocus: Bool
-            if snapshotFocused == true {
-                resolvedFocus = true
-            } else if isTextFieldType(elType) {
-                resolvedFocus = keyboardVisibleInSnapshot
-            } else {
-                resolvedFocus = false
-            }
+            let resolvedFocus = resolvedSnapshotFocus(
+                nodeDict,
+                elementType: elType,
+                keyboardVisibleInSnapshot: keyboardVisibleInSnapshot
+            )
 
             // For text fields, prefer the "value" property (typed text) over "label"
             // (accessibility label). React Native TextInput has label="Email" and
@@ -413,6 +408,20 @@ class SnapshotElementFinder {
     private func isTextFieldType(_ elType: XCUIElement.ElementType) -> Bool {
         elType == .textField || elType == .secureTextField
             || elType == .textView || elType == .searchField
+    }
+
+    private func resolvedSnapshotFocus(
+        _ node: [String: Any],
+        elementType: XCUIElement.ElementType,
+        keyboardVisibleInSnapshot: Bool
+    ) -> Bool {
+        let snapshotFocused = (node["hasFocus"] as? Bool)
+            ?? (node["hasKeyboardFocus"] as? Bool)
+        if snapshotFocused == true { return true }
+        if isTextFieldType(elementType) {
+            return keyboardVisibleInSnapshot
+        }
+        return false
     }
 
     private static let kvcMissLogger = OneShotLogger()
@@ -667,7 +676,8 @@ class SnapshotElementFinder {
         selector: ElementSelector,
         results: inout [([String: Any], CGRect)],
         otherAncestors: inout [WrapperAncestor],
-        suppressed: inout Set<Int>
+        suppressed: inout Set<Int>,
+        keyboardVisibleInSnapshot: Bool
     ) {
         // Pre-order: parent first, then descendants. Callers (e.g.
         // `.first()`) rely on document/snapshot order, so we must NOT
@@ -675,7 +685,11 @@ class SnapshotElementFinder {
         // `.other` wrappers whose identifier/label matches a native
         // descendant in one linear pass.
         var pushedAncestor = false
-        if matchesSelector(nodeDict, selector: selector) {
+        if matchesSelector(
+            nodeDict,
+            selector: selector,
+            keyboardVisibleInSnapshot: keyboardVisibleInSnapshot
+        ) {
             let myId = nodeDict["identifier"] as? String ?? ""
             let myLabel = nodeDict["label"] as? String ?? ""
             let raw = parseUInt(nodeDict["elementType"]) ?? 0
@@ -723,7 +737,8 @@ class SnapshotElementFinder {
                     selector: selector,
                     results: &results,
                     otherAncestors: &otherAncestors,
-                    suppressed: &suppressed
+                    suppressed: &suppressed,
+                    keyboardVisibleInSnapshot: keyboardVisibleInSnapshot
                 )
             }
         }
@@ -733,7 +748,11 @@ class SnapshotElementFinder {
         }
     }
 
-    private func matchesSelector(_ node: [String: Any], selector: ElementSelector) -> Bool {
+    private func matchesSelector(
+        _ node: [String: Any],
+        selector: ElementSelector,
+        keyboardVisibleInSnapshot: Bool
+    ) -> Bool {
         let label = node["label"] as? String ?? ""
         let title = node["title"] as? String ?? ""
         let identifier = node["identifier"] as? String ?? ""
@@ -840,9 +859,11 @@ class SnapshotElementFinder {
 
         // Focus filter
         if let wantFocused = selector.focused {
-            let isFocused = (node["hasFocus"] as? Bool)
-                ?? (node["hasKeyboardFocus"] as? Bool)
-                ?? false
+            let isFocused = resolvedSnapshotFocus(
+                node,
+                elementType: elType,
+                keyboardVisibleInSnapshot: keyboardVisibleInSnapshot
+            )
             if isFocused != wantFocused { return false }
         }
 
