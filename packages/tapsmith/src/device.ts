@@ -759,7 +759,7 @@ export class Device {
     };
 
     stream.on('data', (entry: DaemonLogEntry) => {
-      if (this._daemonLogStream !== stream) return;
+      if (!entry || this._daemonLogStream !== stream) return;
       const level = mapDeviceLogLevel(entry.level);
       const message = entry.target
         ? `[${entry.target}] ${entry.message}`

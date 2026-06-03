@@ -4391,7 +4391,26 @@ impl proto::tapsmith_service_server::TapsmithService for TapsmithServiceImpl {
                                     break;
                                 }
                             }
-                            Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                            Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
+                                // Surface dropped entries instead of silently
+                                // losing them when a slow client falls behind.
+                                let now_ms = std::time::SystemTime::now()
+                                    .duration_since(std::time::UNIX_EPOCH)
+                                    .map(|d| d.as_millis() as u64)
+                                    .unwrap_or(0);
+                                let warn_entry = proto::DaemonLogEntry {
+                                    level: "warn".to_string(),
+                                    message: format!(
+                                        "Daemon log stream lagged; skipped {skipped} log entries"
+                                    ),
+                                    target: "tapsmith_core::grpc_server".to_string(),
+                                    request_id: String::new(),
+                                    timestamp_ms: now_ms,
+                                };
+                                if out_tx.send(Ok(warn_entry)).await.is_err() {
+                                    break;
+                                }
+                            }
                             Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
                         }
                     }

@@ -76,7 +76,14 @@ impl Visit for MessageVisitor {
         if field.name() == "message" {
             self.message = Some(value.to_string());
         } else {
-            self.fields.push(format!("{}={value}", field.name()));
+            // Quote values containing whitespace or quotes so `key=value` pairs
+            // stay parseable in the trace viewer; leave simple values bare.
+            let formatted = if value.contains(' ') || value.contains('"') {
+                format!("{value:?}")
+            } else {
+                value.to_string()
+            };
+            self.fields.push(format!("{}={formatted}", field.name()));
         }
     }
 
