@@ -85,7 +85,16 @@ describe('coordinate gesture methods on TapsmithGrpcClient', () => {
       await instance.inputText('hi');
       expect(callSpy).toHaveBeenCalledWith(
         'inputText',
-        expect.objectContaining({ text: 'hi', requestId: expect.any(String) }),
+        expect.objectContaining({ text: 'hi', typingDelayMs: 0, requestId: expect.any(String) }),
+      );
+    });
+
+    it('passes typingDelayMs when provided', async () => {
+      const { instance, callSpy } = makeClientWithCallSpy();
+      await instance.inputText('hi', 10);
+      expect(callSpy).toHaveBeenCalledWith(
+        'inputText',
+        expect.objectContaining({ text: 'hi', typingDelayMs: 10, requestId: expect.any(String) }),
       );
     });
   });
@@ -146,11 +155,19 @@ describe('coordinate gestures (device)', () => {
     expect(dragXY).toHaveBeenCalledWith(1, 2, 3, 4, 250);
   });
 
-  it('inputText delegates to client.inputText with text', async () => {
+  it('inputText delegates to client.inputText with text and default typing delay', async () => {
     const inputText = vi.fn(async () => successResponse());
     const client = makeDeviceMockClient({ inputText });
     const device = new Device(client);
     await device.inputText('hi');
-    expect(inputText).toHaveBeenCalledWith('hi');
+    expect(inputText).toHaveBeenCalledWith('hi', 0);
+  });
+
+  it('inputText delegates configured typingDelay to client.inputText', async () => {
+    const inputText = vi.fn(async () => successResponse());
+    const client = makeDeviceMockClient({ inputText });
+    const device = new Device(client, { typingDelay: 10 });
+    await device.inputText('hi');
+    expect(inputText).toHaveBeenCalledWith('hi', 10);
   });
 });

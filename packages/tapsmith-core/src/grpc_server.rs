@@ -5657,7 +5657,14 @@ impl proto::tapsmith_service_server::TapsmithService for TapsmithServiceImpl {
     ) -> Result<Response<proto::ActionResponse>, Status> {
         let req = request.into_inner();
         let request_id = Self::request_id(&req.request_id);
-        let command = AgentCommand::InputText { text: req.text };
+        let command = AgentCommand::InputText {
+            text: req.text,
+            typing_delay_ms: if req.typing_delay_ms > 0 {
+                Some(req.typing_delay_ms)
+            } else {
+                None
+            },
+        };
         let result = self.send_agent_command_with_timeout(&command, 0).await;
         self.make_action_response(request_id, result).await
     }

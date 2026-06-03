@@ -290,6 +290,9 @@ class CommandHandler {
             return try elementFinder.getElementInfo(elementId)
         }
         let selector = SelectorParser.parse(params)
+        if selector.xpath != nil {
+            return try elementFinder.findElement(selector)
+        }
         // Use snapshot-based finding for speed (single IPC call)
         return try snapshotFinder.findElement(selector)
     }
@@ -336,6 +339,36 @@ class CommandHandler {
         throw firstError!
     }
 
+    /// Double-tap a resolved element. Prefer XCUIElement.doubleTap() because
+    /// UIKit/RN gesture recognizers handle it more consistently than raw
+    /// coordinate double-taps on CI simulators. Use coordinate synthesis only
+    /// as a fallback when the cached XCUIElement path is unavailable.
+    private func doubleTapResolvedElement(_ element: ElementInfo, intervalMs: Int) throws {
+        var firstError: Error?
+        do {
+            let xcElem = try getXCUIElement(element.elementId)
+            try actionExecutor.doubleTap(xcElem)
+            return
+        } catch {
+            firstError = error
+            let message = "[TapsmithCommand] XCUIElement.doubleTap failed " +
+                "for \(element.elementId): \(error.localizedDescription), " +
+                "falling back to coordinate doubleTap"
+            NSLog(message)
+        }
+
+        if let center = snapshotCenter(for: element.elementId) {
+            actionExecutor.doubleTapCoordinates(
+                x: Int(center.x),
+                y: Int(center.y),
+                intervalMs: intervalMs
+            )
+            return
+        }
+
+        throw firstError!
+    }
+
     /// Tap inside a text input, biased toward the trailing edge so refocusing
     /// during retries keeps the insertion point at the end of the current
     /// value instead of moving it into the middle of existing text.
@@ -348,6 +381,7 @@ class CommandHandler {
             let screen = snapshotFinder.screenSize
             if x >= 0 && y >= 0 && x <= screen.width && y <= screen.height {
                 actionExecutor.tapCoordinates(x: Int(x), y: Int(y))
+                snapshotFinder.recordFocusedTextInputHint(element)
                 waitForKeyboardAppearance(maxWait: settleTime)
                 return
             }
@@ -358,6 +392,7 @@ class CommandHandler {
             throw AgentError.actionFailed("Element is not hittable — cannot type text")
         }
         xcElem.tap()
+        snapshotFinder.recordFocusedTextInputHint(element)
         waitForKeyboardAppearance(maxWait: settleTime)
     }
 
@@ -554,9 +589,11 @@ class CommandHandler {
             let y = (params["y"] as? NSNumber)?.intValue ?? -1
             if x >= 0 && y >= 0 {
                 actionExecutor.tapCoordinates(x: x, y: y)
+                snapshotFinder.recordFocusedTextInputHint(at: CGPoint(x: CGFloat(x), y: CGFloat(y)))
             } else {
                 let element = try resolveElement(params)
                 try tapResolvedElement(element)
+                snapshotFinder.recordFocusedTextInputHint(element)
             }
             // Force-flush pending touch events: take a snapshot() which does
             // a round-trip through the XCTest daemon. This acts as a barrier,
@@ -569,12 +606,7 @@ class CommandHandler {
         case "doubleTap":
             let element = try resolveElement(params)
             let intervalMs = params["intervalMs"] as? Int ?? 0
-            if let center = snapshotCenter(for: element.elementId) {
-                actionExecutor.doubleTapCoordinates(x: Int(center.x), y: Int(center.y), intervalMs: intervalMs)
-            } else {
-                let xcElem = try getXCUIElement(element.elementId)
-                try actionExecutor.doubleTap(xcElem)
-            }
+            try doubleTapResolvedElement(element, intervalMs: intervalMs)
             touchBarrier()
             return ["success": true]
 
@@ -606,16 +638,30 @@ class CommandHandler {
                 return ["success": true]
             }
             let delayMs = params["typingDelayMs"] as? Int ?? 0
-            let selectorKeys = ["role", "id", "contentDesc", "className", "testId", "hint", "textContains", "elementId"]
+            let selectorKeys = [
+                "role", "id", "contentDesc", "className", "testId",
+                "hint", "textContains", "elementId", "focused",
+                "label", "xpath", "resourceId", "parent", "parentId",
+                "enabled", "checked", "selected", "expanded",
+            ]
             let hasSelector = selectorKeys.contains { params[$0] != nil }
-            if hasSelector {
+            let isFocusedOnlySelector = (
+                (params["focused"] as? Bool) == true
+                && selectorKeys.allSatisfy { $0 == "focused" || params[$0] == nil }
+            )
+            if hasSelector && !(isFocusedOnlySelector && delayMs == 0) {
                 var selectorParams = params
                 selectorParams.removeValue(forKey: "text")
                 selectorParams.removeValue(forKey: "typingDelayMs")
+                if isFocusedOnlySelector {
+                    waitForKeyboardAppearance(maxWait: 1.0)
+                }
                 let element = try resolveElement(selectorParams)
-                try focusElementForTyping(element, settleTime: 0.5)
+                if !isFocusedOnlySelector {
+                    try focusElementForTyping(element, settleTime: 0.5)
+                }
                 if delayMs > 0 {
-                    let focused = try resolveElement(selectorParams)
+                    let focused = isFocusedOnlySelector ? element : try resolveElement(selectorParams)
                     try typeTextWithPerGraphemeVerification(
                         text,
                         selectorParams: selectorParams,
@@ -1026,6 +1072,7 @@ class CommandHandler {
                 let xcElem = try getXCUIElement(element.elementId)
                 try actionExecutor.focus(xcElem)
             }
+            snapshotFinder.recordFocusedTextInputHint(element)
             return ["success": true]
 
         case "blur":
@@ -1035,6 +1082,7 @@ class CommandHandler {
             // app.windows.firstMatch.frame.size read inside blur().
             actionExecutor.cachedScreenSize = snapshotFinder.screenSize
             try actionExecutor.blur(xcElem)
+            snapshotFinder.clearFocusedTextInputHint()
             return ["success": true]
 
         case "highlight":
@@ -1253,6 +1301,7 @@ class CommandHandler {
             let kbSnapshot = try? app.snapshot()
             let kbDict = kbSnapshot.map { $0.dictionaryRepresentation } ?? [:]
             guard hasKeyboardInSnapshot(kbDict) else {
+                snapshotFinder.clearFocusedTextInputHint()
                 return ["success": true]
             }
 
@@ -1282,6 +1331,7 @@ class CommandHandler {
                 duration: 0.05
             )
             Thread.sleep(forTimeInterval: 0.3)
+            snapshotFinder.clearFocusedTextInputHint()
             return ["success": true]
 
         // ─── Color Scheme ───

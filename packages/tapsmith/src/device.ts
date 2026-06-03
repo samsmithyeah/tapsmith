@@ -352,10 +352,10 @@ export class Device {
       () => this._client.dragXY(from.x, from.y, to.x, to.y, options?.duration), 'Coordinate drag failed');
   }
 
-  /** Type text into whatever currently has focus (no selector). */
+  /** Type text into whatever currently has focus. */
   async inputText(text: string): Promise<void> {
     return this._tracedAction('inputText', 'type', undefined,
-      () => this._client.inputText(text), 'Input text failed', { inputValue: text });
+      () => this._client.inputText(text, this._typingDelayMs), 'Input text failed', { inputValue: text });
   }
 
   // ── Utilities ──

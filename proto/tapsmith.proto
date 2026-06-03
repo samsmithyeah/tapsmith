@@ -280,6 +280,9 @@ message DragCoordinatesRequest {
 message InputTextRequest {
   string request_id = 1;
   string text = 2;
+  // Delay in ms between keystrokes. Mirrors TypeTextRequest so focused-field
+  // input can use the same guarded iOS typing path.
+  uint32 typing_delay_ms = 3;
 }
 
 // Streamed touch gesture (interactive mirror live-drag). Coordinates are
