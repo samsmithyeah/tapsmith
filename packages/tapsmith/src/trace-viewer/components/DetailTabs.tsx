@@ -270,6 +270,14 @@ function ConsoleTab({ event, events: consoleEvents }: { event: ActionTraceEvent 
   }, [consoleEvents]);
   const showSourceFilter = presentSources.size > 1;
 
+  // If the active source filter is no longer present (e.g. switching to an
+  // event with no daemon logs), reset to 'all' so the tab isn't confusingly empty.
+  useEffect(() => {
+    if (sourceFilter !== 'all' && !presentSources.has(sourceFilter)) {
+      setSourceFilter('all');
+    }
+  }, [presentSources, sourceFilter]);
+
   const filtered = useMemo(() => {
     const lf = search.toLowerCase();
     return consoleEvents.filter(e => {

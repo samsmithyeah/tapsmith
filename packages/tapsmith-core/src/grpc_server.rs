@@ -4376,21 +4376,28 @@ impl proto::tapsmith_service_server::TapsmithService for TapsmithServiceImpl {
 
         tokio::spawn(async move {
             loop {
-                match sub.recv().await {
-                    Ok(entry) => {
-                        let proto_entry = proto::DaemonLogEntry {
-                            level: entry.level,
-                            message: entry.message,
-                            target: entry.target,
-                            request_id: entry.request_id,
-                            timestamp_ms: entry.timestamp_ms,
-                        };
-                        if out_tx.send(Ok(proto_entry)).await.is_err() {
-                            break;
+                tokio::select! {
+                    res = sub.recv() => {
+                        match res {
+                            Ok(entry) => {
+                                let proto_entry = proto::DaemonLogEntry {
+                                    level: entry.level,
+                                    message: entry.message,
+                                    target: entry.target,
+                                    request_id: entry.request_id,
+                                    timestamp_ms: entry.timestamp_ms,
+                                };
+                                if out_tx.send(Ok(proto_entry)).await.is_err() {
+                                    break;
+                                }
+                            }
+                            Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                            Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
                         }
                     }
-                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
-                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                    // Client disconnected: terminate immediately instead of
+                    // blocking on `sub.recv()` until the next (maybe never) log.
+                    _ = out_tx.closed() => break,
                 }
             }
         });
