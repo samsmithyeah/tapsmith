@@ -78,7 +78,9 @@ interface WorkerHandle {
   retired?: boolean
 }
 
-function daemonStdio(workerId: number): 'ignore' | ['ignore', number, number] {
+type DaemonStdio = 'ignore' | ['ignore', number, number];
+
+function daemonStdio(workerId: number): DaemonStdio {
   const baseLogPath = process.env.TAPSMITH_DAEMON_LOG;
   if (!baseLogPath) return 'ignore';
 
@@ -89,6 +91,33 @@ function daemonStdio(workerId: number): 'ignore' | ['ignore', number, number] {
   fs.mkdirSync(path.dirname(logPath), { recursive: true });
   const fd = fs.openSync(logPath, 'a');
   return ['ignore', fd, fd];
+}
+
+function closeDaemonStdioParentFds(stdio: DaemonStdio): void {
+  if (!Array.isArray(stdio)) return;
+
+  const fds = new Set(stdio.filter((entry): entry is number => typeof entry === 'number'));
+  for (const fd of fds) {
+    try { fs.closeSync(fd); } catch { /* already closed */ }
+  }
+}
+
+function spawnDaemonProcess(
+  daemonBin: string,
+  daemonPort: number,
+  agentPort: number,
+  workerId: number,
+): ChildProcess {
+  const stdio = daemonStdio(workerId);
+  try {
+    return spawn(
+      daemonBin,
+      ['--port', String(daemonPort), '--agent-port', String(agentPort)],
+      { stdio },
+    );
+  } finally {
+    closeDaemonStdioParentFds(stdio);
+  }
 }
 
 export interface DispatcherOptions {
@@ -711,11 +740,7 @@ export async function runParallel(opts: DispatcherOptions, _portOffset = 0): Pro
   }
 
   updateLaunchPhaseProgress('daemon', `Worker ${displayWorkerId(0)}: starting daemon on localhost:${firstDaemonPort}`);
-  const firstDaemon = spawn(
-    daemonBin,
-    ['--port', String(firstDaemonPort), '--agent-port', String(firstAgentPort)],
-    { stdio: daemonStdio(0) },
-  );
+  const firstDaemon = spawnDaemonProcess(daemonBin, firstDaemonPort, firstAgentPort, 0);
   firstDaemon.unref();
   firstDaemon.on('error', () => {
     // Handled by the waitForReady timeout below
@@ -1590,11 +1615,7 @@ async function initializeWorker(opts: InitializeWorkerOptions): Promise<WorkerHa
     opts.onDaemonReady?.();
   } else {
     opts.onProgress?.(`starting worker daemon on localhost:${daemonPort}`);
-    daemonProcess = spawn(
-      daemonBin,
-      ['--port', String(daemonPort), '--agent-port', String(agentPort)],
-      { stdio: daemonStdio(workerId) },
-    );
+    daemonProcess = spawnDaemonProcess(daemonBin, daemonPort, agentPort, workerId);
     daemonProcess.unref();
     daemonProcess.on('error', (err) => {
       process.stderr.write(`Daemon for worker ${workerId} failed to start: ${err.message}\n`);

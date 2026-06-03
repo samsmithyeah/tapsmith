@@ -48,9 +48,12 @@ class CommandHandler {
     /// We tap Open, not Cancel: on a fresh simulator the confirmation can gate
     /// URL delivery, so cancelling leaves the deep link undelivered.
     @discardableResult
-    private func acceptOpenInAppDialogIfPresent(timeout: TimeInterval = 0.0) -> Bool {
-        let springboard = XCUIApplication(bundleIdentifier: "com.apple.springboard")
-        let openButton = springboard.buttons["Open"]
+    private func acceptOpenInAppDialogIfPresent(
+        springboard: XCUIApplication? = nil,
+        timeout: TimeInterval = 0.0
+    ) -> Bool {
+        let sb = springboard ?? XCUIApplication(bundleIdentifier: "com.apple.springboard")
+        let openButton = sb.buttons["Open"]
         if openButton.waitForExistence(timeout: timeout) {
             _ = ObjCExceptionCatcher.catchException {
                 openButton.tap()
@@ -97,12 +100,16 @@ class CommandHandler {
         let deadline = Date(timeIntervalSinceNow: timeout)
         while Date() < deadline {
             if safeAppState(app) == .runningForeground {
-                if appHasRenderedContent(app) && !openInAppDialogExists(springboard) {
+                let hasContent = appHasRenderedContent(app)
+                let dialogExists = openInAppDialogExists(springboard)
+                if hasContent && !dialogExists {
                     return true
                 }
-                _ = self.acceptOpenInAppDialogIfPresent(timeout: 0.1)
+                if dialogExists {
+                    _ = self.acceptOpenInAppDialogIfPresent(springboard: springboard, timeout: 0.1)
+                }
             } else {
-                _ = self.acceptOpenInAppDialogIfPresent(timeout: 0.3)
+                _ = self.acceptOpenInAppDialogIfPresent(springboard: springboard, timeout: 0.3)
             }
             Thread.sleep(forTimeInterval: 0.2)
         }
