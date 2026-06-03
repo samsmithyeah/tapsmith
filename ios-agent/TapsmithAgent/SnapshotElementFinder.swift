@@ -125,7 +125,16 @@ class SnapshotElementFinder {
         // Check once if keyboard is visible (for focus detection).
         // Keyboard = elementType 56 (XCUIElement.ElementType.keyboard).
         let keyboardVisibleInSnapshot = hasKeyboardInTree(snapshotDict)
-        let liveFocusedTextInput = keyboardVisibleInSnapshot ? findLiveFocusedTextInput() : nil
+        var liveFocusedTextInputFetched = false
+        var cachedLiveFocusedTextInput: LiveFocusedTextInput?
+        let liveFocusedTextInput = { [weak self] () -> LiveFocusedTextInput? in
+            guard keyboardVisibleInSnapshot, let self else { return nil }
+            if !liveFocusedTextInputFetched {
+                cachedLiveFocusedTextInput = self.findLiveFocusedTextInput()
+                liveFocusedTextInputFetched = true
+            }
+            return cachedLiveFocusedTextInput
+        }
         let focusedHint = keyboardVisibleInSnapshot ? currentFocusedTextInputHint() : nil
 
         // Flatten and search (pre-order — `.first()` callers depend on it).
@@ -497,29 +506,25 @@ class SnapshotElementFinder {
         _ node: [String: Any],
         elementType: XCUIElement.ElementType,
         keyboardVisibleInSnapshot: Bool,
-        liveFocusedTextInput: LiveFocusedTextInput?,
+        liveFocusedTextInput: () -> LiveFocusedTextInput?,
         focusedHint: FocusedTextInputHint?
     ) -> Bool {
         let snapshotFocused = (node["hasFocus"] as? Bool)
             ?? (node["hasKeyboardFocus"] as? Bool)
         if snapshotFocused == true { return true }
-        if keyboardVisibleInSnapshot,
-           matchesLiveFocusedTextInput(
-                node,
-                elementType: elementType,
-                liveFocusedTextInput: liveFocusedTextInput
-           ) {
-            return true
-        }
-        if keyboardVisibleInSnapshot,
-           matchesFocusedTextInputHint(
+        guard keyboardVisibleInSnapshot, isTextFieldType(elementType) else { return false }
+        if matchesFocusedTextInputHint(
                 node,
                 elementType: elementType,
                 focusedHint: focusedHint
            ) {
             return true
         }
-        return false
+        return matchesLiveFocusedTextInput(
+            node,
+            elementType: elementType,
+            liveFocusedTextInput: liveFocusedTextInput()
+        )
     }
 
     private func matchesLiveFocusedTextInput(
@@ -835,7 +840,7 @@ class SnapshotElementFinder {
         otherAncestors: inout [WrapperAncestor],
         suppressed: inout Set<Int>,
         keyboardVisibleInSnapshot: Bool,
-        liveFocusedTextInput: LiveFocusedTextInput?,
+        liveFocusedTextInput: () -> LiveFocusedTextInput?,
         focusedHint: FocusedTextInputHint?
     ) {
         // Pre-order: parent first, then descendants. Callers (e.g.
@@ -915,7 +920,7 @@ class SnapshotElementFinder {
         _ node: [String: Any],
         selector: ElementSelector,
         keyboardVisibleInSnapshot: Bool,
-        liveFocusedTextInput: LiveFocusedTextInput?,
+        liveFocusedTextInput: () -> LiveFocusedTextInput?,
         focusedHint: FocusedTextInputHint?
     ) -> Bool {
         let label = node["label"] as? String ?? ""
