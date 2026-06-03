@@ -542,16 +542,25 @@ class CommandHandler {
                 return ["success": true]
             }
             let delayMs = params["typingDelayMs"] as? Int ?? 0
-            let selectorKeys = ["role", "id", "contentDesc", "className", "testId", "hint", "textContains", "elementId"]
+            let selectorKeys = [
+                "role", "id", "contentDesc", "className", "testId",
+                "hint", "textContains", "elementId", "focused",
+            ]
             let hasSelector = selectorKeys.contains { params[$0] != nil }
-            if hasSelector {
+            let isFocusedOnlySelector = (
+                (params["focused"] as? Bool) == true
+                && selectorKeys.filter { $0 != "focused" }.allSatisfy { params[$0] == nil }
+            )
+            if hasSelector && !(isFocusedOnlySelector && delayMs == 0) {
                 var selectorParams = params
                 selectorParams.removeValue(forKey: "text")
                 selectorParams.removeValue(forKey: "typingDelayMs")
                 let element = try resolveElement(selectorParams)
-                try focusElementForTyping(element, settleTime: 0.5)
+                if !isFocusedOnlySelector {
+                    try focusElementForTyping(element, settleTime: 0.5)
+                }
                 if delayMs > 0 {
-                    let focused = try resolveElement(selectorParams)
+                    let focused = isFocusedOnlySelector ? element : try resolveElement(selectorParams)
                     try typeTextWithPerGraphemeVerification(
                         text,
                         selectorParams: selectorParams,

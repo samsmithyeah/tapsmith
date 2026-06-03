@@ -371,10 +371,11 @@ export class TapsmithGrpcClient {
     });
   }
 
-  async inputText(text: string): Promise<ActionResponse> {
+  async inputText(text: string, typingDelayMs?: number): Promise<ActionResponse> {
     return this.call<ActionResponse>('inputText', {
       requestId: requestId(),
       text,
+      typingDelayMs: typingDelayMs ?? 0,
     });
   }
 

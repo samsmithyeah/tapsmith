@@ -330,6 +330,7 @@ pub enum AgentCommand {
     },
     InputText {
         text: String,
+        typing_delay_ms: Option<u32>,
     },
     TouchDown {
         x: f32,
@@ -546,7 +547,16 @@ impl AgentCommand {
                     "durationMs": duration_ms
                 }),
             ),
-            AgentCommand::InputText { text } => ("typeText", json!({"text": text})),
+            AgentCommand::InputText {
+                text,
+                typing_delay_ms,
+            } => {
+                let mut p = json!({"text": text, "focused": true});
+                if let Some(d) = typing_delay_ms {
+                    p["typingDelayMs"] = json!(d);
+                }
+                ("typeText", p)
+            }
             AgentCommand::TouchDown { x, y, t_ms } => {
                 ("touchDown", json!({"x": x, "y": y, "t": t_ms}))
             }
@@ -1484,10 +1494,13 @@ mod tests {
     fn serializes_input_text() {
         let cmd = AgentCommand::InputText {
             text: "hello".to_string(),
+            typing_delay_ms: Some(10),
         };
         let j = cmd.to_json("it1");
         assert_eq!(j["method"], "typeText");
         assert_eq!(j["params"]["text"], "hello");
+        assert_eq!(j["params"]["focused"], true);
+        assert_eq!(j["params"]["typingDelayMs"], 10);
     }
 
     #[test]
