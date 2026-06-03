@@ -26,6 +26,7 @@ import {
   type Orientation,
   type ColorScheme,
   type DeviceLogEntry,
+  type DaemonLogEntry,
 } from './grpc-client.js';
 import { ElementHandle, locatorOptionsToSelector, type LocatorOptions } from './element-handle.js';
 import type { TapsmithConfig } from './config.js';
@@ -144,6 +145,8 @@ export class Device {
   /** @internal — Active device log stream. */
   private _logStream: grpc.ClientReadableStream<DeviceLogEntry> | null = null;
   private _logStreamCollector: TraceCollector | null = null;
+  private _daemonLogStream: grpc.ClientReadableStream<DaemonLogEntry> | null = null;
+  private _daemonLogStreamCollector: TraceCollector | null = null;
 
   private _typingDelayMs: number;
   private _doubleTapIntervalMs: number;
@@ -737,6 +740,55 @@ export class Device {
     stream?.cancel();
   }
 
+  /** @internal — Start streaming the daemon's own logs into the active trace collector. */
+  _startDaemonLogStream(collector: TraceCollector): void {
+    if (this._daemonLogStream) {
+      if (this._daemonLogStreamCollector === collector) return;
+      this._stopDaemonLogStream();
+    }
+
+    const stream = this._client.daemonLogStream();
+    this._daemonLogStream = stream;
+    this._daemonLogStreamCollector = collector;
+
+    const clearStream = () => {
+      if (this._daemonLogStream === stream) {
+        this._daemonLogStream = null;
+        this._daemonLogStreamCollector = null;
+      }
+    };
+
+    stream.on('data', (entry: DaemonLogEntry) => {
+      if (this._daemonLogStream !== stream) return;
+      const level = mapDeviceLogLevel(entry.level);
+      const message = entry.target
+        ? `[${entry.target}] ${entry.message}`
+        : entry.message;
+      collector.addDaemonLogEntry(level, message);
+    });
+
+    stream.on('error', (err: Error) => {
+      const code = (err as grpc.ServiceError).code;
+      const isCleanReset = code === grpc.status.INTERNAL && err.message.includes('RST_STREAM with code 0');
+      if (code !== grpc.status.CANCELLED && !isCleanReset) {
+        console.warn('[tapsmith] Daemon log stream error:', err.message);
+      }
+      clearStream();
+    });
+
+    stream.on('end', () => {
+      clearStream();
+    });
+  }
+
+  /** @internal — Stop streaming daemon logs. */
+  _stopDaemonLogStream(): void {
+    const stream = this._daemonLogStream;
+    this._daemonLogStream = null;
+    this._daemonLogStreamCollector = null;
+    stream?.cancel();
+  }
+
   // ─── Network Route Interception ───
 
   /**
@@ -1246,6 +1298,7 @@ export class Device {
   async close(): Promise<void> {
     // Stop device log stream (synchronous)
     this._stopDeviceLogStream();
+    this._stopDaemonLogStream();
 
     // Dispose the route manager (closes gRPC stream)
     if (this._routeManager) {
