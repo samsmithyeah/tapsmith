@@ -1788,6 +1788,7 @@ await device.tracing.start({ screenshots: true, snapshots: true });
 | `snapshots` | `boolean` | `true` | Capture view hierarchy XML |
 | `sources` | `boolean` | `true` | Include test source files |
 | `network` | `boolean` | `true` | Capture HTTP/HTTPS traffic via proxy |
+| `daemonLogs` | `boolean` | `false` | Stream the `tapsmith-core` daemon's own logs (gRPC, ADB/simctl invocations, device events) into the trace. Useful for diagnosing framework-level failures. Appears in the trace viewer's Console tab under the `daemon` source. Verbosity follows the daemon's log level — run the daemon with `--verbose` for debug-level detail. Opt-in (default off) because daemon logs are internal noise for typical app debugging. |
 | `title` | `string` | — | Custom title for the trace |
 
 ### `device.tracing.stop(options?)`

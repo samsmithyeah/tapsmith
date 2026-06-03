@@ -32,6 +32,7 @@ export default defineConfig({
   workers: 1,
   trace: {
     mode: "retain-on-failure",
+    daemonLogs: true,
     // Physical iOS captures traffic system-wide (no per-app scoping without
     // MDM). Allowlist the hosts the test app actually calls so traces don't
     // fill up with iOS background services and unrelated apps.

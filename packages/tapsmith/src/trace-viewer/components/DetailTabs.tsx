@@ -253,7 +253,7 @@ function LogTab({ event }: { event: ActionTraceEvent | AssertionTraceEvent | und
 
 // ─── Console Tab ───
 
-type SourceFilter = 'all' | 'test' | 'device'
+type SourceFilter = 'all' | 'test' | 'device' | 'daemon'
 
 const LEVEL_ORDER: ConsoleLevel[] = ['error', 'warn', 'info', 'log', 'debug'];
 
@@ -263,10 +263,20 @@ function ConsoleTab({ event, events: consoleEvents }: { event: ActionTraceEvent 
   const [sourceFilter, setSourceFilter] = useState<SourceFilter>('all');
   const [scopeToAction, setScopeToAction] = useState(false);
 
-  const hasBothSources = useMemo(() => {
-    const sources = new Set(consoleEvents.map(e => e.source));
-    return sources.has('test') && sources.has('device');
+  const presentSources = useMemo(() => {
+    const s = new Set<SourceFilter>();
+    for (const e of consoleEvents) s.add(e.source as SourceFilter);
+    return s;
   }, [consoleEvents]);
+  const showSourceFilter = presentSources.size > 1;
+
+  // If the active source filter is no longer present (e.g. switching to an
+  // event with no daemon logs), reset to 'all' so the tab isn't confusingly empty.
+  useEffect(() => {
+    if (sourceFilter !== 'all' && !presentSources.has(sourceFilter)) {
+      setSourceFilter('all');
+    }
+  }, [presentSources, sourceFilter]);
 
   const filtered = useMemo(() => {
     const lf = search.toLowerCase();
@@ -309,17 +319,19 @@ function ConsoleTab({ event, events: consoleEvents }: { event: ActionTraceEvent 
             >{level}</button>
           ))}
         </div>
-        {hasBothSources && (
+        {showSourceFilter && (
           <>
             <div class="con-pill-sep" />
             <div class="con-pills">
-              {(['all', 'test', 'device'] as SourceFilter[]).map(s => (
-                <button
-                  key={s}
-                  class={`con-pill${sourceFilter === s ? ' active' : ''}`}
-                  onClick={() => setSourceFilter(s)}
-                >{s}</button>
-              ))}
+              {(['all', 'test', 'device', 'daemon'] as SourceFilter[])
+                .filter(s => s === 'all' || presentSources.has(s))
+                .map(s => (
+                  <button
+                    key={s}
+                    class={`con-pill${sourceFilter === s ? ' active' : ''}`}
+                    onClick={() => setSourceFilter(s)}
+                  >{s}</button>
+                ))}
             </div>
           </>
         )}
@@ -339,7 +351,7 @@ function ConsoleTab({ event, events: consoleEvents }: { event: ActionTraceEvent 
           : filtered.map((ev, i) => (
             <div key={i} class="log-entry">
               <span class={`log-level ${ev.level}`}>{ev.level}</span>
-              <span class="log-source">{ev.source === 'device' ? 'device' : 'test'}</span>
+              <span class="log-source">{ev.source}</span>
               <span class="log-message">{ev.message}</span>
             </div>
           ))

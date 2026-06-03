@@ -736,7 +736,7 @@ export class TraceCollector {
 
   // ── Console ──
 
-  private _addConsoleEvent(level: ConsoleLevel, message: string, source: 'test' | 'device'): void {
+  private _addConsoleEvent(level: ConsoleLevel, message: string, source: 'test' | 'device' | 'daemon'): void {
     this._flushPendingGroups();
     const event = {
       type: 'console',
@@ -752,6 +752,10 @@ export class TraceCollector {
 
   addLogcatEntry(level: ConsoleLevel, message: string): void {
     this._addConsoleEvent(level, message, 'device');
+  }
+
+  addDaemonLogEntry(level: ConsoleLevel, message: string): void {
+    this._addConsoleEvent(level, message, 'daemon');
   }
 
   // ── Error ──

@@ -124,6 +124,10 @@ interface TraceConfig {
   network: boolean;              // Capture HTTP/HTTPS traffic via proxy (default: true)
   deviceLogs: boolean;           // Stream device logs — Android logcat / iOS
                                  // simulator syslog — into the trace (default: true)
+  daemonLogs: boolean;           // Stream the tapsmith-core daemon's own logs
+                                 // (gRPC, ADB/simctl, device events) into the
+                                 // trace, shown under the `daemon` source
+                                 // (default: false; --verbose for debug detail)
   networkHosts?: string[];       // Hostname allowlist (glob patterns). When set,
                                  // only entries whose host matches a pattern are
                                  // kept in the trace archive.

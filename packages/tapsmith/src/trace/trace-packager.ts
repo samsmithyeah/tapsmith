@@ -89,6 +89,7 @@ export function packageTrace(
       sources: collector.config.sources,
       network: collector.config.network,
       deviceLogs: collector.config.deviceLogs,
+      daemonLogs: collector.config.daemonLogs,
     },
     actionCount: collector.currentActionIndex,
     screenshotCount: collector.screenshots.length,

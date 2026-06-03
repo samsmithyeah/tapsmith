@@ -96,6 +96,9 @@ pub struct TapsmithServiceImpl {
     /// streamed touch here, falling back to the agent if it's unavailable.
     #[cfg(target_os = "macos")]
     hid_injector: Arc<crate::hid_injector::HidInjector>,
+    /// In-process broadcast of daemon `tracing` events, fanned out by the
+    /// `StreamDaemonLogs` RPC so the SDK can fold daemon logs into traces.
+    daemon_log_bus: crate::daemon_log_bus::DaemonLogBus,
 }
 
 /// Stored iOS agent launch config for restart.
@@ -113,10 +116,12 @@ impl TapsmithServiceImpl {
     pub fn new(
         device_manager: Arc<RwLock<DeviceManager>>,
         agent: Arc<RwLock<AgentConnection>>,
+        daemon_log_bus: crate::daemon_log_bus::DaemonLogBus,
     ) -> Self {
         Self {
             device_manager,
             agent,
+            daemon_log_bus,
             agent_stream: agent_comms::new_agent_stream_cache(),
             network_proxy: Arc::new(RwLock::new(None)),
             proxy_device_serial: Arc::new(RwLock::new(None)),
@@ -4311,6 +4316,9 @@ impl proto::tapsmith_service_server::TapsmithService for TapsmithServiceImpl {
     type StreamDeviceLogsStream =
         Pin<Box<dyn Stream<Item = Result<proto::DeviceLogEntry, Status>> + Send>>;
 
+    type StreamDaemonLogsStream =
+        Pin<Box<dyn Stream<Item = Result<proto::DaemonLogEntry, Status>> + Send>>;
+
     async fn stream_device_logs(
         &self,
         request: Request<proto::StreamDeviceLogsRequest>,
@@ -4350,6 +4358,67 @@ impl proto::tapsmith_service_server::TapsmithService for TapsmithServiceImpl {
                 }
             }
             drop(handle);
+        });
+
+        let output_stream = tokio_stream::wrappers::ReceiverStream::new(out_rx);
+        Ok(Response::new(Box::pin(output_stream)))
+    }
+
+    // ─── Daemon Log Streaming ───
+
+    async fn stream_daemon_logs(
+        &self,
+        _request: Request<proto::StreamDaemonLogsRequest>,
+    ) -> Result<Response<Self::StreamDaemonLogsStream>, Status> {
+        let mut sub = self.daemon_log_bus.subscribe();
+        let (out_tx, out_rx) =
+            tokio::sync::mpsc::channel::<Result<proto::DaemonLogEntry, Status>>(256);
+
+        tokio::spawn(async move {
+            loop {
+                tokio::select! {
+                    res = sub.recv() => {
+                        match res {
+                            Ok(entry) => {
+                                let proto_entry = proto::DaemonLogEntry {
+                                    level: entry.level,
+                                    message: entry.message,
+                                    target: entry.target,
+                                    request_id: entry.request_id,
+                                    timestamp_ms: entry.timestamp_ms,
+                                };
+                                if out_tx.send(Ok(proto_entry)).await.is_err() {
+                                    break;
+                                }
+                            }
+                            Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
+                                // Surface dropped entries instead of silently
+                                // losing them when a slow client falls behind.
+                                let now_ms = std::time::SystemTime::now()
+                                    .duration_since(std::time::UNIX_EPOCH)
+                                    .map(|d| d.as_millis() as u64)
+                                    .unwrap_or(0);
+                                let warn_entry = proto::DaemonLogEntry {
+                                    level: "warn".to_string(),
+                                    message: format!(
+                                        "Daemon log stream lagged; skipped {skipped} log entries"
+                                    ),
+                                    target: "tapsmith_core::grpc_server".to_string(),
+                                    request_id: String::new(),
+                                    timestamp_ms: now_ms,
+                                };
+                                if out_tx.send(Ok(warn_entry)).await.is_err() {
+                                    break;
+                                }
+                            }
+                            Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                        }
+                    }
+                    // Client disconnected: terminate immediately instead of
+                    // blocking on `sub.recv()` until the next (maybe never) log.
+                    _ = out_tx.closed() => break,
+                }
+            }
         });
 
         let output_stream = tokio_stream::wrappers::ReceiverStream::new(out_rx);

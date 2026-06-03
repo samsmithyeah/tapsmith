@@ -994,6 +994,18 @@ async function runSuiteContext(
             );
           }
         }
+
+        // Start daemon log streaming if configured
+        if (traceConfig.daemonLogs && traceCollector) {
+          try {
+            opts.device._startDaemonLogStream(traceCollector);
+          } catch (err) {
+            _warnCaptureOnce(
+              'Daemon log streaming failed to start',
+              err instanceof Error ? err.message : String(err),
+            );
+          }
+        }
       }
 
       // Video recording — bracket the test the same way `trace` does (PILOT-114).
@@ -1243,8 +1255,13 @@ async function runSuiteContext(
       if (traceCollector && opts.device) {
         const device = opts.device;
 
-        // Stop device log streaming first — no async cleanup needed
+        // Stop device + daemon log streaming first — no async cleanup needed.
+        // Stopping per-test (not just on Device.close) keeps the streams from
+        // outliving the test they belong to: on a shared Device, a later test
+        // with logs disabled would otherwise keep streaming into this finalized
+        // collector (leak + cross-test pollution).
         device._stopDeviceLogStream();
+        device._stopDaemonLogStream();
 
         // Drain per-test network entries BEFORE disposing the route manager —
         // the proxy may still have in-flight requests that need the gRPC

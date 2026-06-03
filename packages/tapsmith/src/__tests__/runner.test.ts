@@ -629,6 +629,8 @@ describe('runner execution', () => {
         if (activeLogCollector) streamStops.push(activeLogCollector);
         activeLogCollector = null;
       }),
+      _startDaemonLogStream: vi.fn(),
+      _stopDaemonLogStream: vi.fn(),
     };
 
     try {
@@ -695,6 +697,8 @@ describe('runner execution', () => {
         errorMessage: '',
       })),
       _stopDeviceLogStream: vi.fn(),
+      _startDaemonLogStream: vi.fn(),
+      _stopDaemonLogStream: vi.fn(),
       _disposeRouteManager: vi.fn(async () => {}),
       _disposeWebViewManager: vi.fn(async () => {}),
     };
