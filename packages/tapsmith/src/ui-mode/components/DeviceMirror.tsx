@@ -6,18 +6,29 @@
  */
 
 import type { RefObject } from 'preact';
+import { useDeviceInteraction } from '../hooks/use-device-interaction.js';
+import type { ClientMessage } from '../ui-protocol.js';
 
 interface DeviceMirrorProps {
   canvasRef: RefObject<HTMLCanvasElement>
   connected: boolean
+  /** True while the selected device's mirror is starting and hasn't painted a
+   * frame yet — shows the loading placeholder instead of a black canvas. */
+  loading?: boolean
   platform?: 'android' | 'ios'
+  interactive: boolean
+  force: boolean
+  workerId: number
+  send: (msg: ClientMessage) => void
 }
 
-export function DeviceMirror({ canvasRef, connected, platform }: DeviceMirrorProps) {
+export function DeviceMirror({ canvasRef, connected, loading, platform, interactive, force, workerId, send }: DeviceMirrorProps) {
+  const interaction = useDeviceInteraction({ send, enabled: interactive, force, workerId });
+
   return (
     <div class="device-mirror">
       <div class="dm-viewport">
-        {!connected && (
+        {(!connected || loading) && (
           <div class="dm-overlay">
             <div class="dm-placeholder">
               <svg class="dm-phone-icon" viewBox="0 0 56 96" fill="none" xmlns="http://www.w3.org/2000/svg">
@@ -26,8 +37,8 @@ export function DeviceMirror({ canvasRef, connected, platform }: DeviceMirrorPro
                 <rect x="22" y="84" width="12" height="3" rx="1.5" fill="currentColor" opacity="0.3" />
                 <circle cx="28" cy="8" r="2" fill="currentColor" opacity="0.2" />
               </svg>
-              <div class="dm-placeholder-text">Waiting for device</div>
-              <div class="dm-placeholder-hint">Connect a device or start a test run</div>
+              <div class="dm-placeholder-text">{connected ? 'Starting mirror…' : 'Waiting for device'}</div>
+              {!connected && <div class="dm-placeholder-hint">Connect a device or start a test run</div>}
               <div class="dm-placeholder-dots">
                 <span class="dm-dot" />
                 <span class="dm-dot" />
@@ -39,7 +50,13 @@ export function DeviceMirror({ canvasRef, connected, platform }: DeviceMirrorPro
         <div class={`dm-frame${platform ? ` dm-skin-${platform}` : ''}`}>
           <canvas
             ref={canvasRef}
-            class="dm-canvas"
+            class={`dm-canvas ${interactive ? 'interactive' : 'locked'}`}
+            tabIndex={interactive ? 0 : -1}
+            onPointerDown={interactive ? interaction.onPointerDown : undefined}
+            onPointerMove={interactive ? interaction.onPointerMove : undefined}
+            onPointerUp={interactive ? interaction.onPointerUp : undefined}
+            onPointerCancel={interactive ? interaction.onPointerCancel : undefined}
+            onKeyDown={interactive ? interaction.onKeyDown : undefined}
           />
         </div>
       </div>

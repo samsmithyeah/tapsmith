@@ -146,6 +146,40 @@ Press the Android back button. Convenience method equivalent to `device.pressKey
 await device.pressBack();
 ```
 
+### `device.tapXY(x: number, y: number): Promise<void>`
+
+Tap at raw screen coordinates in logical points (Android pixels; iOS points). Prefer selector-based `tap()` in tests; use this for coordinate-driven interaction (e.g., device mirror gestures).
+
+```typescript
+await device.tapXY(120, 340);
+```
+
+### `device.longPressXY(x: number, y: number, options?: { duration?: number }): Promise<void>`
+
+Long-press at raw screen coordinates in logical points. `options.duration` specifies the hold duration in milliseconds (default 1000).
+
+```typescript
+await device.longPressXY(120, 340, { duration: 800 });
+```
+
+### `device.dragXY(from: { x: number; y: number }, to: { x: number; y: number }, options?: { duration?: number }): Promise<void>`
+
+Drag/swipe from one point to another in logical points. `options.duration` specifies the drag duration in milliseconds (default 300).
+
+```typescript
+await device.dragXY({ x: 50, y: 200 }, { x: 50, y: 600 }, { duration: 400 });
+```
+
+> **Platform note:** `duration` is honored on Android (it scales the gesture's step count). On iOS the drag is performed via a fixed-duration synthesized gesture, so `duration` currently has no effect on speed.
+
+### `device.inputText(text: string): Promise<void>`
+
+Type `text` into whatever element currently has focus (no selector). Useful for inserting text without first tapping a field.
+
+```typescript
+await device.inputText("hello world");
+```
+
 ### `device.takeScreenshot(): Promise<ScreenshotResponse>`
 
 Capture a screenshot of the current device screen. Returns an object with `success`, `data` (PNG bytes), and `errorMessage` fields.

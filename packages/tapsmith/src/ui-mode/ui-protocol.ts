@@ -268,6 +268,13 @@ export interface RunStateMessage {
   startedAt?: number
 }
 
+export interface VideoStatusMessage {
+  type: 'video-status'
+  workerId: number
+  streaming: boolean
+  reason?: string
+}
+
 /** Union of all server → client JSON messages. */
 export type ServerMessage =
   | TestTreeMessage
@@ -288,6 +295,7 @@ export type ServerMessage =
   | ErrorMessage
   | McpStatusMessage
   | McpToolCallMessage
+  | VideoStatusMessage
 
 // ─── Client → Server messages ───
 
@@ -355,12 +363,85 @@ export interface RequestSourceCommand {
   path: string
 }
 
-export interface TapCoordinatesCommand {
-  type: 'tap-coordinates'
-  /** X coordinate normalized to 0–1 range. */
+export interface MirrorTapCommand {
+  type: 'mirror-tap'
+  /** X normalized to 0–1. */
   x: number
-  /** Y coordinate normalized to 0–1 range. */
+  /** Y normalized to 0–1. */
   y: number
+  /** Target worker (multi-worker mode). Defaults to the selected worker. */
+  workerId?: number
+  /** True when the user overrode the lock to interact during a run. */
+  force?: boolean
+}
+
+export interface MirrorLongPressCommand {
+  type: 'mirror-long-press'
+  x: number
+  y: number
+  durationMs: number
+  workerId?: number
+  force?: boolean
+}
+
+export interface MirrorSwipeCommand {
+  type: 'mirror-swipe'
+  fromX: number
+  fromY: number
+  toX: number
+  toY: number
+  durationMs: number
+  workerId?: number
+  force?: boolean
+}
+
+export interface MirrorInputTextCommand {
+  type: 'mirror-input-text'
+  text: string
+  workerId?: number
+  force?: boolean
+}
+
+export interface MirrorPressKeyCommand {
+  type: 'mirror-press-key'
+  key: string
+  workerId?: number
+  force?: boolean
+}
+
+export interface MirrorTouchStartCommand {
+  type: 'mirror-touch-start'
+  /** X normalized to 0–1. */
+  x: number
+  /** Y normalized to 0–1. */
+  y: number
+  workerId?: number
+  force?: boolean
+}
+
+export interface MirrorTouchMoveCommand {
+  type: 'mirror-touch-move'
+  x: number
+  y: number
+  /** Milliseconds since touch-start. */
+  tMs: number
+  workerId?: number
+  force?: boolean
+}
+
+export interface MirrorTouchEndCommand {
+  type: 'mirror-touch-end'
+  x: number
+  y: number
+  tMs: number
+  workerId?: number
+  force?: boolean
+}
+
+export interface MirrorTouchCancelCommand {
+  type: 'mirror-touch-cancel'
+  workerId?: number
+  force?: boolean
 }
 
 export interface SetFilterCommand {
@@ -386,6 +467,16 @@ export interface RespawnWorkerCommand {
   workerId: number
 }
 
+export interface StartVideoCommand {
+  type: 'start-video'
+  workerId: number
+}
+
+export interface StopVideoCommand {
+  type: 'stop-video'
+  workerId: number
+}
+
 /** Union of all client → server JSON messages. */
 export type ClientMessage =
   | RunTestCommand
@@ -397,22 +488,41 @@ export type ClientMessage =
   | ToggleWatchCommand
   | RequestHierarchyCommand
   | RequestSourceCommand
-  | TapCoordinatesCommand
+  | MirrorTapCommand
+  | MirrorLongPressCommand
+  | MirrorSwipeCommand
+  | MirrorInputTextCommand
+  | MirrorPressKeyCommand
+  | MirrorTouchStartCommand
+  | MirrorTouchMoveCommand
+  | MirrorTouchEndCommand
+  | MirrorTouchCancelCommand
   | SetFilterCommand
   | SelectWorkerCommand
   | SelectWorkerViewCommand
   | RespawnWorkerCommand
+  | StartVideoCommand
+  | StopVideoCommand
 
 // ─── Binary frame helpers ───
 
 /**
- * Screen frames are sent as binary WebSocket messages:
- *   bytes 0-3:  uint32 BE frame sequence number
- *   bytes 4-5:  uint16 BE worker ID (0 for single-worker mode)
- *   bytes 6-9:  uint16 BE width, uint16 BE height
- *   bytes 10+:  raw PNG data
+ * Binary WebSocket frames are tagged with a `kind` byte (byte 0) so the same
+ * channel can carry both PNG screenshot frames and H.264 video frames.
  */
-export const SCREEN_FRAME_HEADER_SIZE = 10;
+export const FRAME_KIND_SCREENSHOT = 0;
+export const FRAME_KIND_VIDEO = 1;
+
+/**
+ * Screenshot frame layout:
+ *   byte  0:    uint8  kind = 0
+ *   bytes 1-4:  uint32 BE frame sequence number
+ *   bytes 5-6:  uint16 BE worker ID (0 for single-worker mode)
+ *   bytes 7-8:  uint16 BE width
+ *   bytes 9-10: uint16 BE height
+ *   bytes 11+:  raw PNG data
+ */
+export const SCREEN_FRAME_HEADER_SIZE = 11;
 
 export function encodeScreenFrame(
   seq: number,
@@ -422,26 +532,59 @@ export function encodeScreenFrame(
   png: Buffer,
 ): Buffer {
   const header = Buffer.alloc(SCREEN_FRAME_HEADER_SIZE);
-  header.writeUInt32BE(seq, 0);
-  header.writeUInt16BE(workerId, 4);
-  header.writeUInt16BE(width, 6);
-  header.writeUInt16BE(height, 8);
+  header.writeUInt8(FRAME_KIND_SCREENSHOT, 0);
+  header.writeUInt32BE(seq, 1);
+  header.writeUInt16BE(workerId, 5);
+  header.writeUInt16BE(width, 7);
+  header.writeUInt16BE(height, 9);
   return Buffer.concat([header, png]);
 }
 
-export function decodeScreenFrameHeader(data: ArrayBuffer): {
-  seq: number
-  workerId: number
-  width: number
-  height: number
-  pngOffset: number
-} {
+/**
+ * Video frame layout:
+ *   byte  0:    uint8  kind = 1
+ *   bytes 1-2:  uint16 BE worker ID
+ *   byte  3:    uint8  flags (bit0 = keyframe, bit1 = config carrying SPS/PPS)
+ *   bytes 4+:   H.264 Annex-B payload
+ */
+export const VIDEO_FRAME_HEADER_SIZE = 4;
+
+export function encodeVideoFrame(
+  workerId: number,
+  keyframe: boolean,
+  config: boolean,
+  payload: Buffer,
+): Buffer {
+  const header = Buffer.alloc(VIDEO_FRAME_HEADER_SIZE);
+  header.writeUInt8(FRAME_KIND_VIDEO, 0);
+  header.writeUInt16BE(workerId, 1);
+  header.writeUInt8((keyframe ? 1 : 0) | (config ? 2 : 0), 3);
+  return Buffer.concat([header, payload]);
+}
+
+export type DecodedBinaryFrame =
+  | { kind: 'screenshot'; seq: number; workerId: number; width: number; height: number; pngOffset: number }
+  | { kind: 'video'; workerId: number; keyframe: boolean; config: boolean; payload: ArrayBuffer }
+
+export function decodeBinaryFrame(data: ArrayBuffer): DecodedBinaryFrame {
   const view = new DataView(data);
+  const kind = view.getUint8(0);
+  if (kind === FRAME_KIND_VIDEO) {
+    const flags = view.getUint8(3);
+    return {
+      kind: 'video',
+      workerId: view.getUint16(1),
+      keyframe: (flags & 1) !== 0,
+      config: (flags & 2) !== 0,
+      payload: data.slice(VIDEO_FRAME_HEADER_SIZE),
+    };
+  }
   return {
-    seq: view.getUint32(0),
-    workerId: view.getUint16(4),
-    width: view.getUint16(6),
-    height: view.getUint16(8),
+    kind: 'screenshot',
+    seq: view.getUint32(1),
+    workerId: view.getUint16(5),
+    width: view.getUint16(7),
+    height: view.getUint16(9),
     pngOffset: SCREEN_FRAME_HEADER_SIZE,
   };
 }

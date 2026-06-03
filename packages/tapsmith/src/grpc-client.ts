@@ -154,6 +154,12 @@ export interface DeviceLogEntry {
   pid: number;
 }
 
+export interface ScreenVideoFrame {
+  data: Buffer
+  keyframe: boolean
+  config: boolean
+}
+
 export interface WebViewInfo {
   socketName: string;
   pid: number;
@@ -335,6 +341,57 @@ export class TapsmithGrpcClient {
     };
     if (options?.timeoutMs != null) request.timeoutMs = options.timeoutMs;
     return this.call<ActionResponse>('swipe', request);
+  }
+
+  async tapXY(x: number, y: number): Promise<ActionResponse> {
+    return this.call<ActionResponse>('tapCoordinates', {
+      requestId: requestId(),
+      x,
+      y,
+    });
+  }
+
+  async longPressXY(x: number, y: number, durationMs?: number): Promise<ActionResponse> {
+    return this.call<ActionResponse>('longPressCoordinates', {
+      requestId: requestId(),
+      x,
+      y,
+      durationMs: durationMs ?? 0,
+    });
+  }
+
+  async dragXY(fromX: number, fromY: number, toX: number, toY: number, durationMs?: number): Promise<ActionResponse> {
+    return this.call<ActionResponse>('dragCoordinates', {
+      requestId: requestId(),
+      fromX,
+      fromY,
+      toX,
+      toY,
+      durationMs: durationMs ?? 0,
+    });
+  }
+
+  async inputText(text: string): Promise<ActionResponse> {
+    return this.call<ActionResponse>('inputText', {
+      requestId: requestId(),
+      text,
+    });
+  }
+
+  async touchDown(x: number, y: number, tMs = 0): Promise<ActionResponse> {
+    return this.call<ActionResponse>('touchDown', { requestId: requestId(), x, y, tMs });
+  }
+
+  async touchMove(x: number, y: number, tMs = 0): Promise<ActionResponse> {
+    return this.call<ActionResponse>('touchMove', { requestId: requestId(), x, y, tMs });
+  }
+
+  async touchUp(x: number, y: number, tMs = 0): Promise<ActionResponse> {
+    return this.call<ActionResponse>('touchUp', { requestId: requestId(), x, y, tMs });
+  }
+
+  async touchCancel(): Promise<ActionResponse> {
+    return this.call<ActionResponse>('touchCancel', { requestId: requestId() });
   }
 
   async scroll(
@@ -778,6 +835,20 @@ export class TapsmithGrpcClient {
       requestId: requestId(),
       packageName,
     }) as grpc.ClientReadableStream<DeviceLogEntry>;
+  }
+
+  /**
+   * Server-stream of H.264 access units (Annex-B) for the live mirror.
+   * Cancel the returned stream to stop capture on the device.
+   * @internal
+   */
+  screenStream(maxSize = 0, bitRate = 0): grpc.ClientReadableStream<ScreenVideoFrame> {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- dynamic RPC dispatch on proto-loaded client
+    return (this.client as any).streamScreen({
+      requestId: requestId(),
+      maxSize,
+      bitRate,
+    }) as grpc.ClientReadableStream<ScreenVideoFrame>;
   }
 
   // ── Network Route Interception ──

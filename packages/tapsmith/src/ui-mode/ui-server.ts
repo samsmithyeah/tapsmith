@@ -55,7 +55,7 @@ import type {
   UIWorkerChildMessage,
   UIWorkerMessage,
 } from './ui-protocol.js';
-import { encodeScreenFrame } from './ui-protocol.js';
+import { encodeScreenFrame, encodeVideoFrame } from './ui-protocol.js';
 import { RunQueue } from '../watch-queue.js';
 import {
   forkStdioForLaunchProgress,
@@ -250,6 +250,9 @@ export async function startUIServer(
   let screenPollTimer: ReturnType<typeof setTimeout> | null = null;
   let screenSeq = 0;
   let screenPollActive = false;
+  // Throttle for the dims-only screenshot that keeps video workers' device-pixel
+  // dimensions fresh (their screenshot polling is paused — see refreshVideoWorkerDims).
+  let lastVideoDimsRefresh = 0;
   let watcher: FSWatcher | null = null;
   let discoveryWatcher: FSWatcher | null = null;
   const pendingDiscoveryFiles = new Set<string>();
@@ -307,8 +310,17 @@ export async function startUIServer(
   let workersInitialized = false;
   /** Which worker's device to mirror. Defaults to 0. */
   let selectedWorkerId = 0;
+  let lastMirrorInteraction = 0;
+  const INTERACTION_WINDOW_MS = 2000;
+  const INTERACTIVE_POLL_MS = 90;
   /** Screen view mode: 'all' polls all workers, number polls a specific worker. */
   let screenViewMode: 'all' | number = 'all';
+  /** Last known frame dimensions per worker ID, used to convert normalized coords. */
+  const lastFrameDims = new Map<number, { width: number; height: number }>();
+  /** Active H.264 video streams per worker ID. */
+  const videoStreams = new Map<number, import('@grpc/grpc-js').ClientReadableStream<unknown>>();
+  /** Workers currently served by video — skip screenshot polling for these. */
+  const videoWorkers = new Set<number>();
   /** Set to true while a parallel run is in progress, to signal stop. */
   let parallelRunAborted = false;
 
@@ -2432,9 +2444,53 @@ export async function startUIServer(
       // Read dimensions from the PNG IHDR chunk (bytes 16-23: width + height as big-endian uint32)
       const width = data.length >= 24 ? data.readUInt32BE(16) : 1080;
       const height = data.length >= 24 ? data.readUInt32BE(20) : 1920;
+      lastFrameDims.set(workerId, { width, height });
       const frame = encodeScreenFrame(screenSeq++, workerId, width, height, data);
       broadcastBinary(frame);
     }
+  }
+
+  /**
+   * Keep `lastFrameDims` (device-pixel dimensions, used to map normalized touch
+   * coords to logical points) fresh for workers served by video. Their normal
+   * screenshot polling is paused, so without this the dims would be empty before
+   * the first frame or stale after a device rotation, breaking touch mapping.
+   * Uses a low-rate dims-only screenshot (device pixels — NOT the downscaled
+   * video frame size) and does NOT broadcast it, so the video display is
+   * unaffected. Throttled (see interval below) since it only needs to catch a
+   * rare mid-stream rotation — initial dims are set before video starts.
+   */
+  async function refreshVideoWorkerDims(): Promise<void> {
+    if (videoWorkers.size === 0) return;
+    // Infrequent: a screenshot mid-stream briefly hitches the H.264 video, and
+    // the initial dims are already set before video starts (screenshot polling
+    // runs until the first video frame). This refresh only catches the rare
+    // mid-stream device rotation, so 10s is plenty.
+    if (Date.now() - lastVideoDimsRefresh < 10000) return;
+    lastVideoDimsRefresh = Date.now();
+    const targets: { id: number; client: import('../grpc-client.js').TapsmithGrpcClient }[] =
+      multiWorker && workersInitialized
+        ? uiWorkers
+            .filter((w) => !w.retired && w.screenClient && videoWorkers.has(w.id))
+            .map((w) => ({ id: w.id, client: w.screenClient! }))
+        : ctx.client && videoWorkers.has(selectedWorkerId)
+          ? [{ id: selectedWorkerId, client: ctx.client }]
+          : [];
+    await Promise.allSettled(
+      targets.map(async ({ id, client }) => {
+        try {
+          const r = await client.takeScreenshot();
+          if (r.success && r.data) {
+            const data = Buffer.isBuffer(r.data) ? r.data : Buffer.from(r.data);
+            if (data.length >= 24) {
+              lastFrameDims.set(id, { width: data.readUInt32BE(16), height: data.readUInt32BE(20) });
+            }
+          }
+        } catch {
+          // Device busy — keep the last known dims.
+        }
+      }),
+    );
   }
 
   async function pollScreen(): Promise<void> {
@@ -2445,13 +2501,15 @@ export async function startUIServer(
 
     try {
       if (multiWorker && workersInitialized && screenViewMode === 'all') {
-        // Poll ALL non-retired workers in parallel
-        const activeWorkers = uiWorkers.filter((w) => !w.retired && w.screenClient);
+        // Poll ALL non-retired workers in parallel, skipping any served by video
+        const activeWorkers = uiWorkers.filter(
+          (w) => !w.retired && w.screenClient && !videoWorkers.has(w.id),
+        );
         await Promise.allSettled(
           activeWorkers.map((w) => pollSingleWorker(w.id, w.screenClient!)),
         );
-      } else {
-        // Single-worker mode or specific worker selected
+      } else if (!videoWorkers.has(selectedWorkerId)) {
+        // Single-worker mode or specific worker selected (skip if served by video)
         const pollClient = multiWorker && workersInitialized
           ? uiWorkers.find((w) => w.id === selectedWorkerId && !w.retired)?.screenClient
           : ctx.client;
@@ -2463,6 +2521,8 @@ export async function startUIServer(
 
         await pollSingleWorker(selectedWorkerId, pollClient);
       }
+      // Keep video workers' device dims fresh (throttled; no broadcast).
+      await refreshVideoWorkerDims();
     } catch {
       // Device may be busy — skip frame
     }
@@ -2472,7 +2532,8 @@ export async function startUIServer(
 
   function scheduleScreenPoll(): void {
     if (screenPollTimer) clearTimeout(screenPollTimer);
-    const interval = screenPollActive ? 150 : 500;
+    const interacting = Date.now() - lastMirrorInteraction < INTERACTION_WINDOW_MS;
+    const interval = interacting ? INTERACTIVE_POLL_MS : (screenPollActive ? 150 : 500);
     screenPollTimer = setTimeout(pollScreen, interval);
   }
 
@@ -2914,6 +2975,46 @@ export async function startUIServer(
     }
   });
 
+  // ─── Mirror Gesture Helpers ───
+
+  /** Resolve the gRPC client + devicePixelRatio for a mirror gesture target. */
+  function resolveGestureTarget(workerId?: number): {
+    client: TapsmithGrpcClient | undefined
+    dpr: number
+    dims: { width: number; height: number } | undefined
+  } {
+    if (multiWorker && workersInitialized) {
+      const id = workerId ?? selectedWorkerId;
+      const worker = uiWorkers.find((w) => w.id === id && !w.retired);
+      const platform = worker ? resolveWorkerPlatform(ctx, worker) : undefined;
+      return {
+        client: worker?.screenClient,
+        dpr: (worker && cachedScreenScale(worker.deviceSerial, platform)) || 1,
+        dims: lastFrameDims.get(id),
+      };
+    }
+    return {
+      client: ctx.client,
+      dpr: cachedScreenScale(ctx.deviceSerial ?? '', ctx.config.platform) || 1,
+      dims: lastFrameDims.get(0),
+    };
+  }
+
+  /** Convert a normalized (0–1) point to logical points for the target. */
+  function normalizedToLogical(
+    nx: number,
+    ny: number,
+    dims: { width: number; height: number } | undefined,
+    dpr: number,
+  ): { x: number; y: number } | undefined {
+    if (!dims) return undefined;
+    const clamp = (v: number) => Math.min(1, Math.max(0, v));
+    return {
+      x: (clamp(nx) * dims.width) / dpr,
+      y: (clamp(ny) * dims.height) / dpr,
+    };
+  }
+
   // ─── Command Handler ───
 
   function handleCommand(msg: ClientMessage): void {
@@ -3055,9 +3156,119 @@ export async function startUIServer(
       case 'request-source':
         sendSourceFromDisk(msg.path);
         break;
-      case 'tap-coordinates':
-        console.log(`[Tapsmith UI] Tap at (${msg.x.toFixed(2)}, ${msg.y.toFixed(2)}) — coordinate tap not yet implemented`);
+      case 'mirror-tap': {
+        lastMirrorInteraction = Date.now();
+        const t = resolveGestureTarget(msg.workerId);
+        const p = normalizedToLogical(msg.x, msg.y, t.dims, t.dpr);
+        if (t.client && p) t.client.tapXY(p.x, p.y).catch(() => {});
         break;
+      }
+      case 'mirror-long-press': {
+        lastMirrorInteraction = Date.now();
+        const t = resolveGestureTarget(msg.workerId);
+        const p = normalizedToLogical(msg.x, msg.y, t.dims, t.dpr);
+        if (t.client && p) t.client.longPressXY(p.x, p.y, msg.durationMs).catch(() => {});
+        break;
+      }
+      case 'mirror-swipe': {
+        lastMirrorInteraction = Date.now();
+        const t = resolveGestureTarget(msg.workerId);
+        const from = normalizedToLogical(msg.fromX, msg.fromY, t.dims, t.dpr);
+        const to = normalizedToLogical(msg.toX, msg.toY, t.dims, t.dpr);
+        if (t.client && from && to) {
+          t.client.dragXY(from.x, from.y, to.x, to.y, msg.durationMs).catch(() => {});
+        }
+        break;
+      }
+      case 'mirror-input-text': {
+        lastMirrorInteraction = Date.now();
+        const t = resolveGestureTarget(msg.workerId);
+        if (t.client) t.client.inputText(msg.text).catch(() => {});
+        break;
+      }
+      case 'mirror-press-key': {
+        lastMirrorInteraction = Date.now();
+        const t = resolveGestureTarget(msg.workerId);
+        if (t.client) t.client.pressKey(msg.key).catch(() => {});
+        break;
+      }
+      case 'mirror-touch-start': {
+        lastMirrorInteraction = Date.now();
+        const t = resolveGestureTarget(msg.workerId);
+        const p = normalizedToLogical(msg.x, msg.y, t.dims, t.dpr);
+        if (t.client && p) t.client.touchDown(p.x, p.y, 0).catch(() => {});
+        break;
+      }
+      case 'mirror-touch-move': {
+        lastMirrorInteraction = Date.now();
+        const t = resolveGestureTarget(msg.workerId);
+        const p = normalizedToLogical(msg.x, msg.y, t.dims, t.dpr);
+        if (t.client && p) t.client.touchMove(p.x, p.y, msg.tMs).catch(() => {});
+        break;
+      }
+      case 'mirror-touch-end': {
+        lastMirrorInteraction = Date.now();
+        const t = resolveGestureTarget(msg.workerId);
+        const p = normalizedToLogical(msg.x, msg.y, t.dims, t.dpr);
+        if (t.client && p) t.client.touchUp(p.x, p.y, msg.tMs).catch(() => {});
+        break;
+      }
+      case 'mirror-touch-cancel': {
+        lastMirrorInteraction = Date.now();
+        const t = resolveGestureTarget(msg.workerId);
+        if (t.client) t.client.touchCancel().catch(() => {});
+        break;
+      }
+      case 'start-video': {
+        const workerId = msg.workerId;
+        if (videoStreams.has(workerId)) break;
+        const t = resolveGestureTarget(workerId);
+        if (!t.client) {
+          broadcast({ type: 'video-status', workerId, streaming: false, reason: 'no-client' });
+          break;
+        }
+        try {
+          const stream = t.client.screenStream(720, 6_000_000);
+          videoStreams.set(workerId, stream as never);
+          broadcast({ type: 'video-status', workerId, streaming: true });
+          stream.on('data', (f: { data: Buffer; keyframe: boolean; config: boolean }) => {
+            // Keep polling screenshots until the FIRST video frame actually
+            // arrives — screenrecord spawn + first keyframe can take a couple
+            // seconds, and pausing screenshots up front leaves the mirror black
+            // for that whole window. Marking the worker video-served only now
+            // lets screenshots bridge the gap, then video takes over the canvas.
+            if (!videoWorkers.has(workerId)) videoWorkers.add(workerId);
+            const data = Buffer.isBuffer(f.data) ? f.data : Buffer.from(f.data);
+            broadcastBinary(encodeVideoFrame(workerId, f.keyframe, f.config, data));
+          });
+          const cleanup = (reason: string): void => {
+            if (!videoStreams.has(workerId)) return;
+            videoStreams.delete(workerId);
+            videoWorkers.delete(workerId);
+            broadcast({ type: 'video-status', workerId, streaming: false, reason });
+          };
+          stream.on('error', () => cleanup('stream-error'));
+          stream.on('end', () => cleanup('ended'));
+        } catch {
+          videoStreams.delete(workerId);
+          videoWorkers.delete(workerId);
+          broadcast({ type: 'video-status', workerId, streaming: false, reason: 'start-failed' });
+        }
+        break;
+      }
+      case 'stop-video': {
+        const workerId = msg.workerId;
+        const stream = videoStreams.get(workerId);
+        if (stream) {
+          try { stream.cancel(); } catch { /* already closed */ }
+          videoStreams.delete(workerId);
+          videoWorkers.delete(workerId);
+          // Notify all clients (symmetry with start-video's streaming:true) so
+          // other browser sessions reset their decoder and fall back to screenshots.
+          broadcast({ type: 'video-status', workerId, streaming: false, reason: 'stopped' });
+        }
+        break;
+      }
       case 'select-worker':
         selectedWorkerId = msg.workerId;
         screenViewMode = msg.workerId;
@@ -3377,6 +3588,14 @@ export async function startUIServer(
 
     ws.on('close', () => {
       clients.delete(ws);
+      // No viewers left — stop all video streams so screenrecord stops on the device.
+      if (clients.size === 0) {
+        for (const stream of videoStreams.values()) {
+          try { stream.cancel(); } catch { /* already closed */ }
+        }
+        videoStreams.clear();
+        videoWorkers.clear();
+      }
     });
   });
 
@@ -3531,6 +3750,13 @@ export async function startUIServer(
     port: actualPort,
     close: () => {
       if (screenPollTimer) clearTimeout(screenPollTimer);
+
+      // Cancel any active video streams so screenrecord stops on the device.
+      for (const stream of videoStreams.values()) {
+        try { stream.cancel(); } catch { /* already closed */ }
+      }
+      videoStreams.clear();
+      videoWorkers.clear();
 
       // Clean up workers
       if (multiWorker) {

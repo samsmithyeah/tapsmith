@@ -20,6 +20,13 @@ class CommandHandler {
     /// Cache of last clipboard text set via setClipboard.
     private var lastClipboardText = ""
 
+    // Interactive-mirror live-drag: iOS can't stream touches, so buffer the
+    // path during the drag and dispatch it as one gesture on touchUp.
+    // touchDown/Move/Up/Cancel arrive on gRPC pool threads, so all access to
+    // touchPath is guarded by touchPathLock (Swift Array is not thread-safe).
+    private var touchPath: [(CGPoint, TimeInterval)] = []
+    private let touchPathLock = NSLock()
+
     init(
         app: XCUIApplication,
         elementFinder: ElementFinder,
@@ -476,8 +483,11 @@ class CommandHandler {
         // ─── Tap Actions ───
 
         case "tap":
-            let x = params["x"] as? Int ?? -1
-            let y = params["y"] as? Int ?? -1
+            // Coordinates arrive as JSON numbers (NSNumber) and may be
+            // fractional logical points (coordinate taps from the SDK /
+            // UI-mode mirror), so `as? Int` would fail — go via NSNumber.
+            let x = (params["x"] as? NSNumber)?.intValue ?? -1
+            let y = (params["y"] as? NSNumber)?.intValue ?? -1
             if x >= 0 && y >= 0 {
                 actionExecutor.tapCoordinates(x: x, y: y)
             } else {
@@ -505,9 +515,11 @@ class CommandHandler {
             return ["success": true]
 
         case "longPress":
-            let duration = params["duration"] as? Int64 ?? 1000
-            let x = params["x"] as? Int ?? -1
-            let y = params["y"] as? Int ?? -1
+            // NSNumber coercion: JSON numbers aren't directly castable to Int/
+            // Int64, and coordinates may be fractional logical points.
+            let duration = (params["duration"] as? NSNumber)?.int64Value ?? 1000
+            let x = (params["x"] as? NSNumber)?.intValue ?? -1
+            let y = (params["y"] as? NSNumber)?.intValue ?? -1
             if x >= 0 && y >= 0 {
                 actionExecutor.longPressCoordinates(x: x, y: y, durationMs: duration)
             } else {
@@ -744,9 +756,71 @@ class CommandHandler {
             try? focusElementForTyping(element, settleTime: 0.1)
             return ["success": true]
 
+        // ─── Interactive Mirror Live-Drag (buffered touch path) ───
+
+        case "touchDown":
+            let x = (params["x"] as? NSNumber)?.doubleValue ?? 0
+            let y = (params["y"] as? NSNumber)?.doubleValue ?? 0
+            touchPathLock.lock()
+            touchPath = [(CGPoint(x: x, y: y), 0.0)]
+            touchPathLock.unlock()
+            return ["success": true]
+
+        case "touchMove":
+            let x = (params["x"] as? NSNumber)?.doubleValue ?? 0
+            let y = (params["y"] as? NSNumber)?.doubleValue ?? 0
+            let tMs = (params["t"] as? NSNumber)?.doubleValue ?? 0
+            touchPathLock.lock()
+            if !touchPath.isEmpty {
+                touchPath.append((CGPoint(x: x, y: y), tMs / 1000.0))
+            }
+            touchPathLock.unlock()
+            return ["success": true]
+
+        case "touchUp":
+            let x = (params["x"] as? NSNumber)?.doubleValue ?? 0
+            let y = (params["y"] as? NSNumber)?.doubleValue ?? 0
+            let tMs = (params["t"] as? NSNumber)?.doubleValue ?? 0
+            // Copy + clear the path under the lock, then synthesize OUTSIDE the
+            // lock (event synthesis is slow and must not block other threads).
+            touchPathLock.lock()
+            var pathToReplay: [(CGPoint, TimeInterval)] = []
+            if !touchPath.isEmpty {
+                touchPath.append((CGPoint(x: x, y: y), tMs / 1000.0))
+                pathToReplay = touchPath
+                touchPath = []
+            }
+            touchPathLock.unlock()
+            if !pathToReplay.isEmpty {
+                _ = EventSynthesizer.swipePath(pathToReplay)
+            }
+            // Settle like the existing swipe path.
+            Thread.sleep(forTimeInterval: 0.2)
+            RunLoop.current.run(mode: .default, before: Date(timeIntervalSinceNow: 0.01))
+            return ["success": true]
+
+        case "touchCancel":
+            touchPathLock.lock()
+            touchPath = []
+            touchPathLock.unlock()
+            return ["success": true]
+
         // ─── Swipe / Scroll ───
 
         case "swipe":
+            if let fromX = (params["fromX"] as? NSNumber)?.doubleValue,
+               let fromY = (params["fromY"] as? NSNumber)?.doubleValue,
+               let toX = (params["toX"] as? NSNumber)?.doubleValue,
+               let toY = (params["toY"] as? NSNumber)?.doubleValue {
+                try actionExecutor.drag(
+                    from: CGPoint(x: CGFloat(fromX), y: CGFloat(fromY)),
+                    to: CGPoint(x: CGFloat(toX), y: CGFloat(toY))
+                )
+                // Match the settle used by the direction-based swipe below.
+                Thread.sleep(forTimeInterval: 0.2)
+                RunLoop.current.run(mode: .default, before: Date(timeIntervalSinceNow: 0.01))
+                return ["success": true]
+            }
             let direction = params["direction"] as? String ?? "up"
             let speed = params["speed"] as? Int ?? 5000
             let distance = params["distance"] as? Double ?? 0.5

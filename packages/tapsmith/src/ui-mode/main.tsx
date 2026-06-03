@@ -2,7 +2,7 @@ import './fonts.css';
 import { render } from 'preact';
 import { useState, useCallback, useMemo, useRef, useEffect } from 'preact/hooks';
 import type { ServerMessage, ClientMessage, TestTreeNode, WorkerInfo } from './ui-protocol.js';
-import { inferDevicePlatform, type DevicePlatform } from './ui-protocol.js';
+import { inferDevicePlatform, decodeBinaryFrame, type DevicePlatform } from './ui-protocol.js';
 import type { ActionTraceEvent, AssertionTraceEvent, TraceMetadata, SourceLocation } from '../trace/types.js';
 import { sortEventsByStartTime } from '../trace/sort-events.js';
 import { useWebSocket } from './hooks/use-websocket.js';
@@ -22,6 +22,7 @@ import {
   type InFlightAction,
 } from './hooks/use-trace-data.js';
 import { useScreenMirror, useMultiScreenMirror } from './hooks/use-screen-mirror.js';
+import { useVideoMirror } from './hooks/use-video-mirror.js';
 import { useTestTree } from './hooks/use-test-tree.js';
 import { useRunTimer } from './hooks/use-run-timer.js';
 import { usePersistedJSON } from './hooks/use-persisted-state.js';
@@ -139,6 +140,18 @@ function App() {
   // Device pane state
   const [selectedWorkerId, setSelectedWorkerId] = useState(0);
   const [deviceViewMode, setDeviceViewMode] = usePersistedJSON<'all' | number>('tapsmith-device-view', 'all');
+  // Single-view mirror loading: true from when a device is selected until its
+  // first frame paints (bridges the video/screenshot warmup so we show the
+  // loading placeholder instead of a black canvas). Cleared in handleScreenFrame.
+  const [mirrorLoading, setMirrorLoading] = useState(false);
+  const firstFrameRef = useRef(false);
+  // Re-arm the loading placeholder whenever the mirrored single device changes
+  // (a fresh device must repaint before we hide the placeholder). The grid uses
+  // its own per-tile placeholder, so this only applies to the single view.
+  useEffect(() => {
+    firstFrameRef.current = false;
+    setMirrorLoading(connected && deviceViewMode !== 'all');
+  }, [deviceViewMode, selectedWorkerId, connected]);
 
   // MCP state
   const [mcpUrl, setMcpUrl] = useState<string | undefined>();
@@ -172,6 +185,13 @@ function App() {
   treeRef.current = tree;
   const { canvasRef, handleBinaryFrame } = useScreenMirror();
   const { registerCanvas, unregisterCanvas, handleBinaryFrame: handleMultiBinaryFrame } = useMultiScreenMirror();
+  const videoMirror = useVideoMirror();
+  // Ref so handleMessage (empty dep array) can reset the decoder without
+  // depending on the mirror object. Video streams only for the single-device
+  // view; the "All" grid uses screenshots (multi-tile H.264 can't sustain
+  // decode under contention — see the live-video design notes).
+  const videoMirrorRef = useRef(videoMirror);
+  videoMirrorRef.current = videoMirror;
 
   // Whether any project has dependencies (controls visibility of the toggle)
   const hasProjectDeps = useMemo(() => {
@@ -881,6 +901,13 @@ function App() {
           return next.length > 200 ? next.slice(-200) : next;
         });
         break;
+
+      case 'video-status':
+        // Server stopped (or failed to start) the stream — drop the decoder so
+        // any stale frames are cleared and the screenshots the server resumes
+        // sending render onto a clean canvas.
+        if (!msg.streaming) videoMirrorRef.current.reset();
+        break;
     }
   }, []);
 
@@ -894,19 +921,88 @@ function App() {
   deviceViewModeRef.current = deviceViewMode;
   const workersLenRef = useRef(workers.length);
   workersLenRef.current = workers.length;
+  // Latest workers list for effects that look up a device's platform without
+  // wanting `workers` in their dependency array (avoids needless re-runs).
+  const workersRef = useRef(workers);
+  workersRef.current = workers;
   const handleScreenFrame = useCallback((data: ArrayBuffer) => {
+    // First frame for the current device → hide the loading placeholder.
+    if (!firstFrameRef.current) {
+      firstFrameRef.current = true;
+      setMirrorLoading(false);
+    }
+    const frame = decodeBinaryFrame(data);
+    if (frame.kind === 'video') {
+      // Video only streams for the single-device view (the "All" grid uses
+      // screenshots). Point the single decoder at the visible canvas (the same
+      // element the screenshot mirror renders to) so both paths draw to it.
+      const vm = videoMirrorRef.current;
+      vm.canvasRef.current = canvasRef.current;
+      vm.handleVideoFrame(frame.payload, frame.keyframe, frame.config);
+      return;
+    }
+    // Screenshot frame → existing screen-mirror handler(s). The grid uses the
+    // multi-mirror; everything else uses the single mirror.
     if (deviceViewModeRef.current === 'all' && workersLenRef.current > 1) {
       handleMultiBinaryFrame(data);
     } else {
       handleBinaryFrame(data);
     }
-  }, [handleBinaryFrame, handleMultiBinaryFrame]);
+  }, [handleBinaryFrame, handleMultiBinaryFrame, canvasRef]);
 
   const { send } = useWebSocket({
     onMessage: handleMessage,
     onBinaryMessage: handleScreenFrame,
     onConnectionChange: handleConnectionChange,
   });
+
+  // Interactive mirror lock preference:
+  //   'auto' — locked only while the active worker is running (default)
+  //   'on'   — user explicitly locked; stays locked even after the run ends
+  //   'off'  — user unlocked during a run; resets to 'auto' when the run ends
+  //            (so the next run auto-locks again)
+  const [mirrorLockPref, setMirrorLockPref] = useState<'auto' | 'on' | 'off'>('auto');
+  const activeWorker = workers.find((w) => w.workerId === selectedWorkerId);
+  const runningOnActive = activeWorker ? activeWorker.status === 'running' : isRunning;
+  // An unlock-override is per-run: once the run ends, fall back to 'auto'.
+  // An explicit lock ('on') is sticky and survives the run ending.
+  useEffect(() => {
+    if (!runningOnActive && mirrorLockPref === 'off') setMirrorLockPref('auto');
+  }, [runningOnActive, mirrorLockPref]);
+  const mirrorLocked = mirrorLockPref === 'on'
+    ? true
+    : mirrorLockPref === 'off'
+      ? false
+      : runningOnActive;
+  const mirrorInteractive = !mirrorLocked;
+
+  // Live H.264 video for the single / selected mirror. Only request video when
+  // WebCodecs can decode it, the target device is Android (video is Android-only
+  // server-side — requesting it for iOS just fails and falls back, wasting a
+  // gRPC stream and logging errors), and we're not showing the multi-worker grid
+  // (the grid stays on screenshots). When no start-video is sent, the server
+  // keeps polling screenshots, so the screenshot path is the natural fallback.
+  // Cleanup stops video for the old worker and drops the decoder so the next
+  // worker reconfigures from its own keyframe.
+  useEffect(() => {
+    if (!connected) return;
+    const showingGrid = deviceViewMode === 'all' && workers.length > 1;
+    if (!videoMirrorRef.current.hasVideoDecoder() || showingGrid) return;
+    const workerId = typeof deviceViewMode === 'number' ? deviceViewMode : selectedWorkerId;
+    // Video is Android-only server-side; requesting it for an iOS device just
+    // fails and falls back to screenshots, so skip it. (workersRef avoids adding
+    // the workers array to the deps.)
+    const worker = workersRef.current.find((w) => w.workerId === workerId);
+    const targetPlatform = worker?.platform
+      ?? inferDevicePlatform(worker?.displayName ?? '', worker?.deviceSerial ?? '')
+      ?? devicePlatform;
+    if (targetPlatform !== 'android') return;
+    send({ type: 'start-video', workerId });
+    return () => {
+      videoMirrorRef.current.reset();
+      send({ type: 'stop-video', workerId });
+    };
+  }, [connected, deviceViewMode, selectedWorkerId, workers.length, devicePlatform, send]);
 
   const handleThemeChange = useCallback((newTheme: Theme) => {
     setTheme(newTheme);
@@ -1262,7 +1358,13 @@ function App() {
           onSelectDeviceView={handleSelectDeviceView}
           registerCanvas={registerCanvas}
           unregisterCanvas={unregisterCanvas}
+          mirrorLoading={mirrorLoading}
           platform={devicePlatform}
+          interactive={mirrorInteractive}
+          locked={mirrorLocked}
+          force={runningOnActive && mirrorInteractive}
+          onToggleLock={() => setMirrorLockPref(mirrorLocked ? 'off' : 'on')}
+          send={send}
         />
       }
       mcpPanel={mcpPanelOpen ? (

@@ -1071,7 +1071,7 @@ html, body, #app {
   border-bottom: 1px solid var(--border);
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  gap: 8px;
 }
 .device-head-title {
   font-size: 10.5px;
@@ -1175,6 +1175,23 @@ html, body, #app {
   border-radius: 8px; border: 2px solid var(--border); background: #000;
 }
 .dm-canvas.tap-mode { cursor: crosshair; border-color: var(--accent); }
+.dm-canvas.interactive { cursor: pointer; touch-action: none; outline: none; }
+.dm-canvas.interactive:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.dm-canvas.locked { cursor: not-allowed; }
+.mirror-lock-toggle {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 2px;
+  border-radius: 5px;
+}
+.mirror-lock-toggle.unlocked { color: var(--fg-dim); }
+.mirror-lock-toggle.locked { color: var(--accent); }
+.mirror-lock-toggle:hover { background: var(--bg-elev-2); }
 
 .dm-overlay {
   position: absolute; inset: 0;
@@ -1285,6 +1302,7 @@ html, body, #app {
   background: #1a1a1a;
   border-radius: var(--skin-ios-island-radius, 3cqi);
   z-index: 2;
+  pointer-events: none;
 }
 /* Side button hints */
 .dm-skin-ios::before {
@@ -1331,6 +1349,7 @@ html, body, #app {
   border-radius: 50%;
   border: 1px solid oklch(0.25 0 0);
   z-index: 2;
+  pointer-events: none;
 }
 /* Power + volume buttons (right side) */
 .dm-skin-android::before {

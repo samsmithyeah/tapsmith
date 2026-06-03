@@ -376,6 +376,86 @@ enum EventSynthesizer {
         return dispatchSync(record) || dispatchViaDevice(record) || dispatchViaDaemonSession(record)
     }
 
+    /// Replay an arbitrary touch path as one synthesized gesture. `points` is
+    /// [(location, offsetSeconds)] with the touch-down at the first entry
+    /// (offset 0). Used by the interactive mirror's live-drag on iOS, where a
+    /// touch cannot be streamed live — the full path is dispatched on release.
+    static func swipePath(_ points: [(CGPoint, TimeInterval)]) -> Bool {
+        guard points.count >= 2,
+              let pathClass = objc_lookUpClass("XCPointerEventPath"),
+              let recordClass = objc_lookUpClass("XCSynthesizedEventRecord")
+        else { return false }
+
+        let initSel = NSSelectorFromString("initForTouchAtPoint:offset:")
+        // Allocate via the runtime as a RAW pointer so ARC never manages the
+        // uninitialized instance: `init` (called through its IMP) consumes the
+        // +1 from `alloc` and returns the fully-initialized, ARC-managed object.
+        // Capturing the alloc result as an NSObject instead would let ARC release
+        // that +1 a second time (init already consumed it) — a double-free.
+        let allocSel = NSSelectorFromString("alloc")
+        guard (pathClass as! NSObject.Type).instancesRespond(to: initSel),
+              let meta = object_getClass(pathClass),
+              let allocImp = class_getMethodImplementation(meta, allocSel),
+              let initImp = class_getMethodImplementation(pathClass, initSel)
+        else { return false }
+        typealias AllocFn = @convention(c) (AnyClass, Selector) -> UnsafeMutableRawPointer
+        // Return Unmanaged so we explicitly consume init's +1 (takeRetainedValue)
+        // — a bare NSObject return leaks it — and handle a nil-returning init.
+        typealias InitMethod = @convention(c) (UnsafeMutableRawPointer, Selector, CGPoint, TimeInterval) -> Unmanaged<NSObject>?
+        let raw = unsafeBitCast(allocImp, to: AllocFn.self)(pathClass, allocSel)
+        guard let path = unsafeBitCast(initImp, to: InitMethod.self)(raw, initSel, points[0].0, 0.0)?.takeRetainedValue() else { return false }
+
+        // XCPointerEventPath requires strictly increasing offsets — coincident
+        // timestamps (e.g. a coalesced move and the release rounding to the same
+        // ms on the client) would otherwise yield an invalid, no-op gesture that
+        // never engages the scroll/pan recognizer. Enforce monotonicity here.
+        var lastOffset: TimeInterval = 0
+        let moveSel = NSSelectorFromString("moveToPoint:atOffset:")
+        if path.responds(to: moveSel) {
+            let moveImp = path.method(for: moveSel)
+            typealias MoveMethod = @convention(c) (NSObject, Selector, CGPoint, TimeInterval) -> Void
+            let moveFunc = unsafeBitCast(moveImp, to: MoveMethod.self)
+            for (point, offset) in points.dropFirst() {
+                let o = max(offset, lastOffset + 0.001)
+                lastOffset = o
+                moveFunc(path, moveSel, point, o)
+            }
+        }
+
+        let liftSel = NSSelectorFromString("liftUpAtOffset:")
+        if path.responds(to: liftSel) {
+            let liftImp = path.method(for: liftSel)
+            typealias LiftMethod = @convention(c) (NSObject, Selector, TimeInterval) -> Void
+            unsafeBitCast(liftImp, to: LiftMethod.self)(path, liftSel, lastOffset + 0.01)
+        }
+
+        let recordInitSel = NSSelectorFromString("initWithName:interfaceOrientation:")
+        let recordAllocSel = NSSelectorFromString("alloc")
+        let record: NSObject
+        // Allocate as a RAW pointer so ARC never manages the uninitialized
+        // instance (init via IMP consumes alloc's +1) — same double-free
+        // avoidance as the pointer path above.
+        if (recordClass as! NSObject.Type).instancesRespond(to: recordInitSel),
+           let meta = object_getClass(recordClass),
+           let allocImp = class_getMethodImplementation(meta, recordAllocSel),
+           let initImp = class_getMethodImplementation(recordClass, recordInitSel) {
+            typealias AllocFn = @convention(c) (AnyClass, Selector) -> UnsafeMutableRawPointer
+            typealias RMethod = @convention(c) (UnsafeMutableRawPointer, Selector, NSString, Int) -> Unmanaged<NSObject>?
+            let raw = unsafeBitCast(allocImp, to: AllocFn.self)(recordClass, recordAllocSel)
+            guard let r = unsafeBitCast(initImp, to: RMethod.self)(raw, recordInitSel, "tapsmith-swipe-path" as NSString, currentOrientation)?.takeRetainedValue() else { return false }
+            record = r
+        } else {
+            record = (recordClass as! NSObject.Type).init()
+        }
+
+        let addPathSel = NSSelectorFromString("addPointerEventPath:")
+        if record.responds(to: addPathSel) {
+            record.perform(addPathSel, with: path)
+        }
+
+        return dispatchSync(record) || dispatchViaDevice(record) || dispatchViaDaemonSession(record)
+    }
+
     /// Drag from one point to another using a touch-down, short hold, move, and lift.
     /// Unlike swipe(), this intentionally avoids async fallback dispatchers because
     /// they are the part that tends to wedge the XCTest session on Xcode 26.
@@ -384,13 +464,24 @@ enum EventSynthesizer {
               let recordClass = objc_lookUpClass("XCSynthesizedEventRecord")
         else { return false }
 
-        let pathObj = pathClass.alloc() as! NSObject
         let initSel = NSSelectorFromString("initForTouchAtPoint:offset:")
-        guard pathObj.responds(to: initSel) else { return false }
-
-        let initImp = pathObj.method(for: initSel)
-        typealias InitMethod = @convention(c) (NSObject, Selector, CGPoint, TimeInterval) -> NSObject
-        let path = unsafeBitCast(initImp, to: InitMethod.self)(pathObj, initSel, start, 0.0)
+        // Allocate via the runtime as a RAW pointer so ARC never manages the
+        // uninitialized instance: `init` (called through its IMP) consumes the
+        // +1 from `alloc` and returns the fully-initialized, ARC-managed object.
+        // Capturing the alloc result as an NSObject instead would let ARC release
+        // that +1 a second time (init already consumed it) — a double-free.
+        let allocSel = NSSelectorFromString("alloc")
+        guard (pathClass as! NSObject.Type).instancesRespond(to: initSel),
+              let meta = object_getClass(pathClass),
+              let allocImp = class_getMethodImplementation(meta, allocSel),
+              let initImp = class_getMethodImplementation(pathClass, initSel)
+        else { return false }
+        typealias AllocFn = @convention(c) (AnyClass, Selector) -> UnsafeMutableRawPointer
+        // Return Unmanaged so we explicitly consume init's +1 (takeRetainedValue)
+        // — a bare NSObject return leaks it — and handle a nil-returning init.
+        typealias InitMethod = @convention(c) (UnsafeMutableRawPointer, Selector, CGPoint, TimeInterval) -> Unmanaged<NSObject>?
+        let raw = unsafeBitCast(allocImp, to: AllocFn.self)(pathClass, allocSel)
+        guard let path = unsafeBitCast(initImp, to: InitMethod.self)(raw, initSel, start, 0.0)?.takeRetainedValue() else { return false }
 
         let moveSel = NSSelectorFromString("moveToPoint:atOffset:")
         if path.responds(to: moveSel) {
@@ -414,18 +505,26 @@ enum EventSynthesizer {
             unsafeBitCast(liftImp, to: LiftMethod.self)(path, liftSel, holdDuration + 0.24)
         }
 
-        let recordObj = recordClass.alloc() as! NSObject
         let recordInitSel = NSSelectorFromString("initWithName:interfaceOrientation:")
+        let recordAllocSel = NSSelectorFromString("alloc")
         let record: NSObject
-        if recordObj.responds(to: recordInitSel) {
-            let imp = recordObj.method(for: recordInitSel)
-            typealias RMethod = @convention(c) (NSObject, Selector, NSString, Int) -> NSObject
-            record = unsafeBitCast(imp, to: RMethod.self)(
-                recordObj,
+        // Allocate as a RAW pointer so ARC never manages the uninitialized
+        // instance (init via IMP consumes alloc's +1) — same double-free
+        // avoidance as the pointer path above.
+        if (recordClass as! NSObject.Type).instancesRespond(to: recordInitSel),
+           let meta = object_getClass(recordClass),
+           let allocImp = class_getMethodImplementation(meta, recordAllocSel),
+           let initImp = class_getMethodImplementation(recordClass, recordInitSel) {
+            typealias AllocFn = @convention(c) (AnyClass, Selector) -> UnsafeMutableRawPointer
+            typealias RMethod = @convention(c) (UnsafeMutableRawPointer, Selector, NSString, Int) -> Unmanaged<NSObject>?
+            let raw = unsafeBitCast(allocImp, to: AllocFn.self)(recordClass, recordAllocSel)
+            guard let r = unsafeBitCast(initImp, to: RMethod.self)(
+                raw,
                 recordInitSel,
                 "tapsmith-drag" as NSString,
                 currentOrientation
-            )
+            )?.takeRetainedValue() else { return false }
+            record = r
         } else {
             record = (recordClass as! NSObject.Type).init()
         }

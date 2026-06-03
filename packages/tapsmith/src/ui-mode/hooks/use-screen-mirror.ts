@@ -6,7 +6,7 @@
  */
 
 import { useRef, useCallback, useEffect } from 'preact/hooks';
-import { decodeScreenFrameHeader } from '../ui-protocol.js';
+import { decodeBinaryFrame } from '../ui-protocol.js';
 
 // ─── Single-canvas hook (used for per-worker view) ───
 
@@ -23,7 +23,10 @@ export function useScreenMirror() {
   const frameGenRef = useRef(0);
 
   const handleBinaryFrame = useCallback((data: ArrayBuffer) => {
-    const { seq, width, height, pngOffset } = decodeScreenFrameHeader(data);
+    const f = decodeBinaryFrame(data);
+    // Video frames are handled by a separate hook; this hook only renders PNGs.
+    if (f.kind !== 'screenshot') return;
+    const { seq, width, height, pngOffset } = f;
 
     // Skip out-of-order frames
     if (seq < stateRef.current.lastSeq) return;
@@ -113,7 +116,10 @@ export function useMultiScreenMirror() {
   }, []);
 
   const handleBinaryFrame = useCallback((data: ArrayBuffer) => {
-    const { seq, workerId, pngOffset } = decodeScreenFrameHeader(data);
+    const f = decodeBinaryFrame(data);
+    // Video frames are handled by a separate hook; this hook only renders PNGs.
+    if (f.kind !== 'screenshot') return;
+    const { seq, workerId, pngOffset } = f;
 
     const entry = workersRef.current.get(workerId);
     if (!entry) return;

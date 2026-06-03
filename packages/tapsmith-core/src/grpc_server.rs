@@ -91,6 +91,11 @@ pub struct TapsmithServiceImpl {
     /// lifetime of one test, released by `StopVideoRecording`. Dropping the
     /// handle (e.g. on session teardown) hard-kills the underlying recorder.
     video_recording: Arc<RwLock<Option<crate::video::RecordingHandle>>>,
+    /// iOS-simulator live HID touch injector (macOS only). Lazily spawns one
+    /// `tapsmith-ios-hid` helper per simulator; touch handlers route iOS-sim
+    /// streamed touch here, falling back to the agent if it's unavailable.
+    #[cfg(target_os = "macos")]
+    hid_injector: Arc<crate::hid_injector::HidInjector>,
 }
 
 /// Stored iOS agent launch config for restart.
@@ -133,6 +138,8 @@ impl TapsmithServiceImpl {
             #[cfg(target_os = "macos")]
             webkit_debug_proxy: Arc::new(RwLock::new(None)),
             video_recording: Arc::new(RwLock::new(None)),
+            #[cfg(target_os = "macos")]
+            hid_injector: Arc::new(crate::hid_injector::HidInjector::new()),
         }
     }
 
@@ -1170,6 +1177,59 @@ impl TapsmithServiceImpl {
 
         Ok(parse_component_name(&output))
     }
+
+    /// Try to handle a streamed-touch event via the iOS-simulator HID path.
+    /// Returns true if it was injected via HID; false means the caller should
+    /// fall back to the agent command. `is_down` ensures the helper is spawned
+    /// before the first event of a gesture.
+    ///
+    /// Fallback is per-event: if the helper dies mid-gesture, the failing event
+    /// (and the rest of the gesture) routes to the agent. A gesture that started
+    /// on HID and finishes on the agent could in theory leave a dangling HID
+    /// touch, but in practice `ensure` only fails at `down` (before any contact)
+    /// and a live helper does not die mid-drag — so a split gesture is a
+    /// degenerate case, not the normal path.
+    #[cfg(target_os = "macos")]
+    async fn try_hid_touch(&self, line: &str, is_down: bool) -> bool {
+        let udid = {
+            let dm = self.device_manager.read().await;
+            match dm.active_device() {
+                Some(d) if d.platform == Platform::Ios && d.is_emulator => d.serial.clone(),
+                _ => return false,
+            }
+        };
+        if is_down {
+            if let Err(e) = self.hid_injector.ensure(&udid).await {
+                warn!(%udid, error = %e, "iOS HID helper unavailable; falling back to agent");
+                return false;
+            }
+        }
+        match self.hid_injector.send(&udid, line).await {
+            Ok(()) => true,
+            Err(e) => {
+                warn!(%udid, error = %e, "iOS HID send failed; falling back to agent");
+                false
+            }
+        }
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    async fn try_hid_touch(&self, _line: &str, _is_down: bool) -> bool {
+        false
+    }
+
+    /// Build a synthetic success ActionResponse (used when a touch event was
+    /// handled out-of-band by the HID injector, bypassing the agent).
+    #[allow(clippy::result_large_err)] // Status is tonic's standard error type
+    fn hid_ok_response(request_id: String) -> Result<Response<proto::ActionResponse>, Status> {
+        Ok(Response::new(proto::ActionResponse {
+            request_id,
+            success: true,
+            error_type: String::new(),
+            error_message: String::new(),
+            screenshot: Vec::new(),
+        }))
+    }
 }
 
 /// Convert a protobuf Selector into a JSON value for the agent protocol.
@@ -1779,12 +1839,24 @@ impl proto::tapsmith_service_server::TapsmithService for TapsmithServiceImpl {
             .await
             .map_err(|e| Status::internal(e.to_string()))?;
 
+        // Capture the previously-active serial so we can release a stale iOS
+        // HID helper for the old simulator once the active device switches.
+        #[cfg(target_os = "macos")]
+        let previous_serial = dm.active_serial().map(String::from);
+
         match dm.set_active(&req.serial) {
             Ok(()) => {
                 // Drop the device_manager lock before the async pre-start so
                 // ensure_ios_physical_proxy can acquire its own locks without
                 // deadlocking against our write guard.
                 drop(dm);
+                // Best-effort: shut down the HID helper for the device we just
+                // switched away from (no-op if there wasn't one). The helper
+                // also dies via kill_on_drop on daemon exit.
+                #[cfg(target_os = "macos")]
+                if let Some(prev) = previous_serial.filter(|p| p != &req.serial) {
+                    self.hid_injector.shutdown(&prev).await;
+                }
                 agent_comms::clear_stream_cache(&self.agent_stream).await;
                 // Persist the CLI's tracing flag on the server so subsequent
                 // call sites (start_agent, recovery restarts) can check it
@@ -5372,6 +5444,210 @@ impl proto::tapsmith_service_server::TapsmithService for TapsmithServiceImpl {
                 }))
             }
         }
+    }
+
+    // ─── Coordinate gesture handlers ───
+
+    #[instrument(skip_all, fields(request_id))]
+    async fn tap_coordinates(
+        &self,
+        request: Request<proto::TapCoordinatesRequest>,
+    ) -> Result<Response<proto::ActionResponse>, Status> {
+        let req = request.into_inner();
+        let request_id = Self::request_id(&req.request_id);
+        let command = AgentCommand::TapCoordinates { x: req.x, y: req.y };
+        let result = self.send_agent_command_with_timeout(&command, 0).await;
+        self.make_action_response(request_id, result).await
+    }
+
+    #[instrument(skip_all, fields(request_id))]
+    async fn long_press_coordinates(
+        &self,
+        request: Request<proto::LongPressCoordinatesRequest>,
+    ) -> Result<Response<proto::ActionResponse>, Status> {
+        let req = request.into_inner();
+        let request_id = Self::request_id(&req.request_id);
+        let command = AgentCommand::LongPressCoordinates {
+            x: req.x,
+            y: req.y,
+            duration_ms: if req.duration_ms > 0 {
+                req.duration_ms
+            } else {
+                1000
+            },
+        };
+        let result = self.send_agent_command_with_timeout(&command, 0).await;
+        self.make_action_response(request_id, result).await
+    }
+
+    #[instrument(skip_all, fields(request_id))]
+    async fn drag_coordinates(
+        &self,
+        request: Request<proto::DragCoordinatesRequest>,
+    ) -> Result<Response<proto::ActionResponse>, Status> {
+        let req = request.into_inner();
+        let request_id = Self::request_id(&req.request_id);
+        let command = AgentCommand::DragCoordinates {
+            from_x: req.from_x,
+            from_y: req.from_y,
+            to_x: req.to_x,
+            to_y: req.to_y,
+            duration_ms: if req.duration_ms > 0 {
+                req.duration_ms
+            } else {
+                300
+            },
+        };
+        let result = self.send_agent_command_with_timeout(&command, 0).await;
+        self.make_action_response(request_id, result).await
+    }
+
+    #[instrument(skip_all, fields(request_id))]
+    async fn input_text(
+        &self,
+        request: Request<proto::InputTextRequest>,
+    ) -> Result<Response<proto::ActionResponse>, Status> {
+        let req = request.into_inner();
+        let request_id = Self::request_id(&req.request_id);
+        let command = AgentCommand::InputText { text: req.text };
+        let result = self.send_agent_command_with_timeout(&command, 0).await;
+        self.make_action_response(request_id, result).await
+    }
+
+    #[instrument(skip_all, fields(request_id))]
+    async fn touch_down(
+        &self,
+        request: Request<proto::TouchPointRequest>,
+    ) -> Result<Response<proto::ActionResponse>, Status> {
+        let req = request.into_inner();
+        let request_id = Self::request_id(&req.request_id);
+        if self
+            .try_hid_touch(&format!("d {} {}", req.x, req.y), true)
+            .await
+        {
+            return Self::hid_ok_response(request_id);
+        }
+        let command = AgentCommand::TouchDown {
+            x: req.x,
+            y: req.y,
+            t_ms: req.t_ms,
+        };
+        let result = self.send_agent_command_with_timeout(&command, 0).await;
+        self.make_action_response(request_id, result).await
+    }
+
+    #[instrument(skip_all, fields(request_id))]
+    async fn touch_move(
+        &self,
+        request: Request<proto::TouchPointRequest>,
+    ) -> Result<Response<proto::ActionResponse>, Status> {
+        let req = request.into_inner();
+        let request_id = Self::request_id(&req.request_id);
+        if self
+            .try_hid_touch(&format!("m {} {}", req.x, req.y), false)
+            .await
+        {
+            return Self::hid_ok_response(request_id);
+        }
+        let command = AgentCommand::TouchMove {
+            x: req.x,
+            y: req.y,
+            t_ms: req.t_ms,
+        };
+        let result = self.send_agent_command_with_timeout(&command, 0).await;
+        self.make_action_response(request_id, result).await
+    }
+
+    #[instrument(skip_all, fields(request_id))]
+    async fn touch_up(
+        &self,
+        request: Request<proto::TouchPointRequest>,
+    ) -> Result<Response<proto::ActionResponse>, Status> {
+        let req = request.into_inner();
+        let request_id = Self::request_id(&req.request_id);
+        if self
+            .try_hid_touch(&format!("u {} {}", req.x, req.y), false)
+            .await
+        {
+            return Self::hid_ok_response(request_id);
+        }
+        let command = AgentCommand::TouchUp {
+            x: req.x,
+            y: req.y,
+            t_ms: req.t_ms,
+        };
+        let result = self.send_agent_command_with_timeout(&command, 0).await;
+        self.make_action_response(request_id, result).await
+    }
+
+    #[instrument(skip_all, fields(request_id))]
+    async fn touch_cancel(
+        &self,
+        request: Request<proto::TouchCancelRequest>,
+    ) -> Result<Response<proto::ActionResponse>, Status> {
+        let req = request.into_inner();
+        let request_id = Self::request_id(&req.request_id);
+        if self.try_hid_touch("c", false).await {
+            return Self::hid_ok_response(request_id);
+        }
+        let command = AgentCommand::TouchCancel {};
+        let result = self.send_agent_command_with_timeout(&command, 0).await;
+        self.make_action_response(request_id, result).await
+    }
+
+    // ─── Live Screen Streaming ───
+
+    type StreamScreenStream =
+        Pin<Box<dyn Stream<Item = Result<proto::ScreenVideoFrame, Status>> + Send + 'static>>;
+
+    // The mapped stream's item is Result<_, Status>; Status (tonic's standard
+    // error) is large relative to the small frame, so the map closure trips
+    // clippy::result_large_err. Allowed here as elsewhere in this file.
+    #[allow(clippy::result_large_err)]
+    async fn stream_screen(
+        &self,
+        request: Request<proto::StreamScreenRequest>,
+    ) -> Result<Response<Self::StreamScreenStream>, Status> {
+        let req = request.into_inner();
+        let serial = self.active_serial().await?;
+        let platform = self.require_platform().await?;
+        // Android-only for now (iOS capture is a separate follow-up).
+        if platform != Platform::Android {
+            return Err(Status::unimplemented(
+                "Video streaming is currently Android-only",
+            ));
+        }
+        let max_size = if req.max_size > 0 {
+            Some(req.max_size)
+        } else {
+            Some(720)
+        };
+        let bit_rate = if req.bit_rate > 0 {
+            Some(req.bit_rate)
+        } else {
+            Some(6_000_000)
+        };
+
+        info!(
+            serial = %serial,
+            max_size = ?max_size,
+            bit_rate = ?bit_rate,
+            "Starting screen video stream"
+        );
+
+        // Map the access-unit receiver straight into the gRPC frame stream — no
+        // extra task or channel needed. When the client cancels, the stream is
+        // dropped, which drops handle.rx and signals screen_stream to stop.
+        use tokio_stream::StreamExt;
+        let handle = crate::screen_stream::start(serial, max_size, bit_rate);
+        let output_stream = tokio_stream::wrappers::ReceiverStream::new(handle.rx).map(|au| {
+            Ok(proto::ScreenVideoFrame {
+                data: au.data,
+                keyframe: au.keyframe,
+                config: au.config,
+            })
+        });
+        Ok(Response::new(Box::pin(output_stream)))
     }
 }
 
