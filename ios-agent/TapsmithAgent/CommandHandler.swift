@@ -577,7 +577,8 @@ class CommandHandler {
             let selectorKeys = [
                 "role", "id", "contentDesc", "className", "testId",
                 "hint", "textContains", "elementId", "focused",
-                "label", "xpath", "resourceId",
+                "label", "xpath", "resourceId", "parent", "parentId",
+                "enabled", "checked", "selected", "expanded",
             ]
             let hasSelector = selectorKeys.contains { params[$0] != nil }
             let isFocusedOnlySelector = (

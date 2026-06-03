@@ -467,22 +467,23 @@ class SnapshotElementFinder {
     }
 
     private func findLiveFocusedTextInput() -> LiveFocusedTextInput? {
-        let types: [XCUIElement.ElementType] = [
+        let textInputTypes: Set<XCUIElement.ElementType> = [
             .textField, .secureTextField, .textView, .searchField,
         ]
-        for type in types {
-            for element in app.descendants(matching: type).allElementsBoundByIndex {
-                if element.hasFocus {
-                    return LiveFocusedTextInput(
-                        elementType: type,
-                        identifier: element.identifier,
-                        label: element.label,
-                        frame: element.frame
-                    )
-                }
-            }
-        }
-        return nil
+        let element = app.descendants(matching: .any)
+            .matching(NSPredicate(format: "hasFocus == true"))
+            .firstMatch
+        guard element.exists else { return nil }
+
+        let type = element.elementType
+        guard textInputTypes.contains(type) else { return nil }
+
+        return LiveFocusedTextInput(
+            elementType: type,
+            identifier: element.identifier,
+            label: element.label,
+            frame: element.frame
+        )
     }
 
     private func currentFocusedTextInputHint() -> FocusedTextInputHint? {
