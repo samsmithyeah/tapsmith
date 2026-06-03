@@ -656,6 +656,7 @@ pub async fn terminate_app(udid: &str, bundle_id: &str) -> Result<()> {
 pub async fn open_url(udid: &str, url: &str) -> Result<()> {
     let output = Command::new("xcrun")
         .args(["simctl", "openurl", udid, url])
+        .kill_on_drop(true)
         .output()
         .await
         .context("Failed to run xcrun simctl openurl")?;

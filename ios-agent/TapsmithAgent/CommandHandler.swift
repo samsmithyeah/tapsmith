@@ -54,7 +54,11 @@ class CommandHandler {
     ) -> Bool {
         let sb = springboard ?? XCUIApplication(bundleIdentifier: "com.apple.springboard")
         let openButton = sb.buttons["Open"]
-        if openButton.waitForExistence(timeout: timeout) {
+        var exists = false
+        _ = ObjCExceptionCatcher.catchException {
+            exists = openButton.waitForExistence(timeout: timeout)
+        }
+        if exists {
             _ = ObjCExceptionCatcher.catchException {
                 openButton.tap()
             }
