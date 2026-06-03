@@ -154,6 +154,14 @@ export interface DeviceLogEntry {
   pid: number;
 }
 
+export interface DaemonLogEntry {
+  level: string;
+  message: string;
+  target: string;
+  requestId: string;
+  timestampMs: number;
+}
+
 export interface ScreenVideoFrame {
   data: Buffer
   keyframe: boolean
@@ -835,6 +843,18 @@ export class TapsmithGrpcClient {
       requestId: requestId(),
       packageName,
     }) as grpc.ClientReadableStream<DeviceLogEntry>;
+  }
+
+  /**
+   * Open a server-side streaming RPC for daemon log streaming.
+   * Cancel the returned stream to stop.
+   * @internal
+   */
+  daemonLogStream(): grpc.ClientReadableStream<DaemonLogEntry> {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- dynamic RPC dispatch on proto-loaded client
+    return (this.client as any).streamDaemonLogs({
+      requestId: requestId(),
+    }) as grpc.ClientReadableStream<DaemonLogEntry>;
   }
 
   /**
