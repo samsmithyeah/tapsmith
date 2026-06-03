@@ -5600,6 +5600,10 @@ impl proto::tapsmith_service_server::TapsmithService for TapsmithServiceImpl {
     type StreamScreenStream =
         Pin<Box<dyn Stream<Item = Result<proto::ScreenVideoFrame, Status>> + Send + 'static>>;
 
+    // The mapped stream's item is Result<_, Status>; Status (tonic's standard
+    // error) is large relative to the small frame, so the map closure trips
+    // clippy::result_large_err. Allowed here as elsewhere in this file.
+    #[allow(clippy::result_large_err)]
     async fn stream_screen(
         &self,
         request: Request<proto::StreamScreenRequest>,
