@@ -37,10 +37,18 @@ describe("Live touch stream", () => {
 
     // Let any momentum settle, then confirm the item scrolled upward.
     await new Promise((r) => setTimeout(r, 1000))
+    // The drag may scroll Item A-1 fully out of view — strongest proof it
+    // scrolled. Android's live MotionEvents fling farther than iOS's buffered
+    // replay, so it often leaves the viewport entirely. boundingBox() waits for
+    // the element to exist and THROWS when it's gone (it never returns null for
+    // a missing element), so probe presence with count() first.
+    const stillPresent = (await scrollScreen.firstItem.count()) > 0
+    if (!stillPresent) {
+      return // scrolled out of view — drag worked
+    }
     const after = await scrollScreen.firstItem.boundingBox()
     if (!after) {
-      // Scrolled fully out of view — that's an even stronger proof of scrolling.
-      return
+      return // present but unbounded (off-screen) — also proof it scrolled
     }
     expect(after.y).toBeLessThan(before.y)
   })
