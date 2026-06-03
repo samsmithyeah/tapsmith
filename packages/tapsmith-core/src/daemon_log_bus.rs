@@ -40,6 +40,12 @@ impl DaemonLogBus {
         self.tx.subscribe()
     }
 
+    /// Whether any client is currently subscribed. Lets the layer skip log
+    /// formatting/allocation when nobody is streaming daemon logs (the default).
+    pub fn has_subscribers(&self) -> bool {
+        self.tx.receiver_count() > 0
+    }
+
     fn publish(&self, entry: DaemonLogEntry) {
         // Err == no active subscribers; that's fine, drop the entry.
         let _ = self.tx.send(entry);
@@ -104,6 +110,12 @@ where
     S: Subscriber + for<'a> LookupSpan<'a>,
 {
     fn on_event(&self, event: &Event<'_>, _ctx: Context<'_, S>) {
+        // Daemon logs are off by default; skip all formatting/allocation and the
+        // system-time query when no client is streaming.
+        if !self.bus.has_subscribers() {
+            return;
+        }
+
         let mut visitor = MessageVisitor::default();
         event.record(&mut visitor);
 
@@ -150,6 +162,16 @@ mod tests {
         let entry = rx.try_recv().expect("entry should be published");
         assert_eq!(entry.level, "info");
         assert_eq!(entry.message, "hello daemon");
+    }
+
+    #[test]
+    fn has_subscribers_reflects_active_receivers() {
+        let bus = DaemonLogBus::new(4);
+        assert!(!bus.has_subscribers());
+        let _rx = bus.subscribe();
+        assert!(bus.has_subscribers());
+        drop(_rx);
+        assert!(!bus.has_subscribers());
     }
 
     #[tokio::test]
