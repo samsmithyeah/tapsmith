@@ -656,6 +656,7 @@ pub async fn terminate_app(udid: &str, bundle_id: &str) -> Result<()> {
 pub async fn open_url(udid: &str, url: &str) -> Result<()> {
     let output = Command::new("xcrun")
         .args(["simctl", "openurl", udid, url])
+        .kill_on_drop(true)
         .output()
         .await
         .context("Failed to run xcrun simctl openurl")?;
@@ -998,6 +999,13 @@ mod tests {
     fn retryable_open_url_error_matches_simctl_timeout() {
         let message = "Failed to open URL on B54345BC: An error was encountered processing the command (domain=NSPOSIXErrorDomain, code=60):\nSimulator device failed to open tapsmithtest:///profile.\nOperation timed out";
         assert!(is_retryable_open_url_error(message));
+    }
+
+    #[test]
+    fn retryable_open_url_error_matches_daemon_timeout() {
+        assert!(is_retryable_open_url_error(
+            "Operation timed out opening URL on B54345BC: tapsmithtest:///profile"
+        ));
     }
 
     #[test]

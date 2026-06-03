@@ -813,7 +813,7 @@ async function setupSequentialDevice(
         iosAppPath: resolvedIosAppPath,
         deviceSerial: cfg.device,
         networkTracingEnabled,
-      }, 'startup', { readinessAttempts: 3 });
+      }, 'startup', { allowSoftReset: false, readinessAttempts: 3 });
       if (progress) progress.complete('app-launch', `launched ${cfg.package}`);
       else console.log(dim(`Launched ${cfg.package}`));
     } catch (err) {

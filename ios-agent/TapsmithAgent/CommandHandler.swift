@@ -49,16 +49,80 @@ class CommandHandler {
         return ProcessInfo.processInfo.environment["TAPSMITH_TARGET_BUNDLE_ID"] ?? ""
     }
 
-    /// Accept SpringBoard's custom URL-scheme confirmation if it is covering
-    /// the app after a deep-link launch.
+    /// Accept SpringBoard's custom URL-scheme confirmation ("Open in <app>?")
+    /// if it is covering the app after a deep-link launch.
+    ///
+    /// We tap Open, not Cancel: on a fresh simulator the confirmation can gate
+    /// URL delivery, so cancelling leaves the deep link undelivered.
     @discardableResult
-    private func acceptOpenInAppDialogIfPresent(timeout: TimeInterval = 0.0) -> Bool {
-        let springboard = XCUIApplication(bundleIdentifier: "com.apple.springboard")
-        let openButton = springboard.buttons["Open"]
-        if openButton.waitForExistence(timeout: timeout) {
-            openButton.tap()
-            Thread.sleep(forTimeInterval: 0.25)
+    private func acceptOpenInAppDialogIfPresent(
+        springboard: XCUIApplication? = nil,
+        timeout: TimeInterval = 0.0
+    ) -> Bool {
+        let sb = springboard ?? XCUIApplication(bundleIdentifier: "com.apple.springboard")
+        let openButton = sb.buttons["Open"]
+        var exists = false
+        _ = ObjCExceptionCatcher.catchException {
+            exists = openButton.waitForExistence(timeout: timeout)
+        }
+        if exists {
+            _ = ObjCExceptionCatcher.catchException {
+                openButton.tap()
+            }
+            Thread.sleep(forTimeInterval: 0.2)
             return true
+        }
+        return false
+    }
+
+    /// True when the app's accessibility snapshot has rendered interactive
+    /// content. This keeps openDeepLink from returning while the app is still
+    /// cold-launching.
+    private func appHasRenderedContent(_ app: XCUIApplication) -> Bool {
+        var has = false
+        _ = ObjCExceptionCatcher.catchException {
+            has = app.staticTexts.firstMatch.exists
+                || app.textFields.firstMatch.exists
+                || app.buttons.firstMatch.exists
+        }
+        return has
+    }
+
+    private func openInAppDialogExists(_ springboard: XCUIApplication) -> Bool {
+        var exists = false
+        _ = ObjCExceptionCatcher.catchException {
+            exists = springboard.buttons["Open"].exists
+        }
+        return exists
+    }
+
+    private func safeAppState(_ app: XCUIApplication) -> XCUIApplication.State {
+        var state: XCUIApplication.State = .unknown
+        _ = ObjCExceptionCatcher.catchException {
+            state = app.state
+        }
+        return state
+    }
+
+    /// Dismiss SpringBoard's "Open in <app>?" confirmation and wait for the
+    /// app to render after a deep-link launch.
+    private func waitForDeepLinkDestination(_ app: XCUIApplication, timeout: TimeInterval) -> Bool {
+        let springboard = XCUIApplication(bundleIdentifier: "com.apple.springboard")
+        let deadline = Date(timeIntervalSinceNow: timeout)
+        while Date() < deadline {
+            if safeAppState(app) == .runningForeground {
+                let hasContent = appHasRenderedContent(app)
+                let dialogExists = openInAppDialogExists(springboard)
+                if hasContent && !dialogExists {
+                    return true
+                }
+                if dialogExists {
+                    _ = self.acceptOpenInAppDialogIfPresent(springboard: springboard, timeout: 0.1)
+                }
+            } else {
+                _ = self.acceptOpenInAppDialogIfPresent(springboard: springboard, timeout: 0.3)
+            }
+            Thread.sleep(forTimeInterval: 0.2)
         }
         return false
     }
@@ -1040,13 +1104,9 @@ class CommandHandler {
             // If running in background, this brings it to foreground.
             let targetApp = rebindApp(bundleId: targetBundleId(fallback: params))
             targetApp.activate()
-            // Wait for the app to settle after launch/foregrounding.
             Thread.sleep(forTimeInterval: 0.5)
-            // Accept custom URL-scheme confirmation if simctl openurl left
-            // SpringBoard in front of the app before this rebind.
-            let springboard = XCUIApplication(bundleIdentifier: "com.apple.springboard")
-            _ = acceptOpenInAppDialogIfPresent(timeout: 1.0)
             // Dismiss "Save Password?" dialog from iOS Passwords framework.
+            let springboard = XCUIApplication(bundleIdentifier: "com.apple.springboard")
             let notNow = springboard.buttons["Not Now"]
             if notNow.exists {
                 notNow.tap()
@@ -1090,25 +1150,42 @@ class CommandHandler {
                 throw AgentError.actionFailed("openDeepLink: missing or invalid URL")
             }
             let bundleId = targetBundleId(fallback: params)
-            let targetApp = rebindApp(bundleId: bundleId)
-            if #available(iOS 16.4, *) {
-                // Pre-warm: activate() ensures the quiescence disable is
-                // fully propagated on the freshly rebound XCUIApplication.
-                // Without this, open(url:) can block indefinitely waiting
-                // for quiescence after a full agent restart (e.g. following
-                // clearData), because the new instance's quiescence state
-                // hasn't settled yet.
-                targetApp.activate()
-                Thread.sleep(forTimeInterval: 0.15)
-                targetApp.open(url)
-                Thread.sleep(forTimeInterval: 0.3)
-                _ = acceptOpenInAppDialogIfPresent(timeout: 1.0)
-                return ["success": true]
-            } else {
-                throw AgentError.actionFailed(
-                    "openDeepLink requires iOS 16.4 or newer on physical devices"
-                )
+            // Physical devices have no host-side `simctl openurl`, so the agent
+            // delivers the URL itself. On simulators the daemon already ran it;
+            // this command only accepts any remaining prompt and rebinds once
+            // the target app is foreground.
+            let deliverInProcess = params["deliverInProcess"] as? Bool ?? true
+            let targetApp = XCUIApplication(bundleIdentifier: bundleId)
+            _ = safeAppState(targetApp)
+            QuiescenceDisabler.disable(for: targetApp)
+
+            if deliverInProcess {
+                guard #available(iOS 16.4, *) else {
+                    throw AgentError.actionFailed(
+                        "openDeepLink requires iOS 16.4 or newer on physical devices"
+                    )
+                }
+                _ = ObjCExceptionCatcher.catchException {
+                    targetApp.activate()
+                    Thread.sleep(forTimeInterval: 0.15)
+                    targetApp.open(url)
+                }
             }
+
+            if waitForDeepLinkDestination(targetApp, timeout: 10.0) {
+                _ = rebindApp(bundleId: bundleId)
+                return ["success": true]
+            }
+            throw AgentError.actionFailed(
+                "openDeepLink: app did not reach foreground after opening \(urlString)"
+            )
+
+        case "acceptOpenInAppDialog":
+            let timeoutMs = params["timeout"] as? Int64 ?? 1000
+            let dismissed = acceptOpenInAppDialogIfPresent(
+                timeout: TimeInterval(timeoutMs) / 1000.0
+            )
+            return ["success": true, "dismissed": dismissed]
 
         case "dismissSystemDialogs":
             let springboard = XCUIApplication(bundleIdentifier: "com.apple.springboard")
