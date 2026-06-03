@@ -21,6 +21,13 @@ class SnapshotElementFinder {
     /// over a long test run.
     private let maxCacheSize = 500
 
+    private struct LiveFocusedTextInput {
+        let elementType: XCUIElement.ElementType
+        let identifier: String
+        let label: String
+        let frame: CGRect
+    }
+
     /// Parsed snapshot node from the accessibility tree.
     struct AXNode {
         let elementType: UInt
@@ -110,6 +117,7 @@ class SnapshotElementFinder {
         // Check once if keyboard is visible (for focus detection).
         // Keyboard = elementType 56 (XCUIElement.ElementType.keyboard).
         let keyboardVisibleInSnapshot = hasKeyboardInTree(snapshotDict)
+        let liveFocusedTextInput = keyboardVisibleInSnapshot ? findLiveFocusedTextInput() : nil
 
         // Flatten and search (pre-order — `.first()` callers depend on it).
         // Wrapper suppression happens inline via an ancestor stack so the
@@ -123,7 +131,8 @@ class SnapshotElementFinder {
             results: &matches,
             otherAncestors: &otherAncestors,
             suppressed: &suppressed,
-            keyboardVisibleInSnapshot: keyboardVisibleInSnapshot
+            keyboardVisibleInSnapshot: keyboardVisibleInSnapshot,
+            liveFocusedTextInput: liveFocusedTextInput
         )
         if !suppressed.isEmpty {
             matches = matches.enumerated()
@@ -171,15 +180,15 @@ class SnapshotElementFinder {
             // a property (like .isHittable) is accessed. Pass the snapshot node so the
             // query can use element type + identifier for more precise matching.
             cacheQueryElement(elementId: elementId, selector: selector, snapshotNode: nodeDict)
-            // The snapshot's hasFocus is unreliable on Xcode 26 — it reports false
-            // even when the element is the first responder with keyboard showing.
-            // For text fields, detect focus by checking if a keyboard is visible
-            // in the same snapshot. This avoids live XCUIElement property access
-            // which triggers quiescence waits on Xcode 26.
+            // The snapshot's hasFocus is unreliable on Xcode 26 — it can
+            // report false even when the text input is the first responder.
+            // Use the snapshot when it reports true; otherwise fall back to
+            // the one live text input whose hasFocus is true.
             let resolvedFocus = resolvedSnapshotFocus(
                 nodeDict,
                 elementType: elType,
-                keyboardVisibleInSnapshot: keyboardVisibleInSnapshot
+                keyboardVisibleInSnapshot: keyboardVisibleInSnapshot,
+                liveFocusedTextInput: liveFocusedTextInput
             )
 
             // For text fields, prefer the "value" property (typed text) over "label"
@@ -410,18 +419,74 @@ class SnapshotElementFinder {
             || elType == .textView || elType == .searchField
     }
 
+    private func findLiveFocusedTextInput() -> LiveFocusedTextInput? {
+        let types: [XCUIElement.ElementType] = [
+            .textField, .secureTextField, .textView, .searchField,
+        ]
+        for type in types {
+            for element in app.descendants(matching: type).allElementsBoundByIndex {
+                if element.hasFocus {
+                    return LiveFocusedTextInput(
+                        elementType: type,
+                        identifier: element.identifier,
+                        label: element.label,
+                        frame: element.frame
+                    )
+                }
+            }
+        }
+        return nil
+    }
+
     private func resolvedSnapshotFocus(
         _ node: [String: Any],
         elementType: XCUIElement.ElementType,
-        keyboardVisibleInSnapshot: Bool
+        keyboardVisibleInSnapshot: Bool,
+        liveFocusedTextInput: LiveFocusedTextInput?
     ) -> Bool {
         let snapshotFocused = (node["hasFocus"] as? Bool)
             ?? (node["hasKeyboardFocus"] as? Bool)
         if snapshotFocused == true { return true }
-        if isTextFieldType(elementType) {
-            return keyboardVisibleInSnapshot
+        if keyboardVisibleInSnapshot,
+           matchesLiveFocusedTextInput(
+                node,
+                elementType: elementType,
+                liveFocusedTextInput: liveFocusedTextInput
+           ) {
+            return true
         }
         return false
+    }
+
+    private func matchesLiveFocusedTextInput(
+        _ node: [String: Any],
+        elementType: XCUIElement.ElementType,
+        liveFocusedTextInput: LiveFocusedTextInput?
+    ) -> Bool {
+        guard let live = liveFocusedTextInput else { return false }
+        guard isTextFieldType(elementType), elementType == live.elementType else { return false }
+
+        let identifier = node["identifier"] as? String ?? ""
+        let label = node["label"] as? String ?? ""
+        let title = node["title"] as? String ?? ""
+        let frame = parseFrame(node)
+
+        if !identifier.isEmpty || !live.identifier.isEmpty {
+            guard identifier == live.identifier else { return false }
+            if framesApproximatelyEqual(frame, live.frame) { return true }
+            return !live.label.isEmpty && (label == live.label || title == live.label)
+        }
+
+        guard framesApproximatelyEqual(frame, live.frame) else { return false }
+        return live.label.isEmpty || label == live.label || title == live.label
+    }
+
+    private func framesApproximatelyEqual(_ lhs: CGRect, _ rhs: CGRect) -> Bool {
+        let tolerance: CGFloat = 1
+        return abs(lhs.origin.x - rhs.origin.x) <= tolerance
+            && abs(lhs.origin.y - rhs.origin.y) <= tolerance
+            && abs(lhs.width - rhs.width) <= tolerance
+            && abs(lhs.height - rhs.height) <= tolerance
     }
 
     private static let kvcMissLogger = OneShotLogger()
@@ -677,7 +742,8 @@ class SnapshotElementFinder {
         results: inout [([String: Any], CGRect)],
         otherAncestors: inout [WrapperAncestor],
         suppressed: inout Set<Int>,
-        keyboardVisibleInSnapshot: Bool
+        keyboardVisibleInSnapshot: Bool,
+        liveFocusedTextInput: LiveFocusedTextInput?
     ) {
         // Pre-order: parent first, then descendants. Callers (e.g.
         // `.first()`) rely on document/snapshot order, so we must NOT
@@ -688,7 +754,8 @@ class SnapshotElementFinder {
         if matchesSelector(
             nodeDict,
             selector: selector,
-            keyboardVisibleInSnapshot: keyboardVisibleInSnapshot
+            keyboardVisibleInSnapshot: keyboardVisibleInSnapshot,
+            liveFocusedTextInput: liveFocusedTextInput
         ) {
             let myId = nodeDict["identifier"] as? String ?? ""
             let myLabel = nodeDict["label"] as? String ?? ""
@@ -738,7 +805,8 @@ class SnapshotElementFinder {
                     results: &results,
                     otherAncestors: &otherAncestors,
                     suppressed: &suppressed,
-                    keyboardVisibleInSnapshot: keyboardVisibleInSnapshot
+                    keyboardVisibleInSnapshot: keyboardVisibleInSnapshot,
+                    liveFocusedTextInput: liveFocusedTextInput
                 )
             }
         }
@@ -751,7 +819,8 @@ class SnapshotElementFinder {
     private func matchesSelector(
         _ node: [String: Any],
         selector: ElementSelector,
-        keyboardVisibleInSnapshot: Bool
+        keyboardVisibleInSnapshot: Bool,
+        liveFocusedTextInput: LiveFocusedTextInput?
     ) -> Bool {
         let label = node["label"] as? String ?? ""
         let title = node["title"] as? String ?? ""
@@ -862,7 +931,8 @@ class SnapshotElementFinder {
             let isFocused = resolvedSnapshotFocus(
                 node,
                 elementType: elType,
-                keyboardVisibleInSnapshot: keyboardVisibleInSnapshot
+                keyboardVisibleInSnapshot: keyboardVisibleInSnapshot,
+                liveFocusedTextInput: liveFocusedTextInput
             )
             if isFocused != wantFocused { return false }
         }

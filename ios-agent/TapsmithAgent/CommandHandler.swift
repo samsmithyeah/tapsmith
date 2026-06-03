@@ -226,6 +226,9 @@ class CommandHandler {
             return try elementFinder.getElementInfo(elementId)
         }
         let selector = SelectorParser.parse(params)
+        if selector.xpath != nil {
+            return try elementFinder.findElement(selector)
+        }
         // Use snapshot-based finding for speed (single IPC call)
         return try snapshotFinder.findElement(selector)
     }
@@ -570,6 +573,7 @@ class CommandHandler {
             let selectorKeys = [
                 "role", "id", "contentDesc", "className", "testId",
                 "hint", "textContains", "elementId", "focused",
+                "label", "xpath", "resourceId",
             ]
             let hasSelector = selectorKeys.contains { params[$0] != nil }
             let isFocusedOnlySelector = (
