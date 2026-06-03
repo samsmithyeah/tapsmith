@@ -42,7 +42,7 @@ These drive the same coordinate gestures exposed in the SDK (`device.tapXY`, `de
 
 **Lock toggle.** A lock control in the mirror header governs interactivity. It's unlocked (interactive) by default and **auto-locks while a run is active** so your input can't interfere with a running test. You can override it at any time -- an explicit lock sticks until you unlock, while an unlock during a run lasts only for that run.
 
-**Live video (Android).** Viewing a single Android device streams live H.264 video (decoded in the browser via WebCodecs) for smooth, low-latency playback. The multi-device grid and iOS devices use screenshot streaming.
+**Live video (Android).** Viewing a single Android device streams live H.264 video (decoded in the browser via WebCodecs) for smooth, low-latency playback, falling back to screenshot streaming if WebCodecs is unsupported or decoding fails. The multi-device grid and iOS devices use screenshot streaming.
 
 ## MCP integration
 
