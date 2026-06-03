@@ -549,7 +549,7 @@ class CommandHandler {
             let hasSelector = selectorKeys.contains { params[$0] != nil }
             let isFocusedOnlySelector = (
                 (params["focused"] as? Bool) == true
-                && selectorKeys.filter { $0 != "focused" }.allSatisfy { params[$0] == nil }
+                && selectorKeys.allSatisfy { $0 == "focused" || params[$0] == nil }
             )
             if hasSelector && !(isFocusedOnlySelector && delayMs == 0) {
                 var selectorParams = params
