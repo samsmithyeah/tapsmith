@@ -1,4 +1,5 @@
 import { describe, expect, test } from "../fixtures.js"
+import { resetApp } from "../utils/app-reset.js"
 
 /**
  * End-to-end smoke test for the streamed-touch (live-drag) path that powers the
@@ -9,7 +10,11 @@ import { describe, expect, test } from "../fixtures.js"
  */
 describe("Live touch stream", () => {
   test("streamed drag scrolls the view", async ({ device, scrollScreen }) => {
-    await device.openDeepLink("tapsmithtest:///scroll")
+    // Use resetApp (not a bare openDeepLink): when this runs after other tests
+    // the app is already foregrounded on another screen, where a plain deep link
+    // doesn't reliably re-navigate. resetApp resets to the scroll screen and
+    // waits for idle, matching the other gesture/scroll smoke tests.
+    await resetApp(device, "/scroll")
     await expect(scrollScreen.firstItem).toBeVisible()
 
     const before = await scrollScreen.firstItem.boundingBox()
