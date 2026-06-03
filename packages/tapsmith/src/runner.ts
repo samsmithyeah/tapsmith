@@ -994,6 +994,18 @@ async function runSuiteContext(
             );
           }
         }
+
+        // Start daemon log streaming if configured
+        if (traceConfig.daemonLogs && traceCollector) {
+          try {
+            opts.device._startDaemonLogStream(traceCollector);
+          } catch (err) {
+            _warnCaptureOnce(
+              'Daemon log streaming failed to start',
+              err instanceof Error ? err.message : String(err),
+            );
+          }
+        }
       }
 
       // Video recording — bracket the test the same way `trace` does (PILOT-114).
