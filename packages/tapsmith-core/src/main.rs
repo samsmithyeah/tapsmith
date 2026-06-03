@@ -1,5 +1,6 @@
 mod adb;
 mod agent_comms;
+mod daemon_log_bus;
 mod device;
 mod device_logs;
 mod grpc_server;
