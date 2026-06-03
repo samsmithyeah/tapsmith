@@ -740,7 +740,7 @@ export async function runParallel(opts: DispatcherOptions, _portOffset = 0): Pro
   }
 
   updateLaunchPhaseProgress('daemon', `Worker ${displayWorkerId(0)}: starting daemon on localhost:${firstDaemonPort}`);
-  const firstDaemon = spawnDaemonProcess(daemonBin, firstDaemonPort, firstAgentPort, 0);
+  const firstDaemon = spawnDaemonProcess(daemonBin, firstDaemonPort, firstAgentPort, displayWorkerId(0));
   firstDaemon.unref();
   firstDaemon.on('error', () => {
     // Handled by the waitForReady timeout below
@@ -1615,7 +1615,7 @@ async function initializeWorker(opts: InitializeWorkerOptions): Promise<WorkerHa
     opts.onDaemonReady?.();
   } else {
     opts.onProgress?.(`starting worker daemon on localhost:${daemonPort}`);
-    daemonProcess = spawnDaemonProcess(daemonBin, daemonPort, agentPort, workerId);
+    daemonProcess = spawnDaemonProcess(daemonBin, daemonPort, agentPort, opts.displayWorkerId ?? workerId);
     daemonProcess.unref();
     daemonProcess.on('error', (err) => {
       process.stderr.write(`Daemon for worker ${workerId} failed to start: ${err.message}\n`);
