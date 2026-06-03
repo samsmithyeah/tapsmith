@@ -1,11 +1,8 @@
 //! In-process broadcast of daemon `tracing` events, consumed by the
 //! `StreamDaemonLogs` RPC so the SDK can fold daemon logs into per-test traces.
 //!
-//! This module is self-contained and not yet wired into the live tracing
-//! subscriber or the gRPC server — that happens in follow-up tasks. Until then
-//! the bus/layer are only exercised by this module's own tests, so we allow the
-//! otherwise-"dead" public surface at the module level.
-#![allow(dead_code)]
+//! This module is wired into the live tracing subscriber (`main.rs`) and the
+//! `StreamDaemonLogs` gRPC handler (`grpc_server.rs`).
 
 use std::time::{SystemTime, UNIX_EPOCH};
 

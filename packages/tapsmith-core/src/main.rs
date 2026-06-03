@@ -130,17 +130,24 @@ async fn main() -> Result<()> {
 
     let args = parse_args();
 
+    use tracing_subscriber::prelude::*;
+
     let filter = if args.verbose {
         "tapsmith_core=debug,tonic=info"
     } else {
         "tapsmith_core=info,tonic=warn"
     };
+    let env_filter = tracing_subscriber::EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new(filter));
 
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new(filter)),
-        )
+    // Bus that fans daemon log lines to the StreamDaemonLogs RPC. Capacity bounds
+    // the in-memory backlog when a subscriber lags; oldest entries are dropped.
+    let daemon_log_bus = daemon_log_bus::DaemonLogBus::new(2048);
+
+    tracing_subscriber::registry()
+        .with(env_filter)
+        .with(tracing_subscriber::fmt::layer())
+        .with(daemon_log_bus::DaemonLogLayer::new(daemon_log_bus.clone()))
         .init();
 
     // Verify ADB is available (Android)
@@ -186,7 +193,7 @@ async fn main() -> Result<()> {
         }
     }
 
-    let service = TapsmithServiceImpl::new(device_manager, agent_connection);
+    let service = TapsmithServiceImpl::new(device_manager, agent_connection, daemon_log_bus);
     let service_handle = Arc::new(service);
 
     let addr: SocketAddr = format!("127.0.0.1:{}", args.port)
