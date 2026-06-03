@@ -16,7 +16,7 @@ describe('TraceCollector', () => {
       screenshots: true,
       snapshots: true,
       sources: true,
-      attachments: true, network: false, deviceLogs: false,
+      attachments: true, network: false, deviceLogs: false, daemonLogs: false,
     };
   });
 
@@ -222,6 +222,31 @@ describe('TraceCollector', () => {
     expect(ev.source).toBe('device');
     expect(ev.level).toBe('info');
     expect(ev.message).toBe('App launched');
+  });
+
+  it('records daemon log entries as console events with source "daemon"', () => {
+    const collector = new TraceCollector(
+      {
+        mode: 'on',
+        screenshots: false,
+        snapshots: false,
+        sources: false,
+        attachments: true,
+        network: false,
+        deviceLogs: false,
+        daemonLogs: true,
+      },
+      tempDir,
+    );
+    collector.addDaemonLogEntry('info', 'spawned adb shell input tap');
+    const events = collector.events.filter((e) => e.type === 'console');
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({
+      type: 'console',
+      level: 'info',
+      source: 'daemon',
+      message: 'spawned adb shell input tap',
+    });
   });
 
   it('produces valid NDJSON output', () => {
@@ -548,7 +573,7 @@ describe('extractStack', () => {
 describe('addActionEvent preserves stack', () => {
   it('keeps the stack array on the emitted event', () => {
     const c = new TraceCollector(
-      { mode: 'on', screenshots: false, snapshots: false, sources: true, attachments: true, network: false, deviceLogs: false },
+      { mode: 'on', screenshots: false, snapshots: false, sources: true, attachments: true, network: false, deviceLogs: false, daemonLogs: false },
       '/tmp/ts-test-' + process.pid,
     );
     c.addActionEvent({

@@ -187,8 +187,8 @@ export interface ConsoleTraceEvent extends TraceEvent {
   level: ConsoleLevel
   /** Console message. */
   message: string
-  /** Source: 'test' for test code, 'device' for logcat. */
-  source: 'test' | 'device'
+  /** Source: 'test' for test code, 'device' for logcat/syslog, 'daemon' for tapsmith-core. */
+  source: 'test' | 'device' | 'daemon'
 }
 
 export interface AttachmentTraceEvent extends TraceEvent {
@@ -271,6 +271,7 @@ export interface TraceConfigSnapshot {
   sources: boolean
   network: boolean
   deviceLogs: boolean
+  daemonLogs: boolean
 }
 
 // ─── Trace Configuration ───
@@ -355,6 +356,8 @@ export interface TraceConfig {
   networkIgnoreHosts?: string[]
   /** Whether to stream device logs (Android logcat / iOS simulator syslog). Default: true. */
   deviceLogs: boolean
+  /** Whether to stream the tapsmith-core daemon's own logs into the trace. Default: false. */
+  daemonLogs: boolean
 }
 
 /** Parse a string shorthand or object into a full TraceConfig. */
@@ -369,6 +372,7 @@ export function resolveTraceConfig(
     attachments: true,
     network: true,
     deviceLogs: true,
+    daemonLogs: false,
   };
 
   if (input === undefined) return defaults;

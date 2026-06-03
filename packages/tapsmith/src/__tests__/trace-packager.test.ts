@@ -27,7 +27,7 @@ describe('trace packager', () => {
       screenshots: false,
       snapshots: false,
       sources: false,
-      attachments: true, network: false, deviceLogs: false,
+      attachments: true, network: false, deviceLogs: false, daemonLogs: false,
     };
 
     const collector = new TraceCollector(config, tempDir);
@@ -100,7 +100,7 @@ describe('trace packager', () => {
       screenshots: false,
       snapshots: false,
       sources: true,
-      attachments: true, network: false, deviceLogs: false,
+      attachments: true, network: false, deviceLogs: false, daemonLogs: false,
     };
 
     // Create a fake source file
@@ -136,7 +136,7 @@ describe('trace packager', () => {
       screenshots: false,
       snapshots: false,
       sources: false,
-      attachments: true, network: false, deviceLogs: false,
+      attachments: true, network: false, deviceLogs: false, daemonLogs: false,
     };
 
     const collector = new TraceCollector(config, tempDir);
@@ -182,7 +182,7 @@ describe('packageTrace sources.json', () => {
 
       const device: TraceDeviceInfo = { serial: 'test', isEmulator: false };
       const c = new TraceCollector(
-        { mode: 'on', screenshots: false, snapshots: false, sources: true, attachments: false, network: false, deviceLogs: false },
+        { mode: 'on', screenshots: false, snapshots: false, sources: true, attachments: false, network: false, deviceLogs: false, daemonLogs: false },
         tmp,
       );
       c.addActionEvent({

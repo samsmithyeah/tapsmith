@@ -395,7 +395,7 @@ function App() {
     startTime: 0,
     endTime: viewedTestNode?.duration ?? 0,
     device: { serial: testDeviceSerial, isEmulator: deviceIsEmulator },
-    traceConfig: { screenshots: true, snapshots: true, sources: true, network: true, deviceLogs: false },
+    traceConfig: { screenshots: true, snapshots: true, sources: true, network: true, deviceLogs: false, daemonLogs: false },
     actionCount: actionEvents.length,
     screenshotCount: screenshots.size,
     error: viewedTestNode?.error,
