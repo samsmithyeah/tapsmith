@@ -88,9 +88,17 @@ function daemonStdio(workerId: number): DaemonStdio {
   const logPath = workerId === 0
     ? baseLogPath
     : path.join(parsed.dir, `${parsed.name}.worker-${workerId}${parsed.ext}`);
-  fs.mkdirSync(path.dirname(logPath), { recursive: true });
-  const fd = fs.openSync(logPath, 'a');
-  return ['ignore', fd, fd];
+  try {
+    fs.mkdirSync(path.dirname(logPath), { recursive: true });
+    const fd = fs.openSync(logPath, 'a');
+    return ['ignore', fd, fd];
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    process.stderr.write(
+      `${YELLOW}Failed to open daemon log ${logPath}; daemon output will be discarded: ${message}${RESET}\n`,
+    );
+    return 'ignore';
+  }
 }
 
 function closeDaemonStdioParentFds(stdio: DaemonStdio): void {

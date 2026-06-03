@@ -308,56 +308,37 @@ impl TapsmithServiceImpl {
     ) -> anyhow::Result<()> {
         let serial_for_open = serial.to_string();
         let uri_for_open = uri.to_string();
-        let mut open_url =
-            tokio::spawn(
-                async move { ios::device::open_url(&serial_for_open, &uri_for_open).await },
-            );
+        let open_url = ios::device::open_url(&serial_for_open, &uri_for_open);
+        tokio::pin!(open_url);
         let deadline = tokio::time::Instant::now() + IOS_OPEN_URL_PROMPT_TIMEOUT;
-        self.accept_ios_open_in_app_dialog().await;
 
         let prompt_poll_interval = Duration::from_millis(500);
+        let initial_prompt_poll_interval = Duration::from_millis(50);
+        let mut next_poll_interval = initial_prompt_poll_interval;
         loop {
-            if open_url.is_finished() {
-                let result = open_url
-                    .await
-                    .map_err(|e| anyhow::anyhow!("simctl openurl task failed: {e}"))?;
-                return result;
-            }
-
             let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
             if remaining.is_zero() {
-                if open_url.is_finished() {
-                    let result = open_url
-                        .await
-                        .map_err(|e| anyhow::anyhow!("simctl openurl task failed: {e}"))?;
-                    return result;
+                tokio::select! {
+                    biased;
+                    result = &mut open_url => {
+                        return result;
+                    }
+                    _ = tokio::time::sleep(Duration::from_millis(1)) => {}
                 }
-                open_url.abort();
                 return Err(anyhow::anyhow!(
                     "Operation timed out opening URL on {serial}: {uri}"
                 ));
             }
 
-            if remaining <= prompt_poll_interval {
-                match tokio::time::timeout(remaining, &mut open_url).await {
-                    Ok(Ok(result)) => return result,
-                    Ok(Err(e)) => return Err(anyhow::anyhow!("simctl openurl task failed: {e}")),
-                    Err(_) => {
-                        open_url.abort();
-                        return Err(anyhow::anyhow!(
-                            "Operation timed out opening URL on {serial}: {uri}"
-                        ));
-                    }
-                }
-            }
-
+            let sleep_duration = remaining.min(next_poll_interval);
             tokio::select! {
+                biased;
                 result = &mut open_url => {
-                    return result
-                        .map_err(|e| anyhow::anyhow!("simctl openurl task failed: {e}"))?;
+                    return result;
                 }
-                _ = tokio::time::sleep(prompt_poll_interval) => {
+                _ = tokio::time::sleep(sleep_duration) => {
                     self.accept_ios_open_in_app_dialog().await;
+                    next_poll_interval = prompt_poll_interval;
                 }
             }
         }
