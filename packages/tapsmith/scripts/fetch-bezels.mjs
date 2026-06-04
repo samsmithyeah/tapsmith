@@ -145,6 +145,18 @@ async function main() {
     const size = (readFileSync(out).length / 1024).toFixed(0);
     console.log(`  screen bbox ${r.w}x${r.h}+${r.x}+${r.y}  →  ${target.file} (${size} KB)`);
 
+    // 5. Screen-opening mask: crop the overlay to the screen window and invert
+    //    its alpha (opening → opaque, corners → transparent). The content is
+    //    clipped to this so the rounded/squircle opening matches the bezel
+    //    exactly (a circular border-radius can't).
+    const maskFile = target.file.replace(/\.png$/, '-mask.png');
+    const maskOut = join(OUT_DIR, maskFile);
+    const [ow, oh] = magick([out, '-format', '%wx%h', 'info:']).toString().trim().split('x').map(Number);
+    const s = meta[target.bucket].screen;
+    const crop = `${Math.round(s.widthPct * ow)}x${Math.round(s.heightPct * oh)}+${Math.round(s.leftPct * ow)}+${Math.round(s.topPct * oh)}`;
+    magick([out, '-crop', crop, '+repage', '-channel', 'A', '-negate', '+channel', '-strip', maskOut]);
+    console.log(`  mask ${crop}  →  ${maskFile}`);
+
     // Stay under the documented 3 req / 60 s rate limit.
     if (i < TARGETS.length - 1) await sleep(25_000);
   }

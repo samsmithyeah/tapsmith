@@ -1273,14 +1273,19 @@ html, body, #app {
   justify-content: center;
   overflow: hidden;
   background: #000;
-  /* Establish a container so the screen content can round its corners relative
-   * to the screen box width (cqi), matching the bezel's rounded opening. */
-  container-type: inline-size;
+  /* Clip the content (and the black backing) to the exact screen-opening shape
+   * via a mask generated from the frame, so the rounded/squircle corners match
+   * the bezel opening precisely (a circular border-radius cannot). */
+  -webkit-mask-image: var(--dm-mask);
+  mask-image: var(--dm-mask);
+  -webkit-mask-size: 100% 100%;
+  mask-size: 100% 100%;
+  -webkit-mask-repeat: no-repeat;
+  mask-repeat: no-repeat;
 }
 /* The screen content fits its window preserving aspect (no distortion), so the
  * canvas's getBoundingClientRect — used to normalize tap coordinates — always
- * maps 1:1 onto the device screen. Corners are rounded to the device screen
- * radius (--dm-sr, % of screen width) so square corners tuck under the bezel. */
+ * maps 1:1 onto the device screen. */
 .dm-frame-screen > .dm-canvas,
 .dm-frame-screen > img {
   max-width: 100%;
@@ -1289,7 +1294,7 @@ html, body, #app {
   height: auto;
   object-fit: contain;
   border: none;
-  border-radius: calc(var(--dm-sr, 12) * 1cqi);
+  border-radius: 0;
   display: block;
   background: transparent;
 }

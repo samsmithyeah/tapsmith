@@ -788,9 +788,14 @@ html, body, #app {
   justify-content: center;
   overflow: hidden;
   background: #000;
-  /* Container so the screenshot can round its corners relative to the screen
-   * box width (cqi), matching the bezel's rounded opening. */
-  container-type: inline-size;
+  /* Clip content to the exact screen-opening shape (matches the bezel's
+   * squircle corners; a circular border-radius cannot). */
+  -webkit-mask-image: var(--dm-mask);
+  mask-image: var(--dm-mask);
+  -webkit-mask-size: 100% 100%;
+  mask-size: 100% 100%;
+  -webkit-mask-repeat: no-repeat;
+  mask-repeat: no-repeat;
 }
 .screenshot-image-wrapper .dm-frame-screen > img {
   max-width: 100%;
@@ -799,7 +804,7 @@ html, body, #app {
   height: auto;
   object-fit: contain;
   border: none;
-  border-radius: calc(var(--dm-sr, 12) * 1cqi);
+  border-radius: 0;
   display: block;
 }
 
