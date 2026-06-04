@@ -16,6 +16,7 @@
     "build:trace-viewer": "vite build",
     "build:ui-mode": "vite build --config vite.config.ui-mode.ts",
     "dev:ui-mode": "vite --config vite.config.ui-mode.ts",
+    "fetch-bezels": "node scripts/fetch-bezels.mjs",
     "lint": "eslint src/",
     "knip": "knip",
     "test": "vitest run",

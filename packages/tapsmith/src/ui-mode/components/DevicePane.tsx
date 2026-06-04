@@ -10,9 +10,10 @@
 import type { RefObject } from 'preact';
 import { useRef, useEffect } from 'preact/hooks';
 import { Lock, LockOpen } from 'lucide-preact';
-import type { WorkerInfo, ClientMessage } from '../ui-protocol.js';
-import { inferDevicePlatform } from '../ui-protocol.js';
+import type { WorkerInfo, ClientMessage, DevicePlatform } from '../ui-protocol.js';
+import { inferDevicePlatform, inferDeviceFormFactor } from '../ui-protocol.js';
 import { DeviceMirror } from './DeviceMirror.js';
+import { DeviceFrame } from './DeviceFrame.js';
 import { useDeviceInteraction } from '../hooks/use-device-interaction.js';
 
 interface DevicePaneProps {
@@ -50,13 +51,14 @@ function WorkerCanvas({ workerId, label, deviceSerial, connected, registerCanvas
   connected: boolean
   registerCanvas: (id: number, canvas: HTMLCanvasElement) => void
   unregisterCanvas: (id: number) => void
-  platform?: 'android' | 'ios'
+  platform?: DevicePlatform
   interactive: boolean
   force: boolean
   send: (msg: ClientMessage) => void
 }) {
   const ref = useRef<HTMLCanvasElement>(null);
   const framePlatform = platform ?? inferDevicePlatform(label, deviceSerial);
+  const frameFormFactor = inferDeviceFormFactor({ hints: [label, deviceSerial] });
   const interaction = useDeviceInteraction({ send, enabled: interactive, force, workerId });
 
   // The "All" grid renders screenshots for every tile (multi-tile H.264 can't
@@ -91,7 +93,7 @@ function WorkerCanvas({ workerId, label, deviceSerial, connected, registerCanvas
             </div>
           </div>
         )}
-        <div class={`dm-frame${framePlatform ? ` dm-skin-${framePlatform}` : ''}`}>
+        <DeviceFrame platform={framePlatform} formFactor={frameFormFactor}>
           <canvas
             ref={ref}
             class={`dm-canvas ${interactive ? 'interactive' : 'locked'}`}
@@ -102,7 +104,7 @@ function WorkerCanvas({ workerId, label, deviceSerial, connected, registerCanvas
             onPointerCancel={interactive ? interaction.onPointerCancel : undefined}
             onKeyDown={interactive ? interaction.onKeyDown : undefined}
           />
-        </div>
+        </DeviceFrame>
       </div>
     </div>
   );
@@ -130,6 +132,9 @@ export function DevicePane({
   const mirrorPlatform = selectedWorker
     ? (selectedWorker.platform ?? inferDevicePlatform(selectedWorker.displayName, selectedWorker.deviceSerial) ?? platform)
     : platform;
+  const mirrorFormFactor = inferDeviceFormFactor({
+    hints: selectedWorker ? [selectedWorker.displayName, selectedWorker.deviceSerial] : [],
+  });
 
   return (
     <div class="device-col">
@@ -199,6 +204,7 @@ export function DevicePane({
             connected={connected}
             loading={mirrorLoading}
             platform={mirrorPlatform}
+            formFactor={mirrorFormFactor}
             interactive={interactive}
             force={force}
             workerId={typeof deviceViewMode === 'number' ? deviceViewMode : selectedWorkerId}

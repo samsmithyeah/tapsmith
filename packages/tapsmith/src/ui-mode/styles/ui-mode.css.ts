@@ -1236,6 +1236,64 @@ html, body, #app {
 .dm-frame {
   display: contents;
 }
+
+/* ─── Image bezels (photographic frames from bezel.fit) ─── */
+
+/* The frame box fits the viewport preserving the frame PNG's aspect ratio
+ * (set inline). The PNG overlays the screen window; the device screen
+ * (canvas / screenshot) sits underneath in the dm-frame-screen box. */
+.dm-frame-img {
+  display: block;
+  position: relative;
+  /* Width fits the container: grid tiles fill their width (100%); the single
+   * mirror sets an explicit px width inline (measured in JS) so it also fits by
+   * the container height. max-* guards either case from overflowing. */
+  width: 100%;
+  aspect-ratio: var(--dm-fa);
+  max-width: 100%;
+  max-height: 100%;
+  margin: auto;
+}
+.dm-frame-png {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: fill;
+  z-index: 2;
+  pointer-events: none; /* taps fall through to the screen below */
+  user-select: none;
+  -webkit-user-drag: none;
+}
+.dm-frame-screen {
+  position: absolute; /* left/top/width/height set inline from the screen rect */
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  background: #000;
+  /* Establish a container so the screen content can round its corners relative
+   * to the screen box width (cqi), matching the bezel's rounded opening. */
+  container-type: inline-size;
+}
+/* The screen content fits its window preserving aspect (no distortion), so the
+ * canvas's getBoundingClientRect — used to normalize tap coordinates — always
+ * maps 1:1 onto the device screen. Corners are rounded to the device screen
+ * radius (--dm-sr, % of screen width) so square corners tuck under the bezel. */
+.dm-frame-screen > .dm-canvas,
+.dm-frame-screen > img {
+  max-width: 100%;
+  max-height: 100%;
+  width: auto;
+  height: auto;
+  object-fit: contain;
+  border: none;
+  border-radius: calc(var(--dm-sr, 12) * 1cqi);
+  display: block;
+  background: transparent;
+}
+
 .dm-skin-ios,
 .dm-skin-android {
   display: inline-flex;
@@ -1363,6 +1421,33 @@ html, body, #app {
   background: oklch(0.3 0 0);
   z-index: 3;
   pointer-events: none;
+}
+
+/* Tablet variants — slimmer uniform bezel, gentler corner radius, and a small
+ * centered front camera instead of a phone notch / punch-hole. Used for iPads
+ * and Android tablets, which bezel.fit has no photographic frames for. */
+.dm-skin-ios.dm-skin-tablet,
+.dm-skin-android.dm-skin-tablet {
+  --bezel: 2.6cqi;
+  --bezel-radius: 5cqi;
+  padding: var(--bezel);
+}
+.dm-skin-ios.dm-skin-tablet .dm-canvas,
+.dm-skin-ios.dm-skin-tablet > img,
+.dm-skin-android.dm-skin-tablet .dm-canvas,
+.dm-skin-android.dm-skin-tablet > img {
+  border-radius: calc(var(--bezel-radius) - var(--bezel));
+}
+.dm-skin-ios.dm-skin-tablet::after,
+.dm-skin-android.dm-skin-tablet::after {
+  top: calc((var(--bezel) - 1.4cqi) / 2);
+  left: 50%;
+  transform: translateX(-50%);
+  width: 1.4cqi;
+  height: 1.4cqi;
+  background: oklch(0.12 0 0);
+  border: 1px solid oklch(0.28 0 0);
+  border-radius: 50%;
 }
 
 /* ─── Trace Viewer Components (ActionsPanel, DetailTabs, etc.) ─── */

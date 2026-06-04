@@ -731,6 +731,78 @@ html, body, #app {
   pointer-events: none;
 }
 
+/* Tablet variants — slimmer uniform bezel, gentler corners, small centered camera. */
+.dm-skin-ios.dm-skin-tablet,
+.dm-skin-android.dm-skin-tablet {
+  --bezel: 2.6cqi;
+  --bezel-radius: 5cqi;
+  padding: var(--bezel);
+}
+.dm-skin-ios.dm-skin-tablet > img,
+.dm-skin-android.dm-skin-tablet > img {
+  border-radius: calc(var(--bezel-radius) - var(--bezel));
+}
+.dm-skin-ios.dm-skin-tablet::after,
+.dm-skin-android.dm-skin-tablet::after {
+  top: calc((var(--bezel) - 1.4cqi) / 2);
+  left: 50%;
+  transform: translateX(-50%);
+  width: 1.4cqi;
+  height: 1.4cqi;
+  background: oklch(0.12 0 0);
+  border: 1px solid oklch(0.28 0 0);
+  border-radius: 50%;
+}
+
+/* Image bezels (photographic frames from bezel.fit). The frame PNG overlays the
+ * screen window; the screenshot sits underneath in the dm-frame-screen box, so
+ * its rendered rect (used to place bounds/point overlays) is unaffected. */
+.screenshot-image-wrapper .dm-frame-img {
+  display: block;
+  position: relative;
+  /* width is set inline (JS, from the measured wrapper) so it fits both ways;
+   * 100% is the pre-measure fallback, always capped by max-width/height. */
+  width: 100%;
+  aspect-ratio: var(--dm-fa);
+  max-width: 100%;
+  max-height: 100%;
+  margin: auto;
+}
+.screenshot-image-wrapper .dm-frame-png {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: fill;
+  border-radius: 0;
+  z-index: 2;
+  pointer-events: none;
+  user-select: none;
+  -webkit-user-drag: none;
+}
+.dm-frame-screen {
+  position: absolute;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  background: #000;
+  /* Container so the screenshot can round its corners relative to the screen
+   * box width (cqi), matching the bezel's rounded opening. */
+  container-type: inline-size;
+}
+.screenshot-image-wrapper .dm-frame-screen > img {
+  max-width: 100%;
+  max-height: 100%;
+  width: auto;
+  height: auto;
+  object-fit: contain;
+  border: none;
+  border-radius: calc(var(--dm-sr, 12) * 1cqi);
+  display: block;
+}
+
 /* ─── Detail Tabs ─── */
 
 .ct {

@@ -3,6 +3,8 @@ import { Focus, Download, Camera, LoaderCircle, CircleDot, Play, Layers, ListTre
 import type { ActionTraceEvent, AssertionTraceEvent } from '../../trace/types.js';
 import type { ContainerSummary } from '../types.js';
 import { findNearestScreenshot } from '../../ui-mode/hooks/use-trace-data.js';
+import { inferDeviceFormFactor } from '../../ui-mode/ui-protocol.js';
+import { selectDeviceFrame, screenWindowStyle } from '../../ui-mode/assets/bezels/frames.js';
 
 // ─── Injected Styles ───
 
@@ -10,7 +12,7 @@ const SCREENSHOT_STYLES = `
   .screenshot-zoom-label { margin-left: auto; padding: 6px 12px; color: var(--color-text-muted); font-size: 11px; }
   .screenshot-image-wrapper { position: relative; width: 100%; height: 100%; display: flex; align-items: center; justify-content: center; }
   .screenshot-image-wrapper > img,
-  .screenshot-image-wrapper .dm-frame:not(.dm-skin-ios):not(.dm-skin-android) > img { max-width: 100%; max-height: 100%; object-fit: contain; border-radius: 8px; }
+  .screenshot-image-wrapper .dm-frame:not(.dm-skin-ios):not(.dm-skin-android):not(.dm-frame-img) > img { max-width: 100%; max-height: 100%; object-fit: contain; border-radius: 8px; }
   .screenshot-image-wrapper .dm-skin-ios > img,
   .screenshot-image-wrapper .dm-skin-android > img { max-width: 100%; object-fit: contain; border-radius: calc(var(--bezel-radius) - var(--bezel)); }
   .bounds-overlay { position: absolute; z-index: 4; pointer-events: none; border-radius: 8px; overflow: hidden; }
@@ -337,6 +339,63 @@ export function ScreenshotPanel({ event, screenshots, highlightBounds, selectorH
   // Show bounds + point overlay only on the "action" tab
   const showOverlay = tab === 'action' && (!!bounds || !!point);
 
+  // Once the screenshot has loaded we know its aspect ratio; a photographic
+  // bezel.fit frame is used for phone-shaped screens, the CSS bezel otherwise
+  // (tablets, square / odd ratios). Phones never flip (the frame is chosen on
+  // first paint and confirmed on load); tablets fall back to CSS after load.
+  const contentAspect = naturalSize ? naturalSize.width / naturalSize.height : undefined;
+  const imageFrame = platform ? selectDeviceFrame({ platform, contentAspect }) : undefined;
+  const formFactor = inferDeviceFormFactor({ aspectRatio: contentAspect });
+
+  // Size the frame box in JS from the measured wrapper, so it fits by width AND
+  // height (this panel is often wide-and-short, unlike the tall mirror column,
+  // and container-query height isn't reliable here). Mirrors the CSS-skin
+  // `frameStyle` approach above.
+  const imageFrameStyle = (() => {
+    if (!imageFrame) return undefined;
+    const style: Record<string, string> = { '--dm-fa': String(imageFrame.frameAspect) };
+    if (viewportSize && viewportSize.width > 0 && viewportSize.height > 0) {
+      const width = Math.min(viewportSize.width, viewportSize.height * imageFrame.frameAspect);
+      style.width = `${width.toFixed(2)}px`;
+    }
+    return style;
+  })();
+
+  const screenshotImg = (
+    <img
+      ref={imgRef}
+      src={currentUrl}
+      alt={`Screenshot ${tab}`}
+      onLoad={handleImageLoad}
+      onClick={handleImageClick}
+      onMouseMove={handleImageMouseMove}
+      onMouseLeave={handleImageMouseLeave}
+      style={onScreenshotClick ? { cursor: 'crosshair' } : undefined}
+    />
+  );
+
+  let framedScreenshot: preact.JSX.Element;
+  if (imageFrame) {
+    framedScreenshot = (
+      <div class="dm-frame dm-frame-img" style={imageFrameStyle}>
+        <div class="dm-frame-screen" style={screenWindowStyle(imageFrame)}>
+          {screenshotImg}
+        </div>
+        <img class="dm-frame-png" src={imageFrame.src} alt="" aria-hidden="true" draggable={false} />
+      </div>
+    );
+  } else if (platform) {
+    framedScreenshot = (
+      <div class="screenshot-device-frame" style={frameStyle}>
+        <div class={`dm-frame dm-skin-${platform} dm-skin-${formFactor}`}>
+          {screenshotImg}
+        </div>
+      </div>
+    );
+  } else {
+    framedScreenshot = screenshotImg;
+  }
+
   return (
     <div class="screenshot-panel">
       <div class="viewer-head">
@@ -379,33 +438,7 @@ export function ScreenshotPanel({ event, screenshots, highlightBounds, selectorH
         )}
         {currentUrl ? (
           <div ref={wrapperRef} class="screenshot-image-wrapper" style={scale !== 1 ? { transform: `scale(${scale})`, transformOrigin: 'center center' } : undefined}>
-            {platform ? (
-              <div class="screenshot-device-frame" style={frameStyle}>
-                <div class={`dm-frame dm-skin-${platform}`}>
-                  <img
-                    ref={imgRef}
-                    src={currentUrl}
-                    alt={`Screenshot ${tab}`}
-                    onLoad={handleImageLoad}
-                    onClick={handleImageClick}
-                    onMouseMove={handleImageMouseMove}
-                    onMouseLeave={handleImageMouseLeave}
-                    style={onScreenshotClick ? { cursor: 'crosshair' } : undefined}
-                  />
-                </div>
-              </div>
-            ) : (
-              <img
-                ref={imgRef}
-                src={currentUrl}
-                alt={`Screenshot ${tab}`}
-                onLoad={handleImageLoad}
-                onClick={handleImageClick}
-                onMouseMove={handleImageMouseMove}
-                onMouseLeave={handleImageMouseLeave}
-                style={onScreenshotClick ? { cursor: 'crosshair' } : undefined}
-              />
-            )}
+            {framedScreenshot}
             {showOverlay && naturalSize && renderedSize && (
               <BoundsOverlay
                 bounds={bounds}

@@ -14,11 +14,47 @@ import type { AnyTraceEvent } from '../trace/types.js';
 
 export type DevicePlatform = 'android' | 'ios'
 
+export type DeviceFormFactor = 'phone' | 'tablet'
+
+/** Device "skin" bucket — drives which bezel (image frame or CSS) is rendered. */
+export type DeviceSkin = `${DevicePlatform}-${DeviceFormFactor}`
+
 export function inferDevicePlatform(...values: Array<string | undefined>): DevicePlatform | undefined {
   const text = values.filter(Boolean).join(' ');
   if (/ios|iphone|ipad|simulator/i.test(text)) return 'ios';
   if (/android|emulator-|pixel|nexus|galaxy|generic_phone|avd/i.test(text)) return 'android';
   return undefined;
+}
+
+/** Tablet model hints found in simulator/emulator names and serials. */
+const TABLET_RE = /ipad|tablet|\btab\b|\bsm-[tx]\d|nexus (?:7|9|10)|pixel\s*tablet|galaxy\s*tab|\bgts\d/i;
+
+/**
+ * Phone vs tablet. Name/serial hints are authoritative (an "iPad" is a tablet
+ * whatever its screen ratio); the optional screen aspect ratio is a fallback for
+ * opaque serials (e.g. bare `emulator-5554`) — tablets are squarer than phones.
+ */
+export function inferDeviceFormFactor(
+  opts: { hints?: Array<string | undefined>; aspectRatio?: number } = {},
+): DeviceFormFactor {
+  const text = (opts.hints ?? []).filter(Boolean).join(' ');
+  if (TABLET_RE.test(text)) return 'tablet';
+  if (/iphone|pixel \d|generic_phone/i.test(text)) return 'phone';
+  if (opts.aspectRatio && opts.aspectRatio > 0) {
+    // Compare short side / long side. Phones are elongated (≈0.46–0.56);
+    // tablets are closer to square (iPad ≈0.75, most Android tablets ≥0.6).
+    const r = opts.aspectRatio <= 1 ? opts.aspectRatio : 1 / opts.aspectRatio;
+    if (r >= 0.62) return 'tablet';
+  }
+  return 'phone';
+}
+
+/** Combine platform + form factor into the bezel bucket, or undefined if unknown. */
+export function resolveDeviceSkin(
+  platform: DevicePlatform | undefined,
+  formFactor: DeviceFormFactor = 'phone',
+): DeviceSkin | undefined {
+  return platform ? `${platform}-${formFactor}` : undefined;
 }
 
 /** Per-worker status used by UI components. */
