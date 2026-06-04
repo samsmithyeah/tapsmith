@@ -75,17 +75,39 @@ class CommandHandler {
         return false
     }
 
-    /// True when the app's accessibility snapshot has rendered interactive
-    /// content. This keeps openDeepLink from returning while the app is still
-    /// cold-launching.
+    /// True when the app's accessibility tree has rendered interactive content.
+    ///
+    /// Uses `app.snapshot()` — the same mechanism as `GetUiHierarchy` — rather
+    /// than direct element queries (`app.staticTexts.firstMatch.exists`). After
+    /// a deep link the daemon cold-launches the target app out of process via
+    /// `simctl openurl`; XCUITest has not "attached" to a process it did not
+    /// launch, so `XCUIApplication.state` and direct element existence queries
+    /// are unreliable during that window (they report not-running / empty even
+    /// while the app is foreground and fully rendered). `snapshot()` works in
+    /// that same window, which is why hierarchy dumps succeed when the state
+    /// query does not.
     private func appHasRenderedContent(_ app: XCUIApplication) -> Bool {
         var has = false
         _ = ObjCExceptionCatcher.catchException {
-            has = app.staticTexts.firstMatch.exists
-                || app.textFields.firstMatch.exists
-                || app.buttons.firstMatch.exists
+            guard let snapshot = try? app.snapshot() else { return }
+            has = snapshotContainsContent(snapshot)
         }
         return has
+    }
+
+    /// Recursively check whether a snapshot tree contains any rendered,
+    /// user-meaningful element (text, input, or control).
+    private func snapshotContainsContent(_ snapshot: XCUIElementSnapshot) -> Bool {
+        switch snapshot.elementType {
+        case .staticText, .textField, .secureTextField, .button, .link, .image:
+            return true
+        default:
+            break
+        }
+        for child in snapshot.children where snapshotContainsContent(child) {
+            return true
+        }
+        return false
     }
 
     private func openInAppDialogExists(_ springboard: XCUIApplication) -> Bool {
@@ -107,36 +129,31 @@ class CommandHandler {
     /// Dismiss SpringBoard's "Open in <app>?" confirmation and wait for the
     /// app to settle after a deep-link launch.
     ///
-    /// Success means: the target app is foreground with no blocking "Open in
-    /// <app>?" confirmation still covering it. We *prefer* to also see rendered
-    /// content (the fast path returns as soon as the accessibility tree has
-    /// any), but we do NOT require it: the very first deep link on a fresh
-    /// simulator is the only cold, untrusted launch (first RN process start +
-    /// the one-time trust dialog), and its accessibility tree can take longer
-    /// to render than this budget. Once the app is foreground and the dialog is
-    /// gone the deep link has been delivered, so we return success and let the
-    /// caller's auto-waiting `findElement` absorb any remaining render delay,
-    /// rather than failing a deep link that actually worked.
+    /// Readiness is detected via `app.snapshot()` (content present) and SpringBoard
+    /// queries (dialog gone) — both work for the out-of-process, simctl-launched
+    /// target app. We deliberately do NOT gate on `XCUIApplication.state`: it is
+    /// unreliable until XCUITest attaches to the externally-launched process, and
+    /// gating on it caused deep links that had actually reached their destination
+    /// to be reported as failures.
+    ///
+    /// On timeout we still treat the deep link as delivered as long as no "Open
+    /// in <app>?" confirmation is still up, letting the caller's auto-waiting
+    /// `findElement` absorb any remaining render delay rather than failing a deep
+    /// link that worked.
     private func waitForDeepLinkDestination(_ app: XCUIApplication, timeout: TimeInterval) -> Bool {
         let springboard = XCUIApplication(bundleIdentifier: "com.apple.springboard")
         let deadline = Date(timeIntervalSinceNow: timeout)
         while Date() < deadline {
-            if safeAppState(app) == .runningForeground {
-                if openInAppDialogExists(springboard) {
-                    _ = self.acceptOpenInAppDialogIfPresent(springboard: springboard, timeout: 0.1)
-                } else if appHasRenderedContent(app) {
-                    // Ideal: foreground, no dialog, content already rendered.
-                    return true
-                }
-            } else {
-                _ = self.acceptOpenInAppDialogIfPresent(springboard: springboard, timeout: 0.3)
+            if openInAppDialogExists(springboard) {
+                _ = self.acceptOpenInAppDialogIfPresent(springboard: springboard, timeout: 0.1)
+            } else if appHasRenderedContent(app) {
+                return true
             }
             Thread.sleep(forTimeInterval: 0.2)
         }
-        // Best-effort fallback on timeout: the deep link is considered delivered
-        // as long as the app is foreground and no confirmation dialog remains.
-        return safeAppState(app) == .runningForeground
-            && !openInAppDialogExists(springboard)
+        // Best-effort fallback on timeout: delivered as long as no confirmation
+        // dialog is still covering the app.
+        return !openInAppDialogExists(springboard)
     }
 
     /// Dismiss any blocking iOS system dialog currently covering the app
