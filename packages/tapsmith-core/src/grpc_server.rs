@@ -115,6 +115,26 @@ struct IosAgentConfig {
     app_path: Option<String>,
 }
 
+/// Emit one timing line per on-device agent command (no-op unless
+/// `TAPSMITH_TIMING_LOG` is set). Measures the full daemon→agent→response
+/// round-trip, which is where iOS per-action latency (XCUITest ops + the
+/// agent's fixed settle sleeps) accumulates.
+fn log_agent_command_timing(
+    command: &AgentCommand,
+    started: std::time::Instant,
+    result: &Result<AgentResponse>,
+) {
+    if !crate::timing::enabled() {
+        return;
+    }
+    crate::timing::timing_log!(
+        "kind=cmd name={} dur_ms={} ok={}",
+        command.method_name(),
+        started.elapsed().as_millis(),
+        result.is_ok()
+    );
+}
+
 impl TapsmithServiceImpl {
     pub fn new(
         device_manager: Arc<RwLock<DeviceManager>>,
@@ -237,9 +257,11 @@ impl TapsmithServiceImpl {
     async fn send_agent_command(&self, command: &AgentCommand) -> Result<AgentResponse, Status> {
         let params = Self::agent_params(&*self.agent.read().await)?;
         let timeout = Duration::from_secs(30);
+        let started = std::time::Instant::now();
         let raw =
             agent_comms::send_with_persistent_cache(&self.agent_stream, &params, command, timeout)
                 .await;
+        log_agent_command_timing(command, started, &raw);
         self.recover_agent_on_timeout(command, raw).await
     }
 
@@ -274,9 +296,11 @@ impl TapsmithServiceImpl {
             Duration::from_secs(30)
         };
         let params = Self::agent_params(&*self.agent.read().await)?;
+        let started = std::time::Instant::now();
         let raw =
             agent_comms::send_with_persistent_cache(&self.agent_stream, &params, command, timeout)
                 .await;
+        log_agent_command_timing(command, started, &raw);
         self.recover_agent_on_timeout(command, raw).await
     }
 
@@ -680,6 +704,7 @@ impl TapsmithServiceImpl {
     ) -> Result<(), String> {
         let is_physical = self.is_active_ios_physical().await;
 
+        let reset_start = std::time::Instant::now();
         let t0 = std::time::Instant::now();
         match self
             .relaunch_ios_app_via_agent(package_name, wait_for_idle, idle_timeout_ms)
@@ -690,6 +715,10 @@ impl TapsmithServiceImpl {
                     package_name,
                     elapsed_ms = t0.elapsed().as_millis() as u64,
                     "iOS app reset completed via in-runner relaunch"
+                );
+                crate::timing::timing_log!(
+                    "kind=reset name=in_runner dur_ms={} ok=true",
+                    reset_start.elapsed().as_millis()
                 );
                 return Ok(());
             }
@@ -707,9 +736,15 @@ impl TapsmithServiceImpl {
         // Simulator runtimes, not real hardware. Jump straight to the full
         // agent restart path, which works for both target kinds.
         if is_physical {
-            return self
+            let res = self
                 .restart_ios_agent_for_app(serial, package_name, wait_for_idle, idle_timeout_ms)
                 .await;
+            crate::timing::timing_log!(
+                "kind=reset name=agent_restart dur_ms={} ok={}",
+                reset_start.elapsed().as_millis(),
+                res.is_ok()
+            );
+            return res;
         }
 
         let t1 = std::time::Instant::now();
@@ -723,6 +758,10 @@ impl TapsmithServiceImpl {
                     elapsed_ms = t1.elapsed().as_millis() as u64,
                     "iOS app reset completed via simctl relaunch"
                 );
+                crate::timing::timing_log!(
+                    "kind=reset name=simctl dur_ms={} ok=true",
+                    reset_start.elapsed().as_millis()
+                );
                 Ok(())
             }
             Err(err) => {
@@ -732,8 +771,15 @@ impl TapsmithServiceImpl {
                     elapsed_ms = t1.elapsed().as_millis() as u64,
                     "simctl relaunch lost the iOS accessibility session; falling back to agent restart"
                 );
-                self.restart_ios_agent_for_app(serial, package_name, wait_for_idle, idle_timeout_ms)
-                    .await
+                let res = self
+                    .restart_ios_agent_for_app(serial, package_name, wait_for_idle, idle_timeout_ms)
+                    .await;
+                crate::timing::timing_log!(
+                    "kind=reset name=agent_restart dur_ms={} ok={}",
+                    reset_start.elapsed().as_millis(),
+                    res.is_ok()
+                );
+                res
             }
         }
     }

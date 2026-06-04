@@ -435,6 +435,55 @@ pub enum AgentCommand {
 }
 
 impl AgentCommand {
+    /// The wire method name for this command. Mirrors the `method` value in
+    /// [`Self::to_json`] but returns a static string with no serialization or
+    /// allocation, so it's cheap to call on hot paths (e.g. timing labels).
+    pub(crate) fn method_name(&self) -> &'static str {
+        match self {
+            AgentCommand::FindElement { .. } => "findElement",
+            AgentCommand::FindElements { .. } => "findElements",
+            AgentCommand::Tap { .. } => "tap",
+            AgentCommand::LongPress { .. } => "longPress",
+            AgentCommand::TypeText { .. } => "typeText",
+            AgentCommand::ClearText { .. } => "clearText",
+            AgentCommand::Swipe { .. } => "swipe",
+            AgentCommand::TapCoordinates { .. } => "tap",
+            AgentCommand::LongPressCoordinates { .. } => "longPress",
+            AgentCommand::DragCoordinates { .. } => "swipe",
+            AgentCommand::InputText { .. } => "typeText",
+            AgentCommand::TouchDown { .. } => "touchDown",
+            AgentCommand::TouchMove { .. } => "touchMove",
+            AgentCommand::TouchUp { .. } => "touchUp",
+            AgentCommand::TouchCancel {} => "touchCancel",
+            AgentCommand::Scroll { .. } => "scroll",
+            AgentCommand::PressKey { .. } => "pressKey",
+            AgentCommand::GetUiHierarchy {} => "getUiHierarchy",
+            AgentCommand::WaitForIdle { .. } => "waitForIdle",
+            AgentCommand::Screenshot {} => "screenshot",
+            AgentCommand::DoubleTap { .. } => "doubleTap",
+            AgentCommand::DragAndDrop { .. } => "dragAndDrop",
+            AgentCommand::SelectOption { .. } => "selectOption",
+            AgentCommand::PinchZoom { .. } => "pinchZoom",
+            AgentCommand::Focus { .. } => "focus",
+            AgentCommand::Blur { .. } => "blur",
+            AgentCommand::Highlight { .. } => "highlight",
+            AgentCommand::TakeElementScreenshot { .. } => "elementScreenshot",
+            AgentCommand::SetClipboard { .. } => "setClipboard",
+            AgentCommand::GetClipboard {} => "getClipboard",
+            AgentCommand::LaunchApp { .. } => "launchApp",
+            AgentCommand::TerminateApp { .. } => "terminateApp",
+            AgentCommand::OpenDeepLink { .. } => "openDeepLink",
+            AgentCommand::AcceptOpenInAppDialog { .. } => "acceptOpenInAppDialog",
+            AgentCommand::HideKeyboard {} => "hideKeyboard",
+            AgentCommand::IsKeyboardShown {} => "isKeyboardShown",
+            AgentCommand::SetOrientation { .. } => "setOrientation",
+            AgentCommand::GetOrientation {} => "getOrientation",
+            AgentCommand::GetColorScheme {} => "getColorScheme",
+            AgentCommand::GetAppState { .. } => "getAppState",
+            AgentCommand::DismissSystemDialog => "dismissSystemDialogs",
+        }
+    }
+
     /// Serialize into the JSON protocol format: {"id": "...", "method": "...", "params": {...}}
     pub(crate) fn to_json(&self, id: &str) -> Value {
         let (method, params) = match self {
@@ -1141,6 +1190,84 @@ mod tests {
         let j = cmd.to_json("r2");
         assert_eq!(j["method"], "findElement");
         assert!(j["params"].get("timeout").is_none());
+    }
+
+    #[test]
+    fn method_name_matches_to_json_method() {
+        // method_name() is a cheap static mirror of to_json's `method`; assert
+        // they agree across a representative spread of variants — struct
+        // variants with fields, empty-brace variants, and the unit variant —
+        // so the two can't silently drift.
+        let cases = vec![
+            AgentCommand::FindElements {
+                selector: json!({}),
+                timeout_ms: None,
+            },
+            AgentCommand::Tap {
+                selector: json!({}),
+                timeout_ms: None,
+            },
+            AgentCommand::TypeText {
+                selector: json!({}),
+                text: "x".into(),
+                timeout_ms: None,
+                typing_delay_ms: None,
+            },
+            AgentCommand::TapCoordinates { x: 1.0, y: 2.0 },
+            AgentCommand::LongPressCoordinates {
+                x: 1.0,
+                y: 2.0,
+                duration_ms: 500,
+            },
+            AgentCommand::DragCoordinates {
+                from_x: 1.0,
+                from_y: 2.0,
+                to_x: 3.0,
+                to_y: 4.0,
+                duration_ms: 300,
+            },
+            AgentCommand::InputText {
+                text: "x".into(),
+                typing_delay_ms: None,
+            },
+            AgentCommand::TouchDown {
+                x: 1.0,
+                y: 2.0,
+                t_ms: 0,
+            },
+            AgentCommand::TouchMove {
+                x: 2.0,
+                y: 3.0,
+                t_ms: 16,
+            },
+            AgentCommand::TouchUp {
+                x: 3.0,
+                y: 4.0,
+                t_ms: 32,
+            },
+            AgentCommand::TouchCancel {},
+            AgentCommand::TakeElementScreenshot {
+                selector: json!({}),
+                timeout_ms: None,
+            },
+            AgentCommand::GetUiHierarchy {},
+            AgentCommand::Screenshot {},
+            AgentCommand::WaitForIdle { timeout_ms: None },
+            AgentCommand::LaunchApp {
+                package: "p".into(),
+            },
+            AgentCommand::AcceptOpenInAppDialog { timeout_ms: None },
+            AgentCommand::GetClipboard {},
+            AgentCommand::GetOrientation {},
+            AgentCommand::DismissSystemDialog,
+        ];
+        for cmd in cases {
+            assert_eq!(
+                json!(cmd.method_name()),
+                cmd.to_json("t")["method"],
+                "method_name() disagrees with to_json for {cmd:?}"
+            );
+        }
     }
 
     #[test]
