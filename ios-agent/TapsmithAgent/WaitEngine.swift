@@ -11,6 +11,11 @@ class WaitEngine {
     private let app: XCUIApplication
 
     private static let stabilityWindowMs: UInt64 = 150
+    /// Cumulative time a moving element's frame must hold steady before it's
+    /// considered settled. Must be < stabilityWindowMs so the early-exit can
+    /// fire within the window; the gap absorbs single dropped frames on slow
+    /// CI simulators that would otherwise read as a false settle.
+    private static let requiredStableSeconds: TimeInterval = 0.10
     private static let defaultIdleTimeout: TimeInterval = 5.0
     private static let defaultElementTimeout: TimeInterval = 10.0
 
@@ -102,17 +107,42 @@ class WaitEngine {
                     }
                 }
 
-                // Phase 3: Verify positional stability
-                let stabilityMs = Self.stabilityWindowMs
-                let stabilityDeadline = CFAbsoluteTimeGetCurrent() + Double(stabilityMs) / 1000.0
-                var lastFrame = element.frame
-                while CFAbsoluteTimeGetCurrent() < stabilityDeadline {
-                    Thread.sleep(forTimeInterval: Double(stabilityMs) / 1000.0)
-                    let currentFrame = element.frame
-                    if lastFrame == currentFrame {
-                        break
+                // Phase 3: Verify positional stability.
+                //
+                // Most elements are already static by the time they're found, so
+                // confirm with two frame reads and skip the settle wait when they
+                // match. Sleep one display frame (~16ms at 60Hz) between the reads
+                // so motion is detected reliably regardless of how fast the
+                // accessibility query returns — it's sub-millisecond on native
+                // UIKit/SwiftUI and fast simulators, where two back-to-back reads
+                // would otherwise catch the same animation frame and falsely
+                // report stability. Only when motion is detected do we pay the
+                // bounded stability window, requiring a cumulative period of no
+                // movement before proceeding — a single matching read isn't
+                // enough, since a slow CI simulator can drop a frame mid-animation
+                // and momentarily look static. Capped by stabilityWindowMs so a
+                // genuinely-animating element can't block past the original budget.
+                let firstFrame = element.frame
+                Thread.sleep(forTimeInterval: 0.016)
+                let secondFrame = element.frame
+                if firstFrame != secondFrame {
+                    var lastFrame = secondFrame
+                    // Monotonic clock: unaffected by wall-clock/NTP adjustments
+                    // that could otherwise skew this elapsed-time loop.
+                    let now0 = ProcessInfo.processInfo.systemUptime
+                    var stableSince = now0
+                    let stabilityDeadline = now0 + Double(Self.stabilityWindowMs) / 1000.0
+                    while ProcessInfo.processInfo.systemUptime < stabilityDeadline {
+                        Thread.sleep(forTimeInterval: 0.03)
+                        let currentFrame = element.frame
+                        let now = ProcessInfo.processInfo.systemUptime
+                        if currentFrame != lastFrame {
+                            stableSince = now
+                        } else if now - stableSince >= Self.requiredStableSeconds {
+                            break
+                        }
+                        lastFrame = currentFrame
                     }
-                    lastFrame = currentFrame
                 }
             }
 

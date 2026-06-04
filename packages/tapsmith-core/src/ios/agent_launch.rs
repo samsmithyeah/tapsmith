@@ -101,9 +101,14 @@ async fn start_agent_impl(
     agent_port: u16,
     is_physical: bool,
 ) -> Result<Option<IproxyHandle>> {
+    let boot_start = std::time::Instant::now();
     // Check if agent is already running by trying to connect
     if !force && ping_agent(agent_port).await.is_ok() {
         info!("iOS agent is already running");
+        crate::timing::timing_log!(
+            "kind=boot name=agent dur_ms={} reused=true udid={udid}",
+            boot_start.elapsed().as_millis()
+        );
         // For physical devices, pingable-on-localhost means the caller's
         // iproxy tunnel is still up; no new handle is returned and the
         // caller's existing stored state remains authoritative.
@@ -269,6 +274,10 @@ async fn start_agent_impl(
         match ping_agent(agent_port).await {
             Ok(_) => {
                 info!(udid, "iOS agent is ready");
+                crate::timing::timing_log!(
+                    "kind=boot name=agent dur_ms={} reused=false udid={udid}",
+                    boot_start.elapsed().as_millis()
+                );
                 // Hand the child off to a reaper task so the kernel can collect
                 // it once xcodebuild eventually exits — without this, dropping
                 // the Child without awaiting leaves a zombie until process exit.
