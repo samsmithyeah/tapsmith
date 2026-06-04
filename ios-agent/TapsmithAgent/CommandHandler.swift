@@ -217,7 +217,16 @@ class CommandHandler {
         elementFinder = ElementFinder(app: refreshedApp)
         snapshotFinder = SnapshotElementFinder(app: refreshedApp)
         actionExecutor = ActionExecutor(app: refreshedApp)
-        actionExecutor.cachedScreenSize = snapshotFinder.screenSize
+        // Eagerly cache the screen size, but tolerate a transient XCUITest
+        // interruption: `screenSize` probes `app.windows.firstMatch.frame`, a
+        // direct query that can raise an "Interrupting test" NSException while
+        // SpringBoard is still settling (e.g. right after a deep-link launch).
+        // On failure leave the cache unset — ActionExecutor resolves it lazily
+        // on next use — so re-binding never fails a command that already
+        // succeeded.
+        _ = ObjCExceptionCatcher.catchException {
+            actionExecutor.cachedScreenSize = snapshotFinder.screenSize
+        }
         waitEngine = WaitEngine(app: refreshedApp)
         hierarchyDumper = HierarchyDumper(app: refreshedApp)
         return refreshedApp
