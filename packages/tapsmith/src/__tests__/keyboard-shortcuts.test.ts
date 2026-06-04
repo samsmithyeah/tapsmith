@@ -19,9 +19,10 @@ describe('resolveShortcut', () => {
   // running on refresh.
   it('does not fire a shortcut for browser reload chords', () => {
     expect(resolveShortcut({ key: 'r', metaKey: true })).toBeNull(); // Cmd+R
-    expect(resolveShortcut({ key: 'r', metaKey: true, shiftKey: true } as never)).toBeNull(); // Cmd+Shift+R
+    expect(resolveShortcut({ key: 'r', metaKey: true, shiftKey: true })).toBeNull(); // Cmd+Shift+R
     expect(resolveShortcut({ key: 'R', metaKey: true })).toBeNull(); // shift-cased variant
     expect(resolveShortcut({ key: 'r', ctrlKey: true })).toBeNull(); // Ctrl+R
+    expect(resolveShortcut({ key: 'Escape', shiftKey: true })).toBeNull(); // Shift+Escape (task manager)
   });
 
   it('ignores any modifier-bearing key', () => {
@@ -29,9 +30,10 @@ describe('resolveShortcut', () => {
     expect(resolveShortcut({ key: 'w', altKey: true })).toBeNull();
   });
 
-  it('ignores keys while typing in form fields', () => {
+  it('ignores keys while typing in form fields or editable elements', () => {
     expect(resolveShortcut({ key: 'r', target: { tagName: 'INPUT' } as never })).toBeNull();
     expect(resolveShortcut({ key: 'r', target: { tagName: 'TEXTAREA' } as never })).toBeNull();
     expect(resolveShortcut({ key: 'r', target: { tagName: 'SELECT' } as never })).toBeNull();
+    expect(resolveShortcut({ key: 'r', target: { isContentEditable: true } as never })).toBeNull();
   });
 });
