@@ -1114,6 +1114,53 @@ class CommandHandler {
             let xml = hierarchyDumper.dump()
             return ["hierarchy": xml]
 
+        case "captureTraceState":
+            var result: [String: Any] = ["success": true]
+            let wantScreenshot = params["screenshot"] as? Bool ?? false
+            let wantHierarchy = params["hierarchy"] as? Bool ?? false
+            let hasSelector = SelectorParser.hasSelector(params)
+
+            // Take one shared snapshot for hierarchy + element lookup.
+            var snapshot: XCUIElementSnapshot?
+            var snapshotError: Error?
+            if wantHierarchy || hasSelector {
+                do {
+                    snapshot = try snapshotFinder.takeSnapshot()
+                } catch {
+                    snapshotError = error
+                }
+            }
+
+            if hasSelector, let error = snapshotError, snapshot == nil {
+                throw error
+            }
+
+            if wantScreenshot {
+                let screenshot = XCUIScreen.main.screenshot()
+                let pngData = screenshot.pngRepresentation
+                result["screenshotData"] = pngData.base64EncodedString()
+            }
+            if wantHierarchy {
+                if let snapshot = snapshot {
+                    result["hierarchyXml"] = hierarchyDumper.dump(from: snapshot)
+                } else if snapshotError != nil {
+                    result["hierarchyXml"] = hierarchyDumper.dumpFallback()
+                } else {
+                    result["hierarchyXml"] = hierarchyDumper.dump()
+                }
+            }
+            if hasSelector {
+                let selector = SelectorParser.parse(params)
+                if let snapshot = snapshot,
+                   let element = try? snapshotFinder.findElement(selector, fromSnapshot: snapshot) {
+                    result["elementFound"] = true
+                    result["element"] = element.toDict()
+                } else {
+                    result["elementFound"] = false
+                }
+            }
+            return result
+
         // ─── Wait ───
 
         case "waitForIdle":

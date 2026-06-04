@@ -74,6 +74,15 @@ class SnapshotElementFinder {
         return first
     }
 
+    /// Find a single element from a pre-taken snapshot (avoids an extra IPC).
+    func findElement(_ selector: ElementSelector, fromSnapshot snapshot: XCUIElementSnapshot) throws -> ElementInfo {
+        let elements = try findElements(selector, fromSnapshot: snapshot)
+        guard let first = elements.first else {
+            throw AgentError.elementNotFound("No element found matching: \(describeSelector(selector))")
+        }
+        return first
+    }
+
     /// Find all elements matching the selector using snapshot.
     ///
     /// **Cost:** 1 × `app.snapshot()` IPC (the only IPC on the happy
@@ -87,39 +96,14 @@ class SnapshotElementFinder {
     /// walk via the ancestor stack, so it does not add an extra
     /// O(N²) post-pass.
     func findElements(_ selector: ElementSelector, parentId: String? = nil) throws -> [ElementInfo] {
-        // Take a snapshot of the entire accessibility tree in one IPC call.
-        // With _XCTSetApplicationStateTimeout(0), the first snapshot may return
-        // an empty tree before the accessibility connection is established.
-        // Retry with short delays to let the tree populate.
-        let resolvedDict: [XCUIElement.AttributeName: Any]
-        var lastError: Error?
-        var snapshot: XCUIElementSnapshot?
-        for _ in 0..<5 {
-            do {
-                let s = try app.snapshot()
-                if !s.dictionaryRepresentation.isEmpty {
-                    snapshot = s
-                    break
-                }
-            } catch {
-                lastError = error
-            }
-            Thread.sleep(forTimeInterval: 0.2)
-        }
-        guard let resolvedSnapshot = snapshot else {
-            let msg = lastError.map { "Snapshot failed after retries: \($0)" }
-                ?? "Snapshot returned empty tree after retries"
-            NSLog("[TapsmithSnapshot] \(msg)")
-            throw AgentError.elementNotFound(msg)
-        }
-        resolvedDict = resolvedSnapshot.dictionaryRepresentation
+        let resolvedSnapshot = try takeSnapshot()
+        return try findElements(selector, fromSnapshot: resolvedSnapshot)
+    }
 
+    /// Find all elements from a pre-taken snapshot (avoids an extra IPC).
+    func findElements(_ selector: ElementSelector, fromSnapshot resolvedSnapshot: XCUIElementSnapshot) throws -> [ElementInfo] {
         // Convert to string-keyed dict for easier processing
-        var snapshotDict = convertKeys(resolvedDict)
-        // dictionaryRepresentation omits accessibilityTraits on Xcode 26. Walk
-        // the snapshot tree in parallel and splice each node's `traits` in
-        // so role detection (e.g. "heading" for RN `accessibilityRole="header"`)
-        // works.
+        var snapshotDict = convertKeys(resolvedSnapshot.dictionaryRepresentation)
         SnapshotElementFinder.annotateTraits(dict: &snapshotDict, snapshot: resolvedSnapshot)
 
         // Check once if keyboard is visible (for focus detection).
@@ -286,6 +270,26 @@ class SnapshotElementFinder {
         lock.unlock()
 
         return results
+    }
+
+    /// Take a validated snapshot with retries for cold-start.
+    func takeSnapshot() throws -> XCUIElementSnapshot {
+        var lastError: Error?
+        for _ in 0..<5 {
+            do {
+                let s = try app.snapshot()
+                if !s.dictionaryRepresentation.isEmpty {
+                    return s
+                }
+            } catch {
+                lastError = error
+            }
+            Thread.sleep(forTimeInterval: 0.2)
+        }
+        let msg = lastError.map { "Snapshot failed after retries: \($0)" }
+            ?? "Snapshot returned empty tree after retries"
+        NSLog("[TapsmithSnapshot] \(msg)")
+        throw AgentError.elementNotFound(msg)
     }
 
     /// Clear all caches (call after app relaunch).

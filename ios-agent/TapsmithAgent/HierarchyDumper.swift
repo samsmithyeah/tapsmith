@@ -15,22 +15,31 @@ class HierarchyDumper {
 
     /// Dump the full UI hierarchy as an XML string using snapshot.
     func dump() -> String {
-        var xml = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
-        xml += "<hierarchy>\n"
-
-        // Use snapshot for fast, single-IPC hierarchy dump (29ms vs 7+ seconds).
         do {
             let snapshot = try app.snapshot()
-            var dict = convertKeys(snapshot.dictionaryRepresentation)
-            // Splice trait bits so dumpNode can resolve trait-based roles
-            // (e.g. heading, link, alert from React Native accessibilityRole).
-            SnapshotElementFinder.annotateTraits(dict: &dict, snapshot: snapshot)
-            dumpNode(dict, depth: 1, into: &xml)
+            return dump(from: snapshot)
         } catch {
             NSLog("[HierarchyDumper] Snapshot failed, falling back to XCUIElement traversal: \(error)")
-            dumpElementFallback(app, depth: 1, into: &xml)
+            return dumpFallback()
         }
+    }
 
+    /// Dump the UI hierarchy via direct XCUIElement traversal.
+    func dumpFallback() -> String {
+        var xml = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+        xml += "<hierarchy>\n"
+        dumpElementFallback(app, depth: 1, into: &xml)
+        xml += "</hierarchy>\n"
+        return xml
+    }
+
+    /// Dump the UI hierarchy from a pre-taken snapshot (avoids an extra IPC).
+    func dump(from snapshot: XCUIElementSnapshot) -> String {
+        var xml = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+        xml += "<hierarchy>\n"
+        var dict = convertKeys(snapshot.dictionaryRepresentation)
+        SnapshotElementFinder.annotateTraits(dict: &dict, snapshot: snapshot)
+        dumpNode(dict, depth: 1, into: &xml)
         xml += "</hierarchy>\n"
         return xml
     }

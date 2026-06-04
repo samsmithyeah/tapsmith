@@ -1871,6 +1871,86 @@ impl proto::tapsmith_service_server::TapsmithService for TapsmithServiceImpl {
     }
 
     #[instrument(skip_all, fields(request_id))]
+    async fn capture_trace_state(
+        &self,
+        request: Request<proto::CaptureTraceStateRequest>,
+    ) -> Result<Response<proto::CaptureTraceStateResponse>, Status> {
+        let req = request.into_inner();
+        let request_id = Self::request_id(&req.request_id);
+
+        let selector_json = req.element_selector.as_ref().map(selector_to_json);
+
+        let command = AgentCommand::CaptureTraceState {
+            screenshot: req.screenshot,
+            hierarchy: req.hierarchy,
+            selector: selector_json,
+        };
+
+        match self.send_agent_command_with_timeout(&command, 5000).await {
+            Ok(resp) if resp.success => {
+                let screenshot_data = resp
+                    .data
+                    .get("screenshotData")
+                    .and_then(|v| v.as_str())
+                    .map(|b64| {
+                        use base64::Engine;
+                        base64::engine::general_purpose::STANDARD
+                            .decode(b64)
+                            .unwrap_or_default()
+                    })
+                    .unwrap_or_default();
+
+                let hierarchy_xml = resp
+                    .data
+                    .get("hierarchyXml")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+
+                let element_found = resp
+                    .data
+                    .get("elementFound")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
+
+                let element = if element_found {
+                    resp.data.get("element").and_then(parse_element_info)
+                } else {
+                    None
+                };
+
+                Ok(Response::new(proto::CaptureTraceStateResponse {
+                    request_id,
+                    success: true,
+                    error_message: String::new(),
+                    screenshot_data,
+                    hierarchy_xml,
+                    element_found,
+                    element,
+                }))
+            }
+            Ok(resp) => Ok(Response::new(proto::CaptureTraceStateResponse {
+                request_id,
+                success: false,
+                error_message: resp.error.unwrap_or_default(),
+                screenshot_data: Vec::new(),
+                hierarchy_xml: String::new(),
+                element_found: false,
+                element: None,
+            })),
+            Err(status) => Ok(Response::new(proto::CaptureTraceStateResponse {
+                request_id,
+                success: false,
+                error_message: status.message().to_string(),
+                screenshot_data: Vec::new(),
+                hierarchy_xml: String::new(),
+                element_found: false,
+                element: None,
+            })),
+        }
+    }
+
+    #[instrument(skip_all, fields(request_id))]
     async fn wait_for_idle(
         &self,
         request: Request<proto::WaitForIdleRequest>,
