@@ -20,12 +20,17 @@ class HierarchyDumper {
             return dump(from: snapshot)
         } catch {
             NSLog("[HierarchyDumper] Snapshot failed, falling back to XCUIElement traversal: \(error)")
-            var xml = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
-            xml += "<hierarchy>\n"
-            dumpElementFallback(app, depth: 1, into: &xml)
-            xml += "</hierarchy>\n"
-            return xml
+            return dumpFallback()
         }
+    }
+
+    /// Dump the UI hierarchy via direct XCUIElement traversal.
+    func dumpFallback() -> String {
+        var xml = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+        xml += "<hierarchy>\n"
+        dumpElementFallback(app, depth: 1, into: &xml)
+        xml += "</hierarchy>\n"
+        return xml
     }
 
     /// Dump the UI hierarchy from a pre-taken snapshot (avoids an extra IPC).

@@ -1143,6 +1143,8 @@ class CommandHandler {
             if wantHierarchy {
                 if let snapshot = snapshot {
                     result["hierarchyXml"] = hierarchyDumper.dump(from: snapshot)
+                } else if snapshotError != nil {
+                    result["hierarchyXml"] = hierarchyDumper.dumpFallback()
                 } else {
                     result["hierarchyXml"] = hierarchyDumper.dump()
                 }
