@@ -24,8 +24,6 @@ export function useScreenMirror() {
 
   const handleBinaryFrame = useCallback((data: ArrayBuffer) => {
     const f = decodeBinaryFrame(data);
-    // Video frames are handled by a separate hook; this hook only renders PNGs.
-    if (f.kind !== 'screenshot') return;
     const { seq, width, height, pngOffset } = f;
 
     // Skip out-of-order frames
@@ -117,8 +115,6 @@ export function useMultiScreenMirror() {
 
   const handleBinaryFrame = useCallback((data: ArrayBuffer) => {
     const f = decodeBinaryFrame(data);
-    // Video frames are handled by a separate hook; this hook only renders PNGs.
-    if (f.kind !== 'screenshot') return;
     const { seq, workerId, pngOffset } = f;
 
     const entry = workersRef.current.get(workerId);
