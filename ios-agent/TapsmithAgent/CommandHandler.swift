@@ -105,26 +105,38 @@ class CommandHandler {
     }
 
     /// Dismiss SpringBoard's "Open in <app>?" confirmation and wait for the
-    /// app to render after a deep-link launch.
+    /// app to settle after a deep-link launch.
+    ///
+    /// Success means: the target app is foreground with no blocking "Open in
+    /// <app>?" confirmation still covering it. We *prefer* to also see rendered
+    /// content (the fast path returns as soon as the accessibility tree has
+    /// any), but we do NOT require it: the very first deep link on a fresh
+    /// simulator is the only cold, untrusted launch (first RN process start +
+    /// the one-time trust dialog), and its accessibility tree can take longer
+    /// to render than this budget. Once the app is foreground and the dialog is
+    /// gone the deep link has been delivered, so we return success and let the
+    /// caller's auto-waiting `findElement` absorb any remaining render delay,
+    /// rather than failing a deep link that actually worked.
     private func waitForDeepLinkDestination(_ app: XCUIApplication, timeout: TimeInterval) -> Bool {
         let springboard = XCUIApplication(bundleIdentifier: "com.apple.springboard")
         let deadline = Date(timeIntervalSinceNow: timeout)
         while Date() < deadline {
             if safeAppState(app) == .runningForeground {
-                let hasContent = appHasRenderedContent(app)
-                let dialogExists = openInAppDialogExists(springboard)
-                if hasContent && !dialogExists {
-                    return true
-                }
-                if dialogExists {
+                if openInAppDialogExists(springboard) {
                     _ = self.acceptOpenInAppDialogIfPresent(springboard: springboard, timeout: 0.1)
+                } else if appHasRenderedContent(app) {
+                    // Ideal: foreground, no dialog, content already rendered.
+                    return true
                 }
             } else {
                 _ = self.acceptOpenInAppDialogIfPresent(springboard: springboard, timeout: 0.3)
             }
             Thread.sleep(forTimeInterval: 0.2)
         }
-        return false
+        // Best-effort fallback on timeout: the deep link is considered delivered
+        // as long as the app is foreground and no confirmation dialog remains.
+        return safeAppState(app) == .runningForeground
+            && !openInAppDialogExists(springboard)
     }
 
     /// Dismiss any blocking iOS system dialog currently covering the app
@@ -1267,7 +1279,7 @@ class CommandHandler {
                 }
             }
 
-            if waitForDeepLinkDestination(targetApp, timeout: 10.0) {
+            if waitForDeepLinkDestination(targetApp, timeout: 18.0) {
                 _ = rebindApp(bundleId: bundleId)
                 return ["success": true]
             }

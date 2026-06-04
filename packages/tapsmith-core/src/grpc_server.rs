@@ -32,7 +32,10 @@ const WEBVIEW_ADB_TIMEOUT: Duration = Duration::from_secs(5);
 const WEBVIEW_ADB_CLEANUP_TIMEOUT: Duration = Duration::from_secs(2);
 const IOS_OPEN_URL_PROMPT_TIMEOUT: Duration = Duration::from_secs(28);
 const IOS_OPEN_DIALOG_ACCEPT_TIMEOUT_MS: u64 = 300;
-const IOS_OPEN_DEEP_LINK_VERIFY_TIMEOUT_MS: u64 = 12_000;
+// Must exceed the agent-side `waitForDeepLinkDestination` ceiling (18s) plus
+// gRPC round-trip, so a slow first cold launch returns a verdict rather than
+// tripping this command timeout.
+const IOS_OPEN_DEEP_LINK_VERIFY_TIMEOUT_MS: u64 = 22_000;
 
 pub struct TapsmithServiceImpl {
     device_manager: Arc<RwLock<DeviceManager>>,
