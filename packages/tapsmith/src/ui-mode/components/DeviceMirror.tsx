@@ -7,7 +7,8 @@
 
 import type { RefObject } from 'preact';
 import { useDeviceInteraction } from '../hooks/use-device-interaction.js';
-import type { ClientMessage } from '../ui-protocol.js';
+import type { ClientMessage, DevicePlatform, DeviceFormFactor } from '../ui-protocol.js';
+import { DeviceFrame } from './DeviceFrame.js';
 
 interface DeviceMirrorProps {
   canvasRef: RefObject<HTMLCanvasElement>
@@ -15,14 +16,15 @@ interface DeviceMirrorProps {
   /** True while the selected device's mirror is starting and hasn't painted a
    * frame yet — shows the loading placeholder instead of a black canvas. */
   loading?: boolean
-  platform?: 'android' | 'ios'
+  platform?: DevicePlatform
+  formFactor?: DeviceFormFactor
   interactive: boolean
   force: boolean
   workerId: number
   send: (msg: ClientMessage) => void
 }
 
-export function DeviceMirror({ canvasRef, connected, loading, platform, interactive, force, workerId, send }: DeviceMirrorProps) {
+export function DeviceMirror({ canvasRef, connected, loading, platform, formFactor, interactive, force, workerId, send }: DeviceMirrorProps) {
   const interaction = useDeviceInteraction({ send, enabled: interactive, force, workerId });
 
   return (
@@ -47,7 +49,7 @@ export function DeviceMirror({ canvasRef, connected, loading, platform, interact
             </div>
           </div>
         )}
-        <div class={`dm-frame${platform ? ` dm-skin-${platform}` : ''}`}>
+        <DeviceFrame platform={platform} formFactor={formFactor} heightBound>
           <canvas
             ref={canvasRef}
             class={`dm-canvas ${interactive ? 'interactive' : 'locked'}`}
@@ -58,7 +60,7 @@ export function DeviceMirror({ canvasRef, connected, loading, platform, interact
             onPointerCancel={interactive ? interaction.onPointerCancel : undefined}
             onKeyDown={interactive ? interaction.onKeyDown : undefined}
           />
-        </div>
+        </DeviceFrame>
       </div>
     </div>
   );
