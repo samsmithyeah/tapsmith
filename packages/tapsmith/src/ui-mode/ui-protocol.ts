@@ -306,13 +306,6 @@ export interface RunStateMessage {
   startedAt?: number
 }
 
-export interface VideoStatusMessage {
-  type: 'video-status'
-  workerId: number
-  streaming: boolean
-  reason?: string
-}
-
 /** Union of all server → client JSON messages. */
 export type ServerMessage =
   | TestTreeMessage
@@ -333,7 +326,6 @@ export type ServerMessage =
   | ErrorMessage
   | McpStatusMessage
   | McpToolCallMessage
-  | VideoStatusMessage
 
 // ─── Client → Server messages ───
 
@@ -505,16 +497,6 @@ export interface RespawnWorkerCommand {
   workerId: number
 }
 
-export interface StartVideoCommand {
-  type: 'start-video'
-  workerId: number
-}
-
-export interface StopVideoCommand {
-  type: 'stop-video'
-  workerId: number
-}
-
 /** Union of all client → server JSON messages. */
 export type ClientMessage =
   | RunTestCommand
@@ -539,17 +521,14 @@ export type ClientMessage =
   | SelectWorkerCommand
   | SelectWorkerViewCommand
   | RespawnWorkerCommand
-  | StartVideoCommand
-  | StopVideoCommand
 
 // ─── Binary frame helpers ───
 
 /**
- * Binary WebSocket frames are tagged with a `kind` byte (byte 0) so the same
- * channel can carry both PNG screenshot frames and H.264 video frames.
+ * Binary WebSocket frames are tagged with a `kind` byte (byte 0). Only PNG
+ * screenshot frames are carried today; the tag is retained for wire stability.
  */
 export const FRAME_KIND_SCREENSHOT = 0;
-export const FRAME_KIND_VIDEO = 1;
 
 /**
  * Screenshot frame layout:
@@ -578,45 +557,11 @@ export function encodeScreenFrame(
   return Buffer.concat([header, png]);
 }
 
-/**
- * Video frame layout:
- *   byte  0:    uint8  kind = 1
- *   bytes 1-2:  uint16 BE worker ID
- *   byte  3:    uint8  flags (bit0 = keyframe, bit1 = config carrying SPS/PPS)
- *   bytes 4+:   H.264 Annex-B payload
- */
-export const VIDEO_FRAME_HEADER_SIZE = 4;
-
-export function encodeVideoFrame(
-  workerId: number,
-  keyframe: boolean,
-  config: boolean,
-  payload: Buffer,
-): Buffer {
-  const header = Buffer.alloc(VIDEO_FRAME_HEADER_SIZE);
-  header.writeUInt8(FRAME_KIND_VIDEO, 0);
-  header.writeUInt16BE(workerId, 1);
-  header.writeUInt8((keyframe ? 1 : 0) | (config ? 2 : 0), 3);
-  return Buffer.concat([header, payload]);
-}
-
 export type DecodedBinaryFrame =
   | { kind: 'screenshot'; seq: number; workerId: number; width: number; height: number; pngOffset: number }
-  | { kind: 'video'; workerId: number; keyframe: boolean; config: boolean; payload: ArrayBuffer }
 
 export function decodeBinaryFrame(data: ArrayBuffer): DecodedBinaryFrame {
   const view = new DataView(data);
-  const kind = view.getUint8(0);
-  if (kind === FRAME_KIND_VIDEO) {
-    const flags = view.getUint8(3);
-    return {
-      kind: 'video',
-      workerId: view.getUint16(1),
-      keyframe: (flags & 1) !== 0,
-      config: (flags & 2) !== 0,
-      payload: data.slice(VIDEO_FRAME_HEADER_SIZE),
-    };
-  }
   return {
     kind: 'screenshot',
     seq: view.getUint32(1),

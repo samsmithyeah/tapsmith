@@ -5749,61 +5749,6 @@ impl proto::tapsmith_service_server::TapsmithService for TapsmithServiceImpl {
         let result = self.send_agent_command_with_timeout(&command, 0).await;
         self.make_action_response(request_id, result).await
     }
-
-    // ─── Live Screen Streaming ───
-
-    type StreamScreenStream =
-        Pin<Box<dyn Stream<Item = Result<proto::ScreenVideoFrame, Status>> + Send + 'static>>;
-
-    // The mapped stream's item is Result<_, Status>; Status (tonic's standard
-    // error) is large relative to the small frame, so the map closure trips
-    // clippy::result_large_err. Allowed here as elsewhere in this file.
-    #[allow(clippy::result_large_err)]
-    async fn stream_screen(
-        &self,
-        request: Request<proto::StreamScreenRequest>,
-    ) -> Result<Response<Self::StreamScreenStream>, Status> {
-        let req = request.into_inner();
-        let serial = self.active_serial().await?;
-        let platform = self.require_platform().await?;
-        // Android-only for now (iOS capture is a separate follow-up).
-        if platform != Platform::Android {
-            return Err(Status::unimplemented(
-                "Video streaming is currently Android-only",
-            ));
-        }
-        let max_size = if req.max_size > 0 {
-            Some(req.max_size)
-        } else {
-            Some(720)
-        };
-        let bit_rate = if req.bit_rate > 0 {
-            Some(req.bit_rate)
-        } else {
-            Some(6_000_000)
-        };
-
-        info!(
-            serial = %serial,
-            max_size = ?max_size,
-            bit_rate = ?bit_rate,
-            "Starting screen video stream"
-        );
-
-        // Map the access-unit receiver straight into the gRPC frame stream — no
-        // extra task or channel needed. When the client cancels, the stream is
-        // dropped, which drops handle.rx and signals screen_stream to stop.
-        use tokio_stream::StreamExt;
-        let handle = crate::screen_stream::start(serial, max_size, bit_rate);
-        let output_stream = tokio_stream::wrappers::ReceiverStream::new(handle.rx).map(|au| {
-            Ok(proto::ScreenVideoFrame {
-                data: au.data,
-                keyframe: au.keyframe,
-                config: au.config,
-            })
-        });
-        Ok(Response::new(Box::pin(output_stream)))
-    }
 }
 
 /// Extract port number from a WebSocket URL like `ws://localhost:9222/devtools/page/1`

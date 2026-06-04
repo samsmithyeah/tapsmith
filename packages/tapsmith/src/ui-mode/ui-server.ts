@@ -55,7 +55,7 @@ import type {
   UIWorkerChildMessage,
   UIWorkerMessage,
 } from './ui-protocol.js';
-import { encodeScreenFrame, encodeVideoFrame } from './ui-protocol.js';
+import { encodeScreenFrame } from './ui-protocol.js';
 import { RunQueue } from '../watch-queue.js';
 import {
   forkStdioForLaunchProgress,
@@ -250,9 +250,6 @@ export async function startUIServer(
   let screenPollTimer: ReturnType<typeof setTimeout> | null = null;
   let screenSeq = 0;
   let screenPollActive = false;
-  // Throttle for the dims-only screenshot that keeps video workers' device-pixel
-  // dimensions fresh (their screenshot polling is paused — see refreshVideoWorkerDims).
-  let lastVideoDimsRefresh = 0;
   let watcher: FSWatcher | null = null;
   let discoveryWatcher: FSWatcher | null = null;
   const pendingDiscoveryFiles = new Set<string>();
@@ -317,10 +314,6 @@ export async function startUIServer(
   let screenViewMode: 'all' | number = 'all';
   /** Last known frame dimensions per worker ID, used to convert normalized coords. */
   const lastFrameDims = new Map<number, { width: number; height: number }>();
-  /** Active H.264 video streams per worker ID. */
-  const videoStreams = new Map<number, import('@grpc/grpc-js').ClientReadableStream<unknown>>();
-  /** Workers currently served by video — skip screenshot polling for these. */
-  const videoWorkers = new Set<number>();
   /** Set to true while a parallel run is in progress, to signal stop. */
   let parallelRunAborted = false;
 
@@ -2450,49 +2443,6 @@ export async function startUIServer(
     }
   }
 
-  /**
-   * Keep `lastFrameDims` (device-pixel dimensions, used to map normalized touch
-   * coords to logical points) fresh for workers served by video. Their normal
-   * screenshot polling is paused, so without this the dims would be empty before
-   * the first frame or stale after a device rotation, breaking touch mapping.
-   * Uses a low-rate dims-only screenshot (device pixels — NOT the downscaled
-   * video frame size) and does NOT broadcast it, so the video display is
-   * unaffected. Throttled (see interval below) since it only needs to catch a
-   * rare mid-stream rotation — initial dims are set before video starts.
-   */
-  async function refreshVideoWorkerDims(): Promise<void> {
-    if (videoWorkers.size === 0) return;
-    // Infrequent: a screenshot mid-stream briefly hitches the H.264 video, and
-    // the initial dims are already set before video starts (screenshot polling
-    // runs until the first video frame). This refresh only catches the rare
-    // mid-stream device rotation, so 10s is plenty.
-    if (Date.now() - lastVideoDimsRefresh < 10000) return;
-    lastVideoDimsRefresh = Date.now();
-    const targets: { id: number; client: import('../grpc-client.js').TapsmithGrpcClient }[] =
-      multiWorker && workersInitialized
-        ? uiWorkers
-            .filter((w) => !w.retired && w.screenClient && videoWorkers.has(w.id))
-            .map((w) => ({ id: w.id, client: w.screenClient! }))
-        : ctx.client && videoWorkers.has(selectedWorkerId)
-          ? [{ id: selectedWorkerId, client: ctx.client }]
-          : [];
-    await Promise.allSettled(
-      targets.map(async ({ id, client }) => {
-        try {
-          const r = await client.takeScreenshot();
-          if (r.success && r.data) {
-            const data = Buffer.isBuffer(r.data) ? r.data : Buffer.from(r.data);
-            if (data.length >= 24) {
-              lastFrameDims.set(id, { width: data.readUInt32BE(16), height: data.readUInt32BE(20) });
-            }
-          }
-        } catch {
-          // Device busy — keep the last known dims.
-        }
-      }),
-    );
-  }
-
   async function pollScreen(): Promise<void> {
     if (clients.size === 0) {
       scheduleScreenPoll();
@@ -2501,15 +2451,15 @@ export async function startUIServer(
 
     try {
       if (multiWorker && workersInitialized && screenViewMode === 'all') {
-        // Poll ALL non-retired workers in parallel, skipping any served by video
+        // Poll ALL non-retired workers in parallel
         const activeWorkers = uiWorkers.filter(
-          (w) => !w.retired && w.screenClient && !videoWorkers.has(w.id),
+          (w) => !w.retired && w.screenClient,
         );
         await Promise.allSettled(
           activeWorkers.map((w) => pollSingleWorker(w.id, w.screenClient!)),
         );
-      } else if (!videoWorkers.has(selectedWorkerId)) {
-        // Single-worker mode or specific worker selected (skip if served by video)
+      } else {
+        // Single-worker mode or specific worker selected
         const pollClient = multiWorker && workersInitialized
           ? uiWorkers.find((w) => w.id === selectedWorkerId && !w.retired)?.screenClient
           : ctx.client;
@@ -2521,8 +2471,6 @@ export async function startUIServer(
 
         await pollSingleWorker(selectedWorkerId, pollClient);
       }
-      // Keep video workers' device dims fresh (throttled; no broadcast).
-      await refreshVideoWorkerDims();
     } catch {
       // Device may be busy — skip frame
     }
@@ -3219,56 +3167,6 @@ export async function startUIServer(
         if (t.client) t.client.touchCancel().catch(() => {});
         break;
       }
-      case 'start-video': {
-        const workerId = msg.workerId;
-        if (videoStreams.has(workerId)) break;
-        const t = resolveGestureTarget(workerId);
-        if (!t.client) {
-          broadcast({ type: 'video-status', workerId, streaming: false, reason: 'no-client' });
-          break;
-        }
-        try {
-          const stream = t.client.screenStream(720, 6_000_000);
-          videoStreams.set(workerId, stream as never);
-          broadcast({ type: 'video-status', workerId, streaming: true });
-          stream.on('data', (f: { data: Buffer; keyframe: boolean; config: boolean }) => {
-            // Keep polling screenshots until the FIRST video frame actually
-            // arrives — screenrecord spawn + first keyframe can take a couple
-            // seconds, and pausing screenshots up front leaves the mirror black
-            // for that whole window. Marking the worker video-served only now
-            // lets screenshots bridge the gap, then video takes over the canvas.
-            if (!videoWorkers.has(workerId)) videoWorkers.add(workerId);
-            const data = Buffer.isBuffer(f.data) ? f.data : Buffer.from(f.data);
-            broadcastBinary(encodeVideoFrame(workerId, f.keyframe, f.config, data));
-          });
-          const cleanup = (reason: string): void => {
-            if (!videoStreams.has(workerId)) return;
-            videoStreams.delete(workerId);
-            videoWorkers.delete(workerId);
-            broadcast({ type: 'video-status', workerId, streaming: false, reason });
-          };
-          stream.on('error', () => cleanup('stream-error'));
-          stream.on('end', () => cleanup('ended'));
-        } catch {
-          videoStreams.delete(workerId);
-          videoWorkers.delete(workerId);
-          broadcast({ type: 'video-status', workerId, streaming: false, reason: 'start-failed' });
-        }
-        break;
-      }
-      case 'stop-video': {
-        const workerId = msg.workerId;
-        const stream = videoStreams.get(workerId);
-        if (stream) {
-          try { stream.cancel(); } catch { /* already closed */ }
-          videoStreams.delete(workerId);
-          videoWorkers.delete(workerId);
-          // Notify all clients (symmetry with start-video's streaming:true) so
-          // other browser sessions reset their decoder and fall back to screenshots.
-          broadcast({ type: 'video-status', workerId, streaming: false, reason: 'stopped' });
-        }
-        break;
-      }
       case 'select-worker':
         selectedWorkerId = msg.workerId;
         screenViewMode = msg.workerId;
@@ -3588,14 +3486,6 @@ export async function startUIServer(
 
     ws.on('close', () => {
       clients.delete(ws);
-      // No viewers left — stop all video streams so screenrecord stops on the device.
-      if (clients.size === 0) {
-        for (const stream of videoStreams.values()) {
-          try { stream.cancel(); } catch { /* already closed */ }
-        }
-        videoStreams.clear();
-        videoWorkers.clear();
-      }
     });
   });
 
@@ -3750,13 +3640,6 @@ export async function startUIServer(
     port: actualPort,
     close: () => {
       if (screenPollTimer) clearTimeout(screenPollTimer);
-
-      // Cancel any active video streams so screenrecord stops on the device.
-      for (const stream of videoStreams.values()) {
-        try { stream.cancel(); } catch { /* already closed */ }
-      }
-      videoStreams.clear();
-      videoWorkers.clear();
 
       // Clean up workers
       if (multiWorker) {

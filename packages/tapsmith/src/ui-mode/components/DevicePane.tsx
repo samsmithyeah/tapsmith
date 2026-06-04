@@ -61,9 +61,7 @@ function WorkerCanvas({ workerId, label, deviceSerial, connected, registerCanvas
   const frameFormFactor = inferDeviceFormFactor({ hints: [label, deviceSerial] });
   const interaction = useDeviceInteraction({ send, enabled: interactive, force, workerId });
 
-  // The "All" grid renders screenshots for every tile (multi-tile H.264 can't
-  // sustain decode under contention — live video is reserved for the focused
-  // single-device view). Register this tile's canvas with the screenshot mirror.
+  // Register this tile's canvas with the screenshot mirror.
   useEffect(() => {
     if (ref.current) {
       registerCanvas(workerId, ref.current);
