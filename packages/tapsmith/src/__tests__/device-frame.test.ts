@@ -24,6 +24,9 @@ describe('inferDeviceFormFactor', () => {
     // Phones are elongated; tablets are squarer.
     expect(inferDeviceFormFactor({ hints: ['emulator-5554'], aspectRatio: 1080 / 2400 })).toBe('phone');
     expect(inferDeviceFormFactor({ hints: ['emulator-5554'], aspectRatio: 1600 / 2560 })).toBe('tablet');
+    // 16:9 (≈0.5625) is a phone; 5:3 (≈0.6, common Android tablets) is a tablet.
+    expect(inferDeviceFormFactor({ hints: ['emulator-5554'], aspectRatio: 9 / 16 })).toBe('phone');
+    expect(inferDeviceFormFactor({ hints: ['emulator-5554'], aspectRatio: 3 / 5 })).toBe('tablet');
   });
 
   it('defaults to phone when nothing is known', () => {

@@ -28,6 +28,13 @@ export function DeviceFrame({ platform, formFactor, heightBound, children }: Dev
   const [imgFailed, setImgFailed] = useState(false);
   const [width, setWidth] = useState<number | undefined>(undefined);
   const ref = useRef<HTMLDivElement>(null);
+
+  // Re-attempt the photographic frame when the device changes — a past load
+  // failure (or a different platform/form factor) shouldn't stick forever.
+  useLayoutEffect(() => {
+    setImgFailed(false);
+  }, [platform, formFactor]);
+
   const frame = imgFailed ? undefined : selectDeviceFrame({ platform, formFactor });
   const frameAspect = frame?.frameAspect;
 

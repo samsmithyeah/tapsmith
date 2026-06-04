@@ -41,10 +41,12 @@ export function inferDeviceFormFactor(
   if (TABLET_RE.test(text)) return 'tablet';
   if (/iphone|pixel \d|generic_phone/i.test(text)) return 'phone';
   if (opts.aspectRatio && opts.aspectRatio > 0) {
-    // Compare short side / long side. Phones are elongated (≈0.46–0.56);
-    // tablets are closer to square (iPad ≈0.75, most Android tablets ≥0.6).
+    // Compare short side / long side. Phones are elongated (16:9 ≈ 0.56, taller
+    // ones lower); tablets are closer to square (iPad ≈ 0.75, 5:3 Android
+    // tablets = 0.6). 0.59 splits them: 16:9 phones stay phones, 5:3 tablets
+    // are caught as tablets.
     const r = opts.aspectRatio <= 1 ? opts.aspectRatio : 1 / opts.aspectRatio;
-    if (r >= 0.62) return 'tablet';
+    if (r >= 0.59) return 'tablet';
   }
   return 'phone';
 }
