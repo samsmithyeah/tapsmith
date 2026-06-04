@@ -633,10 +633,10 @@ async function mapWithConcurrency<T, R>(
 }
 
 function resolveScripts(): ResolvedScripts {
-  // __dirname is either src/mcp/ or dist/mcp/
+  // import.meta.dirname is either src/mcp/ or dist/mcp/
   // watch-run is at src/watch-run.ts or dist/watch-run.js
   // ui-discover is at src/ui-mode/ui-discover.ts or dist/ui-mode/ui-discover.js
-  const baseDir = path.resolve(__dirname, '..');
+  const baseDir = path.resolve(import.meta.dirname, '..');
 
   const jsWatchRun = path.resolve(baseDir, 'watch-run.js');
   const tsWatchRun = path.resolve(baseDir, 'watch-run.ts');

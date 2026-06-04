@@ -141,6 +141,7 @@ function makeTraceCollector(tempDir: string): TraceCollector {
     attachments: true,
     network: false,
     deviceLogs: true,
+    daemonLogs: false,
   }, tempDir);
 }
 
@@ -415,6 +416,7 @@ describe('Device.webview()', () => {
       attachments: true,
       network: false,
       deviceLogs: false,
+      daemonLogs: false,
     }, tempDir);
 
     try {

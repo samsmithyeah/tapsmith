@@ -3,7 +3,7 @@ import { render } from 'preact';
 import { useState, useCallback, useMemo, useRef, useEffect } from 'preact/hooks';
 import type { ServerMessage, ClientMessage, TestTreeNode, WorkerInfo } from './ui-protocol.js';
 import { inferDevicePlatform, type DevicePlatform } from './ui-protocol.js';
-import type { ActionTraceEvent, AssertionTraceEvent, TraceMetadata } from '../trace/types.js';
+import type { ActionTraceEvent, AssertionTraceEvent, TraceMetadata, SourceLocation } from '../trace/types.js';
 import { sortEventsByStartTime } from '../trace/sort-events.js';
 import { useWebSocket } from './hooks/use-websocket.js';
 import {
@@ -25,6 +25,7 @@ import { useScreenMirror, useMultiScreenMirror } from './hooks/use-screen-mirror
 import { useTestTree } from './hooks/use-test-tree.js';
 import { useRunTimer } from './hooks/use-run-timer.js';
 import { usePersistedJSON } from './hooks/use-persisted-state.js';
+import { resolveShortcut } from './keyboard-shortcuts.js';
 import { Layout } from './components/Layout.js';
 import { TestExplorer } from './components/TestExplorer.js';
 import { RunControls, type Theme } from './components/RunControls.js';
@@ -34,6 +35,7 @@ import { McpPanel } from './components/McpPanel.js';
 import { ActionsPanel } from '../trace-viewer/components/ActionsPanel.js';
 import { ScreenshotPanel } from '../trace-viewer/components/ScreenshotPanel.js';
 import { DetailTabs } from '../trace-viewer/components/DetailTabs.js';
+import { findTestDeclarationLine, findSuiteDeclarationLine } from '../trace-viewer/components/source-view-utils.js';
 import { TimelineFilmstrip } from '../trace-viewer/components/TimelineFilmstrip.js';
 import { SelectorTab, handlePickFromScreenshot, handleHoverFromScreenshot } from '../trace-viewer/components/SelectorPlayground.js';
 import { parseHierarchyXml } from '../trace-viewer/components/hierarchy-utils.js';
@@ -119,6 +121,10 @@ function App() {
   const autoFollowRef = useRef<'auto' | `worker:${number}` | 'manual'>('auto');
 
   const { testTraces, setTestTraces, activeTestRef, pendingSourcesRef } = useTraceData();
+  // Pre-run source preview: keyed by normalised absolute path (forward slashes).
+  const [previewSources, setPreviewSources] = useState<Map<string, string>>(new Map());
+  // Tracks which paths have already been requested to avoid duplicate sends.
+  const requestedSourcesRef = useRef<Set<string>>(new Set());
   const [pinnedIndex, setPinnedIndex] = useState(0);
   const [hoveredIndex, setHoveredIndex] = useState<number | null>(null);
   const selectedIndex = hoveredIndex ?? pinnedIndex;
@@ -134,6 +140,18 @@ function App() {
   // Device pane state
   const [selectedWorkerId, setSelectedWorkerId] = useState(0);
   const [deviceViewMode, setDeviceViewMode] = usePersistedJSON<'all' | number>('tapsmith-device-view', 'all');
+  // Single-view mirror loading: true from when a device is selected until its
+  // first frame paints (so we show the loading placeholder instead of a black
+  // canvas during warmup). Cleared in handleScreenFrame.
+  const [mirrorLoading, setMirrorLoading] = useState(false);
+  const firstFrameRef = useRef(false);
+  // Re-arm the loading placeholder whenever the mirrored single device changes
+  // (a fresh device must repaint before we hide the placeholder). The grid uses
+  // its own per-tile placeholder, so this only applies to the single view.
+  useEffect(() => {
+    firstFrameRef.current = false;
+    setMirrorLoading(connected && deviceViewMode !== 'all');
+  }, [deviceViewMode, selectedWorkerId, connected]);
 
   // MCP state
   const [mcpUrl, setMcpUrl] = useState<string | undefined>();
@@ -269,7 +287,52 @@ function App() {
   );
   const screenshots = currentTrace?.screenshots ?? EMPTY_MAP;
   const hierarchies = currentTrace?.hierarchies ?? EMPTY_MAP;
-  const sources = currentTrace?.sources ?? EMPTY_MAP;
+  // Resolve the single previewed source string outside useMemo (a plain O(1)
+  // Map.get) so the 1-entry Map below is only reallocated when the key or its
+  // content actually changes — not on every previewSources mutation.
+  // Preview the source file for any test-bearing node: a file (no highlight),
+  // a suite (highlight its `describe(...)`), or a test (highlight its `test(...)`).
+  const previewable = viewedTestNode?.type === 'file'
+    || viewedTestNode?.type === 'suite'
+    || viewedTestNode?.type === 'test';
+  const previewKey = previewable && viewedTestNode?.filePath
+    ? viewedTestNode.filePath.replace(/\\/g, '/')
+    : undefined;
+  const previewContent = previewKey !== undefined ? previewSources.get(previewKey) : undefined;
+  const previewSourcesForView = useMemo(() => {
+    return previewKey !== undefined && previewContent !== undefined
+      ? new Map([[previewKey, previewContent]])
+      : EMPTY_MAP;
+  }, [previewKey, previewContent]);
+  // For a live trace, merge the session-wide previewSources (every streamed
+  // source) under the trace's own snapshot. Sources are path-keyed with
+  // identical on-disk content, so the union resolves any file the selected
+  // step's call stack references — including files streamed by other workers
+  // during parallel runs — instead of copying the map into every trace on
+  // every 'source' message. Pre-run (no trace) keeps the scoped 1-file view.
+  const sources = useMemo(() => {
+    if (!currentTrace) return previewSourcesForView;
+    if (previewSources.size === 0) return currentTrace.sources;
+    // Build on previewSources, then let the trace's own snapshot win on key
+    // collisions — same precedence as a spread merge, without allocating the
+    // intermediate arrays a spread of both maps would create.
+    const merged = new Map(previewSources);
+    for (const [path, content] of currentTrace.sources) merged.set(path, content);
+    return merged;
+  }, [currentTrace, previewSources, previewSourcesForView]);
+  // Pre-run preview: highlight the selected node's declaration line in its
+  // source file — `test(...)` for a test, `describe(...)` for a suite. A file
+  // node shows the source with nothing highlighted. Skipped once a trace
+  // exists (events drive the view).
+  const previewHighlight = useMemo<SourceLocation | undefined>(() => {
+    if (currentTrace || previewKey === undefined || previewContent === undefined) return undefined;
+    const line = viewedTestNode?.type === 'test'
+      ? findTestDeclarationLine(previewContent, viewedTestNode.name)
+      : viewedTestNode?.type === 'suite'
+        ? findSuiteDeclarationLine(previewContent, viewedTestNode.name)
+        : undefined;
+    return line !== undefined ? { file: previewKey, line } : undefined;
+  }, [currentTrace, previewKey, previewContent, viewedTestNode]);
   const networkEntries = currentTrace?.network ?? EMPTY_NETWORK;
   const networkBodies = currentTrace?.networkBodies ?? EMPTY_MAP;
   const viewedTestWorker = (() => {
@@ -325,7 +388,7 @@ function App() {
     startTime: 0,
     endTime: viewedTestNode?.duration ?? 0,
     device: { serial: testDeviceSerial, isEmulator: deviceIsEmulator },
-    traceConfig: { screenshots: true, snapshots: true, sources: true, network: true },
+    traceConfig: { screenshots: true, snapshots: true, sources: true, network: true, deviceLogs: false, daemonLogs: false },
     actionCount: actionEvents.length,
     screenshotCount: screenshots.size,
     error: viewedTestNode?.error,
@@ -541,11 +604,11 @@ function App() {
           if (existing) revokeTraceScreenshots(existing);
           const next = new Map(prev);
           const data = emptyTraceData(msg.filePath);
-          // Match pending source by test file basename
-          const basename = msg.filePath.split('/').pop() ?? '';
-          const sourceContent = pendingSourcesRef.current.get(basename);
+          // Seed the test file from the pending pool (pre-run preview).
+          const normalizedPath = msg.filePath.replace(/\\/g, '/');
+          const sourceContent = pendingSourcesRef.current.get(normalizedPath);
           if (sourceContent) {
-            data.sources = new Map([[basename, sourceContent]]);
+            data.sources = new Map([[normalizedPath, sourceContent]]);
           }
           next.set(key, data);
           return next;
@@ -595,7 +658,7 @@ function App() {
           setTestTraces((prev) => {
             const trace = prev.get(statusKey);
             if (trace) {
-              const failIdx = trace.actionEvents.findLastIndex((e) => e.status === 'failed');
+              const failIdx = trace.actionEvents.findLastIndex((e) => (e.type === 'action' ? !e.success : !e.passed));
               if (failIdx !== -1) {
                 setPinnedIndex(failIdx);
                 setHoveredIndex(null);
@@ -736,22 +799,20 @@ function App() {
         break;
       }
       case 'source':
-        pendingSourcesRef.current.set(msg.fileName, msg.content);
-        // On reconnect, test-start doesn't fire so sources aren't snapshotted
-        // into trace entries. Inject into matching entries (by filePath basename)
-        // or entries without filePath (created by getOrCreateTrace).
-        setTestTraces((prev) => {
-          let changed = false;
+        // Keep every streamed source in two session-wide, path-keyed stores:
+        // pendingSourcesRef (snapshotted into a trace at its test-start) and
+        // previewSources (merged in at read time — see the `sources` memo).
+        // We deliberately DON'T copy the file into each trace's own map here:
+        // that was O(traces) per message. Because sources are path-keyed with
+        // identical on-disk content, the read-time merge resolves any file a
+        // trace needs — including files streamed by other workers during
+        // parallel runs — without the per-message fan-out.
+        pendingSourcesRef.current.set(msg.path, msg.content);
+        setPreviewSources((prev) => {
+          if (prev.get(msg.path) === msg.content) return prev;
           const next = new Map(prev);
-          for (const [k, data] of prev) {
-            if (data.sources.has(msg.fileName)) continue;
-            const match = !data.filePath || data.filePath.split('/').pop() === msg.fileName;
-            if (match) {
-              next.set(k, { ...data, sources: new Map([...data.sources, [msg.fileName, msg.content]]) });
-              changed = true;
-            }
-          }
-          return changed ? next : prev;
+          next.set(msg.path, msg.content);
+          return next;
         });
         break;
       case 'network': {
@@ -847,6 +908,13 @@ function App() {
   const workersLenRef = useRef(workers.length);
   workersLenRef.current = workers.length;
   const handleScreenFrame = useCallback((data: ArrayBuffer) => {
+    // First frame for the current device → hide the loading placeholder.
+    if (!firstFrameRef.current) {
+      firstFrameRef.current = true;
+      setMirrorLoading(false);
+    }
+    // Screenshot frame → existing screen-mirror handler(s). The grid uses the
+    // multi-mirror; everything else uses the single mirror.
     if (deviceViewModeRef.current === 'all' && workersLenRef.current > 1) {
       handleMultiBinaryFrame(data);
     } else {
@@ -859,6 +927,26 @@ function App() {
     onBinaryMessage: handleScreenFrame,
     onConnectionChange: handleConnectionChange,
   });
+
+  // Interactive mirror lock preference:
+  //   'auto' — locked only while the active worker is running (default)
+  //   'on'   — user explicitly locked; stays locked even after the run ends
+  //   'off'  — user unlocked during a run; resets to 'auto' when the run ends
+  //            (so the next run auto-locks again)
+  const [mirrorLockPref, setMirrorLockPref] = useState<'auto' | 'on' | 'off'>('auto');
+  const activeWorker = workers.find((w) => w.workerId === selectedWorkerId);
+  const runningOnActive = activeWorker ? activeWorker.status === 'running' : isRunning;
+  // An unlock-override is per-run: once the run ends, fall back to 'auto'.
+  // An explicit lock ('on') is sticky and survives the run ending.
+  useEffect(() => {
+    if (!runningOnActive && mirrorLockPref === 'off') setMirrorLockPref('auto');
+  }, [runningOnActive, mirrorLockPref]);
+  const mirrorLocked = mirrorLockPref === 'on'
+    ? true
+    : mirrorLockPref === 'off'
+      ? false
+      : runningOnActive;
+  const mirrorInteractive = !mirrorLocked;
 
   const handleThemeChange = useCallback((newTheme: Theme) => {
     setTheme(newTheme);
@@ -957,6 +1045,19 @@ function App() {
     }
   }, [viewedTraceKey, actionEvents.length, isRunning]);
 
+  // Pre-run preview: when a file/suite/test is selected but not yet run, fetch
+  // its source file from disk so the Source tab shows it (the matching
+  // declaration line is highlighted for suites/tests; files show no highlight).
+  useEffect(() => {
+    if (!previewable) return;
+    const filePath = viewedTestNode?.filePath;
+    if (!filePath) return;
+    const key = filePath.replace(/\\/g, '/');
+    if (previewSources.has(key) || requestedSourcesRef.current.has(key)) return;
+    requestedSourcesRef.current.add(key);
+    send({ type: 'request-source', path: filePath });
+  }, [previewable, viewedTestNode, previewSources, send]);
+
   const handleSelectDeviceView = useCallback((mode: 'all' | number) => {
     setDeviceViewMode(mode);
     if (typeof mode === 'number') {
@@ -974,22 +1075,20 @@ function App() {
 
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
-      // Ignore when typing in an input/textarea
-      const tag = (e.target as HTMLElement)?.tagName;
-      if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
-
-      switch (e.key) {
-        case 'r':
+      // resolveShortcut bails on Cmd/Ctrl/Alt chords (e.g. Cmd+Shift+R reload)
+      // and on form-field focus, so a browser refresh never fires run-all.
+      switch (resolveShortcut(e)) {
+        case 'run-all':
           send({ type: 'run-all' });
           break;
-        case 'f':
+        case 'run-failed':
           send({ type: 'run-failed' });
           break;
-        case 'Escape':
+        case 'stop-run':
           send({ type: 'stop-run' });
           setIsStopping(true);
           break;
-        case 'w':
+        case 'toggle-watch':
           send({ type: 'toggle-watch', filePath: 'all' });
           break;
       }
@@ -1201,7 +1300,13 @@ function App() {
           onSelectDeviceView={handleSelectDeviceView}
           registerCanvas={registerCanvas}
           unregisterCanvas={unregisterCanvas}
+          mirrorLoading={mirrorLoading}
           platform={devicePlatform}
+          interactive={mirrorInteractive}
+          locked={mirrorLocked}
+          force={runningOnActive && mirrorInteractive}
+          onToggleLock={() => setMirrorLockPref(mirrorLocked ? 'off' : 'on')}
+          send={send}
         />
       }
       mcpPanel={mcpPanelOpen ? (
@@ -1224,6 +1329,7 @@ function App() {
           networkBodies={networkBodies}
           onHierarchyNodeSelect={setHierarchyHighlight}
           pickMode={pickMode}
+          previewHighlight={previewHighlight}
           locatorTab={
             <SelectorTab
               hierarchyXml={currentHierarchyXml}

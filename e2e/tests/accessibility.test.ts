@@ -2,9 +2,9 @@ import { describe, expect, test } from "../fixtures.js"
 import { resetApp } from "../utils/app-reset.js"
 
 describe("Accessibility screen", () => {
-  test.beforeAll(async ({ device }) => {
+  test.beforeAll(async ({ device, accessibilityScreen }) => {
     await resetApp(device, "/accessibility")
-    await expect(device.getByText("Accessibility Testing", { exact: true })).toBeVisible()
+    await expect(accessibilityScreen.heading).toBeVisible()
   })
 
   test.beforeEach(async ({ device, accessibilityScreen }) => {

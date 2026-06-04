@@ -312,6 +312,42 @@ pub enum AgentCommand {
         distance: Option<f32>,
         timeout_ms: Option<u64>,
     },
+    TapCoordinates {
+        x: f32,
+        y: f32,
+    },
+    LongPressCoordinates {
+        x: f32,
+        y: f32,
+        duration_ms: u64,
+    },
+    DragCoordinates {
+        from_x: f32,
+        from_y: f32,
+        to_x: f32,
+        to_y: f32,
+        duration_ms: u64,
+    },
+    InputText {
+        text: String,
+        typing_delay_ms: Option<u32>,
+    },
+    TouchDown {
+        x: f32,
+        y: f32,
+        t_ms: u64,
+    },
+    TouchMove {
+        x: f32,
+        y: f32,
+        t_ms: u64,
+    },
+    TouchUp {
+        x: f32,
+        y: f32,
+        t_ms: u64,
+    },
+    TouchCancel {},
     Scroll {
         container: Option<Value>,
         direction: String,
@@ -379,6 +415,10 @@ pub enum AgentCommand {
     OpenDeepLink {
         url: String,
         package: String,
+        deliver_in_process: bool,
+    },
+    AcceptOpenInAppDialog {
+        timeout_ms: Option<u64>,
     },
     HideKeyboard {},
     IsKeyboardShown {},
@@ -407,6 +447,14 @@ impl AgentCommand {
             AgentCommand::TypeText { .. } => "typeText",
             AgentCommand::ClearText { .. } => "clearText",
             AgentCommand::Swipe { .. } => "swipe",
+            AgentCommand::TapCoordinates { .. } => "tap",
+            AgentCommand::LongPressCoordinates { .. } => "longPress",
+            AgentCommand::DragCoordinates { .. } => "swipe",
+            AgentCommand::InputText { .. } => "typeText",
+            AgentCommand::TouchDown { .. } => "touchDown",
+            AgentCommand::TouchMove { .. } => "touchMove",
+            AgentCommand::TouchUp { .. } => "touchUp",
+            AgentCommand::TouchCancel {} => "touchCancel",
             AgentCommand::Scroll { .. } => "scroll",
             AgentCommand::PressKey { .. } => "pressKey",
             AgentCommand::GetUiHierarchy {} => "getUiHierarchy",
@@ -425,6 +473,7 @@ impl AgentCommand {
             AgentCommand::LaunchApp { .. } => "launchApp",
             AgentCommand::TerminateApp { .. } => "terminateApp",
             AgentCommand::OpenDeepLink { .. } => "openDeepLink",
+            AgentCommand::AcceptOpenInAppDialog { .. } => "acceptOpenInAppDialog",
             AgentCommand::HideKeyboard {} => "hideKeyboard",
             AgentCommand::IsKeyboardShown {} => "isKeyboardShown",
             AgentCommand::SetOrientation { .. } => "setOrientation",
@@ -530,6 +579,45 @@ impl AgentCommand {
                 }
                 ("swipe", p)
             }
+            AgentCommand::TapCoordinates { x, y } => ("tap", json!({"x": x, "y": y})),
+            AgentCommand::LongPressCoordinates { x, y, duration_ms } => (
+                "longPress",
+                json!({"x": x, "y": y, "duration": duration_ms}),
+            ),
+            AgentCommand::DragCoordinates {
+                from_x,
+                from_y,
+                to_x,
+                to_y,
+                duration_ms,
+            } => (
+                "swipe",
+                json!({
+                    "fromX": from_x,
+                    "fromY": from_y,
+                    "toX": to_x,
+                    "toY": to_y,
+                    "durationMs": duration_ms
+                }),
+            ),
+            AgentCommand::InputText {
+                text,
+                typing_delay_ms,
+            } => {
+                let mut p = json!({"text": text, "focused": true});
+                if let Some(d) = typing_delay_ms {
+                    p["typingDelayMs"] = json!(d);
+                }
+                ("typeText", p)
+            }
+            AgentCommand::TouchDown { x, y, t_ms } => {
+                ("touchDown", json!({"x": x, "y": y, "t": t_ms}))
+            }
+            AgentCommand::TouchMove { x, y, t_ms } => {
+                ("touchMove", json!({"x": x, "y": y, "t": t_ms}))
+            }
+            AgentCommand::TouchUp { x, y, t_ms } => ("touchUp", json!({"x": x, "y": y, "t": t_ms})),
+            AgentCommand::TouchCancel {} => ("touchCancel", json!({})),
             AgentCommand::Scroll {
                 container,
                 direction,
@@ -670,8 +758,24 @@ impl AgentCommand {
             AgentCommand::TerminateApp { package } => {
                 ("terminateApp", json!({ "bundleId": package }))
             }
-            AgentCommand::OpenDeepLink { url, package } => {
-                ("openDeepLink", json!({ "url": url, "bundleId": package }))
+            AgentCommand::OpenDeepLink {
+                url,
+                package,
+                deliver_in_process,
+            } => (
+                "openDeepLink",
+                json!({
+                    "url": url,
+                    "bundleId": package,
+                    "deliverInProcess": deliver_in_process,
+                }),
+            ),
+            AgentCommand::AcceptOpenInAppDialog { timeout_ms } => {
+                let mut p = json!({});
+                if let Some(t) = timeout_ms {
+                    p["timeout"] = json!(t);
+                }
+                ("acceptOpenInAppDialog", p)
             }
             AgentCommand::HideKeyboard {} => ("hideKeyboard", json!({})),
             AgentCommand::IsKeyboardShown {} => ("isKeyboardShown", json!({})),
@@ -1109,6 +1213,39 @@ mod tests {
                 timeout_ms: None,
                 typing_delay_ms: None,
             },
+            AgentCommand::TapCoordinates { x: 1.0, y: 2.0 },
+            AgentCommand::LongPressCoordinates {
+                x: 1.0,
+                y: 2.0,
+                duration_ms: 500,
+            },
+            AgentCommand::DragCoordinates {
+                from_x: 1.0,
+                from_y: 2.0,
+                to_x: 3.0,
+                to_y: 4.0,
+                duration_ms: 300,
+            },
+            AgentCommand::InputText {
+                text: "x".into(),
+                typing_delay_ms: None,
+            },
+            AgentCommand::TouchDown {
+                x: 1.0,
+                y: 2.0,
+                t_ms: 0,
+            },
+            AgentCommand::TouchMove {
+                x: 2.0,
+                y: 3.0,
+                t_ms: 16,
+            },
+            AgentCommand::TouchUp {
+                x: 3.0,
+                y: 4.0,
+                t_ms: 32,
+            },
+            AgentCommand::TouchCancel {},
             AgentCommand::TakeElementScreenshot {
                 selector: json!({}),
                 timeout_ms: None,
@@ -1119,6 +1256,7 @@ mod tests {
             AgentCommand::LaunchApp {
                 package: "p".into(),
             },
+            AgentCommand::AcceptOpenInAppDialog { timeout_ms: None },
             AgentCommand::GetClipboard {},
             AgentCommand::GetOrientation {},
             AgentCommand::DismissSystemDialog,
@@ -1448,12 +1586,141 @@ mod tests {
     }
 
     #[test]
+    fn to_json_open_deep_link() {
+        let cmd = AgentCommand::OpenDeepLink {
+            url: "tapsmithtest:///login".into(),
+            package: "dev.tapsmith.testapp".into(),
+            deliver_in_process: false,
+        };
+        let j = cmd.to_json("dl1");
+        assert_eq!(j["method"], "openDeepLink");
+        assert_eq!(j["params"]["url"], "tapsmithtest:///login");
+        assert_eq!(j["params"]["bundleId"], "dev.tapsmith.testapp");
+        assert_eq!(j["params"]["deliverInProcess"], false);
+    }
+
+    #[test]
+    fn to_json_accept_open_in_app_dialog() {
+        let cmd = AgentCommand::AcceptOpenInAppDialog {
+            timeout_ms: Some(750),
+        };
+        let j = cmd.to_json("open-dialog");
+        assert_eq!(j["method"], "acceptOpenInAppDialog");
+        assert_eq!(j["params"]["timeout"], 750);
+    }
+
+    #[test]
     fn to_json_id_is_passed_through() {
         let cmd = AgentCommand::PressKey {
             key: "ENTER".into(),
         };
         let j = cmd.to_json("my-custom-id-123");
         assert_eq!(j["id"], "my-custom-id-123");
+    }
+
+    // ─── Coordinate Gesture Commands ───
+
+    #[test]
+    fn serializes_tap_coordinates() {
+        let cmd = AgentCommand::TapCoordinates { x: 100.0, y: 200.0 };
+        let j = cmd.to_json("tc1");
+        assert_eq!(j["method"], "tap");
+        assert_eq!(j["params"]["x"], 100.0);
+        assert_eq!(j["params"]["y"], 200.0);
+    }
+
+    #[test]
+    fn serializes_long_press_coordinates() {
+        let cmd = AgentCommand::LongPressCoordinates {
+            x: 10.0,
+            y: 20.0,
+            duration_ms: 800,
+        };
+        let j = cmd.to_json("lpc1");
+        assert_eq!(j["method"], "longPress");
+        assert_eq!(j["params"]["x"], 10.0);
+        assert_eq!(j["params"]["y"], 20.0);
+        assert_eq!(j["params"]["duration"], 800);
+    }
+
+    #[test]
+    fn serializes_drag_coordinates() {
+        let cmd = AgentCommand::DragCoordinates {
+            from_x: 1.0,
+            from_y: 2.0,
+            to_x: 3.0,
+            to_y: 4.0,
+            duration_ms: 300,
+        };
+        let j = cmd.to_json("dc1");
+        assert_eq!(j["method"], "swipe");
+        assert_eq!(j["params"]["fromX"], 1.0);
+        assert_eq!(j["params"]["fromY"], 2.0);
+        assert_eq!(j["params"]["toX"], 3.0);
+        assert_eq!(j["params"]["toY"], 4.0);
+        assert_eq!(j["params"]["durationMs"], 300);
+    }
+
+    #[test]
+    fn serializes_input_text() {
+        let cmd = AgentCommand::InputText {
+            text: "hello".to_string(),
+            typing_delay_ms: Some(10),
+        };
+        let j = cmd.to_json("it1");
+        assert_eq!(j["method"], "typeText");
+        assert_eq!(j["params"]["text"], "hello");
+        assert_eq!(j["params"]["focused"], true);
+        assert_eq!(j["params"]["typingDelayMs"], 10);
+    }
+
+    #[test]
+    fn serializes_touch_down() {
+        let cmd = AgentCommand::TouchDown {
+            x: 12.0,
+            y: 34.0,
+            t_ms: 0,
+        };
+        let j = cmd.to_json("id");
+        assert_eq!(j["method"], "touchDown");
+        assert_eq!(j["params"]["x"], 12.0);
+        assert_eq!(j["params"]["y"], 34.0);
+        assert_eq!(j["params"]["t"], 0);
+    }
+
+    #[test]
+    fn serializes_touch_move() {
+        let cmd = AgentCommand::TouchMove {
+            x: 1.0,
+            y: 2.0,
+            t_ms: 50,
+        };
+        let j = cmd.to_json("id");
+        assert_eq!(j["method"], "touchMove");
+        assert_eq!(j["params"]["x"], 1.0);
+        assert_eq!(j["params"]["y"], 2.0);
+        assert_eq!(j["params"]["t"], 50);
+    }
+
+    #[test]
+    fn serializes_touch_up() {
+        let cmd = AgentCommand::TouchUp {
+            x: 3.0,
+            y: 4.0,
+            t_ms: 120,
+        };
+        let j = cmd.to_json("id");
+        assert_eq!(j["method"], "touchUp");
+        assert_eq!(j["params"]["x"], 3.0);
+        assert_eq!(j["params"]["y"], 4.0);
+        assert_eq!(j["params"]["t"], 120);
+    }
+
+    #[test]
+    fn serializes_touch_cancel() {
+        let cmd = AgentCommand::TouchCancel {};
+        let j = cmd.to_json("id");
+        assert_eq!(j["method"], "touchCancel");
     }
 
     // ─── AgentResponse::from_json ───

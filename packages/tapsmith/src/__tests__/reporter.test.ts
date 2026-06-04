@@ -49,6 +49,55 @@ function stripAnsi(value: string): string {
   return value.replace(/\x1b\[[0-9;]*m/g, '');
 }
 
+// Minimal terminal emulator: replays a stream of bytes (including the cursor
+// escapes the list reporter uses) and returns the final visible lines. Used to
+// assert what the user actually sees after in-place redraws.
+function renderTerminal(stream: string): string[] {
+  const lines: string[] = [''];
+  let row = 0;
+  let col = 0;
+  const ensureRow = (): void => {
+    while (lines.length <= row) lines.push('');
+  };
+  for (let i = 0; i < stream.length; i++) {
+    const ch = stream[i];
+    if (ch === '\x1b') {
+      const m = /^\x1b\[(\d*)([A-Za-z])/.exec(stream.slice(i));
+      if (m) {
+        const n = m[1] === '' ? 1 : parseInt(m[1], 10);
+        const cmd = m[2];
+        if (cmd === 'A') row = Math.max(0, row - n);
+        else if (cmd === 'B') row += n;
+        else if (cmd === 'K') {
+          // 2K (and 0K here) clears the current line.
+          ensureRow();
+          lines[row] = '';
+          col = 0;
+        }
+        // SGR ('m') and anything else: ignored (no visible effect).
+        i += m[0].length - 1;
+        continue;
+      }
+    }
+    if (ch === '\n') {
+      // TTY onlcr: newline returns to column 0 and moves down a row.
+      row += 1;
+      col = 0;
+      ensureRow();
+      continue;
+    }
+    if (ch === '\r') {
+      col = 0;
+      continue;
+    }
+    ensureRow();
+    const line = lines[row];
+    lines[row] = line.slice(0, col) + ch + line.slice(col + 1);
+    col += 1;
+  }
+  return lines;
+}
+
 // ─── ReporterDispatcher ───
 
 describe('ReporterDispatcher', () => {
@@ -377,6 +426,62 @@ describe('ListReporter', () => {
       expect(output).toContain('[1] [worker 3] [ios] › tests/login.test.ts › suite > my test');
     } finally {
       Object.defineProperty(process.stdout, 'isTTY', { configurable: true, value: originalIsTTY });
+    }
+  });
+
+  it('clears the in-progress line when a test logs to stdout (single worker)', async () => {
+    // Regression: in single-worker mode the test runs in-process, so its
+    // console.log lands on stdout between onTestStart (prints the dimmed
+    // in-progress row) and onTestEnd (clears it). The reporter must clear and
+    // redraw the live region around interleaved output, otherwise the cursor
+    // math is off-by-N and the in-progress row is left stranded (duplicate).
+    const originalIsTTY = process.stdout.isTTY;
+    Object.defineProperty(process.stdout, 'isTTY', { configurable: true, value: true });
+    // The reporter installs its own process.stdout.write interceptor, so we
+    // can't use the describe-level spy here — record on the real stream.
+    stdoutSpy.mockRestore();
+    const chunks: string[] = [];
+    const realWrite = process.stdout.write.bind(process.stdout);
+    const recorder = vi.spyOn(process.stdout, 'write').mockImplementation(((chunk: unknown) => {
+      chunks.push(String(chunk));
+      return true;
+    }) as typeof process.stdout.write);
+    try {
+      const { ListReporter } = await import('../reporters/list.js');
+      const ttyReporter = new ListReporter();
+      ttyReporter.onRunStart!(makeConfig({ workers: 1, rootDir: '/project' }), 1);
+      ttyReporter.onTestStart!('suite > test A', '/project/tests/a.test.ts', { project: undefined });
+      // The test logs to stdout while it runs — must route through whatever
+      // interceptor the reporter installed.
+      process.stdout.write('log line 1\n');
+      process.stdout.write('log line 2\n');
+      ttyReporter.onTestEnd!(makeTestResult({
+        fullName: 'suite > test A',
+        status: 'passed',
+        filePath: '/project/tests/a.test.ts',
+      }));
+      ttyReporter.onRunEnd!(makeFullResult({
+        tests: [makeTestResult({ fullName: 'suite > test A', status: 'passed' })],
+      }));
+
+      const visible = renderTerminal(chunks.join(''));
+      // The test's own logs survive.
+      expect(visible).toContain('log line 1');
+      expect(visible).toContain('log line 2');
+      // The completed row is shown exactly once.
+      const completedRows = visible.filter((l) => /✓.*\[1\].*suite > test A/.test(l));
+      expect(completedRows).toHaveLength(1);
+      // No stranded dimmed in-progress row (would read `[1] › … › suite > test A`
+      // without the ✓ status icon).
+      const strandedInProgress = visible.filter(
+        (l) => l.includes('suite > test A') && !l.includes('✓'),
+      );
+      expect(strandedInProgress).toEqual([]);
+    } finally {
+      recorder.mockRestore();
+      void realWrite;
+      Object.defineProperty(process.stdout, 'isTTY', { configurable: true, value: originalIsTTY });
+      stdoutSpy = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
     }
   });
 

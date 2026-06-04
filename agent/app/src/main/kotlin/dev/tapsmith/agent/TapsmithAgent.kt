@@ -47,7 +47,7 @@ class TapsmithAgent : Instrumentation() {
         val port = arguments?.getString(ARG_PORT)?.toIntOrNull() ?: DEFAULT_PORT
 
         val elementFinder = ElementFinder(device)
-        val actionExecutor = ActionExecutor(device)
+        val actionExecutor = ActionExecutor(device, this)
         val waitEngine = WaitEngine(device)
         val hierarchyDumper = HierarchyDumper(device, this)
         val commandHandler =

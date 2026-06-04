@@ -146,6 +146,40 @@ Press the Android back button. Convenience method equivalent to `device.pressKey
 await device.pressBack();
 ```
 
+### `device.tapXY(x: number, y: number): Promise<void>`
+
+Tap at raw screen coordinates in logical points (Android pixels; iOS points). Prefer selector-based `tap()` in tests; use this for coordinate-driven interaction (e.g., device mirror gestures).
+
+```typescript
+await device.tapXY(120, 340);
+```
+
+### `device.longPressXY(x: number, y: number, options?: { duration?: number }): Promise<void>`
+
+Long-press at raw screen coordinates in logical points. `options.duration` specifies the hold duration in milliseconds (default 1000).
+
+```typescript
+await device.longPressXY(120, 340, { duration: 800 });
+```
+
+### `device.dragXY(from: { x: number; y: number }, to: { x: number; y: number }, options?: { duration?: number }): Promise<void>`
+
+Drag/swipe from one point to another in logical points. `options.duration` specifies the drag duration in milliseconds (default 300).
+
+```typescript
+await device.dragXY({ x: 50, y: 200 }, { x: 50, y: 600 }, { duration: 400 });
+```
+
+> **Platform note:** `duration` is honored on Android (it scales the gesture's step count). On iOS the drag is performed via a fixed-duration synthesized gesture, so `duration` currently has no effect on speed.
+
+### `device.inputText(text: string): Promise<void>`
+
+Type `text` into whatever element currently has focus (no selector). Useful for inserting text without first tapping a field.
+
+```typescript
+await device.inputText("hello world");
+```
+
 ### `device.takeScreenshot(): Promise<ScreenshotResponse>`
 
 Capture a screenshot of the current device screen. Returns an object with `success`, `data` (PNG bytes), and `errorMessage` fields.
@@ -1495,7 +1529,7 @@ Focus or skip an entire suite.
 
 ### `beforeAll(fn: (fixtures) => void | Promise<void>): void`
 
-Run a function once before all tests in the current suite. Receives builtin fixtures (`device`, `projectName`, `platform`) and any worker-scoped custom fixtures.
+Run a function once before all tests in the current suite. Receives builtin fixtures (`device`, `projectName`, `platform`), worker-scoped custom fixtures, and any test-scoped custom fixtures it destructures (see the note below).
 
 ```typescript
 beforeAll(async ({ device }) => {
@@ -1540,7 +1574,7 @@ test.beforeEach(async ({ device, authScreen }) => {
 });
 ```
 
-> **Note:** `beforeAll`/`afterAll` hooks (both standalone and `test.beforeAll`) only receive worker-scoped fixtures and builtins — not test-scoped fixtures, which are created per-test. `beforeEach`/`afterEach` hooks registered via `test.beforeEach()`/`test.afterEach()` receive all fixtures including test-scoped custom fixtures.
+> **Note:** Test-scoped custom fixtures work in `beforeAll`/`afterAll` as well as `beforeEach`/`afterEach`. As in Playwright, each `beforeAll`/`afterAll` hook gets its **own** test-fixture scope: the fixtures it destructures are set up just before the hook runs and torn down immediately after (even if the hook throws). They are therefore not shared with the tests in the suite — for a single instance shared across the whole worker, declare the fixture with `{ scope: "worker" }` instead.
 
 ---
 
@@ -1754,6 +1788,7 @@ await device.tracing.start({ screenshots: true, snapshots: true });
 | `snapshots` | `boolean` | `true` | Capture view hierarchy XML |
 | `sources` | `boolean` | `true` | Include test source files |
 | `network` | `boolean` | `true` | Capture HTTP/HTTPS traffic via proxy |
+| `daemonLogs` | `boolean` | `false` | Stream the `tapsmith-core` daemon's own logs (gRPC, ADB/simctl invocations, device events) into the trace. Useful for diagnosing framework-level failures. Appears in the trace viewer's Console tab under the `daemon` source. Verbosity follows the daemon's log level — run the daemon with `--verbose` for debug-level detail. Opt-in (default off) because daemon logs are internal noise for typical app debugging. |
 | `title` | `string` | — | Custom title for the trace |
 
 ### `device.tracing.stop(options?)`

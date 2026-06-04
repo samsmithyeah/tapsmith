@@ -78,6 +78,56 @@ interface WorkerHandle {
   retired?: boolean
 }
 
+type DaemonStdio = 'ignore' | ['ignore', number, number];
+
+function daemonStdio(workerId: number): DaemonStdio {
+  const baseLogPath = process.env.TAPSMITH_DAEMON_LOG;
+  if (!baseLogPath) return 'ignore';
+
+  const parsed = path.parse(baseLogPath);
+  const logPath = workerId === 0
+    ? baseLogPath
+    : path.join(parsed.dir, `${parsed.name}.worker-${workerId}${parsed.ext}`);
+  try {
+    fs.mkdirSync(path.dirname(logPath), { recursive: true });
+    const fd = fs.openSync(logPath, 'a');
+    return ['ignore', fd, fd];
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    process.stderr.write(
+      `${YELLOW}Failed to open daemon log ${logPath}; daemon output will be discarded: ${message}${RESET}\n`,
+    );
+    return 'ignore';
+  }
+}
+
+function closeDaemonStdioParentFds(stdio: DaemonStdio): void {
+  if (!Array.isArray(stdio)) return;
+
+  const fds = new Set(stdio.filter((entry): entry is number => typeof entry === 'number'));
+  for (const fd of fds) {
+    try { fs.closeSync(fd); } catch { /* already closed */ }
+  }
+}
+
+function spawnDaemonProcess(
+  daemonBin: string,
+  daemonPort: number,
+  agentPort: number,
+  workerId: number,
+): ChildProcess {
+  const stdio = daemonStdio(workerId);
+  try {
+    return spawn(
+      daemonBin,
+      ['--port', String(daemonPort), '--agent-port', String(agentPort)],
+      { stdio },
+    );
+  } finally {
+    closeDaemonStdioParentFds(stdio);
+  }
+}
+
 export interface DispatcherOptions {
   config: TapsmithConfig
   reporter: TapsmithReporter
@@ -698,11 +748,7 @@ export async function runParallel(opts: DispatcherOptions, _portOffset = 0): Pro
   }
 
   updateLaunchPhaseProgress('daemon', `Worker ${displayWorkerId(0)}: starting daemon on localhost:${firstDaemonPort}`);
-  const firstDaemon = spawn(
-    daemonBin,
-    ['--port', String(firstDaemonPort), '--agent-port', String(firstAgentPort)],
-    { stdio: 'ignore' },
-  );
+  const firstDaemon = spawnDaemonProcess(daemonBin, firstDaemonPort, firstAgentPort, displayWorkerId(0));
   firstDaemon.unref();
   firstDaemon.on('error', () => {
     // Handled by the waitForReady timeout below
@@ -962,18 +1008,18 @@ export async function runParallel(opts: DispatcherOptions, _portOffset = 0): Pro
 
   try {
     // Fork worker processes.
-    // When running under tsx (TypeScript test files), __dirname points to src/
+    // When running under tsx (TypeScript test files), import.meta.dirname points to src/
     // and we need to fork with tsx as the loader. When running from compiled JS,
-    // __dirname points to dist/ and we can fork directly.
-    const jsScript = path.resolve(__dirname, 'worker-runner.js');
-    const tsScript = path.resolve(__dirname, 'worker-runner.ts');
+    // import.meta.dirname points to dist/ and we can fork directly.
+    const jsScript = path.resolve(import.meta.dirname, 'worker-runner.js');
+    const tsScript = path.resolve(import.meta.dirname, 'worker-runner.ts');
     const useTypeScript = !fs.existsSync(jsScript) && fs.existsSync(tsScript);
     const resolvedScript = useTypeScript ? tsScript : jsScript;
 
     // When forking a .ts file, we need tsx to handle it.
     let tsxBin: string | undefined;
     if (useTypeScript) {
-      const tapsmithPkgDir = path.resolve(__dirname, '..');
+      const tapsmithPkgDir = path.resolve(import.meta.dirname, '..');
       const localTsx = path.join(tapsmithPkgDir, 'node_modules', '.bin', 'tsx');
       tsxBin = fs.existsSync(localTsx) ? localTsx : 'tsx';
     }
@@ -1577,11 +1623,7 @@ async function initializeWorker(opts: InitializeWorkerOptions): Promise<WorkerHa
     opts.onDaemonReady?.();
   } else {
     opts.onProgress?.(`starting worker daemon on localhost:${daemonPort}`);
-    daemonProcess = spawn(
-      daemonBin,
-      ['--port', String(daemonPort), '--agent-port', String(agentPort)],
-      { stdio: 'ignore' },
-    );
+    daemonProcess = spawnDaemonProcess(daemonBin, daemonPort, agentPort, opts.displayWorkerId ?? workerId);
     daemonProcess.unref();
     daemonProcess.on('error', (err) => {
       process.stderr.write(`Daemon for worker ${workerId} failed to start: ${err.message}\n`);

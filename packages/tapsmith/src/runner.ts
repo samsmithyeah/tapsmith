@@ -407,7 +407,7 @@ export function afterEach(fn: HookFn): void {
 
 function getPackageVersion(): string {
   try {
-    const pkgPath = path.resolve(__dirname, '../package.json');
+    const pkgPath = path.resolve(import.meta.dirname, '../package.json');
     const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf-8'));
     return pkg.version ?? '0.0.0';
   } catch {
@@ -601,6 +601,41 @@ async function invokeHook(
   }
 }
 
+/**
+ * Invoke a suite-level hook (beforeAll/afterAll) with its own short-lived
+ * test-fixture scope, then tear that scope down — even if the hook throws.
+ *
+ * Mirrors Playwright's `_runAllHooksForSuite`: each beforeAll/afterAll gets a
+ * fresh test-fixture scope on top of the suite/worker fixtures. This lets these
+ * hooks destructure test-scoped fixtures (e.g. page objects) without forcing
+ * them to worker scope, where a single instance would be shared across every
+ * test in the worker.
+ */
+async function invokeHookWithTestScope(
+  hook: HookEntry,
+  suiteFixtures: Record<string, unknown>,
+  suiteRegistry: FixtureRegistry,
+): Promise<void> {
+  // A hook that takes no fixtures parameter needs no test-scoped setup.
+  if (!functionHasParameters(hook.fn)) {
+    await invokeHook(hook, suiteFixtures);
+    return;
+  }
+  const registry = hook.registry ?? suiteRegistry;
+  // Lazily resolve only the fixtures the hook destructures. If it takes a
+  // non-destructured fixtures parameter we can't tell what it needs, so fall
+  // back to resolving every test-scoped fixture (matches the test-body path).
+  const names = fixtureParameterNames(hook.fn);
+  const resolved = await resolveFixtures(
+    registry, 'test', suiteFixtures, names.length > 0 ? names : undefined,
+  );
+  try {
+    await invokeHook(hook, resolved.fixtures);
+  } finally {
+    await resolved.teardown();
+  }
+}
+
 const builtinFixtureNames = new Set(['device', 'request', 'projectName', 'platform']);
 
 function validateHookFixtures(
@@ -614,23 +649,6 @@ function validateHookFixtures(
       process.stderr.write(
         `[tapsmith] ${hookType} hook expects fixture "${name}" which is not available in this test's fixture registry. ` +
         `The hook was registered with a different test.extend() than the test it is running against.\n`,
-      );
-    }
-  }
-}
-
-function validateBeforeAllHookFixtures(
-  hook: HookEntry,
-  registry: FixtureRegistry,
-  hookType: string,
-): void {
-  for (const name of fixtureParameterNames(hook.fn)) {
-    if (builtinFixtureNames.has(name)) continue;
-    const fixture = registry.get(name);
-    if (fixture && fixture.scope === 'test') {
-      process.stderr.write(
-        `[tapsmith] ${hookType} hook references test-scoped fixture "${name}". ` +
-        `Only worker-scoped fixtures and builtins (device, request, etc.) are available in ${hookType} hooks.\n`,
       );
     }
   }
@@ -777,21 +795,18 @@ async function runSuiteContext(
   };
 
   const suiteRegistry = getFixtureRegistry();
-  for (const hook of ctx.beforeAll) {
-    validateBeforeAllHookFixtures(hook, hook.registry ?? suiteRegistry, 'beforeAll');
-  }
 
   try {
     if (beforeAllCollector) {
       await withActiveTraceCollector(beforeAllCollector, async () => {
         for (const hook of ctx.beforeAll) {
-          await invokeHook(hook, suiteFixtures);
+          await invokeHookWithTestScope(hook, suiteFixtures, suiteRegistry);
         }
       });
       beforeAllCollector.endGroup();
     } else {
       for (const hook of ctx.beforeAll) {
-        await invokeHook(hook, suiteFixtures);
+        await invokeHookWithTestScope(hook, suiteFixtures, suiteRegistry);
       }
     }
   } catch (err) {
@@ -975,6 +990,18 @@ async function runSuiteContext(
           } catch (err) {
             _warnCaptureOnce(
               'Device log streaming failed to start',
+              err instanceof Error ? err.message : String(err),
+            );
+          }
+        }
+
+        // Start daemon log streaming if configured
+        if (traceConfig.daemonLogs && traceCollector) {
+          try {
+            opts.device._startDaemonLogStream(traceCollector);
+          } catch (err) {
+            _warnCaptureOnce(
+              'Daemon log streaming failed to start',
               err instanceof Error ? err.message : String(err),
             );
           }
@@ -1228,8 +1255,13 @@ async function runSuiteContext(
       if (traceCollector && opts.device) {
         const device = opts.device;
 
-        // Stop device log streaming first — no async cleanup needed
+        // Stop device + daemon log streaming first — no async cleanup needed.
+        // Stopping per-test (not just on Device.close) keeps the streams from
+        // outliving the test they belong to: on a shared Device, a later test
+        // with logs disabled would otherwise keep streaming into this finalized
+        // collector (leak + cross-test pollution).
         device._stopDeviceLogStream();
+        device._stopDaemonLogStream();
 
         // Drain per-test network entries BEFORE disposing the route manager —
         // the proxy may still have in-flight requests that need the gRPC
@@ -1520,9 +1552,6 @@ async function runSuiteContext(
 
   // Run afterAll hooks with tracing (same pattern as beforeAll).
   // Events are streamed to the UI tagged with the last test that ran.
-  for (const hook of ctx.afterAll) {
-    validateBeforeAllHookFixtures(hook, hook.registry ?? suiteRegistry, 'afterAll');
-  }
   if (ctx.afterAll.length > 0 && opts.device) {
     const traceConfig = resolveTraceConfig(opts.config.trace);
     if (shouldRecord(traceConfig.mode, 0)) {
@@ -1550,7 +1579,7 @@ async function runSuiteContext(
       await withActiveTraceCollector(afterAllCollector, async () => {
         for (const hook of ctx.afterAll) {
           try {
-            await invokeHook(hook, suiteFixtures);
+            await invokeHookWithTestScope(hook, suiteFixtures, suiteRegistry);
           } catch (err) {
             process.stderr.write(`[tapsmith] afterAll hook error: ${err instanceof Error ? err.message : String(err)}\n`);
           }
@@ -1561,7 +1590,7 @@ async function runSuiteContext(
     } else {
       for (const hook of ctx.afterAll) {
         try {
-          await invokeHook(hook, suiteFixtures);
+          await invokeHookWithTestScope(hook, suiteFixtures, suiteRegistry);
         } catch (err) {
           process.stderr.write(`[tapsmith] afterAll hook error: ${err instanceof Error ? err.message : String(err)}\n`);
         }
@@ -1570,7 +1599,7 @@ async function runSuiteContext(
   } else {
     for (const hook of ctx.afterAll) {
       try {
-        await invokeHook(hook, suiteFixtures);
+        await invokeHookWithTestScope(hook, suiteFixtures, suiteRegistry);
       } catch (err) {
         process.stderr.write(`[tapsmith] afterAll hook error: ${err instanceof Error ? err.message : String(err)}\n`);
       }

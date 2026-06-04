@@ -3,7 +3,8 @@ import { usePersistedString } from '../../ui-mode/hooks/use-persisted-state.js';
 import type { ComponentChildren } from 'preact';
 import { AlertTriangle } from 'lucide-preact';
 import { buildCodeSnippet, formatCodeSnippetPlain } from '../../trace/code-frame.js';
-import type { ActionTraceEvent, AssertionTraceEvent, AnyTraceEvent, ConsoleTraceEvent, TraceMetadata, NetworkEntry, ConsoleLevel } from '../../trace/types.js';
+import type { ActionTraceEvent, AssertionTraceEvent, AnyTraceEvent, ConsoleTraceEvent, TraceMetadata, NetworkEntry, ConsoleLevel, SourceLocation } from '../../trace/types.js';
+import { resolveSourceView } from './source-view-utils.js';
 import { HierarchyTree } from './HierarchyTree.js';
 import type { Bounds } from './HierarchyTree.js';
 import { NetworkTab } from './NetworkTab.js';
@@ -20,11 +21,16 @@ interface Props {
   onHierarchyNodeSelect?: (bounds: Bounds | null) => void
   locatorTab?: ComponentChildren
   pickMode?: boolean
+  /**
+   * Source line to highlight when there is no selected event (e.g. previewing
+   * a test that hasn't run yet). Ignored once a real event drives the view.
+   */
+  previewHighlight?: SourceLocation
 }
 
 type DetailTab = 'call' | 'log' | 'console' | 'source' | 'hierarchy' | 'locator' | 'errors' | 'network'
 
-export function DetailTabs({ event, events, hierarchies, sources, metadata, networkEntries, networkBodies, onHierarchyNodeSelect, locatorTab, pickMode }: Props) {
+export function DetailTabs({ event, events, hierarchies, sources, metadata, networkEntries, networkBodies, onHierarchyNodeSelect, locatorTab, pickMode, previewHighlight }: Props) {
   const testError = metadata.error;
   const [tab, setTab] = usePersistedString('tapsmith-detail-tab', 'call') as [DetailTab, (v: DetailTab) => void];
 
@@ -98,7 +104,7 @@ export function DetailTabs({ event, events, hierarchies, sources, metadata, netw
         {tab === 'call' && <CallTab event={event} metadata={metadata} />}
         {tab === 'log' && <LogTab event={event} />}
         {tab === 'console' && <ConsoleTab event={event} events={consoleEvents} />}
-        {tab === 'source' && <SourceTab event={event} sources={sources} />}
+        {tab === 'source' && <SourceTab event={event} sources={sources} previewHighlight={previewHighlight} />}
         {tab === 'hierarchy' && <HierarchyTabWrapper event={event} hierarchies={hierarchies} onNodeSelect={onHierarchyNodeSelect} />}
         {tab === 'locator' && locatorTab}
         {tab === 'network' && <NetworkTab entries={networkEntries} bodies={networkBodies} />}
@@ -247,7 +253,7 @@ function LogTab({ event }: { event: ActionTraceEvent | AssertionTraceEvent | und
 
 // ─── Console Tab ───
 
-type SourceFilter = 'all' | 'test' | 'device'
+type SourceFilter = 'all' | 'test' | 'device' | 'daemon'
 
 const LEVEL_ORDER: ConsoleLevel[] = ['error', 'warn', 'info', 'log', 'debug'];
 
@@ -257,10 +263,20 @@ function ConsoleTab({ event, events: consoleEvents }: { event: ActionTraceEvent 
   const [sourceFilter, setSourceFilter] = useState<SourceFilter>('all');
   const [scopeToAction, setScopeToAction] = useState(false);
 
-  const hasBothSources = useMemo(() => {
-    const sources = new Set(consoleEvents.map(e => e.source));
-    return sources.has('test') && sources.has('device');
+  const presentSources = useMemo(() => {
+    const s = new Set<SourceFilter>();
+    for (const e of consoleEvents) s.add(e.source as SourceFilter);
+    return s;
   }, [consoleEvents]);
+  const showSourceFilter = presentSources.size > 1;
+
+  // If the active source filter is no longer present (e.g. switching to an
+  // event with no daemon logs), reset to 'all' so the tab isn't confusingly empty.
+  useEffect(() => {
+    if (sourceFilter !== 'all' && !presentSources.has(sourceFilter)) {
+      setSourceFilter('all');
+    }
+  }, [presentSources, sourceFilter]);
 
   const filtered = useMemo(() => {
     const lf = search.toLowerCase();
@@ -303,17 +319,19 @@ function ConsoleTab({ event, events: consoleEvents }: { event: ActionTraceEvent 
             >{level}</button>
           ))}
         </div>
-        {hasBothSources && (
+        {showSourceFilter && (
           <>
             <div class="con-pill-sep" />
             <div class="con-pills">
-              {(['all', 'test', 'device'] as SourceFilter[]).map(s => (
-                <button
-                  key={s}
-                  class={`con-pill${sourceFilter === s ? ' active' : ''}`}
-                  onClick={() => setSourceFilter(s)}
-                >{s}</button>
-              ))}
+              {(['all', 'test', 'device', 'daemon'] as SourceFilter[])
+                .filter(s => s === 'all' || presentSources.has(s))
+                .map(s => (
+                  <button
+                    key={s}
+                    class={`con-pill${sourceFilter === s ? ' active' : ''}`}
+                    onClick={() => setSourceFilter(s)}
+                  >{s}</button>
+                ))}
             </div>
           </>
         )}
@@ -333,7 +351,7 @@ function ConsoleTab({ event, events: consoleEvents }: { event: ActionTraceEvent 
           : filtered.map((ev, i) => (
             <div key={i} class="log-entry">
               <span class={`log-level ${ev.level}`}>{ev.level}</span>
-              <span class="log-source">{ev.source === 'device' ? 'device' : 'test'}</span>
+              <span class="log-source">{ev.source}</span>
               <span class="log-message">{ev.message}</span>
             </div>
           ))
@@ -466,18 +484,67 @@ const TOKEN_COLORS: Record<SourceToken['type'], string | undefined> = {
   plain: undefined,
 };
 
-function SourceTab({ event, sources }: { event: ActionTraceEvent | AssertionTraceEvent | undefined; sources: Map<string, string> }) {
+function StackTraceView({ stack, selected, onSelect }: { stack: SourceLocation[]; selected: number; onSelect: (i: number) => void }) {
+  return (
+    <div class="source-stack">
+      <div class="source-stack-title">Call stack</div>
+      {stack.map((frame, i) => frame?.file && (
+        <div
+          key={i}
+          class={`source-stack-frame${i === selected ? ' selected' : ''}`}
+          title={`${frame.file}:${frame.line}`}
+          role="button"
+          tabIndex={0}
+          onClick={() => onSelect(i)}
+          onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onSelect(i); } }}
+        >
+          <span class="source-stack-file">{frame.file?.replace(/\\/g, '/').split('/').pop() ?? ''}</span>
+          <span class="source-stack-line">:{frame.line}</span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function SourceTab({ event, sources, previewHighlight }: { event: ActionTraceEvent | AssertionTraceEvent | undefined; sources: Map<string, string>; previewHighlight?: SourceLocation }) {
   const highlightRef = useRef<HTMLDivElement>(null);
+  const [selectedFrame, setSelectedFrame] = useState(0);
 
-  if (sources.size === 0) return <div class="no-content">No source files in trace</div>;
+  // With no event (e.g. previewing a test before it runs) fall back to the
+  // preview highlight so the test's `test(...)` line is still highlighted.
+  const stack = event?.stack ?? (event?.sourceLocation ? [event.sourceLocation] : previewHighlight ? [previewHighlight] : []);
+  const eventKey = event ? `${event.type}-${event.actionIndex}` : 'none';
+  useEffect(() => { setSelectedFrame(0); }, [eventKey]);
 
-  const [filename, content] = [...sources.entries()][0];
-  const loc = event?.sourceLocation;
-  const highlightLine = loc?.line;
+  // Guard against a one-render window where selectedFrame is stale (out of
+  // bounds) right after switching to an event with a shorter stack, before the
+  // reset effect runs — otherwise resolveSourceView would briefly show nothing.
+  const activeFrame = selectedFrame < stack.length ? selectedFrame : 0;
+
+  const { filename, content, highlightLine } = resolveSourceView(stack, sources, activeFrame, !!event);
+
+  useEffect(() => {
+    // Instant (not smooth) scroll: in a trace viewer the user steps through
+    // actions rapidly, and smooth scrolling lags/bounces behind the clicks.
+    highlightRef.current?.scrollIntoView({ block: 'center' });
+  }, [highlightLine, filename]);
+
+  const showStack = stack.length > 1;
+
+  if (content === undefined) {
+    return (
+      <div class={`source-tab${showStack ? ' has-stack' : ''}`}>
+        <div class="source-main">
+          <div class="no-content">
+            {filename ? `Source not captured for ${filename.replace(/\\/g, '/').split('/').pop()}` : 'No source files in trace'}
+          </div>
+        </div>
+        {showStack && <StackTraceView stack={stack} selected={activeFrame} onSelect={setSelectedFrame} />}
+      </div>
+    );
+  }
 
   const lines = content.split('\n');
-
-  // Tokenize all lines, tracking block comment state across lines
   let inBlockComment = false;
   const tokenizedLines: SourceToken[][] = [];
   for (const line of lines) {
@@ -486,35 +553,33 @@ function SourceTab({ event, sources }: { event: ActionTraceEvent | AssertionTrac
     inBlockComment = result.inBlockComment;
   }
 
-  useEffect(() => {
-    highlightRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' });
-  }, [highlightLine]);
-
   return (
-    <div class="source-tab">
-      <div class="source-filename">{filename}</div>
-      <div class="source-code">
-        {tokenizedLines.map((tokens, i) => (
-          <div
-            key={i}
-            ref={highlightLine === i + 1 ? highlightRef : undefined}
-            class={`source-line${highlightLine === i + 1 ? ' highlight' : ''}`}
-          >
-            <span class="source-line-number">{i + 1}</span>
-            <span class="source-line-content">
-              {tokens.length === 0
-                ? '\u200b'
-                : tokens.map((token, j) => {
-                    const color = TOKEN_COLORS[token.type];
-                    return color
-                      ? <span key={j} style={{ color }}>{token.text}</span>
-                      : <span key={j}>{token.text}</span>;
-                  })
-              }
-            </span>
-          </div>
-        ))}
+    <div class={`source-tab${showStack ? ' has-stack' : ''}`}>
+      <div class="source-main">
+        <div class="source-filename">{filename}</div>
+        <div class="source-code">
+          {tokenizedLines.map((tokens, i) => (
+            <div
+              key={i}
+              ref={highlightLine === i + 1 ? highlightRef : undefined}
+              class={`source-line${highlightLine === i + 1 ? ' highlight' : ''}`}
+            >
+              <span class="source-line-number">{i + 1}</span>
+              <span class="source-line-content">
+                {tokens.length === 0
+                  ? '\u200b'
+                  : tokens.map((token, j) => {
+                      const color = TOKEN_COLORS[token.type];
+                      return color
+                        ? <span key={j} style={{ color }}>{token.text}</span>
+                        : <span key={j}>{token.text}</span>;
+                    })}
+              </span>
+            </div>
+          ))}
+        </div>
       </div>
+      {showStack && <StackTraceView stack={stack} selected={activeFrame} onSelect={setSelectedFrame} />}
     </div>
   );
 }

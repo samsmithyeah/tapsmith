@@ -46,6 +46,7 @@ export default defineConfig({
   screenshot: "only-on-failure",
   trace: {
     mode: "retain-on-failure",
+    daemonLogs: true,
     networkHosts: ["jsonplaceholder.typicode.com", "127.0.0.1"]
   },
   video: {

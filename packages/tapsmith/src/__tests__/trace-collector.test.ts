@@ -2,8 +2,8 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as os from 'node:os';
-import { TraceCollector, extractSourceLocation } from '../trace/trace-collector.js';
-import type { TraceConfig, ActionTraceEvent, AssertionTraceEvent, ConsoleTraceEvent, GroupTraceEvent } from '../trace/types.js';
+import { TraceCollector, extractSourceLocation, extractStack, collectReferencedFiles } from '../trace/trace-collector.js';
+import type { TraceConfig, ActionTraceEvent, AssertionTraceEvent, ConsoleTraceEvent, GroupTraceEvent, AnyTraceEvent } from '../trace/types.js';
 
 describe('TraceCollector', () => {
   let tempDir: string;
@@ -16,7 +16,7 @@ describe('TraceCollector', () => {
       screenshots: true,
       snapshots: true,
       sources: true,
-      attachments: true, network: false, deviceLogs: false,
+      attachments: true, network: false, deviceLogs: false, daemonLogs: false,
     };
   });
 
@@ -222,6 +222,31 @@ describe('TraceCollector', () => {
     expect(ev.source).toBe('device');
     expect(ev.level).toBe('info');
     expect(ev.message).toBe('App launched');
+  });
+
+  it('records daemon log entries as console events with source "daemon"', () => {
+    const collector = new TraceCollector(
+      {
+        mode: 'on',
+        screenshots: false,
+        snapshots: false,
+        sources: false,
+        attachments: true,
+        network: false,
+        deviceLogs: false,
+        daemonLogs: true,
+      },
+      tempDir,
+    );
+    collector.addDaemonLogEntry('info', 'spawned adb shell input tap');
+    const events = collector.events.filter((e) => e.type === 'console');
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({
+      type: 'console',
+      level: 'info',
+      source: 'daemon',
+      message: 'spawned adb shell input tap',
+    });
   });
 
   it('produces valid NDJSON output', () => {
@@ -489,6 +514,80 @@ describe('TraceCollector', () => {
   });
 });
 
+describe('extractStack', () => {
+  it('returns all user-code frames in order, top first', () => {
+    const stack = [
+      'Error',
+      '    at Object.tap (/proj/node_modules/tapsmith/dist/element-handle.js:10:5)',
+      '    at loginHelper (/proj/tests/helpers/login.ts:8:3)',
+      '    at /proj/tests/auth.test.ts:42:7',
+    ].join('\n');
+    const frames = extractStack(stack);
+    expect(frames).toEqual([
+      { file: '/proj/tests/helpers/login.ts', line: 8, column: 3 },
+      { file: '/proj/tests/auth.test.ts', line: 42, column: 7 },
+    ]);
+  });
+
+  it('filters SDK, node_modules, and node internal frames', () => {
+    const stack = [
+      'Error',
+      '    at /proj/packages/tapsmith/src/device.ts:700:1',
+      '    at node:internal/process/task_queues:95:5',
+      '    at internal/main/run_main_module:23:47',
+      '    at /proj/tests/x.test.ts:3:1',
+    ].join('\n');
+    expect(extractStack(stack)).toEqual([{ file: '/proj/tests/x.test.ts', line: 3, column: 1 }]);
+  });
+
+  it('extractSourceLocation returns the first frame from extractStack', () => {
+    const stack = 'Error\n    at /proj/a.ts:1:2\n    at /proj/b.ts:3:4';
+    expect(extractSourceLocation(stack)).toEqual(extractStack(stack)[0]);
+  });
+
+  it('returns [] for an empty stack', () => {
+    expect(extractStack('')).toEqual([]);
+  });
+
+  it('normalizes Windows backslash paths to forward slashes', () => {
+    const stack = 'Error\n    at loginHelper (C:\\proj\\tests\\helpers\\login.ts:8:3)';
+    expect(extractStack(stack)).toEqual([{ file: 'C:/proj/tests/helpers/login.ts', line: 8, column: 3 }]);
+  });
+
+  it('normalizes file:// URLs (ESM runner loads tests via import(file://))', () => {
+    const stack = 'Error\n    at Object.<anonymous> (file:///Users/me/proj/tests/login.test.ts:12:7)';
+    expect(extractStack(stack)).toEqual([{ file: '/Users/me/proj/tests/login.test.ts', line: 12, column: 7 }]);
+  });
+
+  it('decodes percent-encoded characters in file:// URLs', () => {
+    const stack = 'Error\n    at Object.<anonymous> (file:///Users/me/my%20proj/tests/a.test.ts:1:1)';
+    expect(extractStack(stack)).toEqual([{ file: '/Users/me/my proj/tests/a.test.ts', line: 1, column: 1 }]);
+  });
+
+  it('strips ?query and #fragment from file:// URLs (loader cache-busting)', () => {
+    const stack = 'Error\n    at Object.<anonymous> (file:///Users/me/proj/tests/a.test.ts?t=1700000000000:4:9)';
+    expect(extractStack(stack)).toEqual([{ file: '/Users/me/proj/tests/a.test.ts', line: 4, column: 9 }]);
+  });
+});
+
+describe('addActionEvent preserves stack', () => {
+  it('keeps the stack array on the emitted event', () => {
+    const c = new TraceCollector(
+      { mode: 'on', screenshots: false, snapshots: false, sources: true, attachments: true, network: false, deviceLogs: false, daemonLogs: false },
+      '/tmp/ts-test-' + process.pid,
+    );
+    c.addActionEvent({
+      category: 'tap', action: 'tap', duration: 1, success: true,
+      hasScreenshotBefore: false, hasScreenshotAfter: false,
+      hasHierarchyBefore: false, hasHierarchyAfter: false,
+      sourceLocation: { file: '/p/a.ts', line: 1 },
+      stack: [{ file: '/p/a.ts', line: 1 }, { file: '/p/b.ts', line: 2 }],
+    });
+    const ev = c.events.find((e) => e.type === 'action') as ActionTraceEvent;
+    expect(ev.stack).toEqual([{ file: '/p/a.ts', line: 1 }, { file: '/p/b.ts', line: 2 }]);
+  });
+});
+
 describe('extractSourceLocation', () => {
   it('extracts file, line, column from a stack trace', () => {
     const stack = `Error: test
@@ -524,5 +623,17 @@ describe('extractSourceLocation', () => {
 
     const loc = extractSourceLocation(stack);
     expect(loc).toBeUndefined();
+  });
+});
+
+describe('collectReferencedFiles', () => {
+  it('returns the unique set of files across action and assertion stacks', () => {
+    const events = [
+      { type: 'action', stack: [{ file: '/p/a.ts', line: 1 }, { file: '/p/h.ts', line: 2 }] },
+      { type: 'assertion', stack: [{ file: '/p/h.ts', line: 9 }] },
+      { type: 'console' },
+      { type: 'action' },
+    ] as unknown as AnyTraceEvent[];
+    expect(collectReferencedFiles(events).sort()).toEqual(['/p/a.ts', '/p/h.ts']);
   });
 });

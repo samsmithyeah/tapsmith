@@ -8,6 +8,7 @@
 
 import * as fs from 'node:fs';
 import * as path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import type {
   ActionTraceEvent,
   AssertionTraceEvent,
@@ -108,26 +109,71 @@ export interface CaptureBeforeAfter {
 const STACK_FRAME_RE = /at\s+(?:.+\s+)?\(?(.+):(\d+):(\d+)\)?$/;
 
 /**
- * Extract the caller's source location from a stack trace.
- * Skips frames inside the tapsmith SDK.
+ * Extract all user-code frames from a stack trace, top frame first.
+ * Skips frames inside the tapsmith SDK, node_modules, and node internals.
  */
-export function extractSourceLocation(stack: string): SourceLocation | undefined {
-  const lines = stack.split('\n');
-  for (const line of lines) {
+export function extractStack(stack: string): SourceLocation[] {
+  const frames: SourceLocation[] = [];
+  for (const line of stack.split('\n')) {
     const match = STACK_FRAME_RE.exec(line.trim());
     if (!match) continue;
-    const file = match[1];
-    // Skip internal frames
-    if (file.includes('/tapsmith/src/') || file.includes('/tapsmith/dist/')) continue;
-    if (file.includes('node_modules')) continue;
+    let file = match[1];
+    // ESM stack frames reference modules by file:// URL — the runner loads
+    // tests via import(pathToFileURL(absPath).href), so user-code frames look
+    // like `file:///Users/.../test.ts`. Convert to a plain absolute path so
+    // fs.statSync/readFileSync can later read the file off disk.
+    if (file.startsWith('file://')) {
+      try {
+        // Strip any ?query / #fragment first — ESM loaders (tsx, vite, jiti)
+        // append cache-busting queries like `?t=123` to import URLs, and
+        // fileURLToPath would otherwise fold them into the path so the file
+        // can't be found on disk. Clear search/hash on the URL object and let
+        // fileURLToPath do the conversion rather than rebuilding the string.
+        const url = new URL(file);
+        url.search = '';
+        url.hash = '';
+        file = fileURLToPath(url);
+      } catch {
+        continue;
+      }
+    }
+    file = file.replace(/\\/g, '/');
+    // Filter out frames inside the SDK itself and dependencies. The `(^|/)`
+    // anchor matches both absolute and relative paths; the `i` flag keeps it
+    // robust on case-insensitive filesystems (macOS/Windows) where the path's
+    // casing can vary with how the project was cloned/navigated. Matching
+    // packages/tapsmith/(src|dist) specifically (not bare "tapsmith") avoids
+    // misclassifying a user project that happens to be named "tapsmith".
+    if (/(^|\/)(packages\/tapsmith\/(src|dist)|node_modules)\//i.test(file)) continue;
     if (file.startsWith('node:') || file.startsWith('internal/')) continue;
-    return {
-      file,
-      line: parseInt(match[2], 10),
-      column: parseInt(match[3], 10),
-    };
+    frames.push({ file, line: parseInt(match[2], 10), column: parseInt(match[3], 10) });
   }
-  return undefined;
+  return frames;
+}
+
+/**
+ * Extract the caller's source location (the top user-code frame) from a stack
+ * trace. Convenience wrapper over {@link extractStack}.
+ */
+export function extractSourceLocation(stack: string): SourceLocation | undefined {
+  return extractStack(stack)[0];
+}
+
+/**
+ * Collect the unique set of absolute file paths referenced by the stacks of all
+ * action/assertion events. Used to snapshot exactly the source files the trace
+ * can display.
+ */
+export function collectReferencedFiles(events: readonly AnyTraceEvent[]): string[] {
+  const files = new Set<string>();
+  for (const ev of events) {
+    if ((ev.type === 'action' || ev.type === 'assertion') && ev.stack) {
+      for (const frame of ev.stack) {
+        if (frame?.file) files.add(frame.file);
+      }
+    }
+  }
+  return [...files];
 }
 
 // ─── TraceCollector ───
@@ -690,7 +736,7 @@ export class TraceCollector {
 
   // ── Console ──
 
-  private _addConsoleEvent(level: ConsoleLevel, message: string, source: 'test' | 'device'): void {
+  private _addConsoleEvent(level: ConsoleLevel, message: string, source: 'test' | 'device' | 'daemon'): void {
     this._flushPendingGroups();
     const event = {
       type: 'console',
@@ -706,6 +752,10 @@ export class TraceCollector {
 
   addLogcatEntry(level: ConsoleLevel, message: string): void {
     this._addConsoleEvent(level, message, 'device');
+  }
+
+  addDaemonLogEntry(level: ConsoleLevel, message: string): void {
+    this._addConsoleEvent(level, message, 'daemon');
   }
 
   // ── Error ──

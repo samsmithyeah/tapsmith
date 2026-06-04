@@ -89,8 +89,8 @@ export function createMcpServer(options?: McpServerOptions): McpServer {
   }
 
   // Register API reference as a resource
-  // __dirname points to dist/mcp/ or src/mcp/ depending on build vs tsx
-  const apiRefPath = path.resolve(__dirname, '../../../docs/api-reference.md');
+  // import.meta.dirname points to dist/mcp/ or src/mcp/ depending on build vs tsx
+  const apiRefPath = path.resolve(import.meta.dirname, '../../../docs/api-reference.md');
   if (fs.existsSync(apiRefPath)) {
     server.resource(
       'Tapsmith API Reference',
@@ -332,7 +332,7 @@ export async function runMcpServer(
   const banner = figlet.textSync('Tapsmith', { font: 'Three Point' });
   process.stderr.write('\n' + banner.split('\n').map((line) => `${GREEN}${line}${RESET}`).join('\n') + '\n');
   try {
-    const pkg = JSON.parse(fs.readFileSync(path.resolve(__dirname, '../../package.json'), 'utf-8'));
+    const pkg = JSON.parse(fs.readFileSync(path.resolve(import.meta.dirname, '../../package.json'), 'utf-8'));
     process.stderr.write(`${DIM}v${pkg.version}${RESET}\n`);
   } catch { /* version not available */ }
   process.stderr.write(`\n  ${DIM}MCP server running on stdio transport. Waiting for an MCP client on stdin...${RESET}\n`);

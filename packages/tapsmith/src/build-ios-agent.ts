@@ -47,7 +47,7 @@ import { getProfileExpiryInfo, formatExpiryWarning } from './ios-profile-expiry.
  */
 function getPackageVersion(): string {
   try {
-    const pkg = JSON.parse(fs.readFileSync(path.resolve(__dirname, '../package.json'), 'utf8'));
+    const pkg = JSON.parse(fs.readFileSync(path.resolve(import.meta.dirname, '../package.json'), 'utf8'));
     return pkg.version ?? '0.0.0';
   } catch {
     return '0.0.0';
@@ -70,7 +70,7 @@ export function resolveIosAgentDir(cwd?: string): string {
   }
 
   // 3. Extract from bundled npm package source
-  const bundled = path.resolve(__dirname, 'ios-agent');
+  const bundled = path.resolve(import.meta.dirname, 'ios-agent');
   if (fs.existsSync(path.join(bundled, 'TapsmithAgent.xcodeproj'))) {
     if (fs.existsSync(cached)) fs.rmSync(cached, { recursive: true, force: true });
     fs.mkdirSync(cached, { recursive: true });

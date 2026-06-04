@@ -1,0 +1,52 @@
+import { describe, expect, test } from "../fixtures.js"
+import { resetApp } from "../utils/app-reset.js"
+import type { ElementHandle } from "tapsmith"
+
+/**
+ * End-to-end smoke test for the coordinate-based gesture API
+ * (device.tapXY / longPressXY / dragXY / inputText) that powers the
+ * interactive UI-mode device mirror. Resolves real element bounds and drives
+ * the device by raw coordinate — a wrong coordinate-space mapping would miss
+ * the target and fail the on-screen assertion.
+ */
+async function center(el: ElementHandle): Promise<{ x: number; y: number }> {
+  const b = await el.boundingBox()
+  if (!b) throw new Error("element has no bounds")
+  return { x: b.x + b.width / 2, y: b.y + b.height / 2 }
+}
+
+describe("Coordinate gesture API (mirror)", () => {
+  test("tapXY taps at a resolved coordinate", async ({ device, gesturesScreen }) => {
+    await resetApp(device, "/gestures")
+    await expect(gesturesScreen.heading).toBeVisible()
+    const c = await center(gesturesScreen.tapArea)
+    await device.tapXY(c.x, c.y)
+    await expect(gesturesScreen.tapCount).toContainText("1")
+  })
+
+  test("longPressXY long-presses at a resolved coordinate", async ({ device, gesturesScreen }) => {
+    await resetApp(device, "/gestures")
+    await expect(gesturesScreen.heading).toBeVisible()
+    const c = await center(gesturesScreen.longPressArea)
+    await device.longPressXY(c.x, c.y, { duration: 800 })
+    await expect(gesturesScreen.lastGesture).toContainText("Long press")
+  })
+
+  test("dragXY drags from one coordinate to another", async ({ device, gesturesScreen }) => {
+    await resetApp(device, "/gestures")
+    await expect(gesturesScreen.heading).toBeVisible()
+    const from = await center(gesturesScreen.draggable)
+    const to = await center(gesturesScreen.dropZone)
+    await device.dragXY(from, to, { duration: 600 })
+    await expect(gesturesScreen.lastGesture).toContainText("Drag")
+  })
+
+  test("inputText types into the focused field", async ({ device, loginScreen }) => {
+    await device.openDeepLink("tapsmithtest:///login")
+    await expect(loginScreen.emailField).toBeVisible()
+    const c = await center(loginScreen.emailField)
+    await device.tapXY(c.x, c.y)
+    await device.inputText("smoke@test.com")
+    await expect(loginScreen.emailField).toHaveValue("smoke@test.com")
+  })
+})

@@ -71,11 +71,11 @@ import {
 
 // ─── SPA paths ───
 
-const SPA_HTML_PATH = path.resolve(__dirname, 'index.html');
+const SPA_HTML_PATH = path.resolve(import.meta.dirname, 'index.html');
 
 const TAPSMITH_VERSION = (() => {
   try {
-    const pkgPath = path.resolve(__dirname, '../../package.json');
+    const pkgPath = path.resolve(import.meta.dirname, '../../package.json');
     const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf-8'));
     return (pkg.version as string) ?? '0.0.0';
   } catch {
@@ -256,6 +256,9 @@ export async function startUIServer(
   let discoveryTimer: ReturnType<typeof setTimeout> | null = null;
   let discoveryBatchRunning = false;
   const discoveredFileNodes = new Map<string, TestTreeNode>();
+  // Normalised paths whose source we've served to clients (Source-tab preview).
+  // Edits to these are re-broadcast so a not-yet-run test's source stays live.
+  const servedSourcePaths = new Set<string>();
   const resolvedRootDir = path.resolve(ctx.config.rootDir);
   const resolvedOutputDir = path.resolve(resolvedRootDir, ctx.config.outputDir);
   /** A single watched entry: optional project scope + optional test filter.
@@ -304,8 +307,13 @@ export async function startUIServer(
   let workersInitialized = false;
   /** Which worker's device to mirror. Defaults to 0. */
   let selectedWorkerId = 0;
+  let lastMirrorInteraction = 0;
+  const INTERACTION_WINDOW_MS = 2000;
+  const INTERACTIVE_POLL_MS = 90;
   /** Screen view mode: 'all' polls all workers, number polls a specific worker. */
   let screenViewMode: 'all' | number = 'all';
+  /** Last known frame dimensions per worker ID, used to convert normalized coords. */
+  const lastFrameDims = new Map<number, { width: number; height: number }>();
   /** Set to true while a parallel run is in progress, to signal stop. */
   let parallelRunAborted = false;
 
@@ -368,28 +376,28 @@ export async function startUIServer(
   })();
 
   // Resolve tsx binary for forking TypeScript files
-  const jsScript = path.resolve(__dirname, 'ui-run.js');
-  const tsScript = path.resolve(__dirname, 'ui-run.ts');
+  const jsScript = path.resolve(import.meta.dirname, 'ui-run.js');
+  const tsScript = path.resolve(import.meta.dirname, 'ui-run.ts');
   const useTypeScript = !fs.existsSync(jsScript) && fs.existsSync(tsScript);
   const resolvedRunScript = useTypeScript ? tsScript : jsScript;
 
-  const jsWorkerScript = path.resolve(__dirname, 'ui-worker.js');
-  const tsWorkerScript = path.resolve(__dirname, 'ui-worker.ts');
+  const jsWorkerScript = path.resolve(import.meta.dirname, 'ui-worker.js');
+  const tsWorkerScript = path.resolve(import.meta.dirname, 'ui-worker.ts');
   const resolvedWorkerScript = !fs.existsSync(jsWorkerScript) && fs.existsSync(tsWorkerScript)
     ? tsWorkerScript
     : jsWorkerScript;
 
-  const jsDiscoverScript = path.resolve(__dirname, 'ui-discover.js');
-  const tsDiscoverScript = path.resolve(__dirname, 'ui-discover.ts');
+  const jsDiscoverScript = path.resolve(import.meta.dirname, 'ui-discover.js');
+  const tsDiscoverScript = path.resolve(import.meta.dirname, 'ui-discover.ts');
   const resolvedDiscoverScript = !fs.existsSync(jsDiscoverScript) && fs.existsSync(tsDiscoverScript)
     ? tsDiscoverScript
     : jsDiscoverScript;
 
   let tsxBin: string | undefined;
   if (useTypeScript || resolvedDiscoverScript.endsWith('.ts') || resolvedWorkerScript.endsWith('.ts')) {
-    // __dirname is packages/tapsmith/{src,dist}/ui-mode — the package root
+    // import.meta.dirname is packages/tapsmith/{src,dist}/ui-mode — the package root
     // (where node_modules lives) is two levels up in both cases.
-    const tapsmithPkgDir = path.resolve(__dirname, '..', '..');
+    const tapsmithPkgDir = path.resolve(import.meta.dirname, '..', '..');
     const localTsx = path.join(tapsmithPkgDir, 'node_modules', '.bin', 'tsx');
     tsxBin = fs.existsSync(localTsx) ? localTsx : 'tsx';
   }
@@ -409,6 +417,44 @@ export async function startUIServer(
   function broadcastError(err: unknown): void {
     const message = err instanceof Error ? err.message : String(err);
     broadcast({ type: 'error', message });
+  }
+
+  function sendSourceFromDisk(filePath: string): void {
+    // A malformed WebSocket message could omit `path` or send a non-string;
+    // path.resolve(undefined) would throw and take down the server.
+    if (typeof filePath !== 'string') return;
+    const MAX_SOURCE_BYTES = 2 * 1024 * 1024;
+    // Only serve known test files — never an arbitrary client-supplied path.
+    // Guards against path traversal / arbitrary file reads over the WebSocket.
+    // Resolve both sides so separator/relative-path differences (e.g. Windows)
+    // can't bypass the allowlist, and read from the trusted matched entry.
+    // Anchor relative paths to the project root (not process.cwd(), which may
+    // differ from where tests were discovered). Absolute paths are unaffected.
+    const resolved = path.resolve(resolvedRootDir, filePath);
+    // On case-insensitive filesystems (macOS/Windows) a path that differs only
+    // in casing (e.g. drive letter `c:` vs `C:`) still refers to the same file,
+    // so compare case-insensitively there to avoid rejecting a known test file.
+    const caseInsensitiveFs = process.platform === 'darwin' || process.platform === 'win32';
+    const eq = (a: string, b: string): boolean =>
+      caseInsensitiveFs ? a.toLowerCase() === b.toLowerCase() : a === b;
+    const isKnown = ctx.testFiles.some((f) => eq(path.resolve(resolvedRootDir, f), resolved));
+    if (!isKnown) return;
+    try {
+      const stat = fs.statSync(resolved);
+      if (!stat.isFile() || stat.size > MAX_SOURCE_BYTES) return;
+      const content = fs.readFileSync(resolved, 'utf-8');
+      const normalizedPath = resolved.replace(/\\/g, '/');
+      const sourceMsg: SourceMessage = {
+        type: 'source',
+        path: normalizedPath,
+        fileName: path.basename(resolved),
+        content,
+      };
+      servedSourcePaths.add(normalizedPath);
+      broadcast(sourceMsg);
+    } catch {
+      // best-effort — file may be unreadable or missing
+    }
   }
 
   function broadcastBinary(data: Buffer): void {
@@ -565,7 +611,7 @@ export async function startUIServer(
         ...(tsxBin ? { execPath: tsxBin } : {}),
         env: {
           ...process.env,
-          NODE_PATH: path.resolve(__dirname, '..', '..'),
+          NODE_PATH: path.resolve(import.meta.dirname, '..', '..'),
         },
       });
       pipeForkOutputForLaunchProgress(child, launchProgress);
@@ -1023,7 +1069,7 @@ export async function startUIServer(
         ...(tsxBin ? { execPath: tsxBin } : {}),
         env: {
           ...process.env,
-          NODE_PATH: path.resolve(__dirname, '..', '..'),
+          NODE_PATH: path.resolve(import.meta.dirname, '..', '..'),
         },
       });
       pipeForkOutputForLaunchProgress(child, launchProgress);
@@ -1088,10 +1134,11 @@ export async function startUIServer(
           case 'source': {
             const sourceMsg: SourceMessage = {
               type: 'source',
+              path: response.path,
               fileName: response.fileName,
               content: response.content,
             };
-            sourceBuffer.set(response.fileName, sourceMsg);
+            sourceBuffer.set(response.path, sourceMsg);
             broadcast(sourceMsg);
             break;
           }
@@ -1522,7 +1569,7 @@ export async function startUIServer(
       ...(tsxBin ? { execPath: tsxBin } : {}),
       env: {
         ...process.env,
-        NODE_PATH: path.resolve(__dirname, '..', '..'),
+        NODE_PATH: path.resolve(import.meta.dirname, '..', '..'),
         TAPSMITH_WORKER_ID: String(id),
       },
     });
@@ -1853,8 +1900,8 @@ export async function startUIServer(
               break;
             }
             case 'source': {
-              const sourceMsg: SourceMessage = { type: 'source', fileName: msg.fileName, content: msg.content };
-              sourceBuffer.set(msg.fileName, sourceMsg);
+              const sourceMsg: SourceMessage = { type: 'source', path: msg.path, fileName: msg.fileName, content: msg.content };
+              sourceBuffer.set(msg.path, sourceMsg);
               broadcast(sourceMsg);
               break;
             }
@@ -2390,6 +2437,7 @@ export async function startUIServer(
       // Read dimensions from the PNG IHDR chunk (bytes 16-23: width + height as big-endian uint32)
       const width = data.length >= 24 ? data.readUInt32BE(16) : 1080;
       const height = data.length >= 24 ? data.readUInt32BE(20) : 1920;
+      lastFrameDims.set(workerId, { width, height });
       const frame = encodeScreenFrame(screenSeq++, workerId, width, height, data);
       broadcastBinary(frame);
     }
@@ -2404,7 +2452,9 @@ export async function startUIServer(
     try {
       if (multiWorker && workersInitialized && screenViewMode === 'all') {
         // Poll ALL non-retired workers in parallel
-        const activeWorkers = uiWorkers.filter((w) => !w.retired && w.screenClient);
+        const activeWorkers = uiWorkers.filter(
+          (w) => !w.retired && w.screenClient,
+        );
         await Promise.allSettled(
           activeWorkers.map((w) => pollSingleWorker(w.id, w.screenClient!)),
         );
@@ -2430,7 +2480,8 @@ export async function startUIServer(
 
   function scheduleScreenPoll(): void {
     if (screenPollTimer) clearTimeout(screenPollTimer);
-    const interval = screenPollActive ? 150 : 500;
+    const interacting = Date.now() - lastMirrorInteraction < INTERACTION_WINDOW_MS;
+    const interval = interacting ? INTERACTIVE_POLL_MS : (screenPollActive ? 150 : 500);
     screenPollTimer = setTimeout(pollScreen, interval);
   }
 
@@ -2752,6 +2803,13 @@ export async function startUIServer(
     });
     discoveryWatcher.on('change', (filePath) => {
       scheduleDiscovery(filePath);
+      // Re-serve the source so a Source-tab preview of a not-yet-run test
+      // reflects the edit. (For a test that has run, the client merges the
+      // trace's captured sources over previews, so this is ignored there.)
+      const resolved = path.resolve(resolvedRootDir, filePath);
+      if (servedSourcePaths.has(resolved.replace(/\\/g, '/'))) {
+        sendSourceFromDisk(resolved);
+      }
     });
     discoveryWatcher.on('unlink', (filePath) => {
       const resolved = path.resolve(filePath);
@@ -2864,6 +2922,46 @@ export async function startUIServer(
       broadcastError(err);
     }
   });
+
+  // ─── Mirror Gesture Helpers ───
+
+  /** Resolve the gRPC client + devicePixelRatio for a mirror gesture target. */
+  function resolveGestureTarget(workerId?: number): {
+    client: TapsmithGrpcClient | undefined
+    dpr: number
+    dims: { width: number; height: number } | undefined
+  } {
+    if (multiWorker && workersInitialized) {
+      const id = workerId ?? selectedWorkerId;
+      const worker = uiWorkers.find((w) => w.id === id && !w.retired);
+      const platform = worker ? resolveWorkerPlatform(ctx, worker) : undefined;
+      return {
+        client: worker?.screenClient,
+        dpr: (worker && cachedScreenScale(worker.deviceSerial, platform)) || 1,
+        dims: lastFrameDims.get(id),
+      };
+    }
+    return {
+      client: ctx.client,
+      dpr: cachedScreenScale(ctx.deviceSerial ?? '', ctx.config.platform) || 1,
+      dims: lastFrameDims.get(0),
+    };
+  }
+
+  /** Convert a normalized (0–1) point to logical points for the target. */
+  function normalizedToLogical(
+    nx: number,
+    ny: number,
+    dims: { width: number; height: number } | undefined,
+    dpr: number,
+  ): { x: number; y: number } | undefined {
+    if (!dims) return undefined;
+    const clamp = (v: number) => Math.min(1, Math.max(0, v));
+    return {
+      x: (clamp(nx) * dims.width) / dpr,
+      y: (clamp(ny) * dims.height) / dpr,
+    };
+  }
 
   // ─── Command Handler ───
 
@@ -3003,9 +3101,72 @@ export async function startUIServer(
         }).catch(() => {});
         break;
       }
-      case 'tap-coordinates':
-        console.log(`[Tapsmith UI] Tap at (${msg.x.toFixed(2)}, ${msg.y.toFixed(2)}) — coordinate tap not yet implemented`);
+      case 'request-source':
+        sendSourceFromDisk(msg.path);
         break;
+      case 'mirror-tap': {
+        lastMirrorInteraction = Date.now();
+        const t = resolveGestureTarget(msg.workerId);
+        const p = normalizedToLogical(msg.x, msg.y, t.dims, t.dpr);
+        if (t.client && p) t.client.tapXY(p.x, p.y).catch(() => {});
+        break;
+      }
+      case 'mirror-long-press': {
+        lastMirrorInteraction = Date.now();
+        const t = resolveGestureTarget(msg.workerId);
+        const p = normalizedToLogical(msg.x, msg.y, t.dims, t.dpr);
+        if (t.client && p) t.client.longPressXY(p.x, p.y, msg.durationMs).catch(() => {});
+        break;
+      }
+      case 'mirror-swipe': {
+        lastMirrorInteraction = Date.now();
+        const t = resolveGestureTarget(msg.workerId);
+        const from = normalizedToLogical(msg.fromX, msg.fromY, t.dims, t.dpr);
+        const to = normalizedToLogical(msg.toX, msg.toY, t.dims, t.dpr);
+        if (t.client && from && to) {
+          t.client.dragXY(from.x, from.y, to.x, to.y, msg.durationMs).catch(() => {});
+        }
+        break;
+      }
+      case 'mirror-input-text': {
+        lastMirrorInteraction = Date.now();
+        const t = resolveGestureTarget(msg.workerId);
+        if (t.client) t.client.inputText(msg.text).catch(() => {});
+        break;
+      }
+      case 'mirror-press-key': {
+        lastMirrorInteraction = Date.now();
+        const t = resolveGestureTarget(msg.workerId);
+        if (t.client) t.client.pressKey(msg.key).catch(() => {});
+        break;
+      }
+      case 'mirror-touch-start': {
+        lastMirrorInteraction = Date.now();
+        const t = resolveGestureTarget(msg.workerId);
+        const p = normalizedToLogical(msg.x, msg.y, t.dims, t.dpr);
+        if (t.client && p) t.client.touchDown(p.x, p.y, 0).catch(() => {});
+        break;
+      }
+      case 'mirror-touch-move': {
+        lastMirrorInteraction = Date.now();
+        const t = resolveGestureTarget(msg.workerId);
+        const p = normalizedToLogical(msg.x, msg.y, t.dims, t.dpr);
+        if (t.client && p) t.client.touchMove(p.x, p.y, msg.tMs).catch(() => {});
+        break;
+      }
+      case 'mirror-touch-end': {
+        lastMirrorInteraction = Date.now();
+        const t = resolveGestureTarget(msg.workerId);
+        const p = normalizedToLogical(msg.x, msg.y, t.dims, t.dpr);
+        if (t.client && p) t.client.touchUp(p.x, p.y, msg.tMs).catch(() => {});
+        break;
+      }
+      case 'mirror-touch-cancel': {
+        lastMirrorInteraction = Date.now();
+        const t = resolveGestureTarget(msg.workerId);
+        if (t.client) t.client.touchCancel().catch(() => {});
+        break;
+      }
       case 'select-worker':
         selectedWorkerId = msg.workerId;
         screenViewMode = msg.workerId;
@@ -3525,6 +3686,10 @@ export async function startUIServer(
  * HTML shell used in dev mode: points the browser at a running Vite dev
  * server for the SPA modules while the WebSocket still talks to this server.
  */
+// Inlined website favicon (coral Tapsmith "T" mark) so the dev shell's tab icon
+// matches the built SPA and the marketing site.
+const FAVICON_DATA_URI = 'data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A//www.w3.org/2000/svg%22%20viewBox%3D%220%200%20213%20256%22%20fill%3D%22none%22%3E%3Cpath%20fill%3D%22%23fd8567%22%20d%3D%22M11.48%2022.33C9.25%2017.5%2012.6%2011.05%2017.98%2010.49%2024.18%2010.14%2030.01%2012.83%2035.99%2014.02%2066.76%2020.77%2097.38%2028.19%20128.06%2035.31%20141.5%2037.95%20154.68%2041.75%20168.07%2044.64%20170.87%2045.08%20173.21%2046.74%20175.45%2048.36%20181.25%2065.26%20187.66%2081.94%20193.43%2098.83%20194.64%20101.62%20195.89%20104.5%20195.43%20107.62%20192.96%20107.83%20190.47%20107.83%20188.07%20107.15%20178.4%20104.74%20168.53%20103.2%20158.87%20100.73%20148.28%2098.08%20137.41%2096.73%20126.94%2093.62%20126.6%2093.88%20125.92%2094.4%20125.58%2094.66%20125.27%2094.86%20124.66%2095.25%20124.35%2095.45%20124.49%2094.71%20124.63%2093.97%20124.76%2093.23%20111.54%2091.01%2098.48%2087.93%2085.23%2085.85%2069.77%2081.91%2053.66%2085.18%2038.01%2082.87%2034.91%2082.32%2031.34%2081.02%2030.29%2077.71%2023.98%2059.27%2017.98%2040.71%2011.48%2022.33Z%22/%3E%3Cpath%20fill%3D%22%23fd8567%22%20d%3D%22M77.6%20137.56C79.44%20135.25%2081.85%20133.48%2084%20131.48%2085.18%20131.79%2086.36%20132.11%2087.54%20132.42%2086.89%20135.34%2086.74%20138.42%2088.29%20141.11%2086.48%20140.47%2084.67%20139.86%2082.84%20139.27%2084.24%20143.44%2086.4%20147.34%2089.47%20150.53%2092.42%20153.63%2094.05%20157.65%2095.44%20161.63%2097.54%20167.71%20101.58%20172.82%20104.37%20178.57%20106.31%20182.58%20108.12%20186.67%20110.68%20190.34%20114.16%20195.34%20116.38%20201.07%20119.84%20206.08%20121.65%20208.41%20121.62%20211.4%20121.64%20214.19%20108.58%20224.22%2096.19%20235.07%2083.45%20245.48%2081.96%20247.13%2079.67%20246.6%2077.71%20246.62%2076.97%20245.82%2076.22%20245.03%2075.47%20244.24%2075.11%20211.83%2076.11%20179.41%2075.83%20147%2075.9%20143.82%2075.71%20140.3%2077.6%20137.56Z%22/%3E%3Cpath%20fill%3D%22%23fd8b6f%22%20d%3D%22M110.93%20106.99C115.32%20103.06%20119.13%2098.35%20124.35%2095.45%20124.66%2095.25%20125.27%2094.86%20125.58%2094.66%20127.12%20103.01%20125.77%20111.54%20126.18%20119.98%20125.26%20148.98%20125.72%20178.02%20125.6%20207.03%20125.67%20209.98%20123.54%20212.21%20121.64%20214.19%20121.62%20211.4%20121.65%20208.41%20119.84%20206.08%20116.38%20201.07%20114.16%20195.34%20110.68%20190.34%20108.12%20186.67%20106.31%20182.58%20104.37%20178.57%20101.58%20172.82%2097.54%20167.71%2095.44%20161.63%2094.05%20157.65%2092.42%20153.63%2089.47%20150.53%2086.4%20147.34%2084.24%20143.44%2082.84%20139.27%2084.67%20139.86%2086.48%20140.47%2088.29%20141.11%2086.74%20138.42%2086.89%20135.34%2087.54%20132.42%2086.36%20132.11%2085.18%20131.79%2084%20131.48%2093.12%20123.47%20101.68%20114.85%20110.93%20106.99Z%22/%3E%3C/svg%3E';
+
 function buildDevShellHtml(devUrl: string): string {
   // Validate as a URL (fail loudly on garbage) and escape for an attribute
   // context before interpolation. The value comes from a CLI flag / env var
@@ -3551,6 +3716,7 @@ function buildDevShellHtml(devUrl: string): string {
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Tapsmith UI Mode (dev)</title>
+  <link rel="icon" type="image/svg+xml" href="${FAVICON_DATA_URI}">
   <script type="module" src="${attr(base)}/@vite/client"></script>
   <script type="module" src="${attr(base)}/main.tsx"></script>
 </head>

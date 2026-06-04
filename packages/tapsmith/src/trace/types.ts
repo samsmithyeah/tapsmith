@@ -110,6 +110,9 @@ export interface ActionTraceEvent extends TraceEvent {
   hasHierarchyAfter: boolean
   /** Source location where the action was called. */
   sourceLocation?: SourceLocation
+  /** Full user-code call stack at the time of the action (top frame first).
+   * `sourceLocation` is `stack[0]`. */
+  stack?: SourceLocation[]
   /** Wait time before the element was found (ms). */
   waitTime?: number
   /** Number of retries before success. */
@@ -159,6 +162,9 @@ export interface AssertionTraceEvent extends TraceEvent {
   bounds?: { left: number; top: number; right: number; bottom: number }
   /** Source location. */
   sourceLocation?: SourceLocation
+  /** Full user-code call stack at the time of the assertion (top frame first).
+   * `sourceLocation` is `stack[0]`. */
+  stack?: SourceLocation[]
   /** Whether a "before" screenshot was captured. */
   hasScreenshotBefore?: boolean
   /** Whether an "after" screenshot was captured. */
@@ -181,8 +187,8 @@ export interface ConsoleTraceEvent extends TraceEvent {
   level: ConsoleLevel
   /** Console message. */
   message: string
-  /** Source: 'test' for test code, 'device' for logcat. */
-  source: 'test' | 'device'
+  /** Source: 'test' for test code, 'device' for logcat/syslog, 'daemon' for tapsmith-core. */
+  source: 'test' | 'device' | 'daemon'
 }
 
 export interface AttachmentTraceEvent extends TraceEvent {
@@ -265,6 +271,7 @@ export interface TraceConfigSnapshot {
   sources: boolean
   network: boolean
   deviceLogs: boolean
+  daemonLogs: boolean
 }
 
 // ─── Trace Configuration ───
@@ -349,6 +356,8 @@ export interface TraceConfig {
   networkIgnoreHosts?: string[]
   /** Whether to stream device logs (Android logcat / iOS simulator syslog). Default: true. */
   deviceLogs: boolean
+  /** Whether to stream the tapsmith-core daemon's own logs into the trace. Default: false. */
+  daemonLogs: boolean
 }
 
 /** Parse a string shorthand or object into a full TraceConfig. */
@@ -363,6 +372,7 @@ export function resolveTraceConfig(
     attachments: true,
     network: true,
     deviceLogs: true,
+    daemonLogs: false,
   };
 
   if (input === undefined) return defaults;

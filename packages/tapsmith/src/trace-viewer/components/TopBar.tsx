@@ -1,4 +1,7 @@
 import type { TraceMetadata } from '../../trace/types.js';
+import brandMark from '../../assets/mark.png';
+import wordmarkLight from '../../assets/wordmark-light.png';
+import wordmarkDark from '../../assets/wordmark-dark.png';
 
 // ─── Types ───
 
@@ -41,10 +44,13 @@ export function TopBar({ metadata, theme, onThemeChange }: Props) {
   return (
     <div class="rail">
       <div class="rail-brand">
-        <span class="rail-brand-mark">T</span>
-        <div>
-          <div class="rail-logo-text">Tapsmith</div>
-          <div class="rail-brand-sub">Trace Viewer</div>
+        <div class="rail-brand-lockup">
+          <img class="rail-mark" src={brandMark} alt="" />
+          <div class="rail-brand-text">
+            <img class="rail-wordmark rail-wordmark-light" src={wordmarkLight} alt="Tapsmith" />
+            <img class="rail-wordmark rail-wordmark-dark" src={wordmarkDark} alt="Tapsmith" />
+            <span class="rail-brand-sub">Trace Viewer</span>
+          </div>
         </div>
       </div>
 

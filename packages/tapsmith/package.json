@@ -2,6 +2,7 @@
   "name": "tapsmith",
   "version": "0.1.2",
   "description": "Mobile app testing framework — TypeScript SDK and test runner",
+  "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "bin": {
@@ -15,10 +16,11 @@
     "build:trace-viewer": "vite build",
     "build:ui-mode": "vite build --config vite.config.ui-mode.ts",
     "dev:ui-mode": "vite --config vite.config.ui-mode.ts",
-    "lint": "eslint src/ --ignore-pattern src/trace-viewer/",
+    "fetch-bezels": "node scripts/fetch-bezels.mjs",
+    "lint": "eslint src/",
     "knip": "knip",
     "test": "vitest run",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "tsc --noEmit && tsc -p tsconfig.apps.json",
     "prepublishOnly": "npm run build"
   },
   "files": [
@@ -41,8 +43,6 @@
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
-      "import": "./dist/index.js",
-      "require": "./dist/index.js",
       "default": "./dist/index.js"
     }
   },
