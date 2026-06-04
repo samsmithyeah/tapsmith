@@ -935,8 +935,19 @@ class CommandHandler {
             let hasSelector = SelectorParser.hasSelector(params)
 
             // Take one shared snapshot for hierarchy + element lookup.
-            let snapshot: XCUIElementSnapshot? = (wantHierarchy || hasSelector)
-                ? (try? snapshotFinder.takeSnapshot()) : nil
+            var snapshot: XCUIElementSnapshot?
+            var snapshotError: Error?
+            if wantHierarchy || hasSelector {
+                do {
+                    snapshot = try snapshotFinder.takeSnapshot()
+                } catch {
+                    snapshotError = error
+                }
+            }
+
+            if hasSelector, let error = snapshotError, snapshot == nil {
+                throw error
+            }
 
             if wantScreenshot {
                 let screenshot = XCUIScreen.main.screenshot()

@@ -7,11 +7,13 @@
  */
 
 import type { TraceCollector } from './trace-collector.js';
-import { extractSourceLocation } from './trace-collector.js';
+import { extractSourceLocation, TRACE_CAPTURE_TIMEOUT_MS } from './trace-collector.js';
 import type { ActionCategory } from './types.js';
 import type { ActionResponse, ElementInfo, CaptureTraceStateResponse } from '../grpc-client.js';
 import type { Selector } from '../selectors.js';
 import { selectorToProto } from '../selectors.js';
+
+const MIN_TRACE_FALLBACK_TIMEOUT_MS = 250;
 
 // ─── Trace context ───
 
@@ -55,6 +57,7 @@ export async function tracedAction(
   let point: { x: number; y: number } | undefined;
 
   log.push('Capturing before screenshot + hierarchy');
+  const traceCaptureDeadline = Date.now() + TRACE_CAPTURE_TIMEOUT_MS;
 
   // When the batched captureTraceState is available (iOS), use a single
   // round-trip for screenshot + hierarchy + element bounds instead of 3
@@ -104,36 +107,41 @@ export async function tracedAction(
   }
 
   if (!batchSuccess) {
-    // Individual parallel calls (Android, or iOS fallback on batch failure)
-    const boundsPromise = (selector && ctx.findElement)
-      ? (async () => {
-          const lookupStart = Date.now();
-          try {
-            const res = await ctx.findElement!(selector, 100);
-            if (res.found && res.element?.bounds) {
-              bounds = res.element.bounds;
-              log.push(`Element found at [${bounds.left},${bounds.top}][${bounds.right},${bounds.bottom}] (${Date.now() - lookupStart}ms)`);
-              if (category === 'tap') {
-                point = {
-                  x: (bounds.left + bounds.right) / 2,
-                  y: (bounds.top + bounds.bottom) / 2,
-                };
-                log.push(`Tap target: (${point.x}, ${point.y})`);
+    const remainingCaptureMs = traceCaptureDeadline - Date.now();
+    if (remainingCaptureMs < MIN_TRACE_FALLBACK_TIMEOUT_MS) {
+      log.push('Skipping individual trace capture fallback; batch consumed capture budget');
+    } else {
+      // Individual parallel calls (Android, or iOS fallback on batch failure)
+      const boundsPromise = (selector && ctx.findElement)
+        ? (async () => {
+            const lookupStart = Date.now();
+            try {
+              const res = await ctx.findElement!(selector, 100);
+              if (res.found && res.element?.bounds) {
+                bounds = res.element.bounds;
+                log.push(`Element found at [${bounds.left},${bounds.top}][${bounds.right},${bounds.bottom}] (${Date.now() - lookupStart}ms)`);
+                if (category === 'tap') {
+                  point = {
+                    x: (bounds.left + bounds.right) / 2,
+                    y: (bounds.top + bounds.bottom) / 2,
+                  };
+                  log.push(`Tap target: (${point.x}, ${point.y})`);
+                }
+              } else {
+                log.push(`Element lookup returned no match (${Date.now() - lookupStart}ms)`);
               }
-            } else {
-              log.push(`Element lookup returned no match (${Date.now() - lookupStart}ms)`);
+            } catch {
+              log.push(`Element lookup failed (${Date.now() - lookupStart}ms)`);
             }
-          } catch {
-            log.push(`Element lookup failed (${Date.now() - lookupStart}ms)`);
-          }
-        })()
-      : Promise.resolve();
+          })()
+        : Promise.resolve();
 
-    const [, { captures }] = await Promise.all([
-      boundsPromise,
-      ctx.collector.captureBeforeAction(ctx.takeScreenshot, ctx.captureHierarchy),
-    ]);
-    beforeCaptures = captures;
+      const [, { captures }] = await Promise.all([
+        boundsPromise,
+        ctx.collector.captureBeforeAction(ctx.takeScreenshot, ctx.captureHierarchy, remainingCaptureMs),
+      ]);
+      beforeCaptures = captures;
+    }
   }
 
   // Stream a "started" lifecycle signal so UI mode can render an in-flight

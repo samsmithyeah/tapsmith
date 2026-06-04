@@ -26,6 +26,7 @@ import {
   type Orientation,
   type ColorScheme,
   type DeviceLogEntry,
+  type CaptureTraceStateResponse,
 } from './grpc-client.js';
 import { ElementHandle, locatorOptionsToSelector, type LocatorOptions } from './element-handle.js';
 import type { TapsmithConfig } from './config.js';
@@ -42,6 +43,12 @@ import {
 } from './network.js';
 import { WebViewHandle } from './webview-handle.js';
 import type { Platform } from './config.js';
+
+type CaptureTraceStateOptions = {
+  screenshot?: boolean;
+  hierarchy?: boolean;
+  elementSelector?: Selector;
+};
 
 const WEBVIEW_RPC_TIMEOUT_MS = 5_000;
 const WEBVIEW_RETRY_INTERVAL_MS = 500;
@@ -197,30 +204,40 @@ export class Device {
     }
   }
 
+  private async _appendActiveWebViewDom(xml: string | undefined): Promise<string | undefined> {
+    if (!xml || !this._activeWebView) return xml;
+    try {
+      const webviewDom = await this._activeWebView._dumpDomHierarchy();
+      if (webviewDom) {
+        const lastClose = xml.lastIndexOf('</');
+        if (lastClose !== -1) {
+          return xml.slice(0, lastClose) + webviewDom + '\n' + xml.slice(lastClose);
+        }
+      }
+    } catch { /* best-effort */ }
+    return xml;
+  }
+
   /** @internal — Capture the view hierarchy XML, including WebView DOM when active. */
   private async _captureHierarchy(): Promise<string | undefined> {
     try {
       const res = await this._client.getUiHierarchy();
-      let xml = res.hierarchyXml || undefined;
-
-      // Append WebView DOM hierarchy if a WebView is active
-      if (xml && this._activeWebView) {
-        try {
-          const webviewDom = await this._activeWebView._dumpDomHierarchy();
-          if (webviewDom) {
-            // Insert WebView DOM nodes before the closing root tag
-            const lastClose = xml.lastIndexOf('</');
-            if (lastClose !== -1) {
-              xml = xml.slice(0, lastClose) + webviewDom + '\n' + xml.slice(lastClose);
-            }
-          }
-        } catch { /* best-effort */ }
-      }
-
-      return xml;
+      return await this._appendActiveWebViewDom(res.hierarchyXml || undefined);
     } catch {
       return undefined;
     }
+  }
+
+  /** @internal — Capture batched trace state, preserving WebView DOM hierarchy enrichment. */
+  private async _captureTraceState(options: CaptureTraceStateOptions): Promise<CaptureTraceStateResponse> {
+    const res = await this._client.captureTraceState(options);
+    if (options.hierarchy && res.hierarchyXml) {
+      return {
+        ...res,
+        hierarchyXml: await this._appendActiveWebViewDom(res.hierarchyXml) ?? res.hierarchyXml,
+      };
+    }
+    return res;
   }
 
   /** @internal — Run an action RPC and throw on failure. */
@@ -242,8 +259,7 @@ export class Device {
       captureHierarchy: () => this._captureHierarchy(),
       findElement: (sel: Selector, timeout: number) => this._client.findElement(sel, timeout),
       ...(this._platform === 'ios' ? {
-        captureTraceState: (opts: { screenshot?: boolean; hierarchy?: boolean; elementSelector?: Selector }) =>
-          this._client.captureTraceState(opts).catch(() => undefined),
+        captureTraceState: (opts: CaptureTraceStateOptions) => this._captureTraceState(opts),
       } : {}),
     } : undefined;
     return tracedAction(ctx, action, category, selector, fn, fallbackMsg, extra);
@@ -311,8 +327,7 @@ export class Device {
       takeScreenshot: () => this._takeScreenshotBuffer(),
       captureHierarchy: () => this._captureHierarchy(),
       ...(this._platform === 'ios' ? {
-        captureTraceState: (opts: { screenshot?: boolean; hierarchy?: boolean; elementSelector?: Selector }) =>
-          this._client.captureTraceState(opts).catch(() => undefined),
+        captureTraceState: (opts: CaptureTraceStateOptions) => this._captureTraceState(opts),
       } : {}),
     } : undefined;
     return new ElementHandle(this._client, selector, this._defaultTimeoutMs, { traceCapture, typingDelay: this._typingDelayMs, doubleTapInterval: this._doubleTapIntervalMs });
@@ -1168,10 +1183,6 @@ export class Device {
         collector: this._traceCollector,
         takeScreenshot: () => this._takeScreenshotBuffer(),
         captureHierarchy: () => this._captureHierarchy(),
-        ...(this._platform === 'ios' ? {
-          captureTraceState: (opts: { screenshot?: boolean; hierarchy?: boolean; elementSelector?: Selector }) =>
-            this._client.captureTraceState(opts).catch(() => undefined),
-        } : {}),
       };
     }
   }
