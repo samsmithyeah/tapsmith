@@ -780,16 +780,14 @@ html, body, #app {
   user-select: none;
   -webkit-user-drag: none;
 }
+/* Full-frame layer aligned to the frame PNG, clipped to the exact screen opening
+ * (matches the bezel's squircle corners; a circular border-radius cannot, and a
+ * screen-rect-positioned mask seams against the frame). */
 .dm-frame-screen {
   position: absolute;
+  inset: 0;
   z-index: 1;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  overflow: hidden;
   background: #000;
-  /* Clip content to the exact screen-opening shape (matches the bezel's
-   * squircle corners; a circular border-radius cannot). */
   -webkit-mask-image: var(--dm-mask);
   mask-image: var(--dm-mask);
   -webkit-mask-size: 100% 100%;
@@ -797,7 +795,14 @@ html, body, #app {
   -webkit-mask-repeat: no-repeat;
   mask-repeat: no-repeat;
 }
-.screenshot-image-wrapper .dm-frame-screen > img {
+.dm-frame-screen-rect {
+  position: absolute;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+}
+.screenshot-image-wrapper .dm-frame-screen-rect > img {
   max-width: 100%;
   max-height: 100%;
   width: auto;

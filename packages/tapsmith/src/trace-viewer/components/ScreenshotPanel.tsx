@@ -4,7 +4,7 @@ import type { ActionTraceEvent, AssertionTraceEvent } from '../../trace/types.js
 import type { ContainerSummary } from '../types.js';
 import { findNearestScreenshot } from '../../ui-mode/hooks/use-trace-data.js';
 import { inferDeviceFormFactor } from '../../ui-mode/ui-protocol.js';
-import { selectDeviceFrame, screenWindowStyle } from '../../ui-mode/assets/bezels/frames.js';
+import { selectDeviceFrame, screenWindowStyle, screenMaskStyle } from '../../ui-mode/assets/bezels/frames.js';
 
 // ─── Injected Styles ───
 
@@ -378,8 +378,10 @@ export function ScreenshotPanel({ event, screenshots, highlightBounds, selectorH
   if (imageFrame) {
     framedScreenshot = (
       <div class="dm-frame dm-frame-img" style={imageFrameStyle}>
-        <div class="dm-frame-screen" style={screenWindowStyle(imageFrame)}>
-          {screenshotImg}
+        <div class="dm-frame-screen" style={screenMaskStyle(imageFrame)}>
+          <div class="dm-frame-screen-rect" style={screenWindowStyle(imageFrame)}>
+            {screenshotImg}
+          </div>
         </div>
         <img class="dm-frame-png" src={imageFrame.src} alt="" aria-hidden="true" draggable={false} />
       </div>

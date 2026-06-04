@@ -10,7 +10,7 @@
 import type { ComponentChildren } from 'preact';
 import { useState, useRef, useLayoutEffect } from 'preact/hooks';
 import type { DevicePlatform, DeviceFormFactor } from '../ui-protocol.js';
-import { selectDeviceFrame, screenWindowStyle } from '../assets/bezels/frames.js';
+import { selectDeviceFrame, screenWindowStyle, screenMaskStyle } from '../assets/bezels/frames.js';
 
 interface DeviceFrameProps {
   platform?: DevicePlatform
@@ -54,8 +54,10 @@ export function DeviceFrame({ platform, formFactor, heightBound, children }: Dev
     if (heightBound && width) style.width = `${width.toFixed(2)}px`;
     return (
       <div ref={ref} class="dm-frame dm-frame-img" style={style}>
-        <div class="dm-frame-screen" style={screenWindowStyle(frame)}>
-          {children}
+        <div class="dm-frame-screen" style={screenMaskStyle(frame)}>
+          <div class="dm-frame-screen-rect" style={screenWindowStyle(frame)}>
+            {children}
+          </div>
         </div>
         <img
           class="dm-frame-png"

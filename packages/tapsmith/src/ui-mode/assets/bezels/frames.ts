@@ -35,9 +35,10 @@ export interface DeviceFrame {
   screen: ScreenRect
   /** width / height of the screen window — used to reject mismatched devices. */
   screenAspect: number
-  /** Inlined data URI of the screen-opening mask (opaque over the exact screen
-   * shape, transparent elsewhere). Clips the mirror content to the bezel's real
-   * rounded opening — a circular border-radius can't match the squircle. */
+  /** Inlined data URI of the full-frame screen-opening mask (opaque over the
+   * exact screen shape, transparent over the bezel and outside). Applied to a
+   * layer that fills the frame — identically to the frame PNG — so the two
+   * align exactly and the content is clipped to the bezel's real opening. */
   mask: string
 }
 
@@ -89,9 +90,7 @@ export function selectDeviceFrame(opts: {
   return f;
 }
 
-/** Inline style placing an element over a frame's screen window, and supplying
- * the screen-opening mask (--dm-mask) so the content is clipped to the exact
- * bezel opening. */
+/** Inline style positioning the content wrapper over the frame's screen window. */
 export function screenWindowStyle(frame: DeviceFrame): Record<string, string> {
   const { screen } = frame;
   return {
@@ -99,6 +98,10 @@ export function screenWindowStyle(frame: DeviceFrame): Record<string, string> {
     top: `${(screen.topPct * 100).toFixed(3)}%`,
     width: `${(screen.widthPct * 100).toFixed(3)}%`,
     height: `${(screen.heightPct * 100).toFixed(3)}%`,
-    '--dm-mask': `url("${frame.mask}")`,
   };
+}
+
+/** Inline style for the full-frame masked layer (clips content to the opening). */
+export function screenMaskStyle(frame: DeviceFrame): Record<string, string> {
+  return { '--dm-mask': `url("${frame.mask}")` };
 }

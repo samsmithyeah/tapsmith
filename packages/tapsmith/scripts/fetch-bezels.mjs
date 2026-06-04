@@ -34,10 +34,13 @@ const API = 'https://bezel.fit';
 const ROOT = dirname(fileURLToPath(import.meta.url));
 const OUT_DIR = join(ROOT, '..', 'src', 'ui-mode', 'assets', 'bezels');
 
-/** Phone buckets only — bezel.fit has no tablet frames (tablets fall back to CSS). */
+/** Phone buckets only — bezel.fit has no tablet frames (tablets fall back to CSS).
+ * maskCornerPct: screen-opening corner radius as a fraction of the screen width,
+ * used to trim the magenta probe's square-corner artifact from the mask while
+ * preserving the true rounded opening (iPhone corners are rounder than Pixel). */
 const TARGETS = [
-  { bucket: 'ios-phone', device: 'iphone-17-pro', file: 'iphone.png' },
-  { bucket: 'android-phone', device: 'pixel-10-pro', file: 'android.png' },
+  { bucket: 'ios-phone', device: 'iphone-17-pro', file: 'iphone.png', maskCornerPct: 0.136 },
+  { bucket: 'android-phone', device: 'pixel-10-pro', file: 'android.png', maskCornerPct: 0.086 },
 ];
 
 /** Downscaled overlay width (px). The mirror is displayed small; keep assets light. */
@@ -145,17 +148,30 @@ async function main() {
     const size = (readFileSync(out).length / 1024).toFixed(0);
     console.log(`  screen bbox ${r.w}x${r.h}+${r.x}+${r.y}  →  ${target.file} (${size} KB)`);
 
-    // 5. Screen-opening mask: crop the overlay to the screen window and invert
-    //    its alpha (opening → opaque, corners → transparent). The content is
-    //    clipped to this so the rounded/squircle opening matches the bezel
-    //    exactly (a circular border-radius can't).
+    // 5. Full-frame screen-opening mask. Crop the overlay to the screen window
+    //    and invert its alpha (opening → opaque, corners → transparent), then
+    //    composite back onto a transparent canvas the size of the frame. The
+    //    mask is applied to a layer that fills the frame — identically to the
+    //    frame PNG — so the two align exactly and the content is clipped to the
+    //    real (squircle) opening with no edge seam.
     const maskFile = target.file.replace(/\.png$/, '-mask.png');
     const maskOut = join(OUT_DIR, maskFile);
     const [ow, oh] = magick([out, '-format', '%wx%h', 'info:']).toString().trim().split('x').map(Number);
     const s = meta[target.bucket].screen;
-    const crop = `${Math.round(s.widthPct * ow)}x${Math.round(s.heightPct * oh)}+${Math.round(s.leftPct * ow)}+${Math.round(s.topPct * oh)}`;
-    magick([out, '-crop', crop, '+repage', '-channel', 'A', '-negate', '+channel', '-strip', maskOut]);
-    console.log(`  mask ${crop}  →  ${maskFile}`);
+    const cw = Math.round(s.widthPct * ow), ch = Math.round(s.heightPct * oh);
+    const cx = Math.round(s.leftPct * ow), cy = Math.round(s.topPct * oh);
+    const rad = Math.round((target.maskCornerPct ?? 0.1) * cw);
+    const opening = join(work, `${target.device}-opening.png`);
+    const roundrect = join(work, `${target.device}-rr.png`);
+    // Opening (white on black) from the overlay's transparent screen region.
+    magick([out, '-crop', `${cw}x${ch}+${cx}+${cy}`, '+repage', '-alpha', 'extract', '-threshold', '50%', '-negate', opening]);
+    // Rounded rect at the opening's corner radius; intersect to drop the square
+    // magenta-probe artifact at the corners while keeping the true opening.
+    magick(['-size', `${cw}x${ch}`, 'xc:black', '-fill', 'white', '-draw', `roundrectangle 0,0 ${cw - 1},${ch - 1} ${rad},${rad}`, roundrect]);
+    const cropMask = join(work, `${target.device}-cropmask.png`);
+    magick([opening, roundrect, '-compose', 'multiply', '-composite', '-threshold', '50%', '-blur', '0x0.6', '-transparent', 'black', cropMask]);
+    magick(['-size', `${ow}x${oh}`, 'xc:transparent', cropMask, '-geometry', `+${cx}+${cy}`, '-compose', 'over', '-composite', '-strip', maskOut]);
+    console.log(`  mask (full ${ow}x${oh}, r=${rad})  →  ${maskFile}`);
 
     // Stay under the documented 3 req / 60 s rate limit.
     if (i < TARGETS.length - 1) await sleep(25_000);

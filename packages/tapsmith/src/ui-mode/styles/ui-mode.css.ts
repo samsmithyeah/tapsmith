@@ -1265,17 +1265,15 @@ html, body, #app {
   user-select: none;
   -webkit-user-drag: none;
 }
+/* Full-frame layer, positioned and sized identically to the frame PNG, clipped
+ * to the exact screen-opening shape via a mask generated from the frame. Because
+ * the mask and the frame PNG both cover this same box, they align precisely —
+ * no sub-pixel seam where the black backing could bleed past the bezel. */
 .dm-frame-screen {
-  position: absolute; /* left/top/width/height set inline from the screen rect */
+  position: absolute;
+  inset: 0;
   z-index: 1;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  overflow: hidden;
   background: #000;
-  /* Clip the content (and the black backing) to the exact screen-opening shape
-   * via a mask generated from the frame, so the rounded/squircle corners match
-   * the bezel opening precisely (a circular border-radius cannot). */
   -webkit-mask-image: var(--dm-mask);
   mask-image: var(--dm-mask);
   -webkit-mask-size: 100% 100%;
@@ -1283,11 +1281,19 @@ html, body, #app {
   -webkit-mask-repeat: no-repeat;
   mask-repeat: no-repeat;
 }
+/* The content sits over the screen window; the mask above clips its corners. */
+.dm-frame-screen-rect {
+  position: absolute; /* left/top/width/height set inline from the screen rect */
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+}
 /* The screen content fits its window preserving aspect (no distortion), so the
  * canvas's getBoundingClientRect — used to normalize tap coordinates — always
  * maps 1:1 onto the device screen. */
-.dm-frame-screen > .dm-canvas,
-.dm-frame-screen > img {
+.dm-frame-screen-rect > .dm-canvas,
+.dm-frame-screen-rect > img {
   max-width: 100%;
   max-height: 100%;
   width: auto;
