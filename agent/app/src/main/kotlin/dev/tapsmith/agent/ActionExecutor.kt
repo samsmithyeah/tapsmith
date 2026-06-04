@@ -1,6 +1,10 @@
 package dev.tapsmith.agent
 
+import android.app.Instrumentation
+import android.os.SystemClock
+import android.view.InputDevice
 import android.view.KeyEvent
+import android.view.MotionEvent
 import androidx.test.uiautomator.By
 import androidx.test.uiautomator.Direction
 import androidx.test.uiautomator.UiDevice
@@ -10,7 +14,10 @@ import androidx.test.uiautomator.Until
 /**
  * Executes UI actions: tap, long press, text input, swipe, scroll, and key presses.
  */
-class ActionExecutor(private val device: UiDevice) {
+class ActionExecutor(
+    private val device: UiDevice,
+    private val instrumentation: Instrumentation,
+) {
     /** Tracks ASCII control-char code points we've already warned about,
      *  so the log fires once per code point per agent lifetime. */
     private val warnedDroppedControlChars = java.util.concurrent.ConcurrentHashMap.newKeySet<Int>()
@@ -285,6 +292,81 @@ class ActionExecutor(private val device: UiDevice) {
             }
             else -> throw ActionFailedException("Unknown swipe direction: $direction. Use up/down/left/right.")
         }
+    }
+
+    /**
+     * Swipe between two raw screen coordinates (pixels). Used by the
+     * interactive mirror and the SDK coordinate API.
+     */
+    fun swipeCoordinates(
+        x1: Int,
+        y1: Int,
+        x2: Int,
+        y2: Int,
+        durationMs: Long = 300,
+    ) {
+        // UIAutomator swipe is step-based (~5ms/step). Convert duration to steps.
+        val steps = (durationMs / 5).coerceIn(5L, 200L).toInt()
+        device.swipe(x1, y1, x2, y2, steps)
+    }
+
+    // ─── Streamed touch (interactive mirror live-drag) ───
+    // @Volatile: touch events arrive on gRPC pool threads; ensure writes are
+    // visible across threads.
+    @Volatile
+    private var touchDownTime = 0L
+
+    @Volatile
+    private var touchActive = false
+
+    private fun injectTouch(
+        action: Int,
+        x: Int,
+        y: Int,
+        eventTime: Long,
+    ) {
+        val event = MotionEvent.obtain(touchDownTime, eventTime, action, x.toFloat(), y.toFloat(), 0)
+        event.source = InputDevice.SOURCE_TOUCHSCREEN
+        try {
+            // sync=false: fire-and-forget keeps the move stream low-latency.
+            // Use the agent's own Instrumentation (this process is a custom
+            // Instrumentation, not registered with InstrumentationRegistry).
+            instrumentation.uiAutomation.injectInputEvent(event, false)
+        } finally {
+            event.recycle()
+        }
+    }
+
+    fun touchDown(
+        x: Int,
+        y: Int,
+    ) {
+        touchDownTime = SystemClock.uptimeMillis()
+        touchActive = true
+        injectTouch(MotionEvent.ACTION_DOWN, x, y, touchDownTime)
+    }
+
+    fun touchMove(
+        x: Int,
+        y: Int,
+    ) {
+        if (!touchActive) return
+        injectTouch(MotionEvent.ACTION_MOVE, x, y, SystemClock.uptimeMillis())
+    }
+
+    fun touchUp(
+        x: Int,
+        y: Int,
+    ) {
+        if (!touchActive) return
+        injectTouch(MotionEvent.ACTION_UP, x, y, SystemClock.uptimeMillis())
+        touchActive = false
+    }
+
+    fun touchCancel() {
+        if (!touchActive) return
+        injectTouch(MotionEvent.ACTION_CANCEL, 0, 0, SystemClock.uptimeMillis())
+        touchActive = false
     }
 
     /**

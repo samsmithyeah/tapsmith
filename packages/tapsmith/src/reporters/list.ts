@@ -34,6 +34,8 @@ interface InProgressEntry {
   project?: string
 }
 
+type WriteMethod = typeof process.stdout.write;
+
 export class ListReporter implements TapsmithReporter {
   private _testIndex = 0;
   private _multipleWorkers = false;
@@ -42,6 +44,13 @@ export class ListReporter implements TapsmithReporter {
   private _rootDir = '';
   private _inProgress: InProgressEntry[] = [];
   private _linesRendered = 0;
+  // In single-worker mode the test runs in-process, so its stdout/stderr (e.g.
+  // console.log) interleaves with our output between onTestStart and onTestEnd.
+  // We intercept those writes to clear and redraw the live in-progress region
+  // around them, keeping our cursor math correct. Mirrors LaunchProgress.
+  private _originalStdoutWrite?: WriteMethod;
+  private _originalStderrWrite?: WriteMethod;
+  private _internalWriteDepth = 0;
 
   onRunStart(config: TapsmithConfig, fileCount: number): void {
     this._testIndex = 0;
@@ -50,7 +59,8 @@ export class ListReporter implements TapsmithReporter {
     this._rootDir = config.rootDir;
     this._inProgress = [];
     this._linesRendered = 0;
-    process.stdout.write(`\nRunning tests from ${fileCount} file(s)\n\n`);
+    this._installWriteInterceptors();
+    this._write(`\nRunning tests from ${fileCount} file(s)\n\n`);
   }
 
   onTestFileStart(_filePath: string): void {
@@ -84,7 +94,7 @@ export class ListReporter implements TapsmithReporter {
       const worker = this._multipleWorkers ? workerTag(test.workerIndex) : '';
       const project = this._showProjectTags ? projectTag(test.project) : '';
       const file = this._fileSegment(test.filePath);
-      process.stdout.write(`  ${red('✗')} ${counter} ${worker}${project}${file}${test.fullName} ${duration}\n`);
+      this._write(`  ${red('✗')} ${counter} ${worker}${project}${file}${test.fullName} ${duration}\n`);
       if (this._isTTY) this._printInProgress();
       return;
     }
@@ -97,22 +107,22 @@ export class ListReporter implements TapsmithReporter {
     const worker = this._multipleWorkers ? workerTag(test.workerIndex) : '';
     const project = this._showProjectTags ? projectTag(test.project) : '';
     const file = this._fileSegment(test.filePath);
-    process.stdout.write(`  ${icon} ${counter} ${worker}${project}${file}${test.fullName} ${duration}\n`);
+    this._write(`  ${icon} ${counter} ${worker}${project}${file}${test.fullName} ${duration}\n`);
 
     if (test.error) {
-      process.stdout.write(formatError(test.error) + '\n');
+      this._write(formatError(test.error) + '\n');
     }
 
     if (test.screenshotPath) {
-      process.stdout.write(`        ${dim(`Screenshot: ${test.screenshotPath}`)}\n`);
+      this._write(`        ${dim(`Screenshot: ${test.screenshotPath}`)}\n`);
     }
 
     if (test.tracePath) {
-      process.stdout.write(`        ${dim(`Trace:      npx tapsmith show-trace ${test.tracePath}`)}\n`);
+      this._write(`        ${dim(`Trace:      npx tapsmith show-trace ${test.tracePath}`)}\n`);
     }
 
     if (test.videoPath) {
-      process.stdout.write(`        ${dim(`Video:      ${test.videoPath}`)}\n`);
+      this._write(`        ${dim(`Video:      ${test.videoPath}`)}\n`);
     }
 
     if (this._isTTY) this._printInProgress();
@@ -130,47 +140,48 @@ export class ListReporter implements TapsmithReporter {
 
   onRunEnd(result: FullResult): void {
     if (this._isTTY) this._clearInProgress();
+    this._restoreWriteInterceptors();
 
     const passed = result.tests.filter((t) => t.status === 'passed').length;
     const failed = result.tests.filter((t) => t.status === 'failed').length;
     const skipped = result.tests.filter((t) => t.status === 'skipped').length;
     const flaky = countFlaky(result.tests);
 
-    process.stdout.write('\n');
+    this._write('\n');
 
     if (flaky > 0) {
       const flakyTests = result.tests.filter((t) => t.status === 'passed' && t.retry != null && t.retry > 0);
-      process.stdout.write(`  ${yellow(`${flaky} flaky`)}\n`);
+      this._write(`  ${yellow(`${flaky} flaky`)}\n`);
       for (const test of flakyTests) {
         const worker = this._multipleWorkers ? workerTag(test.workerIndex) : '';
         const project = this._showProjectTags ? projectTag(test.project) : '';
-        process.stdout.write(`    ${worker}${project}${test.fullName}\n`);
+        this._write(`    ${worker}${project}${test.fullName}\n`);
       }
     }
 
     if (failed > 0) {
-      process.stdout.write(bold(red('Failures:\n\n')));
+      this._write(bold(red('Failures:\n\n')));
       for (const test of result.tests) {
         if (test.status === 'failed' && test.error) {
           const worker = this._multipleWorkers ? workerTag(test.workerIndex) : '';
           const project = this._showProjectTags ? projectTag(test.project) : '';
-          process.stdout.write(`  ${red('✗')} ${worker}${project}${test.fullName}\n`);
-          process.stdout.write(formatError(test.error) + '\n');
+          this._write(`  ${red('✗')} ${worker}${project}${test.fullName}\n`);
+          this._write(formatError(test.error) + '\n');
           if (test.screenshotPath) {
-            process.stdout.write(`        ${dim(`Screenshot: ${test.screenshotPath}`)}\n`);
+            this._write(`        ${dim(`Screenshot: ${test.screenshotPath}`)}\n`);
           }
           if (test.tracePath) {
-            process.stdout.write(`        ${dim(`Trace: npx tapsmith show-trace ${test.tracePath}`)}\n`);
+            this._write(`        ${dim(`Trace: npx tapsmith show-trace ${test.tracePath}`)}\n`);
           }
           if (test.videoPath) {
-            process.stdout.write(`        ${dim(`Video: ${test.videoPath}`)}\n`);
+            this._write(`        ${dim(`Video: ${test.videoPath}`)}\n`);
           }
-          process.stdout.write('\n');
+          this._write('\n');
         }
       }
     }
 
-    process.stdout.write(formatSummaryLine(passed, failed, skipped, result.duration, result.setupDuration, flaky) + '\n\n');
+    this._write(formatSummaryLine(passed, failed, skipped, result.duration, result.setupDuration, flaky) + '\n\n');
   }
 
   // ─── Private helpers ───
@@ -202,15 +213,73 @@ export class ListReporter implements TapsmithReporter {
       lines.push(dim(line));
     }
     const output = lines.join('\n') + '\n';
-    process.stdout.write(output);
+    this._write(output);
     this._linesRendered = lines.length;
   }
 
   private _clearInProgress(): void {
     if (this._linesRendered === 0) return;
-    for (let i = 0; i < this._linesRendered; i++) {
-      process.stdout.write('\x1b[1A\x1b[2K');
-    }
+    // Combine the per-line "cursor up + erase line" escapes into one write to
+    // avoid extra write calls and terminal flicker.
+    this._write('\x1b[1A\x1b[2K'.repeat(this._linesRendered));
     this._linesRendered = 0;
+  }
+
+  // ─── Interleaved-output handling (single-worker, in-process tests) ───
+
+  private _installWriteInterceptors(): void {
+    if (!this._isTTY || this._originalStdoutWrite) return;
+    this._originalStdoutWrite = process.stdout.write;
+    this._originalStderrWrite = process.stderr.write;
+    process.stdout.write = this._createExternalWriteInterceptor(
+      process.stdout,
+      this._originalStdoutWrite,
+    );
+    process.stderr.write = this._createExternalWriteInterceptor(
+      process.stderr,
+      this._originalStderrWrite,
+    );
+  }
+
+  private _restoreWriteInterceptors(): void {
+    if (this._originalStdoutWrite) {
+      process.stdout.write = this._originalStdoutWrite;
+      this._originalStdoutWrite = undefined;
+    }
+    if (this._originalStderrWrite) {
+      process.stderr.write = this._originalStderrWrite;
+      this._originalStderrWrite = undefined;
+    }
+  }
+
+  private _createExternalWriteInterceptor(
+    stream: NodeJS.WriteStream,
+    originalWrite: WriteMethod,
+  ): WriteMethod {
+    const original = originalWrite.bind(stream) as WriteMethod;
+    return ((...args: Parameters<WriteMethod>): ReturnType<WriteMethod> => {
+      // Our own output (depth > 0) and the case where there is no live region
+      // to protect pass straight through. Everything else is foreign output
+      // (test console.log, hook stderr) that must not corrupt the live region:
+      // erase it, emit the foreign chunk, then redraw it below.
+      if (this._internalWriteDepth > 0 || this._linesRendered <= 0) {
+        return original(...args);
+      }
+      this._clearInProgress();
+      const result = original(...args);
+      this._printInProgress();
+      return result;
+    }) as WriteMethod;
+  }
+
+  private _write(chunk: string): void {
+    this._internalWriteDepth++;
+    try {
+      // Routes through the interceptor (if installed), which sees depth > 0 and
+      // forwards to the original write. When not installed, writes directly.
+      process.stdout.write(chunk);
+    } finally {
+      this._internalWriteDepth--;
+    }
   }
 }

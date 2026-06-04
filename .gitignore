@@ -49,3 +49,5 @@ pilot-report/
 .worktrees/
 
 repomix-output.xml
+# Superpowers design specs / implementation plans (local workflow artifacts)
+docs/superpowers/

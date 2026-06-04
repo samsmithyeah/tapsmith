@@ -27,11 +27,12 @@ import {
   type ColorScheme,
   type DeviceLogEntry,
   type CaptureTraceStateResponse,
+  type DaemonLogEntry,
 } from './grpc-client.js';
 import { ElementHandle, locatorOptionsToSelector, type LocatorOptions } from './element-handle.js';
 import type { TapsmithConfig } from './config.js';
 import { Tracing } from './trace/tracing.js';
-import { type TraceCollector, getActiveTraceCollector, extractSourceLocation } from './trace/trace-collector.js';
+import { type TraceCollector, getActiveTraceCollector, extractStack } from './trace/trace-collector.js';
 import type { ActionCategory, ConsoleLevel } from './trace/types.js';
 import { tracedAction } from './trace/traced-action.js';
 import {
@@ -151,6 +152,8 @@ export class Device {
   /** @internal — Active device log stream. */
   private _logStream: grpc.ClientReadableStream<DeviceLogEntry> | null = null;
   private _logStreamCollector: TraceCollector | null = null;
+  private _daemonLogStream: grpc.ClientReadableStream<DaemonLogEntry> | null = null;
+  private _daemonLogStreamCollector: TraceCollector | null = null;
 
   private _typingDelayMs: number;
   private _doubleTapIntervalMs: number;
@@ -349,6 +352,33 @@ export class Device {
   /** Press the hardware back button. @platform android */
   async pressBack(): Promise<void> {
     return this.pressKey('BACK');
+  }
+
+  /**
+   * Tap at raw screen coordinates (logical points). Prefer selector-based
+   * `tap()` in tests; this is for coordinate-driven interaction.
+   */
+  async tapXY(x: number, y: number): Promise<void> {
+    return this._tracedAction('tapXY', 'tap', undefined,
+      () => this._client.tapXY(x, y), 'Coordinate tap failed');
+  }
+
+  /** Long-press at raw screen coordinates (logical points). */
+  async longPressXY(x: number, y: number, options?: { duration?: number }): Promise<void> {
+    return this._tracedAction('longPressXY', 'tap', undefined,
+      () => this._client.longPressXY(x, y, options?.duration), 'Coordinate long-press failed');
+  }
+
+  /** Drag/swipe from one point to another (logical points). */
+  async dragXY(from: { x: number; y: number }, to: { x: number; y: number }, options?: { duration?: number }): Promise<void> {
+    return this._tracedAction('dragXY', 'swipe', undefined,
+      () => this._client.dragXY(from.x, from.y, to.x, to.y, options?.duration), 'Coordinate drag failed');
+  }
+
+  /** Type text into whatever currently has focus. */
+  async inputText(text: string): Promise<void> {
+    return this._tracedAction('inputText', 'type', undefined,
+      () => this._client.inputText(text, this._typingDelayMs), 'Input text failed', { inputValue: text });
   }
 
   // ── Utilities ──
@@ -713,7 +743,7 @@ export class Device {
 
     stream.on('error', (err: Error) => {
       const code = (err as grpc.ServiceError).code;
-      const isCleanReset = code === grpc.status.INTERNAL && err.message.includes('RST_STREAM with code 0');
+      const isCleanReset = code === grpc.status.INTERNAL && err.message?.includes('RST_STREAM with code 0');
       if (code !== grpc.status.CANCELLED && !isCleanReset) {
         console.warn('[tapsmith] Device log stream error:', err.message);
       }
@@ -730,6 +760,55 @@ export class Device {
     const stream = this._logStream;
     this._logStream = null;
     this._logStreamCollector = null;
+    stream?.cancel();
+  }
+
+  /** @internal — Start streaming the daemon's own logs into the active trace collector. */
+  _startDaemonLogStream(collector: TraceCollector): void {
+    if (this._daemonLogStream) {
+      if (this._daemonLogStreamCollector === collector) return;
+      this._stopDaemonLogStream();
+    }
+
+    const stream = this._client.daemonLogStream();
+    this._daemonLogStream = stream;
+    this._daemonLogStreamCollector = collector;
+
+    const clearStream = () => {
+      if (this._daemonLogStream === stream) {
+        this._daemonLogStream = null;
+        this._daemonLogStreamCollector = null;
+      }
+    };
+
+    stream.on('data', (entry: DaemonLogEntry) => {
+      if (!entry || this._daemonLogStream !== stream) return;
+      const level = mapDeviceLogLevel(entry.level);
+      const message = entry.target
+        ? `[${entry.target}] ${entry.message}`
+        : entry.message;
+      collector.addDaemonLogEntry(level, message);
+    });
+
+    stream.on('error', (err: Error) => {
+      const code = (err as grpc.ServiceError).code;
+      const isCleanReset = code === grpc.status.INTERNAL && err.message?.includes('RST_STREAM with code 0');
+      if (code !== grpc.status.CANCELLED && !isCleanReset) {
+        console.warn('[tapsmith] Daemon log stream error:', err.message);
+      }
+      clearStream();
+    });
+
+    stream.on('end', () => {
+      clearStream();
+    });
+  }
+
+  /** @internal — Stop streaming daemon logs. */
+  _stopDaemonLogStream(): void {
+    const stream = this._daemonLogStream;
+    this._daemonLogStream = null;
+    this._daemonLogStreamCollector = null;
     stream?.cancel();
   }
 
@@ -750,14 +829,15 @@ export class Device {
     options?: { times?: number },
   ): Promise<void> {
     const start = Date.now();
-    const source = extractSourceLocation(new Error().stack ?? '');
+    const stack = extractStack(new Error().stack ?? '');
+    const source = stack[0];
     if (!this._networkCaptureActive && this._networkCaptureError) {
       const error = `Network capture disabled: ${this._networkCaptureError}`;
-      this._emitNetworkAction('route', formatPattern(url), start, false, error, source);
+      this._emitNetworkAction('route', formatPattern(url), start, false, error, source, stack);
       throw new Error(error);
     }
     await this._ensureRouteManager().addRoute(url, handler, options);
-    this._emitNetworkAction('route', formatPattern(url), start, true, undefined, source);
+    this._emitNetworkAction('route', formatPattern(url), start, true, undefined, source, stack);
   }
 
   /**
@@ -770,18 +850,20 @@ export class Device {
   ): Promise<void> {
     if (!this._routeManager) return;
     const start = Date.now();
-    const source = extractSourceLocation(new Error().stack ?? '');
+    const stack = extractStack(new Error().stack ?? '');
+    const source = stack[0];
     await this._routeManager.removeRoute(url, handler);
-    this._emitNetworkAction('unroute', formatPattern(url), start, true, undefined, source);
+    this._emitNetworkAction('unroute', formatPattern(url), start, true, undefined, source, stack);
   }
 
   /** Remove all registered route handlers. */
   async unrouteAll(): Promise<void> {
     if (!this._routeManager) return;
     const start = Date.now();
-    const source = extractSourceLocation(new Error().stack ?? '');
+    const stack = extractStack(new Error().stack ?? '');
+    const source = stack[0];
     await this._routeManager.removeAllRoutes();
-    this._emitNetworkAction('unrouteAll', undefined, start, true, undefined, source);
+    this._emitNetworkAction('unrouteAll', undefined, start, true, undefined, source, stack);
   }
 
   /**
@@ -903,7 +985,8 @@ export class Device {
       return this._connectWebView(packageName);
     }
 
-    const sourceLocation = extractSourceLocation(new Error().stack ?? '');
+    const stack = extractStack(new Error().stack ?? '');
+    const sourceLocation = stack[0];
     const targetPackageName = packageName ?? this.defaultPackageName;
     const selector = targetPackageName ? `package=${targetPackageName}` : undefined;
     const { captures: beforeCaptures } = await collector.captureBeforeAction(
@@ -920,6 +1003,7 @@ export class Device {
       action: 'connect',
       selector,
       sourceLocation,
+      stack,
       log: connectLog,
       hasScreenshotBefore: !!beforeCaptures.screenshotBefore,
       hasHierarchyBefore: !!beforeCaptures.hierarchyBefore,
@@ -944,6 +1028,7 @@ export class Device {
         hasHierarchyBefore: !!beforeCaptures.hierarchyBefore,
         hasHierarchyAfter: false,
         sourceLocation,
+        stack,
       });
     });
 
@@ -967,6 +1052,7 @@ export class Device {
           hasHierarchyBefore: !!beforeCaptures.hierarchyBefore,
           hasHierarchyAfter: false,
           sourceLocation,
+          stack,
         });
       }
       throw err;
@@ -989,6 +1075,7 @@ export class Device {
       hasHierarchyBefore: !!beforeCaptures.hierarchyBefore,
       hasHierarchyAfter: false,
       sourceLocation,
+      stack,
     });
 
     return handle;
@@ -1210,6 +1297,7 @@ export class Device {
     success: boolean,
     error?: string,
     sourceLocation?: import('./trace/types.js').SourceLocation,
+    stack?: import('./trace/types.js').SourceLocation[],
   ): void {
     const collector = this._traceCollector;
     if (!collector) return;
@@ -1226,12 +1314,14 @@ export class Device {
       hasHierarchyBefore: false,
       hasHierarchyAfter: false,
       sourceLocation,
+      stack,
     });
   }
 
   async close(): Promise<void> {
     // Stop device log stream (synchronous)
     this._stopDeviceLogStream();
+    this._stopDaemonLogStream();
 
     // Dispose the route manager (closes gRPC stream)
     if (this._routeManager) {

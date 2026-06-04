@@ -245,6 +245,7 @@ async function handleInit(msg: InitMessage): Promise<void> {
       await launchConfiguredApp(
         sessionContext(msg.deviceSerial, resolvedAgentApk, resolvedAgentTestApk, resolvedIosXctestrun, resolvedIosAppPath),
         'worker initialization',
+        { allowSoftReset: false },
       );
       sendProgress('app launched');
     } else {

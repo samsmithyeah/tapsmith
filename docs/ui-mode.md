@@ -27,7 +27,20 @@ The UI provides:
 - **Live progress** -- test results stream into the UI in real time as tests execute. You see pass/fail status, duration, and error details as each test completes.
 - **Result browsing** -- after a run, browse results with error messages, stack traces, screenshots, and trace data inline.
 - **Watch mode toggle** -- toggle file-level watching from the UI. When a file's watch is enabled, it re-runs automatically on save (the same mechanism as `--watch` mode).
-- **Device screen mirror** -- the UI polls and displays the device screen, so you can see what the app looks like without switching windows.
+- **Interactive device mirror** -- the UI streams the device screen and lets you drive it with your mouse and keyboard: click to tap, drag to swipe/scroll, click-and-hold to long-press, and type to enter text. See [Interacting with the device mirror](#interacting-with-the-device-mirror).
+
+## Interacting with the device mirror
+
+The live device mirror is interactive -- drive the device straight from the browser, with no attached debugger or window-switching:
+
+- **Tap** -- click anywhere on the mirror.
+- **Swipe / scroll** -- drag with the mouse; the screen tracks the drag.
+- **Long-press** -- click and hold.
+- **Text input** -- the mirror takes keyboard focus on click; type to enter text (Enter and Backspace are forwarded too).
+
+These drive the same coordinate gestures exposed in the SDK (`device.tapXY`, `device.dragXY`, `device.longPressXY`, `device.inputText` -- see the [API reference](api-reference.md)).
+
+**Lock toggle.** A lock control in the mirror header governs interactivity. It's unlocked (interactive) by default and **auto-locks while a run is active** so your input can't interfere with a running test. You can override it at any time -- an explicit lock sticks until you unlock, while an unlock during a run lasts only for that run.
 
 ## MCP integration
 

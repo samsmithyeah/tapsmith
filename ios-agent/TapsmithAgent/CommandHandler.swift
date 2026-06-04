@@ -20,6 +20,13 @@ class CommandHandler {
     /// Cache of last clipboard text set via setClipboard.
     private var lastClipboardText = ""
 
+    // Interactive-mirror live-drag: iOS can't stream touches, so buffer the
+    // path during the drag and dispatch it as one gesture on touchUp.
+    // touchDown/Move/Up/Cancel arrive on gRPC pool threads, so all access to
+    // touchPath is guarded by touchPathLock (Swift Array is not thread-safe).
+    private var touchPath: [(CGPoint, TimeInterval)] = []
+    private let touchPathLock = NSLock()
+
     init(
         app: XCUIApplication,
         elementFinder: ElementFinder,
@@ -42,16 +49,80 @@ class CommandHandler {
         return ProcessInfo.processInfo.environment["TAPSMITH_TARGET_BUNDLE_ID"] ?? ""
     }
 
-    /// Accept SpringBoard's custom URL-scheme confirmation if it is covering
-    /// the app after a deep-link launch.
+    /// Accept SpringBoard's custom URL-scheme confirmation ("Open in <app>?")
+    /// if it is covering the app after a deep-link launch.
+    ///
+    /// We tap Open, not Cancel: on a fresh simulator the confirmation can gate
+    /// URL delivery, so cancelling leaves the deep link undelivered.
     @discardableResult
-    private func acceptOpenInAppDialogIfPresent(timeout: TimeInterval = 0.0) -> Bool {
-        let springboard = XCUIApplication(bundleIdentifier: "com.apple.springboard")
-        let openButton = springboard.buttons["Open"]
-        if openButton.waitForExistence(timeout: timeout) {
-            openButton.tap()
-            Thread.sleep(forTimeInterval: 0.25)
+    private func acceptOpenInAppDialogIfPresent(
+        springboard: XCUIApplication? = nil,
+        timeout: TimeInterval = 0.0
+    ) -> Bool {
+        let sb = springboard ?? XCUIApplication(bundleIdentifier: "com.apple.springboard")
+        let openButton = sb.buttons["Open"]
+        var exists = false
+        _ = ObjCExceptionCatcher.catchException {
+            exists = openButton.waitForExistence(timeout: timeout)
+        }
+        if exists {
+            _ = ObjCExceptionCatcher.catchException {
+                openButton.tap()
+            }
+            Thread.sleep(forTimeInterval: 0.2)
             return true
+        }
+        return false
+    }
+
+    /// True when the app's accessibility snapshot has rendered interactive
+    /// content. This keeps openDeepLink from returning while the app is still
+    /// cold-launching.
+    private func appHasRenderedContent(_ app: XCUIApplication) -> Bool {
+        var has = false
+        _ = ObjCExceptionCatcher.catchException {
+            has = app.staticTexts.firstMatch.exists
+                || app.textFields.firstMatch.exists
+                || app.buttons.firstMatch.exists
+        }
+        return has
+    }
+
+    private func openInAppDialogExists(_ springboard: XCUIApplication) -> Bool {
+        var exists = false
+        _ = ObjCExceptionCatcher.catchException {
+            exists = springboard.buttons["Open"].exists
+        }
+        return exists
+    }
+
+    private func safeAppState(_ app: XCUIApplication) -> XCUIApplication.State {
+        var state: XCUIApplication.State = .unknown
+        _ = ObjCExceptionCatcher.catchException {
+            state = app.state
+        }
+        return state
+    }
+
+    /// Dismiss SpringBoard's "Open in <app>?" confirmation and wait for the
+    /// app to render after a deep-link launch.
+    private func waitForDeepLinkDestination(_ app: XCUIApplication, timeout: TimeInterval) -> Bool {
+        let springboard = XCUIApplication(bundleIdentifier: "com.apple.springboard")
+        let deadline = Date(timeIntervalSinceNow: timeout)
+        while Date() < deadline {
+            if safeAppState(app) == .runningForeground {
+                let hasContent = appHasRenderedContent(app)
+                let dialogExists = openInAppDialogExists(springboard)
+                if hasContent && !dialogExists {
+                    return true
+                }
+                if dialogExists {
+                    _ = self.acceptOpenInAppDialogIfPresent(springboard: springboard, timeout: 0.1)
+                }
+            } else {
+                _ = self.acceptOpenInAppDialogIfPresent(springboard: springboard, timeout: 0.3)
+            }
+            Thread.sleep(forTimeInterval: 0.2)
         }
         return false
     }
@@ -219,6 +290,9 @@ class CommandHandler {
             return try elementFinder.getElementInfo(elementId)
         }
         let selector = SelectorParser.parse(params)
+        if selector.xpath != nil {
+            return try elementFinder.findElement(selector)
+        }
         // Use snapshot-based finding for speed (single IPC call)
         return try snapshotFinder.findElement(selector)
     }
@@ -265,6 +339,36 @@ class CommandHandler {
         throw firstError!
     }
 
+    /// Double-tap a resolved element. Prefer XCUIElement.doubleTap() because
+    /// UIKit/RN gesture recognizers handle it more consistently than raw
+    /// coordinate double-taps on CI simulators. Use coordinate synthesis only
+    /// as a fallback when the cached XCUIElement path is unavailable.
+    private func doubleTapResolvedElement(_ element: ElementInfo, intervalMs: Int) throws {
+        var firstError: Error?
+        do {
+            let xcElem = try getXCUIElement(element.elementId)
+            try actionExecutor.doubleTap(xcElem)
+            return
+        } catch {
+            firstError = error
+            let message = "[TapsmithCommand] XCUIElement.doubleTap failed " +
+                "for \(element.elementId): \(error.localizedDescription), " +
+                "falling back to coordinate doubleTap"
+            NSLog(message)
+        }
+
+        if let center = snapshotCenter(for: element.elementId) {
+            actionExecutor.doubleTapCoordinates(
+                x: Int(center.x),
+                y: Int(center.y),
+                intervalMs: intervalMs
+            )
+            return
+        }
+
+        throw firstError!
+    }
+
     /// Tap inside a text input, biased toward the trailing edge so refocusing
     /// during retries keeps the insertion point at the end of the current
     /// value instead of moving it into the middle of existing text.
@@ -277,6 +381,7 @@ class CommandHandler {
             let screen = snapshotFinder.screenSize
             if x >= 0 && y >= 0 && x <= screen.width && y <= screen.height {
                 actionExecutor.tapCoordinates(x: Int(x), y: Int(y))
+                snapshotFinder.recordFocusedTextInputHint(element)
                 waitForKeyboardAppearance(maxWait: settleTime)
                 return
             }
@@ -287,6 +392,7 @@ class CommandHandler {
             throw AgentError.actionFailed("Element is not hittable — cannot type text")
         }
         xcElem.tap()
+        snapshotFinder.recordFocusedTextInputHint(element)
         waitForKeyboardAppearance(maxWait: settleTime)
     }
 
@@ -476,13 +582,18 @@ class CommandHandler {
         // ─── Tap Actions ───
 
         case "tap":
-            let x = params["x"] as? Int ?? -1
-            let y = params["y"] as? Int ?? -1
+            // Coordinates arrive as JSON numbers (NSNumber) and may be
+            // fractional logical points (coordinate taps from the SDK /
+            // UI-mode mirror), so `as? Int` would fail — go via NSNumber.
+            let x = (params["x"] as? NSNumber)?.intValue ?? -1
+            let y = (params["y"] as? NSNumber)?.intValue ?? -1
             if x >= 0 && y >= 0 {
                 actionExecutor.tapCoordinates(x: x, y: y)
+                snapshotFinder.recordFocusedTextInputHint(at: CGPoint(x: CGFloat(x), y: CGFloat(y)))
             } else {
                 let element = try resolveElement(params)
                 try tapResolvedElement(element)
+                snapshotFinder.recordFocusedTextInputHint(element)
             }
             // Force-flush pending touch events: take a snapshot() which does
             // a round-trip through the XCTest daemon. This acts as a barrier,
@@ -495,19 +606,16 @@ class CommandHandler {
         case "doubleTap":
             let element = try resolveElement(params)
             let intervalMs = params["intervalMs"] as? Int ?? 0
-            if let center = snapshotCenter(for: element.elementId) {
-                actionExecutor.doubleTapCoordinates(x: Int(center.x), y: Int(center.y), intervalMs: intervalMs)
-            } else {
-                let xcElem = try getXCUIElement(element.elementId)
-                try actionExecutor.doubleTap(xcElem)
-            }
+            try doubleTapResolvedElement(element, intervalMs: intervalMs)
             touchBarrier()
             return ["success": true]
 
         case "longPress":
-            let duration = params["duration"] as? Int64 ?? 1000
-            let x = params["x"] as? Int ?? -1
-            let y = params["y"] as? Int ?? -1
+            // NSNumber coercion: JSON numbers aren't directly castable to Int/
+            // Int64, and coordinates may be fractional logical points.
+            let duration = (params["duration"] as? NSNumber)?.int64Value ?? 1000
+            let x = (params["x"] as? NSNumber)?.intValue ?? -1
+            let y = (params["y"] as? NSNumber)?.intValue ?? -1
             if x >= 0 && y >= 0 {
                 actionExecutor.longPressCoordinates(x: x, y: y, durationMs: duration)
             } else {
@@ -530,16 +638,30 @@ class CommandHandler {
                 return ["success": true]
             }
             let delayMs = params["typingDelayMs"] as? Int ?? 0
-            let selectorKeys = ["role", "id", "contentDesc", "className", "testId", "hint", "textContains", "elementId"]
+            let selectorKeys = [
+                "role", "id", "contentDesc", "className", "testId",
+                "hint", "textContains", "elementId", "focused",
+                "label", "xpath", "resourceId", "parent", "parentId",
+                "enabled", "checked", "selected", "expanded",
+            ]
             let hasSelector = selectorKeys.contains { params[$0] != nil }
-            if hasSelector {
+            let isFocusedOnlySelector = (
+                (params["focused"] as? Bool) == true
+                && selectorKeys.allSatisfy { $0 == "focused" || params[$0] == nil }
+            )
+            if hasSelector && !(isFocusedOnlySelector && delayMs == 0) {
                 var selectorParams = params
                 selectorParams.removeValue(forKey: "text")
                 selectorParams.removeValue(forKey: "typingDelayMs")
+                if isFocusedOnlySelector {
+                    waitForKeyboardAppearance(maxWait: 1.0)
+                }
                 let element = try resolveElement(selectorParams)
-                try focusElementForTyping(element, settleTime: 0.5)
+                if !isFocusedOnlySelector {
+                    try focusElementForTyping(element, settleTime: 0.5)
+                }
                 if delayMs > 0 {
-                    let focused = try resolveElement(selectorParams)
+                    let focused = isFocusedOnlySelector ? element : try resolveElement(selectorParams)
                     try typeTextWithPerGraphemeVerification(
                         text,
                         selectorParams: selectorParams,
@@ -744,9 +866,71 @@ class CommandHandler {
             try? focusElementForTyping(element, settleTime: 0.1)
             return ["success": true]
 
+        // ─── Interactive Mirror Live-Drag (buffered touch path) ───
+
+        case "touchDown":
+            let x = (params["x"] as? NSNumber)?.doubleValue ?? 0
+            let y = (params["y"] as? NSNumber)?.doubleValue ?? 0
+            touchPathLock.lock()
+            touchPath = [(CGPoint(x: x, y: y), 0.0)]
+            touchPathLock.unlock()
+            return ["success": true]
+
+        case "touchMove":
+            let x = (params["x"] as? NSNumber)?.doubleValue ?? 0
+            let y = (params["y"] as? NSNumber)?.doubleValue ?? 0
+            let tMs = (params["t"] as? NSNumber)?.doubleValue ?? 0
+            touchPathLock.lock()
+            if !touchPath.isEmpty {
+                touchPath.append((CGPoint(x: x, y: y), tMs / 1000.0))
+            }
+            touchPathLock.unlock()
+            return ["success": true]
+
+        case "touchUp":
+            let x = (params["x"] as? NSNumber)?.doubleValue ?? 0
+            let y = (params["y"] as? NSNumber)?.doubleValue ?? 0
+            let tMs = (params["t"] as? NSNumber)?.doubleValue ?? 0
+            // Copy + clear the path under the lock, then synthesize OUTSIDE the
+            // lock (event synthesis is slow and must not block other threads).
+            touchPathLock.lock()
+            var pathToReplay: [(CGPoint, TimeInterval)] = []
+            if !touchPath.isEmpty {
+                touchPath.append((CGPoint(x: x, y: y), tMs / 1000.0))
+                pathToReplay = touchPath
+                touchPath = []
+            }
+            touchPathLock.unlock()
+            if !pathToReplay.isEmpty {
+                _ = EventSynthesizer.swipePath(pathToReplay)
+            }
+            // Settle like the existing swipe path.
+            Thread.sleep(forTimeInterval: 0.2)
+            RunLoop.current.run(mode: .default, before: Date(timeIntervalSinceNow: 0.01))
+            return ["success": true]
+
+        case "touchCancel":
+            touchPathLock.lock()
+            touchPath = []
+            touchPathLock.unlock()
+            return ["success": true]
+
         // ─── Swipe / Scroll ───
 
         case "swipe":
+            if let fromX = (params["fromX"] as? NSNumber)?.doubleValue,
+               let fromY = (params["fromY"] as? NSNumber)?.doubleValue,
+               let toX = (params["toX"] as? NSNumber)?.doubleValue,
+               let toY = (params["toY"] as? NSNumber)?.doubleValue {
+                try actionExecutor.drag(
+                    from: CGPoint(x: CGFloat(fromX), y: CGFloat(fromY)),
+                    to: CGPoint(x: CGFloat(toX), y: CGFloat(toY))
+                )
+                // Match the settle used by the direction-based swipe below.
+                Thread.sleep(forTimeInterval: 0.2)
+                RunLoop.current.run(mode: .default, before: Date(timeIntervalSinceNow: 0.01))
+                return ["success": true]
+            }
             let direction = params["direction"] as? String ?? "up"
             let speed = params["speed"] as? Int ?? 5000
             let distance = params["distance"] as? Double ?? 0.5
@@ -888,6 +1072,7 @@ class CommandHandler {
                 let xcElem = try getXCUIElement(element.elementId)
                 try actionExecutor.focus(xcElem)
             }
+            snapshotFinder.recordFocusedTextInputHint(element)
             return ["success": true]
 
         case "blur":
@@ -897,6 +1082,7 @@ class CommandHandler {
             // app.windows.firstMatch.frame.size read inside blur().
             actionExecutor.cachedScreenSize = snapshotFinder.screenSize
             try actionExecutor.blur(xcElem)
+            snapshotFinder.clearFocusedTextInputHint()
             return ["success": true]
 
         case "highlight":
@@ -1011,13 +1197,9 @@ class CommandHandler {
             // If running in background, this brings it to foreground.
             let targetApp = rebindApp(bundleId: targetBundleId(fallback: params))
             targetApp.activate()
-            // Wait for the app to settle after launch/foregrounding.
             Thread.sleep(forTimeInterval: 0.5)
-            // Accept custom URL-scheme confirmation if simctl openurl left
-            // SpringBoard in front of the app before this rebind.
-            let springboard = XCUIApplication(bundleIdentifier: "com.apple.springboard")
-            _ = acceptOpenInAppDialogIfPresent(timeout: 1.0)
             // Dismiss "Save Password?" dialog from iOS Passwords framework.
+            let springboard = XCUIApplication(bundleIdentifier: "com.apple.springboard")
             let notNow = springboard.buttons["Not Now"]
             if notNow.exists {
                 notNow.tap()
@@ -1061,25 +1243,42 @@ class CommandHandler {
                 throw AgentError.actionFailed("openDeepLink: missing or invalid URL")
             }
             let bundleId = targetBundleId(fallback: params)
-            let targetApp = rebindApp(bundleId: bundleId)
-            if #available(iOS 16.4, *) {
-                // Pre-warm: activate() ensures the quiescence disable is
-                // fully propagated on the freshly rebound XCUIApplication.
-                // Without this, open(url:) can block indefinitely waiting
-                // for quiescence after a full agent restart (e.g. following
-                // clearData), because the new instance's quiescence state
-                // hasn't settled yet.
-                targetApp.activate()
-                Thread.sleep(forTimeInterval: 0.15)
-                targetApp.open(url)
-                Thread.sleep(forTimeInterval: 0.3)
-                _ = acceptOpenInAppDialogIfPresent(timeout: 1.0)
-                return ["success": true]
-            } else {
-                throw AgentError.actionFailed(
-                    "openDeepLink requires iOS 16.4 or newer on physical devices"
-                )
+            // Physical devices have no host-side `simctl openurl`, so the agent
+            // delivers the URL itself. On simulators the daemon already ran it;
+            // this command only accepts any remaining prompt and rebinds once
+            // the target app is foreground.
+            let deliverInProcess = params["deliverInProcess"] as? Bool ?? true
+            let targetApp = XCUIApplication(bundleIdentifier: bundleId)
+            _ = safeAppState(targetApp)
+            QuiescenceDisabler.disable(for: targetApp)
+
+            if deliverInProcess {
+                guard #available(iOS 16.4, *) else {
+                    throw AgentError.actionFailed(
+                        "openDeepLink requires iOS 16.4 or newer on physical devices"
+                    )
+                }
+                _ = ObjCExceptionCatcher.catchException {
+                    targetApp.activate()
+                    Thread.sleep(forTimeInterval: 0.15)
+                    targetApp.open(url)
+                }
             }
+
+            if waitForDeepLinkDestination(targetApp, timeout: 10.0) {
+                _ = rebindApp(bundleId: bundleId)
+                return ["success": true]
+            }
+            throw AgentError.actionFailed(
+                "openDeepLink: app did not reach foreground after opening \(urlString)"
+            )
+
+        case "acceptOpenInAppDialog":
+            let timeoutMs = params["timeout"] as? Int64 ?? 1000
+            let dismissed = acceptOpenInAppDialogIfPresent(
+                timeout: TimeInterval(timeoutMs) / 1000.0
+            )
+            return ["success": true, "dismissed": dismissed]
 
         case "dismissSystemDialogs":
             let springboard = XCUIApplication(bundleIdentifier: "com.apple.springboard")
@@ -1147,6 +1346,7 @@ class CommandHandler {
             let kbSnapshot = try? app.snapshot()
             let kbDict = kbSnapshot.map { $0.dictionaryRepresentation } ?? [:]
             guard hasKeyboardInSnapshot(kbDict) else {
+                snapshotFinder.clearFocusedTextInputHint()
                 return ["success": true]
             }
 
@@ -1176,6 +1376,7 @@ class CommandHandler {
                 duration: 0.05
             )
             Thread.sleep(forTimeInterval: 0.3)
+            snapshotFinder.clearFocusedTextInputHint()
             return ["success": true]
 
         // ─── Color Scheme ───

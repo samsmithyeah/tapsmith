@@ -164,6 +164,14 @@ export interface DeviceLogEntry {
   pid: number;
 }
 
+export interface DaemonLogEntry {
+  level: string;
+  message: string;
+  target: string;
+  requestId: string;
+  timestampMs: number;
+}
+
 export interface WebViewInfo {
   socketName: string;
   pid: number;
@@ -212,9 +220,9 @@ export interface ScrollOptions {
 // ─── Client ───
 
 const PROTO_PATH = (() => {
-  const bundled = path.resolve(__dirname, 'proto/tapsmith.proto');
+  const bundled = path.resolve(import.meta.dirname, 'proto/tapsmith.proto');
   if (fs.existsSync(bundled)) return bundled;
-  return path.resolve(__dirname, '../../../proto/tapsmith.proto');
+  return path.resolve(import.meta.dirname, '../../../proto/tapsmith.proto');
 })();
 const DEFAULT_ADDRESS = 'localhost:50051';
 
@@ -345,6 +353,58 @@ export class TapsmithGrpcClient {
     };
     if (options?.timeoutMs != null) request.timeoutMs = options.timeoutMs;
     return this.call<ActionResponse>('swipe', request);
+  }
+
+  async tapXY(x: number, y: number): Promise<ActionResponse> {
+    return this.call<ActionResponse>('tapCoordinates', {
+      requestId: requestId(),
+      x,
+      y,
+    });
+  }
+
+  async longPressXY(x: number, y: number, durationMs?: number): Promise<ActionResponse> {
+    return this.call<ActionResponse>('longPressCoordinates', {
+      requestId: requestId(),
+      x,
+      y,
+      durationMs: durationMs ?? 0,
+    });
+  }
+
+  async dragXY(fromX: number, fromY: number, toX: number, toY: number, durationMs?: number): Promise<ActionResponse> {
+    return this.call<ActionResponse>('dragCoordinates', {
+      requestId: requestId(),
+      fromX,
+      fromY,
+      toX,
+      toY,
+      durationMs: durationMs ?? 0,
+    });
+  }
+
+  async inputText(text: string, typingDelayMs?: number): Promise<ActionResponse> {
+    return this.call<ActionResponse>('inputText', {
+      requestId: requestId(),
+      text,
+      typingDelayMs: typingDelayMs ?? 0,
+    });
+  }
+
+  async touchDown(x: number, y: number, tMs = 0): Promise<ActionResponse> {
+    return this.call<ActionResponse>('touchDown', { requestId: requestId(), x, y, tMs });
+  }
+
+  async touchMove(x: number, y: number, tMs = 0): Promise<ActionResponse> {
+    return this.call<ActionResponse>('touchMove', { requestId: requestId(), x, y, tMs });
+  }
+
+  async touchUp(x: number, y: number, tMs = 0): Promise<ActionResponse> {
+    return this.call<ActionResponse>('touchUp', { requestId: requestId(), x, y, tMs });
+  }
+
+  async touchCancel(): Promise<ActionResponse> {
+    return this.call<ActionResponse>('touchCancel', { requestId: requestId() });
   }
 
   async scroll(
@@ -804,6 +864,18 @@ export class TapsmithGrpcClient {
       requestId: requestId(),
       packageName,
     }) as grpc.ClientReadableStream<DeviceLogEntry>;
+  }
+
+  /**
+   * Open a server-side streaming RPC for daemon log streaming.
+   * Cancel the returned stream to stop.
+   * @internal
+   */
+  daemonLogStream(): grpc.ClientReadableStream<DaemonLogEntry> {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- dynamic RPC dispatch on proto-loaded client
+    return (this.client as any).streamDaemonLogs({
+      requestId: requestId(),
+    }) as grpc.ClientReadableStream<DaemonLogEntry>;
   }
 
   // ── Network Route Interception ──

@@ -30,6 +30,9 @@ const ANDROID_REVERSE_PORT_FALLBACK_COUNT: usize = 8;
 const ANDROID_REVERSE_PORT_FALLBACK_STEP: u32 = 997;
 const WEBVIEW_ADB_TIMEOUT: Duration = Duration::from_secs(5);
 const WEBVIEW_ADB_CLEANUP_TIMEOUT: Duration = Duration::from_secs(2);
+const IOS_OPEN_URL_PROMPT_TIMEOUT: Duration = Duration::from_secs(28);
+const IOS_OPEN_DIALOG_ACCEPT_TIMEOUT_MS: u64 = 300;
+const IOS_OPEN_DEEP_LINK_VERIFY_TIMEOUT_MS: u64 = 12_000;
 
 pub struct TapsmithServiceImpl {
     device_manager: Arc<RwLock<DeviceManager>>,
@@ -91,6 +94,14 @@ pub struct TapsmithServiceImpl {
     /// lifetime of one test, released by `StopVideoRecording`. Dropping the
     /// handle (e.g. on session teardown) hard-kills the underlying recorder.
     video_recording: Arc<RwLock<Option<crate::video::RecordingHandle>>>,
+    /// iOS-simulator live HID touch injector (macOS only). Lazily spawns one
+    /// `tapsmith-ios-hid` helper per simulator; touch handlers route iOS-sim
+    /// streamed touch here, falling back to the agent if it's unavailable.
+    #[cfg(target_os = "macos")]
+    hid_injector: Arc<crate::hid_injector::HidInjector>,
+    /// In-process broadcast of daemon `tracing` events, fanned out by the
+    /// `StreamDaemonLogs` RPC so the SDK can fold daemon logs into traces.
+    daemon_log_bus: crate::daemon_log_bus::DaemonLogBus,
 }
 
 /// Stored iOS agent launch config for restart.
@@ -108,10 +119,12 @@ impl TapsmithServiceImpl {
     pub fn new(
         device_manager: Arc<RwLock<DeviceManager>>,
         agent: Arc<RwLock<AgentConnection>>,
+        daemon_log_bus: crate::daemon_log_bus::DaemonLogBus,
     ) -> Self {
         Self {
             device_manager,
             agent,
+            daemon_log_bus,
             agent_stream: agent_comms::new_agent_stream_cache(),
             network_proxy: Arc::new(RwLock::new(None)),
             proxy_device_serial: Arc::new(RwLock::new(None)),
@@ -133,6 +146,8 @@ impl TapsmithServiceImpl {
             #[cfg(target_os = "macos")]
             webkit_debug_proxy: Arc::new(RwLock::new(None)),
             video_recording: Arc::new(RwLock::new(None)),
+            #[cfg(target_os = "macos")]
+            hid_injector: Arc::new(crate::hid_injector::HidInjector::new()),
         }
     }
 
@@ -263,6 +278,82 @@ impl TapsmithServiceImpl {
             agent_comms::send_with_persistent_cache(&self.agent_stream, &params, command, timeout)
                 .await;
         self.recover_agent_on_timeout(command, raw).await
+    }
+
+    async fn accept_ios_open_in_app_dialog(&self) {
+        let result = self
+            .send_agent_command_with_timeout(
+                &AgentCommand::AcceptOpenInAppDialog {
+                    timeout_ms: Some(IOS_OPEN_DIALOG_ACCEPT_TIMEOUT_MS),
+                },
+                IOS_OPEN_DIALOG_ACCEPT_TIMEOUT_MS + 1_000,
+            )
+            .await;
+
+        match result {
+            Ok(resp) if resp.success => {
+                if resp
+                    .data
+                    .get("dismissed")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false)
+                {
+                    info!("Accepted iOS Open-in-app confirmation dialog");
+                }
+            }
+            Ok(resp) => {
+                debug!(
+                    error = ?resp.error,
+                    "iOS Open-in-app dialog accept command returned failure"
+                );
+            }
+            Err(e) => {
+                debug!(error = %e, "Failed to probe iOS Open-in-app dialog");
+            }
+        }
+    }
+
+    async fn open_ios_simulator_url_with_prompt_handling(
+        &self,
+        serial: &str,
+        uri: &str,
+    ) -> anyhow::Result<()> {
+        let serial_for_open = serial.to_string();
+        let uri_for_open = uri.to_string();
+        let open_url = ios::device::open_url(&serial_for_open, &uri_for_open);
+        tokio::pin!(open_url);
+        let deadline = tokio::time::Instant::now() + IOS_OPEN_URL_PROMPT_TIMEOUT;
+
+        let prompt_poll_interval = Duration::from_millis(500);
+        let initial_prompt_poll_interval = Duration::from_millis(50);
+        let mut next_poll_interval = initial_prompt_poll_interval;
+        loop {
+            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+            if remaining.is_zero() {
+                tokio::select! {
+                    biased;
+                    result = &mut open_url => {
+                        return result;
+                    }
+                    _ = tokio::time::sleep(Duration::from_millis(1)) => {}
+                }
+                return Err(anyhow::anyhow!(
+                    "Operation timed out opening URL on {serial}: {uri}"
+                ));
+            }
+
+            let sleep_duration = remaining.min(next_poll_interval);
+            tokio::select! {
+                biased;
+                result = &mut open_url => {
+                    return result;
+                }
+                _ = tokio::time::sleep(sleep_duration) => {
+                    self.accept_ios_open_in_app_dialog().await;
+                    next_poll_interval = prompt_poll_interval;
+                }
+            }
+        }
     }
 
     /// If the agent command failed with a "timed out" error AND the active
@@ -1170,6 +1261,59 @@ impl TapsmithServiceImpl {
 
         Ok(parse_component_name(&output))
     }
+
+    /// Try to handle a streamed-touch event via the iOS-simulator HID path.
+    /// Returns true if it was injected via HID; false means the caller should
+    /// fall back to the agent command. `is_down` ensures the helper is spawned
+    /// before the first event of a gesture.
+    ///
+    /// Fallback is per-event: if the helper dies mid-gesture, the failing event
+    /// (and the rest of the gesture) routes to the agent. A gesture that started
+    /// on HID and finishes on the agent could in theory leave a dangling HID
+    /// touch, but in practice `ensure` only fails at `down` (before any contact)
+    /// and a live helper does not die mid-drag — so a split gesture is a
+    /// degenerate case, not the normal path.
+    #[cfg(target_os = "macos")]
+    async fn try_hid_touch(&self, line: &str, is_down: bool) -> bool {
+        let udid = {
+            let dm = self.device_manager.read().await;
+            match dm.active_device() {
+                Some(d) if d.platform == Platform::Ios && d.is_emulator => d.serial.clone(),
+                _ => return false,
+            }
+        };
+        if is_down {
+            if let Err(e) = self.hid_injector.ensure(&udid).await {
+                warn!(%udid, error = %e, "iOS HID helper unavailable; falling back to agent");
+                return false;
+            }
+        }
+        match self.hid_injector.send(&udid, line).await {
+            Ok(()) => true,
+            Err(e) => {
+                warn!(%udid, error = %e, "iOS HID send failed; falling back to agent");
+                false
+            }
+        }
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    async fn try_hid_touch(&self, _line: &str, _is_down: bool) -> bool {
+        false
+    }
+
+    /// Build a synthetic success ActionResponse (used when a touch event was
+    /// handled out-of-band by the HID injector, bypassing the agent).
+    #[allow(clippy::result_large_err)] // Status is tonic's standard error type
+    fn hid_ok_response(request_id: String) -> Result<Response<proto::ActionResponse>, Status> {
+        Ok(Response::new(proto::ActionResponse {
+            request_id,
+            success: true,
+            error_type: String::new(),
+            error_message: String::new(),
+            screenshot: Vec::new(),
+        }))
+    }
 }
 
 /// Convert a protobuf Selector into a JSON value for the agent protocol.
@@ -1859,12 +2003,24 @@ impl proto::tapsmith_service_server::TapsmithService for TapsmithServiceImpl {
             .await
             .map_err(|e| Status::internal(e.to_string()))?;
 
+        // Capture the previously-active serial so we can release a stale iOS
+        // HID helper for the old simulator once the active device switches.
+        #[cfg(target_os = "macos")]
+        let previous_serial = dm.active_serial().map(String::from);
+
         match dm.set_active(&req.serial) {
             Ok(()) => {
                 // Drop the device_manager lock before the async pre-start so
                 // ensure_ios_physical_proxy can acquire its own locks without
                 // deadlocking against our write guard.
                 drop(dm);
+                // Best-effort: shut down the HID helper for the device we just
+                // switched away from (no-op if there wasn't one). The helper
+                // also dies via kill_on_drop on daemon exit.
+                #[cfg(target_os = "macos")]
+                if let Some(prev) = previous_serial.filter(|p| p != &req.serial) {
+                    self.hid_injector.shutdown(&prev).await;
+                }
                 agent_comms::clear_stream_cache(&self.agent_stream).await;
                 // Persist the CLI's tracing flag on the server so subsequent
                 // call sites (start_agent, recovery restarts) can check it
@@ -2571,21 +2727,21 @@ impl proto::tapsmith_service_server::TapsmithService for TapsmithServiceImpl {
                     let command = AgentCommand::OpenDeepLink {
                         url: req.uri.clone(),
                         package: bundle_id,
+                        deliver_in_process: true,
                     };
                     let result = self.send_agent_command(&command).await;
                     return self.make_action_response(request_id, result).await;
                 }
 
-                // Simulator: terminate → simctl openurl → rebind agent.
+                // Simulator: terminate -> simctl openurl -> verify/rebind agent.
                 //
                 // XCUIApplication.open(url:) hangs on quiescence on slow CI
                 // runners, so we avoid it entirely. simctl openurl to a
                 // running app doesn't trigger navigation (the React Native
                 // scene handler misses it), so we terminate first — making
-                // openurl cold-launch the app with the URL. Finally, rebind
-                // the agent to the newly launched process; LaunchApp also
-                // accepts SpringBoard's URL-scheme confirmation if the
-                // simulator shows it.
+                // openurl cold-launch the app with the URL. Fresh simulators
+                // can show "Open in <app>?" and block simctl itself, so the
+                // daemon taps that dialog while openurl is still pending.
                 let _ = self
                     .send_agent_command_with_timeout(
                         &AgentCommand::TerminateApp {
@@ -2598,7 +2754,10 @@ impl proto::tapsmith_service_server::TapsmithService for TapsmithServiceImpl {
 
                 let mut open_url_attempt = 1;
                 loop {
-                    match ios::device::open_url(&serial, &req.uri).await {
+                    match self
+                        .open_ios_simulator_url_with_prompt_handling(&serial, &req.uri)
+                        .await
+                    {
                         Ok(()) => break,
                         Err(e)
                             if open_url_attempt == 1
@@ -2630,18 +2789,15 @@ impl proto::tapsmith_service_server::TapsmithService for TapsmithServiceImpl {
                 }
                 tokio::time::sleep(Duration::from_millis(500)).await;
 
-                // Rebind agent to the cold-launched process and dismiss
-                // any system dialogs. LaunchApp calls activate() which
-                // connects to the running process without navigating away
-                // from the deep link destination.
-                let _ = self
-                    .send_agent_command_with_timeout(
-                        &AgentCommand::LaunchApp { package: bundle_id },
-                        8_000,
-                    )
+                let command = AgentCommand::OpenDeepLink {
+                    url: req.uri,
+                    package: bundle_id,
+                    deliver_in_process: false,
+                };
+                let result = self
+                    .send_agent_command_with_timeout(&command, IOS_OPEN_DEEP_LINK_VERIFY_TIMEOUT_MS)
                     .await;
-
-                Ok(Self::success_action_response(request_id))
+                self.make_action_response(request_id, result).await
             }
             Platform::Android => {
                 if req.uri.contains('\'') {
@@ -4319,6 +4475,9 @@ impl proto::tapsmith_service_server::TapsmithService for TapsmithServiceImpl {
     type StreamDeviceLogsStream =
         Pin<Box<dyn Stream<Item = Result<proto::DeviceLogEntry, Status>> + Send>>;
 
+    type StreamDaemonLogsStream =
+        Pin<Box<dyn Stream<Item = Result<proto::DaemonLogEntry, Status>> + Send>>;
+
     async fn stream_device_logs(
         &self,
         request: Request<proto::StreamDeviceLogsRequest>,
@@ -4358,6 +4517,67 @@ impl proto::tapsmith_service_server::TapsmithService for TapsmithServiceImpl {
                 }
             }
             drop(handle);
+        });
+
+        let output_stream = tokio_stream::wrappers::ReceiverStream::new(out_rx);
+        Ok(Response::new(Box::pin(output_stream)))
+    }
+
+    // ─── Daemon Log Streaming ───
+
+    async fn stream_daemon_logs(
+        &self,
+        _request: Request<proto::StreamDaemonLogsRequest>,
+    ) -> Result<Response<Self::StreamDaemonLogsStream>, Status> {
+        let mut sub = self.daemon_log_bus.subscribe();
+        let (out_tx, out_rx) =
+            tokio::sync::mpsc::channel::<Result<proto::DaemonLogEntry, Status>>(256);
+
+        tokio::spawn(async move {
+            loop {
+                tokio::select! {
+                    res = sub.recv() => {
+                        match res {
+                            Ok(entry) => {
+                                let proto_entry = proto::DaemonLogEntry {
+                                    level: entry.level,
+                                    message: entry.message,
+                                    target: entry.target,
+                                    request_id: entry.request_id,
+                                    timestamp_ms: entry.timestamp_ms,
+                                };
+                                if out_tx.send(Ok(proto_entry)).await.is_err() {
+                                    break;
+                                }
+                            }
+                            Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
+                                // Surface dropped entries instead of silently
+                                // losing them when a slow client falls behind.
+                                let now_ms = std::time::SystemTime::now()
+                                    .duration_since(std::time::UNIX_EPOCH)
+                                    .map(|d| d.as_millis() as u64)
+                                    .unwrap_or(0);
+                                let warn_entry = proto::DaemonLogEntry {
+                                    level: "warn".to_string(),
+                                    message: format!(
+                                        "Daemon log stream lagged; skipped {skipped} log entries"
+                                    ),
+                                    target: "tapsmith_core::grpc_server".to_string(),
+                                    request_id: String::new(),
+                                    timestamp_ms: now_ms,
+                                };
+                                if out_tx.send(Ok(warn_entry)).await.is_err() {
+                                    break;
+                                }
+                            }
+                            Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                        }
+                    }
+                    // Client disconnected: terminate immediately instead of
+                    // blocking on `sub.recv()` until the next (maybe never) log.
+                    _ = out_tx.closed() => break,
+                }
+            }
         });
 
         let output_stream = tokio_stream::wrappers::ReceiverStream::new(out_rx);
@@ -5452,6 +5672,162 @@ impl proto::tapsmith_service_server::TapsmithService for TapsmithServiceImpl {
                 }))
             }
         }
+    }
+
+    // ─── Coordinate gesture handlers ───
+
+    #[instrument(skip_all, fields(request_id))]
+    async fn tap_coordinates(
+        &self,
+        request: Request<proto::TapCoordinatesRequest>,
+    ) -> Result<Response<proto::ActionResponse>, Status> {
+        let req = request.into_inner();
+        let request_id = Self::request_id(&req.request_id);
+        let command = AgentCommand::TapCoordinates { x: req.x, y: req.y };
+        let result = self.send_agent_command_with_timeout(&command, 0).await;
+        self.make_action_response(request_id, result).await
+    }
+
+    #[instrument(skip_all, fields(request_id))]
+    async fn long_press_coordinates(
+        &self,
+        request: Request<proto::LongPressCoordinatesRequest>,
+    ) -> Result<Response<proto::ActionResponse>, Status> {
+        let req = request.into_inner();
+        let request_id = Self::request_id(&req.request_id);
+        let command = AgentCommand::LongPressCoordinates {
+            x: req.x,
+            y: req.y,
+            duration_ms: if req.duration_ms > 0 {
+                req.duration_ms
+            } else {
+                1000
+            },
+        };
+        let result = self.send_agent_command_with_timeout(&command, 0).await;
+        self.make_action_response(request_id, result).await
+    }
+
+    #[instrument(skip_all, fields(request_id))]
+    async fn drag_coordinates(
+        &self,
+        request: Request<proto::DragCoordinatesRequest>,
+    ) -> Result<Response<proto::ActionResponse>, Status> {
+        let req = request.into_inner();
+        let request_id = Self::request_id(&req.request_id);
+        let command = AgentCommand::DragCoordinates {
+            from_x: req.from_x,
+            from_y: req.from_y,
+            to_x: req.to_x,
+            to_y: req.to_y,
+            duration_ms: if req.duration_ms > 0 {
+                req.duration_ms
+            } else {
+                300
+            },
+        };
+        let result = self.send_agent_command_with_timeout(&command, 0).await;
+        self.make_action_response(request_id, result).await
+    }
+
+    #[instrument(skip_all, fields(request_id))]
+    async fn input_text(
+        &self,
+        request: Request<proto::InputTextRequest>,
+    ) -> Result<Response<proto::ActionResponse>, Status> {
+        let req = request.into_inner();
+        let request_id = Self::request_id(&req.request_id);
+        let command = AgentCommand::InputText {
+            text: req.text,
+            typing_delay_ms: if req.typing_delay_ms > 0 {
+                Some(req.typing_delay_ms)
+            } else {
+                None
+            },
+        };
+        let result = self.send_agent_command_with_timeout(&command, 0).await;
+        self.make_action_response(request_id, result).await
+    }
+
+    #[instrument(skip_all, fields(request_id))]
+    async fn touch_down(
+        &self,
+        request: Request<proto::TouchPointRequest>,
+    ) -> Result<Response<proto::ActionResponse>, Status> {
+        let req = request.into_inner();
+        let request_id = Self::request_id(&req.request_id);
+        if self
+            .try_hid_touch(&format!("d {} {}", req.x, req.y), true)
+            .await
+        {
+            return Self::hid_ok_response(request_id);
+        }
+        let command = AgentCommand::TouchDown {
+            x: req.x,
+            y: req.y,
+            t_ms: req.t_ms,
+        };
+        let result = self.send_agent_command_with_timeout(&command, 0).await;
+        self.make_action_response(request_id, result).await
+    }
+
+    #[instrument(skip_all, fields(request_id))]
+    async fn touch_move(
+        &self,
+        request: Request<proto::TouchPointRequest>,
+    ) -> Result<Response<proto::ActionResponse>, Status> {
+        let req = request.into_inner();
+        let request_id = Self::request_id(&req.request_id);
+        if self
+            .try_hid_touch(&format!("m {} {}", req.x, req.y), false)
+            .await
+        {
+            return Self::hid_ok_response(request_id);
+        }
+        let command = AgentCommand::TouchMove {
+            x: req.x,
+            y: req.y,
+            t_ms: req.t_ms,
+        };
+        let result = self.send_agent_command_with_timeout(&command, 0).await;
+        self.make_action_response(request_id, result).await
+    }
+
+    #[instrument(skip_all, fields(request_id))]
+    async fn touch_up(
+        &self,
+        request: Request<proto::TouchPointRequest>,
+    ) -> Result<Response<proto::ActionResponse>, Status> {
+        let req = request.into_inner();
+        let request_id = Self::request_id(&req.request_id);
+        if self
+            .try_hid_touch(&format!("u {} {}", req.x, req.y), false)
+            .await
+        {
+            return Self::hid_ok_response(request_id);
+        }
+        let command = AgentCommand::TouchUp {
+            x: req.x,
+            y: req.y,
+            t_ms: req.t_ms,
+        };
+        let result = self.send_agent_command_with_timeout(&command, 0).await;
+        self.make_action_response(request_id, result).await
+    }
+
+    #[instrument(skip_all, fields(request_id))]
+    async fn touch_cancel(
+        &self,
+        request: Request<proto::TouchCancelRequest>,
+    ) -> Result<Response<proto::ActionResponse>, Status> {
+        let req = request.into_inner();
+        let request_id = Self::request_id(&req.request_id);
+        if self.try_hid_touch("c", false).await {
+            return Self::hid_ok_response(request_id);
+        }
+        let command = AgentCommand::TouchCancel {};
+        let result = self.send_agent_command_with_timeout(&command, 0).await;
+        self.make_action_response(request_id, result).await
     }
 }
 

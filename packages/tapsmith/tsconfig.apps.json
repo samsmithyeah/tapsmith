@@ -1,0 +1,20 @@
+{
+  // Type-checks the Preact web apps (UI mode + trace viewer). The base tsconfig
+  // only covers the Node SDK (`src/**/*.ts`, no JSX, no DOM lib), so the `.tsx`
+  // component layer was previously never type-checked. This config adds the
+  // browser lib + Preact JSX runtime and includes the app sources.
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "jsx": "react-jsx",
+    "jsxImportSource": "preact",
+    "lib": ["ES2023", "DOM", "DOM.Iterable"]
+  },
+  "include": [
+    "src/ui-mode/**/*.ts",
+    "src/ui-mode/**/*.tsx",
+    "src/trace-viewer/**/*.ts",
+    "src/trace-viewer/**/*.tsx",
+    "src/assets/**/*.d.ts"
+  ]
+}

@@ -135,20 +135,20 @@ export async function runWatchMode(ctx: WatchModeContext): Promise<void> {
   const serializedConfig: SerializedConfig = serializeConfig(ctx.config);
 
   // Resolve tsx binary for forking TypeScript files
-  const jsScript = path.resolve(__dirname, 'watch-run.js');
-  const tsScript = path.resolve(__dirname, 'watch-run.ts');
+  const jsScript = path.resolve(import.meta.dirname, 'watch-run.js');
+  const tsScript = path.resolve(import.meta.dirname, 'watch-run.ts');
   const useTypeScript = !fs.existsSync(jsScript) && fs.existsSync(tsScript);
   const resolvedScript = useTypeScript ? tsScript : jsScript;
 
-  const jsWorkerScript = path.resolve(__dirname, 'ui-mode', 'ui-worker.js');
-  const tsWorkerScript = path.resolve(__dirname, 'ui-mode', 'ui-worker.ts');
+  const jsWorkerScript = path.resolve(import.meta.dirname, 'ui-mode', 'ui-worker.js');
+  const tsWorkerScript = path.resolve(import.meta.dirname, 'ui-mode', 'ui-worker.ts');
   const resolvedWorkerScript = !fs.existsSync(jsWorkerScript) && fs.existsSync(tsWorkerScript)
     ? tsWorkerScript
     : jsWorkerScript;
 
   let tsxBin: string | undefined;
   if (useTypeScript || resolvedWorkerScript.endsWith('.ts')) {
-    const tapsmithPkgDir = path.resolve(__dirname, '..');
+    const tapsmithPkgDir = path.resolve(import.meta.dirname, '..');
     const localTsx = path.join(tapsmithPkgDir, 'node_modules', '.bin', 'tsx');
     tsxBin = fs.existsSync(localTsx) ? localTsx : 'tsx';
   }
@@ -255,7 +255,7 @@ export async function runWatchMode(ctx: WatchModeContext): Promise<void> {
     const child = fork(resolvedWorkerScript, [], {
       stdio: ['ignore', 'inherit', 'inherit', 'ipc'],
       ...(tsxBin ? { execPath: tsxBin } : {}),
-      env: { ...process.env, NODE_PATH: path.resolve(__dirname, '..'), TAPSMITH_WORKER_ID: String(id) },
+      env: { ...process.env, NODE_PATH: path.resolve(import.meta.dirname, '..'), TAPSMITH_WORKER_ID: String(id) },
     });
     child.setMaxListeners(20);
 
@@ -801,7 +801,7 @@ export async function runWatchMode(ctx: WatchModeContext): Promise<void> {
         ...(tsxBin ? { execPath: tsxBin } : {}),
         env: {
           ...process.env,
-          NODE_PATH: path.resolve(__dirname, '..', '..'),
+          NODE_PATH: path.resolve(import.meta.dirname, '..', '..'),
         },
       });
 

@@ -63,10 +63,13 @@ class TapsmithAgentRunner: XCTestCase {
                 QuiescenceDisabler.disableAllQuiescenceMethods(on: cls)
             }
         }
-        // Auto-dismiss system alerts (e.g., "Open in X?", permission prompts)
-        // that would otherwise block XCUITest interactions.
+        // Auto-dismiss permission prompts that would otherwise block XCUITest
+        // interactions.
+        // NOTE: deliberately does not handle the deep-link "Open in <app>?"
+        // confirmation. The daemon taps it through acceptOpenInAppDialog while
+        // simctl openurl is pending, before XCUITest interactions can race it.
         addUIInterruptionMonitor(withDescription: "System Alert") { alert in
-            let allowButtons = ["Open", "Allow", "OK", "Allow While Using App",
+            let allowButtons = ["Allow", "OK", "Allow While Using App",
                                 "Allow Once", "Continue", "Dismiss"]
             for title in allowButtons {
                 let button = alert.buttons[title]

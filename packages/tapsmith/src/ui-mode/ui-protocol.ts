@@ -14,11 +14,49 @@ import type { AnyTraceEvent } from '../trace/types.js';
 
 export type DevicePlatform = 'android' | 'ios'
 
+export type DeviceFormFactor = 'phone' | 'tablet'
+
+/** Device "skin" bucket — drives which bezel (image frame or CSS) is rendered. */
+export type DeviceSkin = `${DevicePlatform}-${DeviceFormFactor}`
+
 export function inferDevicePlatform(...values: Array<string | undefined>): DevicePlatform | undefined {
   const text = values.filter(Boolean).join(' ');
   if (/ios|iphone|ipad|simulator/i.test(text)) return 'ios';
   if (/android|emulator-|pixel|nexus|galaxy|generic_phone|avd/i.test(text)) return 'android';
   return undefined;
+}
+
+/** Tablet model hints found in simulator/emulator names and serials. */
+const TABLET_RE = /ipad|tablet|\btab\b|\bsm-[tx]\d|nexus (?:7|9|10)|pixel\s*tablet|galaxy\s*tab|\bgts\d/i;
+
+/**
+ * Phone vs tablet. Name/serial hints are authoritative (an "iPad" is a tablet
+ * whatever its screen ratio); the optional screen aspect ratio is a fallback for
+ * opaque serials (e.g. bare `emulator-5554`) — tablets are squarer than phones.
+ */
+export function inferDeviceFormFactor(
+  opts: { hints?: Array<string | undefined>; aspectRatio?: number } = {},
+): DeviceFormFactor {
+  const text = (opts.hints ?? []).filter(Boolean).join(' ');
+  if (TABLET_RE.test(text)) return 'tablet';
+  if (/iphone|pixel \d|generic_phone/i.test(text)) return 'phone';
+  if (opts.aspectRatio && opts.aspectRatio > 0) {
+    // Compare short side / long side. Phones are elongated (16:9 ≈ 0.56, taller
+    // ones lower); tablets are closer to square (iPad ≈ 0.75, 5:3 Android
+    // tablets = 0.6). 0.59 splits them: 16:9 phones stay phones, 5:3 tablets
+    // are caught as tablets.
+    const r = opts.aspectRatio <= 1 ? opts.aspectRatio : 1 / opts.aspectRatio;
+    if (r >= 0.59) return 'tablet';
+  }
+  return 'phone';
+}
+
+/** Combine platform + form factor into the bezel bucket, or undefined if unknown. */
+export function resolveDeviceSkin(
+  platform: DevicePlatform | undefined,
+  formFactor: DeviceFormFactor = 'phone',
+): DeviceSkin | undefined {
+  return platform ? `${platform}-${formFactor}` : undefined;
 }
 
 /** Per-worker status used by UI components. */
@@ -213,6 +251,9 @@ export interface DeviceInfoMessage {
 
 export interface SourceMessage {
   type: 'source'
+  /** Absolute path of the source file — unique key for the client sources map. */
+  path: string
+  /** Basename for display. */
   fileName: string
   content: string
 }
@@ -346,12 +387,91 @@ export interface RequestHierarchyCommand {
   type: 'request-hierarchy'
 }
 
-export interface TapCoordinatesCommand {
-  type: 'tap-coordinates'
-  /** X coordinate normalized to 0–1 range. */
+export interface RequestSourceCommand {
+  type: 'request-source'
+  /** Absolute path of the source file to read from disk. */
+  path: string
+}
+
+export interface MirrorTapCommand {
+  type: 'mirror-tap'
+  /** X normalized to 0–1. */
   x: number
-  /** Y coordinate normalized to 0–1 range. */
+  /** Y normalized to 0–1. */
   y: number
+  /** Target worker (multi-worker mode). Defaults to the selected worker. */
+  workerId?: number
+  /** True when the user overrode the lock to interact during a run. */
+  force?: boolean
+}
+
+export interface MirrorLongPressCommand {
+  type: 'mirror-long-press'
+  x: number
+  y: number
+  durationMs: number
+  workerId?: number
+  force?: boolean
+}
+
+export interface MirrorSwipeCommand {
+  type: 'mirror-swipe'
+  fromX: number
+  fromY: number
+  toX: number
+  toY: number
+  durationMs: number
+  workerId?: number
+  force?: boolean
+}
+
+export interface MirrorInputTextCommand {
+  type: 'mirror-input-text'
+  text: string
+  workerId?: number
+  force?: boolean
+}
+
+export interface MirrorPressKeyCommand {
+  type: 'mirror-press-key'
+  key: string
+  workerId?: number
+  force?: boolean
+}
+
+export interface MirrorTouchStartCommand {
+  type: 'mirror-touch-start'
+  /** X normalized to 0–1. */
+  x: number
+  /** Y normalized to 0–1. */
+  y: number
+  workerId?: number
+  force?: boolean
+}
+
+export interface MirrorTouchMoveCommand {
+  type: 'mirror-touch-move'
+  x: number
+  y: number
+  /** Milliseconds since touch-start. */
+  tMs: number
+  workerId?: number
+  force?: boolean
+}
+
+export interface MirrorTouchEndCommand {
+  type: 'mirror-touch-end'
+  x: number
+  y: number
+  tMs: number
+  workerId?: number
+  force?: boolean
+}
+
+export interface MirrorTouchCancelCommand {
+  type: 'mirror-touch-cancel'
+  workerId?: number
+  force?: boolean
 }
 
 export interface SetFilterCommand {
@@ -387,7 +507,16 @@ export type ClientMessage =
   | StopRunCommand
   | ToggleWatchCommand
   | RequestHierarchyCommand
-  | TapCoordinatesCommand
+  | RequestSourceCommand
+  | MirrorTapCommand
+  | MirrorLongPressCommand
+  | MirrorSwipeCommand
+  | MirrorInputTextCommand
+  | MirrorPressKeyCommand
+  | MirrorTouchStartCommand
+  | MirrorTouchMoveCommand
+  | MirrorTouchEndCommand
+  | MirrorTouchCancelCommand
   | SetFilterCommand
   | SelectWorkerCommand
   | SelectWorkerViewCommand
@@ -396,13 +525,21 @@ export type ClientMessage =
 // ─── Binary frame helpers ───
 
 /**
- * Screen frames are sent as binary WebSocket messages:
- *   bytes 0-3:  uint32 BE frame sequence number
- *   bytes 4-5:  uint16 BE worker ID (0 for single-worker mode)
- *   bytes 6-9:  uint16 BE width, uint16 BE height
- *   bytes 10+:  raw PNG data
+ * Binary WebSocket frames are tagged with a `kind` byte (byte 0). Only PNG
+ * screenshot frames are carried today; the tag is retained for wire stability.
  */
-export const SCREEN_FRAME_HEADER_SIZE = 10;
+export const FRAME_KIND_SCREENSHOT = 0;
+
+/**
+ * Screenshot frame layout:
+ *   byte  0:    uint8  kind = 0
+ *   bytes 1-4:  uint32 BE frame sequence number
+ *   bytes 5-6:  uint16 BE worker ID (0 for single-worker mode)
+ *   bytes 7-8:  uint16 BE width
+ *   bytes 9-10: uint16 BE height
+ *   bytes 11+:  raw PNG data
+ */
+export const SCREEN_FRAME_HEADER_SIZE = 11;
 
 export function encodeScreenFrame(
   seq: number,
@@ -412,26 +549,25 @@ export function encodeScreenFrame(
   png: Buffer,
 ): Buffer {
   const header = Buffer.alloc(SCREEN_FRAME_HEADER_SIZE);
-  header.writeUInt32BE(seq, 0);
-  header.writeUInt16BE(workerId, 4);
-  header.writeUInt16BE(width, 6);
-  header.writeUInt16BE(height, 8);
+  header.writeUInt8(FRAME_KIND_SCREENSHOT, 0);
+  header.writeUInt32BE(seq, 1);
+  header.writeUInt16BE(workerId, 5);
+  header.writeUInt16BE(width, 7);
+  header.writeUInt16BE(height, 9);
   return Buffer.concat([header, png]);
 }
 
-export function decodeScreenFrameHeader(data: ArrayBuffer): {
-  seq: number
-  workerId: number
-  width: number
-  height: number
-  pngOffset: number
-} {
+export type DecodedBinaryFrame =
+  | { kind: 'screenshot'; seq: number; workerId: number; width: number; height: number; pngOffset: number }
+
+export function decodeBinaryFrame(data: ArrayBuffer): DecodedBinaryFrame {
   const view = new DataView(data);
   return {
-    seq: view.getUint32(0),
-    workerId: view.getUint16(4),
-    width: view.getUint16(6),
-    height: view.getUint16(8),
+    kind: 'screenshot',
+    seq: view.getUint32(1),
+    workerId: view.getUint16(5),
+    width: view.getUint16(7),
+    height: view.getUint16(9),
     pngOffset: SCREEN_FRAME_HEADER_SIZE,
   };
 }
@@ -482,6 +618,7 @@ export interface UIRunTraceEventMessage {
 
 export interface UIRunSourceMessage {
   type: 'source'
+  path: string
   fileName: string
   content: string
 }
@@ -612,6 +749,7 @@ export interface UIWorkerTraceEventMessage {
 export interface UIWorkerSourceMessage {
   type: 'source'
   workerId: number
+  path: string
   fileName: string
   content: string
 }

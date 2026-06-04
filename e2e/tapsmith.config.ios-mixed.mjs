@@ -53,6 +53,7 @@ export default defineConfig({
   screenshot: "only-on-failure",
   trace: {
     mode: "retain-on-failure",
+    daemonLogs: true,
     // Physical iOS captures Wi-Fi traffic system-wide; scope to the hosts
     // the test app actually calls so traces aren't dominated by iOS
     // background services. Honoured on the simulator side too (harmless —

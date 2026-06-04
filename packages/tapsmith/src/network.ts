@@ -10,7 +10,7 @@ import * as crypto from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import type * as grpc from '@grpc/grpc-js';
 import type { TapsmithGrpcClient } from './grpc-client.js';
-import { getActiveTraceCollector, extractSourceLocation } from './trace/trace-collector.js';
+import { getActiveTraceCollector, extractStack } from './trace/trace-collector.js';
 import type { SourceLocation } from './trace/types.js';
 
 // ─── Public Types ───
@@ -329,6 +329,7 @@ interface RegisteredRouteInfo {
   handler: (route: Route) => Promise<void> | void
   timesRemaining?: number
   sourceLocation?: SourceLocation
+  stack?: SourceLocation[]
 }
 
 // ─── URL Pattern Matching ───
@@ -528,7 +529,8 @@ export class NetworkRouteManager {
 
     // Capture source location at registration time — used by trace events
     // when the handler fires so the viewer can highlight the test code.
-    const sourceLocation = extractSourceLocation(new Error().stack ?? '');
+    const stack = extractStack(new Error().stack ?? '');
+    const sourceLocation = stack[0];
 
     this._routes.set(routeId, {
       routeId,
@@ -537,6 +539,7 @@ export class NetworkRouteManager {
       handler,
       timesRemaining: options?.times,
       sourceLocation,
+      stack,
     });
 
     const stream = this._ensureStream();
@@ -828,7 +831,7 @@ export class NetworkRouteManager {
           route._forceResolve();
           routeAction = 'continue';
         }
-        this._emitRouteTraceEvent(msg, routeAction, startTime, true, undefined, routeInfo.sourceLocation);
+        this._emitRouteTraceEvent(msg, routeAction, startTime, true, undefined, routeInfo.sourceLocation, routeInfo.stack);
       })
       .catch((err) => {
         console.warn(`[tapsmith] Route handler error: ${err}`);
@@ -843,7 +846,7 @@ export class NetworkRouteManager {
           });
           route._forceResolve();
         }
-        this._emitRouteTraceEvent(msg, 'continue', startTime, false, String(err), routeInfo.sourceLocation);
+        this._emitRouteTraceEvent(msg, 'continue', startTime, false, String(err), routeInfo.sourceLocation, routeInfo.stack);
       });
   }
 
@@ -855,6 +858,7 @@ export class NetworkRouteManager {
     success: boolean,
     error?: string,
     sourceLocation?: SourceLocation,
+    stack?: SourceLocation[],
   ): void {
     const collector = getActiveTraceCollector();
     if (!collector) return;
@@ -884,6 +888,7 @@ export class NetworkRouteManager {
       hasHierarchyAfter: false,
       selector: shortUrl,
       sourceLocation,
+      stack,
     });
   }
 

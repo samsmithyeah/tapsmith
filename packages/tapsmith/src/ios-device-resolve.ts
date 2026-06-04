@@ -7,11 +7,14 @@
  * simulator names to UDIDs.
  */
 
+import { createRequire } from 'node:module';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 
 import { listPhysicalDevices, listUsbAttachedIosDevices } from './ios-devicectl.js';
+
+const require = createRequire(import.meta.url);
 
 /**
  * Resolve a single paired, USB-attached physical iOS device UDID. Throws

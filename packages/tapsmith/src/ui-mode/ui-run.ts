@@ -29,6 +29,7 @@ import type {
 import type { AnyTraceEvent } from '../trace/types.js';
 import { isNetworkTracingEnabled, networkHostsForPac } from '../trace/types.js';
 import { encodeNetworkBodies } from './encode-bodies.js';
+import { streamSourcesForEvent } from './source-stream.js';
 
 // ─── Helpers ───
 
@@ -101,7 +102,10 @@ function setupTraceStreaming(device: Device): void {
   const collector = device.tracing._currentCollector;
   if (!collector) return;
 
+  const sentSources = new Set<string>();
   collector.setEventCallback((event: AnyTraceEvent, screenshots, lifecycle) => {
+    streamSourcesForEvent(event, sentSources, (p, fileName, content) =>
+      send({ type: 'source', path: p, fileName, content }));
     const msg: UIRunTraceEventMessage = {
       type: 'trace-event',
       event,
@@ -153,7 +157,7 @@ async function handleRun(msg: UIRunMessage): Promise<void> {
   // Send test source file so the Source tab can display it
   try {
     const sourceContent = fs.readFileSync(msg.filePath, 'utf-8');
-    send({ type: 'source', fileName: path.basename(msg.filePath), content: sourceContent });
+    send({ type: 'source', path: msg.filePath.replace(/\\/g, '/'), fileName: path.basename(msg.filePath), content: sourceContent });
   } catch {
     // best-effort
   }

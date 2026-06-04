@@ -7,7 +7,7 @@
  */
 
 import type { TraceCollector } from './trace-collector.js';
-import { extractSourceLocation, TRACE_CAPTURE_TIMEOUT_MS } from './trace-collector.js';
+import { extractStack, TRACE_CAPTURE_TIMEOUT_MS } from './trace-collector.js';
 import type { ActionCategory } from './types.js';
 import type { ActionResponse, ElementInfo, CaptureTraceStateResponse } from '../grpc-client.js';
 import type { Selector } from '../selectors.js';
@@ -49,7 +49,8 @@ export async function tracedAction(
     return;
   }
 
-  const sourceLocation = extractSourceLocation(new Error().stack ?? '');
+  const stack = extractStack(new Error().stack ?? '');
+  const sourceLocation = stack[0];
   const selectorStr = selector ? JSON.stringify(selectorToProto(selector)) : undefined;
   const log: string[] = [];
 
@@ -149,7 +150,7 @@ export async function tracedAction(
   // emit at the same actionIndex with lifecycle='completed'.
   ctx.collector._emitActionStarted({
     category, action, selector: selectorStr, inputValue: extra?.inputValue,
-    bounds, point, sourceLocation, log: [...log],
+    bounds, point, sourceLocation, stack, log: [...log],
     hasScreenshotBefore: !!beforeCaptures.screenshotBefore,
     hasHierarchyBefore: !!beforeCaptures.hierarchyBefore,
   });
@@ -174,7 +175,7 @@ export async function tracedAction(
       hasScreenshotAfter: false,
       hasHierarchyBefore: !!beforeCaptures.hierarchyBefore,
       hasHierarchyAfter: false,
-      sourceLocation,
+      sourceLocation, stack,
     });
   });
 
@@ -223,7 +224,7 @@ export async function tracedAction(
     hasScreenshotAfter: false,
     hasHierarchyBefore: !!beforeCaptures.hierarchyBefore,
     hasHierarchyAfter: false,
-    sourceLocation,
+    sourceLocation, stack,
   });
 
   if (caughtErr !== undefined) {
