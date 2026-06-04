@@ -485,6 +485,7 @@ impl AgentCommand {
             AgentCommand::GetOrientation {} => "getOrientation",
             AgentCommand::GetColorScheme {} => "getColorScheme",
             AgentCommand::GetAppState { .. } => "getAppState",
+            AgentCommand::CaptureTraceState { .. } => "captureTraceState",
             AgentCommand::DismissSystemDialog => "dismissSystemDialogs",
         }
     }
@@ -1277,6 +1278,11 @@ mod tests {
             AgentCommand::AcceptOpenInAppDialog { timeout_ms: None },
             AgentCommand::GetClipboard {},
             AgentCommand::GetOrientation {},
+            AgentCommand::CaptureTraceState {
+                screenshot: true,
+                hierarchy: true,
+                selector: Some(json!({"text": "Login"})),
+            },
             AgentCommand::DismissSystemDialog,
         ];
         for cmd in cases {
