@@ -26,6 +26,7 @@ import { useVideoMirror } from './hooks/use-video-mirror.js';
 import { useTestTree } from './hooks/use-test-tree.js';
 import { useRunTimer } from './hooks/use-run-timer.js';
 import { usePersistedJSON } from './hooks/use-persisted-state.js';
+import { resolveShortcut } from './keyboard-shortcuts.js';
 import { Layout } from './components/Layout.js';
 import { TestExplorer } from './components/TestExplorer.js';
 import { RunControls, type Theme } from './components/RunControls.js';
@@ -1131,22 +1132,20 @@ function App() {
 
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
-      // Ignore when typing in an input/textarea
-      const tag = (e.target as HTMLElement)?.tagName;
-      if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
-
-      switch (e.key) {
-        case 'r':
+      // resolveShortcut bails on Cmd/Ctrl/Alt chords (e.g. Cmd+Shift+R reload)
+      // and on form-field focus, so a browser refresh never fires run-all.
+      switch (resolveShortcut(e)) {
+        case 'run-all':
           send({ type: 'run-all' });
           break;
-        case 'f':
+        case 'run-failed':
           send({ type: 'run-failed' });
           break;
-        case 'Escape':
+        case 'stop-run':
           send({ type: 'stop-run' });
           setIsStopping(true);
           break;
-        case 'w':
+        case 'toggle-watch':
           send({ type: 'toggle-watch', filePath: 'all' });
           break;
       }
