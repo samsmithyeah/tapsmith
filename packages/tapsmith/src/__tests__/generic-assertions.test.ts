@@ -750,6 +750,15 @@ describe("PILOT-44: expect.poll()", () => {
     await tapsmithExpect.poll(() => 5, { timeout: 1000 }).toBe(5);
   });
 
+  it("returns an awaitable Promise from each assertion", async () => {
+    // The PollAssertions type declares every method as `() => Promise<void>`;
+    // this guards the runtime contract behind that type so a caller's `await`
+    // is never a no-op against a synchronous `void`.
+    const result = tapsmithExpect.poll(() => 5, { timeout: 500 }).toBe(5);
+    vitestExpect(result).toBeInstanceOf(Promise);
+    await result;
+  });
+
   it("polls until condition is met", async () => {
     let count = 0;
     const promise = tapsmithExpect

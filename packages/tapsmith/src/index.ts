@@ -19,7 +19,7 @@ export {
 } from './element-handle.js';
 
 // Assertions
-export { expect, flushSoftErrors, type TapsmithAssertions, type WebViewAssertions, type GenericAssertions, type PollOptions } from './expect.js';
+export { expect, flushSoftErrors, type TapsmithAssertions, type WebViewAssertions, type GenericAssertions, type PollAssertions, type PollOptions } from './expect.js';
 
 // Test runner
 export {

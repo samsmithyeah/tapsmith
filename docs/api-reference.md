@@ -1062,9 +1062,11 @@ const errors = flushSoftErrors();
 // errors contains any failures from soft assertions
 ```
 
-### `expect.poll(fn: () => unknown | Promise<unknown>, options?: PollOptions): GenericAssertions`
+### `expect.poll(fn: () => unknown | Promise<unknown>, options?: PollOptions): PollAssertions`
 
 Poll an async function until the assertion passes or the timeout expires. Useful for waiting on values that change over time.
+
+Returns `PollAssertions` — the same matchers as `GenericAssertions`, but each returns a `Promise<void>` because it retries `fn` until the assertion holds. Always `await` the matcher.
 
 ```typescript
 await expect.poll(async () => {
