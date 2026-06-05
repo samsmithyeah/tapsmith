@@ -183,39 +183,53 @@ jobs:
         run: |
           sudo xcode-select -s /Applications/Xcode.app/Contents/Developer
           xcodebuild -version
-          SIM=$(xcrun simctl list devices available | grep -oE "iPhone [0-9]+ " | head -1 | xargs)
-          echo "Using simulator: $SIM"
-          echo "TAPSMITH_IOS_SIMULATOR=$SIM" >> $GITHUB_ENV
-          UDID=$(xcrun simctl list devices available -j | python3 -c "
-          import json,sys
+          # Pick a real, available iPhone straight from the device list, taking
+          # its exact name AND udid from the same record so the name always
+          # matches a device. Prefer a base "iPhone <NN>" (no Pro/Plus/e suffix)
+          # at the highest number, else any iPhone. The old
+          # `grep -oE "iPhone [0-9]+ " | head -1` could yield e.g. "iPhone 17"
+          # from an "iPhone 17 Pro" line when no base "iPhone 17" existed on the
+          # runner, leaving the daemon unable to resolve the name (it varies by
+          # runner image, so it failed intermittently).
+          # Print "<udid> <name>" — udid first, so `read` captures the
+          # space-containing name as the trailing field.
+          SEL=$(xcrun simctl list devices available -j | python3 -c "
+          import json,re,sys
           d=json.load(sys.stdin)
-          for devs in d['devices'].values():
-            for dev in devs:
-              if dev['name']=='$SIM' and dev['isAvailable']:
-                print(dev['udid']); sys.exit()
+          cands=[dev for devs in d['devices'].values() for dev in devs
+                 if dev.get('isAvailable') and dev['name'].startswith('iPhone')]
+          def key(dev):
+            m=re.match(r'iPhone (\d+)', dev['name'])
+            return (bool(re.fullmatch(r'iPhone \d+', dev['name'])),
+                    int(m.group(1)) if m else -1)
+          cands.sort(key=key, reverse=True)
+          if cands: print(cands[0]['udid'], cands[0]['name'])
           ")
-          if [ -n "$UDID" ]; then
-            echo "Booting $SIM ($UDID)"
-            echo "TAPSMITH_IOS_UDID=$UDID" >> $GITHUB_ENV
-            xcrun simctl boot "$UDID" 2>/dev/null || true
-            # Wait for the simulator to be FULLY booted, not just state=Booted.
-            # The device state flips to "Booted" early — before system services
-            # (notably the pasteboard daemon behind `simctl pbcopy`/`pbpaste`)
-            # are ready. On the slower macos-26 / iOS 26 image that cold-start
-            # window is wide enough that the first clipboard op and the first few
-            # UI commands hit transient `NSPOSIXErrorDomain code=60` timeouts.
-            # `bootstatus -b` blocks until the boot completes, closing that race.
-            xcrun simctl bootstatus "$UDID" -b || true
-            STATE=$(xcrun simctl list devices -j | python3 -c "
-          import json,sys
-          d=json.load(sys.stdin)
-          for devs in d['devices'].values():
-            for dev in devs:
-              if dev['udid']=='$UDID':
-                print(dev['state']); sys.exit()
-          ")
-            echo "Simulator state: $STATE"
+          read -r UDID SIM <<< "$SEL"
+          if [ -z "$UDID" ]; then
+            echo "No available iPhone simulator found:"
+            xcrun simctl list devices available
+            exit 1
           fi
+          echo "Using simulator: $SIM ($UDID)"
+          echo "TAPSMITH_IOS_SIMULATOR=$SIM" >> $GITHUB_ENV
+          echo "TAPSMITH_IOS_UDID=$UDID" >> $GITHUB_ENV
+          echo "Booting $SIM ($UDID)"
+          xcrun simctl boot "$UDID" 2>/dev/null || true
+          # Wait for the simulator to be FULLY booted, not just state=Booted.
+          # The device state flips to "Booted" early — before system services
+          # (notably the pasteboard daemon behind `simctl pbcopy`/`pbpaste`)
+          # are ready. On the slower macos-26 / iOS 26 image that cold-start
+          # window is wide enough that the first clipboard op and the first few
+          # UI commands hit transient `NSPOSIXErrorDomain code=60` timeouts.
+          # `bootstatus -b` blocks until the boot completes, closing that race.
+          xcrun simctl bootstatus "$UDID" -b || true
+          echo "Simulator state: $(xcrun simctl list devices -j | python3 -c "
+          import json,sys
+          d=json.load(sys.stdin)
+          print(next((dev['state'] for devs in d['devices'].values()
+                      for dev in devs if dev['udid']=='$UDID'), 'unknown'))
+          ")"
 
       - name: Link agent build to DerivedData for auto-discovery
         run: |
