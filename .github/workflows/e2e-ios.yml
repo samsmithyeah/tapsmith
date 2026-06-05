@@ -198,10 +198,15 @@ jobs:
             echo "Booting $SIM ($UDID)"
             echo "TAPSMITH_IOS_UDID=$UDID" >> $GITHUB_ENV
             xcrun simctl boot "$UDID" 2>/dev/null || true
-            # Wait for simulator to be fully booted
-            TIMEOUT=60
-            while [ $TIMEOUT -gt 0 ]; do
-              STATE=$(xcrun simctl list devices -j | python3 -c "
+            # Wait for the simulator to be FULLY booted, not just state=Booted.
+            # The device state flips to "Booted" early — before system services
+            # (notably the pasteboard daemon behind `simctl pbcopy`/`pbpaste`)
+            # are ready. On the slower macos-26 / iOS 26 image that cold-start
+            # window is wide enough that the first clipboard op and the first few
+            # UI commands hit transient `NSPOSIXErrorDomain code=60` timeouts.
+            # `bootstatus -b` blocks until the boot completes, closing that race.
+            xcrun simctl bootstatus "$UDID" -b || true
+            STATE=$(xcrun simctl list devices -j | python3 -c "
           import json,sys
           d=json.load(sys.stdin)
           for devs in d['devices'].values():
@@ -209,10 +214,6 @@ jobs:
               if dev['udid']=='$UDID':
                 print(dev['state']); sys.exit()
           ")
-              if [ "$STATE" = "Booted" ]; then break; fi
-              sleep 2
-              TIMEOUT=$((TIMEOUT - 2))
-            done
             echo "Simulator state: $STATE"
           fi
 
