@@ -75,25 +75,40 @@ class CommandHandler {
         return false
     }
 
-    /// True when the app's accessibility snapshot has rendered interactive
-    /// content. This keeps openDeepLink from returning while the app is still
-    /// cold-launching.
+    /// True when the app's accessibility tree has rendered interactive content.
+    ///
+    /// Uses `app.snapshot()` — the same mechanism as `GetUiHierarchy` — rather
+    /// than direct element queries (`app.staticTexts.firstMatch.exists`). After
+    /// a deep link the daemon cold-launches the target app out of process via
+    /// `simctl openurl`; XCUITest has not "attached" to a process it did not
+    /// launch, so `XCUIApplication.state` and direct element existence queries
+    /// are unreliable during that window (they report not-running / empty even
+    /// while the app is foreground and fully rendered). `snapshot()` works in
+    /// that same window, which is why hierarchy dumps succeed when the state
+    /// query does not.
     private func appHasRenderedContent(_ app: XCUIApplication) -> Bool {
         var has = false
         _ = ObjCExceptionCatcher.catchException {
-            has = app.staticTexts.firstMatch.exists
-                || app.textFields.firstMatch.exists
-                || app.buttons.firstMatch.exists
+            guard let snapshot = try? app.snapshot() else { return }
+            has = snapshotContainsContent(snapshot)
         }
         return has
     }
 
-    private func openInAppDialogExists(_ springboard: XCUIApplication) -> Bool {
-        var exists = false
-        _ = ObjCExceptionCatcher.catchException {
-            exists = springboard.buttons["Open"].exists
+    /// Recursively check whether a snapshot tree contains any rendered,
+    /// user-meaningful element (text, input, or control).
+    private func snapshotContainsContent(_ snapshot: XCUIElementSnapshot) -> Bool {
+        switch snapshot.elementType {
+        case .staticText, .textField, .secureTextField, .textView, .searchField,
+             .button, .link, .image, .switch:
+            return true
+        default:
+            break
         }
-        return exists
+        for child in snapshot.children where snapshotContainsContent(child) {
+            return true
+        }
+        return false
     }
 
     private func safeAppState(_ app: XCUIApplication) -> XCUIApplication.State {
@@ -105,22 +120,32 @@ class CommandHandler {
     }
 
     /// Dismiss SpringBoard's "Open in <app>?" confirmation and wait for the
-    /// app to render after a deep-link launch.
+    /// target app to actually render content after a deep-link launch.
+    ///
+    /// Readiness is detected via `app.snapshot()` (content present) and SpringBoard
+    /// queries (dialog accepted) — both work for the out-of-process, simctl-launched
+    /// target app. We deliberately do NOT gate on `XCUIApplication.state`: it is
+    /// unreliable until XCUITest attaches to the externally-launched process, and
+    /// gating on it caused deep links that had actually reached their destination
+    /// to be reported as failures.
+    ///
+    /// Returns true ONLY when the app has rendered content. On timeout it returns
+    /// false — the first cold, trust-gated openurl on a fresh sim intermittently
+    /// fails to foreground the app (it lands back on SpringBoard with no dialog),
+    /// and the daemon re-delivers the deep link when we report not-delivered. We
+    /// must NOT treat "no dialog" as success, or a never-launched app would be
+    /// reported as ready and the next action would run against SpringBoard.
     private func waitForDeepLinkDestination(_ app: XCUIApplication, timeout: TimeInterval) -> Bool {
         let springboard = XCUIApplication(bundleIdentifier: "com.apple.springboard")
         let deadline = Date(timeIntervalSinceNow: timeout)
         while Date() < deadline {
-            if safeAppState(app) == .runningForeground {
-                let hasContent = appHasRenderedContent(app)
-                let dialogExists = openInAppDialogExists(springboard)
-                if hasContent && !dialogExists {
-                    return true
-                }
-                if dialogExists {
-                    _ = self.acceptOpenInAppDialogIfPresent(springboard: springboard, timeout: 0.1)
-                }
-            } else {
-                _ = self.acceptOpenInAppDialogIfPresent(springboard: springboard, timeout: 0.3)
+            // One SpringBoard query per iteration: acceptOpenInAppDialogIfPresent
+            // with timeout 0.0 is `.exists` + tap in a single call. If it taps a
+            // dialog, loop again; otherwise check for rendered content.
+            if self.acceptOpenInAppDialogIfPresent(springboard: springboard, timeout: 0.0) {
+                // Dialog accepted — re-check on the next iteration.
+            } else if appHasRenderedContent(app) {
+                return true
             }
             Thread.sleep(forTimeInterval: 0.2)
         }
@@ -188,7 +213,16 @@ class CommandHandler {
         elementFinder = ElementFinder(app: refreshedApp)
         snapshotFinder = SnapshotElementFinder(app: refreshedApp)
         actionExecutor = ActionExecutor(app: refreshedApp)
-        actionExecutor.cachedScreenSize = snapshotFinder.screenSize
+        // Eagerly cache the screen size, but tolerate a transient XCUITest
+        // interruption: `screenSize` probes `app.windows.firstMatch.frame`, a
+        // direct query that can raise an "Interrupting test" NSException while
+        // SpringBoard is still settling (e.g. right after a deep-link launch).
+        // On failure leave the cache unset — ActionExecutor resolves it lazily
+        // on next use — so re-binding never fails a command that already
+        // succeeded.
+        _ = ObjCExceptionCatcher.catchException {
+            actionExecutor.cachedScreenSize = snapshotFinder.screenSize
+        }
         waitEngine = WaitEngine(app: refreshedApp)
         hierarchyDumper = HierarchyDumper(app: refreshedApp)
         return refreshedApp
