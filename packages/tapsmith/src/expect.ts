@@ -1073,6 +1073,23 @@ export interface GenericAssertions {
   toThrow(expected?: string | RegExp | Error): void;
 }
 
+/**
+ * The assertion surface returned by {@link expect.poll}. Mirrors
+ * {@link GenericAssertions}, but every assertion returns a `Promise<void>`:
+ * `poll` re-invokes the supplied function until the assertion passes or the
+ * timeout elapses, so each call must be `await`ed.
+ */
+export type PollAssertions = {
+  /** Negate the following assertion. */
+  not: PollAssertions;
+} & {
+  [K in Exclude<keyof GenericAssertions, "not">]: GenericAssertions[K] extends (
+    ...args: infer A
+  ) => void
+    ? (...args: A) => Promise<void>
+    : never;
+};
+
 function deepEqual(a: unknown, b: unknown): boolean {
   function _deepEqual(a: unknown, b: unknown, visited: Map<unknown, unknown>): boolean {
     if (Object.is(a, b)) return true;
@@ -1554,7 +1571,7 @@ export interface PollOptions {
 function createPollAssertions(
   fn: () => unknown | Promise<unknown>,
   options: PollOptions,
-): GenericAssertions {
+): PollAssertions {
   const timeout = options.timeout ?? DEFAULT_ASSERTION_TIMEOUT_MS;
   const intervals = options.intervals ?? [POLL_INTERVAL_MS];
 
@@ -1610,8 +1627,8 @@ function createPollAssertions(
     ),
   );
 
-  const buildProxy = (negated: boolean): GenericAssertions => {
-    const handler: ProxyHandler<GenericAssertions> = {
+  const buildProxy = (negated: boolean): PollAssertions => {
+    const handler: ProxyHandler<PollAssertions> = {
       get(_target, prop: string) {
         if (prop === "not") return buildProxy(!negated);
         if (prop === "then") return undefined; // Support await
@@ -1631,7 +1648,7 @@ function createPollAssertions(
         };
       },
     };
-    return new Proxy({} as GenericAssertions, handler);
+    return new Proxy({} as PollAssertions, handler);
   };
 
   return buildProxy(false);
@@ -1972,6 +1989,6 @@ expect.soft = function soft(value: unknown): TapsmithAssertions | WebViewAsserti
 expect.poll = function expectPoll(
   fn: () => unknown | Promise<unknown>,
   options?: PollOptions,
-): GenericAssertions {
+): PollAssertions {
   return createPollAssertions(fn, options ?? {});
 };
