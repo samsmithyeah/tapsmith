@@ -36,11 +36,17 @@ const IOS_OPEN_DIALOG_ACCEPT_TIMEOUT_MS: u64 = 300;
 // gRPC round-trip, so each verify returns a verdict rather than tripping this
 // command timeout.
 const IOS_OPEN_DEEP_LINK_VERIFY_TIMEOUT_MS: u64 = 13_000;
-// How many times to (re-)deliver an iOS simulator deep link before giving up.
-// The first cold, trust-gated openurl on a fresh sim intermittently fails to
-// foreground the app; a warm, already-trusted re-delivery reliably lands, so we
-// retry the terminate -> openurl -> verify cycle as a unit.
+// How many times to (re-)deliver an iOS simulator deep link when openurl
+// succeeded but the app didn't reach its destination. The first cold,
+// trust-gated openurl on a fresh sim intermittently fails to foreground the app;
+// a warm, already-trusted re-delivery reliably lands, so we retry the
+// terminate -> openurl -> verify cycle as a unit.
 const IOS_OPEN_DEEP_LINK_MAX_ATTEMPTS: u32 = 3;
+// How many times to attempt `simctl openurl` itself when it hits a transient
+// error (e.g. NSPOSIXErrorDomain code=60). Kept low so a soft-reset deep link
+// that the simulator keeps rejecting bails quickly to the caller's hard-reset
+// fallback instead of burning the full re-delivery budget.
+const IOS_OPEN_URL_TRANSIENT_MAX_ATTEMPTS: u32 = 2;
 
 pub struct TapsmithServiceImpl {
     device_manager: Arc<RwLock<DeviceManager>>,
@@ -2805,7 +2811,9 @@ impl proto::tapsmith_service_server::TapsmithService for TapsmithServiceImpl {
                 // openurl is still pending.
                 let mut last_error = "openDeepLink: app did not reach destination".to_string();
                 let mut verify_result: Option<Result<AgentResponse, Status>> = None;
-                for attempt in 1..=IOS_OPEN_DEEP_LINK_MAX_ATTEMPTS {
+                let mut verify_attempts: u32 = 0;
+                let mut openurl_transient_attempts: u32 = 0;
+                loop {
                     let _ = self
                         .send_agent_command_with_timeout(
                             &AgentCommand::TerminateApp {
@@ -2821,12 +2829,23 @@ impl proto::tapsmith_service_server::TapsmithService for TapsmithServiceImpl {
                         .await
                     {
                         if ios::device::is_retryable_open_url_error(&e.to_string()) {
+                            openurl_transient_attempts += 1;
+                            last_error = e.to_string();
+                            if openurl_transient_attempts >= IOS_OPEN_URL_TRANSIENT_MAX_ATTEMPTS {
+                                warn!(
+                                    %serial, uri = %req.uri,
+                                    attempts = openurl_transient_attempts,
+                                    error = %e,
+                                    "simctl openurl kept hitting a transient timeout; giving up (caller falls back to hard reset)"
+                                );
+                                break;
+                            }
                             warn!(
-                                %serial, uri = %req.uri, attempt,
+                                %serial, uri = %req.uri,
+                                attempt = openurl_transient_attempts,
                                 error = %e,
                                 "simctl openurl hit a transient timeout; re-delivering deep link"
                             );
-                            last_error = e.to_string();
                             tokio::time::sleep(Duration::from_millis(500)).await;
                             continue;
                         }
@@ -2847,6 +2866,7 @@ impl proto::tapsmith_service_server::TapsmithService for TapsmithServiceImpl {
                             IOS_OPEN_DEEP_LINK_VERIFY_TIMEOUT_MS,
                         )
                         .await;
+                    verify_attempts += 1;
                     if matches!(&result, Ok(resp) if resp.success) {
                         verify_result = Some(result);
                         break;
@@ -2857,12 +2877,22 @@ impl proto::tapsmith_service_server::TapsmithService for TapsmithServiceImpl {
                         }),
                         Err(status) => status.message().to_string(),
                     };
+                    verify_result = Some(result);
+                    if verify_attempts >= IOS_OPEN_DEEP_LINK_MAX_ATTEMPTS {
+                        warn!(
+                            %serial, uri = %req.uri,
+                            attempts = verify_attempts,
+                            error = %last_error,
+                            "deep link did not reach its destination after retries; giving up"
+                        );
+                        break;
+                    }
                     warn!(
-                        %serial, uri = %req.uri, attempt,
+                        %serial, uri = %req.uri,
+                        attempt = verify_attempts,
                         error = %last_error,
                         "deep link did not reach its destination; re-delivering"
                     );
-                    verify_result = Some(result);
                 }
 
                 match verify_result {
