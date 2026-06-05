@@ -99,7 +99,8 @@ class CommandHandler {
     /// user-meaningful element (text, input, or control).
     private func snapshotContainsContent(_ snapshot: XCUIElementSnapshot) -> Bool {
         switch snapshot.elementType {
-        case .staticText, .textField, .secureTextField, .button, .link, .image:
+        case .staticText, .textField, .secureTextField, .textView, .searchField,
+             .button, .link, .image, .switch:
             return true
         default:
             break
@@ -144,8 +145,11 @@ class CommandHandler {
         let springboard = XCUIApplication(bundleIdentifier: "com.apple.springboard")
         let deadline = Date(timeIntervalSinceNow: timeout)
         while Date() < deadline {
-            if openInAppDialogExists(springboard) {
-                _ = self.acceptOpenInAppDialogIfPresent(springboard: springboard, timeout: 0.1)
+            // One SpringBoard query per iteration: acceptOpenInAppDialogIfPresent
+            // with timeout 0.0 is `.exists` + tap in a single call. If it taps a
+            // dialog, loop again; otherwise check for rendered content.
+            if self.acceptOpenInAppDialogIfPresent(springboard: springboard, timeout: 0.0) {
+                // Dialog accepted — re-check on the next iteration.
             } else if appHasRenderedContent(app) {
                 return true
             }
