@@ -105,7 +105,7 @@ jobs:
     # IPC proto) is exercised by CI. The Linux rust job above can't catch
     # cfg(target_os = "macos") regressions on its own.
     name: Rust (macOS)
-    runs-on: macos-latest
+    runs-on: macos-26
     defaults:
       run:
         working-directory: packages/tapsmith-core
