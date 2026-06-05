@@ -373,11 +373,15 @@ impl TapsmithServiceImpl {
         serial: &str,
         uri: &str,
     ) -> anyhow::Result<()> {
-        // Once the simulator has trusted this scheme (we accepted the dialog
-        // once), subsequent openurls don't show it — so skip the per-500ms
-        // dialog poll, which is an expensive SpringBoard query on iOS 26. If the
-        // openurl unexpectedly stalls, the dialog may have returned (e.g. after
-        // a reinstall): drop the serial so the next attempt re-enables polling.
+        // Once a deep link has successfully opened on this serial, the simulator
+        // has shown (and trusted) the "Open in <app>?" dialog if it was ever
+        // going to — in practice it never appears on the iOS 26 simulator. So
+        // after the first success we skip the per-500ms dialog poll entirely;
+        // each probe is an expensive SpringBoard accessibility query (~1.2s on
+        // iOS 26) that otherwise runs on every deep link for a dialog that isn't
+        // there. If a trusted openurl unexpectedly stalls (the dialog returned,
+        // e.g. after a reinstall re-armed scheme trust), drop the serial so the
+        // next attempt re-enables polling.
         if self.ios_open_in_app_trusted.read().await.contains(serial) {
             let open_url = ios::device::open_url(serial, uri);
             return match tokio::time::timeout(IOS_OPEN_URL_PROMPT_TIMEOUT, open_url).await {
@@ -400,41 +404,42 @@ impl TapsmithServiceImpl {
         let prompt_poll_interval = Duration::from_millis(500);
         let initial_prompt_poll_interval = Duration::from_millis(50);
         let mut next_poll_interval = initial_prompt_poll_interval;
-        loop {
+        let result: anyhow::Result<()> = loop {
             let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
             if remaining.is_zero() {
-                tokio::select! {
+                let timed_out = tokio::select! {
                     biased;
-                    result = &mut open_url => {
-                        return result;
-                    }
-                    _ = tokio::time::sleep(Duration::from_millis(1)) => {}
-                }
-                return Err(anyhow::anyhow!(
-                    "Operation timed out opening URL on {serial}: {uri}"
-                ));
+                    result = &mut open_url => Some(result),
+                    _ = tokio::time::sleep(Duration::from_millis(1)) => None,
+                };
+                break timed_out.unwrap_or_else(|| {
+                    Err(anyhow::anyhow!(
+                        "Operation timed out opening URL on {serial}: {uri}"
+                    ))
+                });
             }
 
             let sleep_duration = remaining.min(next_poll_interval);
             tokio::select! {
                 biased;
-                result = &mut open_url => {
-                    return result;
-                }
+                result = &mut open_url => break result,
                 _ = tokio::time::sleep(sleep_duration) => {
-                    if self.accept_ios_open_in_app_dialog().await {
-                        // Scheme is now trusted: stop polling for future deep
-                        // links and just finish awaiting this openurl.
-                        self.ios_open_in_app_trusted
-                            .write()
-                            .await
-                            .insert(serial.to_string());
-                        return (&mut open_url).await;
-                    }
+                    // Best-effort dismiss in case the dialog ever does appear.
+                    self.accept_ios_open_in_app_dialog().await;
                     next_poll_interval = prompt_poll_interval;
                 }
             }
+        };
+
+        // First successful open trusts the scheme: subsequent deep links skip
+        // the dialog poll above.
+        if result.is_ok() {
+            self.ios_open_in_app_trusted
+                .write()
+                .await
+                .insert(serial.to_string());
         }
+        result
     }
 
     /// If the agent command failed with a "timed out" error AND the active
