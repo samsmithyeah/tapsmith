@@ -44,13 +44,13 @@ describe("Login screen", () => {
   test("focusing and blurring email field toggles keyboard", async ({ device, loginScreen }) => {
     await loginScreen.emailField.focus()
     await expect(loginScreen.emailField).toBeFocused()
-    // The keyboard show/hide is animated and async, so poll rather than reading
-    // the state once — on slower runners the first read can land mid-animation.
-    await expect.poll(() => device.isKeyboardShown()).toBe(true)
+    let shown = await device.isKeyboardShown()
+    expect(shown).toBe(true)
 
     await loginScreen.emailField.blur()
     await device.hideKeyboard()
-    await expect.poll(() => device.isKeyboardShown()).toBe(false)
+    shown = await device.isKeyboardShown()
+    expect(shown).toBe(false)
   })
 
   // ─── Clear & Retype ───

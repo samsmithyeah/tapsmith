@@ -440,6 +440,23 @@ class CommandHandler {
         }
     }
 
+    /// Poll the snapshot until the keyboard is gone or `maxWait` elapses.
+    /// Returns true once no keyboard is present. Used by hideKeyboard so it only
+    /// reports success after the dismiss animation has actually completed —
+    /// otherwise a fixed sleep can return early on slow simulators and leave the
+    /// keyboard up.
+    @discardableResult
+    private func waitForKeyboardDisappearance(maxWait: TimeInterval) -> Bool {
+        let deadline = CFAbsoluteTimeGetCurrent() + maxWait
+        while CFAbsoluteTimeGetCurrent() < deadline {
+            let snap = try? app.snapshot()
+            let dict = snap.map { $0.dictionaryRepresentation } ?? [:]
+            if !hasKeyboardInSnapshot(dict) { return true }
+            Thread.sleep(forTimeInterval: 0.15)
+        }
+        return false
+    }
+
     /// Type through EventSynthesizer, but don't advance to the next grapheme
     /// until the target field's snapshot reflects the current one. This fixes
     /// slow CI simulators dropping an in-string character (e.g. "test" ->
@@ -1404,14 +1421,18 @@ class CommandHandler {
                 // Fallback: tap above keyboard area
                 actionExecutor.tapCoordinates(x: Int(midX), y: 15)
             }
-            Thread.sleep(forTimeInterval: 0.5) // Wait for dismiss animation
-            // If keyboard is still showing, try horizontal swipe
-            _ = EventSynthesizer.swipe(
-                from: CGPoint(x: midX, y: midY),
-                to: CGPoint(x: midX - kbScreenSize.width * 0.03, y: midY),
-                duration: 0.05
-            )
-            Thread.sleep(forTimeInterval: 0.3)
+            // Wait for the dismiss animation to actually finish rather than
+            // sleeping a fixed interval — on slow simulators the keyboard can
+            // still be up after a fixed wait, so callers see it as "shown".
+            if !waitForKeyboardDisappearance(maxWait: 1.5) {
+                // Still up: try a horizontal swipe, then wait again.
+                _ = EventSynthesizer.swipe(
+                    from: CGPoint(x: midX, y: midY),
+                    to: CGPoint(x: midX - kbScreenSize.width * 0.03, y: midY),
+                    duration: 0.05
+                )
+                waitForKeyboardDisappearance(maxWait: 1.5)
+            }
             snapshotFinder.clearFocusedTextInputHint()
             return ["success": true]
 
