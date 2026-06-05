@@ -23,7 +23,7 @@ concurrency:
 jobs:
   ios:
     name: iOS Agent
-    runs-on: macos-latest
+    runs-on: macos-26
     defaults:
       run:
         working-directory: ios-agent
