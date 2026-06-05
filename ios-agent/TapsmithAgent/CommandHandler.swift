@@ -152,6 +152,50 @@ class CommandHandler {
         return false
     }
 
+    /// Wait until the app is responsive again after a cold launch, so the first
+    /// gesture lands instead of being silently dropped.
+    ///
+    /// A deep link cold-launches the app (the daemon terminates it first), and
+    /// on the slow iOS 26 simulator the React Native JS thread stays saturated
+    /// for a while after the first frame renders — initial bundle eval, mount
+    /// effects, data fetches. A tap delivered during that window is dropped by
+    /// RN's responder system (which needs the JS thread), so the action reports
+    /// success but no-ops and the following assertion fails. The flaky tests are
+    /// always the first interaction after a navigation.
+    ///
+    /// We can't observe the JS thread directly, but `app.snapshot()` latency is
+    /// a reliable proxy: during cold-start it takes seconds (see CI timing logs),
+    /// then drops to ~100ms once the storm passes. We treat the app as ready
+    /// after two consecutive fast snapshots. Best-effort and bounded — a warm app
+    /// passes in ~one extra snapshot, a cold one waits until it settles or the
+    /// timeout elapses, and we never hang.
+    private func waitForAppResponsive(
+        _ app: XCUIApplication,
+        // Capped well under the daemon's 13s deep-link verify timeout (this runs
+        // after waitForDeepLinkDestination, which can take up to 10s). Typical
+        // cost is ~300ms — two fast snapshots — since content has already
+        // rendered by the time we get here.
+        maxWaitMs: Double = 3000,
+        fastMs: Double = 800,
+        consecutiveFast: Int = 2
+    ) {
+        let deadline = CFAbsoluteTimeGetCurrent() + maxWaitMs / 1000.0
+        var fastStreak = 0
+        while CFAbsoluteTimeGetCurrent() < deadline {
+            let start = CFAbsoluteTimeGetCurrent()
+            _ = try? app.snapshot()
+            let elapsedMs = (CFAbsoluteTimeGetCurrent() - start) * 1000
+            if elapsedMs <= fastMs {
+                fastStreak += 1
+                if fastStreak >= consecutiveFast { return }
+                Thread.sleep(forTimeInterval: 0.1)
+            } else {
+                // Still saturated; the slow snapshot itself paced this iteration.
+                fastStreak = 0
+            }
+        }
+    }
+
     /// Dismiss any blocking iOS system dialog currently covering the app
     /// (e.g. "Save Password?", "Allow Notifications?", iCloud Keychain
     /// prompts). Returns true if a dialog was dismissed. Intended for
@@ -1320,6 +1364,10 @@ class CommandHandler {
 
             if waitForDeepLinkDestination(targetApp, timeout: 10.0) {
                 _ = rebindApp(bundleId: bundleId)
+                // Content has rendered, but the JS thread may still be churning
+                // through mount effects after this cold launch. Wait for the app
+                // to be responsive so the first gesture isn't dropped.
+                waitForAppResponsive(targetApp)
                 return ["success": true]
             }
             throw AgentError.actionFailed(
