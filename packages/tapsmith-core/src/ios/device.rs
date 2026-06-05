@@ -1,8 +1,9 @@
 use std::path::PathBuf;
+use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
 use tokio::process::Command;
-use tracing::{debug, info, instrument};
+use tracing::{debug, info, instrument, warn};
 
 /// Locate the `xcrun` binary on PATH.
 pub async fn find_xcrun() -> Result<PathBuf> {
@@ -669,11 +670,20 @@ pub async fn open_url(udid: &str, url: &str) -> Result<()> {
     Ok(())
 }
 
-pub fn is_retryable_open_url_error(message: &str) -> bool {
+/// Returns true for transient `simctl` failures worth retrying — the
+/// `NSPOSIXErrorDomain code=60` / "Operation timed out" errors simctl surfaces
+/// when a simulator subsystem isn't ready yet during cold-start (the deep-link
+/// handler, or the pasteboard service behind `pbcopy`/`pbpaste`). These clear
+/// within a second or two once the service comes up, so a short retry recovers.
+pub fn is_retryable_simctl_timeout(message: &str) -> bool {
     let lower = message.to_lowercase();
     lower.contains("operation timed out")
         || lower.contains("nsposixerrordomain, code=60")
         || lower.contains("nsposixerrordomain code=60")
+}
+
+pub fn is_retryable_open_url_error(message: &str) -> bool {
+    is_retryable_simctl_timeout(message)
 }
 
 /// Grant a privacy permission on a simulator.
@@ -728,11 +738,51 @@ pub async fn set_appearance(udid: &str, mode: &str) -> Result<()> {
     Ok(())
 }
 
+/// Max attempts for `pbcopy`/`pbpaste` when they hit a transient cold-start
+/// timeout. The pasteboard service can take a second or two to come up after the
+/// sim reports `Booted`, so a handful of retries comfortably covers the window.
+const CLIPBOARD_MAX_ATTEMPTS: u32 = 8;
+/// Backoff between clipboard retries.
+const CLIPBOARD_RETRY_BACKOFF: Duration = Duration::from_millis(250);
+
+/// Run a clipboard `simctl` op, retrying transient cold-start timeouts (see
+/// [`is_retryable_simctl_timeout`]) with a short backoff. Non-timeout failures
+/// propagate immediately.
+async fn with_clipboard_retry<F, Fut, T>(udid: &str, op: &str, mut run: F) -> Result<T>
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = Result<T>>,
+{
+    let mut attempt: u32 = 0;
+    loop {
+        attempt += 1;
+        match run().await {
+            Ok(value) => return Ok(value),
+            Err(e)
+                if attempt < CLIPBOARD_MAX_ATTEMPTS
+                    && is_retryable_simctl_timeout(&e.to_string()) =>
+            {
+                warn!(
+                    %udid, op, attempt,
+                    error = %e,
+                    "simctl clipboard op hit a transient timeout during sim cold-start; retrying"
+                );
+                tokio::time::sleep(CLIPBOARD_RETRY_BACKOFF).await;
+            }
+            Err(e) => return Err(e),
+        }
+    }
+}
+
 /// Get the simulator clipboard text via `simctl pbpaste`.
 /// This avoids the iOS 16+ paste permission dialog that would be triggered
 /// by reading UIPasteboard on-device.
 #[instrument]
 pub async fn get_clipboard(udid: &str) -> Result<String> {
+    with_clipboard_retry(udid, "pbpaste", || get_clipboard_once(udid)).await
+}
+
+async fn get_clipboard_once(udid: &str) -> Result<String> {
     let output = Command::new("xcrun")
         .args(["simctl", "pbpaste", udid])
         .output()
@@ -752,20 +802,34 @@ pub async fn get_clipboard(udid: &str) -> Result<String> {
 /// by writing to UIPasteboard on-device.
 #[instrument]
 pub async fn set_clipboard(udid: &str, text: &str) -> Result<()> {
+    with_clipboard_retry(udid, "pbcopy", || set_clipboard_once(udid, text)).await
+}
+
+async fn set_clipboard_once(udid: &str, text: &str) -> Result<()> {
     let mut child = Command::new("xcrun")
         .args(["simctl", "pbcopy", udid])
         .stdin(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
         .spawn()
         .context("Failed to run xcrun simctl pbcopy")?;
 
     if let Some(mut stdin) = child.stdin.take() {
         use tokio::io::AsyncWriteExt;
         stdin.write_all(text.as_bytes()).await?;
+        // Drop stdin to send EOF so pbcopy can finish reading and exit.
+        drop(stdin);
     }
 
-    let status = child.wait().await?;
-    if !status.success() {
-        bail!("Failed to set clipboard on {udid}");
+    // `wait_with_output` drains stderr (we pipe it) so a failed pbcopy surfaces
+    // simctl's actual error — e.g. the cold-start "Operation timed out" — instead
+    // of an opaque "Failed to set clipboard".
+    let output = child
+        .wait_with_output()
+        .await
+        .context("Failed to wait for xcrun simctl pbcopy")?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        bail!("Failed to set clipboard on {udid}: {stderr}");
     }
 
     Ok(())
@@ -1012,6 +1076,23 @@ mod tests {
     fn retryable_open_url_error_rejects_non_timeout_failures() {
         assert!(!is_retryable_open_url_error(
             "Failed to open URL on ABC: No such file or directory"
+        ));
+    }
+
+    #[test]
+    fn retryable_simctl_timeout_matches_pbcopy_cold_start_timeout() {
+        // Real pbcopy failure captured booting an iPhone 17 / iOS 26 sim before
+        // the pasteboard service was up.
+        let message = "Failed to set clipboard on 972FB67E: An error was encountered processing the command (domain=NSPOSIXErrorDomain, code=60):\nThe operation couldn't be completed. Operation timed out\nOperation timed out";
+        assert!(is_retryable_simctl_timeout(message));
+        // The open-url predicate delegates to the same logic.
+        assert!(is_retryable_open_url_error(message));
+    }
+
+    #[test]
+    fn retryable_simctl_timeout_rejects_real_clipboard_failures() {
+        assert!(!is_retryable_simctl_timeout(
+            "Failed to set clipboard on ABC: Invalid device state"
         ));
     }
 
