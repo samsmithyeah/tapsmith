@@ -81,6 +81,15 @@ pub struct TapsmithServiceImpl {
     /// every per-test start/stop cycle pays the NE timeout (~10s × N tests).
     #[cfg(target_os = "macos")]
     ios_ne_unavailable: Arc<RwLock<bool>>,
+    /// Serials whose SpringBoard "Open in <app>?" confirmation has already been
+    /// accepted this session. The simulator trusts the URL scheme after the
+    /// first accept, so subsequent deep links don't show the dialog — and we
+    /// skip the per-openurl dialog polling, which is a slow SpringBoard
+    /// accessibility query on iOS 26 (~1.2s each, fired every 500ms while
+    /// `simctl openurl` is pending). Self-healing: if a trusted openurl stalls
+    /// (the dialog unexpectedly returned, e.g. after an app reinstall), the
+    /// serial is dropped so the next attempt re-enables polling.
+    ios_open_in_app_trusted: Arc<RwLock<std::collections::HashSet<String>>>,
     /// iOS agent launch config (stored for restart on launchApp).
     ios_agent_config: Arc<RwLock<Option<IosAgentConfig>>>,
     /// iproxy USB tunnel for the physical iOS device, if any. Held for the
@@ -174,6 +183,7 @@ impl TapsmithServiceImpl {
             ios_system_proxy_service: Arc::new(RwLock::new(None)),
             #[cfg(target_os = "macos")]
             ios_ne_unavailable: Arc::new(RwLock::new(false)),
+            ios_open_in_app_trusted: Arc::new(RwLock::new(std::collections::HashSet::new())),
             ios_agent_config: Arc::new(RwLock::new(None)),
             ios_iproxy: Arc::new(RwLock::new(None)),
             network_tracing_enabled: Arc::new(RwLock::new(false)),
@@ -320,7 +330,9 @@ impl TapsmithServiceImpl {
         self.recover_agent_on_timeout(command, raw).await
     }
 
-    async fn accept_ios_open_in_app_dialog(&self) {
+    /// Probe for and accept the SpringBoard "Open in <app>?" confirmation.
+    /// Returns true only if the dialog was present and dismissed.
+    async fn accept_ios_open_in_app_dialog(&self) -> bool {
         let result = self
             .send_agent_command_with_timeout(
                 &AgentCommand::AcceptOpenInAppDialog {
@@ -332,23 +344,26 @@ impl TapsmithServiceImpl {
 
         match result {
             Ok(resp) if resp.success => {
-                if resp
+                let dismissed = resp
                     .data
                     .get("dismissed")
                     .and_then(|v| v.as_bool())
-                    .unwrap_or(false)
-                {
+                    .unwrap_or(false);
+                if dismissed {
                     info!("Accepted iOS Open-in-app confirmation dialog");
                 }
+                dismissed
             }
             Ok(resp) => {
                 debug!(
                     error = ?resp.error,
                     "iOS Open-in-app dialog accept command returned failure"
                 );
+                false
             }
             Err(e) => {
                 debug!(error = %e, "Failed to probe iOS Open-in-app dialog");
+                false
             }
         }
     }
@@ -358,6 +373,24 @@ impl TapsmithServiceImpl {
         serial: &str,
         uri: &str,
     ) -> anyhow::Result<()> {
+        // Once the simulator has trusted this scheme (we accepted the dialog
+        // once), subsequent openurls don't show it — so skip the per-500ms
+        // dialog poll, which is an expensive SpringBoard query on iOS 26. If the
+        // openurl unexpectedly stalls, the dialog may have returned (e.g. after
+        // a reinstall): drop the serial so the next attempt re-enables polling.
+        if self.ios_open_in_app_trusted.read().await.contains(serial) {
+            let open_url = ios::device::open_url(serial, uri);
+            return match tokio::time::timeout(IOS_OPEN_URL_PROMPT_TIMEOUT, open_url).await {
+                Ok(result) => result,
+                Err(_) => {
+                    self.ios_open_in_app_trusted.write().await.remove(serial);
+                    Err(anyhow::anyhow!(
+                        "Operation timed out opening URL on {serial}: {uri}"
+                    ))
+                }
+            };
+        }
+
         let serial_for_open = serial.to_string();
         let uri_for_open = uri.to_string();
         let open_url = ios::device::open_url(&serial_for_open, &uri_for_open);
@@ -389,7 +422,15 @@ impl TapsmithServiceImpl {
                     return result;
                 }
                 _ = tokio::time::sleep(sleep_duration) => {
-                    self.accept_ios_open_in_app_dialog().await;
+                    if self.accept_ios_open_in_app_dialog().await {
+                        // Scheme is now trusted: stop polling for future deep
+                        // links and just finish awaiting this openurl.
+                        self.ios_open_in_app_trusted
+                            .write()
+                            .await
+                            .insert(serial.to_string());
+                        return (&mut open_url).await;
+                    }
                     next_poll_interval = prompt_poll_interval;
                 }
             }
