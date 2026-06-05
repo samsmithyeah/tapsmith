@@ -2,7 +2,9 @@ name: E2E iOS
 
 on:
   push:
-    branches: [ main ]
+    # TEMP: validate the dialog-polling optimization on a stacked (non-main)
+    # branch. Reverted before merge.
+    branches: [ main, perf/ios-open-in-app-dialog ]
   pull_request:
     branches: [ main ]
 
