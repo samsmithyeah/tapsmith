@@ -151,10 +151,8 @@ jobs:
       matrix:
         include:
           - arch: arm64
-            xcodebuild-dest: 'platform=iOS Simulator,arch=arm64'
             npm-pkg: agent-ios-simulator-arm64
           - arch: x86_64
-            xcodebuild-dest: 'platform=iOS Simulator,arch=x86_64'
             npm-pkg: agent-ios-simulator-x64
     defaults:
       run:
@@ -167,8 +165,9 @@ jobs:
           xcodebuild build-for-testing \
             -project TapsmithAgent.xcodeproj \
             -scheme TapsmithAgentUITests \
-            -destination '${{ matrix.xcodebuild-dest }}' \
+            -destination 'generic/platform=iOS Simulator' \
             -derivedDataPath '.build-sim-${{ matrix.arch }}' \
+            ARCHS='${{ matrix.arch }}' ONLY_ACTIVE_ARCH=NO \
             CODE_SIGNING_ALLOWED=NO
 
       - name: Stage package contents
