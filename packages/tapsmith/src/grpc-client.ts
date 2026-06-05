@@ -619,13 +619,14 @@ export class TapsmithGrpcClient {
 
   async openDeepLink(uri: string): Promise<ActionResponse> {
     // iOS deep links can terminate + cold-launch the app, accept the "Open in
-    // <app>?" prompt, and wait for the first cold launch to settle, so the
-    // daemon-side path can run for tens of seconds. Use the same generous
-    // deadline as the other app-lifecycle calls rather than the 60s default.
+    // <app>?" prompt, and re-deliver several times if the first cold, trust-gated
+    // openurl doesn't foreground the app — so the daemon-side path can run for
+    // over a minute. Keep this deadline above the daemon's worst-case retry
+    // budget so the client never aborts a call the daemon is still processing.
     return this.call<ActionResponse>('openDeepLink', {
       requestId: requestId(),
       uri,
-    }, 120_000);
+    }, 150_000);
   }
 
   async getCurrentPackage(): Promise<GetCurrentPackageResponse> {

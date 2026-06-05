@@ -32,10 +32,15 @@ const WEBVIEW_ADB_TIMEOUT: Duration = Duration::from_secs(5);
 const WEBVIEW_ADB_CLEANUP_TIMEOUT: Duration = Duration::from_secs(2);
 const IOS_OPEN_URL_PROMPT_TIMEOUT: Duration = Duration::from_secs(28);
 const IOS_OPEN_DIALOG_ACCEPT_TIMEOUT_MS: u64 = 300;
-// Must exceed the agent-side `waitForDeepLinkDestination` ceiling (18s) plus
-// gRPC round-trip, so a slow first cold launch returns a verdict rather than
-// tripping this command timeout.
-const IOS_OPEN_DEEP_LINK_VERIFY_TIMEOUT_MS: u64 = 22_000;
+// Must exceed the agent-side `waitForDeepLinkDestination` ceiling (10s) plus
+// gRPC round-trip, so each verify returns a verdict rather than tripping this
+// command timeout.
+const IOS_OPEN_DEEP_LINK_VERIFY_TIMEOUT_MS: u64 = 13_000;
+// How many times to (re-)deliver an iOS simulator deep link before giving up.
+// The first cold, trust-gated openurl on a fresh sim intermittently fails to
+// foreground the app; a warm, already-trusted re-delivery reliably lands, so we
+// retry the terminate -> openurl -> verify cycle as a unit.
+const IOS_OPEN_DEEP_LINK_MAX_ATTEMPTS: u32 = 3;
 
 pub struct TapsmithServiceImpl {
     device_manager: Arc<RwLock<DeviceManager>>,
@@ -2782,71 +2787,90 @@ impl proto::tapsmith_service_server::TapsmithService for TapsmithServiceImpl {
                     return self.make_action_response(request_id, result).await;
                 }
 
-                // Simulator: terminate -> simctl openurl -> verify/rebind agent.
+                // Simulator: terminate -> simctl openurl -> agent verify, retried
+                // as a unit. The first cold, trust-gated openurl on a fresh sim
+                // intermittently fails to foreground the app (the "Open in <app>?"
+                // prompt races the launch and the app lands back on SpringBoard).
+                // Re-delivering self-heals: a second openurl is warm and already
+                // trusted, so it lands. We only succeed once the agent confirms
+                // the app actually rendered content (the verify returns false on a
+                // never-foregrounded app rather than masking it).
                 //
                 // XCUIApplication.open(url:) hangs on quiescence on slow CI
-                // runners, so we avoid it entirely. simctl openurl to a
-                // running app doesn't trigger navigation (the React Native
-                // scene handler misses it), so we terminate first — making
-                // openurl cold-launch the app with the URL. Fresh simulators
-                // can show "Open in <app>?" and block simctl itself, so the
-                // daemon taps that dialog while openurl is still pending.
-                let _ = self
-                    .send_agent_command_with_timeout(
-                        &AgentCommand::TerminateApp {
-                            package: bundle_id.clone(),
-                        },
-                        4_000,
-                    )
-                    .await;
-                tokio::time::sleep(Duration::from_millis(200)).await;
+                // runners, so we avoid it entirely. simctl openurl to a running
+                // app doesn't trigger navigation (the React Native scene handler
+                // misses it), so we terminate first — making openurl cold-launch
+                // the app with the URL. Fresh simulators can show "Open in <app>?"
+                // and block simctl itself, so the daemon taps that dialog while
+                // openurl is still pending.
+                let mut last_error = "openDeepLink: app did not reach destination".to_string();
+                let mut verify_result: Option<Result<AgentResponse, Status>> = None;
+                for attempt in 1..=IOS_OPEN_DEEP_LINK_MAX_ATTEMPTS {
+                    let _ = self
+                        .send_agent_command_with_timeout(
+                            &AgentCommand::TerminateApp {
+                                package: bundle_id.clone(),
+                            },
+                            4_000,
+                        )
+                        .await;
+                    tokio::time::sleep(Duration::from_millis(200)).await;
 
-                let mut open_url_attempt = 1;
-                loop {
-                    match self
+                    if let Err(e) = self
                         .open_ios_simulator_url_with_prompt_handling(&serial, &req.uri)
                         .await
                     {
-                        Ok(()) => break,
-                        Err(e)
-                            if open_url_attempt == 1
-                                && ios::device::is_retryable_open_url_error(&e.to_string()) =>
-                        {
+                        if ios::device::is_retryable_open_url_error(&e.to_string()) {
                             warn!(
-                                %serial,
-                                uri = %req.uri,
+                                %serial, uri = %req.uri, attempt,
                                 error = %e,
-                                "simctl openurl hit a transient timeout; terminating app and retrying"
+                                "simctl openurl hit a transient timeout; re-delivering deep link"
                             );
-                            let _ = self
-                                .send_agent_command_with_timeout(
-                                    &AgentCommand::TerminateApp {
-                                        package: bundle_id.clone(),
-                                    },
-                                    4_000,
-                                )
-                                .await;
+                            last_error = e.to_string();
                             tokio::time::sleep(Duration::from_millis(500)).await;
-                            open_url_attempt += 1;
+                            continue;
                         }
-                        Err(e) => {
-                            return Ok(self
-                                .action_error(request_id, "ACTION_FAILED", e.to_string())
-                                .await);
-                        }
+                        return Ok(self
+                            .action_error(request_id, "ACTION_FAILED", e.to_string())
+                            .await);
                     }
-                }
-                tokio::time::sleep(Duration::from_millis(500)).await;
+                    tokio::time::sleep(Duration::from_millis(500)).await;
 
-                let command = AgentCommand::OpenDeepLink {
-                    url: req.uri,
-                    package: bundle_id,
-                    deliver_in_process: false,
-                };
-                let result = self
-                    .send_agent_command_with_timeout(&command, IOS_OPEN_DEEP_LINK_VERIFY_TIMEOUT_MS)
-                    .await;
-                self.make_action_response(request_id, result).await
+                    let command = AgentCommand::OpenDeepLink {
+                        url: req.uri.clone(),
+                        package: bundle_id.clone(),
+                        deliver_in_process: false,
+                    };
+                    let result = self
+                        .send_agent_command_with_timeout(
+                            &command,
+                            IOS_OPEN_DEEP_LINK_VERIFY_TIMEOUT_MS,
+                        )
+                        .await;
+                    if matches!(&result, Ok(resp) if resp.success) {
+                        verify_result = Some(result);
+                        break;
+                    }
+                    last_error = match &result {
+                        Ok(resp) => resp.error.clone().unwrap_or_else(|| {
+                            "app did not reach deep-link destination".to_string()
+                        }),
+                        Err(status) => status.message().to_string(),
+                    };
+                    warn!(
+                        %serial, uri = %req.uri, attempt,
+                        error = %last_error,
+                        "deep link did not reach its destination; re-delivering"
+                    );
+                    verify_result = Some(result);
+                }
+
+                match verify_result {
+                    Some(result) => self.make_action_response(request_id, result).await,
+                    None => Ok(self
+                        .action_error(request_id, "ACTION_FAILED", last_error)
+                        .await),
+                }
             }
             Platform::Android => {
                 if req.uri.contains('\'') {

@@ -111,14 +111,6 @@ class CommandHandler {
         return false
     }
 
-    private func openInAppDialogExists(_ springboard: XCUIApplication) -> Bool {
-        var exists = false
-        _ = ObjCExceptionCatcher.catchException {
-            exists = springboard.buttons["Open"].exists
-        }
-        return exists
-    }
-
     private func safeAppState(_ app: XCUIApplication) -> XCUIApplication.State {
         var state: XCUIApplication.State = .unknown
         _ = ObjCExceptionCatcher.catchException {
@@ -128,19 +120,21 @@ class CommandHandler {
     }
 
     /// Dismiss SpringBoard's "Open in <app>?" confirmation and wait for the
-    /// app to settle after a deep-link launch.
+    /// target app to actually render content after a deep-link launch.
     ///
     /// Readiness is detected via `app.snapshot()` (content present) and SpringBoard
-    /// queries (dialog gone) — both work for the out-of-process, simctl-launched
+    /// queries (dialog accepted) — both work for the out-of-process, simctl-launched
     /// target app. We deliberately do NOT gate on `XCUIApplication.state`: it is
     /// unreliable until XCUITest attaches to the externally-launched process, and
     /// gating on it caused deep links that had actually reached their destination
     /// to be reported as failures.
     ///
-    /// On timeout we still treat the deep link as delivered as long as no "Open
-    /// in <app>?" confirmation is still up, letting the caller's auto-waiting
-    /// `findElement` absorb any remaining render delay rather than failing a deep
-    /// link that worked.
+    /// Returns true ONLY when the app has rendered content. On timeout it returns
+    /// false — the first cold, trust-gated openurl on a fresh sim intermittently
+    /// fails to foreground the app (it lands back on SpringBoard with no dialog),
+    /// and the daemon re-delivers the deep link when we report not-delivered. We
+    /// must NOT treat "no dialog" as success, or a never-launched app would be
+    /// reported as ready and the next action would run against SpringBoard.
     private func waitForDeepLinkDestination(_ app: XCUIApplication, timeout: TimeInterval) -> Bool {
         let springboard = XCUIApplication(bundleIdentifier: "com.apple.springboard")
         let deadline = Date(timeIntervalSinceNow: timeout)
@@ -155,9 +149,7 @@ class CommandHandler {
             }
             Thread.sleep(forTimeInterval: 0.2)
         }
-        // Best-effort fallback on timeout: delivered as long as no confirmation
-        // dialog is still covering the app.
-        return !openInAppDialogExists(springboard)
+        return false
     }
 
     /// Dismiss any blocking iOS system dialog currently covering the app
@@ -1309,7 +1301,7 @@ class CommandHandler {
                 }
             }
 
-            if waitForDeepLinkDestination(targetApp, timeout: 18.0) {
+            if waitForDeepLinkDestination(targetApp, timeout: 10.0) {
                 _ = rebindApp(bundleId: bundleId)
                 return ["success": true]
             }
