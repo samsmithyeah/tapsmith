@@ -212,6 +212,25 @@ describe('TraceCollector', () => {
     });
   });
 
+  it('writes before-action screenshots to disk, flushed before packaging', async () => {
+    const collector = new TraceCollector(config, tempDir);
+    const png = Buffer.from('fake-png-bytes');
+
+    const { captures } = await collector.captureBeforeAction(
+      () => Promise.resolve(png),
+      () => Promise.resolve('<hierarchy/>'),
+    );
+
+    // Metadata is available synchronously once the capture buffer is in hand.
+    expect(captures.screenshotBefore).toBeDefined();
+    const diskPath = captures.screenshotBefore!.diskPath;
+
+    // The disk write is backgrounded — guaranteed complete only after flush.
+    await collector.flushPendingCaptures();
+    expect(fs.existsSync(diskPath)).toBe(true);
+    expect(fs.readFileSync(diskPath)).toEqual(png);
+  });
+
   it('records logcat entries', () => {
     const collector = new TraceCollector(config, tempDir);
     collector.addLogcatEntry('info', 'App launched');

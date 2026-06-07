@@ -233,6 +233,27 @@ export class Device {
 
   /** @internal — Capture batched trace state, preserving WebView DOM hierarchy enrichment. */
   private async _captureTraceState(options: CaptureTraceStateOptions): Promise<CaptureTraceStateResponse> {
+    if (this._platform === 'android') {
+      // On Android the cheap, well-tested screenshot path is ADB `screencap`
+      // (what non-traced screenshots use), not the agent's UIAutomator capture.
+      // Run that in parallel with a single batched agent call that serves the
+      // hierarchy dump + element lookup — collapsing the previous three
+      // per-action round-trips (findElement + getUiHierarchy + screencap) down
+      // to two, without changing screenshot quality.
+      const wantScreenshot = options.screenshot ?? false;
+      const [agentRes, screenshot] = await Promise.all([
+        this._client.captureTraceState({ ...options, screenshot: false }),
+        wantScreenshot ? this._takeScreenshotBuffer() : Promise.resolve(undefined),
+      ]);
+      const hierarchyXml = options.hierarchy && agentRes.hierarchyXml
+        ? (await this._appendActiveWebViewDom(agentRes.hierarchyXml) ?? agentRes.hierarchyXml)
+        : agentRes.hierarchyXml;
+      return {
+        ...agentRes,
+        hierarchyXml,
+        ...(screenshot ? { screenshotData: screenshot } : {}),
+      };
+    }
     const res = await this._client.captureTraceState(options);
     if (options.hierarchy && res.hierarchyXml) {
       return {
@@ -261,9 +282,7 @@ export class Device {
       takeScreenshot: () => this._takeScreenshotBuffer(),
       captureHierarchy: () => this._captureHierarchy(),
       findElement: (sel: Selector, timeout: number) => this._client.findElement(sel, timeout),
-      ...(this._platform === 'ios' ? {
-        captureTraceState: (opts: CaptureTraceStateOptions) => this._captureTraceState(opts),
-      } : {}),
+      captureTraceState: (opts: CaptureTraceStateOptions) => this._captureTraceState(opts),
     } : undefined;
     return tracedAction(ctx, action, category, selector, fn, fallbackMsg, extra);
   }
@@ -329,9 +348,7 @@ export class Device {
       collector: this._traceCollector,
       takeScreenshot: () => this._takeScreenshotBuffer(),
       captureHierarchy: () => this._captureHierarchy(),
-      ...(this._platform === 'ios' ? {
-        captureTraceState: (opts: CaptureTraceStateOptions) => this._captureTraceState(opts),
-      } : {}),
+      captureTraceState: (opts: CaptureTraceStateOptions) => this._captureTraceState(opts),
     } : undefined;
     return new ElementHandle(this._client, selector, this._defaultTimeoutMs, { traceCapture, typingDelay: this._typingDelayMs, doubleTapInterval: this._doubleTapIntervalMs });
   }

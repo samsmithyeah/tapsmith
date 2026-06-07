@@ -287,6 +287,8 @@ class CommandHandler(
                 JSONObject().put("data", base64).put("format", "png")
             }
 
+            "captureTraceState" -> captureTraceState(params)
+
             "doubleTap" -> {
                 val element = resolveElement(params)
                 val intervalMs = params.optLong("intervalMs", 0)
@@ -498,6 +500,76 @@ class CommandHandler(
         } finally {
             tmpFile.delete()
         }
+    }
+
+    /**
+     * Batched trace-state capture: hierarchy dump + element lookup (and
+     * optionally a screenshot) in a single round-trip. Mirrors the iOS agent's
+     * `captureTraceState` so the SDK can avoid issuing separate findElement and
+     * getUiHierarchy commands per traced action. All sub-captures are
+     * best-effort — a failure in one does not fail the whole command.
+     *
+     * Note: on Android the SDK keeps the screenshot on the faster ADB
+     * `screencap` path and calls this with `screenshot=false`, but the screenshot
+     * branch is supported for parity and direct callers.
+     */
+    private fun captureTraceState(params: JSONObject): JSONObject {
+        val wantScreenshot = params.optBoolean("screenshot", false)
+        val wantHierarchy = params.optBoolean("hierarchy", false)
+        val selectorKeys =
+            listOf(
+                "role",
+                "name",
+                "text",
+                "textContains",
+                "contentDesc",
+                "hint",
+                "className",
+                "testId",
+                "resourceId",
+                "id",
+                "xpath",
+                "label",
+                "elementId",
+            )
+        val hasSelector = selectorKeys.any(params::has)
+
+        val result = JSONObject().put("success", true)
+
+        if (wantScreenshot) {
+            try {
+                result.put("screenshotData", captureScreenshot(100))
+            } catch (e: Exception) {
+                Log.w(TAG, "captureTraceState: screenshot failed: ${e.message}")
+            }
+        }
+
+        if (wantHierarchy) {
+            try {
+                result.put("hierarchyXml", hierarchyDumper.dump())
+            } catch (e: Exception) {
+                Log.w(TAG, "captureTraceState: hierarchy dump failed: ${e.message}")
+            }
+        }
+
+        if (hasSelector) {
+            // Single, non-waiting lookup — the element was just acted on, so it
+            // is present; polling here would only add latency to the trace path.
+            val element =
+                try {
+                    elementFinder.findElement(parseSelectorParams(params))
+                } catch (e: Exception) {
+                    null
+                }
+            if (element != null) {
+                result.put("elementFound", true)
+                result.put("element", element.toJson())
+            } else {
+                result.put("elementFound", false)
+            }
+        }
+
+        return result
     }
 
     private fun captureScreenshot(quality: Int): String {
