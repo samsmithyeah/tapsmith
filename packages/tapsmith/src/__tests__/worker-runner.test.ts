@@ -198,7 +198,7 @@ describe('worker-runner IPC reporting', () => {
         1,
         expect.any(Object),
         'worker initialization',
-        { allowSoftReset: false },
+        { allowSoftReset: false, skipAppReset: true },
       );
 
       const done = waitForMessage((msg) => msg.type === 'file-done');

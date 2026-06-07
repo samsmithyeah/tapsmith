@@ -80,7 +80,7 @@ export async function ensureSessionReady(
 export async function launchConfiguredApp(
   ctx: SessionPreflightContext,
   phase: string,
-  options: { allowSoftReset?: boolean; readinessAttempts?: number } = {},
+  options: { allowSoftReset?: boolean; readinessAttempts?: number; skipAppReset?: boolean } = {},
 ): Promise<void> {
   const readinessAttempts = options.readinessAttempts;
 
@@ -102,6 +102,17 @@ export async function launchConfiguredApp(
       const message = err instanceof Error ? err.message : String(err);
       process.stderr.write(`[tapsmith] Soft reset failed, falling back to hard reset: ${message}\n`);
     }
+  }
+
+  // When skipAppReset is true (fresh install / startup), skip the expensive
+  // clearAppData + restartApp cycle. The app was just installed — there's no
+  // state to clear. Go straight to ensuring the session is ready.
+  if (options.skipAppReset) {
+    await ensureSessionReady(ctx, phase, readinessAttempts);
+    if (ctx.config.platform === 'ios') {
+      await waitForIosAppReady(ctx);
+    }
+    return;
   }
 
   if (ctx.config.platform === 'ios') {
