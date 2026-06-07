@@ -451,8 +451,9 @@ async function setupSequentialDevice(
 
   cfg.device = target.selectedSerial;
 
-  // Pre-flight: verify device is responsive before doing anything slow (Android only)
-  if (cfg.platform !== 'ios') {
+  // Pre-flight: verify device is responsive before doing anything slow (Android only).
+  // Skip in CI — the workflow already verified boot_completed=1 and disabled animations.
+  if (cfg.platform !== 'ios' && !process.env.CI) {
     progress?.update('primary-device', { state: 'running', detail: `checking ${cfg.device}` });
     await checkDeviceHealth(cfg.device);
   }
