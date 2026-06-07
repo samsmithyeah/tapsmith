@@ -124,13 +124,17 @@ class CommandHandler(
             "tap" -> {
                 val x = params.optInt("x", -1)
                 val y = params.optInt("y", -1)
+                val result = JSONObject().put("success", true)
                 if (x >= 0 && y >= 0) {
                     actionExecutor.tapCoordinates(x, y)
                 } else {
                     val element = resolveElement(params)
                     actionExecutor.tap(elementFinder.getElement(element.elementId))
+                    // Surface the resolved element so tracing can mark the
+                    // target without a separate lookup.
+                    result.put("element", element.toJson())
                 }
-                JSONObject().put("success", true)
+                result
             }
 
             // waitForElement is used by the daemon to auto-wait + find + tap
@@ -147,13 +151,15 @@ class CommandHandler(
                 val duration = params.optLong("duration", 1000L)
                 val x = params.optInt("x", -1)
                 val y = params.optInt("y", -1)
+                val result = JSONObject().put("success", true)
                 if (x >= 0 && y >= 0) {
                     actionExecutor.longPressCoordinates(x, y, duration)
                 } else {
                     val element = resolveElement(params)
                     actionExecutor.longPress(elementFinder.getElement(element.elementId), duration)
+                    result.put("element", element.toJson())
                 }
-                JSONObject().put("success", true)
+                result
             }
 
             "typeText" -> {
@@ -293,7 +299,7 @@ class CommandHandler(
                 val element = resolveElement(params)
                 val intervalMs = params.optLong("intervalMs", 0)
                 actionExecutor.doubleTap(elementFinder.getElement(element.elementId), intervalMs)
-                JSONObject().put("success", true)
+                JSONObject().put("success", true).put("element", element.toJson())
             }
 
             "dragAndDrop" -> {

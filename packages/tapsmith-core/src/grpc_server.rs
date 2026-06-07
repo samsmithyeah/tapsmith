@@ -843,6 +843,8 @@ impl TapsmithServiceImpl {
             error_type: error_type.to_string(),
             error_message,
             screenshot,
+
+            bounds: None,
         })
     }
 
@@ -967,13 +969,19 @@ impl TapsmithServiceImpl {
         result: Result<AgentResponse, Status>,
     ) -> Result<Response<proto::ActionResponse>, Status> {
         match result {
-            Ok(resp) if resp.success => Ok(Response::new(proto::ActionResponse {
-                request_id,
-                success: true,
-                error_type: String::new(),
-                error_message: String::new(),
-                screenshot: Vec::new(),
-            })),
+            Ok(resp) if resp.success => {
+                // Reuse the element the action already resolved (when present)
+                // so tracing can mark the target without a separate lookup.
+                let bounds = parse_element_info(&resp.data).and_then(|e| e.bounds);
+                Ok(Response::new(proto::ActionResponse {
+                    request_id,
+                    success: true,
+                    error_type: String::new(),
+                    error_message: String::new(),
+                    screenshot: Vec::new(),
+                    bounds,
+                }))
+            }
             Ok(resp) => {
                 let screenshot = self.error_screenshot().await;
                 Ok(Response::new(proto::ActionResponse {
@@ -982,6 +990,7 @@ impl TapsmithServiceImpl {
                     error_type: resp.error_type.unwrap_or_default(),
                     error_message: resp.error.unwrap_or_else(|| "Unknown error".to_string()),
                     screenshot,
+                    bounds: None,
                 }))
             }
             Err(status) => {
@@ -992,6 +1001,7 @@ impl TapsmithServiceImpl {
                     error_type: "INTERNAL".to_string(),
                     error_message: status.message().to_string(),
                     screenshot,
+                    bounds: None,
                 }))
             }
         }
@@ -1060,6 +1070,8 @@ impl TapsmithServiceImpl {
                 error_type: String::new(),
                 error_message: String::new(),
                 screenshot: Vec::new(),
+
+                bounds: None,
             })),
             Err(e) => {
                 let screenshot = self.error_screenshot().await;
@@ -1069,6 +1081,8 @@ impl TapsmithServiceImpl {
                     error_type: "ADB_COMMAND_FAILED".to_string(),
                     error_message: e.to_string(),
                     screenshot,
+
+                    bounds: None,
                 }))
             }
         }
@@ -1081,6 +1095,8 @@ impl TapsmithServiceImpl {
             error_type: String::new(),
             error_message: String::new(),
             screenshot: Vec::new(),
+
+            bounds: None,
         })
     }
 
@@ -1198,6 +1214,8 @@ impl TapsmithServiceImpl {
                     error_type: "WAIT_FOR_IDLE_FAILED".to_string(),
                     error_message: format!("App launched but UI did not become idle: {e}"),
                     screenshot,
+
+                    bounds: None,
                 }));
             }
         }
@@ -1228,6 +1246,8 @@ impl TapsmithServiceImpl {
                     error_type: "LAUNCH_FAILED".to_string(),
                     error_message: format!("Failed to launch app: {e}"),
                     screenshot,
+
+                    bounds: None,
                 }))
             }
         }
@@ -1284,6 +1304,8 @@ impl TapsmithServiceImpl {
                         error_type: "LAUNCH_FAILED".to_string(),
                         error_message: format!("Failed to launch app: {monkey_err}"),
                         screenshot,
+
+                        bounds: None,
                     }));
                 };
 
@@ -1304,6 +1326,7 @@ impl TapsmithServiceImpl {
                                 "Failed to launch app via launcher intent ({monkey_err}) and explicit activity {activity} ({fallback_err})"
                             ),
                             screenshot,
+                            bounds: None,
                         }))
                     }
                 }
@@ -1374,6 +1397,8 @@ impl TapsmithServiceImpl {
             error_type: String::new(),
             error_message: String::new(),
             screenshot: Vec::new(),
+
+            bounds: None,
         }))
     }
 }
@@ -2003,6 +2028,8 @@ impl proto::tapsmith_service_server::TapsmithService for TapsmithServiceImpl {
                 error_type: String::new(),
                 error_message: String::new(),
                 screenshot: Vec::new(),
+
+                bounds: None,
             })),
             Err(e) => {
                 error!(error = %e, "APK installation failed");
@@ -2013,6 +2040,8 @@ impl proto::tapsmith_service_server::TapsmithService for TapsmithServiceImpl {
                     error_type: "INSTALL_FAILED".to_string(),
                     error_message: e.to_string(),
                     screenshot,
+
+                    bounds: None,
                 }))
             }
         }
@@ -2113,6 +2142,8 @@ impl proto::tapsmith_service_server::TapsmithService for TapsmithServiceImpl {
                     error_type: String::new(),
                     error_message: String::new(),
                     screenshot: Vec::new(),
+
+                    bounds: None,
                 }))
             }
             Err(e) => Ok(Response::new(proto::ActionResponse {
@@ -2121,6 +2152,8 @@ impl proto::tapsmith_service_server::TapsmithService for TapsmithServiceImpl {
                 error_type: "DEVICE_NOT_FOUND".to_string(),
                 error_message: e.to_string(),
                 screenshot: Vec::new(),
+
+                bounds: None,
             })),
         }
     }
@@ -2152,6 +2185,8 @@ impl proto::tapsmith_service_server::TapsmithService for TapsmithServiceImpl {
                             Set iosXctestrun in your tapsmith config."
                             .to_string(),
                         screenshot: Vec::new(),
+
+                        bounds: None,
                     }));
                 }
 
@@ -2207,6 +2242,8 @@ impl proto::tapsmith_service_server::TapsmithService for TapsmithServiceImpl {
                             error_type: "AGENT_START_FAILED".to_string(),
                             error_message: e.to_string(),
                             screenshot: Vec::new(),
+
+                            bounds: None,
                         }));
                     }
                 };
@@ -2232,6 +2269,8 @@ impl proto::tapsmith_service_server::TapsmithService for TapsmithServiceImpl {
                             "Android device was not ready before starting agent: {e}"
                         ),
                         screenshot: Vec::new(),
+
+                        bounds: None,
                     }));
                 }
 
@@ -2251,6 +2290,8 @@ impl proto::tapsmith_service_server::TapsmithService for TapsmithServiceImpl {
                             or install manually with: adb install <path-to-agent.apk>"
                             .to_string(),
                         screenshot: Vec::new(),
+
+                        bounds: None,
                     }));
                 }
 
@@ -2265,6 +2306,8 @@ impl proto::tapsmith_service_server::TapsmithService for TapsmithServiceImpl {
                             error_type: "AGENT_INSTALL_FAILED".to_string(),
                             error_message: format!("Failed to install agent APK: {e}"),
                             screenshot: Vec::new(),
+
+                            bounds: None,
                         }));
                     }
                     if let Err(e) = adb::install_apk(&serial, &req.agent_test_apk_path).await {
@@ -2274,6 +2317,8 @@ impl proto::tapsmith_service_server::TapsmithService for TapsmithServiceImpl {
                             error_type: "AGENT_INSTALL_FAILED".to_string(),
                             error_message: format!("Failed to install agent test APK: {e}"),
                             screenshot: Vec::new(),
+
+                            bounds: None,
                         }));
                     }
                     info!("Agent APKs installed successfully");
@@ -2300,6 +2345,8 @@ impl proto::tapsmith_service_server::TapsmithService for TapsmithServiceImpl {
                         error_type: "AGENT_START_FAILED".to_string(),
                         error_message: e.to_string(),
                         screenshot: Vec::new(),
+
+                        bounds: None,
                     }));
                 }
 
@@ -2321,6 +2368,8 @@ impl proto::tapsmith_service_server::TapsmithService for TapsmithServiceImpl {
                 error_type: String::new(),
                 error_message: String::new(),
                 screenshot: Vec::new(),
+
+                bounds: None,
             })),
             Err(e) => {
                 error!(error = %e, "Failed to connect to agent");
@@ -2332,6 +2381,8 @@ impl proto::tapsmith_service_server::TapsmithService for TapsmithServiceImpl {
                     error_type: "AGENT_CONNECTION_FAILED".to_string(),
                     error_message: e.to_string(),
                     screenshot,
+
+                    bounds: None,
                 }))
             }
         }
@@ -2682,6 +2733,8 @@ impl proto::tapsmith_service_server::TapsmithService for TapsmithServiceImpl {
                     error_type: String::new(),
                     error_message: String::new(),
                     screenshot: Vec::new(),
+
+                    bounds: None,
                 }))
             }
             Platform::Android => {
@@ -2704,6 +2757,8 @@ impl proto::tapsmith_service_server::TapsmithService for TapsmithServiceImpl {
                                     output.trim()
                                 ),
                                 screenshot,
+
+                                bounds: None,
                             }));
                         }
                         Err(e) => {
@@ -2715,6 +2770,8 @@ impl proto::tapsmith_service_server::TapsmithService for TapsmithServiceImpl {
                                 error_type: "CLEAR_DATA_FAILED".to_string(),
                                 error_message: format!("Failed to clear app data: {e}"),
                                 screenshot,
+
+                                bounds: None,
                             }));
                         }
                         Ok(_) => {} // Success
@@ -2931,6 +2988,8 @@ impl proto::tapsmith_service_server::TapsmithService for TapsmithServiceImpl {
                         error_type: "ADB_COMMAND_FAILED".to_string(),
                         error_message: e.to_string(),
                         screenshot,
+
+                        bounds: None,
                     }));
                 }
 
@@ -3084,6 +3143,8 @@ impl proto::tapsmith_service_server::TapsmithService for TapsmithServiceImpl {
                         error_type: "FORCE_STOP_FAILED".to_string(),
                         error_message: format!("Failed to stop app: {e}"),
                         screenshot,
+
+                        bounds: None,
                     }));
                 }
 
@@ -3157,6 +3218,8 @@ impl proto::tapsmith_service_server::TapsmithService for TapsmithServiceImpl {
                     error_type: String::new(),
                     error_message: String::new(),
                     screenshot: Vec::new(),
+
+                    bounds: None,
                 }))
             }
             Platform::Android => {
@@ -3320,6 +3383,8 @@ impl proto::tapsmith_service_server::TapsmithService for TapsmithServiceImpl {
                         error_type: String::new(),
                         error_message: String::new(),
                         screenshot: Vec::new(),
+
+                        bounds: None,
                     }));
                 }
                 let serial = self.active_serial().await?;
@@ -3344,6 +3409,8 @@ impl proto::tapsmith_service_server::TapsmithService for TapsmithServiceImpl {
                     error_type: String::new(),
                     error_message: String::new(),
                     screenshot: Vec::new(),
+
+                    bounds: None,
                 }))
             }
             Platform::Android => {
@@ -5685,6 +5752,8 @@ impl proto::tapsmith_service_server::TapsmithService for TapsmithServiceImpl {
             error_type: String::new(),
             error_message: String::new(),
             screenshot: Vec::new(),
+
+            bounds: None,
         }))
     }
 
@@ -5706,6 +5775,8 @@ impl proto::tapsmith_service_server::TapsmithService for TapsmithServiceImpl {
                                 StopVideoRecording before starting a new one."
                     .into(),
                 screenshot: Vec::new(),
+
+                bounds: None,
             }));
         }
 
@@ -5726,6 +5797,8 @@ impl proto::tapsmith_service_server::TapsmithService for TapsmithServiceImpl {
                     error_type: String::new(),
                     error_message: String::new(),
                     screenshot: Vec::new(),
+
+                    bounds: None,
                 }))
             }
             Err(e) => {
@@ -5736,6 +5809,8 @@ impl proto::tapsmith_service_server::TapsmithService for TapsmithServiceImpl {
                     error_type: "start_failed".into(),
                     error_message: e.to_string(),
                     screenshot: Vec::new(),
+
+                    bounds: None,
                 }))
             }
         }

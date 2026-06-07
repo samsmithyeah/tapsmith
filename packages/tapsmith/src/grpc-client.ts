@@ -40,6 +40,9 @@ export interface ActionResponse {
   errorType: string;
   errorMessage: string;
   screenshot: Buffer;
+  /** Bounds of the element the action resolved, when it targeted a single
+   * element. Absent for coordinate-based or non-element actions. */
+  bounds?: { left: number; top: number; right: number; bottom: number };
 }
 
 export interface FindElementResponse {
