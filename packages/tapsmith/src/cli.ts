@@ -614,15 +614,20 @@ async function setupSequentialDevice(
       }
     }
   } else {
-    try {
-      progress?.update('primary-device', { state: 'running', detail: `waking ${cfg.device}` });
-      await device.wake();
-      await device.unlock();
-      if (progress) progress.complete('primary-device', `${cfg.device} awake and unlocked`);
-      else console.log(dim('Device screen unlocked.'));
-    } catch {
-      // Non-fatal — device might already be awake/unlocked
+    if (process.env.CI) {
+      // Skip wake/unlock in CI — headless emulators have no lockscreen.
       progress?.complete('primary-device', `${cfg.device} selected`);
+    } else {
+      try {
+        progress?.update('primary-device', { state: 'running', detail: `waking ${cfg.device}` });
+        await device.wake();
+        await device.unlock();
+        if (progress) progress.complete('primary-device', `${cfg.device} awake and unlocked`);
+        else console.log(dim('Device screen unlocked.'));
+      } catch {
+        // Non-fatal — device might already be awake/unlocked
+        progress?.complete('primary-device', `${cfg.device} selected`);
+      }
     }
 
     if (cfg.apk) {
