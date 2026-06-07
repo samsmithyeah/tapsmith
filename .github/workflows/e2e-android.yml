@@ -259,7 +259,11 @@ jobs:
       - name: Run E2E tests
         working-directory: e2e
         run: |
-          npx tapsmith test -c tapsmith.config.android-ci.mjs --shard=${{ matrix.shard }}/${{ env.SHARD_TOTAL }} --workers 1
+          SERIAL=$(adb devices | grep -w device | head -1 | awk '{print $1}')
+          npx tapsmith test -c tapsmith.config.android-ci.mjs \
+            --shard=${{ matrix.shard }}/${{ env.SHARD_TOTAL }} \
+            --workers 1 \
+            --device "$SERIAL"
 
       - name: Upload blob report
         if: always()
