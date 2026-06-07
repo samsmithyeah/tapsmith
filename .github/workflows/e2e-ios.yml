@@ -226,6 +226,16 @@ jobs:
           mkdir -p e2e/fixtures
           tar xzf test-app-ios.tar.gz -C e2e/fixtures
 
+      - name: Pre-install test app
+        run: |
+          APP_PATH="e2e/fixtures/TapsmithTestApp.app"
+          if [ -d "$APP_PATH" ]; then
+            xcrun simctl install "$TAPSMITH_IOS_UDID" "$APP_PATH"
+            echo "Pre-installed test app on $TAPSMITH_IOS_SIMULATOR ($TAPSMITH_IOS_UDID)"
+          else
+            echo "Test app not found at $APP_PATH, will be installed by Tapsmith"
+          fi
+
       - name: Install SDK dependencies
         working-directory: packages/tapsmith
         run: npm ci
