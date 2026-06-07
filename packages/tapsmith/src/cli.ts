@@ -465,9 +465,13 @@ async function setupSequentialDevice(
 
   cfg.device = target.selectedSerial;
 
+  // CI=false (string) must be treated as falsy — some systems export CI=false
+  // for "not in CI" which is truthy in JavaScript. Normalise once here.
+  const isCI = !!(process.env.CI && process.env.CI !== 'false');
+
   // Pre-flight: verify device is responsive before doing anything slow (Android only).
   // Skip in CI — the workflow already verified boot_completed=1 and disabled animations.
-  if (cfg.platform !== 'ios' && !process.env.CI) {
+  if (cfg.platform !== 'ios' && !isCI) {
     progress?.update('primary-device', { state: 'running', detail: `checking ${cfg.device}` });
     await checkDeviceHealth(cfg.device);
   }
@@ -493,6 +497,7 @@ async function setupSequentialDevice(
   }
 
   const deviceJustLaunched = launchedEmulators.some((e) => e.serial === cfg.device);
+  let skipAppReset = false;
 
   // Determine whether this UDID targets a physical device or a simulator.
   // The branch drives every downstream decision in the iOS block: simctl for
@@ -581,6 +586,7 @@ async function setupSequentialDevice(
               progress?.update('app-install', { state: 'running', detail: `installing ${path.basename(resolvedApp)} on device` });
             }
             await installAppOnDevice(cfg.device, resolvedApp);
+            skipAppReset = true;
             if (progress) progress.complete('app-install', `installed ${path.basename(resolvedApp)} on ${cfg.device}`);
             else console.log(dim(`Installed ${path.basename(resolvedApp)} on iOS device ${cfg.device}.`));
           }
@@ -600,6 +606,7 @@ async function setupSequentialDevice(
               progress?.update('app-install', { state: 'running', detail: `installing ${path.basename(resolvedApp)}` });
             }
             installApp(cfg.device, resolvedApp);
+            skipAppReset = true;
             if (progress) progress.complete('app-install', `installed ${path.basename(resolvedApp)}`);
             else console.log(dim(`Installed ${path.basename(resolvedApp)} on iOS simulator.`));
           }
@@ -628,7 +635,7 @@ async function setupSequentialDevice(
       }
     }
   } else {
-    if (process.env.CI) {
+    if (isCI) {
       // Skip wake/unlock in CI — headless emulators have no lockscreen.
       progress?.complete('primary-device', `${cfg.device} selected`);
     } else {
@@ -664,6 +671,7 @@ async function setupSequentialDevice(
             progress?.update('app-install', { state: 'running', detail: `installing ${path.basename(resolvedApk)}` });
           }
           await device.installApk(resolvedApk);
+          skipAppReset = true;
           if (cfg.package && cfg.device) {
             await waitForPackageIndexed(cfg.device, cfg.package);
           }
@@ -833,7 +841,7 @@ async function setupSequentialDevice(
         iosAppPath: resolvedIosAppPath,
         deviceSerial: cfg.device,
         networkTracingEnabled,
-      }, 'startup', { allowSoftReset: false, readinessAttempts: 3, skipAppReset: true });
+      }, 'startup', { allowSoftReset: false, readinessAttempts: 3, skipAppReset });
       if (progress) progress.complete('app-launch', `launched ${cfg.package}`);
       else console.log(dim(`Launched ${cfg.package}`));
     } catch (err) {

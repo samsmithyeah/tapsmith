@@ -106,8 +106,13 @@ export async function launchConfiguredApp(
 
   // When skipAppReset is true (fresh install / startup), skip the expensive
   // clearAppData + restartApp cycle. The app was just installed — there's no
-  // state to clear. Go straight to ensuring the session is ready.
+  // state to clear. On Android, explicitly launch the app (iOS auto-launches
+  // via the XCUITest agent during startAgent). Then go straight to ensuring
+  // the session is ready.
   if (options.skipAppReset) {
+    if (ctx.config.platform !== 'ios') {
+      await ctx.device.launchApp(ctx.config.package, launchOptions(ctx.config));
+    }
     await ensureSessionReady(ctx, phase, readinessAttempts);
     if (ctx.config.platform === 'ios') {
       await waitForIosAppReady(ctx);
