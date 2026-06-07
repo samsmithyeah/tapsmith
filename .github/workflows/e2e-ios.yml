@@ -221,6 +221,16 @@ jobs:
           mkdir -p ~/Library/Developer/Xcode/DerivedData
           ln -s "$PWD/ios-agent/.build-sim" ~/Library/Developer/Xcode/DerivedData/TapsmithAgent-ci
 
+      - name: Resolve xctestrun path
+        run: |
+          XCTESTRUN=$(find "$PWD/ios-agent/.build-sim" -name "*.xctestrun" -type f | head -1)
+          if [ -n "$XCTESTRUN" ]; then
+            echo "TAPSMITH_IOS_XCTESTRUN=$XCTESTRUN" >> $GITHUB_ENV
+            echo "Resolved xctestrun: $XCTESTRUN"
+          else
+            echo "No xctestrun found, will auto-discover"
+          fi
+
       - name: Extract test app
         run: |
           mkdir -p e2e/fixtures
