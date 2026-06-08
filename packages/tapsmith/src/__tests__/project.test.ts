@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { resolveProjects, topologicalSort, collectTransitiveDeps, findProjectForFile, deviceSignature, allocateBucketWorkers, bucketizeProjects, type ResolvedProject } from '../project.js';
+import { resolveProjects, topologicalSort, collectTransitiveDeps, findProjectsForFile, deviceSignature, allocateBucketWorkers, bucketizeProjects, type ResolvedProject } from '../project.js';
 import { effectiveConfigForProject, type TapsmithConfig } from '../config.js';
 
 function makeConfig(overrides: Partial<TapsmithConfig> = {}): TapsmithConfig {
@@ -221,9 +221,9 @@ describe('collectTransitiveDeps()', () => {
   });
 });
 
-// ─── findProjectForFile ───
+// ─── findProjectsForFile ───
 
-describe('findProjectForFile()', () => {
+describe('findProjectsForFile()', () => {
   it('matches file to project by testMatch', () => {
     const projects = resolveProjects(makeConfig({
       projects: [
@@ -231,8 +231,8 @@ describe('findProjectForFile()', () => {
         { name: 'default', testMatch: ['**/*.test.ts'] },
       ],
     }));
-    expect(findProjectForFile('/tmp/tests/auth.setup.ts', projects, '/tmp')).toBe('setup');
-    expect(findProjectForFile('/tmp/tests/foo.test.ts', projects, '/tmp')).toBe('default');
+    expect(findProjectsForFile('/tmp/tests/auth.setup.ts', projects, '/tmp')).toEqual(['setup']);
+    expect(findProjectsForFile('/tmp/tests/foo.test.ts', projects, '/tmp')).toEqual(['default']);
   });
 
   it('respects testIgnore', () => {
@@ -242,16 +242,37 @@ describe('findProjectForFile()', () => {
         { name: 'auth', testMatch: ['**/app-state.test.ts'] },
       ],
     }));
-    expect(findProjectForFile('/tmp/tests/app-state.test.ts', projects, '/tmp')).toBe('auth');
+    expect(findProjectsForFile('/tmp/tests/app-state.test.ts', projects, '/tmp')).toEqual(['auth']);
   });
 
-  it('returns undefined for unmatched file', () => {
+  it('returns empty array for unmatched file', () => {
     const projects = resolveProjects(makeConfig({
       projects: [
         { name: 'setup', testMatch: ['**/auth.setup.ts'] },
       ],
     }));
-    expect(findProjectForFile('/tmp/tests/foo.test.ts', projects, '/tmp')).toBeUndefined();
+    expect(findProjectsForFile('/tmp/tests/foo.test.ts', projects, '/tmp')).toEqual([]);
+  });
+
+  it('returns all matching projects when file matches multiple', () => {
+    const projects = resolveProjects(makeConfig({
+      projects: [
+        { name: 'android', testMatch: ['**/*.test.ts'] },
+        { name: 'ios', testMatch: ['**/*.test.ts'] },
+      ],
+    }));
+    expect(findProjectsForFile('/tmp/tests/foo.test.ts', projects, '/tmp')).toEqual(['android', 'ios']);
+  });
+
+  it('returns all matching projects respecting testIgnore per project', () => {
+    const projects = resolveProjects(makeConfig({
+      projects: [
+        { name: 'android', testMatch: ['**/*.test.ts'] },
+        { name: 'ios', testMatch: ['**/*.test.ts'], testIgnore: ['**/*.android.test.ts'] },
+      ],
+    }));
+    expect(findProjectsForFile('/tmp/tests/foo.test.ts', projects, '/tmp')).toEqual(['android', 'ios']);
+    expect(findProjectsForFile('/tmp/tests/bar.android.test.ts', projects, '/tmp')).toEqual(['android']);
   });
 });
 
