@@ -1,0 +1,16 @@
+{
+  "name": "@tapsmith/agent-android",
+  "version": "0.1.2",
+  "description": "Prebuilt Android agent APKs for Tapsmith",
+  "files": [
+    "app-debug.apk",
+    "app-debug-androidTest.apk"
+  ],
+  "preferUnplugged": true,
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/samsmithyeah/tapsmith.git",
+    "directory": "npm-packages/agent-android"
+  },
+  "license": "Apache-2.0"
+}
