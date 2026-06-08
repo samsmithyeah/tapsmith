@@ -68,15 +68,30 @@ describe('getInstalledSimulatorSdkVersion()', () => {
   });
 
   it('returns SDK version from xcrun', async () => {
+    const orig = process.platform;
+    Object.defineProperty(process, 'platform', { value: 'darwin', configurable: true });
     execFileSyncMock.mockReturnValue('26.0\n');
     const { getInstalledSimulatorSdkVersion } = await import('../ios-device-resolve.js');
     expect(getInstalledSimulatorSdkVersion()).toBe('26.0');
+    Object.defineProperty(process, 'platform', { value: orig, configurable: true });
   });
 
   it('returns undefined when xcrun fails', async () => {
+    const orig = process.platform;
+    Object.defineProperty(process, 'platform', { value: 'darwin', configurable: true });
     execFileSyncMock.mockImplementation(() => { throw new Error('xcrun not found'); });
     const { getInstalledSimulatorSdkVersion } = await import('../ios-device-resolve.js');
     expect(getInstalledSimulatorSdkVersion()).toBeUndefined();
+    Object.defineProperty(process, 'platform', { value: orig, configurable: true });
+  });
+
+  it('returns undefined on non-darwin platforms', async () => {
+    const orig = process.platform;
+    Object.defineProperty(process, 'platform', { value: 'linux', configurable: true });
+    const { getInstalledSimulatorSdkVersion } = await import('../ios-device-resolve.js');
+    expect(getInstalledSimulatorSdkVersion()).toBeUndefined();
+    expect(execFileSyncMock).not.toHaveBeenCalled();
+    Object.defineProperty(process, 'platform', { value: orig, configurable: true });
   });
 });
 
