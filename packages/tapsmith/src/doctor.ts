@@ -155,13 +155,11 @@ function checkAgentApks(checks: CheckList): void {
     const apk = findAgentApk();
     const testApk = findAgentTestApk();
     if (apk && testApk) {
-      const isBundled = apk.includes('agents/android');
-      const source = isBundled ? 'bundled' : 'monorepo build';
-      pass(checks, `Android agent ${dim(`(${source})`)}`);
+      pass(checks, `Android agent ${dim(`(${apk.includes('agent-android') ? '@tapsmith/agent-android' : 'monorepo build'})`)}`);
     } else if (apk || testApk) {
-      warn(checks, 'Android agent incomplete — rebuild with `./gradlew assembleDebug assembleDebugAndroidTest` in agent/');
+      warn(checks, 'Android agent incomplete — one APK found but not both');
     } else {
-      warn(checks, 'Android agent not found — build with `./gradlew assembleDebug` in agent/');
+      warn(checks, 'Android agent not found — install @tapsmith/agent-android or build from source in agent/');
     }
   } catch {
     warn(checks, 'Could not locate Android agent');
