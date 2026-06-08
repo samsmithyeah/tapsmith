@@ -2329,8 +2329,14 @@ async function main(): Promise<void> {
         // when projects override device-shaping fields via `use:`.
         const projectConfig = currentSequentialState?.effectiveConfig ?? config;
 
+        let isFirstFileInProject = true;
         for (const file of project.testFiles) {
-          if (fileIndex > 0 && projectConfig.package) {
+          // Skip the file-level reset when the project has appState — the
+          // runner's suite-level restoreAppState + restartApp will handle
+          // the transition, making a prior launchConfiguredApp redundant.
+          const projectHasAppState = !!(project.use?.appState);
+          if (fileIndex > 0 && projectConfig.package
+            && !(isFirstFileInProject && projectHasAppState)) {
             const resetCtx: import('./session-preflight.js').SessionPreflightContext = {
               label: `Device ${projectConfig.device}`,
               config: projectConfig,
@@ -2420,6 +2426,7 @@ async function main(): Promise<void> {
 
           reporter.onTestFileEnd(file, fileResults);
           fileIndex++;
+          isFirstFileInProject = false;
 
           if (fileResults.some((r) => r.status === 'failed')) {
             projectFailed = true;
