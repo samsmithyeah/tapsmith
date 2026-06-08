@@ -348,6 +348,7 @@ jobs:
             }
             fs.writeFileSync('package.json', JSON.stringify(pkg, null, 2) + '\n');
           "
+          npm install --package-lock-only
 
       - name: Build
         run: npm run build
