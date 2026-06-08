@@ -37,6 +37,8 @@ export async function buildSimulatorAgent(sdkVersion: string): Promise<string> {
   }
 
   fs.mkdirSync(CACHE_DIR, { recursive: true });
+  const sdkMarker = path.join(CACHE_DIR, '.sdk-version');
+  if (fs.existsSync(sdkMarker)) fs.rmSync(sdkMarker, { force: true });
   const buildDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tapsmith-build-'));
 
   try {
@@ -107,7 +109,7 @@ export async function buildSimulatorAgent(sdkVersion: string): Promise<string> {
     }
 
     // Write the SDK version marker so future runs can skip the build.
-    fs.writeFileSync(path.join(CACHE_DIR, '.sdk-version'), sdkVersion);
+    fs.writeFileSync(sdkMarker, sdkVersion);
 
     return xctestrunDest;
   } finally {
