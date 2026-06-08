@@ -131,8 +131,9 @@ export async function ensureSimulatorAgent(): Promise<string> {
       try {
         console.log(`No prebuilt iOS agent found. Building from source for SDK ${installedSdk}...`);
         return await buildSimulatorAgent(installedSdk);
-      } catch {
-        // Fall through to descriptive error
+      } catch (err) {
+        const detail = err instanceof Error ? err.message : String(err);
+        throw new Error(`Failed to build iOS simulator agent from source: ${detail}`);
       }
     }
     throw new Error(
