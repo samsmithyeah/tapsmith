@@ -38,7 +38,7 @@ Apple Developer account, device pairing). See [iOS physical devices](./ios-physi
 npm install tapsmith
 ```
 
-This installs the TypeScript SDK, test runner, the Tapsmith daemon binary for your platform, and the Android agent APKs.
+This installs the TypeScript SDK, test runner, the Tapsmith daemon binary for your platform, and the Android agent APKs (via the `@tapsmith/agent-android` optional dependency).
 
 ## Quick Setup (Recommended)
 

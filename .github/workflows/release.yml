@@ -315,10 +315,66 @@ jobs:
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
+  # ─── Publish Android agent package ───
+  publish-android-agent:
+    name: Publish @tapsmith/agent-android
+    needs: [build-android-agent]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+
+      - name: Download Android agent APK
+        uses: actions/download-artifact@v4
+        with:
+          name: android-agent-apk
+          path: npm-packages/agent-android/
+
+      - name: Download Android agent test APK
+        uses: actions/download-artifact@v4
+        with:
+          name: android-agent-test-apk
+          path: npm-packages/agent-android/
+
+      - name: Set version from tag
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          cd npm-packages/agent-android
+          node -e "
+            const fs = require('fs');
+            const pkg = require('./package.json');
+            pkg.version = '$VERSION';
+            fs.writeFileSync('package.json', JSON.stringify(pkg, null, 2) + '\n');
+          "
+
+      - name: Check if package version already exists
+        id: android_exists
+        working-directory: npm-packages/agent-android
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          NAME=$(node -p "require('./package.json').name")
+          if npm view "${NAME}@${VERSION}" version >/dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+            echo "${NAME}@${VERSION} is already published; skipping npm publish."
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Publish
+        if: steps.android_exists.outputs.exists != 'true'
+        working-directory: npm-packages/agent-android
+        run: npm publish --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
   # ─── Publish main tapsmith package ───
   publish-tapsmith:
     name: Publish tapsmith
-    needs: [publish-platform-packages, publish-ios-simulator-packages, build-android-agent]
+    needs: [publish-platform-packages, publish-ios-simulator-packages, publish-android-agent]
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -353,27 +409,12 @@ jobs:
       - name: Build
         run: npm run build
 
-      # Download agent APKs AFTER build (build starts with rm -rf dist)
-      - name: Download Android agent APK
-        uses: actions/download-artifact@v4
-        with:
-          name: android-agent-apk
-          path: packages/tapsmith/dist/agents/android/
-
-      - name: Download Android agent test APK
-        uses: actions/download-artifact@v4
-        with:
-          name: android-agent-test-apk
-          path: packages/tapsmith/dist/agents/android/
-
       - name: Verify package contents
         run: |
           npm pack --dry-run 2>&1
           # Check critical files are present
           test -f dist/cli.js || (echo "Missing dist/cli.js" && exit 1)
           test -f dist/proto/tapsmith.proto || (echo "Missing dist/proto/tapsmith.proto" && exit 1)
-          test -f dist/agents/android/app-debug.apk || (echo "Missing Android agent APK" && exit 1)
-          test -f dist/agents/android/app-debug-androidTest.apk || (echo "Missing Android agent test APK" && exit 1)
 
       - name: Check if tapsmith version already exists
         id: tapsmith_exists

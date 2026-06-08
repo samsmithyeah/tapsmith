@@ -525,7 +525,7 @@ Tapsmith Doctor
   ✓ ADB 35.0.1
   ✓ ANDROID_HOME /Users/you/Library/Android/sdk
   ✓ 1 device connected (emulator-5554)
-  ✓ Android agent (bundled)
+  ✓ Android agent (@tapsmith/agent-android)
   ✓ App APK exists (app-debug.apk)
 
   iOS

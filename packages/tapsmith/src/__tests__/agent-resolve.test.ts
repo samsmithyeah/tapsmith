@@ -1,32 +1,44 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import * as fs from 'node:fs';
-import { findAgentApk, findAgentTestApk } from '../agent-resolve.js';
+import * as path from 'node:path';
 
 vi.mock('node:fs');
+
+const { mockResolve } = vi.hoisted(() => ({
+  mockResolve: vi.fn(),
+}));
+
+vi.mock('node:module', () => ({
+  createRequire: () => ({ resolve: mockResolve }),
+}));
+
+import { findAgentApk, findAgentTestApk } from '../agent-resolve.js';
 
 const existsSync = vi.mocked(fs.existsSync);
 
 beforeEach(() => {
   existsSync.mockReset();
+  mockResolve.mockReset();
 });
 
 describe('findAgentApk()', () => {
-  it('returns bundled path when it exists', () => {
+  it('returns npm package path when @tapsmith/agent-android is installed', () => {
+    mockResolve.mockReturnValue('/node_modules/@tapsmith/agent-android/package.json');
     existsSync.mockImplementation((p) =>
-      String(p).includes('agents/android/app-debug.apk'),
+      String(p) === path.resolve('/node_modules/@tapsmith/agent-android', 'app-debug.apk'),
     );
 
     const result = findAgentApk();
-    expect(result).toBeDefined();
-    expect(result).toContain('agents/android/app-debug.apk');
+    expect(result).toContain('@tapsmith/agent-android');
+    expect(result).toContain('app-debug.apk');
   });
 
-  it('falls back to monorepo path when bundled not found', () => {
+  it('falls back to monorepo path when npm package not installed', () => {
+    mockResolve.mockImplementation(() => { throw new Error('not found'); });
     let callIndex = 0;
     existsSync.mockImplementation(() => {
       callIndex++;
-      // First call is bundled (miss), second is first monorepo candidate (hit)
-      return callIndex === 2;
+      return callIndex === 1; // first monorepo candidate
     });
 
     const result = findAgentApk();
@@ -35,23 +47,26 @@ describe('findAgentApk()', () => {
   });
 
   it('returns undefined when no path exists', () => {
+    mockResolve.mockImplementation(() => { throw new Error('not found'); });
     existsSync.mockReturnValue(false);
     expect(findAgentApk()).toBeUndefined();
   });
 });
 
 describe('findAgentTestApk()', () => {
-  it('returns bundled path when it exists', () => {
+  it('returns npm package path when @tapsmith/agent-android is installed', () => {
+    mockResolve.mockReturnValue('/node_modules/@tapsmith/agent-android/package.json');
     existsSync.mockImplementation((p) =>
-      String(p).includes('agents/android/app-debug-androidTest.apk'),
+      String(p) === path.resolve('/node_modules/@tapsmith/agent-android', 'app-debug-androidTest.apk'),
     );
 
     const result = findAgentTestApk();
-    expect(result).toBeDefined();
-    expect(result).toContain('agents/android/app-debug-androidTest.apk');
+    expect(result).toContain('@tapsmith/agent-android');
+    expect(result).toContain('app-debug-androidTest.apk');
   });
 
   it('returns undefined when no path exists', () => {
+    mockResolve.mockImplementation(() => { throw new Error('not found'); });
     existsSync.mockReturnValue(false);
     expect(findAgentTestApk()).toBeUndefined();
   });
