@@ -37,79 +37,81 @@ export async function buildSimulatorAgent(sdkVersion: string): Promise<string> {
   }
 
   fs.mkdirSync(CACHE_DIR, { recursive: true });
-  const buildDir = path.join(CACHE_DIR, 'build');
+  const buildDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tapsmith-build-'));
 
-  const args = [
-    'build-for-testing',
-    '-project', xcodeproj,
-    '-scheme', 'TapsmithAgentUITests',
-    '-destination', 'generic/platform=iOS Simulator',
-    '-derivedDataPath', buildDir,
-    'ARCHS=' + (process.arch === 'arm64' ? 'arm64' : 'x86_64'),
-    'ONLY_ACTIVE_ARCH=NO',
-    'CODE_SIGNING_ALLOWED=NO',
-  ];
+  try {
+    const args = [
+      'build-for-testing',
+      '-project', xcodeproj,
+      '-scheme', 'TapsmithAgentUITests',
+      '-destination', 'generic/platform=iOS Simulator',
+      '-derivedDataPath', buildDir,
+      'ARCHS=' + (process.arch === 'arm64' ? 'arm64' : 'x86_64'),
+      'ONLY_ACTIVE_ARCH=NO',
+      'CODE_SIGNING_ALLOWED=NO',
+    ];
 
-  await new Promise<void>((resolve, reject) => {
-    const child = execFile(
-      'xcodebuild',
-      args,
-      { maxBuffer: 10 * 1024 * 1024 },
-      (err, stdout) => {
-        if (err) {
-          const tail = (stdout || '').slice(-2000);
-          reject(new Error(`xcodebuild failed:\n${tail}`));
-        } else {
-          resolve();
-        }
-      },
-    );
-    child.stderr?.pipe(process.stderr);
-  });
+    await new Promise<void>((resolve, reject) => {
+      execFile(
+        'xcodebuild',
+        args,
+        { maxBuffer: 10 * 1024 * 1024 },
+        (err, stdout, stderr) => {
+          if (err) {
+            const tail = ((stdout || '') + '\n' + (stderr || '')).slice(-2000);
+            reject(new Error(`xcodebuild failed:\n${tail}`));
+          } else {
+            resolve();
+          }
+        },
+      );
+    });
 
-  // Copy products to the cache directory.
-  const productsDir = path.join(buildDir, 'Build', 'Products');
+    // Copy products to the cache directory.
+    const productsDir = path.join(buildDir, 'Build', 'Products');
 
-  // Copy the Debug-iphonesimulator/ directory.
-  const simDir = path.join(productsDir, 'Debug-iphonesimulator');
-  const cachedSimDir = path.join(CACHE_DIR, 'Debug-iphonesimulator');
-  if (fs.existsSync(cachedSimDir)) {
-    fs.rmSync(cachedSimDir, { recursive: true, force: true });
-  }
-  fs.cpSync(simDir, cachedSimDir, { recursive: true });
-
-  // Clean up old xctestrun files before copying new ones.
-  for (const old of fs.readdirSync(CACHE_DIR)) {
-    if (old.endsWith('.xctestrun')) fs.rmSync(path.join(CACHE_DIR, old), { force: true });
-  }
-
-  // Copy the xctestrun file(s).
-  const entries = fs.readdirSync(productsDir);
-  let xctestrunDest: string | undefined;
-  for (const entry of entries) {
-    if (entry.endsWith('.xctestrun') && !entry.endsWith('.patched.xctestrun')) {
-      const src = path.join(productsDir, entry);
-      const dest = path.join(CACHE_DIR, entry);
-      fs.copyFileSync(src, dest);
-      // Pick the first (typically only) xctestrun as the return value.
-      if (!xctestrunDest) xctestrunDest = dest;
+    // Copy the Debug-iphonesimulator/ directory.
+    const simDir = path.join(productsDir, 'Debug-iphonesimulator');
+    if (!fs.existsSync(simDir)) {
+      throw new Error(`Build succeeded but products directory not found at ${simDir}`);
     }
+    const cachedSimDir = path.join(CACHE_DIR, 'Debug-iphonesimulator');
+    if (fs.existsSync(cachedSimDir)) {
+      fs.rmSync(cachedSimDir, { recursive: true, force: true });
+    }
+    fs.cpSync(simDir, cachedSimDir, { recursive: true });
+
+    // Clean up old xctestrun files before copying new ones.
+    for (const old of fs.readdirSync(CACHE_DIR)) {
+      if (old.endsWith('.xctestrun')) fs.rmSync(path.join(CACHE_DIR, old), { force: true });
+    }
+
+    // Copy the xctestrun file(s).
+    const entries = fs.readdirSync(productsDir);
+    let xctestrunDest: string | undefined;
+    for (const entry of entries) {
+      if (entry.endsWith('.xctestrun') && !entry.endsWith('.patched.xctestrun')) {
+        const src = path.join(productsDir, entry);
+        const dest = path.join(CACHE_DIR, entry);
+        fs.copyFileSync(src, dest);
+        if (!xctestrunDest) xctestrunDest = dest;
+      }
+    }
+
+    if (!xctestrunDest) {
+      throw new Error(
+        'xcodebuild succeeded but no .xctestrun file was found in Build/Products. ' +
+          'This is unexpected — please file a bug.',
+      );
+    }
+
+    // Write the SDK version marker so future runs can skip the build.
+    fs.writeFileSync(path.join(CACHE_DIR, '.sdk-version'), sdkVersion);
+
+    return xctestrunDest;
+  } finally {
+    try { fs.rmSync(buildDir, { recursive: true, force: true }); } catch { /* non-fatal */ }
   }
-
-  if (!xctestrunDest) {
-    throw new Error(
-      'xcodebuild succeeded but no .xctestrun file was found in Build/Products. ' +
-        'This is unexpected — please file a bug.',
-    );
-  }
-
-  // Write the SDK version marker so future runs can skip the build.
-  fs.writeFileSync(path.join(CACHE_DIR, '.sdk-version'), sdkVersion);
-
-  // Clean up the temporary build directory to save disk space.
-  try { fs.rmSync(buildDir, { recursive: true, force: true }); } catch { /* non-fatal */ }
-
-  return xctestrunDest;
 }
 
 // ─── Orchestrator ───────────────────────────────────────────────────────
