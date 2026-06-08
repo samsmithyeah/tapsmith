@@ -121,10 +121,11 @@ function newestIphoneosXctestrun(productsDir: string): string | undefined {
  * fix-it message pointing at the simulator build command.
  */
 export function findSimulatorXctestrun(): string | undefined {
-  // 1. Auto-build cache (SDK-matched local build).
+  // 1. Auto-build cache (only if SDK matches installed version).
   const cacheDir = path.join(os.homedir(), '.tapsmith', 'ios-simulator-agent');
+  const installedSdk = getInstalledSimulatorSdkVersion();
   const cached = newestSimulatorXctestrunIn(cacheDir);
-  if (cached) return cached;
+  if (cached && (!installedSdk || extractSdkVersion(cached) === installedSdk)) return cached;
 
   // 2. Try the prebuilt npm package for the current architecture.
   const arch = process.arch;
