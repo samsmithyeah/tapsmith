@@ -5,6 +5,7 @@
   "os": ["darwin"],
   "cpu": ["arm64"],
   "files": [
+    "sdk-*/",
     "*.xctestrun",
     "Debug-iphonesimulator/"
   ],
