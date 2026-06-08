@@ -208,17 +208,24 @@ export function extractSdkVersion(xctestrunPath: string): string | undefined {
   return match?.[1];
 }
 
+let _cachedSdkVersion: string | undefined;
+let _sdkVersionChecked = false;
+
 export function getInstalledSimulatorSdkVersion(): string | undefined {
+  if (process.platform !== 'darwin') return undefined;
+  if (_sdkVersionChecked) return _cachedSdkVersion;
+  _sdkVersionChecked = true;
   try {
     const raw = execFileSync(
       'xcrun',
       ['--show-sdk-version', '--sdk', 'iphonesimulator'],
       { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] },
     );
-    return raw.trim() || undefined;
+    _cachedSdkVersion = raw.trim() || undefined;
   } catch {
-    return undefined;
+    _cachedSdkVersion = undefined;
   }
+  return _cachedSdkVersion;
 }
 
 function newestSimulatorXctestrunIn(dir: string): string | undefined {
