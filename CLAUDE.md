@@ -75,11 +75,12 @@ GitHub Actions runs 4 parallel jobs: `proto-lint`, `typescript`, `rust`, `androi
 Releases are triggered by pushing a `v*` tag (e.g., `git tag v0.2.0 && git push --tags`). The release workflow (`.github/workflows/release.yml`) builds and publishes:
 
 - **`@tapsmith/core-{darwin,linux}-{arm64,x64}`**: Platform-specific packages containing only the prebuilt `tapsmith-core` binary. Listed as `optionalDependencies` so npm auto-installs only the matching platform.
-- **`tapsmith`**: Main package. Bundles the TypeScript SDK, CLI, proto file (`dist/proto/`), Android agent APKs (`dist/agents/android/`), and trace viewer/UI mode web apps.
+- **`@tapsmith/agent-android`**: Android agent APKs. Listed as an `optionalDependency` of the main package and auto-installed on any platform.
+- **`tapsmith`**: Main package. Bundles the TypeScript SDK, CLI, proto file (`dist/proto/`), and trace viewer/UI mode web apps.
 
 **Binary resolution** (`daemon-bin.ts`): Uses `require.resolve()` to find the platform package, with fallbacks to monorepo builds, `TAPSMITH_DAEMON_BIN` env var, and `PATH`.
 
-**Agent APK resolution** (`agent-resolve.ts`): Checks bundled APKs in `dist/agents/android/`, then monorepo build output. Config `agentApk`/`agentTestApk` override.
+**Agent APK resolution** (`agent-resolve.ts`): Resolves APKs from the `@tapsmith/agent-android` npm package first, then monorepo build output. Config `agentApk`/`agentTestApk` override.
 
 **Proto file** (`grpc-client.ts`): Tries `dist/proto/tapsmith.proto` (npm-installed), falls back to `../../proto/tapsmith.proto` (monorepo).
 
