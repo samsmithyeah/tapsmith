@@ -83,6 +83,10 @@ pub struct TapsmithServiceImpl {
     ios_ne_unavailable: Arc<RwLock<bool>>,
     /// iOS agent launch config (stored for restart on launchApp).
     ios_agent_config: Arc<RwLock<Option<IosAgentConfig>>>,
+    /// Startup inputs for the currently connected agent. Used to make
+    /// StartAgent idempotent when the daemon is already connected to the same
+    /// live agent for the same device/configuration.
+    started_agent_config: Arc<RwLock<Option<StartedAgentConfig>>>,
     /// iproxy USB tunnel for the physical iOS device, if any. Held for the
     /// lifetime of the XCUITest runner session; dropped when a new agent is
     /// started or the session is torn down.
@@ -131,6 +135,65 @@ struct IosAgentConfig {
     app_path: Option<String>,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct StartedAgentConfig {
+    serial: String,
+    platform: Platform,
+    target_package: String,
+    agent_apk: Option<StartupArtifactIdentity>,
+    agent_test_apk: Option<StartupArtifactIdentity>,
+    ios_xctestrun: Option<StartupArtifactIdentity>,
+    ios_app: Option<StartupArtifactIdentity>,
+    network_tracing_enabled: bool,
+}
+
+impl StartedAgentConfig {
+    fn from_start_agent_request(
+        serial: &str,
+        platform: Platform,
+        req: &proto::StartAgentRequest,
+    ) -> Self {
+        Self {
+            serial: serial.to_string(),
+            platform,
+            target_package: req.target_package.clone(),
+            agent_apk: StartupArtifactIdentity::from_path(&req.agent_apk_path),
+            agent_test_apk: StartupArtifactIdentity::from_path(&req.agent_test_apk_path),
+            ios_xctestrun: StartupArtifactIdentity::from_path(&req.ios_xctestrun_path),
+            ios_app: StartupArtifactIdentity::from_path(&req.ios_app_path),
+            network_tracing_enabled: req.network_tracing_enabled,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct StartupArtifactIdentity {
+    path: String,
+    len: Option<u64>,
+    modified_unix_nanos: Option<u128>,
+}
+
+impl StartupArtifactIdentity {
+    fn from_path(path: &str) -> Option<Self> {
+        if path.is_empty() {
+            return None;
+        }
+
+        let metadata = std::fs::metadata(path).ok();
+        let modified_unix_nanos = metadata
+            .as_ref()
+            .and_then(|m| m.modified().ok())
+            .and_then(|modified| modified.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|duration| duration.as_nanos());
+
+        Some(Self {
+            path: path.to_string(),
+            len: metadata.as_ref().map(|m| m.len()),
+            modified_unix_nanos,
+        })
+    }
+}
+
 /// Emit one timing line per on-device agent command (no-op unless
 /// `TAPSMITH_TIMING_LOG` is set). Measures the full daemon→agent→response
 /// round-trip, which is where iOS per-action latency (XCUITest ops + the
@@ -175,6 +238,7 @@ impl TapsmithServiceImpl {
             #[cfg(target_os = "macos")]
             ios_ne_unavailable: Arc::new(RwLock::new(false)),
             ios_agent_config: Arc::new(RwLock::new(None)),
+            started_agent_config: Arc::new(RwLock::new(None)),
             ios_iproxy: Arc::new(RwLock::new(None)),
             network_tracing_enabled: Arc::new(RwLock::new(false)),
             active_route_handler: Arc::new(RwLock::new(None)),
@@ -268,6 +332,43 @@ impl TapsmithServiceImpl {
         agent
             .connection_params()
             .map_err(|e| Status::failed_precondition(e.to_string()))
+    }
+
+    async fn can_reuse_started_agent(&self, desired: &StartedAgentConfig) -> bool {
+        let has_matching_startup_config = {
+            let current = self.started_agent_config.read().await;
+            current.as_ref() == Some(desired)
+        };
+        if !has_matching_startup_config {
+            return false;
+        }
+
+        let is_ios = desired.platform == Platform::Ios;
+        let host_port = {
+            let agent = self.agent.read().await;
+            agent.connected_host_port_for(&desired.serial, is_ios)
+        };
+        let Some(host_port) = host_port else {
+            debug!(
+                serial = %desired.serial,
+                platform = %desired.platform,
+                "StartAgent reuse skipped: cached startup config matched but agent connection did not"
+            );
+            return false;
+        };
+
+        if let Err(e) = agent_comms::ping_agent_port(host_port).await {
+            debug!(
+                serial = %desired.serial,
+                platform = %desired.platform,
+                host_port,
+                error = %e,
+                "StartAgent reuse skipped: cached agent did not respond to ping"
+            );
+            return false;
+        }
+
+        true
     }
 
     async fn send_agent_command(&self, command: &AgentCommand) -> Result<AgentResponse, Status> {
@@ -2065,10 +2166,10 @@ impl proto::tapsmith_service_server::TapsmithService for TapsmithServiceImpl {
             .await
             .map_err(|e| Status::internal(e.to_string()))?;
 
-        // Capture the previously-active serial so we can release a stale iOS
-        // HID helper for the old simulator once the active device switches.
-        #[cfg(target_os = "macos")]
+        // Capture the previously-active serial so we can release stale
+        // per-device session state once the active device switches.
         let previous_serial = dm.active_serial().map(String::from);
+        let device_changed = previous_serial.as_deref() != Some(req.serial.as_str());
 
         match dm.set_active(&req.serial) {
             Ok(()) => {
@@ -2080,8 +2181,14 @@ impl proto::tapsmith_service_server::TapsmithService for TapsmithServiceImpl {
                 // switched away from (no-op if there wasn't one). The helper
                 // also dies via kill_on_drop on daemon exit.
                 #[cfg(target_os = "macos")]
-                if let Some(prev) = previous_serial.filter(|p| p != &req.serial) {
-                    self.hid_injector.shutdown(&prev).await;
+                if device_changed {
+                    if let Some(prev) = previous_serial.as_deref() {
+                        self.hid_injector.shutdown(prev).await;
+                    }
+                }
+                if device_changed {
+                    *self.started_agent_config.write().await = None;
+                    *self.ios_agent_config.write().await = None;
                 }
                 agent_comms::clear_stream_cache(&self.agent_stream).await;
                 // Persist the CLI's tracing flag on the server so subsequent
@@ -2140,21 +2247,44 @@ impl proto::tapsmith_service_server::TapsmithService for TapsmithServiceImpl {
 
         info!(ios_xctestrun_path = %req.ios_xctestrun_path, "StartAgent fields");
 
+        if platform == Platform::Ios && req.ios_xctestrun_path.is_empty() {
+            return Ok(Response::new(proto::ActionResponse {
+                request_id,
+                success: false,
+                error_type: "AGENT_NOT_CONFIGURED".to_string(),
+                error_message: "iOS agent not configured. \
+                    Set iosXctestrun in your tapsmith config."
+                    .to_string(),
+                screenshot: Vec::new(),
+            }));
+        }
+
+        let desired_agent_config =
+            StartedAgentConfig::from_start_agent_request(&serial, platform, &req);
+
+        // Re-affirm the server-wide tracing flag before any reuse decision.
+        // SetDevice is the primary setter, but StartAgent is called in the
+        // same RPC sequence and may be invoked by future clients directly.
+        *self.network_tracing_enabled.write().await = req.network_tracing_enabled;
+
+        if self.can_reuse_started_agent(&desired_agent_config).await {
+            #[cfg(target_os = "macos")]
+            if platform == Platform::Ios
+                && req.network_tracing_enabled
+                && self.is_active_ios_physical().await
+            {
+                self.ensure_ios_physical_proxy(&serial).await;
+            }
+
+            info!(serial = %serial, %platform, "Reusing existing agent connection");
+            return Ok(Self::success_action_response(request_id));
+        }
+
+        *self.started_agent_config.write().await = None;
+
         match platform {
             Platform::Ios => {
                 // ─── iOS: launch XCUITest agent ───
-                if req.ios_xctestrun_path.is_empty() {
-                    return Ok(Response::new(proto::ActionResponse {
-                        request_id,
-                        success: false,
-                        error_type: "AGENT_NOT_CONFIGURED".to_string(),
-                        error_message: "iOS agent not configured. \
-                            Set iosXctestrun in your tapsmith config."
-                            .to_string(),
-                        screenshot: Vec::new(),
-                    }));
-                }
-
                 let is_physical = self.is_active_ios_physical().await;
 
                 // Apply test-friendly defaults every time the agent starts,
@@ -2315,13 +2445,10 @@ impl proto::tapsmith_service_server::TapsmithService for TapsmithServiceImpl {
             Platform::Android => agent.connect(&serial).await,
         };
         match connect_result {
-            Ok(()) => Ok(Response::new(proto::ActionResponse {
-                request_id,
-                success: true,
-                error_type: String::new(),
-                error_message: String::new(),
-                screenshot: Vec::new(),
-            })),
+            Ok(()) => {
+                *self.started_agent_config.write().await = Some(desired_agent_config);
+                Ok(Self::success_action_response(request_id))
+            }
             Err(e) => {
                 error!(error = %e, "Failed to connect to agent");
                 let platform = self.require_platform().await?;
@@ -6270,6 +6397,80 @@ mod tests {
         for (idx, port) in ports.iter().enumerate() {
             assert!(!ports[..idx].contains(port));
         }
+    }
+
+    #[test]
+    fn started_agent_config_ignores_request_id_and_normalizes_empty_ios_app_artifact() {
+        let mut req = proto::StartAgentRequest {
+            request_id: "req-1".to_string(),
+            target_package: "com.example.app".to_string(),
+            agent_apk_path: "agent.apk".to_string(),
+            agent_test_apk_path: "agent-test.apk".to_string(),
+            ios_xctestrun_path: "Runner.xctestrun".to_string(),
+            ios_app_path: String::new(),
+            network_tracing_enabled: true,
+        };
+        let first = StartedAgentConfig::from_start_agent_request("device-1", Platform::Ios, &req);
+
+        req.request_id = "req-2".to_string();
+        let second = StartedAgentConfig::from_start_agent_request("device-1", Platform::Ios, &req);
+
+        assert_eq!(first, second);
+        assert_eq!(first.ios_app, None);
+    }
+
+    #[test]
+    fn started_agent_config_includes_device_platform_and_startup_inputs() {
+        let req = proto::StartAgentRequest {
+            request_id: String::new(),
+            target_package: "com.example.app".to_string(),
+            agent_apk_path: "agent.apk".to_string(),
+            agent_test_apk_path: "agent-test.apk".to_string(),
+            ios_xctestrun_path: "Runner.xctestrun".to_string(),
+            ios_app_path: "Example.app".to_string(),
+            network_tracing_enabled: false,
+        };
+
+        let base =
+            StartedAgentConfig::from_start_agent_request("device-1", Platform::Android, &req);
+        let different_device =
+            StartedAgentConfig::from_start_agent_request("device-2", Platform::Android, &req);
+        let different_platform =
+            StartedAgentConfig::from_start_agent_request("device-1", Platform::Ios, &req);
+
+        let mut changed_req = req.clone();
+        changed_req.agent_apk_path = "other-agent.apk".to_string();
+        let different_startup_input = StartedAgentConfig::from_start_agent_request(
+            "device-1",
+            Platform::Android,
+            &changed_req,
+        );
+
+        assert_ne!(base, different_device);
+        assert_ne!(base, different_platform);
+        assert_ne!(base, different_startup_input);
+        assert_eq!(
+            base.ios_app.as_ref().map(|artifact| artifact.path.as_str()),
+            Some("Example.app")
+        );
+    }
+
+    #[test]
+    fn startup_artifact_identity_tracks_file_metadata() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("agent.apk");
+        std::fs::write(&path, b"old").unwrap();
+        let path = path.to_str().unwrap();
+
+        let first = StartupArtifactIdentity::from_path(path).unwrap();
+        std::fs::write(path, b"newer").unwrap();
+        let second = StartupArtifactIdentity::from_path(path).unwrap();
+
+        assert_eq!(first.path, path);
+        assert_eq!(second.path, path);
+        assert_ne!(first, second);
+        assert_eq!(first.len, Some(3));
+        assert_eq!(second.len, Some(5));
     }
 
     #[test]

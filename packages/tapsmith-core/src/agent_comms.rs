@@ -57,6 +57,32 @@ async fn probe_agent_alive(addr: &str) -> bool {
         .is_some()
 }
 
+pub(crate) async fn ping_agent_port(host_port: u16) -> Result<()> {
+    let addr = format!("127.0.0.1:{host_port}");
+    let mut stream = tokio::time::timeout(Duration::from_secs(3), async {
+        TcpStream::connect(&addr).await
+    })
+    .await
+    .map_err(|_| anyhow!("Timed out connecting to agent"))?
+    .context("Agent socket not reachable")?;
+
+    // Send a simple ping
+    let ping = r#"{"command":"ping"}"#;
+    stream.write_all(ping.as_bytes()).await?;
+    stream.write_all(b"\n").await?;
+    stream.flush().await?;
+
+    let mut reader = BufReader::new(&mut stream);
+    let mut line = String::new();
+
+    tokio::time::timeout(Duration::from_secs(3), reader.read_line(&mut line))
+        .await
+        .map_err(|_| anyhow!("Agent did not respond to ping"))??;
+
+    debug!("Agent ping successful");
+    Ok(())
+}
+
 /// Categorizes a `try_send_command` failure so the caller can decide whether
 /// retrying is safe. See the long comment on `send_command_with_timeout` for
 /// the reasoning.
@@ -890,6 +916,15 @@ impl AgentConnection {
         self.host_port
     }
 
+    pub fn connected_host_port_for(&self, serial: &str, is_ios: bool) -> Option<u16> {
+        if self.connected && self.is_ios == is_ios && self.device_serial.as_deref() == Some(serial)
+        {
+            Some(self.host_port)
+        } else {
+            None
+        }
+    }
+
     /// Snapshot the connection params needed for TCP I/O. Returns an error if
     /// the agent is not connected. Designed to be called under a brief read
     /// lock so the caller can release the lock before doing the actual I/O.
@@ -1131,29 +1166,7 @@ impl AgentConnection {
     }
 
     async fn ping_agent(&self) -> Result<()> {
-        let addr = format!("127.0.0.1:{}", self.host_port);
-        let mut stream = tokio::time::timeout(Duration::from_secs(3), async {
-            TcpStream::connect(&addr).await
-        })
-        .await
-        .map_err(|_| anyhow!("Timed out connecting to agent"))?
-        .context("Agent socket not reachable")?;
-
-        // Send a simple ping
-        let ping = r#"{"command":"ping"}"#;
-        stream.write_all(ping.as_bytes()).await?;
-        stream.write_all(b"\n").await?;
-        stream.flush().await?;
-
-        let mut reader = BufReader::new(&mut stream);
-        let mut line = String::new();
-
-        tokio::time::timeout(Duration::from_secs(3), reader.read_line(&mut line))
-            .await
-            .map_err(|_| anyhow!("Agent did not respond to ping"))??;
-
-        debug!("Agent ping successful");
-        Ok(())
+        ping_agent_port(self.host_port).await
     }
 
     #[allow(dead_code)]
@@ -1982,6 +1995,24 @@ mod tests {
             msg.contains("Not connected"),
             "expected 'Not connected' in error, got: {msg}"
         );
+    }
+
+    #[test]
+    fn connected_host_port_for_requires_matching_live_connection() {
+        let mut conn = AgentConnection::with_port(12_345);
+
+        assert_eq!(conn.connected_host_port_for("device-1", false), None);
+
+        conn.connected = true;
+        conn.device_serial = Some("device-1".to_string());
+        conn.is_ios = false;
+
+        assert_eq!(
+            conn.connected_host_port_for("device-1", false),
+            Some(12_345)
+        );
+        assert_eq!(conn.connected_host_port_for("device-2", false), None);
+        assert_eq!(conn.connected_host_port_for("device-1", true), None);
     }
 
     #[test]
