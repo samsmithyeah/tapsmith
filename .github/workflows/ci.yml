@@ -43,7 +43,7 @@ jobs:
           cache-dependency-path: packages/tapsmith/package-lock.json
 
       - name: Install dependencies
-        run: npm ci --omit=optional
+        run: npm ci
 
       - name: Type check
         run: npm run typecheck
