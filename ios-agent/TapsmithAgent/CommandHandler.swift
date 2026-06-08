@@ -449,9 +449,13 @@ class CommandHandler {
     private func waitForKeyboardDisappearance(maxWait: TimeInterval) -> Bool {
         let deadline = CFAbsoluteTimeGetCurrent() + maxWait
         while CFAbsoluteTimeGetCurrent() < deadline {
-            let snap = try? app.snapshot()
-            let dict = snap.map { $0.dictionaryRepresentation } ?? [:]
-            if !hasKeyboardInSnapshot(dict) { return true }
+            var snap: XCUIElementSnapshot?
+            _ = ObjCExceptionCatcher.catchException {
+                snap = try? self.app.snapshot()
+            }
+            if let snapshot = snap {
+                if !hasKeyboardInSnapshot(snapshot.dictionaryRepresentation) { return true }
+            }
             Thread.sleep(forTimeInterval: 0.15)
         }
         return false
