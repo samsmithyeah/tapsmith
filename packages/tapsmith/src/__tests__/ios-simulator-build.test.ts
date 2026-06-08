@@ -1,4 +1,5 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { execFileSync } from 'node:child_process';
 import { extractSdkVersion } from '../ios-device-resolve.js';
 
 describe('extractSdkVersion()', () => {
@@ -22,5 +23,30 @@ describe('extractSdkVersion()', () => {
 
   it('returns undefined for unrelated filenames', () => {
     expect(extractSdkVersion('/path/to/some-file.txt')).toBeUndefined();
+  });
+});
+
+// ─── getInstalledSimulatorSdkVersion tests ──────────────────────────────
+
+vi.mock('node:child_process');
+
+const execFileSyncMock = vi.mocked(execFileSync);
+
+describe('getInstalledSimulatorSdkVersion()', () => {
+  beforeEach(() => {
+    vi.resetModules();
+    execFileSyncMock.mockReset();
+  });
+
+  it('returns SDK version from xcrun', async () => {
+    execFileSyncMock.mockReturnValue('26.0\n');
+    const { getInstalledSimulatorSdkVersion } = await import('../ios-simulator-build.js');
+    expect(getInstalledSimulatorSdkVersion()).toBe('26.0');
+  });
+
+  it('returns undefined when xcrun fails', async () => {
+    execFileSyncMock.mockImplementation(() => { throw new Error('xcrun not found'); });
+    const { getInstalledSimulatorSdkVersion } = await import('../ios-simulator-build.js');
+    expect(getInstalledSimulatorSdkVersion()).toBeUndefined();
   });
 });
