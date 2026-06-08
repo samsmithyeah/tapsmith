@@ -737,7 +737,7 @@ async function setupSequentialDevice(
         else console.log(dim(`Auto-detected iOS simulator xctestrun: ${found}`));
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
-        progress?.fail('agent', 'no simulator xctestrun found');
+        progress?.fail('agent', 'failed to ensure simulator agent');
         throw new Error(msg);
       }
     }

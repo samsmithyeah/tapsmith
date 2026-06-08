@@ -67,7 +67,7 @@ export async function buildSimulatorAgent(sdkVersion: string): Promise<string> {
     '-scheme', 'TapsmithAgentUITests',
     '-destination', 'generic/platform=iOS Simulator',
     '-derivedDataPath', buildDir,
-    'ARCHS=arm64',
+    'ARCHS=' + (process.arch === 'arm64' ? 'arm64' : 'x86_64'),
     'ONLY_ACTIVE_ARCH=NO',
     'CODE_SIGNING_ALLOWED=NO',
   ];
@@ -77,12 +77,15 @@ export async function buildSimulatorAgent(sdkVersion: string): Promise<string> {
       'xcodebuild',
       args,
       { maxBuffer: 10 * 1024 * 1024 },
-      (err) => {
-        if (err) reject(err);
-        else resolve();
+      (err, stdout) => {
+        if (err) {
+          const tail = stdout.slice(-2000);
+          reject(new Error(`xcodebuild failed:\n${tail}`));
+        } else {
+          resolve();
+        }
       },
     );
-    // Pipe stderr so the user sees xcodebuild progress / errors.
     child.stderr?.pipe(process.stderr);
   });
 
@@ -96,6 +99,11 @@ export async function buildSimulatorAgent(sdkVersion: string): Promise<string> {
     fs.rmSync(cachedSimDir, { recursive: true, force: true });
   }
   fs.cpSync(simDir, cachedSimDir, { recursive: true });
+
+  // Clean up old xctestrun files before copying new ones.
+  for (const old of fs.readdirSync(CACHE_DIR)) {
+    if (old.endsWith('.xctestrun')) fs.rmSync(path.join(CACHE_DIR, old), { force: true });
+  }
 
   // Copy the xctestrun file(s).
   const entries = fs.readdirSync(productsDir);
