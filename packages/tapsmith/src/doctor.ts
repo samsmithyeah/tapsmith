@@ -210,12 +210,27 @@ function checkSimctl(checks: CheckList): void {
 
 async function checkSimulatorXctestrun(checks: CheckList): Promise<void> {
   try {
-    const { findSimulatorXctestrun } = await import('./ios-device-resolve.js');
+    const { findSimulatorXctestrun, extractSdkVersion } = await import('./ios-device-resolve.js');
     const found = findSimulatorXctestrun();
-    if (found) {
-      pass(checks, `Simulator xctestrun found ${dim(`(${path.basename(found)})`)}`);
-    } else {
+    if (!found) {
       warn(checks, 'No simulator xctestrun found — build with xcodebuild or install @tapsmith/agent-ios-simulator-arm64');
+      return;
+    }
+
+    const xctestrunSdk = extractSdkVersion(found);
+    const sdkLabel = xctestrunSdk ? ` SDK ${xctestrunSdk}` : '';
+    let installedSdk: string | undefined;
+    try {
+      const { getInstalledSimulatorSdkVersion } = await import('./ios-simulator-build.js');
+      installedSdk = getInstalledSimulatorSdkVersion();
+    } catch {
+      // ios-simulator-build not available — skip comparison
+    }
+
+    if (installedSdk && xctestrunSdk && xctestrunSdk !== installedSdk) {
+      warn(checks, `Simulator xctestrun built for iOS ${xctestrunSdk} but installed SDK is ${installedSdk} — will auto-build on first test run`);
+    } else {
+      pass(checks, `Simulator xctestrun found ${dim(`(${path.basename(found)}${sdkLabel})`)}`);
     }
   } catch {
     warn(checks, 'Could not check for simulator xctestrun');
