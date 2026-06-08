@@ -125,7 +125,8 @@ export function findSimulatorXctestrun(): string | undefined {
   const cacheDir = path.join(os.homedir(), '.tapsmith', 'ios-simulator-agent');
   const installedSdk = getInstalledSimulatorSdkVersion();
   const cached = newestSimulatorXctestrunIn(cacheDir);
-  if (cached && (!installedSdk || extractSdkVersion(cached) === installedSdk)) return cached;
+  const hasMarker = fs.existsSync(path.join(cacheDir, '.sdk-version'));
+  if (cached && hasMarker && (!installedSdk || extractSdkVersion(cached) === installedSdk)) return cached;
 
   // 2. Try the prebuilt npm package for the current architecture.
   const arch = process.arch;
@@ -220,7 +221,7 @@ export function getInstalledSimulatorSdkVersion(): string | undefined {
     const raw = execFileSync(
       'xcrun',
       ['--show-sdk-version', '--sdk', 'iphonesimulator'],
-      { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] },
+      { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 5000 },
     );
     _cachedSdkVersion = raw.trim() || undefined;
   } catch {
