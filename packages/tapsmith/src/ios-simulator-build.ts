@@ -57,7 +57,7 @@ export async function buildSimulatorAgent(sdkVersion: string): Promise<string> {
       { maxBuffer: 10 * 1024 * 1024 },
       (err, stdout) => {
         if (err) {
-          const tail = stdout.slice(-2000);
+          const tail = (stdout || '').slice(-2000);
           reject(new Error(`xcodebuild failed:\n${tail}`));
         } else {
           resolve();
@@ -148,7 +148,7 @@ export async function ensureSimulatorAgent(): Promise<string> {
     if (cachedSdk === installedSdk) {
       // Cache should hit — re-resolve.
       const cached = findSimulatorXctestrun();
-      if (cached) return cached;
+      if (cached && extractSdkVersion(cached) === installedSdk) return cached;
     }
   } catch {
     // No cached version — fall through to build.

@@ -143,14 +143,21 @@ export function findSimulatorXctestrun(): string | undefined {
       }
     }
 
-    // 2b. Any sdk-*/ subdirectory (newest xctestrun wins).
+    // 2b. Any sdk-*/ subdirectory (newest xctestrun across all subdirs wins).
     try {
       const subdirs = fs.readdirSync(pkgDir)
         .filter((e) => e.startsWith('sdk-'))
         .map((e) => path.join(pkgDir, e));
+      const sdkCandidates: { path: string; mtime: number }[] = [];
       for (const subdir of subdirs) {
         const match = newestSimulatorXctestrunIn(subdir);
-        if (match) return match;
+        if (match) {
+          try { sdkCandidates.push({ path: match, mtime: fs.statSync(match).mtimeMs }); } catch { /* skip */ }
+        }
+      }
+      if (sdkCandidates.length > 0) {
+        sdkCandidates.sort((a, b) => b.mtime - a.mtime);
+        return sdkCandidates[0].path;
       }
     } catch {
       // No subdirectories — fall through.
