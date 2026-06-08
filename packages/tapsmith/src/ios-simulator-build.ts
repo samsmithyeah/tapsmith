@@ -46,7 +46,7 @@ export async function buildSimulatorAgent(sdkVersion: string): Promise<string> {
       '-scheme', 'TapsmithAgentUITests',
       '-destination', 'generic/platform=iOS Simulator',
       '-derivedDataPath', buildDir,
-      'ARCHS=' + (process.arch === 'arm64' ? 'arm64' : 'x86_64'),
+      'ARCHS=' + (os.machine() === 'arm64' ? 'arm64' : 'x86_64'),
       'ONLY_ACTIVE_ARCH=NO',
       'CODE_SIGNING_ALLOWED=NO',
     ];
@@ -58,8 +58,9 @@ export async function buildSimulatorAgent(sdkVersion: string): Promise<string> {
         { maxBuffer: 10 * 1024 * 1024 },
         (err, stdout, stderr) => {
           if (err) {
-            const tail = ((stdout || '') + '\n' + (stderr || '')).slice(-2000);
-            reject(new Error(`xcodebuild failed:\n${tail}`));
+            const tail = ((stdout || '') + '\n' + (stderr || '')).slice(-2000).trim();
+            const message = tail ? `xcodebuild failed:\n${tail}` : `xcodebuild failed to start: ${err.message}`;
+            reject(new Error(message));
           } else {
             resolve();
           }
