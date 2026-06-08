@@ -145,7 +145,7 @@ jobs:
   # ─── Build iOS simulator agent for arm64 and x64 ───
   build-ios-simulator-agent:
     name: Build iOS simulator agent (${{ matrix.arch }})
-    runs-on: macos-latest
+    runs-on: macos-26
     strategy:
       fail-fast: false
       matrix:
