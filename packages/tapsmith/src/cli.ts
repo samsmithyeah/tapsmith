@@ -33,8 +33,6 @@ import {
   prefilterDevicesForStrategy,
   probeDeviceHealth,
   provisionEmulators,
-  getCachedHealth,
-  setCachedHealth,
   type DeviceHealthResult,
   type LaunchedEmulator,
   selectDevicesForStrategy,
@@ -217,16 +215,8 @@ async function checkDeviceHealth(serial: string | undefined): Promise<void> {
   const target = serial ?? 'any connected device';
 
   if (serial) {
-    const cached = getCachedHealth(serial);
-    if (cached?.healthy) return;
-  }
-
-  if (serial) {
     const stable = await waitForDeviceStability(serial, 20_000, probeDeviceHealth);
-    if (stable.healthy) {
-      setCachedHealth(serial, true);
-      return;
-    }
+    if (stable.healthy) return;
 
     if (stable.reason && !stable.reason.includes('ADB shell')) {
       console.error(red(`Device ${target} is not ready: ${stable.reason}.`));
@@ -253,7 +243,6 @@ async function checkDeviceHealth(serial: string | undefined): Promise<void> {
   };
 
   if (tryAdb()) {
-    if (serial) setCachedHealth(serial, true);
     return;
   }
 
@@ -281,7 +270,6 @@ async function checkDeviceHealth(serial: string | undefined): Promise<void> {
 
   if (!serial ? tryAdb() : (await waitForDeviceStability(serial, 20_000, probeDeviceHealth)).healthy) {
     console.log(dim('ADB recovered. Device is responsive.'));
-    if (serial) setCachedHealth(serial, true);
     return;
   }
 

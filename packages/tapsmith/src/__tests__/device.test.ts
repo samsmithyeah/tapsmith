@@ -516,7 +516,7 @@ describe('Device.currentActivity()', () => {
 // ─── setDevice() ───
 
 describe('Device.setDevice()', () => {
-  it('uses a longer deadline for the device refresh before selection', async () => {
+  it('delegates directly to daemon setDevice', async () => {
     const listDevices = vi.fn(async () => ({ requestId: '1', devices: [] }));
     const setDevice = vi.fn(async () => successResponse());
     const client = makeMockClient({ listDevices, setDevice });
@@ -524,7 +524,7 @@ describe('Device.setDevice()', () => {
 
     await device.setDevice('SIM-UDID', true, ['example.test']);
 
-    expect(listDevices).toHaveBeenCalledWith(120_000);
+    expect(listDevices).not.toHaveBeenCalled();
     expect(setDevice).toHaveBeenCalledWith('SIM-UDID', true, ['example.test']);
   });
 });

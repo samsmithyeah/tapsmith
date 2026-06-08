@@ -55,7 +55,6 @@ const WEBVIEW_RPC_TIMEOUT_MS = 5_000;
 const WEBVIEW_RETRY_INTERVAL_MS = 500;
 const WEBVIEW_CONNECT_ATTEMPT_TIMEOUT_MS = 5_000;
 const WEBVIEW_CONNECT_LOG_LIMIT = 80;
-const DEVICE_SELECTION_TIMEOUT_MS = 120_000;
 
 type WebViewInfo = Awaited<ReturnType<TapsmithGrpcClient['listWebViews']>>['webviews'][number];
 
@@ -410,8 +409,6 @@ export class Device {
     networkTracingEnabled = false,
     networkHosts: string[] = [],
   ): Promise<void> {
-    // Refresh the daemon's device registry so newly-launched emulators are visible
-    await this._client.listDevices(DEVICE_SELECTION_TIMEOUT_MS);
     const res = await this._client.setDevice(serial, networkTracingEnabled, networkHosts);
     if (!res.success) {
       throw new Error(res.errorMessage || 'Set device failed');

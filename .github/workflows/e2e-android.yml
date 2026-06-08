@@ -234,16 +234,6 @@ jobs:
           adb shell settings put global animator_duration_scale 0
           echo "Emulator booted and ready ($(adb shell getprop ro.build.display.id))"
 
-      - name: Pre-install test app
-        run: |
-          APK_PATH="e2e/fixtures/app-release.apk"
-          if [ -f "$APK_PATH" ]; then
-            adb install -r "$APK_PATH"
-            echo "Pre-installed test app"
-          else
-            echo "Test app APK not found at $APK_PATH, will be installed by Tapsmith"
-          fi
-
       - name: Install SDK dependencies
         working-directory: packages/tapsmith
         run: npm ci

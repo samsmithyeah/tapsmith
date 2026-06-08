@@ -18,22 +18,6 @@ const DIM = '\x1b[2m';
 const YELLOW = '\x1b[33m';
 const RESET = '\x1b[0m';
 
-// ─── Device health cache ───
-
-const healthCache = new Map<string, { healthy: boolean; timestamp: number }>();
-const HEALTH_CACHE_TTL_MS = 30_000;
-
-export function getCachedHealth(serial: string): DeviceHealthResult | undefined {
-  const cached = healthCache.get(serial);
-  if (cached && Date.now() - cached.timestamp < HEALTH_CACHE_TTL_MS) {
-    return { serial, healthy: cached.healthy, reason: cached.healthy ? undefined : 'cached unhealthy' };
-  }
-  return undefined;
-}
-
-export function setCachedHealth(serial: string, healthy: boolean): void {
-  healthCache.set(serial, { healthy, timestamp: Date.now() });
-}
 const DEVICE_STABILITY_POLL_MS = 2_000;
 const DEFAULT_DEVICE_STABILITY_TIMEOUT_MS = 20_000;
 const REQUIRED_STABLE_HEALTH_CHECKS = 2;
