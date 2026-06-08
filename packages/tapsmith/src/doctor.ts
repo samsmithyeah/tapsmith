@@ -155,7 +155,7 @@ function checkAgentApks(checks: CheckList): void {
     const apk = findAgentApk();
     const testApk = findAgentTestApk();
     if (apk && testApk) {
-      pass(checks, `Android agent ${dim(`(${apk.includes('agent-android') ? '@tapsmith/agent-android' : 'monorepo build'})`)}`);
+      pass(checks, `Android agent ${dim(`(${apk.includes(path.join('@tapsmith', 'agent-android')) ? '@tapsmith/agent-android' : 'monorepo build'})`)}`);
     } else if (apk || testApk) {
       warn(checks, 'Android agent incomplete — one APK found but not both');
     } else {
