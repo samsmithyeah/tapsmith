@@ -218,13 +218,18 @@ async function checkSimulatorXctestrun(checks: CheckList): Promise<void> {
     }
 
     const xctestrunSdk = extractSdkVersion(found);
-    const sdkLabel = xctestrunSdk ? ` SDK ${xctestrunSdk}` : '';
+    const sdkLabel = xctestrunSdk ? `, SDK ${xctestrunSdk}` : '';
+    const source = found.includes(path.join('.tapsmith', 'ios-simulator-agent'))
+      ? 'auto-build cache'
+      : found.includes('agent-ios-simulator')
+        ? '@tapsmith/agent-ios-simulator'
+        : 'DerivedData';
     const installedSdk = getInstalledSimulatorSdkVersion();
 
     if (installedSdk && xctestrunSdk && xctestrunSdk !== installedSdk) {
       warn(checks, `Simulator xctestrun built for iOS ${xctestrunSdk} but installed SDK is ${installedSdk} — will auto-build on first test run`);
     } else {
-      pass(checks, `Simulator xctestrun found ${dim(`(${path.basename(found)}${sdkLabel})`)}`);
+      pass(checks, `Simulator xctestrun found ${dim(`(${source}${sdkLabel})`)}`);
     }
   } catch {
     warn(checks, 'Could not check for simulator xctestrun');
