@@ -242,7 +242,9 @@ async function checkDeviceHealth(serial: string | undefined): Promise<void> {
     }
   };
 
-  if (tryAdb()) return;
+  if (tryAdb()) {
+    return;
+  }
 
   // Device is unresponsive — try ADB restart recovery
   console.log(yellow(`Device ${target} is unresponsive. Restarting ADB server...`));
@@ -451,8 +453,13 @@ async function setupSequentialDevice(
 
   cfg.device = target.selectedSerial;
 
-  // Pre-flight: verify device is responsive before doing anything slow (Android only)
-  if (cfg.platform !== 'ios') {
+  // CI=false (string) must be treated as falsy — some systems export CI=false
+  // for "not in CI" which is truthy in JavaScript. Normalise once here.
+  const isCI = !!(process.env.CI && process.env.CI !== 'false');
+
+  // Pre-flight: verify device is responsive before doing anything slow (Android only).
+  // Skip in CI — the workflow already verified boot_completed=1 and disabled animations.
+  if (cfg.platform !== 'ios' && !isCI) {
     progress?.update('primary-device', { state: 'running', detail: `checking ${cfg.device}` });
     await checkDeviceHealth(cfg.device);
   }
@@ -478,6 +485,9 @@ async function setupSequentialDevice(
   }
 
   const deviceJustLaunched = launchedEmulators.some((e) => e.serial === cfg.device);
+  let skipAppReset = false;
+  let pendingSimulatorInstall: Promise<void> | undefined;
+  let pendingInstallError: unknown;
 
   // Determine whether this UDID targets a physical device or a simulator.
   // The branch drives every downstream decision in the iOS block: simctl for
@@ -566,11 +576,12 @@ async function setupSequentialDevice(
               progress?.update('app-install', { state: 'running', detail: `installing ${path.basename(resolvedApp)} on device` });
             }
             await installAppOnDevice(cfg.device, resolvedApp);
+            skipAppReset = true;
             if (progress) progress.complete('app-install', `installed ${path.basename(resolvedApp)} on ${cfg.device}`);
             else console.log(dim(`Installed ${path.basename(resolvedApp)} on iOS device ${cfg.device}.`));
           }
         } else {
-          const { installApp, isAppInstalled } = await import('./ios-simulator.js');
+          const { installAppAsync, isAppInstalled } = await import('./ios-simulator.js');
           const alreadyInstalled = !deviceJustLaunched
             && cfg.package
             && isAppInstalled(cfg.device, cfg.package);
@@ -584,9 +595,11 @@ async function setupSequentialDevice(
             } else {
               progress?.update('app-install', { state: 'running', detail: `installing ${path.basename(resolvedApp)}` });
             }
-            installApp(cfg.device, resolvedApp);
-            if (progress) progress.complete('app-install', `installed ${path.basename(resolvedApp)}`);
-            else console.log(dim(`Installed ${path.basename(resolvedApp)} on iOS simulator.`));
+            // Start install concurrently with agent startup — xcodebuild
+            // doesn't need the target app during its own init. The promise
+            // is awaited after startAgent completes.
+            pendingSimulatorInstall = installAppAsync(cfg.device, resolvedApp)
+              .catch((err: unknown) => { pendingInstallError = err; });
           }
         }
       } catch (err) {
@@ -596,13 +609,12 @@ async function setupSequentialDevice(
     } else {
       progress?.skip('app-install', 'no iOS app configured');
     }
-    if (cfg.package && cfg.device) {
+    if (cfg.package && cfg.device && !pendingSimulatorInstall) {
       // For simulators we fire a best-effort simctl launch so the app is in
       // the foreground when the XCUITest runner attaches, which avoids a
-      // brief black-screen flicker. For physical devices we skip this step
-      // entirely: `simctl launch` doesn't work on real hardware, and the
-      // XCUITest runner's own `app.launch()` (inside the Swift agent) will
-      // bring the app forward during the subsequent agent startup.
+      // brief black-screen flicker. Deferred when a simulator install is
+      // running concurrently with agent startup. For physical devices we
+      // skip this entirely: `simctl launch` doesn't work on real hardware.
       if (!targetIsPhysical) {
         try {
           execFileSync('xcrun', ['simctl', 'launch', cfg.device, cfg.package]);
@@ -613,15 +625,20 @@ async function setupSequentialDevice(
       }
     }
   } else {
-    try {
-      progress?.update('primary-device', { state: 'running', detail: `waking ${cfg.device}` });
-      await device.wake();
-      await device.unlock();
-      if (progress) progress.complete('primary-device', `${cfg.device} awake and unlocked`);
-      else console.log(dim('Device screen unlocked.'));
-    } catch {
-      // Non-fatal — device might already be awake/unlocked
+    if (isCI) {
+      // Skip wake/unlock in CI — headless emulators have no lockscreen.
       progress?.complete('primary-device', `${cfg.device} selected`);
+    } else {
+      try {
+        progress?.update('primary-device', { state: 'running', detail: `waking ${cfg.device}` });
+        await device.wake();
+        await device.unlock();
+        if (progress) progress.complete('primary-device', `${cfg.device} awake and unlocked`);
+        else console.log(dim('Device screen unlocked.'));
+      } catch {
+        // Non-fatal — device might already be awake/unlocked
+        progress?.complete('primary-device', `${cfg.device} selected`);
+      }
     }
 
     if (cfg.apk) {
@@ -644,6 +661,7 @@ async function setupSequentialDevice(
             progress?.update('app-install', { state: 'running', detail: `installing ${path.basename(resolvedApk)}` });
           }
           await device.installApk(resolvedApk);
+          skipAppReset = true;
           if (cfg.package && cfg.device) {
             await waitForPackageIndexed(cfg.device, cfg.package);
           }
@@ -799,6 +817,25 @@ async function setupSequentialDevice(
     throw new Error(`Failed to start agent: ${err}`);
   }
 
+  // Await the simulator install that was running concurrently with agent startup.
+  if (pendingSimulatorInstall) {
+    await pendingSimulatorInstall;
+    if (pendingInstallError) {
+      progress?.fail('app-install', `failed to install ${path.basename(resolvedIosAppPath ?? cfg.app!)}`);
+      throw new Error(`Failed to install iOS app: ${pendingInstallError}`);
+    }
+    skipAppReset = true;
+    if (progress) progress.complete('app-install', `installed ${path.basename(resolvedIosAppPath!)}`);
+    else console.log(dim(`Installed ${path.basename(resolvedIosAppPath!)} on iOS simulator.`));
+    if (cfg.package && cfg.device) {
+      try {
+        execFileSync('xcrun', ['simctl', 'launch', cfg.device, cfg.package]);
+      } catch {
+        // App may already be running
+      }
+    }
+  }
+
   if (cfg.package) {
     try {
       progress?.start('app-launch', `launching ${cfg.package}`);
@@ -813,7 +850,7 @@ async function setupSequentialDevice(
         iosAppPath: resolvedIosAppPath,
         deviceSerial: cfg.device,
         networkTracingEnabled,
-      }, 'startup', { allowSoftReset: false, readinessAttempts: 3 });
+      }, 'startup', { allowSoftReset: false, readinessAttempts: 3, skipAppReset });
       if (progress) progress.complete('app-launch', `launched ${cfg.package}`);
       else console.log(dim(`Launched ${cfg.package}`));
     } catch (err) {
@@ -2292,8 +2329,14 @@ async function main(): Promise<void> {
         // when projects override device-shaping fields via `use:`.
         const projectConfig = currentSequentialState?.effectiveConfig ?? config;
 
+        let isFirstFileInProject = true;
         for (const file of project.testFiles) {
-          if (fileIndex > 0 && projectConfig.package) {
+          // Skip the file-level reset when the project has appState — the
+          // runner's suite-level restoreAppState + restartApp will handle
+          // the transition, making a prior launchConfiguredApp redundant.
+          const projectHasAppState = !!(project.use?.appState);
+          if (fileIndex > 0 && projectConfig.package
+            && !(isFirstFileInProject && projectHasAppState)) {
             const resetCtx: import('./session-preflight.js').SessionPreflightContext = {
               label: `Device ${projectConfig.device}`,
               config: projectConfig,
@@ -2383,6 +2426,7 @@ async function main(): Promise<void> {
 
           reporter.onTestFileEnd(file, fileResults);
           fileIndex++;
+          isFirstFileInProject = false;
 
           if (fileResults.some((r) => r.status === 'failed')) {
             projectFailed = true;

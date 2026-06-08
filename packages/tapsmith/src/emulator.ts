@@ -17,6 +17,7 @@ import type { DeviceStrategy } from './config.js';
 const DIM = '\x1b[2m';
 const YELLOW = '\x1b[33m';
 const RESET = '\x1b[0m';
+
 const DEVICE_STABILITY_POLL_MS = 2_000;
 const DEFAULT_DEVICE_STABILITY_TIMEOUT_MS = 20_000;
 const REQUIRED_STABLE_HEALTH_CHECKS = 2;

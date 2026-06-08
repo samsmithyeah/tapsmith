@@ -926,12 +926,13 @@ async function runSuiteContext(
     const testTimeoutMs = scopeTimeout ? Math.max(defaultTestTimeoutMs, scopeTimeout) : defaultTestTimeoutMs;
     const maxRetries = opts.config.retries;
     let lastAttempt = 0;
+    let attemptStart = testStart;
     const traceConfig = resolveTraceConfig(opts.config.trace);
     const videoConfig = resolveVideoConfig(opts.config.video);
 
     for (let attempt = 0; attempt <= maxRetries; attempt++) {
       if (attempt > 0 && opts.abortSignal?.aborted) break;
-      const attemptStart = Date.now();
+      attemptStart = Date.now();
       // Reset per-attempt state. Only the final attempt's artifacts are
       // reported — prior attempt traces/videos are retained on disk via
       // shouldRetain() but not linked from the TestResult.
@@ -1509,7 +1510,7 @@ async function runSuiteContext(
       name: entry.name,
       fullName,
       status,
-      durationMs: Date.now() - testStart,
+      durationMs: Date.now() - attemptStart,
       error,
       screenshotPath,
       tracePath,

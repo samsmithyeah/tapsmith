@@ -19,6 +19,7 @@ export default defineConfig({
   video: "retain-on-failure",
   workers: 1,
   simulator: process.env.TAPSMITH_IOS_SIMULATOR || "iPhone 16",
+  iosXctestrun: process.env.TAPSMITH_IOS_XCTESTRUN || undefined,
   projects: [
     {
       name: "authentication",

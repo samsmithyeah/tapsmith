@@ -216,10 +216,15 @@ jobs:
             echo "Simulator state: $STATE"
           fi
 
-      - name: Link agent build to DerivedData for auto-discovery
+      - name: Resolve xctestrun path
         run: |
-          mkdir -p ~/Library/Developer/Xcode/DerivedData
-          ln -s "$PWD/ios-agent/.build-sim" ~/Library/Developer/Xcode/DerivedData/TapsmithAgent-ci
+          XCTESTRUN=$(find "$PWD/ios-agent/.build-sim" -name "*.xctestrun" -type f -print -quit)
+          if [ -z "$XCTESTRUN" ]; then
+            echo "::error::No xctestrun found under ios-agent/.build-sim"
+            exit 1
+          fi
+          echo "TAPSMITH_IOS_XCTESTRUN=$XCTESTRUN" >> $GITHUB_ENV
+          echo "Resolved xctestrun: $XCTESTRUN"
 
       - name: Extract test app
         run: |
