@@ -40,6 +40,9 @@ export interface ActionResponse {
   errorType: string;
   errorMessage: string;
   screenshot: Buffer;
+  /** Bounds of the element the action resolved, when it targeted a single
+   * element. Absent for coordinate-based or non-element actions. */
+  bounds?: { left: number; top: number; right: number; bottom: number };
 }
 
 export interface FindElementResponse {
@@ -432,9 +435,10 @@ export class TapsmithGrpcClient {
     });
   }
 
-  async takeScreenshot(): Promise<ScreenshotResponse> {
+  async takeScreenshot(scale?: number): Promise<ScreenshotResponse> {
     return this.call<ScreenshotResponse>('takeScreenshot', {
       requestId: requestId(),
+      scale: scale ?? 0,
     });
   }
 
@@ -448,11 +452,13 @@ export class TapsmithGrpcClient {
     screenshot?: boolean;
     hierarchy?: boolean;
     elementSelector?: Selector;
+    screenshotScale?: number;
   }): Promise<CaptureTraceStateResponse> {
     const request: Record<string, unknown> = {
       requestId: requestId(),
       screenshot: options.screenshot ?? false,
       hierarchy: options.hierarchy ?? false,
+      screenshotScale: options.screenshotScale ?? 0,
     };
     if (options.elementSelector) {
       request.elementSelector = this.selectorProto(options.elementSelector);

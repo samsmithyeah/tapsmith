@@ -49,6 +49,7 @@ type CaptureTraceStateOptions = {
   screenshot?: boolean;
   hierarchy?: boolean;
   elementSelector?: Selector;
+  screenshotScale?: number;
 };
 
 const WEBVIEW_RPC_TIMEOUT_MS = 5_000;
@@ -167,7 +168,7 @@ export class Device {
     this._platform = config?.platform ?? 'android';
     this._simulatorUdid = config?.simulator;
     this.tracing = new Tracing(
-      () => this._takeScreenshotBuffer(),
+      () => this._takeScreenshotBuffer(this._traceScreenshotScale),
       () => this._captureHierarchy(),
     );
   }
@@ -197,14 +198,20 @@ export class Device {
     return this.tracing._currentCollector ?? getActiveTraceCollector();
   }
 
-  /** @internal — Take a screenshot and return the raw buffer. */
-  private async _takeScreenshotBuffer(): Promise<Buffer | undefined> {
+  /** @internal — Take a screenshot and return the raw buffer.
+   *  `scale` (0,1) downscales — used for trace screenshots only. */
+  private async _takeScreenshotBuffer(scale?: number): Promise<Buffer | undefined> {
     try {
-      const res = await this._client.takeScreenshot();
+      const res = await this._client.takeScreenshot(scale);
       return res.success ? res.data : undefined;
     } catch {
       return undefined;
     }
+  }
+
+  /** @internal — Downscale factor to apply to trace screenshots (1 = full). */
+  private get _traceScreenshotScale(): number {
+    return this._traceCollector?.config.screenshotScale ?? 1;
   }
 
   private async _appendActiveWebViewDom(xml: string | undefined): Promise<string | undefined> {
@@ -233,6 +240,27 @@ export class Device {
 
   /** @internal — Capture batched trace state, preserving WebView DOM hierarchy enrichment. */
   private async _captureTraceState(options: CaptureTraceStateOptions): Promise<CaptureTraceStateResponse> {
+    if (this._platform === 'android') {
+      // On Android the cheap, well-tested screenshot path is ADB `screencap`
+      // (what non-traced screenshots use), not the agent's UIAutomator capture.
+      // Run that in parallel with a single batched agent call that serves the
+      // hierarchy dump + element lookup — collapsing the previous three
+      // per-action round-trips (findElement + getUiHierarchy + screencap) down
+      // to two. The daemon applies any trace downscale to the ADB screenshot.
+      const wantScreenshot = options.screenshot ?? false;
+      const [agentRes, screenshot] = await Promise.all([
+        this._client.captureTraceState({ ...options, screenshot: false }),
+        wantScreenshot ? this._takeScreenshotBuffer(options.screenshotScale) : Promise.resolve(undefined),
+      ]);
+      const hierarchyXml = options.hierarchy && agentRes.hierarchyXml
+        ? (await this._appendActiveWebViewDom(agentRes.hierarchyXml) ?? agentRes.hierarchyXml)
+        : agentRes.hierarchyXml;
+      return {
+        ...agentRes,
+        hierarchyXml,
+        ...(screenshot ? { screenshotData: screenshot } : {}),
+      };
+    }
     const res = await this._client.captureTraceState(options);
     if (options.hierarchy && res.hierarchyXml) {
       return {
@@ -258,12 +286,11 @@ export class Device {
     const collector = this._traceCollector;
     const ctx = collector ? {
       collector,
-      takeScreenshot: () => this._takeScreenshotBuffer(),
+      takeScreenshot: () => this._takeScreenshotBuffer(this._traceScreenshotScale),
       captureHierarchy: () => this._captureHierarchy(),
       findElement: (sel: Selector, timeout: number) => this._client.findElement(sel, timeout),
-      ...(this._platform === 'ios' ? {
-        captureTraceState: (opts: CaptureTraceStateOptions) => this._captureTraceState(opts),
-      } : {}),
+      captureTraceState: (opts: CaptureTraceStateOptions) =>
+        this._captureTraceState({ ...opts, screenshotScale: this._traceScreenshotScale }),
     } : undefined;
     return tracedAction(ctx, action, category, selector, fn, fallbackMsg, extra);
   }
@@ -327,11 +354,10 @@ export class Device {
   private _handle(selector: Selector): ElementHandle {
     const traceCapture = this._traceCollector ? {
       collector: this._traceCollector,
-      takeScreenshot: () => this._takeScreenshotBuffer(),
+      takeScreenshot: () => this._takeScreenshotBuffer(this._traceScreenshotScale),
       captureHierarchy: () => this._captureHierarchy(),
-      ...(this._platform === 'ios' ? {
-        captureTraceState: (opts: CaptureTraceStateOptions) => this._captureTraceState(opts),
-      } : {}),
+      captureTraceState: (opts: CaptureTraceStateOptions) =>
+        this._captureTraceState({ ...opts, screenshotScale: this._traceScreenshotScale }),
     } : undefined;
     return new ElementHandle(this._client, selector, this._defaultTimeoutMs, { traceCapture, typingDelay: this._typingDelayMs, doubleTapInterval: this._doubleTapIntervalMs });
   }
@@ -990,7 +1016,7 @@ export class Device {
     const targetPackageName = packageName ?? this.defaultPackageName;
     const selector = targetPackageName ? `package=${targetPackageName}` : undefined;
     const { captures: beforeCaptures } = await collector.captureBeforeAction(
-      () => this._takeScreenshotBuffer(),
+      () => this._takeScreenshotBuffer(this._traceScreenshotScale),
       () => this._captureHierarchy(),
     );
     const connectLog = [`device.webview(${packageName ? JSON.stringify(packageName) : ''})`];
@@ -1268,7 +1294,7 @@ export class Device {
     if (this._traceCollector) {
       handle._traceCtx = {
         collector: this._traceCollector,
-        takeScreenshot: () => this._takeScreenshotBuffer(),
+        takeScreenshot: () => this._takeScreenshotBuffer(this._traceScreenshotScale),
         captureHierarchy: () => this._captureHierarchy(),
       };
     }

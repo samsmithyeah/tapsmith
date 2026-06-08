@@ -621,6 +621,7 @@ class CommandHandler {
             // UI-mode mirror), so `as? Int` would fail — go via NSNumber.
             let x = (params["x"] as? NSNumber)?.intValue ?? -1
             let y = (params["y"] as? NSNumber)?.intValue ?? -1
+            var tapResult: [String: Any] = ["success": true]
             if x >= 0 && y >= 0 {
                 actionExecutor.tapCoordinates(x: x, y: y)
                 snapshotFinder.recordFocusedTextInputHint(at: CGPoint(x: CGFloat(x), y: CGFloat(y)))
@@ -628,6 +629,9 @@ class CommandHandler {
                 let element = try resolveElement(params)
                 try tapResolvedElement(element)
                 snapshotFinder.recordFocusedTextInputHint(element)
+                // Surface the resolved element so tracing can mark the target
+                // without a separate lookup.
+                tapResult["element"] = element.toDict()
             }
             // Force-flush pending touch events: take a snapshot() which does
             // a round-trip through the XCTest daemon. This acts as a barrier,
@@ -635,14 +639,14 @@ class CommandHandler {
             // have been fully processed before we return. Without this, the
             // next command's snapshot IPC can race with touch delivery.
             touchBarrier()
-            return ["success": true]
+            return tapResult
 
         case "doubleTap":
             let element = try resolveElement(params)
             let intervalMs = params["intervalMs"] as? Int ?? 0
             try doubleTapResolvedElement(element, intervalMs: intervalMs)
             touchBarrier()
-            return ["success": true]
+            return ["success": true, "element": element.toDict()]
 
         case "longPress":
             // NSNumber coercion: JSON numbers aren't directly castable to Int/
@@ -650,6 +654,7 @@ class CommandHandler {
             let duration = (params["duration"] as? NSNumber)?.int64Value ?? 1000
             let x = (params["x"] as? NSNumber)?.intValue ?? -1
             let y = (params["y"] as? NSNumber)?.intValue ?? -1
+            var longPressResult: [String: Any] = ["success": true]
             if x >= 0 && y >= 0 {
                 actionExecutor.longPressCoordinates(x: x, y: y, durationMs: duration)
             } else {
@@ -660,9 +665,10 @@ class CommandHandler {
                     let xcElem = try getXCUIElement(element.elementId)
                     try actionExecutor.longPress(xcElem, durationMs: duration)
                 }
+                longPressResult["element"] = element.toDict()
             }
             touchBarrier()
-            return ["success": true]
+            return longPressResult
 
         // ─── Text Input ───
 

@@ -172,6 +172,12 @@ message ActionResponse {
   string error_type = 3;
   string error_message = 4;
   bytes screenshot = 5;
+  // Bounds of the element the action resolved and operated on, when the
+  // action targeted a single element (tap, type, etc.). Lets tracing reuse
+  // the action's own element resolution for the viewer's target marker
+  // instead of performing a separate lookup. Absent for coordinate-based or
+  // non-element actions.
+  optional Bounds bounds = 6;
 }
 
 // ─── Requests ───
@@ -313,6 +319,9 @@ message PressKeyRequest {
 
 message ScreenshotRequest {
   string request_id = 1;
+  // Downscale factor in (0,1] for trace screenshots — e.g. 0.5 = half size.
+  // 0 or 1 means full resolution. Ignored for user-facing screenshots.
+  float scale = 2;
 }
 
 message ScreenshotResponse {
@@ -641,6 +650,8 @@ message CaptureTraceStateRequest {
   bool screenshot = 2;
   bool hierarchy = 3;
   Selector element_selector = 4;  // optional — omit to skip element lookup
+  // Downscale factor in (0,1] for the captured screenshot (0 or 1 = full).
+  float screenshot_scale = 5;
 }
 
 message CaptureTraceStateResponse {

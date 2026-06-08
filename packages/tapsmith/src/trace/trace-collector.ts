@@ -243,6 +243,8 @@ export class TraceCollector {
   private _pendingOperationHandler: ((error: string) => void) | null = null;
   /** Pending after-action capture promises that must complete before trace packaging. */
   private _pendingAfterCaptures: Promise<void>[] = [];
+  /** Pending screenshot disk writes, kept off the per-action critical path. */
+  private _pendingDiskWrites: Promise<void>[] = [];
 
   constructor(config: TraceConfig, tempDir: string, timelineOrigin = Date.now()) {
     this.config = config;
@@ -405,7 +407,9 @@ export class TraceCollector {
           if (data) {
             const filename = `action-${String(actionIndex).padStart(3, '0')}-before.png`;
             const diskPath = path.join(this._tempDir, 'screenshots', filename);
-            fs.writeFileSync(diskPath, data);
+            // Write asynchronously so the disk I/O stays off the per-action
+            // critical path; flushPendingCaptures() awaits it before packaging.
+            this._trackDiskWrite(fs.promises.writeFile(diskPath, data));
             const capture: ScreenshotCapture = {
               archivePath: `screenshots/${filename}`,
               diskPath,
@@ -464,7 +468,9 @@ export class TraceCollector {
           if (data) {
             const filename = `action-${String(actionIndex).padStart(3, '0')}-after.png`;
             const diskPath = path.join(this._tempDir, 'screenshots', filename);
-            fs.writeFileSync(diskPath, data);
+            // Write asynchronously so the disk I/O stays off the per-action
+            // critical path; flushPendingCaptures() awaits it before packaging.
+            this._trackDiskWrite(fs.promises.writeFile(diskPath, data));
             const capture: ScreenshotCapture = {
               archivePath: `screenshots/${filename}`,
               diskPath,
@@ -515,12 +521,21 @@ export class TraceCollector {
   }
 
   /**
-   * Wait for all pending after-action captures to complete.
-   * Called before packaging the trace to ensure all data is flushed.
+   * Track a backgrounded screenshot disk write. Errors are swallowed
+   * (best-effort) and the promise is awaited by flushPendingCaptures().
+   */
+  private _trackDiskWrite(promise: Promise<unknown>): void {
+    this._pendingDiskWrites.push(promise.then(() => undefined, () => undefined));
+  }
+
+  /**
+   * Wait for all pending after-action captures and screenshot disk writes to
+   * complete. Called before packaging the trace to ensure all data is flushed.
    */
   async flushPendingCaptures(): Promise<void> {
-    await Promise.allSettled(this._pendingAfterCaptures);
+    await Promise.allSettled([...this._pendingAfterCaptures, ...this._pendingDiskWrites]);
     this._pendingAfterCaptures = [];
+    this._pendingDiskWrites = [];
   }
 
   /**

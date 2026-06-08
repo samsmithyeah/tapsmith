@@ -57,6 +57,14 @@ export async function tracedAction(
   let bounds: { left: number; top: number; right: number; bottom: number } | undefined;
   let point: { x: number; y: number } | undefined;
 
+  // Tap-family actions resolve their target element as part of the action
+  // itself, then return its bounds on the ActionResponse. Reusing that avoids
+  // a redundant pre-action element lookup (a full accessibility pass) — the
+  // bounds come straight from the element the action operated on, so they're
+  // also more faithful than a separate query.
+  const deriveBoundsFromAction = category === 'tap' && !!selector;
+  const lookupSelector = deriveBoundsFromAction ? undefined : selector;
+
   log.push('Capturing before screenshot + hierarchy');
   const traceCaptureDeadline = Date.now() + TRACE_CAPTURE_TIMEOUT_MS;
 
@@ -72,7 +80,7 @@ export async function tracedAction(
       const batchResult = await ctx.captureTraceState({
         screenshot: ctx.collector.config.screenshots,
         hierarchy: ctx.collector.config.snapshots,
-        elementSelector: selector,
+        elementSelector: lookupSelector,
       });
       if (batchResult?.success) {
         batchSuccess = true;
@@ -96,7 +104,7 @@ export async function tracedAction(
             };
             log.push(`Tap target: (${point.x}, ${point.y})`);
           }
-        } else if (selector) {
+        } else if (lookupSelector) {
           log.push(`Element lookup returned no match (${Date.now() - batchStart}ms)`);
         }
       } else {
@@ -113,11 +121,11 @@ export async function tracedAction(
       log.push('Skipping individual trace capture fallback; batch consumed capture budget');
     } else {
       // Individual parallel calls (Android, or iOS fallback on batch failure)
-      const boundsPromise = (selector && ctx.findElement)
+      const boundsPromise = (lookupSelector && ctx.findElement)
         ? (async () => {
             const lookupStart = Date.now();
             try {
-              const res = await ctx.findElement!(selector, 100);
+              const res = await ctx.findElement!(lookupSelector, 100);
               if (res.found && res.element?.bounds) {
                 bounds = res.element.bounds;
                 log.push(`Element found at [${bounds.left},${bounds.top}][${bounds.right},${bounds.bottom}] (${Date.now() - lookupStart}ms)`);
@@ -185,6 +193,16 @@ export async function tracedAction(
       success = false;
       error = res.errorMessage || fallbackMsg;
       throw new Error(error);
+    }
+    // Reuse the element the action resolved for the trace target marker,
+    // skipping the redundant pre-action lookup (see deriveBoundsFromAction).
+    if (deriveBoundsFromAction && res.bounds) {
+      bounds = res.bounds;
+      point = {
+        x: (bounds.left + bounds.right) / 2,
+        y: (bounds.top + bounds.bottom) / 2,
+      };
+      log.push(`Element at [${bounds.left},${bounds.top}][${bounds.right},${bounds.bottom}], tap target: (${point.x}, ${point.y})`);
     }
   } catch (err) {
     success = false;

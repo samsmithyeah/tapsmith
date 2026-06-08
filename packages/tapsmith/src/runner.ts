@@ -1392,9 +1392,11 @@ async function runSuiteContext(
         }
         if (collector) {
           const retain = shouldRetain(traceConfig.mode, status === 'passed', attempt);
+          // Flush pending after-action captures and backgrounded screenshot
+          // disk writes before packaging or cleanup, so no write races with
+          // temp-dir removal (relevant when recording but not retaining).
+          await collector.flushPendingCaptures();
           if (retain) {
-            // Flush any pending after-action captures before packaging
-            await collector.flushPendingCaptures();
             try {
               const outputDir = path.resolve(
                 opts.config.rootDir,
