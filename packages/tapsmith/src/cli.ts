@@ -486,6 +486,8 @@ async function setupSequentialDevice(
 
   const deviceJustLaunched = launchedEmulators.some((e) => e.serial === cfg.device);
   let skipAppReset = false;
+  let pendingSimulatorInstall: Promise<void> | undefined;
+  let pendingInstallError: unknown;
 
   // Determine whether this UDID targets a physical device or a simulator.
   // The branch drives every downstream decision in the iOS block: simctl for
@@ -579,7 +581,7 @@ async function setupSequentialDevice(
             else console.log(dim(`Installed ${path.basename(resolvedApp)} on iOS device ${cfg.device}.`));
           }
         } else {
-          const { installApp, isAppInstalled } = await import('./ios-simulator.js');
+          const { installAppAsync, isAppInstalled } = await import('./ios-simulator.js');
           const alreadyInstalled = !deviceJustLaunched
             && cfg.package
             && isAppInstalled(cfg.device, cfg.package);
@@ -593,10 +595,11 @@ async function setupSequentialDevice(
             } else {
               progress?.update('app-install', { state: 'running', detail: `installing ${path.basename(resolvedApp)}` });
             }
-            installApp(cfg.device, resolvedApp);
-            skipAppReset = true;
-            if (progress) progress.complete('app-install', `installed ${path.basename(resolvedApp)}`);
-            else console.log(dim(`Installed ${path.basename(resolvedApp)} on iOS simulator.`));
+            // Start install concurrently with agent startup — xcodebuild
+            // doesn't need the target app during its own init. The promise
+            // is awaited after startAgent completes.
+            pendingSimulatorInstall = installAppAsync(cfg.device, resolvedApp)
+              .catch((err: unknown) => { pendingInstallError = err; });
           }
         }
       } catch (err) {
@@ -606,13 +609,12 @@ async function setupSequentialDevice(
     } else {
       progress?.skip('app-install', 'no iOS app configured');
     }
-    if (cfg.package && cfg.device) {
+    if (cfg.package && cfg.device && !pendingSimulatorInstall) {
       // For simulators we fire a best-effort simctl launch so the app is in
       // the foreground when the XCUITest runner attaches, which avoids a
-      // brief black-screen flicker. For physical devices we skip this step
-      // entirely: `simctl launch` doesn't work on real hardware, and the
-      // XCUITest runner's own `app.launch()` (inside the Swift agent) will
-      // bring the app forward during the subsequent agent startup.
+      // brief black-screen flicker. Deferred when a simulator install is
+      // running concurrently with agent startup. For physical devices we
+      // skip this entirely: `simctl launch` doesn't work on real hardware.
       if (!targetIsPhysical) {
         try {
           execFileSync('xcrun', ['simctl', 'launch', cfg.device, cfg.package]);
@@ -813,6 +815,25 @@ async function setupSequentialDevice(
   } catch (err) {
     progress?.fail('agent', err instanceof Error ? err.message : String(err));
     throw new Error(`Failed to start agent: ${err}`);
+  }
+
+  // Await the simulator install that was running concurrently with agent startup.
+  if (pendingSimulatorInstall) {
+    await pendingSimulatorInstall;
+    if (pendingInstallError) {
+      progress?.fail('app-install', `failed to install ${path.basename(resolvedIosAppPath ?? cfg.app!)}`);
+      throw new Error(`Failed to install iOS app: ${pendingInstallError}`);
+    }
+    skipAppReset = true;
+    if (progress) progress.complete('app-install', `installed ${path.basename(resolvedIosAppPath!)}`);
+    else console.log(dim(`Installed ${path.basename(resolvedIosAppPath!)} on iOS simulator.`));
+    if (cfg.package && cfg.device) {
+      try {
+        execFileSync('xcrun', ['simctl', 'launch', cfg.device, cfg.package]);
+      } catch {
+        // App may already be running
+      }
+    }
   }
 
   if (cfg.package) {

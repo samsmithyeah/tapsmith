@@ -10,7 +10,7 @@
  * brief sleeps between retries since `setTimeout` requires an async context.
  */
 
-import { execFileSync } from 'node:child_process';
+import { execFile, execFileSync } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
@@ -168,12 +168,25 @@ export function rebootSimulator(udid: string): void {
 }
 
 /**
- * Install an app bundle on a simulator.
+ * Install an app bundle on a simulator (blocking).
  */
 export function installApp(udid: string, appPath: string): void {
   execFileSync('xcrun', ['simctl', 'install', udid, appPath], {
     timeout: 60_000,
     stdio: 'ignore',
+  });
+}
+
+/**
+ * Install an app bundle on a simulator (non-blocking). Use this when the
+ * install can run concurrently with other setup work (e.g. agent startup).
+ */
+export function installAppAsync(udid: string, appPath: string): Promise<void> {
+  return new Promise<void>((resolve, reject) => {
+    execFile('xcrun', ['simctl', 'install', udid, appPath], { timeout: 60_000 }, (err) => {
+      if (err) reject(err);
+      else resolve();
+    });
   });
 }
 
