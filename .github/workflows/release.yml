@@ -144,15 +144,23 @@ jobs:
 
   # ─── Build iOS simulator agent for arm64 and x64 ───
   build-ios-simulator-agent:
-    name: Build iOS simulator agent (${{ matrix.arch }})
-    runs-on: macos-26
+    name: Build iOS simulator agent (${{ matrix.arch }}, ${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
         include:
           - arch: arm64
+            os: macos-latest
+            npm-pkg: agent-ios-simulator-arm64
+          - arch: arm64
+            os: macos-26
             npm-pkg: agent-ios-simulator-arm64
           - arch: x86_64
+            os: macos-latest
+            npm-pkg: agent-ios-simulator-x64
+          - arch: x86_64
+            os: macos-26
             npm-pkg: agent-ios-simulator-x64
     defaults:
       run:
@@ -174,7 +182,9 @@ jobs:
         run: |
           PRODUCTS=".build-sim-${{ matrix.arch }}/Build/Products"
           PRODUCTS_ABS="$(cd "$PRODUCTS" && pwd)"
-          STAGING="../npm-packages/${{ matrix.npm-pkg }}"
+          SDK_VERSION="$(xcrun --show-sdk-version --sdk iphonesimulator)"
+          STAGING="../npm-packages/${{ matrix.npm-pkg }}/sdk-${SDK_VERSION}"
+          mkdir -p "$STAGING"
 
           # Copy xctestrun file(s) and the test runner app bundle
           cp "$PRODUCTS"/*iphonesimulator*.xctestrun "$STAGING/"
@@ -189,10 +199,9 @@ jobs:
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: ios-sim-agent-${{ matrix.npm-pkg }}
+          name: ios-sim-agent-${{ matrix.npm-pkg }}-${{ matrix.os }}
           path: |
-            npm-packages/${{ matrix.npm-pkg }}/*.xctestrun
-            npm-packages/${{ matrix.npm-pkg }}/Debug-iphonesimulator/
+            npm-packages/${{ matrix.npm-pkg }}/sdk-*/
 
   # ─── Publish platform-specific binary packages ───
   publish-platform-packages:
@@ -278,10 +287,16 @@ jobs:
           node-version: 24
           registry-url: https://registry.npmjs.org
 
-      - name: Download iOS simulator agent
+      - name: Download iOS simulator agent (macos-latest)
         uses: actions/download-artifact@v4
         with:
-          name: ios-sim-agent-${{ matrix.pkg }}
+          name: ios-sim-agent-${{ matrix.pkg }}-macos-latest
+          path: npm-packages/${{ matrix.pkg }}/
+
+      - name: Download iOS simulator agent (macos-26)
+        uses: actions/download-artifact@v4
+        with:
+          name: ios-sim-agent-${{ matrix.pkg }}-macos-26
           path: npm-packages/${{ matrix.pkg }}/
 
       - name: Set version from tag
