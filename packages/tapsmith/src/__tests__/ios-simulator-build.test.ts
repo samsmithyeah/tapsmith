@@ -40,13 +40,13 @@ describe('getInstalledSimulatorSdkVersion()', () => {
 
   it('returns SDK version from xcrun', async () => {
     execFileSyncMock.mockReturnValue('26.0\n');
-    const { getInstalledSimulatorSdkVersion } = await import('../ios-simulator-build.js');
+    const { getInstalledSimulatorSdkVersion } = await import('../ios-device-resolve.js');
     expect(getInstalledSimulatorSdkVersion()).toBe('26.0');
   });
 
   it('returns undefined when xcrun fails', async () => {
     execFileSyncMock.mockImplementation(() => { throw new Error('xcrun not found'); });
-    const { getInstalledSimulatorSdkVersion } = await import('../ios-simulator-build.js');
+    const { getInstalledSimulatorSdkVersion } = await import('../ios-device-resolve.js');
     expect(getInstalledSimulatorSdkVersion()).toBeUndefined();
   });
 });

@@ -7,6 +7,7 @@
  * simulator names to UDIDs.
  */
 
+import { execFileSync } from 'node:child_process';
 import { createRequire } from 'node:module';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
@@ -173,6 +174,19 @@ export function findSimulatorXctestrun(): string | undefined {
 export function extractSdkVersion(xctestrunPath: string): string | undefined {
   const match = path.basename(xctestrunPath).match(/iphonesimulator([\d.]+)-/);
   return match?.[1];
+}
+
+export function getInstalledSimulatorSdkVersion(): string | undefined {
+  try {
+    const raw = execFileSync(
+      'xcrun',
+      ['--show-sdk-version', '--sdk', 'iphonesimulator'],
+      { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] },
+    );
+    return raw.trim() || undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 function newestSimulatorXctestrunIn(dir: string): string | undefined {

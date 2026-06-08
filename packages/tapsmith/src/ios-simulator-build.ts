@@ -7,35 +7,13 @@
  * the build as long as the cached SDK version still matches.
  */
 
-import { execFileSync, execFile } from 'node:child_process';
+import { execFile } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 
 import { resolveIosAgentDir } from './build-ios-agent.js';
-import { extractSdkVersion, findSimulatorXctestrun } from './ios-device-resolve.js';
-
-// ─── SDK detection ──────────────────────────────────────────────────────
-
-/**
- * Return the installed iphonesimulator SDK version (e.g. "18.5", "26.0")
- * by querying `xcrun --show-sdk-version --sdk iphonesimulator`.
- *
- * Returns `undefined` when xcrun is unavailable or fails (e.g. Xcode
- * Command Line Tools not installed).
- */
-export function getInstalledSimulatorSdkVersion(): string | undefined {
-  try {
-    const raw = execFileSync(
-      'xcrun',
-      ['--show-sdk-version', '--sdk', 'iphonesimulator'],
-      { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] },
-    );
-    return raw.trim() || undefined;
-  } catch {
-    return undefined;
-  }
-}
+import { extractSdkVersion, findSimulatorXctestrun, getInstalledSimulatorSdkVersion } from './ios-device-resolve.js';
 
 // ─── Build ──────────────────────────────────────────────────────────────
 
