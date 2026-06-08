@@ -132,8 +132,33 @@ export function findSimulatorXctestrun(): string | undefined {
   try {
     const pkgJsonPath = require.resolve(`${pkg}/package.json`);
     const pkgDir = path.dirname(pkgJsonPath);
-    const match = newestSimulatorXctestrunIn(pkgDir);
-    if (match) return match;
+    const installedSdk = getInstalledSimulatorSdkVersion();
+
+    // 2a. Exact SDK match in sdk-{version}/ subdirectory.
+    if (installedSdk) {
+      const sdkSubdir = path.join(pkgDir, `sdk-${installedSdk}`);
+      if (fs.existsSync(sdkSubdir)) {
+        const match = newestSimulatorXctestrunIn(sdkSubdir);
+        if (match) return match;
+      }
+    }
+
+    // 2b. Any sdk-*/ subdirectory (newest xctestrun wins).
+    try {
+      const subdirs = fs.readdirSync(pkgDir)
+        .filter((e) => e.startsWith('sdk-'))
+        .map((e) => path.join(pkgDir, e));
+      for (const subdir of subdirs) {
+        const match = newestSimulatorXctestrunIn(subdir);
+        if (match) return match;
+      }
+    } catch {
+      // No subdirectories — fall through.
+    }
+
+    // 2c. Flat layout (backward compat with older packages).
+    const flat = newestSimulatorXctestrunIn(pkgDir);
+    if (flat) return flat;
   } catch {
     // Package not installed — fall through.
   }
