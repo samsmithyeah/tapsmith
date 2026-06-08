@@ -104,10 +104,12 @@ function newestIphoneosXctestrun(productsDir: string): string | undefined {
  * Find the newest simulator-slice xctestrun.
  *
  * Resolution order:
- *   1. Prebuilt npm package (`@tapsmith/agent-ios-simulator-{arch}`) — ships
+ *   1. Auto-build cache (`~/.tapsmith/ios-simulator-agent/`) — SDK-matched
+ *      local builds produced by `tapsmith build-ios-agent --simulator`.
+ *   2. Prebuilt npm package (`@tapsmith/agent-ios-simulator-{arch}`) — ships
  *      a ready-to-use xctestrun with `__TAPSMITH_PKG__` path placeholders
  *      that the daemon resolves at runtime.
- *   2. Xcode DerivedData scan (`~/Library/Developer/Xcode/DerivedData/TapsmithAgent-*`)
+ *   3. Xcode DerivedData scan (`~/Library/Developer/Xcode/DerivedData/TapsmithAgent-*`)
  *      — covers local `xcodebuild build-for-testing` builds.
  *
  * `.patched.xctestrun` files are excluded from the DerivedData scan because
@@ -118,7 +120,12 @@ function newestIphoneosXctestrun(productsDir: string): string | undefined {
  * fix-it message pointing at the simulator build command.
  */
 export function findSimulatorXctestrun(): string | undefined {
-  // 1. Try the prebuilt npm package for the current architecture.
+  // 1. Auto-build cache (SDK-matched local build).
+  const cacheDir = path.join(os.homedir(), '.tapsmith', 'ios-simulator-agent');
+  const cached = newestSimulatorXctestrunIn(cacheDir);
+  if (cached) return cached;
+
+  // 2. Try the prebuilt npm package for the current architecture.
   const arch = process.arch;
   const pkg = `@tapsmith/agent-ios-simulator-${arch}`;
   try {
@@ -130,7 +137,7 @@ export function findSimulatorXctestrun(): string | undefined {
     // Package not installed — fall through.
   }
 
-  // 2. DerivedData scan (local Xcode builds).
+  // 3. DerivedData scan (local Xcode builds).
   const root = path.join(os.homedir(), 'Library', 'Developer', 'Xcode', 'DerivedData');
   let dirs: string[];
   try {
