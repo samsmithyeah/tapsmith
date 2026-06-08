@@ -233,7 +233,7 @@ jobs:
 
       - name: Install SDK dependencies
         working-directory: packages/tapsmith
-        run: npm ci
+        run: npm ci --omit=optional
 
       - name: Build SDK
         working-directory: packages/tapsmith
@@ -343,7 +343,7 @@ jobs:
 
       - name: Install and build SDK
         working-directory: packages/tapsmith
-        run: npm ci && npm run build
+        run: npm ci --omit=optional && npm run build
 
       - name: Download all blob reports
         uses: actions/download-artifact@v4
