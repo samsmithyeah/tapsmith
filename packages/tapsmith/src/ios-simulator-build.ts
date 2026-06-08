@@ -106,6 +106,9 @@ export async function buildSimulatorAgent(sdkVersion: string): Promise<string> {
   // Write the SDK version marker so future runs can skip the build.
   fs.writeFileSync(path.join(CACHE_DIR, '.sdk-version'), sdkVersion);
 
+  // Clean up the temporary build directory to save disk space.
+  try { fs.rmSync(buildDir, { recursive: true, force: true }); } catch { /* non-fatal */ }
+
   return xctestrunDest;
 }
 
@@ -121,7 +124,17 @@ export async function buildSimulatorAgent(sdkVersion: string): Promise<string> {
  */
 export async function ensureSimulatorAgent(): Promise<string> {
   const found = findSimulatorXctestrun();
+  const installedSdk = getInstalledSimulatorSdkVersion();
+
   if (!found) {
+    if (installedSdk) {
+      try {
+        console.log(`No prebuilt iOS agent found. Building from source for SDK ${installedSdk}...`);
+        return await buildSimulatorAgent(installedSdk);
+      } catch {
+        // Fall through to descriptive error
+      }
+    }
     throw new Error(
       'No iOS simulator agent xctestrun found. Install the @tapsmith/agent-ios-simulator package, ' +
         'or build from source: cd ios-agent && xcodebuild build-for-testing ' +
@@ -129,7 +142,6 @@ export async function ensureSimulatorAgent(): Promise<string> {
     );
   }
 
-  const installedSdk = getInstalledSimulatorSdkVersion();
   if (!installedSdk) {
     // Can't detect SDK — return whatever we found.
     return found;
