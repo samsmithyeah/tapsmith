@@ -1819,9 +1819,16 @@ async function main(): Promise<void> {
 
     // Find which projects the explicit files belong to
     const targetProjectNames = new Set<string>();
+    const filesByProject = new Map<string, string[]>();
     for (const filePath of explicitPaths) {
       for (const name of findProjectsForFile(filePath, allProjects, config.rootDir)) {
         targetProjectNames.add(name);
+        let list = filesByProject.get(name);
+        if (!list) {
+          list = [];
+          filesByProject.set(name, list);
+        }
+        list.push(filePath);
       }
     }
 
@@ -1835,10 +1842,7 @@ async function main(): Promise<void> {
     // Discover files: dependency projects get their full testMatch, target projects get only explicit files
     for (const project of projects) {
       if (targetProjectNames.has(project.name)) {
-        // Only run the explicit files that belong to this project
-        project.testFiles = explicitPaths.filter(
-          (f: string) => findProjectsForFile(f, [project], config.rootDir).includes(project.name),
-        );
+        project.testFiles = filesByProject.get(project.name) ?? [];
       } else {
         // Dependency project — run all its files
         project.testFiles = await discoverTestFiles(project.testMatch, config.rootDir, undefined, project.testIgnore);
