@@ -1828,7 +1828,7 @@ impl proto::tapsmith_service_server::TapsmithService for TapsmithServiceImpl {
                         Ok(data) => Ok(Response::new(proto::ScreenshotResponse {
                             request_id,
                             success: true,
-                            data,
+                            data: downscale_png(data, req.scale),
                             error_message: String::new(),
                         })),
                         Err(e) => Ok(Response::new(proto::ScreenshotResponse {
@@ -1860,7 +1860,7 @@ impl proto::tapsmith_service_server::TapsmithService for TapsmithServiceImpl {
                 Ok(data) => Ok(Response::new(proto::ScreenshotResponse {
                     request_id,
                     success: true,
-                    data,
+                    data: downscale_png(data, req.scale),
                     error_message: String::new(),
                 })),
                 Err(e) => Ok(Response::new(proto::ScreenshotResponse {
@@ -1918,6 +1918,7 @@ impl proto::tapsmith_service_server::TapsmithService for TapsmithServiceImpl {
     ) -> Result<Response<proto::CaptureTraceStateResponse>, Status> {
         let req = request.into_inner();
         let request_id = Self::request_id(&req.request_id);
+        let screenshot_scale = req.screenshot_scale;
 
         let selector_json = req.element_selector.as_ref().map(selector_to_json);
 
@@ -1940,6 +1941,7 @@ impl proto::tapsmith_service_server::TapsmithService for TapsmithServiceImpl {
                             .unwrap_or_default()
                     })
                     .unwrap_or_default();
+                let screenshot_data = downscale_png(screenshot_data, screenshot_scale);
 
                 let hierarchy_xml = resp
                     .data
@@ -6059,6 +6061,27 @@ async fn query_cdp_json(port: u16) -> anyhow::Result<Vec<serde_json::Value>> {
 
 // ─── Helper: Parse ElementInfo from agent JSON ───
 
+/// Downscale a PNG by `scale` (must be in (0,1)). Returns the original bytes
+/// unchanged on any error or out-of-range scale — trace screenshots are
+/// best-effort, so a decode/encode failure must never fail the capture.
+fn downscale_png(data: Vec<u8>, scale: f32) -> Vec<u8> {
+    if !(scale > 0.0 && scale < 1.0) || data.is_empty() {
+        return data;
+    }
+    let img = match image::load_from_memory_with_format(&data, image::ImageFormat::Png) {
+        Ok(img) => img,
+        Err(_) => return data,
+    };
+    let nw = ((img.width() as f32) * scale).round().max(1.0) as u32;
+    let nh = ((img.height() as f32) * scale).round().max(1.0) as u32;
+    let resized = img.resize_exact(nw, nh, image::imageops::FilterType::Triangle);
+    let mut out = std::io::Cursor::new(Vec::new());
+    match resized.write_to(&mut out, image::ImageFormat::Png) {
+        Ok(()) => out.into_inner(),
+        Err(_) => data,
+    }
+}
+
 pub(crate) fn parse_element_info(data: &Value) -> Option<proto::ElementInfo> {
     let el = if data.get("element").is_some() {
         data.get("element")?
@@ -6328,6 +6351,35 @@ async fn self_probe_lan_listener(lan_ip: std::net::Ipv4Addr, port: u16) -> bool 
 mod tests {
     use super::*;
     use serde_json::json;
+
+    fn make_png(w: u32, h: u32) -> Vec<u8> {
+        let img = image::RgbaImage::from_pixel(w, h, image::Rgba([10, 20, 30, 255]));
+        let mut buf = std::io::Cursor::new(Vec::new());
+        image::DynamicImage::ImageRgba8(img)
+            .write_to(&mut buf, image::ImageFormat::Png)
+            .unwrap();
+        buf.into_inner()
+    }
+
+    #[test]
+    fn downscale_png_resizes_by_scale() {
+        let png = make_png(100, 80);
+        let out = downscale_png(png.clone(), 0.5);
+        let decoded = image::load_from_memory_with_format(&out, image::ImageFormat::Png).unwrap();
+        assert_eq!(decoded.width(), 50);
+        assert_eq!(decoded.height(), 40);
+    }
+
+    #[test]
+    fn downscale_png_passthrough_for_noop_or_invalid() {
+        let png = make_png(40, 40);
+        // scale of 1 or 0 returns the original bytes untouched
+        assert_eq!(downscale_png(png.clone(), 1.0), png);
+        assert_eq!(downscale_png(png.clone(), 0.0), png);
+        // out-of-range and undecodable input are returned unchanged (best-effort)
+        assert_eq!(downscale_png(png.clone(), 2.0), png);
+        assert_eq!(downscale_png(vec![1, 2, 3], 0.5), vec![1, 2, 3]);
+    }
 
     #[test]
     fn android_reverse_port_candidates_start_with_host_port_then_fallbacks() {

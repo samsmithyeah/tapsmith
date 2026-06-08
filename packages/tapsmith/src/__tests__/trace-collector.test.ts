@@ -592,7 +592,7 @@ describe('extractStack', () => {
 describe('addActionEvent preserves stack', () => {
   it('keeps the stack array on the emitted event', () => {
     const c = new TraceCollector(
-      { mode: 'on', screenshots: false, snapshots: false, sources: true, attachments: true, network: false, deviceLogs: false, daemonLogs: false },
+      { mode: 'on', screenshots: false, snapshots: false, sources: true, attachments: true, network: false, deviceLogs: false, daemonLogs: false, screenshotScale: 1 },
       '/tmp/ts-test-' + process.pid,
     );
     c.addActionEvent({

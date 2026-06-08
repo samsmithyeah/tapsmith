@@ -20,6 +20,10 @@ const traceByVariant = {
   "no-snapshots": { mode: "on", snapshots: false },
   "no-network": { mode: "on", network: false },
   "no-devicelogs": { mode: "on", deviceLogs: false },
+  // Screenshot downscale variants (full recording, screenshots at reduced
+  // resolution) to measure the downscale win against `full`.
+  "ss-0.5": { mode: "on", screenshotScale: 0.5 },
+  "ss-0.25": { mode: "on", screenshotScale: 0.25 },
 }
 const trace = traceByVariant[variant] ?? { mode: "on" }
 

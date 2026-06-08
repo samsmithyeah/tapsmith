@@ -40,6 +40,9 @@ url = "2"
 crc32fast = "1.4"
 plist = "1.7"
 tempfile = "3"
+# Decode/resize/encode trace screenshots (downscaling). PNG only — trace
+# screenshots are PNG; keep the dependency lean.
+image = { version = "0.25", default-features = false, features = ["png"] }
 # Used to send SIGINT/SIGTERM to recording child processes (ffmpeg / simctl
 # recordVideo) so they finalise the MP4 before exit. tokio::process exposes
 # only kill(), which sends SIGKILL and leaves un-finalised files.

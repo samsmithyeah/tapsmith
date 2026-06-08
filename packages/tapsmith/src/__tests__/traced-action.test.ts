@@ -27,6 +27,7 @@ describe('tracedAction — bounds from action result', () => {
       network: false,
       deviceLogs: false,
       daemonLogs: false,
+      screenshotScale: 1,
     };
   });
 

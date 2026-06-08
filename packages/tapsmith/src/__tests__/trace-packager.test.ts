@@ -182,7 +182,7 @@ describe('packageTrace sources.json', () => {
 
       const device: TraceDeviceInfo = { serial: 'test', isEmulator: false };
       const c = new TraceCollector(
-        { mode: 'on', screenshots: false, snapshots: false, sources: true, attachments: false, network: false, deviceLogs: false, daemonLogs: false },
+        { mode: 'on', screenshots: false, snapshots: false, sources: true, attachments: false, network: false, deviceLogs: false, daemonLogs: false, screenshotScale: 1 },
         tmp,
       );
       c.addActionEvent({

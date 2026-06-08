@@ -358,6 +358,14 @@ export interface TraceConfig {
   deviceLogs: boolean
   /** Whether to stream the tapsmith-core daemon's own logs into the trace. Default: false. */
   daemonLogs: boolean
+  /**
+   * Downscale factor in (0,1] applied to trace screenshots — e.g. `0.5`
+   * captures them at half resolution, which significantly cuts capture and
+   * encode cost (screenshots dominate tracing overhead). `1` (default) keeps
+   * full resolution. Does not affect `device.screenshot()` or visual
+   * assertions, which always capture full resolution. Defaults to `1`.
+   */
+  screenshotScale?: number
 }
 
 /** Parse a string shorthand or object into a full TraceConfig. */
@@ -373,6 +381,7 @@ export function resolveTraceConfig(
     network: true,
     deviceLogs: true,
     daemonLogs: false,
+    screenshotScale: 1,
   };
 
   if (input === undefined) return defaults;

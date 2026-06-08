@@ -121,7 +121,7 @@ jobs:
     timeout-minutes: 120
     env:
       # Variants timed per repetition (space-separated) and number of reps.
-      DIAG_VARIANTS: "off full no-screenshots no-snapshots no-network"
+      DIAG_VARIANTS: "off full ss-0.5 ss-0.25 no-screenshots"
       DIAG_REPS: "3"
       # Fixed, deterministic subset of the default project.
       DIAG_SHARD: "1/5"

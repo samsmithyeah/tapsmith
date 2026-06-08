@@ -435,9 +435,10 @@ export class TapsmithGrpcClient {
     });
   }
 
-  async takeScreenshot(): Promise<ScreenshotResponse> {
+  async takeScreenshot(scale?: number): Promise<ScreenshotResponse> {
     return this.call<ScreenshotResponse>('takeScreenshot', {
       requestId: requestId(),
+      scale: scale ?? 0,
     });
   }
 
@@ -451,11 +452,13 @@ export class TapsmithGrpcClient {
     screenshot?: boolean;
     hierarchy?: boolean;
     elementSelector?: Selector;
+    screenshotScale?: number;
   }): Promise<CaptureTraceStateResponse> {
     const request: Record<string, unknown> = {
       requestId: requestId(),
       screenshot: options.screenshot ?? false,
       hierarchy: options.hierarchy ?? false,
+      screenshotScale: options.screenshotScale ?? 0,
     };
     if (options.elementSelector) {
       request.elementSelector = this.selectorProto(options.elementSelector);
