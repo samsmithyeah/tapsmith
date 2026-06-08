@@ -163,6 +163,11 @@ export function findSimulatorXctestrun(): string | undefined {
   return candidates[0];
 }
 
+export function extractSdkVersion(xctestrunPath: string): string | undefined {
+  const match = path.basename(xctestrunPath).match(/iphonesimulator([\d.]+)-/);
+  return match?.[1];
+}
+
 function newestSimulatorXctestrunIn(dir: string): string | undefined {
   let entries: string[];
   try {
