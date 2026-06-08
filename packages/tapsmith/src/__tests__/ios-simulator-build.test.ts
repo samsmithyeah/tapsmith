@@ -100,14 +100,14 @@ describe('findSimulatorXctestrun() SDK-aware resolution', () => {
     const sdk26Dir = '/node_modules/@tapsmith/agent-ios-simulator-arm64/sdk-26.0';
     const xctestrun26 = 'TapsmithAgentUITests_iphonesimulator26.0-arm64.xctestrun';
 
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- readdirSync overloads make mock typing impractical
     readdirSync.mockImplementation(((dir: string) => {
       const d = String(dir);
       if (d.endsWith('ios-simulator-agent')) throw new Error('ENOENT');
       if (d === '/node_modules/@tapsmith/agent-ios-simulator-arm64') return ['sdk-18.5', 'sdk-26.0'];
       if (d === sdk26Dir) return [xctestrun26];
       throw new Error('ENOENT');
-    }) as any);
+    }// eslint-disable-next-line @typescript-eslint/no-explicit-any -- readdirSync overloads
+) as any);
     existsSync.mockImplementation((p) => String(p) === sdk26Dir);
     statSync.mockReturnValue({ mtimeMs: Date.now() } as fs.Stats);
 
@@ -123,13 +123,13 @@ describe('findSimulatorXctestrun() SDK-aware resolution', () => {
     const pkgDir = '/node_modules/@tapsmith/agent-ios-simulator-arm64';
     const xctestrun = 'TapsmithAgentUITests_iphonesimulator18.5-arm64.xctestrun';
 
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- readdirSync overloads make mock typing impractical
     readdirSync.mockImplementation(((dir: string) => {
       const d = String(dir);
       if (d.endsWith('ios-simulator-agent')) throw new Error('ENOENT');
       if (d === pkgDir) return [xctestrun, 'Debug-iphonesimulator'];
       throw new Error('ENOENT');
-    }) as any);
+    }// eslint-disable-next-line @typescript-eslint/no-explicit-any -- readdirSync overloads
+) as any);
     existsSync.mockReturnValue(false);
     statSync.mockReturnValue({ mtimeMs: Date.now() } as fs.Stats);
 
