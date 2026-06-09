@@ -595,9 +595,8 @@ async function setupSequentialDevice(
             } else {
               progress?.update('app-install', { state: 'running', detail: `installing ${path.basename(resolvedApp)}` });
             }
-            // Start install concurrently with agent startup — xcodebuild
-            // doesn't need the target app during its own init. The promise
-            // is awaited after startAgent completes.
+            // Start install asynchronously — awaited before startAgent since
+            // the iOS agent calls app.launch() immediately on startup.
             pendingSimulatorInstall = installAppAsync(cfg.device, resolvedApp)
               .catch((err: unknown) => { pendingInstallError = err; });
           }
@@ -759,6 +758,28 @@ async function setupSequentialDevice(
     }
   }
 
+  // The iOS agent calls app.launch() during testRunAgent(), so the target
+  // app must be installed before the agent starts. Await any pending
+  // simulator install now — this is a no-op when the app was already installed.
+  if (pendingSimulatorInstall) {
+    await pendingSimulatorInstall;
+    if (pendingInstallError) {
+      progress?.fail('app-install', `failed to install ${path.basename(resolvedIosAppPath ?? cfg.app!)}`);
+      throw new Error(`Failed to install iOS app: ${pendingInstallError}`);
+    }
+    skipAppReset = true;
+    if (progress) progress.complete('app-install', `installed ${path.basename(resolvedIosAppPath!)}`);
+    else console.log(dim(`Installed ${path.basename(resolvedIosAppPath!)} on iOS simulator.`));
+    if (cfg.package && cfg.device) {
+      try {
+        execFileSync('xcrun', ['simctl', 'launch', cfg.device, cfg.package]);
+      } catch {
+        // App may already be running
+      }
+    }
+    pendingSimulatorInstall = undefined;
+  }
+
   try {
     progress?.start(
       'agent',
@@ -815,7 +836,8 @@ async function setupSequentialDevice(
     throw new Error(`Failed to start agent: ${err}`);
   }
 
-  // Await the simulator install that was running concurrently with agent startup.
+  // Await any pending simulator install that wasn't already awaited above
+  // (only reachable for non-iOS platforms with a concurrent install).
   if (pendingSimulatorInstall) {
     await pendingSimulatorInstall;
     if (pendingInstallError) {
