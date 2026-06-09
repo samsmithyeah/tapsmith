@@ -99,6 +99,39 @@ Supported roles map to platform-native element types. On iOS, many React Native 
 
 > **React Native note:** RN components that set `accessibilityRole` (e.g. `accessibilityRole="button"`) expose the corresponding iOS accessibility trait, and `getByRole` will find them. Components that don't set `accessibilityRole` (common in many RN apps) render as generic `XCUIElementTypeOther` with no role — use `getByText`, `getByPlaceholder`, or `getByDescription` instead.
 
+#### Making React Native apps testable (and accessible)
+
+Adding accessibility props to your RN components makes them both testable with `getByRole` and accessible to screen readers — a single change that improves both. The key props:
+
+```tsx
+// ✗ Invisible to getByRole — renders as generic XCUIElementTypeOther
+<TouchableOpacity onPress={handleSubmit}>
+  <Text>Sign in</Text>
+</TouchableOpacity>
+
+// ✓ Found by getByRole("button", { name: "Sign in" })
+<TouchableOpacity
+  onPress={handleSubmit}
+  accessibilityRole="button"
+  accessibilityLabel="Sign in"
+>
+  <Text>Sign in</Text>
+</TouchableOpacity>
+```
+
+Common components and their recommended props:
+
+| Component | Props to add | Tapsmith selector |
+|---|---|---|
+| `TouchableOpacity` / `Pressable` | `accessibilityRole="button"` | `getByRole("button", { name: "..." })` |
+| `TextInput` | `accessibilityLabel="Email"` | `getByRole("textfield", { name: "Email" })` or `getByPlaceholder(...)` |
+| `Switch` | `accessibilityRole="switch"`, `accessibilityLabel="..."` | `getByRole("switch", { name: "..." })` |
+| `Image` | `accessibilityRole="image"`, `accessibilityLabel="..."` | `getByRole("image", { name: "..." })` |
+| Section headers | `accessibilityRole="header"` | `getByRole("heading", { name: "..." })` |
+| Links | `accessibilityRole="link"` | `getByRole("link", { name: "..." })` |
+
+> **Tip:** If you can't modify the app, `getByText` and `getByPlaceholder` work without any accessibility props. `getByRole` is preferred when the props are available because it verifies both the element's function and its text, making tests more precise.
+
 ### `getByText(text, { exact? })`
 
 Find an element by its visible text content. **Substring match by default**, like Playwright. Pass `{ exact: true }` for an exact match.
