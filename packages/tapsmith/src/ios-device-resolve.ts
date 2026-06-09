@@ -125,8 +125,14 @@ export function findSimulatorXctestrun(): string | undefined {
   const cacheDir = path.join(os.homedir(), '.tapsmith', 'ios-simulator-agent');
   const installedSdk = getInstalledSimulatorSdkVersion();
   const cached = newestSimulatorXctestrunIn(cacheDir);
-  const hasMarker = fs.existsSync(path.join(cacheDir, '.sdk-version'));
-  if (cached && hasMarker && (!installedSdk || extractSdkVersion(cached) === installedSdk)) return cached;
+  if (cached) {
+    try {
+      const cachedSdk = fs.readFileSync(path.join(cacheDir, '.sdk-version'), 'utf8').trim();
+      if (!installedSdk || cachedSdk === installedSdk) return cached;
+    } catch {
+      // No marker — skip cache (incomplete build)
+    }
+  }
 
   // 2. Try the prebuilt npm package for the current architecture.
   const arch = process.arch;
