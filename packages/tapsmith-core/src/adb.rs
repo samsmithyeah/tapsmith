@@ -149,11 +149,15 @@ pub async fn install_apk(serial: &str, apk_path: &str) -> Result<()> {
     .await;
     if let Err(e) = &result {
         let msg = e.to_string();
-        if msg.contains("INSTALL_FAILED_UPDATE_INCOMPATIBLE") {
-            if let Some(pkg) = msg
+        // Restrict to the actual PM failure line to avoid parsing crafted filenames.
+        let pm_line = msg.lines().find(|line| {
+            line.trim().starts_with("Failure [INSTALL_FAILED_UPDATE_INCOMPATIBLE")
+        });
+        if let Some(line) = pm_line {
+            if let Some(pkg) = line
                 .split("Existing package ")
                 .nth(1)
-                .or_else(|| msg.split("Package ").nth(1))
+                .or_else(|| line.split("Package ").nth(1))
                 .and_then(|s| s.split_whitespace().next())
                 .map(|s| s.trim_end_matches(|c: char| !c.is_alphanumeric() && c != '.' && c != '_'))
             {

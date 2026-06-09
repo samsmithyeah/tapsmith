@@ -93,6 +93,7 @@ export function SelectorTab({ hierarchyXml, pickedNode, onHighlightsChange, sele
       const matches = findMatchingNodes(roots, parsed);
       if (matches.length <= 1) return s;
       const idx = matches.findIndex((m) => m.attributes.get('bounds') === pickedBounds);
+      if (idx === -1) return s;
       const nthSuffix = idx === 0 ? '.first()' : idx === matches.length - 1 ? '.last()' : `.nth(${idx})`;
       return {
         ...s,
