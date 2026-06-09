@@ -134,7 +134,6 @@ export function findSimulatorXctestrun(): string | undefined {
   try {
     const pkgJsonPath = require.resolve(`${pkg}/package.json`);
     const pkgDir = path.dirname(pkgJsonPath);
-    const installedSdk = getInstalledSimulatorSdkVersion();
 
     // 2a. Exact SDK match in sdk-{version}/ subdirectory.
     if (installedSdk) {

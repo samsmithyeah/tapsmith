@@ -57,7 +57,7 @@ export async function buildSimulatorAgent(sdkVersion: string): Promise<string> {
       execFile(
         'xcodebuild',
         args,
-        { maxBuffer: 10 * 1024 * 1024 },
+        { maxBuffer: 10 * 1024 * 1024, encoding: 'utf8' },
         (err, stdout, stderr) => {
           if (err) {
             const tail = ((stdout || '') + '\n' + (stderr || '')).slice(-2000).trim();
@@ -157,19 +157,6 @@ export async function ensureSimulatorAgent(): Promise<string> {
   if (!foundSdk || foundSdk === installedSdk) {
     // Either we can't parse the SDK from the filename, or it already matches.
     return found;
-  }
-
-  // Check if we've already built for this SDK version.
-  const sdkVersionFile = path.join(CACHE_DIR, '.sdk-version');
-  try {
-    const cachedSdk = fs.readFileSync(sdkVersionFile, 'utf8').trim();
-    if (cachedSdk === installedSdk) {
-      // Cache should hit — re-resolve.
-      const cached = findSimulatorXctestrun();
-      if (cached && extractSdkVersion(cached) === installedSdk) return cached;
-    }
-  } catch {
-    // No cached version — fall through to build.
   }
 
   // SDK mismatch — rebuild.
