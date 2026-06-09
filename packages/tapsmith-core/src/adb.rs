@@ -145,9 +145,13 @@ pub async fn get_device_os_version(serial: &str) -> Result<String> {
 fn parse_incompatible_package(msg: &str) -> Option<&str> {
     let idx = msg.find("Failure [INSTALL_FAILED_UPDATE_INCOMPATIBLE")?;
     let tail = &msg[idx..];
-    let end = tail
-        .find(']')
-        .or_else(|| tail.find('\n'))
+    // Stop at the closing bracket or end of line, whichever comes first —
+    // a failure line missing its `]` must not let the slice span into
+    // subsequent lines (which can contain the user-supplied APK path).
+    let end = [tail.find(']'), tail.find('\n')]
+        .into_iter()
+        .flatten()
+        .min()
         .unwrap_or(tail.len());
     let tail = &tail[..end];
     tail.split("Existing package ")
@@ -1029,6 +1033,15 @@ mod tests {
         assert_eq!(parse_incompatible_package(msg), Some("real.pkg"));
         // And with no failure marker at all, nothing is parsed.
         let msg = "adb: failed to install '/tmp/Existing package evil.pkg.apk': device offline";
+        assert_eq!(parse_incompatible_package(msg), None);
+    }
+
+    #[test]
+    fn parse_incompatible_package_does_not_parse_across_lines() {
+        // A failure line missing its closing bracket must not let parsing
+        // continue into later lines, which can contain the APK path.
+        let msg = "Failure [INSTALL_FAILED_UPDATE_INCOMPATIBLE: signatures do not match\n\
+            adb: failed to install '/tmp/Existing package evil.pkg.apk']";
         assert_eq!(parse_incompatible_package(msg), None);
     }
 
