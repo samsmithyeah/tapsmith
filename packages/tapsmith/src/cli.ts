@@ -712,7 +712,7 @@ async function setupSequentialDevice(
   //   - Simulators: look under `~/Library/Developer/Xcode/DerivedData/TapsmithAgent-*`
   //     (populated by the simulator `xcodebuild build-for-testing` command).
   if (!resolvedIosXctestrun && cfg.platform === 'ios') {
-    const { findDeviceXctestrun, findSimulatorXctestrun } =
+    const { findDeviceXctestrun } =
       await import('./ios-device-resolve.js');
     if (targetIsPhysical) {
       const found = findDeviceXctestrun(cfg.rootDir);
@@ -729,18 +729,16 @@ async function setupSequentialDevice(
         );
       }
     } else {
-      const found = findSimulatorXctestrun();
-      if (found) {
+      const { ensureSimulatorAgent } = await import('./ios-simulator-build.js');
+      try {
+        const found = await ensureSimulatorAgent();
         resolvedIosXctestrun = found;
         if (progress) progress.update('agent', { state: 'pending', detail: `resolved ${path.basename(found)}` });
         else console.log(dim(`Auto-detected iOS simulator xctestrun: ${found}`));
-      } else {
-        progress?.fail('agent', 'no simulator xctestrun found');
-        throw new Error(
-          'No simulator xctestrun found under ~/Library/Developer/Xcode/DerivedData/TapsmithAgent-*. ' +
-            'Build the simulator agent first (see docs/ios-physical-devices.md for the command) ' +
-            'or set `iosXctestrun` explicitly.',
-        );
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        progress?.fail('agent', 'failed to ensure simulator agent');
+        throw new Error(msg);
       }
     }
   }

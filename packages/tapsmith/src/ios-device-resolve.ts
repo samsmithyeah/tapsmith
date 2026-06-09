@@ -7,6 +7,7 @@
  * simulator names to UDIDs.
  */
 
+import { execFileSync } from 'node:child_process';
 import { createRequire } from 'node:module';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
@@ -104,10 +105,12 @@ function newestIphoneosXctestrun(productsDir: string): string | undefined {
  * Find the newest simulator-slice xctestrun.
  *
  * Resolution order:
- *   1. Prebuilt npm package (`@tapsmith/agent-ios-simulator-{arch}`) — ships
+ *   1. Auto-build cache (`~/.tapsmith/ios-simulator-agent/`) — SDK-matched
+ *      local builds produced by `tapsmith build-ios-agent --simulator`.
+ *   2. Prebuilt npm package (`@tapsmith/agent-ios-simulator-{arch}`) — ships
  *      a ready-to-use xctestrun with `__TAPSMITH_PKG__` path placeholders
  *      that the daemon resolves at runtime.
- *   2. Xcode DerivedData scan (`~/Library/Developer/Xcode/DerivedData/TapsmithAgent-*`)
+ *   3. Xcode DerivedData scan (`~/Library/Developer/Xcode/DerivedData/TapsmithAgent-*`)
  *      — covers local `xcodebuild build-for-testing` builds.
  *
  * `.patched.xctestrun` files are excluded from the DerivedData scan because
@@ -118,19 +121,63 @@ function newestIphoneosXctestrun(productsDir: string): string | undefined {
  * fix-it message pointing at the simulator build command.
  */
 export function findSimulatorXctestrun(): string | undefined {
-  // 1. Try the prebuilt npm package for the current architecture.
+  // 1. Auto-build cache (only if SDK matches installed version).
+  const cacheDir = path.join(os.homedir(), '.tapsmith', 'ios-simulator-agent');
+  const installedSdk = getInstalledSimulatorSdkVersion();
+  const cached = newestSimulatorXctestrunIn(cacheDir);
+  if (cached) {
+    try {
+      const cachedSdk = fs.readFileSync(path.join(cacheDir, '.sdk-version'), 'utf8').trim();
+      if (!installedSdk || cachedSdk === installedSdk) return cached;
+    } catch {
+      // No marker — skip cache (incomplete build)
+    }
+  }
+
+  // 2. Try the prebuilt npm package for the current architecture.
   const arch = process.arch;
   const pkg = `@tapsmith/agent-ios-simulator-${arch}`;
   try {
     const pkgJsonPath = require.resolve(`${pkg}/package.json`);
     const pkgDir = path.dirname(pkgJsonPath);
-    const match = newestSimulatorXctestrunIn(pkgDir);
-    if (match) return match;
+
+    // 2a. Exact SDK match in sdk-{version}/ subdirectory.
+    if (installedSdk) {
+      const sdkSubdir = path.join(pkgDir, `sdk-${installedSdk}`);
+      if (fs.existsSync(sdkSubdir)) {
+        const match = newestSimulatorXctestrunIn(sdkSubdir);
+        if (match) return match;
+      }
+    }
+
+    // 2b. Any sdk-*/ subdirectory (newest xctestrun across all subdirs wins).
+    try {
+      const subdirs = fs.readdirSync(pkgDir)
+        .filter((e) => e.startsWith('sdk-'))
+        .map((e) => path.join(pkgDir, e));
+      const sdkCandidates: { path: string; mtime: number }[] = [];
+      for (const subdir of subdirs) {
+        const match = newestSimulatorXctestrunIn(subdir);
+        if (match) {
+          try { sdkCandidates.push({ path: match, mtime: fs.statSync(match).mtimeMs }); } catch { /* skip */ }
+        }
+      }
+      if (sdkCandidates.length > 0) {
+        sdkCandidates.sort((a, b) => b.mtime - a.mtime);
+        return sdkCandidates[0].path;
+      }
+    } catch {
+      // No subdirectories — fall through.
+    }
+
+    // 2c. Flat layout (backward compat with older packages).
+    const flat = newestSimulatorXctestrunIn(pkgDir);
+    if (flat) return flat;
   } catch {
     // Package not installed — fall through.
   }
 
-  // 2. DerivedData scan (local Xcode builds).
+  // 3. DerivedData scan (local Xcode builds).
   const root = path.join(os.homedir(), 'Library', 'Developer', 'Xcode', 'DerivedData');
   let dirs: string[];
   try {
@@ -161,6 +208,31 @@ export function findSimulatorXctestrun(): string | undefined {
   if (candidates.length === 0) return undefined;
   candidates.sort((a, b) => fs.statSync(b).mtimeMs - fs.statSync(a).mtimeMs);
   return candidates[0];
+}
+
+export function extractSdkVersion(xctestrunPath: string): string | undefined {
+  const match = path.basename(xctestrunPath).match(/iphonesimulator([\d.]+)-/);
+  return match?.[1];
+}
+
+let _cachedSdkVersion: string | undefined;
+let _sdkVersionChecked = false;
+
+export function getInstalledSimulatorSdkVersion(): string | undefined {
+  if (process.platform !== 'darwin') return undefined;
+  if (_sdkVersionChecked) return _cachedSdkVersion;
+  _sdkVersionChecked = true;
+  try {
+    const raw = execFileSync(
+      'xcrun',
+      ['--show-sdk-version', '--sdk', 'iphonesimulator'],
+      { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 5000 },
+    );
+    _cachedSdkVersion = raw.trim() || undefined;
+  } catch {
+    _cachedSdkVersion = undefined;
+  }
+  return _cachedSdkVersion;
 }
 
 function newestSimulatorXctestrunIn(dir: string): string | undefined {
