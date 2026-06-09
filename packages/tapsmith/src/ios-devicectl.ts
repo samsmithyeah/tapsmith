@@ -67,6 +67,10 @@ export function listPhysicalDevices(): PhysicalDeviceInfo[] {
   let raw: string;
   try {
     raw = fs.readFileSync(scratch, 'utf-8');
+  } catch {
+    // Scratch file vanished or unreadable — treat as no devices rather
+    // than throwing; callers rely on this function never throwing.
+    return [];
   } finally {
     try { fs.unlinkSync(scratch); } catch {}
   }

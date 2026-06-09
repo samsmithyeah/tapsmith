@@ -233,7 +233,11 @@ export function handlePickFromScreenshot(
   // promote a descendant that has a meaningful selector (e.g. textfield
   // with placeholder inside a wrapper View). If the node is a leaf (no
   // children), check siblings with overlapping bounds instead.
+  // A promoted node without parseable bounds would fail the whole pick even
+  // though hitNode (found by bounds) is guaranteed to have them — only
+  // promote nodes that can be highlighted.
   let betterNode = findBetterDescendant(hitNode);
+  if (betterNode && !getNodeBounds(betterNode)) betterNode = null;
   if (!betterNode && hitNode.children.length === 0) {
     const hitBounds = getNodeBounds(hitNode);
     if (hitBounds) {
@@ -244,7 +248,7 @@ export function handlePickFromScreenshot(
           const sb = getNodeBounds(sibling);
           if (sb && boundsOverlap(hitBounds, sb)) {
             const found = findBetterDescendant(sibling) ?? (hasGoodSelectors(sibling) ? sibling : null);
-            if (found) { betterNode = found; break; }
+            if (found && getNodeBounds(found)) { betterNode = found; break; }
           }
         }
       }
