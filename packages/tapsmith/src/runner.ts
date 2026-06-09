@@ -228,9 +228,10 @@ interface SuiteContext {
 // share the same context stack. Without this, CJS projects (no "type":
 // "module") get a separate module instance when tsx loads the test file,
 // and describe()/test() calls write to an empty stack.
-const G = globalThis as Record<string, unknown>;
-const STACK_KEY = '__tapsmith_contextStack__';
-const REGISTRY_KEY = '__tapsmith_fixtureRegistry__';
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const G = globalThis as any;
+const STACK_KEY = Symbol.for('tapsmith.contextStack');
+const REGISTRY_KEY = Symbol.for('tapsmith.fixtureRegistry');
 if (!G[STACK_KEY]) G[STACK_KEY] = [] as SuiteContext[];
 if (!G[REGISTRY_KEY]) G[REGISTRY_KEY] = new FixtureRegistry();
 
