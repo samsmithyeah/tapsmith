@@ -123,24 +123,27 @@ export async function buildSimulatorAgent(sdkVersion: string): Promise<string> {
 
 function stripDstRootPath(xctestrunPath: string): void {
   try {
-    const raw = execFileSync('plutil', ['-convert', 'xml1', '-o', '-', xctestrunPath], {
+    const jsonRaw = execFileSync('plutil', ['-convert', 'json', '-o', '-', xctestrunPath], {
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'pipe'],
     });
-    if (!raw.includes('<key>DSTROOTPath</key>')) return;
-    for (let cfg = 0; cfg < 8; cfg++) {
-      for (let tgt = 0; tgt < 8; tgt++) {
-        try {
-          execFileSync('plutil', [
-            '-remove',
-            `TestConfigurations.${cfg}.TestTargets.${tgt}.DSTROOTPath`,
-            xctestrunPath,
-          ], { stdio: ['ignore', 'ignore', 'ignore'] });
-        } catch {
-          break;
+    const data = JSON.parse(jsonRaw) as Record<string, unknown>;
+
+    const removeKey = (obj: unknown): void => {
+      if (obj && typeof obj === 'object') {
+        const record = obj as Record<string, unknown>;
+        delete record['DSTROOTPath'];
+        for (const k of Object.keys(record)) {
+          removeKey(record[k]);
         }
       }
-    }
+    };
+    removeKey(data);
+
+    execFileSync('plutil', ['-convert', 'xml1', '-o', xctestrunPath, '-'], {
+      input: JSON.stringify(data),
+      stdio: ['pipe', 'ignore', 'pipe'],
+    });
   } catch {
     // Non-fatal — the key might not exist or plutil might not be available
   }
