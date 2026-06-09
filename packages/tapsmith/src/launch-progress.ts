@@ -73,6 +73,7 @@ export interface LaunchProgressSink {
   ): void;
   note(message: string): void;
   finish(detail?: string): void;
+  isComplete(id: LaunchStepId): boolean;
 }
 
 export function forkStdioForLaunchProgress(
@@ -537,6 +538,10 @@ export class UiLaunchProgress implements LaunchProgressSink {
 
   skip(id: LaunchStepId, detail?: string): void {
     this.update(id, { state: "skipped", detail });
+  }
+
+  isComplete(id: LaunchStepId): boolean {
+    return this.byId.get(id)?.state === "done";
   }
 
   update(

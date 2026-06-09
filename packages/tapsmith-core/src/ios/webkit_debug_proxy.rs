@@ -41,11 +41,10 @@ impl WebkitDebugProxyHandle {
 
         info!(%udid, port, "Starting ios_webkit_debug_proxy");
 
-        let port_range = format!("{udid}:{}-{}", port + 1, port + 100);
-        let listen_arg = format!(":{port}");
+        let config = format!("null:{port},{udid}:{}-{}", port + 1, port + 100);
 
         let mut cmd = Command::new("ios_webkit_debug_proxy");
-        cmd.args(["-c", &port_range, "-F", "-p", &listen_arg])
+        cmd.args(["-c", &config, "-F"])
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
             .kill_on_drop(true);
@@ -77,8 +76,9 @@ impl WebkitDebugProxyHandle {
         Ok(Self { child, udid, port })
     }
 
-    pub fn port(&self) -> u16 {
-        self.port
+    /// The device-specific CDP port (`port + 1`). Query this for WebView targets.
+    pub fn device_port(&self) -> u16 {
+        self.port + 1
     }
 }
 

@@ -1088,13 +1088,13 @@ export class Device {
     this._cachedWebView = null;
     const generation = this._webviewGeneration;
 
-    if (this._platform === 'ios') {
+    if (this._platform === 'ios' && this._simulatorUdid) {
       return this._webviewIos(packageName, generation, log);
     }
-    return this._webviewAndroid(packageName, generation, log);
+    return this._webviewCdp(packageName, generation, log);
   }
 
-  private async _webviewAndroid(packageName: string | undefined, generation: number, log?: string[]): Promise<WebViewHandle> {
+  private async _webviewCdp(packageName: string | undefined, generation: number, log?: string[]): Promise<WebViewHandle> {
     const deadline = Date.now() + this._defaultTimeoutMs;
     const targetPackageName = packageName ?? this.defaultPackageName;
 
@@ -1130,7 +1130,10 @@ export class Device {
 
       let candidates = discovered;
       if (targetPackageName) {
-        candidates = discovered.filter(w => webViewMatchesPackage(w, targetPackageName));
+        const matched = discovered.filter(w => webViewMatchesPackage(w, targetPackageName));
+        // ios-webkit-debug-proxy doesn't provide package names, so fall back
+        // to all discovered targets on iOS when no exact match is found.
+        if (matched.length > 0 || this._platform !== 'ios') candidates = matched;
       }
 
       if (candidates.length === 0) {
@@ -1164,6 +1167,7 @@ export class Device {
 
         const attemptDeadline = Date.now() + Math.min(WEBVIEW_CONNECT_ATTEMPT_TIMEOUT_MS, remainingMs(deadline));
         const handle = new WebViewHandle(this._client, fwd.localPort, Math.max(1, remainingMs(attemptDeadline)));
+        if (this._platform === 'ios') handle._platform = 'ios';
         this._applyTraceCtx(handle);
         try {
           await withDeadline(handle._connect(), attemptDeadline, 'Connecting to WebView CDP endpoint');
@@ -1187,10 +1191,11 @@ export class Device {
       await sleepUpTo(WEBVIEW_RETRY_INTERVAL_MS, deadline);
     }
 
+    const hint = this._platform === 'ios'
+      ? 'Ensure Safari Web Inspector is enabled on the device and the WebView has isInspectable = true (iOS 16.4+).'
+      : 'Ensure the app has a visible WebView with debugging enabled (WebView.setWebContentsDebuggingEnabled(true)).';
     throw new Error(
-      `Timed out waiting for WebView (${this._defaultTimeoutMs}ms). ${lastError}. ` +
-      'Ensure the app has a visible WebView with debugging enabled ' +
-      '(WebView.setWebContentsDebuggingEnabled(true)).',
+      `Timed out waiting for WebView (${this._defaultTimeoutMs}ms). ${lastError}. ${hint}`,
     );
   }
 

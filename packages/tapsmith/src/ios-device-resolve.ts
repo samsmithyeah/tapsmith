@@ -63,22 +63,39 @@ export function resolvePhysicalIosDevice(): string {
  * the filename exceeds the 255-byte POSIX limit.
  */
 export function findDeviceXctestrun(startDir: string): string | undefined {
-  // Walk up from startDir looking for `ios-agent/.build-device/Build/Products`.
-  // Same "try a few levels up" approach setup-ios-device uses — we don't
-  // know whether the user runs from the monorepo root, an e2e subdir, or
-  // a nested package.
+  const candidates: string[] = [];
+
+  // 1. Walk up from startDir looking for `ios-agent/.build-device/Build/Products`
+  //    (monorepo / local dev layout).
   let dir = path.resolve(startDir);
   for (let i = 0; i < 6; i++) {
     const productsDir = path.join(dir, 'ios-agent', '.build-device', 'Build', 'Products');
     if (fs.existsSync(productsDir)) {
       const match = newestIphoneosXctestrun(productsDir);
-      if (match) return match;
+      if (match) candidates.push(match);
     }
     const parent = path.dirname(dir);
     if (parent === dir) break;
     dir = parent;
   }
-  return undefined;
+
+  // 2. Check ~/.tapsmith/ios-agent/.build-device — where `tapsmith build-ios-agent`
+  //    puts the output when using npm-distributed source.
+  const globalProducts = path.join(os.homedir(), '.tapsmith', 'ios-agent', '.build-device', 'Build', 'Products');
+  if (fs.existsSync(globalProducts)) {
+    const match = newestIphoneosXctestrun(globalProducts);
+    if (match) candidates.push(match);
+  }
+
+  if (candidates.length === 0) return undefined;
+  candidates.sort((a, b) => {
+    try {
+      return fs.statSync(b).mtimeMs - fs.statSync(a).mtimeMs;
+    } catch {
+      return 0;
+    }
+  });
+  return candidates[0];
 }
 
 function newestIphoneosXctestrun(productsDir: string): string | undefined {
