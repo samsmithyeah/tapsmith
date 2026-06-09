@@ -216,15 +216,22 @@ jobs:
             echo "Simulator state: $STATE"
           fi
 
-      - name: Resolve xctestrun path
+      - name: Stage iOS agent for auto-resolution
         run: |
-          XCTESTRUN=$(find "$PWD/ios-agent/.build-sim" -name "*.xctestrun" -type f -print -quit)
-          if [ -z "$XCTESTRUN" ]; then
-            echo "::error::No xctestrun found under ios-agent/.build-sim"
-            exit 1
+          SDK_VERSION="$(xcrun --show-sdk-version --sdk iphonesimulator)"
+          PRODUCTS="$PWD/ios-agent/.build-sim/Build/Products"
+          CACHE_DIR="$HOME/.tapsmith/ios-simulator-agent"
+          mkdir -p "$CACHE_DIR"
+
+          # Copy xctestrun and Debug-iphonesimulator to the auto-build cache location
+          cp "$PRODUCTS"/*iphonesimulator*.xctestrun "$CACHE_DIR/" 2>/dev/null || true
+          if [ -d "$PRODUCTS/Debug-iphonesimulator" ]; then
+            cp -R "$PRODUCTS/Debug-iphonesimulator" "$CACHE_DIR/"
           fi
-          echo "TAPSMITH_IOS_XCTESTRUN=$XCTESTRUN" >> $GITHUB_ENV
-          echo "Resolved xctestrun: $XCTESTRUN"
+
+          # Write SDK version marker so the resolver trusts the cache
+          echo "$SDK_VERSION" > "$CACHE_DIR/.sdk-version"
+          echo "Staged iOS agent for SDK $SDK_VERSION in $CACHE_DIR"
 
       - name: Extract test app
         run: |
