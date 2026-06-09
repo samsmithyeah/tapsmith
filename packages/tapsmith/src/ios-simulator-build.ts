@@ -140,10 +140,12 @@ function stripDstRootPath(xctestrunPath: string): void {
     };
     removeKey(data);
 
-    execFileSync('plutil', ['-convert', 'xml1', '-o', xctestrunPath, '-'], {
+    const xml = execFileSync('plutil', ['-convert', 'xml1', '-o', '-', '-'], {
       input: JSON.stringify(data),
-      stdio: ['pipe', 'ignore', 'pipe'],
+      encoding: 'utf8',
+      stdio: ['pipe', 'pipe', 'pipe'],
     });
+    fs.writeFileSync(xctestrunPath, xml);
   } catch {
     // Non-fatal — the key might not exist or plutil might not be available
   }
