@@ -396,7 +396,10 @@ describe('Device.webview()', () => {
       errorMessage: '',
     }));
     const client = makeMockClient({ listWebViews, forwardWebViewPort });
-    const device = new Device(client, { timeout: 50, package: 'com.example.app' });
+    // Timeout must be generous enough that a CI event-loop stall can't expire
+    // the deadline before the first listWebViews poll completes — otherwise
+    // the error lacks the "No WebViews found" detail and the test flakes.
+    const device = new Device(client, { timeout: 500, package: 'com.example.app' });
 
     await expect(device.webview()).rejects.toThrow(/No WebViews found for package "com.example.app"/);
 

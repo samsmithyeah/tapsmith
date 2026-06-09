@@ -77,7 +77,10 @@ export function ScreenshotPanel({ event, screenshots, highlightBounds, selectorH
 
   const [tab, setTab] = useState<ScreenshotTab>('action');
   const [scale, setScale] = useState(1);
-  const scaleRef = useRef(1);
+  // Kept in sync on every render so callbacks (ResizeObserver,
+  // updateRenderedSize) read the committed scale without re-subscribing.
+  const scaleRef = useRef(scale);
+  scaleRef.current = scale;
   const [naturalSize, setNaturalSize] = useState<NaturalSize | null>(null);
   const [renderedSize, setRenderedSize] = useState<RenderedSize | null>(null);
   const [viewportSize, setViewportSize] = useState<{ width: number; height: number } | null>(null);
@@ -133,9 +136,7 @@ export function ScreenshotPanel({ event, screenshots, highlightBounds, selectorH
       e.preventDefault();
       setScale(prev => {
         const delta = e.deltaY > 0 ? -0.1 : 0.1;
-        const next = Math.max(0.5, Math.min(5, prev + delta));
-        scaleRef.current = next;
-        return next;
+        return Math.max(0.5, Math.min(5, prev + delta));
       });
     };
     el.addEventListener('wheel', onWheel, { passive: false });

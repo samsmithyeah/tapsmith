@@ -155,7 +155,16 @@ fn parse_incompatible_package(msg: &str) -> Option<&str> {
         .or_else(|| tail.split("Package ").nth(1))
         .and_then(|s| s.split_whitespace().next())
         .map(|s| s.trim_end_matches(|c: char| !c.is_alphanumeric() && c != '.' && c != '_'))
-        .filter(|s| s.starts_with(|c: char| c.is_ascii_alphabetic()))
+        // Require a plausible Android package name (multi-segment, valid
+        // charset). Some Android versions omit the package name entirely
+        // ("Package signatures do not match...") — without this check we'd
+        // parse the word "signatures" and try to uninstall it.
+        .filter(|s| {
+            s.contains('.')
+                && s.starts_with(|c: char| c.is_ascii_alphabetic())
+                && s.chars()
+                    .all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '_')
+        })
 }
 
 /// Install an APK on the device. Uses `-r` to allow reinstall.
@@ -1027,7 +1036,13 @@ mod tests {
     fn parse_incompatible_package_rejects_non_package_tokens() {
         // Package names must start with a letter.
         let msg =
-            "Failure [INSTALL_FAILED_UPDATE_INCOMPATIBLE: Existing package 123abc signatures]";
+            "Failure [INSTALL_FAILED_UPDATE_INCOMPATIBLE: Existing package 123.abc signatures]";
+        assert_eq!(parse_incompatible_package(msg), None);
+        // Single-segment tokens (no dot) are not installable package names —
+        // this guards the wording "Package signatures do not match..." where
+        // the package name is omitted and "signatures" follows the keyword.
+        let msg = "Failure [INSTALL_FAILED_UPDATE_INCOMPATIBLE: \
+            Package signatures do not match the previously installed version; ignoring!]";
         assert_eq!(parse_incompatible_package(msg), None);
     }
 

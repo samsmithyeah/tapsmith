@@ -365,9 +365,10 @@ export async function startUIServer(
 
     // iOS simulator: simctl lists all available sims regardless of root config.
     // Guard on macOS (these commands don't exist on Linux/Windows) and on an
-    // iOS-shaped UDID (sim UUIDs and physical UDIDs both start with 8 hex
-    // chars + dash) so Android-only sessions skip the simctl/devicectl execs.
-    if (process.platform === 'darwin' && /^[0-9A-Fa-f]{8}-/.test(serial)) {
+    // iOS-shaped UDID — sim UUIDs and modern physical UDIDs start with 8 hex
+    // chars + dash; pre-iPhone-XS physical UDIDs are 40 hex chars, no dash —
+    // so Android-only sessions skip the simctl/devicectl execs.
+    if (process.platform === 'darwin' && (/^[0-9A-Fa-f]{8}-/.test(serial) || /^[0-9A-Fa-f]{40}$/.test(serial))) {
       const simName = listSimulators().find((s) => s.udid === serial)?.name;
       if (simName) return { singleWorkerDisplayName: simName, singleWorkerPlatform: 'ios' as const };
 
