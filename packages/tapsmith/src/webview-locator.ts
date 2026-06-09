@@ -10,7 +10,12 @@ import type { WebViewHandle } from './webview-handle.js';
  * expression evaluated via CDP to find the element (defaults to
  * `document.querySelector(selector)` when not explicitly set).
  */
+/** @internal Brand key for cross-instance type checks (CJS/ESM dual-package). */
+export const WEBVIEW_LOCATOR_BRAND = Symbol.for('tapsmith.WebViewLocator');
+
 export class WebViewLocator {
+  /** @internal */
+  readonly [WEBVIEW_LOCATOR_BRAND] = true;
   /** @internal */
   readonly _handle: WebViewHandle;
   /** @internal */

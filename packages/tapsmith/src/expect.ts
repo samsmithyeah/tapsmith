@@ -17,11 +17,11 @@
  *   await expect.poll(async () => fetchCount()).toBe(5);
  */
 
-import { ElementHandle } from "./element-handle.js";
+import { ElementHandle, ELEMENT_HANDLE_BRAND } from "./element-handle.js";
 import type { ElementInfo } from "./grpc-client.js";
 import { selectorToProto, type Selector } from "./selectors.js";
 import { extractStack, getActiveTraceCollector } from "./trace/trace-collector.js";
-import { WebViewLocator } from "./webview-locator.js";
+import { WebViewLocator, WEBVIEW_LOCATOR_BRAND } from "./webview-locator.js";
 
 const DEFAULT_ASSERTION_TIMEOUT_MS = 5_000;
 const POLL_INTERVAL_MS = 250;
@@ -1924,11 +1924,13 @@ function createWebViewAssertions(
 // ─── Main expect function ───
 
 function isElementHandle(value: unknown): value is ElementHandle {
-  return value instanceof ElementHandle;
+  if (value instanceof ElementHandle) return true;
+  return value != null && typeof value === 'object' && ELEMENT_HANDLE_BRAND in value;
 }
 
 function isWebViewLocator(value: unknown): value is WebViewLocator {
-  return value instanceof WebViewLocator;
+  if (value instanceof WebViewLocator) return true;
+  return value != null && typeof value === 'object' && WEBVIEW_LOCATOR_BRAND in value;
 }
 
 /**
