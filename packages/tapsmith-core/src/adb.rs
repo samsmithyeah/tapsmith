@@ -135,11 +135,37 @@ pub async fn get_device_os_version(serial: &str) -> Result<String> {
 }
 
 /// Install an APK on the device. Uses `-r` to allow reinstall.
+/// On `INSTALL_FAILED_UPDATE_INCOMPATIBLE` (signature mismatch from a
+/// different build), automatically uninstalls the old package and retries.
 #[instrument(skip(apk_path))]
 pub async fn install_apk(serial: &str, apk_path: &str) -> Result<()> {
     let timeout = Duration::from_secs(120);
-    run_adb_with_transport_recovery(serial, &["install", "-r", apk_path], timeout, "install APK")
-        .await?;
+    let result =
+        run_adb_with_transport_recovery(serial, &["install", "-r", apk_path], timeout, "install APK")
+            .await;
+    if let Err(e) = &result {
+        let msg = e.to_string();
+        if msg.contains("INSTALL_FAILED_UPDATE_INCOMPATIBLE") {
+            // Parse "Existing package <pkg> signatures" from the error.
+            if let Some(pkg) = msg
+                .split("Existing package ")
+                .nth(1)
+                .and_then(|s| s.split_whitespace().next())
+            {
+                info!("Signature mismatch for {pkg} — uninstalling and retrying");
+                let _ = run_adb(Some(serial), &["uninstall", pkg], DEFAULT_TIMEOUT).await;
+                run_adb_with_transport_recovery(
+                    serial,
+                    &["install", "-r", apk_path],
+                    timeout,
+                    "install APK (retry after uninstall)",
+                )
+                .await?;
+                return Ok(());
+            }
+        }
+    }
+    result?;
     Ok(())
 }
 
