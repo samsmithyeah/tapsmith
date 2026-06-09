@@ -135,13 +135,18 @@ export function ScreenshotPanel({ event, screenshots, highlightBounds, selectorH
         const delta = e.deltaY > 0 ? -0.1 : 0.1;
         const next = Math.max(0.5, Math.min(5, prev + delta));
         scaleRef.current = next;
-        requestAnimationFrame(() => updateRenderedSize());
         return next;
       });
     };
     el.addEventListener('wheel', onWheel, { passive: false });
     return () => el.removeEventListener('wheel', onWheel);
-  }, [updateRenderedSize]);
+  }, []);
+
+  // Re-measure after the scale transform has been committed to the DOM —
+  // measuring inside the state setter would read pre-commit geometry.
+  useEffect(() => {
+    updateRenderedSize();
+  }, [scale, updateRenderedSize]);
 
   const handleImageLoad = useCallback(() => {
     const img = imgRef.current;
