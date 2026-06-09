@@ -217,10 +217,6 @@ function generateNativeSelectors(node: HierarchyNode): GeneratedSelector[] {
   // Android prefer content-desc, then text.
   const accessibleName = ios ? label : (contentDesc || text);
 
-  // When the role is a generic container (common in RN apps without
-  // accessibilityRole), demote role selectors so text/placeholder/description
-  // surface first — they're almost always more useful. But trust tapsmith-role:
-  // the agent explicitly identified these, so they're genuine.
   // Demote role-based selectors when the role is generic OR when it came from
   // the agent's accessibility-trait heuristic (tapsmith-role) on a node whose
   // native type is generic (XCUIElementTypeOther, android.view.ViewGroup). The
@@ -262,8 +258,10 @@ function generateNativeSelectors(node: HierarchyNode): GeneratedSelector[] {
     });
   }
 
-  // 4. Description — Android content-desc only. On iOS the label attribute
-  // serves as visible text (matched by getByText), not as a description.
+  // 4. Description — generated from Android content-desc only. On iOS,
+  // getByDescription does match the accessibility label at runtime, but the
+  // label is also the element's visible text, so we generate the equivalent
+  // getByText instead of a redundant second selector.
   if (contentDesc) {
     selectors.push({
       code: `device.getByDescription("${escapeQuotes(contentDesc)}")`,

@@ -1,8 +1,8 @@
 import { describe, it, expect } from 'vitest';
 import type { HierarchyNode } from '../trace-viewer/components/hierarchy-utils.js';
 import { getNodeRole } from '../trace-viewer/components/hierarchy-utils.js';
-import { generateSelectors, generateBestSelector, FORM_FIELD_ROLES } from '../trace-viewer/components/selector-generation.js';
-import { parseSelectorString, findMatchingNodes } from '../trace-viewer/components/selector-matching.js';
+import { generateSelectors, generateBestSelector, findBetterDescendant, hasGoodSelectors, FORM_FIELD_ROLES } from '../trace-viewer/components/selector-generation.js';
+import { parseSelectorString, findMatchingNodes, hitTest } from '../trace-viewer/components/selector-matching.js';
 
 function makeNode(tagName: string, attrs: Record<string, string>, children: HierarchyNode[] = []): HierarchyNode {
   return {
@@ -143,7 +143,8 @@ describe('generateNativeSelectors priority order', () => {
     const selectors = generateSelectors(node);
     const labels = selectors.map(s => s.label);
     expect(labels[0]).toBe('Role + name');
-    // iOS label maps to getByText, NOT getByDescription (which only works on Android)
+    // iOS label generates getByText only — getByDescription would also match
+    // at runtime, but it's redundant since the label IS the visible text
     expect(labels).toContain('Text');
     expect(labels).not.toContain('Description (label)');
   });
@@ -328,5 +329,115 @@ describe('FORM_FIELD_ROLES', () => {
     for (const role of ['button', 'text', 'image', 'heading', 'link', 'alert']) {
       expect(FORM_FIELD_ROLES.has(role)).toBe(false);
     }
+  });
+});
+
+// ─── hasGoodSelectors / findBetterDescendant ───
+
+describe('hasGoodSelectors', () => {
+  it('returns true for a node with meaningful selectors', () => {
+    const node = makeNode('node', { class: 'android.widget.TextView', text: 'Welcome' });
+    expect(hasGoodSelectors(node)).toBe(true);
+  });
+
+  it('returns false for a generic container with only fallback selectors', () => {
+    const node = makeNode('node', { class: 'android.view.ViewGroup' });
+    expect(hasGoodSelectors(node)).toBe(false);
+  });
+});
+
+describe('findBetterDescendant', () => {
+  it('promotes a textfield with placeholder inside a generic wrapper', () => {
+    const textfield = makeNode('node', { class: 'android.widget.EditText', hint: 'Email' });
+    const wrapper = makeNode('node', { class: 'android.view.ViewGroup' }, [textfield]);
+    expect(findBetterDescendant(wrapper)).toBe(textfield);
+  });
+
+  it('returns null when the node itself has good selectors', () => {
+    const child = makeNode('node', { class: 'android.widget.EditText', hint: 'Email' });
+    const node = makeNode('node', { class: 'android.widget.Button', text: 'Submit' }, [child]);
+    expect(findBetterDescendant(node)).toBeNull();
+  });
+
+  it('returns null when no descendant has good selectors', () => {
+    const inner = makeNode('node', { class: 'android.view.ViewGroup' });
+    const wrapper = makeNode('node', { class: 'android.view.ViewGroup' }, [inner]);
+    expect(findBetterDescendant(wrapper)).toBeNull();
+  });
+
+  it('prefers the shallowest qualifying descendant (BFS)', () => {
+    const deep = makeNode('node', { class: 'android.widget.TextView', text: 'Deep' });
+    const middle = makeNode('node', { class: 'android.view.ViewGroup' }, [deep]);
+    const shallow = makeNode('node', { class: 'android.widget.TextView', text: 'Shallow' });
+    const wrapper = makeNode('node', { class: 'android.view.ViewGroup' }, [middle, shallow]);
+    expect(findBetterDescendant(wrapper)).toBe(shallow);
+  });
+});
+
+// ─── parseSelectorString — device.locator ───
+
+describe('parseSelectorString device.locator', () => {
+  it('parses device.locator({ className: ... })', () => {
+    const parsed = parseSelectorString('device.locator({ className: "android.widget.TextView" })');
+    expect(parsed).toEqual({ type: 'className', value: 'android.widget.TextView', index: undefined });
+  });
+
+  it('parses device.locator({ id: ... })', () => {
+    const parsed = parseSelectorString('device.locator({ id: "com.app:id/submit" })');
+    expect(parsed).toEqual({ type: 'id', value: 'com.app:id/submit', index: undefined });
+  });
+
+  it('matches nodes by className through findMatchingNodes', () => {
+    const root = makeNode('hierarchy', {}, [
+      makeNode('node', { class: 'android.widget.TextView', text: 'One' }),
+      makeNode('node', { class: 'android.widget.Button', text: 'Two' }),
+    ]);
+    const parsed = parseSelectorString('device.locator({ className: "android.widget.TextView" })')!;
+    const matches = findMatchingNodes([root], parsed);
+    expect(matches).toHaveLength(1);
+    expect(matches[0].attributes.get('text')).toBe('One');
+  });
+});
+
+// ─── findMatchingNodes — iOS getByDescription matches label ───
+
+describe('findMatchingNodes iOS description', () => {
+  it('matches getByDescription against the iOS label attribute', () => {
+    // The agent matches contentDesc selectors against the runtime label on
+    // iOS, so the playground matcher must do the same with the label attr.
+    const root = makeNode('XCUIElementTypeApplication', {}, [
+      makeNode('XCUIElementTypeOther', { type: 'XCUIElementTypeOther', label: 'Info' }),
+    ]);
+    const parsed = parseSelectorString('device.getByDescription("Info")')!;
+    const matches = findMatchingNodes([root], parsed);
+    expect(matches).toHaveLength(1);
+    expect(matches[0].attributes.get('label')).toBe('Info');
+  });
+
+  it('still matches Android content-desc', () => {
+    const root = makeNode('hierarchy', {}, [
+      makeNode('node', { class: 'android.widget.ImageButton', 'content-desc': 'Close' }),
+    ]);
+    const parsed = parseSelectorString('device.getByDescription("Close")')!;
+    expect(findMatchingNodes([root], parsed)).toHaveLength(1);
+  });
+});
+
+// ─── hitTest tie-breaking ───
+
+describe('hitTest', () => {
+  it('picks the deeper node when parent and child have equal bounds', () => {
+    // RN apps commonly nest equal-bounds wrapper Views — the deeper node is
+    // closer to the actual content.
+    const child = makeNode('node', { class: 'android.widget.TextView', text: 'Hi', bounds: '[0,0][100,50]' });
+    const parent = makeNode('node', { class: 'android.view.ViewGroup', bounds: '[0,0][100,50]' }, [child]);
+    expect(hitTest([parent], 50, 25)).toBe(child);
+  });
+
+  it('picks the smallest node containing the point', () => {
+    const small = makeNode('node', { class: 'android.widget.Button', bounds: '[10,10][50,30]' });
+    const big = makeNode('node', { class: 'android.view.ViewGroup', bounds: '[0,0][100,100]' }, [small]);
+    expect(hitTest([big], 20, 20)).toBe(small);
+    expect(hitTest([big], 90, 90)).toBe(big);
   });
 });

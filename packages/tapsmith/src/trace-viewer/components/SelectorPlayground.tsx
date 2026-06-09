@@ -84,18 +84,31 @@ export function SelectorTab({ hierarchyXml, pickedNode, onHighlightsChange, sele
     if (!pickedNode) return [];
     const raw = generateSelectors(pickedNode);
     if (roots.length === 0) return raw;
-    const pickedBounds = pickedNode.attributes.get('bounds') ?? '';
+    // Identity check by full attribute equality — pickedNode and matches come
+    // from separate parseHierarchyXml calls (different object trees), so
+    // reference equality won't work. Truly identical siblings remain
+    // ambiguous, but any of them is an equally valid pick.
+    const sameAsPicked = (m: HierarchyNode): boolean => {
+      if (m.tagName !== pickedNode.tagName || m.depth !== pickedNode.depth) return false;
+      if (m.attributes.size !== pickedNode.attributes.size) return false;
+      for (const [k, v] of m.attributes) {
+        if (pickedNode.attributes.get(k) !== v) return false;
+      }
+      return true;
+    };
     // Check each selector for uniqueness against the hierarchy. Non-unique
     // selectors get .nth(N) appended and are demoted below unique ones.
     return raw.map((s) => {
       const parsed = parseSelectorString(s.code);
       if (!parsed) return s;
       const matches = findMatchingNodes(roots, parsed);
+      const idx = matches.findIndex(sameAsPicked);
+      if (idx === -1) {
+        // The selector doesn't resolve to the picked node — don't offer it
+        // as a top suggestion.
+        return { ...s, label: `${s.label} (may not match)`, priority: Math.max(s.priority, 8) };
+      }
       if (matches.length <= 1) return s;
-      // Compare by bounds, tagName, and depth — pickedNode and matches come
-      // from separate parseHierarchyXml calls (different object trees).
-      const idx = matches.findIndex((m) => m.tagName === pickedNode.tagName && m.depth === pickedNode.depth && m.attributes.get('bounds') === pickedBounds);
-      if (idx === -1) return s;
       const nthSuffix = idx === 0 ? '.first()' : idx === matches.length - 1 ? '.last()' : `.nth(${idx})`;
       return {
         ...s,

@@ -364,8 +364,10 @@ export async function startUIServer(
     if (!serial) return { singleWorkerDisplayName: undefined, singleWorkerPlatform: ctx.config.platform };
 
     // iOS simulator: simctl lists all available sims regardless of root config.
-    // Guard on macOS — these commands don't exist on Linux/Windows.
-    if (process.platform === 'darwin') {
+    // Guard on macOS (these commands don't exist on Linux/Windows) and on an
+    // iOS-shaped UDID (sim UUIDs and physical UDIDs both start with 8 hex
+    // chars + dash) so Android-only sessions skip the simctl/devicectl execs.
+    if (process.platform === 'darwin' && /^[0-9A-Fa-f]{8}-/.test(serial)) {
       const simName = listSimulators().find((s) => s.udid === serial)?.name;
       if (simName) return { singleWorkerDisplayName: simName, singleWorkerPlatform: 'ios' as const };
 

@@ -118,7 +118,10 @@ function getNodeText(node: HierarchyNode): string {
 }
 
 function getNodeContentDesc(node: HierarchyNode): string {
-  return node.attributes.get('content-desc') ?? '';
+  // Android: content-desc. iOS: contentDesc selectors match the accessibility
+  // label at runtime (the agent compares against label/title), so fall back
+  // to the label attribute for iOS nodes.
+  return node.attributes.get('content-desc') ?? node.attributes.get('label') ?? '';
 }
 
 function getNodeAccessibleName(node: HierarchyNode): string {
