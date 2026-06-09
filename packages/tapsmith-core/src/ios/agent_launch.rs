@@ -196,8 +196,7 @@ async fn start_agent_impl(
     let stdout = child.stdout.take();
     let stderr = child.stderr.take();
 
-    use std::sync::Arc;
-    use tokio::sync::Mutex;
+    use std::sync::{Arc, Mutex};
 
     let stderr_tail: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
     let stderr_tail_writer = stderr_tail.clone();
@@ -210,7 +209,7 @@ async fn start_agent_impl(
             let mut reader = BufReader::new(stdout).lines();
             while let Ok(Some(line)) = reader.next_line().await {
                 info!(target: "xcodebuild", "{}", line);
-                let mut tail = stdout_tail_writer.lock().await;
+                let mut tail = stdout_tail_writer.lock().unwrap();
                 tail.push(line);
                 if tail.len() > 20 {
                     tail.remove(0);
@@ -224,7 +223,7 @@ async fn start_agent_impl(
             let mut reader = BufReader::new(stderr).lines();
             while let Ok(Some(line)) = reader.next_line().await {
                 info!(target: "xcodebuild::stderr", "{}", line);
-                let mut tail = stderr_tail_writer.lock().await;
+                let mut tail = stderr_tail_writer.lock().unwrap();
                 tail.push(line);
                 if tail.len() > 20 {
                     tail.remove(0);
@@ -248,8 +247,8 @@ async fn start_agent_impl(
             // returning. `drop(iproxy_handle)` is explicit rather than letting
             // scope-drop do it so reviewers can see the cleanup point.
             drop(iproxy_handle);
-            let out_lines = stdout_tail.lock().await.join("\n");
-            let err_lines = stderr_tail.lock().await.join("\n");
+            let out_lines = stdout_tail.lock().unwrap().join("\n");
+            let err_lines = stderr_tail.lock().unwrap().join("\n");
             let target_kind = if is_physical { "device" } else { "simulator" };
             bail!(
                 "Timed out waiting for iOS agent to start on {target_kind} {udid} after 150s. \
@@ -264,8 +263,8 @@ async fn start_agent_impl(
         match child.try_wait() {
             Ok(Some(status)) => {
                 drop(iproxy_handle);
-                let out_lines = stdout_tail.lock().await.join("\n");
-                let err_lines = stderr_tail.lock().await.join("\n");
+                let out_lines = stdout_tail.lock().unwrap().join("\n");
+                let err_lines = stderr_tail.lock().unwrap().join("\n");
                 let target_kind = if is_physical { "device" } else { "simulator" };
                 bail!(
                     "xcodebuild exited with {status} before the iOS agent became \

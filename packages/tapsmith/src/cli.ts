@@ -836,26 +836,6 @@ async function setupSequentialDevice(
     throw new Error(`Failed to start agent: ${err}`);
   }
 
-  // Await any pending simulator install that wasn't already awaited above
-  // (only reachable for non-iOS platforms with a concurrent install).
-  if (pendingSimulatorInstall) {
-    await pendingSimulatorInstall;
-    if (pendingInstallError) {
-      progress?.fail('app-install', `failed to install ${path.basename(resolvedIosAppPath ?? cfg.app!)}`);
-      throw new Error(`Failed to install iOS app: ${pendingInstallError}`);
-    }
-    skipAppReset = true;
-    if (progress) progress.complete('app-install', `installed ${path.basename(resolvedIosAppPath!)}`);
-    else console.log(dim(`Installed ${path.basename(resolvedIosAppPath!)} on iOS simulator.`));
-    if (cfg.package && cfg.device) {
-      try {
-        execFileSync('xcrun', ['simctl', 'launch', cfg.device, cfg.package]);
-      } catch {
-        // App may already be running
-      }
-    }
-  }
-
   if (cfg.package) {
     try {
       progress?.start('app-launch', `launching ${cfg.package}`);
