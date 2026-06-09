@@ -12,7 +12,7 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 
-import { resolveIosAgentDir } from './build-ios-agent.js';
+import { resolveIosAgentDir, stripDstRootPath } from './build-ios-agent.js';
 import { extractSdkVersion, findSimulatorXctestrun, getInstalledSimulatorSdkVersion } from './ios-device-resolve.js';
 
 // ─── Build ──────────────────────────────────────────────────────────────
@@ -107,6 +107,10 @@ export async function buildSimulatorAgent(sdkVersion: string): Promise<string> {
           'This is unexpected — please file a bug.',
       );
     }
+
+    // Strip DSTROOTPath — Xcode 26+ treats it as a "Root install style" request
+    // which fails on public devices/simulators.
+    stripDstRootPath(xctestrunDest);
 
     // Write the SDK version marker so future runs can skip the build.
     fs.writeFileSync(sdkMarker, sdkVersion);
