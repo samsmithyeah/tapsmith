@@ -1,8 +1,29 @@
 import { useState, useCallback, useEffect, useMemo } from 'preact/hooks';
 import type { HierarchyNode, Bounds } from './hierarchy-utils.js';
 import { parseHierarchyXml } from './hierarchy-utils.js';
-import { generateSelectors, generateBestSelector, type GeneratedSelector } from './selector-generation.js';
+import { generateSelectors, generateBestSelector, findBetterDescendant, hasGoodSelectors, type GeneratedSelector } from './selector-generation.js';
 import { parseSelectorString, findMatchingNodes, getNodeBounds, hitTest } from './selector-matching.js';
+
+function findParent(roots: HierarchyNode[], target: HierarchyNode): HierarchyNode | null {
+  for (const root of roots) {
+    const result = findParentWalk(root, target);
+    if (result) return result;
+  }
+  return null;
+}
+
+function findParentWalk(node: HierarchyNode, target: HierarchyNode): HierarchyNode | null {
+  for (const child of node.children) {
+    if (child === target) return node;
+    const result = findParentWalk(child, target);
+    if (result) return result;
+  }
+  return null;
+}
+
+function boundsOverlap(a: Bounds, b: Bounds): boolean {
+  return a.left < b.right && b.left < a.right && a.top < b.bottom && b.top < a.bottom;
+}
 
 // ─── Selector Tab (lives in detail tabs) ───
 
@@ -59,10 +80,28 @@ export function SelectorTab({ hierarchyXml, pickedNode, onHighlightsChange, sele
     [hierarchyXml],
   );
 
-  const generatedSelectors = useMemo<GeneratedSelector[]>(
-    () => pickedNode ? generateSelectors(pickedNode) : [],
-    [pickedNode],
-  );
+  const generatedSelectors = useMemo<GeneratedSelector[]>(() => {
+    if (!pickedNode) return [];
+    const raw = generateSelectors(pickedNode);
+    if (roots.length === 0) return raw;
+    const pickedBounds = pickedNode.attributes.get('bounds') ?? '';
+    // Check each selector for uniqueness against the hierarchy. Non-unique
+    // selectors get .nth(N) appended and are demoted below unique ones.
+    return raw.map((s) => {
+      const parsed = parseSelectorString(s.code);
+      if (!parsed) return s;
+      const matches = findMatchingNodes(roots, parsed);
+      if (matches.length <= 1) return s;
+      const idx = matches.findIndex((m) => m.attributes.get('bounds') === pickedBounds);
+      const nthSuffix = idx === 0 ? '.first()' : idx === matches.length - 1 ? '.last()' : `.nth(${idx})`;
+      return {
+        ...s,
+        code: `${s.code}${nthSuffix}`,
+        label: `${s.label} (${matches.length} matches)`,
+        priority: Math.max(s.priority, 8),
+      };
+    }).sort((a, b) => a.priority - b.priority);
+  }, [pickedNode, roots]);
 
   const isWebViewPick = pickedNode?.attributes.get('webview') === 'true';
 
@@ -172,11 +211,33 @@ export function handlePickFromScreenshot(
   clickX: number,
   clickY: number,
 ): { node: HierarchyNode; selector: string; bounds: Bounds } | null {
-  const node = hitTest(roots, clickX, clickY);
-  if (!node) return null;
-  const bounds = getNodeBounds(node);
+  const hitNode = hitTest(roots, clickX, clickY);
+  if (!hitNode) return null;
+  // When the hit node is a generic container with only fallback selectors,
+  // promote a descendant that has a meaningful selector (e.g. textfield
+  // with placeholder inside a wrapper View). If the node is a leaf (no
+  // children), check siblings with overlapping bounds instead.
+  let betterNode = findBetterDescendant(hitNode);
+  if (!betterNode && hitNode.children.length === 0) {
+    const hitBounds = getNodeBounds(hitNode);
+    if (hitBounds) {
+      const parent = findParent(roots, hitNode);
+      if (parent) {
+        for (const sibling of parent.children) {
+          if (sibling === hitNode) continue;
+          const sb = getNodeBounds(sibling);
+          if (sb && boundsOverlap(hitBounds, sb)) {
+            const found = findBetterDescendant(sibling) ?? (hasGoodSelectors(sibling) ? sibling : null);
+            if (found) { betterNode = found; break; }
+          }
+        }
+      }
+    }
+  }
+  if (!betterNode) betterNode = hitNode;
+  const bounds = getNodeBounds(betterNode);
   if (!bounds) return null;
-  return { node, selector: generateBestSelector(node), bounds };
+  return { node: betterNode, selector: generateBestSelector(betterNode), bounds };
 }
 
 // ─── Hover Handler (called from parent on screenshot mousemove) ───

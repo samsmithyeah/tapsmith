@@ -18,6 +18,8 @@ const DEVICE_RE = /^device\.getBy(\w+)\(\s*(["'])(.*?)\2(?:\s*,\s*\{\s*name:\s*(
 const WEBVIEW_GETBY_RE = /^webview\.getBy(\w+)\(\s*(["'])(.*?)\2(?:\s*,\s*\{\s*name:\s*(["'])(.*?)\4\s*\})?\s*\)/;
 // Matches: webview.locator("css-selector")
 const WEBVIEW_LOCATOR_RE = /^webview\.locator\(\s*(["'])(.*?)\1\s*\)/;
+// Matches: device.locator({ className: "value" }) or device.locator({ id: "value" })
+const DEVICE_LOCATOR_RE = /^device\.locator\(\s*\{\s*(className|id)\s*:\s*(["'])(.*?)\2\s*\}\s*\)/;
 // Matches: text("value"), contentDesc("value") — legacy/shorthand format
 const SHORT_RE = /^(\w+)\(\s*(["'])(.*?)\2\s*\)/;
 
@@ -54,6 +56,15 @@ export function parseSelectorString(input: string): ParsedSelector | null {
     const sel = mapWebViewMethod(method, value, name);
     if (sel) sel.index = index;
     return sel;
+  }
+
+  // Native device.locator({ className/id: "..." })
+  const deviceLocatorMatch = base.match(DEVICE_LOCATOR_RE);
+  if (deviceLocatorMatch) {
+    const prop = deviceLocatorMatch[1];
+    const value = deviceLocatorMatch[3];
+    const type = prop === 'className' ? 'className' : 'id';
+    return { type, value, index };
   }
 
   // Native device getBy*
@@ -293,7 +304,7 @@ export function hitTest(roots: HierarchyNode[], x: number, y: number): Hierarchy
         ? area <= bestArea * 1.5   // WebView node wins unless much larger
         : !isWv && bestIsWebView
           ? false                   // Never replace a WebView node with native
-          : area < bestArea;         // Same category: smallest wins
+          : area <= bestArea;        // Same category: smallest wins (equal picks deeper node)
       if (shouldReplace) {
         best = node;
         bestArea = area;

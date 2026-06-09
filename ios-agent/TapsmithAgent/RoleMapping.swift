@@ -37,10 +37,16 @@ enum RoleMapping {
     ]
 
     /// Reverse mapping: XCUIElement.ElementType → role name.
+    /// `.other` is excluded: multiple roles include it in their forward mapping
+    /// (checkbox, radiobutton, alert, combobox) so getByRole can match generic
+    /// Views by name, but the reverse can't pick one — and Swift dictionary
+    /// iteration order is non-deterministic, which caused .other elements to get
+    /// a random role each session.
     static let elementTypeToRole: [XCUIElement.ElementType: String] = {
         var map: [XCUIElement.ElementType: String] = [:]
         for (role, types) in roleToElementTypes {
             for type in types {
+                if type == .other { continue }
                 // First mapping wins (e.g., .staticText → "text", not "heading")
                 if map[type] == nil {
                     map[type] = role

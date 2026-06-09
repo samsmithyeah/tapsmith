@@ -92,14 +92,15 @@ describe('generateNativeSelectors priority order', () => {
     expect(selectors[0].code).toBe('device.getByRole("heading", { name: "Welcome" })');
   });
 
-  it('suggests getByRole for alert with tapsmith-role', () => {
+  it('demotes agent-assigned suspect roles (tapsmith-role) in favor of text selectors', () => {
     const node = makeNode('node', {
       class: 'android.view.ViewGroup',
       'tapsmith-role': 'alert',
       'content-desc': 'Error occurred',
     });
     const selectors = generateSelectors(node);
-    expect(selectors[0].code).toBe('device.getByRole("alert", { name: "Error occurred" })');
+    expect(selectors[0].code).toBe('device.getByDescription("Error occurred")');
+    expect(selectors.some((s) => s.code.startsWith('device.getByRole("alert"'))).toBe(true);
   });
 
   it('suggests getByLabel only for form field roles', () => {
@@ -134,7 +135,7 @@ describe('generateNativeSelectors priority order', () => {
     expect(selectors[0].label).toBe('Role');
   });
 
-  it('handles iOS label as both description and text', () => {
+  it('handles iOS label as text, not description', () => {
     const node = makeNode('XCUIElementTypeButton', {
       type: 'XCUIElementTypeButton',
       label: 'Continue',
@@ -142,26 +143,20 @@ describe('generateNativeSelectors priority order', () => {
     const selectors = generateSelectors(node);
     const labels = selectors.map(s => s.label);
     expect(labels[0]).toBe('Role + name');
-
-    // getText() falls back to label, so regular "Text" fires (not "Text (label)")
-    const descIdx = labels.indexOf('Description (label)');
-    const textIdx = labels.indexOf('Text');
-    expect(descIdx).toBeLessThan(textIdx);
+    // iOS label maps to getByText, NOT getByDescription (which only works on Android)
+    expect(labels).toContain('Text');
+    expect(labels).not.toContain('Description (label)');
   });
 
-  it('suggests Text (label) when iOS element has label but no text attr', () => {
-    // When getText would return label, it actually returns via fallback so
-    // the regular Text branch fires. Text (label) only fires when there is
-    // an explicit text attr AND a different label attr.
+  it('suggests getByText for iOS element with label but no text attr', () => {
     const node = makeNode('XCUIElementTypeOther', {
       type: 'XCUIElementTypeOther',
       label: 'Info',
     });
     const selectors = generateSelectors(node);
-    // getText returns "Info" via label fallback, !text is false → regular Text
     const labels = selectors.map(s => s.label);
     expect(labels).toContain('Text');
-    expect(labels).toContain('Description (label)');
+    expect(labels).not.toContain('Description (label)');
   });
 
   it('deduplicates identical code strings', () => {
