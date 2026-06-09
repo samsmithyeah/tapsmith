@@ -19,7 +19,7 @@ const WEBVIEW_GETBY_RE = /^webview\.getBy(\w+)\(\s*(["'])(.*?)\2(?:\s*,\s*\{\s*n
 // Matches: webview.locator("css-selector")
 const WEBVIEW_LOCATOR_RE = /^webview\.locator\(\s*(["'])(.*?)\1\s*\)/;
 // Matches: device.locator({ className: "value" }) or device.locator({ id: "value" })
-const DEVICE_LOCATOR_RE = /^device\.locator\(\s*\{\s*(className|id)\s*:\s*(["'])(.*?)\2\s*\}\s*\)/;
+const DEVICE_LOCATOR_RE = /^device\.locator\(\s*\{\s*(className|id)\s*:\s*(["'])(.*?)\2\s*,?\s*\}\s*\)/;
 // Matches: text("value"), contentDesc("value") — legacy/shorthand format
 const SHORT_RE = /^(\w+)\(\s*(["'])(.*?)\2\s*\)/;
 

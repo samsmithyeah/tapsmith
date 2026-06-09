@@ -161,6 +161,7 @@ pub async fn install_apk(serial: &str, apk_path: &str) -> Result<()> {
                 .or_else(|| line.split("Package ").nth(1))
                 .and_then(|s| s.split_whitespace().next())
                 .map(|s| s.trim_end_matches(|c: char| !c.is_alphanumeric() && c != '.' && c != '_'))
+                .filter(|s| s.starts_with(|c: char| c.is_ascii_alphabetic()))
             {
                 info!("Signature mismatch for {pkg} — uninstalling and retrying");
                 let _ = run_adb(Some(serial), &["uninstall", pkg], DEFAULT_TIMEOUT).await;

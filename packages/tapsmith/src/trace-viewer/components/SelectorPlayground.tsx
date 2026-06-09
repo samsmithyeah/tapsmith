@@ -92,9 +92,9 @@ export function SelectorTab({ hierarchyXml, pickedNode, onHighlightsChange, sele
       if (!parsed) return s;
       const matches = findMatchingNodes(roots, parsed);
       if (matches.length <= 1) return s;
-      // Compare by bounds string, not identity — pickedNode and matches come
+      // Compare by bounds, tagName, and depth — pickedNode and matches come
       // from separate parseHierarchyXml calls (different object trees).
-      const idx = matches.findIndex((m) => m.attributes.get('bounds') === pickedBounds);
+      const idx = matches.findIndex((m) => m.tagName === pickedNode.tagName && m.depth === pickedNode.depth && m.attributes.get('bounds') === pickedBounds);
       if (idx === -1) return s;
       const nthSuffix = idx === 0 ? '.first()' : idx === matches.length - 1 ? '.last()' : `.nth(${idx})`;
       return {
