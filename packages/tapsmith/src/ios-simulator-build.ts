@@ -7,7 +7,7 @@
  * the build as long as the cached SDK version still matches.
  */
 
-import { execFile } from 'node:child_process';
+import { execFile, execFileSync } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
@@ -108,12 +108,41 @@ export async function buildSimulatorAgent(sdkVersion: string): Promise<string> {
       );
     }
 
+    // Strip DSTROOTPath — Xcode 26+ treats it as a "Root install style" request
+    // which fails on public devices/simulators.
+    stripDstRootPath(xctestrunDest);
+
     // Write the SDK version marker so future runs can skip the build.
     fs.writeFileSync(sdkMarker, sdkVersion);
 
     return xctestrunDest;
   } finally {
     try { fs.rmSync(buildDir, { recursive: true, force: true }); } catch { /* non-fatal */ }
+  }
+}
+
+function stripDstRootPath(xctestrunPath: string): void {
+  try {
+    const raw = execFileSync('plutil', ['-convert', 'xml1', '-o', '-', xctestrunPath], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    if (!raw.includes('<key>DSTROOTPath</key>')) return;
+    for (let cfg = 0; cfg < 8; cfg++) {
+      for (let tgt = 0; tgt < 8; tgt++) {
+        try {
+          execFileSync('plutil', [
+            '-remove',
+            `TestConfigurations.${cfg}.TestTargets.${tgt}.DSTROOTPath`,
+            xctestrunPath,
+          ], { stdio: ['ignore', 'ignore', 'ignore'] });
+        } catch {
+          break;
+        }
+      }
+    }
+  } catch {
+    // Non-fatal — the key might not exist or plutil might not be available
   }
 }
 
