@@ -1472,15 +1472,21 @@ function createGenericAssertions(
 
 // ─── PILOT-43: Soft assertions ───
 
-let _softErrors: Error[] = [];
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const _G = globalThis as any;
+const SOFT_ERRORS_KEY = Symbol.for('tapsmith.softErrors');
+if (!_G[SOFT_ERRORS_KEY]) _G[SOFT_ERRORS_KEY] = [] as Error[];
+
+function getSoftErrors(): Error[] { return _G[SOFT_ERRORS_KEY]; }
+function setSoftErrors(v: Error[]): void { _G[SOFT_ERRORS_KEY] = v; }
 
 /**
  * Retrieve and clear all soft assertion failures.
  * Called by the test runner at the end of each test.
  */
 export function flushSoftErrors(): Error[] {
-  const errors = _softErrors;
-  _softErrors = [];
+  const errors = getSoftErrors();
+  setSoftErrors([]);
   return errors;
 }
 
@@ -1504,7 +1510,7 @@ function createSoftLocatorAssertions(
       try {
         await original.apply(inner, args);
       } catch (err) {
-        _softErrors.push(err instanceof Error ? err : new Error(String(err)));
+        getSoftErrors().push(err instanceof Error ? err : new Error(String(err)));
       }
     };
   }
@@ -1531,7 +1537,7 @@ function createSoftWebViewAssertions(
       try {
         await original.apply(inner, args);
       } catch (err) {
-        _softErrors.push(err instanceof Error ? err : new Error(String(err)));
+        getSoftErrors().push(err instanceof Error ? err : new Error(String(err)));
       }
     };
   }
@@ -1540,7 +1546,7 @@ function createSoftWebViewAssertions(
 
 function createSoftGenericAssertions(actual: unknown, negated: boolean): GenericAssertions {
   return createGenericAssertions(actual, negated, (message) => {
-    _softErrors.push(new Error(message));
+    getSoftErrors().push(new Error(message));
   });
 }
 

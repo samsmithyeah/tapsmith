@@ -25,17 +25,21 @@ let _activeConsoleInterceptors = 0;
 
 // ─── Global collector accessor ───
 
-let _activeCollector: TraceCollector | null = null;
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const _G = globalThis as any;
+const COLLECTOR_KEY = Symbol.for('tapsmith.activeTraceCollector');
+if (!(COLLECTOR_KEY in _G)) _G[COLLECTOR_KEY] = null;
+
 export const TRACE_CAPTURE_TIMEOUT_MS = 5_000;
 
 /** Get the currently active trace collector (set by the runner during test execution). */
 export function getActiveTraceCollector(): TraceCollector | null {
-  return _activeCollector;
+  return _G[COLLECTOR_KEY];
 }
 
 /** @internal — Set the active collector. Called by the runner. */
 export function setActiveTraceCollector(collector: TraceCollector | null): void {
-  _activeCollector = collector;
+  _G[COLLECTOR_KEY] = collector;
 }
 
 /**
