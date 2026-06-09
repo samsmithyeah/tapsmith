@@ -151,7 +151,8 @@ pub async fn install_apk(serial: &str, apk_path: &str) -> Result<()> {
         let msg = e.to_string();
         // Restrict to the actual PM failure line to avoid parsing crafted filenames.
         let pm_line = msg.lines().find(|line| {
-            line.trim().starts_with("Failure [INSTALL_FAILED_UPDATE_INCOMPATIBLE")
+            line.trim()
+                .starts_with("Failure [INSTALL_FAILED_UPDATE_INCOMPATIBLE")
         });
         if let Some(line) = pm_line {
             if let Some(pkg) = line

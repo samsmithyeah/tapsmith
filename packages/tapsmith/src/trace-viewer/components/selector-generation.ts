@@ -361,10 +361,12 @@ export function hasGoodSelectors(node: HierarchyNode): boolean {
  */
 export function findBetterDescendant(node: HierarchyNode): HierarchyNode | null {
   if (hasGoodSelectors(node)) return null;
-  for (const child of node.children) {
-    if (hasGoodSelectors(child)) return child;
-    const deeper = findBetterDescendant(child);
-    if (deeper) return deeper;
+  // BFS to find the shallowest descendant with good selectors.
+  const queue: HierarchyNode[] = [...node.children];
+  while (queue.length > 0) {
+    const current = queue.shift()!;
+    if (hasGoodSelectors(current)) return current;
+    queue.push(...current.children);
   }
   return null;
 }
