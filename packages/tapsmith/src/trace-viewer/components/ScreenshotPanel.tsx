@@ -124,15 +124,23 @@ export function ScreenshotPanel({ event, screenshots, highlightBounds, selectorH
     return () => ro.disconnect();
   }, [event, tab, updateRenderedSize]);
 
-  const handleWheel = useCallback((e: WheelEvent) => {
-    e.preventDefault();
-    setScale(prev => {
-      const delta = e.deltaY > 0 ? -0.1 : 0.1;
-      const next = Math.max(0.5, Math.min(5, prev + delta));
-      scaleRef.current = next;
-      requestAnimationFrame(() => updateRenderedSize());
-      return next;
-    });
+  const containerRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el) return;
+    const onWheel = (e: WheelEvent) => {
+      e.preventDefault();
+      setScale(prev => {
+        const delta = e.deltaY > 0 ? -0.1 : 0.1;
+        const next = Math.max(0.5, Math.min(5, prev + delta));
+        scaleRef.current = next;
+        requestAnimationFrame(() => updateRenderedSize());
+        return next;
+      });
+    };
+    el.addEventListener('wheel', onWheel, { passive: false });
+    return () => el.removeEventListener('wheel', onWheel);
   }, [updateRenderedSize]);
 
   const handleImageLoad = useCallback(() => {
@@ -437,7 +445,7 @@ export function ScreenshotPanel({ event, screenshots, highlightBounds, selectorH
           )}
         </div>
       </div>
-      <div class="screenshot-container viewer-body has-grid" onWheel={handleWheel} style={{ position: 'relative' }}>
+      <div ref={containerRef} class="screenshot-container viewer-body has-grid" style={{ position: 'relative' }}>
         {(hasBefore && hasAfter) && (
           <div class="screenshot-tab-float">
             <div class={`screenshot-tab${tab === 'action' ? ' active' : ''}`} onClick={() => setTab('action')}>Action</div>

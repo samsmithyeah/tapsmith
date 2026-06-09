@@ -364,12 +364,15 @@ export async function startUIServer(
     if (!serial) return { singleWorkerDisplayName: undefined, singleWorkerPlatform: ctx.config.platform };
 
     // iOS simulator: simctl lists all available sims regardless of root config.
-    const simName = listSimulators().find((s) => s.udid === serial)?.name;
-    if (simName) return { singleWorkerDisplayName: simName, singleWorkerPlatform: 'ios' as const };
+    // Guard on macOS — these commands don't exist on Linux/Windows.
+    if (process.platform === 'darwin') {
+      const simName = listSimulators().find((s) => s.udid === serial)?.name;
+      if (simName) return { singleWorkerDisplayName: simName, singleWorkerPlatform: 'ios' as const };
 
-    // iOS physical device: devicectl finds connected devices.
-    const physName = listPhysicalDevices().find((d) => d.udid === serial)?.name;
-    if (physName) return { singleWorkerDisplayName: physName, singleWorkerPlatform: 'ios' as const };
+      // iOS physical device: devicectl finds connected devices.
+      const physName = listPhysicalDevices().find((d) => d.udid === serial)?.name;
+      if (physName) return { singleWorkerDisplayName: physName, singleWorkerPlatform: 'ios' as const };
+    }
 
     // Android emulator
     if (serial.startsWith('emulator-')) {
