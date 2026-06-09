@@ -35,11 +35,11 @@ sed -i '' "s/v$CURRENT_VERSION/v$NEW_VERSION/g" "$ROOT/website/src/pages/index.a
 # 5. Regenerate lockfiles
 echo "Regenerating lockfiles..."
 (cd "$ROOT/packages/tapsmith" && npm install --package-lock-only --silent)
-(cd "$ROOT/packages/tapsmith-core" && cargo check --quiet 2>/dev/null)
+(cd "$ROOT/packages/tapsmith-core" && cargo check --quiet)
 for dir in website test-app benchmark/tapsmith; do
   lockfile="$ROOT/$dir/package-lock.json"
   if [[ -f "$lockfile" ]]; then
-    (cd "$ROOT/$dir" && npm install --package-lock-only --silent 2>/dev/null)
+    (cd "$ROOT/$dir" && npm install --package-lock-only --silent)
   fi
 done
 

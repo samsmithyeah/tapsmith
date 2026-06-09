@@ -224,16 +224,30 @@ interface SuiteContext {
   useOptions?: UseOptions;
 }
 
-let contextStack: SuiteContext[] = [];
-let activeFixtureRegistry: FixtureRegistry = new FixtureRegistry();
+// Store registration state on globalThis so ESM and CJS module instances
+// share the same context stack. Without this, CJS projects (no "type":
+// "module") get a separate module instance when tsx loads the test file,
+// and describe()/test() calls write to an empty stack.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const G = globalThis as any;
+const STACK_KEY = Symbol.for('tapsmith.contextStack');
+const REGISTRY_KEY = Symbol.for('tapsmith.fixtureRegistry');
+if (!G[STACK_KEY]) G[STACK_KEY] = [] as SuiteContext[];
+if (!G[REGISTRY_KEY]) G[REGISTRY_KEY] = new FixtureRegistry();
+
+function getContextStack(): SuiteContext[] { return G[STACK_KEY] as SuiteContext[]; }
+function setContextStack(v: SuiteContext[]): void { G[STACK_KEY] = v; }
+function getActiveFixtureRegistry(): FixtureRegistry { return G[REGISTRY_KEY] as FixtureRegistry; }
+function setActiveFixtureRegistry(v: FixtureRegistry): void { G[REGISTRY_KEY] = v; }
 
 /** Get the current fixture registry (used by the runner). */
 export function getFixtureRegistry(): FixtureRegistry {
-  return activeFixtureRegistry;
+  return getActiveFixtureRegistry();
 }
 
 function currentContext(): SuiteContext {
-  return contextStack[contextStack.length - 1];
+  const stack = getContextStack();
+  return stack[stack.length - 1];
 }
 
 function pushContext(): SuiteContext {
@@ -245,12 +259,12 @@ function pushContext(): SuiteContext {
     beforeEach: [],
     afterEach: [],
   };
-  contextStack.push(ctx);
+  getContextStack().push(ctx);
   return ctx;
 }
 
 function popContext(): SuiteContext {
-  return contextStack.pop()!;
+  return getContextStack().pop()!;
 }
 
 function materializeSuiteEntry(entry: SuiteEntry): SuiteContext {
@@ -324,7 +338,7 @@ export interface DescribeFn {
 }
 
 function createTestFn<F extends object = TestFixtures>(registry: FixtureRegistry): TestFn<F> {
-  const syncRegistry = () => { activeFixtureRegistry = registry; };
+  const syncRegistry = () => { setActiveFixtureRegistry(registry); };
   const fn = Object.assign(
     (name: string, testFn: TestCallback) => {
       syncRegistry();
@@ -357,7 +371,7 @@ function createTestFn<F extends object = TestFixtures>(registry: FixtureRegistry
         // Cast needed: register() is typed for BuiltinFixtures but F may be a wider fixture set
         childRegistry.register(definitions as FixtureDefinitions<T, BuiltinFixtures & T>);
         const merged = registry.merge(childRegistry);
-        activeFixtureRegistry = merged;
+        setActiveFixtureRegistry(merged);
         return createTestFn<F & T>(merged);
       },
       beforeAll: (hookFn: HookFn) => { syncRegistry(); currentContext().beforeAll.push({ fn: hookFn, registry }); },
@@ -371,7 +385,7 @@ function createTestFn<F extends object = TestFixtures>(registry: FixtureRegistry
   return fn;
 }
 
-export const test: TestFn = createTestFn(activeFixtureRegistry);
+export const test: TestFn = createTestFn(getActiveFixtureRegistry());
 
 export const describe: DescribeFn = Object.assign(
   (name: string, fn: () => void) => {
@@ -1678,8 +1692,8 @@ export async function runTestFile(
   // calls (test(), test.beforeEach(), etc.) sync activeFixtureRegistry
   // back to the extended test's registry, so even cached ESM imports
   // that skip test.extend() re-execution will restore the correct registry.
-  contextStack = [];
-  activeFixtureRegistry = new FixtureRegistry();
+  setContextStack([]);
+  setActiveFixtureRegistry(new FixtureRegistry());
   pushContext();
 
   // Import the test file — this registers tests/suites via side effects
@@ -1780,8 +1794,8 @@ export interface DiscoveredSuite {
  * any test bodies. Used by UI mode for test discovery.
  */
 export async function discoverTestFile(filePath: string): Promise<DiscoveredSuite> {
-  contextStack = [];
-  activeFixtureRegistry = new FixtureRegistry();
+  setContextStack([]);
+  setActiveFixtureRegistry(new FixtureRegistry());
   pushContext();
 
   // Bust ESM cache so re-discovery in persistent processes (UI workers)
@@ -1812,5 +1826,5 @@ function discoverSuiteContext(ctx: SuiteContext, parentPrefix: string): Discover
 }
 
 /** @internal — exposed for unit testing only. */
-function resetFixtureRegistry(): void { activeFixtureRegistry = new FixtureRegistry(); }
+function resetFixtureRegistry(): void { setActiveFixtureRegistry(new FixtureRegistry()); }
 export const _internal = { pushContext, popContext, runSuiteContext, resolvePlatformFixture, resetFixtureRegistry };

@@ -17,11 +17,11 @@
  *   await expect.poll(async () => fetchCount()).toBe(5);
  */
 
-import { ElementHandle } from "./element-handle.js";
+import { ElementHandle, ELEMENT_HANDLE_BRAND } from "./element-handle.js";
 import type { ElementInfo } from "./grpc-client.js";
 import { selectorToProto, type Selector } from "./selectors.js";
 import { extractStack, getActiveTraceCollector } from "./trace/trace-collector.js";
-import { WebViewLocator } from "./webview-locator.js";
+import { WebViewLocator, WEBVIEW_LOCATOR_BRAND } from "./webview-locator.js";
 
 const DEFAULT_ASSERTION_TIMEOUT_MS = 5_000;
 const POLL_INTERVAL_MS = 250;
@@ -1472,15 +1472,21 @@ function createGenericAssertions(
 
 // ─── PILOT-43: Soft assertions ───
 
-let _softErrors: Error[] = [];
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const _G = globalThis as any;
+const SOFT_ERRORS_KEY = Symbol.for('tapsmith.softErrors');
+if (!_G[SOFT_ERRORS_KEY]) _G[SOFT_ERRORS_KEY] = [] as Error[];
+
+function getSoftErrors(): Error[] { return _G[SOFT_ERRORS_KEY]; }
+function setSoftErrors(v: Error[]): void { _G[SOFT_ERRORS_KEY] = v; }
 
 /**
  * Retrieve and clear all soft assertion failures.
  * Called by the test runner at the end of each test.
  */
 export function flushSoftErrors(): Error[] {
-  const errors = _softErrors;
-  _softErrors = [];
+  const errors = getSoftErrors();
+  setSoftErrors([]);
   return errors;
 }
 
@@ -1504,7 +1510,7 @@ function createSoftLocatorAssertions(
       try {
         await original.apply(inner, args);
       } catch (err) {
-        _softErrors.push(err instanceof Error ? err : new Error(String(err)));
+        getSoftErrors().push(err instanceof Error ? err : new Error(String(err)));
       }
     };
   }
@@ -1531,7 +1537,7 @@ function createSoftWebViewAssertions(
       try {
         await original.apply(inner, args);
       } catch (err) {
-        _softErrors.push(err instanceof Error ? err : new Error(String(err)));
+        getSoftErrors().push(err instanceof Error ? err : new Error(String(err)));
       }
     };
   }
@@ -1540,7 +1546,7 @@ function createSoftWebViewAssertions(
 
 function createSoftGenericAssertions(actual: unknown, negated: boolean): GenericAssertions {
   return createGenericAssertions(actual, negated, (message) => {
-    _softErrors.push(new Error(message));
+    getSoftErrors().push(new Error(message));
   });
 }
 
@@ -1924,11 +1930,13 @@ function createWebViewAssertions(
 // ─── Main expect function ───
 
 function isElementHandle(value: unknown): value is ElementHandle {
-  return value instanceof ElementHandle;
+  if (value instanceof ElementHandle) return true;
+  return value != null && typeof value === 'object' && ELEMENT_HANDLE_BRAND in value;
 }
 
 function isWebViewLocator(value: unknown): value is WebViewLocator {
-  return value instanceof WebViewLocator;
+  if (value instanceof WebViewLocator) return true;
+  return value != null && typeof value === 'object' && WEBVIEW_LOCATOR_BRAND in value;
 }
 
 /**

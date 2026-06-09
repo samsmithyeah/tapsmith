@@ -1,6 +1,6 @@
 {
   "name": "@tapsmith/agent-android",
-  "version": "0.1.5",
+  "version": "0.1.6",
   "description": "Prebuilt Android agent APKs for Tapsmith",
   "files": [
     "app-debug.apk",

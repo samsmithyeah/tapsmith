@@ -145,7 +145,12 @@ function isPollableNotFoundError(err: unknown): boolean {
   return msg.startsWith('Element not found:') || msg.startsWith('nth(');
 }
 
+/** @internal Brand key for cross-instance type checks (CJS/ESM dual-package). */
+export const ELEMENT_HANDLE_BRAND = Symbol.for('tapsmith.ElementHandle');
+
 export class ElementHandle {
+  /** @internal */
+  readonly [ELEMENT_HANDLE_BRAND] = true;
   /** @internal */
   readonly _client: TapsmithGrpcClient;
   /** @internal */
