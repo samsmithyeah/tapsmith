@@ -7,12 +7,12 @@
  * the build as long as the cached SDK version still matches.
  */
 
-import { execFile, execFileSync } from 'node:child_process';
+import { execFile } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 
-import { resolveIosAgentDir } from './build-ios-agent.js';
+import { resolveIosAgentDir, stripDstRootPath } from './build-ios-agent.js';
 import { extractSdkVersion, findSimulatorXctestrun, getInstalledSimulatorSdkVersion } from './ios-device-resolve.js';
 
 // ─── Build ──────────────────────────────────────────────────────────────
@@ -118,36 +118,6 @@ export async function buildSimulatorAgent(sdkVersion: string): Promise<string> {
     return xctestrunDest;
   } finally {
     try { fs.rmSync(buildDir, { recursive: true, force: true }); } catch { /* non-fatal */ }
-  }
-}
-
-function stripDstRootPath(xctestrunPath: string): void {
-  try {
-    const jsonRaw = execFileSync('plutil', ['-convert', 'json', '-o', '-', xctestrunPath], {
-      encoding: 'utf8',
-      stdio: ['ignore', 'pipe', 'pipe'],
-    });
-    const data = JSON.parse(jsonRaw) as Record<string, unknown>;
-
-    const removeKey = (obj: unknown): void => {
-      if (obj && typeof obj === 'object') {
-        const record = obj as Record<string, unknown>;
-        delete record['DSTROOTPath'];
-        for (const k of Object.keys(record)) {
-          removeKey(record[k]);
-        }
-      }
-    };
-    removeKey(data);
-
-    const xml = execFileSync('plutil', ['-convert', 'xml1', '-o', '-', '-'], {
-      input: JSON.stringify(data),
-      encoding: 'utf8',
-      stdio: ['pipe', 'pipe', 'pipe'],
-    });
-    fs.writeFileSync(xctestrunPath, xml);
-  } catch {
-    // Non-fatal — the key might not exist or plutil might not be available
   }
 }
 

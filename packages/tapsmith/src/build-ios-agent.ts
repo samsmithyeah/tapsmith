@@ -476,7 +476,7 @@ export async function buildIosAgent(options: BuildIosAgentOptions): Promise<stri
     .map((p) => ({ path: p, mtime: fs.statSync(p).mtimeMs }))
     .sort((a, b) => b.mtime - a.mtime)[0]!.path;
 
-  stripRootInstallKeys(newest);
+  stripDstRootPath(newest);
 
   if (!options.quiet) {
     console.log();
@@ -515,29 +515,33 @@ export async function buildIosAgent(options: BuildIosAgentOptions): Promise<stri
  * Removing the key forces standard "User" install and the same xctestrun
  * runs fine on any public device.
  */
-function stripRootInstallKeys(xctestrunPath: string): void {
+export function stripDstRootPath(xctestrunPath: string): void {
   try {
-    const raw = execFileSync('plutil', ['-convert', 'xml1', '-o', '-', xctestrunPath], {
+    const jsonRaw = execFileSync('plutil', ['-convert', 'json', '-o', '-', xctestrunPath], {
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'pipe'],
     });
-    if (!raw.includes('<key>DSTROOTPath</key>')) return;
-    // Count TestTargets by inspecting indices that plutil accepts.
-    // Practically, our xctestrun has exactly one TestConfiguration and one
-    // TestTarget. Be defensive for future multi-target configurations.
-    for (let cfg = 0; cfg < 8; cfg++) {
-      for (let tgt = 0; tgt < 8; tgt++) {
-        try {
-          execFileSync('plutil', [
-            '-remove',
-            `TestConfigurations.${cfg}.TestTargets.${tgt}.DSTROOTPath`,
-            xctestrunPath,
-          ], { stdio: ['ignore', 'ignore', 'ignore'] });
-        } catch {
-          break;
+    const data = JSON.parse(jsonRaw) as Record<string, unknown>;
+
+    const removeKey = (obj: unknown): void => {
+      if (obj && typeof obj === 'object') {
+        if (Array.isArray(obj)) {
+          for (const item of obj) removeKey(item);
+        } else {
+          const record = obj as Record<string, unknown>;
+          delete record['DSTROOTPath'];
+          for (const k of Object.keys(record)) removeKey(record[k]);
         }
       }
-    }
+    };
+    removeKey(data);
+
+    const xml = execFileSync('plutil', ['-convert', 'xml1', '-o', '-', '-'], {
+      input: JSON.stringify(data),
+      encoding: 'utf8',
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
+    fs.writeFileSync(xctestrunPath, xml);
   } catch {
     // Non-fatal — if plutil is missing or the xctestrun isn't a plist we'd
     // rather proceed than block the build. The worst case is the user hits
