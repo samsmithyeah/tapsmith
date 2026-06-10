@@ -37,11 +37,16 @@ function makeMockClient(
 ): TapsmithGrpcClient {
   return {
     findElement: vi.fn(findElementImpl),
-    findElements: vi.fn(async () => ({
-      requestId: "1",
-      elements: [],
-      errorMessage: "",
-    })),
+    // Assertions resolve through findElements (strict mode, PILOT-226) —
+    // derive the list from the single-element impl.
+    findElements: vi.fn(async () => {
+      const res = await findElementImpl();
+      return {
+        requestId: "1",
+        elements: res.found && res.element ? [res.element] : [],
+        errorMessage: "",
+      };
+    }),
   } as unknown as TapsmithGrpcClient;
 }
 

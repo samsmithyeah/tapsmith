@@ -39,13 +39,19 @@ function makeMockClient(
 ): TapsmithGrpcClient {
   return {
     findElement: vi.fn(findElementImpl),
+    // Assertions resolve through findElements (strict mode, PILOT-226) —
+    // when no explicit impl is given, derive the list from the
+    // single-element impl so tests keep describing one screen state.
     findElements: vi.fn(
       findElementsImpl ??
-        (async () => ({
-          requestId: "1",
-          elements: [],
-          errorMessage: "",
-        })),
+        (async () => {
+          const res = await findElementImpl();
+          return {
+            requestId: "1",
+            elements: res.found && res.element ? [res.element] : [],
+            errorMessage: "",
+          };
+        }),
     ),
   } as unknown as TapsmithGrpcClient;
 }
@@ -1893,5 +1899,92 @@ describe("wrapAssertionWithTrace", () => {
 
     vitestExpect(collector.captureBeforeAction).toHaveBeenCalledTimes(1);
     vitestExpect(collector.captureAfterAction).not.toHaveBeenCalled();
+  });
+});
+
+// ─── Strict mode (PILOT-226) ───
+
+describe("strict mode for assertions", () => {
+  const twoMatches = [
+    makeElementInfo({ elementId: "el-1", text: "Sign in to continue", visible: true }),
+    makeElementInfo({ elementId: "el-2", text: "Sign in", visible: true }),
+  ];
+
+  function makeMultiMatchClient(elements: ElementInfo[]): TapsmithGrpcClient {
+    return makeMockClient(
+      async () => ({
+        requestId: "1",
+        found: elements.length > 0,
+        element: elements[0],
+        errorMessage: "",
+      }),
+      async () => ({ requestId: "1", elements, errorMessage: "" }),
+    );
+  }
+
+  it("toBeVisible throws StrictModeViolationError immediately on multiple matches", async () => {
+    const client = makeMultiMatchClient(twoMatches);
+    const handle = makeHandle(client, _text("Sign in"), 5_000);
+    const start = Date.now();
+    await vitestExpect(
+      tapsmithExpect(handle).toBeVisible({ timeout: 5_000 }),
+    ).rejects.toThrow(/^strict mode violation/);
+    // Must not burn the assertion timeout polling
+    vitestExpect(Date.now() - start).toBeLessThan(2_000);
+  });
+
+  it("toHaveText throws on multiple matches", async () => {
+    const client = makeMultiMatchClient(twoMatches);
+    const handle = makeHandle(client, _text("Sign in"), 5_000);
+    await vitestExpect(
+      tapsmithExpect(handle).toHaveText("Sign in", { timeout: 5_000 }),
+    ).rejects.toThrow(/^strict mode violation/);
+  });
+
+  it(".first() disambiguates for assertions (positional modifiers honored)", async () => {
+    const client = makeMultiMatchClient(twoMatches);
+    const handle = makeHandle(client, _text("Sign in"), 1_000);
+    await tapsmithExpect(handle.first()).toBeVisible({ timeout: 1_000 });
+    await tapsmithExpect(handle.nth(1)).toHaveText("Sign in", { timeout: 1_000 });
+    await tapsmithExpect(handle.last()).toHaveText("Sign in", { timeout: 1_000 });
+  });
+
+  it("not.toBeVisible is an absence check — no strict throw, passes when all hidden", async () => {
+    const hidden = twoMatches.map((el) => ({ ...el, visible: false }));
+    const client = makeMultiMatchClient(hidden);
+    const handle = makeHandle(client, _text("Sign in"), 200);
+    await tapsmithExpect(handle).not.toBeVisible({ timeout: 200 });
+  });
+
+  it("not.toBeVisible fails (without strict throw) while any match is visible", async () => {
+    const client = makeMultiMatchClient(twoMatches);
+    const handle = makeHandle(client, _text("Sign in"), 200);
+    await vitestExpect(
+      tapsmithExpect(handle).not.toBeVisible({ timeout: 200 }),
+    ).rejects.toThrow("NOT to be visible");
+  });
+
+  it("toBeHidden evaluates over all matches without strict throw", async () => {
+    const hidden = twoMatches.map((el) => ({ ...el, visible: false }));
+    await tapsmithExpect(makeHandle(makeMultiMatchClient(hidden), _text("Sign in"), 200)).toBeHidden({ timeout: 200 });
+    // One of two still visible → not hidden
+    const oneVisible = [twoMatches[0], { ...twoMatches[1], visible: false }];
+    await vitestExpect(
+      tapsmithExpect(makeHandle(makeMultiMatchClient(oneVisible), _text("Sign in"), 200)).toBeHidden({ timeout: 200 }),
+    ).rejects.toThrow("to be hidden");
+  });
+
+  it("not.toExist is exempt from strict mode", async () => {
+    const client = makeMultiMatchClient(twoMatches);
+    const handle = makeHandle(client, _text("Sign in"), 200);
+    await vitestExpect(
+      tapsmithExpect(handle).not.toExist({ timeout: 200 }),
+    ).rejects.toThrow("NOT to exist");
+  });
+
+  it("toHaveCount is exempt from strict mode", async () => {
+    const client = makeMultiMatchClient(twoMatches);
+    const handle = makeHandle(client, _text("Sign in"), 1_000);
+    await tapsmithExpect(handle).toHaveCount(2, { timeout: 1_000 });
   });
 });

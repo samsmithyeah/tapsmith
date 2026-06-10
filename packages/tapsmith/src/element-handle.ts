@@ -9,6 +9,7 @@
 import {
   type Selector,
   selectorToProto,
+  formatSelector,
   withParent,
   _id,
   _text,
@@ -140,9 +141,95 @@ function boundsContain(
  * empty/out-of-range matches.
  */
 function isPollableNotFoundError(err: unknown): boolean {
+  // A strict mode violation means the selector DID resolve — to too many
+  // elements. Retrying cannot fix ambiguity; it must propagate immediately.
+  if (isStrictModeViolation(err)) return false;
   if (!(err instanceof Error)) return false;
   const msg = err.message;
   return msg.startsWith('Element not found:') || msg.startsWith('nth(');
+}
+
+// ─── Strict mode (PILOT-226) ───
+
+/** @internal Brand key for cross-instance type checks (CJS/ESM dual-package). */
+export const STRICT_MODE_VIOLATION_BRAND = Symbol.for('tapsmith.StrictModeViolationError');
+
+/**
+ * Thrown when a locator used for an action, single-element query, or
+ * assertion resolves to more than one element. Mirrors Playwright's strict
+ * mode: acting on an ambiguous selector is an error, never a silent
+ * first-match. Disambiguate with `{ exact: true }`, `getByRole(role, { name })`,
+ * `getByTestId()`, or `.first()/.nth()/.last()`.
+ */
+export class StrictModeViolationError extends Error {
+  /** @internal */
+  readonly [STRICT_MODE_VIOLATION_BRAND] = true;
+  /** The elements the selector resolved to, in document order. */
+  readonly elements: ElementInfo[];
+
+  constructor(message: string, elements: ElementInfo[]) {
+    super(message);
+    this.name = 'StrictModeViolationError';
+    this.elements = elements;
+  }
+}
+
+/** Returns true if `err` is a {@link StrictModeViolationError} (brand-based, safe across CJS/ESM copies). */
+export function isStrictModeViolation(err: unknown): err is StrictModeViolationError {
+  return (
+    typeof err === 'object' &&
+    err !== null &&
+    (err as Record<symbol, unknown>)[STRICT_MODE_VIOLATION_BRAND] === true
+  );
+}
+
+/** Max elements listed in a strict mode violation message before truncating. */
+const STRICT_ERROR_MAX_ELEMENTS = 10;
+
+function truncateText(s: string, max: number): string {
+  return s.length <= max ? s : s.slice(0, max - 1) + '…';
+}
+
+/** Best-effort unambiguous locator suggestion for one resolved element. */
+function suggestSelectorFor(el: ElementInfo): string | undefined {
+  if (el.resourceId) {
+    // Android resource ids look like "com.pkg:id/foo"; getByTestId matches the suffix.
+    const testId = el.resourceId.includes(':id/') ? el.resourceId.split(':id/').pop()! : el.resourceId;
+    return `device.getByTestId("${testId}")`;
+  }
+  const name = el.contentDescription || el.text;
+  // Static text elements read better as getByText; real widgets as getByRole.
+  if (el.role && el.role !== 'text' && name) {
+    return `device.getByRole("${el.role}", { name: "${truncateText(name, 60)}" })`;
+  }
+  if (el.text) {
+    return `device.getByText("${truncateText(el.text, 60)}", { exact: true })`;
+  }
+  return undefined;
+}
+
+/** @internal — Build the Playwright-style strict mode violation error. */
+export function buildStrictModeViolationError(
+  selectorDescription: string,
+  elements: ElementInfo[],
+): StrictModeViolationError {
+  const lines = elements.slice(0, STRICT_ERROR_MAX_ELEMENTS).map((el, i) => {
+    const kind = el.role || el.className || 'element';
+    let line = `    ${i + 1}) ${kind}`;
+    if (el.text) line += ` "${truncateText(el.text, 60)}"`;
+    if (el.bounds) line += ` [${el.bounds.left},${el.bounds.top}][${el.bounds.right},${el.bounds.bottom}]`;
+    const aka = suggestSelectorFor(el);
+    if (aka) line += ` aka ${aka}`;
+    return line;
+  });
+  if (elements.length > STRICT_ERROR_MAX_ELEMENTS) {
+    lines.push(`    … and ${elements.length - STRICT_ERROR_MAX_ELEMENTS} more`);
+  }
+  const message =
+    `strict mode violation: ${selectorDescription} resolved to ${elements.length} elements:\n` +
+    `${lines.join('\n')}\n` +
+    'Hint: use { exact: true }, getByRole(role, { name }), getByTestId(), or .first()/.nth()/.last() to target a single element.';
+  return new StrictModeViolationError(message, elements);
 }
 
 /** @internal Brand key for cross-instance type checks (CJS/ESM dual-package). */
@@ -446,7 +533,12 @@ export class ElementHandle {
     return result;
   }
 
-  /** @internal — Resolve to a single target element, respecting nth index. */
+  /**
+   * @internal — Resolve to a single target element, respecting nth index.
+   *
+   * Strict mode (PILOT-226): without a positional modifier, resolving to
+   * more than one element is an error — never a silent first-match.
+   */
   private async _resolveOne(): Promise<ElementInfo> {
     const elements = this._options.resolvedElementsPromise
       ? await this._options.resolvedElementsPromise
@@ -467,12 +559,15 @@ export class ElementHandle {
     if (elements.length === 0) {
       throw new Error(`Element not found: ${this._describe()}`);
     }
+    if (elements.length > 1) {
+      throw buildStrictModeViolationError(this._describe(), elements);
+    }
     return elements[0];
   }
 
   /** @internal — Build a human-readable description of this handle for error messages. */
   private _describe(): string {
-    const sel = JSON.stringify(selectorToProto(this._selector));
+    const sel = formatSelector(this._selector);
     if (this._options.andHandle) {
       const left = this._options.andSelf?._describe() ?? sel;
       const right = this._options.andHandle._describe();
@@ -514,6 +609,107 @@ export class ElementHandle {
   }
 
   /**
+   * @internal — Single-tick strict resolution for an unmodified handle.
+   *
+   * Fetches ALL matches via findElements (the agent does not auto-wait on
+   * this RPC — callers poll). Throws a StrictModeViolationError when the
+   * selector resolves to more than one element; returns the single match or
+   * undefined when there is none yet.
+   */
+  private async _findOneStrict(timeoutMs: number): Promise<ElementInfo | undefined> {
+    const res = await this._client.findElements(this._selector, timeoutMs);
+    const elements = res.elements ?? [];
+    if (elements.length > 1) {
+      throw buildStrictModeViolationError(this._describe(), elements);
+    }
+    return elements[0];
+  }
+
+  /**
+   * @internal — Strict pre-action resolution for actions that don't require
+   * the enabled state (type, scroll, focus, …).
+   *
+   * Modified handles resolve through `_resolveOne()` (strict for ambiguous
+   * filter/and/or chains, exempt for positional ones). Unmodified handles
+   * poll `findElements` so ambiguity is detected BEFORE the raw selector is
+   * handed to the agent, which would otherwise act on the first match.
+   * (A race between this check and the agent-side find is accepted — both
+   * see elements in document order.)
+   *
+   * Returns the action's remaining timeout budget plus the resolved element
+   * for modified handles (so `_actionSelector` can skip re-resolution).
+   * `timeoutMs === 0` skips polling entirely, preserving the explicit
+   * opt-out behavior of `_waitForEnabled`.
+   */
+  private async _strictResolve(): Promise<{ remainingMs: number; element?: ElementInfo }> {
+    if (this._hasModifiers()) {
+      return { remainingMs: this._timeoutMs, element: await this._resolveOne() };
+    }
+    const timeoutMs = this._timeoutMs;
+    if (timeoutMs === 0) return { remainingMs: 0 };
+    const MIN_ACTION_BUDGET_MS = 1000;
+    const deadline = Date.now() + timeoutMs;
+    const POLL_MS = 250;
+    while (true) {
+      const findBudget = Math.min(POLL_MS, Math.max(0, deadline - Date.now()));
+      const el = await this._findOneStrict(findBudget);
+      if (el) {
+        const remaining = Math.max(0, deadline - Date.now());
+        return {
+          remainingMs: Math.min(timeoutMs, Math.max(remaining, MIN_ACTION_BUDGET_MS)),
+          element: el,
+        };
+      }
+      if (Date.now() >= deadline) {
+        throw new Error(`Element ${this._describe()} was not found after waiting ${timeoutMs}ms`);
+      }
+      const sleepMs = Math.min(POLL_MS, Math.max(0, deadline - Date.now()));
+      if (sleepMs > 0) await new Promise((r) => setTimeout(r, sleepMs));
+    }
+  }
+
+  /**
+   * @internal — Single-tick, modifier-aware resolution for assertions
+   * (expect.ts). Returns the matching elements after applying any positional
+   * modifier (so `.first()`/`.nth()` yield at most one element — fixing
+   * assertions previously ignoring modifiers entirely).
+   *
+   * When `strict` is true and the handle has no positional modifier,
+   * resolving to more than one element throws a StrictModeViolationError.
+   * Absence-style checks (toBeHidden, negated visibility/existence) pass
+   * `strict: false` and evaluate their condition over the full match set.
+   */
+  async _resolveForAssertion(timeoutMs: number, strict: boolean): Promise<ElementInfo[]> {
+    let elements: ElementInfo[];
+    if (
+      this._options.filters?.length ||
+      this._options.andHandle ||
+      this._options.orHandle
+    ) {
+      // Filter/and/or chains need client-side resolution; use a short-timeout
+      // probe so a single assertion poll tick stays fast.
+      const probe = new ElementHandle(this._client, this._selector, timeoutMs, {
+        ...this._options,
+        nthIndex: undefined,
+      });
+      elements = await probe._resolveAll();
+    } else {
+      const res = await this._client.findElements(this._selector, timeoutMs);
+      elements = res.elements ?? [];
+    }
+
+    const nthIndex = this._options.nthIndex;
+    if (nthIndex !== undefined) {
+      const idx = nthIndex < 0 ? elements.length + nthIndex : nthIndex;
+      return idx >= 0 && idx < elements.length ? [elements[idx]] : [];
+    }
+    if (strict && elements.length > 1) {
+      throw buildStrictModeViolationError(this._describe(), elements);
+    }
+    return elements;
+  }
+
+  /**
    * @internal — Poll until the target element is enabled, matching Playwright's
    * behavior of auto-waiting before actionable operations (tap, longPress).
    *
@@ -546,7 +742,7 @@ export class ElementHandle {
         const findBudget = Math.min(POLL_MS, Math.max(0, deadline - Date.now()));
         const el = this._hasModifiers()
           ? await this._resolveOne()
-          : (await this._client.findElement(this._selector, findBudget)).element;
+          : await this._findOneStrict(findBudget);
         if (el) {
           everFound = true;
           if (el.enabled) {
@@ -602,14 +798,13 @@ export class ElementHandle {
       if (this._hasModifiers()) {
         result = await this._resolveOne();
       } else {
-        const res = await this._client.findElement(this._selector, this._timeoutMs);
-        if (!res.found || !res.element) {
-          throw new Error(
-            res.errorMessage ||
-              `Element not found: ${this._describe()}`,
-          );
+        // Strict resolution (PILOT-226): poll findElements so multiple
+        // matches throw instead of silently returning the first.
+        const { element } = await this._strictResolve();
+        if (!element) {
+          throw new Error(`Element not found: ${this._describe()}`);
         }
-        result = res.element;
+        result = element;
       }
       await this._traceQuery('find', `Found: ${result.text || result.className}`, Date.now() - start, result.bounds);
       return result;
@@ -728,6 +923,11 @@ export class ElementHandle {
       if (nthIndex !== undefined) {
         const idx = nthIndex < 0 ? elements.length + nthIndex : nthIndex;
         elements = (idx >= 0 && idx < elements.length) ? [elements[idx]] : [];
+      } else if ((state === 'visible' || state === 'attached') && elements.length > 1) {
+        // Strict mode (PILOT-226): waiting for presence on an ambiguous
+        // selector is an error. Absence states ('hidden'/'detached') are
+        // exempt — they evaluate over the full match set.
+        throw buildStrictModeViolationError(this._describe(), elements);
       }
 
       const attached = elements.length > 0;
@@ -892,26 +1092,30 @@ export class ElementHandle {
   }
 
   async type(text: string, options?: { delay?: number }): Promise<void> {
-    const sel = await this._actionSelector();
+    const { remainingMs, element } = await this._strictResolve();
+    const sel = await this._actionSelector(element);
     const delay = options?.delay ?? this._options.typingDelay ?? 0;
-    return this._tracedAction('type', 'type', () => this._client.typeText(sel, text, this._timeoutMs, delay), 'Type text failed', { inputValue: text });
+    return this._tracedAction('type', 'type', () => this._client.typeText(sel, text, remainingMs, delay), 'Type text failed', { inputValue: text });
   }
 
   async clearAndType(text: string, options?: { delay?: number }): Promise<void> {
-    const sel = await this._actionSelector();
+    const { remainingMs, element } = await this._strictResolve();
+    const sel = await this._actionSelector(element);
     const delay = options?.delay ?? this._options.typingDelay ?? 0;
-    return this._tracedAction('clearAndType', 'type', () => this._client.clearAndType(sel, text, this._timeoutMs, delay), 'Clear and type failed', { inputValue: text });
+    return this._tracedAction('clearAndType', 'type', () => this._client.clearAndType(sel, text, remainingMs, delay), 'Clear and type failed', { inputValue: text });
   }
 
   async clear(): Promise<void> {
-    const sel = await this._actionSelector();
-    return this._tracedAction('clear', 'type', () => this._client.clearText(sel, this._timeoutMs), 'Clear text failed');
+    const { remainingMs, element } = await this._strictResolve();
+    const sel = await this._actionSelector(element);
+    return this._tracedAction('clear', 'type', () => this._client.clearText(sel, remainingMs), 'Clear text failed');
   }
 
   async scroll(direction: string, options?: { distance?: number }): Promise<void> {
-    const sel = await this._actionSelector();
+    const { remainingMs, element } = await this._strictResolve();
+    const sel = await this._actionSelector(element);
     return this._tracedAction('scroll', 'scroll',
-      () => this._client.scroll(sel, direction, { distance: options?.distance, timeoutMs: this._timeoutMs }),
+      () => this._client.scroll(sel, direction, { distance: options?.distance, timeoutMs: remainingMs }),
       'Scroll failed');
   }
 
@@ -927,9 +1131,11 @@ export class ElementHandle {
   }
 
   async dragTo(target: ElementHandle): Promise<void> {
-    const sourceSel = await this._actionSelector();
-    const targetSel = await target._actionSelector();
-    return this._action(() => this._client.dragAndDrop(sourceSel, targetSel, this._timeoutMs), 'Drag and drop failed');
+    const source = await this._strictResolve();
+    const targetRes = await target._strictResolve();
+    const sourceSel = await this._actionSelector(source.element);
+    const targetSel = await target._actionSelector(targetRes.element);
+    return this._action(() => this._client.dragAndDrop(sourceSel, targetSel, source.remainingMs), 'Drag and drop failed');
   }
 
   async setChecked(checked: boolean): Promise<void> {
@@ -964,13 +1170,15 @@ export class ElementHandle {
   }
 
   async selectOption(option: string | { index: number }): Promise<void> {
-    const sel = await this._actionSelector();
-    return this._action(() => this._client.selectOption(sel, option, this._timeoutMs), 'Select option failed');
+    const { remainingMs, element } = await this._strictResolve();
+    const sel = await this._actionSelector(element);
+    return this._action(() => this._client.selectOption(sel, option, remainingMs), 'Select option failed');
   }
 
   async screenshot(): Promise<Buffer> {
-    const sel = await this._actionSelector();
-    const res = await this._client.takeElementScreenshot(sel, this._timeoutMs);
+    const { remainingMs, element } = await this._strictResolve();
+    const sel = await this._actionSelector(element);
+    const res = await this._client.takeElementScreenshot(sel, remainingMs);
     if (!res.success) {
       throw new Error(res.errorMessage || 'Element screenshot failed');
     }
@@ -989,30 +1197,35 @@ export class ElementHandle {
   }
 
   async pinchIn(options?: { scale?: number }): Promise<void> {
-    const sel = await this._actionSelector();
+    const { remainingMs, element } = await this._strictResolve();
+    const sel = await this._actionSelector(element);
     const scale = options?.scale ?? 0.5;
-    return this._action(() => this._client.pinchZoom(sel, scale, this._timeoutMs), 'Pinch in failed');
+    return this._action(() => this._client.pinchZoom(sel, scale, remainingMs), 'Pinch in failed');
   }
 
   async pinchOut(options?: { scale?: number }): Promise<void> {
-    const sel = await this._actionSelector();
+    const { remainingMs, element } = await this._strictResolve();
+    const sel = await this._actionSelector(element);
     const scale = options?.scale ?? 2.0;
-    return this._action(() => this._client.pinchZoom(sel, scale, this._timeoutMs), 'Pinch out failed');
+    return this._action(() => this._client.pinchZoom(sel, scale, remainingMs), 'Pinch out failed');
   }
 
   async focus(): Promise<void> {
-    const sel = await this._actionSelector();
-    return this._action(() => this._client.focus(sel, this._timeoutMs), 'Focus failed');
+    const { remainingMs, element } = await this._strictResolve();
+    const sel = await this._actionSelector(element);
+    return this._action(() => this._client.focus(sel, remainingMs), 'Focus failed');
   }
 
   async blur(): Promise<void> {
-    const sel = await this._actionSelector();
-    return this._action(() => this._client.blur(sel, this._timeoutMs), 'Blur failed');
+    const { remainingMs, element } = await this._strictResolve();
+    const sel = await this._actionSelector(element);
+    return this._action(() => this._client.blur(sel, remainingMs), 'Blur failed');
   }
 
   async highlight(options?: { durationMs?: number }): Promise<void> {
-    const sel = await this._actionSelector();
-    return this._action(() => this._client.highlight(sel, options?.durationMs, this._timeoutMs), 'Highlight failed');
+    const { remainingMs, element } = await this._strictResolve();
+    const sel = await this._actionSelector(element);
+    return this._action(() => this._client.highlight(sel, options?.durationMs, remainingMs), 'Highlight failed');
   }
 
   // ── Info accessors (convenience) ──
@@ -1075,15 +1288,28 @@ export class ElementHandle {
     try {
       for (let i = 0; i <= maxScrolls; i++) {
         try {
-          const res = await this._client.findElement(this._selector, SCROLL_PROBE_TIMEOUT_MS);
-          if (res.found && res.element?.visible) {
+          const els = (await this._client.findElements(this._selector, SCROLL_PROBE_TIMEOUT_MS)).elements ?? [];
+          const nthIndex = this._options.nthIndex;
+          let el: ElementInfo | undefined;
+          if (nthIndex !== undefined) {
+            const idx = nthIndex < 0 ? els.length + nthIndex : nthIndex;
+            el = idx >= 0 && idx < els.length ? els[idx] : undefined;
+          } else {
+            // Strict mode (PILOT-226): scrolling toward an ambiguous selector
+            // is an error — which match should end up on screen?
+            if (els.length > 1) {
+              throw buildStrictModeViolationError(this._describe(), els);
+            }
+            el = els[0];
+          }
+          if (el?.visible) {
             // Wait for scroll momentum to fully stop.  On iOS, momentum
             // deceleration continues after a swipe, and the first tap during
             // deceleration is consumed by the ScrollView (stops the scroll)
             // rather than being delivered to the child view.  Poll until the
             // element's position is stable for two consecutive checks.
             if (i > 0) {
-              let lastY = res.element.bounds?.top;
+              let lastY = el.bounds?.top;
               for (let s = 0; s < 10; s++) {
                 await new Promise((r) => setTimeout(r, 100));
                 const probe = await this._client.findElement(this._selector, 500);
@@ -1096,7 +1322,7 @@ export class ElementHandle {
               'scrollIntoView',
               `Visible after ${i} scroll(s)`,
               Date.now() - start,
-              res.element.bounds,
+              el.bounds,
             );
             return;
           }

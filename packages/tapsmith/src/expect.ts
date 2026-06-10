@@ -17,9 +17,9 @@
  *   await expect.poll(async () => fetchCount()).toBe(5);
  */
 
-import { ElementHandle, ELEMENT_HANDLE_BRAND } from "./element-handle.js";
+import { ElementHandle, ELEMENT_HANDLE_BRAND, isStrictModeViolation } from "./element-handle.js";
 import type { ElementInfo } from "./grpc-client.js";
-import { selectorToProto, type Selector } from "./selectors.js";
+import { formatSelector } from "./selectors.js";
 import { extractStack, getActiveTraceCollector } from "./trace/trace-collector.js";
 import { WebViewLocator, WEBVIEW_LOCATOR_BRAND } from "./webview-locator.js";
 
@@ -61,27 +61,18 @@ function selectorDescription(handle: ElementHandle): string {
   return formatSelector(handle._selector);
 }
 
-function formatSelector(sel: Selector): string {
-  let base: string;
-  switch (sel.kind.type) {
-    case 'role': {
-      const rv = sel.kind.value;
-      base = rv.name ? `getByRole("${rv.role}", "${rv.name}")` : `getByRole("${rv.role}")`;
-      break;
-    }
-    case 'text': base = `getByText("${sel.kind.value}")`; break;
-    case 'textContains': base = `getByText("${sel.kind.value}")`; break;
-    case 'contentDesc': base = `getByDescription("${sel.kind.value}")`; break;
-    case 'hint': base = `getByPlaceholder("${sel.kind.value}")`; break;
-    case 'testId': base = `getByTestId("${sel.kind.value}")`; break;
-    case 'label': base = `getByLabel("${sel.kind.value}")`; break;
-    case 'id': base = `locator({ id: "${sel.kind.value}" })`; break;
-    case 'className': base = `locator({ className: "${sel.kind.value}" })`; break;
-    case 'xpath': base = `locator({ xpath: "${sel.kind.value}" })`; break;
-    default: base = JSON.stringify(selectorToProto(sel)); break;
-  }
-  if (sel.parent) return `${formatSelector(sel.parent)}.locator(${base})`;
-  return base;
+/**
+ * Resolve the assertion target for one poll tick (PILOT-226).
+ *
+ * Strict by default: a selector matching more than one element throws a
+ * StrictModeViolationError, which propagates out of the poll loop
+ * immediately instead of silently checking the first match. Positional
+ * modifiers (`.first()`/`.nth()`) and filters on the handle are honored.
+ * Absence-style checks (toBeHidden, negated visibility/existence) pass
+ * `strict: false` and evaluate their condition over the full match set.
+ */
+function resolveTick(handle: ElementHandle, strict: boolean): Promise<ElementInfo[]> {
+  return handle._resolveForAssertion(POLL_FIND_TIMEOUT_MS, strict);
 }
 
 // ─── Role-to-class mapping (mirrors Kotlin roleClassMap) ───
@@ -453,9 +444,11 @@ function createAssertions(
       const desc = selectorDescription(handle);
       const result = await poll(async () => {
         try {
-          const res = await handle._client.findElement(handle._selector, POLL_FIND_TIMEOUT_MS);
-          return res.found && res.element?.visible === true;
-        } catch {
+          // Negated form is an absence check — evaluate over all matches.
+          const els = await resolveTick(handle, !negated);
+          return els.some((el) => el.visible);
+        } catch (err) {
+          if (isStrictModeViolation(err)) throw err;
           return false;
         }
       }, timeout, negated);
@@ -473,9 +466,10 @@ function createAssertions(
       const desc = selectorDescription(handle);
       const result = await poll(async () => {
         try {
-          const res = await handle._client.findElement(handle._selector, POLL_FIND_TIMEOUT_MS);
-          return res.found && res.element?.enabled === true;
-        } catch {
+          const els = await resolveTick(handle, true);
+          return els[0]?.enabled === true;
+        } catch (err) {
+          if (isStrictModeViolation(err)) throw err;
           return false;
         }
       }, timeout, negated);
@@ -494,13 +488,14 @@ function createAssertions(
       let lastText = "";
       const result = await poll(async () => {
         try {
-          const res = await handle._client.findElement(handle._selector, POLL_FIND_TIMEOUT_MS);
-          if (res.found && res.element) {
-            lastText = res.element.text;
-            return res.element.text === expected;
+          const els = await resolveTick(handle, true);
+          if (els.length > 0) {
+            lastText = els[0].text;
+            return els[0].text === expected;
           }
           return false;
-        } catch {
+        } catch (err) {
+          if (isStrictModeViolation(err)) throw err;
           return false;
         }
       }, timeout, negated);
@@ -524,9 +519,11 @@ function createAssertions(
       const desc = selectorDescription(handle);
       const result = await poll(async () => {
         try {
-          const res = await handle._client.findElement(handle._selector, POLL_FIND_TIMEOUT_MS);
-          return res.found;
-        } catch {
+          // Negated form is an absence check — evaluate over all matches.
+          const els = await resolveTick(handle, !negated);
+          return els.length > 0;
+        } catch (err) {
+          if (isStrictModeViolation(err)) throw err;
           return false;
         }
       }, timeout, negated);
@@ -546,9 +543,10 @@ function createAssertions(
       const desc = selectorDescription(handle);
       const result = await poll(async () => {
         try {
-          const res = await handle._client.findElement(handle._selector, POLL_FIND_TIMEOUT_MS);
-          return res.found && res.element?.checked === true;
-        } catch {
+          const els = await resolveTick(handle, true);
+          return els[0]?.checked === true;
+        } catch (err) {
+          if (isStrictModeViolation(err)) throw err;
           return false;
         }
       }, timeout, negated);
@@ -568,9 +566,10 @@ function createAssertions(
       const desc = selectorDescription(handle);
       const result = await poll(async () => {
         try {
-          const res = await handle._client.findElement(handle._selector, POLL_FIND_TIMEOUT_MS);
-          return res.found && res.element?.enabled === false;
-        } catch {
+          const els = await resolveTick(handle, true);
+          return els.length > 0 && els[0].enabled === false;
+        } catch (err) {
+          if (isStrictModeViolation(err)) throw err;
           return false;
         }
       }, timeout, negated);
@@ -592,8 +591,9 @@ function createAssertions(
       const desc = selectorDescription(handle);
       const result = await poll(async () => {
         try {
-          const res = await handle._client.findElement(handle._selector, POLL_FIND_TIMEOUT_MS);
-          return !res.found || res.element?.visible === false;
+          // Absence check — non-strict, hidden means EVERY match is hidden.
+          const els = await resolveTick(handle, false);
+          return els.every((el) => !el.visible);
         } catch {
           return true;
         }
@@ -615,13 +615,14 @@ function createAssertions(
       let lastText = "";
       const result = await poll(async () => {
         try {
-          const res = await handle._client.findElement(handle._selector, POLL_FIND_TIMEOUT_MS);
-          if (res.found && res.element) {
-            lastText = res.element.text;
-            return !res.element.text;
+          const els = await resolveTick(handle, true);
+          if (els.length > 0) {
+            lastText = els[0].text;
+            return !els[0].text;
           }
           return false;
-        } catch {
+        } catch (err) {
+          if (isStrictModeViolation(err)) throw err;
           return false;
         }
       }, timeout, negated);
@@ -645,9 +646,10 @@ function createAssertions(
       const desc = selectorDescription(handle);
       const result = await poll(async () => {
         try {
-          const res = await handle._client.findElement(handle._selector, POLL_FIND_TIMEOUT_MS);
-          return res.found && res.element?.focused === true;
-        } catch {
+          const els = await resolveTick(handle, true);
+          return els[0]?.focused === true;
+        } catch (err) {
+          if (isStrictModeViolation(err)) throw err;
           return false;
         }
       }, timeout, negated);
@@ -668,13 +670,14 @@ function createAssertions(
       let lastText = "";
       const result = await poll(async () => {
         try {
-          const res = await handle._client.findElement(handle._selector, POLL_FIND_TIMEOUT_MS);
-          if (res.found && res.element) {
-            lastText = res.element.text;
-            return matchesStringOrRegExp(res.element.text, expected);
+          const els = await resolveTick(handle, true);
+          if (els.length > 0) {
+            lastText = els[0].text;
+            return matchesStringOrRegExp(els[0].text, expected);
           }
           return false;
-        } catch {
+        } catch (err) {
+          if (isStrictModeViolation(err)) throw err;
           return false;
         }
       }, timeout, negated);
@@ -729,15 +732,16 @@ function createAssertions(
       let lastValue: unknown;
       const result = await poll(async () => {
         try {
-          const res = await handle._client.findElement(handle._selector, POLL_FIND_TIMEOUT_MS);
-          if (res.found && res.element) {
-            lastValue = (res.element as unknown as Record<string, unknown>)[
+          const els = await resolveTick(handle, true);
+          if (els.length > 0) {
+            lastValue = (els[0] as unknown as Record<string, unknown>)[
               name
             ];
             return lastValue === value;
           }
           return false;
-        } catch {
+        } catch (err) {
+          if (isStrictModeViolation(err)) throw err;
           return false;
         }
       }, timeout, negated);
@@ -764,14 +768,15 @@ function createAssertions(
       let lastName = "";
       const result = await poll(async () => {
         try {
-          const res = await handle._client.findElement(handle._selector, POLL_FIND_TIMEOUT_MS);
-          if (res.found && res.element) {
+          const els = await resolveTick(handle, true);
+          if (els.length > 0) {
             // On Android, accessible name is contentDescription if set, otherwise text
-            lastName = res.element.contentDescription || res.element.text;
+            lastName = els[0].contentDescription || els[0].text;
             return matchesExact(lastName, name);
           }
           return false;
-        } catch {
+        } catch (err) {
+          if (isStrictModeViolation(err)) throw err;
           return false;
         }
       }, timeout, negated);
@@ -798,13 +803,14 @@ function createAssertions(
       let lastDesc = "";
       const result = await poll(async () => {
         try {
-          const res = await handle._client.findElement(handle._selector, POLL_FIND_TIMEOUT_MS);
-          if (res.found && res.element) {
-            lastDesc = res.element.hint;
+          const els = await resolveTick(handle, true);
+          if (els.length > 0) {
+            lastDesc = els[0].hint;
             return matchesExact(lastDesc, description);
           }
           return false;
-        } catch {
+        } catch (err) {
+          if (isStrictModeViolation(err)) throw err;
           return false;
         }
       }, timeout, negated);
@@ -832,15 +838,16 @@ function createAssertions(
       let lastRole = "";
       const result = await poll(async () => {
         try {
-          const res = await handle._client.findElement(handle._selector, POLL_FIND_TIMEOUT_MS);
-          if (res.found && res.element) {
+          const els = await resolveTick(handle, true);
+          if (els.length > 0) {
             // Use the role field from the agent if available, otherwise compute from className
             lastRole =
-              res.element.role || classNameToRole(res.element.className);
+              els[0].role || classNameToRole(els[0].className);
             return normalizeRole(lastRole) === expected;
           }
           return false;
-        } catch {
+        } catch (err) {
+          if (isStrictModeViolation(err)) throw err;
           return false;
         }
       }, timeout, negated);
@@ -865,13 +872,14 @@ function createAssertions(
       let lastValue = "";
       const result = await poll(async () => {
         try {
-          const res = await handle._client.findElement(handle._selector, POLL_FIND_TIMEOUT_MS);
-          if (res.found && res.element) {
-            lastValue = res.element.text;
-            return res.element.text === value;
+          const els = await resolveTick(handle, true);
+          if (els.length > 0) {
+            lastValue = els[0].text;
+            return els[0].text === value;
           }
           return false;
-        } catch {
+        } catch (err) {
+          if (isStrictModeViolation(err)) throw err;
           return false;
         }
       }, timeout, negated);
@@ -897,15 +905,16 @@ function createAssertions(
       const desc = selectorDescription(handle);
       const result = await poll(async () => {
         try {
-          const res = await handle._client.findElement(handle._selector, POLL_FIND_TIMEOUT_MS);
-          if (res.found && res.element) {
+          const els = await resolveTick(handle, true);
+          if (els.length > 0) {
             const isTextField =
-              res.element.role === "textfield" ||
-              EDITABLE_CLASSES.has(res.element.className);
-            return isTextField && res.element.enabled;
+              els[0].role === "textfield" ||
+              EDITABLE_CLASSES.has(els[0].className);
+            return isTextField && els[0].enabled;
           }
           return false;
-        } catch {
+        } catch (err) {
+          if (isStrictModeViolation(err)) throw err;
           return false;
         }
       }, timeout, negated);
@@ -927,16 +936,17 @@ function createAssertions(
       let lastRatio = 0;
       const result = await poll(async () => {
         try {
-          const res = await handle._client.findElement(handle._selector, POLL_FIND_TIMEOUT_MS);
-          if (res.found && res.element) {
-            lastRatio = res.element.viewportRatio ?? 0;
+          const els = await resolveTick(handle, true);
+          if (els.length > 0) {
+            lastRatio = els[0].viewportRatio ?? 0;
             if (requiredRatio > 0) {
               return lastRatio >= requiredRatio;
             }
             return lastRatio > 0;
           }
           return false;
-        } catch {
+        } catch (err) {
+          if (isStrictModeViolation(err)) throw err;
           return false;
         }
       }, timeout, negated);

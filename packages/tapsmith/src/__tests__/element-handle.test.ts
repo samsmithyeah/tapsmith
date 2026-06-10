@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
-import { ElementHandle } from '../element-handle.js';
-import { type Selector, _text, _role, _className, _id, selectorToProto } from '../selectors.js';
+import { ElementHandle, StrictModeViolationError, isStrictModeViolation } from '../element-handle.js';
+import { type Selector, _text, _textContains, _role, _className, _id, selectorToProto } from '../selectors.js';
 import type {
   TapsmithGrpcClient,
   FindElementsResponse,
@@ -205,12 +205,7 @@ describe('find()', () => {
   it('returns ElementInfo when found', async () => {
     const info = makeElementInfo({ text: 'Found it' });
     const client = makeMockClient({
-      findElement: vi.fn(async () => ({
-        requestId: '1',
-        found: true,
-        element: info,
-        errorMessage: '',
-      })),
+      findElements: vi.fn(async () => makeFindElementsResponse([info])),
     });
     const handle = new ElementHandle(client, _text('Found it'), 5000);
     const result = await handle.find();
@@ -219,39 +214,37 @@ describe('find()', () => {
 
   it('throws when element is not found', async () => {
     const client = makeMockClient({
-      findElement: vi.fn(async () => ({
-        requestId: '1',
-        found: false,
-        errorMessage: 'Element not found',
-      })),
+      findElements: vi.fn(async () => makeFindElementsResponse([])),
     });
-    const handle = new ElementHandle(client, _text('Missing'), 5000);
-    await expect(handle.find()).rejects.toThrow('Element not found');
+    const handle = new ElementHandle(client, _text('Missing'), 300);
+    await expect(handle.find()).rejects.toThrow(/was not found/);
   });
 
-  it('throws with selector description when no error message', async () => {
+  it('throws with selector description in the error message', async () => {
     const client = makeMockClient({
-      findElement: vi.fn(async () => ({
-        requestId: '1',
-        found: false,
-        errorMessage: '',
-      })),
+      findElements: vi.fn(async () => makeFindElementsResponse([])),
     });
-    const handle = new ElementHandle(client, _text('Gone'), 5000);
-    await expect(handle.find()).rejects.toThrow('Element not found');
+    const handle = new ElementHandle(client, _text('Gone'), 300);
+    await expect(handle.find()).rejects.toThrow('getByText("Gone", { exact: true })');
   });
 
-  it('passes timeout to client', async () => {
-    const findElement = vi.fn(async () => ({
-      requestId: '1',
-      found: true,
-      element: makeElementInfo(),
-      errorMessage: '',
-    }));
-    const client = makeMockClient({ findElement });
+  it('polls findElements with a capped per-tick budget', async () => {
+    const findElements = vi.fn(async () => makeFindElementsResponse([makeElementInfo()]));
+    const client = makeMockClient({ findElements });
     const handle = new ElementHandle(client, _text('X'), 3000);
     await handle.find();
-    expect(findElement).toHaveBeenCalledWith(handle._selector, 3000);
+    expect(findElements).toHaveBeenCalledWith(handle._selector, 250);
+  });
+
+  it('throws StrictModeViolationError when multiple elements match', async () => {
+    const client = makeMockClient({
+      findElements: vi.fn(async () => makeFindElementsResponse([
+        makeElementInfo({ text: 'Sign in to continue' }),
+        makeElementInfo({ text: 'Sign in' }),
+      ])),
+    });
+    const handle = new ElementHandle(client, _textContains('Sign in'), 5000);
+    await expect(handle.find()).rejects.toThrow(/^strict mode violation/);
   });
 });
 
@@ -288,8 +281,9 @@ describe('tap()', () => {
     const sel = _text('Button');
     const handle = new ElementHandle(client, sel, 4000);
     await handle.tap();
-    // findElement is called once by _waitForEnabled to check enabled state
-    expect(client.findElement).toHaveBeenCalled();
+    // findElements is called once by _waitForEnabled to check enabled state
+    // (and that the match is unique — strict mode, PILOT-226)
+    expect(client.findElements).toHaveBeenCalled();
     expect(tap).toHaveBeenCalledWith(sel, expect.any(Number));
     // Remaining timeout should be close to 4000 (minus the findElement round-trip)
     const remaining = (tap.mock.calls[0] as unknown as [unknown, number])[1];
@@ -315,17 +309,12 @@ describe('tap()', () => {
 
   it('waits for a disabled element to become enabled before tapping', async () => {
     let callCount = 0;
-    const findElement = vi.fn(async () => {
+    const findElements = vi.fn(async () => {
       callCount++;
-      return {
-        requestId: '1',
-        found: true,
-        element: makeElementInfo({ enabled: callCount >= 3 }),
-        errorMessage: '',
-      };
+      return makeFindElementsResponse([makeElementInfo({ enabled: callCount >= 3 })]);
     });
     const tap = vi.fn(async () => successResponse());
-    const client = makeMockClient({ findElement, tap });
+    const client = makeMockClient({ findElements, tap });
     const handle = new ElementHandle(client, _text('Submit'), 5000);
     await handle.tap();
     expect(callCount).toBeGreaterThanOrEqual(3);
@@ -333,53 +322,82 @@ describe('tap()', () => {
   });
 
   it('throws "disabled" when element is found but stays disabled', async () => {
-    const findElement = vi.fn(async () => ({
-      requestId: '1',
-      found: true,
-      element: makeElementInfo({ enabled: false }),
-      errorMessage: '',
-    }));
-    const client = makeMockClient({ findElement });
+    const findElements = vi.fn(async () => makeFindElementsResponse([makeElementInfo({ enabled: false })]));
+    const client = makeMockClient({ findElements });
     const handle = new ElementHandle(client, _text('Submit'), 500);
     await expect(handle.tap()).rejects.toThrow(/is disabled/);
   });
 
   it('throws "not found" when element never appears', async () => {
-    const findElement = vi.fn(async () => ({
-      requestId: '1',
-      found: false,
-      element: undefined as unknown as ElementInfo,
-      errorMessage: 'not found',
-    }));
-    const client = makeMockClient({ findElement });
+    const findElements = vi.fn(async () => makeFindElementsResponse([]));
+    const client = makeMockClient({ findElements });
     const handle = new ElementHandle(client, _text('Ghost'), 500);
     await expect(handle.tap()).rejects.toThrow(/was not found/);
   });
 
-  it('with timeout 0 skips the enabled wait and still invokes tap', async () => {
-    const findElement = vi.fn(async () => ({
-      requestId: '1',
-      found: true,
-      element: makeElementInfo({ enabled: true }),
-      errorMessage: '',
-    }));
+  it('throws StrictModeViolationError listing all matches when the selector is ambiguous', async () => {
+    const elements = [
+      makeElementInfo({ text: 'Sign in to continue to DreamSpinner', role: 'text', bounds: { left: 44, top: 210, right: 436, bottom: 260 } }),
+      makeElementInfo({ text: 'Sign in', role: 'button', bounds: { left: 44, top: 640, right: 436, bottom: 712 } }),
+    ];
     const tap = vi.fn(async () => successResponse());
-    const client = makeMockClient({ findElement, tap });
+    const client = makeMockClient({
+      findElements: vi.fn(async () => makeFindElementsResponse(elements)),
+      tap,
+    });
+    const handle = new ElementHandle(client, _textContains('Sign in'), 5000);
+    const err = await handle.tap().then(
+      () => { throw new Error('expected tap to reject'); },
+      (e: unknown) => e,
+    );
+    expect(isStrictModeViolation(err)).toBe(true);
+    expect(err).toBeInstanceOf(StrictModeViolationError);
+    expect((err as StrictModeViolationError).elements).toHaveLength(2);
+    expect((err as Error).message).toBe(
+      'strict mode violation: getByText("Sign in") resolved to 2 elements:\n' +
+      '    1) text "Sign in to continue to DreamSpinner" [44,210][436,260] aka device.getByText("Sign in to continue to DreamSpinner", { exact: true })\n' +
+      '    2) button "Sign in" [44,640][436,712] aka device.getByRole("button", { name: "Sign in" })\n' +
+      'Hint: use { exact: true }, getByRole(role, { name }), getByTestId(), or .first()/.nth()/.last() to target a single element.',
+    );
+    // Strict violations must throw immediately — no polling out the timeout
+    expect(client.findElements).toHaveBeenCalledTimes(1);
+    expect(tap).not.toHaveBeenCalled();
+  });
+
+  it('.first() disambiguates an ambiguous selector', async () => {
+    const elements = [
+      makeElementInfo({ text: 'Sign in to continue', resourceId: 'subtitle' }),
+      makeElementInfo({ text: 'Sign in', resourceId: 'button' }),
+    ];
+    const tap = vi.fn(async () => successResponse());
+    const client = makeMockClient({
+      findElements: vi.fn(async () => makeFindElementsResponse(elements)),
+      tap,
+    });
+    const handle = new ElementHandle(client, _textContains('Sign in'), 5000);
+    await handle.first().tap();
+    expect(tap).toHaveBeenCalled();
+  });
+
+  it('with timeout 0 skips the enabled wait and still invokes tap', async () => {
+    const findElements = vi.fn(async () => makeFindElementsResponse([makeElementInfo({ enabled: true })]));
+    const tap = vi.fn(async () => successResponse());
+    const client = makeMockClient({ findElements, tap });
     const handle = new ElementHandle(client, _text('Now'), 0);
     await handle.tap();
-    expect(findElement).not.toHaveBeenCalled();
+    expect(findElements).not.toHaveBeenCalled();
     expect(tap).toHaveBeenCalledWith(expect.anything(), 0);
   });
 
-  it('propagates non-"not found" errors from findElement instead of masking them as timeout', async () => {
+  it('propagates non-"not found" errors from findElements instead of masking them as timeout', async () => {
     // Regression: the old catch-all swallowed gRPC failures and surfaced
     // them as "Element X was not found after waiting Nms", obscuring the
     // real cause (e.g. daemon crashed, network down). Only no-match errors
     // should keep the poll loop alive; everything else must propagate.
-    const findElement = vi.fn(async () => {
+    const findElements = vi.fn(async () => {
       throw new Error('14 UNAVAILABLE: No connection established');
     });
-    const client = makeMockClient({ findElement });
+    const client = makeMockClient({ findElements });
     const handle = new ElementHandle(client, _text('Anything'), 5000);
     await expect(handle.tap()).rejects.toThrow(/UNAVAILABLE/);
   });
@@ -390,18 +408,13 @@ describe('tap()', () => {
     // against the faked clock.
     vi.useFakeTimers();
     try {
-      const findElement = vi.fn(async () => {
+      const findElements = vi.fn(async () => {
         // Burn almost the whole 2000ms budget before reporting enabled.
         await new Promise((r) => setTimeout(r, 1900));
-        return {
-          requestId: '1',
-          found: true,
-          element: makeElementInfo({ enabled: true }),
-          errorMessage: '',
-        };
+        return makeFindElementsResponse([makeElementInfo({ enabled: true })]);
       });
       const tap = vi.fn(async () => successResponse());
-      const client = makeMockClient({ findElement, tap });
+      const client = makeMockClient({ findElements, tap });
       const handle = new ElementHandle(client, _text('Late'), 2000);
 
       const tapPromise = handle.tap();
@@ -450,7 +463,7 @@ describe('type()', () => {
     const sel = _text('Input');
     const handle = new ElementHandle(client, sel, 5000);
     await handle.type('hello');
-    expect(typeText).toHaveBeenCalledWith(sel, 'hello', 5000, 0);
+    expect(typeText).toHaveBeenCalledWith(sel, 'hello', expect.any(Number), 0);
   });
 
   it('throws on failure', async () => {
@@ -469,7 +482,7 @@ describe('clearAndType()', () => {
     const sel = _text('Field');
     const handle = new ElementHandle(client, sel, 5000);
     await handle.clearAndType('new value');
-    expect(clearAndType).toHaveBeenCalledWith(sel, 'new value', 5000, 0);
+    expect(clearAndType).toHaveBeenCalledWith(sel, 'new value', expect.any(Number), 0);
   });
 
   it('throws on failure', async () => {
@@ -488,7 +501,7 @@ describe('clear()', () => {
     const sel = _text('Field');
     const handle = new ElementHandle(client, sel, 5000);
     await handle.clear();
-    expect(clearText).toHaveBeenCalledWith(sel, 5000);
+    expect(clearText).toHaveBeenCalledWith(sel, expect.any(Number));
   });
 
   it('throws on failure', async () => {
@@ -527,12 +540,7 @@ describe('scroll()', () => {
 describe('getText()', () => {
   it('returns text from found element', async () => {
     const client = makeMockClient({
-      findElement: vi.fn(async () => ({
-        requestId: '1',
-        found: true,
-        element: makeElementInfo({ text: 'Content here' }),
-        errorMessage: '',
-      })),
+      findElements: vi.fn(async () => makeFindElementsResponse([makeElementInfo({ text: 'Content here' })])),
     });
     const handle = new ElementHandle(client, _text('X'), 5000);
     const result = await handle.getText();
@@ -543,12 +551,7 @@ describe('getText()', () => {
 describe('isVisible()', () => {
   it('returns visibility from found element', async () => {
     const client = makeMockClient({
-      findElement: vi.fn(async () => ({
-        requestId: '1',
-        found: true,
-        element: makeElementInfo({ visible: false }),
-        errorMessage: '',
-      })),
+      findElements: vi.fn(async () => makeFindElementsResponse([makeElementInfo({ visible: false })])),
     });
     const handle = new ElementHandle(client, _text('X'), 5000);
     expect(await handle.isVisible()).toBe(false);
@@ -558,12 +561,7 @@ describe('isVisible()', () => {
 describe('isEnabled()', () => {
   it('returns enabled state from found element', async () => {
     const client = makeMockClient({
-      findElement: vi.fn(async () => ({
-        requestId: '1',
-        found: true,
-        element: makeElementInfo({ enabled: false }),
-        errorMessage: '',
-      })),
+      findElements: vi.fn(async () => makeFindElementsResponse([makeElementInfo({ enabled: false })])),
     });
     const handle = new ElementHandle(client, _text('X'), 5000);
     expect(await handle.isEnabled()).toBe(false);
@@ -1147,17 +1145,18 @@ describe('method composition', () => {
     }
   });
 
-  it('action methods on unmodified handle use direct selector (fast path)', async () => {
+  it('action methods on unmodified handle pass the direct selector to the agent', async () => {
     const tap = vi.fn(async () => successResponse());
-    const findElements = vi.fn();
-    const client = makeMockClient({ tap, findElements });
+    const client = makeMockClient({ tap });
     const sel = _text('Button');
     const handle = new ElementHandle(client, sel, 5000);
 
     await handle.tap();
 
-    // Should use direct selector, not resolve via findElements
-    expect(findElements).not.toHaveBeenCalled();
+    // findElements runs once for the strict-mode uniqueness check
+    // (PILOT-226), but the action itself still receives the raw selector —
+    // the agent re-resolves it on-device.
+    expect(client.findElements).toHaveBeenCalled();
     // tap forwards the remaining budget from _waitForEnabled(), which is
     // `deadline - Date.now()` — on a slow tick CI run that can be 4999ms
     // rather than exactly 5000. Assert the call shape, not the exact value.
@@ -1324,14 +1323,14 @@ describe('doubleTap()', () => {
     await expect(handle.doubleTap()).rejects.toThrow('Double tap failed');
   });
 
-  it('unmodified handle uses direct selector (fast path)', async () => {
+  it('unmodified handle passes the direct selector to the agent', async () => {
     const doubleTap = vi.fn(async () => successResponse());
-    const findElements = vi.fn();
-    const client = makeMockClient({ doubleTap, findElements });
+    const client = makeMockClient({ doubleTap });
     const sel = _text('Button');
     const handle = new ElementHandle(client, sel, 5000);
     await handle.doubleTap();
-    expect(findElements).not.toHaveBeenCalled();
+    // findElements runs once for the strict-mode uniqueness check (PILOT-226)
+    expect(client.findElements).toHaveBeenCalled();
     expect(doubleTap).toHaveBeenCalledWith(sel, expect.any(Number), 0);
   });
 });
@@ -1347,7 +1346,7 @@ describe('dragTo()', () => {
     const source = new ElementHandle(client, sourceSel, 5000);
     const target = new ElementHandle(client, targetSel, 5000);
     await source.dragTo(target);
-    expect(dragAndDrop).toHaveBeenCalledWith(sourceSel, targetSel, 5000);
+    expect(dragAndDrop).toHaveBeenCalledWith(sourceSel, targetSel, expect.any(Number));
   });
 
   it('throws on failure', async () => {
@@ -1494,7 +1493,7 @@ describe('selectOption()', () => {
     const sel = _text('Dropdown');
     const handle = new ElementHandle(client, sel, 5000);
     await handle.selectOption('Option 2');
-    expect(selectOption).toHaveBeenCalledWith(sel, 'Option 2', 5000);
+    expect(selectOption).toHaveBeenCalledWith(sel, 'Option 2', expect.any(Number));
   });
 
   it('delegates to client.selectOption with index option', async () => {
@@ -1503,7 +1502,7 @@ describe('selectOption()', () => {
     const sel = _text('Dropdown');
     const handle = new ElementHandle(client, sel, 5000);
     await handle.selectOption({ index: 1 });
-    expect(selectOption).toHaveBeenCalledWith(sel, { index: 1 }, 5000);
+    expect(selectOption).toHaveBeenCalledWith(sel, { index: 1 }, expect.any(Number));
   });
 
   it('throws on failure', async () => {
@@ -1532,7 +1531,7 @@ describe('screenshot()', () => {
     const sel = _text('Image');
     const handle = new ElementHandle(client, sel, 5000);
     const result = await handle.screenshot();
-    expect(takeElementScreenshot).toHaveBeenCalledWith(sel, 5000);
+    expect(takeElementScreenshot).toHaveBeenCalledWith(sel, expect.any(Number));
     expect(result).toEqual(Buffer.from('PNG_DATA'));
   });
 
@@ -1580,12 +1579,9 @@ describe('screenshot()', () => {
 describe('boundingBox()', () => {
   it('returns bounding box from element bounds', async () => {
     const client = makeMockClient({
-      findElement: vi.fn(async () => ({
-        requestId: '1',
-        found: true,
-        element: makeElementInfo({ bounds: { left: 10, top: 20, right: 110, bottom: 70 } }),
-        errorMessage: '',
-      })),
+      findElements: vi.fn(async () => makeFindElementsResponse([
+        makeElementInfo({ bounds: { left: 10, top: 20, right: 110, bottom: 70 } }),
+      ])),
     });
     const handle = new ElementHandle(client, _text('Header'), 5000);
     const box = await handle.boundingBox();
@@ -1594,12 +1590,9 @@ describe('boundingBox()', () => {
 
   it('returns null when element has no bounds', async () => {
     const client = makeMockClient({
-      findElement: vi.fn(async () => ({
-        requestId: '1',
-        found: true,
-        element: makeElementInfo({ bounds: undefined }),
-        errorMessage: '',
-      })),
+      findElements: vi.fn(async () => makeFindElementsResponse([
+        makeElementInfo({ bounds: undefined }),
+      ])),
     });
     const handle = new ElementHandle(client, _text('Header'), 5000);
     const box = await handle.boundingBox();
@@ -1629,7 +1622,7 @@ describe('pinchIn()', () => {
     const sel = _text('Map');
     const handle = new ElementHandle(client, sel, 5000);
     await handle.pinchIn();
-    expect(pinchZoom).toHaveBeenCalledWith(sel, 0.5, 5000);
+    expect(pinchZoom).toHaveBeenCalledWith(sel, 0.5, expect.any(Number));
   });
 
   it('accepts custom scale', async () => {
@@ -1638,7 +1631,7 @@ describe('pinchIn()', () => {
     const sel = _text('Map');
     const handle = new ElementHandle(client, sel, 5000);
     await handle.pinchIn({ scale: 0.3 });
-    expect(pinchZoom).toHaveBeenCalledWith(sel, 0.3, 5000);
+    expect(pinchZoom).toHaveBeenCalledWith(sel, 0.3, expect.any(Number));
   });
 
   it('throws on failure', async () => {
@@ -1665,7 +1658,7 @@ describe('pinchOut()', () => {
     const sel = _text('Map');
     const handle = new ElementHandle(client, sel, 5000);
     await handle.pinchOut();
-    expect(pinchZoom).toHaveBeenCalledWith(sel, 2.0, 5000);
+    expect(pinchZoom).toHaveBeenCalledWith(sel, 2.0, expect.any(Number));
   });
 
   it('accepts custom scale', async () => {
@@ -1674,7 +1667,7 @@ describe('pinchOut()', () => {
     const sel = _text('Map');
     const handle = new ElementHandle(client, sel, 5000);
     await handle.pinchOut({ scale: 3.0 });
-    expect(pinchZoom).toHaveBeenCalledWith(sel, 3.0, 5000);
+    expect(pinchZoom).toHaveBeenCalledWith(sel, 3.0, expect.any(Number));
   });
 
   it('throws on failure', async () => {
@@ -1695,7 +1688,7 @@ describe('focus()', () => {
     const sel = _text('Email');
     const handle = new ElementHandle(client, sel, 5000);
     await handle.focus();
-    expect(focus).toHaveBeenCalledWith(sel, 5000);
+    expect(focus).toHaveBeenCalledWith(sel, expect.any(Number));
   });
 
   it('throws on failure', async () => {
@@ -1714,15 +1707,15 @@ describe('focus()', () => {
     await expect(handle.focus()).rejects.toThrow('Focus failed');
   });
 
-  it('unmodified handle uses direct selector', async () => {
+  it('unmodified handle passes the direct selector to the agent', async () => {
     const focus = vi.fn(async () => successResponse());
-    const findElements = vi.fn();
-    const client = makeMockClient({ focus, findElements });
+    const client = makeMockClient({ focus });
     const sel = _text('Input');
     const handle = new ElementHandle(client, sel, 5000);
     await handle.focus();
-    expect(findElements).not.toHaveBeenCalled();
-    expect(focus).toHaveBeenCalledWith(sel, 5000);
+    // findElements runs once for the strict-mode uniqueness check (PILOT-226)
+    expect(client.findElements).toHaveBeenCalled();
+    expect(focus).toHaveBeenCalledWith(sel, expect.any(Number));
   });
 });
 
@@ -1733,7 +1726,7 @@ describe('blur()', () => {
     const sel = _text('Email');
     const handle = new ElementHandle(client, sel, 5000);
     await handle.blur();
-    expect(blur).toHaveBeenCalledWith(sel, 5000);
+    expect(blur).toHaveBeenCalledWith(sel, expect.any(Number));
   });
 
   it('throws on failure', async () => {
@@ -1758,12 +1751,7 @@ describe('blur()', () => {
 describe('isChecked()', () => {
   it('returns true when element is checked', async () => {
     const client = makeMockClient({
-      findElement: vi.fn(async () => ({
-        requestId: '1',
-        found: true,
-        element: makeElementInfo({ checked: true }),
-        errorMessage: '',
-      })),
+      findElements: vi.fn(async () => makeFindElementsResponse([makeElementInfo({ checked: true })])),
     });
     const handle = new ElementHandle(client, _text('Switch'), 5000);
     expect(await handle.isChecked()).toBe(true);
@@ -1771,12 +1759,7 @@ describe('isChecked()', () => {
 
   it('returns false when element is not checked', async () => {
     const client = makeMockClient({
-      findElement: vi.fn(async () => ({
-        requestId: '1',
-        found: true,
-        element: makeElementInfo({ checked: false }),
-        errorMessage: '',
-      })),
+      findElements: vi.fn(async () => makeFindElementsResponse([makeElementInfo({ checked: false })])),
     });
     const handle = new ElementHandle(client, _text('Switch'), 5000);
     expect(await handle.isChecked()).toBe(false);
@@ -1788,12 +1771,7 @@ describe('isChecked()', () => {
 describe('inputValue()', () => {
   it('returns the text value of the element', async () => {
     const client = makeMockClient({
-      findElement: vi.fn(async () => ({
-        requestId: '1',
-        found: true,
-        element: makeElementInfo({ text: 'user@example.com' }),
-        errorMessage: '',
-      })),
+      findElements: vi.fn(async () => makeFindElementsResponse([makeElementInfo({ text: 'user@example.com' })])),
     });
     const handle = new ElementHandle(client, _text('Email'), 5000);
     expect(await handle.inputValue()).toBe('user@example.com');
@@ -1801,12 +1779,7 @@ describe('inputValue()', () => {
 
   it('returns empty string when field is empty', async () => {
     const client = makeMockClient({
-      findElement: vi.fn(async () => ({
-        requestId: '1',
-        found: true,
-        element: makeElementInfo({ text: '' }),
-        errorMessage: '',
-      })),
+      findElements: vi.fn(async () => makeFindElementsResponse([makeElementInfo({ text: '' })])),
     });
     const handle = new ElementHandle(client, _text('Email'), 5000);
     expect(await handle.inputValue()).toBe('');
@@ -1822,7 +1795,7 @@ describe('highlight()', () => {
     const sel = _text('Submit');
     const handle = new ElementHandle(client, sel, 5000);
     await handle.highlight();
-    expect(highlight).toHaveBeenCalledWith(sel, undefined, 5000);
+    expect(highlight).toHaveBeenCalledWith(sel, undefined, expect.any(Number));
   });
 
   it('passes durationMs option', async () => {
@@ -1831,7 +1804,7 @@ describe('highlight()', () => {
     const sel = _text('Submit');
     const handle = new ElementHandle(client, sel, 5000);
     await handle.highlight({ durationMs: 2000 });
-    expect(highlight).toHaveBeenCalledWith(sel, 2000, 5000);
+    expect(highlight).toHaveBeenCalledWith(sel, 2000, expect.any(Number));
   });
 
   it('throws on failure', async () => {
@@ -2002,12 +1975,7 @@ describe('waitFor', () => {
 describe('isEditable', () => {
   it('returns true for enabled textfield', async () => {
     const client = makeMockClient({
-      findElement: vi.fn(async () => ({
-        requestId: '1',
-        found: true,
-        element: makeElementInfo({ role: 'textfield', enabled: true }),
-        errorMessage: '',
-      })),
+      findElements: vi.fn(async () => makeFindElementsResponse([makeElementInfo({ role: 'textfield', enabled: true })])),
     });
     const handle = new ElementHandle(client, _text('Email'), 5000);
     expect(await handle.isEditable()).toBe(true);
@@ -2015,12 +1983,7 @@ describe('isEditable', () => {
 
   it('returns false for disabled textfield', async () => {
     const client = makeMockClient({
-      findElement: vi.fn(async () => ({
-        requestId: '1',
-        found: true,
-        element: makeElementInfo({ role: 'textfield', enabled: false }),
-        errorMessage: '',
-      })),
+      findElements: vi.fn(async () => makeFindElementsResponse([makeElementInfo({ role: 'textfield', enabled: false })])),
     });
     const handle = new ElementHandle(client, _text('Email'), 5000);
     expect(await handle.isEditable()).toBe(false);
@@ -2028,12 +1991,7 @@ describe('isEditable', () => {
 
   it('returns false for non-textfield element', async () => {
     const client = makeMockClient({
-      findElement: vi.fn(async () => ({
-        requestId: '1',
-        found: true,
-        element: makeElementInfo({ role: 'button', enabled: true }),
-        errorMessage: '',
-      })),
+      findElements: vi.fn(async () => makeFindElementsResponse([makeElementInfo({ role: 'button', enabled: true })])),
     });
     const handle = new ElementHandle(client, _text('Submit'), 5000);
     expect(await handle.isEditable()).toBe(false);
