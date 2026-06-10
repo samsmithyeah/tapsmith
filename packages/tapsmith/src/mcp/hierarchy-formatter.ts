@@ -1,6 +1,7 @@
 import type { HierarchyNode } from '../trace-viewer/components/hierarchy-utils.js';
 import { getNodeRole } from '../trace-viewer/components/hierarchy-utils.js';
 import { generateSelectors } from '../trace-viewer/components/selector-generation.js';
+import { disambiguateSelectors } from '../trace-viewer/components/selector-uniqueness.js';
 
 interface FormattedResult {
   tree: string
@@ -53,6 +54,7 @@ function formatNode(
   node: HierarchyNode,
   depth: number,
   refs: RefEntry[],
+  roots: HierarchyNode[],
 ): string[] {
   const lines: string[] = [];
   const indent = '  '.repeat(depth);
@@ -64,7 +66,10 @@ function formatNode(
   const isSemantic = isSemanticNode(node);
 
   if (isSemantic) {
-    const selectors = generateSelectors(node);
+    // Disambiguate against the full hierarchy (PILOT-226): a suggested
+    // selector that matches multiple elements would throw a strict mode
+    // violation the moment a test acts on it.
+    const selectors = disambiguateSelectors(roots, node, generateSelectors(node));
     let refTag = '';
     if (selectors.length > 0) {
       const ref = refs.length + 1;
@@ -84,7 +89,7 @@ function formatNode(
   const childDepth = isSemantic ? depth + 1 : depth;
   for (const child of node.children) {
     if (hasSemanticDescendant(child)) {
-      lines.push(...formatNode(child, childDepth, refs));
+      lines.push(...formatNode(child, childDepth, refs, roots));
     }
   }
 
@@ -102,7 +107,7 @@ export function formatHierarchy(roots: HierarchyNode[]): FormattedResult {
 
   for (const root of roots) {
     if (hasSemanticDescendant(root)) {
-      lines.push(...formatNode(root, 0, refs));
+      lines.push(...formatNode(root, 0, refs, roots));
     }
   }
 
