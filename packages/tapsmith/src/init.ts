@@ -4,6 +4,7 @@ import * as path from 'node:path';
 import Enquirer from 'enquirer';
 import figlet from 'figlet';
 import { tryExec, scanEnvironment, type EnvScan, type SimulatorInfo } from './env-scan.js';
+import { detectAndroidPackage, detectIosBundleId } from './init-detect.js';
 
 const DIM = '\x1b[2m';
 const BOLD = '\x1b[1m';
@@ -99,27 +100,10 @@ async function configureAndroid(env: EnvScan): Promise<AndroidConfig> {
   });
 
   let packageName: string | undefined;
-  let aapt2Bin = 'aapt2';
-  if (!tryExec('aapt2', ['version'])) {
-    const androidHome = process.env['ANDROID_HOME'] || process.env['ANDROID_SDK_ROOT'];
-    if (androidHome) {
-      const buildTools = path.join(androidHome, 'build-tools');
-      if (fs.existsSync(buildTools)) {
-        const versions = fs.readdirSync(buildTools).sort((a, b) => b.localeCompare(a, undefined, { numeric: true }));
-        for (const v of versions) {
-          const candidate = path.join(buildTools, v, 'aapt2');
-          if (fs.existsSync(candidate)) { aapt2Bin = candidate; break; }
-        }
-      }
-    }
-  }
-  const aapt = tryExec(aapt2Bin, ['dump', 'badging', apkPath]);
-  if (aapt) {
-    const match = aapt.match(/package: name='([^']+)'/);
-    if (match) {
-      packageName = match[1];
-      console.log(dim(`  Detected package: ${packageName}`));
-    }
+  const detected = detectAndroidPackage(apkPath);
+  if (detected) {
+    packageName = detected;
+    console.log(dim(`  Detected package: ${detected}`));
   }
   if (!packageName) {
     packageName = await ask<string>({
@@ -172,13 +156,10 @@ async function configureIos(env: EnvScan): Promise<IosConfig> {
   });
 
   let bundleId: string | undefined;
-  const plistPath = path.join(appPath, 'Info.plist');
-  if (fs.existsSync(plistPath)) {
-    const plistOut = tryExec('/usr/libexec/PlistBuddy', ['-c', 'Print :CFBundleIdentifier', plistPath]);
-    if (plistOut) {
-      bundleId = plistOut;
-      console.log(dim(`  Detected bundle ID: ${bundleId}`));
-    }
+  const detected = detectIosBundleId(appPath);
+  if (detected) {
+    bundleId = detected;
+    console.log(dim(`  Detected bundle ID: ${detected}`));
   }
   if (!bundleId) {
     bundleId = await ask<string>({
