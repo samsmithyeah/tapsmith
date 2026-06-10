@@ -42,6 +42,7 @@ export default defineConfig({
             { label: 'Parallel Execution', slug: 'guides/parallel-and-sharding' },
             { label: 'Debugging', slug: 'guides/debugging' },
             { label: 'MCP Server', slug: 'guides/mcp-server' },
+            { label: 'AI Coding Agents', slug: 'guides/agents' },
           ],
         },
         {
