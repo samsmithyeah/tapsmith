@@ -1,29 +1,9 @@
 import { useState, useCallback, useEffect, useMemo } from 'preact/hooks';
 import type { HierarchyNode, Bounds } from './hierarchy-utils.js';
 import { parseHierarchyXml } from './hierarchy-utils.js';
-import { generateSelectors, generateBestSelector, findBetterDescendant, hasGoodSelectors, type GeneratedSelector } from './selector-generation.js';
-import { parseSelectorString, findMatchingNodes, getNodeBounds, hitTest } from './selector-matching.js';
-
-function findParent(roots: HierarchyNode[], target: HierarchyNode): HierarchyNode | null {
-  for (const root of roots) {
-    const result = findParentWalk(root, target);
-    if (result) return result;
-  }
-  return null;
-}
-
-function findParentWalk(node: HierarchyNode, target: HierarchyNode): HierarchyNode | null {
-  for (const child of node.children) {
-    if (child === target) return node;
-    const result = findParentWalk(child, target);
-    if (result) return result;
-  }
-  return null;
-}
-
-function boundsOverlap(a: Bounds, b: Bounds): boolean {
-  return a.left < b.right && b.left < a.right && a.top < b.bottom && b.top < a.bottom;
-}
+import { generateSelectors, type GeneratedSelector } from './selector-generation.js';
+import { parseSelectorString, findMatchingNodes, getNodeBounds } from './selector-matching.js';
+import { disambiguateSelectors } from './selector-uniqueness.js';
 
 // ─── Selector Tab (lives in detail tabs) ───
 
@@ -51,6 +31,8 @@ const SELECTOR_TAB_STYLES = `
   .st-pick-hint code { background: var(--color-bg-tertiary); padding: 1px 5px; border-radius: 3px; font-size: 11px; }
   .st-setup-hint { padding: 4px 10px 6px; font-size: 11px; color: var(--color-text-faint); font-family: 'SF Mono', 'Cascadia Code', Consolas, monospace; }
   .st-setup-hint code { color: var(--color-text-muted); }
+  .st-strict-warning { padding: 6px 10px; font-size: 11px; color: var(--color-warning, #e2b340); border-bottom: 1px solid var(--color-border); font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; flex-shrink: 0; }
+  .st-strict-warning code { background: var(--color-bg-tertiary); padding: 1px 4px; border-radius: 3px; font-family: 'SF Mono', 'Cascadia Code', Consolas, monospace; font-size: 10px; }
 `;
 
 let stStylesInjected = false;
@@ -82,41 +64,10 @@ export function SelectorTab({ hierarchyXml, pickedNode, onHighlightsChange, sele
 
   const generatedSelectors = useMemo<GeneratedSelector[]>(() => {
     if (!pickedNode) return [];
-    const raw = generateSelectors(pickedNode);
-    if (roots.length === 0) return raw;
-    // Identity check by full attribute equality — pickedNode and matches come
-    // from separate parseHierarchyXml calls (different object trees), so
-    // reference equality won't work. Truly identical siblings remain
-    // ambiguous, but any of them is an equally valid pick.
-    const sameAsPicked = (m: HierarchyNode): boolean => {
-      if (m.tagName !== pickedNode.tagName || m.depth !== pickedNode.depth) return false;
-      if (m.attributes.size !== pickedNode.attributes.size) return false;
-      for (const [k, v] of m.attributes) {
-        if (pickedNode.attributes.get(k) !== v) return false;
-      }
-      return true;
-    };
-    // Check each selector for uniqueness against the hierarchy. Non-unique
-    // selectors get .nth(N) appended and are demoted below unique ones.
-    return raw.map((s) => {
-      const parsed = parseSelectorString(s.code);
-      if (!parsed) return s;
-      const matches = findMatchingNodes(roots, parsed);
-      const idx = matches.findIndex(sameAsPicked);
-      if (idx === -1) {
-        // The selector doesn't resolve to the picked node — don't offer it
-        // as a top suggestion.
-        return { ...s, label: `${s.label} (may not match)`, priority: Math.max(s.priority, 8) };
-      }
-      if (matches.length <= 1) return s;
-      const nthSuffix = idx === 0 ? '.first()' : idx === matches.length - 1 ? '.last()' : `.nth(${idx})`;
-      return {
-        ...s,
-        code: `${s.code}${nthSuffix}`,
-        label: `${s.label} (${matches.length} matches)`,
-        priority: Math.max(s.priority, 8),
-      };
-    }).sort((a, b) => a.priority - b.priority);
+    // Validate against the hierarchy under runtime semantics: ambiguous
+    // suggestions are upgraded ({ exact: true } / role name) or get a
+    // positional chain appended (selector-uniqueness.ts).
+    return disambiguateSelectors(roots, pickedNode, generateSelectors(pickedNode));
   }, [pickedNode, roots]);
 
   const isWebViewPick = pickedNode?.attributes.get('webview') === 'true';
@@ -171,6 +122,11 @@ export function SelectorTab({ hierarchyXml, pickedNode, onHighlightsChange, sele
       ? 'st-count has-matches'
       : 'st-count no-matches';
 
+  // Strict mode (PILOT-226): an ambiguous selector without a positional
+  // chain will throw at runtime — warn here, where the user is composing it.
+  const hasPositionalChain = /\.(first|last)\(\)|\.nth\(\s*-?\d+\s*\)/.test(selector);
+  const strictWarning = matchCount !== null && matchCount > 1 && !hasPositionalChain;
+
   return (
     <div class="st-container">
       <div class="st-input-row">
@@ -183,6 +139,13 @@ export function SelectorTab({ hierarchyXml, pickedNode, onHighlightsChange, sele
         />
         <span class={countClass}>{countLabel}</span>
       </div>
+      {strictWarning && (
+        <div class="st-strict-warning">
+          ⚠ {matchCount} matches — runtime actions/assertions will throw a strict
+          mode violation. Refine the selector (<code>{'{ exact: true }'}</code>,{' '}
+          <code>getByRole</code>) or add <code>.first()</code>.
+        </div>
+      )}
       <div class="st-options">
         {generatedSelectors.length > 0 && (
           <>
@@ -220,54 +183,6 @@ export function SelectorTab({ hierarchyXml, pickedNode, onHighlightsChange, sele
   );
 }
 
-// ─── Pick Handler (called from parent on screenshot click) ───
-
-export function handlePickFromScreenshot(
-  roots: HierarchyNode[],
-  clickX: number,
-  clickY: number,
-): { node: HierarchyNode; selector: string; bounds: Bounds } | null {
-  const hitNode = hitTest(roots, clickX, clickY);
-  if (!hitNode) return null;
-  // When the hit node is a generic container with only fallback selectors,
-  // promote a descendant that has a meaningful selector (e.g. textfield
-  // with placeholder inside a wrapper View). If the node is a leaf (no
-  // children), check siblings with overlapping bounds instead.
-  // A promoted node without parseable bounds would fail the whole pick even
-  // though hitNode (found by bounds) is guaranteed to have them — only
-  // promote nodes that can be highlighted.
-  let betterNode = findBetterDescendant(hitNode);
-  if (betterNode && !getNodeBounds(betterNode)) betterNode = null;
-  if (!betterNode && hitNode.children.length === 0) {
-    const hitBounds = getNodeBounds(hitNode);
-    if (hitBounds) {
-      const parent = findParent(roots, hitNode);
-      if (parent) {
-        for (const sibling of parent.children) {
-          if (sibling === hitNode) continue;
-          const sb = getNodeBounds(sibling);
-          if (sb && boundsOverlap(hitBounds, sb)) {
-            const found = findBetterDescendant(sibling) ?? (hasGoodSelectors(sibling) ? sibling : null);
-            if (found && getNodeBounds(found)) { betterNode = found; break; }
-          }
-        }
-      }
-    }
-  }
-  if (!betterNode) betterNode = hitNode;
-  const bounds = getNodeBounds(betterNode);
-  if (!bounds) return null;
-  return { node: betterNode, selector: generateBestSelector(betterNode), bounds };
-}
-
-// ─── Hover Handler (called from parent on screenshot mousemove) ───
-
-export function handleHoverFromScreenshot(
-  roots: HierarchyNode[],
-  x: number,
-  y: number,
-): Bounds | null {
-  const node = hitTest(roots, x, y);
-  if (!node) return null;
-  return getNodeBounds(node);
-}
+// Pick/hover logic lives in selector-pick.ts (plain TS, unit-testable);
+// re-exported here for the UI entry points that import from this module.
+export { handlePickFromScreenshot, handleHoverFromScreenshot } from './selector-pick.js';

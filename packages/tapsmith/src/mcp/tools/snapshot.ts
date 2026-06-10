@@ -7,7 +7,7 @@ import { formatHierarchy } from '../hierarchy-formatter.js';
 export function registerSnapshotTool(server: McpServer): void {
   server.tool(
     'tapsmith_snapshot',
-    'Get the current screen\'s accessibility tree with copy-paste-ready Tapsmith selectors for each interactive element. Use this first when writing tests to see what\'s on screen. Then validate selectors with tapsmith_test_selector before putting them in test code.',
+    'Get the current screen\'s accessibility tree with copy-paste-ready Tapsmith selectors for each interactive element. Suggested selectors are validated to resolve to exactly one element under runtime matching (getByText is substring by default; ambiguous selectors throw a strict mode violation when acted on). Use this first when writing tests to see what\'s on screen. Then validate selectors with tapsmith_test_selector before putting them in test code.',
     {
       device: z.string().optional().describe('Device serial from tapsmith_list_devices (optional, uses default device)'),
     },

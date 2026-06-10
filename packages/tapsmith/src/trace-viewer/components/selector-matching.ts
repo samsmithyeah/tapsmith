@@ -11,20 +11,50 @@ export interface ParsedSelector {
   index?: number | 'first' | 'last'
 }
 
-// Matches: device.getByText("value"), device.getByRole("role", { name: "n" })
-// Supports both single and double quotes, optional whitespace around args
-const DEVICE_RE = /^device\.getBy(\w+)\(\s*(["'])(.*?)\2(?:\s*,\s*\{\s*name:\s*(["'])(.*?)\4\s*\})?\s*\)/;
+// Matches: device.getByText("value"), device.getByRole("role", { name: "n" }),
+// device.getByText("value", { exact: true }) — the options object is captured
+// as a blob and parsed by parseGetByOptions. Supports both single and double
+// quotes, optional whitespace around args.
+// The quoted-string alternation skips escaped characters so values containing
+// escaped quotes (getByText("Say \\"hi\\"")) parse fully instead of truncating.
+// Groups: 1 = method, 2 = double-quoted value, 3 = single-quoted value, 4 = options blob.
+const DEVICE_RE = /^device\.getBy(\w+)\(\s*(?:"((?:[^"\\]|\\.)*)"|'((?:[^'\\]|\\.)*)')(?:\s*,\s*\{([^}]*)\})?\s*\)/;
 // Matches: webview.getByText("value"), webview.getByRole("role", { name: "n" })
-const WEBVIEW_GETBY_RE = /^webview\.getBy(\w+)\(\s*(["'])(.*?)\2(?:\s*,\s*\{\s*name:\s*(["'])(.*?)\4\s*\})?\s*\)/;
-// Matches: webview.locator("css-selector")
-const WEBVIEW_LOCATOR_RE = /^webview\.locator\(\s*(["'])(.*?)\1\s*\)/;
-// Matches: device.locator({ className: "value" }) or device.locator({ id: "value" })
-const DEVICE_LOCATOR_RE = /^device\.locator\(\s*\{\s*(className|id)\s*:\s*(["'])(.*?)\2\s*,?\s*\}\s*\)/;
-// Matches: text("value"), contentDesc("value") — legacy/shorthand format
-const SHORT_RE = /^(\w+)\(\s*(["'])(.*?)\2\s*\)/;
+const WEBVIEW_GETBY_RE = /^webview\.getBy(\w+)\(\s*(?:"((?:[^"\\]|\\.)*)"|'((?:[^'\\]|\\.)*)')(?:\s*,\s*\{([^}]*)\})?\s*\)/;
 
-// Matches trailing .first(), .last(), .nth(N)
-const CHAIN_RE = /\.(first|last)\(\)$|\.nth\(\s*(\d+)\s*\)$/;
+/**
+ * Undo source-string escaping (\" \' \\ \n) so a parsed name compares
+ * against raw node attribute values.
+ */
+function unescapeSelectorValue(s: string): string {
+  return s.replace(/\\(.)/g, (_, c: string) => (c === 'n' ? '\n' : c));
+}
+
+/** Parse the options-object blob of a getBy* call: `name: "x"` and/or `exact: true`. */
+function parseGetByOptions(blob: string | undefined): { name?: string; exact?: boolean } {
+  if (!blob) return {};
+  // Skip over escaped characters inside the quotes so an escaped quote of
+  // the same type (name: "Say \"hi\"") doesn't truncate the capture.
+  const nameMatch = blob.match(/name:\s*(?:"((?:[^"\\]|\\.)*)"|'((?:[^'\\]|\\.)*)')/);
+  const exactMatch = blob.match(/exact:\s*(true|false)/);
+  const rawName = nameMatch ? (nameMatch[1] !== undefined ? nameMatch[1] : nameMatch[2]) : undefined;
+  return {
+    name: rawName !== undefined ? unescapeSelectorValue(rawName) : undefined,
+    exact: exactMatch ? exactMatch[1] === 'true' : undefined,
+  };
+}
+// Matches: webview.locator("css-selector") — groups: 1 = dq value, 2 = sq value
+const WEBVIEW_LOCATOR_RE = /^webview\.locator\(\s*(?:"((?:[^"\\]|\\.)*)"|'((?:[^'\\]|\\.)*)')\s*\)/;
+// Matches: device.locator({ className: "value" }) or device.locator({ id: "value" })
+// Groups: 1 = prop, 2 = dq value, 3 = sq value
+const DEVICE_LOCATOR_RE = /^device\.locator\(\s*\{\s*(className|id)\s*:\s*(?:"((?:[^"\\]|\\.)*)"|'((?:[^'\\]|\\.)*)')\s*,?\s*\}\s*\)/;
+// Matches: text("value"), contentDesc("value") — legacy/shorthand format
+// Groups: 1 = type, 2 = dq value, 3 = sq value
+const SHORT_RE = /^(\w+)\(\s*(?:"((?:[^"\\]|\\.)*)"|'((?:[^'\\]|\\.)*)')\s*\)/;
+
+// Matches trailing .first(), .last(), .nth(N) — N may be negative
+// (the runtime's .nth() counts from the end for negative indices)
+const CHAIN_RE = /\.(first|last)\(\)$|\.nth\(\s*(-?\d+)\s*\)$/;
 
 function parseChain(input: string): { base: string; index?: number | 'first' | 'last' } {
   const match = input.match(CHAIN_RE);
@@ -41,19 +71,24 @@ export function parseSelectorString(input: string): ParsedSelector | null {
 
   const { base, index } = parseChain(trimmed);
 
+  // Parsed values are UNESCAPED (raw) — they compare directly against raw
+  // node attribute values; emitters re-escape when generating code strings.
+  const pick = (dq: string | undefined, sq: string | undefined): string =>
+    unescapeSelectorValue(dq !== undefined ? dq : (sq ?? ''));
+
   // WebView locator: webview.locator("#email")
   const locatorMatch = base.match(WEBVIEW_LOCATOR_RE);
   if (locatorMatch) {
-    return { type: 'wv-locator', value: locatorMatch[2], index };
+    return { type: 'wv-locator', value: pick(locatorMatch[1], locatorMatch[2]), index };
   }
 
   // WebView getBy*: webview.getByRole("button", { name: "Login" })
   const wvMatch = base.match(WEBVIEW_GETBY_RE);
   if (wvMatch) {
     const method = wvMatch[1];
-    const value = wvMatch[3];
-    const name = wvMatch[5];
-    const sel = mapWebViewMethod(method, value, name);
+    const value = pick(wvMatch[2], wvMatch[3]);
+    const { name, exact } = parseGetByOptions(wvMatch[4]);
+    const sel = mapWebViewMethod(method, value, name, exact);
     if (sel) sel.index = index;
     return sel;
   }
@@ -62,7 +97,7 @@ export function parseSelectorString(input: string): ParsedSelector | null {
   const deviceLocatorMatch = base.match(DEVICE_LOCATOR_RE);
   if (deviceLocatorMatch) {
     const prop = deviceLocatorMatch[1];
-    const value = deviceLocatorMatch[3];
+    const value = pick(deviceLocatorMatch[2], deviceLocatorMatch[3]);
     const type = prop === 'className' ? 'className' : 'id';
     return { type, value, index };
   }
@@ -71,24 +106,27 @@ export function parseSelectorString(input: string): ParsedSelector | null {
   const deviceMatch = base.match(DEVICE_RE);
   if (deviceMatch) {
     const method = deviceMatch[1];
-    const value = deviceMatch[3];
-    const name = deviceMatch[5];
-    const sel = mapDeviceMethod(method, value, name);
+    const value = pick(deviceMatch[2], deviceMatch[3]);
+    const { name, exact } = parseGetByOptions(deviceMatch[4]);
+    const sel = mapDeviceMethod(method, value, name, exact);
     if (sel) sel.index = index;
     return sel;
   }
 
   const shortMatch = base.match(SHORT_RE);
   if (shortMatch) {
-    return { type: shortMatch[1], value: shortMatch[3], index };
+    return { type: shortMatch[1], value: pick(shortMatch[2], shortMatch[3]), index };
   }
 
   return null;
 }
 
-function mapDeviceMethod(method: string, value: string, name?: string): ParsedSelector | null {
+function mapDeviceMethod(method: string, value: string, name?: string, exact?: boolean): ParsedSelector | null {
   switch (method) {
-    case 'Text': return { type: 'text', value };
+    // Runtime getByText is a SUBSTRING match unless { exact: true } is passed
+    // (device.ts getByText → textContains). The playground must agree, or a
+    // selector validated here taps a different element at runtime (PILOT-226).
+    case 'Text': return exact ? { type: 'text', value } : { type: 'textContains', value };
     case 'Role': return { type: 'role', value, name };
     case 'Description': return { type: 'contentDesc', value };
     case 'Placeholder': return { type: 'hint', value };
@@ -98,9 +136,10 @@ function mapDeviceMethod(method: string, value: string, name?: string): ParsedSe
   }
 }
 
-function mapWebViewMethod(method: string, value: string, name?: string): ParsedSelector | null {
+function mapWebViewMethod(method: string, value: string, name?: string, exact?: boolean): ParsedSelector | null {
   switch (method) {
-    case 'Text': return { type: 'wv-text', value };
+    // webview.getByText is substring by default too (webview-handle.ts).
+    case 'Text': return exact ? { type: 'wv-text', value } : { type: 'wv-text-contains', value };
     case 'Role': return { type: 'wv-role', value, name };
     case 'Label': return { type: 'wv-label', value };
     case 'Placeholder': return { type: 'wv-placeholder', value };
@@ -113,8 +152,14 @@ function mapWebViewMethod(method: string, value: string, name?: string): ParsedS
 // Android uses: text, content-desc, resource-id, hint, class
 // iOS uses: label, identifier, placeholderValue, type
 
+// iOS runtime text matching also accepts the element's value (and title), so
+// fall back to the `value` attribute the iOS agent emits. Remaining fidelity
+// gaps vs the on-device matcher (title attribute, auto-concatenated child
+// labels, trailing-punctuation tolerance) are accepted here — native selector
+// VALIDATION goes through the real runtime via findElements (test_selector);
+// this TS matcher only powers the browser-side trace viewer/playground.
 function getNodeText(node: HierarchyNode): string {
-  return node.attributes.get('text') ?? node.attributes.get('label') ?? '';
+  return node.attributes.get('text') ?? node.attributes.get('label') ?? node.attributes.get('value') ?? '';
 }
 
 function getNodeContentDesc(node: HierarchyNode): string {
@@ -203,6 +248,8 @@ function webViewNodeMatchesSelector(node: HierarchyNode, selector: ParsedSelecto
   switch (selector.type) {
     case 'wv-text':
       return text === selector.value;
+    case 'wv-text-contains':
+      return text.includes(selector.value);
     case 'wv-role': {
       const role = getNodeRole(node);
       if (role !== selector.value) return false;
@@ -252,12 +299,56 @@ function matchCssSelector(css: string, tag: string, id: string, cssClass: string
   return tag === trimmed;
 }
 
+/**
+ * Collapse accessibility-tree duplicates targeting the same visual element —
+ * the TS-matcher mirror of the SDK's collapseSameTargetDuplicates (the iOS
+ * tree exposes some text elements twice: an attribute-carrying parent and an
+ * inner child with identical text and pixel-identical bounds). Keeping them
+ * distinct would make playground counts and .nth() suffixes disagree with
+ * runtime resolution (PILOT-226).
+ */
+function collapseSameTargetNodes(nodes: HierarchyNode[]): HierarchyNode[] {
+  if (nodes.length < 2) return nodes;
+  const seen = new Set<string>();
+  const result: HierarchyNode[] = [];
+  for (const node of nodes) {
+    const bounds = getNodeBounds(node);
+    if (!bounds || bounds.right - bounds.left <= 0 || bounds.bottom - bounds.top <= 0) {
+      result.push(node);
+      continue;
+    }
+    const key = `${bounds.left},${bounds.top},${bounds.right},${bounds.bottom}|${getNodeText(node)}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    result.push(node);
+  }
+  return result;
+}
+
+/**
+ * Resolve a positional chain (.first()/.last()/.nth(n), negative n counting
+ * from the end) to a concrete index. May be out of range — callers decide
+ * whether that means "empty result" or an error.
+ */
+export function resolvePositionalIndex(count: number, index: number | 'first' | 'last'): number {
+  if (index === 'first') return 0;
+  if (index === 'last') return count - 1;
+  return index < 0 ? count + index : index;
+}
+
+/** Apply a parsed positional chain to a match list (out of range → empty). */
+export function applyPositionalIndex<T>(items: T[], index: ParsedSelector['index']): T[] {
+  if (index === undefined) return items;
+  const idx = resolvePositionalIndex(items.length, index);
+  return idx >= 0 && idx < items.length ? [items[idx]] : [];
+}
+
 export function findMatchingNodes(roots: HierarchyNode[], selector: ParsedSelector): HierarchyNode[] {
-  const all: HierarchyNode[] = [];
+  const raw: HierarchyNode[] = [];
 
   function walk(node: HierarchyNode) {
     if (nodeMatchesSelector(node, selector)) {
-      all.push(node);
+      raw.push(node);
     }
     for (const child of node.children) {
       walk(child);
@@ -268,10 +359,7 @@ export function findMatchingNodes(roots: HierarchyNode[], selector: ParsedSelect
     walk(root);
   }
 
-  if (selector.index === undefined) return all;
-  if (selector.index === 'first') return all.length > 0 ? [all[0]] : [];
-  if (selector.index === 'last') return all.length > 0 ? [all[all.length - 1]] : [];
-  return all[selector.index] ? [all[selector.index]] : [];
+  return applyPositionalIndex(collapseSameTargetNodes(raw), selector.index);
 }
 
 export function getNodeBounds(node: HierarchyNode): Bounds | null {

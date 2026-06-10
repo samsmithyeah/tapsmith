@@ -112,6 +112,39 @@ export function selectorToProto(selector: Selector): Record<string, unknown> {
   return proto;
 }
 
+// ─── Human-readable formatting (error messages, traces) ───
+
+/**
+ * Render a Selector as the user-facing locator call that produced it, e.g.
+ * `getByText("Sign in")` or `getByRole("button", "Submit")`. Used in error
+ * messages and trace output.
+ *
+ * @internal
+ */
+export function formatSelector(sel: Selector): string {
+  let base: string;
+  switch (sel.kind.type) {
+    case 'role': {
+      const rv = sel.kind.value;
+      base = rv.name ? `getByRole("${rv.role}", "${rv.name}")` : `getByRole("${rv.role}")`;
+      break;
+    }
+    case 'text': base = `getByText("${sel.kind.value}", { exact: true })`; break;
+    case 'textContains': base = `getByText("${sel.kind.value}")`; break;
+    case 'contentDesc': base = `getByDescription("${sel.kind.value}")`; break;
+    case 'hint': base = `getByPlaceholder("${sel.kind.value}")`; break;
+    case 'testId': base = `getByTestId("${sel.kind.value}")`; break;
+    case 'label': base = `getByLabel("${sel.kind.value}")`; break;
+    case 'id': base = `locator({ id: "${sel.kind.value}" })`; break;
+    case 'className': base = `locator({ className: "${sel.kind.value}" })`; break;
+    case 'xpath': base = `locator({ xpath: "${sel.kind.value}" })`; break;
+    default: base = JSON.stringify(selectorToProto(sel)); break;
+  }
+  // Scoped locators chain getBy* calls: getByRole("list").getByText("Row")
+  if (sel.parent) return `${formatSelector(sel.parent)}.${base}`;
+  return base;
+}
+
 // ─── Internal builders (used by Device/ElementHandle getBy* methods) ───
 
 /** @internal */

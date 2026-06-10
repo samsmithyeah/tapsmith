@@ -13,6 +13,8 @@ export type { LaunchAppOptions, AppState, Orientation, ColorScheme } from './grp
 // ElementHandle
 export {
   ElementHandle,
+  StrictModeViolationError,
+  isStrictModeViolation,
   type FilterOptions,
   type BoundingBox,
   type LocatorOptions,

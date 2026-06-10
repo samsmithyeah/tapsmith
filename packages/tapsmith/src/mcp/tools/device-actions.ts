@@ -1,7 +1,7 @@
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { ensureConnected } from '../connection.js';
-import { parseSelectorToInternal } from '../selector-helper.js';
+import { resolveActionTarget } from '../selector-helper.js';
 
 function actionResult(success: boolean, errorMessage?: string) {
   if (!success && errorMessage) {
@@ -21,8 +21,12 @@ export function registerDeviceActionTools(server: McpServer): void {
     async ({ selector, device }) => {
       const client = await ensureConnected(device);
       if (device) await client.setDevice(device);
-      const sel = parseSelectorToInternal(selector);
-      const { success, errorMessage } = await client.tap(sel);
+      // Strict mode (PILOT-226): resolve through the runtime find path so an
+      // ambiguous selector errors with the match list instead of silently
+      // tapping the first match.
+      const target = await resolveActionTarget(client, selector);
+      if (target.error) return actionResult(false, target.error);
+      const { success, errorMessage } = await client.tap(target.selector);
       return actionResult(success, errorMessage);
     },
   );
@@ -39,11 +43,12 @@ export function registerDeviceActionTools(server: McpServer): void {
     async ({ selector, text, clear, device }) => {
       const client = await ensureConnected(device);
       if (device) await client.setDevice(device);
-      const sel = parseSelectorToInternal(selector);
+      const target = await resolveActionTarget(client, selector);
+      if (target.error) return actionResult(false, target.error);
       if (clear) {
-        await client.clearText(sel);
+        await client.clearText(target.selector);
       }
-      const { success, errorMessage } = await client.typeText(sel, text);
+      const { success, errorMessage } = await client.typeText(target.selector, text);
       return actionResult(success, errorMessage);
     },
   );

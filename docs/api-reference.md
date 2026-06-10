@@ -17,6 +17,8 @@ device.getByText("Welcome")                          // substring
 device.getByText("Sign In", { exact: true })         // exact
 ```
 
+> Because the default is a substring match, `getByText("Sign in")` also matches longer text like `"Sign in to continue"`. When that happens, acting on the locator throws a [strict mode](#strict-mode) violation — add `{ exact: true }` or use `getByRole(role, { name })` to pin a single element.
+
 ### `device.getByRole(role: string, options?): ElementHandle`
 
 Locate an element by its accessibility role, optionally filtered by accessible name or state.
@@ -102,6 +104,51 @@ device.locator({ xpath: "//android.widget.Button[@text='OK']" })
 > The `getBy*` methods and `locator()` are also available on every `ElementHandle`. Calling them on a parent locator scopes the search to its descendants. See [ElementHandle Scoping](#scoping).
 
 > **iOS wrapper suppression.** When traversing the iOS accessibility tree, Tapsmith drops a matching `XCUIElementTypeOther` container if a descendant *also* matches the same selector and shares the wrapper's `accessibilityIdentifier` (or, when the wrapper's identifier is empty, its `accessibilityLabel`). This collapses the redundant wrappers React Native (and SwiftUI in some configurations) emit around interactive elements, so a `getByText("Submit")` resolves to the actual control rather than the surrounding container. The visible text of the wrapper and descendant is *not* compared — identifier/label match alone is enough. If your native iOS app deliberately exposes an `.other` container with the same identifier as a child you also want addressable, the outer wrapper will be silently suppressed in favour of the child — give the wrapper a unique `accessibilityIdentifier` (or use `device.locator({ id: ... })`) to address it directly.
+
+### Strict mode
+
+Like Playwright, Tapsmith locators are **strict**: a locator used for an action, single-element query, or assertion must resolve to exactly one element. When it resolves to more than one, the operation throws a `StrictModeViolationError` immediately (it does not keep auto-waiting) listing every match with a suggested unambiguous selector:
+
+```
+strict mode violation: getByText("Sign in") resolved to 2 elements:
+    1) text "Sign in to continue to DreamSpinner" [44,210][436,260] aka device.getByText("Sign in to continue to DreamSpinner", { exact: true })
+    2) button "Sign in" [44,640][436,712] aka device.getByRole("button", { name: "Sign in" })
+Hint: use { exact: true }, getByRole(role, { name }), getByTestId(), or .first()/.nth()/.last() to target a single element.
+```
+
+This is the safety net for the substring default of `getByText` — without it, an ambiguous locator would silently act on the first match in document order, which is rarely the element you meant.
+
+| Operation | Strict? |
+|---|---|
+| Actions (`tap`, `type`, `scroll`, `dragTo`, `setChecked`, …) | Yes |
+| Single-element queries (`find`, `getText`, `isVisible`, `boundingBox`, `scrollIntoView`, …) | Yes |
+| `waitFor({ state: "visible" \| "attached" })` | Yes |
+| Positive assertions (`toBeVisible`, `toHaveText`, `toBeChecked`, …) | Yes |
+| `waitFor({ state: "hidden" \| "detached" })` | No — absence is evaluated over all matches |
+| `toBeHidden`, `not.toBeVisible`, `not.toExist` | No — absence is evaluated over all matches |
+| `count()`, `all()`, `exists()`, `toHaveCount` | No — inherently multi-element |
+| Locators narrowed with `.first()` / `.last()` / `.nth(n)` | Exempt — they target one match by definition |
+
+To handle a violation programmatically, import the error class or the cross-realm-safe guard:
+
+```typescript
+import { StrictModeViolationError, isStrictModeViolation } from "tapsmith";
+
+try {
+  await device.getByText("Delete").tap();
+} catch (err) {
+  if (isStrictModeViolation(err)) {
+    console.log(err.elements.length); // the matched ElementInfo objects
+  }
+  throw err;
+}
+```
+
+> **Accessibility-tree duplicates don't count.** Some platforms expose the same visual element twice — iOS in particular renders a React Native `<Text testID="...">` as a parent `StaticText` carrying the attributes plus an inner child with identical text and pixel-identical bounds. Matches with identical text **and** identical bounds are collapsed to one element (the attribute-carrying first occurrence) before the strict check, since acting on either taps the same point. This collapsing also applies to `count()`, `all()`, and `.nth()` indexing, so positional chains stay consistent with what you see on screen. Distinct elements that merely share text at different positions still violate.
+
+> **Transient duplicates:** if a screen briefly shows two elements matching the locator mid-transition, the violation throws at that moment (Playwright behaves the same way). Prefer selectors that are unique at all times, or `.first()` when duplication is expected.
+
+> **WebView locators** (`webview.getBy*`) do not enforce strict mode yet; they act on the first DOM match.
 
 ---
 

@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import type { HierarchyNode } from '../trace-viewer/components/hierarchy-utils.js';
 import { getNodeRole } from '../trace-viewer/components/hierarchy-utils.js';
 import { generateSelectors, generateBestSelector, findBetterDescendant, hasGoodSelectors, FORM_FIELD_ROLES } from '../trace-viewer/components/selector-generation.js';
-import { parseSelectorString, findMatchingNodes, hitTest } from '../trace-viewer/components/selector-matching.js';
+import { parseSelectorString, findMatchingNodes, hitTest, applyPositionalIndex } from '../trace-viewer/components/selector-matching.js';
 
 function makeNode(tagName: string, attrs: Record<string, string>, children: HierarchyNode[] = []): HierarchyNode {
   return {
@@ -439,5 +439,106 @@ describe('hitTest', () => {
     const big = makeNode('node', { class: 'android.view.ViewGroup', bounds: '[0,0][100,100]' }, [small]);
     expect(hitTest([big], 20, 20)).toBe(small);
     expect(hitTest([big], 90, 90)).toBe(big);
+  });
+});
+
+// ─── parseSelectorString — runtime-aligned getByText semantics (PILOT-226) ───
+
+describe('parseSelectorString getByText semantics', () => {
+  const heading = makeNode('node', { class: 'android.widget.TextView', text: 'Sign in to continue to DreamSpinner' });
+  const button = makeNode('node', { class: 'android.widget.Button', text: 'Sign in' });
+  const roots = [makeNode('node', { class: 'android.view.ViewGroup' }, [heading, button])];
+
+  it('getByText without options parses to a SUBSTRING match (matches runtime)', () => {
+    const parsed = parseSelectorString('device.getByText("Sign in")');
+    expect(parsed).toEqual({ type: 'textContains', value: 'Sign in', index: undefined });
+    // Both the heading and the button substring-match — exactly what the
+    // runtime sees (the original story-app bug).
+    expect(findMatchingNodes(roots, parsed!)).toHaveLength(2);
+  });
+
+  it('getByText with { exact: true } parses to an exact match', () => {
+    const parsed = parseSelectorString('device.getByText("Sign in", { exact: true })');
+    expect(parsed).toEqual({ type: 'text', value: 'Sign in', index: undefined });
+    const matches = findMatchingNodes(roots, parsed!);
+    expect(matches).toHaveLength(1);
+    expect(matches[0].attributes.get('class')).toBe('android.widget.Button');
+  });
+
+  it('supports single quotes and exact: false', () => {
+    expect(parseSelectorString("device.getByText('Sign in', { exact: false })"))
+      .toEqual({ type: 'textContains', value: 'Sign in', index: undefined });
+  });
+
+  it('parses combined { name, exact } options on getByRole without confusion', () => {
+    const parsed = parseSelectorString('device.getByRole("button", { name: "Sign in" })');
+    expect(parsed).toEqual({ type: 'role', value: 'button', name: 'Sign in', index: undefined });
+  });
+
+  it('getByText with index chain keeps substring semantics', () => {
+    const parsed = parseSelectorString('device.getByText("Sign in").first()');
+    expect(parsed).toEqual({ type: 'textContains', value: 'Sign in', index: 'first' });
+    expect(findMatchingNodes(roots, parsed!)).toHaveLength(1);
+  });
+
+  it('webview.getByText defaults to substring, exact with option', () => {
+    expect(parseSelectorString('webview.getByText("Add")'))
+      .toEqual({ type: 'wv-text-contains', value: 'Add', index: undefined });
+    expect(parseSelectorString('webview.getByText("Add", { exact: true })'))
+      .toEqual({ type: 'wv-text', value: 'Add', index: undefined });
+  });
+
+  it('wv-text-contains matches webview nodes by substring', () => {
+    const wvNode = makeNode('node', { webview: 'true', text: 'Add item' });
+    const wvRoots = [makeNode('node', {}, [wvNode])];
+    expect(findMatchingNodes(wvRoots, parseSelectorString('webview.getByText("Add")')!)).toHaveLength(1);
+    expect(findMatchingNodes(wvRoots, parseSelectorString('webview.getByText("Add", { exact: true })')!)).toHaveLength(0);
+  });
+
+  it('text matching falls back to the iOS value attribute', () => {
+    const slider = makeNode('XCUIElementTypeSlider', { type: 'XCUIElementTypeSlider', value: '50%' });
+    const matches = findMatchingNodes([slider], parseSelectorString('device.getByText("50%", { exact: true })')!);
+    expect(matches).toHaveLength(1);
+  });
+});
+
+describe('parseGetByOptions escaped-quote handling (PR #124 review)', () => {
+  it('parses a name containing escaped quotes of the same type, unescaped', () => {
+    const parsed = parseSelectorString('device.getByRole("button", { name: "Say \\"hi\\"" })');
+    expect(parsed).toEqual({ type: 'role', value: 'button', name: 'Say "hi"', index: undefined });
+  });
+
+  it('parsed name matches raw node attribute values', () => {
+    const node = makeNode('node', { class: 'android.widget.Button', text: 'Say "hi"' });
+    const parsed = parseSelectorString('device.getByRole("button", { name: "Say \\"hi\\"" })');
+    expect(findMatchingNodes([node], parsed!)).toHaveLength(1);
+  });
+
+  it('handles single-quoted names with escaped single quotes', () => {
+    const parsed = parseSelectorString("device.getByRole('button', { name: 'Don\\'t' })");
+    expect(parsed?.name).toBe("Don't");
+  });
+
+  it('still parses { name, exact } combinations', () => {
+    const parsed = parseSelectorString('device.getByRole("button", { name: "OK", exact: true })');
+    expect(parsed?.name).toBe('OK');
+  });
+});
+
+describe('applyPositionalIndex (shared positional-chain util)', () => {
+  const items = ['a', 'b', 'c'];
+  it('passes through without an index', () => {
+    expect(applyPositionalIndex(items, undefined)).toEqual(['a', 'b', 'c']);
+  });
+  it('resolves first/last/nth and negative indices', () => {
+    expect(applyPositionalIndex(items, 'first')).toEqual(['a']);
+    expect(applyPositionalIndex(items, 'last')).toEqual(['c']);
+    expect(applyPositionalIndex(items, 1)).toEqual(['b']);
+    expect(applyPositionalIndex(items, -1)).toEqual(['c']);
+  });
+  it('returns empty for out-of-range indices', () => {
+    expect(applyPositionalIndex(items, 5)).toEqual([]);
+    expect(applyPositionalIndex(items, -4)).toEqual([]);
+    expect(applyPositionalIndex([], 'first')).toEqual([]);
   });
 });

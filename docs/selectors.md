@@ -147,6 +147,8 @@ await device.getByText("Sign In", { exact: true }).tap()
 await expect(device.getByText("3 items")).toBeVisible()
 ```
 
+> **Strict mode:** because of the substring default, `getByText("Sign in")` also matches longer text such as `"Sign in to continue"`. A locator that resolves to more than one element throws a `strict mode violation` when you act or assert on it (instead of silently using the first match). Disambiguate with `{ exact: true }`, `getByRole(role, { name })`, `getByTestId()`, or `.first()/.nth()/.last()`. Absence checks (`toBeHidden`, `not.toBeVisible`, `waitFor({ state: "hidden" })`) and multi-element APIs (`count()`, `all()`, `toHaveCount`) are exempt. See the [API reference](api-reference.md#strict-mode) for the full rules. WebView locators do not enforce strict mode yet.
+
 ### `getByDescription(text)`
 
 Find an element by its accessibility description. On Android this matches `contentDescription`; on iOS it matches `accessibilityLabel`. Use this for icon buttons, images, and elements where the accessible label differs from visible text.

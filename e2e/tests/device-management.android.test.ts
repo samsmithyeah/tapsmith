@@ -126,7 +126,7 @@ describe("Permissions", () => {
     await device.grantPermission(PKG, CAMERA_PERMISSION)
     await device.openDeepLink("tapsmithtest:///permissions")
 
-    await expect(device.getByText("Permissions", { exact: true })).toBeVisible()
+    await expect(device.getByText("Permissions", { exact: true }).first()).toBeVisible()
     await device.locator({ id: "request-camera" }).tap()
     await expect(device.locator({ id: "camera-status" })).toContainText("granted")
   })

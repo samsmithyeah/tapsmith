@@ -1,7 +1,8 @@
 import { useState, useMemo, useCallback, useRef, useEffect } from 'preact/hooks';
 import { parseHierarchyXml, parseBounds } from './hierarchy-utils.js';
 import type { HierarchyNode, Bounds } from './hierarchy-utils.js';
-import { generateBestSelector } from './selector-generation.js';
+import { generateBestSelector, generateSelectors } from './selector-generation.js';
+import { disambiguateSelectors } from './selector-uniqueness.js';
 
 export type { HierarchyNode, Bounds };
 export { parseHierarchyXml, parseBounds, generateBestSelector };
@@ -131,9 +132,13 @@ function TreeNode({ node, selectedNode, onSelect, searchLower, defaultExpanded }
 
 // ─── Property Sheet ───
 
-function PropertySheet({ node }: { node: HierarchyNode }) {
+function PropertySheet({ node, roots }: { node: HierarchyNode; roots: HierarchyNode[] }) {
   const [copied, setCopied] = useState(false);
-  const selector = generateBestSelector(node);
+  // Disambiguated against the hierarchy so the copied selector resolves
+  // uniquely at runtime (strict mode) instead of needing manual .first().
+  const selector =
+    disambiguateSelectors(roots, node, generateSelectors(node))
+      .find((s) => !s.label.includes('may not match'))?.code ?? generateBestSelector(node);
 
   const handleCopy = () => {
     navigator.clipboard.writeText(selector).then(() => {
@@ -262,7 +267,7 @@ export function HierarchyTree({ xml, onNodeSelect }: Props) {
           />
         ))}
       </div>
-      {selectedNode && <PropertySheet node={selectedNode} />}
+      {selectedNode && <PropertySheet node={selectedNode} roots={roots} />}
     </div>
   );
 }

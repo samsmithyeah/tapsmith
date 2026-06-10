@@ -10,7 +10,7 @@ test("profile is accessible when app state is restored", async ({ device }) => {
   await device.openDeepLink("tapsmithtest:///profile")
 
   // appState restores auth, so the profile screen should be accessible
-  await expect(device.getByText("Profile", { exact: true })).toBeVisible()
+  await expect(device.getByText("Profile", { exact: true }).first()).toBeVisible()
   await expect(device.getByText("test@example.com", { exact: true })).toBeVisible()
   await expect(device.getByText("Authenticated", { exact: true })).toBeVisible()
 })
