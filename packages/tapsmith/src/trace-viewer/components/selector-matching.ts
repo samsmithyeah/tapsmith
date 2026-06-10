@@ -11,11 +11,24 @@ export interface ParsedSelector {
   index?: number | 'first' | 'last'
 }
 
-// Matches: device.getByText("value"), device.getByRole("role", { name: "n" })
-// Supports both single and double quotes, optional whitespace around args
-const DEVICE_RE = /^device\.getBy(\w+)\(\s*(["'])(.*?)\2(?:\s*,\s*\{\s*name:\s*(["'])(.*?)\4\s*\})?\s*\)/;
+// Matches: device.getByText("value"), device.getByRole("role", { name: "n" }),
+// device.getByText("value", { exact: true }) — the options object is captured
+// as a blob and parsed by parseGetByOptions. Supports both single and double
+// quotes, optional whitespace around args.
+const DEVICE_RE = /^device\.getBy(\w+)\(\s*(["'])(.*?)\2(?:\s*,\s*\{([^}]*)\})?\s*\)/;
 // Matches: webview.getByText("value"), webview.getByRole("role", { name: "n" })
-const WEBVIEW_GETBY_RE = /^webview\.getBy(\w+)\(\s*(["'])(.*?)\2(?:\s*,\s*\{\s*name:\s*(["'])(.*?)\4\s*\})?\s*\)/;
+const WEBVIEW_GETBY_RE = /^webview\.getBy(\w+)\(\s*(["'])(.*?)\2(?:\s*,\s*\{([^}]*)\})?\s*\)/;
+
+/** Parse the options-object blob of a getBy* call: `name: "x"` and/or `exact: true`. */
+function parseGetByOptions(blob: string | undefined): { name?: string; exact?: boolean } {
+  if (!blob) return {};
+  const nameMatch = blob.match(/name:\s*(["'])(.*?)\1/);
+  const exactMatch = blob.match(/exact:\s*(true|false)/);
+  return {
+    name: nameMatch ? nameMatch[2] : undefined,
+    exact: exactMatch ? exactMatch[1] === 'true' : undefined,
+  };
+}
 // Matches: webview.locator("css-selector")
 const WEBVIEW_LOCATOR_RE = /^webview\.locator\(\s*(["'])(.*?)\1\s*\)/;
 // Matches: device.locator({ className: "value" }) or device.locator({ id: "value" })
@@ -52,8 +65,8 @@ export function parseSelectorString(input: string): ParsedSelector | null {
   if (wvMatch) {
     const method = wvMatch[1];
     const value = wvMatch[3];
-    const name = wvMatch[5];
-    const sel = mapWebViewMethod(method, value, name);
+    const { name, exact } = parseGetByOptions(wvMatch[4]);
+    const sel = mapWebViewMethod(method, value, name, exact);
     if (sel) sel.index = index;
     return sel;
   }
@@ -72,8 +85,8 @@ export function parseSelectorString(input: string): ParsedSelector | null {
   if (deviceMatch) {
     const method = deviceMatch[1];
     const value = deviceMatch[3];
-    const name = deviceMatch[5];
-    const sel = mapDeviceMethod(method, value, name);
+    const { name, exact } = parseGetByOptions(deviceMatch[4]);
+    const sel = mapDeviceMethod(method, value, name, exact);
     if (sel) sel.index = index;
     return sel;
   }
@@ -86,9 +99,12 @@ export function parseSelectorString(input: string): ParsedSelector | null {
   return null;
 }
 
-function mapDeviceMethod(method: string, value: string, name?: string): ParsedSelector | null {
+function mapDeviceMethod(method: string, value: string, name?: string, exact?: boolean): ParsedSelector | null {
   switch (method) {
-    case 'Text': return { type: 'text', value };
+    // Runtime getByText is a SUBSTRING match unless { exact: true } is passed
+    // (device.ts getByText → textContains). The playground must agree, or a
+    // selector validated here taps a different element at runtime (PILOT-226).
+    case 'Text': return exact ? { type: 'text', value } : { type: 'textContains', value };
     case 'Role': return { type: 'role', value, name };
     case 'Description': return { type: 'contentDesc', value };
     case 'Placeholder': return { type: 'hint', value };
@@ -98,9 +114,10 @@ function mapDeviceMethod(method: string, value: string, name?: string): ParsedSe
   }
 }
 
-function mapWebViewMethod(method: string, value: string, name?: string): ParsedSelector | null {
+function mapWebViewMethod(method: string, value: string, name?: string, exact?: boolean): ParsedSelector | null {
   switch (method) {
-    case 'Text': return { type: 'wv-text', value };
+    // webview.getByText is substring by default too (webview-handle.ts).
+    case 'Text': return exact ? { type: 'wv-text', value } : { type: 'wv-text-contains', value };
     case 'Role': return { type: 'wv-role', value, name };
     case 'Label': return { type: 'wv-label', value };
     case 'Placeholder': return { type: 'wv-placeholder', value };
@@ -113,8 +130,14 @@ function mapWebViewMethod(method: string, value: string, name?: string): ParsedS
 // Android uses: text, content-desc, resource-id, hint, class
 // iOS uses: label, identifier, placeholderValue, type
 
+// iOS runtime text matching also accepts the element's value (and title), so
+// fall back to the `value` attribute the iOS agent emits. Remaining fidelity
+// gaps vs the on-device matcher (title attribute, auto-concatenated child
+// labels, trailing-punctuation tolerance) are accepted here — native selector
+// VALIDATION goes through the real runtime via findElements (test_selector);
+// this TS matcher only powers the browser-side trace viewer/playground.
 function getNodeText(node: HierarchyNode): string {
-  return node.attributes.get('text') ?? node.attributes.get('label') ?? '';
+  return node.attributes.get('text') ?? node.attributes.get('label') ?? node.attributes.get('value') ?? '';
 }
 
 function getNodeContentDesc(node: HierarchyNode): string {
@@ -203,6 +226,8 @@ function webViewNodeMatchesSelector(node: HierarchyNode, selector: ParsedSelecto
   switch (selector.type) {
     case 'wv-text':
       return text === selector.value;
+    case 'wv-text-contains':
+      return text.includes(selector.value);
     case 'wv-role': {
       const role = getNodeRole(node);
       if (role !== selector.value) return false;

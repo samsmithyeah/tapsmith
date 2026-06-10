@@ -441,3 +441,63 @@ describe('hitTest', () => {
     expect(hitTest([big], 90, 90)).toBe(big);
   });
 });
+
+// ─── parseSelectorString — runtime-aligned getByText semantics (PILOT-226) ───
+
+describe('parseSelectorString getByText semantics', () => {
+  const heading = makeNode('node', { class: 'android.widget.TextView', text: 'Sign in to continue to DreamSpinner' });
+  const button = makeNode('node', { class: 'android.widget.Button', text: 'Sign in' });
+  const roots = [makeNode('node', { class: 'android.view.ViewGroup' }, [heading, button])];
+
+  it('getByText without options parses to a SUBSTRING match (matches runtime)', () => {
+    const parsed = parseSelectorString('device.getByText("Sign in")');
+    expect(parsed).toEqual({ type: 'textContains', value: 'Sign in', index: undefined });
+    // Both the heading and the button substring-match — exactly what the
+    // runtime sees (the original story-app bug).
+    expect(findMatchingNodes(roots, parsed!)).toHaveLength(2);
+  });
+
+  it('getByText with { exact: true } parses to an exact match', () => {
+    const parsed = parseSelectorString('device.getByText("Sign in", { exact: true })');
+    expect(parsed).toEqual({ type: 'text', value: 'Sign in', index: undefined });
+    const matches = findMatchingNodes(roots, parsed!);
+    expect(matches).toHaveLength(1);
+    expect(matches[0].attributes.get('class')).toBe('android.widget.Button');
+  });
+
+  it('supports single quotes and exact: false', () => {
+    expect(parseSelectorString("device.getByText('Sign in', { exact: false })"))
+      .toEqual({ type: 'textContains', value: 'Sign in', index: undefined });
+  });
+
+  it('parses combined { name, exact } options on getByRole without confusion', () => {
+    const parsed = parseSelectorString('device.getByRole("button", { name: "Sign in" })');
+    expect(parsed).toEqual({ type: 'role', value: 'button', name: 'Sign in', index: undefined });
+  });
+
+  it('getByText with index chain keeps substring semantics', () => {
+    const parsed = parseSelectorString('device.getByText("Sign in").first()');
+    expect(parsed).toEqual({ type: 'textContains', value: 'Sign in', index: 'first' });
+    expect(findMatchingNodes(roots, parsed!)).toHaveLength(1);
+  });
+
+  it('webview.getByText defaults to substring, exact with option', () => {
+    expect(parseSelectorString('webview.getByText("Add")'))
+      .toEqual({ type: 'wv-text-contains', value: 'Add', index: undefined });
+    expect(parseSelectorString('webview.getByText("Add", { exact: true })'))
+      .toEqual({ type: 'wv-text', value: 'Add', index: undefined });
+  });
+
+  it('wv-text-contains matches webview nodes by substring', () => {
+    const wvNode = makeNode('node', { webview: 'true', text: 'Add item' });
+    const wvRoots = [makeNode('node', {}, [wvNode])];
+    expect(findMatchingNodes(wvRoots, parseSelectorString('webview.getByText("Add")')!)).toHaveLength(1);
+    expect(findMatchingNodes(wvRoots, parseSelectorString('webview.getByText("Add", { exact: true })')!)).toHaveLength(0);
+  });
+
+  it('text matching falls back to the iOS value attribute', () => {
+    const slider = makeNode('XCUIElementTypeSlider', { type: 'XCUIElementTypeSlider', value: '50%' });
+    const matches = findMatchingNodes([slider], parseSelectorString('device.getByText("50%", { exact: true })')!);
+    expect(matches).toHaveLength(1);
+  });
+});

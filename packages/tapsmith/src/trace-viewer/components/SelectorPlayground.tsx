@@ -51,6 +51,8 @@ const SELECTOR_TAB_STYLES = `
   .st-pick-hint code { background: var(--color-bg-tertiary); padding: 1px 5px; border-radius: 3px; font-size: 11px; }
   .st-setup-hint { padding: 4px 10px 6px; font-size: 11px; color: var(--color-text-faint); font-family: 'SF Mono', 'Cascadia Code', Consolas, monospace; }
   .st-setup-hint code { color: var(--color-text-muted); }
+  .st-strict-warning { padding: 6px 10px; font-size: 11px; color: var(--color-warning, #e2b340); border-bottom: 1px solid var(--color-border); font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; flex-shrink: 0; }
+  .st-strict-warning code { background: var(--color-bg-tertiary); padding: 1px 4px; border-radius: 3px; font-family: 'SF Mono', 'Cascadia Code', Consolas, monospace; font-size: 10px; }
 `;
 
 let stStylesInjected = false;
@@ -171,6 +173,11 @@ export function SelectorTab({ hierarchyXml, pickedNode, onHighlightsChange, sele
       ? 'st-count has-matches'
       : 'st-count no-matches';
 
+  // Strict mode (PILOT-226): an ambiguous selector without a positional
+  // chain will throw at runtime — warn here, where the user is composing it.
+  const hasPositionalChain = /\.(first|last)\(\)|\.nth\(\s*\d+\s*\)/.test(selector);
+  const strictWarning = matchCount !== null && matchCount > 1 && !hasPositionalChain;
+
   return (
     <div class="st-container">
       <div class="st-input-row">
@@ -183,6 +190,13 @@ export function SelectorTab({ hierarchyXml, pickedNode, onHighlightsChange, sele
         />
         <span class={countClass}>{countLabel}</span>
       </div>
+      {strictWarning && (
+        <div class="st-strict-warning">
+          ⚠ {matchCount} matches — runtime actions/assertions will throw a strict
+          mode violation. Refine the selector (<code>{'{ exact: true }'}</code>,{' '}
+          <code>getByRole</code>) or add <code>.first()</code>.
+        </div>
+      )}
       <div class="st-options">
         {generatedSelectors.length > 0 && (
           <>
