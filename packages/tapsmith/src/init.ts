@@ -3,8 +3,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import Enquirer from 'enquirer';
 import figlet from 'figlet';
-import { findDaemonBin } from './daemon-bin.js';
-import { findAgentApk, findAgentTestApk } from './agent-resolve.js';
+import { tryExec, scanEnvironment, type EnvScan, type SimulatorInfo } from './env-scan.js';
 
 const DIM = '\x1b[2m';
 const BOLD = '\x1b[1m';
@@ -30,100 +29,6 @@ function getVersion(): string {
   } catch {
     return '0.0.0';
   }
-}
-
-function tryExec(cmd: string, args: string[]): string | undefined {
-  try {
-    return execFileSync(cmd, args, {
-      encoding: 'utf8',
-      stdio: ['ignore', 'pipe', 'pipe'],
-      timeout: 10_000,
-    }).trim();
-  } catch {
-    return undefined;
-  }
-}
-
-// ─── Environment scanning ───
-
-interface EnvScan {
-  nodeVersion: string;
-  daemonBin: string | undefined;
-  agentApk: boolean;
-  agentTestApk: boolean;
-  adbVersion: string | undefined;
-  androidHome: string | undefined;
-  xcodeVersion: string | undefined;
-  simulators: SimulatorInfo[];
-  avds: string[];
-  isMacOS: boolean;
-}
-
-interface SimulatorInfo {
-  name: string;
-  udid: string;
-  state: string;
-  runtime: string;
-}
-
-function scanEnvironment(): EnvScan {
-  const isMacOS = process.platform === 'darwin';
-  const nodeVersion = process.versions.node;
-
-  let daemonBin: string | undefined;
-  try {
-    daemonBin = findDaemonBin();
-  } catch {
-    // not found
-  }
-
-  const agentApk = !!findAgentApk();
-  const agentTestApk = !!findAgentTestApk();
-
-  let adbVersion: string | undefined;
-  const adbOut = tryExec('adb', ['--version']);
-  if (adbOut) {
-    const match = adbOut.match(/Version\s+([\d.]+)/);
-    adbVersion = match?.[1] ?? 'installed';
-  }
-
-  const androidHome = process.env['ANDROID_HOME'] || process.env['ANDROID_SDK_ROOT'];
-
-  let xcodeVersion: string | undefined;
-  if (isMacOS) {
-    const xcOut = tryExec('xcodebuild', ['-version']);
-    if (xcOut) {
-      const match = xcOut.match(/Xcode\s+([\d.]+)/);
-      xcodeVersion = match?.[1] ?? 'installed';
-    }
-  }
-
-  const simulators: SimulatorInfo[] = [];
-  if (isMacOS) {
-    const simOut = tryExec('xcrun', ['simctl', 'list', 'devices', 'available', '-j']);
-    if (simOut) {
-      try {
-        const data = JSON.parse(simOut);
-        const devices = data.devices as Record<string, Array<{ name: string; udid: string; state: string }>>;
-        for (const [runtime, devs] of Object.entries(devices)) {
-          for (const d of devs) {
-            const runtimeName = runtime.replace(/^com\.apple\.CoreSimulator\.SimRuntime\./, '').replace(/-/g, ' ');
-            simulators.push({ name: d.name, udid: d.udid, state: d.state, runtime: runtimeName });
-          }
-        }
-      } catch {
-        // parse failure
-      }
-    }
-  }
-
-  let avds: string[] = [];
-  const avdOut = tryExec('emulator', ['-list-avds']);
-  if (avdOut) {
-    avds = avdOut.split('\n').map((l) => l.trim()).filter(Boolean);
-  }
-
-  return { nodeVersion, daemonBin, agentApk, agentTestApk, adbVersion, androidHome, xcodeVersion, simulators, avds, isMacOS };
 }
 
 function displayEnvironment(env: EnvScan): void {
