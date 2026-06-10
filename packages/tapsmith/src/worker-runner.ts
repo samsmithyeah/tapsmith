@@ -192,13 +192,22 @@ async function handleInit(msg: InitMessage): Promise<void> {
     : undefined;
   // Auto-detect xctestrun if omitted, mirroring the single-worker
   // resolution in cli.ts. Picks the device-slice xctestrun under
-  // ios-agent/.build-device for physical devices and the newest
-  // simulator-slice xctestrun from Xcode DerivedData for simulators.
+  // ios-agent/.build-device for physical devices; for simulators,
+  // ensureSimulatorAgent() also rebuilds from source on SDK mismatch
+  // (or when no usable prebuilt agent exists) instead of handing the
+  // daemon a stale xctestrun that xcodebuild rejects at startup.
   if (!resolvedIosXctestrun && config.platform === 'ios' && msg.deviceSerial) {
     const { isPhysicalDevice } = await import('./ios-devicectl.js');
-    const { findDeviceXctestrun, findSimulatorXctestrun } = await import('./ios-device-resolve.js');
+    const { findDeviceXctestrun } = await import('./ios-device-resolve.js');
     const isPhys = isPhysicalDevice(msg.deviceSerial);
-    const found = isPhys ? findDeviceXctestrun(config.rootDir) : findSimulatorXctestrun();
+    let found: string | undefined;
+    if (isPhys) {
+      found = findDeviceXctestrun(config.rootDir);
+    } else {
+      const { ensureSimulatorAgent } = await import('./ios-simulator-build.js');
+      sendProgress('resolving iOS simulator agent');
+      found = await ensureSimulatorAgent();
+    }
     if (found) {
       resolvedIosXctestrun = found;
       sendProgress(`auto-detected xctestrun: ${path.basename(found)}`);

@@ -32,16 +32,13 @@ done
 # 4. Website footer
 sed -i '' "s/v$CURRENT_VERSION/v$NEW_VERSION/g" "$ROOT/website/src/pages/index.astro"
 
-# 5. Regenerate lockfiles
+# 5. Regenerate lockfiles — only for packages whose manifests this script
+# changed. website/test-app/benchmark don't reference the tapsmith version,
+# so regenerating their lockfiles can only pick up unrelated churn, and
+# doing it with a different npm than CI breaks `npm ci` there.
 echo "Regenerating lockfiles..."
 (cd "$ROOT/packages/tapsmith" && npm install --package-lock-only --silent)
 (cd "$ROOT/packages/tapsmith-core" && cargo check --quiet)
-for dir in website test-app benchmark/tapsmith; do
-  lockfile="$ROOT/$dir/package-lock.json"
-  if [[ -f "$lockfile" ]]; then
-    (cd "$ROOT/$dir" && npm install --package-lock-only --silent)
-  fi
-done
 
 echo "Done. Verify with:"
 echo "  grep -rn '\"$CURRENT_VERSION\"' --include='package.json' --include='Cargo.toml' --include='*.astro' . | grep -v node_modules"

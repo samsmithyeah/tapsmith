@@ -1,13 +1,13 @@
 {
   "name": "@tapsmith/agent-ios-simulator-x64",
-  "version": "0.1.7",
+  "version": "0.1.8",
   "description": "Prebuilt iOS simulator agent for macOS x64 (Intel)",
   "os": ["darwin"],
   "cpu": ["x64"],
   "files": [
-    "sdk-*/",
+    "sdk-*/**",
     "*.xctestrun",
-    "Debug-iphonesimulator/"
+    "Debug-iphonesimulator"
   ],
   "preferUnplugged": true,
   "repository": {
