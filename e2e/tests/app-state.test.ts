@@ -12,7 +12,7 @@ test("profile screen is accessible without logging in", async ({ device }) => {
 
   // Without restored auth, this would redirect to login.
   // With restored app state, we land directly on the profile.
-  await expect(device.getByText("Profile", { exact: true })).toBeVisible()
+  await expect(device.getByText("Profile", { exact: true }).first()).toBeVisible()
   await expect(device.getByText("test@example.com", { exact: true })).toBeVisible()
   await expect(device.getByText("Authenticated", { exact: true })).toBeVisible()
 })
