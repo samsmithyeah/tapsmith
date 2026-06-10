@@ -264,18 +264,23 @@ export function resolveInitPlan(
 
 // ─── Execution ───
 
+/** Throws CONFIG_EXISTS unless force or no config present. */
+export function assertConfigWritable(force: boolean, cwd: string = process.cwd()): void {
+  const existing = ['tapsmith.config.ts', 'tapsmith.config.mjs', 'tapsmith.config.js']
+    .find((name) => fs.existsSync(path.join(cwd, name)));
+  if (existing && !force) {
+    throw new InitError('CONFIG_EXISTS', `Found existing ${existing}`, {
+      fix: 'Pass --force to overwrite, or delete the existing config',
+    });
+  }
+}
+
 export function executeInitPlan(plan: InitPlan, args: InitArgs, cwd: string = process.cwd()): InitResult {
   const filesCreated: string[] = [];
   const warnings = [...plan.warnings];
 
   const configPath = path.join(cwd, 'tapsmith.config.ts');
-  const existing = ['tapsmith.config.ts', 'tapsmith.config.mjs', 'tapsmith.config.js']
-    .find((name) => fs.existsSync(path.join(cwd, name)));
-  if (existing && !args.force) {
-    throw new InitError('CONFIG_EXISTS', `Found existing ${existing}`, {
-      fix: 'Pass --force to overwrite, or delete the existing config',
-    });
-  }
+  assertConfigWritable(args.force, cwd);
 
   fs.writeFileSync(configPath, generateConfig(plan.platforms, plan.android, plan.ios, plan.networkCapture));
   filesCreated.push('tapsmith.config.ts');

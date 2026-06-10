@@ -3,9 +3,14 @@ import { parseVerifyArgs, pickVerifyTarget, summarizeVerifyReport } from '../ver
 
 describe('parseVerifyArgs()', () => {
   it('parses --json and --config', () => {
-    expect(parseVerifyArgs(['--json', '--config', 't.config.ts'])).toEqual({ json: true, config: 't.config.ts' });
-    expect(parseVerifyArgs(['--config=t.config.ts'])).toEqual({ json: false, config: 't.config.ts' });
-    expect(parseVerifyArgs([])).toEqual({ json: false, config: undefined });
+    expect(parseVerifyArgs(['--json', '--config', 't.config.ts'])).toEqual({ json: true, config: 't.config.ts', help: false });
+    expect(parseVerifyArgs(['--config=t.config.ts'])).toEqual({ json: false, config: 't.config.ts', help: false });
+    expect(parseVerifyArgs([])).toEqual({ json: false, config: undefined, help: false });
+  });
+
+  it('parses --help and -h', () => {
+    expect(parseVerifyArgs(['--help']).help).toBe(true);
+    expect(parseVerifyArgs(['-h']).help).toBe(true);
   });
 
   it('throws on unknown flags', () => {

@@ -18,15 +18,17 @@ import * as path from 'node:path';
 export interface VerifyArgs {
   json: boolean;
   config: string | undefined;
+  help: boolean;
 }
 
 export function parseVerifyArgs(argv: string[]): VerifyArgs {
-  const args: VerifyArgs = { json: false, config: undefined };
+  const args: VerifyArgs = { json: false, config: undefined, help: false };
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
     if (arg === '--json') args.json = true;
     else if (arg === '--config' || arg === '-c') args.config = argv[++i];
     else if (arg.startsWith('--config=')) args.config = arg.slice('--config='.length);
+    else if (arg === '--help' || arg === '-h') args.help = true;
     else throw new Error(`Unknown verify flag: ${arg} (usage: tapsmith verify [--json] [--config <file>])`);
   }
   return args;
@@ -85,6 +87,18 @@ export function summarizeVerifyReport(report: VerifyReport): VerifySummary {
 
 // ─── Command entry ───
 
+const VERIFY_USAGE = `Usage: tapsmith verify [--json] [--config <file>]
+
+Runs one test end-to-end (device boot, app install, real runner) to prove
+the configured setup works. Scaffolds a throwaway smoke test if the project
+has no tests yet.
+
+Options:
+  --json             Machine-readable output (also on errors)
+  -c, --config <p>   Path to config file
+  -h, --help         Show this help
+`;
+
 function emitError(json: boolean, code: string, message: string, fix?: string): void {
   if (json) {
     console.log(JSON.stringify({ error: { code, message, fix } }, null, 2));
@@ -104,6 +118,24 @@ export async function runVerify(argv: string[]): Promise<void> {
     return;
   }
 
+  if (args.help) {
+    process.stdout.write(VERIFY_USAGE);
+    return;
+  }
+
+  // Fast-fail when no config file exists and no explicit --config was provided.
+  // loadConfig falls back to defaults, so without this guard verify would launch
+  // a full 10-minute run against an unconfigured project.
+  if (!args.config) {
+    const configNames = ['tapsmith.config.ts', 'tapsmith.config.mjs', 'tapsmith.config.js'];
+    const found = configNames.find((name) => fs.existsSync(path.join(process.cwd(), name)));
+    if (!found) {
+      emitError(args.json, 'NO_CONFIG', 'No tapsmith.config.{ts,mjs,js} found in the current directory',
+        'Run: npx tapsmith init --yes');
+      return;
+    }
+  }
+
   const { loadConfig } = await import('./config.js');
   let config;
   try {
@@ -119,10 +151,12 @@ export async function runVerify(argv: string[]): Promise<void> {
 
   let target = pickVerifyTarget(testFiles);
   let scaffolded: string | undefined;
+  let testDirExisted = true;
   if (!target) {
     // No tests yet — scaffold a throwaway smoke test (cleaned up below).
     const { generateExampleTest } = await import('./init.js');
     const testDir = path.join(config.rootDir, 'tests');
+    testDirExisted = fs.existsSync(testDir);
     scaffolded = path.join(testDir, 'tapsmith-verify-smoke.test.ts');
     fs.mkdirSync(testDir, { recursive: true });
     fs.writeFileSync(scaffolded, generateExampleTest());
@@ -139,7 +173,8 @@ export async function runVerify(argv: string[]): Promise<void> {
       process.argv[1], 'test', target, '--reporter', 'json',
       ...(args.config ? ['--config', args.config] : []),
     ], {
-      stdio: args.json ? 'pipe' : 'inherit',
+      stdio: args.json ? ['ignore', 'ignore', 'pipe'] : 'inherit',
+      maxBuffer: 64 * 1024 * 1024,
       env: { ...process.env, TAPSMITH_JSON_OUTPUT_FILE: resultsFile },
       timeout: 10 * 60 * 1000,
     });
@@ -166,6 +201,11 @@ export async function runVerify(argv: string[]): Promise<void> {
     if (!summary.ok) process.exitCode = 1;
   } finally {
     fs.rmSync(resultsFile, { force: true });
-    if (scaffolded) fs.rmSync(scaffolded, { force: true });
+    if (scaffolded) {
+      fs.rmSync(scaffolded, { force: true });
+      if (!testDirExisted) {
+        try { fs.rmdirSync(path.dirname(scaffolded)); } catch { /* non-empty or already gone */ }
+      }
+    }
   }
 }

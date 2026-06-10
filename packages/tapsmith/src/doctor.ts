@@ -331,7 +331,7 @@ export async function runDoctor(argv: string[] = []): Promise<void> {
     if (msg.includes('Could not find') || msg.includes('ENOENT')) {
       // No config file — fine, checkConfigFile() will report it
     } else {
-      warn(checks, 'config', `Config file has errors: ${msg}`, 'Fix the syntax error in tapsmith.config.ts');
+      warn(checks, 'config-load', `Config file has errors: ${msg}`, 'Fix the syntax error in tapsmith.config.ts');
     }
   }
 

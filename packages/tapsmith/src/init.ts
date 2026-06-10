@@ -510,6 +510,11 @@ export async function runInit(argv: string[] = []): Promise<void> {
       const env = scanEnvironment();
       const plan = resolveInitPlan(parsed, env);
 
+      // Guard BEFORE the iOS agent build so a 5-minute xcodebuild is never
+      // launched against a project that already has a config (unless --force).
+      const { assertConfigWritable } = await import('./init-noninteractive.js');
+      assertConfigWritable(parsed.force);
+
       if (plan.platforms.includes('ios')) {
         const agentResult = await ensureSimulatorAgent(plan.ios?.simulator);
         if (agentResult.status === 'failed') {

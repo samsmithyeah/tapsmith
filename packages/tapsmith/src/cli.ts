@@ -1692,6 +1692,7 @@ async function main(): Promise<void> {
     'refresh-ios-network',
     'verify-ios-network',
     'init',
+    'verify',
   ]);
 
   if (args.help && !(args.command && subcommandsWithOwnHelp.has(args.command))) {
