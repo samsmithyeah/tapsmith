@@ -1,6 +1,6 @@
 {
   "name": "@tapsmith/agent-ios-simulator-arm64",
-  "version": "0.1.7",
+  "version": "0.1.8",
   "description": "Prebuilt iOS simulator agent for macOS ARM64 (Apple Silicon)",
   "os": ["darwin"],
   "cpu": ["arm64"],
