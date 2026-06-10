@@ -2128,3 +2128,27 @@ describe('review follow-ups (PR #124)', () => {
     await expect(handle.count()).rejects.toThrow(/findElements failed: agent socket closed/);
   });
 });
+
+describe('scoped selector descriptions (review follow-up)', () => {
+  it('renders chained getBy* syntax, not .locator(getBy*())', async () => {
+    const client = makeMockClient({
+      findElements: vi.fn(async () => makeFindElementsResponse([])),
+    });
+    const parent = new ElementHandle(client, _role('list'), 300);
+    const child = parent.getByText('Row', { exact: true });
+    await expect(child.find()).rejects.toThrow(
+      'getByRole("list").getByText("Row", { exact: true })',
+    );
+  });
+});
+
+describe('scrollIntoView error propagation (review follow-up)', () => {
+  it('surfaces a daemon errorMessage instead of swiping to the max', async () => {
+    const findElements = vi.fn(async () => ({ requestId: '1', elements: [], errorMessage: 'agent gone' }));
+    const swipe = vi.fn(async () => successResponse());
+    const client = makeMockClient({ findElements, swipe });
+    const handle = new ElementHandle(client, _text('Target'), 5000);
+    await expect(handle.scrollIntoView()).rejects.toThrow(/findElements failed: agent gone/);
+    expect(swipe).not.toHaveBeenCalled();
+  });
+});

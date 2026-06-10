@@ -484,12 +484,16 @@ describe("toBeHidden()", () => {
     ).rejects.toThrow("NOT to be hidden");
   });
 
-  it("passes when client throws (element gone)", async () => {
+  it("propagates infrastructure errors instead of treating them as hidden", async () => {
+    // "Element gone" is an empty result, not a throw — a throw means the
+    // daemon/agent failed, and a dead session must not read as "hidden".
     const client = makeMockClient(async () => {
       throw new Error("connection lost");
     });
     const handle = makeHandle(client);
-    await tapsmithExpect(handle).toBeHidden({ timeout: 50 });
+    await vitestExpect(
+      tapsmithExpect(handle).toBeHidden({ timeout: 50 }),
+    ).rejects.toThrow("connection lost");
   });
 });
 
@@ -1624,21 +1628,22 @@ describe("polling behavior", () => {
     vitestExpect(callCount).toBeGreaterThanOrEqual(3);
   });
 
-  it("handles client errors gracefully during polling", async () => {
+  it("propagates client errors immediately instead of polling past them", async () => {
+    // Mirrors the action path (_waitForEnabled): infrastructure failures
+    // surface with their real cause rather than burning the assertion
+    // timeout into a misleading "expected to be visible" message.
     let callCount = 0;
     const client = makeMockClient(async () => {
       callCount++;
-      if (callCount < 3) throw new Error("connection error");
-      return {
-        requestId: "1",
-        found: true,
-        element: makeElementInfo({ visible: true }),
-        errorMessage: "",
-      };
+      throw new Error("connection error");
     });
     const handle = makeHandle(client, _text("retry"), 2000);
-    await tapsmithExpect(handle).toBeVisible({ timeout: 2000 });
-    vitestExpect(callCount).toBeGreaterThanOrEqual(3);
+    const start = Date.now();
+    await vitestExpect(
+      tapsmithExpect(handle).toBeVisible({ timeout: 2000 }),
+    ).rejects.toThrow("connection error");
+    vitestExpect(callCount).toBe(1);
+    vitestExpect(Date.now() - start).toBeLessThan(1_000);
   });
 
   it("uses handle timeout when no explicit timeout given", async () => {

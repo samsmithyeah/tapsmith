@@ -95,10 +95,17 @@ describe('resolveActionTarget (strict mode, PILOT-226)', () => {
   });
 
   it('errors after the wait when nothing matches', async () => {
-    const client = makeClient([]);
-    const target = await resolveActionTarget(client, 'device.getByText("Ghost")');
-    expect(target.error).toMatch(/No elements match/);
-  }, 15_000);
+    vi.useFakeTimers();
+    try {
+      const client = makeClient([]);
+      const targetPromise = resolveActionTarget(client, 'device.getByText("Ghost")');
+      await vi.advanceTimersByTimeAsync(6_000);
+      const target = await targetPromise;
+      expect(target.error).toMatch(/No elements match/);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });
 
 describe('formatBounds', () => {

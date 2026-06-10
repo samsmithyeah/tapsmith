@@ -140,7 +140,8 @@ export function formatSelector(sel: Selector): string {
     case 'xpath': base = `locator({ xpath: "${sel.kind.value}" })`; break;
     default: base = JSON.stringify(selectorToProto(sel)); break;
   }
-  if (sel.parent) return `${formatSelector(sel.parent)}.locator(${base})`;
+  // Scoped locators chain getBy* calls: getByRole("list").getByText("Row")
+  if (sel.parent) return `${formatSelector(sel.parent)}.${base}`;
   return base;
 }
 

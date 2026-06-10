@@ -1350,9 +1350,12 @@ export class ElementHandle {
     try {
       for (let i = 0; i <= maxScrolls; i++) {
         try {
-          const els = collapseSameTargetDuplicates(
-            (await this._client.findElements(this._selector, SCROLL_PROBE_TIMEOUT_MS)).elements ?? [],
-          );
+          const res = await this._client.findElements(this._selector, SCROLL_PROBE_TIMEOUT_MS);
+          if (res.errorMessage) {
+            // Daemon-level failure — not "no match yet"; don't keep swiping.
+            throw new Error(`findElements failed: ${res.errorMessage}`);
+          }
+          const els = collapseSameTargetDuplicates(res.elements ?? []);
           const nthIndex = this._options.nthIndex;
           let el: ElementInfo | undefined;
           if (nthIndex !== undefined) {
