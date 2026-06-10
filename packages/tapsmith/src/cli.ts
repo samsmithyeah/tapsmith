@@ -1257,6 +1257,7 @@ function parseArgs(argv: string[]): CliArgs {
         || arg === 'list-devices'
         || arg === 'mcp-server'
         || arg === 'doctor'
+        || arg === 'init'
       ) {
         break;
       }
@@ -1678,6 +1679,7 @@ async function main(): Promise<void> {
     'configure-ios-network',
     'refresh-ios-network',
     'verify-ios-network',
+    'init',
   ]);
 
   if (args.help && !(args.command && subcommandsWithOwnHelp.has(args.command))) {
@@ -1816,7 +1818,9 @@ async function main(): Promise<void> {
 
   if (args.command === 'init') {
     const { runInit } = await import('./init.js');
-    await runInit();
+    const forwardedArgv = process.argv.slice(process.argv.indexOf('init') + 1)
+      .filter((a) => a !== '--__tsx-reexec');
+    await runInit(forwardedArgv);
     return;
   }
 

@@ -445,7 +445,100 @@ test('app launches successfully', async ({ device }) => {
 
 // ─── Main wizard ───
 
-export async function runInit(): Promise<void> {
+const INIT_USAGE = `Usage: tapsmith init [options]
+
+Interactive wizard when run in a terminal with no options.
+Non-interactive (for scripts and AI agents): pass --yes and/or explicit flags.
+
+Options:
+  -y, --yes                 Accept auto-detected defaults for anything not specified
+  --platform <list>         android, ios, or android,ios (default: inferred from android/ and ios/ dirs)
+  --apk <path>              Android APK (default: auto-detected under android/**/build/outputs/apk/)
+  --package <id>            Android package name (default: read from APK via aapt2)
+  --app <path>              iOS simulator .app bundle (default: auto-detected under ios/)
+  --bundle-id <id>          iOS bundle identifier (default: read from Info.plist)
+  --avd <name>              Android AVD to auto-launch (default: first available)
+  --simulator <name>        iOS simulator name (default: newest available iPhone)
+  --device-type <type>      emulator | physical | both (default: emulator)
+  --network-capture         Enable HTTP(S) trace capture
+  --no-example-test         Skip scaffolding tests/example.test.ts
+  --no-agents-md            Skip scaffolding the AGENTS.md section
+  --force                   Overwrite an existing tapsmith.config.*
+  --json                    Machine-readable output (also on errors)
+  -h, --help                Show this help
+
+Examples:
+  npx tapsmith init --yes
+  npx tapsmith init --yes --platform android --apk ./app-debug.apk
+  npx tapsmith doctor --json   # check environment first
+`;
+
+export async function runInit(argv: string[] = []): Promise<void> {
+  const { parseInitArgs, resolveInitPlan, executeInitPlan, InitError } = await import('./init-noninteractive.js');
+
+  let parsed;
+  try {
+    parsed = parseInitArgs(argv);
+  } catch (err) {
+    if (err instanceof InitError) {
+      emitInitError(err, argv.includes('--json'));
+      process.exit(1);
+    }
+    throw err;
+  }
+
+  if (parsed.help) {
+    console.log(INIT_USAGE);
+    return;
+  }
+
+  const nonInteractive = parsed.yes || parsed.anySetupFlag;
+
+  if (!nonInteractive && !process.stdin.isTTY) {
+    const err = new InitError(
+      'NON_INTERACTIVE_TTY',
+      'tapsmith init is an interactive wizard and stdin is not a TTY',
+      { fix: 'Run non-interactively: npx tapsmith init --yes (see npx tapsmith init --help for all flags)' },
+    );
+    emitInitError(err, parsed.json);
+    if (!parsed.json) console.error(INIT_USAGE);
+    process.exit(1);
+  }
+
+  if (nonInteractive) {
+    try {
+      const env = scanEnvironment();
+      const plan = resolveInitPlan(parsed, env);
+
+      if (plan.platforms.includes('ios')) {
+        const agentResult = await ensureSimulatorAgent(plan.ios?.simulator);
+        if (agentResult.status === 'failed') {
+          plan.warnings.push(`iOS simulator agent build failed (${agentResult.error ?? 'unknown error'}) — it will be retried on first test run`);
+        }
+      }
+
+      const result = executeInitPlan(plan, parsed);
+
+      if (parsed.json) {
+        console.log(JSON.stringify(result, null, 2));
+      } else {
+        for (const f of result.filesCreated) console.log(`  ${green('✓')} ${f}`);
+        for (const w of result.warnings) console.log(`  ${YELLOW}⚠${RESET} ${w}`);
+        console.log();
+        console.log(`  ${bold('Next steps')}`);
+        for (const s of result.nextSteps) console.log(`  - ${s}`);
+      }
+      return;
+    } catch (err) {
+      if (err instanceof InitError) {
+        emitInitError(err, parsed.json);
+        process.exit(1);
+      }
+      throw err;
+    }
+  }
+
+  // Interactive wizard (unchanged path)
   try {
     await runInitInner();
   } catch (err) {
@@ -457,6 +550,16 @@ export async function runInit(): Promise<void> {
     }
     console.log();
     process.exit(1);
+  }
+}
+
+function emitInitError(err: { code: string; message: string; fix?: string; candidates?: string[] }, json: boolean): void {
+  if (json) {
+    console.log(JSON.stringify({ error: { code: err.code, message: err.message, fix: err.fix, candidates: err.candidates } }, null, 2));
+  } else {
+    console.error(`  ${RED}✗${RESET} ${err.message}`);
+    if (err.candidates) for (const c of err.candidates) console.error(`      - ${c}`);
+    if (err.fix) console.error(`  ${YELLOW}→${RESET} ${err.fix}`);
   }
 }
 
@@ -576,6 +679,18 @@ async function runInitInner(): Promise<void> {
       fs.writeFileSync(testPath, generateExampleTest());
       console.log(`  ${green('✓')} tests/example.test.ts created`);
     }
+  }
+
+  // Step 8.5: AGENTS.md for coding agents
+  const writeAgents = await ask<boolean>({
+    type: 'confirm',
+    message: 'Add a Tapsmith section to AGENTS.md? (helps AI coding agents use tapsmith correctly)',
+    initial: true,
+  });
+  if (writeAgents) {
+    const { writeAgentsMd } = await import('./agents-md.js');
+    writeAgentsMd(process.cwd());
+    console.log(`  ${green('✓')} AGENTS.md updated`);
   }
 
   // Step 9: Next steps
