@@ -122,3 +122,23 @@ describe('formatHierarchy suggested selectors (PILOT-226)', () => {
     expect(selectors[1]).toContain('.last()');
   });
 });
+
+describe('exact-text upgrade quoting (PR #124 review)', () => {
+  it('escapes bare double quotes when the source suggestion was single-quoted', () => {
+    const a = makeNode('node', { class: 'android.widget.TextView', text: 'Say "hi"' });
+    const b = makeNode('node', { class: 'android.widget.TextView', text: 'Say "hi" again' });
+    const root = makeNode('node', {}, [a, b]);
+    const suggestion = [{ code: `device.getByText('Say "hi"')`, label: 'Text', priority: 6 }];
+    const result = disambiguateSelectors([root], a, suggestion);
+    expect(result[0].code).toBe('device.getByText("Say \\"hi\\"", { exact: true })');
+  });
+
+  it('does not double-escape backslash sequences from double-quoted sources', () => {
+    const a = makeNode('node', { class: 'android.widget.TextView', text: 'Say "hi"' });
+    const b = makeNode('node', { class: 'android.widget.TextView', text: 'Say "hi" again' });
+    const root = makeNode('node', {}, [a, b]);
+    const suggestion = [{ code: 'device.getByText("Say \\"hi\\"")', label: 'Text', priority: 6 }];
+    const result = disambiguateSelectors([root], a, suggestion);
+    expect(result[0].code).toBe('device.getByText("Say \\"hi\\"", { exact: true })');
+  });
+});

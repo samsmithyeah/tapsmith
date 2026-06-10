@@ -1993,3 +1993,23 @@ describe("strict mode for assertions", () => {
     await tapsmithExpect(handle).toHaveCount(2, { timeout: 1_000 });
   });
 });
+
+describe("assertion probe timeouts (PR #124 review)", () => {
+  it("and() operands resolve with the short poll timeout, not the handle timeout", async () => {
+    const timeouts: number[] = [];
+    const client = {
+      findElement: vi.fn(async () => ({ requestId: "1", found: false, errorMessage: "" })),
+      findElements: vi.fn(async (_sel: unknown, timeoutMs: number) => {
+        timeouts.push(timeoutMs);
+        return { requestId: "1", elements: [makeElementInfo({ visible: true })], errorMessage: "" };
+      }),
+    } as unknown as TapsmithGrpcClient;
+    const a = new ElementHandle(client, _text("A"), 30_000);
+    const b = new ElementHandle(client, _text("B"), 30_000);
+    await tapsmithExpect(a.and(b)).toBeVisible({ timeout: 1_000 });
+    vitestExpect(timeouts.length).toBeGreaterThan(0);
+    for (const t of timeouts) {
+      vitestExpect(t).toBeLessThanOrEqual(500);
+    }
+  });
+});

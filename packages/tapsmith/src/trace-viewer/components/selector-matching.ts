@@ -15,9 +15,12 @@ export interface ParsedSelector {
 // device.getByText("value", { exact: true }) — the options object is captured
 // as a blob and parsed by parseGetByOptions. Supports both single and double
 // quotes, optional whitespace around args.
-const DEVICE_RE = /^device\.getBy(\w+)\(\s*(["'])(.*?)\2(?:\s*,\s*\{([^}]*)\})?\s*\)/;
+// The quoted-string alternation skips escaped characters so values containing
+// escaped quotes (getByText("Say \\"hi\\"")) parse fully instead of truncating.
+// Groups: 1 = method, 2 = double-quoted value, 3 = single-quoted value, 4 = options blob.
+const DEVICE_RE = /^device\.getBy(\w+)\(\s*(?:"((?:[^"\\]|\\.)*)"|'((?:[^'\\]|\\.)*)')(?:\s*,\s*\{([^}]*)\})?\s*\)/;
 // Matches: webview.getByText("value"), webview.getByRole("role", { name: "n" })
-const WEBVIEW_GETBY_RE = /^webview\.getBy(\w+)\(\s*(["'])(.*?)\2(?:\s*,\s*\{([^}]*)\})?\s*\)/;
+const WEBVIEW_GETBY_RE = /^webview\.getBy(\w+)\(\s*(?:"((?:[^"\\]|\\.)*)"|'((?:[^'\\]|\\.)*)')(?:\s*,\s*\{([^}]*)\})?\s*\)/;
 
 /**
  * Undo source-string escaping (\" \' \\ \n) so a parsed name compares
@@ -40,12 +43,14 @@ function parseGetByOptions(blob: string | undefined): { name?: string; exact?: b
     exact: exactMatch ? exactMatch[1] === 'true' : undefined,
   };
 }
-// Matches: webview.locator("css-selector")
-const WEBVIEW_LOCATOR_RE = /^webview\.locator\(\s*(["'])(.*?)\1\s*\)/;
+// Matches: webview.locator("css-selector") — groups: 1 = dq value, 2 = sq value
+const WEBVIEW_LOCATOR_RE = /^webview\.locator\(\s*(?:"((?:[^"\\]|\\.)*)"|'((?:[^'\\]|\\.)*)')\s*\)/;
 // Matches: device.locator({ className: "value" }) or device.locator({ id: "value" })
-const DEVICE_LOCATOR_RE = /^device\.locator\(\s*\{\s*(className|id)\s*:\s*(["'])(.*?)\2\s*,?\s*\}\s*\)/;
+// Groups: 1 = prop, 2 = dq value, 3 = sq value
+const DEVICE_LOCATOR_RE = /^device\.locator\(\s*\{\s*(className|id)\s*:\s*(?:"((?:[^"\\]|\\.)*)"|'((?:[^'\\]|\\.)*)')\s*,?\s*\}\s*\)/;
 // Matches: text("value"), contentDesc("value") — legacy/shorthand format
-const SHORT_RE = /^(\w+)\(\s*(["'])(.*?)\2\s*\)/;
+// Groups: 1 = type, 2 = dq value, 3 = sq value
+const SHORT_RE = /^(\w+)\(\s*(?:"((?:[^"\\]|\\.)*)"|'((?:[^'\\]|\\.)*)')\s*\)/;
 
 // Matches trailing .first(), .last(), .nth(N) — N may be negative
 // (the runtime's .nth() counts from the end for negative indices)
@@ -66,17 +71,22 @@ export function parseSelectorString(input: string): ParsedSelector | null {
 
   const { base, index } = parseChain(trimmed);
 
+  // Parsed values are UNESCAPED (raw) — they compare directly against raw
+  // node attribute values; emitters re-escape when generating code strings.
+  const pick = (dq: string | undefined, sq: string | undefined): string =>
+    unescapeSelectorValue(dq !== undefined ? dq : (sq ?? ''));
+
   // WebView locator: webview.locator("#email")
   const locatorMatch = base.match(WEBVIEW_LOCATOR_RE);
   if (locatorMatch) {
-    return { type: 'wv-locator', value: locatorMatch[2], index };
+    return { type: 'wv-locator', value: pick(locatorMatch[1], locatorMatch[2]), index };
   }
 
   // WebView getBy*: webview.getByRole("button", { name: "Login" })
   const wvMatch = base.match(WEBVIEW_GETBY_RE);
   if (wvMatch) {
     const method = wvMatch[1];
-    const value = wvMatch[3];
+    const value = pick(wvMatch[2], wvMatch[3]);
     const { name, exact } = parseGetByOptions(wvMatch[4]);
     const sel = mapWebViewMethod(method, value, name, exact);
     if (sel) sel.index = index;
@@ -87,7 +97,7 @@ export function parseSelectorString(input: string): ParsedSelector | null {
   const deviceLocatorMatch = base.match(DEVICE_LOCATOR_RE);
   if (deviceLocatorMatch) {
     const prop = deviceLocatorMatch[1];
-    const value = deviceLocatorMatch[3];
+    const value = pick(deviceLocatorMatch[2], deviceLocatorMatch[3]);
     const type = prop === 'className' ? 'className' : 'id';
     return { type, value, index };
   }
@@ -96,7 +106,7 @@ export function parseSelectorString(input: string): ParsedSelector | null {
   const deviceMatch = base.match(DEVICE_RE);
   if (deviceMatch) {
     const method = deviceMatch[1];
-    const value = deviceMatch[3];
+    const value = pick(deviceMatch[2], deviceMatch[3]);
     const { name, exact } = parseGetByOptions(deviceMatch[4]);
     const sel = mapDeviceMethod(method, value, name, exact);
     if (sel) sel.index = index;
@@ -105,7 +115,7 @@ export function parseSelectorString(input: string): ParsedSelector | null {
 
   const shortMatch = base.match(SHORT_RE);
   if (shortMatch) {
-    return { type: shortMatch[1], value: shortMatch[3], index };
+    return { type: shortMatch[1], value: pick(shortMatch[2], shortMatch[3]), index };
   }
 
   return null;

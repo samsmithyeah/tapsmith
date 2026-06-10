@@ -741,10 +741,20 @@ export class ElementHandle {
       this._options.andHandle ||
       this._options.orHandle
     ) {
-      // Filter/and/or chains need client-side resolution; use a short-timeout
-      // probe so a single assertion poll tick stays fast.
+      // Filter/and/or chains need client-side resolution; clone the whole
+      // handle tree with a short timeout so a single assertion poll tick
+      // stays fast — and/or operands carry their own (long) timeouts and
+      // would otherwise cap each sub-query at e.g. 30s.
+      const cloneWithTimeout = (h: ElementHandle): ElementHandle =>
+        new ElementHandle(h._client, h._selector, timeoutMs, {
+          ...h._options,
+          andSelf: h._options.andSelf ? cloneWithTimeout(h._options.andSelf) : undefined,
+          andHandle: h._options.andHandle ? cloneWithTimeout(h._options.andHandle) : undefined,
+          orSelf: h._options.orSelf ? cloneWithTimeout(h._options.orSelf) : undefined,
+          orHandle: h._options.orHandle ? cloneWithTimeout(h._options.orHandle) : undefined,
+        });
       const probe = new ElementHandle(this._client, this._selector, timeoutMs, {
-        ...this._options,
+        ...cloneWithTimeout(this)._options,
         nthIndex: undefined,
       });
       elements = await probe._resolveAll();

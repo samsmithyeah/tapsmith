@@ -145,7 +145,7 @@ export function SelectorTab({ hierarchyXml, pickedNode, onHighlightsChange, sele
 
   // Strict mode (PILOT-226): an ambiguous selector without a positional
   // chain will throw at runtime — warn here, where the user is composing it.
-  const hasPositionalChain = /\.(first|last)\(\)|\.nth\(\s*\d+\s*\)/.test(selector);
+  const hasPositionalChain = /\.(first|last)\(\)|\.nth\(\s*-?\d+\s*\)/.test(selector);
   const strictWarning = matchCount !== null && matchCount > 1 && !hasPositionalChain;
 
   return (

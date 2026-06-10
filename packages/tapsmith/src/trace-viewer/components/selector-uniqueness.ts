@@ -51,13 +51,13 @@ function tryExactTextUpgrade(
   const parsed = parseSelectorString(s.code);
   if (!parsed) return null;
   let upgraded: string;
-  // parsed.value is captured verbatim from the suggestion's source string,
-  // so it is already in escaped form (generateSelectors escaped it) — do NOT
-  // re-escape here or backslashes would double up.
+  // parseSelectorString returns RAW (unescaped) values — re-escape for the
+  // generated code string, whatever quoting the original suggestion used.
+  const value = escapeQuotes(parsed.value);
   if (parsed.type === 'textContains') {
-    upgraded = `device.getByText("${parsed.value}", { exact: true })`;
+    upgraded = `device.getByText("${value}", { exact: true })`;
   } else if (parsed.type === 'wv-text-contains') {
-    upgraded = `webview.getByText("${parsed.value}", { exact: true })`;
+    upgraded = `webview.getByText("${value}", { exact: true })`;
   } else {
     return null;
   }
