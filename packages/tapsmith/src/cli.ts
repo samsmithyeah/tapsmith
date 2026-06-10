@@ -113,6 +113,7 @@ function shouldPrintBannerForCommand(args: CliArgs): boolean {
   if (args.command === 'mcp-server') return false;
   if (args.command === 'list-devices' && commandArgsInclude(args.command, '--json')) return false;
   if (args.command === 'doctor' && commandArgsInclude(args.command, '--json')) return false;
+  if (args.command === 'verify' && commandArgsInclude(args.command, '--json')) return false;
 
   // These commands render command-specific help after the top-level parser
   // stops, so suppress the decorative banner when the user only asked for help.
@@ -137,6 +138,7 @@ function shouldPrintBannerForCommand(args: CliArgs): boolean {
     'configure-ios-network',
     'refresh-ios-network',
     'verify-ios-network',
+    'verify',
     'doctor',
   ]).has(args.command);
 }
@@ -1260,6 +1262,7 @@ function parseArgs(argv: string[]): CliArgs {
         || arg === 'configure-ios-network'
         || arg === 'refresh-ios-network'
         || arg === 'verify-ios-network'
+        || arg === 'verify'
         || arg === 'list-devices'
         || arg === 'mcp-server'
         || arg === 'doctor'
@@ -1644,6 +1647,7 @@ ${bold('Usage:')}
   tapsmith refresh-ios-network <udid>     Regenerate the network capture profile after a host Wi-Fi change
   tapsmith verify-ios-network <udid>      Verify HTTPS capture for a normal system-trust client on a physical iOS device
   tapsmith init                      Initialize a new Tapsmith project (interactive wizard)
+  tapsmith verify [--json]           Run one test end-to-end to prove the setup works
   tapsmith doctor                    Check system health and dependencies
   tapsmith mcp-server [--config file] Run MCP server for LLM/agent integration (stdio transport)
   tapsmith --version                 Print version
@@ -1844,6 +1848,14 @@ async function main(): Promise<void> {
     const forwardedArgv = process.argv.slice(process.argv.indexOf('mcp-server') + 1)
       .filter((a) => a !== '--__tsx-reexec');
     await runMcpServer(forwardedArgv);
+    return;
+  }
+
+  if (args.command === 'verify') {
+    const { runVerify } = await import('./verify.js');
+    const forwardedArgv = process.argv.slice(process.argv.indexOf('verify') + 1)
+      .filter((a) => a !== '--__tsx-reexec');
+    await runVerify(forwardedArgv);
     return;
   }
 
