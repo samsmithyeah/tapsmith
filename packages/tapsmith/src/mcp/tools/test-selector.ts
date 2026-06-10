@@ -5,6 +5,7 @@ import { parseHierarchyXml } from '../../trace-viewer/components/hierarchy-utils
 import { parseSelectorString, findMatchingNodes } from '../../trace-viewer/components/selector-matching.js';
 import { getNodeRole } from '../../trace-viewer/components/hierarchy-utils.js';
 import { parseSelectorToInternal, formatBounds } from '../selector-helper.js';
+import { collapseSameTargetDuplicates } from '../../element-handle.js';
 import type { ElementInfo } from '../../grpc-client.js';
 
 /** Snapshot lookup — the agent's findElements does not auto-wait, so a short
@@ -66,7 +67,9 @@ export function registerTestSelectorTool(server: McpServer): void {
       if (res.errorMessage) {
         return { content: [{ type: 'text' as const, text: `Error: ${res.errorMessage}` }], isError: true };
       }
-      const all = res.elements ?? [];
+      // Same duplicate-collapsing the runtime applies (iOS exposes some text
+      // elements twice with identical label/bounds).
+      const all = collapseSameTargetDuplicates(res.elements ?? []);
 
       // Apply a positional chain the same way the runtime does.
       let resolved: ElementInfo[] = all;

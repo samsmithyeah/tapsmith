@@ -277,12 +277,38 @@ function matchCssSelector(css: string, tag: string, id: string, cssClass: string
   return tag === trimmed;
 }
 
+/**
+ * Collapse accessibility-tree duplicates targeting the same visual element —
+ * the TS-matcher mirror of the SDK's collapseSameTargetDuplicates (the iOS
+ * tree exposes some text elements twice: an attribute-carrying parent and an
+ * inner child with identical text and pixel-identical bounds). Keeping them
+ * distinct would make playground counts and .nth() suffixes disagree with
+ * runtime resolution (PILOT-226).
+ */
+function collapseSameTargetNodes(nodes: HierarchyNode[]): HierarchyNode[] {
+  if (nodes.length < 2) return nodes;
+  const seen = new Set<string>();
+  const result: HierarchyNode[] = [];
+  for (const node of nodes) {
+    const bounds = getNodeBounds(node);
+    if (!bounds || bounds.right - bounds.left <= 0 || bounds.bottom - bounds.top <= 0) {
+      result.push(node);
+      continue;
+    }
+    const key = `${bounds.left},${bounds.top},${bounds.right},${bounds.bottom}|${getNodeText(node)}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    result.push(node);
+  }
+  return result;
+}
+
 export function findMatchingNodes(roots: HierarchyNode[], selector: ParsedSelector): HierarchyNode[] {
-  const all: HierarchyNode[] = [];
+  const raw: HierarchyNode[] = [];
 
   function walk(node: HierarchyNode) {
     if (nodeMatchesSelector(node, selector)) {
-      all.push(node);
+      raw.push(node);
     }
     for (const child of node.children) {
       walk(child);
@@ -292,6 +318,8 @@ export function findMatchingNodes(roots: HierarchyNode[], selector: ParsedSelect
   for (const root of roots) {
     walk(root);
   }
+
+  const all = collapseSameTargetNodes(raw);
 
   if (selector.index === undefined) return all;
   if (selector.index === 'first') return all.length > 0 ? [all[0]] : [];

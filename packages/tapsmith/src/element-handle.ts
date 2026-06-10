@@ -232,6 +232,38 @@ export function buildStrictModeViolationError(
   return new StrictModeViolationError(message, elements);
 }
 
+/**
+ * Collapse accessibility-tree duplicates that target the same visual element.
+ *
+ * The iOS tree often exposes a text element twice: a parent StaticText
+ * carrying the accessibility attributes (testID, traits) and an inner
+ * StaticText child with the same label and pixel-identical bounds. Acting on
+ * either taps the same point, so treating them as distinct matches would
+ * raise false strict-mode violations (PILOT-226). Only elements with
+ * identical text AND identical non-degenerate bounds are collapsed —
+ * distinct elements that merely overlap keep their own entries. Keeps the
+ * first occurrence (document order — the attribute-carrying parent).
+ *
+ * @internal
+ */
+export function collapseSameTargetDuplicates(elements: ElementInfo[]): ElementInfo[] {
+  if (elements.length < 2) return elements;
+  const seen = new Set<string>();
+  const result: ElementInfo[] = [];
+  for (const el of elements) {
+    const b = el.bounds;
+    if (!b || b.right - b.left <= 0 || b.bottom - b.top <= 0) {
+      result.push(el);
+      continue;
+    }
+    const key = `${b.left},${b.top},${b.right},${b.bottom}|${el.text}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    result.push(el);
+  }
+  return result;
+}
+
 /** @internal Brand key for cross-instance type checks (CJS/ESM dual-package). */
 export const ELEMENT_HANDLE_BRAND = Symbol.for('tapsmith.ElementHandle');
 
@@ -462,7 +494,7 @@ export class ElementHandle {
 
     // Base case: no and/or — resolve selector then apply filters
     const res = await this._client.findElements(this._selector, this._timeoutMs);
-    let elements = res.elements ?? [];
+    let elements = collapseSameTargetDuplicates(res.elements ?? []);
 
     if (this._options.filters) {
       for (const f of this._options.filters) {
@@ -618,7 +650,7 @@ export class ElementHandle {
    */
   private async _findOneStrict(timeoutMs: number): Promise<ElementInfo | undefined> {
     const res = await this._client.findElements(this._selector, timeoutMs);
-    const elements = res.elements ?? [];
+    const elements = collapseSameTargetDuplicates(res.elements ?? []);
     if (elements.length > 1) {
       throw buildStrictModeViolationError(this._describe(), elements);
     }
@@ -695,7 +727,7 @@ export class ElementHandle {
       elements = await probe._resolveAll();
     } else {
       const res = await this._client.findElements(this._selector, timeoutMs);
-      elements = res.elements ?? [];
+      elements = collapseSameTargetDuplicates(res.elements ?? []);
     }
 
     const nthIndex = this._options.nthIndex;
@@ -911,7 +943,7 @@ export class ElementHandle {
           elements = await pollHandle._resolveAll();
         } else {
           const res = await this._client.findElements(this._selector, findBudget);
-          elements = res.elements ?? [];
+          elements = collapseSameTargetDuplicates(res.elements ?? []);
         }
       } catch (err) {
         if (!isPollableNotFoundError(err)) throw err;
@@ -1288,7 +1320,9 @@ export class ElementHandle {
     try {
       for (let i = 0; i <= maxScrolls; i++) {
         try {
-          const els = (await this._client.findElements(this._selector, SCROLL_PROBE_TIMEOUT_MS)).elements ?? [];
+          const els = collapseSameTargetDuplicates(
+            (await this._client.findElements(this._selector, SCROLL_PROBE_TIMEOUT_MS)).elements ?? [],
+          );
           const nthIndex = this._options.nthIndex;
           let el: ElementInfo | undefined;
           if (nthIndex !== undefined) {

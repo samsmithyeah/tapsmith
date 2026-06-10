@@ -1997,3 +1997,75 @@ describe('isEditable', () => {
     expect(await handle.isEditable()).toBe(false);
   });
 });
+
+// ─── Same-target duplicate collapsing (PILOT-226) ───
+// The iOS accessibility tree exposes some text elements twice: a parent
+// StaticText carrying the attributes (testID, traits) and an inner child
+// with identical label and pixel-identical bounds. That must not count as
+// a strict-mode ambiguity.
+
+describe('same-target duplicate collapsing', () => {
+  const parent = makeElementInfo({
+    elementId: 'p',
+    text: '0',
+    resourceId: 'counter-value',
+    bounds: { left: 16, top: 674, right: 386, bottom: 751 },
+  });
+  const childDup = makeElementInfo({
+    elementId: 'c',
+    text: '0',
+    resourceId: '',
+    bounds: { left: 16, top: 674, right: 386, bottom: 751 },
+  });
+
+  it('tap() does not throw strict violation for an identical parent/child pair', async () => {
+    const tap = vi.fn(async () => successResponse());
+    const client = makeMockClient({
+      findElements: vi.fn(async () => makeFindElementsResponse([parent, childDup])),
+      tap,
+    });
+    const handle = new ElementHandle(client, _text('0'), 5000);
+    await handle.tap();
+    expect(tap).toHaveBeenCalled();
+  });
+
+  it('find() resolves to the attribute-carrying first occurrence', async () => {
+    const client = makeMockClient({
+      findElements: vi.fn(async () => makeFindElementsResponse([parent, childDup])),
+    });
+    const handle = new ElementHandle(client, _text('0'), 5000);
+    const el = await handle.find();
+    expect(el.resourceId).toBe('counter-value');
+  });
+
+  it('count() reports collapsed visual elements', async () => {
+    const client = makeMockClient({
+      findElements: vi.fn(async () => makeFindElementsResponse([parent, childDup])),
+    });
+    const handle = new ElementHandle(client, _text('0'), 5000);
+    expect(await handle.count()).toBe(1);
+  });
+
+  it('still throws for distinct elements with the same text at different bounds', async () => {
+    const other = makeElementInfo({
+      elementId: 'q',
+      text: '0',
+      bounds: { left: 16, top: 100, right: 386, bottom: 150 },
+    });
+    const client = makeMockClient({
+      findElements: vi.fn(async () => makeFindElementsResponse([other, parent, childDup])),
+    });
+    const handle = new ElementHandle(client, _text('0'), 5000);
+    await expect(handle.tap()).rejects.toThrow(/^strict mode violation/);
+  });
+
+  it('does not collapse zero-area elements', async () => {
+    const hiddenA = makeElementInfo({ elementId: 'a', text: 'x', bounds: { left: 0, top: 0, right: 0, bottom: 0 } });
+    const hiddenB = makeElementInfo({ elementId: 'b', text: 'x', bounds: { left: 0, top: 0, right: 0, bottom: 0 } });
+    const client = makeMockClient({
+      findElements: vi.fn(async () => makeFindElementsResponse([hiddenA, hiddenB])),
+    });
+    const handle = new ElementHandle(client, _text('x'), 5000);
+    expect(await handle.count()).toBe(2);
+  });
+});

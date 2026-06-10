@@ -2,7 +2,7 @@ import { parseSelectorString } from '../trace-viewer/components/selector-matchin
 import type { ParsedSelector } from '../trace-viewer/components/selector-matching.js';
 import type { Selector, SelectorKind } from '../selectors.js';
 import { makeSelector } from '../selectors.js';
-import { buildStrictModeViolationError } from '../element-handle.js';
+import { buildStrictModeViolationError, collapseSameTargetDuplicates } from '../element-handle.js';
 import type { TapsmithGrpcClient, ElementInfo } from '../grpc-client.js';
 
 export interface ParsedRuntimeSelector {
@@ -92,7 +92,7 @@ export async function resolveActionTarget(
   let elements: ElementInfo[] = [];
   while (true) {
     const res = await client.findElements(selector, RESOLVE_POLL_MS);
-    elements = res.elements ?? [];
+    elements = collapseSameTargetDuplicates(res.elements ?? []);
     if (elements.length > 0 || Date.now() >= deadline) break;
     await new Promise((r) => setTimeout(r, RESOLVE_POLL_MS));
   }
