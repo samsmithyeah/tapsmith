@@ -1835,7 +1835,7 @@ async function main(): Promise<void> {
   }
 
   // ─── Project resolution & test file discovery ───
-  const { resolveProjects, topologicalSort, collectTransitiveDeps, findProjectForFile } = await import('./project.js');
+  const { resolveProjects, topologicalSort, collectTransitiveDeps, findProjectsForFile } = await import('./project.js');
   const hasProjects = config.projects && config.projects.length > 0;
   const hasExplicitFiles = args.files && args.files.length > 0;
 
@@ -1856,10 +1856,16 @@ async function main(): Promise<void> {
 
     // Find which projects the explicit files belong to
     const targetProjectNames = new Set<string>();
-    for (const filePath of explicitPaths) {
-      const projectName = findProjectForFile(filePath, allProjects, config.rootDir);
-      if (projectName) {
-        targetProjectNames.add(projectName);
+    const filesByProject = new Map<string, string[]>();
+    for (const filePath of new Set(explicitPaths)) {
+      for (const name of findProjectsForFile(filePath, allProjects, config.rootDir)) {
+        targetProjectNames.add(name);
+        let list = filesByProject.get(name);
+        if (!list) {
+          list = [];
+          filesByProject.set(name, list);
+        }
+        list.push(filePath);
       }
     }
 
@@ -1873,10 +1879,7 @@ async function main(): Promise<void> {
     // Discover files: dependency projects get their full testMatch, target projects get only explicit files
     for (const project of projects) {
       if (targetProjectNames.has(project.name)) {
-        // Only run the explicit files that belong to this project
-        project.testFiles = explicitPaths.filter(
-          (f: string) => findProjectForFile(f, [project], config.rootDir) === project.name,
-        );
+        project.testFiles = filesByProject.get(project.name) ?? [];
       } else {
         // Dependency project — run all its files
         project.testFiles = await discoverTestFiles(project.testMatch, config.rootDir, undefined, project.testIgnore);

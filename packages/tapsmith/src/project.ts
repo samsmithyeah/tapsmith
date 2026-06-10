@@ -5,8 +5,8 @@
  * dependency constraints and shared `use` options.
  */
 
-import { minimatch } from 'minimatch';
 import { effectiveConfigForProject, type TapsmithConfig, type ProjectConfig, type UseOptions } from './config.js';
+import { matchesTestFile } from './test-file-discovery.js';
 
 // ─── Types ───
 
@@ -433,26 +433,22 @@ export function collectTransitiveDeps(
 }
 
 /**
- * Find which project a file belongs to by matching against testMatch/testIgnore
- * patterns. Returns the first matching project name, or undefined.
+ * Find ALL projects a file belongs to by matching against testMatch/testIgnore
+ * patterns. A file can match multiple projects (e.g. the same test running on
+ * both Android and iOS).
  */
-export function findProjectForFile(
+export function findProjectsForFile(
   filePath: string,
   projects: ResolvedProject[],
   rootDir: string,
-): string | undefined {
-  const relative = filePath.startsWith(rootDir)
-    ? filePath.slice(rootDir.length).replace(/^\//, '')
-    : filePath;
-
+): string[] {
+  const matches: string[] = [];
   for (const project of projects) {
-    const matchesInclude = project.testMatch.some((pattern) => minimatch(relative, pattern));
-    const matchesIgnore = project.testIgnore.some((pattern) => minimatch(relative, pattern));
-    if (matchesInclude && !matchesIgnore) {
-      return project.name;
+    if (matchesTestFile(filePath, project.testMatch, rootDir, project.testIgnore)) {
+      matches.push(project.name);
     }
   }
-  return undefined;
+  return matches;
 }
 
 // ─── Cycle detection ───

@@ -12,7 +12,7 @@ export async function discoverTestFiles(
   extraIgnore?: string[],
 ): Promise<string[]> {
   if (explicitFiles && explicitFiles.length > 0) {
-    return explicitFiles.map((f) => path.resolve(rootDir, f));
+    return [...new Set(explicitFiles.map((f) => path.resolve(rootDir, f)))];
   }
 
   const ignore = [...DEFAULT_TEST_IGNORE, ...(extraIgnore ?? [])];
