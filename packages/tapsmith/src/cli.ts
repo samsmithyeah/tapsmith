@@ -112,6 +112,7 @@ function shouldPrintBannerForCommand(args: CliArgs): boolean {
   // Keep protocol and machine-readable surfaces byte-clean.
   if (args.command === 'mcp-server') return false;
   if (args.command === 'list-devices' && commandArgsInclude(args.command, '--json')) return false;
+  if (args.command === 'doctor' && commandArgsInclude(args.command, '--json')) return false;
 
   // These commands render command-specific help after the top-level parser
   // stops, so suppress the decorative banner when the user only asked for help.
@@ -1255,6 +1256,7 @@ function parseArgs(argv: string[]): CliArgs {
         || arg === 'verify-ios-network'
         || arg === 'list-devices'
         || arg === 'mcp-server'
+        || arg === 'doctor'
       ) {
         break;
       }
@@ -1820,7 +1822,9 @@ async function main(): Promise<void> {
 
   if (args.command === 'doctor') {
     const { runDoctor } = await import('./doctor.js');
-    await runDoctor();
+    const forwardedArgv = process.argv.slice(process.argv.indexOf('doctor') + 1)
+      .filter((a) => a !== '--__tsx-reexec');
+    await runDoctor(forwardedArgv);
     return;
   }
 
