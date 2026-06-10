@@ -36,8 +36,9 @@ const DEVICE_LOCATOR_RE = /^device\.locator\(\s*\{\s*(className|id)\s*:\s*(["'])
 // Matches: text("value"), contentDesc("value") — legacy/shorthand format
 const SHORT_RE = /^(\w+)\(\s*(["'])(.*?)\2\s*\)/;
 
-// Matches trailing .first(), .last(), .nth(N)
-const CHAIN_RE = /\.(first|last)\(\)$|\.nth\(\s*(\d+)\s*\)$/;
+// Matches trailing .first(), .last(), .nth(N) — N may be negative
+// (the runtime's .nth() counts from the end for negative indices)
+const CHAIN_RE = /\.(first|last)\(\)$|\.nth\(\s*(-?\d+)\s*\)$/;
 
 function parseChain(input: string): { base: string; index?: number | 'first' | 'last' } {
   const match = input.match(CHAIN_RE);
@@ -324,7 +325,9 @@ export function findMatchingNodes(roots: HierarchyNode[], selector: ParsedSelect
   if (selector.index === undefined) return all;
   if (selector.index === 'first') return all.length > 0 ? [all[0]] : [];
   if (selector.index === 'last') return all.length > 0 ? [all[all.length - 1]] : [];
-  return all[selector.index] ? [all[selector.index]] : [];
+  // Negative indices count from the end, like the runtime's .nth()
+  const idx = selector.index < 0 ? all.length + selector.index : selector.index;
+  return all[idx] ? [all[idx]] : [];
 }
 
 export function getNodeBounds(node: HierarchyNode): Bounds | null {

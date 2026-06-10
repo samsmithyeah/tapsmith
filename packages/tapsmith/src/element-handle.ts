@@ -499,6 +499,11 @@ export class ElementHandle {
 
     // Base case: no and/or — resolve selector then apply filters
     const res = await this._client.findElements(this._selector, this._timeoutMs);
+    if (res.errorMessage) {
+      // Daemon-level failure (agent dead, command error) — not "no match".
+      // Surface it instead of letting it read as an empty result.
+      throw new Error(`findElements failed: ${res.errorMessage}`);
+    }
     let elements = collapseSameTargetDuplicates(res.elements ?? []);
 
     if (this._options.filters) {
@@ -655,6 +660,11 @@ export class ElementHandle {
    */
   private async _findOneStrict(timeoutMs: number): Promise<ElementInfo | undefined> {
     const res = await this._client.findElements(this._selector, timeoutMs);
+    if (res.errorMessage) {
+      // Daemon-level failure (agent dead, command error) — not "no match".
+      // Must not look like a pollable not-found, so the real cause surfaces.
+      throw new Error(`findElements failed: ${res.errorMessage}`);
+    }
     const elements = collapseSameTargetDuplicates(res.elements ?? []);
     if (elements.length > 1) {
       throw buildStrictModeViolationError(this._describe(), elements);
@@ -664,7 +674,8 @@ export class ElementHandle {
 
   /**
    * @internal — Strict pre-action resolution for actions that don't require
-   * the enabled state (type, scroll, focus, …).
+   * the enabled state (type, scroll, focus, …). Polls until the locator
+   * resolves (Playwright-style auto-wait).
    *
    * Modified handles resolve through `_resolveOne()` (strict for ambiguous
    * filter/and/or chains, exempt for positional ones). Unmodified handles
@@ -679,25 +690,30 @@ export class ElementHandle {
    * opt-out behavior of `_waitForEnabled`.
    */
   private async _strictResolve(): Promise<{ remainingMs: number; element?: ElementInfo }> {
-    if (this._hasModifiers()) {
-      return { remainingMs: this._timeoutMs, element: await this._resolveOne() };
-    }
     const timeoutMs = this._timeoutMs;
     if (timeoutMs === 0) return { remainingMs: 0 };
     const MIN_ACTION_BUDGET_MS = 1000;
     const deadline = Date.now() + timeoutMs;
     const POLL_MS = 250;
     while (true) {
-      // Floor at 1ms — the daemon treats a 0 timeout as "use the 30s
-      // default", which would stall the final poll tick for 30s.
-      const findBudget = Math.min(POLL_MS, Math.max(1, deadline - Date.now()));
-      const el = await this._findOneStrict(findBudget);
-      if (el) {
-        const remaining = Math.max(0, deadline - Date.now());
-        return {
-          remainingMs: Math.min(timeoutMs, Math.max(remaining, MIN_ACTION_BUDGET_MS)),
-          element: el,
-        };
+      try {
+        // Floor at 1ms — the daemon treats a 0 timeout as "use the 30s
+        // default", which would stall the final poll tick for 30s.
+        const findBudget = Math.min(POLL_MS, Math.max(1, deadline - Date.now()));
+        const el = this._hasModifiers()
+          ? await this._resolveOne()
+          : await this._findOneStrict(findBudget);
+        if (el) {
+          const remaining = Math.max(0, deadline - Date.now());
+          return {
+            remainingMs: Math.min(timeoutMs, Math.max(remaining, MIN_ACTION_BUDGET_MS)),
+            element: el,
+          };
+        }
+      } catch (err) {
+        // Keep polling on "no match yet" (including nth-out-of-range);
+        // strict violations and infrastructure errors propagate immediately.
+        if (!isPollableNotFoundError(err)) throw err;
       }
       if (Date.now() >= deadline) {
         throw new Error(`Element ${this._describe()} was not found after waiting ${timeoutMs}ms`);
@@ -734,6 +750,9 @@ export class ElementHandle {
       elements = await probe._resolveAll();
     } else {
       const res = await this._client.findElements(this._selector, timeoutMs);
+      if (res.errorMessage) {
+        throw new Error(`findElements failed: ${res.errorMessage}`);
+      }
       elements = collapseSameTargetDuplicates(res.elements ?? []);
     }
 

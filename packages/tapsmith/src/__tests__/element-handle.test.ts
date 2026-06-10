@@ -2088,3 +2088,43 @@ describe('strict violation suggestion escaping', () => {
     expect((err as Error).message).toContain('device.getByText("Say \\"hi\\" later", { exact: true })');
   });
 });
+
+describe('review follow-ups (PR #124)', () => {
+  it('type() on a positional handle auto-waits for the element to appear', async () => {
+    let calls = 0;
+    const findElements = vi.fn(async () => {
+      calls++;
+      return makeFindElementsResponse(calls >= 3 ? [makeElementInfo({ text: 'Email', resourceId: 'email' })] : []);
+    });
+    const typeText = vi.fn(async () => successResponse());
+    const client = makeMockClient({ findElements, typeText });
+    const handle = new ElementHandle(client, _textContains('Email'), 5000);
+    await handle.first().type('hi');
+    expect(calls).toBeGreaterThanOrEqual(3);
+    expect(typeText).toHaveBeenCalled();
+  });
+
+  it('type() throws "not found" after the timeout when the element never appears', async () => {
+    const client = makeMockClient({
+      findElements: vi.fn(async () => makeFindElementsResponse([])),
+    });
+    const handle = new ElementHandle(client, _text('Ghost'), 400);
+    await expect(handle.type('x')).rejects.toThrow(/was not found after waiting/);
+  });
+
+  it('actions surface a daemon errorMessage instead of reporting "not found"', async () => {
+    const client = makeMockClient({
+      findElements: vi.fn(async () => ({ requestId: '1', elements: [], errorMessage: 'UiAutomation not connected' })),
+    });
+    const handle = new ElementHandle(client, _text('X'), 5000);
+    await expect(handle.tap()).rejects.toThrow(/findElements failed: UiAutomation not connected/);
+  });
+
+  it('count() surfaces a daemon errorMessage instead of returning 0', async () => {
+    const client = makeMockClient({
+      findElements: vi.fn(async () => ({ requestId: '1', elements: [], errorMessage: 'agent socket closed' })),
+    });
+    const handle = new ElementHandle(client, _text('X'), 5000);
+    await expect(handle.count()).rejects.toThrow(/findElements failed: agent socket closed/);
+  });
+});

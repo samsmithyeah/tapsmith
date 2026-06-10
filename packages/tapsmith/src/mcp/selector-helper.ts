@@ -92,6 +92,11 @@ export async function resolveActionTarget(
   let elements: ElementInfo[] = [];
   while (true) {
     const res = await client.findElements(selector, RESOLVE_POLL_MS);
+    if (res.errorMessage) {
+      // Daemon-level failure (agent dead, command error) — surface it
+      // immediately instead of busy-waiting toward a generic "no match".
+      return { selector, error: res.errorMessage };
+    }
     elements = collapseSameTargetDuplicates(res.elements ?? []);
     if (elements.length > 0 || Date.now() >= deadline) break;
     await new Promise((r) => setTimeout(r, RESOLVE_POLL_MS));
@@ -108,7 +113,11 @@ export async function resolveActionTarget(
     return { selector };
   }
 
-  const idx = index === 'first' ? 0 : index === 'last' ? elements.length - 1 : index;
+  // Negative indices count from the end, like the runtime's .nth()
+  const idx = index === 'first' ? 0
+    : index === 'last' ? elements.length - 1
+    : index < 0 ? elements.length + index
+    : index;
   const el = idx >= 0 && idx < elements.length ? elements[idx] : undefined;
   if (!el) {
     return { selector, error: `Index ${String(index)} is out of range: ${input} matched ${elements.length} element(s).` };

@@ -71,10 +71,14 @@ export function registerTestSelectorTool(server: McpServer): void {
       // elements twice with identical label/bounds).
       const all = collapseSameTargetDuplicates(res.elements ?? []);
 
-      // Apply a positional chain the same way the runtime does.
+      // Apply a positional chain the same way the runtime does
+      // (negative .nth() indices count from the end).
       let resolved: ElementInfo[] = all;
       if (index !== undefined) {
-        const idx = index === 'first' ? 0 : index === 'last' ? all.length - 1 : index;
+        const idx = index === 'first' ? 0
+          : index === 'last' ? all.length - 1
+          : index < 0 ? all.length + index
+          : index;
         resolved = idx >= 0 && idx < all.length ? [all[idx]] : [];
       }
 

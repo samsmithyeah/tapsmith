@@ -107,3 +107,26 @@ describe('formatBounds', () => {
     expect(formatBounds(undefined)).toBe('');
   });
 });
+
+describe('review follow-ups (PR #124)', () => {
+  it('parses and resolves negative .nth() indices from the end', async () => {
+    const client = makeClient([
+      makeElementInfo({ text: 'A', resourceId: 'a' }),
+      makeElementInfo({ text: 'B', resourceId: 'b' }),
+      makeElementInfo({ text: 'C', resourceId: 'c' }),
+    ]);
+    const target = await resolveActionTarget(client, 'device.getByText("Item").nth(-1)');
+    expect(target.error).toBeUndefined();
+    expect(selectorToProto(target.selector)).toEqual({ resourceId: 'c' });
+  });
+
+  it('surfaces daemon errorMessage immediately instead of polling to timeout', async () => {
+    const findElements = vi.fn(async () => ({ requestId: '1', elements: [], errorMessage: 'agent connection lost' }));
+    const client = { findElements } as unknown as TapsmithGrpcClient;
+    const start = Date.now();
+    const target = await resolveActionTarget(client, 'device.getByText("X")');
+    expect(target.error).toBe('agent connection lost');
+    expect(Date.now() - start).toBeLessThan(1_000);
+    expect(findElements).toHaveBeenCalledTimes(1);
+  });
+});
