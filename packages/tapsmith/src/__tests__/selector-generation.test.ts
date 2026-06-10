@@ -501,3 +501,26 @@ describe('parseSelectorString getByText semantics', () => {
     expect(matches).toHaveLength(1);
   });
 });
+
+describe('parseGetByOptions escaped-quote handling (PR #124 review)', () => {
+  it('parses a name containing escaped quotes of the same type, unescaped', () => {
+    const parsed = parseSelectorString('device.getByRole("button", { name: "Say \\"hi\\"" })');
+    expect(parsed).toEqual({ type: 'role', value: 'button', name: 'Say "hi"', index: undefined });
+  });
+
+  it('parsed name matches raw node attribute values', () => {
+    const node = makeNode('node', { class: 'android.widget.Button', text: 'Say "hi"' });
+    const parsed = parseSelectorString('device.getByRole("button", { name: "Say \\"hi\\"" })');
+    expect(findMatchingNodes([node], parsed!)).toHaveLength(1);
+  });
+
+  it('handles single-quoted names with escaped single quotes', () => {
+    const parsed = parseSelectorString("device.getByRole('button', { name: 'Don\\'t' })");
+    expect(parsed?.name).toBe("Don't");
+  });
+
+  it('still parses { name, exact } combinations', () => {
+    const parsed = parseSelectorString('device.getByRole("button", { name: "OK", exact: true })');
+    expect(parsed?.name).toBe('OK');
+  });
+});

@@ -19,13 +19,24 @@ const DEVICE_RE = /^device\.getBy(\w+)\(\s*(["'])(.*?)\2(?:\s*,\s*\{([^}]*)\})?\
 // Matches: webview.getByText("value"), webview.getByRole("role", { name: "n" })
 const WEBVIEW_GETBY_RE = /^webview\.getBy(\w+)\(\s*(["'])(.*?)\2(?:\s*,\s*\{([^}]*)\})?\s*\)/;
 
+/**
+ * Undo source-string escaping (\" \' \\ \n) so a parsed name compares
+ * against raw node attribute values.
+ */
+function unescapeSelectorValue(s: string): string {
+  return s.replace(/\\(.)/g, (_, c: string) => (c === 'n' ? '\n' : c));
+}
+
 /** Parse the options-object blob of a getBy* call: `name: "x"` and/or `exact: true`. */
 function parseGetByOptions(blob: string | undefined): { name?: string; exact?: boolean } {
   if (!blob) return {};
-  const nameMatch = blob.match(/name:\s*(["'])(.*?)\1/);
+  // Skip over escaped characters inside the quotes so an escaped quote of
+  // the same type (name: "Say \"hi\"") doesn't truncate the capture.
+  const nameMatch = blob.match(/name:\s*(?:"((?:[^"\\]|\\.)*)"|'((?:[^'\\]|\\.)*)')/);
   const exactMatch = blob.match(/exact:\s*(true|false)/);
+  const rawName = nameMatch ? (nameMatch[1] !== undefined ? nameMatch[1] : nameMatch[2]) : undefined;
   return {
-    name: nameMatch ? nameMatch[2] : undefined,
+    name: rawName !== undefined ? unescapeSelectorValue(rawName) : undefined,
     exact: exactMatch ? exactMatch[1] === 'true' : undefined,
   };
 }
