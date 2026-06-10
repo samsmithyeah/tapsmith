@@ -1820,7 +1820,7 @@ async function main(): Promise<void> {
     // Find which projects the explicit files belong to
     const targetProjectNames = new Set<string>();
     const filesByProject = new Map<string, string[]>();
-    for (const filePath of explicitPaths) {
+    for (const filePath of new Set(explicitPaths)) {
       for (const name of findProjectsForFile(filePath, allProjects, config.rootDir)) {
         targetProjectNames.add(name);
         let list = filesByProject.get(name);

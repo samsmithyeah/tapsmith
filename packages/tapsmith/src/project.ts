@@ -442,8 +442,11 @@ export function findProjectsForFile(
   projects: ResolvedProject[],
   rootDir: string,
 ): string[] {
-  const relative = filePath.startsWith(rootDir)
-    ? filePath.slice(rootDir.length).replace(/^\//, '')
+  // Trailing slash prevents a sibling directory sharing the rootDir prefix
+  // (e.g. rootDir /foo vs file /foo-bar/x.test.ts) from passing the check.
+  const normalizedRootDir = rootDir.endsWith('/') ? rootDir : rootDir + '/';
+  const relative = filePath.startsWith(normalizedRootDir)
+    ? filePath.slice(normalizedRootDir.length)
     : filePath;
 
   const matches: string[] = [];

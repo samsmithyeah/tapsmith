@@ -274,6 +274,26 @@ describe('findProjectsForFile()', () => {
     expect(findProjectsForFile('/tmp/tests/foo.test.ts', projects, '/tmp')).toEqual(['android', 'ios']);
     expect(findProjectsForFile('/tmp/tests/bar.android.test.ts', projects, '/tmp')).toEqual(['android']);
   });
+
+  it('does not treat a sibling directory sharing the rootDir prefix as inside rootDir', () => {
+    const projects = resolveProjects(makeConfig({
+      projects: [
+        { name: 'default', testMatch: ['tests/*.test.ts'] },
+      ],
+    }));
+    // /tmp-other is NOT inside /tmp — must not be relativized to '-other/tests/...'
+    expect(findProjectsForFile('/tmp-other/tests/foo.test.ts', projects, '/tmp')).toEqual([]);
+    expect(findProjectsForFile('/tmp/tests/foo.test.ts', projects, '/tmp')).toEqual(['default']);
+  });
+
+  it('handles rootDir with a trailing slash', () => {
+    const projects = resolveProjects(makeConfig({
+      projects: [
+        { name: 'default', testMatch: ['tests/*.test.ts'] },
+      ],
+    }));
+    expect(findProjectsForFile('/tmp/tests/foo.test.ts', projects, '/tmp/')).toEqual(['default']);
+  });
 });
 
 // ─── effectiveConfigForProject ───
