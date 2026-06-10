@@ -1647,8 +1647,9 @@ ${bold('Usage:')}
   tapsmith refresh-ios-network <udid>     Regenerate the network capture profile after a host Wi-Fi change
   tapsmith verify-ios-network <udid>      Verify HTTPS capture for a normal system-trust client on a physical iOS device
   tapsmith init                      Initialize a new Tapsmith project (interactive wizard)
+  tapsmith init --yes [--json]       Non-interactive init for scripts/AI agents (see init --help)
   tapsmith verify [--json]           Run one test end-to-end to prove the setup works
-  tapsmith doctor                    Check system health and dependencies
+  tapsmith doctor [--json]           Check system health (--json includes fixes + device inventory)
   tapsmith mcp-server [--config file] Run MCP server for LLM/agent integration (stdio transport)
   tapsmith --version                 Print version
   tapsmith --help                    Show this help
