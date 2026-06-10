@@ -2069,3 +2069,22 @@ describe('same-target duplicate collapsing', () => {
     expect(await handle.count()).toBe(2);
   });
 });
+
+describe('strict violation suggestion escaping', () => {
+  it('escapes quotes/backslashes/newlines in suggested selectors', async () => {
+    const elements = [
+      makeElementInfo({ text: 'Say "hi"\nnow', bounds: { left: 0, top: 0, right: 10, bottom: 10 } }),
+      makeElementInfo({ text: 'Say "hi" later', bounds: { left: 0, top: 20, right: 10, bottom: 30 } }),
+    ];
+    const client = makeMockClient({
+      findElements: vi.fn(async () => makeFindElementsResponse(elements)),
+    });
+    const handle = new ElementHandle(client, _textContains('Say'), 5000);
+    const err = await handle.tap().then(
+      () => { throw new Error('expected tap to reject'); },
+      (e: unknown) => e,
+    );
+    expect((err as Error).message).toContain('device.getByText("Say \\"hi\\"\\nnow", { exact: true })');
+    expect((err as Error).message).toContain('device.getByText("Say \\"hi\\" later", { exact: true })');
+  });
+});

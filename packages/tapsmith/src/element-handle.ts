@@ -190,20 +190,25 @@ function truncateText(s: string, max: number): string {
   return s.length <= max ? s : s.slice(0, max - 1) + '…';
 }
 
+/** Escape a raw attribute value for embedding in a generated selector string. */
+function escapeForSelector(s: string): string {
+  return s.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\n/g, '\\n');
+}
+
 /** Best-effort unambiguous locator suggestion for one resolved element. */
 function suggestSelectorFor(el: ElementInfo): string | undefined {
   if (el.resourceId) {
     // Android resource ids look like "com.pkg:id/foo"; getByTestId matches the suffix.
     const testId = el.resourceId.includes(':id/') ? el.resourceId.split(':id/').pop()! : el.resourceId;
-    return `device.getByTestId("${testId}")`;
+    return `device.getByTestId("${escapeForSelector(testId)}")`;
   }
   const name = el.contentDescription || el.text;
   // Static text elements read better as getByText; real widgets as getByRole.
   if (el.role && el.role !== 'text' && name) {
-    return `device.getByRole("${el.role}", { name: "${truncateText(name, 60)}" })`;
+    return `device.getByRole("${el.role}", { name: "${escapeForSelector(truncateText(name, 60))}" })`;
   }
   if (el.text) {
-    return `device.getByText("${truncateText(el.text, 60)}", { exact: true })`;
+    return `device.getByText("${escapeForSelector(truncateText(el.text, 60))}", { exact: true })`;
   }
   return undefined;
 }
@@ -683,7 +688,9 @@ export class ElementHandle {
     const deadline = Date.now() + timeoutMs;
     const POLL_MS = 250;
     while (true) {
-      const findBudget = Math.min(POLL_MS, Math.max(0, deadline - Date.now()));
+      // Floor at 1ms — the daemon treats a 0 timeout as "use the 30s
+      // default", which would stall the final poll tick for 30s.
+      const findBudget = Math.min(POLL_MS, Math.max(1, deadline - Date.now()));
       const el = await this._findOneStrict(findBudget);
       if (el) {
         const remaining = Math.max(0, deadline - Date.now());
@@ -771,7 +778,9 @@ export class ElementHandle {
     let everFound = false;
     while (true) {
       try {
-        const findBudget = Math.min(POLL_MS, Math.max(0, deadline - Date.now()));
+        // Floor at 1ms — the daemon treats a 0 timeout as "use the 30s
+        // default", which would stall the final poll tick for 30s.
+        const findBudget = Math.min(POLL_MS, Math.max(1, deadline - Date.now()));
         const el = this._hasModifiers()
           ? await this._resolveOne()
           : await this._findOneStrict(findBudget);
@@ -936,7 +945,9 @@ export class ElementHandle {
 
     const checkState = async (): Promise<boolean> => {
       let elements: ElementInfo[];
-      const findBudget = Math.min(FIND_TIMEOUT_MS, Math.max(0, deadline - Date.now()));
+      // Floor at 1ms — the daemon treats a 0 timeout as "use the 30s
+      // default", which would stall the final poll tick for 30s.
+      const findBudget = Math.min(FIND_TIMEOUT_MS, Math.max(1, deadline - Date.now()));
       try {
         if (this._hasModifiers()) {
           const pollHandle = new ElementHandle(this._client, this._selector, findBudget, this._options);
