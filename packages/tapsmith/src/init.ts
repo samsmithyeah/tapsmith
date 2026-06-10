@@ -71,9 +71,9 @@ async function ask<T>(question: Record<string, unknown>): Promise<T> {
 
 // ─── Platform-specific questions ───
 
-type Platform = 'android' | 'ios';
+export type Platform = 'android' | 'ios';
 
-interface AndroidConfig {
+export interface AndroidConfig {
   apkPath: string;
   packageName?: string;
   useEmulators: boolean;
@@ -81,7 +81,7 @@ interface AndroidConfig {
   avd?: string;
 }
 
-interface IosConfig {
+export interface IosConfig {
   appPath: string;
   bundleId?: string;
   simulator?: string;
@@ -327,6 +327,31 @@ async function setupNetworkCapture(
   return true;
 }
 
+// ─── iOS simulator agent ───
+
+export async function ensureSimulatorAgent(simulator: string | undefined): Promise<'present' | 'built' | 'failed'> {
+  const { findSimulatorXctestrun } = await import('./ios-device-resolve.js');
+  if (findSimulatorXctestrun()) return 'present';
+  try {
+    const { resolveIosAgentDir } = await import('./build-ios-agent.js');
+    const iosAgentDir = resolveIosAgentDir();
+    const createScript = path.join(iosAgentDir, 'create-xcode-project.sh');
+    if (fs.existsSync(createScript)) {
+      try { execFileSync('sh', [createScript], { cwd: iosAgentDir, stdio: 'ignore' }); } catch { /* optional — xcodebuild will fail below if needed */ }
+    }
+    const dest = simulator ? `platform=iOS Simulator,name=${simulator}` : 'platform=iOS Simulator';
+    execFileSync('xcodebuild', [
+      'build-for-testing',
+      '-project', path.join(iosAgentDir, 'TapsmithAgent.xcodeproj'),
+      '-scheme', 'TapsmithAgentUITests',
+      '-destination', dest,
+    ], { stdio: ['ignore', 'pipe', 'pipe'], timeout: 300_000 });
+    return 'built';
+  } catch {
+    return 'failed';
+  }
+}
+
 // ─── Config generation ───
 
 export function generateConfig(
@@ -507,22 +532,12 @@ async function runInitInner(): Promise<void> {
         if (buildSim) {
           console.log(dim('  Building iOS simulator agent...'));
           try {
-            const { resolveIosAgentDir } = await import('./build-ios-agent.js');
-            const iosAgentDir = resolveIosAgentDir();
-            const createScript = path.join(iosAgentDir, 'create-xcode-project.sh');
-            if (fs.existsSync(createScript)) {
-              try { execFileSync('sh', [createScript], { cwd: iosAgentDir, stdio: 'ignore' }); } catch { /* optional — xcodebuild will fail below if needed */ }
+            const outcome = await ensureSimulatorAgent(iosConfig.simulator);
+            if (outcome === 'built' || outcome === 'present') {
+              console.log(`  ${green('✓')} iOS simulator agent built`);
+            } else {
+              console.log(`  ${YELLOW}⚠${RESET} Build failed`);
             }
-            const dest = iosConfig.simulator
-              ? `platform=iOS Simulator,name=${iosConfig.simulator}`
-              : 'platform=iOS Simulator';
-            execFileSync('xcodebuild', [
-              'build-for-testing',
-              '-project', path.join(iosAgentDir, 'TapsmithAgent.xcodeproj'),
-              '-scheme', 'TapsmithAgentUITests',
-              '-destination', dest,
-            ], { stdio: ['ignore', 'pipe', 'pipe'], timeout: 300_000 });
-            console.log(`  ${green('✓')} iOS simulator agent built`);
           } catch (err) {
             console.log(`  ${YELLOW}⚠${RESET} Build failed: ${err instanceof Error ? err.message : String(err)}`);
           }
