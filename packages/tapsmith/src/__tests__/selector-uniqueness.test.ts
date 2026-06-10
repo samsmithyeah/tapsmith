@@ -142,3 +142,53 @@ describe('exact-text upgrade quoting (PR #124 review)', () => {
     expect(result[0].code).toBe('device.getByText("Say \\"hi\\"", { exact: true })');
   });
 });
+
+describe('iOS duplicate-aware pick identity (playground)', () => {
+  /**
+   * Two visual "Sign in" texts, each exposed twice by the iOS tree
+   * (attribute-carrying parent StaticText + inner child with identical
+   * label and bounds). Picking the CHILD must still disambiguate with a
+   * positional chain instead of demoting to "(may not match)".
+   */
+  function duplicatedScreen() {
+    const subtitleChild = makeNode('XCUIElementTypeStaticText', {
+      type: 'XCUIElementTypeStaticText', label: 'Sign in', bounds: '[44,210][436,260]',
+    });
+    const subtitle = makeNode('XCUIElementTypeStaticText', {
+      type: 'XCUIElementTypeStaticText', label: 'Sign in', identifier: 'subtitle', bounds: '[44,210][436,260]',
+    }, [subtitleChild]);
+    const buttonChild = makeNode('XCUIElementTypeStaticText', {
+      type: 'XCUIElementTypeStaticText', label: 'Sign in', bounds: '[44,640][436,712]',
+    });
+    const button = makeNode('XCUIElementTypeStaticText', {
+      type: 'XCUIElementTypeStaticText', label: 'Sign in', identifier: 'signin-btn', bounds: '[44,640][436,712]',
+    }, [buttonChild]);
+    const root = makeNode('XCUIElementTypeOther', { type: 'XCUIElementTypeOther' }, [subtitle, button]);
+    return { roots: [root], subtitle, button, subtitleChild, buttonChild };
+  }
+
+  it('picking a child duplicate of the SECOND visual element appends .last(), not "(may not match)"', () => {
+    const { roots, buttonChild } = duplicatedScreen();
+    const suggestion = [{ code: 'device.getByText("Sign in", { exact: true })', label: 'Text', priority: 6 }];
+    const result = disambiguateSelectors(roots, buttonChild, suggestion);
+    expect(result[0].label).not.toContain('may not match');
+    expect(result[0].code).toBe('device.getByText("Sign in", { exact: true }).last()');
+  });
+
+  it('picking a child duplicate of the FIRST visual element appends .first()', () => {
+    const { roots, subtitleChild } = duplicatedScreen();
+    const suggestion = [{ code: 'device.getByText("Sign in", { exact: true })', label: 'Text', priority: 6 }];
+    const result = disambiguateSelectors(roots, subtitleChild, suggestion);
+    expect(result[0].code).toBe('device.getByText("Sign in", { exact: true }).first()');
+  });
+
+  it('a child duplicate with a UNIQUE selector still validates as unique', () => {
+    const { roots, buttonChild } = duplicatedScreen();
+    // testId lives on the parent; matching it yields the parent, which must
+    // be recognised as the picked child's representative.
+    const suggestion = [{ code: 'device.getByText("Sign in")', label: 'Text', priority: 6 }];
+    const result = disambiguateSelectors(roots, buttonChild, suggestion);
+    // substring matches both visual elements → positional chain appended
+    expect(result[0].code).toMatch(/\.(first|last)\(\)$/);
+  });
+});

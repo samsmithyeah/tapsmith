@@ -8,7 +8,7 @@
  */
 
 import type { HierarchyNode } from './hierarchy-utils.js';
-import { parseSelectorString, findMatchingNodes } from './selector-matching.js';
+import { parseSelectorString, findMatchingNodes, getNodeBounds } from './selector-matching.js';
 import type { GeneratedSelector } from './selector-generation.js';
 
 function escapeQuotes(s: string): string {
@@ -21,10 +21,30 @@ function escapeQuotes(s: string): string {
  * otherwise (playground re-parses the XML). Truly identical siblings remain
  * ambiguous under attribute equality, but any of them is an equally valid pick.
  */
+function nodeText(n: HierarchyNode): string {
+  return n.attributes.get('text') ?? n.attributes.get('label') ?? n.attributes.get('value') ?? '';
+}
+
+/**
+ * Same visual element under the duplicate-collapsing rule (identical text +
+ * identical non-degenerate bounds). The iOS tree exposes some elements twice
+ * (attribute-carrying parent + inner child); findMatchingNodes collapses
+ * them to the first occurrence, so a picked CHILD must still be recognised
+ * as its collapsed parent representative — otherwise iOS picks would read
+ * as "(may not match)" instead of getting a .first()/.nth() suffix.
+ */
+function sameVisualElement(a: HierarchyNode, b: HierarchyNode): boolean {
+  const ab = a.attributes.get('bounds');
+  if (!ab || ab !== b.attributes.get('bounds')) return false;
+  const bounds = getNodeBounds(a);
+  if (!bounds || bounds.right - bounds.left <= 0 || bounds.bottom - bounds.top <= 0) return false;
+  return nodeText(a) === nodeText(b);
+}
+
 function nodeIndexIn(matches: HierarchyNode[], node: HierarchyNode): number {
   const byRef = matches.indexOf(node);
   if (byRef !== -1) return byRef;
-  return matches.findIndex((m) => {
+  const byAttrs = matches.findIndex((m) => {
     if (m.tagName !== node.tagName || m.depth !== node.depth) return false;
     if (m.attributes.size !== node.attributes.size) return false;
     for (const [k, v] of m.attributes) {
@@ -32,6 +52,8 @@ function nodeIndexIn(matches: HierarchyNode[], node: HierarchyNode): number {
     }
     return true;
   });
+  if (byAttrs !== -1) return byAttrs;
+  return matches.findIndex((m) => sameVisualElement(m, node));
 }
 
 /** Does `code` parse and resolve to exactly the picked node? */
