@@ -179,15 +179,26 @@ export async function runVerify(argv: string[]): Promise<void> {
       timeout: 10 * 60 * 1000,
     });
 
-    if (!fs.existsSync(resultsFile)) {
+    if (child.error || !fs.existsSync(resultsFile)) {
+      const reason = child.error
+        ? `Failed to execute test process: ${child.error.message}`
+        : `Test run produced no results (exit code ${child.status ?? 'unknown'})`;
       const stderr = child.stderr ? child.stderr.toString().slice(-2000) : undefined;
       emitError(args.json, 'RUN_FAILED',
-        `Test run produced no results (exit code ${child.status ?? 'unknown'})${stderr ? `: ${stderr}` : ''}`,
+        `${reason}${stderr ? `: ${stderr}` : ''}`,
         'Run: npx tapsmith doctor --json to diagnose the environment');
       return;
     }
 
-    const report = JSON.parse(fs.readFileSync(resultsFile, 'utf8')) as VerifyReport;
+    let report: VerifyReport;
+    try {
+      report = JSON.parse(fs.readFileSync(resultsFile, 'utf8')) as VerifyReport;
+    } catch (err) {
+      emitError(args.json, 'PARSE_FAILED',
+        `Failed to parse test results: ${err instanceof Error ? err.message : String(err)}`,
+        'Run: npx tapsmith doctor --json to diagnose the environment');
+      return;
+    }
     const summary = summarizeVerifyReport(report);
 
     if (args.json) {

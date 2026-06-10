@@ -106,6 +106,11 @@ function commandArgsInclude(command: string, ...flags: string[]): boolean {
   return argsAfterCommand(command).some((arg) => wanted.has(arg));
 }
 
+/** Argv to forward to a subcommand's own parser, minus the tsx re-exec marker. */
+function forwardedArgs(command: string): string[] {
+  return argsAfterCommand(command).filter((a) => a !== '--__tsx-reexec');
+}
+
 function shouldPrintBannerForCommand(args: CliArgs): boolean {
   if (!args.command || args.version || args.help) return false;
 
@@ -1778,8 +1783,7 @@ async function main(): Promise<void> {
 
   if (args.command === 'list-devices') {
     const { runListDevices } = await import('./list-devices.js');
-    const forwardedArgv = process.argv.slice(process.argv.indexOf('list-devices') + 1)
-      .filter((a) => a !== '--__tsx-reexec');
+    const forwardedArgv = forwardedArgs('list-devices');
     await runListDevices(forwardedArgv);
     return;
   }
@@ -1798,24 +1802,21 @@ async function main(): Promise<void> {
 
   if (args.command === 'configure-ios-network') {
     const { runConfigureIosNetwork } = await import('./configure-ios-network.js');
-    const forwardedArgv = process.argv.slice(process.argv.indexOf('configure-ios-network') + 1)
-      .filter((a) => a !== '--__tsx-reexec');
+    const forwardedArgv = forwardedArgs('configure-ios-network');
     await runConfigureIosNetwork(forwardedArgv);
     return;
   }
 
   if (args.command === 'refresh-ios-network') {
     const { runRefreshIosNetwork } = await import('./configure-ios-network.js');
-    const forwardedArgv = process.argv.slice(process.argv.indexOf('refresh-ios-network') + 1)
-      .filter((a) => a !== '--__tsx-reexec');
+    const forwardedArgv = forwardedArgs('refresh-ios-network');
     await runRefreshIosNetwork(forwardedArgv);
     return;
   }
 
   if (args.command === 'verify-ios-network') {
     const { runVerifyIosNetwork } = await import('./verify-ios-network.js');
-    const forwardedArgv = process.argv.slice(process.argv.indexOf('verify-ios-network') + 1)
-      .filter((a) => a !== '--__tsx-reexec');
+    const forwardedArgv = forwardedArgs('verify-ios-network');
     await runVerifyIosNetwork(forwardedArgv);
     return;
   }
@@ -1823,40 +1824,35 @@ async function main(): Promise<void> {
   if (args.command === 'build-ios-agent') {
     const { runBuildIosAgent } = await import('./build-ios-agent.js');
     // Everything after the subcommand name is forwarded; drop the verb.
-    const forwardedArgv = process.argv.slice(process.argv.indexOf('build-ios-agent') + 1)
-      .filter((a) => a !== '--__tsx-reexec');
+    const forwardedArgv = forwardedArgs('build-ios-agent');
     await runBuildIosAgent(forwardedArgv);
     return;
   }
 
   if (args.command === 'init') {
     const { runInit } = await import('./init.js');
-    const forwardedArgv = process.argv.slice(process.argv.indexOf('init') + 1)
-      .filter((a) => a !== '--__tsx-reexec');
+    const forwardedArgv = forwardedArgs('init');
     await runInit(forwardedArgv);
     return;
   }
 
   if (args.command === 'doctor') {
     const { runDoctor } = await import('./doctor.js');
-    const forwardedArgv = process.argv.slice(process.argv.indexOf('doctor') + 1)
-      .filter((a) => a !== '--__tsx-reexec');
+    const forwardedArgv = forwardedArgs('doctor');
     await runDoctor(forwardedArgv);
     return;
   }
 
   if (args.command === 'mcp-server') {
     const { runMcpServer } = await import('./mcp/index.js');
-    const forwardedArgv = process.argv.slice(process.argv.indexOf('mcp-server') + 1)
-      .filter((a) => a !== '--__tsx-reexec');
+    const forwardedArgv = forwardedArgs('mcp-server');
     await runMcpServer(forwardedArgv);
     return;
   }
 
   if (args.command === 'verify') {
     const { runVerify } = await import('./verify.js');
-    const forwardedArgv = process.argv.slice(process.argv.indexOf('verify') + 1)
-      .filter((a) => a !== '--__tsx-reexec');
+    const forwardedArgv = forwardedArgs('verify');
     await runVerify(forwardedArgv);
     return;
   }

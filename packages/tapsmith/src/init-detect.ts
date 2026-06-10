@@ -33,13 +33,15 @@ export function parseAapt2Badging(output: string): string | undefined {
 /** Locate aapt2 (PATH, then newest build-tools under ANDROID_HOME). */
 export function resolveAapt2(): string {
   if (tryExec('aapt2', ['version']) !== undefined) return 'aapt2';
+  // execFile resolves .exe on PATH, but existsSync needs the explicit suffix.
+  const binName = process.platform === 'win32' ? 'aapt2.exe' : 'aapt2';
   const androidHome = process.env['ANDROID_HOME'] || process.env['ANDROID_SDK_ROOT'];
   if (androidHome) {
     const buildTools = path.join(androidHome, 'build-tools');
     if (fs.existsSync(buildTools)) {
       const versions = fs.readdirSync(buildTools).sort((a, b) => b.localeCompare(a, undefined, { numeric: true }));
       for (const v of versions) {
-        const candidate = path.join(buildTools, v, 'aapt2');
+        const candidate = path.join(buildTools, v, binName);
         if (fs.existsSync(candidate)) return candidate;
       }
     }
