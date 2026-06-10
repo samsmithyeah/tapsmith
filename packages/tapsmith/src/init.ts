@@ -329,9 +329,11 @@ async function setupNetworkCapture(
 
 // ─── iOS simulator agent ───
 
-export async function ensureSimulatorAgent(simulator: string | undefined): Promise<'present' | 'built' | 'failed'> {
+export async function ensureSimulatorAgent(
+  simulator: string | undefined,
+): Promise<{ status: 'present' | 'built' | 'failed'; error?: string }> {
   const { findSimulatorXctestrun } = await import('./ios-device-resolve.js');
-  if (findSimulatorXctestrun()) return 'present';
+  if (findSimulatorXctestrun()) return { status: 'present' };
   try {
     const { resolveIosAgentDir } = await import('./build-ios-agent.js');
     const iosAgentDir = resolveIosAgentDir();
@@ -346,9 +348,9 @@ export async function ensureSimulatorAgent(simulator: string | undefined): Promi
       '-scheme', 'TapsmithAgentUITests',
       '-destination', dest,
     ], { stdio: ['ignore', 'pipe', 'pipe'], timeout: 300_000 });
-    return 'built';
-  } catch {
-    return 'failed';
+    return { status: 'built' };
+  } catch (err) {
+    return { status: 'failed', error: err instanceof Error ? err.message : String(err) };
   }
 }
 
@@ -531,15 +533,13 @@ async function runInitInner(): Promise<void> {
 
         if (buildSim) {
           console.log(dim('  Building iOS simulator agent...'));
-          try {
-            const outcome = await ensureSimulatorAgent(iosConfig.simulator);
-            if (outcome === 'built' || outcome === 'present') {
-              console.log(`  ${green('✓')} iOS simulator agent built`);
-            } else {
-              console.log(`  ${YELLOW}⚠${RESET} Build failed`);
-            }
-          } catch (err) {
-            console.log(`  ${YELLOW}⚠${RESET} Build failed: ${err instanceof Error ? err.message : String(err)}`);
+          const result = await ensureSimulatorAgent(iosConfig.simulator);
+          if (result.status === 'built' || result.status === 'present') {
+            console.log(`  ${green('✓')} iOS simulator agent built`);
+          } else if (result.error) {
+            console.log(`  ${YELLOW}⚠${RESET} Build failed: ${result.error}`);
+          } else {
+            console.log(`  ${YELLOW}⚠${RESET} Build failed`);
           }
         }
       }
