@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import type { HierarchyNode } from '../trace-viewer/components/hierarchy-utils.js';
 import { generateSelectors } from '../trace-viewer/components/selector-generation.js';
 import { disambiguateSelectors } from '../trace-viewer/components/selector-uniqueness.js';
+import { handlePickFromScreenshot } from '../trace-viewer/components/selector-pick.js';
 import { formatHierarchy } from '../mcp/hierarchy-formatter.js';
 
 function makeNode(tagName: string, attrs: Record<string, string>, children: HierarchyNode[] = []): HierarchyNode {
@@ -190,5 +191,22 @@ describe('iOS duplicate-aware pick identity (playground)', () => {
     const result = disambiguateSelectors(roots, buttonChild, suggestion);
     // substring matches both visual elements → positional chain appended
     expect(result[0].code).toMatch(/\.(first|last)\(\)$/);
+  });
+});
+
+describe('pick pre-fill disambiguation (playground input field)', () => {
+  it('handlePickFromScreenshot pre-fills the disambiguated suggestion, not the generic one', () => {
+    // Two headings with the same accessible name at different positions —
+    // the generic getByRole suggestion matches both.
+    const navTitle = makeNode('XCUIElementTypeStaticText', {
+      type: 'XCUIElementTypeStaticText', label: 'API Calls', 'tapsmith-role': 'heading', bounds: '[165,73][236,94]',
+    });
+    const pageHeading = makeNode('XCUIElementTypeStaticText', {
+      type: 'XCUIElementTypeStaticText', label: 'API Calls', 'tapsmith-role': 'heading', bounds: '[16,132][386,160]',
+    });
+    const root = makeNode('XCUIElementTypeOther', { type: 'XCUIElementTypeOther', bounds: '[0,0][400,800]' }, [navTitle, pageHeading]);
+    const result = handlePickFromScreenshot([root], 200, 146);
+    expect(result).not.toBeNull();
+    expect(result!.selector).toMatch(/\.(first|last)\(\)$|\.nth\(-?\d+\)$/);
   });
 });
