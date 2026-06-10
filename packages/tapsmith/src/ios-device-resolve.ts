@@ -199,7 +199,8 @@ export function findSimulatorXctestrun(): string | undefined {
       if (
         e.endsWith('.xctestrun') &&
         e.includes('iphonesimulator') &&
-        !e.endsWith('.patched.xctestrun')
+        !e.endsWith('.patched.xctestrun') &&
+        hasSimulatorTestProducts(path.join(productsDir, e))
       ) {
         candidates.push(path.join(productsDir, e));
       }
@@ -248,8 +249,47 @@ function newestSimulatorXctestrunIn(dir: string): string | undefined {
         e.endsWith('.xctestrun') &&
         !e.endsWith('.patched.xctestrun'),
     )
-    .map((e) => ({ path: path.join(dir, e), mtime: fs.statSync(path.join(dir, e)).mtimeMs }));
+    .map((e) => ({ path: path.join(dir, e), mtime: fs.statSync(path.join(dir, e)).mtimeMs }))
+    .filter((m) => hasSimulatorTestProducts(m.path));
   if (matches.length === 0) return undefined;
   matches.sort((a, b) => b.mtime - a.mtime);
   return matches[0].path;
+}
+
+/**
+ * An xctestrun is only usable when the test products it references exist
+ * next to it (`<dir>/*-iphonesimulator/<Runner>.app/PlugIns/*.xctest`).
+ * Prebuilt npm packages v0.1.3–v0.1.7 shipped the xctestrun without the
+ * app bundle (an npm `files` glob bug), which made xcodebuild fail with
+ * exit code 70 at session start. Treating such candidates as absent lets
+ * resolution fall through to the from-source auto-build instead.
+ */
+function hasSimulatorTestProducts(xctestrunPath: string): boolean {
+  const root = path.dirname(xctestrunPath);
+  let entries: string[];
+  try {
+    entries = fs.readdirSync(root);
+  } catch {
+    return false;
+  }
+  for (const products of entries) {
+    if (!products.endsWith('-iphonesimulator')) continue;
+    let apps: string[];
+    try {
+      apps = fs.readdirSync(path.join(root, products));
+    } catch {
+      continue;
+    }
+    for (const app of apps) {
+      if (!app.endsWith('.app')) continue;
+      let plugins: string[];
+      try {
+        plugins = fs.readdirSync(path.join(root, products, app, 'PlugIns'));
+      } catch {
+        continue;
+      }
+      if (plugins.some((p) => p.endsWith('.xctest'))) return true;
+    }
+  }
+  return false;
 }

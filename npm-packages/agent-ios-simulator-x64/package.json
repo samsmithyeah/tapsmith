@@ -5,9 +5,9 @@
   "os": ["darwin"],
   "cpu": ["x64"],
   "files": [
-    "sdk-*/",
+    "sdk-*/**",
     "*.xctestrun",
-    "Debug-iphonesimulator/"
+    "Debug-iphonesimulator"
   ],
   "preferUnplugged": true,
   "repository": {

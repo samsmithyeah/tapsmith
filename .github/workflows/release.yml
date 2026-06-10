@@ -310,6 +310,28 @@ jobs:
             fs.writeFileSync('package.json', JSON.stringify(pkg, null, 2) + '\n');
           "
 
+      # Guard against the v0.1.3–v0.1.7 regression where the npm `files`
+      # globs silently dropped the Debug-iphonesimulator app bundle and
+      # published xctestrun files that pointed at nothing.
+      - name: Verify package contents
+        working-directory: npm-packages/${{ matrix.pkg }}
+        run: |
+          npm pack --dry-run --json > /tmp/pack.json
+          node -e "
+            const files = require('/tmp/pack.json')[0].files.map((f) => f.path);
+            const missing = [];
+            if (!files.some((p) => p.endsWith('.xctestrun'))) missing.push('*.xctestrun');
+            if (!files.some((p) => /-iphonesimulator\/.*\.app\/PlugIns\/.*\.xctest\//.test(p))) {
+              missing.push('<products>/<Runner>.app/PlugIns/*.xctest');
+            }
+            if (missing.length) {
+              console.error('Packed tarball is missing required contents: ' + missing.join(', '));
+              console.error('Tarball files:\n  ' + files.join('\n  '));
+              process.exit(1);
+            }
+            console.log('Tarball OK: ' + files.length + ' files');
+          "
+
       - name: Check if package version already exists
         id: ios_exists
         working-directory: npm-packages/${{ matrix.pkg }}

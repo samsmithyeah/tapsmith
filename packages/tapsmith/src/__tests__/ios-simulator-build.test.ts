@@ -108,6 +108,28 @@ describe('findSimulatorXctestrun() SDK-aware resolution', () => {
     homedir.mockReturnValue('/Users/test');
   });
 
+  /**
+   * Build a readdirSync mock backed by a simple dir → entries map.
+   * Unknown directories throw ENOENT like the real fs would.
+   */
+  function mockDirs(dirs: Record<string, string[]>) {
+    readdirSync.mockImplementation(((dir: string) => {
+      const d = String(dir);
+      if (d in dirs) return dirs[d];
+      throw new Error('ENOENT');
+    }// eslint-disable-next-line @typescript-eslint/no-explicit-any -- readdirSync overloads
+) as any);
+  }
+
+  /** Entries for a products dir holding a complete runner app + xctest. */
+  function productsDirs(parent: string): Record<string, string[]> {
+    const products = path.join(parent, 'Debug-iphonesimulator');
+    return {
+      [products]: ['TapsmithAgentUITests-Runner.app'],
+      [path.join(products, 'TapsmithAgentUITests-Runner.app', 'PlugIns')]: ['TapsmithAgentUITests.xctest'],
+    };
+  }
+
   it('prefers exact SDK match from npm package subdirectory', async () => {
     execFileSyncMock.mockReturnValue('26.0\n');
     mockResolve.mockReturnValue('/node_modules/@tapsmith/agent-ios-simulator-arm64/package.json');
@@ -115,14 +137,11 @@ describe('findSimulatorXctestrun() SDK-aware resolution', () => {
     const sdk26Dir = '/node_modules/@tapsmith/agent-ios-simulator-arm64/sdk-26.0';
     const xctestrun26 = 'TapsmithAgentUITests_iphonesimulator26.0-arm64.xctestrun';
 
-    readdirSync.mockImplementation(((dir: string) => {
-      const d = String(dir);
-      if (d.endsWith('ios-simulator-agent')) throw new Error('ENOENT');
-      if (d === '/node_modules/@tapsmith/agent-ios-simulator-arm64') return ['sdk-18.5', 'sdk-26.0'];
-      if (d === sdk26Dir) return [xctestrun26];
-      throw new Error('ENOENT');
-    }// eslint-disable-next-line @typescript-eslint/no-explicit-any -- readdirSync overloads
-) as any);
+    mockDirs({
+      '/node_modules/@tapsmith/agent-ios-simulator-arm64': ['sdk-18.5', 'sdk-26.0'],
+      [sdk26Dir]: [xctestrun26, 'Debug-iphonesimulator'],
+      ...productsDirs(sdk26Dir),
+    });
     existsSync.mockImplementation((p) => String(p) === sdk26Dir);
     statSync.mockReturnValue({ mtimeMs: Date.now() } as fs.Stats);
 
@@ -138,18 +157,73 @@ describe('findSimulatorXctestrun() SDK-aware resolution', () => {
     const pkgDir = '/node_modules/@tapsmith/agent-ios-simulator-arm64';
     const xctestrun = 'TapsmithAgentUITests_iphonesimulator18.5-arm64.xctestrun';
 
-    readdirSync.mockImplementation(((dir: string) => {
-      const d = String(dir);
-      if (d.endsWith('ios-simulator-agent')) throw new Error('ENOENT');
-      if (d === pkgDir) return [xctestrun, 'Debug-iphonesimulator'];
-      throw new Error('ENOENT');
-    }// eslint-disable-next-line @typescript-eslint/no-explicit-any -- readdirSync overloads
-) as any);
+    mockDirs({
+      [pkgDir]: [xctestrun, 'Debug-iphonesimulator'],
+      ...productsDirs(pkgDir),
+    });
     existsSync.mockReturnValue(false);
     statSync.mockReturnValue({ mtimeMs: Date.now() } as fs.Stats);
 
     const { findSimulatorXctestrun } = await import('../ios-device-resolve.js');
     const result = findSimulatorXctestrun();
     expect(result).toBe(path.join(pkgDir, xctestrun));
+  });
+
+  it('skips an xctestrun whose test products are missing (broken v0.1.3–v0.1.7 packages)', async () => {
+    execFileSyncMock.mockReturnValue('26.4\n');
+    mockResolve.mockReturnValue('/node_modules/@tapsmith/agent-ios-simulator-arm64/package.json');
+
+    const sdkDir = '/node_modules/@tapsmith/agent-ios-simulator-arm64/sdk-26.4';
+
+    // The broken packages shipped only the xctestrun — no Debug-iphonesimulator/.
+    mockDirs({
+      '/node_modules/@tapsmith/agent-ios-simulator-arm64': ['sdk-26.4'],
+      [sdkDir]: ['TapsmithAgentUITests_iphonesimulator26.4-arm64.xctestrun'],
+    });
+    existsSync.mockImplementation((p) => String(p) === sdkDir);
+    statSync.mockReturnValue({ mtimeMs: Date.now() } as fs.Stats);
+
+    const { findSimulatorXctestrun } = await import('../ios-device-resolve.js');
+    expect(findSimulatorXctestrun()).toBeUndefined();
+  });
+
+  it('falls through a broken SDK-matched subdir to a complete flat layout', async () => {
+    execFileSyncMock.mockReturnValue('26.4\n');
+    mockResolve.mockReturnValue('/node_modules/@tapsmith/agent-ios-simulator-arm64/package.json');
+
+    const pkgDir = '/node_modules/@tapsmith/agent-ios-simulator-arm64';
+    const sdkDir = path.join(pkgDir, 'sdk-26.4');
+    const flatXctestrun = 'TapsmithAgentUITests_iphonesimulator26.0-arm64.xctestrun';
+
+    mockDirs({
+      [pkgDir]: ['sdk-26.4', flatXctestrun, 'Debug-iphonesimulator'],
+      [sdkDir]: ['TapsmithAgentUITests_iphonesimulator26.4-arm64.xctestrun'],
+      ...productsDirs(pkgDir),
+    });
+    existsSync.mockImplementation((p) => String(p) === sdkDir);
+    statSync.mockReturnValue({ mtimeMs: Date.now() } as fs.Stats);
+
+    const { findSimulatorXctestrun } = await import('../ios-device-resolve.js');
+    expect(findSimulatorXctestrun()).toBe(path.join(pkgDir, flatXctestrun));
+  });
+
+  it('skips a products dir whose runner app is missing the .xctest plugin', async () => {
+    execFileSyncMock.mockReturnValue('26.4\n');
+    mockResolve.mockReturnValue('/node_modules/@tapsmith/agent-ios-simulator-arm64/package.json');
+
+    const sdkDir = '/node_modules/@tapsmith/agent-ios-simulator-arm64/sdk-26.4';
+    const products = path.join(sdkDir, 'Debug-iphonesimulator');
+
+    mockDirs({
+      '/node_modules/@tapsmith/agent-ios-simulator-arm64': ['sdk-26.4'],
+      [sdkDir]: ['TapsmithAgentUITests_iphonesimulator26.4-arm64.xctestrun', 'Debug-iphonesimulator'],
+      [products]: ['TapsmithAgentUITests-Runner.app'],
+      [path.join(products, 'TapsmithAgentUITests-Runner.app', 'PlugIns')]: [],
+    });
+    existsSync.mockImplementation((p) => String(p) === sdkDir);
+    statSync.mockReturnValue({ mtimeMs: Date.now() } as fs.Stats);
+
+    const { findSimulatorXctestrun } = await import('../ios-device-resolve.js');
+    expect(findSimulatorXctestrun()).toBeUndefined();
   });
 });
