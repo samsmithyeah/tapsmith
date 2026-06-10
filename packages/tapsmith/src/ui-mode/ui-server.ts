@@ -355,24 +355,38 @@ export async function startUIServer(
       : 'on',
   };
 
-  // Resolve a friendly display name for single-worker mode (e.g. UUID → "iPhone 17").
-  // Multi-worker resolves names inside initializeWorkers().
-  const singleWorkerDisplayName = (() => {
+  // Resolve a friendly display name AND the effective platform for single-worker
+  // mode. The root config's platform may be unset when the platform is specified
+  // per-project, so we also infer from device lookups and project configs.
+  const { singleWorkerDisplayName, singleWorkerPlatform } = (() => {
     const serial = ctx.deviceSerial;
-    if (!serial) return undefined;
-    if (ctx.config.platform === 'ios') {
+    const fallback = { singleWorkerDisplayName: serial, singleWorkerPlatform: ctx.config.platform };
+    if (!serial) return { singleWorkerDisplayName: undefined, singleWorkerPlatform: ctx.config.platform };
+
+    // iOS simulator: simctl lists all available sims regardless of root config.
+    // Guard on macOS (these commands don't exist on Linux/Windows) and on an
+    // iOS-shaped UDID — sim UUIDs and modern physical UDIDs start with 8 hex
+    // chars + dash; pre-iPhone-XS physical UDIDs are 40 hex chars, no dash —
+    // so Android-only sessions skip the simctl/devicectl execs.
+    if (process.platform === 'darwin' && (/^[0-9A-Fa-f]{8}-/.test(serial) || /^[0-9A-Fa-f]{40}$/.test(serial))) {
       const simName = listSimulators().find((s) => s.udid === serial)?.name;
-      if (simName) return simName;
-      // Physical devices aren't in simctl — check devicectl. This is what
-      // surfaces "Sam's iPhone" instead of a raw UDID in the UI header.
+      if (simName) return { singleWorkerDisplayName: simName, singleWorkerPlatform: 'ios' as const };
+
+      // iOS physical device: devicectl finds connected devices.
       const physName = listPhysicalDevices().find((d) => d.udid === serial)?.name;
-      if (physName) return physName;
-      return serial;
+      if (physName) return { singleWorkerDisplayName: physName, singleWorkerPlatform: 'ios' as const };
     }
+
+    // Android emulator
     if (serial.startsWith('emulator-')) {
-      return getRunningAvdName(serial) ?? serial;
+      return { singleWorkerDisplayName: getRunningAvdName(serial) ?? serial, singleWorkerPlatform: 'android' as const };
     }
-    return serial;
+
+    // Fall back to root config, then project configs
+    if (ctx.config.platform) return fallback;
+    const projectPlatform = ctx.projects?.find((p) => p.effectiveConfig.platform)?.effectiveConfig.platform;
+    if (projectPlatform) return { singleWorkerDisplayName: serial, singleWorkerPlatform: projectPlatform };
+    return fallback;
   })();
 
   // Resolve tsx binary for forking TypeScript files
@@ -550,7 +564,7 @@ export async function startUIServer(
           dependencies: p.dependencies,
         }));
       return {
-        platform: ctx.config.platform,
+        platform: singleWorkerPlatform ?? ctx.config.platform,
         package: ctx.config.package,
         device: singleWorkerDisplayName ?? ctx.deviceSerial,
         timeout: ctx.config.timeout,
@@ -1189,12 +1203,22 @@ export async function startUIServer(
         }
       });
 
+      // When the file belongs to a project with device-specific overrides
+      // (platform, app, simulator, etc.), merge those into the serialized config
+      // so the child process sees the effective config — not just the root.
+      const project = projectName
+        ? ctx.projects?.find((p) => p.name === projectName)
+        : undefined;
+      const runConfig = project
+        ? { ...serializedConfig, ...serializeConfig(project.effectiveConfig), trace: serializedConfig.trace }
+        : serializedConfig;
+
       const msg: UIRunMessage = {
         type: 'run',
         daemonAddress: ctx.daemonAddress!,
         deviceSerial: ctx.deviceSerial!,
         filePath,
-        config: serializedConfig,
+        config: runConfig,
         screenshotDir: ctx.screenshotDir,
         projectUseOptions,
         projectName,
@@ -2943,7 +2967,7 @@ export async function startUIServer(
     }
     return {
       client: ctx.client,
-      dpr: cachedScreenScale(ctx.deviceSerial ?? '', ctx.config.platform) || 1,
+      dpr: cachedScreenScale(ctx.deviceSerial ?? '', singleWorkerPlatform) || 1,
       dims: lastFrameDims.get(0),
     };
   }
@@ -3463,10 +3487,10 @@ export async function startUIServer(
         type: 'device-info',
         serial: singleWorkerDisplayName ?? ctx.deviceSerial,
         model: undefined,
-        isEmulator: isEmulatorOrSimulator(ctx.deviceSerial, ctx.config.platform),
-        platform: ctx.config.platform,
+        isEmulator: isEmulatorOrSimulator(ctx.deviceSerial, singleWorkerPlatform),
+        platform: singleWorkerPlatform,
         tapsmithVersion: TAPSMITH_VERSION,
-        devicePixelRatio: cachedScreenScale(ctx.deviceSerial, ctx.config.platform),
+        devicePixelRatio: cachedScreenScale(ctx.deviceSerial, singleWorkerPlatform),
       } satisfies ServerMessage));
     }
 
@@ -3629,10 +3653,10 @@ export async function startUIServer(
       type: 'device-info',
       serial: singleWorkerDisplayName ?? ctx.deviceSerial,
       model: undefined,
-      isEmulator: isEmulatorOrSimulator(ctx.deviceSerial, ctx.config.platform),
-      platform: ctx.config.platform,
+      isEmulator: isEmulatorOrSimulator(ctx.deviceSerial, singleWorkerPlatform),
+      platform: singleWorkerPlatform,
       tapsmithVersion: TAPSMITH_VERSION,
-      devicePixelRatio: cachedScreenScale(ctx.deviceSerial, ctx.config.platform),
+      devicePixelRatio: cachedScreenScale(ctx.deviceSerial, singleWorkerPlatform),
     });
   }
 

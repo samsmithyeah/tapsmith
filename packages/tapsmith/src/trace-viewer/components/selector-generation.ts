@@ -1,5 +1,5 @@
 import type { HierarchyNode } from './hierarchy-utils.js';
-import { getNodeRole, WEBVIEW_TAG_TO_ROLE } from './hierarchy-utils.js';
+import { getNodeRole, WEBVIEW_TAG_TO_ROLE, ANDROID_CLASS_TO_ROLE, IOS_TYPE_TO_ROLE } from './hierarchy-utils.js';
 
 function escapeQuotes(s: string): string {
   return s.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\n/g, '\\n');
@@ -64,6 +64,25 @@ function getWebViewRole(node: HierarchyNode): string | null {
 export const FORM_FIELD_ROLES = new Set([
   'textfield', 'checkbox', 'switch', 'searchfield', 'seekbar', 'radiobutton', 'spinner',
 ]);
+
+// Roles that are always generic containers — demote regardless of source.
+const ALWAYS_GENERIC_ROLES = new Set(['other', 'none']);
+
+// Roles that the iOS agent derives from explicit accessibility traits (e.g.
+// UIAccessibilityTraitHeader → "heading", UIAccessibilityTraitButton →
+// "button"). These are trustworthy even on generic XCUIElementTypeOther
+// elements because the app explicitly declared them.
+const TRUSTED_TRAIT_ROLES = new Set(['heading', 'link', 'searchfield', 'button', 'image', 'seekbar']);
+
+/** Check whether the node's native class/type already maps to a known role
+ * (without relying on tapsmith-role). If so, the role is trustworthy. */
+function hasNativeRole(node: HierarchyNode): boolean {
+  const className = node.attributes.get('class') ?? '';
+  if (className && ANDROID_CLASS_TO_ROLE[className]) return true;
+  const iosType = node.attributes.get('type') ?? node.tagName;
+  if (IOS_TYPE_TO_ROLE[iosType]) return true;
+  return false;
+}
 
 export interface GeneratedSelector {
   code: string
@@ -198,12 +217,24 @@ function generateNativeSelectors(node: HierarchyNode): GeneratedSelector[] {
   // Android prefer content-desc, then text.
   const accessibleName = ios ? label : (contentDesc || text);
 
+  // Demote role-based selectors when the role is generic OR when it came from
+  // the agent's accessibility-trait heuristic (tapsmith-role) on a node whose
+  // native type is generic (XCUIElementTypeOther, android.view.ViewGroup). The
+  // trait mapping is unreliable on RN apps without accessibilityRole — it cycles
+  // through wrong roles (alert, checkbox, radiobutton, combobox). But when the
+  // native type itself maps to a real role (XCUIElementTypeTextField → textfield,
+  // android.widget.Button → button), the role is trustworthy.
+  const genericRole = role != null && (
+    ALWAYS_GENERIC_ROLES.has(role)
+    || (node.attributes.has('tapsmith-role') && !hasNativeRole(node) && !TRUSTED_TRAIT_ROLES.has(role))
+  );
+
   // 1. Role + name (highest priority — Testing Library getByRole)
   if (role && accessibleName) {
     selectors.push({
       code: `device.getByRole("${escapeQuotes(role)}", { name: "${escapeQuotes(accessibleName)}" })`,
       label: 'Role + name',
-      priority: 1,
+      priority: genericRole ? 7 : 1,
     });
   }
 
@@ -212,7 +243,7 @@ function generateNativeSelectors(node: HierarchyNode): GeneratedSelector[] {
     selectors.push({
       code: `device.getByRole("${escapeQuotes(role)}")`,
       label: 'Role',
-      priority: 2,
+      priority: genericRole ? 10 : 2,
     });
   }
 
@@ -227,18 +258,14 @@ function generateNativeSelectors(node: HierarchyNode): GeneratedSelector[] {
     });
   }
 
-  // 4. Description / accessibility label — Testing Library semantic query
+  // 4. Description — generated from Android content-desc only. On iOS,
+  // getByDescription does match the accessibility label at runtime, but the
+  // label is also the element's visible text, so we generate the equivalent
+  // getByText instead of a redundant second selector.
   if (contentDesc) {
     selectors.push({
       code: `device.getByDescription("${escapeQuotes(contentDesc)}")`,
       label: 'Description',
-      priority: 4,
-    });
-  }
-  if (ios && label && contentDesc !== label) {
-    selectors.push({
-      code: `device.getByDescription("${escapeQuotes(label)}")`,
-      label: 'Description (label)',
       priority: 4,
     });
   }
@@ -315,7 +342,42 @@ function extractTestId(resourceId: string): string | null {
   return resourceId;
 }
 
+// Priorities at or above this threshold are low-quality fallbacks (className,
+// resource ID, demoted role-only). When the picked node only produces these,
+// try its descendants for a better selector.
+const FALLBACK_PRIORITY_THRESHOLD = 8;
+
+export function hasGoodSelectors(node: HierarchyNode): boolean {
+  const selectors = generateSelectors(node);
+  return selectors.length > 0 && selectors[0].priority < FALLBACK_PRIORITY_THRESHOLD;
+}
+
+/**
+ * When a node only produces low-quality fallback selectors, find the first
+ * descendant with a meaningful selector (e.g. a textfield with a placeholder
+ * inside a generic container View). Returns the descendant node, or null.
+ */
+export function findBetterDescendant(node: HierarchyNode): HierarchyNode | null {
+  if (hasGoodSelectors(node)) return null;
+  // BFS to find the shallowest descendant with good selectors.
+  const queue: HierarchyNode[] = [...node.children];
+  while (queue.length > 0) {
+    const current = queue.shift()!;
+    if (hasGoodSelectors(current)) return current;
+    queue.push(...current.children);
+  }
+  return null;
+}
+
 export function generateBestSelector(node: HierarchyNode): string {
   const selectors = generateSelectors(node);
+  if (selectors.length > 0 && selectors[0].priority < FALLBACK_PRIORITY_THRESHOLD) {
+    return selectors[0].code;
+  }
+  const descendant = findBetterDescendant(node);
+  if (descendant) {
+    const descSelectors = generateSelectors(descendant);
+    if (descSelectors.length > 0) return descSelectors[0].code;
+  }
   return selectors.length > 0 ? selectors[0].code : `// No selector available`;
 }

@@ -75,25 +75,62 @@ await device.getByRole("checkbox", { name: "Remember me" }).tap()
 await device.getByRole("switch", { name: "Dark mode" }).tap()
 ```
 
-Supported roles map to platform-native element types:
+Supported roles map to platform-native element types. On iOS, many React Native components render as `XCUIElementTypeOther` — Tapsmith identifies roles from accessibility traits (e.g. a `Pressable` with `accessibilityRole="button"` gets the button trait) and falls back to matching `.other` elements by name. Native iOS and Android apps use typed elements that map directly.
 
 | Role | Android classes | iOS types |
 |---|---|---|
 | `button` | `Button`, `ImageButton`, Material/AppCompat variants | `XCUIElementTypeButton`, `.other` with button trait |
 | `textfield` | `EditText` | `XCUIElementTypeTextField`, `XCUIElementTypeSecureTextField` |
-| `checkbox` | `CheckBox` | `XCUIElementTypeOther` (React Native) |
-| `switch` | `Switch` | `XCUIElementTypeSwitch` |
-| `radiobutton` | `RadioButton` | `XCUIElementTypeOther` (React Native) |
-| `heading` | RN `accessibilityRole="header"` / native `isHeading` | `XCUIElementTypeOther` with header trait |
-| `link` | RN `accessibilityRole="link"` | `XCUIElementTypeLink` |
-| `image` | `ImageView` or RN `accessibilityRole="image"` | `XCUIElementTypeImage` |
+| `checkbox` | `CheckBox` | `XCUIElementTypeCheckBox`, `.other` (RN fallback) |
+| `switch` | `Switch` | `XCUIElementTypeSwitch`, `XCUIElementTypeToggle` |
+| `radiobutton` | `RadioButton` | `XCUIElementTypeRadioButton`, `.other` (RN fallback) |
+| `heading` | RN `accessibilityRole="header"` / native `isHeading` | `.other` with header trait, `XCUIElementTypeStaticText` with header trait |
+| `link` | RN `accessibilityRole="link"` | `XCUIElementTypeLink`, `.other` with link trait |
+| `image` | `ImageView` or RN `accessibilityRole="image"` | `XCUIElementTypeImage`, `.other` with image trait |
 | `text` | `TextView` | `XCUIElementTypeStaticText` |
-| `alert` | RN `accessibilityRole="alert"` | `XCUIElementTypeAlert` |
+| `alert` | RN `accessibilityRole="alert"` | `.other` (RN — matched by name) |
 | `progressbar` | `ProgressBar` | `XCUIElementTypeProgressIndicator` |
-| `slider` | `SeekBar` | `XCUIElementTypeSlider` |
-| `combobox` | RN `accessibilityRole="combobox"` | `XCUIElementTypePopUpButton` |
-| `searchfield` | `SearchView` | `XCUIElementTypeSearchField` |
-| `togglebutton` | `ToggleButton` | `XCUIElementTypeToggle` |
+| `seekbar` / `slider` | `SeekBar` | `XCUIElementTypeSlider`, `.other` with adjustable trait |
+| `combobox` | RN `accessibilityRole="combobox"` | `.other` (RN — matched by name) |
+| `searchfield` | `SearchView` | `XCUIElementTypeSearchField`, `.other` with search trait |
+| `spinner` | `Spinner` | `XCUIElementTypePicker`, `XCUIElementTypeActivityIndicator` |
+| `toolbar` | `Toolbar` | `XCUIElementTypeToolbar` |
+| `tab` | `TabLayout` | `XCUIElementTypeTab`, `XCUIElementTypeTabBar` |
+
+> **React Native note:** RN components that set `accessibilityRole` (e.g. `accessibilityRole="button"`) expose the corresponding iOS accessibility trait, and `getByRole` will find them. Components that don't set `accessibilityRole` (common in many RN apps) render as generic `XCUIElementTypeOther` with no role — use `getByText`, `getByPlaceholder`, or `getByDescription` instead.
+
+#### Making React Native apps testable (and accessible)
+
+Adding accessibility props to your RN components makes them both testable with `getByRole` and accessible to screen readers — a single change that improves both. The key props:
+
+```tsx
+// ✗ Invisible to getByRole — renders as generic XCUIElementTypeOther
+<TouchableOpacity onPress={handleSubmit}>
+  <Text>Sign in</Text>
+</TouchableOpacity>
+
+// ✓ Found by getByRole("button", { name: "Sign in" })
+<TouchableOpacity
+  onPress={handleSubmit}
+  accessibilityRole="button"
+  accessibilityLabel="Sign in"
+>
+  <Text>Sign in</Text>
+</TouchableOpacity>
+```
+
+Common components and their recommended props:
+
+| Component | Props to add | Tapsmith selector |
+|---|---|---|
+| `TouchableOpacity` / `Pressable` | `accessibilityRole="button"` | `getByRole("button", { name: "..." })` |
+| `TextInput` | `accessibilityLabel="Email"` | `getByRole("textfield", { name: "Email" })` or `getByPlaceholder(...)` |
+| `Switch` | `accessibilityRole="switch"`, `accessibilityLabel="..."` | `getByRole("switch", { name: "..." })` |
+| `Image` | `accessibilityRole="image"`, `accessibilityLabel="..."` | `getByRole("image", { name: "..." })` |
+| Section headers | `accessibilityRole="header"` | `getByRole("heading", { name: "..." })` |
+| Links | `accessibilityRole="link"` | `getByRole("link", { name: "..." })` |
+
+> **Tip:** If you can't modify the app, `getByText` and `getByPlaceholder` work without any accessibility props. `getByRole` is preferred when the props are available because it verifies both the element's function and its text, making tests more precise.
 
 ### `getByText(text, { exact? })`
 
@@ -112,7 +149,9 @@ await expect(device.getByText("3 items")).toBeVisible()
 
 ### `getByDescription(text)`
 
-Find an element by its accessibility description (Android `contentDescription`, iOS `accessibilityLabel`). Use this for icon buttons, images, and elements where the accessible label differs from visible text.
+Find an element by its accessibility description. On Android this matches `contentDescription`; on iOS it matches `accessibilityLabel`. Use this for icon buttons, images, and elements where the accessible label differs from visible text.
+
+On iOS, `getByText` also matches `accessibilityLabel`, so both work for text-bearing elements. Prefer `getByDescription` for elements that have an explicit accessibility description but no visible text (e.g. icon-only buttons).
 
 ```typescript
 // Tap an icon button with a description

@@ -134,12 +134,82 @@ pub async fn get_device_os_version(serial: &str) -> Result<String> {
     Ok(String::from_utf8_lossy(&stdout).trim().to_string())
 }
 
+/// Extract the package name from an `INSTALL_FAILED_UPDATE_INCOMPATIBLE`
+/// error message. Modern adb embeds the failure mid-line
+/// (`adb: failed to install x.apk: Failure [INSTALL_FAILED_UPDATE_INCOMPATIBLE:
+/// Existing package com.foo signatures do not match ...]`), legacy pm output
+/// puts `Failure [...]` at the start of a line — so we locate the marker
+/// anywhere and parse only within the bracketed failure detail. Text before
+/// the marker (e.g. the APK file path) is never consulted, so a crafted
+/// filename can't inject a package name.
+fn parse_incompatible_package(msg: &str) -> Option<&str> {
+    let idx = msg.find("Failure [INSTALL_FAILED_UPDATE_INCOMPATIBLE")?;
+    let tail = &msg[idx..];
+    // Stop at the closing bracket or end of line, whichever comes first —
+    // a failure line missing its `]` must not let the slice span into
+    // subsequent lines (which can contain the user-supplied APK path).
+    let end = [tail.find(']'), tail.find('\n')]
+        .into_iter()
+        .flatten()
+        .min()
+        .unwrap_or(tail.len());
+    let tail = &tail[..end];
+    tail.split("Existing package ")
+        .nth(1)
+        .or_else(|| tail.split("Package ").nth(1))
+        .and_then(|s| s.split_whitespace().next())
+        .map(|s| s.trim_end_matches(|c: char| !c.is_alphanumeric() && c != '.' && c != '_'))
+        // Require a plausible Android package name (multi-segment, valid
+        // charset). Some Android versions omit the package name entirely
+        // ("Package signatures do not match...") — without this check we'd
+        // parse the word "signatures" and try to uninstall it.
+        .filter(|s| {
+            s.contains('.')
+                && s.starts_with(|c: char| c.is_ascii_alphabetic())
+                && s.chars()
+                    .all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '_')
+        })
+}
+
 /// Install an APK on the device. Uses `-r` to allow reinstall.
+///
+/// With `recover_signature_mismatch`, an `INSTALL_FAILED_UPDATE_INCOMPATIBLE`
+/// failure (APK signed with a different key than the installed version)
+/// triggers an automatic uninstall + retry. Uninstalling wipes the package's
+/// app data, so this is only safe for packages we own (the Tapsmith agent) —
+/// user apps installed via the InstallApk RPC must not opt in.
 #[instrument(skip(apk_path))]
-pub async fn install_apk(serial: &str, apk_path: &str) -> Result<()> {
+pub async fn install_apk(
+    serial: &str,
+    apk_path: &str,
+    recover_signature_mismatch: bool,
+) -> Result<()> {
     let timeout = Duration::from_secs(120);
-    run_adb_with_transport_recovery(serial, &["install", "-r", apk_path], timeout, "install APK")
-        .await?;
+    let result = run_adb_with_transport_recovery(
+        serial,
+        &["install", "-r", apk_path],
+        timeout,
+        "install APK",
+    )
+    .await;
+    if recover_signature_mismatch {
+        if let Err(e) = &result {
+            let msg = e.to_string();
+            if let Some(pkg) = parse_incompatible_package(&msg) {
+                info!("Signature mismatch for {pkg} — uninstalling and retrying");
+                let _ = run_adb(Some(serial), &["uninstall", pkg], DEFAULT_TIMEOUT).await;
+                run_adb_with_transport_recovery(
+                    serial,
+                    &["install", "-r", apk_path],
+                    timeout,
+                    "install APK (retry after uninstall)",
+                )
+                .await?;
+                return Ok(());
+            }
+        }
+    }
+    result?;
     Ok(())
 }
 
@@ -912,6 +982,81 @@ mod tests {
         assert!(!is_retryable_adb_transport_error(
             "adb command failed (exit exit status: 1): error: device unauthorized"
         ));
+    }
+
+    // ─── parse_incompatible_package ───
+
+    #[test]
+    fn parse_incompatible_package_modern_adb_inline_format() {
+        // Modern (streamed-install) adb embeds the failure mid-line in stderr.
+        let msg = "adb command failed (exit exit status: 1): \
+            adb: failed to install /tmp/agent.apk: \
+            Failure [INSTALL_FAILED_UPDATE_INCOMPATIBLE: Existing package \
+            dev.tapsmith.agent signatures do not match newer version; ignoring!]";
+        assert_eq!(parse_incompatible_package(msg), Some("dev.tapsmith.agent"));
+    }
+
+    #[test]
+    fn parse_incompatible_package_legacy_line_start_format() {
+        let msg = "adb command failed (exit exit status: 1): \nPerforming Push Install\n\
+            Failure [INSTALL_FAILED_UPDATE_INCOMPATIBLE: \
+            Package dev.tapsmith.agent.test signatures do not match previously installed version]";
+        assert_eq!(
+            parse_incompatible_package(msg),
+            Some("dev.tapsmith.agent.test")
+        );
+    }
+
+    #[test]
+    fn parse_incompatible_package_trims_trailing_bracket() {
+        let msg = "Failure [INSTALL_FAILED_UPDATE_INCOMPATIBLE: Existing package com.example]";
+        assert_eq!(parse_incompatible_package(msg), Some("com.example"));
+    }
+
+    #[test]
+    fn parse_incompatible_package_ignores_other_failures() {
+        assert_eq!(
+            parse_incompatible_package(
+                "Failure [INSTALL_FAILED_VERSION_DOWNGRADE: Existing package com.example]"
+            ),
+            None
+        );
+        assert_eq!(parse_incompatible_package("adb: device offline"), None);
+    }
+
+    #[test]
+    fn parse_incompatible_package_ignores_text_before_failure_marker() {
+        // A crafted APK path mentioning "Existing package evil.pkg" before the
+        // failure marker must not be parsed — only the bracketed detail counts.
+        let msg = "adb: failed to install '/tmp/Existing package evil.pkg.apk': \
+            Failure [INSTALL_FAILED_UPDATE_INCOMPATIBLE: Existing package real.pkg signatures]";
+        assert_eq!(parse_incompatible_package(msg), Some("real.pkg"));
+        // And with no failure marker at all, nothing is parsed.
+        let msg = "adb: failed to install '/tmp/Existing package evil.pkg.apk': device offline";
+        assert_eq!(parse_incompatible_package(msg), None);
+    }
+
+    #[test]
+    fn parse_incompatible_package_does_not_parse_across_lines() {
+        // A failure line missing its closing bracket must not let parsing
+        // continue into later lines, which can contain the APK path.
+        let msg = "Failure [INSTALL_FAILED_UPDATE_INCOMPATIBLE: signatures do not match\n\
+            adb: failed to install '/tmp/Existing package evil.pkg.apk']";
+        assert_eq!(parse_incompatible_package(msg), None);
+    }
+
+    #[test]
+    fn parse_incompatible_package_rejects_non_package_tokens() {
+        // Package names must start with a letter.
+        let msg =
+            "Failure [INSTALL_FAILED_UPDATE_INCOMPATIBLE: Existing package 123.abc signatures]";
+        assert_eq!(parse_incompatible_package(msg), None);
+        // Single-segment tokens (no dot) are not installable package names —
+        // this guards the wording "Package signatures do not match..." where
+        // the package name is omitted and "signatures" follows the keyword.
+        let msg = "Failure [INSTALL_FAILED_UPDATE_INCOMPATIBLE: \
+            Package signatures do not match the previously installed version; ignoring!]";
+        assert_eq!(parse_incompatible_package(msg), None);
     }
 
     // ─── AdbDevice::is_online ───

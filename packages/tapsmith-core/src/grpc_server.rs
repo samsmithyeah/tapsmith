@@ -2097,7 +2097,10 @@ impl proto::tapsmith_service_server::TapsmithService for TapsmithServiceImpl {
 
         info!(apk_path = %req.apk_path, "Installing APK");
 
-        match adb::install_apk(&serial, &req.apk_path).await {
+        // No signature-mismatch auto-recovery here: this RPC installs user
+        // apps, and the recovery path uninstalls the existing package (wiping
+        // its app data) — too destructive to do silently on someone's app.
+        match adb::install_apk(&serial, &req.apk_path, false).await {
             Ok(()) => Ok(Response::new(proto::ActionResponse {
                 request_id,
                 success: true,
@@ -2388,7 +2391,7 @@ impl proto::tapsmith_service_server::TapsmithService for TapsmithServiceImpl {
                 // changes to the agent are deployed without manual intervention.
                 if has_apk_paths {
                     info!("Installing agent APKs...");
-                    if let Err(e) = adb::install_apk(&serial, &req.agent_apk_path).await {
+                    if let Err(e) = adb::install_apk(&serial, &req.agent_apk_path, true).await {
                         return Ok(Response::new(proto::ActionResponse {
                             request_id,
                             success: false,
@@ -2397,7 +2400,8 @@ impl proto::tapsmith_service_server::TapsmithService for TapsmithServiceImpl {
                             screenshot: Vec::new(),
                         }));
                     }
-                    if let Err(e) = adb::install_apk(&serial, &req.agent_test_apk_path).await {
+                    if let Err(e) = adb::install_apk(&serial, &req.agent_test_apk_path, true).await
+                    {
                         return Ok(Response::new(proto::ActionResponse {
                             request_id,
                             success: false,

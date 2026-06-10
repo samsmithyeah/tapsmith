@@ -77,6 +77,10 @@ export function ScreenshotPanel({ event, screenshots, highlightBounds, selectorH
 
   const [tab, setTab] = useState<ScreenshotTab>('action');
   const [scale, setScale] = useState(1);
+  // Kept in sync on every render so callbacks (ResizeObserver,
+  // updateRenderedSize) read the committed scale without re-subscribing.
+  const scaleRef = useRef(scale);
+  scaleRef.current = scale;
   const [naturalSize, setNaturalSize] = useState<NaturalSize | null>(null);
   const [renderedSize, setRenderedSize] = useState<RenderedSize | null>(null);
   const [viewportSize, setViewportSize] = useState<{ width: number; height: number } | null>(null);
@@ -90,11 +94,14 @@ export function ScreenshotPanel({ event, screenshots, highlightBounds, selectorH
     const wrapper = wrapperRef.current;
     const imgRect = img.getBoundingClientRect();
     const wrapperRect = wrapper?.getBoundingClientRect();
+    // getBoundingClientRect returns post-transform coordinates, but the
+    // overlay is inside the scaled wrapper and needs pre-transform offsets.
+    const s = scaleRef.current || 1;
     setRenderedSize({
       width: img.clientWidth,
       height: img.clientHeight,
-      left: wrapperRect ? imgRect.left - wrapperRect.left : 0,
-      top: wrapperRect ? imgRect.top - wrapperRect.top : 0,
+      left: wrapperRect ? (imgRect.left - wrapperRect.left) / s : 0,
+      top: wrapperRect ? (imgRect.top - wrapperRect.top) / s : 0,
     });
   }, []);
 
@@ -120,13 +127,27 @@ export function ScreenshotPanel({ event, screenshots, highlightBounds, selectorH
     return () => ro.disconnect();
   }, [event, tab, updateRenderedSize]);
 
-  const handleWheel = useCallback((e: WheelEvent) => {
-    e.preventDefault();
-    setScale(prev => {
-      const delta = e.deltaY > 0 ? -0.1 : 0.1;
-      return Math.max(0.5, Math.min(5, prev + delta));
-    });
+  const containerRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el) return;
+    const onWheel = (e: WheelEvent) => {
+      e.preventDefault();
+      setScale(prev => {
+        const delta = e.deltaY > 0 ? -0.1 : 0.1;
+        return Math.max(0.5, Math.min(5, prev + delta));
+      });
+    };
+    el.addEventListener('wheel', onWheel, { passive: false });
+    return () => el.removeEventListener('wheel', onWheel);
   }, []);
+
+  // Re-measure after the scale transform has been committed to the DOM —
+  // measuring inside the state setter would read pre-commit geometry.
+  useEffect(() => {
+    updateRenderedSize();
+  }, [scale, updateRenderedSize]);
 
   const handleImageLoad = useCallback(() => {
     const img = imgRef.current;
@@ -430,7 +451,7 @@ export function ScreenshotPanel({ event, screenshots, highlightBounds, selectorH
           )}
         </div>
       </div>
-      <div class="screenshot-container viewer-body has-grid" onWheel={handleWheel} style={{ position: 'relative' }}>
+      <div ref={containerRef} class="screenshot-container viewer-body has-grid" style={{ position: 'relative' }}>
         {(hasBefore && hasAfter) && (
           <div class="screenshot-tab-float">
             <div class={`screenshot-tab${tab === 'action' ? ' active' : ''}`} onClick={() => setTab('action')}>Action</div>

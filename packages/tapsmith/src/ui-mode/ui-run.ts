@@ -125,6 +125,17 @@ async function handleRun(msg: UIRunMessage): Promise<void> {
   const config = configFromSerialized(msg.config, msg.daemonAddress);
   config.device = msg.deviceSerial;
 
+  // Auto-detect xctestrun if omitted, mirroring the multi-worker resolution
+  // in ui-worker.ts. Without this, single-worker UI mode on iOS fails with
+  // "iOS agent not configured" when the config uses per-project platforms.
+  if (!config.iosXctestrun && config.platform === 'ios' && msg.deviceSerial) {
+    const { isPhysicalDevice } = await import('../ios-devicectl.js');
+    const { findDeviceXctestrun, findSimulatorXctestrun } = await import('../ios-device-resolve.js');
+    const isPhys = isPhysicalDevice(msg.deviceSerial);
+    const found = isPhys ? findDeviceXctestrun(config.rootDir) : findSimulatorXctestrun();
+    if (found) config.iosXctestrun = found;
+  }
+
   // Force trace on for UI mode so we get real-time trace events
   if (!config.trace || config.trace === 'off') {
     config.trace = 'on';
