@@ -137,3 +137,36 @@ describe('review follow-ups (PR #124)', () => {
     expect(findElements).toHaveBeenCalledTimes(1);
   });
 });
+
+describe('positional re-targeting ambiguity guard (PR #124 review)', () => {
+  it('errors when the resolved element\'s identifying text also matches an earlier element', async () => {
+    const client = makeClient([
+      makeElementInfo({ text: 'Item' }),
+      makeElementInfo({ text: 'Item' }),
+    ]);
+    // .nth(1) resolves to the second "Item", but re-targeting by exact text
+    // would make the agent act on the FIRST one — must error, not mis-tap.
+    const target = await resolveActionTarget(client, 'device.getByText("Item", { exact: true }).nth(1)');
+    expect(target.error).toMatch(/would land on the wrong one/);
+  });
+
+  it('allows re-targeting when the identifying property is unique to the resolved element', async () => {
+    const client = makeClient([
+      makeElementInfo({ text: 'Item A' }),
+      makeElementInfo({ text: 'Item B' }),
+    ]);
+    const target = await resolveActionTarget(client, 'device.getByText("Item").nth(1)');
+    expect(target.error).toBeUndefined();
+    expect(selectorToProto(target.selector)).toEqual({ text: 'Item B' });
+  });
+
+  it('prefers resourceId targeting, which disambiguates same-text elements', async () => {
+    const client = makeClient([
+      makeElementInfo({ text: 'Item', resourceId: 'row_0' }),
+      makeElementInfo({ text: 'Item', resourceId: 'row_1' }),
+    ]);
+    const target = await resolveActionTarget(client, 'device.getByText("Item", { exact: true }).nth(1)');
+    expect(target.error).toBeUndefined();
+    expect(selectorToProto(target.selector)).toEqual({ resourceId: 'row_1' });
+  });
+});

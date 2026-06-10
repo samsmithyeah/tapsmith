@@ -126,5 +126,28 @@ export async function resolveActionTarget(
   if (!targeted) {
     return { selector, error: `Cannot target match ${String(index)} of ${input}: the element has no resourceId, contentDescription, or text to address it by.` };
   }
+  // The agent acts on the targeting selector's FIRST match in document
+  // order. If an earlier match shares the identifying property, the action
+  // would silently land on that element instead of the resolved index —
+  // error out rather than mis-tap. (elements is in document order, so the
+  // first sharer within the match set approximates the agent's pick.)
+  const sharesProperty = (e: ElementInfo): boolean => {
+    switch (targeted.kind.type) {
+      case 'id': return e.resourceId === el.resourceId;
+      case 'contentDesc': return e.contentDescription === el.contentDescription;
+      case 'text': return e.text === el.text;
+      default: return false;
+    }
+  };
+  const firstSharer = elements.findIndex(sharesProperty);
+  if (firstSharer !== -1 && firstSharer !== idx) {
+    return {
+      selector,
+      error:
+        `Cannot target match ${String(index)} of ${input}: its identifying property ` +
+        `(${targeted.kind.type} ${JSON.stringify(String(targeted.kind.value))}) also matches an earlier element, ` +
+        'so the action would land on the wrong one. Use a more specific selector (getByTestId, getByRole with name) for this element.',
+    };
+  }
   return { selector: targeted };
 }
