@@ -325,6 +325,24 @@ function collapseSameTargetNodes(nodes: HierarchyNode[]): HierarchyNode[] {
   return result;
 }
 
+/**
+ * Resolve a positional chain (.first()/.last()/.nth(n), negative n counting
+ * from the end) to a concrete index. May be out of range — callers decide
+ * whether that means "empty result" or an error.
+ */
+export function resolvePositionalIndex(count: number, index: number | 'first' | 'last'): number {
+  if (index === 'first') return 0;
+  if (index === 'last') return count - 1;
+  return index < 0 ? count + index : index;
+}
+
+/** Apply a parsed positional chain to a match list (out of range → empty). */
+export function applyPositionalIndex<T>(items: T[], index: ParsedSelector['index']): T[] {
+  if (index === undefined) return items;
+  const idx = resolvePositionalIndex(items.length, index);
+  return idx >= 0 && idx < items.length ? [items[idx]] : [];
+}
+
 export function findMatchingNodes(roots: HierarchyNode[], selector: ParsedSelector): HierarchyNode[] {
   const raw: HierarchyNode[] = [];
 
@@ -341,14 +359,7 @@ export function findMatchingNodes(roots: HierarchyNode[], selector: ParsedSelect
     walk(root);
   }
 
-  const all = collapseSameTargetNodes(raw);
-
-  if (selector.index === undefined) return all;
-  if (selector.index === 'first') return all.length > 0 ? [all[0]] : [];
-  if (selector.index === 'last') return all.length > 0 ? [all[all.length - 1]] : [];
-  // Negative indices count from the end, like the runtime's .nth()
-  const idx = selector.index < 0 ? all.length + selector.index : selector.index;
-  return all[idx] ? [all[idx]] : [];
+  return applyPositionalIndex(collapseSameTargetNodes(raw), selector.index);
 }
 
 export function getNodeBounds(node: HierarchyNode): Bounds | null {

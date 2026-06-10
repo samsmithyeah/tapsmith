@@ -1,4 +1,4 @@
-import { parseSelectorString } from '../trace-viewer/components/selector-matching.js';
+import { parseSelectorString, resolvePositionalIndex } from '../trace-viewer/components/selector-matching.js';
 import type { ParsedSelector } from '../trace-viewer/components/selector-matching.js';
 import type { Selector, SelectorKind } from '../selectors.js';
 import { makeSelector } from '../selectors.js';
@@ -114,10 +114,7 @@ export async function resolveActionTarget(
   }
 
   // Negative indices count from the end, like the runtime's .nth()
-  const idx = index === 'first' ? 0
-    : index === 'last' ? elements.length - 1
-    : index < 0 ? elements.length + index
-    : index;
+  const idx = resolvePositionalIndex(elements.length, index);
   const el = idx >= 0 && idx < elements.length ? elements[idx] : undefined;
   if (!el) {
     return { selector, error: `Index ${String(index)} is out of range: ${input} matched ${elements.length} element(s).` };

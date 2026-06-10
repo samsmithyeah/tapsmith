@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import type { HierarchyNode } from '../trace-viewer/components/hierarchy-utils.js';
 import { getNodeRole } from '../trace-viewer/components/hierarchy-utils.js';
 import { generateSelectors, generateBestSelector, findBetterDescendant, hasGoodSelectors, FORM_FIELD_ROLES } from '../trace-viewer/components/selector-generation.js';
-import { parseSelectorString, findMatchingNodes, hitTest } from '../trace-viewer/components/selector-matching.js';
+import { parseSelectorString, findMatchingNodes, hitTest, applyPositionalIndex } from '../trace-viewer/components/selector-matching.js';
 
 function makeNode(tagName: string, attrs: Record<string, string>, children: HierarchyNode[] = []): HierarchyNode {
   return {
@@ -522,5 +522,23 @@ describe('parseGetByOptions escaped-quote handling (PR #124 review)', () => {
   it('still parses { name, exact } combinations', () => {
     const parsed = parseSelectorString('device.getByRole("button", { name: "OK", exact: true })');
     expect(parsed?.name).toBe('OK');
+  });
+});
+
+describe('applyPositionalIndex (shared positional-chain util)', () => {
+  const items = ['a', 'b', 'c'];
+  it('passes through without an index', () => {
+    expect(applyPositionalIndex(items, undefined)).toEqual(['a', 'b', 'c']);
+  });
+  it('resolves first/last/nth and negative indices', () => {
+    expect(applyPositionalIndex(items, 'first')).toEqual(['a']);
+    expect(applyPositionalIndex(items, 'last')).toEqual(['c']);
+    expect(applyPositionalIndex(items, 1)).toEqual(['b']);
+    expect(applyPositionalIndex(items, -1)).toEqual(['c']);
+  });
+  it('returns empty for out-of-range indices', () => {
+    expect(applyPositionalIndex(items, 5)).toEqual([]);
+    expect(applyPositionalIndex(items, -4)).toEqual([]);
+    expect(applyPositionalIndex([], 'first')).toEqual([]);
   });
 });

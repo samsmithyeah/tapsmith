@@ -2,7 +2,7 @@ import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { ensureConnected } from '../connection.js';
 import { parseHierarchyXml } from '../../trace-viewer/components/hierarchy-utils.js';
-import { parseSelectorString, findMatchingNodes } from '../../trace-viewer/components/selector-matching.js';
+import { parseSelectorString, findMatchingNodes, applyPositionalIndex } from '../../trace-viewer/components/selector-matching.js';
 import { getNodeRole } from '../../trace-viewer/components/hierarchy-utils.js';
 import { parseSelectorToInternal, formatBounds } from '../selector-helper.js';
 import { collapseSameTargetDuplicates } from '../../element-handle.js';
@@ -73,14 +73,7 @@ export function registerTestSelectorTool(server: McpServer): void {
 
       // Apply a positional chain the same way the runtime does
       // (negative .nth() indices count from the end).
-      let resolved: ElementInfo[] = all;
-      if (index !== undefined) {
-        const idx = index === 'first' ? 0
-          : index === 'last' ? all.length - 1
-          : index < 0 ? all.length + index
-          : index;
-        resolved = idx >= 0 && idx < all.length ? [all[idx]] : [];
-      }
+      const resolved: ElementInfo[] = applyPositionalIndex(all, index);
 
       const elements = resolved.map(el => ({
         role: el.role || el.className,
