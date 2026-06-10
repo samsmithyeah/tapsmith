@@ -57,7 +57,7 @@ export class JsonReporter implements TapsmithReporter {
   private _startTime = new Date();
 
   constructor(options: Record<string, unknown> = {}) {
-    this._outputFile = (options.outputFile as string) ?? 'tapsmith-results/results.json';
+    this._outputFile = process.env.TAPSMITH_JSON_OUTPUT_FILE ?? (options.outputFile as string) ?? 'tapsmith-results/results.json';
   }
 
   onRunStart(config: TapsmithConfig, _fileCount: number): void {

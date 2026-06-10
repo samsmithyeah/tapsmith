@@ -1125,6 +1125,8 @@ interface CliArgs {
   grep?: string;
   /** Pattern from `--grep-invert`. Compiled to a RegExp later. */
   grepInvert?: string;
+  /** Reporter override from `--reporter`. */
+  reporter?: string;
 }
 
 function compileGrepPattern(pattern: string, flag: string): RegExp {
@@ -1229,6 +1231,10 @@ function parseArgs(argv: string[]): CliArgs {
       args.config = rest[++i];
     } else if (arg?.startsWith('--config=')) {
       args.config = arg.slice('--config='.length);
+    } else if (arg === '--reporter') {
+      args.reporter = rest[++i];
+    } else if (arg?.startsWith('--reporter=')) {
+      args.reporter = arg.slice('--reporter='.length);
     } else if (arg === '--grep' || arg === '-g') {
       args.grep = rest[++i];
     } else if (arg?.startsWith('--grep=')) {
@@ -1655,6 +1661,7 @@ ${bold('Options:')}
   -c, --config <path>      Path to config file (default: tapsmith.config.ts)
   -g, --grep <pattern>     Run only tests whose fullName matches this regex
   --grep-invert <pattern>  Skip tests whose fullName matches this regex
+  --reporter <name>        Override the reporter (list, line, dot, json, junit, html, github)
   --force-install          Reinstall the app even if already installed
   -v, --version            Print version
   -h, --help               Show this help
@@ -1874,6 +1881,9 @@ async function main(): Promise<void> {
   }
   if (args.grepInvert !== undefined) {
     config.grepInvert = compileGrepPattern(args.grepInvert, '--grep-invert');
+  }
+  if (args.reporter) {
+    config.reporter = args.reporter;
   }
 
   // Validate watch mode constraints
