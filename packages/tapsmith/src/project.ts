@@ -5,8 +5,8 @@
  * dependency constraints and shared `use` options.
  */
 
-import { minimatch } from 'minimatch';
 import { effectiveConfigForProject, type TapsmithConfig, type ProjectConfig, type UseOptions } from './config.js';
+import { matchesTestFile } from './test-file-discovery.js';
 
 // ─── Types ───
 
@@ -442,18 +442,9 @@ export function findProjectsForFile(
   projects: ResolvedProject[],
   rootDir: string,
 ): string[] {
-  // Trailing slash prevents a sibling directory sharing the rootDir prefix
-  // (e.g. rootDir /foo vs file /foo-bar/x.test.ts) from passing the check.
-  const normalizedRootDir = rootDir.endsWith('/') ? rootDir : rootDir + '/';
-  const relative = filePath.startsWith(normalizedRootDir)
-    ? filePath.slice(normalizedRootDir.length)
-    : filePath;
-
   const matches: string[] = [];
   for (const project of projects) {
-    const matchesInclude = project.testMatch.some((pattern) => minimatch(relative, pattern));
-    const matchesIgnore = project.testIgnore.some((pattern) => minimatch(relative, pattern));
-    if (matchesInclude && !matchesIgnore) {
+    if (matchesTestFile(filePath, project.testMatch, rootDir, project.testIgnore)) {
       matches.push(project.name);
     }
   }
