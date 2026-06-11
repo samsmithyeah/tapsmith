@@ -1922,6 +1922,9 @@ export async function startUIServer(
         worker.currentTest = undefined;
         worker.busy = false;
         broadcastWorkerStatus(worker, 'error');
+        // Release the daemon/screen client now rather than at the next run's
+        // respawn — a retired worker's resources serve no one in between.
+        releaseWorkerResources(worker);
 
         if (inFlightFile && parallelRunAborted) {
           // During a user stop the file isn't coming back — don't requeue it
@@ -2337,6 +2340,7 @@ export async function startUIServer(
       worker.retired = true;
       worker.busy = false;
       broadcastWorkerStatus(worker, 'error');
+      releaseWorkerResources(worker);
       if (worker.currentFile) {
         if (worker.currentTest) {
           updateTestStatus(
@@ -2359,6 +2363,17 @@ export async function startUIServer(
     }
 
     if (killedAny) forceSettleDispatch?.();
+  }
+
+  /**
+   * Kill a retired worker's daemon and close its screen client. SIGTERM (not
+   * SIGKILL) so the daemon can tear down its own agent processes — orphaned
+   * XCUITest runners re-boot their simulators (see PILOT-230). Safe to call
+   * repeatedly: kill on a dead process is a no-op and close() is idempotent.
+   */
+  function releaseWorkerResources(worker: UIWorkerHandle): void {
+    try { worker.daemonProcess?.kill(); } catch { /* already dead */ }
+    worker.screenClient?.close();
   }
 
   /** Respawn any retired workers before starting a new run. */
@@ -2386,9 +2401,9 @@ export async function startUIServer(
 
       respawnPromises.push((async () => {
         try {
-          // Clean up old daemon
-          try { worker.daemonProcess?.kill(); } catch { /* already dead */ }
-          worker.screenClient?.close();
+          // Clean up old daemon (usually already done at retirement; this is
+          // a no-op backstop)
+          releaseWorkerResources(worker);
 
           const newWorker = await initializeOneWorker(
             worker.id, worker.deviceSerial, daemonPort, agentPort, daemonBin,
@@ -3879,8 +3894,7 @@ export async function startUIServer(
               }, 3_000);
             }
           } catch { /* already dead */ }
-          try { worker.daemonProcess?.kill(); } catch { /* already dead */ }
-          worker.screenClient?.close();
+          releaseWorkerResources(worker);
         }
       } else {
         if (activeChild) {
