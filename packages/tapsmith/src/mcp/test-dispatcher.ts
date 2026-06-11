@@ -1,8 +1,10 @@
 export interface TestRunResult {
-  status: 'passed' | 'failed'
+  status: 'passed' | 'failed' | 'stopped'
   passed: number
   failed: number
   skipped: number
+  /** Tests killed mid-flight by a user stop (not counted in `failed`). */
+  interrupted?: number
   duration: number
   failures?: TestFailureDetail[]
 }
@@ -57,6 +59,12 @@ export interface TestDispatcher {
   runFiles(files: string[], options?: { testFilter?: string; project?: string }): Promise<TestRunResult>
   runAll(): Promise<TestRunResult>
   stop(): void
+  /**
+   * Resolves with the run's final result once it actually ends (or
+   * immediately with the last run's result when no run is in progress);
+   * resolves with `null` if the run is still terminating after `timeoutMs`.
+   */
+  waitForRunEnd?(timeoutMs: number): Promise<TestRunResult | null>
   isRunning(): boolean
   getResults(): TestResultEntry[]
   getTestFiles(): string[]

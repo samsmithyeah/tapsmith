@@ -11,6 +11,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as crypto from 'node:crypto';
 import { type Selector, selectorToProto } from './selectors.js';
+import { TestAbortedError } from './abort.js';
 
 // ─── Types mirroring proto messages ───
 
@@ -234,6 +235,7 @@ export class TapsmithGrpcClient {
   // eslint-disable-next-line @typescript-eslint/no-unsafe-function-type
   private client: grpc.Client & Record<string, Function>;
   private address: string;
+  private _abortSignal?: AbortSignal;
 
   constructor(address: string = DEFAULT_ADDRESS) {
     this.address = address;
@@ -263,17 +265,40 @@ export class TapsmithGrpcClient {
 
   // ── Helpers ──
 
+  /**
+   * @internal Set (or clear) the signal that cancels in-flight unary calls.
+   * Set by the runner for the duration of a test file; one client instance
+   * serves Device, ElementHandle, and expect, so this single set-point covers
+   * every RPC issued by tests and hooks.
+   */
+  _setAbortSignal(signal: AbortSignal | undefined): void {
+    this._abortSignal = signal;
+  }
+
+  /** @internal */
+  _getAbortSignal(): AbortSignal | undefined {
+    return this._abortSignal;
+  }
+
   private call<T>(method: string, request: Record<string, unknown>, deadlineMs?: number): Promise<T> {
+    const signal = this._abortSignal;
+    if (signal?.aborted) return Promise.reject(new TestAbortedError());
     return new Promise<T>((resolve, reject) => {
       const deadline = new Date(Date.now() + (deadlineMs ?? 60_000));
       // eslint-disable-next-line @typescript-eslint/no-explicit-any -- dynamic RPC dispatch on proto-loaded client
-      (this.client as any)[method](request, { deadline }, (err: grpc.ServiceError | null, response: T) => {
+      const grpcCall = (this.client as any)[method](request, { deadline }, (err: grpc.ServiceError | null, response: T) => {
+        signal?.removeEventListener('abort', onAbort);
         if (err) {
-          reject(err);
+          // Any error surfacing after the signal fired (CANCELLED or
+          // otherwise) is reported as an abort so callers see one
+          // distinguishable type.
+          reject(signal?.aborted ? new TestAbortedError() : err);
         } else {
           resolve(response);
         }
-      });
+      }) as grpc.ClientUnaryCall;
+      const onAbort = (): void => grpcCall.cancel();
+      signal?.addEventListener('abort', onAbort, { once: true });
     });
   }
 

@@ -1,5 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
 import { ElementHandle, StrictModeViolationError, isStrictModeViolation } from '../element-handle.js';
+import { isAbortError } from '../abort.js';
 import { type Selector, _text, _textContains, _role, _className, _id, selectorToProto } from '../selectors.js';
 import type {
   TapsmithGrpcClient,
@@ -1885,6 +1886,20 @@ describe('waitFor', () => {
     const handle = new ElementHandle(client, _text('Hello'), 5000);
     await handle.waitFor({ state: 'visible' });
     expect(callCount).toBeGreaterThanOrEqual(3);
+  });
+
+  it('aborts the poll loop promptly when the client abort signal fires (PILOT-222)', async () => {
+    const ac = new AbortController();
+    const client = makeMockClient({
+      findElements: vi.fn(async () => makeFindElementsResponse([])),
+      _getAbortSignal: vi.fn(() => ac.signal),
+    } as Partial<TapsmithGrpcClient>);
+    // Long timeout: only the abort can end this wait inside vitest's budget.
+    const handle = new ElementHandle(client, _text('Hello'), 60_000);
+    const wait = handle.waitFor({ state: 'visible' });
+    setTimeout(() => ac.abort(), 20);
+    // Must surface the abort, NOT the "did not reach state" timeout error.
+    await expect(wait).rejects.toSatisfy(isAbortError);
   });
 
   it('polls until element becomes detached', async () => {

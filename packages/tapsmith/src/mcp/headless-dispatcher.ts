@@ -41,6 +41,8 @@ export class HeadlessTestDispatcher implements TestDispatcher {
   private _testResults = new Map<string, TestResultEntry>();
   private _isRunning = false;
   private _stopRequested = false;
+  private _lastRunEnd: TestRunResult | null = null;
+  private readonly _runEndWaiters: Array<(r: TestRunResult) => void> = [];
   private _activeChild: ChildProcess | null = null;
   private _initialized = false;
   private _initPromise: Promise<void> | null = null;
@@ -107,16 +109,15 @@ export class HeadlessTestDispatcher implements TestDispatcher {
           log(`Error running ${path.basename(f)}: ${err instanceof Error ? err.message : err}`);
         }
       }
-      return this._withFailures({
-        status: totalFailed > 0 ? 'failed' : 'passed',
+      return this._finishRun(this._withFailures({
+        status: this._stopRequested ? 'stopped' : totalFailed > 0 ? 'failed' : 'passed',
         passed: totalPassed,
         failed: totalFailed,
         skipped: totalSkipped,
         duration: totalDuration,
-      });
+      }));
     } finally {
-      this._isRunning = false;
-      this._stopRequested = false;
+      this._endRunState();
     }
   }
 
@@ -184,28 +185,64 @@ export class HeadlessTestDispatcher implements TestDispatcher {
         }
       }
 
-      return this._withFailures({
-        status: totalFailed > 0 ? 'failed' : 'passed',
+      return this._finishRun(this._withFailures({
+        status: this._stopRequested ? 'stopped' : totalFailed > 0 ? 'failed' : 'passed',
         passed: totalPassed,
         failed: totalFailed,
         skipped: totalSkipped,
         duration: totalDuration,
-      });
+      }));
     } finally {
-      this._isRunning = false;
-      this._stopRequested = false;
+      this._endRunState();
     }
   }
 
   stop(): void {
+    if (!this._isRunning) return;
     this._stopRequested = true;
     if (this._activeChild) {
       try { this._activeChild.kill(); } catch { /* already dead */ }
     }
   }
 
+  waitForRunEnd(timeoutMs: number): Promise<TestRunResult | null> {
+    if (!this._isRunning) return Promise.resolve(this._lastRunEnd);
+    return new Promise((resolve) => {
+      let settled = false;
+      const timer = setTimeout(() => {
+        if (settled) return;
+        settled = true;
+        resolve(null);
+      }, timeoutMs);
+      timer.unref?.();
+      this._runEndWaiters.push((r) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        resolve(r);
+      });
+    });
+  }
+
   isRunning(): boolean {
     return this._isRunning;
+  }
+
+  /** Record the final result and wake waitForRunEnd callers. */
+  private _finishRun(result: TestRunResult): TestRunResult {
+    this._lastRunEnd = result;
+    for (const w of this._runEndWaiters.splice(0)) w(result);
+    return result;
+  }
+
+  /** Run-state teardown; resolves any waiters left by an exception path. */
+  private _endRunState(): void {
+    this._isRunning = false;
+    this._stopRequested = false;
+    if (this._runEndWaiters.length > 0) {
+      const fallback = this._lastRunEnd ?? { status: 'stopped' as const, passed: 0, failed: 0, skipped: 0, duration: 0 };
+      for (const w of this._runEndWaiters.splice(0)) w(fallback);
+    }
   }
 
   getResults(): TestResultEntry[] {

@@ -26,6 +26,7 @@ import type { TapsmithGrpcClient, ElementInfo, ActionResponse } from './grpc-cli
 import { type TraceCapture, extractStack } from './trace/trace-collector.js';
 import type { ActionCategory } from './trace/types.js';
 import { tracedAction } from './trace/traced-action.js';
+import { sleep } from './abort.js';
 
 // ─── Public types ───
 
@@ -143,6 +144,8 @@ function boundsContain(
 function isPollableNotFoundError(err: unknown): boolean {
   // A strict mode violation means the selector DID resolve — to too many
   // elements. Retrying cannot fix ambiguity; it must propagate immediately.
+  // Likewise TestAbortedError (user stop, PILOT-222) falls through the
+  // message checks below and propagates — poll loops must not retry it.
   if (isStrictModeViolation(err)) return false;
   if (!(err instanceof Error)) return false;
   const msg = err.message;
@@ -719,7 +722,7 @@ export class ElementHandle {
         throw new Error(`Element ${this._describe()} was not found after waiting ${timeoutMs}ms`);
       }
       const sleepMs = Math.min(POLL_MS, Math.max(0, deadline - Date.now()));
-      if (sleepMs > 0) await new Promise((r) => setTimeout(r, sleepMs));
+      if (sleepMs > 0) await sleep(sleepMs, this._client._getAbortSignal?.());
     }
   }
 
@@ -840,7 +843,7 @@ export class ElementHandle {
         );
       }
       const sleepMs = Math.min(POLL_MS, Math.max(0, deadline - Date.now()));
-      if (sleepMs > 0) await new Promise((r) => setTimeout(r, sleepMs));
+      if (sleepMs > 0) await sleep(sleepMs, this._client._getAbortSignal?.());
     }
   }
 
@@ -1025,7 +1028,7 @@ export class ElementHandle {
           );
         }
         const sleepMs = Math.min(POLL_MS, Math.max(0, deadline - Date.now()));
-        if (sleepMs > 0) await new Promise((r) => setTimeout(r, sleepMs));
+        if (sleepMs > 0) await sleep(sleepMs, this._client._getAbortSignal?.());
       }
     } catch (err) {
       await this._traceQueryFailed(`waitFor(${state})`, err, Date.now() - start);
@@ -1227,7 +1230,7 @@ export class ElementHandle {
     // Poll for the state change until the full deadline — animations
     // and state propagation can take several frames.
     while (Date.now() < deadline) {
-      await new Promise((r) => setTimeout(r, POLL_MS));
+      await sleep(POLL_MS, this._client._getAbortSignal?.());
       try {
         const after = await this._resolveOne();
         if (after.checked === checked) return; // State changed successfully
@@ -1388,7 +1391,7 @@ export class ElementHandle {
             if (i > 0) {
               let lastY = el.bounds?.top;
               for (let s = 0; s < 10; s++) {
-                await new Promise((r) => setTimeout(r, 100));
+                await sleep(100, this._client._getAbortSignal?.());
                 const probe = await this._client.findElement(this._selector, 500);
                 const curY = probe.element?.bounds?.top;
                 if (curY !== undefined && curY === lastY) break;
@@ -1423,7 +1426,7 @@ export class ElementHandle {
           if (!swipeRes.success) {
             throw new Error(swipeRes.errorMessage || 'Swipe failed during scrollIntoView');
           }
-          await new Promise((resolve) => setTimeout(resolve, SCROLL_SETTLE_MS));
+          await sleep(SCROLL_SETTLE_MS, this._client._getAbortSignal?.());
         }
       }
 

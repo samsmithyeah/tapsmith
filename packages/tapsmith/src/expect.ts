@@ -49,6 +49,9 @@ async function poll(
   const target = !negated; // true = want check() to be true; false = want false
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
+    // On user stop (PILOT-222) each tick's RPC rejects with TestAbortedError,
+    // which propagates out of the loop (see resolveTick); the only residual
+    // latency is one POLL_INTERVAL_MS sleep.
     const value = await check();
     if (value === target) return value;
     await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS));

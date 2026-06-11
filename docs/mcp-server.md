@@ -231,7 +231,9 @@ Returns a summary with counts, then per-test results including status, full name
 
 #### `tapsmith_stop_tests`
 
-Stop the currently running test execution. Works whether the run was started by the agent or by the user in the UI.
+Stop the currently running test execution and report the outcome. Works whether the run was started by the agent or by the user in the UI.
+
+The stop takes effect immediately: the in-flight device command is cancelled and the current test is recorded as interrupted (`Stopped by user`) rather than riding out its timeout. A worker that fails to stop within a grace period is force-killed and respawned for the next run. The response reports the actual result (`Run stopped: X passed, Y failed, Z skipped, N interrupted`); partial results from the stopped run remain available via `tapsmith_list_results`.
 
 No parameters.
 
