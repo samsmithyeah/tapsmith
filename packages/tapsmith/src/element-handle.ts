@@ -26,7 +26,7 @@ import type { TapsmithGrpcClient, ElementInfo, ActionResponse } from './grpc-cli
 import { type TraceCapture, extractStack } from './trace/trace-collector.js';
 import type { ActionCategory } from './trace/types.js';
 import { tracedAction } from './trace/traced-action.js';
-import { sleep } from './abort.js';
+import { sleep, isAbortError } from './abort.js';
 
 // ─── Public types ───
 
@@ -144,9 +144,9 @@ function boundsContain(
 function isPollableNotFoundError(err: unknown): boolean {
   // A strict mode violation means the selector DID resolve — to too many
   // elements. Retrying cannot fix ambiguity; it must propagate immediately.
-  // Likewise TestAbortedError (user stop, PILOT-222) falls through the
-  // message checks below and propagates — poll loops must not retry it.
   if (isStrictModeViolation(err)) return false;
+  // A user stop (PILOT-222) must propagate — poll loops never retry it.
+  if (isAbortError(err)) return false;
   if (!(err instanceof Error)) return false;
   const msg = err.message;
   return msg.startsWith('Element not found:') || msg.startsWith('nth(');

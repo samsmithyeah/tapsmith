@@ -1920,13 +1920,34 @@ export async function startUIServer(
         if (worker.retired) return;
         worker.retired = true;
         const inFlightFile = worker.currentFile;
+        const inFlightTest = worker.currentTest;
         worker.currentFile = undefined;
+        worker.currentTest = undefined;
         worker.busy = false;
         broadcastWorkerStatus(worker, 'error');
 
-        if (inFlightFile && !parallelRunAborted) {
+        if (inFlightFile && parallelRunAborted) {
           // During a user stop the file isn't coming back — don't requeue it
-          // or log a misleading "Requeueing" line.
+          // or log a misleading "Requeueing" line. Whatever was running when
+          // the worker died (SIGKILL escalation, worker error, unexpected
+          // exit) is recorded as interrupted so it doesn't linger as
+          // 'running' and the run-end counts stay honest.
+          if (inFlightTest) {
+            updateTestStatus(
+              inFlightTest,
+              inFlightFile.filePath,
+              'failed',
+              undefined,
+              'Interrupted: stopped by user',
+              undefined,
+              undefined,
+              worker.id,
+              inFlightFile.projectName,
+            );
+            interruptedCount++;
+          }
+          broadcastFileStatus(inFlightFile.filePath, 'done', inFlightFile.projectName);
+        } else if (inFlightFile) {
           fileQueue.unshift(inFlightFile);
           console.error(`${YELLOW}Worker ${worker.id} (${worker.deviceSerial}) became unavailable: ${reason}. Requeueing ${path.basename(inFlightFile.filePath)}.${RESET}`);
         }
@@ -2296,10 +2317,10 @@ export async function startUIServer(
   /**
    * Escalation backstop (PILOT-222): a worker that hasn't drained within the
    * grace period is wedged (e.g. blocked event loop, hung native call) — the
-   * cooperative abort can never land. SIGKILL it, record its in-flight test
-   * as interrupted, and let the existing exit handler → retireWorker →
-   * maybeResolve path settle the run. ensureWorkersReady() respawns retired
-   * workers at the start of the next run.
+   * cooperative abort can never land. SIGKILL it; the exit handler →
+   * retireWorker path records its in-flight test as interrupted and settles
+   * the run via maybeResolve. ensureWorkersReady() respawns retired workers
+   * at the start of the next run.
    */
   function escalateStop(): void {
     stopEscalationTimer = null;
@@ -2309,23 +2330,6 @@ export async function startUIServer(
     for (const worker of uiWorkers) {
       if (worker.retired || !worker.busy) continue;
       killedAny = true;
-      if (worker.currentTest && worker.currentFile) {
-        updateTestStatus(
-          worker.currentTest,
-          worker.currentFile.filePath,
-          'failed',
-          undefined,
-          'Interrupted: stopped by user',
-          undefined,
-          undefined,
-          worker.id,
-          worker.currentFile.projectName,
-        );
-        interruptedCount++;
-      }
-      if (worker.currentFile) {
-        broadcastFileStatus(worker.currentFile.filePath, 'done', worker.currentFile.projectName);
-      }
       console.error(`${YELLOW}Worker ${worker.id} (${worker.deviceSerial}) did not stop within ${STOP_GRACE_MS}ms — force-killing.${RESET}`);
       try { worker.process.kill('SIGKILL'); } catch { /* already dead */ }
     }
