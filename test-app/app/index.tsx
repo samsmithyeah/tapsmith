@@ -20,6 +20,7 @@ const screens = [
   { href: "/accessibility", label: "Accessibility", description: "Roles, labels, descriptions" },
   { href: "/permissions", label: "Permissions", description: "Runtime permission requests" },
   { href: "/clipboard", label: "Clipboard", description: "Copy and paste" },
+  { href: "/keychain", label: "Keychain", description: "Secure storage (keychain/keystore)" },
   { href: "/slow-load", label: "Slow Load", description: "Simulated loading delays" },
   { href: "/scroll", label: "Scroll", description: "Nested scrollable containers" },
   { href: "/api-calls", label: "API Calls", description: "Real HTTP requests to a test API" },

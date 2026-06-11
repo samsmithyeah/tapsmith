@@ -944,6 +944,293 @@ pub async fn clear_container(container_path: &str) -> Result<()> {
     Ok(())
 }
 
+// ─── Simulator Keychain Helpers ───
+
+/// File names making up the simulator's device-level keychain SQLite database.
+/// The db is in WAL mode — the three files must be copied together as a set,
+/// otherwise a stale `-wal` can replay old transactions over the restored db.
+pub const SIM_KEYCHAIN_FILES: [&str; 3] = [
+    "keychain-2-debug.db",
+    "keychain-2-debug.db-wal",
+    "keychain-2-debug.db-shm",
+];
+
+/// launchctl service target for the simulator's securityd. The same on the
+/// iOS runtimes we've tested; `restart_securityd` falls back to discovery if
+/// it ever drifts.
+const SECURITYD_LABEL: &str = "system/com.apple.securityd";
+
+/// Reserved archive member that carries keychain state inside app-state
+/// archives. Dot-prefixed so an old daemon that extracts it into the app
+/// container can't collide with real app data.
+pub const KEYCHAIN_ARCHIVE_MEMBER: &str = ".tapsmith-keychain";
+
+/// Escape hatch: set `TAPSMITH_NO_KEYCHAIN_STATE=1` to disable all keychain
+/// capture/restore/clear behavior on simulators.
+pub fn keychain_state_disabled() -> bool {
+    std::env::var("TAPSMITH_NO_KEYCHAIN_STATE").is_ok_and(|v| !v.is_empty() && v != "0")
+}
+
+/// Derive the simulator's device-level keychain directory from an app data
+/// container path:
+/// `…/Devices/<UDID>/data/Containers/Data/Application/<UUID>` →
+/// `…/Devices/<UDID>/data/Library/Keychains`.
+///
+/// Deriving from the container path (rather than hardcoding
+/// `~/Library/Developer/CoreSimulator`) keeps this correct for custom
+/// device-set locations (`simctl --set`).
+pub fn simulator_keychain_dir(container_path: &str) -> Option<PathBuf> {
+    // rfind: match the LAST occurrence, so a username or parent directory
+    // that happens to contain "/data/Containers/" can't shadow the real
+    // container segment closest to the path tail.
+    let idx = container_path.rfind("/data/Containers/")?;
+    let device_data_root = &container_path[..idx + "/data".len()];
+    Some(PathBuf::from(device_data_root).join("Library/Keychains"))
+}
+
+/// Returns true when a `tar tzf` listing contains the reserved keychain
+/// member. bsdtar prints members as `./.tapsmith-keychain/…`; tolerate the
+/// un-prefixed form too.
+pub fn archive_has_keychain_member(listing: &str) -> bool {
+    listing.lines().any(|line| {
+        let line = line.trim();
+        let stripped = line.strip_prefix("./").unwrap_or(line);
+        stripped == KEYCHAIN_ARCHIVE_MEMBER
+            || stripped.starts_with(&format!("{KEYCHAIN_ARCHIVE_MEMBER}/"))
+    })
+}
+
+/// Copy whichever of the keychain db files exist into `dest_dir` (created if
+/// needed). Returns the number of files copied; 0 means there is no keychain
+/// state to capture and the caller should skip the archive member entirely.
+#[instrument(skip_all)]
+pub async fn stage_keychain_files(
+    keychain_dir: &std::path::Path,
+    dest_dir: &std::path::Path,
+) -> Result<usize> {
+    tokio::fs::create_dir_all(dest_dir)
+        .await
+        .context("Failed to create keychain staging dir")?;
+    let mut copied = 0;
+    for name in SIM_KEYCHAIN_FILES {
+        let src = keychain_dir.join(name);
+        if tokio::fs::try_exists(&src).await.unwrap_or(false) {
+            tokio::fs::copy(&src, dest_dir.join(name))
+                .await
+                .with_context(|| format!("Failed to copy keychain file {name}"))?;
+            copied += 1;
+        }
+    }
+    debug!(copied, "Staged simulator keychain files");
+    Ok(copied)
+}
+
+/// Overwrite the simulator's keychain from `src_dir`: copy the db (plus
+/// `-wal`/`-shm` when present in src, deleting stale ones in the destination
+/// when absent), then restart securityd so it re-reads the swapped db.
+#[instrument(skip_all, fields(udid))]
+pub async fn swap_keychain_files(
+    udid: &str,
+    keychain_dir: &std::path::Path,
+    src_dir: &std::path::Path,
+) -> Result<()> {
+    let db_src = src_dir.join(SIM_KEYCHAIN_FILES[0]);
+    if !tokio::fs::try_exists(&db_src).await.unwrap_or(false) {
+        bail!(
+            "Keychain archive member is missing {} — archive may be corrupt",
+            SIM_KEYCHAIN_FILES[0]
+        );
+    }
+    tokio::fs::create_dir_all(keychain_dir)
+        .await
+        .context("Failed to create simulator keychain dir")?;
+
+    // Replace each file atomically *while securityd is still running*. On Unix
+    // a rename/unlink doesn't disturb an already-open fd, so the live securityd
+    // keeps reading the old inode (a consistent old db) throughout — it can
+    // never observe a half-written one. We copy into a `.tmp` sibling (securityd
+    // ignores unknown filenames) then rename it into place. Only after all the
+    // files are swapped does `restart_securityd` (`kickstart -k`) replace the
+    // process, so the fresh securityd opens the new, complete set by name.
+    // (Killing first would be worse: launchd respawns securityd almost
+    // immediately and a respawn mid-swap could open a mismatched db/-wal pair.)
+    //
+    // Stage every file into a `.tmp` sibling first, and only rename them into
+    // place once ALL copies have succeeded. If a copy fails partway, remove the
+    // temps and abort with the live keychain untouched, so a failed restore can
+    // never install a mismatched db/-wal/-shm set.
+    let mut staged: Vec<(PathBuf, PathBuf)> = Vec::new();
+    let mut stale: Vec<PathBuf> = Vec::new();
+    for name in SIM_KEYCHAIN_FILES {
+        let src = src_dir.join(name);
+        let dest = keychain_dir.join(name);
+        if tokio::fs::try_exists(&src).await.unwrap_or(false) {
+            let tmp = keychain_dir.join(format!("{name}.tapsmith-tmp"));
+            if let Err(e) = tokio::fs::copy(&src, &tmp).await {
+                for (t, _) in &staged {
+                    let _ = tokio::fs::remove_file(t).await;
+                }
+                return Err(e).with_context(|| format!("Failed to stage keychain file {name}"));
+            }
+            staged.push((tmp, dest));
+        } else if tokio::fs::try_exists(&dest).await.unwrap_or(false) {
+            // src lacks this file (e.g. no -wal/-shm) — drop the stale dest so
+            // a leftover WAL can't replay old transactions over the restored db.
+            stale.push(dest);
+        }
+    }
+    for (tmp, dest) in staged {
+        tokio::fs::rename(&tmp, &dest)
+            .await
+            .with_context(|| format!("Failed to install keychain file {}", dest.display()))?;
+    }
+    for dest in stale {
+        tokio::fs::remove_file(&dest)
+            .await
+            .with_context(|| format!("Failed to remove stale keychain file {}", dest.display()))?;
+    }
+    restart_securityd(udid).await?;
+    info!(udid, "Simulator keychain restored");
+    Ok(())
+}
+
+/// Delete the simulator's keychain db files, then restart securityd so it
+/// recreates a fresh, empty keychain. Device-global: clears keychain items
+/// for every app on the simulator.
+#[instrument(skip_all, fields(udid))]
+pub async fn clear_keychain(udid: &str, keychain_dir: &std::path::Path) -> Result<()> {
+    // Unlink the db files *while securityd is still running*: its open fds keep
+    // the old inodes alive (any final flush lands there and is discarded when
+    // the process dies), so the delete can't race a respawn. Then restart so a
+    // fresh securityd opens the db by name, finds nothing, and recreates an
+    // empty keychain.
+    let mut removed = 0;
+    for name in SIM_KEYCHAIN_FILES {
+        let path = keychain_dir.join(name);
+        if tokio::fs::try_exists(&path).await.unwrap_or(false) {
+            tokio::fs::remove_file(&path)
+                .await
+                .with_context(|| format!("Failed to delete keychain file {name}"))?;
+            removed += 1;
+        }
+    }
+    if removed == 0 {
+        debug!(udid, "No simulator keychain files to clear");
+        return Ok(());
+    }
+    restart_securityd(udid).await?;
+    info!(udid, "Simulator keychain cleared");
+    Ok(())
+}
+
+/// Restart securityd inside the simulator so it re-reads the keychain db
+/// from disk. securityd holds the db open; without this, file-level swaps
+/// are ignored (or torn) until the daemon next reads it.
+#[instrument]
+pub async fn restart_securityd(udid: &str) -> Result<()> {
+    const KNOWN_LABEL: &str = SECURITYD_LABEL;
+
+    let kickstart = |label: String| async move {
+        Command::new("xcrun")
+            .args([
+                "simctl",
+                "spawn",
+                udid,
+                "launchctl",
+                "kickstart",
+                "-k",
+                &label,
+            ])
+            .output()
+            .await
+            .context("Failed to run launchctl kickstart")
+    };
+
+    // Track the label actually kickstarted so the readiness probe below
+    // queries the right one even when the label drifted.
+    let mut active_label = KNOWN_LABEL.to_string();
+    let output = kickstart(active_label.clone()).await?;
+    if !output.status.success() {
+        // Label drift across iOS runtimes: discover the actual securityd
+        // label from launchctl and retry once.
+        let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+        let discovered = discover_securityd_label(udid).await;
+        let Some(label) = discovered else {
+            bail!("launchctl kickstart {KNOWN_LABEL} failed ({stderr}) and no securityd service found via launchctl print system");
+        };
+        // Use the discovered label as-is when it already carries a domain
+        // (`user/501/...`); only bare labels need the default `system/` domain.
+        active_label = if label.contains('/') {
+            label
+        } else {
+            format!("system/{label}")
+        };
+        let retry = kickstart(active_label.clone()).await?;
+        if !retry.status.success() {
+            let retry_stderr = String::from_utf8_lossy(&retry.stderr);
+            bail!("launchctl kickstart failed for both {KNOWN_LABEL} ({stderr}) and {active_label} ({retry_stderr})");
+        }
+    }
+
+    // Wait for securityd to come back up before the app is relaunched, so
+    // keychain reads don't race the restart. launchctl print exits non-zero
+    // while the service is still respawning.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        let probe = Command::new("xcrun")
+            .args(["simctl", "spawn", udid, "launchctl", "print", &active_label])
+            .output()
+            .await;
+        if let Ok(out) = probe {
+            let stdout = String::from_utf8_lossy(&out.stdout);
+            if out.status.success() && stdout.contains("state = running") {
+                break;
+            }
+        }
+        if std::time::Instant::now() >= deadline {
+            debug!(
+                udid,
+                "securityd did not report running within 5s; continuing"
+            );
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    }
+    debug!(udid, "securityd restarted");
+    Ok(())
+}
+
+/// Parse `launchctl print system` output for a securityd service label,
+/// returning it *with* any domain prefix (e.g. `system/com.apple.securityd`
+/// or `user/501/com.apple.securityd`) so the caller can target the right
+/// domain. The label appears in different positions depending on the section
+/// (`<pid> <status> com.apple.securityd` in the services list, or
+/// `<domain>/com.apple.securityd = {` in an endpoints block), so scan every
+/// token. Tokens that are absolute paths (e.g. the daemon's `.plist` path,
+/// which also contains `com.apple.securityd`) start with `/` and are skipped.
+async fn discover_securityd_label(udid: &str) -> Option<String> {
+    let output = Command::new("xcrun")
+        .args(["simctl", "spawn", udid, "launchctl", "print", "system"])
+        .output()
+        .await
+        .ok()?;
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    parse_securityd_label(&stdout)
+}
+
+fn parse_securityd_label(listing: &str) -> Option<String> {
+    listing
+        .split_whitespace()
+        .find(|token| token.contains("com.apple.securityd") && !token.starts_with('/'))
+        .map(|token| {
+            token
+                .trim_matches(|c: char| {
+                    !c.is_alphanumeric() && c != '.' && c != '-' && c != '_' && c != '/'
+                })
+                .to_string()
+        })
+}
+
 // ─── Network Proxy Helpers ───
 
 /// Install a CA certificate on the iOS simulator for MITM HTTPS interception.
@@ -994,6 +1281,94 @@ pub async fn clear_app_data(udid: &str, bundle_id: &str, app_path: Option<&str>)
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn keychain_dir_derived_from_standard_container_path() {
+        let container = "/Users/sam/Library/Developer/CoreSimulator/Devices/ABC-123/data/Containers/Data/Application/DEF-456";
+        assert_eq!(
+            simulator_keychain_dir(container),
+            Some(PathBuf::from(
+                "/Users/sam/Library/Developer/CoreSimulator/Devices/ABC-123/data/Library/Keychains"
+            ))
+        );
+    }
+
+    #[test]
+    fn keychain_dir_derived_from_custom_device_set() {
+        let container = "/tmp/custom-set/Devices/ABC-123/data/Containers/Data/Application/DEF-456";
+        assert_eq!(
+            simulator_keychain_dir(container),
+            Some(PathBuf::from(
+                "/tmp/custom-set/Devices/ABC-123/data/Library/Keychains"
+            ))
+        );
+    }
+
+    #[test]
+    fn keychain_dir_rejects_unrecognized_path() {
+        assert_eq!(simulator_keychain_dir("/some/random/path"), None);
+        assert_eq!(simulator_keychain_dir(""), None);
+    }
+
+    #[test]
+    fn keychain_member_detected_in_tar_listing() {
+        let listing =
+            "./\n./Documents/\n./.tapsmith-keychain/\n./.tapsmith-keychain/keychain-2-debug.db\n";
+        assert!(archive_has_keychain_member(listing));
+        // bsdtar sometimes omits the ./ prefix
+        let listing = ".tapsmith-keychain/keychain-2-debug.db\n";
+        assert!(archive_has_keychain_member(listing));
+    }
+
+    #[test]
+    fn securityd_label_parsed_from_various_formats() {
+        // Services-list format: <pid> <status> <label> (no domain prefix)
+        assert_eq!(
+            parse_securityd_label("\t58242\t0\tcom.apple.securityd\n"),
+            Some("com.apple.securityd".to_string())
+        );
+        // Endpoints-block format: <domain>/<label> = { — prefix preserved
+        assert_eq!(
+            parse_securityd_label("    system/com.apple.securityd = {\n"),
+            Some("system/com.apple.securityd".to_string())
+        );
+        // user domain prefix preserved (so restart targets the right domain)
+        assert_eq!(
+            parse_securityd_label("user/501/com.apple.securityd = {"),
+            Some("user/501/com.apple.securityd".to_string())
+        );
+        // Absolute paths that merely contain the label (e.g. the .plist path)
+        // must not be mistaken for the service target.
+        assert_eq!(
+            parse_securityd_label(
+                "\tpath = /System/Library/LaunchDaemons/com.apple.securityd.plist\n"
+            ),
+            None
+        );
+        assert_eq!(parse_securityd_label("no match here\n"), None);
+    }
+
+    #[test]
+    fn keychain_dir_uses_last_data_containers_segment() {
+        // A parent dir containing the marker must not shadow the real one.
+        let container = "/Users/data/Containers/x/Developer/CoreSimulator/Devices/UDID/data/Containers/Data/Application/APP";
+        assert_eq!(
+            simulator_keychain_dir(container),
+            Some(PathBuf::from(
+                "/Users/data/Containers/x/Developer/CoreSimulator/Devices/UDID/data/Library/Keychains"
+            ))
+        );
+    }
+
+    #[test]
+    fn keychain_member_absent_in_old_archives() {
+        let listing = "./\n./Documents/\n./Library/\n./Library/Preferences/app.plist\n";
+        assert!(!archive_has_keychain_member(listing));
+        // A user file that merely contains the name elsewhere must not match
+        assert!(!archive_has_keychain_member(
+            "./Documents/notes-about-.tapsmith-keychain.txt\n"
+        ));
+    }
 
     #[test]
     fn retryable_open_url_error_matches_simctl_timeout() {
