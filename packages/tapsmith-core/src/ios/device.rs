@@ -1041,25 +1041,40 @@ pub async fn swap_keychain_files(
             SIM_KEYCHAIN_FILES[0]
         );
     }
-    // Stop securityd before touching the files: it holds the db open, so
-    // overwriting it underneath a live securityd risks a torn read or, worse,
-    // securityd flushing stale in-memory state back over the files we just
-    // restored. SIGKILL (not a graceful restart) so it can't flush on the way
-    // out. The kickstart -k in restart_securityd then forces a fresh process
-    // that reads the swapped db from disk — even if launchd respawned one
-    // mid-copy with a stale view.
-    kill_securityd(udid).await;
     tokio::fs::create_dir_all(keychain_dir)
         .await
         .context("Failed to create simulator keychain dir")?;
+
+    // securityd holds the db open and launchd respawns it almost immediately
+    // after a kill, so a plain copy-in-place risks a respawned securityd
+    // observing a half-written db. Instead: (1) copy into `.tmp` siblings
+    // while securityd is still up (it ignores unknown filenames), (2) SIGKILL
+    // securityd so it can't flush stale state on the way out, (3) atomically
+    // rename each `.tmp` into place — rename is atomic on the same filesystem,
+    // so the db is never visible partially written. The kickstart -k in
+    // restart_securityd then forces a fresh process to read the swapped db.
     for name in SIM_KEYCHAIN_FILES {
         let src = src_dir.join(name);
-        let dest = keychain_dir.join(name);
         if tokio::fs::try_exists(&src).await.unwrap_or(false) {
-            tokio::fs::copy(&src, &dest)
+            let tmp = keychain_dir.join(format!("{name}.tapsmith-tmp"));
+            tokio::fs::copy(&src, &tmp)
                 .await
-                .with_context(|| format!("Failed to restore keychain file {name}"))?;
+                .with_context(|| format!("Failed to stage keychain file {name}"))?;
+        }
+    }
+
+    kill_securityd(udid).await;
+
+    for name in SIM_KEYCHAIN_FILES {
+        let dest = keychain_dir.join(name);
+        let tmp = keychain_dir.join(format!("{name}.tapsmith-tmp"));
+        if tokio::fs::try_exists(&tmp).await.unwrap_or(false) {
+            tokio::fs::rename(&tmp, &dest)
+                .await
+                .with_context(|| format!("Failed to install keychain file {name}"))?;
         } else if tokio::fs::try_exists(&dest).await.unwrap_or(false) {
+            // src lacks this file (e.g. no -wal/-shm) — drop the stale dest so
+            // a leftover WAL can't replay old transactions over the restored db.
             tokio::fs::remove_file(&dest)
                 .await
                 .with_context(|| format!("Failed to remove stale keychain file {name}"))?;
