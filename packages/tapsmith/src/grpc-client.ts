@@ -484,12 +484,14 @@ export class TapsmithGrpcClient {
     serial: string,
     networkTracingEnabled = false,
     networkHosts: string[] = [],
+    passthroughHosts: string[] = [],
   ): Promise<ActionResponse> {
     return this.call<ActionResponse>('setDevice', {
       requestId: requestId(),
       serial,
       networkTracingEnabled,
       networkHosts,
+      passthroughHosts,
     }, 120_000);
   }
 

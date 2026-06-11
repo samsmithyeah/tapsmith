@@ -13,7 +13,11 @@
 //!   proceeds with MITM interception. Used by iOS simulators and Android.
 //!
 //! For HTTPS, performs MITM interception using per-host certificates signed by
-//! the Tapsmith CA to decrypt and capture request/response content.
+//! the Tapsmith CA to decrypt and capture request/response content. The MITM
+//! engine speaks HTTP/1.1 only; TLS connections that cannot be downgraded —
+//! HTTP/2-only ALPN offers (gRPC, Firestore) or hosts listed in
+//! `trace.networkPassthroughHosts` (certificate pinning) — are tunneled
+//! end-to-end without interception instead of being dropped (PILOT-231).
 
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -62,7 +66,10 @@ pub struct CapturedEntry {
     pub response_body: Vec<u8>,
     pub is_https: bool,
     /// How this request was handled by a route: "mocked", "aborted",
-    /// "continued", "fetched", or "" (no route matched / passthrough).
+    /// "continued", "fetched", or "" (no route matched). The special value
+    /// "passthrough" marks a synthetic per-connection entry for TLS traffic
+    /// tunneled without MITM (h2-only ALPN or `trace.networkPassthroughHosts`)
+    /// — no request/response detail is available for those.
     pub route_action: String,
 }
 
@@ -219,6 +226,14 @@ pub(crate) struct ProxyState {
     /// `trace.networkHosts` in tapsmith.config.ts and kept up-to-date by
     /// `NetworkProxy::set_network_hosts`. Empty = route everything.
     network_hosts: Vec<String>,
+    /// Pre-compiled glob patterns (see [`compile_host_glob`]) for hosts whose
+    /// TLS connections are tunneled end-to-end instead of MITM'd (no capture,
+    /// no routing — the app talks to the real server). Sourced from the
+    /// user's `trace.networkPassthroughHosts` and kept up-to-date by
+    /// `NetworkProxy::set_passthrough_hosts`. Useful for cert-pinned hosts.
+    /// Matched against the ClientHello SNI. Empty = no host-based passthrough
+    /// (ALPN-based h2 passthrough still applies).
+    passthrough_hosts: Vec<regex::Regex>,
 }
 
 /// Handle to the running proxy. Dropping it stops the proxy.
@@ -260,17 +275,21 @@ impl NetworkProxy {
 
         let mut root_store = rustls::RootCertStore::empty();
         root_store.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
-        let tls_client_config = Arc::new(
-            ClientConfig::builder()
-                .with_root_certificates(root_store)
-                .with_no_client_auth(),
-        );
+        let mut tls_client_config = ClientConfig::builder()
+            .with_root_certificates(root_store)
+            .with_no_client_auth();
+        // The proxy re-serializes everything as HTTP/1.1, so make that
+        // explicit to upstream servers rather than relying on their
+        // no-ALPN default.
+        tls_client_config.alpn_protocols = vec![b"http/1.1".to_vec()];
+        let tls_client_config = Arc::new(tls_client_config);
 
         let state = Arc::new(Mutex::new(ProxyState {
             entries: Vec::new(),
             tls_client_config,
             handler: None,
             network_hosts: Vec::new(),
+            passthrough_hosts: Vec::new(),
         }));
 
         let (shutdown_tx, mut shutdown_rx) = tokio::sync::oneshot::channel::<()>();
@@ -334,6 +353,28 @@ impl NetworkProxy {
     pub async fn set_network_hosts(&self, hosts: Vec<String>) {
         let mut state = self.state.lock().await;
         state.network_hosts = hosts;
+    }
+
+    /// Update the host-glob passthrough list (`trace.networkPassthroughHosts`).
+    /// TLS connections whose SNI matches any of these globs are tunneled
+    /// end-to-end without MITM — no capture, no routing — so cert-pinned
+    /// hosts keep working during tests. Globs are compiled to regexes here,
+    /// once, so per-connection matching stays cheap. Safe to call while the
+    /// proxy is serving traffic; applies to connections accepted after the
+    /// call.
+    pub async fn set_passthrough_hosts(&self, hosts: Vec<String>) {
+        let compiled = hosts
+            .iter()
+            .filter_map(|pattern| {
+                let re = compile_host_glob(pattern);
+                if re.is_none() {
+                    warn!(%pattern, "Ignoring invalid networkPassthroughHosts pattern");
+                }
+                re
+            })
+            .collect();
+        let mut state = self.state.lock().await;
+        state.passthrough_hosts = compiled;
     }
 
     /// Set a [`NetworkHandler`] implementation on the proxy. Requests
@@ -599,11 +640,16 @@ fn parse_host_header(header: &str) -> Option<(String, u16)> {
 
 /// Handle HTTP CONNECT with MITM TLS interception.
 ///
-/// We establish the client-side TLS tunnel before dialing upstream. This keeps
-/// `waitForRequest()` and `route.fulfill()` independent from transient upstream
-/// DNS/connectivity stalls: once the app has sent the decrypted HTTP request,
-/// the proxy can emit the request event or synthesize a route response without
-/// waiting for the real server.
+/// After acknowledging the tunnel, delegates to [`handle_transparent_tls`]:
+/// same SNI fallback (the CONNECT host when the ClientHello has no SNI),
+/// same upstream resolution (the CONNECT host:port), and — critically — the
+/// same ALPN/host-based passthrough decision (PILOT-231).
+///
+/// The shared path establishes the client-side TLS session before dialing
+/// upstream. This keeps `waitForRequest()` and `route.fulfill()` independent
+/// from transient upstream DNS/connectivity stalls: once the app has sent
+/// the decrypted HTTP request, the proxy can emit the request event or
+/// synthesize a route response without waiting for the real server.
 async fn handle_connect(
     mut client: TcpStream,
     target: &str,
@@ -621,47 +667,7 @@ async fn handle_connect(
         return;
     }
 
-    let start = match tokio::time::timeout(
-        CLIENT_READ_TIMEOUT,
-        tokio_rustls::LazyConfigAcceptor::new(rustls::server::Acceptor::default(), client),
-    )
-    .await
-    {
-        Ok(Ok(s)) => s,
-        Ok(Err(e)) => {
-            debug!("CONNECT failed reading TLS ClientHello for {target}: {e}");
-            return;
-        }
-        Err(_) => {
-            debug!("CONNECT timed out reading TLS ClientHello for {target}");
-            return;
-        }
-    };
-
-    let hostname = start
-        .client_hello()
-        .server_name()
-        .map(|s| s.to_string())
-        .unwrap_or_else(|| connect_host.clone());
-
-    let server_config = match mitm_ca.server_config_for_host(&hostname).await {
-        Ok(cfg) => cfg,
-        Err(e) => {
-            debug!("Failed to generate MITM cert for {hostname}: {e}");
-            return;
-        }
-    };
-
-    let client_tls = match start.into_stream(server_config).await {
-        Ok(s) => s,
-        Err(e) => {
-            debug!("TLS handshake with client for {hostname} failed: {e}");
-            return;
-        }
-    };
-
-    handle_mitm_https_lazy_upstream(client_tls, &hostname, &connect_host, connect_port, state)
-        .await;
+    handle_transparent_tls(client, connect_host, connect_port, state, mitm_ca).await;
 }
 
 fn parse_connect_target(target: &str) -> (String, u16) {
@@ -2325,12 +2331,11 @@ async fn dial_upstream(dst_host: &str, dst_port: u16) -> Option<TcpStream> {
 /// with `0x16 0x03 0x0?` (Handshake ContentType + SSL 3.0 / TLS 1.x major
 /// version + minor version 0..=4), which can't appear at the start of a
 /// valid HTTP request (whose first byte is always an ASCII method letter >
-/// `0x40`). If the prefix matches, we run [`tokio_rustls::LazyConfigAcceptor`]
-/// to lazily parse the client's `ClientHello`, extract the **real hostname
-/// from the SNI extension**, and use that as the upstream `ServerName` +
-/// the per-host MITM cert CN. The client handshake is then resumed via
-/// [`tokio_rustls::StartHandshake::into_stream`]. Plain HTTP flows pass
-/// through to [`handle_mitm_http`] directly (no SNI needed).
+/// `0x40`). If the prefix matches, [`handle_transparent_tls`] parses the
+/// client's `ClientHello`, extracts the **real hostname from the SNI
+/// extension** (upstream `ServerName` + per-host MITM cert CN), and decides
+/// between MITM interception and end-to-end passthrough (PILOT-231). Plain
+/// HTTP flows pass through to [`handle_mitm_http`] directly (no SNI needed).
 #[cfg(target_os = "macos")]
 pub(crate) async fn handle_transparent_tcp<S>(
     mut client: S,
@@ -2387,11 +2392,220 @@ pub(crate) async fn handle_transparent_tcp<S>(
     }
 }
 
-/// Lazily read the client's TLS `ClientHello`, extract SNI, dial upstream
-/// with the real hostname as SNI, mint a matching cert, resume the client
-/// handshake, and hand both decrypted streams to [`handle_mitm_http`].
+/// Result of reading a TLS `ClientHello` off a client stream while recording
+/// every byte read, so the connection can either be MITM'd (replay the
+/// recorded bytes into a [`tokio_rustls::LazyConfigAcceptor`] via
+/// [`PrefixedStream`]) or tunneled upstream untouched (replay the recorded
+/// bytes to the origin).
+struct ClientHelloInfo {
+    /// Every byte read from the client so far. May extend past the end of
+    /// the ClientHello if the client pipelined data into the same read;
+    /// replaying the whole buffer preserves fidelity in both the MITM and
+    /// tunnel cases.
+    recorded: Vec<u8>,
+    sni: Option<String>,
+    /// ALPN protocols offered by the client, in client preference order.
+    /// Empty when the client sent no ALPN extension.
+    alpn: Vec<Vec<u8>>,
+}
+
+/// Upper bound on bytes buffered while waiting for a complete ClientHello.
+/// A TLS record is at most ~16 KiB; even a multi-record hello fits well
+/// under this. Anything larger is not a ClientHello.
+const MAX_CLIENT_HELLO_SIZE: usize = 65536;
+
+/// Read a complete TLS `ClientHello` from `stream`, recording the raw bytes
+/// consumed. Drives [`rustls::server::Acceptor`] manually because
+/// `tokio_rustls::StartHandshake` cannot return the underlying IO — and we
+/// must be able to hand the untouched byte stream to a passthrough tunnel.
+async fn read_client_hello<S>(stream: &mut S) -> std::io::Result<ClientHelloInfo>
+where
+    S: AsyncRead + Unpin,
+{
+    let mut acceptor = rustls::server::Acceptor::default();
+    let mut recorded = Vec::new();
+    let mut chunk = [0u8; 8192];
+    loop {
+        let n = stream.read(&mut chunk).await?;
+        if n == 0 {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::UnexpectedEof,
+                "client closed before completing ClientHello",
+            ));
+        }
+        recorded.extend_from_slice(&chunk[..n]);
+        if recorded.len() > MAX_CLIENT_HELLO_SIZE {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "TLS ClientHello exceeds maximum size",
+            ));
+        }
+        // Feed the entire chunk to the acceptor. `read_tls` may not consume
+        // the whole slice in one call, so loop until it has.
+        let mut cursor: &[u8] = &chunk[..n];
+        while !cursor.is_empty() {
+            let consumed = acceptor.read_tls(&mut cursor)?;
+            if consumed == 0 {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "TLS acceptor refused ClientHello bytes",
+                ));
+            }
+            match acceptor.accept() {
+                Ok(Some(accepted)) => {
+                    let hello = accepted.client_hello();
+                    let sni = hello.server_name().map(|s| s.to_string());
+                    let alpn = hello
+                        .alpn()
+                        .map(|it| it.map(|p| p.to_vec()).collect())
+                        .unwrap_or_default();
+                    return Ok(ClientHelloInfo {
+                        recorded,
+                        sni,
+                        alpn,
+                    });
+                }
+                Ok(None) => {} // need more bytes
+                Err((e, _alert)) => {
+                    return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, e));
+                }
+            }
+        }
+    }
+}
+
+/// Whether a connection must bypass MITM based on the client's ALPN offer.
+///
+/// True when the client offers ALPN but no HTTP/1.x variant.
+/// gRPC-Core/BoringSSL (Firestore, gRPC APIs) offers only `["h2"]`; our MITM
+/// engine speaks only HTTP/1.1, so completing the handshake would either
+/// fail ALPN negotiation or desync right after it (PILOT-231). No ALPN at
+/// all means a plain HTTPS client — MITM as before. Exotic ALPN-only
+/// protocols (`grpc-exp`, custom) are also passed through: MITM would break
+/// them anyway, so tunneling is strictly better.
+fn requires_tls_passthrough(alpn: &[Vec<u8>]) -> bool {
+    !alpn.is_empty()
+        && !alpn
+            .iter()
+            .any(|p| p.as_slice() == b"http/1.1" || p.as_slice() == b"http/1.0")
+}
+
+/// Compile a host glob into an anchored, case-insensitive regex, mirroring
+/// the SDK's `trace/filter-hosts.ts` semantics: `*` matches any run of
+/// characters, and a leading `*.` (or `**.`) prefix is optional so
+/// `*.example.com` matches both `api.example.com` and `example.com` itself.
+/// Returns `None` for patterns the regex engine rejects (pathological size).
+///
+/// Compiled once per pattern in [`NetworkProxy::set_passthrough_hosts`] —
+/// per-connection matching only runs the pre-compiled regexes.
+fn compile_host_glob(pattern: &str) -> Option<regex::Regex> {
+    let pattern = pattern.to_lowercase();
+    let (optional_subdomain, body) = match pattern
+        .strip_prefix("**.")
+        .or_else(|| pattern.strip_prefix("*."))
+    {
+        Some(tail) => (true, tail),
+        None => (false, pattern.as_str()),
+    };
+    let mut re = String::from("(?i)^");
+    if optional_subdomain {
+        re.push_str("(?:.*\\.)?");
+    }
+    for ch in body.chars() {
+        if ch == '*' {
+            re.push_str(".*");
+        } else {
+            re.push_str(&regex::escape(&ch.to_string()));
+        }
+    }
+    re.push('$');
+    regex::Regex::new(&re).ok()
+}
+
+/// Single-pattern convenience over [`compile_host_glob`] (tests and
+/// one-off checks; hot paths use the pre-compiled list in `ProxyState`).
+#[cfg(test)]
+fn host_glob_matches(pattern: &str, host: &str) -> bool {
+    compile_host_glob(pattern).is_some_and(|r| r.is_match(host))
+}
+
+/// Record a marker entry for a connection tunneled without MITM, so the
+/// trace explains *why* expected traffic (gRPC/Firestore, cert-pinned
+/// hosts) is absent rather than silently omitting it. One entry per
+/// connection, not per request — the proxy never sees the encrypted
+/// requests inside the tunnel.
+async fn record_passthrough_entry(state: &Arc<Mutex<ProxyState>>, host: &str, port: u16) {
+    let url = if port == 443 {
+        format!("https://{host}/")
+    } else {
+        format!("https://{host}:{port}/")
+    };
+    state.lock().await.entries.push(CapturedEntry {
+        method: "CONNECT".to_string(),
+        url,
+        status_code: 0,
+        content_type: String::new(),
+        request_size: 0,
+        response_size: 0,
+        start_time_ms: now_ms(),
+        duration_ms: 0,
+        request_headers: Vec::new(),
+        response_headers: Vec::new(),
+        request_body: Vec::new(),
+        response_body: Vec::new(),
+        is_https: true,
+        route_action: "passthrough".to_string(),
+    });
+}
+
+/// End-to-end TLS tunnel for connections we must not MITM (h2-only ALPN or
+/// configured passthrough hosts). Replays the already-consumed ClientHello
+/// bytes to the origin, then splices the two sockets until either side
+/// closes. No capture is possible — the proxy never sees plaintext. No idle
+/// timeout either: gRPC streams are long-lived by design, matching the
+/// kept-alive MITM loop's lifecycle.
+async fn tunnel_tls_passthrough<S>(
+    mut client: S,
+    recorded: Vec<u8>,
+    upstream_host: &str,
+    upstream_port: u16,
+    sni: &str,
+) where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
+    let Some(mut upstream) = dial_upstream(upstream_host, upstream_port).await else {
+        return; // dial_upstream already logged
+    };
+    if let Err(e) = upstream.write_all(&recorded).await {
+        debug!(%sni, upstream_host, upstream_port, "passthrough: replaying ClientHello failed: {e}");
+        return;
+    }
+    match tokio::io::copy_bidirectional(&mut client, &mut upstream).await {
+        Ok((tx, rx)) => {
+            debug!(%sni, upstream_host, upstream_port, tx, rx, "passthrough tunnel closed")
+        }
+        Err(e) => debug!(%sni, upstream_host, upstream_port, "passthrough tunnel error: {e}"),
+    }
+}
+
+/// Read the client's TLS `ClientHello` and decide how to handle the
+/// connection:
+///
+/// * **Passthrough** — if the client's ALPN offer has no HTTP/1.x variant
+///   (h2-only gRPC clients, see [`requires_tls_passthrough`]) or the SNI
+///   matches `trace.networkPassthroughHosts`, tunnel the raw TLS bytes to
+///   the origin untouched. The app does end-to-end TLS with the real
+///   server; nothing is captured for that connection (PILOT-231).
+/// * **MITM** — otherwise, extract the SNI, mint a matching cert, complete
+///   the client handshake, dial upstream with the real hostname as SNI, and
+///   hand both decrypted streams to the HTTP/1.1 capture loop.
+///
+/// This is the single decision point shared by all three entry paths:
+/// Android iptables transparent redirect ([`handle_connection`]), iOS
+/// Network Extension redirect ([`handle_transparent_tcp`]), and
+/// forward-proxy CONNECT ([`handle_connect`]).
 async fn handle_transparent_tls<S>(
-    chained: PrefixedStream<S>,
+    mut client: S,
     dst_host: String,
     dst_port: u16,
     state: Arc<Mutex<ProxyState>>,
@@ -2402,31 +2616,23 @@ async fn handle_transparent_tls<S>(
     // Bounded ClientHello read for the same reason as the peek above:
     // a client that sends `0x16 0x03 0x01` and then stalls mid-handshake
     // would park this task indefinitely.
-    let start = match tokio::time::timeout(
-        CLIENT_READ_TIMEOUT,
-        tokio_rustls::LazyConfigAcceptor::new(rustls::server::Acceptor::default(), chained),
-    )
-    .await
-    {
-        Ok(Ok(s)) => s,
-        Ok(Err(e)) => {
-            debug!(%dst_host, dst_port, "failed reading TLS ClientHello: {e}");
-            return;
-        }
-        Err(_) => {
-            debug!(%dst_host, dst_port, "timed out reading TLS ClientHello");
-            return;
-        }
-    };
+    let hello =
+        match tokio::time::timeout(CLIENT_READ_TIMEOUT, read_client_hello(&mut client)).await {
+            Ok(Ok(h)) => h,
+            Ok(Err(e)) => {
+                debug!(%dst_host, dst_port, "failed reading TLS ClientHello: {e}");
+                return;
+            }
+            Err(_) => {
+                debug!(%dst_host, dst_port, "timed out reading TLS ClientHello");
+                return;
+            }
+        };
 
     // Prefer the SNI from the ClientHello — that's the hostname the app
     // actually wanted. Fall back to `dst_host` (likely an IP) if the
     // client didn't send SNI at all (rare; mostly very old TLS clients).
-    let sni = start
-        .client_hello()
-        .server_name()
-        .map(|s| s.to_string())
-        .unwrap_or_else(|| dst_host.clone());
+    let sni = hello.sni.clone().unwrap_or_else(|| dst_host.clone());
     debug!(
         %dst_host, dst_port, %sni,
         "transparent TLS: extracted SNI from ClientHello"
@@ -2443,6 +2649,52 @@ async fn handle_transparent_tls<S>(
         );
         return;
     }
+
+    let host_passthrough = state
+        .lock()
+        .await
+        .passthrough_hosts
+        .iter()
+        .any(|re| re.is_match(&sni));
+    if requires_tls_passthrough(&hello.alpn) || host_passthrough {
+        // info-level on purpose: this is the breadcrumb a user has when
+        // wondering why expected traffic is missing from the capture.
+        info!(
+            %sni, %upstream_host, dst_port,
+            alpn = ?hello
+                .alpn
+                .iter()
+                .map(|p| String::from_utf8_lossy(p).into_owned())
+                .collect::<Vec<_>>(),
+            host_rule = host_passthrough,
+            "TLS connection tunneled without capture (h2-only ALPN or passthrough host)"
+        );
+        record_passthrough_entry(&state, &sni, dst_port).await;
+        tunnel_tls_passthrough(client, hello.recorded, upstream_host, dst_port, &sni).await;
+        return;
+    }
+
+    // MITM path: replay the recorded ClientHello bytes so the acceptor flow
+    // below sees a byte-identical stream (the re-parse cost is negligible —
+    // a ClientHello is at most a few KiB).
+    let replay = PrefixedStream::new(hello.recorded, client);
+    let start = match tokio::time::timeout(
+        CLIENT_READ_TIMEOUT,
+        tokio_rustls::LazyConfigAcceptor::new(rustls::server::Acceptor::default(), replay),
+    )
+    .await
+    {
+        Ok(Ok(s)) => s,
+        Ok(Err(e)) => {
+            debug!(%dst_host, dst_port, "failed re-parsing TLS ClientHello: {e}");
+            return;
+        }
+        Err(_) => {
+            debug!(%dst_host, dst_port, "timed out re-parsing TLS ClientHello");
+            return;
+        }
+    };
+
     // Mint a per-host cert signed by our MITM CA and resume the client
     // handshake using the ClientHello bytes the acceptor already read.
     let server_config = match mitm_ca.server_config_for_host(&sni).await {
@@ -3371,6 +3623,7 @@ mod tests {
             tls_client_config: client_config.clone(),
             handler: Some(Arc::new(SyntheticHttpsHandler { seen_tx })),
             network_hosts: Vec::new(),
+            passthrough_hosts: Vec::new(),
         }));
 
         let (client_side, server_side) = tokio::io::duplex(65536);
@@ -3516,5 +3769,409 @@ mod tests {
         let (host, port) = super::parse_host_header("  10.0.0.1:8080  ").unwrap();
         assert_eq!(host, "10.0.0.1");
         assert_eq!(port, 8080);
+    }
+
+    // ─── PILOT-231: HTTP/2 passthrough ───
+
+    #[test]
+    fn requires_tls_passthrough_decision() {
+        let alpn = |protos: &[&[u8]]| protos.iter().map(|p| p.to_vec()).collect::<Vec<_>>();
+        // No ALPN at all → plain HTTPS client → MITM.
+        assert!(!requires_tls_passthrough(&alpn(&[])));
+        // HTTP/1.x offered → MITM.
+        assert!(!requires_tls_passthrough(&alpn(&[b"http/1.1"])));
+        assert!(!requires_tls_passthrough(&alpn(&[b"http/1.0"])));
+        assert!(!requires_tls_passthrough(&alpn(&[b"h2", b"http/1.1"])));
+        // h2-only (gRPC-Core/BoringSSL) → passthrough.
+        assert!(requires_tls_passthrough(&alpn(&[b"h2"])));
+        // Exotic ALPN-only protocols → passthrough.
+        assert!(requires_tls_passthrough(&alpn(&[b"grpc-exp", b"h2"])));
+    }
+
+    #[test]
+    fn host_glob_matches_semantics() {
+        // Exact match, case-insensitive.
+        assert!(host_glob_matches("api.example.com", "api.example.com"));
+        assert!(host_glob_matches("API.Example.COM", "api.example.com"));
+        assert!(!host_glob_matches("api.example.com", "cdn.example.com"));
+        // `*.` prefix matches subdomains AND the bare domain.
+        assert!(host_glob_matches("*.example.com", "api.example.com"));
+        assert!(host_glob_matches("*.example.com", "a.b.example.com"));
+        assert!(host_glob_matches("*.example.com", "example.com"));
+        assert!(!host_glob_matches("*.example.com", "example.org"));
+        assert!(!host_glob_matches("*.example.com", "notexample.com"));
+        // `**.` accepted as an alias.
+        assert!(host_glob_matches("**.example.com", "api.example.com"));
+        // Mid-pattern `*`.
+        assert!(host_glob_matches("example.*", "example.co.uk"));
+        assert!(host_glob_matches("192.168.1.*", "192.168.1.7"));
+        // Dots are literal, not regex wildcards.
+        assert!(!host_glob_matches("192.168.1.7", "192x168x1x7"));
+    }
+
+    /// Drain a rustls ClientConnection's pending handshake bytes.
+    fn drain_client_hello(alpn: &[&[u8]], sni: &str) -> Vec<u8> {
+        let mut root_store = rustls::RootCertStore::empty();
+        root_store.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
+        let mut config = ClientConfig::builder()
+            .with_root_certificates(root_store)
+            .with_no_client_auth();
+        config.alpn_protocols = alpn.iter().map(|p| p.to_vec()).collect();
+        let server_name = rustls::pki_types::ServerName::try_from(sni.to_string()).unwrap();
+        let mut conn = rustls::ClientConnection::new(Arc::new(config), server_name).unwrap();
+        let mut hello = Vec::new();
+        conn.write_tls(&mut hello).unwrap();
+        hello
+    }
+
+    #[tokio::test]
+    async fn read_client_hello_records_exact_bytes() {
+        use tokio::io::AsyncWriteExt;
+
+        let hello = drain_client_hello(&[b"h2"], "example.test");
+        assert!(!hello.is_empty());
+
+        let (mut client_side, mut server_side) = tokio::io::duplex(65536);
+        // Write the hello in two split chunks to exercise the partial-read
+        // loop in read_client_hello.
+        let split = hello.len() / 2;
+        let (first, second) = hello.split_at(split);
+        let first = first.to_vec();
+        let second = second.to_vec();
+        let writer = tokio::spawn(async move {
+            client_side.write_all(&first).await.unwrap();
+            tokio::task::yield_now().await;
+            client_side.write_all(&second).await.unwrap();
+            client_side
+        });
+
+        let info = read_client_hello(&mut server_side).await.unwrap();
+        writer.await.unwrap();
+        assert_eq!(info.sni.as_deref(), Some("example.test"));
+        assert_eq!(info.alpn, vec![b"h2".to_vec()]);
+        assert_eq!(info.recorded, hello);
+    }
+
+    #[tokio::test]
+    async fn read_client_hello_rejects_non_tls_bytes() {
+        use tokio::io::AsyncWriteExt;
+        let (mut client_side, mut server_side) = tokio::io::duplex(8192);
+        client_side
+            .write_all(b"GET / HTTP/1.1\r\nHost: example.com\r\n\r\n")
+            .await
+            .unwrap();
+        assert!(read_client_hello(&mut server_side).await.is_err());
+    }
+
+    /// Self-signed origin TLS server config + the cert clients must trust.
+    fn origin_server_config(
+        hostname: &str,
+        alpn: &[&[u8]],
+    ) -> (
+        Arc<rustls::ServerConfig>,
+        rustls::pki_types::CertificateDer<'static>,
+    ) {
+        let key = rcgen::KeyPair::generate().unwrap();
+        let cert = rcgen::CertificateParams::new(vec![hostname.to_string()])
+            .unwrap()
+            .self_signed(&key)
+            .unwrap();
+        let cert_der = cert.der().clone();
+        let key_der: rustls::pki_types::PrivateKeyDer<'static> =
+            rustls::pki_types::PrivatePkcs8KeyDer::from(key.serialize_der()).into();
+        let mut config = rustls::ServerConfig::builder()
+            .with_no_client_auth()
+            .with_single_cert(vec![cert_der.clone()], key_der)
+            .unwrap();
+        config.alpn_protocols = alpn.iter().map(|p| p.to_vec()).collect();
+        (Arc::new(config), cert_der)
+    }
+
+    /// Client config that trusts ONLY the given cert (not the MITM CA), so a
+    /// successful handshake proves the connection was NOT intercepted.
+    fn client_config_trusting(
+        cert: &rustls::pki_types::CertificateDer<'static>,
+        alpn: &[&[u8]],
+    ) -> Arc<ClientConfig> {
+        let mut root_store = rustls::RootCertStore::empty();
+        root_store.add(cert.clone()).unwrap();
+        let mut config = ClientConfig::builder()
+            .with_root_certificates(root_store)
+            .with_no_client_auth();
+        config.alpn_protocols = alpn.iter().map(|p| p.to_vec()).collect();
+        Arc::new(config)
+    }
+
+    fn empty_proxy_state(passthrough_hosts: Vec<String>) -> Arc<Mutex<ProxyState>> {
+        let mut root_store = rustls::RootCertStore::empty();
+        root_store.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
+        Arc::new(Mutex::new(ProxyState {
+            entries: Vec::new(),
+            tls_client_config: Arc::new(
+                ClientConfig::builder()
+                    .with_root_certificates(root_store)
+                    .with_no_client_auth(),
+            ),
+            handler: None,
+            network_hosts: Vec::new(),
+            passthrough_hosts: passthrough_hosts
+                .iter()
+                .map(|p| compile_host_glob(p).unwrap())
+                .collect(),
+        }))
+    }
+
+    /// Spawn a one-connection TLS origin server on an ephemeral loopback
+    /// port. After the handshake it writes `banner` and shuts down.
+    async fn spawn_tls_origin(
+        server_config: Arc<rustls::ServerConfig>,
+        banner: &'static [u8],
+    ) -> u16 {
+        use tokio::io::AsyncWriteExt;
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            let (tcp, _) = listener.accept().await.unwrap();
+            let acceptor = tokio_rustls::TlsAcceptor::from(server_config);
+            let mut tls = acceptor.accept(tcp).await.unwrap();
+            tls.write_all(banner).await.unwrap();
+            tls.shutdown().await.ok();
+        });
+        port
+    }
+
+    async fn run_passthrough_client(
+        client_config: Arc<ClientConfig>,
+        client_side: tokio::io::DuplexStream,
+        sni: &str,
+    ) -> (Option<Vec<u8>>, Vec<u8>) {
+        use tokio::io::AsyncReadExt;
+        let server_name = rustls::pki_types::ServerName::try_from(sni.to_string()).unwrap();
+        let mut tls = TlsConnector::from(client_config)
+            .connect(server_name, client_side)
+            .await
+            .expect("client handshake should succeed end-to-end");
+        let negotiated = tls.get_ref().1.alpn_protocol().map(|p| p.to_vec());
+        let mut received = Vec::new();
+        tls.read_to_end(&mut received).await.ok();
+        (negotiated, received)
+    }
+
+    #[tokio::test]
+    async fn h2_only_client_is_tunneled_end_to_end() {
+        let dir = tempfile::tempdir().unwrap();
+        let ca = Arc::new(
+            MitmAuthority::generate_new(&dir.path().join("ca.pem"), &dir.path().join("ca-key.pem"))
+                .unwrap(),
+        );
+
+        let (server_config, origin_cert) = origin_server_config("passthrough.test", &[b"h2"]);
+        let origin_port = spawn_tls_origin(server_config, b"hello-from-origin").await;
+
+        let state = empty_proxy_state(Vec::new());
+        let (client_side, server_side) = tokio::io::duplex(65536);
+        let proxy_state = state.clone();
+        let proxy_task = tokio::spawn(async move {
+            handle_transparent_tls(
+                server_side,
+                "127.0.0.1".to_string(),
+                origin_port,
+                proxy_state,
+                ca,
+            )
+            .await;
+        });
+
+        // The client trusts ONLY the origin's self-signed cert. If the proxy
+        // had MITM'd this connection, the handshake would fail.
+        let client_config = client_config_trusting(&origin_cert, &[b"h2"]);
+        let (negotiated, received) =
+            run_passthrough_client(client_config, client_side, "passthrough.test").await;
+        assert_eq!(negotiated.as_deref(), Some(b"h2".as_slice()));
+        assert_eq!(received, b"hello-from-origin");
+
+        proxy_task.await.unwrap();
+        let entries = state.lock().await.entries.clone();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].route_action, "passthrough");
+        assert_eq!(entries[0].method, "CONNECT");
+        // The entry records the SNI hostname (what the app asked for), not
+        // the redirector-resolved IP.
+        assert_eq!(
+            entries[0].url,
+            format!("https://passthrough.test:{origin_port}/")
+        );
+        assert!(entries[0].is_https);
+    }
+
+    #[tokio::test]
+    async fn configured_passthrough_host_is_tunneled_even_for_http1_client() {
+        let dir = tempfile::tempdir().unwrap();
+        let ca = Arc::new(
+            MitmAuthority::generate_new(&dir.path().join("ca.pem"), &dir.path().join("ca-key.pem"))
+                .unwrap(),
+        );
+
+        let (server_config, origin_cert) =
+            origin_server_config("pinned.example.com", &[b"http/1.1"]);
+        let origin_port = spawn_tls_origin(server_config, b"pinned-origin").await;
+
+        // SNI-glob passthrough rule; the client offers plain http/1.1 ALPN,
+        // which would normally be MITM'd.
+        let state = empty_proxy_state(vec!["*.example.com".to_string()]);
+        let (client_side, server_side) = tokio::io::duplex(65536);
+        let proxy_state = state.clone();
+        let proxy_task = tokio::spawn(async move {
+            handle_transparent_tls(
+                server_side,
+                "127.0.0.1".to_string(),
+                origin_port,
+                proxy_state,
+                ca,
+            )
+            .await;
+        });
+
+        let client_config = client_config_trusting(&origin_cert, &[b"http/1.1"]);
+        let (negotiated, received) =
+            run_passthrough_client(client_config, client_side, "pinned.example.com").await;
+        assert_eq!(negotiated.as_deref(), Some(b"http/1.1".as_slice()));
+        assert_eq!(received, b"pinned-origin");
+
+        proxy_task.await.unwrap();
+        let entries = state.lock().await.entries.clone();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].route_action, "passthrough");
+    }
+
+    #[tokio::test]
+    async fn dual_alpn_client_is_mitmd_as_http1() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let dir = tempfile::tempdir().unwrap();
+        let ca = Arc::new(
+            MitmAuthority::generate_new(&dir.path().join("ca.pem"), &dir.path().join("ca-key.pem"))
+                .unwrap(),
+        );
+
+        // Client trusts the MITM CA and offers both h2 and http/1.1, like
+        // NSURLSession / OkHttp. The proxy must select http/1.1 and MITM.
+        let mut root_store = rustls::RootCertStore::empty();
+        let ca_pem = std::fs::read(ca.ca_pem_path()).unwrap();
+        let mut reader = std::io::BufReader::new(ca_pem.as_slice());
+        for cert in rustls_pemfile::certs(&mut reader) {
+            root_store.add(cert.unwrap()).unwrap();
+        }
+        let mut client_config = ClientConfig::builder()
+            .with_root_certificates(root_store)
+            .with_no_client_auth();
+        client_config.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
+        let client_config = Arc::new(client_config);
+
+        let (seen_tx, mut seen_rx) = tokio::sync::mpsc::unbounded_channel();
+        let state = Arc::new(Mutex::new(ProxyState {
+            entries: Vec::new(),
+            tls_client_config: client_config.clone(),
+            handler: Some(Arc::new(SyntheticHttpsHandler { seen_tx })),
+            network_hosts: Vec::new(),
+            passthrough_hosts: Vec::new(),
+        }));
+
+        let (client_side, server_side) = tokio::io::duplex(65536);
+        let proxy_state = state.clone();
+        let proxy_task = tokio::spawn(async move {
+            // 192.0.2.1 (TEST-NET) is never dialed: the route handler
+            // synthesizes the response before any upstream connect.
+            handle_transparent_tls(server_side, "192.0.2.1".to_string(), 443, proxy_state, ca)
+                .await;
+        });
+
+        let server_name =
+            rustls::pki_types::ServerName::try_from("example.test".to_string()).unwrap();
+        let mut client_tls = TlsConnector::from(client_config)
+            .connect(server_name, client_side)
+            .await
+            .expect("dual-ALPN client must still complete the MITM handshake");
+        assert_eq!(
+            client_tls.get_ref().1.alpn_protocol(),
+            Some(b"http/1.1".as_slice()),
+            "proxy must negotiate http/1.1 with dual-protocol clients"
+        );
+
+        client_tls
+            .write_all(b"GET /users/1 HTTP/1.1\r\nHost: example.test\r\n\r\n")
+            .await
+            .unwrap();
+        let seen = tokio::time::timeout(std::time::Duration::from_secs(2), seen_rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(seen, "https://example.test/users/1");
+
+        let mut response = Vec::new();
+        let mut buf = [0u8; 1024];
+        loop {
+            match tokio::time::timeout(std::time::Duration::from_secs(2), client_tls.read(&mut buf))
+                .await
+                .unwrap()
+            {
+                Ok(0) => break,
+                Ok(n) => {
+                    response.extend_from_slice(&buf[..n]);
+                    if response.windows(11).any(|w| w == br#"{"ok":true}"#) {
+                        break;
+                    }
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => break,
+                Err(e) => panic!("client read failed: {e}"),
+            }
+        }
+        drop(client_tls);
+        proxy_task.await.unwrap();
+
+        let entries = state.lock().await.entries.clone();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].route_action, "mocked");
+    }
+
+    #[tokio::test]
+    async fn connect_path_tunnels_h2_only_client() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let dir = tempfile::tempdir().unwrap();
+        let ca = Arc::new(
+            MitmAuthority::generate_new(&dir.path().join("ca.pem"), &dir.path().join("ca-key.pem"))
+                .unwrap(),
+        );
+
+        let (server_config, origin_cert) = origin_server_config("grpc.test", &[b"h2"]);
+        let origin_port = spawn_tls_origin(server_config, b"grpc-origin").await;
+
+        let proxy = NetworkProxy::start(ca).await.unwrap();
+        let mut tcp = TcpStream::connect(("127.0.0.1", proxy.port()))
+            .await
+            .unwrap();
+        tcp.write_all(format!("CONNECT 127.0.0.1:{origin_port} HTTP/1.1\r\n\r\n").as_bytes())
+            .await
+            .unwrap();
+        let mut ack = vec![0u8; 64];
+        let n = tcp.read(&mut ack).await.unwrap();
+        assert!(String::from_utf8_lossy(&ack[..n]).starts_with("HTTP/1.1 200"));
+
+        let client_config = client_config_trusting(&origin_cert, &[b"h2"]);
+        let server_name = rustls::pki_types::ServerName::try_from("grpc.test".to_string()).unwrap();
+        let mut tls = TlsConnector::from(client_config)
+            .connect(server_name, tcp)
+            .await
+            .expect("h2-only CONNECT client must be tunneled, not MITM'd");
+        assert_eq!(tls.get_ref().1.alpn_protocol(), Some(b"h2".as_slice()));
+        let mut received = Vec::new();
+        tls.read_to_end(&mut received).await.ok();
+        assert_eq!(received, b"grpc-origin");
+
+        let entries = proxy.stop().await;
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].route_action, "passthrough");
+        assert_eq!(entries[0].url, format!("https://grpc.test:{origin_port}/"));
     }
 }

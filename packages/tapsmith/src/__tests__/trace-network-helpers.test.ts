@@ -1,5 +1,9 @@
 import { describe, it, expect } from 'vitest';
-import { isNetworkTracingEnabled, networkHostsForPac } from '../trace/types.js';
+import {
+  isNetworkTracingEnabled,
+  networkHostsForPac,
+  networkPassthroughHosts,
+} from '../trace/types.js';
 
 describe('isNetworkTracingEnabled', () => {
   it('returns false when trace is undefined or off', () => {
@@ -39,6 +43,34 @@ describe('networkHostsForPac', () => {
   it('returns an empty list when network sub-channel is disabled even if hosts set', () => {
     expect(
       networkHostsForPac({ mode: 'on', network: false, networkHosts: ['*.myapp.com'] }),
+    ).toEqual([]);
+  });
+});
+
+describe('networkPassthroughHosts', () => {
+  it('returns an empty list when tracing is off or nothing is configured', () => {
+    expect(networkPassthroughHosts(undefined)).toEqual([]);
+    expect(networkPassthroughHosts('off')).toEqual([]);
+    expect(networkPassthroughHosts('on')).toEqual([]);
+    expect(networkPassthroughHosts({ mode: 'on' })).toEqual([]);
+  });
+
+  it('returns the configured globs when tracing is on', () => {
+    expect(
+      networkPassthroughHosts({
+        mode: 'on',
+        networkPassthroughHosts: ['pinned-api.myapp.com', '*.example.com'],
+      }),
+    ).toEqual(['pinned-api.myapp.com', '*.example.com']);
+  });
+
+  it('returns an empty list when network sub-channel is disabled even if hosts set', () => {
+    expect(
+      networkPassthroughHosts({
+        mode: 'on',
+        network: false,
+        networkPassthroughHosts: ['pinned-api.myapp.com'],
+      }),
     ).toEqual([]);
   });
 });

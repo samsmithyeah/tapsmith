@@ -380,6 +380,14 @@ message SetDeviceRequest {
   // `trace.networkHosts` in tapsmith.config.ts. Only meaningful when
   // `network_tracing_enabled == true`.
   repeated string network_hosts = 4;
+  // Host globs whose TLS connections the MITM proxy tunnels end-to-end
+  // instead of intercepting — no capture, no routing, but the app talks
+  // to its real backend (useful for certificate-pinned hosts). Matched
+  // against the TLS ClientHello SNI. Sourced from
+  // `trace.networkPassthroughHosts` in tapsmith.config.ts. Empty = no
+  // host-based passthrough; HTTP/2-only clients (gRPC) are always
+  // tunneled automatically regardless of this list (PILOT-231).
+  repeated string passthrough_hosts = 5;
 }
 
 message StartAgentRequest {

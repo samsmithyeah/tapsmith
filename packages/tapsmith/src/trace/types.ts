@@ -354,6 +354,32 @@ export interface TraceConfig {
    * Same glob syntax as `networkHosts`.
    */
   networkIgnoreHosts?: string[]
+  /**
+   * Glob-style host patterns whose TLS connections bypass MITM
+   * interception entirely. Defaults to `undefined` — no host-based
+   * passthrough.
+   *
+   * Matching connections are tunneled end-to-end to the real server: the
+   * app sees the server's genuine certificate, but Tapsmith cannot
+   * capture the traffic and `device.route()` can never match it. Each
+   * tunneled connection appears in the trace as a single `CONNECT` entry
+   * marked `passthrough`.
+   *
+   * Use this for hosts the app reaches with certificate pinning, which
+   * MITM interception would otherwise break:
+   *
+   *     trace: {
+   *       mode: 'on',
+   *       networkPassthroughHosts: ['pinned-api.example.com'],
+   *     }
+   *
+   * Note that HTTP/2-only traffic (gRPC, Firestore) is detected and
+   * passed through automatically — no configuration needed.
+   *
+   * Patterns match against the TLS SNI hostname with the same glob
+   * syntax as `networkHosts`.
+   */
+  networkPassthroughHosts?: string[]
   /** Whether to stream device logs (Android logcat / iOS simulator syslog). Default: true. */
   deviceLogs: boolean
   /** Whether to stream the tapsmith-core daemon's own logs into the trace. Default: false. */
@@ -413,6 +439,21 @@ export function networkHostsForPac(
   return resolved.networkHosts ?? [];
 }
 
+/**
+ * Return the configured `trace.networkPassthroughHosts` glob list for the
+ * daemon's MITM proxy. TLS connections whose SNI matches are tunneled
+ * end-to-end without interception (PILOT-231). Returns `[]` when tracing
+ * is off or the option is unset — the daemon interprets `[]` as "no
+ * host-based passthrough".
+ */
+export function networkPassthroughHosts(
+  input: TraceMode | Partial<TraceConfig> | undefined,
+): string[] {
+  if (!isNetworkTracingEnabled(input)) return [];
+  const resolved = resolveTraceConfig(input);
+  return resolved.networkPassthroughHosts ?? [];
+}
+
 // ─── Network Types (Phase 6) ───
 
 export interface NetworkEntry {
@@ -450,8 +491,14 @@ export interface NetworkEntry {
   requestBody?: Buffer
   /** Response body bytes (transient — not serialized to archive JSON). */
   responseBody?: Buffer
-  /** How this request was handled by a route: "mocked", "aborted", "continued", "fetched". */
-  routeAction?: 'mocked' | 'aborted' | 'continued' | 'fetched'
+  /**
+   * How this request was handled by a route: "mocked", "aborted",
+   * "continued", "fetched". The special value "passthrough" marks a
+   * synthetic per-connection entry for TLS traffic tunneled without MITM
+   * (HTTP/2-only clients or `trace.networkPassthroughHosts`) — no
+   * request/response detail is available for those.
+   */
+  routeAction?: 'mocked' | 'aborted' | 'continued' | 'fetched' | 'passthrough'
 }
 
 // ─── Union type for all events ───

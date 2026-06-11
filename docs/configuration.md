@@ -135,6 +135,12 @@ interface TraceConfig {
                                  // whose host matches a pattern are dropped.
                                  // Combines with `networkHosts`: entry is kept
                                  // iff it matches allow AND does NOT match deny.
+  networkPassthroughHosts?: string[]; // Hosts (glob patterns, matched against the
+                                 // TLS SNI) whose connections bypass MITM
+                                 // interception entirely — tunneled end-to-end,
+                                 // no capture, no route matching. Use for
+                                 // certificate-pinned hosts. HTTP/2-only traffic
+                                 // (gRPC, Firestore) passes through automatically.
 }
 ```
 
@@ -178,6 +184,19 @@ trace: {
 ```
 
 Both accept glob patterns (`*` matches any single segment, `**` or a leading `*.` matches any number). Matching is case-insensitive. When both are set, the entry is kept iff it matches the allowlist AND does NOT match the denylist — deny wins.
+
+### Bypassing interception for pinned hosts
+
+`networkHosts`/`networkIgnoreHosts` filter what is *kept in the trace* — the traffic is still intercepted. `networkPassthroughHosts` is different: matching connections are never decrypted at all. The proxy tunnels them end-to-end to the real server, so the app sees the genuine server certificate. Use it when the app pins certificates for a host (MITM would break those connections):
+
+```typescript
+trace: {
+  mode: "on",
+  networkPassthroughHosts: ["pinned-api.myapp.com"],
+}
+```
+
+Tunneled connections appear in the trace as a single `CONNECT` entry marked `passthrough`, and `device.route()` cannot match them. HTTP/2-only clients (gRPC, Firestore) are detected and passed through automatically without configuration — see [network.md](network.md#http2-grpc-and-passthrough-connections).
 
 Example:
 

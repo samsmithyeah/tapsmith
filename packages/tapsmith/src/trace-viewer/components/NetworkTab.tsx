@@ -73,6 +73,7 @@ const NETWORK_STYLES = `
   .net-route-aborted { background: #ef444422; color: #ef4444; border: 1px solid #ef444444; }
   .net-route-continued { background: #eab30822; color: #ca8a04; border: 1px solid #eab30844; }
   .net-route-fetched { background: #3b82f622; color: #3b82f6; border: 1px solid #3b82f644; }
+  .net-route-passthrough { background: #6b728022; color: #6b7280; border: 1px solid #6b728044; }
 
   /* Detail panel */
   .net-detail { flex: 1; min-width: 0; display: flex; flex-direction: column; background: var(--color-bg-secondary); overflow: hidden; }
@@ -257,7 +258,8 @@ function prettyJson(body: string): { text: string; pretty: boolean } {
 
 function matchesStatusFilter(entry: NetworkEntry, filter: StatusFilter): boolean {
   if (filter === 'all') return true;
-  if (filter === 'mocked') return !!entry.routeAction;
+  // 'passthrough' marks an un-intercepted tunnel, not a route action.
+  if (filter === 'mocked') return !!entry.routeAction && entry.routeAction !== 'passthrough';
   const bucket = statusBucket(entry);
   return bucket === filter;
 }
@@ -361,7 +363,7 @@ export function NetworkTab({ entries, bodies }: Props) {
     );
   }
 
-  const hasMocked = entries.some(e => !!e.routeAction);
+  const hasMocked = entries.some(e => !!e.routeAction && e.routeAction !== 'passthrough');
   const TYPE_FILTERS: { value: ResourceType; label: string }[] = [
     { value: 'all', label: 'All' },
     { value: 'fetch', label: 'Fetch/XHR' },

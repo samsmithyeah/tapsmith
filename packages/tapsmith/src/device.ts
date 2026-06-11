@@ -408,8 +408,14 @@ export class Device {
     serial: string,
     networkTracingEnabled = false,
     networkHosts: string[] = [],
+    passthroughHosts: string[] = [],
   ): Promise<void> {
-    const res = await this._client.setDevice(serial, networkTracingEnabled, networkHosts);
+    const res = await this._client.setDevice(
+      serial,
+      networkTracingEnabled,
+      networkHosts,
+      passthroughHosts,
+    );
     if (!res.success) {
       throw new Error(res.errorMessage || 'Set device failed');
     }

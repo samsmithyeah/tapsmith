@@ -20,7 +20,12 @@ import { createReporters, ReporterDispatcher, type FullResult } from './reporter
 import { ensureSessionReady, launchConfiguredApp } from './session-preflight.js';
 import { findAgentApk, findAgentTestApk } from './agent-resolve.js';
 import { discoverTestFiles } from './test-file-discovery.js';
-import { resolveTraceConfig, isNetworkTracingEnabled, networkHostsForPac } from './trace/types.js';
+import {
+  resolveTraceConfig,
+  isNetworkTracingEnabled,
+  networkHostsForPac,
+  networkPassthroughHosts,
+} from './trace/types.js';
 import { spawn, execFileSync } from 'node:child_process';
 import {
   clearOfflineEmulatorTransports,
@@ -474,10 +479,11 @@ async function setupSequentialDevice(
   // can embed it in the PAC script served at `/tapsmith.pac`.
   const networkTracingEnabled = isNetworkTracingEnabled(cfg.trace);
   const pacNetworkHosts = networkHostsForPac(cfg.trace);
+  const passthroughHosts = networkPassthroughHosts(cfg.trace);
 
   try {
     progress?.update('primary-device', { state: 'running', detail: `selecting ${cfg.device}` });
-    await device.setDevice(cfg.device, networkTracingEnabled, pacNetworkHosts);
+    await device.setDevice(cfg.device, networkTracingEnabled, pacNetworkHosts, passthroughHosts);
     if (!progress) console.log(dim(`Using device: ${cfg.device}`));
   } catch (err) {
     progress?.fail('primary-device', `failed to select ${cfg.device}`);

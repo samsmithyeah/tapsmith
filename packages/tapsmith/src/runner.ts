@@ -1383,7 +1383,9 @@ async function runSuiteContext(
               responseHeaders,
               requestBody: decodeHttpBody(e.requestBody, requestHeaders),
               responseBody: decodeHttpBody(e.responseBody, responseHeaders),
-              routeAction: e.routeAction ? e.routeAction as 'mocked' | 'aborted' | 'continued' | 'fetched' : undefined,
+              routeAction: e.routeAction
+                ? e.routeAction as import('./trace/types.js').NetworkEntry['routeAction']
+                : undefined,
             };
           });
 
