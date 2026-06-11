@@ -101,6 +101,13 @@ pub struct TapsmithServiceImpl {
     /// single source of truth for this value; the daemon never reads
     /// tapsmith.config.ts itself.
     network_tracing_enabled: Arc<RwLock<bool>>,
+    /// Host globs whose TLS connections the MITM proxy tunnels end-to-end
+    /// instead of intercepting (PILOT-231). Set from
+    /// `SetDeviceRequest.passthrough_hosts` (the CLI sources it from
+    /// `trace.networkPassthroughHosts`). Stored here because the proxy may
+    /// not exist yet at set_device time — every proxy start site pushes the
+    /// current value into the new proxy.
+    passthrough_hosts: Arc<RwLock<Vec<String>>>,
     /// Active route interception handler, if a `NetworkRoute` stream is open.
     /// Stored here so that `start_network_capture` can install it on newly
     /// created proxies (the stream may open before or after capture starts).
@@ -241,6 +248,7 @@ impl TapsmithServiceImpl {
             started_agent_config: Arc::new(RwLock::new(None)),
             ios_iproxy: Arc::new(RwLock::new(None)),
             network_tracing_enabled: Arc::new(RwLock::new(false)),
+            passthrough_hosts: Arc::new(RwLock::new(Vec::new())),
             active_route_handler: Arc::new(RwLock::new(None)),
             webview_forwards: Arc::new(RwLock::new(std::collections::HashMap::new())),
             #[cfg(target_os = "macos")]
@@ -294,6 +302,9 @@ impl TapsmithServiceImpl {
         match NetworkProxy::start_on(ca, bind).await {
             Ok(proxy) => {
                 info!(%serial, %bind, "Pre-started Wi-Fi MITM proxy for physical iOS OCSP passthrough");
+                proxy
+                    .set_passthrough_hosts(self.passthrough_hosts.read().await.clone())
+                    .await;
                 *self.network_proxy.write().await = Some(proxy);
             }
             Err(e) => {
@@ -2244,6 +2255,17 @@ impl proto::tapsmith_service_server::TapsmithService for TapsmithServiceImpl {
                 // without re-plumbing the bool through every request. The
                 // CLI is authoritative — it derives this from tapsmith.config.ts.
                 *self.network_tracing_enabled.write().await = req.network_tracing_enabled;
+                // Persist the passthrough-host globs (PILOT-231) and push
+                // them into the live proxy if one is already running —
+                // otherwise the next proxy start picks them up. Platform-
+                // independent: simulators, Android, and physical iOS all
+                // honor SNI-based passthrough.
+                *self.passthrough_hosts.write().await = req.passthrough_hosts.clone();
+                if let Some(proxy) = self.network_proxy.read().await.as_ref() {
+                    proxy
+                        .set_passthrough_hosts(req.passthrough_hosts.clone())
+                        .await;
+                }
                 // For physical iOS with tracing enabled, pre-start the Wi-Fi
                 // MITM proxy immediately so any subsequent devicectl install
                 // / launch / xcodebuild invocation can't race the phone's
@@ -3993,6 +4015,9 @@ impl proto::tapsmith_service_server::TapsmithService for TapsmithServiceImpl {
         if let Some(existing) = proxy_guard.as_ref() {
             let existing_port = existing.port();
             existing.reset_entries().await;
+            existing
+                .set_passthrough_hosts(self.passthrough_hosts.read().await.clone())
+                .await;
             let serial = self.active_serial().await.unwrap_or_default();
             info!(
                 serial = %serial,
@@ -4136,6 +4161,9 @@ impl proto::tapsmith_service_server::TapsmithService for TapsmithServiceImpl {
                 .await
                 .map_err(|e| Status::internal(format!("Failed to start proxy: {e}")))?
         };
+        proxy
+            .set_passthrough_hosts(self.passthrough_hosts.read().await.clone())
+            .await;
         let host_port = proxy.port();
 
         // Physical iOS: verify the proxy is reachable from the LAN. On

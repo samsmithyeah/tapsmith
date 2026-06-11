@@ -40,6 +40,8 @@ npx tapsmith test --trace on --no-network
 
 When network capture is off, `device.route()` silently registers the handler but it will never fire because no traffic passes through the proxy.
 
+Route handlers also never fire for **HTTP/2-only traffic** (gRPC, Firestore) or hosts listed in `networkPassthroughHosts` -- those connections are tunneled end-to-end without decryption. See [HTTP/2, gRPC, and passthrough connections](#http2-grpc-and-passthrough-connections).
+
 ---
 
 ## Intercepting Requests with `device.route()`
@@ -736,6 +738,31 @@ HTTPS is decrypted using an auto-generated CA certificate installed on the devic
 
 Captured requests appear in the trace viewer's **Network tab** alongside screenshots, view hierarchy snapshots, and console output.
 
+### HTTP/2, gRPC, and passthrough connections
+
+Capture decrypts and records **HTTP/1.1** traffic. Most mobile HTTP clients (URLSession, OkHttp, fetch/axios) offer both HTTP/2 and HTTP/1.1 during the TLS handshake, so the proxy negotiates HTTP/1.1 with them and captures normally.
+
+Clients that *require* HTTP/2 -- gRPC libraries, including **Firestore** and other Firebase real-time services -- cannot speak HTTP/1.1 at all. The proxy detects these connections from the TLS handshake (an ALPN offer with no HTTP/1.1) and automatically tunnels them end-to-end to the real server instead of intercepting them. The app works exactly as it does outside Tapsmith; the trade-off is that the tunneled traffic cannot be captured or intercepted.
+
+Each tunneled connection appears in the Network tab as a single `CONNECT` row with a `passthrough` badge (one row per connection -- the individual requests inside are encrypted end-to-end and invisible to the proxy).
+
+You can also force passthrough for specific hosts with `networkPassthroughHosts` -- useful when an app uses **certificate pinning** for a host, which MITM interception would otherwise break:
+
+```typescript
+import { defineConfig } from "tapsmith"
+
+export default defineConfig({
+  trace: {
+    mode: "on",
+    networkPassthroughHosts: ["pinned-api.myapp.com"],
+  },
+})
+```
+
+Patterns match against the TLS SNI hostname with the same glob syntax as `networkHosts`.
+
+Because passthrough connections are never decrypted, `device.route()`, `device.waitForRequest()`, and `device.waitForResponse()` can never match traffic on them. If a mock for a gRPC/Firestore endpoint never fires, this is why.
+
 ### Viewing network data in traces
 
 Open a trace archive:
@@ -825,5 +852,5 @@ iOS simulators are already per-PID filtered by the macOS Network Extension, so s
 
 - [API Reference](api-reference.md) -- full method signatures for `device.route()`, `Route`, `TapsmithRequest`, and related types
 - [Trace Viewer](trace-viewer.md) -- how to view and navigate trace archives
-- [Configuration](configuration.md) -- `TraceConfig` options including `network`, `networkHosts`, `networkIgnoreHosts`
+- [Configuration](configuration.md) -- `TraceConfig` options including `network`, `networkHosts`, `networkIgnoreHosts`, `networkPassthroughHosts`
 - [iOS Network Capture](ios-network-capture.md) -- iOS-specific setup, troubleshooting, and the Network Extension architecture

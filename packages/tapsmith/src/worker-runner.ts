@@ -11,7 +11,7 @@
 import * as path from 'node:path';
 import { TapsmithGrpcClient } from './grpc-client.js';
 import { Device } from './device.js';
-import { isNetworkTracingEnabled, networkHostsForPac } from './trace/types.js';
+import { isNetworkTracingEnabled, networkHostsForPac, networkPassthroughHosts } from './trace/types.js';
 import { runTestFile, collectResults } from './runner.js';
 import type { TapsmithConfig } from './config.js';
 import { isPackageInstalled, waitForPackageIndexed } from './emulator.js';
@@ -109,6 +109,7 @@ async function handleInit(msg: InitMessage): Promise<void> {
       msg.deviceSerial,
       isNetworkTracingEnabled(config.trace),
       networkHostsForPac(config.trace),
+      networkPassthroughHosts(config.trace),
     );
   }
 

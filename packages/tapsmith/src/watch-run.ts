@@ -15,7 +15,7 @@ import { Device } from './device.js';
 import { runTestFile, collectResults } from './runner.js';
 import type { TapsmithConfig } from './config.js';
 import { ensureSessionReady, launchConfiguredApp, type SessionPreflightContext } from './session-preflight.js';
-import { isNetworkTracingEnabled, networkHostsForPac } from './trace/types.js';
+import { isNetworkTracingEnabled, networkHostsForPac, networkPassthroughHosts } from './trace/types.js';
 import {
   serializeTestResult,
   serializeSuiteResult,
@@ -140,6 +140,7 @@ async function handleRun(msg: WatchRunMessage): Promise<void> {
     msg.deviceSerial,
     isNetworkTracingEnabled(config.trace),
     networkHostsForPac(config.trace),
+    networkPassthroughHosts(config.trace),
   );
 
   // Ensure the device is awake — the screen may have auto-locked while

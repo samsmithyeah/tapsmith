@@ -525,10 +525,15 @@ describe('Device.setDevice()', () => {
     const client = makeMockClient({ listDevices, setDevice });
     const device = new Device(client);
 
-    await device.setDevice('SIM-UDID', true, ['example.test']);
+    await device.setDevice('SIM-UDID', true, ['example.test'], ['pinned.example.test']);
 
     expect(listDevices).not.toHaveBeenCalled();
-    expect(setDevice).toHaveBeenCalledWith('SIM-UDID', true, ['example.test']);
+    expect(setDevice).toHaveBeenCalledWith(
+      'SIM-UDID',
+      true,
+      ['example.test'],
+      ['pinned.example.test'],
+    );
   });
 });
 

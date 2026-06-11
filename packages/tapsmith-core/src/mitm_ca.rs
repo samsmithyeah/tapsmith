@@ -107,10 +107,17 @@ impl MitmAuthority {
         let cert_der = cert.der().clone();
         let key_der = rustls::pki_types::PrivatePkcs8KeyDer::from(host_key.serialize_der()).into();
 
-        let config = ServerConfig::builder()
+        let mut config = ServerConfig::builder()
             .with_no_client_auth()
             .with_single_cert(vec![cert_der], key_der)
             .context("Failed to build rustls ServerConfig for host")?;
+        // Advertise HTTP/1.1 via ALPN so dual-protocol clients (NSURLSession,
+        // OkHttp offer ["h2", "http/1.1"]) negotiate HTTP/1.1 — the only
+        // protocol the MITM engine speaks — instead of assuming h2. Clients
+        // that send no ALPN extension are still accepted unchanged. h2-only
+        // clients (gRPC) never reach this config: they are detected from the
+        // ClientHello ALPN and tunneled without MITM (PILOT-231).
+        config.alpn_protocols = vec![b"http/1.1".to_vec()];
 
         let config = Arc::new(config);
         cache.insert(hostname.to_string(), config.clone());
