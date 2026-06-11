@@ -1142,7 +1142,13 @@ pub async fn restart_securityd(udid: &str) -> Result<()> {
         let Some(label) = discovered else {
             bail!("launchctl kickstart {KNOWN_LABEL} failed ({stderr}) and no securityd service found via launchctl print system");
         };
-        active_label = format!("system/{label}");
+        // Use the discovered label as-is when it already carries a domain
+        // (`user/501/...`); only bare labels need the default `system/` domain.
+        active_label = if label.contains('/') {
+            label
+        } else {
+            format!("system/{label}")
+        };
         let retry = kickstart(active_label.clone()).await?;
         if !retry.status.success() {
             let retry_stderr = String::from_utf8_lossy(&retry.stderr);
@@ -1178,12 +1184,14 @@ pub async fn restart_securityd(udid: &str) -> Result<()> {
     Ok(())
 }
 
-/// Parse `launchctl print system` output for a securityd service label.
-/// The label can appear in different positions depending on the section
+/// Parse `launchctl print system` output for a securityd service label,
+/// returning it *with* any domain prefix (e.g. `system/com.apple.securityd`
+/// or `user/501/com.apple.securityd`) so the caller can target the right
+/// domain. The label appears in different positions depending on the section
 /// (`<pid> <status> com.apple.securityd` in the services list, or
-/// `com.apple.securityd = {` in an endpoints block), so scan every token
-/// rather than assuming a fixed column, and strip framing punctuation and
-/// any domain prefix before returning the bare label.
+/// `<domain>/com.apple.securityd = {` in an endpoints block), so scan every
+/// token. Tokens that are absolute paths (e.g. the daemon's `.plist` path,
+/// which also contains `com.apple.securityd`) start with `/` and are skipped.
 async fn discover_securityd_label(udid: &str) -> Option<String> {
     let output = Command::new("xcrun")
         .args(["simctl", "spawn", udid, "launchctl", "print", "system"])
@@ -1197,11 +1205,13 @@ async fn discover_securityd_label(udid: &str) -> Option<String> {
 fn parse_securityd_label(listing: &str) -> Option<String> {
     listing
         .split_whitespace()
-        .find(|token| token.contains("com.apple.securityd"))
+        .find(|token| token.contains("com.apple.securityd") && !token.starts_with('/'))
         .map(|token| {
-            let trimmed = token
-                .trim_matches(|c: char| !c.is_alphanumeric() && c != '.' && c != '-' && c != '_');
-            trimmed.rsplit('/').next().unwrap_or(trimmed).to_string()
+            token
+                .trim_matches(|c: char| {
+                    !c.is_alphanumeric() && c != '.' && c != '-' && c != '_' && c != '/'
+                })
+                .to_string()
         })
 }
 
@@ -1296,20 +1306,28 @@ mod tests {
 
     #[test]
     fn securityd_label_parsed_from_various_formats() {
-        // Services-list format: <pid> <status> <label>
+        // Services-list format: <pid> <status> <label> (no domain prefix)
         assert_eq!(
             parse_securityd_label("\t58242\t0\tcom.apple.securityd\n"),
             Some("com.apple.securityd".to_string())
         );
-        // Endpoints-block format: <domain>/<label> = {
+        // Endpoints-block format: <domain>/<label> = { — prefix preserved
         assert_eq!(
             parse_securityd_label("    system/com.apple.securityd = {\n"),
-            Some("com.apple.securityd".to_string())
+            Some("system/com.apple.securityd".to_string())
         );
-        // user domain prefix
+        // user domain prefix preserved (so restart targets the right domain)
         assert_eq!(
             parse_securityd_label("user/501/com.apple.securityd = {"),
-            Some("com.apple.securityd".to_string())
+            Some("user/501/com.apple.securityd".to_string())
+        );
+        // Absolute paths that merely contain the label (e.g. the .plist path)
+        // must not be mistaken for the service target.
+        assert_eq!(
+            parse_securityd_label(
+                "\tpath = /System/Library/LaunchDaemons/com.apple.securityd.plist\n"
+            ),
+            None
         );
         assert_eq!(parse_securityd_label("no match here\n"), None);
     }
