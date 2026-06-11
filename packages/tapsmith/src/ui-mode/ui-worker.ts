@@ -23,6 +23,7 @@ import {
   type SerializedConfig,
 } from '../worker-protocol.js';
 import { ensureSessionReady, launchConfiguredApp, type SessionPreflightContext } from '../session-preflight.js';
+import { isAbortError } from '../abort.js';
 import type { AnyTraceEvent } from '../trace/types.js';
 import { isNetworkTracingEnabled, networkHostsForPac } from '../trace/types.js';
 import { encodeNetworkBodies } from './encode-bodies.js';
@@ -316,14 +317,40 @@ async function handleRunFile(
     throw new Error(`UI Worker ${workerId}: Not initialized`);
   }
 
-  // Ensure the device is awake — the screen may have auto-locked while
-  // watch mode was idle waiting for file changes.
-  await device.wake();
-  await device.unlock();
+  // Created BEFORE the between-files preflight so a stop that lands during
+  // wake/unlock/app-reset is honored too — otherwise the abort IPC would be
+  // a no-op and the worker would run the entire next file (PILOT-222).
+  const abortController = new AbortController();
+  currentAbortController = abortController;
+  device._client._setAbortSignal(abortController.signal);
 
-  // Reset app between files
-  if (config.package) {
-    await launchConfiguredApp(sessionContext(undefined), `file reset for ${path.basename(filePath)}`);
+  try {
+    // Ensure the device is awake — the screen may have auto-locked while
+    // watch mode was idle waiting for file changes.
+    await device.wake();
+    await device.unlock();
+
+    // Reset app between files
+    if (config.package) {
+      await launchConfiguredApp(sessionContext(undefined), `file reset for ${path.basename(filePath)}`);
+    }
+  } catch (err) {
+    // Whether aborted or a genuine preflight failure, this run is over —
+    // don't leave a stale controller for a later idle-state abort IPC.
+    currentAbortController = undefined;
+    if (abortController.signal.aborted || isAbortError(err)) {
+      sendEmptyFileDone(filePath);
+      return;
+    }
+    throw err;
+  } finally {
+    device._client._setAbortSignal(undefined);
+    if (abortController.signal.aborted) currentAbortController = undefined;
+  }
+  if (abortController.signal.aborted) {
+    // Stop arrived during preflight without failing a device call.
+    sendEmptyFileDone(filePath);
+    return;
   }
 
   // Send test source file
@@ -354,13 +381,11 @@ async function handleRunFile(
     return collector;
   };
 
-  currentAbortController = new AbortController();
-
   let suiteResult;
   try {
     suiteResult = await runFileWithRecovery(
       filePath, reporterProxy, projectUseOptions, projectName, testFilter,
-      currentAbortController.signal,
+      abortController.signal,
     );
   } finally {
     // Restore original to prevent accumulating wrappers across runs
@@ -376,6 +401,19 @@ async function handleRunFile(
     filePath,
     results: results.map((r) => serializeTestResult(r, workerId)),
     suite: serializeSuiteResult(suiteResult, workerId),
+  });
+}
+
+/** Report a file as done with no results — used when a user stop lands
+ * before the file's tests ever started (e.g. during the preflight reset). */
+function sendEmptyFileDone(filePath: string): void {
+  const emptySuite: import('../runner.js').SuiteResult = { name: '', tests: [], suites: [], durationMs: 0 };
+  send({
+    type: 'file-done',
+    workerId,
+    filePath,
+    results: [],
+    suite: serializeSuiteResult(emptySuite, workerId),
   });
 }
 
@@ -416,13 +454,17 @@ async function runFileWithRecovery(
         },
       });
 
+      // A user stop is not an infrastructure failure — never recover/retry,
+      // just return what ran (PILOT-222).
+      if (abortSignal?.aborted) return suite;
+
       const infrastructureFailure = findRecoverableInfrastructureFailure(collectResults(suite));
       if (!infrastructureFailure) return suite;
       if (attempt === 2) throw infrastructureFailure;
       await recoverFileSession(filePath, infrastructureFailure);
       continue;
     } catch (err) {
-      if (!isRecoverableInfrastructureError(err) || attempt === 2) throw err;
+      if (abortSignal?.aborted || !isRecoverableInfrastructureError(err) || attempt === 2) throw err;
       await recoverFileSession(filePath, err);
     }
   }

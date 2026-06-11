@@ -1835,6 +1835,8 @@ html, body, #app {
 .error-stack { font-family: var(--font-mono); font-size: 11px; color: var(--fg-dim); white-space: pre-wrap; word-break: break-all; margin-top: 6px; padding: 10px 12px; background: var(--bg-elev-2); border: 1px solid var(--border); border-radius: 8px; line-height: 1.6; }
 .test-error-banner { display: flex; align-items: center; gap: 6px; padding: 6px 12px; background: var(--color-error-bg); border-bottom: 1px solid var(--color-error-border); cursor: pointer; font-size: 12px; color: var(--fail); flex-shrink: 0; }
 .test-error-banner:hover { background: var(--color-error-border); }
+.test-error-banner.info { background: var(--bg-elev-2); border-bottom-color: var(--border); color: var(--fg-dim); }
+.test-error-banner.info:hover { background: var(--bg-elev-2); color: var(--fg); }
 .test-error-banner-icon { font-weight: 700; flex-shrink: 0; }
 .test-error-banner-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .no-content { display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100%; color: var(--fg-muted); font-size: 12px; padding: 24px; text-align: center; }

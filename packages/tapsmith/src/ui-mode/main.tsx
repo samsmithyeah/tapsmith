@@ -170,6 +170,16 @@ function App() {
   }, []);
   useEffect(() => () => clearTimeout(errorTimerRef.current), []);
 
+  // Info banner state (e.g. "Run stopped") — same lifecycle, neutral styling
+  const [infoMessage, setInfoMessage] = useState<string | null>(null);
+  const infoTimerRef = useRef<ReturnType<typeof setTimeout>>();
+  const showInfo = useCallback((msg: string) => {
+    clearTimeout(infoTimerRef.current);
+    setInfoMessage(msg);
+    infoTimerRef.current = setTimeout(() => setInfoMessage(null), 8000);
+  }, []);
+  useEffect(() => () => clearTimeout(infoTimerRef.current), []);
+
   // "Run deps first" toggle — persisted in localStorage
   const [runDepsFirst, setRunDepsFirst] = useState(() => {
     return localStorage.getItem('tapsmith-ui-run-deps') === 'true';
@@ -559,6 +569,11 @@ function App() {
         setIsRunning(false);
         setIsStopping(false);
         stopRunTimer();
+        if (msg.status === 'stopped') {
+          showInfo(msg.interrupted
+            ? `Run stopped (${msg.interrupted} test${msg.interrupted === 1 ? '' : 's'} interrupted)`
+            : 'Run stopped');
+        }
         // Clear any tests/suites/files stuck in 'running' (e.g. after stop).
         treeRef.current.resetRunningStatuses();
         // Clear any in-flight slots that didn't receive a completed event
@@ -1184,6 +1199,11 @@ function App() {
         <div class="test-error-banner" onClick={() => setErrorMessage(null)}>
           <span class="test-error-banner-icon">!</span>
           <span class="test-error-banner-text">{errorMessage}</span>
+        </div>
+      ) : infoMessage ? (
+        <div class="test-error-banner info" onClick={() => setInfoMessage(null)}>
+          <span class="test-error-banner-icon">■</span>
+          <span class="test-error-banner-text">{infoMessage}</span>
         </div>
       ) : undefined}
       topBar={

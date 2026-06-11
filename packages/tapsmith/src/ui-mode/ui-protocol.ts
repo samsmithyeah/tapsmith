@@ -124,11 +124,14 @@ export interface RunStartMessage {
 
 export interface RunEndMessage {
   type: 'run-end'
-  status: 'passed' | 'failed'
+  /** 'stopped' = the user stopped the run before it finished. */
+  status: 'passed' | 'failed' | 'stopped'
   duration: number
   passed: number
   failed: number
   skipped: number
+  /** Tests killed mid-flight by a user stop (not counted in `failed`). */
+  interrupted?: number
 }
 
 export interface TestStartMessage {

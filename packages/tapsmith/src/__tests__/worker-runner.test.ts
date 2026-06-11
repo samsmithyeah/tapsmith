@@ -1,5 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
 import { isRecoverableInfrastructureError, type MainToWorkerMessage, type SerializedConfig, type WorkerToMainMessage } from '../worker-protocol.js';
+import { TestAbortedError } from '../abort.js';
 import type { RunOptions, SuiteResult, TestResult } from '../runner.js';
 
 const workerRunnerMocks = vi.hoisted(() => {
@@ -122,6 +123,11 @@ describe('isRecoverableInfrastructureError', () => {
 
   it('returns false for generic errors', () => {
     expect(isRecoverableInfrastructureError(new Error('something went wrong'))).toBe(false);
+  });
+
+  it('returns false for user-stop aborts — a stop must never trigger session recovery (PILOT-222)', () => {
+    expect(isRecoverableInfrastructureError(new TestAbortedError())).toBe(false);
+    expect(isRecoverableInfrastructureError(new Error('Stopped by user'))).toBe(false);
   });
 
   it('handles non-Error values', () => {

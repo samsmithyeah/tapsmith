@@ -30,10 +30,16 @@ export function registerRunTestsTool(server: McpServer, dispatcher?: TestDispatc
         const result = await dispatcher.runFiles(files, { testFilter, project });
         const content: CallToolResult['content'] = [];
 
-        if (result.failed > 0) {
+        if (result.status === 'stopped' && result.failed === 0) {
+          const interrupted = result.interrupted ? `, ${result.interrupted} interrupted` : '';
+          content.push({ type: 'text' as const, text: `Run stopped by user — partial results: ${result.passed} passed, ${result.skipped} skipped${interrupted} (${result.duration}ms)` });
+        } else if (result.failed > 0 || result.status === 'stopped') {
           const lines: string[] = [];
           const screenshots: Buffer[] = [];
-          lines.push(`Tests failed: ${result.passed} passed, ${result.failed} failed, ${result.skipped} skipped (${result.duration}ms)`);
+          const interrupted = result.interrupted ? `, ${result.interrupted} interrupted` : '';
+          lines.push(result.status === 'stopped'
+            ? `Run stopped by user — partial results: ${result.passed} passed, ${result.failed} failed, ${result.skipped} skipped${interrupted} (${result.duration}ms)`
+            : `Tests failed: ${result.passed} passed, ${result.failed} failed, ${result.skipped} skipped (${result.duration}ms)`);
 
           if (result.failures && result.failures.length > 0) {
             for (const f of result.failures) {

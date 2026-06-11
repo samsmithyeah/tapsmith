@@ -1389,4 +1389,50 @@ describe('retries', () => {
     expect(callCount).toBe(1);
     expect(result.tests[0].status).toBe('failed');
   });
+
+  it('interrupts an in-flight test body when the abort signal fires (PILOT-222)', async () => {
+    const ac = new AbortController();
+    let afterEachRan = false;
+    let secondTestRan = false;
+    pushContext();
+    tapsmithAfterEach(async () => { afterEachRan = true; });
+    tapsmithTest('hangs forever', async () => {
+      await new Promise(() => { /* a pure-JS wait that never settles */ });
+    });
+    tapsmithTest('never reached', async () => { secondTestRan = true; });
+    const ctx = popContext();
+
+    const run = runSuiteContext(ctx, '', [], [], makeOpts({
+      abortSignal: ac.signal,
+    }));
+    // Let the first test body start, then stop the run. The race against
+    // the abort signal must settle the suite without waiting for the
+    // (30s default) test timeout — vitest's own timeout guards this.
+    await new Promise((r) => setTimeout(r, 20));
+    ac.abort();
+    const result = await run;
+
+    expect(result.tests).toHaveLength(1);
+    expect(result.tests[0].status).toBe('failed');
+    expect(result.tests[0].error?.message).toBe('Stopped by user');
+    expect(afterEachRan).toBe(true);
+    expect(secondTestRan).toBe(false);
+  });
+
+  it('rejects a test that starts after the signal already aborted', async () => {
+    // The between-test check normally prevents this, but the race arm must
+    // also handle an already-aborted signal (it never fires 'abort' again).
+    const ac = new AbortController();
+    pushContext();
+    tapsmithBeforeEach(async () => { ac.abort(); });
+    tapsmithTest('first', async () => {
+      await new Promise(() => { /* hang — the pre-aborted arm must reject */ });
+    });
+    const ctx = popContext();
+    const result = await runSuiteContext(ctx, '', [], [], makeOpts({
+      abortSignal: ac.signal,
+    }));
+    expect(result.tests[0].status).toBe('failed');
+    expect(result.tests[0].error?.message).toBe('Stopped by user');
+  });
 });

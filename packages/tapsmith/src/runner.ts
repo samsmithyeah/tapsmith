@@ -29,6 +29,7 @@ import { TraceCollector, setActiveTraceCollector, withActiveTraceCollector } fro
 import type { AnyTraceEvent } from './trace/types.js';
 import { getSimulatorScreenScale } from './ios-simulator.js';
 import type { TraceDeviceInfo } from './trace/types.js';
+import { TestAbortedError, isAbortError } from './abort.js';
 
 // ─── Trace Device Info ───
 
@@ -1167,19 +1168,43 @@ async function runSuiteContext(
 
           // Wrap only the test body with a timeout — hooks run outside this
           // so slow setup (restartApp, navigation) under load doesn't cause
-          // spurious timeouts.
-          let testTimer: ReturnType<typeof setTimeout>;
-          await Promise.race([
-            testFn().finally(() => clearTimeout(testTimer)),
-            new Promise<never>((_, reject) => {
-              testTimer = setTimeout(() => reject(new Error(
-                `Test timed out after ${testTimeoutMs}ms`
-              )), testTimeoutMs);
-            }),
-          ]);
+          // spurious timeouts. Also raced against the run's abort signal so a
+          // user stop interrupts even pure-JS waits that never touch the
+          // device (in-flight device calls are cancelled via the gRPC client).
+          let testTimer: ReturnType<typeof setTimeout> | undefined;
+          let onTestAbort: (() => void) | undefined;
+          const abortSignal = opts.abortSignal;
+          try {
+            await Promise.race([
+              testFn(),
+              new Promise<never>((_, reject) => {
+                testTimer = setTimeout(() => reject(new Error(
+                  `Test timed out after ${testTimeoutMs}ms`
+                )), testTimeoutMs);
+              }),
+              ...(abortSignal ? [new Promise<never>((_, reject) => {
+                // An already-aborted signal never fires 'abort' for new
+                // listeners — reject straight away in that case.
+                if (abortSignal.aborted) {
+                  reject(new TestAbortedError());
+                  return;
+                }
+                onTestAbort = () => reject(new TestAbortedError());
+                abortSignal.addEventListener('abort', onTestAbort, { once: true });
+              })] : []),
+            ]);
+          } finally {
+            // Clear the timeout here (not via testFn().finally) so an abort
+            // settling the race doesn't leave a long-lived timer behind.
+            if (testTimer) clearTimeout(testTimer);
+            if (onTestAbort) abortSignal?.removeEventListener('abort', onTestAbort);
+          }
         } catch (err) {
           status = 'failed';
           error = err instanceof Error ? err : new Error(String(err));
+          if (isAbortError(error) || opts.abortSignal?.aborted) {
+            error = new TestAbortedError();
+          }
 
           // Fail any in-flight traced action/assertion so it appears in the trace
           traceCollector?.failPendingOperation(error.message);
@@ -1191,8 +1216,10 @@ async function runSuiteContext(
             await opts.device._disposeWebViewManager();
           }
 
-          // Screenshot on failure
-          if (opts.config.screenshot !== 'never') {
+          // Screenshot on failure — skipped on user stop: the capture RPC
+          // would be cancelled anyway, and a stop isn't a failure worth
+          // documenting.
+          if (opts.config.screenshot !== 'never' && !isAbortError(error)) {
             screenshotPath = await captureFailureScreenshot(
               opts.device,
               opts.screenshotDir,
@@ -1248,7 +1275,7 @@ async function runSuiteContext(
           error.message += `\n\n--- Additionally ---\n${softErrorSummary}`;
         }
 
-        if (!screenshotPath && opts.config.screenshot !== 'never') {
+        if (!screenshotPath && opts.config.screenshot !== 'never' && !opts.abortSignal?.aborted) {
           screenshotPath = await captureFailureScreenshot(
             opts.device,
             opts.screenshotDir,
@@ -1753,9 +1780,16 @@ export async function runTestFile(
       : opts.abortSignal,
   };
 
+  // Arm in-flight RPC cancellation for the duration of the file: Device,
+  // ElementHandle, and expect all share this client instance, so a user stop
+  // (or abortFileOnError) cancels the current device call instead of riding
+  // out its timeout (PILOT-222).
+  fileOpts.device?._client._setAbortSignal(fileOpts.abortSignal);
+
   try {
     return await runSuiteContext(rootCtx, '', [], [], fileOpts);
   } finally {
+    fileOpts.device?._client._setAbortSignal(undefined);
     try {
       if (workerTeardown) {
         await workerTeardown();

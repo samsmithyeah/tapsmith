@@ -228,6 +228,12 @@ export async function startUIServer(
   function markRunStarted(): void {
     isRunning = true;
     runStartedAt = Date.now();
+    // A new run clears any previous stop request. Multi-file loops check
+    // stopRequested BEFORE starting the next file, so a stop still ends the
+    // whole user-initiated run — this reset only ever runs for files the
+    // loop actually allowed to start.
+    stopRequested = false;
+    interruptedCount = 0;
   }
 
   function clearRunBuffers(): void {
@@ -244,6 +250,42 @@ export async function startUIServer(
     runStartedAt = 0;
     singleWorkerRunningTest = null;
     runningFiles.clear();
+    if (stopEscalationTimer) { clearTimeout(stopEscalationTimer); stopEscalationTimer = null; }
+    forceSettleDispatch = null;
+    // Backstop for run paths that end without broadcasting run-end (e.g. an
+    // exception escaping to the command handler): never leave an MCP
+    // stop_tests call hanging on a waiter. Always a fresh synthetic result —
+    // falling back to lastRunEnd would report the PREVIOUS run's outcome.
+    if (runEndWaiters.length > 0) {
+      const fallback: TestRunResult = { status: 'stopped', passed: 0, failed: 0, skipped: 0, duration: 0 };
+      for (const w of runEndWaiters.splice(0)) w(fallback);
+    }
+  }
+
+  /**
+   * Single funnel for finishing a run (PILOT-222): overrides the status to
+   * 'stopped' when the user requested a stop, attaches the interrupted-test
+   * count, broadcasts run-end, and wakes anyone waiting on the run's outcome
+   * (MCP tapsmith_stop_tests).
+   */
+  function endRun(result: TestRunResult): TestRunResult {
+    const final: TestRunResult = {
+      ...result,
+      status: stopRequested || parallelRunAborted ? 'stopped' : result.status,
+      ...(interruptedCount > 0 ? { interrupted: interruptedCount } : {}),
+    };
+    broadcast({
+      type: 'run-end',
+      status: final.status,
+      duration: final.duration,
+      passed: final.passed,
+      failed: final.failed,
+      skipped: final.skipped,
+      interrupted: final.interrupted,
+    });
+    lastRunEnd = final;
+    for (const w of runEndWaiters.splice(0)) w(final);
+    return final;
   }
 
   let activeChild: ChildProcess | null = null;
@@ -316,6 +358,20 @@ export async function startUIServer(
   const lastFrameDims = new Map<number, { width: number; height: number }>();
   /** Set to true while a parallel run is in progress, to signal stop. */
   let parallelRunAborted = false;
+  /** True from the moment the user requests a stop until the next run starts.
+   * Read by the single-worker file loops (so a stop ends the whole run, not
+   * just the current file) and by endRun to report status 'stopped'. */
+  let stopRequested = false;
+  /** Grace timer between graceful abort and SIGKILL escalation. */
+  let stopEscalationTimer: ReturnType<typeof setTimeout> | null = null;
+  /** Settles the in-flight parallel dispatch promise (escalation). */
+  let forceSettleDispatch: (() => void) | null = null;
+  /** Tests killed mid-flight by the current stop (reported separately). */
+  let interruptedCount = 0;
+  /** Final result of the most recently completed run. */
+  let lastRunEnd: TestRunResult | null = null;
+  /** Callers (MCP stop_tests) waiting for the in-flight run to end. */
+  const runEndWaiters: Array<(r: TestRunResult) => void> = [];
 
   // Detect whether meaningful projects are configured (not just a synthetic 'default')
   const hasRealProjects = ctx.projects != null
@@ -522,15 +578,19 @@ export async function startUIServer(
       }
       if (validFiles.length === 1) return withFailures(await runFile(validFiles[0], testFilter, project));
       let totalPassed = 0, totalFailed = 0, totalSkipped = 0, totalDuration = 0;
+      let stopped = false;
       for (const f of validFiles) {
         const r = await runFile(f, undefined, project);
         totalPassed += r.passed;
         totalFailed += r.failed;
         totalSkipped += r.skipped;
         totalDuration += r.duration;
+        // Checked AFTER each file: a stop during file N must not start file
+        // N+1 (each runFile resets the flag when its run begins).
+        if (stopRequested || r.status === 'stopped') { stopped = true; break; }
       }
       return withFailures({
-        status: totalFailed > 0 ? 'failed' : 'passed',
+        status: stopped ? 'stopped' : totalFailed > 0 ? 'failed' : 'passed',
         passed: totalPassed,
         failed: totalFailed,
         skipped: totalSkipped,
@@ -542,8 +602,24 @@ export async function startUIServer(
       return withFailures(await runAllFiles());
     },
     stop() {
-      if (useParallel()) stopParallelRun();
-      else if (activeChild) { try { activeChild.kill(); } catch { /* already dead */ } }
+      stopRun();
+    },
+    waitForRunEnd(timeoutMs: number): Promise<TestRunResult | null> {
+      if (!isRunning) return Promise.resolve(lastRunEnd);
+      return new Promise((resolve) => {
+        const waiter = (r: TestRunResult): void => {
+          clearTimeout(timer);
+          resolve(r);
+        };
+        const timer = setTimeout(() => {
+          // Drop the stale waiter so repeated polls of a wedged run don't
+          // accumulate closures until the run finally ends.
+          const idx = runEndWaiters.indexOf(waiter);
+          if (idx >= 0) runEndWaiters.splice(idx, 1);
+          resolve(null);
+        }, timeoutMs);
+        runEndWaiters.push(waiter);
+      });
     },
     isRunning: () => isRunning,
     getResults: () => [...testResults.values()],
@@ -829,16 +905,16 @@ export async function startUIServer(
       const duration = suite.durationMs;
 
       broadcastFileStatus(filePath, 'done', projectName);
-      const runResult: TestRunResult = { status: failed > 0 ? 'failed' : 'passed', passed, failed, skipped, duration };
-      broadcast({ type: 'run-end', ...runResult });
-      return runResult;
+      return endRun({ status: failed > 0 ? 'failed' : 'passed', passed, failed, skipped, duration });
     } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      broadcast({ type: 'error', message: `Failed to run ${path.basename(filePath)}: ${msg}` });
+      // A user stop kills the child, which surfaces here as a rejection —
+      // that's the requested outcome, not an error worth broadcasting.
+      if (!stopRequested) {
+        const msg = err instanceof Error ? err.message : String(err);
+        broadcast({ type: 'error', message: `Failed to run ${path.basename(filePath)}: ${msg}` });
+      }
       broadcastFileStatus(filePath, 'done', projectName);
-      const runResult: TestRunResult = { status: 'failed', passed: 0, failed: 1, skipped: 0, duration: 0 };
-      broadcast({ type: 'run-end', ...runResult });
-      return runResult;
+      return endRun({ status: 'failed', passed: 0, failed: stopRequested ? 0 : 1, skipped: 0, duration: 0 });
     } finally {
       markRunEnded();
       screenPollActive = false;
@@ -863,7 +939,9 @@ export async function startUIServer(
         const failedProjects = new Set<string>();
 
         for (const wave of ctx.projectWaves) {
+          if (stopRequested) break;
           for (const project of wave) {
+            if (stopRequested) break;
             const blockedBy = project.dependencies.find((d) => failedProjects.has(d));
             if (blockedBy) {
               broadcast({ type: 'error', message: `Skipping project "${project.name}" — dependency "${blockedBy}" failed` });
@@ -882,6 +960,7 @@ export async function startUIServer(
         }
       } else {
         for (const file of ctx.testFiles) {
+          if (stopRequested) break;
           const project = fileToProject.get(file);
           const useOptions = project?.use as RunFileUseOptions | undefined;
           const projectName = project && project.name !== 'default' ? project.name : undefined;
@@ -895,24 +974,24 @@ export async function startUIServer(
             totalSkipped += results.filter((r) => r.status === 'skipped').length;
             totalDuration += suite.durationMs;
           } catch (err) {
-            const errMsg = err instanceof Error ? err.message : String(err);
-            broadcast({ type: 'error', message: `Error in ${path.basename(file)}: ${errMsg}` });
-            totalFailed++;
+            if (!stopRequested) {
+              const errMsg = err instanceof Error ? err.message : String(err);
+              broadcast({ type: 'error', message: `Error in ${path.basename(file)}: ${errMsg}` });
+              totalFailed++;
+            }
           }
 
           broadcastFileStatus(file, 'done', projectName);
         }
       }
 
-      const runResult: TestRunResult = {
+      return endRun({
         status: totalFailed > 0 ? 'failed' : 'passed',
         duration: totalDuration,
         passed: totalPassed,
         failed: totalFailed,
         skipped: totalSkipped,
-      };
-      broadcast({ type: 'run-end', ...runResult });
-      return runResult;
+      });
     } finally {
       markRunEnded();
       screenPollActive = false;
@@ -927,6 +1006,7 @@ export async function startUIServer(
     const projectName = project.name !== 'default' ? project.name : undefined;
 
     for (const file of project.testFiles) {
+      if (stopRequested) break;
       broadcastFileStatus(file, 'running', projectName);
 
       try {
@@ -937,10 +1017,12 @@ export async function startUIServer(
         duration += suite.durationMs;
         if (results.some((r) => r.status === 'failed')) anyFailed = true;
       } catch (err) {
-        const errMsg = err instanceof Error ? err.message : String(err);
-        broadcast({ type: 'error', message: `Error in ${path.basename(file)}: ${errMsg}` });
-        failed++;
-        anyFailed = true;
+        if (!stopRequested) {
+          const errMsg = err instanceof Error ? err.message : String(err);
+          broadcast({ type: 'error', message: `Error in ${path.basename(file)}: ${errMsg}` });
+          failed++;
+          anyFailed = true;
+        }
       }
 
       broadcastFileStatus(file, 'done', projectName);
@@ -973,7 +1055,9 @@ export async function startUIServer(
 
     try {
       for (const wave of filteredWaves) {
+        if (stopRequested) break;
         for (const project of wave) {
+          if (stopRequested) break;
           const blockedBy = project.dependencies.find((d) => failedProjects.has(d));
           if (blockedBy) {
             broadcast({ type: 'error', message: `Skipping project "${project.name}" — dependency "${blockedBy}" failed` });
@@ -991,8 +1075,7 @@ export async function startUIServer(
         }
       }
 
-      broadcast({
-        type: 'run-end',
+      endRun({
         status: totalFailed > 0 ? 'failed' : 'passed',
         duration: totalDuration,
         passed: totalPassed,
@@ -1029,8 +1112,7 @@ export async function startUIServer(
 
       try {
         const r = await dispatchFilesParallel(files);
-        broadcast({
-          type: 'run-end',
+        endRun({
           status: r.anyFailed ? 'failed' : 'passed',
           duration: r.duration,
           passed: r.passed,
@@ -1054,8 +1136,7 @@ export async function startUIServer(
 
     try {
       const r = await runProjectFilesSingle(target);
-      broadcast({
-        type: 'run-end',
+      endRun({
         status: r.anyFailed ? 'failed' : 'passed',
         duration: r.duration,
         passed: r.passed,
@@ -1263,7 +1344,9 @@ export async function startUIServer(
 
     try {
       for (const wave of depWaves) {
+        if (stopRequested) break;
         for (const depProject of wave) {
+          if (stopRequested) break;
           const blockedBy = depProject.dependencies.find((d) => failedProjects.has(d));
           if (blockedBy) {
             broadcast({ type: 'error', message: `Skipping project "${depProject.name}" — dependency "${blockedBy}" failed` });
@@ -1283,7 +1366,9 @@ export async function startUIServer(
 
       const pName = project.name !== 'default' ? project.name : undefined;
       const blockedBy = project.dependencies.find((d) => failedProjects.has(d));
-      if (blockedBy) {
+      if (stopRequested) {
+        broadcastFileStatus(filePath, 'done', pName);
+      } else if (blockedBy) {
         broadcast({ type: 'error', message: `Skipping "${path.basename(filePath)}" — dependency "${blockedBy}" failed` });
         broadcastFileStatus(filePath, 'done', pName);
       } else {
@@ -1298,16 +1383,17 @@ export async function startUIServer(
           totalSkipped += results.filter((r) => r.status === 'skipped').length;
           totalDuration += suite.durationMs;
         } catch (err) {
-          const errMsg = err instanceof Error ? err.message : String(err);
-          broadcast({ type: 'error', message: `Failed to run ${path.basename(filePath)}: ${errMsg}` });
-          totalFailed++;
+          if (!stopRequested) {
+            const errMsg = err instanceof Error ? err.message : String(err);
+            broadcast({ type: 'error', message: `Failed to run ${path.basename(filePath)}: ${errMsg}` });
+            totalFailed++;
+          }
         }
 
         broadcastFileStatus(filePath, 'done', pName);
       }
 
-      broadcast({
-        type: 'run-end',
+      endRun({
         status: totalFailed > 0 ? 'failed' : 'passed',
         duration: totalDuration,
         passed: totalPassed,
@@ -1710,6 +1796,7 @@ export async function startUIServer(
       function settleResolve(): void {
         if (settled) return;
         settled = true;
+        forceSettleDispatch = null;
         // Clean up dispatch-specific listeners
         for (const { worker, messageHandler, exitHandler } of dispatchListeners) {
           worker.process.removeListener('message', messageHandler);
@@ -1717,6 +1804,9 @@ export async function startUIServer(
         }
         resolve();
       }
+      // PILOT-222: lets escalateStop settle this dispatch synchronously
+      // after SIGKILLing and retiring the remaining busy workers.
+      forceSettleDispatch = settleResolve;
 
       function maybeResolve(): void {
         if (settled) return;
@@ -1828,11 +1918,37 @@ export async function startUIServer(
         if (worker.retired) return;
         worker.retired = true;
         const inFlightFile = worker.currentFile;
+        const inFlightTest = worker.currentTest;
         worker.currentFile = undefined;
+        worker.currentTest = undefined;
         worker.busy = false;
         broadcastWorkerStatus(worker, 'error');
+        // Release the daemon/screen client now rather than at the next run's
+        // respawn — a retired worker's resources serve no one in between.
+        releaseWorkerResources(worker);
 
-        if (inFlightFile) {
+        if (inFlightFile && parallelRunAborted) {
+          // During a user stop the file isn't coming back — don't requeue it
+          // or log a misleading "Requeueing" line. Whatever was running when
+          // the worker died (SIGKILL escalation, worker error, unexpected
+          // exit) is recorded as interrupted so it doesn't linger as
+          // 'running' and the run-end counts stay honest.
+          if (inFlightTest) {
+            updateTestStatus(
+              inFlightTest,
+              inFlightFile.filePath,
+              'failed',
+              undefined,
+              'Interrupted: stopped by user',
+              undefined,
+              undefined,
+              worker.id,
+              inFlightFile.projectName,
+            );
+            interruptedCount++;
+          }
+          broadcastFileStatus(inFlightFile.filePath, 'done', inFlightFile.projectName);
+        } else if (inFlightFile) {
           fileQueue.unshift(inFlightFile);
           console.error(`${YELLOW}Worker ${worker.id} (${worker.deviceSerial}) became unavailable: ${reason}. Requeueing ${path.basename(inFlightFile.filePath)}.${RESET}`);
         }
@@ -1853,6 +1969,12 @@ export async function startUIServer(
         }
 
         if (remaining.length === 0) {
+          if (parallelRunAborted) {
+            // Stopping a fully-busy run via SIGKILL escalation retires every
+            // worker — that's the requested stop, not an error-flavored end.
+            settleResolve();
+            return;
+          }
           settled = true;
           reject(new Error(`All workers became unavailable. Last failure: ${reason}`));
           return;
@@ -1942,8 +2064,16 @@ export async function startUIServer(
               const results = msg.results.map(deserializeTestResult);
               const suite = deserializeSuiteResult(msg.suite);
 
+              // A test the user stopped mid-flight is interrupted, not failed
+              // — keeps graceful-abort accounting consistent with the
+              // kill-path accounting (single-worker stop / SIGKILL escalation).
+              const interruptedHere = results.filter(
+                (r) => r.status === 'failed' && r.error?.message === 'Stopped by user',
+              ).length;
+              interruptedCount += interruptedHere;
+
               passed += results.filter((r) => r.status === 'passed').length;
-              failed += results.filter((r) => r.status === 'failed').length;
+              failed += results.filter((r) => r.status === 'failed').length - interruptedHere;
               skipped += results.filter((r) => r.status === 'skipped').length;
               duration += suite.durationMs;
               if (results.some((r) => r.status === 'failed')) {
@@ -2077,27 +2207,25 @@ export async function startUIServer(
         totalDuration = r.duration;
       }
 
-      const runResult: TestRunResult = {
-        status: totalFailed > 0 || parallelRunAborted ? 'failed' : 'passed',
+      return endRun({
+        status: totalFailed > 0 ? 'failed' : 'passed',
         duration: totalDuration,
         passed: totalPassed,
         failed: totalFailed,
         skipped: totalSkipped,
-      };
-      broadcast({ type: 'run-end', ...runResult });
-      return runResult;
+      });
     } catch (err) {
-      const errMsg = err instanceof Error ? err.message : String(err);
-      broadcast({ type: 'error', message: errMsg });
-      const runResult: TestRunResult = {
+      if (!parallelRunAborted) {
+        const errMsg = err instanceof Error ? err.message : String(err);
+        broadcast({ type: 'error', message: errMsg });
+      }
+      return endRun({
         status: 'failed',
         duration: totalDuration,
         passed: totalPassed,
-        failed: totalFailed + 1,
+        failed: parallelRunAborted ? totalFailed : totalFailed + 1,
         skipped: totalSkipped,
-      };
-      broadcast({ type: 'run-end', ...runResult });
-      return runResult;
+      });
     } finally {
       markRunEnded();
       screenPollActive = false;
@@ -2127,26 +2255,51 @@ export async function startUIServer(
 
     try {
       const r = await dispatchFilesParallel([file]);
-      const runResult: TestRunResult = { status: r.failed > 0 ? 'failed' : 'passed', duration: r.duration, passed: r.passed, failed: r.failed, skipped: r.skipped };
-      broadcast({ type: 'run-end', ...runResult });
-      return runResult;
+      return endRun({ status: r.failed > 0 ? 'failed' : 'passed', duration: r.duration, passed: r.passed, failed: r.failed, skipped: r.skipped });
     } catch (err) {
-      const errMsg = err instanceof Error ? err.message : String(err);
-      broadcast({ type: 'error', message: `Failed to run ${path.basename(filePath)}: ${errMsg}` });
+      if (!parallelRunAborted) {
+        const errMsg = err instanceof Error ? err.message : String(err);
+        broadcast({ type: 'error', message: `Failed to run ${path.basename(filePath)}: ${errMsg}` });
+      }
       broadcastFileStatus(filePath, 'done', file.projectName);
-      const runResult: TestRunResult = { status: 'failed', passed: 0, failed: 1, skipped: 0, duration: 0 };
-      broadcast({ type: 'run-end', ...runResult });
-      return runResult;
+      return endRun({ status: 'failed', passed: 0, failed: parallelRunAborted ? 0 : 1, skipped: 0, duration: 0 });
     } finally {
       markRunEnded();
       screenPollActive = false;
     }
   }
 
+  /** Grace period between the cooperative abort and SIGKILL escalation. */
+  const STOP_GRACE_MS = 5_000;
+
+  /**
+   * Stop the in-flight run (Stop button / MCP tapsmith_stop_tests). In the
+   * common case the cooperative abort lands within ~1s: workers abort their
+   * AbortController, which cancels the in-flight gRPC call and short-circuits
+   * poll loops. Wedged workers are SIGKILLed after STOP_GRACE_MS.
+   */
+  function stopRun(): void {
+    if (!isRunning) return;
+    stopRequested = true;
+    if (useParallel()) {
+      stopParallelRun();
+    } else {
+      // Record the in-flight test as interrupted BEFORE killing the child —
+      // the child's exit handler nulls singleWorkerRunningTest.
+      if (singleWorkerRunningTest) {
+        const { fullName, filePath, projectName } = singleWorkerRunningTest;
+        updateTestStatus(fullName, filePath, 'failed', undefined, 'Stopped by user', undefined, undefined, undefined, projectName);
+        interruptedCount++;
+      }
+      if (activeChild) { try { activeChild.kill(); } catch { /* already dead */ } }
+    }
+  }
+
   /** Stop a parallel run: signal each busy worker to abort. The worker's
-   * poll loops bail out immediately via getActiveAbortSignal(), so the
-   * in-flight assertion/action doesn't finish its own timeout; the worker
-   * itself stays alive and ready for the next run. */
+   * abort cancels the in-flight gRPC call and short-circuits poll loops, so
+   * the current action doesn't ride out its own timeout; the worker itself
+   * stays alive and ready for the next run. Workers that fail to drain
+   * within STOP_GRACE_MS are SIGKILLed by escalateStop. */
   function stopParallelRun(): void {
     parallelRunAborted = true;
 
@@ -2156,6 +2309,72 @@ export async function startUIServer(
         worker.process.send({ type: 'abort' } satisfies import('./ui-protocol.js').UIWorkerAbortMessage);
       } catch { /* IPC closed */ }
     }
+
+    if (!stopEscalationTimer) {
+      stopEscalationTimer = setTimeout(escalateStop, STOP_GRACE_MS);
+    }
+  }
+
+  /**
+   * Escalation backstop (PILOT-222): a worker that hasn't drained within the
+   * grace period is wedged (e.g. blocked event loop, hung native call) — the
+   * cooperative abort can never land. SIGKILL it, retire it, and record its
+   * in-flight test as interrupted SYNCHRONOUSLY — the dispatch's exit
+   * listener is removed once the dispatch settles, so relying on the exit
+   * event could leave a dead worker unretired (never respawned by
+   * ensureWorkersReady) with its test stuck 'running'. With every killed
+   * worker retired there is nothing left to wait for, so the dispatch is
+   * settled immediately; a late exit event takes the worker.retired →
+   * maybeResolve no-op path.
+   */
+  function escalateStop(): void {
+    stopEscalationTimer = null;
+    if (!parallelRunAborted) return;
+
+    let killedAny = false;
+    for (const worker of uiWorkers) {
+      if (worker.retired || !worker.busy) continue;
+      killedAny = true;
+      console.error(`${YELLOW}Worker ${worker.id} (${worker.deviceSerial}) did not stop within ${STOP_GRACE_MS}ms — force-killing.${RESET}`);
+      try { worker.process.kill('SIGKILL'); } catch { /* already dead */ }
+
+      worker.retired = true;
+      worker.busy = false;
+      broadcastWorkerStatus(worker, 'error');
+      releaseWorkerResources(worker);
+      if (worker.currentFile) {
+        if (worker.currentTest) {
+          updateTestStatus(
+            worker.currentTest,
+            worker.currentFile.filePath,
+            'failed',
+            undefined,
+            'Interrupted: stopped by user',
+            undefined,
+            undefined,
+            worker.id,
+            worker.currentFile.projectName,
+          );
+          interruptedCount++;
+        }
+        broadcastFileStatus(worker.currentFile.filePath, 'done', worker.currentFile.projectName);
+        worker.currentFile = undefined;
+        worker.currentTest = undefined;
+      }
+    }
+
+    if (killedAny) forceSettleDispatch?.();
+  }
+
+  /**
+   * Kill a retired worker's daemon and close its screen client. SIGTERM (not
+   * SIGKILL) so the daemon can tear down its own agent processes — orphaned
+   * XCUITest runners re-boot their simulators (see PILOT-230). Safe to call
+   * repeatedly: kill on a dead process is a no-op and close() is idempotent.
+   */
+  function releaseWorkerResources(worker: UIWorkerHandle): void {
+    try { worker.daemonProcess?.kill(); } catch { /* already dead */ }
+    worker.screenClient?.close();
   }
 
   /** Respawn any retired workers before starting a new run. */
@@ -2183,9 +2402,9 @@ export async function startUIServer(
 
       respawnPromises.push((async () => {
         try {
-          // Clean up old daemon
-          try { worker.daemonProcess?.kill(); } catch { /* already dead */ }
-          worker.screenClient?.close();
+          // Clean up old daemon (usually already done at retirement; this is
+          // a no-op backstop)
+          releaseWorkerResources(worker);
 
           const newWorker = await initializeOneWorker(
             worker.id, worker.deviceSerial, daemonPort, agentPort, daemonBin,
@@ -2240,8 +2459,7 @@ export async function startUIServer(
 
     try {
       const r = await dispatchFilesParallel(files);
-      broadcast({
-        type: 'run-end',
+      endRun({
         status: r.failed > 0 ? 'failed' : 'passed',
         duration: r.duration,
         passed: r.passed,
@@ -2249,9 +2467,11 @@ export async function startUIServer(
         skipped: r.skipped,
       });
     } catch (err) {
-      const errMsg = err instanceof Error ? err.message : String(err);
-      broadcast({ type: 'error', message: errMsg });
-      broadcast({ type: 'run-end', status: 'failed', duration: 0, passed: 0, failed: files.length, skipped: 0 });
+      if (!parallelRunAborted) {
+        const errMsg = err instanceof Error ? err.message : String(err);
+        broadcast({ type: 'error', message: errMsg });
+      }
+      endRun({ status: 'failed', duration: 0, passed: 0, failed: parallelRunAborted ? 0 : files.length, skipped: 0 });
     } finally {
       markRunEnded();
       screenPollActive = false;
@@ -2329,8 +2549,7 @@ export async function startUIServer(
           }
         }
 
-        broadcast({
-          type: 'run-end',
+        endRun({
           status: totalFailed > 0 ? 'failed' : 'passed',
           duration: totalDuration,
           passed: totalPassed,
@@ -2432,8 +2651,7 @@ export async function startUIServer(
           totalDuration += r.duration;
         }
 
-        broadcast({
-          type: 'run-end',
+        endRun({
           status: totalFailed > 0 ? 'failed' : 'passed',
           duration: totalDuration,
           passed: totalPassed,
@@ -3028,8 +3246,7 @@ export async function startUIServer(
 
               try {
                 const r = await dispatchFilesParallel(taggedFiles);
-                broadcast({
-                  type: 'run-end',
+                endRun({
                   status: r.failed > 0 ? 'failed' : 'passed',
                   duration: r.duration,
                   passed: r.passed,
@@ -3037,16 +3254,22 @@ export async function startUIServer(
                   skipped: r.skipped,
                 });
               } catch (err) {
-                const errMsg = err instanceof Error ? err.message : String(err);
-                broadcast({ type: 'error', message: `Failed to run failed tests: ${errMsg}` });
-                broadcast({ type: 'run-end', status: 'failed', duration: 0, passed: 0, failed: 1, skipped: 0 });
+                if (!parallelRunAborted) {
+                  const errMsg = err instanceof Error ? err.message : String(err);
+                  broadcast({ type: 'error', message: `Failed to run failed tests: ${errMsg}` });
+                }
+                endRun({ status: 'failed', duration: 0, passed: 0, failed: parallelRunAborted ? 0 : 1, skipped: 0 });
               } finally {
                 markRunEnded();
                 screenPollActive = false;
               }
             } else {
-              // Single-worker: run files sequentially via runFile (each manages isRunning)
-              for (const f of files) await runFile(f);
+              // Single-worker: run files sequentially via runFile (each manages
+              // isRunning). A stop during one file must not start the next.
+              for (const f of files) {
+                const r = await runFile(f);
+                if (stopRequested || r.status === 'stopped') break;
+              }
             }
           })().catch(broadcastError);
         }
@@ -3057,11 +3280,7 @@ export async function startUIServer(
         else runProjectOnly(msg.projectName).catch(broadcastError);
         break;
       case 'stop-run':
-        if (useParallel()) {
-          stopParallelRun();
-        } else if (activeChild) {
-          try { activeChild.kill(); } catch { /* already dead */ }
-        }
+        stopRun();
         break;
       case 'toggle-watch':
         if (msg.filePath === 'all') {
@@ -3676,8 +3895,7 @@ export async function startUIServer(
               }, 3_000);
             }
           } catch { /* already dead */ }
-          try { worker.daemonProcess?.kill(); } catch { /* already dead */ }
-          worker.screenClient?.close();
+          releaseWorkerResources(worker);
         }
       } else {
         if (activeChild) {
