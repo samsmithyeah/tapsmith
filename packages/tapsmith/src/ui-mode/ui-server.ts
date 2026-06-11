@@ -2214,13 +2214,15 @@ export async function startUIServer(
         skipped: totalSkipped,
       });
     } catch (err) {
-      const errMsg = err instanceof Error ? err.message : String(err);
-      broadcast({ type: 'error', message: errMsg });
+      if (!parallelRunAborted) {
+        const errMsg = err instanceof Error ? err.message : String(err);
+        broadcast({ type: 'error', message: errMsg });
+      }
       return endRun({
         status: 'failed',
         duration: totalDuration,
         passed: totalPassed,
-        failed: totalFailed + 1,
+        failed: parallelRunAborted ? totalFailed : totalFailed + 1,
         skipped: totalSkipped,
       });
     } finally {
