@@ -61,9 +61,9 @@ export default defineConfig({
     },
     {
       name: "android",
-      workers: 2,
+      workers: 1,
       testMatch: ["**/*.test.ts"],
-      testIgnore: ["**/app-state.test.ts", "**/auth-gate.test.ts"],
+      testIgnore: ["**/app-state.test.ts", "**/auth-gate.test.ts", "**/*.ios.test.ts"],
       use: ANDROID_USE,
     },
     {
@@ -81,7 +81,7 @@ export default defineConfig({
     },
     {
       name: "ios",
-      workers: 2,
+      workers: 1,
       testMatch: ["**/*.test.ts"],
       testIgnore: [
         "**/app-state.test.ts",

@@ -10,7 +10,7 @@ export default defineConfig({
   timeout: 10_000,
   retries: 0,
   screenshot: "only-on-failure",
-  workers: 4,
+  workers: 2,
   trace: { mode: "retain-on-failure", daemonLogs: true },
   simulator: process.env.TAPSMITH_IOS_SIMULATOR || "iPhone 17",
   projects: [

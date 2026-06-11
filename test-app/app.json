@@ -33,7 +33,10 @@
               "scheme": "tapsmithtest"
             }
           ],
-          "category": ["DEFAULT", "BROWSABLE"]
+          "category": [
+            "DEFAULT",
+            "BROWSABLE"
+          ]
         }
       ]
     },
@@ -43,7 +46,8 @@
     "plugins": [
       "expo-router",
       "./plugins/with-network-security-config",
-      "./plugins/with-webview-debugging"
+      "./plugins/with-webview-debugging",
+      "expo-secure-store"
     ],
     "experiments": {
       "typedRoutes": true

@@ -24,7 +24,12 @@ export default defineConfig({
     {
       name: "default",
       testMatch: ["**/*.test.ts"],
-      testIgnore: ["**/app-state.test.ts", "**/auth-gate.test.ts", "**/webview*.test.ts"],
+      testIgnore: [
+        "**/app-state.test.ts",
+        "**/auth-gate.test.ts",
+        "**/webview*.test.ts",
+        "**/*.ios.test.ts",
+      ],
     },
     {
       name: "authenticated",

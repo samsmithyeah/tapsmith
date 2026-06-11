@@ -1548,6 +1548,33 @@ pub(crate) fn opt_timeout(ms: u64) -> Option<u64> {
     }
 }
 
+/// Extract the reserved keychain member from an app-state archive and swap
+/// it into the simulator's device-level keychain (restarting securityd so
+/// the swapped db is picked up).
+async fn restore_simulator_keychain(udid: &str, container: &str, archive_path: &str) -> Result<()> {
+    use anyhow::{bail, Context};
+
+    let keychain_dir = ios::device::simulator_keychain_dir(container).ok_or_else(|| {
+        anyhow::anyhow!("Could not derive simulator keychain dir from container path {container}")
+    })?;
+    let scratch = tempfile::tempdir().context("Failed to create keychain scratch dir")?;
+    let scratch_path = scratch.path().to_string_lossy().to_string();
+    let member = format!("./{}", ios::device::KEYCHAIN_ARCHIVE_MEMBER);
+    let out = tokio::process::Command::new("tar")
+        .args(["xzf", archive_path, "-C", &scratch_path, &member])
+        .output()
+        .await
+        .context("Failed to run tar")?;
+    if !out.status.success() {
+        bail!(
+            "tar extract of keychain member failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+    let src_dir = scratch.path().join(ios::device::KEYCHAIN_ARCHIVE_MEMBER);
+    ios::device::swap_keychain_files(udid, &keychain_dir, &src_dir).await
+}
+
 #[tonic::async_trait]
 impl proto::tapsmith_service_server::TapsmithService for TapsmithServiceImpl {
     #[instrument(skip_all, fields(request_id))]
@@ -3464,6 +3491,26 @@ impl proto::tapsmith_service_server::TapsmithService for TapsmithServiceImpl {
                         if let Err(e) = ios::device::clear_container(container).await {
                             warn!(error = %e, "Failed to clear app container, continuing anyway");
                         }
+                        // Also clear the simulator's device-level keychain so
+                        // keychain-backed auth state (e.g. Firebase Auth)
+                        // doesn't survive a "full" data clear, leaving a
+                        // half-signed-in app. The keychain is device-global,
+                        // so this clears it for every app on the simulator —
+                        // acceptable for test-owned simulators.
+                        if !ios::device::keychain_state_disabled() {
+                            match ios::device::simulator_keychain_dir(container) {
+                                Some(keychain_dir) => {
+                                    if let Err(e) =
+                                        ios::device::clear_keychain(&serial, &keychain_dir).await
+                                    {
+                                        warn!(error = %e, "Failed to clear simulator keychain, continuing anyway");
+                                    }
+                                }
+                                None => {
+                                    warn!(container = %container, "Could not derive simulator keychain dir; keychain not cleared");
+                                }
+                            }
+                        }
                     }
                     Err(e) => {
                         debug!(error = %e, "Could not get app container (app may not be installed)");
@@ -4849,6 +4896,10 @@ impl proto::tapsmith_service_server::TapsmithService for TapsmithServiceImpl {
                     // --domain-type appDataContainer` to pull the app's data
                     // container to a scratch directory, then tar it for
                     // parity with the simulator output shape.
+                    warn!(
+                        %pkg,
+                        "Keychain state is not captured on physical iOS devices — keychain-backed data (e.g. native auth SDK credentials) will not be saved"
+                    );
                     let scratch = tempfile::tempdir()
                         .map_err(|e| Status::internal(format!("tempdir: {e}")))?;
                     let scratch_path = scratch.path().to_string_lossy().to_string();
@@ -4924,6 +4975,33 @@ impl proto::tapsmith_service_server::TapsmithService for TapsmithServiceImpl {
                 // Terminate the app to flush data
                 let _ = ios::device::terminate_app(&serial, pkg).await;
 
+                // Stage the simulator's device-level keychain db so the
+                // archive captures keychain-backed state (Firebase Auth and
+                // other SDKs persist credentials there, outside the app
+                // container). Staging failures are non-fatal: the archive is
+                // still valid, just without keychain state.
+                let keychain_staging =
+                    tempfile::tempdir().map_err(|e| Status::internal(format!("tempdir: {e}")))?;
+                let mut keychain_staged = 0;
+                if !ios::device::keychain_state_disabled() {
+                    match ios::device::simulator_keychain_dir(&container) {
+                        Some(keychain_dir) => {
+                            let dest = keychain_staging
+                                .path()
+                                .join(ios::device::KEYCHAIN_ARCHIVE_MEMBER);
+                            match ios::device::stage_keychain_files(&keychain_dir, &dest).await {
+                                Ok(count) => keychain_staged = count,
+                                Err(e) => {
+                                    warn!(%pkg, error = %e, "Failed to stage simulator keychain; archive will not include keychain state");
+                                }
+                            }
+                        }
+                        None => {
+                            warn!(%pkg, container, "Could not derive simulator keychain dir; archive will not include keychain state");
+                        }
+                    }
+                }
+
                 // Create tar.gz archive of the data container, excluding
                 // caches and ephemeral data that inflates the archive
                 // without contributing to app state (auth tokens, prefs,
@@ -4932,19 +5010,29 @@ impl proto::tapsmith_service_server::TapsmithService for TapsmithServiceImpl {
                 if let Some(parent) = std::path::Path::new(local_path).parent() {
                     let _ = tokio::fs::create_dir_all(parent).await;
                 }
+                let mut tar_args: Vec<String> = vec![
+                    "czf".into(),
+                    local_path.clone(),
+                    "--exclude=./Library/Caches".into(),
+                    "--exclude=./Library/WebKit".into(),
+                    "--exclude=./Library/SplashBoard".into(),
+                    "--exclude=./Library/Saved Application State".into(),
+                    "--exclude=./tmp".into(),
+                    "-C".into(),
+                    container.clone(),
+                    ".".into(),
+                ];
+                if keychain_staged > 0 {
+                    // Second -C pair appends the staged keychain as a
+                    // reserved member alongside the container contents.
+                    tar_args.extend([
+                        "-C".into(),
+                        keychain_staging.path().to_string_lossy().to_string(),
+                        format!("./{}", ios::device::KEYCHAIN_ARCHIVE_MEMBER),
+                    ]);
+                }
                 let output = tokio::process::Command::new("tar")
-                    .args([
-                        "czf",
-                        local_path,
-                        "--exclude=./Library/Caches",
-                        "--exclude=./Library/WebKit",
-                        "--exclude=./Library/SplashBoard",
-                        "--exclude=./Library/Saved Application State",
-                        "--exclude=./tmp",
-                        "-C",
-                        &container,
-                        ".",
-                    ])
+                    .args(&tar_args)
                     .output()
                     .await;
 
@@ -5244,13 +5332,57 @@ impl proto::tapsmith_service_server::TapsmithService for TapsmithServiceImpl {
                     warn!(%pkg, error = %e, "clear_container failed, continuing");
                 }
 
+                // Archives saved by newer daemons carry the simulator
+                // keychain under a reserved member; older archives don't,
+                // and restore exactly as before.
+                let has_keychain = match tokio::process::Command::new("tar")
+                    .args(["tzf", local_path])
+                    .output()
+                    .await
+                {
+                    Ok(out) if out.status.success() => ios::device::archive_has_keychain_member(
+                        &String::from_utf8_lossy(&out.stdout),
+                    ),
+                    _ => false,
+                };
+
+                let member_pattern = format!("./{}", ios::device::KEYCHAIN_ARCHIVE_MEMBER);
                 let output = tokio::process::Command::new("tar")
-                    .args(["xzf", local_path, "-C", &container])
+                    .args([
+                        "xzf",
+                        local_path,
+                        "-C",
+                        &container,
+                        "--exclude",
+                        &member_pattern,
+                        "--exclude",
+                        &format!("{member_pattern}/*"),
+                    ])
                     .output()
                     .await;
 
                 match output {
                     Ok(out) if out.status.success() => {
+                        if has_keychain && !ios::device::keychain_state_disabled() {
+                            if let Err(e) =
+                                restore_simulator_keychain(&serial, &container, local_path).await
+                            {
+                                // Failing silently here would reproduce the
+                                // half-restored auth state this feature
+                                // exists to fix — surface it instead.
+                                return Ok(self
+                                    .action_error(
+                                        request_id,
+                                        "APP_STATE_RESTORE_FAILED",
+                                        format!("Keychain restore failed: {e}"),
+                                    )
+                                    .await);
+                            }
+                        } else if has_keychain {
+                            debug!(%pkg, "Archive contains keychain state but TAPSMITH_NO_KEYCHAIN_STATE is set; skipping keychain restore");
+                        } else {
+                            debug!(%pkg, "Archive has no keychain member (saved by an older version); skipping keychain restore");
+                        }
                         info!(%pkg, %local_path, container, "iOS simulator app state restored");
                         Ok(Self::success_action_response(request_id))
                     }

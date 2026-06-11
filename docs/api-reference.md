@@ -370,11 +370,17 @@ Clear all app data and cache, providing test isolation similar to Playwright's f
 await device.clearAppData("com.example.myapp");
 ```
 
+- **Android**: `pm clear` — wipes all persisted state including the Android Keystore-backed data.
+- **iOS simulator**: clears the app's data container **and the simulator's keychain**, so keychain-backed state (e.g. native Firebase Auth sessions, `expo-secure-store` items) doesn't survive a "full" clear. The simulator keychain is device-global, so this clears keychain items for *every* app on the simulator — fine for test-owned simulators. Set `TAPSMITH_NO_KEYCHAIN_STATE=1` to skip the keychain wipe.
+- **iOS physical device**: uninstalls and reinstalls the app bundle (iOS deletes the app's keychain entries on uninstall).
+
 ### `device.saveAppState(packageName: string, path: string): Promise<void>`
 
-Snapshot the app's data directory (`/data/data/<package>/`) — including SharedPreferences, databases, and internal files — and save it as a tar.gz archive on the host. The app is force-stopped before snapshotting to avoid data corruption.
+Snapshot the app's persisted state and save it as a tar.gz archive on the host. The app is stopped before snapshotting to avoid data corruption.
 
-Requires root (emulators) or a debuggable app (`run-as` fallback on physical devices).
+- **Android**: archives the app's data directory (`/data/data/<package>/`) — SharedPreferences, databases, and internal files. Requires root (emulators) or a debuggable app (`run-as` fallback on physical devices).
+- **iOS simulator**: archives the app's data container **plus the simulator's keychain database** (as a reserved `.tapsmith-keychain` archive member), so keychain-backed auth state (e.g. native Firebase Auth, `expo-secure-store`) round-trips correctly. Set `TAPSMITH_NO_KEYCHAIN_STATE=1` to disable keychain capture.
+- **iOS physical device**: archives the app's data container only. The keychain is not host-accessible on physical devices, so keychain-backed state (e.g. native auth SDK credentials) is **not** captured — a warning is logged. Prefer API-driven auth (e.g. custom-token sign-in) for test setup on physical devices.
 
 ```typescript
 // Save authenticated state after login
@@ -383,7 +389,11 @@ await device.saveAppState("com.example.myapp", "./auth-state.tar.gz");
 
 ### `device.restoreAppState(packageName: string, path: string): Promise<void>`
 
-Restore a previously saved app state archive. Clears the app's data first (`pm clear`), then extracts the archive, fixing file ownership and SELinux contexts when running as root.
+Restore a previously saved app state archive. Clears the app's data first, then extracts the archive.
+
+- **Android**: `pm clear`, then extracts, fixing file ownership and SELinux contexts when running as root.
+- **iOS simulator**: clears and re-extracts the data container; if the archive contains keychain state, the simulator's keychain is swapped to match and `securityd` is restarted so the change takes effect. The simulator keychain is device-global, so restoring swaps keychain state for every app on the simulator. Archives saved by older Tapsmith versions (without keychain state) restore exactly as before. Set `TAPSMITH_NO_KEYCHAIN_STATE=1` to skip the keychain swap.
+- **iOS physical device**: reinstalls the app and pushes the archived container contents (keychain state is not restored — see `saveAppState`).
 
 ```typescript
 // Restore state instead of logging in again
