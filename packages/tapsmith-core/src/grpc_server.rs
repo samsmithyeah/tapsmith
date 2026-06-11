@@ -1558,25 +1558,27 @@ async fn restore_simulator_keychain(udid: &str, container: &str, archive_path: &
         anyhow::anyhow!("Could not derive simulator keychain dir from container path {container}")
     })?;
     let scratch = tempfile::tempdir().context("Failed to create keychain scratch dir")?;
-    let scratch_path = scratch.path().to_string_lossy().to_string();
     // We write the member as `./.tapsmith-keychain` on save, but tolerate the
     // bare form too so detection, exclusion, and extraction stay consistent
-    // regardless of how the archive recorded it.
+    // regardless of how the archive recorded it. Pass the scratch path as a
+    // Path (not a lossy string) so non-UTF-8 temp dirs work.
     let bare = ios::device::KEYCHAIN_ARCHIVE_MEMBER;
     let mut out = tokio::process::Command::new("tar")
-        .args([
-            "xzf",
-            archive_path,
-            "-C",
-            &scratch_path,
-            &format!("./{bare}"),
-        ])
+        .arg("xzf")
+        .arg(archive_path)
+        .arg("-C")
+        .arg(scratch.path())
+        .arg(format!("./{bare}"))
         .output()
         .await
         .context("Failed to run tar")?;
     if !out.status.success() {
         out = tokio::process::Command::new("tar")
-            .args(["xzf", archive_path, "-C", &scratch_path, bare])
+            .arg("xzf")
+            .arg(archive_path)
+            .arg("-C")
+            .arg(scratch.path())
+            .arg(bare)
             .output()
             .await
             .context("Failed to run tar")?;

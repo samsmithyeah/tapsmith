@@ -1054,24 +1054,40 @@ pub async fn swap_keychain_files(
     // process, so the fresh securityd opens the new, complete set by name.
     // (Killing first would be worse: launchd respawns securityd almost
     // immediately and a respawn mid-swap could open a mismatched db/-wal pair.)
+    //
+    // Stage every file into a `.tmp` sibling first, and only rename them into
+    // place once ALL copies have succeeded. If a copy fails partway, remove the
+    // temps and abort with the live keychain untouched, so a failed restore can
+    // never install a mismatched db/-wal/-shm set.
+    let mut staged: Vec<(PathBuf, PathBuf)> = Vec::new();
+    let mut stale: Vec<PathBuf> = Vec::new();
     for name in SIM_KEYCHAIN_FILES {
         let src = src_dir.join(name);
         let dest = keychain_dir.join(name);
         if tokio::fs::try_exists(&src).await.unwrap_or(false) {
             let tmp = keychain_dir.join(format!("{name}.tapsmith-tmp"));
-            tokio::fs::copy(&src, &tmp)
-                .await
-                .with_context(|| format!("Failed to stage keychain file {name}"))?;
-            tokio::fs::rename(&tmp, &dest)
-                .await
-                .with_context(|| format!("Failed to install keychain file {name}"))?;
+            if let Err(e) = tokio::fs::copy(&src, &tmp).await {
+                for (t, _) in &staged {
+                    let _ = tokio::fs::remove_file(t).await;
+                }
+                return Err(e).with_context(|| format!("Failed to stage keychain file {name}"));
+            }
+            staged.push((tmp, dest));
         } else if tokio::fs::try_exists(&dest).await.unwrap_or(false) {
             // src lacks this file (e.g. no -wal/-shm) — drop the stale dest so
             // a leftover WAL can't replay old transactions over the restored db.
-            tokio::fs::remove_file(&dest)
-                .await
-                .with_context(|| format!("Failed to remove stale keychain file {name}"))?;
+            stale.push(dest);
         }
+    }
+    for (tmp, dest) in staged {
+        tokio::fs::rename(&tmp, &dest)
+            .await
+            .with_context(|| format!("Failed to install keychain file {}", dest.display()))?;
+    }
+    for dest in stale {
+        tokio::fs::remove_file(&dest)
+            .await
+            .with_context(|| format!("Failed to remove stale keychain file {}", dest.display()))?;
     }
     restart_securityd(udid).await?;
     info!(udid, "Simulator keychain restored");
