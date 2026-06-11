@@ -51,3 +51,4 @@ pilot-report/
 repomix-output.xml
 # Superpowers design specs / implementation plans (local workflow artifacts)
 docs/superpowers/
+dogfooding/

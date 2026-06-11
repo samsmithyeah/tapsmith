@@ -955,6 +955,11 @@ pub const SIM_KEYCHAIN_FILES: [&str; 3] = [
     "keychain-2-debug.db-shm",
 ];
 
+/// launchctl service target for the simulator's securityd. The same on the
+/// iOS runtimes we've tested; `restart_securityd` falls back to discovery if
+/// it ever drifts.
+const SECURITYD_LABEL: &str = "system/com.apple.securityd";
+
 /// Reserved archive member that carries keychain state inside app-state
 /// archives. Dot-prefixed so an old daemon that extracts it into the app
 /// container can't collide with real app data.
@@ -1036,6 +1041,14 @@ pub async fn swap_keychain_files(
             SIM_KEYCHAIN_FILES[0]
         );
     }
+    // Stop securityd before touching the files: it holds the db open, so
+    // overwriting it underneath a live securityd risks a torn read or, worse,
+    // securityd flushing stale in-memory state back over the files we just
+    // restored. SIGKILL (not a graceful restart) so it can't flush on the way
+    // out. The kickstart -k in restart_securityd then forces a fresh process
+    // that reads the swapped db from disk — even if launchd respawned one
+    // mid-copy with a stale view.
+    kill_securityd(udid).await;
     tokio::fs::create_dir_all(keychain_dir)
         .await
         .context("Failed to create simulator keychain dir")?;
@@ -1062,6 +1075,9 @@ pub async fn swap_keychain_files(
 /// for every app on the simulator.
 #[instrument(skip_all, fields(udid))]
 pub async fn clear_keychain(udid: &str, keychain_dir: &std::path::Path) -> Result<()> {
+    // Kill securityd before deleting so it can't flush the db back to disk
+    // after we remove it (see swap_keychain_files for the full rationale).
+    kill_securityd(udid).await;
     let mut removed = 0;
     for name in SIM_KEYCHAIN_FILES {
         let path = keychain_dir.join(name);
@@ -1072,13 +1088,33 @@ pub async fn clear_keychain(udid: &str, keychain_dir: &std::path::Path) -> Resul
             removed += 1;
         }
     }
+    // Always restart securityd, even if nothing was removed: we just killed it.
+    restart_securityd(udid).await?;
     if removed == 0 {
         debug!(udid, "No simulator keychain files to clear");
-        return Ok(());
+    } else {
+        info!(udid, "Simulator keychain cleared");
     }
-    restart_securityd(udid).await?;
-    info!(udid, "Simulator keychain cleared");
     Ok(())
+}
+
+/// SIGKILL securityd inside the simulator so it stops immediately without
+/// flushing in-memory keychain state to disk. Best-effort: an already-dead or
+/// drifted-label target just no-ops (the subsequent `restart_securityd` with
+/// `kickstart -k` handles label drift and brings it back).
+async fn kill_securityd(udid: &str) {
+    let _ = Command::new("xcrun")
+        .args([
+            "simctl",
+            "spawn",
+            udid,
+            "launchctl",
+            "kill",
+            "SIGKILL",
+            SECURITYD_LABEL,
+        ])
+        .output()
+        .await;
 }
 
 /// Restart securityd inside the simulator so it re-reads the keychain db
@@ -1086,7 +1122,7 @@ pub async fn clear_keychain(udid: &str, keychain_dir: &std::path::Path) -> Resul
 /// are ignored (or torn) until the daemon next reads it.
 #[instrument]
 pub async fn restart_securityd(udid: &str) -> Result<()> {
-    const KNOWN_LABEL: &str = "system/com.apple.securityd";
+    const KNOWN_LABEL: &str = SECURITYD_LABEL;
 
     let kickstart = |label: String| async move {
         Command::new("xcrun")
