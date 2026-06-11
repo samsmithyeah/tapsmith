@@ -1014,7 +1014,7 @@ pub async fn stage_keychain_files(
     let mut copied = 0;
     for name in SIM_KEYCHAIN_FILES {
         let src = keychain_dir.join(name);
-        if src.exists() {
+        if tokio::fs::try_exists(&src).await.unwrap_or(false) {
             tokio::fs::copy(&src, dest_dir.join(name))
                 .await
                 .with_context(|| format!("Failed to copy keychain file {name}"))?;
@@ -1035,7 +1035,7 @@ pub async fn swap_keychain_files(
     src_dir: &std::path::Path,
 ) -> Result<()> {
     let db_src = src_dir.join(SIM_KEYCHAIN_FILES[0]);
-    if !db_src.exists() {
+    if !tokio::fs::try_exists(&db_src).await.unwrap_or(false) {
         bail!(
             "Keychain archive member is missing {} — archive may be corrupt",
             SIM_KEYCHAIN_FILES[0]
@@ -1055,11 +1055,11 @@ pub async fn swap_keychain_files(
     for name in SIM_KEYCHAIN_FILES {
         let src = src_dir.join(name);
         let dest = keychain_dir.join(name);
-        if src.exists() {
+        if tokio::fs::try_exists(&src).await.unwrap_or(false) {
             tokio::fs::copy(&src, &dest)
                 .await
                 .with_context(|| format!("Failed to restore keychain file {name}"))?;
-        } else if dest.exists() {
+        } else if tokio::fs::try_exists(&dest).await.unwrap_or(false) {
             tokio::fs::remove_file(&dest)
                 .await
                 .with_context(|| format!("Failed to remove stale keychain file {name}"))?;
@@ -1081,7 +1081,7 @@ pub async fn clear_keychain(udid: &str, keychain_dir: &std::path::Path) -> Resul
     let mut removed = 0;
     for name in SIM_KEYCHAIN_FILES {
         let path = keychain_dir.join(name);
-        if path.exists() {
+        if tokio::fs::try_exists(&path).await.unwrap_or(false) {
             tokio::fs::remove_file(&path)
                 .await
                 .with_context(|| format!("Failed to delete keychain file {name}"))?;
