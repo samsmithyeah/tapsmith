@@ -226,13 +226,14 @@ pub(crate) struct ProxyState {
     /// `trace.networkHosts` in tapsmith.config.ts and kept up-to-date by
     /// `NetworkProxy::set_network_hosts`. Empty = route everything.
     network_hosts: Vec<String>,
-    /// Glob patterns for hosts whose TLS connections are tunneled end-to-end
-    /// instead of MITM'd (no capture, no routing — the app talks to the real
-    /// server). Sourced from the user's `trace.networkPassthroughHosts` and
-    /// kept up-to-date by `NetworkProxy::set_passthrough_hosts`. Useful for
-    /// cert-pinned hosts. Matched against the ClientHello SNI. Empty = no
-    /// host-based passthrough (ALPN-based h2 passthrough still applies).
-    passthrough_hosts: Vec<String>,
+    /// Pre-compiled glob patterns (see [`compile_host_glob`]) for hosts whose
+    /// TLS connections are tunneled end-to-end instead of MITM'd (no capture,
+    /// no routing — the app talks to the real server). Sourced from the
+    /// user's `trace.networkPassthroughHosts` and kept up-to-date by
+    /// `NetworkProxy::set_passthrough_hosts`. Useful for cert-pinned hosts.
+    /// Matched against the ClientHello SNI. Empty = no host-based passthrough
+    /// (ALPN-based h2 passthrough still applies).
+    passthrough_hosts: Vec<regex::Regex>,
 }
 
 /// Handle to the running proxy. Dropping it stops the proxy.
@@ -357,11 +358,23 @@ impl NetworkProxy {
     /// Update the host-glob passthrough list (`trace.networkPassthroughHosts`).
     /// TLS connections whose SNI matches any of these globs are tunneled
     /// end-to-end without MITM — no capture, no routing — so cert-pinned
-    /// hosts keep working during tests. Safe to call while the proxy is
-    /// serving traffic; applies to connections accepted after the call.
+    /// hosts keep working during tests. Globs are compiled to regexes here,
+    /// once, so per-connection matching stays cheap. Safe to call while the
+    /// proxy is serving traffic; applies to connections accepted after the
+    /// call.
     pub async fn set_passthrough_hosts(&self, hosts: Vec<String>) {
+        let compiled = hosts
+            .iter()
+            .filter_map(|pattern| {
+                let re = compile_host_glob(pattern);
+                if re.is_none() {
+                    warn!(%pattern, "Ignoring invalid networkPassthroughHosts pattern");
+                }
+                re
+            })
+            .collect();
         let mut state = self.state.lock().await;
-        state.passthrough_hosts = hosts;
+        state.passthrough_hosts = compiled;
     }
 
     /// Set a [`NetworkHandler`] implementation on the proxy. Requests
@@ -2477,13 +2490,16 @@ fn requires_tls_passthrough(alpn: &[Vec<u8>]) -> bool {
             .any(|p| p.as_slice() == b"http/1.1" || p.as_slice() == b"http/1.0")
 }
 
-/// Case-insensitive host glob match, mirroring the SDK's
-/// `trace/filter-hosts.ts` semantics: `*` matches any run of characters,
-/// and a leading `*.` (or `**.`) prefix is optional so `*.example.com`
-/// matches both `api.example.com` and `example.com` itself.
-fn host_glob_matches(pattern: &str, host: &str) -> bool {
+/// Compile a host glob into an anchored, case-insensitive regex, mirroring
+/// the SDK's `trace/filter-hosts.ts` semantics: `*` matches any run of
+/// characters, and a leading `*.` (or `**.`) prefix is optional so
+/// `*.example.com` matches both `api.example.com` and `example.com` itself.
+/// Returns `None` for patterns the regex engine rejects (pathological size).
+///
+/// Compiled once per pattern in [`NetworkProxy::set_passthrough_hosts`] —
+/// per-connection matching only runs the pre-compiled regexes.
+fn compile_host_glob(pattern: &str) -> Option<regex::Regex> {
     let pattern = pattern.to_lowercase();
-    let host = host.to_lowercase();
     let (optional_subdomain, body) = match pattern
         .strip_prefix("**.")
         .or_else(|| pattern.strip_prefix("*."))
@@ -2491,7 +2507,7 @@ fn host_glob_matches(pattern: &str, host: &str) -> bool {
         Some(tail) => (true, tail),
         None => (false, pattern.as_str()),
     };
-    let mut re = String::from("^");
+    let mut re = String::from("(?i)^");
     if optional_subdomain {
         re.push_str("(?:.*\\.)?");
     }
@@ -2503,15 +2519,14 @@ fn host_glob_matches(pattern: &str, host: &str) -> bool {
         }
     }
     re.push('$');
-    regex::Regex::new(&re)
-        .map(|r| r.is_match(&host))
-        .unwrap_or(false)
+    regex::Regex::new(&re).ok()
 }
 
-/// Whether `host` matches any of the configured passthrough globs. Unlike
-/// the SDK's allowlist semantics, an empty list matches nothing.
-fn host_matches_any_glob(patterns: &[String], host: &str) -> bool {
-    patterns.iter().any(|p| host_glob_matches(p, host))
+/// Single-pattern convenience over [`compile_host_glob`] (tests and
+/// one-off checks; hot paths use the pre-compiled list in `ProxyState`).
+#[cfg(test)]
+fn host_glob_matches(pattern: &str, host: &str) -> bool {
+    compile_host_glob(pattern).is_some_and(|r| r.is_match(host))
 }
 
 /// Record a marker entry for a connection tunneled without MITM, so the
@@ -2635,10 +2650,12 @@ async fn handle_transparent_tls<S>(
         return;
     }
 
-    let host_passthrough = {
-        let patterns = &state.lock().await.passthrough_hosts;
-        host_matches_any_glob(patterns, &sni)
-    };
+    let host_passthrough = state
+        .lock()
+        .await
+        .passthrough_hosts
+        .iter()
+        .any(|re| re.is_match(&sni));
     if requires_tls_passthrough(&hello.alpn) || host_passthrough {
         // info-level on purpose: this is the breadcrumb a user has when
         // wondering why expected traffic is missing from the capture.
@@ -3790,13 +3807,6 @@ mod tests {
         assert!(host_glob_matches("192.168.1.*", "192.168.1.7"));
         // Dots are literal, not regex wildcards.
         assert!(!host_glob_matches("192.168.1.7", "192x168x1x7"));
-
-        assert!(host_matches_any_glob(
-            &["other.com".to_string(), "*.example.com".to_string()],
-            "api.example.com"
-        ));
-        // Empty list matches nothing (unlike the SDK allowlist semantics).
-        assert!(!host_matches_any_glob(&[], "api.example.com"));
     }
 
     /// Drain a rustls ClientConnection's pending handshake bytes.
@@ -3904,7 +3914,10 @@ mod tests {
             ),
             handler: None,
             network_hosts: Vec::new(),
-            passthrough_hosts,
+            passthrough_hosts: passthrough_hosts
+                .iter()
+                .map(|p| compile_host_glob(p).unwrap())
+                .collect(),
         }))
     }
 

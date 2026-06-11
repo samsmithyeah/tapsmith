@@ -302,9 +302,10 @@ impl TapsmithServiceImpl {
         match NetworkProxy::start_on(ca, bind).await {
             Ok(proxy) => {
                 info!(%serial, %bind, "Pre-started Wi-Fi MITM proxy for physical iOS OCSP passthrough");
-                proxy
-                    .set_passthrough_hosts(self.passthrough_hosts.read().await.clone())
-                    .await;
+                // Clone out of the read guard before awaiting — holding a
+                // RwLock guard across an await risks starving writers.
+                let passthrough_hosts = self.passthrough_hosts.read().await.clone();
+                proxy.set_passthrough_hosts(passthrough_hosts).await;
                 *self.network_proxy.write().await = Some(proxy);
             }
             Err(e) => {
@@ -4015,9 +4016,10 @@ impl proto::tapsmith_service_server::TapsmithService for TapsmithServiceImpl {
         if let Some(existing) = proxy_guard.as_ref() {
             let existing_port = existing.port();
             existing.reset_entries().await;
-            existing
-                .set_passthrough_hosts(self.passthrough_hosts.read().await.clone())
-                .await;
+            // Clone out of the read guard before awaiting — holding a
+            // RwLock guard across an await risks starving writers.
+            let passthrough_hosts = self.passthrough_hosts.read().await.clone();
+            existing.set_passthrough_hosts(passthrough_hosts).await;
             let serial = self.active_serial().await.unwrap_or_default();
             info!(
                 serial = %serial,
@@ -4161,9 +4163,10 @@ impl proto::tapsmith_service_server::TapsmithService for TapsmithServiceImpl {
                 .await
                 .map_err(|e| Status::internal(format!("Failed to start proxy: {e}")))?
         };
-        proxy
-            .set_passthrough_hosts(self.passthrough_hosts.read().await.clone())
-            .await;
+        // Clone out of the read guard before awaiting — holding a RwLock
+        // guard across an await risks starving writers.
+        let passthrough_hosts = self.passthrough_hosts.read().await.clone();
+        proxy.set_passthrough_hosts(passthrough_hosts).await;
         let host_port = proxy.port();
 
         // Physical iOS: verify the proxy is reachable from the LAN. On
