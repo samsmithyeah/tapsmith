@@ -254,9 +254,10 @@ export async function startUIServer(
     forceSettleDispatch = null;
     // Backstop for run paths that end without broadcasting run-end (e.g. an
     // exception escaping to the command handler): never leave an MCP
-    // stop_tests call hanging on a waiter.
+    // stop_tests call hanging on a waiter. Always a fresh synthetic result —
+    // falling back to lastRunEnd would report the PREVIOUS run's outcome.
     if (runEndWaiters.length > 0) {
-      const fallback = lastRunEnd ?? { status: 'stopped' as const, passed: 0, failed: 0, skipped: 0, duration: 0 };
+      const fallback: TestRunResult = { status: 'stopped', passed: 0, failed: 0, skipped: 0, duration: 0 };
       for (const w of runEndWaiters.splice(0)) w(fallback);
     }
   }

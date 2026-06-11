@@ -235,12 +235,14 @@ export class HeadlessTestDispatcher implements TestDispatcher {
     return result;
   }
 
-  /** Run-state teardown; resolves any waiters left by an exception path. */
+  /** Run-state teardown; resolves any waiters left by an exception path.
+   * Always a fresh synthetic result — falling back to _lastRunEnd would
+   * report the PREVIOUS run's outcome. */
   private _endRunState(): void {
     this._isRunning = false;
     this._stopRequested = false;
     if (this._runEndWaiters.length > 0) {
-      const fallback = this._lastRunEnd ?? { status: 'stopped' as const, passed: 0, failed: 0, skipped: 0, duration: 0 };
+      const fallback: TestRunResult = { status: 'stopped', passed: 0, failed: 0, skipped: 0, duration: 0 };
       for (const w of this._runEndWaiters.splice(0)) w(fallback);
     }
   }
