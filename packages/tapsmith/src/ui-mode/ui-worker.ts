@@ -320,8 +320,9 @@ async function handleRunFile(
   // Created BEFORE the between-files preflight so a stop that lands during
   // wake/unlock/app-reset is honored too — otherwise the abort IPC would be
   // a no-op and the worker would run the entire next file (PILOT-222).
-  currentAbortController = new AbortController();
-  device._client._setAbortSignal(currentAbortController.signal);
+  const abortController = new AbortController();
+  currentAbortController = abortController;
+  device._client._setAbortSignal(abortController.signal);
 
   try {
     // Ensure the device is awake — the screen may have auto-locked while
@@ -334,16 +335,16 @@ async function handleRunFile(
       await launchConfiguredApp(sessionContext(undefined), `file reset for ${path.basename(filePath)}`);
     }
   } catch (err) {
-    if (currentAbortController.signal.aborted || isAbortError(err)) {
+    if (abortController.signal.aborted || isAbortError(err)) {
       sendEmptyFileDone(filePath);
       return;
     }
     throw err;
   } finally {
     device._client._setAbortSignal(undefined);
-    if (currentAbortController.signal.aborted) currentAbortController = undefined;
+    if (abortController.signal.aborted) currentAbortController = undefined;
   }
-  if (!currentAbortController) {
+  if (abortController.signal.aborted) {
     // Stop arrived during preflight without failing a device call.
     sendEmptyFileDone(filePath);
     return;
@@ -381,7 +382,7 @@ async function handleRunFile(
   try {
     suiteResult = await runFileWithRecovery(
       filePath, reporterProxy, projectUseOptions, projectName, testFilter,
-      currentAbortController.signal,
+      abortController.signal,
     );
   } finally {
     // Restore original to prevent accumulating wrappers across runs
