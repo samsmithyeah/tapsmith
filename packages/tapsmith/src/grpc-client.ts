@@ -295,11 +295,14 @@ export class TapsmithGrpcClient {
       const grpcCall = (this.client as any)[method](request, { deadline }, (err: grpc.ServiceError | null, response: T) => {
         callbackFired = true;
         signal?.removeEventListener('abort', onAbort);
-        if (err) {
-          // Any error surfacing after the signal fired (CANCELLED or
-          // otherwise) is reported as an abort so callers see one
+        if (signal?.aborted) {
+          // After an abort, no call settles successfully — even if the
+          // response won the race against cancel() — and any error
+          // (CANCELLED or otherwise) is normalized so callers see one
           // distinguishable type.
-          reject(signal?.aborted ? new TestAbortedError() : err);
+          reject(new TestAbortedError());
+        } else if (err) {
+          reject(err);
         } else {
           resolve(response);
         }

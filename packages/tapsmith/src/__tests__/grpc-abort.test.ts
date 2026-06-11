@@ -97,6 +97,22 @@ describe('TapsmithGrpcClient abort signal', () => {
     expect(fakeMethod).not.toHaveBeenCalled();
   });
 
+  it('rejects even when a successful response wins the race against cancel()', async () => {
+    let savedCb: UnaryCallback | undefined;
+    const client = makeClient((_req, _opts, cb) => {
+      savedCb = cb;
+      return { cancel: vi.fn() }; // cancel does nothing — response arrives anyway
+    });
+
+    const ac = new AbortController();
+    client._setAbortSignal(ac.signal);
+    const p = invokeCall(client);
+    ac.abort();
+    savedCb?.(null, { ok: true });
+
+    await expect(p).rejects.toSatisfy(isAbortError);
+  });
+
   it('normalizes any post-abort error to AbortError', async () => {
     let savedCb: UnaryCallback | undefined;
     const client = makeClient((_req, _opts, cb) => {

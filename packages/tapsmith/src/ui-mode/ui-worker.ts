@@ -335,6 +335,9 @@ async function handleRunFile(
       await launchConfiguredApp(sessionContext(undefined), `file reset for ${path.basename(filePath)}`);
     }
   } catch (err) {
+    // Whether aborted or a genuine preflight failure, this run is over —
+    // don't leave a stale controller for a later idle-state abort IPC.
+    currentAbortController = undefined;
     if (abortController.signal.aborted || isAbortError(err)) {
       sendEmptyFileDone(filePath);
       return;
