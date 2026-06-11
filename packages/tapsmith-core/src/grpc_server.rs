@@ -5346,7 +5346,12 @@ impl proto::tapsmith_service_server::TapsmithService for TapsmithServiceImpl {
                     _ => false,
                 };
 
-                let member_pattern = format!("./{}", ios::device::KEYCHAIN_ARCHIVE_MEMBER);
+                // Exclude both the `./`-prefixed form (how bsdtar stores it
+                // when we add it on save) and the bare form, so the keychain
+                // member can never be extracted into the app container
+                // regardless of how the archive recorded it.
+                let member = ios::device::KEYCHAIN_ARCHIVE_MEMBER;
+                let member_pattern = format!("./{member}");
                 let output = tokio::process::Command::new("tar")
                     .args([
                         "xzf",
@@ -5357,6 +5362,10 @@ impl proto::tapsmith_service_server::TapsmithService for TapsmithServiceImpl {
                         &member_pattern,
                         "--exclude",
                         &format!("{member_pattern}/*"),
+                        "--exclude",
+                        member,
+                        "--exclude",
+                        &format!("{member}/*"),
                     ])
                     .output()
                     .await;

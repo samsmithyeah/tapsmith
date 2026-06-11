@@ -975,7 +975,10 @@ pub fn keychain_state_disabled() -> bool {
 /// `~/Library/Developer/CoreSimulator`) keeps this correct for custom
 /// device-set locations (`simctl --set`).
 pub fn simulator_keychain_dir(container_path: &str) -> Option<PathBuf> {
-    let idx = container_path.find("/data/Containers/")?;
+    // rfind: match the LAST occurrence, so a username or parent directory
+    // that happens to contain "/data/Containers/" can't shadow the real
+    // container segment closest to the path tail.
+    let idx = container_path.rfind("/data/Containers/")?;
     let device_data_root = &container_path[..idx + "/data".len()];
     Some(PathBuf::from(device_data_root).join("Library/Keychains"))
 }
@@ -1101,7 +1104,10 @@ pub async fn restart_securityd(udid: &str) -> Result<()> {
             .context("Failed to run launchctl kickstart")
     };
 
-    let output = kickstart(KNOWN_LABEL.to_string()).await?;
+    // Track the label actually kickstarted so the readiness probe below
+    // queries the right one even when the label drifted.
+    let mut active_label = KNOWN_LABEL.to_string();
+    let output = kickstart(active_label.clone()).await?;
     if !output.status.success() {
         // Label drift across iOS runtimes: discover the actual securityd
         // label from launchctl and retry once.
@@ -1110,10 +1116,11 @@ pub async fn restart_securityd(udid: &str) -> Result<()> {
         let Some(label) = discovered else {
             bail!("launchctl kickstart {KNOWN_LABEL} failed ({stderr}) and no securityd service found via launchctl print system");
         };
-        let retry = kickstart(format!("system/{label}")).await?;
+        active_label = format!("system/{label}");
+        let retry = kickstart(active_label.clone()).await?;
         if !retry.status.success() {
             let retry_stderr = String::from_utf8_lossy(&retry.stderr);
-            bail!("launchctl kickstart failed for both {KNOWN_LABEL} ({stderr}) and system/{label} ({retry_stderr})");
+            bail!("launchctl kickstart failed for both {KNOWN_LABEL} ({stderr}) and {active_label} ({retry_stderr})");
         }
     }
 
@@ -1123,7 +1130,7 @@ pub async fn restart_securityd(udid: &str) -> Result<()> {
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
     loop {
         let probe = Command::new("xcrun")
-            .args(["simctl", "spawn", udid, "launchctl", "print", KNOWN_LABEL])
+            .args(["simctl", "spawn", udid, "launchctl", "print", &active_label])
             .output()
             .await;
         if let Ok(out) = probe {
@@ -1146,6 +1153,11 @@ pub async fn restart_securityd(udid: &str) -> Result<()> {
 }
 
 /// Parse `launchctl print system` output for a securityd service label.
+/// The label can appear in different positions depending on the section
+/// (`<pid> <status> com.apple.securityd` in the services list, or
+/// `com.apple.securityd = {` in an endpoints block), so scan every token
+/// rather than assuming a fixed column, and strip framing punctuation and
+/// any domain prefix before returning the bare label.
 async fn discover_securityd_label(udid: &str) -> Option<String> {
     let output = Command::new("xcrun")
         .args(["simctl", "spawn", udid, "launchctl", "print", "system"])
@@ -1153,11 +1165,18 @@ async fn discover_securityd_label(udid: &str) -> Option<String> {
         .await
         .ok()?;
     let stdout = String::from_utf8_lossy(&output.stdout);
-    stdout
-        .lines()
-        .filter_map(|line| line.split_whitespace().last())
-        .find(|token| token.ends_with("com.apple.securityd"))
-        .map(|s| s.to_string())
+    parse_securityd_label(&stdout)
+}
+
+fn parse_securityd_label(listing: &str) -> Option<String> {
+    listing
+        .split_whitespace()
+        .find(|token| token.contains("com.apple.securityd"))
+        .map(|token| {
+            let trimmed = token
+                .trim_matches(|c: char| !c.is_alphanumeric() && c != '.' && c != '-' && c != '_');
+            trimmed.rsplit('/').next().unwrap_or(trimmed).to_string()
+        })
 }
 
 // ─── Network Proxy Helpers ───
@@ -1247,6 +1266,38 @@ mod tests {
         // bsdtar sometimes omits the ./ prefix
         let listing = ".tapsmith-keychain/keychain-2-debug.db\n";
         assert!(archive_has_keychain_member(listing));
+    }
+
+    #[test]
+    fn securityd_label_parsed_from_various_formats() {
+        // Services-list format: <pid> <status> <label>
+        assert_eq!(
+            parse_securityd_label("\t58242\t0\tcom.apple.securityd\n"),
+            Some("com.apple.securityd".to_string())
+        );
+        // Endpoints-block format: <domain>/<label> = {
+        assert_eq!(
+            parse_securityd_label("    system/com.apple.securityd = {\n"),
+            Some("com.apple.securityd".to_string())
+        );
+        // user domain prefix
+        assert_eq!(
+            parse_securityd_label("user/501/com.apple.securityd = {"),
+            Some("com.apple.securityd".to_string())
+        );
+        assert_eq!(parse_securityd_label("no match here\n"), None);
+    }
+
+    #[test]
+    fn keychain_dir_uses_last_data_containers_segment() {
+        // A parent dir containing the marker must not shadow the real one.
+        let container = "/Users/data/Containers/x/Developer/CoreSimulator/Devices/UDID/data/Containers/Data/Application/APP";
+        assert_eq!(
+            simulator_keychain_dir(container),
+            Some(PathBuf::from(
+                "/Users/data/Containers/x/Developer/CoreSimulator/Devices/UDID/data/Library/Keychains"
+            ))
+        );
     }
 
     #[test]
