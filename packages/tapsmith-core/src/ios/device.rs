@@ -1045,30 +1045,23 @@ pub async fn swap_keychain_files(
         .await
         .context("Failed to create simulator keychain dir")?;
 
-    // securityd holds the db open and launchd respawns it almost immediately
-    // after a kill, so a plain copy-in-place risks a respawned securityd
-    // observing a half-written db. Instead: (1) copy into `.tmp` siblings
-    // while securityd is still up (it ignores unknown filenames), (2) SIGKILL
-    // securityd so it can't flush stale state on the way out, (3) atomically
-    // rename each `.tmp` into place — rename is atomic on the same filesystem,
-    // so the db is never visible partially written. The kickstart -k in
-    // restart_securityd then forces a fresh process to read the swapped db.
+    // Replace each file atomically *while securityd is still running*. On Unix
+    // a rename/unlink doesn't disturb an already-open fd, so the live securityd
+    // keeps reading the old inode (a consistent old db) throughout — it can
+    // never observe a half-written one. We copy into a `.tmp` sibling (securityd
+    // ignores unknown filenames) then rename it into place. Only after all the
+    // files are swapped does `restart_securityd` (`kickstart -k`) replace the
+    // process, so the fresh securityd opens the new, complete set by name.
+    // (Killing first would be worse: launchd respawns securityd almost
+    // immediately and a respawn mid-swap could open a mismatched db/-wal pair.)
     for name in SIM_KEYCHAIN_FILES {
         let src = src_dir.join(name);
+        let dest = keychain_dir.join(name);
         if tokio::fs::try_exists(&src).await.unwrap_or(false) {
             let tmp = keychain_dir.join(format!("{name}.tapsmith-tmp"));
             tokio::fs::copy(&src, &tmp)
                 .await
                 .with_context(|| format!("Failed to stage keychain file {name}"))?;
-        }
-    }
-
-    kill_securityd(udid).await;
-
-    for name in SIM_KEYCHAIN_FILES {
-        let dest = keychain_dir.join(name);
-        let tmp = keychain_dir.join(format!("{name}.tapsmith-tmp"));
-        if tokio::fs::try_exists(&tmp).await.unwrap_or(false) {
             tokio::fs::rename(&tmp, &dest)
                 .await
                 .with_context(|| format!("Failed to install keychain file {name}"))?;
@@ -1090,9 +1083,11 @@ pub async fn swap_keychain_files(
 /// for every app on the simulator.
 #[instrument(skip_all, fields(udid))]
 pub async fn clear_keychain(udid: &str, keychain_dir: &std::path::Path) -> Result<()> {
-    // Kill securityd before deleting so it can't flush the db back to disk
-    // after we remove it (see swap_keychain_files for the full rationale).
-    kill_securityd(udid).await;
+    // Unlink the db files *while securityd is still running*: its open fds keep
+    // the old inodes alive (any final flush lands there and is discarded when
+    // the process dies), so the delete can't race a respawn. Then restart so a
+    // fresh securityd opens the db by name, finds nothing, and recreates an
+    // empty keychain.
     let mut removed = 0;
     for name in SIM_KEYCHAIN_FILES {
         let path = keychain_dir.join(name);
@@ -1103,33 +1098,13 @@ pub async fn clear_keychain(udid: &str, keychain_dir: &std::path::Path) -> Resul
             removed += 1;
         }
     }
-    // Always restart securityd, even if nothing was removed: we just killed it.
-    restart_securityd(udid).await?;
     if removed == 0 {
         debug!(udid, "No simulator keychain files to clear");
-    } else {
-        info!(udid, "Simulator keychain cleared");
+        return Ok(());
     }
+    restart_securityd(udid).await?;
+    info!(udid, "Simulator keychain cleared");
     Ok(())
-}
-
-/// SIGKILL securityd inside the simulator so it stops immediately without
-/// flushing in-memory keychain state to disk. Best-effort: an already-dead or
-/// drifted-label target just no-ops (the subsequent `restart_securityd` with
-/// `kickstart -k` handles label drift and brings it back).
-async fn kill_securityd(udid: &str) {
-    let _ = Command::new("xcrun")
-        .args([
-            "simctl",
-            "spawn",
-            udid,
-            "launchctl",
-            "kill",
-            "SIGKILL",
-            SECURITYD_LABEL,
-        ])
-        .output()
-        .await;
 }
 
 /// Restart securityd inside the simulator so it re-reads the keychain db
