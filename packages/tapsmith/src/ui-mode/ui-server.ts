@@ -251,7 +251,6 @@ export async function startUIServer(
     singleWorkerRunningTest = null;
     runningFiles.clear();
     if (stopEscalationTimer) { clearTimeout(stopEscalationTimer); stopEscalationTimer = null; }
-    if (stopForceSettleTimer) { clearTimeout(stopForceSettleTimer); stopForceSettleTimer = null; }
     forceSettleDispatch = null;
     // Backstop for run paths that end without broadcasting run-end (e.g. an
     // exception escaping to the command handler): never leave an MCP
@@ -364,9 +363,7 @@ export async function startUIServer(
   let stopRequested = false;
   /** Grace timer between graceful abort and SIGKILL escalation. */
   let stopEscalationTimer: ReturnType<typeof setTimeout> | null = null;
-  /** Backstop timer after SIGKILL, in case worker exit events never arrive. */
-  let stopForceSettleTimer: ReturnType<typeof setTimeout> | null = null;
-  /** Settles the in-flight parallel dispatch promise (escalation tier 3). */
+  /** Settles the in-flight parallel dispatch promise (escalation). */
   let forceSettleDispatch: (() => void) | null = null;
   /** Tests killed mid-flight by the current stop (reported separately). */
   let interruptedCount = 0;
@@ -1806,8 +1803,8 @@ export async function startUIServer(
         }
         resolve();
       }
-      // Escalation tier 3 (PILOT-222): lets escalateStop force this dispatch
-      // to settle if a SIGKILLed worker's exit event never arrives.
+      // PILOT-222: lets escalateStop settle this dispatch synchronously
+      // after SIGKILLing and retiring the remaining busy workers.
       forceSettleDispatch = settleResolve;
 
       function maybeResolve(): void {
@@ -2270,8 +2267,6 @@ export async function startUIServer(
 
   /** Grace period between the cooperative abort and SIGKILL escalation. */
   const STOP_GRACE_MS = 5_000;
-  /** After SIGKILL, how long to wait for worker exit events before force-settling. */
-  const STOP_FORCE_SETTLE_MS = 2_000;
 
   /**
    * Stop the in-flight run (Stop button / MCP tapsmith_stop_tests). In the
@@ -2319,10 +2314,14 @@ export async function startUIServer(
   /**
    * Escalation backstop (PILOT-222): a worker that hasn't drained within the
    * grace period is wedged (e.g. blocked event loop, hung native call) — the
-   * cooperative abort can never land. SIGKILL it; the exit handler →
-   * retireWorker path records its in-flight test as interrupted and settles
-   * the run via maybeResolve. ensureWorkersReady() respawns retired workers
-   * at the start of the next run.
+   * cooperative abort can never land. SIGKILL it, retire it, and record its
+   * in-flight test as interrupted SYNCHRONOUSLY — the dispatch's exit
+   * listener is removed once the dispatch settles, so relying on the exit
+   * event could leave a dead worker unretired (never respawned by
+   * ensureWorkersReady) with its test stuck 'running'. With every killed
+   * worker retired there is nothing left to wait for, so the dispatch is
+   * settled immediately; a late exit event takes the worker.retired →
+   * maybeResolve no-op path.
    */
   function escalateStop(): void {
     stopEscalationTimer = null;
@@ -2334,15 +2333,32 @@ export async function startUIServer(
       killedAny = true;
       console.error(`${YELLOW}Worker ${worker.id} (${worker.deviceSerial}) did not stop within ${STOP_GRACE_MS}ms — force-killing.${RESET}`);
       try { worker.process.kill('SIGKILL'); } catch { /* already dead */ }
+
+      worker.retired = true;
+      worker.busy = false;
+      broadcastWorkerStatus(worker, 'error');
+      if (worker.currentFile) {
+        if (worker.currentTest) {
+          updateTestStatus(
+            worker.currentTest,
+            worker.currentFile.filePath,
+            'failed',
+            undefined,
+            'Interrupted: stopped by user',
+            undefined,
+            undefined,
+            worker.id,
+            worker.currentFile.projectName,
+          );
+          interruptedCount++;
+        }
+        broadcastFileStatus(worker.currentFile.filePath, 'done', worker.currentFile.projectName);
+        worker.currentFile = undefined;
+        worker.currentTest = undefined;
+      }
     }
 
-    if (killedAny && !stopForceSettleTimer) {
-      // SIGKILL guarantees an exit event, so this is defensive only.
-      stopForceSettleTimer = setTimeout(() => {
-        stopForceSettleTimer = null;
-        forceSettleDispatch?.();
-      }, STOP_FORCE_SETTLE_MS);
-    }
+    if (killedAny) forceSettleDispatch?.();
   }
 
   /** Respawn any retired workers before starting a new run. */
