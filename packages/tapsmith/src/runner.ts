@@ -1171,12 +1171,12 @@ async function runSuiteContext(
           // spurious timeouts. Also raced against the run's abort signal so a
           // user stop interrupts even pure-JS waits that never touch the
           // device (in-flight device calls are cancelled via the gRPC client).
-          let testTimer: ReturnType<typeof setTimeout>;
+          let testTimer: ReturnType<typeof setTimeout> | undefined;
           let onTestAbort: (() => void) | undefined;
           const abortSignal = opts.abortSignal;
           try {
             await Promise.race([
-              testFn().finally(() => clearTimeout(testTimer)),
+              testFn(),
               new Promise<never>((_, reject) => {
                 testTimer = setTimeout(() => reject(new Error(
                   `Test timed out after ${testTimeoutMs}ms`
@@ -1194,6 +1194,9 @@ async function runSuiteContext(
               })] : []),
             ]);
           } finally {
+            // Clear the timeout here (not via testFn().finally) so an abort
+            // settling the race doesn't leave a long-lived timer behind.
+            if (testTimer) clearTimeout(testTimer);
             if (onTestAbort) abortSignal?.removeEventListener('abort', onTestAbort);
           }
         } catch (err) {

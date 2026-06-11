@@ -285,8 +285,15 @@ export class TapsmithGrpcClient {
     if (signal?.aborted) return Promise.reject(new TestAbortedError());
     return new Promise<T>((resolve, reject) => {
       const deadline = new Date(Date.now() + (deadlineMs ?? 60_000));
+      // onAbort is declared before the dispatch so a callback that fires
+      // synchronously can reference it without hitting the temporal dead
+      // zone. Referencing grpcCall inside onAbort is safe: the abort
+      // listener is only registered after grpcCall is initialized below.
+      let callbackFired = false;
+      const onAbort = (): void => grpcCall.cancel();
       // eslint-disable-next-line @typescript-eslint/no-explicit-any -- dynamic RPC dispatch on proto-loaded client
       const grpcCall = (this.client as any)[method](request, { deadline }, (err: grpc.ServiceError | null, response: T) => {
+        callbackFired = true;
         signal?.removeEventListener('abort', onAbort);
         if (err) {
           // Any error surfacing after the signal fired (CANCELLED or
@@ -297,8 +304,12 @@ export class TapsmithGrpcClient {
           resolve(response);
         }
       }) as grpc.ClientUnaryCall;
-      const onAbort = (): void => grpcCall.cancel();
-      signal?.addEventListener('abort', onAbort, { once: true });
+      // No abort race here: AbortController.abort() can only run between
+      // tasks, never midway through this synchronous block (and an
+      // already-aborted signal was rejected before the Promise was built).
+      // The callbackFired guard keeps a synchronously-settled call from
+      // registering a listener it would never remove.
+      if (signal && !callbackFired) signal.addEventListener('abort', onAbort, { once: true });
     });
   }
 

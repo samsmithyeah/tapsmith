@@ -609,18 +609,18 @@ export async function startUIServer(
     waitForRunEnd(timeoutMs: number): Promise<TestRunResult | null> {
       if (!isRunning) return Promise.resolve(lastRunEnd);
       return new Promise((resolve) => {
-        let settled = false;
-        const timer = setTimeout(() => {
-          if (settled) return;
-          settled = true;
-          resolve(null);
-        }, timeoutMs);
-        runEndWaiters.push((r) => {
-          if (settled) return;
-          settled = true;
+        const waiter = (r: TestRunResult): void => {
           clearTimeout(timer);
           resolve(r);
-        });
+        };
+        const timer = setTimeout(() => {
+          // Drop the stale waiter so repeated polls of a wedged run don't
+          // accumulate closures until the run finally ends.
+          const idx = runEndWaiters.indexOf(waiter);
+          if (idx >= 0) runEndWaiters.splice(idx, 1);
+          resolve(null);
+        }, timeoutMs);
+        runEndWaiters.push(waiter);
       });
     },
     isRunning: () => isRunning,

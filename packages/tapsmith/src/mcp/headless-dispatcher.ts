@@ -208,19 +208,19 @@ export class HeadlessTestDispatcher implements TestDispatcher {
   waitForRunEnd(timeoutMs: number): Promise<TestRunResult | null> {
     if (!this._isRunning) return Promise.resolve(this._lastRunEnd);
     return new Promise((resolve) => {
-      let settled = false;
+      const waiter = (r: TestRunResult): void => {
+        clearTimeout(timer);
+        resolve(r);
+      };
       const timer = setTimeout(() => {
-        if (settled) return;
-        settled = true;
+        // Drop the stale waiter so repeated polls of a wedged run don't
+        // accumulate closures until the run finally ends.
+        const idx = this._runEndWaiters.indexOf(waiter);
+        if (idx >= 0) this._runEndWaiters.splice(idx, 1);
         resolve(null);
       }, timeoutMs);
       timer.unref?.();
-      this._runEndWaiters.push((r) => {
-        if (settled) return;
-        settled = true;
-        clearTimeout(timer);
-        resolve(r);
-      });
+      this._runEndWaiters.push(waiter);
     });
   }
 

@@ -128,6 +128,17 @@ describe('TapsmithGrpcClient abort signal', () => {
     expect(getEventListeners(ac.signal, 'abort')).toHaveLength(0);
   });
 
+  it('handles a callback that fires synchronously (no TDZ on the abort listener)', async () => {
+    const client = makeClient((_req, _opts, cb) => {
+      cb(null, { ok: true }); // settles before the method even returns
+      return { cancel: vi.fn() };
+    });
+    const ac = new AbortController();
+    client._setAbortSignal(ac.signal);
+    await expect(invokeCall(client)).resolves.toEqual({ ok: true });
+    expect(getEventListeners(ac.signal, 'abort')).toHaveLength(0);
+  });
+
   it('does not interfere with calls when no signal is set', async () => {
     const client = makeClient((_req, _opts, cb) => {
       queueMicrotask(() => cb(null, { ok: true }));
