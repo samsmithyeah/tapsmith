@@ -309,6 +309,19 @@ export interface RunStateMessage {
   startedAt?: number
 }
 
+/**
+ * Live progress for a slow device action outside the traced-test window
+ * (between-file preflight reset, recovery). Lets the Actions panel show
+ * what's happening (e.g. "Clearing app data (com.foo)…") instead of a
+ * generic waiting state. No `message` means the action finished — clear
+ * the indicator for that worker. @see PILOT-232
+ */
+export interface RunProgressMessage {
+  type: 'run-progress'
+  workerId: number
+  message?: string
+}
+
 /** Union of all server → client JSON messages. */
 export type ServerMessage =
   | TestTreeMessage
@@ -329,6 +342,7 @@ export type ServerMessage =
   | ErrorMessage
   | McpStatusMessage
   | McpToolCallMessage
+  | RunProgressMessage
 
 // ─── Client → Server messages ───
 
@@ -637,6 +651,14 @@ export interface UIRunErrorMessage {
   error: { message: string; stack?: string }
 }
 
+/** Run child → server: live progress for a slow device action (preflight
+ * reset etc.). Empty/absent message = action finished, clear the indicator.
+ * @see PILOT-232 */
+export interface UIRunProgressMessage {
+  type: 'progress'
+  message?: string
+}
+
 export type UIRunChildMessage =
   | UIRunTestStartMessage
   | UIRunTestEndMessage
@@ -645,6 +667,7 @@ export type UIRunChildMessage =
   | UIRunSourceMessage
   | UIRunNetworkMessage
   | UIRunErrorMessage
+  | UIRunProgressMessage
 
 // ─── Discovery IPC ───
 
@@ -713,7 +736,9 @@ export interface UIWorkerReadyMessage {
   workerId: number
 }
 
-/** UI worker → server: progress during initialization. */
+/** UI worker → server: progress during initialization, and live slow-device-
+ * action progress during the between-file preflight (empty string = clear).
+ * @see PILOT-232 */
 export interface UIWorkerProgressMessage {
   type: 'progress'
   workerId: number

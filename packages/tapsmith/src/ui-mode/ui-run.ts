@@ -16,6 +16,7 @@ import { Device } from '../device.js';
 import { runTestFile, collectResults } from '../runner.js';
 import type { TapsmithConfig } from '../config.js';
 import { ensureSessionReady, launchConfiguredApp, type SessionPreflightContext } from '../session-preflight.js';
+import { createActionProgressMessenger } from '../action-progress-renderer.js';
 import {
   serializeTestResult,
   serializeSuiteResult,
@@ -155,6 +156,14 @@ async function handleRun(msg: UIRunMessage): Promise<void> {
   );
 
   const ctx = buildSessionContext(config, device, client, msg.deviceSerial);
+
+  // Stream slow-device-action progress (preflight reset, test.use({appState})
+  // restore) so the UI shows "Clearing app data…" instead of a generic
+  // waiting state (PILOT-232). An action's end clears the label; the child
+  // exits after this run, so no explicit dispose is needed.
+  createActionProgressMessenger({
+    emit: (text, phase) => send({ type: 'progress', message: phase === 'end' ? undefined : text }),
+  });
 
   // Reset app for clean state
   if (config.package) {

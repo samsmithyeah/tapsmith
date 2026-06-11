@@ -110,6 +110,10 @@ function App() {
 
   // Multi-worker state
   const [workers, setWorkers] = useState<WorkerInfo[]>([]);
+  // Live slow-device-action progress per worker during preflight resets
+  // (e.g. "Clearing app data (com.foo)…") — enriches the Actions panel's
+  // waiting state (PILOT-232).
+  const [runProgress, setRunProgress] = useState<Map<number, string>>(new Map());
   /** Maps trace key → workerId that ran it. */
   const testWorkerMapRef = useRef<Map<string, number>>(new Map());
   /**
@@ -513,6 +517,7 @@ function App() {
         break;
       case 'run-start':
         setIsRunning(true);
+        setRunProgress(new Map());
         startRunTimer();
         // Scope trace clearing: single test > single file > all.
         // This preserves traces from other tests/files so clicking back
@@ -568,6 +573,7 @@ function App() {
       case 'run-end':
         setIsRunning(false);
         setIsStopping(false);
+        setRunProgress(new Map());
         stopRunTimer();
         if (msg.status === 'stopped') {
           showInfo(msg.interrupted
@@ -875,6 +881,14 @@ function App() {
           skipped: 0,
         })));
         break;
+      case 'run-progress':
+        setRunProgress((prev) => {
+          const next = new Map(prev);
+          if (msg.message) next.set(msg.workerId, msg.message);
+          else next.delete(msg.workerId);
+          return next;
+        });
+        break;
       case 'worker-status':
         setWorkers((prev) => {
           const idx = prev.findIndex((w) => w.workerId === msg.workerId);
@@ -1125,8 +1139,22 @@ function App() {
     if (!viewedTestNode || viewedTestNode.type !== 'test') return undefined;
     const isPending = tree.pendingIds.has(viewedTestNode.id);
     const isRunning = viewedTestNode.status === 'running';
-    return isPending || isRunning ? 'Waiting for first action…' : undefined;
-  }, [viewedTestNode, tree.pendingIds]);
+    if (!isPending && !isRunning) return undefined;
+    // When a slow device action is in flight (between-file preflight reset),
+    // show what it's actually doing instead of the generic message (PILOT-232).
+    // Prefer the worker that's running this test's file; fall back to any.
+    if (runProgress.size > 0) {
+      const fileBasename = viewedTestNode.filePath.replace(/\\/g, '/').split('/').pop();
+      const matchingWorker = workers.find(
+        (w) => w.currentFile && w.currentFile === fileBasename && runProgress.has(w.workerId),
+      );
+      const message = matchingWorker
+        ? runProgress.get(matchingWorker.workerId)
+        : runProgress.values().next().value;
+      if (message) return message;
+    }
+    return 'Waiting for first action…';
+  }, [viewedTestNode, tree.pendingIds, runProgress, workers]);
 
   const hasTrace = actionEvents.length > 0;
   const isTestPending = !!viewedTestNode && (tree.pendingIds.has(viewedTestNode.id) || viewedTestNode.status === 'running');

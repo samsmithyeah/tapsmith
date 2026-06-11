@@ -23,6 +23,7 @@ import {
   type SerializedConfig,
 } from '../worker-protocol.js';
 import { ensureSessionReady, launchConfiguredApp, type SessionPreflightContext } from '../session-preflight.js';
+import { createActionProgressMessenger } from '../action-progress-renderer.js';
 import { isAbortError } from '../abort.js';
 import type { AnyTraceEvent } from '../trace/types.js';
 import { isNetworkTracingEnabled, networkHostsForPac } from '../trace/types.js';
@@ -303,6 +304,16 @@ async function handleInit(msg: UIWorkerInitMessage): Promise<void> {
 
   sendProgress('ready');
   send({ type: 'ready', workerId });
+
+  // From here on, stream slow-device-action progress (between-file preflight,
+  // test.use({appState}) restore, recovery) so the UI can show "Restoring app
+  // state…" instead of a generic waiting state (PILOT-232). An action's end
+  // clears the label — the indicator is "what's happening now", and the
+  // Actions panel only renders it while no trace actions have streamed yet,
+  // so traced in-test actions can't double-report.
+  createActionProgressMessenger({
+    emit: (text, phase) => sendProgress(phase === 'end' ? '' : text),
+  });
 }
 
 // ─── Run file handler ───

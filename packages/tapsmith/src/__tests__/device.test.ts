@@ -8,6 +8,7 @@ import { selectorToProto } from '../selectors.js';
 import type { TapsmithGrpcClient, ActionResponse } from '../grpc-client.js';
 import { TraceCollector } from '../trace/trace-collector.js';
 import type { ConsoleTraceEvent } from '../trace/types.js';
+import { onActionProgress, type ActionProgressEvent } from '../action-progress.js';
 
 // ─── Mock helpers ───
 
@@ -1031,5 +1032,84 @@ describe('Device.restoreAppState()', () => {
     const device = new Device(client, { package: 'com.default.app' });
     await device.restoreAppState(undefined as unknown as string, './state.tar.gz');
     expect(restoreAppState).toHaveBeenCalledWith('com.default.app', './state.tar.gz');
+  });
+});
+
+// ─── Action progress emission (PILOT-232) ───
+
+describe('Device action progress events', () => {
+  function collectProgress() {
+    const events: ActionProgressEvent[] = [];
+    const unsubscribe = onActionProgress((ev) => events.push(ev));
+    return { events, unsubscribe };
+  }
+
+  it('emits start/end around saveAppState with package and archive target', async () => {
+    const { events, unsubscribe } = collectProgress();
+    try {
+      const device = new Device(makeMockClient());
+      await device.saveAppState('com.example.app', './states/auth-state.tar.gz');
+      expect(events).toHaveLength(2);
+      expect(events[0]).toMatchObject({
+        kind: 'start', action: 'saveAppState', target: 'com.example.app → auth-state.tar.gz',
+      });
+      expect(events[1]).toMatchObject({ kind: 'end', action: 'saveAppState', success: true });
+    } finally {
+      unsubscribe();
+    }
+  });
+
+  it('emits without an active trace collector', async () => {
+    const { events, unsubscribe } = collectProgress();
+    try {
+      const restartApp = vi.fn(async () => successResponse());
+      const device = new Device(makeMockClient({ restartApp }), { package: 'com.example.app' });
+      await device.restartApp();
+      expect(events.map((e) => `${e.kind}:${e.action}`)).toEqual(['start:restartApp', 'end:restartApp']);
+      expect(events[0].target).toBe('com.example.app');
+    } finally {
+      unsubscribe();
+    }
+  });
+
+  it('emits a failed end event when the RPC reports failure', async () => {
+    const { events, unsubscribe } = collectProgress();
+    try {
+      const client = makeMockClient({
+        restoreAppState: vi.fn(async () => failureResponse('Archive not found')),
+      });
+      const device = new Device(client);
+      await expect(device.restoreAppState('com.example.app', './state.tar.gz')).rejects.toThrow('Archive not found');
+      expect(events[1]).toMatchObject({
+        kind: 'end', action: 'restoreAppState', success: false, error: 'Archive not found',
+      });
+    } finally {
+      unsubscribe();
+    }
+  });
+
+  it('emits around startAgent', async () => {
+    const { events, unsubscribe } = collectProgress();
+    try {
+      const device = new Device(makeMockClient());
+      await device.startAgent('com.example.app');
+      expect(events.map((e) => `${e.kind}:${e.action}`)).toEqual(['start:startAgent', 'end:startAgent']);
+    } finally {
+      unsubscribe();
+    }
+  });
+
+  it('emits around clearAppData, launchApp, and terminateApp', async () => {
+    const { events, unsubscribe } = collectProgress();
+    try {
+      const device = new Device(makeMockClient());
+      await device.clearAppData('com.example.app');
+      await device.launchApp('com.example.app');
+      await device.terminateApp('com.example.app');
+      expect(events.filter((e) => e.kind === 'start').map((e) => e.action))
+        .toEqual(['clearAppData', 'launchApp', 'terminateApp']);
+    } finally {
+      unsubscribe();
+    }
   });
 });

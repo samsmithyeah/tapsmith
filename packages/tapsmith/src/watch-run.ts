@@ -15,6 +15,7 @@ import { Device } from './device.js';
 import { runTestFile, collectResults } from './runner.js';
 import type { TapsmithConfig } from './config.js';
 import { ensureSessionReady, launchConfiguredApp, type SessionPreflightContext } from './session-preflight.js';
+import { installActionProgressPrinter } from './action-progress-renderer.js';
 import { isNetworkTracingEnabled, networkHostsForPac, networkPassthroughHosts } from './trace/types.js';
 import {
   serializeTestResult,
@@ -150,44 +151,52 @@ async function handleRun(msg: WatchRunMessage): Promise<void> {
 
   const ctx = buildSessionContext(config, device, client, msg.deviceSerial);
 
-  // Reset app for clean state
-  if (config.package) {
-    await launchConfiguredApp(ctx, `watch reset for ${path.basename(msg.filePath)}`);
-  } else {
-    await ensureSessionReady(ctx, `watch preflight for ${path.basename(msg.filePath)}`);
+  // Live progress lines for slow device actions (preflight reset, app-state
+  // save/restore, …) — the child's stdout reaches the terminal directly (PILOT-232).
+  const disposeActionProgressPrinter = installActionProgressPrinter();
+
+  try {
+    // Reset app for clean state
+    if (config.package) {
+      await launchConfiguredApp(ctx, `watch reset for ${path.basename(msg.filePath)}`);
+    } else {
+      await ensureSessionReady(ctx, `watch preflight for ${path.basename(msg.filePath)}`);
+    }
+
+    const screenshotDir = msg.screenshotDir;
+
+    // Reporter proxy: stream test results to parent
+    const reporterProxy = {
+      onTestEnd(result: import('./runner.js').TestResult): void {
+        send({
+          type: 'test-end',
+          result: serializeTestResult(result, 0),
+        });
+      },
+    };
+
+    const suiteResult = await runTestFile(msg.filePath, {
+      config,
+      device,
+      screenshotDir,
+      reporter: reporterProxy,
+      projectUseOptions: msg.projectUseOptions,
+      projectName: msg.projectName,
+      grep: deserializeRegExpArray(msg.config.grep),
+      grepInvert: deserializeRegExpArray(msg.config.grepInvert),
+    });
+
+    const results = collectResults(suiteResult);
+
+    send({
+      type: 'file-done',
+      filePath: msg.filePath,
+      results: results.map((r) => serializeTestResult(r, 0)),
+      suite: serializeSuiteResult(suiteResult, 0),
+    });
+  } finally {
+    disposeActionProgressPrinter();
   }
-
-  const screenshotDir = msg.screenshotDir;
-
-  // Reporter proxy: stream test results to parent
-  const reporterProxy = {
-    onTestEnd(result: import('./runner.js').TestResult): void {
-      send({
-        type: 'test-end',
-        result: serializeTestResult(result, 0),
-      });
-    },
-  };
-
-  const suiteResult = await runTestFile(msg.filePath, {
-    config,
-    device,
-    screenshotDir,
-    reporter: reporterProxy,
-    projectUseOptions: msg.projectUseOptions,
-    projectName: msg.projectName,
-    grep: deserializeRegExpArray(msg.config.grep),
-    grepInvert: deserializeRegExpArray(msg.config.grepInvert),
-  });
-
-  const results = collectResults(suiteResult);
-
-  send({
-    type: 'file-done',
-    filePath: msg.filePath,
-    results: results.map((r) => serializeTestResult(r, 0)),
-    suite: serializeSuiteResult(suiteResult, 0),
-  });
 
   client.close();
 }
