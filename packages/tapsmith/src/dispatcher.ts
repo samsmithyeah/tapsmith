@@ -1588,8 +1588,11 @@ export async function runParallel(opts: DispatcherOptions, _portOffset = 0): Pro
     const workerExitPromises: Promise<void>[] = [];
     for (const worker of workers) {
       try {
-        const alive = worker.process
-          && worker.process.exitCode === null
+        // The run is over and we're discarding this worker either way; mark
+        // it retired so late IPC errors from the shutdown don't print
+        // spurious notes via the permanent 'error' listener.
+        worker.retired = true;
+        const alive = worker.process?.exitCode === null
           && worker.process.signalCode === null;
         if (alive) {
           const exitPromise = new Promise<void>((resolve) => {
@@ -1777,7 +1780,9 @@ async function initializeWorker(opts: InitializeWorkerOptions): Promise<WorkerHa
   child.on('error', (err) => {
     if (worker.onIpcError) {
       worker.onIpcError(err);
-    } else {
+    } else if (!worker.retired && !dispatcherIsShuttingDown) {
+      // Retired/shutting-down workers are deliberately killed — late IPC
+      // errors from them are expected and not worth a note.
       process.stderr.write(
         `${DIM}Worker ${opts.displayWorkerId ?? workerId} (${deviceSerial}) IPC error ignored outside dispatch: ${err.message}${RESET}\n`,
       );
@@ -1848,8 +1853,11 @@ async function initializeWorker(opts: InitializeWorkerOptions): Promise<WorkerHa
 
     return worker;
   } catch (err) {
+    // Mark retired so late IPC errors from the process we're about to kill
+    // don't print spurious notes via the permanent 'error' listener.
+    worker.retired = true;
     try {
-      if (worker.process.connected) {
+      if (worker.process.exitCode === null && worker.process.signalCode === null) {
         worker.process.kill();
       }
     } catch { /* already dead */ }
