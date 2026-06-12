@@ -24,7 +24,7 @@ import { dim, green, red, formatDuration } from './reporters/base.js';
 export type ActionProgressPhase = 'start' | 'heartbeat' | 'end';
 
 export interface ActionProgressMessengerOptions {
-  /** Suppress actions that finish faster than this. Default 1000ms. */
+  /** Suppress actions that finish faster than this. Default 3000ms. */
   startDelayMs?: number
   /** Interval between "still running" messages. 0 disables. Default 15000ms. */
   heartbeatMs?: number
@@ -53,7 +53,7 @@ function lowerFirst(s: string): string {
  * Returns a dispose function that clears all timers and unsubscribes.
  */
 export function createActionProgressMessenger(options: ActionProgressMessengerOptions): () => void {
-  const startDelayMs = options.startDelayMs ?? 1_000;
+  const startDelayMs = options.startDelayMs ?? 3_000;
   const heartbeatMs = options.heartbeatMs ?? 15_000;
   const pending = new Map<number, PendingAction>();
 

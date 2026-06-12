@@ -38,8 +38,8 @@ describe('createActionProgressMessenger', () => {
   it('stays silent for actions that finish before the start delay', () => {
     subscribe();
     start(1);
-    vi.advanceTimersByTime(500);
-    end(1, { durationMs: 500 });
+    vi.advanceTimersByTime(2_000);
+    end(1, { durationMs: 2_000 });
     vi.advanceTimersByTime(60_000);
     expect(messages).toHaveLength(0);
   });
@@ -48,18 +48,18 @@ describe('createActionProgressMessenger', () => {
     subscribe();
     start(1, 'saveAppState', 'com.foo → state.tar.gz');
 
-    vi.advanceTimersByTime(1_000);
+    vi.advanceTimersByTime(3_000);
     expect(messages).toEqual([
       { text: '⏳ Saving app state (com.foo → state.tar.gz)…', phase: 'start' },
     ]);
 
     vi.advanceTimersByTime(30_000);
     expect(messages.filter((m) => m.phase === 'heartbeat')).toHaveLength(2);
-    expect(messages[1].text).toBe('⏳ Still saving app state (com.foo → state.tar.gz)… (16s)');
+    expect(messages[1].text).toBe('⏳ Still saving app state (com.foo → state.tar.gz)… (18s)');
 
-    end(1, { durationMs: 31_200, target: 'com.foo → state.tar.gz' });
+    end(1, { durationMs: 33_200, target: 'com.foo → state.tar.gz' });
     expect(messages.at(-1)).toEqual({
-      text: '✓ Saved app state (com.foo → state.tar.gz) (31.2s)',
+      text: '✓ Saved app state (com.foo → state.tar.gz) (33.2s)',
       phase: 'end',
     });
     expect(vi.getTimerCount()).toBe(0);
@@ -68,23 +68,23 @@ describe('createActionProgressMessenger', () => {
   it('prints a failure line with the error message', () => {
     subscribe();
     start(1, 'restoreAppState');
-    vi.advanceTimersByTime(2_000);
+    vi.advanceTimersByTime(4_000);
     emitActionProgress({
       kind: 'end', id: 1, action: 'restoreAppState',
-      durationMs: 2_000, success: false, error: 'tar failed',
+      durationMs: 4_000, success: false, error: 'tar failed',
     });
-    expect(messages.at(-1)?.text).toBe('✗ Restore app state failed (2.0s): tar failed');
+    expect(messages.at(-1)?.text).toBe('✗ Restore app state failed (4.0s): tar failed');
   });
 
   it('prints a neutral stopped line for aborted actions', () => {
     subscribe();
     start(1, 'clearAppData', 'com.foo');
-    vi.advanceTimersByTime(2_000);
+    vi.advanceTimersByTime(4_000);
     emitActionProgress({
       kind: 'end', id: 1, action: 'clearAppData', target: 'com.foo',
-      durationMs: 2_000, success: false, aborted: true, error: 'Stopped by user',
+      durationMs: 4_000, success: false, aborted: true, error: 'Stopped by user',
     });
-    expect(messages.at(-1)?.text).toBe('– Stopped clearing app data (com.foo) (2.0s)');
+    expect(messages.at(-1)?.text).toBe('– Stopped clearing app data (com.foo) (4.0s)');
   });
 
   it('prints a done line for slow actions even if the start timer never fired', () => {
@@ -100,15 +100,15 @@ describe('createActionProgressMessenger', () => {
     subscribe();
     start(1, 'sessionReady', 'com.foo');
     start(2, 'startAgent', 'com.foo');
-    vi.advanceTimersByTime(1_000);
+    vi.advanceTimersByTime(3_000);
     expect(messages.map((m) => m.text)).toEqual([
       '⏳ Waiting for app to be ready (com.foo)…',
       '⏳ Starting automation agent (com.foo)…',
     ]);
-    emitActionProgress({ kind: 'end', id: 2, action: 'startAgent', target: 'com.foo', durationMs: 1_500, success: true });
-    emitActionProgress({ kind: 'end', id: 1, action: 'sessionReady', target: 'com.foo', durationMs: 2_000, success: true });
-    expect(messages.at(-2)?.text).toBe('✓ Automation agent started (com.foo) (1.5s)');
-    expect(messages.at(-1)?.text).toBe('✓ App ready (com.foo) (2.0s)');
+    emitActionProgress({ kind: 'end', id: 2, action: 'startAgent', target: 'com.foo', durationMs: 3_500, success: true });
+    emitActionProgress({ kind: 'end', id: 1, action: 'sessionReady', target: 'com.foo', durationMs: 4_000, success: true });
+    expect(messages.at(-2)?.text).toBe('✓ Automation agent started (com.foo) (3.5s)');
+    expect(messages.at(-1)?.text).toBe('✓ App ready (com.foo) (4.0s)');
     expect(vi.getTimerCount()).toBe(0);
   });
 
@@ -116,7 +116,7 @@ describe('createActionProgressMessenger', () => {
     subscribe();
     start(1);
     start(2);
-    vi.advanceTimersByTime(1_000); // both announced, heartbeats armed
+    vi.advanceTimersByTime(3_000); // both announced, heartbeats armed
     dispose!();
     dispose = undefined;
     expect(vi.getTimerCount()).toBe(0);
