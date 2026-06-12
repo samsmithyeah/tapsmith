@@ -27,6 +27,7 @@ import {
   networkHostsForPac,
   networkPassthroughHosts,
 } from './trace/types.js';
+import { resolveVideoConfig, videoModeRecordsOnlyOnRetry } from './video/types.js';
 import { spawn, execFileSync } from 'node:child_process';
 import {
   clearOfflineEmulatorTransports,
@@ -1957,6 +1958,23 @@ async function main(): Promise<void> {
     const forwardArgs = process.argv.slice(2).filter((a) => a !== '--__tsx-reexec');
     reExecWithTsx(forwardArgs);
     return;
+  }
+
+  // Retry-only video modes start no recorder on attempt 0, so with
+  // `retries: 0` they can never produce a video. Warn once at run start
+  // rather than letting the run silently record nothing (PILOT-240; same
+  // caveat Playwright documents for its `on-first-retry` video mode).
+  // Placed after the tsx re-exec so the warning prints exactly once.
+  for (const project of projects) {
+    const cfg = project.effectiveConfig;
+    const videoMode = resolveVideoConfig(cfg.video).mode;
+    if (videoModeRecordsOnlyOnRetry(videoMode) && cfg.retries === 0) {
+      const scope = projects.length > 1 ? ` in project "${project.name}"` : '';
+      console.error(yellow(
+        `Warning: video mode '${videoMode}' only records retry attempts, but retries is 0${scope} — no video will ever be recorded. Set retries to 1 or more to get videos.`,
+      ));
+      break;
+    }
   }
 
   // Initialize reporters

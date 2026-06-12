@@ -31,6 +31,15 @@ export function shouldRecord(mode: TraceMode, attempt: number): boolean {
 }
 
 /**
+ * Whether this mode records exclusively on retry attempts. Such modes can
+ * never produce an artifact when `retries` is 0 — callers should warn at
+ * run start rather than silently recording nothing (PILOT-240).
+ */
+export function recordsOnlyOnRetry(mode: TraceMode): boolean {
+  return mode === 'on-first-retry' || mode === 'on-all-retries';
+}
+
+/**
  * Whether to keep the trace file after the test completes.
  *
  * @param mode - The configured trace mode.

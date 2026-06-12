@@ -13,7 +13,7 @@
  * change ("on-second-retry"?) should land in one place.
  */
 
-import { shouldRecord, shouldRetain } from '../trace/trace-mode.js';
+import { shouldRecord, shouldRetain, recordsOnlyOnRetry } from '../trace/trace-mode.js';
 
 /**
  * Recording mode. Six modes total — the four listed in PILOT-114 plus two
@@ -62,4 +62,8 @@ export function resolveVideoConfig(
 // Re-export the shared decision helpers under video-flavoured names so
 // runner code can read naturally — `shouldRecordVideo(...)` reads better
 // than `shouldRecord(...)` when sat next to the trace recording call.
-export { shouldRecord as shouldRecordVideo, shouldRetain as shouldRetainVideo };
+export {
+  shouldRecord as shouldRecordVideo,
+  shouldRetain as shouldRetainVideo,
+  recordsOnlyOnRetry as videoModeRecordsOnlyOnRetry,
+};

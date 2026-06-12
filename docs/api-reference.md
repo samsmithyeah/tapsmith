@@ -2295,6 +2295,15 @@ The supported modes are the same as `trace`:
 | `on-first-retry`            | Record only on the first retry attempt.                |
 | `on-all-retries`            | Record on every retry attempt (skips the first run).   |
 
+**Recording cost**: `retain-on-failure` still records (and pays the video
+encode cost for) every test — it only deletes the file for passing tests
+afterwards. `on-first-retry` starts no recorder at all on the first attempt,
+eliminating encode load on healthy runs while still producing a video for
+any test flaky or broken enough to be retried. The trade-off: it requires
+`retries >= 1` to ever produce a video (the runner warns at startup if
+`retries` is 0), and the recorded retry won't show first-attempt-only
+failures. This mirrors Playwright's `on-first-retry` caveat.
+
 ### Implementation
 
 | Platform              | Recorder                                                   |

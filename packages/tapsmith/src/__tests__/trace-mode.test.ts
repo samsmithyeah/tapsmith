@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { shouldRecord, shouldRetain } from '../trace/trace-mode.js';
+import { shouldRecord, shouldRetain, recordsOnlyOnRetry } from '../trace/trace-mode.js';
 
 describe('shouldRecord', () => {
   it('returns false for "off"', () => {
@@ -71,5 +71,16 @@ describe('shouldRetain', () => {
     expect(shouldRetain('retain-on-first-failure', false, 0)).toBe(true);
     expect(shouldRetain('retain-on-first-failure', false, 1)).toBe(false);
     expect(shouldRetain('retain-on-first-failure', true, 1)).toBe(false);
+  });
+});
+
+describe('recordsOnlyOnRetry', () => {
+  it('is true only for the retry-only modes', () => {
+    expect(recordsOnlyOnRetry('on-first-retry')).toBe(true);
+    expect(recordsOnlyOnRetry('on-all-retries')).toBe(true);
+    expect(recordsOnlyOnRetry('off')).toBe(false);
+    expect(recordsOnlyOnRetry('on')).toBe(false);
+    expect(recordsOnlyOnRetry('retain-on-failure')).toBe(false);
+    expect(recordsOnlyOnRetry('retain-on-first-failure')).toBe(false);
   });
 });
