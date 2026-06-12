@@ -76,6 +76,44 @@ interface WorkerHandle {
   busy: boolean
   currentFile?: TaggedFile
   retired?: boolean
+  /**
+   * Receives ChildProcess 'error' events (spawn/kill/IPC-send failures).
+   * Swappable so the init handshake and each dispatch wave can route worker
+   * IPC failures to their own recovery logic. Without a listener Node turns
+   * an async send failure (write EPIPE to a dead child) into an uncaught
+   * exception that kills the whole dispatcher (PILOT-228).
+   */
+  onIpcError?: (err: Error) => void
+}
+
+/**
+ * Send a message to a worker child process without ever crashing the
+ * dispatcher. `subprocess.send()` can fail synchronously (channel already
+ * closed) or asynchronously (EPIPE while the child is dying) — without a
+ * callback the async failure is emitted as an unhandled 'error' event and
+ * takes down the run (PILOT-228). Failures are routed to `onSendFailure`
+ * so the caller can treat the worker as gone and requeue its work.
+ */
+export function sendToWorkerProcess(
+  proc: ChildProcess,
+  msg: MainToWorkerMessage,
+  onSendFailure: (err: Error) => void,
+): void {
+  // Failure callbacks are always deferred to a microtask so callers never
+  // re-enter dispatch bookkeeping (retire → redispatch) synchronously from
+  // inside a dispatch loop.
+  if (!proc.connected) {
+    queueMicrotask(() => onSendFailure(new Error('IPC channel is closed')));
+    return;
+  }
+  try {
+    proc.send(msg, (err) => {
+      if (err) onSendFailure(err);
+    });
+  } catch (err) {
+    const error = err instanceof Error ? err : new Error(String(err));
+    queueMicrotask(() => onSendFailure(error));
+  }
 }
 
 type DaemonStdio = 'ignore' | ['ignore', number, number];
@@ -1268,6 +1306,18 @@ export async function runParallel(opts: DispatcherOptions, _portOffset = 0): Pro
     async function dispatchWave(waveFiles: TaggedFile[]): Promise<void> {
       const fileQueue = [...waveFiles];
 
+      try {
+        await dispatchWaveInner(fileQueue);
+      } finally {
+        // Stop routing IPC errors into this wave's (now settled) dispatch
+        // state; the fork-time 'error' listener falls back to a stderr note.
+        for (const worker of workers) {
+          worker.onIpcError = undefined;
+        }
+      }
+    }
+
+    async function dispatchWaveInner(fileQueue: TaggedFile[]): Promise<void> {
       await new Promise<void>((resolve, reject) => {
         let hasError = false;
         let settled = false;
@@ -1311,7 +1361,11 @@ export async function runParallel(opts: DispatcherOptions, _portOffset = 0): Pro
             projectGrep: next.projectGrep,
             projectGrepInvert: next.projectGrepInvert,
           };
-          worker.process.send(msg);
+          sendToWorkerProcess(worker.process, msg, (err) => {
+            // The file we just assigned is worker.currentFile, so retiring
+            // the worker requeues it onto a surviving worker.
+            retireWorker(worker, `could not send ${path.basename(next.filePath)} to the worker process: ${err.message}`);
+          });
         }
 
         const workerTestCounts = new Map<number, number>();
@@ -1321,7 +1375,9 @@ export async function runParallel(opts: DispatcherOptions, _portOffset = 0): Pro
           // On Ctrl-C we killed these workers ourselves — don't spam the
           // user with "became unavailable" warnings that are a consequence
           // of our own cleanup. emergencyCleanup will force-exit shortly.
-          if (dispatcherIsShuttingDown) {
+          // Likewise once the wave has settled: worker deaths after that
+          // point are teardown noise, not lost work.
+          if (dispatcherIsShuttingDown || settled) {
             worker.retired = true;
             return;
           }
@@ -1367,10 +1423,26 @@ export async function runParallel(opts: DispatcherOptions, _portOffset = 0): Pro
           maybeResolve();
         }
 
+        // Workers retired in an earlier wave stay retired. If none survived,
+        // fail now instead of waiting forever for dispatches that never start.
+        if (workers.every((w) => w.retired)) {
+          failRun(
+            new Error('All workers became unavailable before the run completed.'),
+          );
+          return;
+        }
+
         // Remove previous listeners and re-attach for this wave
         for (const worker of workers) {
           worker.process.removeAllListeners('message');
           worker.process.removeAllListeners('exit');
+
+          // Async IPC failures (e.g. kill/send races with a dying child)
+          // surface as ChildProcess 'error' events — treat them as the
+          // worker being gone, not as a fatal dispatcher crash.
+          worker.onIpcError = (err) => {
+            retireWorker(worker, `IPC channel error: ${err.message}`);
+          };
 
           worker.process.on('message', (msg: WorkerToMainMessage) => {
             if (hasError || worker.retired) return;
@@ -1426,10 +1498,18 @@ export async function runParallel(opts: DispatcherOptions, _portOffset = 0): Pro
             }
           });
 
-          worker.process.on('exit', (code) => {
+          worker.process.on('exit', (code, signal) => {
             if (dispatcherIsShuttingDown) return;
-            if (code !== 0 && !hasError && !worker.retired) {
-              retireWorker(worker, `exited unexpectedly with code ${code}`);
+            // Any exit during a wave is unexpected — workers only exit
+            // legitimately via the post-run 'shutdown' message (and
+            // retireWorker is a silent no-op once the wave has settled).
+            // A code-0 exit mid-wave previously left the worker "active",
+            // wedging the wave or crashing a later send to the dead child.
+            if (!hasError && !worker.retired) {
+              retireWorker(
+                worker,
+                `exited unexpectedly (${signal ? `signal ${signal}` : `code ${code}`})`,
+              );
             }
           });
 
@@ -1508,7 +1588,10 @@ export async function runParallel(opts: DispatcherOptions, _portOffset = 0): Pro
     const workerExitPromises: Promise<void>[] = [];
     for (const worker of workers) {
       try {
-        if (worker.process?.connected) {
+        const alive = worker.process
+          && worker.process.exitCode === null
+          && worker.process.signalCode === null;
+        if (alive) {
           const exitPromise = new Promise<void>((resolve) => {
             worker.process.once('exit', () => resolve());
             setTimeout(() => {
@@ -1516,7 +1599,14 @@ export async function runParallel(opts: DispatcherOptions, _portOffset = 0): Pro
               resolve();
             }, 3_000);
           });
-          worker.process.send({ type: 'shutdown' } satisfies MainToWorkerMessage);
+          if (worker.process.connected) {
+            // Send failures mean the worker is already dead/dying; the kill
+            // timeout above resolves the exit promise either way.
+            sendToWorkerProcess(worker.process, { type: 'shutdown' }, () => {});
+          } else {
+            // Alive but IPC channel gone — can't ask nicely, kill directly.
+            try { worker.process.kill(); } catch { /* already dead */ }
+          }
           workerExitPromises.push(exitPromise);
         }
       } catch { /* worker may already be dead */ }
@@ -1573,7 +1663,10 @@ export async function runParallel(opts: DispatcherOptions, _portOffset = 0): Pro
 
 function cleanupWorkerResources(worker: WorkerHandle): void {
   try {
-    if (worker.process.connected) {
+    // Kill based on liveness, not `connected` — a worker whose IPC channel
+    // broke (the reason it's being retired) can still be alive and running
+    // a test, and would otherwise be orphaned.
+    if (worker.process.exitCode === null && worker.process.signalCode === null) {
       worker.process.kill();
     }
   } catch { /* already dead */ }
@@ -1677,6 +1770,20 @@ async function initializeWorker(opts: InitializeWorkerOptions): Promise<WorkerHa
     busy: false,
   };
 
+  // Permanent listener: a ChildProcess with no 'error' listener turns any
+  // spawn/kill/IPC failure into an uncaught exception that kills the whole
+  // dispatcher (PILOT-228). Routed through the handle so the init handshake
+  // and each dispatch wave can install their own recovery.
+  child.on('error', (err) => {
+    if (worker.onIpcError) {
+      worker.onIpcError(err);
+    } else {
+      process.stderr.write(
+        `${DIM}Worker ${opts.displayWorkerId ?? workerId} (${deviceSerial}) IPC error ignored outside dispatch: ${err.message}${RESET}\n`,
+      );
+    }
+  });
+
   try {
     await new Promise<void>((resolve, reject) => {
       const timeout = setTimeout(() => {
@@ -1715,20 +1822,28 @@ async function initializeWorker(opts: InitializeWorkerOptions): Promise<WorkerHa
       const cleanup = () => {
         worker.process.removeListener('exit', onExit);
         worker.process.removeListener('message', onMessage);
+        worker.onIpcError = undefined;
       };
 
       worker.process.on('exit', onExit);
       worker.process.on('message', onMessage);
+      worker.onIpcError = (err) => {
+        clearTimeout(timeout);
+        cleanup();
+        reject(new Error(`worker ${workerId} IPC failure during initialization: ${err.message}`));
+      };
 
       // Send init after listeners are registered so no messages are lost.
-      worker.process.send({
+      sendToWorkerProcess(worker.process, {
         type: 'init',
         workerId: worker.id,
         deviceSerial: worker.deviceSerial,
         daemonPort: worker.daemonPort,
         config: serializedConfig,
         freshEmulator: opts.freshEmulator === true ? true : undefined,
-      } satisfies MainToWorkerMessage);
+      }, (err) => {
+        worker.onIpcError?.(err);
+      });
     });
 
     return worker;
