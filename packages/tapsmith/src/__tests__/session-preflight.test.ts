@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { ensureSessionReady, launchConfiguredApp } from '../session-preflight.js';
+import { onActionProgress, type ActionProgressEvent } from '../action-progress.js';
 
 function makeContext(overrides: Partial<Parameters<typeof ensureSessionReady>[0]> = {}) {
   const device = {
@@ -40,6 +41,19 @@ describe('session-preflight', () => {
     await expect(ensureSessionReady(ctx, 'startup')).resolves.toBeUndefined();
     expect(ctx.client.ping).toHaveBeenCalledTimes(1);
     expect(ctx.device.waitForIdle).toHaveBeenCalledWith(5_000);
+  });
+
+  it('emits sessionReady progress events around the readiness check (PILOT-232)', async () => {
+    const events: ActionProgressEvent[] = [];
+    const unsubscribe = onActionProgress((ev) => events.push(ev));
+    try {
+      await ensureSessionReady(makeContext(), 'startup');
+      expect(events.map((e) => `${e.kind}:${e.action}`)).toEqual(['start:sessionReady', 'end:sessionReady']);
+      expect(events[0].target).toBe('com.example.app');
+      expect(events[1].success).toBe(true);
+    } finally {
+      unsubscribe();
+    }
   });
 
   it('restarts the session once when the agent is disconnected', async () => {

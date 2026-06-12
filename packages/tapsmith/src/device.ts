@@ -29,7 +29,9 @@ import {
   type CaptureTraceStateResponse,
   type DaemonLogEntry,
 } from './grpc-client.js';
+import * as nodePath from 'node:path';
 import { ElementHandle, locatorOptionsToSelector, type LocatorOptions } from './element-handle.js';
+import { withActionProgress } from './action-progress.js';
 import type { TapsmithConfig } from './config.js';
 import { Tracing } from './trace/tracing.js';
 import { type TraceCollector, getActiveTraceCollector, extractStack } from './trace/trace-collector.js';
@@ -429,17 +431,19 @@ export class Device {
     iosAppPath?: string,
     networkTracingEnabled = false,
   ): Promise<void> {
-    const res = await this._client.startAgent(
-      targetPackage,
-      agentApkPath,
-      agentTestApkPath,
-      iosXctestrunPath,
-      iosAppPath,
-      networkTracingEnabled,
-    );
-    if (!res.success) {
-      throw new Error(res.errorMessage || 'Start agent failed');
-    }
+    return withActionProgress('startAgent', targetPackage || undefined, async () => {
+      const res = await this._client.startAgent(
+        targetPackage,
+        agentApkPath,
+        agentTestApkPath,
+        iosXctestrunPath,
+        iosAppPath,
+        networkTracingEnabled,
+      );
+      if (!res.success) {
+        throw new Error(res.errorMessage || 'Start agent failed');
+      }
+    });
   }
 
   // ── Device Management (PILOT-10) ──
@@ -462,16 +466,19 @@ export class Device {
   ): Promise<void> {
     const packageName = typeof packageOrOptions === 'string' ? packageOrOptions : undefined;
     const options = typeof packageOrOptions === 'string' ? maybeOptions : packageOrOptions;
+    const pkg = this.requirePackageName(packageName);
     await this._disposeWebViewManager();
-    return this._tracedAction('restartApp', 'device', undefined,
-      () => this._client.restartApp(this.requirePackageName(packageName), options?.waitForIdle ?? true),
-      'Restart app failed');
+    return withActionProgress('restartApp', pkg,
+      () => this._tracedAction('restartApp', 'device', undefined,
+        () => this._client.restartApp(pkg, options?.waitForIdle ?? true),
+        'Restart app failed'));
   }
 
   async launchApp(packageName: string, options?: LaunchAppOptions): Promise<void> {
-    return this._tracedAction('launchApp', 'navigation', undefined,
-      () => this._client.launchApp(packageName, options),
-      'Launch app failed');
+    return withActionProgress('launchApp', packageName,
+      () => this._tracedAction('launchApp', 'navigation', undefined,
+        () => this._client.launchApp(packageName, options),
+        'Launch app failed'));
   }
 
   async openDeepLink(uri: string): Promise<void> {
@@ -492,9 +499,10 @@ export class Device {
   }
 
   async terminateApp(packageName: string): Promise<void> {
-    return this._tracedAction('terminateApp', 'device', undefined,
-      () => this._client.terminateApp(packageName),
-      'Terminate app failed');
+    return withActionProgress('terminateApp', packageName,
+      () => this._tracedAction('terminateApp', 'device', undefined,
+        () => this._client.terminateApp(packageName),
+        'Terminate app failed'));
   }
 
   async getAppState(packageName: string, options?: { timeout?: number }): Promise<AppState> {
@@ -512,22 +520,27 @@ export class Device {
   }
 
   async saveAppState(packageName: string, path: string): Promise<void> {
-    return this._tracedAction('saveAppState', 'device', undefined,
-      () => this._client.saveAppState(this.requirePackageName(packageName), path),
-      'Save app state failed');
+    const pkg = this.requirePackageName(packageName);
+    return withActionProgress('saveAppState', `${pkg} → ${nodePath.basename(path)}`,
+      () => this._tracedAction('saveAppState', 'device', undefined,
+        () => this._client.saveAppState(pkg, path),
+        'Save app state failed'));
   }
 
   async restoreAppState(packageName: string, path: string): Promise<void> {
-    return this._tracedAction('restoreAppState', 'device', undefined,
-      () => this._client.restoreAppState(this.requirePackageName(packageName), path),
-      'Restore app state failed');
+    const pkg = this.requirePackageName(packageName);
+    return withActionProgress('restoreAppState', `${pkg} → ${nodePath.basename(path)}`,
+      () => this._tracedAction('restoreAppState', 'device', undefined,
+        () => this._client.restoreAppState(pkg, path),
+        'Restore app state failed'));
   }
 
   /** Clear app data (AsyncStorage, caches, etc.) and stop the app. */
   async clearAppData(packageName: string): Promise<void> {
-    return this._tracedAction('clearAppData', 'device', undefined,
-      () => this._client.clearAppData(packageName),
-      'Clear app data failed');
+    return withActionProgress('clearAppData', packageName,
+      () => this._tracedAction('clearAppData', 'device', undefined,
+        () => this._client.clearAppData(packageName),
+        'Clear app data failed'));
   }
 
   /** Programmatically grant a runtime permission. @platform android */

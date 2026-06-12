@@ -1252,8 +1252,13 @@ export async function startUIServer(
             broadcast(networkMsg);
             break;
           }
+          case 'progress':
+            // Slow-device-action progress during the preflight reset (PILOT-232).
+            broadcast({ type: 'run-progress', workerId: 0, message: response.message || undefined });
+            break;
           case 'file-done': {
             settled = true;
+            broadcast({ type: 'run-progress', workerId: 0 });
             const results = response.results.map(deserializeTestResult);
             const suite = deserializeSuiteResult(response.suite);
             resolve({ results, suite });
@@ -2085,6 +2090,7 @@ export async function startUIServer(
               }
 
               broadcastFileStatus(msg.filePath, 'done', worker.currentFile?.projectName);
+              broadcast({ type: 'run-progress', workerId: worker.id });
               worker.currentFile = undefined;
               worker.currentTest = undefined;
 
@@ -2099,6 +2105,11 @@ export async function startUIServer(
               }
               break;
             }
+            case 'progress':
+              // Slow-device-action progress during the between-file preflight
+              // (PILOT-232). Empty string = the preflight finished, clear it.
+              broadcast({ type: 'run-progress', workerId: worker.id, message: msg.message || undefined });
+              break;
             case 'error': {
               retireWorker(worker, msg.error.message);
               break;

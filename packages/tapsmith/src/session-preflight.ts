@@ -2,6 +2,7 @@ import type { TapsmithConfig } from './config.js';
 import type { Device } from './device.js';
 import type { LaunchAppOptions, TapsmithGrpcClient } from './grpc-client.js';
 import { detectBlockingSystemDialog, dismissSystemDialogsViaAdb } from './emulator.js';
+import { withActionProgress } from './action-progress.js';
 
 type SessionDevice = Pick<Device, 'startAgent' | 'terminateApp' | 'launchApp' | 'restartApp' | 'waitForIdle' | 'currentPackage' | 'getByText' | 'pressBack' | 'clearAppData' | 'openDeepLink' | 'getAppState'>
 type SessionClient = Pick<TapsmithGrpcClient, 'ping' | 'getUiHierarchy'>
@@ -50,31 +51,33 @@ export async function ensureSessionReady(
   maxAttempts = DEFAULT_MAX_ATTEMPTS,
   options: EnsureSessionReadyOptions = {},
 ): Promise<void> {
-  let lastError: unknown;
+  return withActionProgress('sessionReady', ctx.config.package, async () => {
+    let lastError: unknown;
 
-  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-    try {
-      await verifySession(ctx);
-      return;
-    } catch (err) {
-      lastError = err;
-      if (attempt === maxAttempts) break;
-      options.onRecovery?.(err);
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
       try {
-        await recoverSession(ctx);
-      } catch (recoveryErr) {
-        // The recovery RPC can hit the same transient agent/ADB transport
-        // blip that caused verification to fail. If the caller allowed more
-        // attempts, loop back and probe the session again before giving up.
-        lastError = recoveryErr;
-        if (attempt === maxAttempts - 1) break;
+        await verifySession(ctx);
+        return;
+      } catch (err) {
+        lastError = err;
+        if (attempt === maxAttempts) break;
+        options.onRecovery?.(err);
+        try {
+          await recoverSession(ctx);
+        } catch (recoveryErr) {
+          // The recovery RPC can hit the same transient agent/ADB transport
+          // blip that caused verification to fail. If the caller allowed more
+          // attempts, loop back and probe the session again before giving up.
+          lastError = recoveryErr;
+          if (attempt === maxAttempts - 1) break;
+        }
       }
     }
-  }
 
-  throw new Error(
-    `${ctx.label}: session preflight failed during ${phase}: ${formatError(lastError)}`,
-  );
+    throw new Error(
+      `${ctx.label}: session preflight failed during ${phase}: ${formatError(lastError)}`,
+    );
+  });
 }
 
 export async function launchConfiguredApp(

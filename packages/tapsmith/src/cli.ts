@@ -18,6 +18,7 @@ import { Device } from './device.js';
 import { runTestFile, collectResults, type TestResult, type SuiteResult } from './runner.js';
 import { createReporters, ReporterDispatcher, type FullResult } from './reporter.js';
 import { ensureSessionReady, launchConfiguredApp } from './session-preflight.js';
+import { installActionProgressPrinter } from './action-progress-renderer.js';
 import { findAgentApk, findAgentTestApk } from './agent-resolve.js';
 import { discoverTestFiles } from './test-file-discovery.js';
 import {
@@ -2064,6 +2065,7 @@ async function main(): Promise<void> {
   let launchedEmulators: LaunchedEmulator[] = [];
   let client: TapsmithGrpcClient | undefined;
   let device: Device | undefined;
+  let disposeActionProgressPrinter: (() => void) | undefined;
   let currentSequentialState: SequentialDeviceState | undefined;
   let resolvedAgentApk: string | undefined;
   let resolvedAgentTestApk: string | undefined;
@@ -2253,6 +2255,11 @@ async function main(): Promise<void> {
     if (!args.ui && !args.watch) {
       launchProgress?.finish();
       reporter.onRunStart(config, testFiles.length);
+      // Print live progress lines for slow device actions (app-state
+      // save/restore, between-file resets, …) so long silent stretches are
+      // visibly forward motion rather than a hang (PILOT-232). Installed
+      // after launchProgress.finish() — startup has its own progress UI.
+      disposeActionProgressPrinter = installActionProgressPrinter();
     }
 
     // Run tests
@@ -2460,6 +2467,7 @@ async function main(): Promise<void> {
     await reporter.onRunEnd(fullResult);
     sequentialExitCode = hasFailed ? 1 : 0;
   } finally {
+    disposeActionProgressPrinter?.();
     device?.close();
     client?.close();
     if (spawnedDaemonProcess) {

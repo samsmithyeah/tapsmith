@@ -1410,6 +1410,15 @@ export async function runParallel(opts: DispatcherOptions, _portOffset = 0): Pro
                 dispatchNext(worker);
                 break;
               }
+              case 'progress': {
+                // Live progress for slow device actions (between-file resets,
+                // app-state save/restore) so the run doesn't look hung (PILOT-232).
+                // Goes through process.stdout.write so the list reporter's
+                // live-region interceptor can redraw around it.
+                const displayId = msg.workerId + (opts.workerIndexBase ?? 0);
+                process.stdout.write(`${DIM}  [worker ${displayId}] ${msg.message}${RESET}\n`);
+                break;
+              }
               case 'error': {
                 retireWorker(worker, msg.error.message);
                 break;

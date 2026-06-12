@@ -29,6 +29,7 @@ import {
   deserializeRegExpArray,
 } from './worker-protocol.js';
 import { ensureSessionReady, launchConfiguredApp, type SessionPreflightContext } from './session-preflight.js';
+import { createActionProgressMessenger } from './action-progress-renderer.js';
 import type { TapsmithReporter } from './reporter.js';
 
 let workerId = -1;
@@ -289,6 +290,12 @@ async function handleInit(msg: InitMessage): Promise<void> {
 
   sendProgress('ready');
   send({ type: 'ready', workerId });
+
+  // From here on, forward slow-device-action progress (between-file resets,
+  // app-state save/restore, …) to the main process so headless multi-worker
+  // runs show forward motion instead of going silent (PILOT-232). Installed
+  // after init — the init phase above already reports its own progress.
+  createActionProgressMessenger({ emit: (text) => sendProgress(text) });
 }
 
 async function handleRunFile(
