@@ -6017,6 +6017,12 @@ impl proto::tapsmith_service_server::TapsmithService for TapsmithServiceImpl {
         let req = request.into_inner();
         let request_id = Self::request_id(&req.request_id);
 
+        // The write lock is intentionally held across the discard and start
+        // awaits below: the recording slot must stay claimed until the old
+        // recorder has fully exited, because CoreSimulator allows only one
+        // host capture at a time — a racing StartVideoRecording that saw an
+        // empty slot mid-discard would spawn a recorder that fails with
+        // "Resource busy" and silently records nothing.
         let mut video_recording = self.video_recording.write().await;
         if let Some(stale) = video_recording.take() {
             // Self-heal instead of refusing (PILOT-235): a recording still
