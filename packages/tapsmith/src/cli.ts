@@ -1961,10 +1961,11 @@ async function main(): Promise<void> {
   }
 
   // Retry-only video modes start no recorder on attempt 0, so with
-  // `retries: 0` they can never produce a video. Warn once at run start
-  // rather than letting the run silently record nothing (PILOT-240; same
-  // caveat Playwright documents for its `on-first-retry` video mode).
-  // Placed after the tsx re-exec so the warning prints exactly once.
+  // `retries: 0` they can never produce a video. Warn at run start — one
+  // line per misconfigured project — rather than letting the run silently
+  // record nothing (PILOT-240; same caveat Playwright documents for its
+  // `on-first-retry` video mode). Placed after the tsx re-exec so each
+  // warning prints exactly once.
   for (const project of projects) {
     const cfg = project.effectiveConfig;
     const videoMode = resolveVideoConfig(cfg.video).mode;
@@ -1973,7 +1974,6 @@ async function main(): Promise<void> {
       console.error(yellow(
         `Warning: video mode '${videoMode}' only records retry attempts, but retries is 0${scope} — no video will ever be recorded. Set retries to 1 or more to get videos.`,
       ));
-      break;
     }
   }
 
