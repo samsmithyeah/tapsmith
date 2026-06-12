@@ -97,7 +97,8 @@ export function createActionProgressMessenger(options: ActionProgressMessengerOp
     } else if (ev.success) {
       options.emit(`✓ ${withTarget(labels.done, ev.target)} ${duration}`, 'end', ev);
     } else {
-      options.emit(`✗ ${withTarget(labels.failed, ev.target)} ${duration}${ev.error ? `: ${ev.error}` : ''}`, 'end', ev);
+      const errorSuffix = ev.error ? `: ${ev.error}` : '';
+      options.emit(`✗ ${withTarget(labels.failed, ev.target)} ${duration}${errorSuffix}`, 'end', ev);
     }
   });
 

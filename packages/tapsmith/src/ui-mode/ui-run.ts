@@ -160,8 +160,11 @@ async function handleRun(msg: UIRunMessage): Promise<void> {
   // Stream slow-device-action progress (preflight reset, test.use({appState})
   // restore) so the UI shows "Clearing app data…" instead of a generic
   // waiting state (PILOT-232). An action's end clears the label; the child
-  // exits after this run, so no explicit dispose is needed.
+  // exits after this run, so no explicit dispose is needed. Unlike the stdout
+  // printer, the label replaces an existing placeholder rather than adding
+  // output, so it announces near-immediately.
   createActionProgressMessenger({
+    startDelayMs: 250,
     emit: (text, phase) => send({ type: 'progress', message: phase === 'end' ? undefined : text }),
   });
 

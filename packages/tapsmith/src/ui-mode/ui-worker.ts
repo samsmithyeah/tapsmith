@@ -310,8 +310,11 @@ async function handleInit(msg: UIWorkerInitMessage): Promise<void> {
   // state…" instead of a generic waiting state (PILOT-232). An action's end
   // clears the label — the indicator is "what's happening now", and the
   // Actions panel only renders it while no trace actions have streamed yet,
-  // so traced in-test actions can't double-report.
+  // so traced in-test actions can't double-report. Unlike the stdout printer,
+  // the label replaces an existing placeholder rather than adding output, so
+  // it announces near-immediately; the tiny delay only skips sub-action blips.
   createActionProgressMessenger({
+    startDelayMs: 250,
     emit: (text, phase) => sendProgress(phase === 'end' ? '' : text),
   });
 }
