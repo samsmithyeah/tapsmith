@@ -1,7 +1,9 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
+import type { ChildProcess } from 'node:child_process';
 import {
   planMultiBucket,
   mergeBucketResults,
+  sendToWorkerProcess,
   PORTS_PER_BUCKET,
   handleParallelTestStartMessage,
   handleParallelTestEndMessage,
@@ -417,5 +419,65 @@ describe('mergeBucketResults()', () => {
     expect(merged.setupDuration).toBe(0);
     expect(merged.tests).toEqual([]);
     expect(merged.suites).toEqual([]);
+  });
+});
+
+// ─── sendToWorkerProcess (PILOT-228) ───
+
+describe('sendToWorkerProcess()', () => {
+  function fakeProc(overrides: Partial<ChildProcess>): ChildProcess {
+    return { connected: true, ...overrides } as unknown as ChildProcess;
+  }
+
+  /** Let queued microtasks (deferred failure callbacks) run. */
+  const flushMicrotasks = () => new Promise<void>((r) => { setTimeout(r, 0); });
+
+  it('reports failure without calling send() when the IPC channel is closed', async () => {
+    const send = vi.fn();
+    const onSendFailure = vi.fn();
+    sendToWorkerProcess(fakeProc({ connected: false, send }), { type: 'shutdown' }, onSendFailure);
+    expect(send).not.toHaveBeenCalled();
+    // Deferred: callers must not be re-entered synchronously mid-dispatch-loop.
+    expect(onSendFailure).not.toHaveBeenCalled();
+    await flushMicrotasks();
+    expect(onSendFailure).toHaveBeenCalledOnce();
+    expect(onSendFailure.mock.calls[0][0].message).toMatch(/IPC channel is closed/);
+  });
+
+  it('reports an asynchronous send failure (EPIPE to a dead child) instead of crashing', async () => {
+    const epipe = Object.assign(new Error('write EPIPE'), { code: 'EPIPE' });
+    const send = vi.fn((_msg: unknown, cb: (err: Error | null) => void) => {
+      cb(epipe);
+      return true;
+    });
+    const onSendFailure = vi.fn();
+    sendToWorkerProcess(fakeProc({ send: send as unknown as ChildProcess['send'] }), { type: 'shutdown' }, onSendFailure);
+    await flushMicrotasks();
+    expect(onSendFailure).toHaveBeenCalledOnce();
+    expect(onSendFailure.mock.calls[0][0]).toBe(epipe);
+  });
+
+  it('reports a synchronous send throw (ERR_IPC_CHANNEL_CLOSED race)', async () => {
+    const send = vi.fn(() => {
+      throw new Error('Channel closed');
+    });
+    const onSendFailure = vi.fn();
+    sendToWorkerProcess(fakeProc({ send: send as unknown as ChildProcess['send'] }), { type: 'shutdown' }, onSendFailure);
+    expect(onSendFailure).not.toHaveBeenCalled();
+    await flushMicrotasks();
+    expect(onSendFailure).toHaveBeenCalledOnce();
+    expect(onSendFailure.mock.calls[0][0].message).toMatch(/Channel closed/);
+  });
+
+  it('does not report failure on a successful send', async () => {
+    const send = vi.fn((_msg: unknown, cb: (err: Error | null) => void) => {
+      cb(null);
+      return true;
+    });
+    const onSendFailure = vi.fn();
+    sendToWorkerProcess(fakeProc({ send: send as unknown as ChildProcess['send'] }), { type: 'shutdown' }, onSendFailure);
+    await flushMicrotasks();
+    expect(send).toHaveBeenCalledOnce();
+    expect(onSendFailure).not.toHaveBeenCalled();
   });
 });
