@@ -1359,14 +1359,21 @@ async function runSuiteContext(
         // The trace viewer uses the next action's before-screenshot as "after",
         // so this provides the terminal state.
         if (traceCollector.config.screenshots) {
-          const tracing = device.tracing;
-          const { actionIndex: finalIdx } = await traceCollector.captureBeforeAction(
-            tracing['_getScreenshot'],
-            tracing['_getHierarchy'],
-          );
-          // Flush to UI mode live stream — emit a lightweight event so the
-          // screenshot buffer reaches the frontend.
-          traceCollector.emitPendingCaptures(finalIdx);
+          try {
+            const tracing = device.tracing;
+            const { actionIndex: finalIdx } = await traceCollector.captureBeforeAction(
+              tracing['_getScreenshot'],
+              tracing['_getHierarchy'],
+            );
+            // Flush to UI mode live stream — emit a lightweight event so the
+            // screenshot buffer reaches the frontend.
+            traceCollector.emitPendingCaptures(finalIdx);
+          } catch {
+            // Best-effort: on a stopped run this screenshot RPC rejects with
+            // TestAbortedError — letting it escape would skip the rest of
+            // the finalization, including the video-recording stop below,
+            // leaking the recorder on the daemon (PILOT-235).
+          }
         }
 
         const collector = device.tracing._stopManaged();
