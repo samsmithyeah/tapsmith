@@ -55,6 +55,18 @@ describe('defineConfig()', () => {
     expect(config.screenshot).toBe('only-on-failure');
   });
 
+  it('ignores keys passed as explicit undefined instead of clobbering defaults', () => {
+    const config = defineConfig({
+      retries: undefined,
+      timeout: undefined,
+      workers: undefined,
+    });
+    expect(config.retries).toBe(0);
+    expect(config.timeout).toBe(30_000);
+    expect(config.workers).toBe(1);
+    expect(isExplicitWorkers(config)).toBe(false);
+  });
+
   it('overrides retries', () => {
     const config = defineConfig({ retries: 3 });
     expect(config.retries).toBe(3);
@@ -205,6 +217,17 @@ describe('isExplicitWorkers() / loadConfig()', () => {
     await withTempConfig(contents, 'tapsmith.config.mjs', async (dir) => {
       const config = await loadConfig(dir);
       expect(config.timeout).toBe(5000);
+      expect(isExplicitWorkers(config)).toBe(false);
+    });
+  });
+
+  it('loadConfig ignores explicit-undefined keys instead of clobbering defaults', async () => {
+    const contents = 'export default { retries: undefined, timeout: undefined, workers: undefined };\n';
+    await withTempConfig(contents, 'tapsmith.config.mjs', async (dir) => {
+      const config = await loadConfig(dir);
+      expect(config.retries).toBe(0);
+      expect(config.timeout).toBe(30_000);
+      expect(config.workers).toBe(1);
       expect(isExplicitWorkers(config)).toBe(false);
     });
   });
