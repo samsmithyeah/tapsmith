@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { shouldRecord, shouldRetain, recordsOnlyOnRetry } from '../trace/trace-mode.js';
+import { resolveTraceConfig } from '../trace/types.js';
 
 describe('shouldRecord', () => {
   it('returns false for "off"', () => {
@@ -71,6 +72,13 @@ describe('shouldRetain', () => {
     expect(shouldRetain('retain-on-first-failure', false, 0)).toBe(true);
     expect(shouldRetain('retain-on-first-failure', false, 1)).toBe(false);
     expect(shouldRetain('retain-on-first-failure', true, 1)).toBe(false);
+  });
+});
+
+describe('resolveTraceConfig null handling', () => {
+  it('defaults to off when input is null (untyped .mjs configs)', () => {
+    expect(resolveTraceConfig(null).mode).toBe('off');
+    expect(resolveTraceConfig(undefined).mode).toBe('off');
   });
 });
 

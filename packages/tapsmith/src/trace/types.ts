@@ -388,7 +388,7 @@ export interface TraceConfig {
 
 /** Parse a string shorthand or object into a full TraceConfig. */
 export function resolveTraceConfig(
-  input: TraceMode | Partial<TraceConfig> | undefined,
+  input: TraceMode | Partial<TraceConfig> | undefined | null,
 ): TraceConfig {
   const defaults: TraceConfig = {
     mode: 'off',
@@ -401,7 +401,8 @@ export function resolveTraceConfig(
     daemonLogs: false,
   };
 
-  if (input === undefined) return defaults;
+  // == null also catches explicit `trace: null` from untyped .mjs configs.
+  if (input == null) return defaults;
 
   if (typeof input === 'string') {
     return { ...defaults, mode: input };

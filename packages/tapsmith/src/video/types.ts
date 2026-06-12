@@ -50,9 +50,10 @@ const DEFAULT_VIDEO_CONFIG: VideoConfig = {
  * or undefined — into a fully-populated `VideoConfig`.
  */
 export function resolveVideoConfig(
-  input: VideoMode | Partial<VideoConfig> | undefined,
+  input: VideoMode | Partial<VideoConfig> | undefined | null,
 ): VideoConfig {
-  if (input === undefined) return { ...DEFAULT_VIDEO_CONFIG };
+  // == null also catches explicit `video: null` from untyped .mjs configs.
+  if (input == null) return { ...DEFAULT_VIDEO_CONFIG };
   if (typeof input === 'string') {
     return { ...DEFAULT_VIDEO_CONFIG, mode: input };
   }
