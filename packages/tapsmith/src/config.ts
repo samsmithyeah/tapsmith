@@ -346,11 +346,25 @@ const DEFAULT_CONFIG: TapsmithConfig = {
 };
 
 /**
+ * Drop keys whose value is explicitly `undefined` so spread-merging cannot
+ * clobber defaults — `{ ...DEFAULT_CONFIG, ...raw }` would otherwise turn
+ * e.g. `defineConfig({ retries: maybeUndefined })` into `retries: undefined`,
+ * which downstream code typed as `number` cannot handle (the runner's retry
+ * loop `attempt <= retries` would never execute).
+ */
+function omitUndefined<T extends object>(raw: T): T {
+  return Object.fromEntries(
+    Object.entries(raw).filter(([, v]) => v !== undefined),
+  ) as T;
+}
+
+/**
  * Define a Tapsmith configuration. Merges the provided overrides with defaults.
  */
 export function defineConfig(overrides: Partial<TapsmithConfig> = {}): TapsmithConfig {
-  const merged = applyConfigDefaults({ ...DEFAULT_CONFIG, ...overrides }, overrides);
-  return withExplicitWorkers(merged, overrides.workers !== undefined);
+  const clean = omitUndefined(overrides);
+  const merged = applyConfigDefaults({ ...DEFAULT_CONFIG, ...clean }, clean);
+  return withExplicitWorkers(merged, clean.workers !== undefined);
 }
 
 function applyConfigDefaults(
@@ -443,12 +457,16 @@ export async function loadConfig(dir?: string, configFile?: string): Promise<Tap
       throw new Error(`Config file not found: ${configPath}`);
     }
     const mod = await import(configPath);
-    const raw: Partial<TapsmithConfig> = mod.default ?? mod;
+    // Keep the original for rawHasExplicitWorkers — omitUndefined produces a
+    // fresh object, dropping the non-enumerable EXPLICIT_WORKERS symbol that
+    // defineConfig-produced configs carry.
+    const original: Partial<TapsmithConfig> = mod.default ?? mod;
+    const raw = omitUndefined(original);
     const merged = applyConfigDefaults(
       { ...DEFAULT_CONFIG, ...raw, rootDir: raw.rootDir ?? root },
       raw,
     );
-    return withExplicitWorkers(merged, rawHasExplicitWorkers(raw));
+    return withExplicitWorkers(merged, rawHasExplicitWorkers(original));
   }
 
   const candidates = ['tapsmith.config.ts', 'tapsmith.config.js', 'tapsmith.config.mjs'];
@@ -459,12 +477,13 @@ export async function loadConfig(dir?: string, configFile?: string): Promise<Tap
       try {
         // For .ts files we rely on tsx / ts-node being available at runtime.
         const mod = await import(configPath);
-        const raw: Partial<TapsmithConfig> = mod.default ?? mod;
+        const original: Partial<TapsmithConfig> = mod.default ?? mod;
+        const raw = omitUndefined(original);
         const merged = applyConfigDefaults(
           { ...DEFAULT_CONFIG, ...raw, rootDir: raw.rootDir ?? root },
           raw,
         );
-        return withExplicitWorkers(merged, rawHasExplicitWorkers(raw));
+        return withExplicitWorkers(merged, rawHasExplicitWorkers(original));
       } catch (err) {
         console.warn(`Warning: failed to load ${configPath}: ${err}`);
       }

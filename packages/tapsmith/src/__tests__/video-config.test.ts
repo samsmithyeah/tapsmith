@@ -6,6 +6,10 @@ describe('resolveVideoConfig (PILOT-114)', () => {
     expect(resolveVideoConfig(undefined)).toEqual({ mode: 'off' });
   });
 
+  it('defaults to off when input is null (untyped .mjs configs)', () => {
+    expect(resolveVideoConfig(null)).toEqual({ mode: 'off' });
+  });
+
   it('accepts every supported mode shorthand', () => {
     const modes = [
       'off',

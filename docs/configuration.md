@@ -110,6 +110,8 @@ type TraceMode = "off" | "on" | "on-first-retry" | "on-all-retries" | "retain-on
 - `"retain-on-failure"` -- Always record, but delete the trace zip if the test passes.
 - `"retain-on-first-failure"` -- Always record, but only keep traces for the first failure (attempt 0).
 
+The retry-only modes (`"on-first-retry"`, `"on-all-retries"`) require `retries >= 1` to ever produce a trace; the runner warns at startup if `retries` is 0.
+
 ### `TraceConfig`
 
 For fine-grained control, pass an object instead of a mode string:
@@ -218,6 +220,8 @@ type VideoMode = "off" | "on" | "on-first-retry" | "on-all-retries" | "retain-on
 ```
 
 The mode set is identical to `TraceMode` and the semantics match exactly — `"on"` records every test, `"retain-on-failure"` records but discards passing-test videos, etc.
+
+Note that `"retain-on-failure"` still pays the recording/encoding cost for every test and only discards the file afterwards. The retry-only modes (`"on-first-retry"`, `"on-all-retries"`) start no recorder at all on the first attempt, which avoids that cost entirely on healthy runs — but they require `retries >= 1` to ever produce a video (the runner warns at startup if `retries` is 0). This mirrors Playwright's `on-first-retry` caveat.
 
 ### `VideoConfig`
 

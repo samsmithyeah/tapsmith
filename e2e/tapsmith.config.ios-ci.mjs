@@ -16,7 +16,9 @@ export default defineConfig({
     daemonLogs: true,
     networkHosts: ["jsonplaceholder.typicode.com", "127.0.0.1"],
   },
-  video: "retain-on-failure",
+  // on-first-retry: no encoder runs on healthy tests (PILOT-240); a failed
+  // test's retry is recorded, so flake investigations still get a video.
+  video: "on-first-retry",
   workers: 1,
   simulator: process.env.TAPSMITH_IOS_SIMULATOR || "iPhone 16",
   iosXctestrun: process.env.TAPSMITH_IOS_XCTESTRUN || undefined,
