@@ -27,7 +27,8 @@ import {
   networkHostsForPac,
   networkPassthroughHosts,
 } from './trace/types.js';
-import { resolveVideoConfig, videoModeRecordsOnlyOnRetry } from './video/types.js';
+import { resolveVideoConfig } from './video/types.js';
+import { recordsOnlyOnRetry } from './trace/trace-mode.js';
 import { spawn, execFileSync } from 'node:child_process';
 import {
   clearOfflineEmulatorTransports,
@@ -1960,20 +1961,25 @@ async function main(): Promise<void> {
     return;
   }
 
-  // Retry-only video modes start no recorder on attempt 0, so with
-  // `retries: 0` they can never produce a video. Warn at run start — one
-  // line per misconfigured project — rather than letting the run silently
-  // record nothing (PILOT-240; same caveat Playwright documents for its
-  // `on-first-retry` video mode). Placed after the tsx re-exec so each
-  // warning prints exactly once.
+  // Retry-only video/trace modes start no recorder on attempt 0, so with
+  // `retries: 0` they can never produce an artifact. Warn at run start —
+  // one line per misconfigured project and artifact — rather than letting
+  // the run silently record nothing (PILOT-240; same caveat Playwright
+  // documents for its `on-first-retry` video mode). Placed after the tsx
+  // re-exec so each warning prints exactly once.
   for (const project of projects) {
     const cfg = project.effectiveConfig;
-    const videoMode = resolveVideoConfig(cfg.video).mode;
-    if (videoModeRecordsOnlyOnRetry(videoMode) && cfg.retries === 0) {
-      const scope = projects.length > 1 ? ` in project "${project.name}"` : '';
-      console.error(yellow(
-        `Warning: video mode '${videoMode}' only records retry attempts, but retries is 0${scope} — no video will ever be recorded. Set retries to 1 or more to get videos.`,
-      ));
+    if (cfg.retries > 0) continue;
+    const scope = projects.length > 1 ? ` in project "${project.name}"` : '';
+    for (const [artifact, mode] of [
+      ['video', resolveVideoConfig(cfg.video).mode],
+      ['trace', resolveTraceConfig(cfg.trace).mode],
+    ] as const) {
+      if (recordsOnlyOnRetry(mode)) {
+        console.error(yellow(
+          `Warning: ${artifact} mode '${mode}' only records retry attempts, but retries is 0${scope} — no ${artifact} will ever be recorded. Set retries to 1 or more to get ${artifact}s.`,
+        ));
+      }
     }
   }
 

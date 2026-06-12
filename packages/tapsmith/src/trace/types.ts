@@ -408,7 +408,9 @@ export function resolveTraceConfig(
     return { ...defaults, mode: input };
   }
 
-  return { ...defaults, ...input };
+  // input.mode ?? 'off' so an explicit-undefined mode in object form can't
+  // clobber the default (mirrors resolveVideoConfig).
+  return { ...defaults, ...input, mode: input.mode ?? 'off' };
 }
 
 /**

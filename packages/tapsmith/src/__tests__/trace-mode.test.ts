@@ -75,10 +75,14 @@ describe('shouldRetain', () => {
   });
 });
 
-describe('resolveTraceConfig null handling', () => {
+describe('resolveTraceConfig null/undefined handling', () => {
   it('defaults to off when input is null (untyped .mjs configs)', () => {
     expect(resolveTraceConfig(null).mode).toBe('off');
     expect(resolveTraceConfig(undefined).mode).toBe('off');
+  });
+
+  it('object form with explicit-undefined mode falls back to off', () => {
+    expect(resolveTraceConfig({ mode: undefined, screenshots: false }).mode).toBe('off');
   });
 });
 

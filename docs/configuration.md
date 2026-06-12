@@ -110,6 +110,8 @@ type TraceMode = "off" | "on" | "on-first-retry" | "on-all-retries" | "retain-on
 - `"retain-on-failure"` -- Always record, but delete the trace zip if the test passes.
 - `"retain-on-first-failure"` -- Always record, but only keep traces for the first failure (attempt 0).
 
+The retry-only modes (`"on-first-retry"`, `"on-all-retries"`) require `retries >= 1` to ever produce a trace; the runner warns at startup if `retries` is 0.
+
 ### `TraceConfig`
 
 For fine-grained control, pass an object instead of a mode string:
