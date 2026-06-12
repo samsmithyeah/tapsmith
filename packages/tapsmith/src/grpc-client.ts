@@ -227,6 +227,13 @@ const PROTO_PATH = (() => {
 })();
 const DEFAULT_ADDRESS = 'localhost:50051';
 
+/**
+ * Deadline for cleanup RPCs dispatched after the run has been aborted
+ * (PILOT-235). Must stay under the UI server's STOP_GRACE_MS (5s) so a
+ * graceful stop can finish cleanup before the SIGKILL escalation lands.
+ */
+const ABORTED_CLEANUP_DEADLINE_MS = 4_000;
+
 function requestId(): string {
   return crypto.randomUUID();
 }
@@ -280,11 +287,29 @@ export class TapsmithGrpcClient {
     return this._abortSignal;
   }
 
-  private call<T>(method: string, request: Record<string, unknown>, deadlineMs?: number): Promise<T> {
+  private call<T>(
+    method: string,
+    request: Record<string, unknown>,
+    deadlineMs?: number,
+    opts?: { bypassAbort?: boolean },
+  ): Promise<T> {
     const signal = this._abortSignal;
-    if (signal?.aborted) return Promise.reject(new TestAbortedError());
+    const bypassAbort = opts?.bypassAbort ?? false;
+    if (signal?.aborted && !bypassAbort) return Promise.reject(new TestAbortedError());
+    // Cleanup RPCs (bypassAbort) must still reach the daemon after a stop —
+    // they release daemon-held resources (video recorder, network capture)
+    // that would otherwise leak past the run and break every later run
+    // (PILOT-235). Their post-abort deadline is clamped so a wedged daemon
+    // can't stall the stop: it sits under the UI server's 5s SIGKILL
+    // escalation grace, giving cleanup a chance to land before the worker
+    // is force-killed. (A bypass call already in flight when the abort
+    // fires keeps its original deadline; the escalation backstop and the
+    // daemon's stale-recording self-heal cover that window.)
+    const effectiveDeadlineMs = bypassAbort && signal?.aborted
+      ? Math.min(deadlineMs ?? 60_000, ABORTED_CLEANUP_DEADLINE_MS)
+      : deadlineMs ?? 60_000;
     return new Promise<T>((resolve, reject) => {
-      const deadline = new Date(Date.now() + (deadlineMs ?? 60_000));
+      const deadline = new Date(Date.now() + effectiveDeadlineMs);
       // onAbort is declared before the dispatch so a callback that fires
       // synchronously can reference it without hitting the temporal dead
       // zone. Referencing grpcCall inside onAbort is safe: the abort
@@ -295,7 +320,7 @@ export class TapsmithGrpcClient {
       const grpcCall = (this.client as any)[method](request, { deadline }, (err: grpc.ServiceError | null, response: T) => {
         callbackFired = true;
         signal?.removeEventListener('abort', onAbort);
-        if (signal?.aborted) {
+        if (signal?.aborted && !bypassAbort) {
           // After an abort, no call settles successfully — even if the
           // response won the race against cancel() — and any error
           // (CANCELLED or otherwise) is normalized so callers see one
@@ -311,8 +336,9 @@ export class TapsmithGrpcClient {
       // tasks, never midway through this synchronous block (and an
       // already-aborted signal was rejected before the Promise was built).
       // The callbackFired guard keeps a synchronously-settled call from
-      // registering a listener it would never remove.
-      if (signal && !callbackFired) signal.addEventListener('abort', onAbort, { once: true });
+      // registering a listener it would never remove. Bypass calls never
+      // register: an abort must not cancel cleanup.
+      if (signal && !bypassAbort && !callbackFired) signal.addEventListener('abort', onAbort, { once: true });
     });
   }
 
@@ -822,10 +848,13 @@ export class TapsmithGrpcClient {
     }>;
     errorMessage: string;
   }> {
+    // bypassAbort: stopping capture is cleanup — it must reach the daemon
+    // even when the run was stopped, or the proxy keeps capturing into a
+    // session nobody will drain (PILOT-235).
     return this.call('stopNetworkCapture', {
       requestId: requestId(),
       keepRunning: options?.keepRunning ?? false,
-    }, 30_000);
+    }, 30_000, { bypassAbort: true });
   }
 
   // ── Video Recording (PILOT-114) ──
@@ -843,9 +872,12 @@ export class TapsmithGrpcClient {
     // flushes the MOOV atom and adb pulls the file off the device. Keep
     // the deadline generous so we don't surface spurious DEADLINE_EXCEEDED
     // errors during teardown of legitimately-large recordings.
+    // bypassAbort: a stopped run must still stop its recorder, or the
+    // orphan blocks video for every later run until the daemon restarts
+    // (PILOT-235). Post-abort the deadline is clamped instead.
     return this.call<StopVideoRecordingResponse>('stopVideoRecording', {
       requestId: requestId(),
-    }, 60_000);
+    }, 60_000, { bypassAbort: true });
   }
 
   // ── Physical iOS device network profile (PILOT-185) ──

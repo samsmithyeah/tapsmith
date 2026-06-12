@@ -202,6 +202,48 @@ pub async fn stop(handle: RecordingHandle) -> Result<(PathBuf, Duration)> {
     Ok((local_path, elapsed))
 }
 
+/// Stop a recording, discard its output, and remove its artifacts.
+///
+/// Used to reap an orphaned recording whose owning run died before it could
+/// call `StopVideoRecording` — e.g. a stopped run whose worker was SIGKILLed
+/// (PILOT-235). The recorders are stopped gracefully even though the output
+/// is discarded: SIGKILLing `simctl io recordVideo` leaves CoreSimulator's
+/// host-side capture session stuck ("Host recording is already in
+/// progress"), which silently breaks every subsequent recording until the
+/// simulator reboots.
+pub async fn discard(handle: RecordingHandle) {
+    let local_path = handle.local_path.clone();
+    match handle.backend {
+        Backend::Android {
+            mut child,
+            serial,
+            device_path,
+        } => {
+            // Stop the device-side encoder first — killing the local adb
+            // process alone leaves it recording on the device.
+            let _ = adb::shell(&serial, "kill -INT $(pidof screenrecord)").await;
+            let _ = child.kill().await;
+            let _ = adb::shell(&serial, &format!("rm -f '{device_path}'")).await;
+        }
+        Backend::IosSim { child } => {
+            if let Err(e) = ios::recording::stop_simctl_recording(child, STOP_GRACEFUL_WAIT).await {
+                warn!(error = %e, "Failed to stop orphaned simctl recording");
+            }
+        }
+        Backend::IosPhysical { child } => {
+            if let Err(e) = ios::recording::stop_ffmpeg_recording(child, STOP_GRACEFUL_WAIT).await {
+                warn!(error = %e, "Failed to stop orphaned ffmpeg recording");
+            }
+        }
+    }
+    if let Err(e) = tokio::fs::remove_file(&local_path).await {
+        if e.kind() != std::io::ErrorKind::NotFound {
+            warn!(path = %local_path.display(), error = %e, "Failed to remove discarded recording file");
+        }
+    }
+    info!(path = %local_path.display(), "Discarded orphaned video recording");
+}
+
 /// Look up an iOS device record by UDID, caching the device list so repeated
 /// recordings within the same daemon session don't re-query simctl/devicectl.
 /// If the UDID isn't in the cached list, refreshes once in case a device was

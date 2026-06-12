@@ -6017,17 +6017,26 @@ impl proto::tapsmith_service_server::TapsmithService for TapsmithServiceImpl {
         let req = request.into_inner();
         let request_id = Self::request_id(&req.request_id);
 
+        // The write lock is intentionally held across the discard and start
+        // awaits below: the recording slot must stay claimed until the old
+        // recorder has fully exited, because CoreSimulator allows only one
+        // host capture at a time — a racing StartVideoRecording that saw an
+        // empty slot mid-discard would spawn a recorder that fails with
+        // "Resource busy" and silently records nothing.
         let mut video_recording = self.video_recording.write().await;
-        if video_recording.is_some() {
-            return Ok(Response::new(proto::ActionResponse {
-                request_id,
-                success: false,
-                error_type: "already_recording".into(),
-                error_message: "A video recording is already in progress. Call \
-                                StopVideoRecording before starting a new one."
-                    .into(),
-                screenshot: Vec::new(),
-            }));
+        if let Some(stale) = video_recording.take() {
+            // Self-heal instead of refusing (PILOT-235): a recording still
+            // active here was orphaned by a run that died before it could
+            // call StopVideoRecording (stopped run, SIGKILLed worker,
+            // crashed client). Refusing would break video for every later
+            // run until the daemon restarts, while the orphaned recorder
+            // churns CPU/disk indefinitely.
+            warn!(
+                "A video recording was still active at StartVideoRecording — \
+                 discarding the orphan (its owning run likely stopped before \
+                 calling StopVideoRecording) and starting fresh"
+            );
+            crate::video::discard(stale).await;
         }
 
         let serial = self.active_serial().await?;
