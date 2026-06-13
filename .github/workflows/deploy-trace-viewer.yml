@@ -40,5 +40,5 @@ jobs:
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          command: pages deploy dist/trace-viewer --project-name=tapsmith-trace
+          command: pages deploy dist/trace-viewer --project-name=tapsmith-trace --branch=main
           workingDirectory: packages/tapsmith
