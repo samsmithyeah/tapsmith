@@ -2144,6 +2144,118 @@ describe('review follow-ups (PR #124)', () => {
   });
 });
 
+describe('transient stale snapshot handling (wait-for flake regression)', () => {
+  // The Android agent stamps this onto a transient UIAutomator
+  // StaleObjectException when the hierarchy changes mid-snapshot (e.g. a
+  // React re-render right after a tap). PILOT-226's strict pre-action resolve
+  // used to report it as a hard "findElements failed", failing the action
+  // even with timeout budget left — the cause of the flaky wait-for tests.
+  const STALE_MSG = 'Element is stale (UI changed): null';
+
+  it('tap() retries through a transient stale snapshot and then succeeds', async () => {
+    let calls = 0;
+    const findElements = vi.fn(async () => {
+      calls++;
+      // First snapshot is stale (UI still re-rendering), the next settles.
+      return calls < 2
+        ? { requestId: '1', elements: [], errorMessage: STALE_MSG }
+        : makeFindElementsResponse([makeElementInfo({ text: 'Show banner' })]);
+    });
+    const tap = vi.fn(async () => successResponse());
+    const client = makeMockClient({ findElements, tap });
+    const handle = new ElementHandle(client, _text('Show banner'), 5000);
+
+    await handle.tap();
+
+    expect(calls).toBeGreaterThanOrEqual(2);
+    expect(tap).toHaveBeenCalledTimes(1);
+  });
+
+  it('a stale snapshot that never settles times out as "not found", not a hard failure', async () => {
+    const findElements = vi.fn(async () => ({ requestId: '1', elements: [], errorMessage: STALE_MSG }));
+    const tap = vi.fn(async () => successResponse());
+    const client = makeMockClient({ findElements, tap });
+    const handle = new ElementHandle(client, _text('Show banner'), 400);
+
+    await expect(handle.tap()).rejects.toThrow(/was not found after waiting/);
+    // Polled across multiple ticks rather than failing fast on the first stale.
+    expect(findElements.mock.calls.length).toBeGreaterThan(1);
+    expect(tap).not.toHaveBeenCalled();
+  });
+
+  it('a non-stale daemon error still fails fast (boundary — only stale is retryable)', async () => {
+    const findElements = vi.fn(async () => ({ requestId: '1', elements: [], errorMessage: 'UiAutomation not connected' }));
+    const client = makeMockClient({ findElements });
+    const handle = new ElementHandle(client, _text('X'), 5000);
+
+    await expect(handle.tap()).rejects.toThrow(/findElements failed: UiAutomation not connected/);
+    expect(findElements).toHaveBeenCalledTimes(1);
+  });
+
+  it('waitFor() retries through a transient stale snapshot and then resolves', async () => {
+    let calls = 0;
+    const findElements = vi.fn(async () => {
+      calls++;
+      return calls < 2
+        ? { requestId: '1', elements: [], errorMessage: STALE_MSG }
+        : makeFindElementsResponse([makeElementInfo({ visible: true })]);
+    });
+    const client = makeMockClient({ findElements });
+    const handle = new ElementHandle(client, _text('Banner'), 5000);
+
+    await handle.waitFor({ state: 'visible' });
+
+    expect(calls).toBeGreaterThanOrEqual(2);
+  });
+
+  it('waitFor() fails fast on a non-stale daemon error instead of timing out', async () => {
+    const findElements = vi.fn(async () => ({ requestId: '1', elements: [], errorMessage: 'UiAutomation not connected' }));
+    const client = makeMockClient({ findElements });
+    const handle = new ElementHandle(client, _text('X'), 5000);
+
+    await expect(handle.waitFor({ state: 'visible' })).rejects.toThrow(/findElements failed: UiAutomation not connected/);
+    expect(findElements).toHaveBeenCalledTimes(1);
+  });
+
+  it('filter({ has }) surfaces a daemon error from child resolution instead of mis-filtering', async () => {
+    // Parent resolves fine; the has-probe (child) resolution hits a daemon
+    // error. Without surfacing it, childElements=[] would silently filter out
+    // every parent and count() would return 0 instead of failing.
+    const findElements = vi.fn(async (selector: Selector) => {
+      const proto = selectorToProto(selector);
+      if (proto.parent) return { requestId: '1', elements: [], errorMessage: 'UiAutomation not connected' };
+      return makeFindElementsResponse([
+        makeElementInfo({ elementId: 'p1', bounds: { left: 0, top: 0, right: 100, bottom: 100 } }),
+      ]);
+    });
+    const client = makeMockClient({ findElements });
+    const handle = new ElementHandle(client, _role('listitem'), 5000);
+    const badge = new ElementHandle(client, _text('Badge'), 5000);
+
+    await expect(handle.filter({ has: badge }).count()).rejects.toThrow(/findElements failed: UiAutomation not connected/);
+  });
+
+  it('waitFor({ state: "detached" }) does not resolve on a transient stale snapshot — retries first', async () => {
+    // A stale tick is unreliable, not a confirmed absence: it must NOT
+    // immediately satisfy 'detached' (which reads an empty result as the
+    // target state). Without retrying, the first stale blip would resolve
+    // prematurely on tick 1.
+    let calls = 0;
+    const findElements = vi.fn(async () => {
+      calls++;
+      return calls < 2
+        ? { requestId: '1', elements: [], errorMessage: STALE_MSG }
+        : makeFindElementsResponse([]); // genuinely gone on the settled tick
+    });
+    const client = makeMockClient({ findElements });
+    const handle = new ElementHandle(client, _text('Banner'), 5000);
+
+    await handle.waitFor({ state: 'detached' });
+
+    expect(calls).toBeGreaterThanOrEqual(2);
+  });
+});
+
 describe('scoped selector descriptions (review follow-up)', () => {
   it('renders chained getBy* syntax, not .locator(getBy*())', async () => {
     const client = makeMockClient({

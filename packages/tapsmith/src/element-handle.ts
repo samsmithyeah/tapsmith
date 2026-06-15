@@ -141,6 +141,19 @@ function boundsContain(
  * throw sites in `_resolveOne` and anything `_resolveAll` surfaces for
  * empty/out-of-range matches.
  */
+/**
+ * Substring the Android agent stamps onto a transient UIAutomator
+ * `StaleObjectException` (see `CommandHandler.kt`). It means the hierarchy
+ * changed mid-snapshot — e.g. a React re-render right after a tap — which is
+ * retryable: the next poll tick queries a settled tree. Treated as a pollable
+ * "not yet" so the action poll loops keep waiting within their timeout budget
+ * instead of failing the action outright. Without this, PILOT-226's strict
+ * pre-action resolution (which uses the non-auto-waiting `findElements` RPC)
+ * turns a momentary stale snapshot into a hard failure — the regression that
+ * surfaced as flaky `wait-for` E2E tests.
+ */
+const STALE_SNAPSHOT_SIGNATURE = 'is stale (UI changed)';
+
 function isPollableNotFoundError(err: unknown): boolean {
   // A strict mode violation means the selector DID resolve — to too many
   // elements. Retrying cannot fix ambiguity; it must propagate immediately.
@@ -149,7 +162,24 @@ function isPollableNotFoundError(err: unknown): boolean {
   if (isAbortError(err)) return false;
   if (!(err instanceof Error)) return false;
   const msg = err.message;
-  return msg.startsWith('Element not found:') || msg.startsWith('nth(');
+  return (
+    msg.startsWith('Element not found:') ||
+    msg.startsWith('nth(') ||
+    // A transient stale snapshot — retry on the next poll tick rather than
+    // surfacing the agent error as a fatal "findElements failed".
+    isStaleSnapshotError(err)
+  );
+}
+
+/**
+ * True for a transient stale-snapshot error (see {@link STALE_SNAPSHOT_SIGNATURE}).
+ * Distinct from a definitive "not found": a stale tick is *unreliable*, so
+ * callers that interpret an empty result as a real state — notably `waitFor`'s
+ * absence states (`'detached'`/`'hidden'`) — must retry rather than conclude
+ * absence, or a single re-render blip would falsely satisfy the wait.
+ */
+function isStaleSnapshotError(err: unknown): boolean {
+  return err instanceof Error && err.message.includes(STALE_SNAPSHOT_SIGNATURE);
 }
 
 // ─── Strict mode (PILOT-226) ───
@@ -542,6 +572,12 @@ export class ElementHandle {
     if (filter.has !== undefined) {
       const childSelector = withParent(filter.has._selector, this._selector);
       const childRes = await this._client.findElements(childSelector, this._timeoutMs);
+      if (childRes.errorMessage) {
+        // Don't silently mis-filter on a child-resolution failure: surface it
+        // so a transient stale snapshot retries and a real daemon error fails
+        // fast (via isPollableNotFoundError), as elsewhere.
+        throw new Error(`findElements failed: ${childRes.errorMessage}`);
+      }
       const childElements = childRes.elements ?? [];
       result = result.filter((parent) => {
         // If parent has no bounds, we can't determine geometric containment — skip it
@@ -560,6 +596,9 @@ export class ElementHandle {
     if (filter.hasNot !== undefined) {
       const childSelector = withParent(filter.hasNot._selector, this._selector);
       const childRes = await this._client.findElements(childSelector, this._timeoutMs);
+      if (childRes.errorMessage) {
+        throw new Error(`findElements failed: ${childRes.errorMessage}`);
+      }
       const childElements = childRes.elements ?? [];
       result = result.filter((parent) => {
         if (!parent.bounds) return true;
@@ -727,6 +766,27 @@ export class ElementHandle {
   }
 
   /**
+   * @internal — Deep-clone a handle tree, overriding the timeout at every
+   * node (and/or operands carry their own, often long, timeouts). Used by
+   * assertion and waitFor poll ticks so a single tick is bounded by the short
+   * per-tick budget instead of an operand's full timeout (e.g. 30s); the outer
+   * poll loop owns the overall deadline.
+   */
+  private static _cloneWithTimeout(h: ElementHandle, timeoutMs: number): ElementHandle {
+    return new ElementHandle(h._client, h._selector, timeoutMs, {
+      ...h._options,
+      // A re-timed clone is a fresh probe: drop any cached resolution from
+      // all() so it re-queries with the new timeout instead of serving the
+      // stale snapshot (_resolveOne short-circuits on this promise).
+      resolvedElementsPromise: undefined,
+      andSelf: h._options.andSelf ? ElementHandle._cloneWithTimeout(h._options.andSelf, timeoutMs) : undefined,
+      andHandle: h._options.andHandle ? ElementHandle._cloneWithTimeout(h._options.andHandle, timeoutMs) : undefined,
+      orSelf: h._options.orSelf ? ElementHandle._cloneWithTimeout(h._options.orSelf, timeoutMs) : undefined,
+      orHandle: h._options.orHandle ? ElementHandle._cloneWithTimeout(h._options.orHandle, timeoutMs) : undefined,
+    });
+  }
+
+  /**
    * @internal — Single-tick, modifier-aware resolution for assertions
    * (expect.ts). Returns the matching elements after applying any positional
    * modifier (so `.first()`/`.nth()` yield at most one element — fixing
@@ -748,16 +808,8 @@ export class ElementHandle {
       // handle tree with a short timeout so a single assertion poll tick
       // stays fast — and/or operands carry their own (long) timeouts and
       // would otherwise cap each sub-query at e.g. 30s.
-      const cloneWithTimeout = (h: ElementHandle): ElementHandle =>
-        new ElementHandle(h._client, h._selector, timeoutMs, {
-          ...h._options,
-          andSelf: h._options.andSelf ? cloneWithTimeout(h._options.andSelf) : undefined,
-          andHandle: h._options.andHandle ? cloneWithTimeout(h._options.andHandle) : undefined,
-          orSelf: h._options.orSelf ? cloneWithTimeout(h._options.orSelf) : undefined,
-          orHandle: h._options.orHandle ? cloneWithTimeout(h._options.orHandle) : undefined,
-        });
       const probe = new ElementHandle(this._client, this._selector, timeoutMs, {
-        ...cloneWithTimeout(this)._options,
+        ...ElementHandle._cloneWithTimeout(this, timeoutMs)._options,
         nthIndex: undefined,
       });
       elements = await probe._resolveAll();
@@ -955,6 +1007,41 @@ export class ElementHandle {
   // ── Waiting ──
 
   /**
+   * @internal — Resolve matches for a single `waitFor` poll tick.
+   *
+   * Returns `null` to signal "retry this tick": a transient stale snapshot is
+   * an *unreliable* result, not a confirmed empty set, so the caller must not
+   * interpret it as a reached state (this is what keeps `'detached'`/`'hidden'`
+   * from falsely resolving on a re-render blip). A genuine not-found resolves
+   * to `[]`; daemon-level failures propagate so the wait fails fast.
+   */
+  private async _resolveForWaitTick(findBudget: number): Promise<ElementInfo[] | null> {
+    try {
+      if (this._hasModifiers()) {
+        // Clone with findBudget at every node so an and/or operand's own
+        // (long) timeout doesn't stall this poll tick — the waitFor deadline
+        // loop owns the overall wait.
+        const pollHandle = ElementHandle._cloneWithTimeout(this, findBudget);
+        return await pollHandle._resolveAll();
+      }
+      const res = await this._client.findElements(this._selector, findBudget);
+      if (res.errorMessage) {
+        // Surface daemon-level failures (agent dead, command error) so a real
+        // fault fails fast instead of being swallowed as "no match" and timing
+        // out with a generic "did not reach state" message.
+        throw new Error(`findElements failed: ${res.errorMessage}`);
+      }
+      return collapseSameTargetDuplicates(res.elements ?? []);
+    } catch (err) {
+      if (!isPollableNotFoundError(err)) throw err;
+      // Stale snapshot → retry (unreliable tick). Covers both this path and
+      // the modified-handle path (_resolveAll throws the same signature).
+      if (isStaleSnapshotError(err)) return null;
+      return [];
+    }
+  }
+
+  /**
    * Wait until this element reaches the specified state.
    *
    * - `'visible'` (default): element exists in the hierarchy AND is visible.
@@ -976,22 +1063,14 @@ export class ElementHandle {
     const deadline = start + timeoutMs;
 
     const checkState = async (): Promise<boolean> => {
-      let elements: ElementInfo[];
       // Floor at 1ms — the daemon treats a 0 timeout as "use the 30s
       // default", which would stall the final poll tick for 30s.
       const findBudget = Math.min(FIND_TIMEOUT_MS, Math.max(1, deadline - Date.now()));
-      try {
-        if (this._hasModifiers()) {
-          const pollHandle = new ElementHandle(this._client, this._selector, findBudget, this._options);
-          elements = await pollHandle._resolveAll();
-        } else {
-          const res = await this._client.findElements(this._selector, findBudget);
-          elements = collapseSameTargetDuplicates(res.elements ?? []);
-        }
-      } catch (err) {
-        if (!isPollableNotFoundError(err)) throw err;
-        elements = [];
-      }
+      const resolved = await this._resolveForWaitTick(findBudget);
+      // null = transient stale snapshot: skip this tick and retry rather than
+      // treating an unreliable result as a real state.
+      if (resolved === null) return false;
+      let elements = resolved;
 
       // Respect nthIndex — target the specific element, not the full set
       const nthIndex = this._options.nthIndex;
