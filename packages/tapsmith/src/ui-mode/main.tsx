@@ -433,6 +433,8 @@ function App() {
         hasScreenshotAfter: false,
         hasHierarchyBefore: inFlight.hasHierarchyBefore,
         hasHierarchyAfter: false,
+        stack: inFlight.stack,
+        sourceLocation: inFlight.sourceLocation,
       } satisfies ActionTraceEvent;
     }
     return {
@@ -451,6 +453,8 @@ function App() {
       hasScreenshotAfter: false,
       hasHierarchyBefore: inFlight.hasHierarchyBefore,
       hasHierarchyAfter: false,
+      stack: inFlight.stack,
+      sourceLocation: inFlight.sourceLocation,
     } satisfies AssertionTraceEvent;
   }, [actionEvents, selectedIndex, currentTrace?.inFlightAction]);
 
@@ -764,6 +768,8 @@ function App() {
                   point: ev.point,
                   hasScreenshotBefore: hasShotBefore,
                   hasHierarchyBefore: hasHierBefore,
+                  stack: ev.stack,
+                  sourceLocation: ev.sourceLocation,
                 }
               : {
                   actionIndex: ev.actionIndex,
@@ -776,6 +782,8 @@ function App() {
                   bounds: inheritedBounds,
                   hasScreenshotBefore: hasShotBefore,
                   hasHierarchyBefore: hasHierBefore,
+                  stack: ev.stack,
+                  sourceLocation: ev.sourceLocation,
                 };
             const next = new Map(map);
             next.set(key, { ...data, screenshots, hierarchies, inFlightAction });
