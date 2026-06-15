@@ -323,7 +323,8 @@ function installSequentialFatalHandlers(config: TapsmithConfig): void {
     if (teardownDone) return;
     teardownDone = true;
     process.stderr.write(`\n${DIM}Fatal ${label} — shutting down daemon and agent...${RESET}\n`);
-    process.stderr.write(`${err instanceof Error ? err.message : String(err)}\n`);
+    // Print the stack, not just the message — async crashes are undebuggable otherwise.
+    process.stderr.write(`${err instanceof Error ? err.stack ?? err.message : String(err)}\n`);
     // config.device holds the booted simulator UDID once setup completes; read
     // it lazily here so we kill the runner whether or not setup finished.
     if (config.platform === 'ios' && config.device) {

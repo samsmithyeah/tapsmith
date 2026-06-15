@@ -287,11 +287,13 @@ function installFatalErrorHandlers(): void {
   if (fatalHandlersInstalled) return;
   fatalHandlersInstalled = true;
   const runFatalTeardown = (label: string, err: unknown) => {
-    if (!fatalExitScheduled) {
-      fatalExitScheduled = true;
-      process.stderr.write(`\n${DIM}Fatal ${label} — shutting down workers and devices...${RESET}\n`);
-      process.stderr.write(`${messageFromUnknown(err)}\n`);
-    }
+    // Return early on re-entry: an error thrown during cleanup must not
+    // re-run every teardown (redundant work, secondary errors, or loops).
+    if (fatalExitScheduled) return;
+    fatalExitScheduled = true;
+    process.stderr.write(`\n${DIM}Fatal ${label} — shutting down workers and devices...${RESET}\n`);
+    // Print the stack, not just the message — async crashes are undebuggable otherwise.
+    process.stderr.write(`${err instanceof Error ? err.stack ?? err.message : String(err)}\n`);
     for (const cleanup of activeEmergencyCleanups) {
       try { cleanup(); } catch { /* keep tearing down the rest */ }
     }
