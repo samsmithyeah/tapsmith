@@ -1,6 +1,7 @@
 package dev.tapsmith.agent
 
 import android.graphics.Rect
+import android.os.SystemClock
 import androidx.test.uiautomator.By
 import androidx.test.uiautomator.BySelector
 import androidx.test.uiautomator.StaleObjectException
@@ -183,6 +184,17 @@ class ElementFinder(private val device: UiDevice) {
         // 1; alerts / toasts / list items rarely exceed 4) while bounding
         // worst-case cost for unexpectedly deep matches.
         const val MAX_DESCENDANT_TEXT_DEPTH: Int = 6
+
+        // A re-render mid-traversal (e.g. a React state update right after a
+        // tap) invalidates the UiObject2 handles a find is walking, surfacing
+        // as StaleObjectException from findObjects() or an attribute read. The
+        // snapshot is transient — re-query a settled tree a few times before
+        // giving up, rather than failing the command. A bubbling stale would
+        // otherwise become an ELEMENT_NOT_FOUND that the SDK's strict
+        // pre-action resolve (PILOT-226) reports as a hard "findElements
+        // failed" instead of auto-waiting through it.
+        const val STALE_RETRY_ATTEMPTS: Int = 4
+        const val STALE_RETRY_DELAY_MS: Long = 50L
 
         // Cross-platform aliases so users can pass either the Tapsmith/Playwright
         // role name ("heading") or the React Native one ("header").
@@ -404,8 +416,31 @@ class ElementFinder(private val device: UiDevice) {
 
     /**
      * Find all elements matching the selector.
+     *
+     * Retries on a transient StaleObjectException: a re-render between the
+     * tree walk and reading an element's attributes invalidates UiObject2
+     * handles, and a fresh snapshot of the (now-settled) tree usually
+     * succeeds. See [STALE_RETRY_ATTEMPTS].
      */
     fun findElements(
+        selector: ElementSelector,
+        parentId: String? = null,
+    ): List<ElementInfo> {
+        var lastStale: StaleObjectException? = null
+        repeat(STALE_RETRY_ATTEMPTS) { attempt ->
+            try {
+                return findElementsOnce(selector, parentId)
+            } catch (e: StaleObjectException) {
+                lastStale = e
+                if (attempt < STALE_RETRY_ATTEMPTS - 1) {
+                    SystemClock.sleep(STALE_RETRY_DELAY_MS)
+                }
+            }
+        }
+        throw lastStale!!
+    }
+
+    private fun findElementsOnce(
         selector: ElementSelector,
         parentId: String? = null,
     ): List<ElementInfo> {

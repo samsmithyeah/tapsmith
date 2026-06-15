@@ -141,6 +141,19 @@ function boundsContain(
  * throw sites in `_resolveOne` and anything `_resolveAll` surfaces for
  * empty/out-of-range matches.
  */
+/**
+ * Substring the Android agent stamps onto a transient UIAutomator
+ * `StaleObjectException` (see `CommandHandler.kt`). It means the hierarchy
+ * changed mid-snapshot — e.g. a React re-render right after a tap — which is
+ * retryable: the next poll tick queries a settled tree. Treated as a pollable
+ * "not yet" so the action poll loops keep waiting within their timeout budget
+ * instead of failing the action outright. Without this, PILOT-226's strict
+ * pre-action resolution (which uses the non-auto-waiting `findElements` RPC)
+ * turns a momentary stale snapshot into a hard failure — the regression that
+ * surfaced as flaky `wait-for` E2E tests.
+ */
+const STALE_SNAPSHOT_SIGNATURE = 'is stale (UI changed)';
+
 function isPollableNotFoundError(err: unknown): boolean {
   // A strict mode violation means the selector DID resolve — to too many
   // elements. Retrying cannot fix ambiguity; it must propagate immediately.
@@ -149,7 +162,13 @@ function isPollableNotFoundError(err: unknown): boolean {
   if (isAbortError(err)) return false;
   if (!(err instanceof Error)) return false;
   const msg = err.message;
-  return msg.startsWith('Element not found:') || msg.startsWith('nth(');
+  return (
+    msg.startsWith('Element not found:') ||
+    msg.startsWith('nth(') ||
+    // A transient stale snapshot — retry on the next poll tick rather than
+    // surfacing the agent error as a fatal "findElements failed".
+    msg.includes(STALE_SNAPSHOT_SIGNATURE)
+  );
 }
 
 // ─── Strict mode (PILOT-226) ───

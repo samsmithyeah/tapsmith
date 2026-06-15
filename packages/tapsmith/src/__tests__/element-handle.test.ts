@@ -2144,6 +2144,55 @@ describe('review follow-ups (PR #124)', () => {
   });
 });
 
+describe('transient stale snapshot handling (wait-for flake regression)', () => {
+  // The Android agent stamps this onto a transient UIAutomator
+  // StaleObjectException when the hierarchy changes mid-snapshot (e.g. a
+  // React re-render right after a tap). PILOT-226's strict pre-action resolve
+  // used to report it as a hard "findElements failed", failing the action
+  // even with timeout budget left — the cause of the flaky wait-for tests.
+  const STALE_MSG = 'Element is stale (UI changed): null';
+
+  it('tap() retries through a transient stale snapshot and then succeeds', async () => {
+    let calls = 0;
+    const findElements = vi.fn(async () => {
+      calls++;
+      // First snapshot is stale (UI still re-rendering), the next settles.
+      return calls < 2
+        ? { requestId: '1', elements: [], errorMessage: STALE_MSG }
+        : makeFindElementsResponse([makeElementInfo({ text: 'Show banner' })]);
+    });
+    const tap = vi.fn(async () => successResponse());
+    const client = makeMockClient({ findElements, tap });
+    const handle = new ElementHandle(client, _text('Show banner'), 5000);
+
+    await handle.tap();
+
+    expect(calls).toBeGreaterThanOrEqual(2);
+    expect(tap).toHaveBeenCalledTimes(1);
+  });
+
+  it('a stale snapshot that never settles times out as "not found", not a hard failure', async () => {
+    const findElements = vi.fn(async () => ({ requestId: '1', elements: [], errorMessage: STALE_MSG }));
+    const tap = vi.fn(async () => successResponse());
+    const client = makeMockClient({ findElements, tap });
+    const handle = new ElementHandle(client, _text('Show banner'), 400);
+
+    await expect(handle.tap()).rejects.toThrow(/was not found after waiting/);
+    // Polled across multiple ticks rather than failing fast on the first stale.
+    expect(findElements.mock.calls.length).toBeGreaterThan(1);
+    expect(tap).not.toHaveBeenCalled();
+  });
+
+  it('a non-stale daemon error still fails fast (boundary — only stale is retryable)', async () => {
+    const findElements = vi.fn(async () => ({ requestId: '1', elements: [], errorMessage: 'UiAutomation not connected' }));
+    const client = makeMockClient({ findElements });
+    const handle = new ElementHandle(client, _text('X'), 5000);
+
+    await expect(handle.tap()).rejects.toThrow(/findElements failed: UiAutomation not connected/);
+    expect(findElements).toHaveBeenCalledTimes(1);
+  });
+});
+
 describe('scoped selector descriptions (review follow-up)', () => {
   it('renders chained getBy* syntax, not .locator(getBy*())', async () => {
     const client = makeMockClient({
