@@ -40,6 +40,7 @@ import {
   probeSimulatorHealth,
   filterHealthySimulators,
   cleanupStaleSimulators,
+  killAgentRunnersForSimulators,
   recordClonedSimulators,
   unrecordSimulators,
   provisionSimulators,
@@ -479,6 +480,39 @@ describe('cleanupStaleSimulators', () => {
     const written = JSON.parse(mockedWriteFileSync.mock.calls[0][1] as string);
     expect(written).toHaveLength(1);
     expect(written[0].sourceName).toBe('iPad Pro');
+  });
+});
+
+// ─── killAgentRunnersForSimulators ───
+
+describe('killAgentRunnersForSimulators', () => {
+  it('pkills the xcodebuild runner then terminates the agent, per udid', () => {
+    const calls: string[][] = [];
+    mockedExecFileSync.mockImplementation((cmd: string, args: string[]) => {
+      calls.push([cmd as string, ...(args as string[])]);
+      return '' as unknown as Buffer;
+    });
+
+    killAgentRunnersForSimulators(['UDID-1', 'UDID-2']);
+
+    // pkill targets the runner by udid before simctl terminate for the same udid
+    expect(calls).toEqual([
+      ['pkill', '-f', 'xcodebuild.*test-without-building.*id=UDID-1'],
+      ['xcrun', 'simctl', 'terminate', 'UDID-1', 'dev.tapsmith.agent.xctrunner'],
+      ['pkill', '-f', 'xcodebuild.*test-without-building.*id=UDID-2'],
+      ['xcrun', 'simctl', 'terminate', 'UDID-2', 'dev.tapsmith.agent.xctrunner'],
+    ]);
+  });
+
+  it('does not throw when no matching process exists', () => {
+    mockedExecFileSync.mockImplementation(() => { throw new Error('no matching process'); });
+    expect(() => killAgentRunnersForSimulators(['UDID-1'])).not.toThrow();
+  });
+
+  it('is a no-op for an empty udid list', () => {
+    const spy = mockedExecFileSync.mockImplementation(() => '' as unknown as Buffer);
+    killAgentRunnersForSimulators([]);
+    expect(spy).not.toHaveBeenCalled();
   });
 });
 

@@ -41,6 +41,7 @@ import {
   cleanupStaleSimulators,
   preserveSimulatorsForReuse,
   forceCleanupSimulators,
+  killAgentRunnersForSimulators,
   filterHealthySimulators,
   listCompatibleBootedSimulators,
   type ClonedSimulator,
@@ -258,6 +259,52 @@ function scheduleShutdownExit(signal?: NodeJS.Signals): void {
   shutdownExitScheduled = true;
   const code = signal === 'SIGTERM' ? 143 : 130;
   setImmediate(() => process.exit(code));
+}
+
+/**
+ * Active per-bucket emergency-cleanup callbacks. Each `runParallel` invocation
+ * registers its `emergencyCleanup` here on entry and removes it in `finally`.
+ * A single process-wide `uncaughtException`/`unhandledRejection` handler (see
+ * `installFatalErrorHandlers`) iterates this set so a dispatcher *crash* tears
+ * down the same resources a Ctrl-C would — without it, an uncaught error
+ * bypasses the SIGINT/SIGTERM handlers entirely and orphans daemons, xcodebuild
+ * runners, and booted simulators (PILOT-230).
+ */
+const activeEmergencyCleanups = new Set<() => void>();
+let fatalHandlersInstalled = false;
+let fatalExitScheduled = false;
+
+/**
+ * Install process-wide handlers that route an uncaught exception or unhandled
+ * rejection through the same teardown path as SIGINT/SIGTERM, then exit
+ * non-zero. Idempotent — only the first `runParallel` installs them. Safe to
+ * add a global `unhandledRejection` handler: fixture rejections are already
+ * marked handled (see fixtures.ts), so only genuinely fatal errors reach here,
+ * and Node ≥15 already crashes the process on unhandled rejection — we just
+ * clean up first.
+ */
+function installFatalErrorHandlers(): void {
+  if (fatalHandlersInstalled) return;
+  fatalHandlersInstalled = true;
+  const runFatalTeardown = (label: string, err: unknown) => {
+    if (!fatalExitScheduled) {
+      fatalExitScheduled = true;
+      process.stderr.write(`\n${DIM}Fatal ${label} — shutting down workers and devices...${RESET}\n`);
+      process.stderr.write(`${messageFromUnknown(err)}\n`);
+    }
+    for (const cleanup of activeEmergencyCleanups) {
+      try { cleanup(); } catch { /* keep tearing down the rest */ }
+    }
+    // Cleanups are idempotent and coordinate via dispatcherIsShuttingDown; they
+    // do NOT schedule the exit themselves on this path (see emergencyCleanup),
+    // so force a non-zero exit here.
+    if (!shutdownExitScheduled) {
+      shutdownExitScheduled = true;
+      setImmediate(() => process.exit(1));
+    }
+  };
+  process.on('uncaughtException', (err) => runFatalTeardown('error', err));
+  process.on('unhandledRejection', (reason) => runFatalTeardown('rejection', reason));
 }
 
 /**
@@ -841,6 +888,71 @@ export async function runParallel(opts: DispatcherOptions, _portOffset = 0): Pro
   let freshIosUdids = new Set<string>();
   let deviceSerials: string[];
 
+  const workers: WorkerHandle[] = [];
+  let firstDaemonAssigned = false;
+
+  // Register cleanup handlers BEFORE provisioning devices. Two paths can tear
+  // these resources down:
+  //   - SIGINT/SIGTERM (Ctrl-C) via the signal handlers below.
+  //   - An uncaught exception / unhandled rejection — i.e. a dispatcher *crash*
+  //     — via the process-wide handler installed by installFatalErrorHandlers,
+  //     which iterates `activeEmergencyCleanups`. Without this, a crash bypasses
+  //     the signal handlers entirely and orphans daemons, xcodebuild runners,
+  //     and booted simulators, overloading the host (PILOT-230).
+  // Multi-bucket runs register one handler per bucket; they coordinate via the
+  // module-level `dispatcherIsShuttingDown` flag so the "Interrupted" message
+  // prints exactly once and the process exits exactly once — but only AFTER
+  // every bucket's cleanup has had a chance to run. teardownResources is
+  // idempotent and synchronous, so re-entry (a second SIGINT, or a crash during
+  // shutdown) is safe and always completes before the deferred exit.
+  const teardownResources = () => {
+    dispatcherIsShuttingDown = true;
+    // 1. Stop workers issuing new RPCs.
+    for (const worker of workers) {
+      try { worker.process?.kill(); } catch { /* already dead */ }
+    }
+    // 2. Kill xcodebuild XCUITest runners BEFORE touching their sims — a runner
+    //    re-boots its target sim after a simctl shutdown, so deleting the sim
+    //    first just lets the survivor boot a replacement and keep the host hot.
+    if (clonedSimulators.length > 0) {
+      killAgentRunnersForSimulators(clonedSimulators.map((s) => s.udid));
+    }
+    // 3. Shut down / delete the worker simulators and emulators.
+    if (launchedEmulators.length > 0) {
+      forceCleanupEmulators(launchedEmulators);
+    }
+    if (clonedSimulators.length > 0) {
+      forceCleanupSimulators(clonedSimulators);
+    }
+    // 4. Kill the daemons last (their xcodebuild children are already gone).
+    for (const worker of workers) {
+      try { worker.daemonProcess?.kill(); } catch { /* already dead */ }
+    }
+    if (!firstDaemonAssigned) {
+      try { firstDaemon.kill(); } catch { /* already dead */ }
+    }
+  };
+  activeEmergencyCleanups.add(teardownResources);
+  installFatalErrorHandlers();
+
+  const emergencyCleanup = (signal?: NodeJS.Signals) => {
+    const firstEntry = !dispatcherIsShuttingDown;
+    if (firstEntry) {
+      if (launchProgress) {
+        launchProgress.finish();
+        process.stderr.write(`${DIM}Interrupted. Shutting down...${RESET}\n`);
+      } else {
+        process.stderr.write(`\n${DIM}Interrupted. Shutting down...${RESET}\n`);
+      }
+    }
+    teardownResources();
+    scheduleShutdownExit(signal);
+  };
+  const sigintHandler = () => emergencyCleanup('SIGINT');
+  const sigtermHandler = () => emergencyCleanup('SIGTERM');
+  process.on('SIGINT', sigintHandler);
+  process.on('SIGTERM', sigtermHandler);
+
   if (isIos && !config.simulator) {
     // ─── Physical iOS device bucket ───
     // No `simulator` configured → treat as a physical device run. Use the
@@ -1003,51 +1115,10 @@ export async function runParallel(opts: DispatcherOptions, _portOffset = 0): Pro
     });
   }
 
-  const workers: WorkerHandle[] = [];
   const allResults: TestResult[] = [];
   const allSuites: SuiteResult[] = [];
   const totalStart = Date.now();
   let setupDuration = 0;
-  let firstDaemonAssigned = false;
-
-  // Register signal handlers to ensure cleanup on SIGINT/SIGTERM.
-  // Without this, Ctrl-C leaves orphaned daemons and emulators. Multi-bucket
-  // runs install one handler per bucket; they coordinate via the module-
-  // level `dispatcherIsShuttingDown` flag so the "Interrupted" message
-  // prints exactly once and the process exits exactly once — but only
-  // AFTER every bucket's cleanup has had a chance to run (see
-  // scheduleShutdownExit). Local cleanup below is idempotent so re-entry
-  // from a second SIGINT is safe.
-  const emergencyCleanup = (signal?: NodeJS.Signals) => {
-    const firstEntry = !dispatcherIsShuttingDown;
-    dispatcherIsShuttingDown = true;
-    if (firstEntry) {
-      if (launchProgress) {
-        launchProgress.finish();
-        process.stderr.write(`${DIM}Interrupted. Shutting down...${RESET}\n`);
-      } else {
-        process.stderr.write(`\n${DIM}Interrupted. Shutting down...${RESET}\n`);
-      }
-    }
-    for (const worker of workers) {
-      try { worker.process?.kill(); } catch { /* already dead */ }
-      try { worker.daemonProcess?.kill(); } catch { /* already dead */ }
-    }
-    if (!firstDaemonAssigned) {
-      try { firstDaemon.kill(); } catch { /* already dead */ }
-    }
-    if (launchedEmulators.length > 0) {
-      forceCleanupEmulators(launchedEmulators);
-    }
-    if (clonedSimulators.length > 0) {
-      forceCleanupSimulators(clonedSimulators);
-    }
-    scheduleShutdownExit(signal);
-  };
-  const sigintHandler = () => emergencyCleanup('SIGINT');
-  const sigtermHandler = () => emergencyCleanup('SIGTERM');
-  process.on('SIGINT', sigintHandler);
-  process.on('SIGTERM', sigtermHandler);
 
   try {
     // Fork worker processes.
@@ -1580,6 +1651,7 @@ export async function runParallel(opts: DispatcherOptions, _portOffset = 0): Pro
   } finally {
     process.removeListener('SIGINT', sigintHandler);
     process.removeListener('SIGTERM', sigtermHandler);
+    activeEmergencyCleanups.delete(teardownResources);
 
     // Cleanup order matters: workers first, then daemons, then ADB state, then emulators.
     // This ensures nothing is using the resources when we clean them up.

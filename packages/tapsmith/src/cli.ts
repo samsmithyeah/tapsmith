@@ -55,6 +55,7 @@ import {
   UiLaunchProgress,
   type LaunchProgressSink,
 } from './launch-progress.js';
+import { killAgentRunnersForSimulators } from './ios-simulator.js';
 
 // ─── ANSI helpers ───
 
@@ -303,6 +304,39 @@ async function checkDeviceHealth(serial: string | undefined): Promise<void> {
 
 /** Track the daemon process we spawned so we can kill it on exit. */
 let spawnedDaemonProcess: ReturnType<typeof spawn> | undefined;
+
+let sequentialFatalHandlersInstalled = false;
+
+/**
+ * Install process-wide handlers so a *crash* in single-worker (sequential) mode
+ * still tears down its daemon and the daemon's xcodebuild XCUITest runner,
+ * instead of orphaning them and loading the host (PILOT-230, sequential variant
+ * of the dispatcher fix). Idempotent. The sim itself is left booted — sequential
+ * mode reuses a named simulator rather than cloning, so deleting it would be
+ * wrong; killing the runner is enough to stop it holding the host hot.
+ */
+function installSequentialFatalHandlers(config: TapsmithConfig): void {
+  if (sequentialFatalHandlersInstalled) return;
+  sequentialFatalHandlersInstalled = true;
+  let teardownDone = false;
+  const runFatalTeardown = (label: string, err: unknown) => {
+    if (teardownDone) return;
+    teardownDone = true;
+    process.stderr.write(`\n${DIM}Fatal ${label} — shutting down daemon and agent...${RESET}\n`);
+    process.stderr.write(`${err instanceof Error ? err.message : String(err)}\n`);
+    // config.device holds the booted simulator UDID once setup completes; read
+    // it lazily here so we kill the runner whether or not setup finished.
+    if (config.platform === 'ios' && config.device) {
+      try { killAgentRunnersForSimulators([config.device]); } catch { /* best effort */ }
+    }
+    if (spawnedDaemonProcess) {
+      try { spawnedDaemonProcess.kill(); } catch { /* already gone */ }
+    }
+    setTimeout(() => process.exit(1), 0);
+  };
+  process.on('uncaughtException', (err) => runFatalTeardown('error', err));
+  process.on('unhandledRejection', (reason) => runFatalTeardown('rejection', reason));
+}
 
 async function ensureDaemonRunning(
   address: string,
@@ -2097,6 +2131,11 @@ async function main(): Promise<void> {
   let resolvedIosAppPath: string | undefined;
   let sequentialExitCode = 1;
   const sequentialStart = Date.now();
+
+  // Route a crash through teardown so we don't orphan the daemon + its
+  // xcodebuild runner (PILOT-230). Mutually exclusive with the parallel
+  // dispatcher path, so it won't double-install with runParallel's handlers.
+  installSequentialFatalHandlers(config);
 
   // Detect heterogeneous device-targeting projects. When projects share a
   // single signature, sequential mode runs unchanged. When they differ,
