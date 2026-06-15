@@ -1005,6 +1005,14 @@ export class ElementHandle {
           elements = await pollHandle._resolveAll();
         } else {
           const res = await this._client.findElements(this._selector, findBudget);
+          if (res.errorMessage) {
+            // Surface daemon-level failures (agent dead, command error) so a
+            // real fault fails fast instead of being swallowed as "no match"
+            // and timing out with a generic "did not reach state" message.
+            // isPollableNotFoundError keeps a transient stale snapshot
+            // retryable while letting genuine errors propagate.
+            throw new Error(`findElements failed: ${res.errorMessage}`);
+          }
           elements = collapseSameTargetDuplicates(res.elements ?? []);
         }
       } catch (err) {

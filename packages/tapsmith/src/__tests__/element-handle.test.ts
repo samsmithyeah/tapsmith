@@ -2191,6 +2191,31 @@ describe('transient stale snapshot handling (wait-for flake regression)', () => 
     await expect(handle.tap()).rejects.toThrow(/findElements failed: UiAutomation not connected/);
     expect(findElements).toHaveBeenCalledTimes(1);
   });
+
+  it('waitFor() retries through a transient stale snapshot and then resolves', async () => {
+    let calls = 0;
+    const findElements = vi.fn(async () => {
+      calls++;
+      return calls < 2
+        ? { requestId: '1', elements: [], errorMessage: STALE_MSG }
+        : makeFindElementsResponse([makeElementInfo({ visible: true })]);
+    });
+    const client = makeMockClient({ findElements });
+    const handle = new ElementHandle(client, _text('Banner'), 5000);
+
+    await handle.waitFor({ state: 'visible' });
+
+    expect(calls).toBeGreaterThanOrEqual(2);
+  });
+
+  it('waitFor() fails fast on a non-stale daemon error instead of timing out', async () => {
+    const findElements = vi.fn(async () => ({ requestId: '1', elements: [], errorMessage: 'UiAutomation not connected' }));
+    const client = makeMockClient({ findElements });
+    const handle = new ElementHandle(client, _text('X'), 5000);
+
+    await expect(handle.waitFor({ state: 'visible' })).rejects.toThrow(/findElements failed: UiAutomation not connected/);
+    expect(findElements).toHaveBeenCalledTimes(1);
+  });
 });
 
 describe('scoped selector descriptions (review follow-up)', () => {
