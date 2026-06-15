@@ -7,7 +7,7 @@
  * for types it owns the rendering of.
  */
 
-import type { ActionCategory } from '../trace/types.js';
+import type { ActionCategory, SourceLocation } from '../trace/types.js';
 
 /**
  * In-flight action/assertion currently being executed by the device.
@@ -49,4 +49,10 @@ export interface InFlightAction {
   hasScreenshotBefore: boolean
   /** Whether the started event carried a before-hierarchy snapshot. */
   hasHierarchyBefore: boolean
+  /** Full user-code call stack captured at action start (top frame first).
+   * Carried through so the Source tab can show the file and highlight the
+   * current line while the action is still running. */
+  stack?: SourceLocation[]
+  /** Call-site of the action (== stack[0]); drives the Source tab highlight. */
+  sourceLocation?: SourceLocation
 }
