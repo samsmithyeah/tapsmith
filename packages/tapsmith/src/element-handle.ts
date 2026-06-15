@@ -766,6 +766,10 @@ export class ElementHandle {
   private static _cloneWithTimeout(h: ElementHandle, timeoutMs: number): ElementHandle {
     return new ElementHandle(h._client, h._selector, timeoutMs, {
       ...h._options,
+      // A re-timed clone is a fresh probe: drop any cached resolution from
+      // all() so it re-queries with the new timeout instead of serving the
+      // stale snapshot (_resolveOne short-circuits on this promise).
+      resolvedElementsPromise: undefined,
       andSelf: h._options.andSelf ? ElementHandle._cloneWithTimeout(h._options.andSelf, timeoutMs) : undefined,
       andHandle: h._options.andHandle ? ElementHandle._cloneWithTimeout(h._options.andHandle, timeoutMs) : undefined,
       orSelf: h._options.orSelf ? ElementHandle._cloneWithTimeout(h._options.orSelf, timeoutMs) : undefined,
