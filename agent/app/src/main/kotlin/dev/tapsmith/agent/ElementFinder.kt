@@ -426,18 +426,22 @@ class ElementFinder(private val device: UiDevice) {
         selector: ElementSelector,
         parentId: String? = null,
     ): List<ElementInfo> {
+        // Coerce to >= 1 so the loop always runs at least once and the
+        // fallback below is unreachable in practice (guards a future edit
+        // that sets STALE_RETRY_ATTEMPTS to 0).
+        val maxAttempts = STALE_RETRY_ATTEMPTS.coerceAtLeast(1)
         var lastStale: StaleObjectException? = null
-        repeat(STALE_RETRY_ATTEMPTS) { attempt ->
+        for (attempt in 0 until maxAttempts) {
             try {
                 return findElementsOnce(selector, parentId)
             } catch (e: StaleObjectException) {
                 lastStale = e
-                if (attempt < STALE_RETRY_ATTEMPTS - 1) {
+                if (attempt < maxAttempts - 1) {
                     SystemClock.sleep(STALE_RETRY_DELAY_MS)
                 }
             }
         }
-        throw lastStale!!
+        throw lastStale ?: error("findElements retry loop ran zero attempts")
     }
 
     private fun findElementsOnce(
