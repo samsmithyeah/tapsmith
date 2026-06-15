@@ -2216,6 +2216,26 @@ describe('transient stale snapshot handling (wait-for flake regression)', () => 
     await expect(handle.waitFor({ state: 'visible' })).rejects.toThrow(/findElements failed: UiAutomation not connected/);
     expect(findElements).toHaveBeenCalledTimes(1);
   });
+
+  it('waitFor({ state: "detached" }) does not resolve on a transient stale snapshot — retries first', async () => {
+    // A stale tick is unreliable, not a confirmed absence: it must NOT
+    // immediately satisfy 'detached' (which reads an empty result as the
+    // target state). Without retrying, the first stale blip would resolve
+    // prematurely on tick 1.
+    let calls = 0;
+    const findElements = vi.fn(async () => {
+      calls++;
+      return calls < 2
+        ? { requestId: '1', elements: [], errorMessage: STALE_MSG }
+        : makeFindElementsResponse([]); // genuinely gone on the settled tick
+    });
+    const client = makeMockClient({ findElements });
+    const handle = new ElementHandle(client, _text('Banner'), 5000);
+
+    await handle.waitFor({ state: 'detached' });
+
+    expect(calls).toBeGreaterThanOrEqual(2);
+  });
 });
 
 describe('scoped selector descriptions (review follow-up)', () => {

@@ -167,8 +167,19 @@ function isPollableNotFoundError(err: unknown): boolean {
     msg.startsWith('nth(') ||
     // A transient stale snapshot — retry on the next poll tick rather than
     // surfacing the agent error as a fatal "findElements failed".
-    msg.includes(STALE_SNAPSHOT_SIGNATURE)
+    isStaleSnapshotError(err)
   );
+}
+
+/**
+ * True for a transient stale-snapshot error (see {@link STALE_SNAPSHOT_SIGNATURE}).
+ * Distinct from a definitive "not found": a stale tick is *unreliable*, so
+ * callers that interpret an empty result as a real state — notably `waitFor`'s
+ * absence states (`'detached'`/`'hidden'`) — must retry rather than conclude
+ * absence, or a single re-render blip would falsely satisfy the wait.
+ */
+function isStaleSnapshotError(err: unknown): boolean {
+  return err instanceof Error && err.message.includes(STALE_SNAPSHOT_SIGNATURE);
 }
 
 // ─── Strict mode (PILOT-226) ───
@@ -974,6 +985,38 @@ export class ElementHandle {
   // ── Waiting ──
 
   /**
+   * @internal — Resolve matches for a single `waitFor` poll tick.
+   *
+   * Returns `null` to signal "retry this tick": a transient stale snapshot is
+   * an *unreliable* result, not a confirmed empty set, so the caller must not
+   * interpret it as a reached state (this is what keeps `'detached'`/`'hidden'`
+   * from falsely resolving on a re-render blip). A genuine not-found resolves
+   * to `[]`; daemon-level failures propagate so the wait fails fast.
+   */
+  private async _resolveForWaitTick(findBudget: number): Promise<ElementInfo[] | null> {
+    try {
+      if (this._hasModifiers()) {
+        const pollHandle = new ElementHandle(this._client, this._selector, findBudget, this._options);
+        return await pollHandle._resolveAll();
+      }
+      const res = await this._client.findElements(this._selector, findBudget);
+      if (res.errorMessage) {
+        // Surface daemon-level failures (agent dead, command error) so a real
+        // fault fails fast instead of being swallowed as "no match" and timing
+        // out with a generic "did not reach state" message.
+        throw new Error(`findElements failed: ${res.errorMessage}`);
+      }
+      return collapseSameTargetDuplicates(res.elements ?? []);
+    } catch (err) {
+      if (!isPollableNotFoundError(err)) throw err;
+      // Stale snapshot → retry (unreliable tick). Covers both this path and
+      // the modified-handle path (_resolveAll throws the same signature).
+      if (isStaleSnapshotError(err)) return null;
+      return [];
+    }
+  }
+
+  /**
    * Wait until this element reaches the specified state.
    *
    * - `'visible'` (default): element exists in the hierarchy AND is visible.
@@ -995,30 +1038,14 @@ export class ElementHandle {
     const deadline = start + timeoutMs;
 
     const checkState = async (): Promise<boolean> => {
-      let elements: ElementInfo[];
       // Floor at 1ms — the daemon treats a 0 timeout as "use the 30s
       // default", which would stall the final poll tick for 30s.
       const findBudget = Math.min(FIND_TIMEOUT_MS, Math.max(1, deadline - Date.now()));
-      try {
-        if (this._hasModifiers()) {
-          const pollHandle = new ElementHandle(this._client, this._selector, findBudget, this._options);
-          elements = await pollHandle._resolveAll();
-        } else {
-          const res = await this._client.findElements(this._selector, findBudget);
-          if (res.errorMessage) {
-            // Surface daemon-level failures (agent dead, command error) so a
-            // real fault fails fast instead of being swallowed as "no match"
-            // and timing out with a generic "did not reach state" message.
-            // isPollableNotFoundError keeps a transient stale snapshot
-            // retryable while letting genuine errors propagate.
-            throw new Error(`findElements failed: ${res.errorMessage}`);
-          }
-          elements = collapseSameTargetDuplicates(res.elements ?? []);
-        }
-      } catch (err) {
-        if (!isPollableNotFoundError(err)) throw err;
-        elements = [];
-      }
+      const resolved = await this._resolveForWaitTick(findBudget);
+      // null = transient stale snapshot: skip this tick and retry rather than
+      // treating an unreliable result as a real state.
+      if (resolved === null) return false;
+      let elements = resolved;
 
       // Respect nthIndex — target the specific element, not the full set
       const nthIndex = this._options.nthIndex;
