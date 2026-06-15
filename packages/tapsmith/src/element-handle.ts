@@ -757,6 +757,23 @@ export class ElementHandle {
   }
 
   /**
+   * @internal — Deep-clone a handle tree, overriding the timeout at every
+   * node (and/or operands carry their own, often long, timeouts). Used by
+   * assertion and waitFor poll ticks so a single tick is bounded by the short
+   * per-tick budget instead of an operand's full timeout (e.g. 30s); the outer
+   * poll loop owns the overall deadline.
+   */
+  private static _cloneWithTimeout(h: ElementHandle, timeoutMs: number): ElementHandle {
+    return new ElementHandle(h._client, h._selector, timeoutMs, {
+      ...h._options,
+      andSelf: h._options.andSelf ? ElementHandle._cloneWithTimeout(h._options.andSelf, timeoutMs) : undefined,
+      andHandle: h._options.andHandle ? ElementHandle._cloneWithTimeout(h._options.andHandle, timeoutMs) : undefined,
+      orSelf: h._options.orSelf ? ElementHandle._cloneWithTimeout(h._options.orSelf, timeoutMs) : undefined,
+      orHandle: h._options.orHandle ? ElementHandle._cloneWithTimeout(h._options.orHandle, timeoutMs) : undefined,
+    });
+  }
+
+  /**
    * @internal — Single-tick, modifier-aware resolution for assertions
    * (expect.ts). Returns the matching elements after applying any positional
    * modifier (so `.first()`/`.nth()` yield at most one element — fixing
@@ -778,16 +795,8 @@ export class ElementHandle {
       // handle tree with a short timeout so a single assertion poll tick
       // stays fast — and/or operands carry their own (long) timeouts and
       // would otherwise cap each sub-query at e.g. 30s.
-      const cloneWithTimeout = (h: ElementHandle): ElementHandle =>
-        new ElementHandle(h._client, h._selector, timeoutMs, {
-          ...h._options,
-          andSelf: h._options.andSelf ? cloneWithTimeout(h._options.andSelf) : undefined,
-          andHandle: h._options.andHandle ? cloneWithTimeout(h._options.andHandle) : undefined,
-          orSelf: h._options.orSelf ? cloneWithTimeout(h._options.orSelf) : undefined,
-          orHandle: h._options.orHandle ? cloneWithTimeout(h._options.orHandle) : undefined,
-        });
       const probe = new ElementHandle(this._client, this._selector, timeoutMs, {
-        ...cloneWithTimeout(this)._options,
+        ...ElementHandle._cloneWithTimeout(this, timeoutMs)._options,
         nthIndex: undefined,
       });
       elements = await probe._resolveAll();
@@ -996,7 +1005,10 @@ export class ElementHandle {
   private async _resolveForWaitTick(findBudget: number): Promise<ElementInfo[] | null> {
     try {
       if (this._hasModifiers()) {
-        const pollHandle = new ElementHandle(this._client, this._selector, findBudget, this._options);
+        // Clone with findBudget at every node so an and/or operand's own
+        // (long) timeout doesn't stall this poll tick — the waitFor deadline
+        // loop owns the overall wait.
+        const pollHandle = ElementHandle._cloneWithTimeout(this, findBudget);
         return await pollHandle._resolveAll();
       }
       const res = await this._client.findElements(this._selector, findBudget);
