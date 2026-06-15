@@ -473,14 +473,11 @@ class ElementFinder(private val device: UiDevice) {
                     (selector.expanded == null || isExpanded(obj) == selector.expanded)
             }
 
-        return filtered.mapNotNull { obj ->
-            try {
-                cacheAndConvert(obj)
-            } catch (_: StaleObjectException) {
-                // Element went stale between find and info extraction — skip it
-                null
-            }
-        }
+        // Let a StaleObjectException during info extraction bubble to
+        // findElements(), which re-snapshots a settled tree. Swallowing it
+        // here would silently drop the element and return a partial/empty
+        // result, defeating the retry for the very case it exists to handle.
+        return filtered.map { obj -> cacheAndConvert(obj) }
     }
 
     /**

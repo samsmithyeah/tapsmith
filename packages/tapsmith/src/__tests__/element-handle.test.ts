@@ -2217,6 +2217,24 @@ describe('transient stale snapshot handling (wait-for flake regression)', () => 
     expect(findElements).toHaveBeenCalledTimes(1);
   });
 
+  it('filter({ has }) surfaces a daemon error from child resolution instead of mis-filtering', async () => {
+    // Parent resolves fine; the has-probe (child) resolution hits a daemon
+    // error. Without surfacing it, childElements=[] would silently filter out
+    // every parent and count() would return 0 instead of failing.
+    const findElements = vi.fn(async (selector: Selector) => {
+      const proto = selectorToProto(selector);
+      if (proto.parent) return { requestId: '1', elements: [], errorMessage: 'UiAutomation not connected' };
+      return makeFindElementsResponse([
+        makeElementInfo({ elementId: 'p1', bounds: { left: 0, top: 0, right: 100, bottom: 100 } }),
+      ]);
+    });
+    const client = makeMockClient({ findElements });
+    const handle = new ElementHandle(client, _role('listitem'), 5000);
+    const badge = new ElementHandle(client, _text('Badge'), 5000);
+
+    await expect(handle.filter({ has: badge }).count()).rejects.toThrow(/findElements failed: UiAutomation not connected/);
+  });
+
   it('waitFor({ state: "detached" }) does not resolve on a transient stale snapshot — retries first', async () => {
     // A stale tick is unreliable, not a confirmed absence: it must NOT
     // immediately satisfy 'detached' (which reads an empty result as the

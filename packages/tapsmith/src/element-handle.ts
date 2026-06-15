@@ -572,6 +572,12 @@ export class ElementHandle {
     if (filter.has !== undefined) {
       const childSelector = withParent(filter.has._selector, this._selector);
       const childRes = await this._client.findElements(childSelector, this._timeoutMs);
+      if (childRes.errorMessage) {
+        // Don't silently mis-filter on a child-resolution failure: surface it
+        // so a transient stale snapshot retries and a real daemon error fails
+        // fast (via isPollableNotFoundError), as elsewhere.
+        throw new Error(`findElements failed: ${childRes.errorMessage}`);
+      }
       const childElements = childRes.elements ?? [];
       result = result.filter((parent) => {
         // If parent has no bounds, we can't determine geometric containment — skip it
@@ -590,6 +596,9 @@ export class ElementHandle {
     if (filter.hasNot !== undefined) {
       const childSelector = withParent(filter.hasNot._selector, this._selector);
       const childRes = await this._client.findElements(childSelector, this._timeoutMs);
+      if (childRes.errorMessage) {
+        throw new Error(`findElements failed: ${childRes.errorMessage}`);
+      }
       const childElements = childRes.elements ?? [];
       result = result.filter((parent) => {
         if (!parent.bounds) return true;
