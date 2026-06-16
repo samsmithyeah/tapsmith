@@ -113,6 +113,10 @@ export function attachMcpClientEventReporting(
   server: McpServer,
   events: McpEventEmitter,
   onClose?: () => void,
+  // Per-session callback for multi-client setups (UI mode): the shared `events`
+  // emitter can't distinguish concurrent clients, so callers that track sessions
+  // individually use this to learn this specific server's client identity.
+  onClientInfo?: (info: McpClientInfo | null) => void,
 ): void {
   let connected = false;
 
@@ -121,10 +125,12 @@ export function attachMcpClientEventReporting(
     previousOnInitialized?.();
     const client = server.server.getClientVersion();
     connected = true;
-    events.emitClientChange({
+    const info: McpClientInfo = {
       name: client?.name ?? 'Unknown',
       version: client?.version ?? '',
-    });
+    };
+    events.emitClientChange(info);
+    onClientInfo?.(info);
   };
 
   const previousOnClose = server.server.onclose;
@@ -132,6 +138,7 @@ export function attachMcpClientEventReporting(
     if (connected) {
       connected = false;
       events.emitClientChange(null);
+      onClientInfo?.(null);
     }
     onClose?.();
     previousOnClose?.();

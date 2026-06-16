@@ -2080,12 +2080,22 @@ html, body, #app {
 
 .mcp-header {
   display: flex;
-  justify-content: space-between;
-  align-items: center;
+  flex-direction: column;
   padding: 6px 10px;
   border-bottom: 1px solid var(--border);
-  gap: 8px;
+  gap: 6px;
   flex-shrink: 0;
+}
+.mcp-header-top {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+}
+.mcp-agents-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
 }
 .mcp-header-left {
   display: flex;
@@ -2113,6 +2123,26 @@ html, body, #app {
   text-overflow: ellipsis;
 }
 .mcp-connection.connected { color: var(--pass); }
+
+.mcp-agent-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 1px 6px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg-elev-2);
+  color: var(--pass);
+  white-space: nowrap;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.mcp-agent-count {
+  font-variant-numeric: tabular-nums;
+  color: var(--fg-dim);
+  font-size: 0.85em;
+}
 
 .mcp-dot {
   width: 6px;

@@ -15,14 +15,12 @@
 import * as http from 'node:http';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import { randomUUID } from 'node:crypto';
 import { execFileSync, fork, spawn, type ChildProcess } from 'node:child_process';
 import { watch as chokidarWatch, type FSWatcher } from 'chokidar';
 import { WebSocketServer, type WebSocket } from 'ws';
-import { attachMcpClientEventReporting, createMcpServer } from '../mcp/index.js';
 import { McpEventEmitter } from '../mcp/events.js';
+import { McpSessionRouter } from '../mcp/http-session-router.js';
 import type { TestDispatcher, TestRunResult, TestResultEntry, TestTreeEntry, SessionInfo } from '../mcp/index.js';
-import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import type { TapsmithConfig } from '../config.js';
 import { findDaemonBin } from '../daemon-bin.js';
 import { TapsmithGrpcClient } from '../grpc-client.js';
@@ -661,20 +659,28 @@ export async function startUIServer(
   };
 
   const mcpEvents = new McpEventEmitter();
-  const mcpServer = createMcpServer({ name: 'tapsmith-ui', events: mcpEvents, dispatcher: testDispatcher });
-  const mcpTransport = new StreamableHTTPServerTransport({ sessionIdGenerator: () => randomUUID() });
-  await mcpServer.connect(mcpTransport);
-  let mcpClientName: string | undefined;
-  let mcpClientVersion: string | undefined;
   let mcpPort = 0;
 
+  // PILOT-221: route MCP over per-session transports so dropped clients can
+  // reconnect and multiple agents can attach to this one device session. The
+  // router shares `mcpEvents` + `testDispatcher` across every session.
+  const mcpRouter = new McpSessionRouter({
+    name: 'tapsmith-ui',
+    events: mcpEvents,
+    dispatcher: testDispatcher,
+    onClientsChanged: () => { broadcast(getMcpStatus()); },
+  });
+
   function getMcpStatus(): ServerMessage {
+    const clients = mcpRouter.clientList;
     return {
       type: 'mcp-status' as const,
       running: true,
       mcpUrl: mcpPort ? `http://localhost:${mcpPort}/mcp` : undefined,
-      clientName: mcpClientName,
-      clientVersion: mcpClientVersion,
+      clientName: clients[0]?.name,
+      clientVersion: clients[0]?.version,
+      connectedCount: clients.length,
+      clients,
     };
   }
 
@@ -683,14 +689,6 @@ export async function startUIServer(
     if (mcpToolCallBuffer.length < MAX_MCP_BUFFER) mcpToolCallBuffer.push(mcpMsg);
     broadcast(mcpMsg);
   });
-
-  mcpEvents.onClientChange((info) => {
-    mcpClientName = info?.name;
-    mcpClientVersion = info?.version;
-    broadcast(getMcpStatus());
-  });
-
-  attachMcpClientEventReporting(mcpServer, mcpEvents);
 
   // ─── Test Discovery ───
 
@@ -3768,7 +3766,7 @@ export async function startUIServer(
     // Streamable HTTP endpoint — handles POST (JSON-RPC) + GET (SSE stream) + DELETE (session close)
     if (url.pathname === '/mcp') {
       try {
-        await mcpTransport.handleRequest(req, res);
+        await mcpRouter.handleRequest(req, res);
       } catch (error) {
         console.error('MCP transport error:', error);
         if (!res.headersSent) {
@@ -3917,8 +3915,7 @@ export async function startUIServer(
       }
 
       mcpHttpServer.close();
-      mcpTransport.close();
-      mcpServer.close();
+      mcpRouter.close();
       try { fs.unlinkSync(portFilePath); } catch { /* already gone */ }
       if (watcher) watcher.close();
       if (discoveryWatcher) discoveryWatcher.close();

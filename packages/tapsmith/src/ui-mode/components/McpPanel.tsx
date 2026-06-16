@@ -1,15 +1,27 @@
 import { useRef, useEffect, useState, useCallback } from 'preact/hooks';
 import type { McpToolCallMessage } from '../ui-protocol.js';
+import { groupAgents, agentsTooltip, type McpAgent } from '../mcp-agents.js';
 
 interface McpPanelProps {
   mcpUrl?: string
   clientName?: string
   clientVersion?: string
+  clients?: McpAgent[]
   toolCalls: McpToolCallMessage[]
   onClear: () => void
 }
 
-export function McpPanel({ mcpUrl, clientName, clientVersion, toolCalls, onClear }: McpPanelProps) {
+export function McpPanel({ mcpUrl, clientName, clientVersion, clients, toolCalls, onClear }: McpPanelProps) {
+  // Prefer the full client list; fall back to the single-client fields for back-compat.
+  const agents: McpAgent[] = clients && clients.length > 0
+    ? clients
+    : clientName
+      ? [{ name: clientName, version: clientVersion ?? '' }]
+      : [];
+  // Two instances of the same client are indistinguishable (identical clientInfo),
+  // so collapse duplicates into "name ×N" instead of repeating the pill.
+  const grouped = groupAgents(agents);
+  const connected = agents.length > 0 || Boolean(clientName);
   const feedRef = useRef<HTMLDivElement>(null);
   const [expandedId, setExpandedId] = useState<string | null>(null);
 
@@ -23,39 +35,58 @@ export function McpPanel({ mcpUrl, clientName, clientVersion, toolCalls, onClear
   // replace with completed version when it arrives.
   const mergedCalls = mergeToolCalls(toolCalls);
 
+  const single = grouped.length === 1 && grouped[0].count === 1;
+
   return (
     <div class="mcp-panel">
       <div class="mcp-header">
-        <div class="mcp-header-left">
-          <span class="mcp-title">MCP Server</span>
-          {clientName
-            ? (
-              <span class="mcp-connection connected">
-                <span class="mcp-dot connected" />
-                {clientName}{clientVersion ? ` ${clientVersion}` : ''}
-              </span>
-            )
-            : (
-              <span class="mcp-connection listening">
-                <span class="mcp-dot listening" />
-                Listening
-              </span>
+        <div class="mcp-header-top">
+          <div class="mcp-header-left">
+            <span class="mcp-title">MCP Server</span>
+            {!connected
+              ? (
+                <span class="mcp-connection listening">
+                  <span class="mcp-dot listening" />
+                  Listening
+                </span>
+              )
+              : single
+                ? (
+                  <span class="mcp-connection connected">
+                    <span class="mcp-dot connected" />
+                    {agents[0].name}{agents[0].version ? ` ${agents[0].version}` : ''}
+                  </span>
+                )
+                // Multiple agents: the named pills render on their own row below,
+                // so the top row stays just the title + Clear (never clips).
+                : null}
+          </div>
+          <div class="mcp-header-right">
+            {mergedCalls.length > 0 && (
+              <button class="mcp-btn" onClick={onClear} title="Clear activity feed">
+                Clear
+              </button>
             )}
+          </div>
         </div>
-        <div class="mcp-header-right">
-          {mergedCalls.length > 0 && (
-            <button class="mcp-btn" onClick={onClear} title="Clear activity feed">
-              Clear
-            </button>
-          )}
-        </div>
+        {connected && !single && (
+          <div class="mcp-agents-row" title={`${agents.length} agents connected:\n${agentsTooltip(agents)}`}>
+            {grouped.map((g) => (
+              <span key={g.name} class="mcp-agent-pill" title={g.count > 1 ? `${g.name} ×${g.count}` : g.name}>
+                <span class="mcp-dot connected" />
+                {g.name}
+                {g.count > 1 && <span class="mcp-agent-count">×{g.count}</span>}
+              </span>
+            ))}
+          </div>
+        )}
       </div>
 
       <div class="mcp-feed" ref={feedRef}>
         {mergedCalls.length === 0
           ? (
             <div class="mcp-empty">
-              {clientName
+              {connected
                 ? 'Waiting for tool calls...'
                 : mcpUrl
                   ? <McpSetupHint mcpUrl={mcpUrl} />
