@@ -5,6 +5,7 @@
 import { useCallback, useEffect, useRef, useState } from 'preact/hooks';
 import { RefreshCw } from 'lucide-preact';
 import type { ClientMessage, WorkerInfo } from '../ui-protocol.js';
+import { agentsLabel, agentsTooltip, type McpAgent } from '../mcp-agents.js';
 import brandMark from '../../assets/mark.png';
 import wordmarkLight from '../../assets/wordmark-light.png';
 import wordmarkDark from '../../assets/wordmark-dark.png';
@@ -24,6 +25,7 @@ interface RunControlsProps {
   /** Elapsed run time in ms. */
   runElapsed: number
   mcpClientName?: string
+  mcpClients?: McpAgent[]
   mcpPanelOpen?: boolean
   onToggleMcpPanel?: () => void
 }
@@ -118,7 +120,15 @@ function WorkerDevice({ w, onSend }: { w: WorkerInfo; onSend: (msg: ClientMessag
 
 // ─── RunControls ───
 
-export function RunControls({ connected, isRunning, deviceSerial, counts, theme, onThemeChange, onSend, workers, runElapsed, mcpClientName, mcpPanelOpen, onToggleMcpPanel }: RunControlsProps) {
+export function RunControls({ connected, isRunning, deviceSerial, counts, theme, onThemeChange, onSend, workers, runElapsed, mcpClientName, mcpClients, mcpPanelOpen, onToggleMcpPanel }: RunControlsProps) {
+  // Prefer the full agent list; fall back to the single-name field for back-compat.
+  const mcpAgents: McpAgent[] = mcpClients && mcpClients.length > 0
+    ? mcpClients
+    : mcpClientName
+      ? [{ name: mcpClientName, version: '' }]
+      : [];
+  const mcpConnected = mcpAgents.length > 0;
+  const mcpLabel = agentsLabel(mcpAgents);
   const hasWorkers = workers.length > 1;
 
   return (
@@ -179,11 +189,11 @@ export function RunControls({ connected, isRunning, deviceSerial, counts, theme,
         <button
           class={`rc-mcp-indicator ${mcpPanelOpen ? 'active' : ''}`}
           onClick={onToggleMcpPanel}
-          title={mcpClientName ? `MCP: ${mcpClientName} (click to toggle panel)` : 'MCP: listening (click to toggle panel)'}
+          title={mcpConnected ? `MCP agents:\n${agentsTooltip(mcpAgents)}\n(click to toggle panel)` : 'MCP: listening (click to toggle panel)'}
         >
-          <span class={`mcp-dot ${mcpClientName ? 'connected' : 'listening'}`} />
+          <span class={`mcp-dot ${mcpConnected ? 'connected' : 'listening'}`} />
           MCP
-          {mcpClientName && <span class="rc-mcp-client">{mcpClientName}</span>}
+          {mcpConnected && <span class="rc-mcp-client">{mcpLabel}</span>}
         </button>
         <span class="rc-divider" />
         <select

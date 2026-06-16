@@ -10,6 +10,8 @@ The MCP server operates in two modes:
 
 When running `tapsmith test --ui`, a Streamable HTTP MCP endpoint is hosted alongside the UI. The agent shares the same daemon, device, and test session as the UI — test runs appear in the UI with full progress tracking, and both the agent and user share mutual exclusion (only one run at a time).
 
+Multiple agents can connect to the same UI session at once: each gets its own MCP session but they all drive the same device and report into the same activity feed (the MCP panel shows how many clients are attached). If an agent's connection drops mid-call, it can simply reconnect — the session stays alive without restarting `tapsmith test --ui`.
+
 To connect, copy the MCP URL from the MCP panel in the UI into any MCP client that supports Streamable HTTP transport. Replace the example URL below with the URL shown in the UI.
 
 Claude Code:

@@ -285,8 +285,13 @@ export interface McpStatusMessage {
   type: 'mcp-status'
   running: boolean
   mcpUrl?: string
+  /** Primary (first) connected client — kept for back-compat with single-client UI. */
   clientName?: string
   clientVersion?: string
+  /** Number of MCP clients currently attached to the shared session. */
+  connectedCount?: number
+  /** All currently attached MCP clients. */
+  clients?: { name: string; version: string }[]
 }
 
 export interface McpToolCallMessage {

@@ -161,6 +161,7 @@ function App() {
   const [mcpUrl, setMcpUrl] = useState<string | undefined>();
   const [mcpClientName, setMcpClientName] = useState<string | undefined>();
   const [mcpClientVersion, setMcpClientVersion] = useState<string | undefined>();
+  const [mcpClients, setMcpClients] = useState<{ name: string; version: string }[]>([]);
   const [mcpToolCalls, setMcpToolCalls] = useState<import('./ui-protocol.js').McpToolCallMessage[]>([]);
   const [mcpPanelOpen, setMcpPanelOpen] = usePersistedJSON<boolean>('tapsmith-mcp-panel', false);
 
@@ -923,6 +924,7 @@ function App() {
         setMcpUrl(msg.mcpUrl);
         setMcpClientName(msg.clientName);
         setMcpClientVersion(msg.clientVersion);
+        setMcpClients(msg.clients ?? (msg.clientName ? [{ name: msg.clientName, version: msg.clientVersion ?? '' }] : []));
         break;
 
       case 'mcp-tool-call':
@@ -1254,6 +1256,7 @@ function App() {
           workers={workers}
           runElapsed={runElapsed}
           mcpClientName={mcpClientName}
+          mcpClients={mcpClients}
           mcpPanelOpen={mcpPanelOpen}
           onToggleMcpPanel={() => setMcpPanelOpen(prev => !prev)}
         />
@@ -1370,6 +1373,7 @@ function App() {
           mcpUrl={mcpUrl}
           clientName={mcpClientName}
           clientVersion={mcpClientVersion}
+          clients={mcpClients}
           toolCalls={mcpToolCalls}
           onClear={() => setMcpToolCalls([])}
         />
