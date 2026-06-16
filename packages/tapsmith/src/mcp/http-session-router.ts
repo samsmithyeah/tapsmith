@@ -214,21 +214,25 @@ export class McpSessionRouter {
       events: this.options.events,
       dispatcher: this.options.dispatcher,
     });
+    // Capture the session id at init time. Don't read transport.sessionId during
+    // teardown — the SDK may clear it on close, which would skip cleanup and
+    // leak the session (and leave a stale entry in the client list).
+    let boundSessionId: string | undefined;
     const transport = new StreamableHTTPServerTransport({
       sessionIdGenerator: () => randomUUID(),
       onsessioninitialized: (sessionId) => {
+        boundSessionId = sessionId;
         this.sessions.set(sessionId, { transport, server, lastActivityAt: Date.now() });
       },
       onsessionclosed: (sessionId) => { this.cleanupSession(sessionId); },
     });
-    transport.onclose = () => { if (transport.sessionId) this.cleanupSession(transport.sessionId); };
+    transport.onclose = () => { if (boundSessionId) this.cleanupSession(boundSessionId); };
     // Track this session's client identity (keyed by sessionId) so callers can
     // show every connected agent — a single shared emitter can't tell them apart.
     attachMcpClientEventReporting(server, this.options.events, undefined, (info) => {
-      const sessionId = transport.sessionId;
-      if (!sessionId) return;
-      if (info) this.clients.set(sessionId, info);
-      else this.clients.delete(sessionId);
+      if (!boundSessionId) return;
+      if (info) this.clients.set(boundSessionId, info);
+      else this.clients.delete(boundSessionId);
       this.options.onClientsChanged?.(this.clientList);
     });
     try {
@@ -239,7 +243,7 @@ export class McpSessionRouter {
       // behind. cleanupSession only closes the server if the session made it
       // into the map, so always server.close() too (idempotent if already done).
       try { transport.close(); } catch { /* already closed */ }
-      if (transport.sessionId) this.cleanupSession(transport.sessionId);
+      if (boundSessionId) this.cleanupSession(boundSessionId);
       try { server.close(); } catch { /* already closed */ }
       throw err;
     }
@@ -320,7 +324,10 @@ export class McpSessionRouter {
       const standbyDead = !!session.standbyRes && (session.standbyRes.writableEnded || session.standbyRes.destroyed);
       const hasLiveStandby = !!session.standbyRes && !standbyDead;
       if (hasLiveStandby) continue; // genuinely connected — leave it alone
-      if (standbyDead || now - session.lastActivityAt > this.idleTimeoutMs) {
+      // Reap a detectably-dead standby always; reap on idle only when the idle
+      // timeout is enabled (idleTimeoutMs <= 0 means "don't reap on idle").
+      const idleExpired = this.idleTimeoutMs > 0 && now - session.lastActivityAt > this.idleTimeoutMs;
+      if (standbyDead || idleExpired) {
         this.reapSession(sessionId);
       }
     }
