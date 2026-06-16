@@ -40,6 +40,7 @@ import {
   probeSimulatorHealth,
   filterHealthySimulators,
   cleanupStaleSimulators,
+  killAgentRunnersForSimulators,
   recordClonedSimulators,
   unrecordSimulators,
   provisionSimulators,
@@ -479,6 +480,55 @@ describe('cleanupStaleSimulators', () => {
     const written = JSON.parse(mockedWriteFileSync.mock.calls[0][1] as string);
     expect(written).toHaveLength(1);
     expect(written[0].sourceName).toBe('iPad Pro');
+  });
+});
+
+// ─── killAgentRunnersForSimulators ───
+
+describe('killAgentRunnersForSimulators', () => {
+  it('kills all runners in one pkill (regex alternation) then terminates each agent', () => {
+    const calls: string[][] = [];
+    mockedExecFileSync.mockImplementation((cmd: string, args: string[]) => {
+      calls.push([cmd as string, ...(args as string[])]);
+      return '' as unknown as Buffer;
+    });
+
+    killAgentRunnersForSimulators(['UDID-1', 'UDID-2']);
+
+    // Single pkill batches both UDIDs; simctl terminate stays per-UDID.
+    expect(calls).toEqual([
+      ['pkill', '-f', 'xcodebuild.*test-without-building.*id=(UDID-1|UDID-2)'],
+      ['xcrun', 'simctl', 'terminate', 'UDID-1', 'dev.tapsmith.agent.xctrunner'],
+      ['xcrun', 'simctl', 'terminate', 'UDID-2', 'dev.tapsmith.agent.xctrunner'],
+    ]);
+  });
+
+  it('does not throw when no matching process exists', () => {
+    mockedExecFileSync.mockImplementation(() => { throw new Error('no matching process'); });
+    expect(() => killAgentRunnersForSimulators(['UDID-1'])).not.toThrow();
+  });
+
+  it('is a no-op for an empty udid list', () => {
+    const spy = mockedExecFileSync.mockImplementation(() => '' as unknown as Buffer);
+    killAgentRunnersForSimulators([]);
+    expect(spy).not.toHaveBeenCalled();
+  });
+
+  it('skips empty/falsy udids so the pkill pattern never matches every runner', () => {
+    const calls: string[][] = [];
+    mockedExecFileSync.mockImplementation((cmd: string, args: string[]) => {
+      calls.push([cmd as string, ...(args as string[])]);
+      return '' as unknown as Buffer;
+    });
+
+    killAgentRunnersForSimulators(['', 'UDID-1']);
+
+    // No bare `id=()` pattern (would match unrelated xcodebuild runners); only UDID-1 acted on.
+    expect(calls.some((c) => c.includes('xcodebuild.*test-without-building.*id=()'))).toBe(false);
+    expect(calls).toEqual([
+      ['pkill', '-f', 'xcodebuild.*test-without-building.*id=(UDID-1)'],
+      ['xcrun', 'simctl', 'terminate', 'UDID-1', 'dev.tapsmith.agent.xctrunner'],
+    ]);
   });
 });
 

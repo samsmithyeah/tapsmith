@@ -508,6 +508,51 @@ export function filterHealthySimulators(
 
 // ─── Stale cleanup ───
 
+/**
+ * Kill orphaned xcodebuild XCUITest runners targeting the given simulator UDIDs.
+ *
+ * Must run BEFORE shutting down/deleting those simulators: an XCUITest runner
+ * actively re-boots its target simulator after a `simctl shutdown`, so deleting
+ * the sim first just lets the surviving runner boot a replacement and keep the
+ * host loaded. Synchronous (execFileSync) so it's safe to call from crash/exit
+ * handlers that must finish before the process exits.
+ *
+ * The `simctl terminate` mirrors the daemon's own kill_existing_agents_on
+ * (tapsmith-core/src/ios/agent_launch.rs).
+ */
+export function killAgentRunnersForSimulators(udids: string[]): void {
+  // Skip empty/falsy UDIDs: an empty value makes the pkill pattern `id=` match
+  // every xcodebuild runner and would kill unrelated sessions.
+  const validUdids = udids.filter(Boolean);
+  if (validUdids.length === 0) return;
+
+  // Kill all matching runners in ONE pkill via ERE alternation rather than one
+  // spawn per UDID. This runs during emergency teardown when the host may
+  // already be overloaded (the PILOT-230 scenario), so minimizing process
+  // spawns matters. UDIDs are hex + hyphens, so they need no regex escaping,
+  // and macOS `pkill -f` matches with extended regular expressions.
+  try {
+    execFileSync('pkill', ['-f', `xcodebuild.*test-without-building.*id=(${validUdids.join('|')})`], {
+      timeout: 5_000,
+      stdio: 'ignore',
+    });
+  } catch {
+    // No matching process — fine
+  }
+
+  // `simctl terminate` takes a single UDID, so it stays per-UDID.
+  for (const udid of validUdids) {
+    try {
+      execFileSync('xcrun', ['simctl', 'terminate', udid, 'dev.tapsmith.agent.xctrunner'], {
+        timeout: 5_000,
+        stdio: 'ignore',
+      });
+    } catch {
+      // Agent not running on this sim — fine
+    }
+  }
+}
+
 export interface CleanupStaleSimulatorsResult {
   /** UDIDs of healthy clones ready for reuse. */
   reusable: string[]
@@ -576,16 +621,7 @@ export function cleanupStaleSimulators(
   }
 
   // Phase 3: kill stale xcodebuild processes for deleted sims
-  for (const udid of killed) {
-    try {
-      execFileSync('pkill', ['-f', `xcodebuild.*test-without-building.*id=${udid}`], {
-        timeout: 5_000,
-        stdio: 'ignore',
-      });
-    } catch {
-      // No matching process — fine
-    }
-  }
+  killAgentRunnersForSimulators(killed);
 
   return { reusable, killed };
 }
