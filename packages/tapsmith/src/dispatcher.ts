@@ -273,15 +273,19 @@ function scheduleShutdownExit(signal?: NodeJS.Signals): void {
 const activeEmergencyCleanups = new Set<() => void>();
 let fatalHandlersInstalled = false;
 let fatalExitScheduled = false;
+let uncaughtExceptionListener: ((err: Error) => void) | undefined;
+let unhandledRejectionListener: ((reason: unknown) => void) | undefined;
 
 /**
  * Install process-wide handlers that route an uncaught exception or unhandled
  * rejection through the same teardown path as SIGINT/SIGTERM, then exit
- * non-zero. Idempotent — only the first `runParallel` installs them. Safe to
- * add a global `unhandledRejection` handler: fixture rejections are already
- * marked handled (see fixtures.ts), so only genuinely fatal errors reach here,
- * and Node ≥15 already crashes the process on unhandled rejection — we just
- * clean up first.
+ * non-zero. Idempotent — only the first active `runParallel` installs them;
+ * they are removed by `uninstallFatalErrorHandlers` once the last run finishes
+ * so they don't linger in long-lived hosts (MCP server, watch/UI mode) and
+ * hijack later unrelated errors. Safe to add a global `unhandledRejection`
+ * handler: fixture rejections are already marked handled (see fixtures.ts), so
+ * only genuinely fatal errors reach here, and Node ≥15 already crashes the
+ * process on unhandled rejection — we just clean up first.
  */
 function installFatalErrorHandlers(): void {
   if (fatalHandlersInstalled) return;
@@ -305,8 +309,29 @@ function installFatalErrorHandlers(): void {
       setImmediate(() => process.exit(1));
     }
   };
-  process.on('uncaughtException', (err) => runFatalTeardown('error', err));
-  process.on('unhandledRejection', (reason) => runFatalTeardown('rejection', reason));
+  uncaughtExceptionListener = (err) => runFatalTeardown('error', err);
+  unhandledRejectionListener = (reason) => runFatalTeardown('rejection', reason);
+  process.on('uncaughtException', uncaughtExceptionListener);
+  process.on('unhandledRejection', unhandledRejectionListener);
+}
+
+/**
+ * Remove the process-wide fatal-error handlers. Called when the last active
+ * `runParallel` finishes (no remaining `activeEmergencyCleanups`), so the
+ * listeners don't accumulate or fire after the dispatcher work is done.
+ */
+function uninstallFatalErrorHandlers(): void {
+  if (!fatalHandlersInstalled) return;
+  fatalHandlersInstalled = false;
+  fatalExitScheduled = false;
+  if (uncaughtExceptionListener) {
+    process.removeListener('uncaughtException', uncaughtExceptionListener);
+    uncaughtExceptionListener = undefined;
+  }
+  if (unhandledRejectionListener) {
+    process.removeListener('unhandledRejection', unhandledRejectionListener);
+    unhandledRejectionListener = undefined;
+  }
 }
 
 /**
@@ -963,174 +988,179 @@ export async function runParallel(opts: DispatcherOptions, _portOffset = 0): Pro
   process.on('SIGINT', sigintHandler);
   process.on('SIGTERM', sigtermHandler);
 
-  if (isIos && !config.simulator) {
-    // ─── Physical iOS device bucket ───
-    // No `simulator` configured → treat as a physical device run. Use the
-    // explicit `config.device` UDID when set, otherwise auto-pick the single
-    // paired USB device. Mirrors the single-worker resolution in cli.ts.
-    // Parallel workers against one physical device aren't supported (only
-    // one XCUITest session per device) — the dispatcher caps workers to 1
-    // downstream via the project's explicit `workers: 1`, but we don't
-    // enforce that here; any over-count is handled by the worker slot
-    // allocator.
-    if (config.device) {
-      deviceSerials = [config.device];
+  const allResults: TestResult[] = [];
+  const allSuites: SuiteResult[] = [];
+  let totalStart = 0;
+  let setupDuration = 0;
+
+  // The try spans device provisioning AND dispatch so a setup-phase
+  // failure still runs the finally below (deregistering the signal/crash
+  // handlers) instead of leaking them on the process (PILOT-230).
+  try {
+    if (isIos && !config.simulator) {
+      // ─── Physical iOS device bucket ───
+      // No `simulator` configured → treat as a physical device run. Use the
+      // explicit `config.device` UDID when set, otherwise auto-pick the single
+      // paired USB device. Mirrors the single-worker resolution in cli.ts.
+      // Parallel workers against one physical device aren't supported (only
+      // one XCUITest session per device) — the dispatcher caps workers to 1
+      // downstream via the project's explicit `workers: 1`, but we don't
+      // enforce that here; any over-count is handled by the worker slot
+      // allocator.
+      if (config.device) {
+        deviceSerials = [config.device];
+      } else {
+        try {
+          const { resolvePhysicalIosDevice } = await import('./ios-device-resolve.js');
+          deviceSerials = [resolvePhysicalIosDevice()];
+        } catch (e) {
+          throw new Error(
+            `Physical iOS device bucket failed to resolve: ${(e as Error).message}`,
+          );
+        }
+      }
+      launchProgress?.update('worker-devices', { state: 'running', detail: `physical iOS device ${deviceSerials[0]}` });
+      if (!launchProgress) process.stderr.write(`${DIM}Physical iOS device: ${deviceSerials[0]}${RESET}\n`);
+    } else if (isIos) {
+      // ─── iOS simulator discovery & provisioning ───
+      // The daemon reports ALL booted iOS simulators. Filter to only those
+      // compatible with the primary — different runtimes cause xcodebuild
+      // test-without-building to fail since the xctestrun is OS-version-specific.
+      const iosDevices = onlineDevices.filter((d) => d.platform === 'ios');
+      let candidateUdids = iosDevices.map((d) => d.serial);
+      if (candidateUdids.length > 0) {
+        const compatible = listCompatibleBootedSimulators(candidateUdids[0]);
+        const compatibleSet = new Set(compatible.map((s) => s.udid));
+        candidateUdids = candidateUdids.filter((u) => compatibleSet.has(u));
+      }
+      const iosHealthy = filterHealthySimulators(candidateUdids);
+      for (const unhealthy of iosHealthy.unhealthySimulators) {
+        if (launchProgress) launchProgress.note(`Skipping unhealthy simulator ${unhealthy.udid}: ${unhealthy.reason}.`);
+        else process.stderr.write(`${YELLOW}Skipping unhealthy simulator ${unhealthy.udid}: ${unhealthy.reason}.${RESET}\n`);
+      }
+      deviceSerials = iosHealthy.healthyUdids;
+
+      const neededWorkers = Math.min(opts.workers, testFiles.length);
+      if (deviceSerials.length < neededWorkers && config.simulator) {
+        const detail = `provisioning iOS simulators: have ${deviceSerials.length}, need ${neededWorkers}`;
+        if (launchProgress) launchProgress.update('worker-devices', { state: 'running', detail });
+        else process.stderr.write(`${DIM}${detail}${RESET}\n`);
+        const provision = provisionSimulators({
+          simulatorName: config.simulator,
+          workers: neededWorkers,
+          existingUdids: deviceSerials,
+          appPath: config.app ? path.resolve(config.rootDir, config.app) : undefined,
+          reusableUdids: reusableSimulatorUdids,
+          onProgress: (message, level) => {
+            if (!launchProgress) return;
+            if (level === 'warning') launchProgress.note(message);
+            else launchProgress.update('worker-devices', { state: 'running', detail: message });
+          },
+        });
+        clonedSimulators = provision.clonedSimulators;
+        freshIosUdids = provision.freshUdids;
+        deviceSerials = provision.allUdids;
+        reusedSimulatorCount += provision.reusedUdids.length;
+
+        if (clonedSimulators.length > 0) {
+          const message = `Cloned ${clonedSimulators.length} simulator(s) for parallel workers.`;
+          if (launchProgress) launchProgress.update('worker-devices', { state: 'running', detail: message });
+          else note(message);
+        }
+
+        // Re-discover devices so the daemon sees newly booted simulators
+        if (provision.allUdids.length > iosDevices.length) {
+          // Give simulators a moment to register, then refresh
+          await new Promise((resolve) => setTimeout(resolve, 2_000));
+          const refreshClient = new TapsmithGrpcClient(`localhost:${firstDaemonPort}`);
+          await refreshClient.waitForReady(5_000);
+          await refreshClient.listDevices();
+          refreshClient.close();
+        }
+      }
     } else {
-      try {
-        const { resolvePhysicalIosDevice } = await import('./ios-device-resolve.js');
-        deviceSerials = [resolvePhysicalIosDevice()];
-      } catch (e) {
-        throw new Error(
-          `Physical iOS device bucket failed to resolve: ${(e as Error).message}`,
-        );
-      }
-    }
-    launchProgress?.update('worker-devices', { state: 'running', detail: `physical iOS device ${deviceSerials[0]}` });
-    if (!launchProgress) process.stderr.write(`${DIM}Physical iOS device: ${deviceSerials[0]}${RESET}\n`);
-  } else if (isIos) {
-    // ─── iOS simulator discovery & provisioning ───
-    // The daemon reports ALL booted iOS simulators. Filter to only those
-    // compatible with the primary — different runtimes cause xcodebuild
-    // test-without-building to fail since the xctestrun is OS-version-specific.
-    const iosDevices = onlineDevices.filter((d) => d.platform === 'ios');
-    let candidateUdids = iosDevices.map((d) => d.serial);
-    if (candidateUdids.length > 0) {
-      const compatible = listCompatibleBootedSimulators(candidateUdids[0]);
-      const compatibleSet = new Set(compatible.map((s) => s.udid));
-      candidateUdids = candidateUdids.filter((u) => compatibleSet.has(u));
-    }
-    const iosHealthy = filterHealthySimulators(candidateUdids);
-    for (const unhealthy of iosHealthy.unhealthySimulators) {
-      if (launchProgress) launchProgress.note(`Skipping unhealthy simulator ${unhealthy.udid}: ${unhealthy.reason}.`);
-      else process.stderr.write(`${YELLOW}Skipping unhealthy simulator ${unhealthy.udid}: ${unhealthy.reason}.${RESET}\n`);
-    }
-    deviceSerials = iosHealthy.healthyUdids;
-
-    const neededWorkers = Math.min(opts.workers, testFiles.length);
-    if (deviceSerials.length < neededWorkers && config.simulator) {
-      const detail = `provisioning iOS simulators: have ${deviceSerials.length}, need ${neededWorkers}`;
-      if (launchProgress) launchProgress.update('worker-devices', { state: 'running', detail });
-      else process.stderr.write(`${DIM}${detail}${RESET}\n`);
-      const provision = provisionSimulators({
-        simulatorName: config.simulator,
-        workers: neededWorkers,
-        existingUdids: deviceSerials,
-        appPath: config.app ? path.resolve(config.rootDir, config.app) : undefined,
-        reusableUdids: reusableSimulatorUdids,
-        onProgress: (message, level) => {
-          if (!launchProgress) return;
-          if (level === 'warning') launchProgress.note(message);
-          else launchProgress.update('worker-devices', { state: 'running', detail: message });
-        },
-      });
-      clonedSimulators = provision.clonedSimulators;
-      freshIosUdids = provision.freshUdids;
-      deviceSerials = provision.allUdids;
-      reusedSimulatorCount += provision.reusedUdids.length;
-
-      if (clonedSimulators.length > 0) {
-        const message = `Cloned ${clonedSimulators.length} simulator(s) for parallel workers.`;
-        if (launchProgress) launchProgress.update('worker-devices', { state: 'running', detail: message });
-        else note(message);
-      }
-
-      // Re-discover devices so the daemon sees newly booted simulators
-      if (provision.allUdids.length > iosDevices.length) {
-        // Give simulators a moment to register, then refresh
-        await new Promise((resolve) => setTimeout(resolve, 2_000));
-        const refreshClient = new TapsmithGrpcClient(`localhost:${firstDaemonPort}`);
-        await refreshClient.waitForReady(5_000);
-        await refreshClient.listDevices();
-        refreshClient.close();
-      }
-    }
-  } else {
-    // ─── Android device discovery & provisioning ───
-    const androidDevices = onlineDevices.filter((d) => d.platform !== 'ios');
-    const prefilteredOnline = prefilterDevicesForStrategy(
-      androidDevices.map((d) => d.serial),
-      deviceStrategy,
-      config.avd,
-    );
-    warnSkippedDevices(prefilteredOnline.skippedDevices, launchProgress);
-    const healthyOnline = filterHealthyDevices(prefilteredOnline.candidateSerials);
-    warnUnhealthyDevices(healthyOnline.unhealthyDevices, launchProgress);
-    const selectedOnline = selectDevicesForStrategy(
-      healthyOnline.healthySerials,
-      deviceStrategy,
-      config.avd,
-    );
-    warnSkippedDevices(
-      selectedOnline.skippedDevices.filter(
-        (device) => !prefilteredOnline.skippedDevices.some((prefiltered) => prefiltered.serial === device.serial),
-      ),
-      launchProgress,
-    );
-
-    if (
-      config.launchEmulators &&
-      selectedOnline.selectedSerials.length < Math.min(opts.workers, testFiles.length)
-    ) {
-      const provision = await provisionEmulators({
-        existingSerials: selectedOnline.selectedSerials,
-        occupiedSerials: androidDevices.map((d) => d.serial),
-        workers: Math.min(opts.workers, testFiles.length),
-        avd: config.avd,
-        onProgress: (message, level) => {
-          if (!launchProgress) return;
-          if (level === 'warning') launchProgress.note(message);
-          else launchProgress.update('worker-devices', { state: 'running', detail: message });
-        },
-      });
-      launchedEmulators = provision.launched;
-      const healthyProvisioned = filterHealthyDevices(provision.allSerials);
-      warnUnhealthyDevices(healthyProvisioned.unhealthyDevices, launchProgress);
-      const selectedProvisioned = selectDevicesForStrategy(
-        healthyProvisioned.healthySerials,
+      // ─── Android device discovery & provisioning ───
+      const androidDevices = onlineDevices.filter((d) => d.platform !== 'ios');
+      const prefilteredOnline = prefilterDevicesForStrategy(
+        androidDevices.map((d) => d.serial),
         deviceStrategy,
         config.avd,
       );
-      warnSkippedDevices(selectedProvisioned.skippedDevices, launchProgress);
-      deviceSerials = selectedProvisioned.selectedSerials;
-    } else {
-      deviceSerials = selectedOnline.selectedSerials;
+      warnSkippedDevices(prefilteredOnline.skippedDevices, launchProgress);
+      const healthyOnline = filterHealthyDevices(prefilteredOnline.candidateSerials);
+      warnUnhealthyDevices(healthyOnline.unhealthyDevices, launchProgress);
+      const selectedOnline = selectDevicesForStrategy(
+        healthyOnline.healthySerials,
+        deviceStrategy,
+        config.avd,
+      );
+      warnSkippedDevices(
+        selectedOnline.skippedDevices.filter(
+          (device) => !prefilteredOnline.skippedDevices.some((prefiltered) => prefiltered.serial === device.serial),
+        ),
+        launchProgress,
+      );
+
+      if (
+        config.launchEmulators &&
+        selectedOnline.selectedSerials.length < Math.min(opts.workers, testFiles.length)
+      ) {
+        const provision = await provisionEmulators({
+          existingSerials: selectedOnline.selectedSerials,
+          occupiedSerials: androidDevices.map((d) => d.serial),
+          workers: Math.min(opts.workers, testFiles.length),
+          avd: config.avd,
+          onProgress: (message, level) => {
+            if (!launchProgress) return;
+            if (level === 'warning') launchProgress.note(message);
+            else launchProgress.update('worker-devices', { state: 'running', detail: message });
+          },
+        });
+        launchedEmulators = provision.launched;
+        const healthyProvisioned = filterHealthyDevices(provision.allSerials);
+        warnUnhealthyDevices(healthyProvisioned.unhealthyDevices, launchProgress);
+        const selectedProvisioned = selectDevicesForStrategy(
+          healthyProvisioned.healthySerials,
+          deviceStrategy,
+          config.avd,
+        );
+        warnSkippedDevices(selectedProvisioned.skippedDevices, launchProgress);
+        deviceSerials = selectedProvisioned.selectedSerials;
+      } else {
+        deviceSerials = selectedOnline.selectedSerials;
+      }
     }
-  }
 
-  if (deviceSerials.length === 0) {
-    launchProgress?.fail('worker-devices', 'no worker-ready devices found');
-    throw new LaunchSetupError(
-      isIos
-        ? `No booted iOS simulators found.${config.simulator ? ` Boot a simulator matching '${config.simulator}', or add more simulators for parallel execution.` : ' Set `simulator` in your config and boot at least one.'}`
-        : 'No online devices found. Connect a device, start an emulator, ' +
-          'or set `avd` in your config to auto-launch emulators.',
-    );
-  }
+    if (deviceSerials.length === 0) {
+      launchProgress?.fail('worker-devices', 'no worker-ready devices found');
+      throw new LaunchSetupError(
+        isIos
+          ? `No booted iOS simulators found.${config.simulator ? ` Boot a simulator matching '${config.simulator}', or add more simulators for parallel execution.` : ' Set `simulator` in your config and boot at least one.'}`
+          : 'No online devices found. Connect a device, start an emulator, ' +
+            'or set `avd` in your config to auto-launch emulators.',
+      );
+    }
 
-  if (launchProgress && !opts.bucketLabel) {
-    const reuseSuffix = reusedSimulatorCount > 0 ? ` (${reusedSimulatorCount} reused)` : '';
-    launchProgress.complete(
-      'worker-devices',
-      `${deviceSerials.slice(0, maxUsefulWorkers).length} device(s)${reuseSuffix}: ${deviceSerials.slice(0, maxUsefulWorkers).join(', ')}`,
-    );
-    launchProgress.update('ui-workers', {
-      state: 'running',
-      detail: `starting workers on ${deviceSerials.slice(0, maxUsefulWorkers).join(', ')}`,
-      progress: { done: progressReadyCounter.count, total: progressWorkerTotal },
-    });
-  } else if (launchProgress) {
-    launchProgress.update('worker-devices', {
-      state: 'running',
-      detail: `${opts.bucketLabel}: ${deviceSerials.slice(0, maxUsefulWorkers).join(', ')}`,
-    });
-  }
+    if (launchProgress && !opts.bucketLabel) {
+      const reuseSuffix = reusedSimulatorCount > 0 ? ` (${reusedSimulatorCount} reused)` : '';
+      launchProgress.complete(
+        'worker-devices',
+        `${deviceSerials.slice(0, maxUsefulWorkers).length} device(s)${reuseSuffix}: ${deviceSerials.slice(0, maxUsefulWorkers).join(', ')}`,
+      );
+      launchProgress.update('ui-workers', {
+        state: 'running',
+        detail: `starting workers on ${deviceSerials.slice(0, maxUsefulWorkers).join(', ')}`,
+        progress: { done: progressReadyCounter.count, total: progressWorkerTotal },
+      });
+    } else if (launchProgress) {
+      launchProgress.update('worker-devices', {
+        state: 'running',
+        detail: `${opts.bucketLabel}: ${deviceSerials.slice(0, maxUsefulWorkers).join(', ')}`,
+      });
+    }
 
-  const allResults: TestResult[] = [];
-  const allSuites: SuiteResult[] = [];
-  const totalStart = Date.now();
-  let setupDuration = 0;
-
-  try {
+    // Start the dispatch clock after provisioning, before forking workers.
+    totalStart = Date.now();
     // Fork worker processes.
     // When running under tsx (TypeScript test files), import.meta.dirname points to src/
     // and we need to fork with tsx as the loader. When running from compiled JS,
@@ -1662,6 +1692,12 @@ export async function runParallel(opts: DispatcherOptions, _portOffset = 0): Pro
     process.removeListener('SIGINT', sigintHandler);
     process.removeListener('SIGTERM', sigtermHandler);
     activeEmergencyCleanups.delete(teardownResources);
+    // Once the last concurrent bucket is done, drop the process-wide crash
+    // handlers so they don't linger in long-lived hosts (MCP server, watch/UI
+    // mode) and hijack later unrelated errors.
+    if (activeEmergencyCleanups.size === 0) {
+      uninstallFatalErrorHandlers();
+    }
 
     // Cleanup order matters: workers first, then daemons, then ADB state, then emulators.
     // This ensures nothing is using the resources when we clean them up.
