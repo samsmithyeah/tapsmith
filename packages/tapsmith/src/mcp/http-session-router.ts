@@ -142,7 +142,12 @@ export class McpSessionRouter {
     this.sweepTimer = undefined;
     for (const timer of this.reapTimers.values()) clearTimeout(timer);
     this.reapTimers.clear();
-    for (const { transport, server } of this.sessions.values()) {
+    // Snapshot: transport.close() fires onclose → cleanupSession, which mutates
+    // the map mid-iteration.
+    for (const { transport, server, standbyRes } of [...this.sessions.values()]) {
+      if (standbyRes && !standbyRes.writableEnded) {
+        try { standbyRes.end(); } catch { /* already closed */ }
+      }
       try { transport.close(); } catch { /* already closed */ }
       try { server.close(); } catch { /* already closed */ }
     }
@@ -186,9 +191,17 @@ export class McpSessionRouter {
     // OS-level keepalive helps detect a peer that vanished without a FIN, so the
     // socket eventually errors and fires 'close' instead of hanging half-open.
     res.socket?.setKeepAlive(true, SOCKET_KEEPALIVE_DELAY_MS);
+    // Writing to a dropped peer surfaces EPIPE/ECONNRESET as an async 'error'
+    // event; without a listener that crashes the whole process. Swallow it —
+    // the following 'close' does the cleanup.
+    res.on('error', () => {});
     this.attachKeepAlive(sessionId, res);
     res.on('close', () => {
-      if (session.standbyRes === res) session.standbyRes = undefined;
+      // Only react if this is still the active standby. A reconnect registers
+      // the new stream before the old one's 'close' fires, so reaping here
+      // unconditionally would destroy a freshly-attached, live session.
+      if (session.standbyRes !== res) return;
+      session.standbyRes = undefined;
       this.scheduleReap(sessionId);
     });
   }
@@ -282,11 +295,18 @@ export class McpSessionRouter {
 function readJsonBody(req: http.IncomingMessage): Promise<unknown> {
   return new Promise((resolve, reject) => {
     let body = '';
+    let settled = false;
     req.on('data', (chunk: Buffer) => { body += chunk.toString(); });
     req.on('end', () => {
+      settled = true;
       if (!body) { resolve(undefined); return; }
       try { resolve(JSON.parse(body)); } catch (err) { reject(err); }
     });
-    req.on('error', reject);
+    req.on('error', (err) => { settled = true; reject(err); });
+    // If the request is aborted before 'end', 'close' fires without 'end' —
+    // settle the promise instead of leaking it (and its listeners) forever.
+    req.on('close', () => {
+      if (!settled) reject(new Error('Request connection closed before body was received'));
+    });
   });
 }
