@@ -26,7 +26,7 @@ afterEach(async () => {
 });
 
 async function startHarness(
-  opts: { sessionGraceMs?: number; idleTimeoutMs?: number; sweepIntervalMs?: number } = {},
+  opts: { sessionGraceMs?: number; idleTimeoutMs?: number; sweepIntervalMs?: number; maxRequestBodyBytes?: number } = {},
 ): Promise<Harness> {
   const events = new McpEventEmitter();
   const clients: McpClientInfo[] = [];
@@ -39,6 +39,7 @@ async function startHarness(
     sessionGraceMs: opts.sessionGraceMs ?? 0, // reap immediately on clean close unless a test opts in
     idleTimeoutMs: opts.idleTimeoutMs ?? 0, // disable the idle sweep unless a test opts in
     sweepIntervalMs: opts.sweepIntervalMs ?? 0,
+    ...(opts.maxRequestBodyBytes != null ? { maxRequestBodyBytes: opts.maxRequestBodyBytes } : {}),
   });
 
   const server = http.createServer((req, res) => {
@@ -182,6 +183,21 @@ describe('McpSessionRouter', () => {
     expect(res.status).toBe(400);
     const json = await res.json() as { error?: { code?: number } };
     expect(json.error?.code).toBe(-32700);
+  });
+
+  it('returns 413 when the request body exceeds the limit', async () => {
+    const { url } = await startHarness({ maxRequestBodyBytes: 64 });
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Accept': 'application/json, text/event-stream',
+      },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'x', params: { pad: 'a'.repeat(200) } }),
+    });
+    expect(res.status).toBe(413);
+    const json = await res.json() as { error?: { message?: string } };
+    expect(json.error?.message).toMatch(/Payload Too Large/i);
   });
 
   it('rejects a non-initialize POST with no session id with 400', async () => {

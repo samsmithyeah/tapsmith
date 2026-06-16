@@ -40,6 +40,16 @@ export interface McpSessionRouterOptions {
   idleTimeoutMs?: number
   /** How often the idle/liveness sweep runs (ms). */
   sweepIntervalMs?: number
+  /** Max accepted request body size in bytes (defaults to 10 MB). */
+  maxRequestBodyBytes?: number
+}
+
+/** Thrown by readJsonBody when a request body exceeds the configured limit. */
+class PayloadTooLargeError extends Error {
+  constructor() {
+    super('Request body too large');
+    this.name = 'PayloadTooLargeError';
+  }
 }
 
 interface McpSession {
@@ -74,12 +84,14 @@ export class McpSessionRouter {
   private readonly keepAliveIntervalMs: number;
   private readonly sessionGraceMs: number;
   private readonly idleTimeoutMs: number;
+  private readonly maxRequestBodyBytes: number;
   private sweepTimer?: ReturnType<typeof setInterval>;
 
   constructor(private readonly options: McpSessionRouterOptions) {
     this.keepAliveIntervalMs = options.keepAliveIntervalMs ?? DEFAULT_KEEPALIVE_INTERVAL_MS;
     this.sessionGraceMs = options.sessionGraceMs ?? DEFAULT_SESSION_GRACE_MS;
     this.idleTimeoutMs = options.idleTimeoutMs ?? DEFAULT_IDLE_TIMEOUT_MS;
+    this.maxRequestBodyBytes = options.maxRequestBodyBytes ?? MAX_REQUEST_BODY_BYTES;
 
     const sweepIntervalMs = options.sweepIntervalMs ?? DEFAULT_SWEEP_INTERVAL_MS;
     if (this.idleTimeoutMs > 0 && sweepIntervalMs > 0) {
@@ -112,9 +124,10 @@ export class McpSessionRouter {
     let body: unknown;
     if (req.method === 'POST') {
       try {
-        body = await readJsonBody(req);
-      } catch {
-        this.respondParseError(res);
+        body = await readJsonBody(req, this.maxRequestBodyBytes);
+      } catch (err) {
+        if (err instanceof PayloadTooLargeError) this.respondPayloadTooLarge(res);
+        else this.respondParseError(res);
         return;
       }
     }
@@ -155,6 +168,18 @@ export class McpSessionRouter {
       res.end(JSON.stringify({
         jsonrpc: '2.0',
         error: { code: -32700, message: 'Parse error: Invalid JSON' },
+        id: null,
+      }));
+    } catch { /* connection already gone */ }
+  }
+
+  private respondPayloadTooLarge(res: http.ServerResponse): void {
+    if (res.headersSent || res.writableEnded) return; // client likely gone
+    try {
+      res.writeHead(413, { 'Content-Type': 'application/json', 'Connection': 'close' });
+      res.end(JSON.stringify({
+        jsonrpc: '2.0',
+        error: { code: -32000, message: 'Payload Too Large: request body exceeds limit' },
         id: null,
       }));
     } catch { /* connection already gone */ }
@@ -320,7 +345,7 @@ export class McpSessionRouter {
  * the raw stream itself, but to route by session and detect `initialize` we
  * have to consume the body first, then hand the parsed value to handleRequest.
  */
-function readJsonBody(req: http.IncomingMessage): Promise<unknown> {
+function readJsonBody(req: http.IncomingMessage, maxBytes: number): Promise<unknown> {
   // Decode as UTF-8 at the stream level so multi-byte characters split across
   // chunk boundaries aren't corrupted by per-chunk toString().
   req.setEncoding('utf8');
@@ -330,10 +355,12 @@ function readJsonBody(req: http.IncomingMessage): Promise<unknown> {
     req.on('data', (chunk: string) => {
       if (settled) return;
       body += chunk;
-      if (body.length > MAX_REQUEST_BODY_BYTES) {
+      if (body.length > maxBytes) {
         settled = true;
-        req.destroy();
-        reject(new Error('Request body too large'));
+        // Pause rather than destroy so the socket survives long enough for the
+        // caller to send a 413 before the connection is closed.
+        req.pause();
+        reject(new PayloadTooLargeError());
       }
     });
     req.on('end', () => {
