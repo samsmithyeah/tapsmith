@@ -104,12 +104,24 @@ export class McpSessionRouter {
     const sessionId = req.headers['mcp-session-id'] as string | undefined;
     const existing = sessionId ? this.sessions.get(sessionId) : undefined;
 
+    // Read the JSON body once for POSTs. A malformed payload gets a JSON-RPC
+    // Parse error (-32700) instead of bubbling up as a 500.
+    let body: unknown;
+    if (req.method === 'POST') {
+      try {
+        body = await readJsonBody(req);
+      } catch {
+        this.respondParseError(res);
+        return;
+      }
+    }
+
     if (existing) {
       // Any traffic on a session means its owner is alive — refresh liveness.
       existing.lastActivityAt = Date.now();
       this.cancelReap(sessionId!);
       if (req.method === 'POST') {
-        await existing.transport.handleRequest(req, res, await readJsonBody(req));
+        await existing.transport.handleRequest(req, res, body);
       } else {
         // GET opens the standby SSE stream; track it, keep it alive, and reap if
         // it closes (a reconnect re-opens it and refreshes liveness above).
@@ -120,12 +132,9 @@ export class McpSessionRouter {
     }
 
     // No (or unknown) session id — only a fresh `initialize` POST may start one.
-    if (req.method === 'POST') {
-      const body = await readJsonBody(req);
-      if (!sessionId && isInitializeRequest(body)) {
-        await this.createSession(req, res, body);
-        return;
-      }
+    if (req.method === 'POST' && !sessionId && isInitializeRequest(body)) {
+      await this.createSession(req, res, body);
+      return;
     }
 
     res.writeHead(400, { 'Content-Type': 'application/json' });
@@ -134,6 +143,18 @@ export class McpSessionRouter {
       error: { code: -32000, message: 'Bad Request: No valid session ID provided' },
       id: null,
     }));
+  }
+
+  private respondParseError(res: http.ServerResponse): void {
+    if (res.headersSent || res.writableEnded) return; // client likely gone
+    try {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        jsonrpc: '2.0',
+        error: { code: -32700, message: 'Parse error: Invalid JSON' },
+        id: null,
+      }));
+    } catch { /* connection already gone */ }
   }
 
   /** Tear down every live session. */
@@ -182,8 +203,15 @@ export class McpSessionRouter {
       else this.clients.delete(sessionId);
       this.options.onClientsChanged?.(this.clientList);
     });
-    await server.connect(transport);
-    await transport.handleRequest(req, res, parsedBody);
+    try {
+      await server.connect(transport);
+      await transport.handleRequest(req, res, parsedBody);
+    } catch (err) {
+      // Init failed — don't leave a registered-but-unusable session behind.
+      if (transport.sessionId) this.cleanupSession(transport.sessionId);
+      else { try { server.close(); } catch { /* already closed */ } }
+      throw err;
+    }
   }
 
   private registerStandbyStream(sessionId: string, session: McpSession, res: http.ServerResponse): void {
@@ -293,10 +321,13 @@ export class McpSessionRouter {
  * have to consume the body first, then hand the parsed value to handleRequest.
  */
 function readJsonBody(req: http.IncomingMessage): Promise<unknown> {
+  // Decode as UTF-8 at the stream level so multi-byte characters split across
+  // chunk boundaries aren't corrupted by per-chunk toString().
+  req.setEncoding('utf8');
   return new Promise((resolve, reject) => {
     let body = '';
     let settled = false;
-    req.on('data', (chunk: Buffer) => { body += chunk.toString(); });
+    req.on('data', (chunk: string) => { body += chunk; });
     req.on('end', () => {
       settled = true;
       if (!body) { resolve(undefined); return; }

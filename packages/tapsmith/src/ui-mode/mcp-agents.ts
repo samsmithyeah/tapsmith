@@ -30,7 +30,12 @@ export function agentsLabel(agents: McpAgent[]): string {
 
 /** Multi-line tooltip listing every agent with its version, deduped with counts. */
 export function agentsTooltip(agents: McpAgent[]): string {
-  return groupAgents(agents)
-    .map(g => (g.count > 1 ? `${g.name} ×${g.count}` : g.name))
+  const counts = new Map<string, number>();
+  for (const a of agents) {
+    const label = a.version ? `${a.name} ${a.version}` : a.name;
+    counts.set(label, (counts.get(label) ?? 0) + 1);
+  }
+  return [...counts.entries()]
+    .map(([label, count]) => (count > 1 ? `${label} ×${count}` : label))
     .join('\n');
 }

@@ -169,6 +169,21 @@ describe('McpSessionRouter', () => {
     await res.body?.cancel();
   });
 
+  it('returns a JSON-RPC parse error (-32700) for malformed JSON', async () => {
+    const { url } = await startHarness();
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Accept': 'application/json, text/event-stream',
+      },
+      body: '{ this is not json',
+    });
+    expect(res.status).toBe(400);
+    const json = await res.json() as { error?: { code?: number } };
+    expect(json.error?.code).toBe(-32700);
+  });
+
   it('rejects a non-initialize POST with no session id with 400', async () => {
     const { url } = await startHarness();
     const res = await fetch(url, {

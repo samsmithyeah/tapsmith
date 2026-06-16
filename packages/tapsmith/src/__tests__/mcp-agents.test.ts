@@ -36,11 +36,15 @@ describe('agentsLabel()', () => {
 });
 
 describe('agentsTooltip()', () => {
-  it('lists distinct agents with ×N for duplicates', () => {
+  it('lists distinct agents with versions and ×N for duplicates', () => {
     expect(agentsTooltip([
       { name: 'claude-code', version: '1.2' },
       { name: 'claude-code', version: '1.2' },
       { name: 'codex-mcp-client', version: '0.5' },
-    ])).toBe('claude-code ×2\ncodex-mcp-client');
+    ])).toBe('claude-code 1.2 ×2\ncodex-mcp-client 0.5');
+  });
+
+  it('omits the version when absent', () => {
+    expect(agentsTooltip([{ name: 'claude-code', version: '' }])).toBe('claude-code');
   });
 });
