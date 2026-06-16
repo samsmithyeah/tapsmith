@@ -11,6 +11,9 @@ const DEFAULT_SESSION_GRACE_MS = 30_000;
 const DEFAULT_IDLE_TIMEOUT_MS = 120_000;
 const DEFAULT_SWEEP_INTERVAL_MS = 30_000;
 const SOCKET_KEEPALIVE_DELAY_MS = 15_000;
+// Cap request bodies so a misbehaving/malicious client can't OOM the process.
+// MCP JSON-RPC payloads are tiny; 10 MB is generous headroom.
+const MAX_REQUEST_BODY_BYTES = 10 * 1024 * 1024;
 
 export interface McpSessionRouterOptions {
   /** Server name reported to clients. */
@@ -208,6 +211,7 @@ export class McpSessionRouter {
       await transport.handleRequest(req, res, parsedBody);
     } catch (err) {
       // Init failed — don't leave a registered-but-unusable session behind.
+      try { transport.close(); } catch { /* already closed */ }
       if (transport.sessionId) this.cleanupSession(transport.sessionId);
       else { try { server.close(); } catch { /* already closed */ } }
       throw err;
@@ -223,7 +227,7 @@ export class McpSessionRouter {
     // event; without a listener that crashes the whole process. Swallow it —
     // the following 'close' does the cleanup.
     res.on('error', () => {});
-    this.attachKeepAlive(sessionId, res);
+    this.attachKeepAlive(res);
     res.on('close', () => {
       // Only react if this is still the active standby. A reconnect registers
       // the new stream before the old one's 'close' fires, so reaping here
@@ -284,7 +288,8 @@ export class McpSessionRouter {
    */
   private sweep(): void {
     const now = Date.now();
-    for (const [sessionId, session] of this.sessions) {
+    // Snapshot: reapSession() deletes from the map mid-iteration.
+    for (const [sessionId, session] of [...this.sessions.entries()]) {
       const standbyDead = !!session.standbyRes && (session.standbyRes.writableEnded || session.standbyRes.destroyed);
       const hasLiveStandby = !!session.standbyRes && !standbyDead;
       if (hasLiveStandby) continue; // genuinely connected — leave it alone
@@ -294,20 +299,15 @@ export class McpSessionRouter {
     }
   }
 
-  private attachKeepAlive(sessionId: string, res: http.ServerResponse): void {
+  private attachKeepAlive(res: http.ServerResponse): void {
     if (this.keepAliveIntervalMs <= 0) return;
     const interval = setInterval(() => {
       if (res.writableEnded || res.destroyed) { clearInterval(interval); return; }
       // SSE comment lines (`:` prefix) are ignored by EventSource parsers; Node
       // `res.write` calls are discrete, so a comment lands between the
-      // transport's events and never splits one. A throw means the standby
-      // stream is dead — reap the session.
-      try {
-        res.write(': keepalive\n\n');
-      } catch {
-        clearInterval(interval);
-        this.reapSession(sessionId);
-      }
+      // transport's events and never splits one. A dead peer surfaces via the
+      // standby stream's 'error'/'close' handlers (which reap), not a throw here.
+      res.write(': keepalive\n\n');
     }, this.keepAliveIntervalMs);
     const stop = (): void => clearInterval(interval);
     res.on('close', stop);
@@ -327,7 +327,15 @@ function readJsonBody(req: http.IncomingMessage): Promise<unknown> {
   return new Promise((resolve, reject) => {
     let body = '';
     let settled = false;
-    req.on('data', (chunk: string) => { body += chunk; });
+    req.on('data', (chunk: string) => {
+      if (settled) return;
+      body += chunk;
+      if (body.length > MAX_REQUEST_BODY_BYTES) {
+        settled = true;
+        req.destroy();
+        reject(new Error('Request body too large'));
+      }
+    });
     req.on('end', () => {
       settled = true;
       if (!body) { resolve(undefined); return; }
