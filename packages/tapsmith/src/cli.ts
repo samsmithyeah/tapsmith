@@ -306,6 +306,11 @@ async function checkDeviceHealth(serial: string | undefined): Promise<void> {
 let spawnedDaemonProcess: ReturnType<typeof spawn> | undefined;
 
 let sequentialFatalHandlersInstalled = false;
+// The handler is registered once, but the active run context is refreshed on
+// every install call so a crash always tears down the CURRENT run rather than a
+// stale first-run closure (matters if main() runs more than once in a process).
+let activeSequentialConfig: TapsmithConfig | undefined;
+let activeSequentialDeviceGetter: (() => string | undefined) | undefined;
 
 /**
  * Install process-wide handlers so a *crash* in single-worker (sequential) mode
@@ -319,6 +324,9 @@ function installSequentialFatalHandlers(
   config: TapsmithConfig,
   getActiveDevice?: () => string | undefined,
 ): void {
+  activeSequentialConfig = config;
+  activeSequentialDeviceGetter = getActiveDevice;
+
   if (sequentialFatalHandlersInstalled) return;
   sequentialFatalHandlersInstalled = true;
   let teardownDone = false;
@@ -328,11 +336,12 @@ function installSequentialFatalHandlers(
     process.stderr.write(`\n${DIM}Fatal ${label} — shutting down daemon and agent...${RESET}\n`);
     // Print the stack, not just the message — async crashes are undebuggable otherwise.
     process.stderr.write(`${err instanceof Error ? err.stack ?? err.message : String(err)}\n`);
-    // Read the active device lazily at crash time: in heterogeneous project
-    // runs the sequential device switches mid-run, so the getter reflects the
+    // Read the active config/device lazily at crash time: in heterogeneous
+    // project runs the sequential device switches mid-run, so this reflects the
     // currently-active sim/device. Fall back to config.device before setup ran.
-    const activeDevice = getActiveDevice?.() ?? config.device;
-    if (config.platform === 'ios' && activeDevice) {
+    const activeConfig = activeSequentialConfig ?? config;
+    const activeDevice = activeSequentialDeviceGetter?.() ?? activeConfig.device;
+    if (activeConfig.platform === 'ios' && activeDevice) {
       try { killAgentRunnersForSimulators([activeDevice]); } catch { /* best effort */ }
     }
     if (spawnedDaemonProcess) {

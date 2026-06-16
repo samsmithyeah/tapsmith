@@ -486,7 +486,7 @@ describe('cleanupStaleSimulators', () => {
 // ─── killAgentRunnersForSimulators ───
 
 describe('killAgentRunnersForSimulators', () => {
-  it('pkills the xcodebuild runner then terminates the agent, per udid', () => {
+  it('kills all runners in one pkill (regex alternation) then terminates each agent', () => {
     const calls: string[][] = [];
     mockedExecFileSync.mockImplementation((cmd: string, args: string[]) => {
       calls.push([cmd as string, ...(args as string[])]);
@@ -495,11 +495,10 @@ describe('killAgentRunnersForSimulators', () => {
 
     killAgentRunnersForSimulators(['UDID-1', 'UDID-2']);
 
-    // pkill targets the runner by udid before simctl terminate for the same udid
+    // Single pkill batches both UDIDs; simctl terminate stays per-UDID.
     expect(calls).toEqual([
-      ['pkill', '-f', 'xcodebuild.*test-without-building.*id=UDID-1'],
+      ['pkill', '-f', 'xcodebuild.*test-without-building.*id=(UDID-1|UDID-2)'],
       ['xcrun', 'simctl', 'terminate', 'UDID-1', 'dev.tapsmith.agent.xctrunner'],
-      ['pkill', '-f', 'xcodebuild.*test-without-building.*id=UDID-2'],
       ['xcrun', 'simctl', 'terminate', 'UDID-2', 'dev.tapsmith.agent.xctrunner'],
     ]);
   });
@@ -524,10 +523,10 @@ describe('killAgentRunnersForSimulators', () => {
 
     killAgentRunnersForSimulators(['', 'UDID-1']);
 
-    // No bare `id=` pattern (would match unrelated xcodebuild runners); only UDID-1 acted on.
-    expect(calls.some((c) => c.includes('xcodebuild.*test-without-building.*id='))).toBe(false);
+    // No bare `id=()` pattern (would match unrelated xcodebuild runners); only UDID-1 acted on.
+    expect(calls.some((c) => c.includes('xcodebuild.*test-without-building.*id=()'))).toBe(false);
     expect(calls).toEqual([
-      ['pkill', '-f', 'xcodebuild.*test-without-building.*id=UDID-1'],
+      ['pkill', '-f', 'xcodebuild.*test-without-building.*id=(UDID-1)'],
       ['xcrun', 'simctl', 'terminate', 'UDID-1', 'dev.tapsmith.agent.xctrunner'],
     ]);
   });

@@ -521,18 +521,27 @@ export function filterHealthySimulators(
  * (tapsmith-core/src/ios/agent_launch.rs).
  */
 export function killAgentRunnersForSimulators(udids: string[]): void {
-  for (const udid of udids) {
-    // Skip empty/falsy UDIDs: an empty value makes the pkill pattern `id=`
-    // match every xcodebuild runner and would kill unrelated sessions.
-    if (!udid) continue;
-    try {
-      execFileSync('pkill', ['-f', `xcodebuild.*test-without-building.*id=${udid}`], {
-        timeout: 5_000,
-        stdio: 'ignore',
-      });
-    } catch {
-      // No matching process — fine
-    }
+  // Skip empty/falsy UDIDs: an empty value makes the pkill pattern `id=` match
+  // every xcodebuild runner and would kill unrelated sessions.
+  const validUdids = udids.filter(Boolean);
+  if (validUdids.length === 0) return;
+
+  // Kill all matching runners in ONE pkill via ERE alternation rather than one
+  // spawn per UDID. This runs during emergency teardown when the host may
+  // already be overloaded (the PILOT-230 scenario), so minimizing process
+  // spawns matters. UDIDs are hex + hyphens, so they need no regex escaping,
+  // and macOS `pkill -f` matches with extended regular expressions.
+  try {
+    execFileSync('pkill', ['-f', `xcodebuild.*test-without-building.*id=(${validUdids.join('|')})`], {
+      timeout: 5_000,
+      stdio: 'ignore',
+    });
+  } catch {
+    // No matching process — fine
+  }
+
+  // `simctl terminate` takes a single UDID, so it stays per-UDID.
+  for (const udid of validUdids) {
     try {
       execFileSync('xcrun', ['simctl', 'terminate', udid, 'dev.tapsmith.agent.xctrunner'], {
         timeout: 5_000,
