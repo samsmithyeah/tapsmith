@@ -31,6 +31,12 @@ const ANDROID_REVERSE_PORT_FALLBACK_STEP: u32 = 997;
 const WEBVIEW_ADB_TIMEOUT: Duration = Duration::from_secs(5);
 const WEBVIEW_ADB_CLEANUP_TIMEOUT: Duration = Duration::from_secs(2);
 const IOS_OPEN_URL_PROMPT_TIMEOUT: Duration = Duration::from_secs(28);
+/// Bound on the trusted (no-poll) `openurl` fast path. A trusted `simctl
+/// openurl` returns in well under a second; if it hasn't completed by this
+/// point the scheme's confirmation dialog has likely re-armed, so we abandon
+/// the fast path and fall back to polling. Kept short so that lost-trust
+/// recovery costs a few seconds rather than the full prompt timeout.
+const IOS_OPEN_URL_TRUSTED_TIMEOUT: Duration = Duration::from_secs(5);
 const IOS_OPEN_DIALOG_ACCEPT_TIMEOUT_MS: u64 = 300;
 // Must exceed the agent-side `waitForDeepLinkDestination` ceiling (10s) plus
 // gRPC round-trip, so each verify returns a verdict rather than tripping this
@@ -81,6 +87,16 @@ pub struct TapsmithServiceImpl {
     /// every per-test start/stop cycle pays the NE timeout (~10s × N tests).
     #[cfg(target_os = "macos")]
     ios_ne_unavailable: Arc<RwLock<bool>>,
+    /// Serials whose SpringBoard "Open in <app>?" confirmation has already been
+    /// accepted (or never appeared) this session. The simulator trusts the URL
+    /// scheme after the first successful deep link, so subsequent ones don't
+    /// show the dialog — and we skip the per-`openurl` dialog polling, which is
+    /// a slow SpringBoard accessibility query on iOS 26 (~1.2s each, fired every
+    /// 500ms while `simctl openurl` is pending). Self-healing: if a trusted
+    /// `openurl` stalls (the dialog unexpectedly returned, e.g. after an app
+    /// reinstall re-armed scheme trust), the serial is dropped and that same
+    /// attempt falls back to polling.
+    ios_open_in_app_trusted: Arc<RwLock<std::collections::HashSet<String>>>,
     /// iOS agent launch config (stored for restart on launchApp).
     ios_agent_config: Arc<RwLock<Option<IosAgentConfig>>>,
     /// Startup inputs for the currently connected agent. Used to make
@@ -244,6 +260,7 @@ impl TapsmithServiceImpl {
             ios_system_proxy_service: Arc::new(RwLock::new(None)),
             #[cfg(target_os = "macos")]
             ios_ne_unavailable: Arc::new(RwLock::new(false)),
+            ios_open_in_app_trusted: Arc::new(RwLock::new(std::collections::HashSet::new())),
             ios_agent_config: Arc::new(RwLock::new(None)),
             started_agent_config: Arc::new(RwLock::new(None)),
             ios_iproxy: Arc::new(RwLock::new(None)),
@@ -520,38 +537,70 @@ impl TapsmithServiceImpl {
         let uri_for_open = uri.to_string();
         let open_url = ios::device::open_url(&serial_for_open, &uri_for_open);
         tokio::pin!(open_url);
-        let deadline = tokio::time::Instant::now() + IOS_OPEN_URL_PROMPT_TIMEOUT;
 
+        // Fast path: once a deep link has successfully opened on this serial the
+        // scheme is trusted and the "Open in <app>?" dialog won't reappear (on
+        // the iOS 26 simulator it never appears at all), so skip the per-500ms
+        // SpringBoard probe — each one is a slow accessibility query (~1.2s on
+        // iOS 26) otherwise fired on every deep link for a dialog that isn't
+        // there. We still bound the open on a short timeout: if a trusted
+        // `openurl` stalls (the dialog unexpectedly came back), drop the serial
+        // and fall through to the polling path below — continuing to await the
+        // *same* `openurl` future so the dialog is dismissed within this same
+        // attempt instead of after a full-length timeout + caller retry.
+        if self.ios_open_in_app_trusted.read().await.contains(serial) {
+            match tokio::time::timeout(IOS_OPEN_URL_TRUSTED_TIMEOUT, &mut open_url).await {
+                Ok(result) => return result,
+                Err(_) => {
+                    self.ios_open_in_app_trusted.write().await.remove(serial);
+                    warn!(
+                        %serial,
+                        "Trusted iOS openurl stalled; re-enabling Open-in-app dialog polling"
+                    );
+                }
+            }
+        }
+
+        let deadline = tokio::time::Instant::now() + IOS_OPEN_URL_PROMPT_TIMEOUT;
         let prompt_poll_interval = Duration::from_millis(500);
         let initial_prompt_poll_interval = Duration::from_millis(50);
         let mut next_poll_interval = initial_prompt_poll_interval;
-        loop {
+        let result: anyhow::Result<()> = loop {
             let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
             if remaining.is_zero() {
-                tokio::select! {
+                let completed = tokio::select! {
                     biased;
-                    result = &mut open_url => {
-                        return result;
-                    }
-                    _ = tokio::time::sleep(Duration::from_millis(1)) => {}
-                }
-                return Err(anyhow::anyhow!(
-                    "Operation timed out opening URL on {serial}: {uri}"
-                ));
+                    result = &mut open_url => Some(result),
+                    _ = tokio::time::sleep(Duration::from_millis(1)) => None,
+                };
+                break completed.unwrap_or_else(|| {
+                    Err(anyhow::anyhow!(
+                        "Operation timed out opening URL on {serial}: {uri}"
+                    ))
+                });
             }
 
             let sleep_duration = remaining.min(next_poll_interval);
             tokio::select! {
                 biased;
-                result = &mut open_url => {
-                    return result;
-                }
+                result = &mut open_url => break result,
                 _ = tokio::time::sleep(sleep_duration) => {
+                    // Best-effort dismiss in case the dialog ever does appear.
                     self.accept_ios_open_in_app_dialog().await;
                     next_poll_interval = prompt_poll_interval;
                 }
             }
+        };
+
+        // A successful open trusts the scheme: subsequent deep links on this
+        // serial take the fast path above and skip the dialog poll.
+        if result.is_ok() {
+            self.ios_open_in_app_trusted
+                .write()
+                .await
+                .insert(serial.to_string());
         }
+        result
     }
 
     /// If the agent command failed with a "timed out" error AND the active
