@@ -235,10 +235,12 @@ export class McpSessionRouter {
       await server.connect(transport);
       await transport.handleRequest(req, res, parsedBody);
     } catch (err) {
-      // Init failed — don't leave a registered-but-unusable session behind.
+      // Init failed — don't leave a registered-but-unusable session/server
+      // behind. cleanupSession only closes the server if the session made it
+      // into the map, so always server.close() too (idempotent if already done).
       try { transport.close(); } catch { /* already closed */ }
       if (transport.sessionId) this.cleanupSession(transport.sessionId);
-      else { try { server.close(); } catch { /* already closed */ } }
+      try { server.close(); } catch { /* already closed */ }
       throw err;
     }
   }
@@ -330,9 +332,15 @@ export class McpSessionRouter {
       if (res.writableEnded || res.destroyed) { clearInterval(interval); return; }
       // SSE comment lines (`:` prefix) are ignored by EventSource parsers; Node
       // `res.write` calls are discrete, so a comment lands between the
-      // transport's events and never splits one. A dead peer surfaces via the
-      // standby stream's 'error'/'close' handlers (which reap), not a throw here.
-      res.write(': keepalive\n\n');
+      // transport's events and never splits one. A dead peer is reaped via the
+      // standby stream's 'error'/'close' handlers, not here — but this runs in a
+      // setInterval, so guard the write defensively: an unexpected synchronous
+      // throw must not escape and crash the process.
+      try {
+        res.write(': keepalive\n\n');
+      } catch {
+        clearInterval(interval);
+      }
     }, this.keepAliveIntervalMs);
     const stop = (): void => clearInterval(interval);
     res.on('close', stop);
@@ -346,27 +354,30 @@ export class McpSessionRouter {
  * have to consume the body first, then hand the parsed value to handleRequest.
  */
 function readJsonBody(req: http.IncomingMessage, maxBytes: number): Promise<unknown> {
-  // Decode as UTF-8 at the stream level so multi-byte characters split across
-  // chunk boundaries aren't corrupted by per-chunk toString().
-  req.setEncoding('utf8');
   return new Promise((resolve, reject) => {
-    let body = '';
+    // Collect raw Buffer chunks and decode once at the end: this counts the
+    // limit in actual bytes (not UTF-16 code units) and avoids corrupting a
+    // multi-byte character split across a chunk boundary.
+    const chunks: Buffer[] = [];
+    let size = 0;
     let settled = false;
-    req.on('data', (chunk: string) => {
+    req.on('data', (chunk: Buffer) => {
       if (settled) return;
-      body += chunk;
-      if (body.length > maxBytes) {
+      size += chunk.length;
+      if (size > maxBytes) {
         settled = true;
         // Pause rather than destroy so the socket survives long enough for the
         // caller to send a 413 before the connection is closed.
         req.pause();
         reject(new PayloadTooLargeError());
+        return;
       }
+      chunks.push(chunk);
     });
     req.on('end', () => {
       settled = true;
-      if (!body) { resolve(undefined); return; }
-      try { resolve(JSON.parse(body)); } catch (err) { reject(err); }
+      if (size === 0) { resolve(undefined); return; }
+      try { resolve(JSON.parse(Buffer.concat(chunks).toString('utf8'))); } catch (err) { reject(err); }
     });
     req.on('error', (err) => { settled = true; reject(err); });
     // If the request is aborted before 'end', 'close' fires without 'end' —
