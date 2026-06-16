@@ -315,7 +315,10 @@ let sequentialFatalHandlersInstalled = false;
  * mode reuses a named simulator rather than cloning, so deleting it would be
  * wrong; killing the runner is enough to stop it holding the host hot.
  */
-function installSequentialFatalHandlers(config: TapsmithConfig): void {
+function installSequentialFatalHandlers(
+  config: TapsmithConfig,
+  getActiveDevice?: () => string | undefined,
+): void {
   if (sequentialFatalHandlersInstalled) return;
   sequentialFatalHandlersInstalled = true;
   let teardownDone = false;
@@ -325,10 +328,12 @@ function installSequentialFatalHandlers(config: TapsmithConfig): void {
     process.stderr.write(`\n${DIM}Fatal ${label} — shutting down daemon and agent...${RESET}\n`);
     // Print the stack, not just the message — async crashes are undebuggable otherwise.
     process.stderr.write(`${err instanceof Error ? err.stack ?? err.message : String(err)}\n`);
-    // config.device holds the booted simulator UDID once setup completes; read
-    // it lazily here so we kill the runner whether or not setup finished.
-    if (config.platform === 'ios' && config.device) {
-      try { killAgentRunnersForSimulators([config.device]); } catch { /* best effort */ }
+    // Read the active device lazily at crash time: in heterogeneous project
+    // runs the sequential device switches mid-run, so the getter reflects the
+    // currently-active sim/device. Fall back to config.device before setup ran.
+    const activeDevice = getActiveDevice?.() ?? config.device;
+    if (config.platform === 'ios' && activeDevice) {
+      try { killAgentRunnersForSimulators([activeDevice]); } catch { /* best effort */ }
     }
     if (spawnedDaemonProcess) {
       try { spawnedDaemonProcess.kill(); } catch { /* already gone */ }
@@ -2136,7 +2141,7 @@ async function main(): Promise<void> {
   // Route a crash through teardown so we don't orphan the daemon + its
   // xcodebuild runner (PILOT-230). Mutually exclusive with the parallel
   // dispatcher path, so it won't double-install with runParallel's handlers.
-  installSequentialFatalHandlers(config);
+  installSequentialFatalHandlers(config, () => currentSequentialState?.deviceSerial);
 
   // Detect heterogeneous device-targeting projects. When projects share a
   // single signature, sequential mode runs unchanged. When they differ,

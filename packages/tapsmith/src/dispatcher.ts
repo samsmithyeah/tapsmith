@@ -916,8 +916,16 @@ export async function runParallel(opts: DispatcherOptions, _portOffset = 0): Pro
     // 2. Kill xcodebuild XCUITest runners BEFORE touching their sims — a runner
     //    re-boots its target sim after a simctl shutdown, so deleting the sim
     //    first just lets the survivor boot a replacement and keep the host hot.
-    if (clonedSimulators.length > 0) {
-      killAgentRunnersForSimulators(clonedSimulators.map((s) => s.udid));
+    //    Cover reused/pre-existing devices too (present in deviceSerials but not
+    //    clonedSimulators), not just the sims we cloned this run.
+    if (isIos) {
+      const udids = new Set(clonedSimulators.map((s) => s.udid));
+      if (Array.isArray(deviceSerials)) {
+        for (const serial of deviceSerials) udids.add(serial);
+      }
+      if (udids.size > 0) {
+        killAgentRunnersForSimulators([...udids]);
+      }
     }
     // 3. Shut down / delete the worker simulators and emulators.
     if (launchedEmulators.length > 0) {
