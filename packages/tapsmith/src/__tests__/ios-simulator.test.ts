@@ -514,6 +514,23 @@ describe('killAgentRunnersForSimulators', () => {
     killAgentRunnersForSimulators([]);
     expect(spy).not.toHaveBeenCalled();
   });
+
+  it('skips empty/falsy udids so the pkill pattern never matches every runner', () => {
+    const calls: string[][] = [];
+    mockedExecFileSync.mockImplementation((cmd: string, args: string[]) => {
+      calls.push([cmd as string, ...(args as string[])]);
+      return '' as unknown as Buffer;
+    });
+
+    killAgentRunnersForSimulators(['', 'UDID-1']);
+
+    // No bare `id=` pattern (would match unrelated xcodebuild runners); only UDID-1 acted on.
+    expect(calls.some((c) => c.includes('xcodebuild.*test-without-building.*id='))).toBe(false);
+    expect(calls).toEqual([
+      ['pkill', '-f', 'xcodebuild.*test-without-building.*id=UDID-1'],
+      ['xcrun', 'simctl', 'terminate', 'UDID-1', 'dev.tapsmith.agent.xctrunner'],
+    ]);
+  });
 });
 
 // ─── provisionSimulators (multi-worker) ───

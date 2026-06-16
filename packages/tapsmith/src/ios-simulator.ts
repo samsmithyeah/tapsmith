@@ -522,6 +522,9 @@ export function filterHealthySimulators(
  */
 export function killAgentRunnersForSimulators(udids: string[]): void {
   for (const udid of udids) {
+    // Skip empty/falsy UDIDs: an empty value makes the pkill pattern `id=`
+    // match every xcodebuild runner and would kill unrelated sessions.
+    if (!udid) continue;
     try {
       execFileSync('pkill', ['-f', `xcodebuild.*test-without-building.*id=${udid}`], {
         timeout: 5_000,

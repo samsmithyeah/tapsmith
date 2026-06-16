@@ -338,7 +338,7 @@ function installSequentialFatalHandlers(
     if (spawnedDaemonProcess) {
       try { spawnedDaemonProcess.kill(); } catch { /* already gone */ }
     }
-    setTimeout(() => process.exit(1), 0);
+    setImmediate(() => process.exit(1));
   };
   process.on('uncaughtException', (err) => runFatalTeardown('error', err));
   process.on('unhandledRejection', (reason) => runFatalTeardown('rejection', reason));
