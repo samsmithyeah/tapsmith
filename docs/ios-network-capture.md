@@ -152,6 +152,35 @@ Check the daemon logs — run `tapsmith test` with `RUST_LOG=tapsmith_core=debug
 - **`upstream TLS handshake failed for <host>: UnknownIssuer`** — the upstream server uses a certificate chain not in Tapsmith's webpki roots. This affects some Apple-internal services; it does not affect standard public HTTPS endpoints.
 - **`simulator_processes returned 0 PIDs`** — the simulator isn't booted, or `ps` parsing couldn't find it. Check `xcrun simctl list devices booted`.
 
+### Firestore, gRPC, and IPv6
+
+Firestore and many Firebase real-time services use gRPC, which requires HTTP/2. Tapsmith tunnels these connections end-to-end rather than decrypting them, but on iOS simulators the macOS Network Extension still observes the simulator's outbound IPv6 connection attempt before the tunnel is established.
+
+If the Mac has IPv6 disabled, or the current network has no usable IPv6 route, those simulator connections can sit on an unsatisfied IPv6 path long enough to look like a Firestore load hang. This is host/network dependent: it is most likely on Macs where **Configure IPv6** is set to **Off**, on VPN/corporate networks that disable IPv6, or on networks with broken IPv6 routing.
+
+Symptoms:
+
+- The same Firestore/gRPC-backed screen works when `trace.network` is `false`.
+- The stall only happens on iOS simulator network capture, not Android or physical iOS capture.
+- HTTP/1.1 REST traffic still appears normally in the trace.
+- `npx tapsmith doctor` reports that host IPv6 is unavailable for iOS simulator capture.
+
+Check the Mac:
+
+```sh
+npx tapsmith doctor
+networksetup -getinfo Wi-Fi
+route -n get -inet6 2001:4860:4860::8888
+```
+
+On a healthy macOS setup, `networksetup` usually reports `IPv6: Automatic` and the `route` command returns a route. To fix the issue, enable IPv6 for the active network service (**System Settings > Network > Wi-Fi > Details > TCP/IP > Configure IPv6 > Automatically**) or run:
+
+```sh
+sudo networksetup -setv6automatic Wi-Fi
+```
+
+If you cannot enable IPv6 on the current network, set `trace.network: false` for affected Firestore/gRPC tests or run those flows without iOS simulator network capture.
+
 ### My host's web browser traffic went through Tapsmith's proxy
 
 This should not happen with PILOT-182's NE-based approach. The NE filters by PID, so only the simulator's process tree's traffic is redirected; your browser's PID is not in the filter. If you are still seeing host traffic being affected, check that `networksetup -getwebproxy Wi-Fi` shows `Enabled: No`. If a stale proxy setting is still configured from a pre-PILOT-182 Tapsmith version, clear it with:

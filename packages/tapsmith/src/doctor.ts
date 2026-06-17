@@ -14,6 +14,10 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { findDaemonBin } from './daemon-bin.js';
 import { findAgentApk, findAgentTestApk } from './agent-resolve.js';
+import {
+  checkIosSimulatorIpv6Readiness,
+  formatIosSimulatorIpv6Warning,
+} from './ios-ipv6-check.js';
 
 // ─── ANSI helpers ───
 
@@ -282,6 +286,18 @@ function checkNetworkExtension(checks: CheckList): void {
   }
 }
 
+function checkIosSimulatorIpv6(checks: CheckList): void {
+  const readiness = checkIosSimulatorIpv6Readiness();
+  if (!readiness.platformSupported) return;
+
+  const warning = formatIosSimulatorIpv6Warning(readiness);
+  if (warning) {
+    warn(checks, warning);
+  } else {
+    pass(checks, 'Host IPv6 route available for iOS simulator capture');
+  }
+}
+
 // ─── Main entry point ───
 
 export async function runDoctor(): Promise<void> {
@@ -353,6 +369,7 @@ export async function runDoctor(): Promise<void> {
   if (process.platform === 'darwin') {
     checkMitmproxy(checks);
     checkNetworkExtension(checks);
+    checkIosSimulatorIpv6(checks);
   }
 
   // ─── Summary ───

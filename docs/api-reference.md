@@ -2209,7 +2209,7 @@ npx tapsmith init
 
 ### `tapsmith doctor`
 
-Run a non-interactive system health check. Verifies all prerequisites: Node.js version, daemon binary, ADB (Android), agent APKs, Xcode (iOS), simulators, and iOS network capture dependencies. Exits with code 0 if all checks pass, 1 if any hard errors.
+Run a non-interactive system health check. Verifies all prerequisites: Node.js version, daemon binary, ADB (Android), agent APKs, Xcode (iOS), simulators, iOS network capture dependencies, and host IPv6 readiness for iOS simulator capture. Exits with code 0 if all checks pass, 1 if any hard errors.
 
 ```bash
 npx tapsmith doctor

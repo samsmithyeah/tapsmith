@@ -537,8 +537,9 @@ Tapsmith Doctor
   ✓ MITM CA exists (~/.tapsmith/ca.pem)
   ✓ mitmproxy installed
   ✓ Network Extension enabled
+  ✓ Host IPv6 route available for iOS simulator capture
 
-12 checks passed
+13 checks passed
 ```
 
 The checks cover:
@@ -546,7 +547,7 @@ The checks cover:
 - **Core:** Node.js version, daemon binary presence, config file
 - **Android:** ADB, ANDROID_HOME, connected devices, agent APKs, app APK
 - **iOS:** Xcode, simulators, xctestrun file (macOS only)
-- **Network Capture:** MITM CA certificate, mitmproxy installation, Network Extension status
+- **Network Capture:** MITM CA certificate, mitmproxy installation, Network Extension status, host IPv6 route for iOS simulator capture
 
 Exit code is 0 when all checks pass (warnings are acceptable), 1 when any hard error is found.
 

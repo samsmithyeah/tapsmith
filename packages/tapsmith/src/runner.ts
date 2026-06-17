@@ -30,6 +30,7 @@ import type { AnyTraceEvent } from './trace/types.js';
 import { getSimulatorScreenScale } from './ios-simulator.js';
 import type { TraceDeviceInfo } from './trace/types.js';
 import { TestAbortedError, isAbortError } from './abort.js';
+import { getIosSimulatorIpv6Warning } from './ios-ipv6-check.js';
 
 // ─── Trace Device Info ───
 
@@ -984,6 +985,17 @@ async function runSuiteContext(
         // users whose trace has no network entries know exactly why and
         // exactly what to do.
         if (traceConfig.network) {
+          if (opts.config.platform === 'ios' && opts.config.device) {
+            try {
+              const deviceInfo = await opts.device._fetchDeviceInfo(opts.config.device);
+              if (deviceInfo.isEmulator === true) {
+                const warning = getIosSimulatorIpv6Warning();
+                if (warning) _warnCaptureOnce('Network capture warning', warning);
+              }
+            } catch {
+              // Best-effort host readiness warning only.
+            }
+          }
           try {
             const res = await opts.device._startNetworkCapture();
             if (!res.success && res.errorMessage) {

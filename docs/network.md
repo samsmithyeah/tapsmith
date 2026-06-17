@@ -746,6 +746,8 @@ Clients that *require* HTTP/2 -- gRPC libraries, including **Firestore** and oth
 
 Each tunneled connection appears in the Network tab as a single `CONNECT` row with a `passthrough` badge (one row per connection -- the individual requests inside are encrypted end-to-end and invisible to the proxy).
 
+On iOS simulators, Firestore/gRPC passthrough still depends on the Mac having a usable IPv6 route when the backend chooses IPv6. If Firestore-backed screens stall only when `trace.network` is enabled, run `npx tapsmith doctor` and see [Firestore, gRPC, and IPv6](ios-network-capture.md#firestore-grpc-and-ipv6).
+
 You can also force passthrough for specific hosts with `networkPassthroughHosts` -- useful when an app uses **certificate pinning** for a host, which MITM interception would otherwise break:
 
 ```typescript
