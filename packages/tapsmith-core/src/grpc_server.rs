@@ -833,6 +833,19 @@ impl TapsmithServiceImpl {
     ) -> Result<(), String> {
         let is_physical = self.is_active_ios_physical().await;
 
+        // PILOT-245: when network tracing is enabled on a simulator, stage the
+        // MITM CA into the app container and publish
+        // GRPC_DEFAULT_SSL_ROOTS_FILE_PATH via the sim's launchd, so the app's
+        // gRPC-Core (Firestore) trusts our cert and its h2 traffic can be
+        // intercepted instead of failing the TLS handshake. Gated on the
+        // session config flag (set at set_device, before any launch) rather
+        // than the live proxy — the app is first launched in preflight, before
+        // per-test capture starts, and gRPC reads the roots env once at init,
+        // so the env must be in place for that first launch.
+        if !is_physical && *self.network_tracing_enabled.read().await {
+            ios::device::prepare_grpc_trust(serial, package_name).await;
+        }
+
         let reset_start = std::time::Instant::now();
         let t0 = std::time::Instant::now();
         match self
