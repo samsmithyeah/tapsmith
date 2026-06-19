@@ -577,15 +577,24 @@ export class ElementHandle {
    * Requires bounds: a parent or child without bounds cannot be confirmed
    * contained and is excluded (Add accessibility identifiers / ensure the
    * container reports bounds if scoping returns nothing).
+   *
+   * A missing or out-of-range positional parent resolves to an empty scope
+   * (no children in scope) rather than throwing — so `count()`/`exists()` and
+   * absence assertions on a scoped handle report 0/false/empty like
+   * Playwright, instead of surfacing the parent's "not found" error.
    */
   private async _scopeToParent(children: ElementInfo[], parent: ElementHandle): Promise<ElementInfo[]> {
-    const parentEls =
-      parent._options.nthIndex !== undefined
-        ? [await parent._resolveOne()]
-        : await parent._resolveAll();
+    const parentEls = await parent._resolveAll();
+    const nthIndex = parent._options.nthIndex;
+
+    let scopedParents = parentEls;
+    if (nthIndex !== undefined) {
+      const idx = nthIndex < 0 ? parentEls.length + nthIndex : nthIndex;
+      scopedParents = idx >= 0 && idx < parentEls.length ? [parentEls[idx]] : [];
+    }
 
     return children.filter((child) =>
-      parentEls.some((p) => boundsContain(p.bounds, child.bounds) === 'contained'),
+      scopedParents.some((p) => boundsContain(p.bounds, child.bounds) === 'contained'),
     );
   }
 

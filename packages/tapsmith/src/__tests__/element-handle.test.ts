@@ -264,6 +264,17 @@ describe('getBy* scoping', () => {
       const el = await handle.find();
       expect(el.elementId).toBe('t1');
     });
+
+    it('returns 0 from count() (does not throw) when the scoped parent is absent', async () => {
+      const device = makeMockClient({
+        findElements: vi.fn(async () => makeFindElementsResponse([])),
+      });
+      const count = await new ElementHandle(device, _testId('dialog'), 5000)
+        .first()
+        .getByRole('button')
+        .count();
+      expect(count).toBe(0);
+    });
   });
 });
 
