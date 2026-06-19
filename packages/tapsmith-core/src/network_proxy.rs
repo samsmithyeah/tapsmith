@@ -448,6 +448,23 @@ fn now_ms() -> u64 {
         .as_millis() as u64
 }
 
+/// Build a `host:port` connect target, bracketing bare IPv6 address literals
+/// so `TcpStream::connect` can parse them (`2a00:…` → `[2a00:…]:443`).
+///
+/// The iOS NE redirector hands us the connection's raw original destination,
+/// which is frequently an IPv6 address (PILOT-242). Without brackets,
+/// `format!("{host}:{port}")` produces an unparseable address and every
+/// IPv6 flow fails to dial — so the app's IPv6-first connections (Firestore
+/// gRPC, etc.) break under capture. Hostnames and already-bracketed literals
+/// pass through unchanged.
+fn join_host_port(host: &str, port: u16) -> String {
+    if host.contains(':') && !host.starts_with('[') {
+        format!("[{host}]:{port}")
+    } else {
+        format!("{host}:{port}")
+    }
+}
+
 /// Handle a single proxy connection.
 ///
 /// Supports three connection types:
@@ -756,7 +773,7 @@ async fn connect_tls_upstream(
     upstream_port: u16,
     server_name_host: &str,
 ) -> Option<tokio_rustls::client::TlsStream<TcpStream>> {
-    let addr = format!("{upstream_host}:{upstream_port}");
+    let addr = join_host_port(upstream_host, upstream_port);
     let upstream_tcp =
         match tokio::time::timeout(UPSTREAM_CONNECT_TIMEOUT, TcpStream::connect(&addr)).await {
             Ok(Ok(s)) => s,
@@ -1587,7 +1604,7 @@ async fn connect_h2_upstream(
     upstream_port: u16,
     server_name_host: &str,
 ) -> Option<h2::client::SendRequest<bytes::Bytes>> {
-    let addr = format!("{upstream_host}:{upstream_port}");
+    let addr = join_host_port(upstream_host, upstream_port);
     let tcp = match tokio::time::timeout(UPSTREAM_CONNECT_TIMEOUT, TcpStream::connect(&addr)).await
     {
         Ok(Ok(s)) => s,
@@ -3066,7 +3083,7 @@ impl<S: AsyncWrite + Unpin> AsyncWrite for PrefixedStream<S> {
 
 /// Dial a TCP upstream with the shared connect timeout, logging on failure.
 async fn dial_upstream(dst_host: &str, dst_port: u16) -> Option<TcpStream> {
-    let addr = format!("{dst_host}:{dst_port}");
+    let addr = join_host_port(dst_host, dst_port);
     match tokio::time::timeout(UPSTREAM_CONNECT_TIMEOUT, TcpStream::connect(&addr)).await {
         Ok(Ok(s)) => Some(s),
         Ok(Err(e)) => {
@@ -4578,6 +4595,33 @@ mod tests {
         let (host, port) = super::parse_host_header("  10.0.0.1:8080  ").unwrap();
         assert_eq!(host, "10.0.0.1");
         assert_eq!(port, 8080);
+    }
+
+    // ─── PILOT-242: IPv6 connect-target formatting ───
+
+    #[test]
+    fn join_host_port_brackets_ipv6_literals() {
+        // Hostnames and IPv4 pass through unchanged.
+        assert_eq!(
+            join_host_port("firestore.googleapis.com", 443),
+            "firestore.googleapis.com:443"
+        );
+        assert_eq!(join_host_port("142.250.151.95", 443), "142.250.151.95:443");
+        // Bare IPv6 literals get bracketed so TcpStream::connect can parse them.
+        assert_eq!(
+            join_host_port("2a00:1450:4009:c08::8a", 443),
+            "[2a00:1450:4009:c08::8a]:443"
+        );
+        assert_eq!(join_host_port("::1", 8080), "[::1]:8080");
+        // Already-bracketed literals are left alone.
+        assert_eq!(
+            join_host_port("[2a00:1450::8a]", 443),
+            "[2a00:1450::8a]:443"
+        );
+        // The result parses as a SocketAddr for IPv6.
+        assert!(join_host_port("2a00:1450:4009:c08::8a", 443)
+            .parse::<std::net::SocketAddr>()
+            .is_ok());
     }
 
     // ─── PILOT-245: HTTP/2 MITM vs passthrough decision ───
