@@ -20,7 +20,9 @@ export class DialogsScreen {
   // Modal
   get showModalButton() { return this.device.getByRole("button", { name: "Show modal" }) }
   get modal() { return this.device.getByText("Modal Title") }
+  get modalContainer() { return this.device.getByTestId("modal") }
   get modalTitle() { return this.device.getByText("Modal Title", { exact: true }) }
   get cancelButton() { return this.device.getByRole("button", { name: "Cancel" }) }
   get confirmButton() { return this.device.getByRole("button", { name: "Confirm" }) }
+  get confirmedToast() { return this.device.getByText("Action confirmed!", { exact: true }) }
 }

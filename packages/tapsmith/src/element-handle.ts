@@ -87,6 +87,13 @@ interface ElementHandleOptions {
   /** Left operand for or() — the full handle `this` was called on. */
   orSelf?: ElementHandle;
   orHandle?: ElementHandle;
+  /**
+   * Parent scope for a `getBy*`/`locator()` call made on a *modified* handle
+   * (e.g. `dialog.first().getByRole('button')`). The parent's modifiers can't
+   * be folded into a nested Selector, so it is resolved to concrete element(s)
+   * and the child is scoped to them by geometric containment (see _resolveAll).
+   */
+  scopeParent?: ElementHandle;
   resolvedElementsPromise?: Promise<ElementInfo[]>;
   /** Trace capture context, propagated from the Device. */
   traceCapture?: TraceCapture;
@@ -390,10 +397,14 @@ export class ElementHandle {
   /** @internal */
   private _scoped(child: Selector): ElementHandle {
     if (this._hasModifiers()) {
-      throw new Error(
-        'getBy*/locator() cannot be called on a modified handle (e.g. after .first(), .filter(), .and()). ' +
-          'Resolve the parent with .find() first, then scope from a fresh device-level locator.',
-      );
+      // The parent carries modifiers (.first(), .filter(), .and(), or a prior
+      // scope) that can't be expressed as a nested Selector. Defer to runtime
+      // geometric scoping: resolve the parent to concrete element(s), then keep
+      // only children contained within them (Playwright-style subtree scoping).
+      return new ElementHandle(this._client, child, this._timeoutMs, {
+        scopeParent: this,
+        traceCapture: this._options.traceCapture,
+      });
     }
     const scoped = withParent(child, this._selector);
     return new ElementHandle(this._client, scoped, this._timeoutMs, { traceCapture: this._options.traceCapture });
@@ -482,7 +493,8 @@ export class ElementHandle {
       this._options.nthIndex !== undefined ||
       (this._options.filters !== undefined && this._options.filters.length > 0) ||
       this._options.andHandle !== undefined ||
-      this._options.orHandle !== undefined
+      this._options.orHandle !== undefined ||
+      this._options.scopeParent !== undefined
     );
   }
 
@@ -539,6 +551,12 @@ export class ElementHandle {
     }
     let elements = collapseSameTargetDuplicates(res.elements ?? []);
 
+    // Scope to a modified parent (getBy*/locator() called on a modified handle):
+    // keep only matches geometrically contained within the resolved parent(s).
+    if (this._options.scopeParent) {
+      elements = await this._scopeToParent(elements, this._options.scopeParent);
+    }
+
     if (this._options.filters) {
       for (const f of this._options.filters) {
         elements = await this._applyFilter(elements, f);
@@ -546,6 +564,29 @@ export class ElementHandle {
     }
 
     return elements;
+  }
+
+  /**
+   * @internal — Restrict `children` to those geometrically contained within the
+   * resolved parent handle, the same containment primitive used by
+   * `filter({ has })`. The parent's modifiers are honored: a positional parent
+   * (`.first()`, `.nth()`, an `all()` handle) resolves to its single selected
+   * element; a filter/and/or parent resolves to all of its matches, and a child
+   * contained within *any* of them is in scope.
+   *
+   * Requires bounds: a parent or child without bounds cannot be confirmed
+   * contained and is excluded (Add accessibility identifiers / ensure the
+   * container reports bounds if scoping returns nothing).
+   */
+  private async _scopeToParent(children: ElementInfo[], parent: ElementHandle): Promise<ElementInfo[]> {
+    const parentEls =
+      parent._options.nthIndex !== undefined
+        ? [await parent._resolveOne()]
+        : await parent._resolveAll();
+
+    return children.filter((child) =>
+      parentEls.some((p) => boundsContain(p.bounds, child.bounds) === 'contained'),
+    );
   }
 
   /** @internal */
@@ -666,7 +707,7 @@ export class ElementHandle {
       if (this._options.filters?.length) desc += `.filter(…×${this._options.filters.length})`;
       return desc;
     }
-    let desc = sel;
+    let desc = this._options.scopeParent ? `${this._options.scopeParent._describe()} >> ${sel}` : sel;
     if (this._options.filters?.length) desc += `.filter(…×${this._options.filters.length})`;
     return desc;
   }

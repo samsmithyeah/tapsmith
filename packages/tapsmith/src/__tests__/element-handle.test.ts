@@ -1,7 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import { ElementHandle, StrictModeViolationError, isStrictModeViolation } from '../element-handle.js';
 import { isAbortError } from '../abort.js';
-import { type Selector, _text, _textContains, _role, _className, _id, selectorToProto } from '../selectors.js';
+import { type Selector, _text, _textContains, _role, _className, _id, _testId, formatSelector, selectorToProto } from '../selectors.js';
 import type {
   TapsmithGrpcClient,
   FindElementsResponse,
@@ -188,15 +188,70 @@ describe('getBy* scoping', () => {
     expect(parent.locator({ id: 'foo' })._selector.parent).toBeDefined();
   });
 
-  it('throws when called on a modified handle', () => {
-    const client = makeMockClient();
-    const handle = new ElementHandle(client, _role('list'), 5000);
-    expect(() => handle.first().getByText('Item')).toThrow(
-      /getBy.*cannot be called on a modified handle/,
-    );
-    expect(() => handle.filter({ hasText: 'x' }).getByText('Item')).toThrow(
-      /getBy.*cannot be called on a modified handle/,
-    );
+  describe('scoping off a modified handle (geometric containment)', () => {
+    // Two stacked dialogs; one button geometrically inside each.
+    const dialogs: ElementInfo[] = [
+      makeElementInfo({ elementId: 'd1', text: 'Dialog A', bounds: { left: 0, top: 0, right: 200, bottom: 100 } }),
+      makeElementInfo({ elementId: 'd2', text: 'Dialog B', bounds: { left: 0, top: 100, right: 200, bottom: 200 } }),
+    ];
+    const buttons: ElementInfo[] = [
+      makeElementInfo({ elementId: 'b1', text: 'Submit', role: 'button', bounds: { left: 10, top: 10, right: 90, bottom: 40 } }),
+      makeElementInfo({ elementId: 'b2', text: 'Submit', role: 'button', bounds: { left: 10, top: 110, right: 90, bottom: 140 } }),
+    ];
+    // Leaf text element, geometrically inside b1 (for the re-scoping test).
+    const labels: ElementInfo[] = [
+      makeElementInfo({ elementId: 't1', text: 'OK', bounds: { left: 20, top: 15, right: 80, bottom: 35 } }),
+    ];
+
+    function scopedClient(): TapsmithGrpcClient {
+      const findElements = vi.fn(async (selector: Selector) => {
+        const desc = formatSelector(selector);
+        if (desc.includes('getByRole')) return makeFindElementsResponse(buttons);
+        if (desc.includes('getByText')) return makeFindElementsResponse(labels);
+        return makeFindElementsResponse(dialogs);
+      });
+      return makeMockClient({ findElements });
+    }
+
+    it('scopes a getBy* child to the .first() parent by containment', async () => {
+      const device = scopedClient();
+      const button = new ElementHandle(device, _testId('dialog'), 5000)
+        .first()
+        .getByRole('button', { name: 'Submit' });
+      const el = await button.find();
+      expect(el.elementId).toBe('b1');
+    });
+
+    it('scopes to the .last() parent', async () => {
+      const device = scopedClient();
+      const button = new ElementHandle(device, _testId('dialog'), 5000)
+        .last()
+        .getByRole('button', { name: 'Submit' });
+      const el = await button.find();
+      expect(el.elementId).toBe('b2');
+    });
+
+    it('unions children across all parents matched by a filter', async () => {
+      const device = scopedClient();
+      // Both dialogs contain "Dialog", so the scope spans both → both buttons.
+      const count = await new ElementHandle(device, _testId('dialog'), 5000)
+        .filter({ hasText: 'Dialog' })
+        .getByRole('button')
+        .count();
+      expect(count).toBe(2);
+    });
+
+    it('supports re-scoping off an already-scoped handle', async () => {
+      const device = scopedClient();
+      // dialog.first() → scoped buttons; .first() of those → scope again.
+      const handle = new ElementHandle(device, _testId('dialog'), 5000)
+        .first()
+        .getByRole('button')
+        .first()
+        .getByText('OK');
+      const el = await handle.find();
+      expect(el.elementId).toBe('t1');
+    });
   });
 });
 

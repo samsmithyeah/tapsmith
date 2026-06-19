@@ -669,7 +669,7 @@ An `ElementHandle` is a lazy reference to a UI element. It is returned by every 
 | `getByLabel(text)` | Input element by associated label text within the parent. |
 | `locator(options)` | Native id / xpath / className within the parent. |
 
-Cannot be called on modified handles (e.g. after `.first()`, `.filter()`, `.and()`).
+Scoping also works after a positional or filtering modifier (`.first()`, `.last()`, `.nth()`, `.filter()`, `.and()`, `.or()`), just like Playwright. When the parent carries such a modifier it is resolved to its concrete element(s) and the child is scoped to them by geometric containment, so the parent must report bounds. A positional parent (`.first()`/`.nth()`) scopes to its single selected element; a filtering parent scopes to every match it resolves to (a child contained in any of them is in scope).
 
 ```typescript
 const list = device.getByRole("list", { name: "Shopping cart" });
@@ -678,6 +678,9 @@ await item.tap();
 
 // Tap a delete button inside a specific row
 await device.getByTestId("row-5").getByRole("button", { name: "Delete" }).tap();
+
+// Scope into a positional match — the submit button inside the first dialog
+await device.getByTestId("dialog").first().getByRole("button", { name: "Submit" }).tap();
 ```
 
 ### Positional Selection
