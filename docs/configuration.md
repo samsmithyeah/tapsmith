@@ -141,8 +141,8 @@ interface TraceConfig {
                                  // TLS SNI) whose connections bypass MITM
                                  // interception entirely — tunneled end-to-end,
                                  // no capture, no route matching. Use for
-                                 // certificate-pinned hosts. HTTP/2-only traffic
-                                 // (gRPC, Firestore) passes through automatically.
+                                 // certificate-pinned hosts. HTTP/2 and gRPC
+                                 // (incl. Firestore) are intercepted by default.
 }
 ```
 
@@ -198,7 +198,7 @@ trace: {
 }
 ```
 
-Tunneled connections appear in the trace as a single `CONNECT` entry marked `passthrough`, and `device.route()` cannot match them. HTTP/2-only clients (gRPC, Firestore) are detected and passed through automatically without configuration — see [network.md](network.md#http2-grpc-and-passthrough-connections).
+Tunneled connections appear in the trace as a single `CONNECT` entry marked `passthrough`, and `device.route()` cannot match them. HTTP/2 clients (gRPC, Firestore) are intercepted and captured by default — see [network.md](network.md#http2-grpc-and-passthrough-connections).
 
 Example:
 
