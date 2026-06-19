@@ -215,6 +215,11 @@ pub(crate) trait NetworkHandler: Send + Sync {
 pub(crate) struct ProxyState {
     entries: Vec<CapturedEntry>,
     tls_client_config: Arc<ClientConfig>,
+    /// Upstream TLS config for the HTTP/2 pipeline (PILOT-245). Offers `h2`
+    /// first then `http/1.1` so the proxy can detect an origin that only
+    /// speaks HTTP/1.1 and fall back accordingly. Kept separate from
+    /// `tls_client_config` (pinned to http/1.1) which the HTTP/1.1 path uses.
+    h2_client_config: Arc<ClientConfig>,
     /// Optional transformation handler. `None` today (PILOT-182); populated
     /// later when request/response modification lands. The handler field is
     /// read from inside `handle_mitm_http` — even though it's always `None`
@@ -276,17 +281,27 @@ impl NetworkProxy {
         let mut root_store = rustls::RootCertStore::empty();
         root_store.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
         let mut tls_client_config = ClientConfig::builder()
-            .with_root_certificates(root_store)
+            .with_root_certificates(root_store.clone())
             .with_no_client_auth();
-        // The proxy re-serializes everything as HTTP/1.1, so make that
+        // The HTTP/1.1 path re-serializes everything as HTTP/1.1, so make that
         // explicit to upstream servers rather than relying on their
         // no-ALPN default.
         tls_client_config.alpn_protocols = vec![b"http/1.1".to_vec()];
         let tls_client_config = Arc::new(tls_client_config);
 
+        // HTTP/2 pipeline upstream config (PILOT-245): offer h2 first, then
+        // http/1.1 so we can detect (and fall back for) an origin that only
+        // speaks HTTP/1.1.
+        let mut h2_client_config = ClientConfig::builder()
+            .with_root_certificates(root_store)
+            .with_no_client_auth();
+        h2_client_config.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
+        let h2_client_config = Arc::new(h2_client_config);
+
         let state = Arc::new(Mutex::new(ProxyState {
             entries: Vec::new(),
             tls_client_config,
+            h2_client_config,
             handler: None,
             network_hosts: Vec::new(),
             passthrough_hosts: Vec::new(),
@@ -927,6 +942,399 @@ async fn handle_mitm_https_lazy_upstream<C>(
             return;
         }
     }
+}
+
+/// One lazily-established upstream HTTP/2 connection, shared (cloned) across all
+/// streams of a single client connection so we multiplex onto one upstream
+/// connection the way a gRPC channel expects.
+type SharedH2Upstream = Arc<Mutex<Option<h2::client::SendRequest<bytes::Bytes>>>>;
+
+/// MITM an HTTP/2 connection (PILOT-245). Accepts each inbound h2 stream and
+/// spawns a per-stream task that proxies it to the upstream origin, streaming
+/// DATA frames and trailers in both directions (so gRPC keeps working) while
+/// teeing a bounded copy of the bodies for the trace.
+async fn handle_mitm_h2<C>(
+    client_tls: C,
+    hostname: String,
+    upstream_host: String,
+    upstream_port: u16,
+    state: Arc<Mutex<ProxyState>>,
+) where
+    C: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+{
+    let mut conn = match h2::server::handshake(client_tls).await {
+        Ok(c) => c,
+        Err(e) => {
+            debug!(%hostname, "h2 server handshake failed: {e}");
+            return;
+        }
+    };
+
+    let hostname = Arc::new(hostname);
+    let upstream_host = Arc::new(upstream_host);
+    let upstream: SharedH2Upstream = Arc::new(Mutex::new(None));
+
+    // The accept loop IS the connection driver — keep polling it so
+    // connection-level frames (WINDOW_UPDATE, PING, GOAWAY) keep flowing while
+    // per-stream tasks run. Never block it on per-stream work.
+    loop {
+        match conn.accept().await {
+            Some(Ok((request, respond))) => {
+                tokio::spawn(serve_h2_stream(
+                    request,
+                    respond,
+                    hostname.clone(),
+                    upstream_host.clone(),
+                    upstream_port,
+                    state.clone(),
+                    upstream.clone(),
+                ));
+            }
+            Some(Err(e)) => {
+                debug!(%hostname, "h2 accept error: {e}");
+                return;
+            }
+            None => {
+                debug!(%hostname, "h2 connection closed");
+                return;
+            }
+        }
+    }
+}
+
+/// Proxy a single HTTP/2 stream (one request/response exchange) to the upstream
+/// origin. Runs the request and response body pumps concurrently so
+/// bidirectional / server-streaming gRPC doesn't deadlock.
+async fn serve_h2_stream(
+    request: http::Request<h2::RecvStream>,
+    mut respond: h2::server::SendResponse<bytes::Bytes>,
+    hostname: Arc<String>,
+    upstream_host: Arc<String>,
+    upstream_port: u16,
+    state: Arc<Mutex<ProxyState>>,
+    upstream: SharedH2Upstream,
+) {
+    let start = now_ms();
+    let handler = state.lock().await.handler.clone();
+
+    let (parts, mut client_recv) = request.into_parts();
+    let method = parts.method.clone();
+    let path = parts
+        .uri
+        .path_and_query()
+        .map(|p| p.as_str())
+        .unwrap_or("/")
+        .to_string();
+    // Capture host: prefer the :authority pseudo-header (what the app asked
+    // for), fall back to the SNI used for the TLS connection.
+    let cap_host = parts
+        .uri
+        .authority()
+        .map(|a| a.as_str().to_string())
+        .unwrap_or_else(|| (*hostname).clone());
+    let req_headers = parsed_headers_from_h2(&parts.headers);
+
+    // Fire the request notification immediately on headers so waitForRequest /
+    // device.on('request') work even for never-ending server streams.
+    if let Some(h) = handler.as_ref() {
+        let notify_req = ParsedRequest {
+            method: method.to_string(),
+            path: path.clone(),
+            headers: req_headers.clone(),
+            body: Vec::new(),
+            raw_bytes: Vec::new(),
+            override_host: None,
+        };
+        h.notify_request(&notify_req, &cap_host, true).await;
+    }
+
+    // Establish (or reuse) the upstream h2 connection.
+    let send_req = match ensure_h2_upstream(
+        &upstream,
+        &state,
+        &upstream_host,
+        upstream_port,
+        &hostname,
+    )
+    .await
+    {
+        Some(s) => s,
+        None => {
+            // Upstream isn't h2 (or connect failed). HTTP/1.1-origin
+            // translation lands in a later step; for now reset the stream
+            // and leave a breadcrumb mirroring the passthrough one.
+            info!(
+                %hostname, upstream_port,
+                "h2 upstream unavailable (non-h2 origin?) — add the host to networkPassthroughHosts"
+            );
+            respond.send_reset(h2::Reason::REFUSED_STREAM);
+            drain_recv(&mut client_recv).await;
+            return;
+        }
+    };
+    let mut send_req = match send_req.ready().await {
+        Ok(s) => s,
+        Err(e) => {
+            debug!(%hostname, "h2 upstream not ready: {e}");
+            respond.send_reset(h2::Reason::INTERNAL_ERROR);
+            drain_recv(&mut client_recv).await;
+            return;
+        }
+    };
+
+    // Build the upstream request from the client's parts. The URI is absolute
+    // (scheme + authority + path) because h2 reconstructs it from the pseudo
+    // headers, which is exactly what the client side needs to re-emit them.
+    let mut up_req = http::Request::new(());
+    *up_req.method_mut() = parts.method.clone();
+    *up_req.uri_mut() = parts.uri.clone();
+    *up_req.version_mut() = http::Version::HTTP_2;
+    *up_req.headers_mut() = parts.headers.clone();
+
+    let req_has_no_body = client_recv.is_end_stream();
+    let (resp_fut, up_send) = match send_req.send_request(up_req, req_has_no_body) {
+        Ok(x) => x,
+        Err(e) => {
+            debug!(%hostname, "h2 send_request failed: {e}");
+            respond.send_reset(h2::Reason::INTERNAL_ERROR);
+            drain_recv(&mut client_recv).await;
+            return;
+        }
+    };
+
+    // Request body pump (client -> upstream).
+    let req_pump = async move {
+        let mut tee = Vec::new();
+        let mut size: u64 = 0;
+        let mut up_send = up_send;
+        if !req_has_no_body {
+            if let Err(e) = pump_body(&mut client_recv, &mut up_send, &mut tee, &mut size).await {
+                debug!("h2 request body pump error: {e}");
+            }
+        }
+        (tee, size)
+    };
+
+    // Response handling (upstream -> client).
+    let resp_pump = async move {
+        let response = match resp_fut.await {
+            Ok(r) => r,
+            Err(e) => {
+                debug!("h2 upstream response error: {e}");
+                respond.send_reset(h2::Reason::INTERNAL_ERROR);
+                return (0i32, Vec::new(), Vec::new(), 0u64);
+            }
+        };
+        let (rparts, mut up_recv) = response.into_parts();
+        let status_code = rparts.status.as_u16() as i32;
+        let resp_headers = parsed_headers_from_h2(&rparts.headers);
+
+        let mut client_resp = http::Response::new(());
+        *client_resp.status_mut() = rparts.status;
+        *client_resp.version_mut() = http::Version::HTTP_2;
+        *client_resp.headers_mut() = rparts.headers;
+
+        let mut client_send = match respond.send_response(client_resp, false) {
+            Ok(s) => s,
+            Err(e) => {
+                debug!("h2 send_response to client failed: {e}");
+                return (status_code, resp_headers, Vec::new(), 0u64);
+            }
+        };
+        let mut tee = Vec::new();
+        let mut size: u64 = 0;
+        if let Err(e) = pump_body(&mut up_recv, &mut client_send, &mut tee, &mut size).await {
+            debug!("h2 response body pump error: {e}");
+        }
+        (status_code, resp_headers, tee, size)
+    };
+
+    let ((req_tee, req_size), (status_code, resp_headers, resp_tee, resp_size)) =
+        tokio::join!(req_pump, resp_pump);
+
+    // Record the exchange. For never-ending streams this only runs once the
+    // stream closes (documented limitation).
+    let parsed_req = ParsedRequest {
+        method: method.to_string(),
+        path,
+        headers: req_headers,
+        body: req_tee,
+        raw_bytes: Vec::new(),
+        override_host: None,
+    };
+    let parsed_resp = ParsedResponse {
+        status_code,
+        headers: resp_headers,
+        body: resp_tee,
+        raw_bytes: Vec::new(),
+    };
+    if let Some(h) = handler.as_ref() {
+        h.notify_response(&parsed_req, &parsed_resp, &cap_host, true, "")
+            .await;
+    }
+    record_entry_sized(
+        &state,
+        &parsed_req,
+        &parsed_resp,
+        &cap_host,
+        true,
+        start,
+        "",
+        req_size,
+        resp_size,
+    )
+    .await;
+}
+
+/// Copy DATA frames and trailers from `recv` to `send`, threading flow control
+/// (release receive capacity as consumed, await send capacity before writing)
+/// and teeing up to `MAX_BODY_SIZE` bytes into `tee` while counting the true
+/// total in `total`.
+async fn pump_body(
+    recv: &mut h2::RecvStream,
+    send: &mut h2::SendStream<bytes::Bytes>,
+    tee: &mut Vec<u8>,
+    total: &mut u64,
+) -> Result<(), h2::Error> {
+    while let Some(chunk) = recv.data().await {
+        let mut chunk = chunk?;
+        let len = chunk.len();
+        *total += len as u64;
+        if tee.len() < MAX_BODY_SIZE {
+            let take = (MAX_BODY_SIZE - tee.len()).min(len);
+            tee.extend_from_slice(&chunk[..take]);
+        }
+        // Forward the chunk in send-window-sized pieces. Sending only what the
+        // downstream window currently allows (rather than waiting for the whole
+        // chunk's worth of capacity) keeps data flowing — waiting for a full
+        // 64 KiB of capacity would deadlock against the 65 535-byte initial
+        // window, since no data would flow to trigger a WINDOW_UPDATE.
+        while !chunk.is_empty() {
+            send.reserve_capacity(chunk.len());
+            while send.capacity() == 0 {
+                match std::future::poll_fn(|cx| send.poll_capacity(cx)).await {
+                    Some(Ok(_)) => {}
+                    Some(Err(e)) => return Err(e),
+                    None => return Ok(()), // downstream closed; stop
+                }
+            }
+            let take = send.capacity().min(chunk.len());
+            let piece = chunk.split_to(take);
+            send.send_data(piece, false)?;
+        }
+        // Release receive capacity only after queuing downstream, so client
+        // backpressure tracks the downstream window.
+        recv.flow_control().release_capacity(len)?;
+    }
+    // After DATA drains, forward trailers (grpc-status/grpc-message live here)
+    // or end the stream cleanly with an empty final frame.
+    match recv.trailers().await? {
+        Some(trailers) => send.send_trailers(trailers)?,
+        None => send.send_data(bytes::Bytes::new(), true)?,
+    }
+    Ok(())
+}
+
+/// Get (or lazily establish) the shared upstream h2 connection for this client
+/// connection, returning a fresh `SendRequest` handle for a new stream.
+async fn ensure_h2_upstream(
+    upstream: &SharedH2Upstream,
+    state: &Arc<Mutex<ProxyState>>,
+    upstream_host: &str,
+    upstream_port: u16,
+    sni: &str,
+) -> Option<h2::client::SendRequest<bytes::Bytes>> {
+    let mut guard = upstream.lock().await;
+    if let Some(sr) = guard.as_ref() {
+        return Some(sr.clone());
+    }
+    let sr = connect_h2_upstream(state, upstream_host, upstream_port, sni).await?;
+    *guard = Some(sr.clone());
+    Some(sr)
+}
+
+/// Dial the upstream origin over TLS with an `h2`-preferring ALPN and complete
+/// the HTTP/2 client handshake. Returns `None` if the origin doesn't speak h2
+/// (caller resets the stream) or the connection fails. The connection driver
+/// future is spawned so frames keep flowing.
+async fn connect_h2_upstream(
+    state: &Arc<Mutex<ProxyState>>,
+    upstream_host: &str,
+    upstream_port: u16,
+    server_name_host: &str,
+) -> Option<h2::client::SendRequest<bytes::Bytes>> {
+    let addr = format!("{upstream_host}:{upstream_port}");
+    let tcp = match tokio::time::timeout(UPSTREAM_CONNECT_TIMEOUT, TcpStream::connect(&addr)).await
+    {
+        Ok(Ok(s)) => s,
+        Ok(Err(e)) => {
+            debug!("h2 upstream connect failed to {addr}: {e}");
+            return None;
+        }
+        Err(_) => {
+            debug!("h2 upstream connect timed out to {addr}");
+            return None;
+        }
+    };
+
+    let cfg = state.lock().await.h2_client_config.clone();
+    let server_name = match rustls::pki_types::ServerName::try_from(server_name_host.to_string()) {
+        Ok(sn) => sn,
+        Err(e) => {
+            debug!("Invalid upstream server name '{server_name_host}': {e}");
+            return None;
+        }
+    };
+    let tls = match TlsConnector::from(cfg).connect(server_name, tcp).await {
+        Ok(s) => s,
+        Err(e) => {
+            debug!("h2 upstream TLS handshake with {server_name_host} failed: {e}");
+            return None;
+        }
+    };
+    if tls.get_ref().1.alpn_protocol() != Some(b"h2") {
+        debug!(%server_name_host, "upstream did not negotiate h2");
+        return None;
+    }
+
+    let (send_req, connection) = match h2::client::handshake(tls).await {
+        Ok(x) => x,
+        Err(e) => {
+            debug!("h2 upstream handshake failed for {server_name_host}: {e}");
+            return None;
+        }
+    };
+    // Drive the connection — without this nothing flows.
+    tokio::spawn(async move {
+        if let Err(e) = connection.await {
+            debug!("h2 upstream connection driver ended: {e}");
+        }
+    });
+    Some(send_req)
+}
+
+/// Drain and discard a client request body (releasing flow control) so a reset
+/// stream doesn't sit on the connection's flow window.
+async fn drain_recv(recv: &mut h2::RecvStream) {
+    while let Some(Ok(chunk)) = recv.data().await {
+        let _ = recv.flow_control().release_capacity(chunk.len());
+    }
+    let _ = recv.trailers().await;
+}
+
+/// Convert an h2/http `HeaderMap` into the proxy's `Vec<(name, value)>` form.
+/// Pseudo-headers (`:method` etc.) are never present in a `HeaderMap` — they
+/// live in the request/response head — so no filtering is needed.
+fn parsed_headers_from_h2(headers: &http::HeaderMap) -> Vec<(String, String)> {
+    headers
+        .iter()
+        .map(|(name, value)| {
+            (
+                name.as_str().to_string(),
+                String::from_utf8_lossy(value.as_bytes()).into_owned(),
+            )
+        })
+        .collect()
 }
 
 /// Outcome of reading a request or response from a stream. `ConnectionClosed`
@@ -1615,6 +2023,39 @@ async fn record_entry(
     start_ms: u64,
     route_action: &str,
 ) {
+    // The HTTP/1.1 path buffers full bodies, so body length is the true size.
+    let request_size = req.body.len() as u64;
+    let response_size = resp.body.len() as u64;
+    record_entry_sized(
+        state,
+        req,
+        resp,
+        hostname,
+        is_https,
+        start_ms,
+        route_action,
+        request_size,
+        response_size,
+    )
+    .await;
+}
+
+/// Like [`record_entry`] but with explicit transferred byte counts. The HTTP/2
+/// path streams bodies and only tees a truncated copy (`req.body`/`resp.body`)
+/// for the trace, so it can't derive the true size from the buffered body —
+/// it tracks the real totals separately and passes them here.
+#[allow(clippy::too_many_arguments)]
+async fn record_entry_sized(
+    state: &Arc<Mutex<ProxyState>>,
+    req: &ParsedRequest,
+    resp: &ParsedResponse,
+    hostname: &str,
+    is_https: bool,
+    start_ms: u64,
+    route_action: &str,
+    request_size: u64,
+    response_size: u64,
+) {
     let scheme = if is_https { "https" } else { "http" };
     let url = format!("{scheme}://{hostname}{}", req.path);
     let content_type = get_header(&resp.headers, "content-type")
@@ -1643,8 +2084,8 @@ async fn record_entry(
         url,
         status_code: resp.status_code,
         content_type,
-        request_size: req.body.len() as u64,
-        response_size: resp.body.len() as u64,
+        request_size,
+        response_size,
         start_time_ms: start_ms,
         duration_ms: duration,
         request_headers: req.headers.clone(),
@@ -2477,17 +2918,18 @@ where
 /// Whether a connection must bypass MITM based on the client's ALPN offer.
 ///
 /// True when the client offers ALPN but no HTTP/1.x variant.
-/// gRPC-Core/BoringSSL (Firestore, gRPC APIs) offers only `["h2"]`; our MITM
-/// engine speaks only HTTP/1.1, so completing the handshake would either
-/// fail ALPN negotiation or desync right after it (PILOT-231). No ALPN at
-/// all means a plain HTTPS client — MITM as before. Exotic ALPN-only
-/// protocols (`grpc-exp`, custom) are also passed through: MITM would break
-/// them anyway, so tunneling is strictly better.
+/// The MITM engine speaks both HTTP/1.1 and HTTP/2 (PILOT-245), so a client
+/// only needs to be tunneled when it offers an ALPN list with *no* protocol
+/// we can speak. No ALPN at all means a plain HTTPS client — MITM as HTTP/1.1.
+/// `["h2"]` (gRPC-Core/BoringSSL: Firestore, gRPC APIs) and any list
+/// containing `http/1.1`/`http/1.0`/`h2` are MITM'd. Exotic ALPN-only
+/// protocols (`grpc-exp` with no h2, custom) are still passed through: MITM
+/// would break them anyway, so tunneling is strictly better.
 fn requires_tls_passthrough(alpn: &[Vec<u8>]) -> bool {
     !alpn.is_empty()
         && !alpn
             .iter()
-            .any(|p| p.as_slice() == b"http/1.1" || p.as_slice() == b"http/1.0")
+            .any(|p| matches!(p.as_slice(), b"http/1.1" | b"http/1.0" | b"h2"))
 }
 
 /// Compile a host glob into an anchored, case-insensitive regex, mirroring
@@ -2712,7 +3154,22 @@ async fn handle_transparent_tls<S>(
         }
     };
 
-    handle_mitm_https_lazy_upstream(client_tls, &sni, upstream_host, dst_port, state).await;
+    // Dispatch on the protocol negotiated during the handshake. If the client
+    // picked h2, frame the connection as HTTP/2 (PILOT-245); otherwise (http/1.1
+    // or no ALPN) use the HTTP/1.1 pipeline.
+    let negotiated_h2 = client_tls.get_ref().1.alpn_protocol() == Some(b"h2");
+    if negotiated_h2 {
+        handle_mitm_h2(
+            client_tls,
+            sni.clone(),
+            upstream_host.to_string(),
+            dst_port,
+            state,
+        )
+        .await;
+    } else {
+        handle_mitm_https_lazy_upstream(client_tls, &sni, upstream_host, dst_port, state).await;
+    }
 }
 
 /// Parse host and path from an absolute HTTP URL.
@@ -3621,6 +4078,7 @@ mod tests {
         let state = Arc::new(Mutex::new(ProxyState {
             entries: Vec::new(),
             tls_client_config: client_config.clone(),
+            h2_client_config: client_config.clone(),
             handler: Some(Arc::new(SyntheticHttpsHandler { seen_tx })),
             network_hosts: Vec::new(),
             passthrough_hosts: Vec::new(),
@@ -3771,7 +4229,7 @@ mod tests {
         assert_eq!(port, 8080);
     }
 
-    // ─── PILOT-231: HTTP/2 passthrough ───
+    // ─── PILOT-245: HTTP/2 MITM vs passthrough decision ───
 
     #[test]
     fn requires_tls_passthrough_decision() {
@@ -3782,10 +4240,12 @@ mod tests {
         assert!(!requires_tls_passthrough(&alpn(&[b"http/1.1"])));
         assert!(!requires_tls_passthrough(&alpn(&[b"http/1.0"])));
         assert!(!requires_tls_passthrough(&alpn(&[b"h2", b"http/1.1"])));
-        // h2-only (gRPC-Core/BoringSSL) → passthrough.
-        assert!(requires_tls_passthrough(&alpn(&[b"h2"])));
-        // Exotic ALPN-only protocols → passthrough.
-        assert!(requires_tls_passthrough(&alpn(&[b"grpc-exp", b"h2"])));
+        // h2-only (gRPC-Core/BoringSSL) → MITM now that the engine speaks h2.
+        assert!(!requires_tls_passthrough(&alpn(&[b"h2"])));
+        // A list containing h2 alongside an exotic protocol → MITM.
+        assert!(!requires_tls_passthrough(&alpn(&[b"grpc-exp", b"h2"])));
+        // Exotic ALPN-only with no protocol we speak → passthrough.
+        assert!(requires_tls_passthrough(&alpn(&[b"grpc-exp"])));
     }
 
     #[test]
@@ -3905,13 +4365,15 @@ mod tests {
     fn empty_proxy_state(passthrough_hosts: Vec<String>) -> Arc<Mutex<ProxyState>> {
         let mut root_store = rustls::RootCertStore::empty();
         root_store.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
+        let client_config = Arc::new(
+            ClientConfig::builder()
+                .with_root_certificates(root_store)
+                .with_no_client_auth(),
+        );
         Arc::new(Mutex::new(ProxyState {
             entries: Vec::new(),
-            tls_client_config: Arc::new(
-                ClientConfig::builder()
-                    .with_root_certificates(root_store)
-                    .with_no_client_auth(),
-            ),
+            tls_client_config: client_config.clone(),
+            h2_client_config: client_config,
             handler: None,
             network_hosts: Vec::new(),
             passthrough_hosts: passthrough_hosts
@@ -3958,14 +4420,16 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn h2_only_client_is_tunneled_end_to_end() {
+    async fn exotic_alpn_client_is_tunneled_end_to_end() {
+        // h2 is now MITM'd (PILOT-245), but a client offering only an ALPN we
+        // can't speak (here `grpc-exp` with no h2/http1) is still tunneled.
         let dir = tempfile::tempdir().unwrap();
         let ca = Arc::new(
             MitmAuthority::generate_new(&dir.path().join("ca.pem"), &dir.path().join("ca-key.pem"))
                 .unwrap(),
         );
 
-        let (server_config, origin_cert) = origin_server_config("passthrough.test", &[b"h2"]);
+        let (server_config, origin_cert) = origin_server_config("passthrough.test", &[b"grpc-exp"]);
         let origin_port = spawn_tls_origin(server_config, b"hello-from-origin").await;
 
         let state = empty_proxy_state(Vec::new());
@@ -3984,10 +4448,10 @@ mod tests {
 
         // The client trusts ONLY the origin's self-signed cert. If the proxy
         // had MITM'd this connection, the handshake would fail.
-        let client_config = client_config_trusting(&origin_cert, &[b"h2"]);
+        let client_config = client_config_trusting(&origin_cert, &[b"grpc-exp"]);
         let (negotiated, received) =
             run_passthrough_client(client_config, client_side, "passthrough.test").await;
-        assert_eq!(negotiated.as_deref(), Some(b"h2".as_slice()));
+        assert_eq!(negotiated.as_deref(), Some(b"grpc-exp".as_slice()));
         assert_eq!(received, b"hello-from-origin");
 
         proxy_task.await.unwrap();
@@ -4045,7 +4509,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn dual_alpn_client_is_mitmd_as_http1() {
+    async fn http1_client_is_mitmd() {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
         let dir = tempfile::tempdir().unwrap();
@@ -4054,24 +4518,16 @@ mod tests {
                 .unwrap(),
         );
 
-        // Client trusts the MITM CA and offers both h2 and http/1.1, like
-        // NSURLSession / OkHttp. The proxy must select http/1.1 and MITM.
-        let mut root_store = rustls::RootCertStore::empty();
-        let ca_pem = std::fs::read(ca.ca_pem_path()).unwrap();
-        let mut reader = std::io::BufReader::new(ca_pem.as_slice());
-        for cert in rustls_pemfile::certs(&mut reader) {
-            root_store.add(cert.unwrap()).unwrap();
-        }
-        let mut client_config = ClientConfig::builder()
-            .with_root_certificates(root_store)
-            .with_no_client_auth();
-        client_config.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
-        let client_config = Arc::new(client_config);
+        // Client trusts the MITM CA and offers only http/1.1. The proxy MITMs
+        // it on the HTTP/1.1 pipeline. (Dual-protocol clients now negotiate h2
+        // and are covered by the h2 MITM tests.)
+        let client_config = client_config_trusting_ca(&ca, &[b"http/1.1"]);
 
         let (seen_tx, mut seen_rx) = tokio::sync::mpsc::unbounded_channel();
         let state = Arc::new(Mutex::new(ProxyState {
             entries: Vec::new(),
             tls_client_config: client_config.clone(),
+            h2_client_config: client_config.clone(),
             handler: Some(Arc::new(SyntheticHttpsHandler { seen_tx })),
             network_hosts: Vec::new(),
             passthrough_hosts: Vec::new(),
@@ -4091,11 +4547,11 @@ mod tests {
         let mut client_tls = TlsConnector::from(client_config)
             .connect(server_name, client_side)
             .await
-            .expect("dual-ALPN client must still complete the MITM handshake");
+            .expect("http/1.1 client must complete the MITM handshake");
         assert_eq!(
             client_tls.get_ref().1.alpn_protocol(),
             Some(b"http/1.1".as_slice()),
-            "proxy must negotiate http/1.1 with dual-protocol clients"
+            "proxy must negotiate http/1.1 with an http/1.1-only client"
         );
 
         client_tls
@@ -4135,7 +4591,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn connect_path_tunnels_h2_only_client() {
+    async fn connect_path_tunnels_exotic_alpn_client() {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
         let dir = tempfile::tempdir().unwrap();
@@ -4144,7 +4600,7 @@ mod tests {
                 .unwrap(),
         );
 
-        let (server_config, origin_cert) = origin_server_config("grpc.test", &[b"h2"]);
+        let (server_config, origin_cert) = origin_server_config("grpc.test", &[b"grpc-exp"]);
         let origin_port = spawn_tls_origin(server_config, b"grpc-origin").await;
 
         let proxy = NetworkProxy::start(ca).await.unwrap();
@@ -4158,13 +4614,16 @@ mod tests {
         let n = tcp.read(&mut ack).await.unwrap();
         assert!(String::from_utf8_lossy(&ack[..n]).starts_with("HTTP/1.1 200"));
 
-        let client_config = client_config_trusting(&origin_cert, &[b"h2"]);
+        let client_config = client_config_trusting(&origin_cert, &[b"grpc-exp"]);
         let server_name = rustls::pki_types::ServerName::try_from("grpc.test".to_string()).unwrap();
         let mut tls = TlsConnector::from(client_config)
             .connect(server_name, tcp)
             .await
-            .expect("h2-only CONNECT client must be tunneled, not MITM'd");
-        assert_eq!(tls.get_ref().1.alpn_protocol(), Some(b"h2".as_slice()));
+            .expect("exotic-ALPN CONNECT client must be tunneled, not MITM'd");
+        assert_eq!(
+            tls.get_ref().1.alpn_protocol(),
+            Some(b"grpc-exp".as_slice())
+        );
         let mut received = Vec::new();
         tls.read_to_end(&mut received).await.ok();
         assert_eq!(received, b"grpc-origin");
@@ -4173,5 +4632,266 @@ mod tests {
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].route_action, "passthrough");
         assert_eq!(entries[0].url, format!("https://grpc.test:{origin_port}/"));
+    }
+
+    // ─── PILOT-245: HTTP/2 MITM interception ───
+
+    /// A fixed 64 KiB frame used to push streaming responses past the default
+    /// HTTP/2 initial window so the flow-control path is exercised.
+    static BIG_FRAME: [u8; 65536] = [0x5a; 65536];
+
+    /// Spawn a one-connection HTTP/2 origin. For each accepted stream it drains
+    /// the request body, then replies `200` with `count` DATA frames each equal
+    /// to `frame`, optionally followed by a trailer.
+    async fn spawn_h2_origin(
+        server_config: Arc<rustls::ServerConfig>,
+        frame: &'static [u8],
+        count: usize,
+        trailer: Option<(&'static str, &'static str)>,
+    ) -> u16 {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            let (tcp, _) = listener.accept().await.unwrap();
+            let acceptor = tokio_rustls::TlsAcceptor::from(server_config);
+            let tls = acceptor.accept(tcp).await.unwrap();
+            let mut conn = h2::server::handshake(tls).await.unwrap();
+            while let Some(Ok((req, mut respond))) = conn.accept().await {
+                let mut body = req.into_body();
+                while let Some(Ok(chunk)) = body.data().await {
+                    let _ = body.flow_control().release_capacity(chunk.len());
+                }
+                let _ = body.trailers().await;
+
+                let response = http::Response::builder()
+                    .status(200)
+                    .header("content-type", "application/grpc")
+                    .body(())
+                    .unwrap();
+                let mut send = respond.send_response(response, false).unwrap();
+                // Rely on h2's internal buffering/flush (driven by the accept
+                // loop) — fine for a test origin and avoids the full-window
+                // wait that would deadlock for frames >= the initial window.
+                for _ in 0..count {
+                    send.send_data(bytes::Bytes::from_static(frame), false)
+                        .unwrap();
+                }
+                match trailer {
+                    Some((k, v)) => {
+                        let mut tr = http::HeaderMap::new();
+                        tr.insert(
+                            http::HeaderName::from_static(k),
+                            http::HeaderValue::from_static(v),
+                        );
+                        send.send_trailers(tr).unwrap();
+                    }
+                    None => send.send_data(bytes::Bytes::new(), true).unwrap(),
+                }
+            }
+        });
+        port
+    }
+
+    /// Drive one h2 request over `io` and return the response status, the full
+    /// concatenated body, and any trailers.
+    async fn run_h2_client(
+        client_config: Arc<ClientConfig>,
+        io: tokio::io::DuplexStream,
+        sni: &str,
+        authority: &str,
+        path: &str,
+    ) -> (http::StatusCode, Vec<u8>, Option<http::HeaderMap>) {
+        let server_name = rustls::pki_types::ServerName::try_from(sni.to_string()).unwrap();
+        let tls = TlsConnector::from(client_config)
+            .connect(server_name, io)
+            .await
+            .expect("h2 client handshake must succeed against the MITM cert");
+        assert_eq!(tls.get_ref().1.alpn_protocol(), Some(b"h2".as_slice()));
+
+        let (send_req, conn) = h2::client::handshake(tls).await.unwrap();
+        tokio::spawn(async move {
+            let _ = conn.await;
+        });
+        let mut send_req = send_req.ready().await.unwrap();
+        let req = http::Request::builder()
+            .method("POST")
+            .uri(format!("https://{authority}{path}"))
+            .header("content-type", "application/grpc")
+            .body(())
+            .unwrap();
+        let (resp_fut, mut body_send) = send_req.send_request(req, false).unwrap();
+        body_send
+            .send_data(bytes::Bytes::from_static(b"ping"), true)
+            .unwrap();
+
+        let response = resp_fut.await.unwrap();
+        let status = response.status();
+        let mut body = response.into_body();
+        let mut received = Vec::new();
+        while let Some(chunk) = body.data().await {
+            let chunk = chunk.unwrap();
+            received.extend_from_slice(&chunk);
+            body.flow_control().release_capacity(chunk.len()).unwrap();
+        }
+        let trailers = body.trailers().await.unwrap();
+        (status, received, trailers)
+    }
+
+    /// Poll until at least `n` entries are captured (the h2 path records on a
+    /// spawned per-stream task, so the capture can lag the client slightly).
+    async fn wait_for_entries(state: &Arc<Mutex<ProxyState>>, n: usize) -> Vec<CapturedEntry> {
+        for _ in 0..100 {
+            let entries = state.lock().await.entries.clone();
+            if entries.len() >= n {
+                return entries;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        panic!("timed out waiting for {n} captured entries");
+    }
+
+    /// Build a ProxyState whose upstream configs trust the given origin cert
+    /// (so the proxy can complete its upstream TLS handshake in tests).
+    fn proxy_state_trusting(
+        origin_cert: &rustls::pki_types::CertificateDer<'static>,
+        handler: Option<Arc<dyn NetworkHandler>>,
+    ) -> Arc<Mutex<ProxyState>> {
+        let upstream_cfg = client_config_trusting(origin_cert, &[b"h2", b"http/1.1"]);
+        Arc::new(Mutex::new(ProxyState {
+            entries: Vec::new(),
+            tls_client_config: upstream_cfg.clone(),
+            h2_client_config: upstream_cfg,
+            handler,
+            network_hosts: Vec::new(),
+            passthrough_hosts: Vec::new(),
+        }))
+    }
+
+    /// Build a client config that trusts the MITM CA, offering the given ALPN.
+    fn client_config_trusting_ca(ca: &MitmAuthority, alpn: &[&[u8]]) -> Arc<ClientConfig> {
+        let mut root_store = rustls::RootCertStore::empty();
+        let ca_pem = std::fs::read(ca.ca_pem_path()).unwrap();
+        let mut reader = std::io::BufReader::new(ca_pem.as_slice());
+        for cert in rustls_pemfile::certs(&mut reader) {
+            root_store.add(cert.unwrap()).unwrap();
+        }
+        let mut config = ClientConfig::builder()
+            .with_root_certificates(root_store)
+            .with_no_client_auth();
+        config.alpn_protocols = alpn.iter().map(|p| p.to_vec()).collect();
+        Arc::new(config)
+    }
+
+    #[tokio::test]
+    async fn h2_only_client_is_mitmd() {
+        let dir = tempfile::tempdir().unwrap();
+        let ca = Arc::new(
+            MitmAuthority::generate_new(&dir.path().join("ca.pem"), &dir.path().join("ca-key.pem"))
+                .unwrap(),
+        );
+
+        let (server_config, origin_cert) = origin_server_config("grpc.test", &[b"h2"]);
+        let origin_port =
+            spawn_h2_origin(server_config, b"pong", 1, Some(("grpc-status", "0"))).await;
+
+        let state = proxy_state_trusting(&origin_cert, None);
+        let (client_side, server_side) = tokio::io::duplex(65536);
+        let proxy_state = state.clone();
+        let proxy_ca = ca.clone();
+        let proxy_task = tokio::spawn(async move {
+            handle_transparent_tls(
+                server_side,
+                "127.0.0.1".to_string(),
+                origin_port,
+                proxy_state,
+                proxy_ca,
+            )
+            .await;
+        });
+
+        // The client trusts the MITM CA and offers only h2 (like gRPC-Core).
+        let client_config = client_config_trusting_ca(&ca, &[b"h2"]);
+        let (status, body, trailers) = run_h2_client(
+            client_config,
+            client_side,
+            "grpc.test",
+            "grpc.test",
+            "/svc.Service/Method",
+        )
+        .await;
+
+        assert_eq!(status, http::StatusCode::OK);
+        assert_eq!(body, b"pong");
+        let trailers = trailers.expect("grpc trailers must be forwarded through the MITM");
+        assert_eq!(
+            trailers.get("grpc-status").map(|v| v.as_bytes()),
+            Some(b"0".as_slice())
+        );
+
+        let entries = wait_for_entries(&state, 1).await;
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].route_action, "");
+        assert_eq!(entries[0].method, "POST");
+        assert_eq!(entries[0].url, "https://grpc.test/svc.Service/Method");
+        assert_eq!(entries[0].status_code, 200);
+        assert_eq!(entries[0].request_body, b"ping");
+        assert_eq!(entries[0].request_size, 4);
+        assert_eq!(entries[0].response_body, b"pong");
+        assert!(entries[0].is_https);
+
+        drop(proxy_task);
+    }
+
+    #[tokio::test]
+    async fn h2_streaming_response_does_not_buffer() {
+        let dir = tempfile::tempdir().unwrap();
+        let ca = Arc::new(
+            MitmAuthority::generate_new(&dir.path().join("ca.pem"), &dir.path().join("ca-key.pem"))
+                .unwrap(),
+        );
+
+        let (server_config, origin_cert) = origin_server_config("stream.test", &[b"h2"]);
+        // 4 × 64 KiB = 256 KiB, well past the default 64 KiB window: completing
+        // at all proves flow-control capacity is being released both ways.
+        let origin_port = spawn_h2_origin(server_config, &BIG_FRAME, 4, None).await;
+
+        let state = proxy_state_trusting(&origin_cert, None);
+        let (client_side, server_side) = tokio::io::duplex(65536);
+        let proxy_state = state.clone();
+        let proxy_ca = ca.clone();
+        let proxy_task = tokio::spawn(async move {
+            handle_transparent_tls(
+                server_side,
+                "127.0.0.1".to_string(),
+                origin_port,
+                proxy_state,
+                proxy_ca,
+            )
+            .await;
+        });
+
+        let client_config = client_config_trusting_ca(&ca, &[b"h2"]);
+        let (status, body, _trailers) = tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            run_h2_client(
+                client_config,
+                client_side,
+                "stream.test",
+                "stream.test",
+                "/Listen",
+            ),
+        )
+        .await
+        .expect("streaming exchange must not deadlock");
+
+        assert_eq!(status, http::StatusCode::OK);
+        assert_eq!(body.len(), 4 * 65536);
+
+        let entries = wait_for_entries(&state, 1).await;
+        assert_eq!(entries[0].response_size, 4 * 65536);
+        // The trace body is capped even though the full stream flowed through.
+        assert!(entries[0].response_body.len() <= MAX_BODY_SIZE);
+
+        drop(proxy_task);
     }
 }

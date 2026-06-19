@@ -16,6 +16,11 @@ tokio-stream = "0.1"
 hyper = { version = "1", features = ["server", "http1"] }
 hyper-util = { version = "0.1", features = ["tokio", "http1"] }
 http-body-util = "0.1"
+# HTTP/2 MITM interception (PILOT-245). `h2` is already in the lock file as a
+# transitive dep of tonic; promoting it to a direct dep lets the proxy frame
+# h2 itself. `http` provides the Request/Response/HeaderMap types h2 uses.
+h2 = "0.4"
+http = "1"
 bytes = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
