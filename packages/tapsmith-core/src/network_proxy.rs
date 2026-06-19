@@ -209,6 +209,14 @@ pub(crate) trait NetworkHandler: Send + Sync {
         _route_action: &str,
     ) {
     }
+
+    /// Whether any registered route matches `url`. The HTTP/2 path calls this
+    /// before reading the request body to decide whether to buffer the body
+    /// (so `on_request` can inspect/mutate it) or stream it straight through.
+    /// Default: nothing matches.
+    async fn matches(&self, _url: &str) -> bool {
+        false
+    }
 }
 
 /// Shared state for the proxy server.
@@ -1003,8 +1011,10 @@ async fn handle_mitm_h2<C>(
 }
 
 /// Proxy a single HTTP/2 stream (one request/response exchange) to the upstream
-/// origin. Runs the request and response body pumps concurrently so
-/// bidirectional / server-streaming gRPC doesn't deadlock.
+/// origin. When no `device.route()` matches, the request streams straight
+/// through (so bidirectional / server-streaming gRPC doesn't deadlock); when a
+/// route matches, the request body is buffered so the handler can mock, abort,
+/// or mutate it.
 async fn serve_h2_stream(
     request: http::Request<h2::RecvStream>,
     mut respond: h2::server::SendResponse<bytes::Bytes>,
@@ -1048,6 +1058,93 @@ async fn serve_h2_stream(
         h.notify_request(&notify_req, &cap_host, true).await;
     }
 
+    let url = format!("https://{cap_host}{path}");
+    let route_matches = match handler.as_ref() {
+        Some(h) => h.matches(&url).await,
+        None => false,
+    };
+
+    // Request-forwarding plan, possibly adjusted by a matching route below.
+    let mut complete_body: Option<Vec<u8>> = None; // Some => forward this buffered body, then end
+    let mut stream_prefix: Vec<u8> = Vec::new(); // bytes already read (overflow), sent before streaming
+    let mut route_action: &'static str = "";
+    let mut up_method = parts.method.clone();
+    let mut up_headers = parts.headers.clone();
+    let mut record_headers = req_headers.clone();
+
+    if route_matches {
+        let handler = handler.as_ref().expect("route_matches implies a handler");
+        match buffer_request_body(&mut client_recv, MAX_PROXY_BODY).await {
+            Ok((body, true)) => {
+                let _ = client_recv.trailers().await;
+                let mut req = ParsedRequest {
+                    method: method.to_string(),
+                    path: path.clone(),
+                    headers: req_headers.clone(),
+                    body,
+                    raw_bytes: Vec::new(),
+                    override_host: None,
+                };
+                match handler.on_request(&mut req, &cap_host, true).await {
+                    RequestOutcome::Synthesized(synth) => {
+                        write_h2_synthesized(
+                            &mut respond,
+                            synth,
+                            handler,
+                            &req,
+                            &cap_host,
+                            &state,
+                            start,
+                        )
+                        .await;
+                        return;
+                    }
+                    RequestOutcome::Continued => {
+                        route_action = "continued";
+                        if let Some(origin) = req.override_host.clone() {
+                            // Cross-origin continue: fetch the other origin and
+                            // relay its (buffered) response back to the client.
+                            forward_h2_cross_origin(
+                                &mut respond,
+                                &origin,
+                                &req,
+                                &cap_host,
+                                handler,
+                                &state,
+                                start,
+                            )
+                            .await;
+                            return;
+                        }
+                        up_method = http::Method::from_bytes(req.method.as_bytes())
+                            .unwrap_or(method.clone());
+                        up_headers = h2_headers_from_parsed(&req.headers);
+                        record_headers = req.headers.clone();
+                        complete_body = Some(req.body);
+                    }
+                    RequestOutcome::NotMatched => {
+                        complete_body = Some(req.body);
+                    }
+                }
+            }
+            Ok((prefix, false)) => {
+                // Body exceeds the buffer budget: can't safely run the handler,
+                // so forward what we read plus the rest of the stream untouched.
+                warn!(
+                    %cap_host,
+                    "h2 request body exceeds {MAX_PROXY_BODY} bytes on a routed URL; \
+                     forwarding without interception"
+                );
+                stream_prefix = prefix;
+            }
+            Err(e) => {
+                debug!(%cap_host, "h2 request buffering failed: {e}");
+                respond.send_reset(h2::Reason::INTERNAL_ERROR);
+                return;
+            }
+        }
+    }
+
     // Establish (or reuse) the upstream h2 connection.
     let send_req = match ensure_h2_upstream(
         &upstream,
@@ -1060,9 +1157,8 @@ async fn serve_h2_stream(
     {
         Some(s) => s,
         None => {
-            // Upstream isn't h2 (or connect failed). HTTP/1.1-origin
-            // translation lands in a later step; for now reset the stream
-            // and leave a breadcrumb mirroring the passthrough one.
+            // Upstream didn't negotiate h2 (or connect failed). Reset the
+            // stream and leave a breadcrumb mirroring the passthrough one.
             info!(
                 %hostname, upstream_port,
                 "h2 upstream unavailable (non-h2 origin?) — add the host to networkPassthroughHosts"
@@ -1082,17 +1178,20 @@ async fn serve_h2_stream(
         }
     };
 
-    // Build the upstream request from the client's parts. The URI is absolute
-    // (scheme + authority + path) because h2 reconstructs it from the pseudo
-    // headers, which is exactly what the client side needs to re-emit them.
+    // Build the upstream request. The URI is absolute (scheme + authority +
+    // path) because h2 reconstructs it from the pseudo headers, which is what
+    // the client side needs to re-emit them.
     let mut up_req = http::Request::new(());
-    *up_req.method_mut() = parts.method.clone();
+    *up_req.method_mut() = up_method;
     *up_req.uri_mut() = parts.uri.clone();
     *up_req.version_mut() = http::Version::HTTP_2;
-    *up_req.headers_mut() = parts.headers.clone();
+    *up_req.headers_mut() = up_headers;
 
-    let req_has_no_body = client_recv.is_end_stream();
-    let (resp_fut, up_send) = match send_req.send_request(up_req, req_has_no_body) {
+    // End the stream on the HEADERS frame only when there's definitely no body.
+    let empty_complete = matches!(&complete_body, Some(b) if b.is_empty());
+    let end_on_headers = empty_complete
+        || (complete_body.is_none() && stream_prefix.is_empty() && client_recv.is_end_stream());
+    let (resp_fut, up_send) = match send_req.send_request(up_req, end_on_headers) {
         Ok(x) => x,
         Err(e) => {
             debug!(%hostname, "h2 send_request failed: {e}");
@@ -1102,12 +1201,29 @@ async fn serve_h2_stream(
         }
     };
 
-    // Request body pump (client -> upstream).
-    let req_pump = async move {
+    // Request side: send a buffered body, or stream (with any overflow prefix).
+    let req_side = async move {
         let mut tee = Vec::new();
         let mut size: u64 = 0;
         let mut up_send = up_send;
-        if !req_has_no_body {
+        if let Some(body) = complete_body {
+            if !body.is_empty() {
+                size = body.len() as u64;
+                let cap = body.len().min(MAX_BODY_SIZE);
+                tee.extend_from_slice(&body[..cap]);
+                if let Err(e) = send_owned_body(&mut up_send, body, true).await {
+                    debug!("h2 buffered request send error: {e}");
+                }
+            }
+        } else if !end_on_headers {
+            if !stream_prefix.is_empty() {
+                size += stream_prefix.len() as u64;
+                let cap = stream_prefix.len().min(MAX_BODY_SIZE);
+                tee.extend_from_slice(&stream_prefix[..cap]);
+                if let Err(e) = send_owned_body(&mut up_send, stream_prefix, false).await {
+                    debug!("h2 request prefix send error: {e}");
+                }
+            }
             if let Err(e) = pump_body(&mut client_recv, &mut up_send, &mut tee, &mut size).await {
                 debug!("h2 request body pump error: {e}");
             }
@@ -1115,49 +1231,18 @@ async fn serve_h2_stream(
         (tee, size)
     };
 
-    // Response handling (upstream -> client).
-    let resp_pump = async move {
-        let response = match resp_fut.await {
-            Ok(r) => r,
-            Err(e) => {
-                debug!("h2 upstream response error: {e}");
-                respond.send_reset(h2::Reason::INTERNAL_ERROR);
-                return (0i32, Vec::new(), Vec::new(), 0u64);
-            }
-        };
-        let (rparts, mut up_recv) = response.into_parts();
-        let status_code = rparts.status.as_u16() as i32;
-        let resp_headers = parsed_headers_from_h2(&rparts.headers);
-
-        let mut client_resp = http::Response::new(());
-        *client_resp.status_mut() = rparts.status;
-        *client_resp.version_mut() = http::Version::HTTP_2;
-        *client_resp.headers_mut() = rparts.headers;
-
-        let mut client_send = match respond.send_response(client_resp, false) {
-            Ok(s) => s,
-            Err(e) => {
-                debug!("h2 send_response to client failed: {e}");
-                return (status_code, resp_headers, Vec::new(), 0u64);
-            }
-        };
-        let mut tee = Vec::new();
-        let mut size: u64 = 0;
-        if let Err(e) = pump_body(&mut up_recv, &mut client_send, &mut tee, &mut size).await {
-            debug!("h2 response body pump error: {e}");
-        }
-        (status_code, resp_headers, tee, size)
-    };
+    // Response side: relay the upstream response (streamed) back to the client.
+    let resp_side = forward_h2_response(resp_fut, respond);
 
     let ((req_tee, req_size), (status_code, resp_headers, resp_tee, resp_size)) =
-        tokio::join!(req_pump, resp_pump);
+        tokio::join!(req_side, resp_side);
 
     // Record the exchange. For never-ending streams this only runs once the
     // stream closes (documented limitation).
     let parsed_req = ParsedRequest {
         method: method.to_string(),
         path,
-        headers: req_headers,
+        headers: record_headers,
         body: req_tee,
         raw_bytes: Vec::new(),
         override_host: None,
@@ -1169,7 +1254,7 @@ async fn serve_h2_stream(
         raw_bytes: Vec::new(),
     };
     if let Some(h) = handler.as_ref() {
-        h.notify_response(&parsed_req, &parsed_resp, &cap_host, true, "")
+        h.notify_response(&parsed_req, &parsed_resp, &cap_host, true, route_action)
             .await;
     }
     record_entry_sized(
@@ -1179,11 +1264,250 @@ async fn serve_h2_stream(
         &cap_host,
         true,
         start,
-        "",
+        route_action,
         req_size,
         resp_size,
     )
     .await;
+}
+
+/// Await the upstream response, relay its head + streamed body + trailers to the
+/// client, and return `(status, headers, teed_body, total_size)` for capture.
+/// Consumes `respond` (it owns the client send half).
+async fn forward_h2_response(
+    resp_fut: h2::client::ResponseFuture,
+    mut respond: h2::server::SendResponse<bytes::Bytes>,
+) -> (i32, Vec<(String, String)>, Vec<u8>, u64) {
+    let response = match resp_fut.await {
+        Ok(r) => r,
+        Err(e) => {
+            debug!("h2 upstream response error: {e}");
+            respond.send_reset(h2::Reason::INTERNAL_ERROR);
+            return (0, Vec::new(), Vec::new(), 0);
+        }
+    };
+    let (rparts, mut up_recv) = response.into_parts();
+    let status_code = rparts.status.as_u16() as i32;
+    let resp_headers = parsed_headers_from_h2(&rparts.headers);
+
+    let mut client_resp = http::Response::new(());
+    *client_resp.status_mut() = rparts.status;
+    *client_resp.version_mut() = http::Version::HTTP_2;
+    *client_resp.headers_mut() = rparts.headers;
+
+    let mut client_send = match respond.send_response(client_resp, false) {
+        Ok(s) => s,
+        Err(e) => {
+            debug!("h2 send_response to client failed: {e}");
+            return (status_code, resp_headers, Vec::new(), 0);
+        }
+    };
+    let mut tee = Vec::new();
+    let mut size: u64 = 0;
+    if let Err(e) = pump_body(&mut up_recv, &mut client_send, &mut tee, &mut size).await {
+        debug!("h2 response body pump error: {e}");
+    }
+    (status_code, resp_headers, tee, size)
+}
+
+/// Write a synthesized response (route `fulfill`/`abort`) to the client h2
+/// stream and record it. Never touches the upstream.
+async fn write_h2_synthesized(
+    respond: &mut h2::server::SendResponse<bytes::Bytes>,
+    synth: ParsedResponse,
+    handler: &Arc<dyn NetworkHandler>,
+    req: &ParsedRequest,
+    cap_host: &str,
+    state: &Arc<Mutex<ProxyState>>,
+    start: u64,
+) {
+    if synth.status_code == 0 {
+        // Abort: reset the stream rather than send a response.
+        respond.send_reset(h2::Reason::CANCEL);
+        handler
+            .notify_response(req, &synth, cap_host, true, "aborted")
+            .await;
+        record_entry_sized(
+            state,
+            req,
+            &synth,
+            cap_host,
+            true,
+            start,
+            "aborted",
+            req.body.len() as u64,
+            0,
+        )
+        .await;
+        return;
+    }
+
+    let status =
+        http::StatusCode::from_u16(synth.status_code as u16).unwrap_or(http::StatusCode::OK);
+    let mut resp = http::Response::new(());
+    *resp.status_mut() = status;
+    *resp.version_mut() = http::Version::HTTP_2;
+    *resp.headers_mut() = h2_headers_from_parsed(&synth.headers);
+    let body = synth.body.clone();
+    let end = body.is_empty();
+    match respond.send_response(resp, end) {
+        Ok(mut send) => {
+            if !end {
+                let _ = send_owned_body(&mut send, body, true).await;
+            }
+        }
+        Err(e) => debug!("h2 fulfill send_response failed: {e}"),
+    }
+    handler
+        .notify_response(req, &synth, cap_host, true, "mocked")
+        .await;
+    let resp_size = synth.body.len() as u64;
+    record_entry_sized(
+        state,
+        req,
+        &synth,
+        cap_host,
+        true,
+        start,
+        "mocked",
+        req.body.len() as u64,
+        resp_size,
+    )
+    .await;
+}
+
+/// Handle a `route.continue({ url })` that redirects to a different origin: use
+/// the version-agnostic `fetch_upstream` helper and relay its buffered response.
+async fn forward_h2_cross_origin(
+    respond: &mut h2::server::SendResponse<bytes::Bytes>,
+    origin: &OverrideOrigin,
+    req: &ParsedRequest,
+    cap_host: &str,
+    handler: &Arc<dyn NetworkHandler>,
+    state: &Arc<Mutex<ProxyState>>,
+    start: u64,
+) {
+    let url = origin.url(&req.path);
+    match crate::route_handler::fetch_upstream(&url, &req.method, &req.headers, &req.body).await {
+        Some(resp) => {
+            let status = http::StatusCode::from_u16(resp.status_code as u16)
+                .unwrap_or(http::StatusCode::BAD_GATEWAY);
+            let mut hresp = http::Response::new(());
+            *hresp.status_mut() = status;
+            *hresp.version_mut() = http::Version::HTTP_2;
+            *hresp.headers_mut() = h2_headers_from_parsed(&resp.headers);
+            let body = resp.body.clone();
+            let end = body.is_empty();
+            match respond.send_response(hresp, end) {
+                Ok(mut send) => {
+                    if !end {
+                        let _ = send_owned_body(&mut send, body, true).await;
+                    }
+                }
+                Err(e) => debug!("h2 cross-origin send_response failed: {e}"),
+            }
+            handler
+                .notify_response(req, &resp, cap_host, true, "continued")
+                .await;
+            let resp_size = resp.body.len() as u64;
+            record_entry_sized(
+                state,
+                req,
+                &resp,
+                cap_host,
+                true,
+                start,
+                "continued",
+                req.body.len() as u64,
+                resp_size,
+            )
+            .await;
+        }
+        None => respond.send_reset(h2::Reason::INTERNAL_ERROR),
+    }
+}
+
+/// Buffer a request body up to `cap` bytes. Returns `(bytes, complete)` where
+/// `complete` is false if the body overflowed `cap` (more may remain on
+/// `recv`). Flow control is released as data is consumed.
+async fn buffer_request_body(
+    recv: &mut h2::RecvStream,
+    cap: usize,
+) -> Result<(Vec<u8>, bool), h2::Error> {
+    let mut body = Vec::new();
+    while let Some(chunk) = recv.data().await {
+        let chunk = chunk?;
+        recv.flow_control().release_capacity(chunk.len())?;
+        body.extend_from_slice(&chunk);
+        if body.len() > cap {
+            return Ok((body, false));
+        }
+    }
+    Ok((body, true))
+}
+
+/// Send an owned buffer over an h2 `SendStream` in send-window-sized pieces,
+/// setting END_STREAM on the final frame when `end` is true.
+async fn send_owned_body(
+    send: &mut h2::SendStream<bytes::Bytes>,
+    data: Vec<u8>,
+    end: bool,
+) -> Result<(), h2::Error> {
+    if data.is_empty() {
+        if end {
+            send.send_data(bytes::Bytes::new(), true)?;
+        }
+        return Ok(());
+    }
+    let mut buf = bytes::Bytes::from(data);
+    while !buf.is_empty() {
+        send.reserve_capacity(buf.len());
+        while send.capacity() == 0 {
+            match std::future::poll_fn(|cx| send.poll_capacity(cx)).await {
+                Some(Ok(_)) => {}
+                Some(Err(e)) => return Err(e),
+                None => return Ok(()),
+            }
+        }
+        let take = send.capacity().min(buf.len());
+        let piece = buf.split_to(take);
+        let last = end && buf.is_empty();
+        send.send_data(piece, last)?;
+    }
+    Ok(())
+}
+
+/// Build an h2 `HeaderMap` from the proxy's `(name, value)` pairs, dropping the
+/// hop-by-hop / framing headers HTTP/2 forbids or manages itself (so a
+/// `fulfill`/`continue` from the SDK can't produce an illegal frame).
+fn h2_headers_from_parsed(headers: &[(String, String)]) -> http::HeaderMap {
+    const SKIP: [&str; 7] = [
+        "connection",
+        "proxy-connection",
+        "keep-alive",
+        "transfer-encoding",
+        "upgrade",
+        "content-length",
+        "host",
+    ];
+    let mut map = http::HeaderMap::new();
+    for (name, value) in headers {
+        let lower = name.to_ascii_lowercase();
+        if SKIP.contains(&lower.as_str()) {
+            continue;
+        }
+        // `te` is only legal in h2 with the value "trailers".
+        if lower == "te" && !value.eq_ignore_ascii_case("trailers") {
+            continue;
+        }
+        if let (Ok(n), Ok(v)) = (
+            http::HeaderName::from_bytes(name.as_bytes()),
+            http::HeaderValue::from_str(value),
+        ) {
+            map.append(n, v);
+        }
+    }
+    map
 }
 
 /// Copy DATA frames and trailers from `recv` to `send`, threading flow control
@@ -4026,6 +4350,10 @@ mod tests {
 
     #[async_trait::async_trait]
     impl NetworkHandler for SyntheticHttpsHandler {
+        async fn matches(&self, _url: &str) -> bool {
+            true
+        }
+
         async fn notify_request(&self, req: &ParsedRequest, hostname: &str, is_https: bool) {
             let scheme = if is_https { "https" } else { "http" };
             let _ = self
@@ -4047,6 +4375,29 @@ mod tests {
                     ("Connection".to_string(), "close".to_string()),
                 ],
                 body: br#"{"ok":true}"#.to_vec(),
+                raw_bytes: Vec::new(),
+            })
+        }
+    }
+
+    /// Test handler that aborts every matched request.
+    struct AbortHandler;
+
+    #[async_trait::async_trait]
+    impl NetworkHandler for AbortHandler {
+        async fn matches(&self, _url: &str) -> bool {
+            true
+        }
+        async fn on_request(
+            &self,
+            _req: &mut ParsedRequest,
+            _hostname: &str,
+            _is_https: bool,
+        ) -> RequestOutcome {
+            RequestOutcome::Synthesized(ParsedResponse {
+                status_code: 0,
+                headers: Vec::new(),
+                body: Vec::new(),
                 raw_bytes: Vec::new(),
             })
         }
@@ -4519,8 +4870,8 @@ mod tests {
         );
 
         // Client trusts the MITM CA and offers only http/1.1. The proxy MITMs
-        // it on the HTTP/1.1 pipeline. (Dual-protocol clients now negotiate h2
-        // and are covered by the h2 MITM tests.)
+        // it on the HTTP/1.1 pipeline. (Dual-protocol clients also negotiate
+        // http/1.1 by server preference; only h2-only clients take the h2 path.)
         let client_config = client_config_trusting_ca(&ca, &[b"http/1.1"]);
 
         let (seen_tx, mut seen_rx) = tokio::sync::mpsc::unbounded_channel();
@@ -4871,8 +5222,10 @@ mod tests {
         });
 
         let client_config = client_config_trusting_ca(&ca, &[b"h2"]);
+        // Generous timeout: it only exists to catch a flow-control deadlock
+        // (which would hang forever); the exchange itself completes in ms.
         let (status, body, _trailers) = tokio::time::timeout(
-            std::time::Duration::from_secs(10),
+            std::time::Duration::from_secs(30),
             run_h2_client(
                 client_config,
                 client_side,
@@ -4891,6 +5244,220 @@ mod tests {
         assert_eq!(entries[0].response_size, 4 * 65536);
         // The trace body is capped even though the full stream flowed through.
         assert!(entries[0].response_body.len() <= MAX_BODY_SIZE);
+
+        drop(proxy_task);
+    }
+
+    /// ProxyState with a handler and webpki-root upstream config (no real
+    /// origin needed for mock/abort tests).
+    fn proxy_state_with_handler(handler: Arc<dyn NetworkHandler>) -> Arc<Mutex<ProxyState>> {
+        let mut root_store = rustls::RootCertStore::empty();
+        root_store.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
+        let cfg = Arc::new(
+            ClientConfig::builder()
+                .with_root_certificates(root_store)
+                .with_no_client_auth(),
+        );
+        Arc::new(Mutex::new(ProxyState {
+            entries: Vec::new(),
+            tls_client_config: cfg.clone(),
+            h2_client_config: cfg,
+            handler: Some(handler),
+            network_hosts: Vec::new(),
+            passthrough_hosts: Vec::new(),
+        }))
+    }
+
+    #[tokio::test]
+    async fn h2_route_mock_synthesizes_without_upstream() {
+        let dir = tempfile::tempdir().unwrap();
+        let ca = Arc::new(
+            MitmAuthority::generate_new(&dir.path().join("ca.pem"), &dir.path().join("ca-key.pem"))
+                .unwrap(),
+        );
+
+        let (seen_tx, _seen_rx) = tokio::sync::mpsc::unbounded_channel();
+        let state = proxy_state_with_handler(Arc::new(SyntheticHttpsHandler { seen_tx }));
+        let (client_side, server_side) = tokio::io::duplex(65536);
+        let proxy_state = state.clone();
+        let proxy_ca = ca.clone();
+        // Upstream is TEST-NET 192.0.2.1:443 — never dialed because the route
+        // synthesizes the response.
+        let proxy_task = tokio::spawn(async move {
+            handle_transparent_tls(
+                server_side,
+                "192.0.2.1".to_string(),
+                443,
+                proxy_state,
+                proxy_ca,
+            )
+            .await;
+        });
+
+        let client_config = client_config_trusting_ca(&ca, &[b"h2"]);
+        let (status, body, _trailers) = run_h2_client(
+            client_config,
+            client_side,
+            "example.test",
+            "example.test",
+            "/users/1",
+        )
+        .await;
+
+        assert_eq!(status, http::StatusCode::OK);
+        assert_eq!(body, br#"{"ok":true}"#);
+
+        let entries = wait_for_entries(&state, 1).await;
+        assert_eq!(entries[0].route_action, "mocked");
+        assert_eq!(entries[0].url, "https://example.test/users/1");
+
+        drop(proxy_task);
+    }
+
+    #[tokio::test]
+    async fn h2_route_abort_resets_stream() {
+        let dir = tempfile::tempdir().unwrap();
+        let ca = Arc::new(
+            MitmAuthority::generate_new(&dir.path().join("ca.pem"), &dir.path().join("ca-key.pem"))
+                .unwrap(),
+        );
+
+        let state = proxy_state_with_handler(Arc::new(AbortHandler));
+        let (client_side, server_side) = tokio::io::duplex(65536);
+        let proxy_state = state.clone();
+        let proxy_ca = ca.clone();
+        let proxy_task = tokio::spawn(async move {
+            handle_transparent_tls(
+                server_side,
+                "192.0.2.1".to_string(),
+                443,
+                proxy_state,
+                proxy_ca,
+            )
+            .await;
+        });
+
+        let client_config = client_config_trusting_ca(&ca, &[b"h2"]);
+        let server_name =
+            rustls::pki_types::ServerName::try_from("example.test".to_string()).unwrap();
+        let tls = TlsConnector::from(client_config)
+            .connect(server_name, client_side)
+            .await
+            .unwrap();
+        let (send_req, conn) = h2::client::handshake(tls).await.unwrap();
+        tokio::spawn(async move {
+            let _ = conn.await;
+        });
+        let mut send_req = send_req.ready().await.unwrap();
+        let req = http::Request::builder()
+            .method("POST")
+            .uri("https://example.test/x")
+            .body(())
+            .unwrap();
+        let (resp_fut, mut body_send) = send_req.send_request(req, false).unwrap();
+        body_send
+            .send_data(bytes::Bytes::from_static(b"ping"), true)
+            .unwrap();
+
+        assert!(
+            resp_fut.await.is_err(),
+            "an aborted h2 stream must surface as an error to the client"
+        );
+
+        let entries = wait_for_entries(&state, 1).await;
+        assert_eq!(entries[0].route_action, "aborted");
+
+        drop(proxy_task);
+    }
+
+    /// Test handler that appends `x-mut: yes` and continues the request.
+    struct ContinueHandler;
+
+    #[async_trait::async_trait]
+    impl NetworkHandler for ContinueHandler {
+        async fn matches(&self, _url: &str) -> bool {
+            true
+        }
+        async fn on_request(
+            &self,
+            req: &mut ParsedRequest,
+            _hostname: &str,
+            _is_https: bool,
+        ) -> RequestOutcome {
+            req.headers.push(("x-mut".to_string(), "yes".to_string()));
+            RequestOutcome::Continued
+        }
+    }
+
+    /// Spawn a one-connection h2 origin that echoes the value of `echo_header`
+    /// from each request back as the response body.
+    async fn spawn_h2_echo_origin(
+        server_config: Arc<rustls::ServerConfig>,
+        echo_header: &'static str,
+    ) -> u16 {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            let (tcp, _) = listener.accept().await.unwrap();
+            let acceptor = tokio_rustls::TlsAcceptor::from(server_config);
+            let tls = acceptor.accept(tcp).await.unwrap();
+            let mut conn = h2::server::handshake(tls).await.unwrap();
+            while let Some(Ok((req, mut respond))) = conn.accept().await {
+                let val = req
+                    .headers()
+                    .get(echo_header)
+                    .map(|v| v.to_str().unwrap_or("").to_string())
+                    .unwrap_or_else(|| "none".to_string());
+                let mut body = req.into_body();
+                while let Some(Ok(chunk)) = body.data().await {
+                    let _ = body.flow_control().release_capacity(chunk.len());
+                }
+                let _ = body.trailers().await;
+                let response = http::Response::builder().status(200).body(()).unwrap();
+                let mut send = respond.send_response(response, false).unwrap();
+                send.send_data(bytes::Bytes::from(val), true).unwrap();
+            }
+        });
+        port
+    }
+
+    #[tokio::test]
+    async fn h2_route_continue_forwards_mutated_request() {
+        let dir = tempfile::tempdir().unwrap();
+        let ca = Arc::new(
+            MitmAuthority::generate_new(&dir.path().join("ca.pem"), &dir.path().join("ca-key.pem"))
+                .unwrap(),
+        );
+
+        let (server_config, origin_cert) = origin_server_config("api.test", &[b"h2"]);
+        let origin_port = spawn_h2_echo_origin(server_config, "x-mut").await;
+
+        let state = proxy_state_trusting(&origin_cert, Some(Arc::new(ContinueHandler)));
+        let (client_side, server_side) = tokio::io::duplex(65536);
+        let proxy_state = state.clone();
+        let proxy_ca = ca.clone();
+        let proxy_task = tokio::spawn(async move {
+            handle_transparent_tls(
+                server_side,
+                "127.0.0.1".to_string(),
+                origin_port,
+                proxy_state,
+                proxy_ca,
+            )
+            .await;
+        });
+
+        let client_config = client_config_trusting_ca(&ca, &[b"h2"]);
+        let (status, body, _trailers) =
+            run_h2_client(client_config, client_side, "api.test", "api.test", "/x").await;
+
+        assert_eq!(status, http::StatusCode::OK);
+        // The origin echoes the header the handler injected, proving the
+        // mutated request was forwarded upstream.
+        assert_eq!(body, b"yes");
+
+        let entries = wait_for_entries(&state, 1).await;
+        assert_eq!(entries[0].route_action, "continued");
 
         drop(proxy_task);
     }

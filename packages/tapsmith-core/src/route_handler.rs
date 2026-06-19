@@ -289,6 +289,10 @@ impl RouteInterceptHandler {
 
 #[async_trait::async_trait]
 impl NetworkHandler for RouteInterceptHandler {
+    async fn matches(&self, url: &str) -> bool {
+        self.match_route(url).await.is_some()
+    }
+
     async fn on_request(
         &self,
         req: &mut ParsedRequest,
