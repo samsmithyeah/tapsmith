@@ -83,13 +83,13 @@
     "vitest": "^3.0.0"
   },
   "optionalDependencies": {
-    "@tapsmith/core-darwin-arm64": "0.2.0",
-    "@tapsmith/core-darwin-x64": "0.2.0",
-    "@tapsmith/core-linux-arm64": "0.2.0",
-    "@tapsmith/core-linux-x64": "0.2.0",
-    "@tapsmith/agent-android": "0.2.0",
-    "@tapsmith/agent-ios-simulator-arm64": "0.2.0",
-    "@tapsmith/agent-ios-simulator-x64": "0.2.0"
+    "@tapsmith/core-darwin-arm64": "*",
+    "@tapsmith/core-darwin-x64": "*",
+    "@tapsmith/core-linux-arm64": "*",
+    "@tapsmith/core-linux-x64": "*",
+    "@tapsmith/agent-android": "*",
+    "@tapsmith/agent-ios-simulator-arm64": "*",
+    "@tapsmith/agent-ios-simulator-x64": "*"
   },
   "engines": {
     "node": ">=22"
