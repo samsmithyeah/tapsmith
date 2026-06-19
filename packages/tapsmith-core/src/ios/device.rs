@@ -651,27 +651,32 @@ pub async fn prepare_grpc_trust(udid: &str, bundle_id: &str) {
     let Some(roots) = stage_grpc_roots_in_container(udid, bundle_id).await else {
         return;
     };
+    // Trust the MITM CA.
+    sim_setenv(udid, "GRPC_DEFAULT_SSL_ROOTS_FILE_PATH", &roots).await;
+    // Force gRPC-Core onto the platform `getaddrinfo` resolver instead of its
+    // in-process c-ares resolver. c-ares sends DNS straight from the app
+    // process, so the PID-based capture redirector claims those UDP packets and
+    // drops them (TCP-only) → DNS times out (`-65568`) and Firestore never
+    // connects. `getaddrinfo` resolves via mDNSResponder (a separate process,
+    // not intercepted), the same path NSURLSession uses successfully.
+    sim_setenv(udid, "GRPC_DNS_RESOLVER", "native").await;
+}
+
+/// Set an environment variable in the simulator's launchd (inherited by apps
+/// launched afterward, including the XCUITest-agent-launched target app).
+async fn sim_setenv(udid: &str, key: &str, value: &str) {
     match Command::new("xcrun")
-        .args([
-            "simctl",
-            "spawn",
-            udid,
-            "launchctl",
-            "setenv",
-            "GRPC_DEFAULT_SSL_ROOTS_FILE_PATH",
-            &roots,
-        ])
+        .args(["simctl", "spawn", udid, "launchctl", "setenv", key, value])
         .output()
         .await
     {
-        Ok(o) if o.status.success() => {
-            debug!(roots = %roots, "published GRPC_DEFAULT_SSL_ROOTS_FILE_PATH to simulator launchd")
-        }
+        Ok(o) if o.status.success() => debug!(key, value, "published env to simulator launchd"),
         Ok(o) => debug!(
+            key,
             stderr = %String::from_utf8_lossy(&o.stderr),
-            "launchctl setenv for gRPC roots returned non-zero"
+            "launchctl setenv returned non-zero"
         ),
-        Err(e) => debug!(error = %e, "failed to run launchctl setenv for gRPC roots"),
+        Err(e) => debug!(key, error = %e, "failed to run launchctl setenv"),
     }
 }
 
