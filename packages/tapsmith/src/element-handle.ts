@@ -824,6 +824,9 @@ export class ElementHandle {
       andHandle: h._options.andHandle ? ElementHandle._cloneWithTimeout(h._options.andHandle, timeoutMs) : undefined,
       orSelf: h._options.orSelf ? ElementHandle._cloneWithTimeout(h._options.orSelf, timeoutMs) : undefined,
       orHandle: h._options.orHandle ? ElementHandle._cloneWithTimeout(h._options.orHandle, timeoutMs) : undefined,
+      // Re-time the scope parent too, else resolving it during a poll tick
+      // could block for the parent's full (e.g. 30s) timeout when not found.
+      scopeParent: h._options.scopeParent ? ElementHandle._cloneWithTimeout(h._options.scopeParent, timeoutMs) : undefined,
     });
   }
 
@@ -843,9 +846,10 @@ export class ElementHandle {
     if (
       this._options.filters?.length ||
       this._options.andHandle ||
-      this._options.orHandle
+      this._options.orHandle ||
+      this._options.scopeParent !== undefined
     ) {
-      // Filter/and/or chains need client-side resolution; clone the whole
+      // Filter/and/or/scope chains need client-side resolution; clone the whole
       // handle tree with a short timeout so a single assertion poll tick
       // stays fast — and/or operands carry their own (long) timeouts and
       // would otherwise cap each sub-query at e.g. 30s.

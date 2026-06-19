@@ -241,6 +241,18 @@ describe('getBy* scoping', () => {
       expect(count).toBe(2);
     });
 
+    it('honors the parent scope on the assertion path (not a global query)', async () => {
+      const device = scopedClient();
+      // Scoped to the first dialog → only b1 is in scope. Assertions resolve
+      // through _resolveForAssertion, which must apply the scope rather than
+      // querying buttons globally (which would yield b1 + b2).
+      const scoped = new ElementHandle(device, _testId('dialog'), 5000)
+        .first()
+        .getByRole('button');
+      const els = await scoped._resolveForAssertion(5000, false);
+      expect(els.map((e) => e.elementId)).toEqual(['b1']);
+    });
+
     it('supports re-scoping off an already-scoped handle', async () => {
       const device = scopedClient();
       // dialog.first() → scoped buttons; .first() of those → scope again.
