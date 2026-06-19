@@ -457,7 +457,7 @@ fn now_ms() -> u64 {
 /// IPv6 flow fails to dial — so the app's IPv6-first connections (Firestore
 /// gRPC, etc.) break under capture. Hostnames and already-bracketed literals
 /// pass through unchanged.
-fn join_host_port(host: &str, port: u16) -> String {
+pub(crate) fn join_host_port(host: &str, port: u16) -> String {
     if host.contains(':') && !host.starts_with('[') {
         format!("[{host}]:{port}")
     } else {
