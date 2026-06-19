@@ -373,8 +373,8 @@ export interface TraceConfig {
    *       networkPassthroughHosts: ['pinned-api.example.com'],
    *     }
    *
-   * Note that HTTP/2-only traffic (gRPC, Firestore) is detected and
-   * passed through automatically — no configuration needed.
+   * HTTP/2 traffic (including gRPC and Firestore) is intercepted and
+   * captured by default; add a host here only to opt it back out.
    *
    * Patterns match against the TLS SNI hostname with the same glob
    * syntax as `networkHosts`.
@@ -498,8 +498,9 @@ export interface NetworkEntry {
    * How this request was handled by a route: "mocked", "aborted",
    * "continued", "fetched". The special value "passthrough" marks a
    * synthetic per-connection entry for TLS traffic tunneled without MITM
-   * (HTTP/2-only clients or `trace.networkPassthroughHosts`) — no
-   * request/response detail is available for those.
+   * (hosts in `trace.networkPassthroughHosts`, or clients whose ALPN offers
+   * no protocol the proxy speaks) — no request/response detail is available
+   * for those.
    */
   routeAction?: 'mocked' | 'aborted' | 'continued' | 'fetched' | 'passthrough'
 }

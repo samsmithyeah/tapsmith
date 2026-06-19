@@ -40,7 +40,7 @@ npx tapsmith test --trace on --no-network
 
 When network capture is off, `device.route()` silently registers the handler but it will never fire because no traffic passes through the proxy.
 
-Route handlers also never fire for **HTTP/2-only traffic** (gRPC, Firestore) or hosts listed in `networkPassthroughHosts` -- those connections are tunneled end-to-end without decryption. See [HTTP/2, gRPC, and passthrough connections](#http2-grpc-and-passthrough-connections).
+HTTP/2 traffic (including gRPC and Firestore) is intercepted just like HTTP/1.1, so route handlers fire for it too. Route handlers only never fire for hosts listed in `networkPassthroughHosts`, whose connections are tunneled end-to-end without decryption. See [HTTP/2, gRPC, and passthrough connections](#http2-grpc-and-passthrough-connections).
 
 ---
 
@@ -740,13 +740,19 @@ Captured requests appear in the trace viewer's **Network tab** alongside screens
 
 ### HTTP/2, gRPC, and passthrough connections
 
-Capture decrypts and records **HTTP/1.1** traffic. Most mobile HTTP clients (URLSession, OkHttp, fetch/axios) offer both HTTP/2 and HTTP/1.1 during the TLS handshake, so the proxy negotiates HTTP/1.1 with them and captures normally.
+Capture decrypts and records both **HTTP/1.1** and **HTTP/2** traffic. Most mobile HTTP clients (URLSession, OkHttp, fetch/axios) offer both protocols during the TLS handshake; the proxy negotiates HTTP/1.1 with them (server preference) and captures normally.
 
-Clients that *require* HTTP/2 -- gRPC libraries, including **Firestore** and other Firebase real-time services -- cannot speak HTTP/1.1 at all. The proxy detects these connections from the TLS handshake (an ALPN offer with no HTTP/1.1) and automatically tunnels them end-to-end to the real server instead of intercepting them. The app works exactly as it does outside Tapsmith; the trade-off is that the tunneled traffic cannot be captured or intercepted.
+Clients that *require* HTTP/2 -- gRPC libraries, including **Firestore** and other Firebase real-time services -- are also intercepted now: the proxy speaks HTTP/2 to the app and to the origin, forwarding DATA frames and trailers (so `grpc-status` is preserved) while recording each request/response. `device.route()`, `device.waitForRequest()`, and `device.waitForResponse()` work for these requests just like HTTP/1.1.
 
-Each tunneled connection appears in the Network tab as a single `CONNECT` row with a `passthrough` badge (one row per connection -- the individual requests inside are encrypted end-to-end and invisible to the proxy).
+A few HTTP/2 specifics to be aware of:
 
-You can also force passthrough for specific hosts with `networkPassthroughHosts` -- useful when an app uses **certificate pinning** for a host, which MITM interception would otherwise break:
+- **Streaming / long-lived calls** (e.g. Firestore `Listen`) are forwarded incrementally and only appear in the trace once the stream closes -- a never-ending server stream stays open and is recorded at teardown.
+- Captured HTTP/2 header names are lowercase (that's how HTTP/2 sends them on the wire).
+- Request/response **bodies in the trace are capped** (~1 MB), but the full stream is always forwarded to the app.
+
+Hosts listed in `networkPassthroughHosts` are still tunneled end-to-end without decryption (see below). A tunneled connection appears in the Network tab as a single `CONNECT` row with a `passthrough` badge; the requests inside are encrypted end-to-end and invisible to the proxy, so `device.route()` / `waitForRequest` / `waitForResponse` can never match them.
+
+Force passthrough for specific hosts with `networkPassthroughHosts` -- useful when an app uses **certificate pinning** for a host, which MITM interception would otherwise break:
 
 ```typescript
 import { defineConfig } from "tapsmith"
@@ -761,7 +767,7 @@ export default defineConfig({
 
 Patterns match against the TLS SNI hostname with the same glob syntax as `networkHosts`.
 
-Because passthrough connections are never decrypted, `device.route()`, `device.waitForRequest()`, and `device.waitForResponse()` can never match traffic on them. If a mock for a gRPC/Firestore endpoint never fires, this is why.
+Because passthrough connections are never decrypted, `device.route()`, `device.waitForRequest()`, and `device.waitForResponse()` can never match traffic on them. If a mock for a host you've added to `networkPassthroughHosts` never fires, this is why.
 
 ### Viewing network data in traces
 
