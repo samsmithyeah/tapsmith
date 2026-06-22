@@ -1312,17 +1312,24 @@ export class ElementHandle {
       const durationMs = Date.now() - start;
       const errMsg = err instanceof Error ? err.message : String(err);
       const errStack = err instanceof Error ? err.stack : undefined;
-      const { captures } = await trace.collector.captureBeforeAction(
-        trace.takeScreenshot, trace.captureHierarchy,
-      );
-      trace.collector.addActionEvent({
-        category, action, selector,
-        duration: durationMs, success: false, error: errMsg, errorStack: errStack,
-        waitTime: durationMs, sourceLocation, stack,
-        hasScreenshotBefore: !!captures.screenshotBefore, hasScreenshotAfter: false,
-        hasHierarchyBefore: !!captures.hierarchyBefore, hasHierarchyAfter: false,
-        log: [`${action} failed: ${errMsg}`],
-      });
+      // Best-effort trace emission — a failure here (disk full, tracing
+      // teardown, a throwing _onEvent listener) must never mask the real
+      // resolution error the user needs to see.
+      try {
+        const { captures } = await trace.collector.captureBeforeAction(
+          trace.takeScreenshot, trace.captureHierarchy,
+        );
+        trace.collector.addActionEvent({
+          category, action, selector,
+          duration: durationMs, success: false, error: errMsg, errorStack: errStack,
+          waitTime: durationMs, sourceLocation, stack,
+          hasScreenshotBefore: !!captures.screenshotBefore, hasScreenshotAfter: false,
+          hasHierarchyBefore: !!captures.hierarchyBefore, hasHierarchyAfter: false,
+          log: [`${action} failed: ${errMsg}`],
+        });
+      } catch {
+        // Swallow tracing errors; the original resolution error is rethrown below.
+      }
       throw err;
     }
   }
