@@ -158,6 +158,16 @@ The `Device` class is the primary interface for interacting with a mobile device
 
 In addition to the locator methods above, `Device` provides device-level actions that don't target a specific element.
 
+### `device.platform: "android" | "ios"`
+
+Read-only property exposing the platform the device is running. Useful for branching on platform-specific behaviour in tests (e.g. native dialog labels or soft-keyboard handling).
+
+```typescript
+if (device.platform === "android") {
+  await device.pressBack();
+}
+```
+
 ### `device.swipe(direction: string, options?: SwipeOptions): Promise<void>`
 
 Perform a swipe gesture across the screen in the given direction.

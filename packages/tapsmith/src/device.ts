@@ -173,6 +173,15 @@ export class Device {
     );
   }
 
+  /**
+   * The platform this device is running — `'android'` or `'ios'`. Useful for
+   * branching on platform-specific behaviour in tests (e.g. soft-keyboard
+   * handling or native dialog labels).
+   */
+  get platform(): Platform {
+    return this._platform;
+  }
+
   private _ensureRouteManager(): NetworkRouteManager {
     if (!this._routeManager) {
       this._routeManager = new NetworkRouteManager(this._client);
