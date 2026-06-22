@@ -1,6 +1,6 @@
 # Network Interception and Capture
 
-Tapsmith provides Playwright-style network interception for mobile apps. You can mock API responses, abort requests, modify traffic in flight, and wait for specific network activity -- all from your test code. Network requests also appear in the trace viewer when capture is enabled.
+Tapsmith provides Playwright-style network interception for mobile apps. You can mock API responses, abort requests, modify traffic in flight, and wait for specific network activity -- all from your test code. Network requests also appear in the trace viewer when capture is enabled. Traffic that cannot be decrypted can be tunneled instead: either by configuring `networkPassthroughHosts`, or automatically for HTTP/2-capable clients that reject Tapsmith's generated certificate.
 
 This guide covers two related features:
 
@@ -40,7 +40,7 @@ npx tapsmith test --trace on --no-network
 
 When network capture is off, `device.route()` silently registers the handler but it will never fire because no traffic passes through the proxy.
 
-HTTP/2 traffic (including gRPC and Firestore) is intercepted just like HTTP/1.1, so route handlers fire for it too. Route handlers only never fire for hosts listed in `networkPassthroughHosts`, whose connections are tunneled end-to-end without decryption. See [HTTP/2, gRPC, and passthrough connections](#http2-grpc-and-passthrough-connections).
+HTTP/2 traffic is intercepted when the client accepts Tapsmith's MITM CA. Some gRPC clients, including Firestore SDKs that use embedded roots or certificate pinning, reject external MITM certificates; Tapsmith detects that rejection for HTTP/2-capable clients and tunnels later connections so the app keeps working, but route handlers and waiters cannot see the encrypted requests inside. See [HTTP/2, gRPC, and passthrough connections](#http2-grpc-and-passthrough-connections).
 
 ---
 
@@ -734,15 +734,17 @@ The Rust daemon (`tapsmith-core`) runs a local MITM proxy. Traffic routing depen
 | **iOS simulator** | macOS Network Extension (per-PID filtering) | Only the simulator's process tree |
 | **iOS physical** | Wi-Fi proxy via `.mobileconfig` profile | System-wide (all apps on the device) |
 
-HTTPS is decrypted using an auto-generated CA certificate installed on the device. On iOS simulators, this is injected transparently via `xcrun simctl keychain add-root-cert`. On Android, it is pushed via ADB.
+HTTPS is decrypted using an auto-generated CA certificate installed on the device. On iOS simulators, this is injected transparently via `xcrun simctl keychain add-root-cert`. On Android, it is pushed via ADB. Apps or SDKs that use embedded roots, certificate pinning, custom TLS verification, or another transport Tapsmith cannot speak may still reject that CA. Configure `networkPassthroughHosts` for those hosts; HTTP/2-capable clients that reject the generated certificate may also be tunneled dynamically.
 
 Captured requests appear in the trace viewer's **Network tab** alongside screenshots, view hierarchy snapshots, and console output.
 
 ### HTTP/2, gRPC, and passthrough connections
 
-Capture decrypts and records both **HTTP/1.1** and **HTTP/2** traffic. Most mobile HTTP clients (URLSession, OkHttp, fetch/axios) offer both protocols during the TLS handshake; the proxy negotiates HTTP/1.1 with them (server preference) and captures normally.
+Capture decrypts and records both **HTTP/1.1** and **HTTP/2** traffic when the client accepts Tapsmith's MITM certificate. Most mobile HTTP clients (URLSession, OkHttp, fetch/axios) offer both protocols during the TLS handshake; the proxy negotiates HTTP/1.1 with them (server preference) and captures normally.
 
-Clients that *require* HTTP/2 -- gRPC libraries, including **Firestore** and other Firebase real-time services -- are also intercepted now: the proxy speaks HTTP/2 to the app and to the origin, forwarding DATA frames and trailers (so `grpc-status` is preserved) while recording each request/response. `device.route()`, `device.waitForRequest()`, and `device.waitForResponse()` work for these requests just like HTTP/1.1.
+Clients that *require* HTTP/2, such as gRPC libraries, can be captured too: the proxy speaks HTTP/2 to the app and to the origin, forwarding DATA frames and trailers (so `grpc-status` is preserved) while recording each request/response. `device.route()`, `device.waitForRequest()`, and `device.waitForResponse()` work for those requests only when the client trusts the generated Tapsmith certificate.
+
+Some clients do not trust the device or simulator trust store. Firestore's native SDKs are a common example: their gRPC stack may use embedded root certificates or explicit TLS credentials, so they reject Tapsmith's generated certificate even though the Tapsmith CA is installed on the device. When an HTTP/2-capable client rejects the generated certificate, Tapsmith records that host and tunnels later connections for the same SNI. The app continues to work, and the trace shows a single `CONNECT` row marked `passthrough`, but the encrypted requests inside are not available to `device.route()`, `device.waitForRequest()`, `device.waitForResponse()`, or the trace viewer.
 
 A few HTTP/2 specifics to be aware of:
 
@@ -750,7 +752,7 @@ A few HTTP/2 specifics to be aware of:
 - Captured HTTP/2 header names are lowercase (that's how HTTP/2 sends them on the wire).
 - Request/response **bodies in the trace are capped** (~1 MB), but the full stream is always forwarded to the app.
 
-Hosts listed in `networkPassthroughHosts` are still tunneled end-to-end without decryption (see below). A tunneled connection appears in the Network tab as a single `CONNECT` row with a `passthrough` badge; the requests inside are encrypted end-to-end and invisible to the proxy, so `device.route()` / `waitForRequest` / `waitForResponse` can never match them.
+Hosts listed in `networkPassthroughHosts`, and HTTP/2-capable hosts that dynamically fall back after a MITM certificate rejection, are tunneled end-to-end without decryption (see below). A tunneled connection appears in the Network tab as a single `CONNECT` row with a `passthrough` badge; the requests inside are encrypted end-to-end and invisible to the proxy, so `device.route()` / `waitForRequest` / `waitForResponse` can never match them.
 
 Force passthrough for specific hosts with `networkPassthroughHosts` -- useful when an app uses **certificate pinning** for a host, which MITM interception would otherwise break:
 
@@ -767,7 +769,7 @@ export default defineConfig({
 
 Patterns match against the TLS SNI hostname with the same glob syntax as `networkHosts`.
 
-Because passthrough connections are never decrypted, `device.route()`, `device.waitForRequest()`, and `device.waitForResponse()` can never match traffic on them. If a mock for a host you've added to `networkPassthroughHosts` never fires, this is why.
+Because passthrough connections are never decrypted, `device.route()`, `device.waitForRequest()`, and `device.waitForResponse()` can never match traffic on them. If a mock for a host you've added to `networkPassthroughHosts` never fires, or a Firestore/pinned-host request only appears as `CONNECT passthrough`, this is why.
 
 ### Viewing network data in traces
 

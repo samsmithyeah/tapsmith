@@ -1633,7 +1633,7 @@ ${bold('Usage:')}
   tapsmith build-ios-agent           Build the signed TapsmithAgent runner for physical iOS devices
   tapsmith configure-ios-network <udid>   Generate a network capture profile (.mobileconfig) for a physical iOS device
   tapsmith refresh-ios-network <udid>     Regenerate the network capture profile after a host Wi-Fi change
-  tapsmith verify-ios-network <udid>      Verify decrypted HTTPS capture is working on a physical iOS device
+  tapsmith verify-ios-network <udid>      Verify HTTPS capture for a normal system-trust client on a physical iOS device
   tapsmith init                      Initialize a new Tapsmith project (interactive wizard)
   tapsmith doctor                    Check system health and dependencies
   tapsmith mcp-server [--config file] Run MCP server for LLM/agent integration (stdio transport)

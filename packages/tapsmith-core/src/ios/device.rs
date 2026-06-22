@@ -632,27 +632,16 @@ pub async fn launch_app(udid: &str, bundle_id: &str) -> Result<()> {
     Ok(())
 }
 
-/// Make the app's gRPC-Core (Firestore et al.) trust the MITM CA so its h2
-/// connections can be intercepted (PILOT-245).
+/// Prepare simulator launchd environment for gRPC-Core clients (Firestore et
+/// al.) under network capture (PILOT-245).
 ///
-/// gRPC-Core verifies TLS against its own bundled CA roots, not the iOS system
-/// trust store where we install the MITM CA — so by default it rejects our cert
-/// and its h2 traffic can't be captured. `GRPC_DEFAULT_SSL_ROOTS_FILE_PATH`
-/// overrides those roots. We (1) stage the CA inside the app's own Data
-/// container — the host `~/.tapsmith/ca.pem` is outside the sim app sandbox and
-/// reads as "No such file" — and (2) publish the path through the simulator's
-/// launchd env via `launchctl setenv`, which apps launched afterward (including
-/// the XCUITest-agent-launched target app) inherit.
-///
-/// Best-effort: silently no-ops if the CA or app container isn't available.
-/// Only call this when network capture is active — pointing gRPC at a
-/// MITM-CA-only roots file would otherwise break its TLS to real servers.
-pub async fn prepare_grpc_trust(udid: &str, bundle_id: &str) {
-    let Some(roots) = stage_grpc_roots_in_container(udid, bundle_id).await else {
-        return;
-    };
-    // Trust the MITM CA.
-    sim_setenv(udid, "GRPC_DEFAULT_SSL_ROOTS_FILE_PATH", &roots).await;
+/// Firestore's gRPC-C++ stack embeds its root certificates and passes them
+/// directly to SSL credentials, so `GRPC_DEFAULT_SSL_ROOTS_FILE_PATH` is not a
+/// reliable way to make it trust the MITM CA. The proxy instead falls back to
+/// end-to-end passthrough when an h2-capable client rejects the generated cert.
+/// Keep the DNS resolver override, though: it prevents gRPC's in-process
+/// c-ares resolver from sending UDP DNS through the TCP-only capture redirector.
+pub async fn prepare_grpc_trust(udid: &str, _bundle_id: &str) {
     // Force gRPC-Core onto the platform `getaddrinfo` resolver instead of its
     // in-process c-ares resolver. c-ares sends DNS straight from the app
     // process, so the PID-based capture redirector claims those UDP packets and
@@ -678,36 +667,6 @@ async fn sim_setenv(udid: &str, key: &str, value: &str) {
         ),
         Err(e) => debug!(key, error = %e, "failed to run launchctl setenv"),
     }
-}
-
-/// Copy the MITM CA into the app's Data container and return the path, so the
-/// app's gRPC-Core can read it via `GRPC_DEFAULT_SSL_ROOTS_FILE_PATH` (PILOT-245).
-/// The sim app sandbox can't read host paths like `~/.tapsmith/ca.pem`, but it
-/// can read files staged under its own container. Returns `None` (no trust
-/// injection — gRPC keeps its bundled roots) if the CA or container is absent.
-async fn stage_grpc_roots_in_container(udid: &str, bundle_id: &str) -> Option<String> {
-    let ca = dirs::home_dir()?.join(".tapsmith").join("ca.pem");
-    if !ca.exists() {
-        return None;
-    }
-    let container = match get_app_container(udid, bundle_id).await {
-        Ok(c) => c,
-        Err(e) => {
-            debug!(error = %e, "could not resolve app container for gRPC roots staging");
-            return None;
-        }
-    };
-    let caches = PathBuf::from(&container).join("Library").join("Caches");
-    if let Err(e) = tokio::fs::create_dir_all(&caches).await {
-        debug!(error = %e, "could not create Caches dir for gRPC roots");
-        return None;
-    }
-    let dest = caches.join("tapsmith-grpc-roots.pem");
-    if let Err(e) = tokio::fs::copy(&ca, &dest).await {
-        debug!(error = %e, "could not stage MITM CA into app container");
-        return None;
-    }
-    Some(dest.to_string_lossy().into_owned())
 }
 
 /// Terminate an app on a simulator.

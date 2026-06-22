@@ -228,7 +228,7 @@ function printWalkthrough(opts: Options, result: {
   console.log(`     ${dim('set manually because iOS doesn\'t enforce proxy config from profiles')}`);
   console.log(`     ${dim('on unsupervised devices.')}`);
   console.log();
-  console.log(`  ${bold('5)')} ${bold('Verify')} that decrypted HTTPS capture works:`);
+  console.log(`  ${bold('5)')} ${bold('Verify')} HTTPS capture with a normal system-trust client:`);
   console.log(`     ${green('tapsmith verify-ios-network ' + opts.udid)}`);
   console.log();
   console.log(yellow('  Important: the device must be on Wi-Fi "') + bold(result.ssid) + yellow('" for'));

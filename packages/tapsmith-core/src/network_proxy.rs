@@ -19,6 +19,7 @@
 //! `trace.networkPassthroughHosts` (certificate pinning) — are tunneled
 //! end-to-end without interception instead of being dropped (PILOT-231).
 
+use std::collections::HashSet;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -68,8 +69,9 @@ pub struct CapturedEntry {
     /// How this request was handled by a route: "mocked", "aborted",
     /// "continued", "fetched", or "" (no route matched). The special value
     /// "passthrough" marks a synthetic per-connection entry for TLS traffic
-    /// tunneled without MITM (h2-only ALPN or `trace.networkPassthroughHosts`)
-    /// — no request/response detail is available for those.
+    /// tunneled without MITM (unsupported ALPN, explicit passthrough host, or
+    /// h2-capable MITM cert rejection) -- no request/response detail is
+    /// available for those.
     pub route_action: String,
 }
 
@@ -245,8 +247,12 @@ pub(crate) struct ProxyState {
     /// user's `trace.networkPassthroughHosts` and kept up-to-date by
     /// `NetworkProxy::set_passthrough_hosts`. Useful for cert-pinned hosts.
     /// Matched against the ClientHello SNI. Empty = no host-based passthrough
-    /// (ALPN-based h2 passthrough still applies).
+    /// (ALPN-based passthrough for unsupported protocols still applies).
     passthrough_hosts: Vec<regex::Regex>,
+    /// Hosts whose clients rejected our generated MITM certificate during TLS
+    /// setup. Embedded-root gRPC clients (notably Firestore) cannot be made to
+    /// trust an external CA, so after the first reject we tunnel retries.
+    mitm_rejected_hosts: HashSet<String>,
 }
 
 /// Handle to the running proxy. Dropping it stops the proxy.
@@ -313,6 +319,7 @@ impl NetworkProxy {
             handler: None,
             network_hosts: Vec::new(),
             passthrough_hosts: Vec::new(),
+            mitm_rejected_hosts: HashSet::new(),
         }));
 
         let (shutdown_tx, mut shutdown_rx) = tokio::sync::oneshot::channel::<()>();
@@ -773,19 +780,9 @@ async fn connect_tls_upstream(
     upstream_port: u16,
     server_name_host: &str,
 ) -> Option<tokio_rustls::client::TlsStream<TcpStream>> {
-    let addr = join_host_port(upstream_host, upstream_port);
     let upstream_tcp =
-        match tokio::time::timeout(UPSTREAM_CONNECT_TIMEOUT, TcpStream::connect(&addr)).await {
-            Ok(Ok(s)) => s,
-            Ok(Err(e)) => {
-                debug!("CONNECT failed to {addr}: {e}");
-                return None;
-            }
-            Err(_) => {
-                debug!("CONNECT timed out to {addr}");
-                return None;
-            }
-        };
+        dial_upstream_with_sni_fallback(upstream_host, upstream_port, server_name_host, "CONNECT")
+            .await?;
 
     let tls_client_config = state.lock().await.tls_client_config.clone();
     let server_name = match rustls::pki_types::ServerName::try_from(server_name_host.to_string()) {
@@ -1604,19 +1601,13 @@ async fn connect_h2_upstream(
     upstream_port: u16,
     server_name_host: &str,
 ) -> Option<h2::client::SendRequest<bytes::Bytes>> {
-    let addr = join_host_port(upstream_host, upstream_port);
-    let tcp = match tokio::time::timeout(UPSTREAM_CONNECT_TIMEOUT, TcpStream::connect(&addr)).await
-    {
-        Ok(Ok(s)) => s,
-        Ok(Err(e)) => {
-            debug!("h2 upstream connect failed to {addr}: {e}");
-            return None;
-        }
-        Err(_) => {
-            debug!("h2 upstream connect timed out to {addr}");
-            return None;
-        }
-    };
+    let tcp = dial_upstream_with_sni_fallback(
+        upstream_host,
+        upstream_port,
+        server_name_host,
+        "h2 upstream",
+    )
+    .await?;
 
     let cfg = state.lock().await.h2_client_config.clone();
     let server_name = match rustls::pki_types::ServerName::try_from(server_name_host.to_string()) {
@@ -3081,20 +3072,70 @@ impl<S: AsyncWrite + Unpin> AsyncWrite for PrefixedStream<S> {
     }
 }
 
-/// Dial a TCP upstream with the shared connect timeout, logging on failure.
-async fn dial_upstream(dst_host: &str, dst_port: u16) -> Option<TcpStream> {
+async fn dial_upstream_once(dst_host: &str, dst_port: u16, context: &str) -> Option<TcpStream> {
     let addr = join_host_port(dst_host, dst_port);
     match tokio::time::timeout(UPSTREAM_CONNECT_TIMEOUT, TcpStream::connect(&addr)).await {
         Ok(Ok(s)) => Some(s),
         Ok(Err(e)) => {
-            debug!("transparent-TCP failed to connect upstream {addr}: {e}");
+            debug!("{context} failed to connect upstream {addr}: {e}");
             None
         }
         Err(_) => {
-            debug!("transparent-TCP timeout connecting upstream {addr}");
+            debug!("{context} timeout connecting upstream {addr}");
             None
         }
     }
+}
+
+fn is_ip_literal(host: &str) -> bool {
+    host.trim_matches(['[', ']'])
+        .parse::<std::net::IpAddr>()
+        .is_ok()
+}
+
+fn sni_fallback_host<'a>(upstream_host: &str, sni: &'a str) -> Option<&'a str> {
+    let sni = sni.trim();
+    if sni.is_empty() || is_ip_literal(sni) || sni.eq_ignore_ascii_case(upstream_host) {
+        return None;
+    }
+    Some(sni)
+}
+
+async fn dial_upstream_with_sni_fallback(
+    upstream_host: &str,
+    upstream_port: u16,
+    sni: &str,
+    context: &str,
+) -> Option<TcpStream> {
+    dial_upstream_with_optional_fallback(
+        upstream_host,
+        upstream_port,
+        sni_fallback_host(upstream_host, sni),
+        context,
+    )
+    .await
+}
+
+async fn dial_upstream_with_optional_fallback(
+    primary_host: &str,
+    port: u16,
+    fallback_host: Option<&str>,
+    context: &str,
+) -> Option<TcpStream> {
+    if let Some(stream) = dial_upstream_once(primary_host, port, context).await {
+        return Some(stream);
+    }
+    let fallback_host = fallback_host?;
+    info!(
+        primary_host,
+        fallback_host, port, "{context} retrying upstream dial via SNI hostname"
+    );
+    dial_upstream_once(fallback_host, port, context).await
+}
+
+/// Dial a TCP upstream with the shared connect timeout, logging on failure.
+async fn dial_upstream(dst_host: &str, dst_port: u16) -> Option<TcpStream> {
+    dial_upstream_once(dst_host, dst_port, "transparent-TCP").await
 }
 
 /// Handle a transparent-TCP client stream from the iOS Network Extension
@@ -3273,6 +3314,10 @@ fn requires_tls_passthrough(alpn: &[Vec<u8>]) -> bool {
             .any(|p| matches!(p.as_slice(), b"http/1.1" | b"http/1.0" | b"h2"))
 }
 
+fn offers_h2(alpn: &[Vec<u8>]) -> bool {
+    alpn.iter().any(|p| p.as_slice() == b"h2")
+}
+
 /// Compile a host glob into an anchored, case-insensitive regex, mirroring
 /// the SDK's `trace/filter-hosts.ts` semantics: `*` matches any run of
 /// characters, and a leading `*.` (or `**.`) prefix is optional so
@@ -3341,10 +3386,11 @@ async fn record_passthrough_entry(state: &Arc<Mutex<ProxyState>>, host: &str, po
     });
 }
 
-/// End-to-end TLS tunnel for connections we must not MITM (h2-only ALPN or
-/// configured passthrough hosts). Replays the already-consumed ClientHello
-/// bytes to the origin, then splices the two sockets until either side
-/// closes. No capture is possible — the proxy never sees plaintext. No idle
+/// End-to-end TLS tunnel for connections we must not MITM (unsupported ALPN,
+/// configured passthrough hosts, or dynamic cert-reject fallback). Replays the
+/// already-consumed ClientHello bytes to the origin, then splices the two
+/// sockets until either side closes. No capture is possible -- the proxy never
+/// sees plaintext. No idle
 /// timeout either: gRPC streams are long-lived by design, matching the
 /// kept-alive MITM loop's lifecycle.
 async fn tunnel_tls_passthrough<S>(
@@ -3356,8 +3402,10 @@ async fn tunnel_tls_passthrough<S>(
 ) where
     S: AsyncRead + AsyncWrite + Unpin,
 {
-    let Some(mut upstream) = dial_upstream(upstream_host, upstream_port).await else {
-        return; // dial_upstream already logged
+    let Some(mut upstream) =
+        dial_upstream_with_sni_fallback(upstream_host, upstream_port, sni, "passthrough").await
+    else {
+        return; // dial helper already logged
     };
     if let Err(e) = upstream.write_all(&recorded).await {
         debug!(%sni, upstream_host, upstream_port, "passthrough: replaying ClientHello failed: {e}");
@@ -3374,11 +3422,12 @@ async fn tunnel_tls_passthrough<S>(
 /// Read the client's TLS `ClientHello` and decide how to handle the
 /// connection:
 ///
-/// * **Passthrough** — if the client's ALPN offer has no HTTP/1.x variant
-///   (h2-only gRPC clients, see [`requires_tls_passthrough`]) or the SNI
-///   matches `trace.networkPassthroughHosts`, tunnel the raw TLS bytes to
-///   the origin untouched. The app does end-to-end TLS with the real
-///   server; nothing is captured for that connection (PILOT-231).
+/// * **Passthrough** — if the client's ALPN offer has no protocol we can
+///   speak (see [`requires_tls_passthrough`]), the SNI matches
+///   `trace.networkPassthroughHosts`, or a previous h2-capable connection for
+///   the same SNI rejected our generated MITM certificate, tunnel the raw TLS
+///   bytes to the origin untouched. The app does end-to-end TLS with the real
+///   server; nothing is captured for that connection (PILOT-231/PILOT-245).
 /// * **MITM** — otherwise, extract the SNI, mint a matching cert, complete
 ///   the client handshake, dial upstream with the real hostname as SNI, and
 ///   hand both decrypted streams to the HTTP/1.1 capture loop.
@@ -3416,6 +3465,7 @@ async fn handle_transparent_tls<S>(
     // actually wanted. Fall back to `dst_host` (likely an IP) if the
     // client didn't send SNI at all (rare; mostly very old TLS clients).
     let sni = hello.sni.clone().unwrap_or_else(|| dst_host.clone());
+    let sni_key = sni.to_ascii_lowercase();
     debug!(
         %dst_host, dst_port, %sni,
         "transparent TLS: extracted SNI from ClientHello"
@@ -3423,7 +3473,9 @@ async fn handle_transparent_tls<S>(
 
     // For transparent redirect (iptables), `dst_host` may be empty — use the
     // SNI hostname for the upstream connection. For iOS NE redirect, `dst_host`
-    // is the already-resolved IP which avoids an extra DNS lookup.
+    // is the already-resolved IP which avoids an extra DNS lookup. The dial
+    // helpers still fall back to SNI if that IP is unreachable from the Mac
+    // (for example, a Firestore AAAA answer on IPv4-only Wi-Fi).
     let upstream_host = if dst_host.is_empty() { &sni } else { &dst_host };
     if upstream_host.is_empty() {
         debug!(
@@ -3433,13 +3485,15 @@ async fn handle_transparent_tls<S>(
         return;
     }
 
-    let host_passthrough = state
-        .lock()
-        .await
-        .passthrough_hosts
-        .iter()
-        .any(|re| re.is_match(&sni));
-    if requires_tls_passthrough(&hello.alpn) || host_passthrough {
+    let alpn_passthrough = requires_tls_passthrough(&hello.alpn);
+    let (host_passthrough, mitm_rejected_passthrough) = {
+        let state = state.lock().await;
+        (
+            state.passthrough_hosts.iter().any(|re| re.is_match(&sni)),
+            state.mitm_rejected_hosts.contains(&sni_key),
+        )
+    };
+    if alpn_passthrough || host_passthrough || mitm_rejected_passthrough {
         // info-level on purpose: this is the breadcrumb a user has when
         // wondering why expected traffic is missing from the capture.
         info!(
@@ -3449,8 +3503,10 @@ async fn handle_transparent_tls<S>(
                 .iter()
                 .map(|p| String::from_utf8_lossy(p).into_owned())
                 .collect::<Vec<_>>(),
+            alpn_rule = alpn_passthrough,
             host_rule = host_passthrough,
-            "TLS connection tunneled without capture (h2-only ALPN or passthrough host)"
+            mitm_rejected = mitm_rejected_passthrough,
+            "TLS connection tunneled without capture (ALPN, passthrough host, or MITM certificate reject)"
         );
         record_passthrough_entry(&state, &sni, dst_port).await;
         tunnel_tls_passthrough(client, hello.recorded, upstream_host, dst_port, &sni).await;
@@ -3490,6 +3546,20 @@ async fn handle_transparent_tls<S>(
     let client_tls = match start.into_stream(server_config).await {
         Ok(s) => s,
         Err(e) => {
+            if offers_h2(&hello.alpn) {
+                let inserted = state.lock().await.mitm_rejected_hosts.insert(sni_key);
+                if inserted {
+                    info!(
+                        %sni,
+                        alpn = ?hello
+                            .alpn
+                            .iter()
+                            .map(|p| String::from_utf8_lossy(p).into_owned())
+                            .collect::<Vec<_>>(),
+                        "client rejected generated MITM certificate; future h2-capable TLS connections for this host will be tunneled"
+                    );
+                }
+            }
             debug!("client TLS handshake failed for {sni}: {e}");
             return;
         }
@@ -4450,6 +4520,7 @@ mod tests {
             handler: Some(Arc::new(SyntheticHttpsHandler { seen_tx })),
             network_hosts: Vec::new(),
             passthrough_hosts: Vec::new(),
+            mitm_rejected_hosts: HashSet::new(),
         }));
 
         let (client_side, server_side) = tokio::io::duplex(65536);
@@ -4624,6 +4695,42 @@ mod tests {
             .is_ok());
     }
 
+    #[test]
+    fn sni_fallback_host_skips_empty_same_or_ip_sni() {
+        assert_eq!(
+            sni_fallback_host("2a00:1450:4009:c13::5f", "firestore.googleapis.com"),
+            Some("firestore.googleapis.com")
+        );
+        assert_eq!(
+            sni_fallback_host("142.250.151.95", "firestore.googleapis.com"),
+            Some("firestore.googleapis.com")
+        );
+        assert_eq!(
+            sni_fallback_host("firestore.googleapis.com", "firestore.googleapis.com"),
+            None
+        );
+        assert_eq!(
+            sni_fallback_host("2a00:1450:4009:c13::5f", "142.250.151.95"),
+            None
+        );
+        assert_eq!(sni_fallback_host("2a00:1450:4009:c13::5f", ""), None);
+    }
+
+    #[tokio::test]
+    async fn upstream_dial_retries_fallback_host_after_failed_primary() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let accept = tokio::spawn(async move {
+            let _ = listener.accept().await.unwrap();
+        });
+
+        let stream = dial_upstream_with_optional_fallback("::1", port, Some("127.0.0.1"), "test")
+            .await
+            .expect("fallback host should connect");
+        drop(stream);
+        accept.await.unwrap();
+    }
+
     // ─── PILOT-245: HTTP/2 MITM vs passthrough decision ───
 
     #[test]
@@ -4775,6 +4882,7 @@ mod tests {
                 .iter()
                 .map(|p| compile_host_glob(p).unwrap())
                 .collect(),
+            mitm_rejected_hosts: HashSet::new(),
         }))
     }
 
@@ -4904,6 +5012,85 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn h2_client_cert_rejects_are_tunneled_on_retry() {
+        let dir = tempfile::tempdir().unwrap();
+        let ca = Arc::new(
+            MitmAuthority::generate_new(&dir.path().join("ca.pem"), &dir.path().join("ca-key.pem"))
+                .unwrap(),
+        );
+        let state = empty_proxy_state(Vec::new());
+
+        let (server_config, origin_cert) =
+            origin_server_config("firestore.googleapis.com", &[b"h2"]);
+        let client_config = client_config_trusting(&origin_cert, &[b"h2"]);
+
+        let (client_side, server_side) = tokio::io::duplex(65536);
+        let proxy_state = state.clone();
+        let proxy_ca = ca.clone();
+        let proxy_task = tokio::spawn(async move {
+            handle_transparent_tls(
+                server_side,
+                "127.0.0.1".to_string(),
+                443,
+                proxy_state,
+                proxy_ca,
+            )
+            .await;
+        });
+
+        let server_name =
+            rustls::pki_types::ServerName::try_from("firestore.googleapis.com".to_string())
+                .unwrap();
+        let first = tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            TlsConnector::from(client_config.clone()).connect(server_name, client_side),
+        )
+        .await
+        .unwrap();
+        assert!(
+            first.is_err(),
+            "client that only trusts the origin must reject the generated MITM certificate"
+        );
+        proxy_task.await.unwrap();
+
+        {
+            let state = state.lock().await;
+            assert!(state
+                .mitm_rejected_hosts
+                .contains("firestore.googleapis.com"));
+            assert!(state.entries.is_empty());
+        }
+
+        let origin_port = spawn_tls_origin(server_config, b"firestore-origin").await;
+        let (client_side, server_side) = tokio::io::duplex(65536);
+        let proxy_state = state.clone();
+        let proxy_task = tokio::spawn(async move {
+            handle_transparent_tls(
+                server_side,
+                "127.0.0.1".to_string(),
+                origin_port,
+                proxy_state,
+                ca,
+            )
+            .await;
+        });
+
+        let (negotiated, received) =
+            run_passthrough_client(client_config, client_side, "firestore.googleapis.com").await;
+        assert_eq!(negotiated.as_deref(), Some(b"h2".as_slice()));
+        assert_eq!(received, b"firestore-origin");
+
+        proxy_task.await.unwrap();
+        let entries = state.lock().await.entries.clone();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].route_action, "passthrough");
+        assert_eq!(
+            entries[0].url,
+            format!("https://firestore.googleapis.com:{origin_port}/")
+        );
+    }
+
+    #[tokio::test]
     async fn http1_client_is_mitmd() {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
@@ -4926,6 +5113,7 @@ mod tests {
             handler: Some(Arc::new(SyntheticHttpsHandler { seen_tx })),
             network_hosts: Vec::new(),
             passthrough_hosts: Vec::new(),
+            mitm_rejected_hosts: HashSet::new(),
         }));
 
         let (client_side, server_side) = tokio::io::duplex(65536);
@@ -5052,36 +5240,38 @@ mod tests {
             let tls = acceptor.accept(tcp).await.unwrap();
             let mut conn = h2::server::handshake(tls).await.unwrap();
             while let Some(Ok((req, mut respond))) = conn.accept().await {
-                let mut body = req.into_body();
-                while let Some(Ok(chunk)) = body.data().await {
-                    let _ = body.flow_control().release_capacity(chunk.len());
-                }
-                let _ = body.trailers().await;
-
-                let response = http::Response::builder()
-                    .status(200)
-                    .header("content-type", "application/grpc")
-                    .body(())
-                    .unwrap();
-                let mut send = respond.send_response(response, false).unwrap();
-                // Rely on h2's internal buffering/flush (driven by the accept
-                // loop) — fine for a test origin and avoids the full-window
-                // wait that would deadlock for frames >= the initial window.
-                for _ in 0..count {
-                    send.send_data(bytes::Bytes::from_static(frame), false)
-                        .unwrap();
-                }
-                match trailer {
-                    Some((k, v)) => {
-                        let mut tr = http::HeaderMap::new();
-                        tr.insert(
-                            http::HeaderName::from_static(k),
-                            http::HeaderValue::from_static(v),
-                        );
-                        send.send_trailers(tr).unwrap();
+                tokio::spawn(async move {
+                    let mut body = req.into_body();
+                    while let Some(Ok(chunk)) = body.data().await {
+                        let _ = body.flow_control().release_capacity(chunk.len());
                     }
-                    None => send.send_data(bytes::Bytes::new(), true).unwrap(),
-                }
+                    let _ = body.trailers().await;
+
+                    let response = http::Response::builder()
+                        .status(200)
+                        .header("content-type", "application/grpc")
+                        .body(())
+                        .unwrap();
+                    let mut send = respond.send_response(response, false).unwrap();
+                    // Rely on h2's internal buffering/flush (driven by the accept
+                    // loop) — fine for a test origin and avoids the full-window
+                    // wait that would deadlock for frames >= the initial window.
+                    for _ in 0..count {
+                        send.send_data(bytes::Bytes::from_static(frame), false)
+                            .unwrap();
+                    }
+                    match trailer {
+                        Some((k, v)) => {
+                            let mut tr = http::HeaderMap::new();
+                            tr.insert(
+                                http::HeaderName::from_static(k),
+                                http::HeaderValue::from_static(v),
+                            );
+                            send.send_trailers(tr).unwrap();
+                        }
+                        None => send.send_data(bytes::Bytes::new(), true).unwrap(),
+                    }
+                });
             }
         });
         port
@@ -5159,6 +5349,7 @@ mod tests {
             handler,
             network_hosts: Vec::new(),
             passthrough_hosts: Vec::new(),
+            mitm_rejected_hosts: HashSet::new(),
         }))
     }
 
@@ -5309,6 +5500,7 @@ mod tests {
             handler: Some(handler),
             network_hosts: Vec::new(),
             passthrough_hosts: Vec::new(),
+            mitm_rejected_hosts: HashSet::new(),
         }))
     }
 
@@ -5447,19 +5639,21 @@ mod tests {
             let tls = acceptor.accept(tcp).await.unwrap();
             let mut conn = h2::server::handshake(tls).await.unwrap();
             while let Some(Ok((req, mut respond))) = conn.accept().await {
-                let val = req
-                    .headers()
-                    .get(echo_header)
-                    .map(|v| v.to_str().unwrap_or("").to_string())
-                    .unwrap_or_else(|| "none".to_string());
-                let mut body = req.into_body();
-                while let Some(Ok(chunk)) = body.data().await {
-                    let _ = body.flow_control().release_capacity(chunk.len());
-                }
-                let _ = body.trailers().await;
-                let response = http::Response::builder().status(200).body(()).unwrap();
-                let mut send = respond.send_response(response, false).unwrap();
-                send.send_data(bytes::Bytes::from(val), true).unwrap();
+                tokio::spawn(async move {
+                    let val = req
+                        .headers()
+                        .get(echo_header)
+                        .map(|v| v.to_str().unwrap_or("").to_string())
+                        .unwrap_or_else(|| "none".to_string());
+                    let mut body = req.into_body();
+                    while let Some(Ok(chunk)) = body.data().await {
+                        let _ = body.flow_control().release_capacity(chunk.len());
+                    }
+                    let _ = body.trailers().await;
+                    let response = http::Response::builder().status(200).body(()).unwrap();
+                    let mut send = respond.send_response(response, false).unwrap();
+                    send.send_data(bytes::Bytes::from(val), true).unwrap();
+                });
             }
         });
         port

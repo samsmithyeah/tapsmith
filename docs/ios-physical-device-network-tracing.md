@@ -113,14 +113,14 @@ In practice this is only a concern on untrusted networks (coffee shops, shared o
 ## Known limitations
 
 - **VPN apps on the device bypass HTTP proxy.** The MITM proxy won't see traffic the VPN is handling.
-- **Certificate pinning breaks decryption** for specific apps that pin. The request shows up in the trace, but the body is unreadable.
+- **Certificate pinning or embedded roots break decryption** for specific apps and SDKs, including some Firestore/gRPC clients. Configure `networkPassthroughHosts` for known pinned hosts; HTTP/2-capable cert rejects may also fall back dynamically. Passthrough connections show up as a `CONNECT` entry marked `passthrough`, without request or response bodies.
 - **Parallel device setup.** Each device gets its own deterministic port derived from its UDID, so multiple devices can share the same Mac and proxy process.
 
 ## Troubleshooting
 
 **Traces show zero network entries.** Run `tapsmith verify-ios-network <udid>` — it walks through the three most common causes (stealth mode on, profile not installed, device not on the profile's Wi-Fi) and prints the specific fix.
 
-**Traces show HTTPS entries with empty bodies.** The CA isn't trusted. Settings → General → About → Certificate Trust Settings → toggle Tapsmith MITM CA. Remember the row only appears after the mobileconfig profile is installed.
+**Traces show HTTPS entries with empty bodies.** For normal system-trust clients, the CA isn't trusted. Settings → General → About → Certificate Trust Settings → toggle Tapsmith MITM CA. Remember the row only appears after the mobileconfig profile is installed. For pinned or embedded-root clients, configure passthrough; HTTP/2-capable cert rejects may also appear as `CONNECT passthrough`.
 
 **"Device not routing through proxy"** after switching Wi-Fi networks. Run `tapsmith refresh-ios-network <udid>` and reinstall the new profile on the device. Tapsmith will flag this automatically on the next `tapsmith test` run.
 

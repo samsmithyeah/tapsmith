@@ -1125,7 +1125,10 @@ mod tests {
         // Well under UDP_FIRST_PACKET_TIMEOUT / UDP_RELAY_IDLE_TIMEOUT: if the
         // port gate were missing the relay would block here instead of returning.
         let res = timeout(Duration::from_secs(2), relay_udp_dns(daemon)).await;
-        assert!(res.is_ok(), "relay should return promptly for a non-DNS flow");
+        assert!(
+            res.is_ok(),
+            "relay should return promptly for a non-DNS flow"
+        );
         assert!(res.unwrap().is_ok());
     }
 
@@ -1137,7 +1140,10 @@ mod tests {
         drop(se); // SE closes without sending anything
 
         let res = timeout(Duration::from_secs(2), relay_udp_dns(daemon)).await;
-        assert!(res.is_ok(), "relay should return promptly when the flow closes");
+        assert!(
+            res.is_ok(),
+            "relay should return promptly when the flow closes"
+        );
         assert!(res.unwrap().is_ok());
     }
 }

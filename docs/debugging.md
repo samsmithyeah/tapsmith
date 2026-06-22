@@ -73,7 +73,7 @@ The right sidebar has several tabs:
 
 **Console tab** -- Shows `console.log`, `console.warn`, and `console.error` output from your test code, along with device logs (Android logcat or iOS syslog) captured during the test. Messages are color-coded by level. If your test logs diagnostic information, it will appear here timestamped alongside the actions.
 
-**Network tab** -- Displays HTTP/HTTPS requests captured during the test (when network capture is enabled). Shows method, URL, status code, duration, and response size. Click a row to see full request/response headers and bodies. See [Trace Viewer](trace-viewer.md) for network capture setup details.
+**Network tab** -- Displays HTTP/HTTPS requests captured during the test (when network capture is enabled). Shows method, URL, status code, duration, and response size. Click a decrypted row to see request/response headers and bodies. Passthrough connections appear as `CONNECT passthrough` rows without bodies; configure `networkPassthroughHosts` for pinned or embedded-root hosts that Tapsmith cannot decrypt. See [Trace Viewer](trace-viewer.md) for network capture setup details.
 
 **Errors tab** -- For failed actions, shows the full error message, stack trace, and (for assertions) the expected vs. actual values.
 

@@ -1,6 +1,6 @@
 # iOS physical devices
 
-Tapsmith supports running tests against real iPhones and iPads over USB. This page covers the basic setup — everything you need to run tests on a real device. If you also want decrypted HTTPS capture in your traces, head to [iOS physical device network capture](./ios-physical-device-network-tracing.md) after finishing this page.
+Tapsmith supports running tests against real iPhones and iPads over USB. This page covers the basic setup — everything you need to run tests on a real device. If you also want HTTPS capture in your traces, head to [iOS physical device network capture](./ios-physical-device-network-tracing.md) after finishing this page. Decrypted bodies are available for clients that trust Tapsmith's CA; use passthrough for pinned or embedded-root hosts that do not.
 
 Simulators are easier (nothing to sign, nothing to install). Use simulators for fast iteration and physical devices when you specifically need to validate hardware-dependent behavior (camera, NFC, biometrics, signed receipts, real carrier network, battery, etc.).
 
@@ -127,7 +127,7 @@ tapsmith test --project ios-phys # just the physical device
 
 ## Want network capture too?
 
-If you need decrypted HTTPS request/response bodies in your traces, set up [iOS physical device network capture](./ios-physical-device-network-tracing.md). It's a separate one-time step per device involving a mobileconfig profile and a MITM CA trust — nothing you need for basic testing.
+If you need HTTPS request/response bodies in your traces, set up [iOS physical device network capture](./ios-physical-device-network-tracing.md). It's a separate one-time step per device involving a mobileconfig profile and MITM CA trust. Clients that reject that CA need passthrough, which keeps traffic working without decrypted bodies.
 
 ## Want video recording?
 
