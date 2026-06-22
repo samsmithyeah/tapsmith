@@ -45,6 +45,11 @@ const SCROLL_PROBE_TIMEOUT_MS = 1000;
  *  consumed to stop the scroll rather than being delivered to child views.
  *  500ms is the measured safe minimum for iOS. */
 const SCROLL_SETTLE_MS = 500;
+/** Cap for the best-effort screenshot/hierarchy capture taken when an action's
+ *  element resolution has *already* failed. Tighter than the normal 5s
+ *  TRACE_CAPTURE_TIMEOUT_MS so a slow/unresponsive device can't add seconds of
+ *  delay after the failure and obscure the real error behind a runner timeout. */
+const FAILURE_TRACE_CAPTURE_TIMEOUT_MS = 1000;
 
 // ─── Locator options (escape hatch for non-accessible queries) ───
 
@@ -1317,7 +1322,7 @@ export class ElementHandle {
       // resolution error the user needs to see.
       try {
         const { captures } = await trace.collector.captureBeforeAction(
-          trace.takeScreenshot, trace.captureHierarchy,
+          trace.takeScreenshot, trace.captureHierarchy, FAILURE_TRACE_CAPTURE_TIMEOUT_MS,
         );
         trace.collector.addActionEvent({
           category, action, selector,
