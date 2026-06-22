@@ -41,4 +41,38 @@ describe("Dialogs screen", () => {
     await dialogsScreen.cancelButton.tap()
     await expect(dialogsScreen.modal).not.toBeVisible()
   })
+
+  // ─── Scoping off a modified parent handle (Playwright-style chaining) ───
+  //
+  // `getBy*`/`locator()` is allowed on a handle that already carries a
+  // positional or filtering modifier (`.first()`, `.filter()`, …). The parent
+  // can't be folded into a nested selector, so it is resolved to a concrete
+  // element and the child is scoped to it by geometric containment.
+
+  test("scopes a child off a positional (.first()) parent and acts on it", async ({ dialogsScreen, device }) => {
+    await dialogsScreen.showModalButton.tap()
+    await expect(dialogsScreen.modalTitle).toBeVisible()
+
+    // `.first()` makes this a modified handle — scoping was previously rejected.
+    await device.getByTestId("modal").first().getByRole("button", { name: "Confirm" }).tap()
+
+    // Confirm dismisses the modal and fires its success toast.
+    await expect(dialogsScreen.modal).not.toBeVisible()
+    await expect(dialogsScreen.confirmedToast).toBeVisible()
+  })
+
+  test("scopes a child off a filtered parent", async ({ dialogsScreen, device }) => {
+    await dialogsScreen.showModalButton.tap()
+    await expect(dialogsScreen.modalTitle).toBeVisible()
+
+    // Parent carries a `.filter({ has })` modifier; the child resolves within it.
+    const scopedCancel = device
+      .getByTestId("modal")
+      .filter({ has: dialogsScreen.modalTitle })
+      .getByRole("button", { name: "Cancel" })
+
+    await expect(scopedCancel).toBeVisible()
+    await scopedCancel.tap()
+    await expect(dialogsScreen.modal).not.toBeVisible()
+  })
 })
