@@ -5495,8 +5495,12 @@ impl proto::tapsmith_service_server::TapsmithService for TapsmithServiceImpl {
                 // place. Restored files get their ownership/SELinux context
                 // fixed below (root) or inherit the run-as app identity.
                 let clear_cmd = {
+                    // `-exec ... \;` (one `rm` per entry) rather than `+`: with
+                    // `+`, a `find` that matches nothing can invoke `rm` with no
+                    // operands on some implementations, which errors. `\;` only
+                    // runs `rm` per match, so an empty/lib-only dir is a no-op.
                     let find = format!(
-                        "find {data_dir} -mindepth 1 -maxdepth 1 ! -name lib -exec rm -rf {{}} +"
+                        "find {data_dir} -mindepth 1 -maxdepth 1 ! -name lib -exec rm -rf {{}} \\;"
                     );
                     if is_root {
                         find
