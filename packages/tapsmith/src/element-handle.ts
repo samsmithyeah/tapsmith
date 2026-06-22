@@ -1171,17 +1171,6 @@ export class ElementHandle {
 
   // ── Actions ──
 
-  /** @internal — Run an action RPC and throw on failure. */
-  private async _action(
-    fn: () => Promise<ActionResponse>,
-    fallbackMsg: string,
-  ): Promise<void> {
-    const res = await fn();
-    if (!res.success) {
-      throw new Error(res.errorMessage || fallbackMsg);
-    }
-  }
-
   /**
    * @internal — Emit a "started" lifecycle signal for a query/scroll method
    * that doesn't go through tracedAction. Call this before the slow part of
@@ -1287,41 +1276,104 @@ export class ElementHandle {
     return tracedAction(ctx, action, category, this._selector, fn, fallbackMsg, extra);
   }
 
+  /**
+   * @internal — Run an action's pre-flight element resolution (auto-wait +
+   * selector build) inside trace recording.
+   *
+   * Emits a `started` lifecycle event UP-FRONT (before the wait) so UI mode
+   * shows the action in-flight with a spinner during the auto-wait, not only
+   * after the element is found. On success: returns the resolved value and the
+   * caller's _tracedAction owns the rest of the lifecycle (it re-emits
+   * `started` with bounds at the same actionIndex — a harmless single-slot
+   * refresh — then `completed`). On a resolution timeout the throw would
+   * otherwise escape untraced: emit the matching failed completion so the
+   * timed-out action lands in the current lifecycle group with its real wait
+   * duration, instead of finalizeTimeline dumping the tail onto the previous
+   * (e.g. beforeAll) action.
+   */
+  private async _tracedResolve<T>(
+    action: string,
+    category: ActionCategory,
+    resolve: () => Promise<T>,
+  ): Promise<T> {
+    const trace = this._traceCapture;
+    if (!trace) return resolve();
+    const start = Date.now();
+    const stack = extractStack(new Error().stack ?? '');
+    const sourceLocation = stack[0];
+    const selector = JSON.stringify(selectorToProto(this._selector));
+    trace.collector._emitActionStarted({
+      category, action, selector, sourceLocation, stack, log: [],
+      hasScreenshotBefore: false, hasHierarchyBefore: false,
+    });
+    try {
+      return await resolve();
+    } catch (err) {
+      const durationMs = Date.now() - start;
+      const errMsg = err instanceof Error ? err.message : String(err);
+      const errStack = err instanceof Error ? err.stack : undefined;
+      const { captures } = await trace.collector.captureBeforeAction(
+        trace.takeScreenshot, trace.captureHierarchy,
+      );
+      trace.collector.addActionEvent({
+        category, action, selector,
+        duration: durationMs, success: false, error: errMsg, errorStack: errStack,
+        waitTime: durationMs, sourceLocation, stack,
+        hasScreenshotBefore: !!captures.screenshotBefore, hasScreenshotAfter: false,
+        hasHierarchyBefore: !!captures.hierarchyBefore, hasHierarchyAfter: false,
+        log: [`${action} failed: ${errMsg}`],
+      });
+      throw err;
+    }
+  }
+
   async tap(): Promise<void> {
-    const { remainingMs, element } = await this._waitForEnabled();
-    const sel = await this._actionSelector(element);
+    const { sel, remainingMs } = await this._tracedResolve('tap', 'tap', async () => {
+      const { remainingMs, element } = await this._waitForEnabled();
+      return { sel: await this._actionSelector(element), remainingMs };
+    });
     return this._tracedAction('tap', 'tap', () => this._client.tap(sel, remainingMs), 'Tap failed');
   }
 
   async longPress(durationMs?: number): Promise<void> {
-    const { remainingMs, element } = await this._waitForEnabled();
-    const sel = await this._actionSelector(element);
+    const { sel, remainingMs } = await this._tracedResolve('longPress', 'tap', async () => {
+      const { remainingMs, element } = await this._waitForEnabled();
+      return { sel: await this._actionSelector(element), remainingMs };
+    });
     return this._tracedAction('longPress', 'tap', () => this._client.longPress(sel, durationMs, remainingMs), 'Long press failed');
   }
 
   async type(text: string, options?: { delay?: number }): Promise<void> {
-    const { remainingMs, element } = await this._strictResolve();
-    const sel = await this._actionSelector(element);
+    const { sel, remainingMs } = await this._tracedResolve('type', 'type', async () => {
+      const { remainingMs, element } = await this._strictResolve();
+      return { sel: await this._actionSelector(element), remainingMs };
+    });
     const delay = options?.delay ?? this._options.typingDelay ?? 0;
     return this._tracedAction('type', 'type', () => this._client.typeText(sel, text, remainingMs, delay), 'Type text failed', { inputValue: text });
   }
 
   async clearAndType(text: string, options?: { delay?: number }): Promise<void> {
-    const { remainingMs, element } = await this._strictResolve();
-    const sel = await this._actionSelector(element);
+    const { sel, remainingMs } = await this._tracedResolve('clearAndType', 'type', async () => {
+      const { remainingMs, element } = await this._strictResolve();
+      return { sel: await this._actionSelector(element), remainingMs };
+    });
     const delay = options?.delay ?? this._options.typingDelay ?? 0;
     return this._tracedAction('clearAndType', 'type', () => this._client.clearAndType(sel, text, remainingMs, delay), 'Clear and type failed', { inputValue: text });
   }
 
   async clear(): Promise<void> {
-    const { remainingMs, element } = await this._strictResolve();
-    const sel = await this._actionSelector(element);
+    const { sel, remainingMs } = await this._tracedResolve('clear', 'type', async () => {
+      const { remainingMs, element } = await this._strictResolve();
+      return { sel: await this._actionSelector(element), remainingMs };
+    });
     return this._tracedAction('clear', 'type', () => this._client.clearText(sel, remainingMs), 'Clear text failed');
   }
 
   async scroll(direction: string, options?: { distance?: number }): Promise<void> {
-    const { remainingMs, element } = await this._strictResolve();
-    const sel = await this._actionSelector(element);
+    const { sel, remainingMs } = await this._tracedResolve('scroll', 'scroll', async () => {
+      const { remainingMs, element } = await this._strictResolve();
+      return { sel: await this._actionSelector(element), remainingMs };
+    });
     return this._tracedAction('scroll', 'scroll',
       () => this._client.scroll(sel, direction, { distance: options?.distance, timeoutMs: remainingMs }),
       'Scroll failed');
@@ -1330,8 +1382,10 @@ export class ElementHandle {
   // ── Element Actions (PILOT-2) ──
 
   async doubleTap(options?: { intervalMs?: number }): Promise<void> {
-    const { remainingMs, element } = await this._waitForEnabled();
-    const sel = await this._actionSelector(element);
+    const { sel, remainingMs } = await this._tracedResolve('doubleTap', 'tap', async () => {
+      const { remainingMs, element } = await this._waitForEnabled();
+      return { sel: await this._actionSelector(element), remainingMs };
+    });
     // 0 on the wire = "use agent default (100ms)". User-supplied values
     // must be positive; ≤0 is treated as "use default".
     const intervalMs = Math.max(0, options?.intervalMs ?? this._options.doubleTapInterval ?? 0);
@@ -1339,11 +1393,16 @@ export class ElementHandle {
   }
 
   async dragTo(target: ElementHandle): Promise<void> {
-    const source = await this._strictResolve();
-    const targetRes = await target._strictResolve();
-    const sourceSel = await this._actionSelector(source.element);
-    const targetSel = await target._actionSelector(targetRes.element);
-    return this._action(() => this._client.dragAndDrop(sourceSel, targetSel, source.remainingMs), 'Drag and drop failed');
+    const { sourceSel, targetSel, remainingMs } = await this._tracedResolve('dragTo', 'swipe', async () => {
+      const source = await this._strictResolve();
+      const targetRes = await target._strictResolve();
+      return {
+        sourceSel: await this._actionSelector(source.element),
+        targetSel: await target._actionSelector(targetRes.element),
+        remainingMs: source.remainingMs,
+      };
+    });
+    return this._tracedAction('dragTo', 'swipe', () => this._client.dragAndDrop(sourceSel, targetSel, remainingMs), 'Drag and drop failed');
   }
 
   async setChecked(checked: boolean): Promise<void> {
@@ -1351,36 +1410,50 @@ export class ElementHandle {
     const deadline = Date.now() + timeoutMs;
     const POLL_MS = 250;
 
-    const { remainingMs, element } = await this._waitForEnabled();
-    const el = element ?? await this._resolveOne();
-    if (el.checked === checked) return; // Already in desired state
+    const { sel, remainingMs, alreadySet } = await this._tracedResolve('setChecked', 'tap', async () => {
+      const { remainingMs, element } = await this._waitForEnabled();
+      const el = element ?? await this._resolveOne();
+      return { sel: await this._actionSelector(el), remainingMs, alreadySet: el.checked === checked };
+    });
 
-    // Tap once — for toggleable elements (checkboxes, switches) a second
-    // tap would revert the state, so we must not re-tap.
-    const sel = await this._actionSelector(el);
-    await this._action(() => this._client.tap(sel, remainingMs), 'setChecked tap failed');
+    return this._tracedAction('setChecked', 'tap', async () => {
+      // No real RPC for the already-in-state / poll-timeout paths — synthesize
+      // a minimal ActionResponse so they still flow through trace recording.
+      const synthetic = (success: boolean, errorMessage = ''): ActionResponse => ({
+        requestId: '', success, errorType: '', errorMessage, screenshot: Buffer.alloc(0),
+      });
+      if (alreadySet) return synthetic(true); // Already in desired state
 
-    // Poll for the state change until the full deadline — animations
-    // and state propagation can take several frames.
-    while (Date.now() < deadline) {
-      await sleep(POLL_MS, this._client._getAbortSignal?.());
-      try {
-        const after = await this._resolveOne();
-        if (after.checked === checked) return; // State changed successfully
-      } catch (err) {
-        if (!isPollableNotFoundError(err)) throw err;
+      // Tap once — for toggleable elements (checkboxes, switches) a second
+      // tap would revert the state, so we must not re-tap.
+      const tapRes = await this._client.tap(sel, remainingMs);
+      if (!tapRes.success) return tapRes;
+
+      // Poll for the state change until the full deadline — animations
+      // and state propagation can take several frames.
+      while (Date.now() < deadline) {
+        await sleep(POLL_MS, this._client._getAbortSignal?.());
+        try {
+          const after = await this._resolveOne();
+          if (after.checked === checked) return tapRes; // State changed successfully
+        } catch (err) {
+          if (!isPollableNotFoundError(err)) throw err;
+        }
       }
-    }
 
-    throw new Error(
-      `setChecked(${checked}): element ${this._describe()} checked state did not change after tap (still ${!checked})`,
-    );
+      return synthetic(
+        false,
+        `setChecked(${checked}): element ${this._describe()} checked state did not change after tap (still ${!checked})`,
+      );
+    }, 'setChecked failed');
   }
 
   async selectOption(option: string | { index: number }): Promise<void> {
-    const { remainingMs, element } = await this._strictResolve();
-    const sel = await this._actionSelector(element);
-    return this._action(() => this._client.selectOption(sel, option, remainingMs), 'Select option failed');
+    const { sel, remainingMs } = await this._tracedResolve('selectOption', 'other', async () => {
+      const { remainingMs, element } = await this._strictResolve();
+      return { sel: await this._actionSelector(element), remainingMs };
+    });
+    return this._tracedAction('selectOption', 'other', () => this._client.selectOption(sel, option, remainingMs), 'Select option failed');
   }
 
   async screenshot(): Promise<Buffer> {
@@ -1405,35 +1478,45 @@ export class ElementHandle {
   }
 
   async pinchIn(options?: { scale?: number }): Promise<void> {
-    const { remainingMs, element } = await this._strictResolve();
-    const sel = await this._actionSelector(element);
+    const { sel, remainingMs } = await this._tracedResolve('pinchIn', 'other', async () => {
+      const { remainingMs, element } = await this._strictResolve();
+      return { sel: await this._actionSelector(element), remainingMs };
+    });
     const scale = options?.scale ?? 0.5;
-    return this._action(() => this._client.pinchZoom(sel, scale, remainingMs), 'Pinch in failed');
+    return this._tracedAction('pinchIn', 'other', () => this._client.pinchZoom(sel, scale, remainingMs), 'Pinch in failed');
   }
 
   async pinchOut(options?: { scale?: number }): Promise<void> {
-    const { remainingMs, element } = await this._strictResolve();
-    const sel = await this._actionSelector(element);
-    const scale = options?.scale ?? 2.0;
-    return this._action(() => this._client.pinchZoom(sel, scale, remainingMs), 'Pinch out failed');
+    const { sel, remainingMs } = await this._tracedResolve('pinchOut', 'other', async () => {
+      const { remainingMs, element } = await this._strictResolve();
+      return { sel: await this._actionSelector(element), remainingMs };
+    });
+    const scale = options?.scale ?? 2;
+    return this._tracedAction('pinchOut', 'other', () => this._client.pinchZoom(sel, scale, remainingMs), 'Pinch out failed');
   }
 
   async focus(): Promise<void> {
-    const { remainingMs, element } = await this._strictResolve();
-    const sel = await this._actionSelector(element);
-    return this._action(() => this._client.focus(sel, remainingMs), 'Focus failed');
+    const { sel, remainingMs } = await this._tracedResolve('focus', 'other', async () => {
+      const { remainingMs, element } = await this._strictResolve();
+      return { sel: await this._actionSelector(element), remainingMs };
+    });
+    return this._tracedAction('focus', 'other', () => this._client.focus(sel, remainingMs), 'Focus failed');
   }
 
   async blur(): Promise<void> {
-    const { remainingMs, element } = await this._strictResolve();
-    const sel = await this._actionSelector(element);
-    return this._action(() => this._client.blur(sel, remainingMs), 'Blur failed');
+    const { sel, remainingMs } = await this._tracedResolve('blur', 'other', async () => {
+      const { remainingMs, element } = await this._strictResolve();
+      return { sel: await this._actionSelector(element), remainingMs };
+    });
+    return this._tracedAction('blur', 'other', () => this._client.blur(sel, remainingMs), 'Blur failed');
   }
 
   async highlight(options?: { durationMs?: number }): Promise<void> {
-    const { remainingMs, element } = await this._strictResolve();
-    const sel = await this._actionSelector(element);
-    return this._action(() => this._client.highlight(sel, options?.durationMs, remainingMs), 'Highlight failed');
+    const { sel, remainingMs } = await this._tracedResolve('highlight', 'other', async () => {
+      const { remainingMs, element } = await this._strictResolve();
+      return { sel: await this._actionSelector(element), remainingMs };
+    });
+    return this._tracedAction('highlight', 'other', () => this._client.highlight(sel, options?.durationMs, remainingMs), 'Highlight failed');
   }
 
   // ── Info accessors (convenience) ──
