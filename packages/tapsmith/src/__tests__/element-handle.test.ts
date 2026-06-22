@@ -2542,6 +2542,24 @@ describe('action trace lifecycle (PILOT-244)', () => {
     expect(events[0].success).toBe(false);
   }, 10000);
 
+  it('still records the failed action when the before-capture throws', async () => {
+    const h = makeTraceHarness();
+    // Simulate an unresponsive device: the failure-path capture rejects. The
+    // failed action must still be recorded (the capture is guarded separately).
+    vi.spyOn(h.collector, 'captureBeforeAction').mockRejectedValue(new Error('capture boom'));
+    const findElements = vi.fn(async () => makeFindElementsResponse([]));
+    const client = makeMockClient({ findElements });
+    const handle = new ElementHandle(client, _text('Missing'), 200, { traceCapture: h.traceCapture });
+
+    await expect(handle.tap()).rejects.toThrow(/was not found after waiting/);
+
+    const events = actionEvents(h);
+    expect(events).toHaveLength(1);
+    expect(events[0].action).toBe('tap');
+    expect(events[0].success).toBe(false);
+    expect(events[0].hasScreenshotBefore).toBe(false);
+  });
+
   it('adds no trace overhead and still throws when no trace capture is attached', async () => {
     const findElements = vi.fn(async () => makeFindElementsResponse([]));
     const client = makeMockClient({ findElements });

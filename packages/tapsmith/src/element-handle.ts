@@ -1320,10 +1320,21 @@ export class ElementHandle {
       // Best-effort trace emission — a failure here (disk full, tracing
       // teardown, a throwing _onEvent listener) must never mask the real
       // resolution error the user needs to see.
+      //
+      // The capture is guarded SEPARATELY from addActionEvent: an unresponsive
+      // device is exactly when both the resolution AND the screenshot capture
+      // fail, and the whole point of this path is to still record the failed
+      // action — so a capture failure must not skip the event emission.
+      let captures: { screenshotBefore?: unknown; hierarchyBefore?: unknown } = {};
       try {
-        const { captures } = await trace.collector.captureBeforeAction(
+        const res = await trace.collector.captureBeforeAction(
           trace.takeScreenshot, trace.captureHierarchy, FAILURE_TRACE_CAPTURE_TIMEOUT_MS,
         );
+        captures = res.captures;
+      } catch {
+        // Capture is best-effort; still record the failed action below.
+      }
+      try {
         trace.collector.addActionEvent({
           category, action, selector,
           duration: durationMs, success: false, error: errMsg, errorStack: errStack,
