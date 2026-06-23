@@ -604,9 +604,12 @@ describe('scroll()', () => {
     const sel = _text('List');
     const handle = new ElementHandle(client, sel, 5000);
     await handle.scroll('down', { distance: 500 });
+    // timeoutMs is the resolution-remaining budget (deadline - now), which is
+    // 5000 only if <1ms elapsed during the async find — assert the type, not an
+    // exact value, matching the sibling action tests above.
     expect(scroll).toHaveBeenCalledWith(sel, 'down', {
       distance: 500,
-      timeoutMs: 5000,
+      timeoutMs: expect.any(Number),
     });
   });
 
