@@ -232,6 +232,21 @@ export function useTestTree(isRunning: boolean = false) {
     });
   }, [files]);
 
+  /** Mark the node targeted by a server `run-start` as pending. Unlike
+   * setPending (which takes a known tree-node id from a local click), this
+   * resolves the node from the run-start locator — filePath, optional
+   * testFilter (a test/suite fullName), and projectName. Used so runs the
+   * client didn't initiate (MCP agents, or a play-click in another browser
+   * tab) still show the preflight pulse. Resolving by filePath/fullName
+   * rather than rebuilding the id string is deliberate: when projects are
+   * configured the tree prefixes ids with `project::<name>::` even for the
+   * "default" project, yet the server reports that project as an undefined
+   * projectName — so a reconstructed id would never match. */
+  const setPendingForRun = useCallback((filePath: string, testFilter: string | undefined, projectName: string | undefined) => {
+    const nodeId = findNodeIdByLocator(files, filePath, testFilter, projectName);
+    if (nodeId) setPending(nodeId);
+  }, [files, setPending]);
+
   // Filter the tree based on name and status
   const filteredFiles = useMemo(() => {
     if (!nameFilter && statusFilter === 'all') return files;
@@ -290,7 +305,43 @@ export function useTestTree(isRunning: boolean = false) {
     updateWatchEnabled,
     resetRunningStatuses,
     setPending,
+    setPendingForRun,
   };
+}
+
+/**
+ * Resolve a run-start locator (filePath + optional test/suite fullName +
+ * optional projectName) to the matching tree-node id. When projectName is
+ * given, only that project's subtree is searched — required for multi-device
+ * configs where the same file lives under several projects. When it's absent
+ * (single/default project, or flat layout) the first match wins, which is
+ * unambiguous because the server only omits projectName when the file is
+ * unique across the tree.
+ */
+function findNodeIdByLocator(
+  roots: TestTreeNode[],
+  filePath: string,
+  testFilter: string | undefined,
+  projectName: string | undefined,
+): string | undefined {
+  let searchRoots = roots;
+  if (projectName) {
+    const proj = roots.find((n) => n.type === 'project' && n.name === projectName);
+    searchRoots = proj?.children ?? [];
+  }
+  let found: string | undefined;
+  const walk = (nodes: TestTreeNode[]): boolean => {
+    for (const n of nodes) {
+      const isMatch = testFilter
+        ? (n.filePath === filePath && n.fullName === testFilter && (n.type === 'test' || n.type === 'suite'))
+        : (n.type === 'file' && n.filePath === filePath);
+      if (isMatch) { found = n.id; return true; }
+      if (n.children && walk(n.children)) return true;
+    }
+    return false;
+  };
+  walk(searchRoots);
+  return found;
 }
 
 // Helpers used by setPending (also used inside TestExplorer rendering)

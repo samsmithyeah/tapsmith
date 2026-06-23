@@ -566,6 +566,19 @@ function App() {
         }
         activeTestRef.current = null;
 
+        // Mirror the optimistic pending pulse off the server's run-start, not
+        // just the local play-click. A run triggered any other way — an MCP
+        // agent calling tapsmith_run_tests, or this run started from a
+        // different browser tab — never fires the client-side setPending, so
+        // its target would jump straight from idle to 'running' with no
+        // preflight feedback. setPendingForRun resolves the node by
+        // filePath/fullName (not a reconstructed id) so it works even for the
+        // "default" project, whose nodes are id-prefixed but whose run-start
+        // reports projectName as undefined. Idempotent with the local click.
+        if (msg.filePath) {
+          treeRef.current.setPendingForRun(msg.filePath, msg.testFilter, msg.projectName);
+        }
+
         pendingSourcesRef.current = new Map();
         setPinnedIndex(0);
         setHoveredIndex(null);
