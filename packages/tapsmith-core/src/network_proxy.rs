@@ -3318,6 +3318,30 @@ fn offers_h2(alpn: &[Vec<u8>]) -> bool {
     alpn.iter().any(|p| p.as_slice() == b"h2")
 }
 
+fn is_likely_client_cert_reject(error: &impl std::fmt::Display) -> bool {
+    let compact: String = error
+        .to_string()
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric())
+        .flat_map(|c| c.to_lowercase())
+        .collect();
+
+    [
+        "unknownca",
+        "unknownissuer",
+        "badcertificate",
+        "certificateunknown",
+        "unsupportedcertificate",
+        "certificateexpired",
+        "certificaterevoked",
+        "certificateunobtainable",
+        "badcertificatestatusresponse",
+    ]
+    .iter()
+    .any(|needle| compact.contains(needle))
+        || (compact.contains("alert") && compact.contains("certificate"))
+}
+
 /// Compile a host glob into an anchored, case-insensitive regex, mirroring
 /// the SDK's `trace/filter-hosts.ts` semantics: `*` matches any run of
 /// characters, and a leading `*.` (or `**.`) prefix is optional so
@@ -3546,7 +3570,7 @@ async fn handle_transparent_tls<S>(
     let client_tls = match start.into_stream(server_config).await {
         Ok(s) => s,
         Err(e) => {
-            if offers_h2(&hello.alpn) {
+            if offers_h2(&hello.alpn) && is_likely_client_cert_reject(&e) {
                 let inserted = state.lock().await.mitm_rejected_hosts.insert(sni_key);
                 if inserted {
                     info!(
@@ -4748,6 +4772,25 @@ mod tests {
         assert!(!requires_tls_passthrough(&alpn(&[b"grpc-exp", b"h2"])));
         // Exotic ALPN-only with no protocol we speak → passthrough.
         assert!(requires_tls_passthrough(&alpn(&[b"grpc-exp"])));
+    }
+
+    #[test]
+    fn client_cert_reject_detection_ignores_transient_handshake_failures() {
+        assert!(is_likely_client_cert_reject(
+            &"received fatal alert: UnknownCA"
+        ));
+        assert!(is_likely_client_cert_reject(
+            &"received fatal alert: CertificateUnknown"
+        ));
+        assert!(is_likely_client_cert_reject(
+            &"AlertReceived(BadCertificate)"
+        ));
+
+        assert!(!is_likely_client_cert_reject(&"connection reset by peer"));
+        assert!(!is_likely_client_cert_reject(
+            &"client closed before completing handshake"
+        ));
+        assert!(!is_likely_client_cert_reject(&"operation timed out"));
     }
 
     #[test]
