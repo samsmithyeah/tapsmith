@@ -1,5 +1,10 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, afterEach } from 'vitest';
+import * as fs from 'node:fs';
+import * as os from 'node:os';
+import * as path from 'node:path';
 import { ElementHandle, StrictModeViolationError, isStrictModeViolation } from '../element-handle.js';
+import { TraceCollector, type TraceCapture } from '../trace/trace-collector.js';
+import type { AnyTraceEvent, ActionTraceEvent } from '../trace/types.js';
 import { isAbortError } from '../abort.js';
 import { type Selector, _text, _textContains, _role, _className, _id, _testId, formatSelector, selectorToProto } from '../selectors.js';
 import type {
@@ -599,9 +604,12 @@ describe('scroll()', () => {
     const sel = _text('List');
     const handle = new ElementHandle(client, sel, 5000);
     await handle.scroll('down', { distance: 500 });
+    // timeoutMs is the resolution-remaining budget (deadline - now), which is
+    // 5000 only if <1ms elapsed during the async find — assert the type, not an
+    // exact value, matching the sibling action tests above.
     expect(scroll).toHaveBeenCalledWith(sel, 'down', {
       distance: 500,
-      timeoutMs: 5000,
+      timeoutMs: expect.any(Number),
     });
   });
 
@@ -2355,5 +2363,210 @@ describe('scrollIntoView error propagation (review follow-up)', () => {
     const handle = new ElementHandle(client, _text('Target'), 5000);
     await expect(handle.scrollIntoView()).rejects.toThrow(/findElements failed: agent gone/);
     expect(swipe).not.toHaveBeenCalled();
+  });
+});
+
+// ─── Action trace lifecycle (PILOT-244) ───
+
+describe('action trace lifecycle (PILOT-244)', () => {
+  const tempDirs: string[] = [];
+
+  afterEach(() => {
+    for (const dir of tempDirs.splice(0)) fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  interface TraceHarness {
+    collector: TraceCollector;
+    traceCapture: TraceCapture;
+    lifecycle: { event: AnyTraceEvent; lifecycle?: 'started' | 'completed' }[];
+  }
+
+  function makeTraceHarness(): TraceHarness {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tapsmith-eh-trace-'));
+    tempDirs.push(tempDir);
+    const collector = new TraceCollector({
+      mode: 'on', screenshots: false, snapshots: false, sources: false,
+      attachments: true, network: false, deviceLogs: false, daemonLogs: false,
+    }, tempDir);
+    const lifecycle: TraceHarness['lifecycle'] = [];
+    collector.setEventCallback((event, _screenshots, life) => {
+      lifecycle.push({ event, lifecycle: life });
+    });
+    const traceCapture: TraceCapture = {
+      collector,
+      takeScreenshot: async () => undefined,
+      captureHierarchy: async () => undefined,
+    };
+    return { collector, traceCapture, lifecycle };
+  }
+
+  const actionEvents = (h: TraceHarness): ActionTraceEvent[] =>
+    h.collector.events.filter((e): e is ActionTraceEvent => e.type === 'action');
+
+  it('emits a started lifecycle event before the auto-wait resolves (live in-flight)', async () => {
+    const h = makeTraceHarness();
+    // findElements stays pending until released, so the action is mid auto-wait.
+    let releaseFind!: (v: FindElementsResponse) => void;
+    const findElements = vi.fn(
+      () => new Promise<FindElementsResponse>((res) => { releaseFind = res; }),
+    );
+    const client = makeMockClient({ findElements });
+    const handle = new ElementHandle(client, _text('Later'), 5000, { traceCapture: h.traceCapture });
+
+    const tapPromise = handle.tap();
+    await Promise.resolve(); // let the up-front _emitActionStarted flush
+
+    const started = h.lifecycle.filter((e) => e.lifecycle === 'started');
+    expect(started).toHaveLength(1);
+    expect((started[0].event as ActionTraceEvent).category).toBe('tap');
+    // Still in-flight: no completed event while the auto-wait is pending.
+    expect(h.lifecycle.some((e) => e.lifecycle === 'completed')).toBe(false);
+
+    releaseFind(makeFindElementsResponse([makeElementInfo()]));
+    await tapPromise;
+    expect(actionEvents(h).map((e) => e.action)).toEqual(['tap']);
+  });
+
+  it('records a failed action event when element resolution times out', async () => {
+    const h = makeTraceHarness();
+    const findElements = vi.fn(async () => makeFindElementsResponse([])); // never found
+    const tap = vi.fn(async () => successResponse());
+    const client = makeMockClient({ findElements, tap });
+    const handle = new ElementHandle(client, _text('Missing'), 300, { traceCapture: h.traceCapture });
+
+    await expect(handle.tap()).rejects.toThrow(/was not found after waiting/);
+    expect(tap).not.toHaveBeenCalled();
+
+    const events = actionEvents(h);
+    expect(events).toHaveLength(1);
+    expect(events[0].category).toBe('tap');
+    expect(events[0].success).toBe(false);
+    expect(events[0].error).toMatch(/was not found after waiting/);
+    // The matching started fired too, so the live in-flight slot is cleared.
+    expect(h.lifecycle.filter((e) => e.lifecycle === 'started')).toHaveLength(1);
+    expect(h.lifecycle.filter((e) => e.lifecycle === 'completed')).toHaveLength(1);
+  });
+
+  it('attributes trailing time to the failed action, not the previous (beforeAll) action', async () => {
+    const h = makeTraceHarness();
+    // Simulate a prior completed action — e.g. a beforeAll route() registration.
+    h.collector.addActionEvent({
+      category: 'other', action: 'route',
+      duration: 5, success: true,
+      hasScreenshotBefore: false, hasScreenshotAfter: false,
+      hasHierarchyBefore: false, hasHierarchyAfter: false,
+    });
+    const routeEvent = actionEvents(h).find((e) => e.action === 'route')!;
+    const routeWallBefore = routeEvent.wallDuration;
+
+    const findElements = vi.fn(async () => makeFindElementsResponse([]));
+    const client = makeMockClient({ findElements });
+    const handle = new ElementHandle(client, _text('Missing'), 200, { traceCapture: h.traceCapture });
+    await expect(handle.tap()).rejects.toThrow(/was not found after waiting/);
+
+    // Test ends ~30s after the failed tap — this is what finalizeTimeline allocates.
+    h.collector.finalizeTimeline(Date.now() + 30_000);
+
+    const tapEvent = actionEvents(h).find((e) => e.action === 'tap')!;
+    expect(tapEvent.trailingTime ?? 0).toBeGreaterThan(0);
+    // The beforeAll route must NOT have absorbed the trailing time.
+    expect(routeEvent.trailingTime ?? 0).toBe(0);
+    expect(routeEvent.wallDuration).toBe(routeWallBefore);
+  });
+
+  it('traces previously-untraced actions (focus) with started + completed on success', async () => {
+    const h = makeTraceHarness();
+    const focus = vi.fn(async () => successResponse());
+    const client = makeMockClient({ focus });
+    const handle = new ElementHandle(client, _text('Field'), 5000, { traceCapture: h.traceCapture });
+
+    await handle.focus();
+
+    const events = actionEvents(h);
+    expect(events).toHaveLength(1);
+    expect(events[0].action).toBe('focus');
+    expect(events[0].success).toBe(true);
+    expect(h.lifecycle.filter((e) => e.lifecycle === 'started').length).toBeGreaterThanOrEqual(1);
+  });
+
+  it('dragTo attributes a target-not-found to the dragTo action', async () => {
+    const h = makeTraceHarness();
+    const findElements = vi.fn(async (sel: Selector) => {
+      const value = (sel.kind as { value?: string }).value;
+      return makeFindElementsResponse(value === 'Target' ? [] : [makeElementInfo()]);
+    });
+    const client = makeMockClient({ findElements });
+    const source = new ElementHandle(client, _text('Source'), 300, { traceCapture: h.traceCapture });
+    const target = new ElementHandle(client, _text('Target'), 300, { traceCapture: h.traceCapture });
+
+    await expect(source.dragTo(target)).rejects.toThrow(/was not found after waiting/);
+
+    const events = actionEvents(h);
+    expect(events).toHaveLength(1);
+    expect(events[0].action).toBe('dragTo');
+    expect(events[0].success).toBe(false);
+  });
+
+  it('setChecked: already-in-desired-state emits one success event without tapping', async () => {
+    const h = makeTraceHarness();
+    const tap = vi.fn(async () => successResponse());
+    const el = makeElementInfo({ checked: true, text: 'Switch' });
+    const client = makeMockClient({
+      findElement: vi.fn(async () => ({ requestId: '1', found: true, element: el, errorMessage: '' })),
+      findElements: vi.fn(async () => makeFindElementsResponse([el])),
+      tap,
+    });
+    const handle = new ElementHandle(client, _text('Switch'), 5000, { traceCapture: h.traceCapture });
+
+    await handle.setChecked(true);
+
+    expect(tap).not.toHaveBeenCalled();
+    const events = actionEvents(h).filter((e) => e.action === 'setChecked');
+    expect(events).toHaveLength(1);
+    expect(events[0].success).toBe(true);
+  });
+
+  it('setChecked: state never changes → single failed event after tapping', async () => {
+    const h = makeTraceHarness();
+    const tap = vi.fn(async () => successResponse());
+    const el = makeElementInfo({ checked: false, text: 'Switch' });
+    const client = makeMockClient({
+      findElement: vi.fn(async () => ({ requestId: '1', found: true, element: el, errorMessage: '' })),
+      findElements: vi.fn(async () => makeFindElementsResponse([el])),
+      tap,
+    });
+    const handle = new ElementHandle(client, _text('Switch'), 600, { traceCapture: h.traceCapture });
+
+    await expect(handle.setChecked(true)).rejects.toThrow(/did not change after tap/);
+
+    expect(tap).toHaveBeenCalledTimes(1);
+    const events = actionEvents(h).filter((e) => e.action === 'setChecked');
+    expect(events).toHaveLength(1);
+    expect(events[0].success).toBe(false);
+  }, 10000);
+
+  it('still records the failed action when the before-capture throws', async () => {
+    const h = makeTraceHarness();
+    // Simulate an unresponsive device: the failure-path capture rejects. The
+    // failed action must still be recorded (the capture is guarded separately).
+    vi.spyOn(h.collector, 'captureBeforeAction').mockRejectedValue(new Error('capture boom'));
+    const findElements = vi.fn(async () => makeFindElementsResponse([]));
+    const client = makeMockClient({ findElements });
+    const handle = new ElementHandle(client, _text('Missing'), 200, { traceCapture: h.traceCapture });
+
+    await expect(handle.tap()).rejects.toThrow(/was not found after waiting/);
+
+    const events = actionEvents(h);
+    expect(events).toHaveLength(1);
+    expect(events[0].action).toBe('tap');
+    expect(events[0].success).toBe(false);
+    expect(events[0].hasScreenshotBefore).toBe(false);
+  });
+
+  it('adds no trace overhead and still throws when no trace capture is attached', async () => {
+    const findElements = vi.fn(async () => makeFindElementsResponse([]));
+    const client = makeMockClient({ findElements });
+    const handle = new ElementHandle(client, _text('Missing'), 200); // no traceCapture
+    await expect(handle.tap()).rejects.toThrow(/was not found after waiting/);
   });
 });
