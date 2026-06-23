@@ -641,6 +641,7 @@ pub async fn launch_app(udid: &str, bundle_id: &str) -> Result<()> {
 /// end-to-end passthrough when an h2-capable client rejects the generated cert.
 /// Keep the DNS resolver override, though: it prevents gRPC's in-process
 /// c-ares resolver from sending UDP DNS through the TCP-only capture redirector.
+#[cfg(target_os = "macos")]
 pub async fn prepare_grpc_trust(udid: &str, _bundle_id: &str) {
     // Force gRPC-Core onto the platform `getaddrinfo` resolver instead of its
     // in-process c-ares resolver. c-ares sends DNS straight from the app
@@ -653,6 +654,7 @@ pub async fn prepare_grpc_trust(udid: &str, _bundle_id: &str) {
 
 /// Set an environment variable in the simulator's launchd (inherited by apps
 /// launched afterward, including the XCUITest-agent-launched target app).
+#[cfg(target_os = "macos")]
 async fn sim_setenv(udid: &str, key: &str, value: &str) {
     match Command::new("xcrun")
         .args(["simctl", "spawn", udid, "launchctl", "setenv", key, value])

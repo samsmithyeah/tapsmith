@@ -2400,12 +2400,10 @@ impl proto::tapsmith_service_server::TapsmithService for TapsmithServiceImpl {
                     self.ensure_ios_physical_proxy(&serial).await;
                 }
 
-                // PILOT-245: before the agent launches the target app, stage the
-                // MITM CA into the app container and publish
-                // GRPC_DEFAULT_SSL_ROOTS_FILE_PATH via the sim launchd, so the
-                // app's gRPC-Core (Firestore) trusts our cert and its h2 traffic
-                // can be intercepted. gRPC reads the roots env once at SSL init,
-                // so it must be set before this first launch.
+                // PILOT-245: before the agent launches the target app, force
+                // gRPC-Core onto the native resolver. Its c-ares resolver emits
+                // UDP DNS from the app process, which the TCP-only redirector
+                // cannot proxy.
                 #[cfg(target_os = "macos")]
                 if !is_physical && req.network_tracing_enabled {
                     ios::device::prepare_grpc_trust(&serial, &req.target_package).await;
