@@ -261,6 +261,22 @@ describe('Device locator factories', () => {
   });
 });
 
+// ─── platform getter ───
+
+describe('Device.platform', () => {
+  it('defaults to android when no platform is configured', () => {
+    const client = makeMockClient();
+    const device = new Device(client);
+    expect(device.platform).toBe('android');
+  });
+
+  it('reflects the configured platform', () => {
+    const client = makeMockClient();
+    expect(new Device(client, { platform: 'ios' }).platform).toBe('ios');
+    expect(new Device(client, { platform: 'android' }).platform).toBe('android');
+  });
+});
+
 // ─── Device Log Streaming ───
 
 describe('Device device log streaming', () => {

@@ -5476,30 +5476,49 @@ impl proto::tapsmith_service_server::TapsmithService for TapsmithServiceImpl {
                     warn!(%pkg, "Failed to force-stop app before restore: {e}");
                 }
 
-                // 2. Clear app data — creates clean data dir with correct base permissions
-                match adb::shell(&serial, &format!("pm clear {pkg}")).await {
-                    Ok(output) if !output.trim().starts_with("Success") => {
-                        return Ok(self
-                            .action_error(
-                                request_id,
-                                "APP_STATE_RESTORE_FAILED",
-                                format!("pm clear failed: {}", output.trim()),
-                            )
-                            .await);
+                // 2. Determine access strategy: root or run-as.
+                let is_root = adb::shell_lenient(&serial, "id")
+                    .await
+                    .map(|out| out.contains("uid=0"))
+                    .unwrap_or(false);
+
+                // 3. Clear the app's data dir IN PLACE, preserving the device
+                // keystore. `pm clear` would also wipe the app's AndroidKeyStore
+                // keys — and on Android those keys hold the decryption key for
+                // credentials persisted *inside* the data dir (e.g. Firebase
+                // Auth encrypts its session token with a Tink keyset that is
+                // itself wrapped by an AndroidKeyStore master key). Wiping the
+                // keystore leaves the restored, still-encrypted credentials
+                // undecryptable, so the app comes back signed out. Removing only
+                // the data-dir contents keeps the keystore intact. The `lib`
+                // entry (symlink to the installed native libraries) is left in
+                // place. Restored files get their ownership/SELinux context
+                // fixed below (root) or inherit the run-as app identity.
+                let clear_cmd = {
+                    // `-exec ... \;` (one `rm` per entry) rather than `+`: with
+                    // `+`, a `find` that matches nothing can invoke `rm` with no
+                    // operands on some implementations, which errors. `\;` only
+                    // runs `rm` per match, so an empty/lib-only dir is a no-op.
+                    let find = format!(
+                        "find {data_dir} -mindepth 1 -maxdepth 1 ! -name lib -exec rm -rf {{}} \\;"
+                    );
+                    if is_root {
+                        find
+                    } else {
+                        format!("run-as {pkg} {find}")
                     }
-                    Err(e) => {
-                        return Ok(self
-                            .action_error(
-                                request_id,
-                                "APP_STATE_RESTORE_FAILED",
-                                format!("Failed to clear app data: {e}"),
-                            )
-                            .await);
-                    }
-                    _ => {}
+                };
+                if let Err(e) = adb::shell(&serial, &clear_cmd).await {
+                    return Ok(self
+                        .action_error(
+                            request_id,
+                            "APP_STATE_RESTORE_FAILED",
+                            format!("Failed to clear app data: {e}"),
+                        )
+                        .await);
                 }
 
-                // 3. Push archive to device
+                // 4. Push archive to device
                 if let Err(e) = adb::push_file(&serial, local_path, &device_tmp).await {
                     let _ = adb::shell_lenient(&serial, &format!("rm -f {device_tmp}")).await;
                     return Ok(self
@@ -5510,12 +5529,6 @@ impl proto::tapsmith_service_server::TapsmithService for TapsmithServiceImpl {
                         )
                         .await);
                 }
-
-                // 4. Determine access strategy
-                let is_root = adb::shell_lenient(&serial, "id")
-                    .await
-                    .map(|out| out.contains("uid=0"))
-                    .unwrap_or(false);
 
                 // 5. Extract archive into app data dir
                 let tar_result = if is_root {
