@@ -1,6 +1,6 @@
 # iOS network capture
 
-Tapsmith can record the HTTP/HTTPS traffic the app under test makes during iOS tests, with full request/response bodies, headers, timing, and per-test attribution in the trace viewer's Network tab. Both **iOS simulators** and **physical iOS devices** are supported on macOS.
+Tapsmith can record the HTTP/HTTPS traffic the app under test makes during iOS tests, with request/response bodies, headers, timing, and per-test attribution in the trace viewer's Network tab when the app accepts Tapsmith's MITM CA. Clients that use embedded roots, certificate pinning, custom TLS verification, or unsupported transports may need `networkPassthroughHosts`; HTTP/2-capable clients that reject the generated certificate can be tunneled dynamically and appear as passthrough markers. Both **iOS simulators** and **physical iOS devices** are supported on macOS.
 
 Simulators go through a macOS Network Extension (no on-device configuration needed — see [simulator setup](#first-run-setup) below). Physical devices use a Wi-Fi proxy configuration profile (a `.mobileconfig` that Tapsmith generates per device) — see the [physical device section](#physical-ios-devices) below.
 
@@ -10,9 +10,9 @@ Tapsmith's daemon (`tapsmith-core`) runs a local MITM proxy for each worker. On 
 
 - The daemon spawns **`Mitmproxy Redirector.app`**, a small signed launcher that ships with [mitmproxy](https://mitmproxy.org) and manages a macOS **Network Extension** (NE). The NE intercepts TCP flows from specific PIDs on the host and redirects them over a per-worker Unix socket into Tapsmith's MITM proxy.
 - The daemon resolves the booted simulator's process tree (`launchd_sim` and descendants) and sends the resulting PID list to the NE as an `InterceptConf`. The NE filters traffic per-PID, so each worker daemon only sees its own simulator's flows — **parallel iOS workers don't collide**, and the user's host browser traffic is never touched.
-- The MITM proxy reads the real hostname from the client's TLS ClientHello SNI extension (not the resolved IP the NE reports), dials upstream with that hostname as SNI, mints a per-host certificate signed by the Tapsmith CA, and captures the decrypted request/response pair into the trace.
+- The MITM proxy reads the real hostname from the client's TLS ClientHello SNI extension (not the resolved IP the NE reports), dials upstream with that hostname as SNI, mints a per-host certificate signed by the Tapsmith CA, and captures the decrypted request/response pair into the trace when the client trusts that CA. If an HTTP/2-capable client rejects the generated certificate, Tapsmith tunnels later connections for that host so the app keeps working.
 
-The CA is installed into the simulator's trust store automatically via `xcrun simctl keychain add-root-cert` at the start of each capture session.
+The CA is installed into the simulator's trust store automatically via `xcrun simctl keychain add-root-cert` at the start of each capture session. That is enough for normal system-trust clients, but not for SDKs that bring their own root store or pin certificates.
 
 ## First-run setup
 
@@ -267,7 +267,7 @@ Tapsmith also detects this at test time: if the daemon notices that the host's c
 
 **The device isn't routing traffic through the proxy** — check that the device is actually on the SSID the mobileconfig targets (not cellular or a different Wi-Fi). Also confirm the profile is installed and CA trust is enabled.
 
-**HTTPS requests fail with certificate errors** — the Tapsmith CA isn't trusted on the device. Go to **Settings → General → About → Certificate Trust Settings** and enable full trust for "Tapsmith MITM CA".
+**HTTPS requests fail with certificate errors** — for normal system-trust clients, the Tapsmith CA probably isn't trusted on the device. Go to **Settings → General → About → Certificate Trust Settings** and enable full trust for "Tapsmith MITM CA". If the app uses certificate pinning or embedded roots, trusting the CA may not be enough; configure `networkPassthroughHosts` for that host. HTTP/2-capable clients may also fall back dynamically and show `CONNECT passthrough` entries instead of decrypted requests.
 
 **A VPN app is installed on the device** — VPN apps bypass Wi-Fi HTTP proxy. Disable the VPN for the duration of testing. This is a known limitation.
 

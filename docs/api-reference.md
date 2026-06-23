@@ -555,7 +555,7 @@ Tapsmith supports Playwright-style network interception. Route handlers let you 
 
 #### `device.route(url, handler, options?): Promise<void>`
 
-Intercept network requests matching a URL pattern. Requires network tracing to be enabled (set `trace` to any mode other than `'off'` with `network: true`, which is the default). Without it, the MITM proxy that intercepts traffic is not active and route handlers will never fire.
+Intercept network requests matching a URL pattern. Requires network tracing to be enabled (set `trace` to any mode other than `'off'` with `network: true`, which is the default). Without it, the MITM proxy that intercepts traffic is not active and route handlers will never fire. Route handlers only see traffic Tapsmith can decrypt; hosts that are configured for passthrough, or dynamically tunneled because an HTTP/2-capable client rejects the generated MITM certificate, cannot be matched.
 
 See also: [`device.unroute()`](#deviceunrouteurl-handler-promisevoid), [`device.unrouteAll()`](#deviceunrouteall-promisevoid).
 
@@ -2400,10 +2400,11 @@ preferences (or keychain) if `--team` is omitted. The resulting
 #### `tapsmith configure-ios-network <udid> [--ssid <name>] [--device-name <name>]`
 
 Generate a `.mobileconfig` profile that routes the physical device's Wi-Fi
-traffic through Tapsmith's MITM proxy for decrypted HTTPS capture, and reveal
-it in Finder so you can AirDrop it to the device. `--ssid` targets a
-specific Wi-Fi network (defaults to the host's current SSID); `--device-name`
-sets the profile's `PayloadDisplayName`.
+traffic through Tapsmith's MITM proxy, and reveal it in Finder so you can
+AirDrop it to the device. Decrypted capture is available for clients that trust
+the Tapsmith CA; pinned or embedded-root clients may need passthrough.
+`--ssid` targets a specific Wi-Fi network (defaults to the host's current SSID);
+`--device-name` sets the profile's `PayloadDisplayName`.
 
 #### `tapsmith refresh-ios-network <udid>`
 
@@ -2414,10 +2415,10 @@ difference is only wording in the output.
 #### `tapsmith verify-ios-network <udid>`
 
 End-to-end sanity check that the installed profile plus the trusted CA
-actually produce decrypted HTTPS capture. Starts the proxy, asks you to
-load an HTTPS page in Safari on the device, then reports whether Tapsmith
-saw the request and could decrypt the body. Exits non-zero on failure
-with fix-it hints for each failure mode.
+actually produce decrypted HTTPS capture for a normal system-trust client.
+Starts the proxy, asks you to load an HTTPS page in Safari on the device, then
+reports whether Tapsmith saw the request and could decrypt the body. Exits
+non-zero on failure with fix-it hints for each failure mode.
 
 ### `tapsmith --version` / `tapsmith -v`
 

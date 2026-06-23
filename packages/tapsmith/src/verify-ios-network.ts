@@ -11,8 +11,9 @@
  *   6. Inspect the captured entries:
  *      - 0 entries           → device isn't routing through the proxy
  *      - HTTPS entries with empty bodies → proxy sees CONNECT but can't
- *        decrypt; CA isn't trusted on the device
- *      - HTTPS entries with non-empty bodies → fully working
+ *        decrypt; CA isn't trusted on the device for this system-trust check
+ *      - HTTPS entries with non-empty bodies → fully working for normal
+ *        system-trust clients
  *   7. Print a clear ✓/✗ summary with fix-it hints for each failure mode
  *
  * Why the user has to load the URL manually: there's no host-side way

@@ -365,16 +365,18 @@ export interface TraceConfig {
    * tunneled connection appears in the trace as a single `CONNECT` entry
    * marked `passthrough`.
    *
-   * Use this for hosts the app reaches with certificate pinning, which
-   * MITM interception would otherwise break:
+   * Use this for hosts the app reaches with certificate pinning or embedded
+   * roots, which MITM interception would otherwise break:
    *
    *     trace: {
    *       mode: 'on',
    *       networkPassthroughHosts: ['pinned-api.example.com'],
    *     }
    *
-   * Note that HTTP/2-only traffic (gRPC, Firestore) is detected and
-   * passed through automatically — no configuration needed.
+   * HTTP/2 traffic (including gRPC) is intercepted and captured when the
+   * client trusts Tapsmith's MITM CA. HTTP/2-capable clients that reject the
+   * generated certificate, such as some Firestore SDKs with embedded roots,
+   * may be tunneled dynamically and appear as `passthrough`.
    *
    * Patterns match against the TLS SNI hostname with the same glob
    * syntax as `networkHosts`.
@@ -498,8 +500,10 @@ export interface NetworkEntry {
    * How this request was handled by a route: "mocked", "aborted",
    * "continued", "fetched". The special value "passthrough" marks a
    * synthetic per-connection entry for TLS traffic tunneled without MITM
-   * (HTTP/2-only clients or `trace.networkPassthroughHosts`) — no
-   * request/response detail is available for those.
+   * (hosts in `trace.networkPassthroughHosts`, clients whose ALPN offers no
+   * protocol the proxy speaks, or HTTP/2-capable clients that reject the
+   * generated MITM certificate) -- no request/response detail is available
+   * for those.
    */
   routeAction?: 'mocked' | 'aborted' | 'continued' | 'fetched' | 'passthrough'
 }

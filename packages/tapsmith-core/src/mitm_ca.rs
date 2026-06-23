@@ -111,13 +111,16 @@ impl MitmAuthority {
             .with_no_client_auth()
             .with_single_cert(vec![cert_der], key_der)
             .context("Failed to build rustls ServerConfig for host")?;
-        // Advertise HTTP/1.1 via ALPN so dual-protocol clients (NSURLSession,
-        // OkHttp offer ["h2", "http/1.1"]) negotiate HTTP/1.1 — the only
-        // protocol the MITM engine speaks — instead of assuming h2. Clients
-        // that send no ALPN extension are still accepted unchanged. h2-only
-        // clients (gRPC) never reach this config: they are detected from the
-        // ClientHello ALPN and tunneled without MITM (PILOT-231).
-        config.alpn_protocols = vec![b"http/1.1".to_vec()];
+        // Advertise both http/1.1 and h2 via ALPN, http/1.1 FIRST. rustls
+        // negotiates by server preference, so dual-protocol clients (NSURLSession,
+        // OkHttp, browsers) keep negotiating http/1.1 — the battle-tested path,
+        // and the one that reaches http/1.1-only origins without trouble. Only
+        // h2-only clients (gRPC, Firestore) negotiate h2 and take the new HTTP/2
+        // pipeline (PILOT-245); those always talk to h2 origins, so the upstream
+        // is virtually always h2 too. Clients with no ALPN extension are handled
+        // as HTTP/1.1. The negotiated protocol is read back from the completed
+        // handshake to pick the pipeline.
+        config.alpn_protocols = vec![b"http/1.1".to_vec(), b"h2".to_vec()];
 
         let config = Arc::new(config);
         cache.insert(hostname.to_string(), config.clone());

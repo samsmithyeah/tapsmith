@@ -3,7 +3,9 @@
 //! Spawns the `Mitmproxy Redirector.app` launcher, accepts the control
 //! channel from the System Extension, sends a per-simulator PID
 //! `InterceptConf`, and bridges every intercepted TCP flow into
-//! [`crate::network_proxy::handle_transparent_tcp`]. A background refresh
+//! [`crate::network_proxy::handle_transparent_tcp`]. Intercepted UDP flows are
+//! relayed only when they are DNS (so in-process gRPC/c-ares resolvers keep
+//! working under capture); all other UDP is dropped. A background refresh
 //! task polls `ps` every [`PID_REFRESH_INTERVAL`] and pushes an updated
 //! `InterceptConf` if the simulator's process tree has changed.
 //!
@@ -19,15 +21,15 @@ use std::sync::{Arc, Mutex as StdMutex};
 use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
-use bytes::Bytes;
-use futures_util::SinkExt;
+use bytes::{Bytes, BytesMut};
+use futures_util::{SinkExt, StreamExt};
 use prost::Message;
 use tokio::io::AsyncReadExt;
-use tokio::net::{UnixListener, UnixStream};
+use tokio::net::{UdpSocket, UnixListener, UnixStream};
 use tokio::process::Command;
 use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
-use tokio::time::timeout;
+use tokio::time::{timeout, Instant};
 use tokio_util::codec::{Framed, LengthDelimitedCodec};
 use tracing::{debug, error, info, warn};
 
@@ -43,7 +45,7 @@ type FlowTaskList = Arc<StdMutex<Vec<JoinHandle<()>>>>;
 use crate::ios::simulator_processes;
 use crate::ipc;
 use crate::mitm_ca::MitmAuthority;
-use crate::network_proxy::{handle_transparent_tcp, ProxyState};
+use crate::network_proxy::{handle_transparent_tcp, join_host_port, ProxyState};
 
 /// How often the PID refresh task re-queries `ps` and pushes a new
 /// `InterceptConf` if the simulator's process tree has changed. Short enough
@@ -60,6 +62,32 @@ const NEW_FLOW_MAX_LEN: usize = 64 * 1024;
 /// attempts: a connection that the SE accepts but never writes the
 /// handshake on would otherwise pin a flow handler task forever.
 const NEW_FLOW_READ_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// How long to wait for the first datagram on an intercepted UDP flow before
+/// giving up. UDP flows carry a constant remote endpoint, conveyed by the
+/// first `UdpPacket`; without a packet we can't tell DNS from anything else,
+/// so a silent flow is simply let lapse.
+const UDP_FIRST_PACKET_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Idle ceiling for a relayed DNS flow: if neither side sends a datagram for
+/// this long, the relay closes. DNS exchanges are sub-second, so this only
+/// reaps the long tail of c-ares keeping a flow open after it has its answer.
+const UDP_RELAY_IDLE_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Backoff after a DNS relay socket receive error. Connected UDP sockets can
+/// surface asynchronous ICMP errors; these should not tear down the flow, but a
+/// bad resolver must also not spin the relay loop.
+const UDP_RELAY_RECV_ERROR_BACKOFF: Duration = Duration::from_millis(25);
+
+/// Consecutive DNS relay socket receive errors tolerated before closing the
+/// flow. A transient ICMP error is ignored; a persistently failing resolver is
+/// bounded.
+const UDP_RELAY_MAX_RECV_ERRORS: u32 = 8;
+
+/// Max DNS datagram size we buffer from the resolver. EDNS0 responses are
+/// capped well below this; anything larger falls back to TCP DNS (a separate
+/// intercepted TCP flow), so truncating here is safe.
+const UDP_DGRAM_MAX: usize = 4096;
 
 /// Backoff before retrying after a transient `accept()` failure on the
 /// flow listener (e.g. `ConnectionAborted`, `EMFILE`). Short enough that
@@ -665,8 +693,8 @@ async fn accept_flow_loop(
 
 /// Decode the length-prefixed `NewFlow` proto handshake from an accepted
 /// flow connection, then hand the rest of the stream to the transparent-
-/// TCP MITM handler. UDP flows are logged and dropped (out of scope for
-/// PILOT-182; can be revisited when QUIC/DNS capture is on the roadmap).
+/// TCP MITM handler. UDP flows are passed to [`relay_udp_dns`], which relays
+/// DNS (port 53) and drops everything else.
 async fn handle_flow(
     mut stream: UnixStream,
     proxy_state: Arc<Mutex<ProxyState>>,
@@ -725,11 +753,132 @@ async fn handle_flow(
             debug!(
                 pid = ?tunnel.pid,
                 process = ?tunnel.process_name,
-                "intercepted UDP flow — dropping (PILOT-182 scope is TCP/HTTP only)"
+                "intercepted UDP flow"
             );
-            Ok(())
+            relay_udp_dns(stream).await
         }
     }
+}
+
+/// Relay an intercepted UDP flow back out to its real destination *iff it is
+/// DNS* (remote port 53), dropping every other UDP flow.
+///
+/// gRPC-Core stacks (Firestore and other gRPC clients) resolve hostnames
+/// in-process via c-ares, sending DNS queries straight from the app over
+/// UDP/53 rather than through the system resolver. Those datagrams are claimed
+/// by the PID-based redirector; if we drop them the lookup times out
+/// (`-65568 kDNSServiceErr_Timeout`) and the gRPC channel never connects —
+/// even though the subsequent TCP connection would have been MITM'd fine. So
+/// for DNS we proxy datagrams to the resolver the app chose and pipe the
+/// answers back, restoring resolution while still capturing the TCP traffic.
+///
+/// All other UDP (notably QUIC on :443) is still dropped: that deliberately
+/// forces HTTP/3-capable clients to fall back to TCP/h2, which we *can* MITM.
+async fn relay_udp_dns(stream: UnixStream) -> Result<()> {
+    let mut framed = Framed::new(stream, LengthDelimitedCodec::new());
+
+    // The remote endpoint is conveyed per-datagram and is constant for the
+    // flow (the SE validates consistency), so the first packet decides whether
+    // this flow is DNS worth relaying.
+    let first = match timeout(UDP_FIRST_PACKET_TIMEOUT, framed.next()).await {
+        Ok(Some(Ok(buf))) => ipc::UdpPacket::decode(&*buf).context("decoding first UdpPacket")?,
+        Ok(Some(Err(e))) => return Err(e).context("reading first UdpPacket"),
+        Ok(None) => return Ok(()), // flow closed before any datagram
+        Err(_) => return Ok(()),   // no datagram within the window — let it lapse
+    };
+
+    let Some(remote) = first.remote_address.clone() else {
+        bail!("UdpPacket missing remote_address");
+    };
+    if remote.port != 53 {
+        debug!(
+            host = %remote.host,
+            port = remote.port,
+            "dropping non-DNS UDP flow (forces TCP fallback)"
+        );
+        return Ok(());
+    }
+
+    // `remote.host` is a numeric literal from the SE; bracket IPv6 so the
+    // socket address parses (same hazard as the TCP dial path, PILOT-242).
+    let target = join_host_port(&remote.host, remote.port as u16);
+    let bind_addr = if remote.host.contains(':') {
+        "[::]:0"
+    } else {
+        "0.0.0.0:0"
+    };
+    let socket = match UdpSocket::bind(bind_addr).await {
+        Ok(s) => s,
+        Err(e) => {
+            warn!(%target, "failed to bind DNS relay socket: {e}");
+            return Ok(());
+        }
+    };
+    if let Err(e) = socket.connect(&target).await {
+        warn!(%target, "failed to connect DNS relay socket: {e}");
+        return Ok(());
+    }
+    socket.send(&first.data).await.ok();
+    debug!(%target, "relaying DNS UDP flow");
+
+    let mut buf = vec![0u8; UDP_DGRAM_MAX];
+    let mut consecutive_recv_errors = 0;
+    let mut recv_paused_until: Option<Instant> = None;
+    loop {
+        let recv_pause_until = recv_paused_until.unwrap_or_else(Instant::now);
+        tokio::select! {
+            // App → resolver: forward each query datagram verbatim.
+            frame = framed.next() => match frame {
+                Some(Ok(b)) => {
+                    if let Ok(pkt) = ipc::UdpPacket::decode(&*b) {
+                        consecutive_recv_errors = 0;
+                        recv_paused_until = None;
+                        socket.send(&pkt.data).await.ok();
+                    }
+                }
+                _ => break, // flow closed or decode error
+            },
+            // Back off after transient connected-UDP recv errors without
+            // blocking app → resolver datagrams from the same flow.
+            _ = tokio::time::sleep_until(recv_pause_until), if recv_paused_until.is_some() => {
+                recv_paused_until = None;
+            },
+            // Resolver → app: wrap each answer back into a UdpPacket.
+            recv = socket.recv(&mut buf), if recv_paused_until.is_none() => match recv {
+                Ok(n) => {
+                    consecutive_recv_errors = 0;
+                    recv_paused_until = None;
+                    let pkt = ipc::UdpPacket {
+                        data: buf[..n].to_vec(),
+                        remote_address: Some(remote.clone()),
+                    };
+                    let mut out = BytesMut::new();
+                    if pkt.encode(&mut out).is_err() {
+                        break;
+                    }
+                    if framed.send(out.freeze()).await.is_err() {
+                        break;
+                    }
+                }
+                Err(e) => {
+                    consecutive_recv_errors += 1;
+                    debug!(
+                        %target,
+                        error = %e,
+                        consecutive_errors = consecutive_recv_errors,
+                        "DNS relay socket recv error"
+                    );
+                    if consecutive_recv_errors >= UDP_RELAY_MAX_RECV_ERRORS {
+                        break;
+                    }
+                    recv_paused_until = Some(Instant::now() + UDP_RELAY_RECV_ERROR_BACKOFF);
+                }
+            },
+            // Idle ceiling — neither side spoke for the timeout window.
+            _ = tokio::time::sleep(UDP_RELAY_IDLE_TIMEOUT) => break,
+        }
+    }
+    Ok(())
 }
 
 /// Locate the `Mitmproxy Redirector.app` launcher binary via a fallback
@@ -985,5 +1134,50 @@ mod tests {
             extract_owner_pid_from_args("/tmp/tapsmith-redirector-.sock"),
             None,
         );
+    }
+
+    /// A non-DNS UDP flow (e.g. QUIC on :443) must be dropped, not relayed, so
+    /// that HTTP/3-capable clients fall back to TCP/h2 where we can MITM them.
+    /// `relay_udp_dns` must therefore return promptly once it sees the first
+    /// packet's non-53 destination — never blocking or opening a relay socket.
+    #[tokio::test]
+    async fn relay_udp_dns_drops_non_dns_flows() {
+        let (se, daemon) = UnixStream::pair().unwrap();
+        let mut se_framed = Framed::new(se, LengthDelimitedCodec::new());
+
+        let pkt = ipc::UdpPacket {
+            data: b"quic-initial".to_vec(),
+            remote_address: Some(ipc::Address {
+                host: "93.184.216.34".to_string(),
+                port: 443,
+            }),
+        };
+        let mut buf = BytesMut::new();
+        pkt.encode(&mut buf).unwrap();
+        se_framed.send(buf.freeze()).await.unwrap();
+
+        // Well under UDP_FIRST_PACKET_TIMEOUT / UDP_RELAY_IDLE_TIMEOUT: if the
+        // port gate were missing the relay would block here instead of returning.
+        let res = timeout(Duration::from_secs(2), relay_udp_dns(daemon)).await;
+        assert!(
+            res.is_ok(),
+            "relay should return promptly for a non-DNS flow"
+        );
+        assert!(res.unwrap().is_ok());
+    }
+
+    /// An immediately-closed UDP flow (no datagram ever arrives) must not hang
+    /// or error — `relay_udp_dns` should observe the closed stream and return.
+    #[tokio::test]
+    async fn relay_udp_dns_handles_empty_flow() {
+        let (se, daemon) = UnixStream::pair().unwrap();
+        drop(se); // SE closes without sending anything
+
+        let res = timeout(Duration::from_secs(2), relay_udp_dns(daemon)).await;
+        assert!(
+            res.is_ok(),
+            "relay should return promptly when the flow closes"
+        );
+        assert!(res.unwrap().is_ok());
     }
 }

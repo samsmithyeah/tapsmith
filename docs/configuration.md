@@ -139,10 +139,11 @@ interface TraceConfig {
                                  // iff it matches allow AND does NOT match deny.
   networkPassthroughHosts?: string[]; // Hosts (glob patterns, matched against the
                                  // TLS SNI) whose connections bypass MITM
-                                 // interception entirely — tunneled end-to-end,
+                                 // interception entirely -- tunneled end-to-end,
                                  // no capture, no route matching. Use for
-                                 // certificate-pinned hosts. HTTP/2-only traffic
-                                 // (gRPC, Firestore) passes through automatically.
+                                 // certificate-pinned or embedded-root clients.
+                                 // HTTP/2 and gRPC are captured only when the
+                                 // client trusts Tapsmith's MITM CA.
 }
 ```
 
@@ -198,7 +199,7 @@ trace: {
 }
 ```
 
-Tunneled connections appear in the trace as a single `CONNECT` entry marked `passthrough`, and `device.route()` cannot match them. HTTP/2-only clients (gRPC, Firestore) are detected and passed through automatically without configuration — see [network.md](network.md#http2-grpc-and-passthrough-connections).
+Tunneled connections appear in the trace as a single `CONNECT` entry marked `passthrough`, and `device.route()` cannot match them. Tapsmith can also tunnel a host dynamically when an HTTP/2-capable client rejects the generated MITM certificate, which is common for Firestore-style SDKs that use embedded root certificates. See [network.md](network.md#http2-grpc-and-passthrough-connections).
 
 Example:
 

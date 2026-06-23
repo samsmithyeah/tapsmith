@@ -632,6 +632,45 @@ pub async fn launch_app(udid: &str, bundle_id: &str) -> Result<()> {
     Ok(())
 }
 
+/// Prepare simulator launchd environment for gRPC-Core clients (Firestore et
+/// al.) under network capture (PILOT-245).
+///
+/// Firestore's gRPC-C++ stack embeds its root certificates and passes them
+/// directly to SSL credentials, so `GRPC_DEFAULT_SSL_ROOTS_FILE_PATH` is not a
+/// reliable way to make it trust the MITM CA. The proxy instead falls back to
+/// end-to-end passthrough when an h2-capable client rejects the generated cert.
+/// Keep the DNS resolver override, though: it prevents gRPC's in-process
+/// c-ares resolver from sending UDP DNS through the TCP-only capture redirector.
+#[cfg(target_os = "macos")]
+pub async fn prepare_grpc_trust(udid: &str, _bundle_id: &str) {
+    // Force gRPC-Core onto the platform `getaddrinfo` resolver instead of its
+    // in-process c-ares resolver. c-ares sends DNS straight from the app
+    // process, so the PID-based capture redirector claims those UDP packets and
+    // drops them (TCP-only) → DNS times out (`-65568`) and Firestore never
+    // connects. `getaddrinfo` resolves via mDNSResponder (a separate process,
+    // not intercepted), the same path NSURLSession uses successfully.
+    sim_setenv(udid, "GRPC_DNS_RESOLVER", "native").await;
+}
+
+/// Set an environment variable in the simulator's launchd (inherited by apps
+/// launched afterward, including the XCUITest-agent-launched target app).
+#[cfg(target_os = "macos")]
+async fn sim_setenv(udid: &str, key: &str, value: &str) {
+    match Command::new("xcrun")
+        .args(["simctl", "spawn", udid, "launchctl", "setenv", key, value])
+        .output()
+        .await
+    {
+        Ok(o) if o.status.success() => debug!(key, value, "published env to simulator launchd"),
+        Ok(o) => debug!(
+            key,
+            stderr = %String::from_utf8_lossy(&o.stderr),
+            "launchctl setenv returned non-zero"
+        ),
+        Err(e) => debug!(key, error = %e, "failed to run launchctl setenv"),
+    }
+}
+
 /// Terminate an app on a simulator.
 #[instrument]
 pub async fn terminate_app(udid: &str, bundle_id: &str) -> Result<()> {

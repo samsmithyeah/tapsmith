@@ -833,6 +833,17 @@ impl TapsmithServiceImpl {
     ) -> Result<(), String> {
         let is_physical = self.is_active_ios_physical().await;
 
+        // PILOT-245/242: when network tracing is enabled on a simulator, force
+        // gRPC-Core onto the native resolver before app launch. Its c-ares
+        // resolver emits UDP DNS from the app process, which the TCP-only
+        // redirector cannot proxy. Gate on the session config flag (set at
+        // set_device, before any launch) rather than the live proxy because
+        // the app is first launched in preflight, before per-test capture.
+        #[cfg(target_os = "macos")]
+        if !is_physical && *self.network_tracing_enabled.read().await {
+            ios::device::prepare_grpc_trust(serial, package_name).await;
+        }
+
         let reset_start = std::time::Instant::now();
         let t0 = std::time::Instant::now();
         match self
@@ -2387,6 +2398,15 @@ impl proto::tapsmith_service_server::TapsmithService for TapsmithServiceImpl {
                 #[cfg(target_os = "macos")]
                 if is_physical && req.network_tracing_enabled {
                     self.ensure_ios_physical_proxy(&serial).await;
+                }
+
+                // PILOT-245: before the agent launches the target app, force
+                // gRPC-Core onto the native resolver. Its c-ares resolver emits
+                // UDP DNS from the app process, which the TCP-only redirector
+                // cannot proxy.
+                #[cfg(target_os = "macos")]
+                if !is_physical && req.network_tracing_enabled {
+                    ios::device::prepare_grpc_trust(&serial, &req.target_package).await;
                 }
 
                 let agent_port = self.agent.read().await.port();

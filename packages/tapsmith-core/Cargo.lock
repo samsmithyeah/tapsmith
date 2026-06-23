@@ -1531,6 +1531,8 @@ dependencies = [
  "crc32fast",
  "dirs",
  "futures-util",
+ "h2",
+ "http",
  "http-body-util",
  "hyper",
  "hyper-util",
