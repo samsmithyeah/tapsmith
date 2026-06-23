@@ -74,6 +74,16 @@ const UDP_FIRST_PACKET_TIMEOUT: Duration = Duration::from_secs(10);
 /// reaps the long tail of c-ares keeping a flow open after it has its answer.
 const UDP_RELAY_IDLE_TIMEOUT: Duration = Duration::from_secs(30);
 
+/// Backoff after a DNS relay socket receive error. Connected UDP sockets can
+/// surface asynchronous ICMP errors; these should not tear down the flow, but a
+/// bad resolver must also not spin the relay loop.
+const UDP_RELAY_RECV_ERROR_BACKOFF: Duration = Duration::from_millis(25);
+
+/// Consecutive DNS relay socket receive errors tolerated before closing the
+/// flow. A transient ICMP error is ignored; a persistently failing resolver is
+/// bounded.
+const UDP_RELAY_MAX_RECV_ERRORS: u32 = 8;
+
 /// Max DNS datagram size we buffer from the resolver. EDNS0 responses are
 /// capped well below this; anything larger falls back to TCP DNS (a separate
 /// intercepted TCP flow), so truncating here is safe.
@@ -812,12 +822,14 @@ async fn relay_udp_dns(stream: UnixStream) -> Result<()> {
     debug!(%target, "relaying DNS UDP flow");
 
     let mut buf = vec![0u8; UDP_DGRAM_MAX];
+    let mut consecutive_recv_errors = 0;
     loop {
         tokio::select! {
             // App → resolver: forward each query datagram verbatim.
             frame = framed.next() => match frame {
                 Some(Ok(b)) => {
                     if let Ok(pkt) = ipc::UdpPacket::decode(&*b) {
+                        consecutive_recv_errors = 0;
                         socket.send(&pkt.data).await.ok();
                     }
                 }
@@ -826,6 +838,7 @@ async fn relay_udp_dns(stream: UnixStream) -> Result<()> {
             // Resolver → app: wrap each answer back into a UdpPacket.
             recv = socket.recv(&mut buf) => match recv {
                 Ok(n) => {
+                    consecutive_recv_errors = 0;
                     let pkt = ipc::UdpPacket {
                         data: buf[..n].to_vec(),
                         remote_address: Some(remote.clone()),
@@ -838,7 +851,19 @@ async fn relay_udp_dns(stream: UnixStream) -> Result<()> {
                         break;
                     }
                 }
-                Err(_) => break,
+                Err(e) => {
+                    consecutive_recv_errors += 1;
+                    debug!(
+                        %target,
+                        error = %e,
+                        consecutive_errors = consecutive_recv_errors,
+                        "DNS relay socket recv error"
+                    );
+                    if consecutive_recv_errors >= UDP_RELAY_MAX_RECV_ERRORS {
+                        break;
+                    }
+                    tokio::time::sleep(UDP_RELAY_RECV_ERROR_BACKOFF).await;
+                }
             },
             // Idle ceiling — neither side spoke for the timeout window.
             _ = tokio::time::sleep(UDP_RELAY_IDLE_TIMEOUT) => break,
