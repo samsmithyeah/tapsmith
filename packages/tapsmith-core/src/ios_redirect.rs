@@ -29,7 +29,7 @@ use tokio::net::{UdpSocket, UnixListener, UnixStream};
 use tokio::process::Command;
 use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
-use tokio::time::timeout;
+use tokio::time::{timeout, Instant};
 use tokio_util::codec::{Framed, LengthDelimitedCodec};
 use tracing::{debug, error, info, warn};
 
@@ -823,22 +823,31 @@ async fn relay_udp_dns(stream: UnixStream) -> Result<()> {
 
     let mut buf = vec![0u8; UDP_DGRAM_MAX];
     let mut consecutive_recv_errors = 0;
+    let mut recv_paused_until: Option<Instant> = None;
     loop {
+        let recv_pause_until = recv_paused_until.unwrap_or_else(Instant::now);
         tokio::select! {
             // App → resolver: forward each query datagram verbatim.
             frame = framed.next() => match frame {
                 Some(Ok(b)) => {
                     if let Ok(pkt) = ipc::UdpPacket::decode(&*b) {
                         consecutive_recv_errors = 0;
+                        recv_paused_until = None;
                         socket.send(&pkt.data).await.ok();
                     }
                 }
                 _ => break, // flow closed or decode error
             },
+            // Back off after transient connected-UDP recv errors without
+            // blocking app → resolver datagrams from the same flow.
+            _ = tokio::time::sleep_until(recv_pause_until), if recv_paused_until.is_some() => {
+                recv_paused_until = None;
+            },
             // Resolver → app: wrap each answer back into a UdpPacket.
-            recv = socket.recv(&mut buf) => match recv {
+            recv = socket.recv(&mut buf), if recv_paused_until.is_none() => match recv {
                 Ok(n) => {
                     consecutive_recv_errors = 0;
+                    recv_paused_until = None;
                     let pkt = ipc::UdpPacket {
                         data: buf[..n].to_vec(),
                         remote_address: Some(remote.clone()),
@@ -862,7 +871,7 @@ async fn relay_udp_dns(stream: UnixStream) -> Result<()> {
                     if consecutive_recv_errors >= UDP_RELAY_MAX_RECV_ERRORS {
                         break;
                     }
-                    tokio::time::sleep(UDP_RELAY_RECV_ERROR_BACKOFF).await;
+                    recv_paused_until = Some(Instant::now() + UDP_RELAY_RECV_ERROR_BACKOFF);
                 }
             },
             // Idle ceiling — neither side spoke for the timeout window.

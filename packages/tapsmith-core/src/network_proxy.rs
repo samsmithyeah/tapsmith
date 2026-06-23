@@ -1516,7 +1516,7 @@ fn h2_headers_from_parsed(headers: &[(String, String)]) -> http::HeaderMap {
         }
         if let (Ok(n), Ok(v)) = (
             http::HeaderName::from_bytes(name.as_bytes()),
-            http::HeaderValue::from_str(value),
+            http::HeaderValue::from_bytes(value.as_bytes()),
         ) {
             map.append(n, v);
         }
@@ -3829,6 +3829,16 @@ mod tests {
         ];
         let json = headers_to_json_object(&headers);
         assert_eq!(json["set-cookie"], "a=1; Path=/\nb=2; HttpOnly");
+    }
+
+    #[test]
+    fn h2_headers_from_parsed_preserves_utf8_header_values() {
+        let value = String::from_utf8(vec![b'c', b'a', b'f', 0xc3, 0xa9]).unwrap();
+        let headers = vec![("x-label".to_string(), value.clone())];
+
+        let map = h2_headers_from_parsed(&headers);
+
+        assert_eq!(map.get("x-label").unwrap().as_bytes(), value.as_bytes());
     }
 
     #[test]
