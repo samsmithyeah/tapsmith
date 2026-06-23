@@ -266,6 +266,8 @@ export default defineConfig({
 })
 ```
 
+> **Android + Keystore-backed auth (e.g. Firebase):** restoring saved app state works on the **same device** that saved it, but an archive is **not portable across devices**. Many auth SDKs (including the Firebase Android SDK behind `@react-native-firebase/auth`) encrypt their session token with an Android Keystore key that stays on the saving device and isn't captured in the archive — so restoring it on a different device or CI runner results in an unauthenticated state. The setup-project pattern above already handles this: `dependencies` re-runs `auth.setup` on each device, minting fresh state where the tests run. Don't commit an Android auth archive and restore it elsewhere; let the setup project regenerate it (or use API-driven auth such as custom-token sign-in). See [`saveAppState`](api-reference.md#devicesaveappstatepackagename-string-path-string-promisevoid) for details.
+
 ---
 
 ## Selector best practices
