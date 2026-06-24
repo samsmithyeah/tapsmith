@@ -314,6 +314,51 @@ impl TapsmithServiceImpl {
         }
     }
 
+    /// Install the MITM CA into the active Android device's trust store as part
+    /// of device setup — *before* the app under test is first launched.
+    ///
+    /// On Android 14+ the CA is injected into the zygote mount namespace, so it
+    /// is only trusted by app processes *forked after* the injection (a running
+    /// app caches its trust store at client creation and won't pick it up).
+    /// `start_network_capture` installs the CA lazily per-test, which runs after
+    /// the worker has already launched the app — so on a freshly-booted device
+    /// the first HTTPS host is sacrificed until the app happens to re-fork.
+    /// Installing here, before the first launch, means the app forks from an
+    /// already-patched zygote and trusts the cert on its very first request.
+    ///
+    /// Idempotent (skips if already installed this session) and best-effort:
+    /// failures are non-fatal because the per-test install still runs as a
+    /// fallback and the cert-reject → passthrough path keeps traffic flowing.
+    async fn ensure_android_ca_installed(&self, serial: &str) {
+        if self.proxy_ca_cert_path.read().await.is_some() {
+            return;
+        }
+        let mitm_ca = match MitmAuthority::load_or_create() {
+            Ok(ca) => ca,
+            Err(e) => {
+                warn!(%serial, "Skipping CA pre-install: failed to load MITM CA: {e}");
+                return;
+            }
+        };
+        let cert_filename = match mitm_ca.device_cert_filename() {
+            Ok(f) => f,
+            Err(e) => {
+                warn!(%serial, "Skipping CA pre-install: {e}");
+                return;
+            }
+        };
+        let ca_pem_path = mitm_ca.ca_pem_path().to_string_lossy().to_string();
+        match adb::install_ca_cert(serial, &ca_pem_path, &cert_filename).await {
+            Ok(path) => {
+                info!(%serial, "MITM CA pre-installed during device setup (before first app launch)");
+                *self.proxy_ca_cert_path.write().await = Some(path);
+            }
+            Err(e) => {
+                debug!(%serial, "CA pre-install during setup failed: {e} — will retry at capture start");
+            }
+        }
+    }
+
     fn request_id(provided: &str) -> String {
         if provided.is_empty() {
             Uuid::new_v4().to_string()
@@ -2260,6 +2305,12 @@ impl proto::tapsmith_service_server::TapsmithService for TapsmithServiceImpl {
                 if device_changed {
                     *self.started_agent_config.write().await = None;
                     *self.ios_agent_config.write().await = None;
+                    // Drop the previous device's pre-installed CA marker so the
+                    // Android CA pre-install below runs for the newly-selected
+                    // device rather than short-circuiting on stale state. The
+                    // active device can change within a daemon's lifetime (e.g.
+                    // UI mode switching between devices).
+                    *self.proxy_ca_cert_path.write().await = None;
                 }
                 agent_comms::clear_stream_cache(&self.agent_stream).await;
                 // Persist the CLI's tracing flag on the server so subsequent
@@ -2295,6 +2346,18 @@ impl proto::tapsmith_service_server::TapsmithService for TapsmithServiceImpl {
                     if let Some(proxy) = self.network_proxy.read().await.as_ref() {
                         proxy.set_network_hosts(req.network_hosts.clone()).await;
                     }
+                }
+                // Symmetric to the iOS pre-arm above: for Android with tracing
+                // enabled, install the MITM CA now — during setup, before the
+                // first app launch — so the app under test forks from a zygote
+                // that already trusts the cert (Android 14+ injects into the
+                // zygote mount namespace, which only future forks inherit). This
+                // is what spares the first HTTPS request on a freshly-booted
+                // device. See `ensure_android_ca_installed`.
+                if req.network_tracing_enabled
+                    && self.active_platform().await == Some(Platform::Android)
+                {
+                    self.ensure_android_ca_installed(&req.serial).await;
                 }
                 Ok(Response::new(proto::ActionResponse {
                     request_id,
