@@ -42,6 +42,38 @@ export interface SimulatorInfo {
   runtime: string;
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === 'object';
+}
+
+export function parseSimctlDevicesJson(output: string): SimulatorInfo[] {
+  const simulators: SimulatorInfo[] = [];
+  let data: unknown;
+  try {
+    data = JSON.parse(output);
+  } catch {
+    return simulators;
+  }
+
+  const devices = isRecord(data) ? data['devices'] : undefined;
+  if (!isRecord(devices)) return simulators;
+
+  for (const [runtime, devs] of Object.entries(devices)) {
+    if (!Array.isArray(devs)) continue;
+    for (const device of devs) {
+      if (!isRecord(device)) continue;
+      const runtimeName = runtime.replace(/^com\.apple\.CoreSimulator\.SimRuntime\./, '').replace(/-/g, ' ');
+      simulators.push({
+        name: typeof device['name'] === 'string' ? device['name'] : '',
+        udid: typeof device['udid'] === 'string' ? device['udid'] : '',
+        state: typeof device['state'] === 'string' ? device['state'] : '',
+        runtime: runtimeName,
+      });
+    }
+  }
+  return simulators;
+}
+
 export function scanEnvironment(): EnvScan {
   const isMacOS = process.platform === 'darwin';
   const nodeVersion = process.versions.node;
@@ -78,18 +110,7 @@ export function scanEnvironment(): EnvScan {
   if (isMacOS) {
     const simOut = tryExec('xcrun', ['simctl', 'list', 'devices', 'available', '-j']);
     if (simOut) {
-      try {
-        const data = JSON.parse(simOut);
-        const devices = data.devices as Record<string, Array<{ name: string; udid: string; state: string }>>;
-        for (const [runtime, devs] of Object.entries(devices)) {
-          for (const d of devs) {
-            const runtimeName = runtime.replace(/^com\.apple\.CoreSimulator\.SimRuntime\./, '').replace(/-/g, ' ');
-            simulators.push({ name: d.name, udid: d.udid, state: d.state, runtime: runtimeName });
-          }
-        }
-      } catch {
-        // parse failure
-      }
+      simulators.push(...parseSimctlDevicesJson(simOut));
     }
   }
 

@@ -56,10 +56,26 @@ export interface DoctorJson {
   inventory: DoctorInventory;
 }
 
+const ANSI_RE = /\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])/g;
+
+export function stripAnsi(value: string): string {
+  return value.replace(ANSI_RE, '');
+}
+
+function plainCheck(check: CheckEntry): CheckEntry {
+  const plain: CheckEntry = {
+    ...check,
+    label: stripAnsi(check.label),
+  };
+  if (check.detail !== undefined) plain.detail = stripAnsi(check.detail);
+  if (check.fix !== undefined) plain.fix = stripAnsi(check.fix);
+  return plain;
+}
+
 export function buildDoctorJson(checks: CheckList, inventory: DoctorInventory): DoctorJson {
   return {
     ok: !checks.some((c) => c.status === 'fail'),
-    checks,
+    checks: checks.map(plainCheck),
     inventory,
   };
 }

@@ -480,11 +480,12 @@ export async function runInit(argv: string[] = []): Promise<void> {
   try {
     parsed = parseInitArgs(argv);
   } catch (err) {
-    if (err instanceof InitError) {
-      emitInitError(err, argv.includes('--json'));
-      process.exit(1);
-    }
-    throw err;
+    const initErr = err instanceof InitError
+      ? err
+      : new InitError('UNEXPECTED_ERROR', err instanceof Error ? err.message : String(err));
+    emitInitError(initErr, argv.includes('--json'));
+    process.exit(1);
+    return;
   }
 
   if (parsed.help) {
@@ -535,11 +536,11 @@ export async function runInit(argv: string[] = []): Promise<void> {
       }
       return;
     } catch (err) {
-      if (err instanceof InitError) {
-        emitInitError(err, parsed.json);
-        process.exit(1);
-      }
-      throw err;
+      const initErr = err instanceof InitError
+        ? err
+        : new InitError('UNEXPECTED_ERROR', err instanceof Error ? err.message : String(err));
+      emitInitError(initErr, parsed.json);
+      process.exit(1);
     }
   }
 

@@ -15,7 +15,10 @@ export function findApkCandidates(cwd: string): string[] {
   return globSync('android/**/build/outputs/apk/**/*.apk', {
     cwd,
     nodir: true,
-    ignore: ['**/node_modules/**'],
+    ignore: ['**/node_modules/**', '**/build/outputs/apk/androidTest/**', '**/*-androidTest.apk'],
+  }).filter((candidate) => {
+    const parts = candidate.split(/[\\/]/);
+    return !parts.includes('androidTest') && !/-androidTest\.apk$/i.test(candidate);
   }).sort();
 }
 
@@ -38,12 +41,16 @@ export function resolveAapt2(): string {
   const androidHome = process.env['ANDROID_HOME'] || process.env['ANDROID_SDK_ROOT'];
   if (androidHome) {
     const buildTools = path.join(androidHome, 'build-tools');
-    if (fs.existsSync(buildTools)) {
-      const versions = fs.readdirSync(buildTools).sort((a, b) => b.localeCompare(a, undefined, { numeric: true }));
-      for (const v of versions) {
-        const candidate = path.join(buildTools, v, binName);
-        if (fs.existsSync(candidate)) return candidate;
+    try {
+      if (fs.existsSync(buildTools) && fs.statSync(buildTools).isDirectory()) {
+        const versions = fs.readdirSync(buildTools).sort((a, b) => b.localeCompare(a, undefined, { numeric: true }));
+        for (const v of versions) {
+          const candidate = path.join(buildTools, v, binName);
+          if (fs.existsSync(candidate)) return candidate;
+        }
       }
+    } catch {
+      // Fall through when the SDK directory is unreadable.
     }
   }
   return 'aapt2';

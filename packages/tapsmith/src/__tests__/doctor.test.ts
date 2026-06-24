@@ -29,4 +29,20 @@ describe('buildDoctorJson()', () => {
     const json = buildDoctorJson(checks, inventory);
     expect(json.checks.find((c) => c.id === 'adb')?.fix).toContain('platform-tools');
   });
+
+  it('strips ANSI formatting from machine-readable check fields', () => {
+    const json = buildDoctorJson([{
+      id: 'daemon',
+      status: 'pass',
+      label: 'Tapsmith daemon found \x1b[2m(/tmp/bin)\x1b[0m',
+      detail: '\x1b[31mdetail\x1b[0m',
+      fix: '\x1b[33mfix\x1b[0m',
+    }], inventory);
+
+    expect(json.checks[0]).toMatchObject({
+      label: 'Tapsmith daemon found (/tmp/bin)',
+      detail: 'detail',
+      fix: 'fix',
+    });
+  });
 });

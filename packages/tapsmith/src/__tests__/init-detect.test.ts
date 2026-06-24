@@ -31,6 +31,21 @@ describe('findApkCandidates()', () => {
     }
   });
 
+  it('excludes instrumentation APK outputs', () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'tapsmith-detect-'));
+    const appDir = path.join(tmp, 'android', 'app', 'build', 'outputs', 'apk', 'debug');
+    const androidTestDir = path.join(tmp, 'android', 'app', 'build', 'outputs', 'apk', 'androidTest', 'debug');
+    fs.mkdirSync(appDir, { recursive: true });
+    fs.mkdirSync(androidTestDir, { recursive: true });
+    fs.writeFileSync(path.join(appDir, 'app-debug.apk'), '');
+    fs.writeFileSync(path.join(androidTestDir, 'app-debug-androidTest.apk'), '');
+    try {
+      expect(findApkCandidates(tmp)).toEqual(['android/app/build/outputs/apk/debug/app-debug.apk']);
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
   it('returns empty array when nothing matches', () => {
     const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'tapsmith-detect-'));
     try {
