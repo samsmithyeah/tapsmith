@@ -617,10 +617,15 @@ pub async fn install_ca_cert(
         if device_sdk_int(serial).await.map(|v| v >= 34).unwrap_or(false)
             && try_install_apex_ca(serial, cert_filename, &tmp_cert).await
         {
-            // Return the cert file path (not the dir) so the capture-stop
-            // `rm -f` is a clean no-op; the volatile tmpfs overlays clear on
-            // reboot and are re-applied idempotently on the next capture.
-            return Ok(format!("{APEX_CA_CERT_DIR}/{cert_filename}"));
+            // The APEX overlays live in the per-zygote mount namespaces and are
+            // volatile (cleared on reboot), so there's nothing for the
+            // capture-stop `rm -f` to clean. Pointing it at the overlay path
+            // would actually be harmful: the init-namespace view is writable, so
+            // the `rm` would strip our cert there and make the next capture's
+            // idempotency check miss and stack a fresh tmpfs mount. Return the
+            // temp path (already deleted at the end of this fn) so cleanup is a
+            // true no-op.
+            return Ok(tmp_cert.clone());
         }
 
         // Fall back to the user CA store (requires network_security_config.xml).
