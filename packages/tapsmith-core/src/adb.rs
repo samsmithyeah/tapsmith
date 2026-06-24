@@ -734,17 +734,20 @@ NCERTS=$(ls "$SRC" 2>/dev/null | wc -l)
 cp "$SRC"/* "$TMP"/ 2>/dev/null || exit 1
 cp "{tmp_cert_path}" "$TMP"/{cert_filename} || exit 1
 chmod 644 "$TMP"/* || exit 1
-# Never mount a store smaller than the original: the staged set must contain
-# every existing root plus ours. Mounting fewer certs over the APEX dir would
-# strip trusted CAs from every app forked by the zygote and break all other
-# HTTPS, so bail out (falling back to the user store) if the copy came up short.
-[ "$(ls "$TMP" | wc -l)" -gt "$NCERTS" ] || exit 1
+# Never mount a store smaller than the source: the staged set is the source
+# certs plus ours, so its count is >= the source count (equal when ours is
+# already present, e.g. an idempotent re-run over an existing overlay). A
+# short count means the bulk copy failed; bail out (falling back to the user
+# store) rather than mounting a depleted store that would strip trusted CAs
+# from every app forked by the zygote.
+[ "$(ls "$TMP" | wc -l)" -ge "$NCERTS" ] || exit 1
 ok=0
 for PID in 1 $(pidof zygote) $(pidof zygote64); do
   [ -z "$PID" ] && continue
   if nsenter -t "$PID" -m -- test -f "$SRC"/{cert_filename} 2>/dev/null; then ok=1; continue; fi
   if nsenter -t "$PID" -m -- sh -c "mount -t tmpfs tmpfs $SRC && (cp $TMP/* $SRC/ && chmod 644 $SRC/* && chown 0:0 $SRC/* && chcon u:object_r:system_security_cacerts_file:s0 $SRC/* || (umount -l $SRC && exit 1))" 2>/dev/null; then ok=1; fi
 done
+rm -rf "$TMP"
 [ "$ok" = 1 ] && echo TAPSMITH_APEX_OK"#
     );
 
