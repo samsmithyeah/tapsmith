@@ -91,7 +91,7 @@ export function TimelineFilmstrip({ events, screenshots, metadata, selectedIndex
         {onRunContainer && (
           <button class="film-empty-cta" onClick={onRunContainer} disabled={isContainerPending}>
             {isContainerPending
-              ? <><LoaderCircle size={10} style={{ animation: 'spin 1.1s linear infinite' }} /> Running\u2026</>
+              ? <><LoaderCircle size={10} style={{ animation: 'spin 1.1s linear infinite' }} /> Running…</>
               : <><Play size={10} /> Run {totalTests} {totalTests === 1 ? 'test' : 'tests'}</>}
           </button>
         )}
