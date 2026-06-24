@@ -335,13 +335,42 @@ Workflow:
 3. Run Tapsmith pointing at `package` only. It launches the installed dev build,
    which connects back to Metro.
 
-#### Skipping the Expo dev launcher
+#### Skipping the Expo dev launcher and dev menu
 
 A bare dev client opens cold to the **dev launcher** (the "Development servers"
-list) rather than your app — it does not auto-connect. The robust way to land
-directly in your app is to open the dev-client deep link that points straight at
-the Metro bundler, using `device.openDeepLink()` in a hook. This is the same deep
-link the QR code from `npx expo start --dev-client` encodes:
+list) rather than your app, and can surface the **dev menu** overlay at launch.
+Neither is something you want a test run to land on. These are two separate
+screens, controlled independently.
+
+The cleanest fix is build-time, via the `expo-dev-client` config plugin in your
+`app.json` / `app.config.js`. It bakes the behaviour into the build, so there is
+no per-test setup to maintain:
+
+```json
+{
+  "expo": {
+    "plugins": [
+      ["expo-dev-client", {
+        "launchMode": "most-recent",
+        "defaultLaunchURL": "http://localhost:8081",
+        "showMenuAtLaunch": false
+      }]
+    ]
+  }
+}
+```
+
+- `launchMode: "most-recent"` (with `defaultLaunchURL`) launches straight into the
+  dev server and skips the server-selection launcher screen.
+- `showMenuAtLaunch: false` stops the dev menu overlay from appearing at launch.
+  `false` is the default, but setting it explicitly keeps the intent clear.
+
+Rebuild the dev client after changing the plugin config. This is preferred over a
+runtime hook because it is set once per build rather than repeated in test setup.
+
+If you can't rebuild (or want a one-off), open the dev-client deep link at runtime
+instead — the same link the `npx expo start --dev-client` QR code encodes — in a
+`beforeAll` hook:
 
 ```typescript
 test.beforeAll(async ({ device }) => {
@@ -354,10 +383,8 @@ test.beforeAll(async ({ device }) => {
 });
 ```
 
-With this, the launcher screen never appears. Tapping through the launcher UI in
-a hook is the fragile alternative — its layout changes between Expo SDK versions,
-so prefer the deep link. The separate in-app **dev menu** (shake / Cmd-D) is only
-triggered manually and won't interfere with a run.
+The in-app dev menu is otherwise only triggered manually (shake / Cmd-D), so it
+won't interfere with a run.
 
 Notes and caveats:
 
