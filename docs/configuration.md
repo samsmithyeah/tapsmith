@@ -335,6 +335,30 @@ Workflow:
 3. Run Tapsmith pointing at `package` only. It launches the installed dev build,
    which connects back to Metro.
 
+#### Skipping the Expo dev launcher
+
+A bare dev client opens cold to the **dev launcher** (the "Development servers"
+list) rather than your app — it does not auto-connect. The robust way to land
+directly in your app is to open the dev-client deep link that points straight at
+the Metro bundler, using `device.openDeepLink()` in a hook. This is the same deep
+link the QR code from `npx expo start --dev-client` encodes:
+
+```typescript
+test.beforeAll(async ({ device }) => {
+  // <scheme> is your app's URL scheme; the url is the Metro bundler address.
+  // On an Android emulator, use http://localhost:8081 (with `adb reverse`);
+  // on a physical device, use your machine's LAN IP, e.g. http://192.168.1.20:8081.
+  await device.openDeepLink(
+    "myapp://expo-development-client/?url=http://localhost:8081",
+  );
+});
+```
+
+With this, the launcher screen never appears. Tapping through the launcher UI in
+a hook is the fragile alternative — its layout changes between Expo SDK versions,
+so prefer the deep link. The separate in-app **dev menu** (shake / Cmd-D) is only
+triggered manually and won't interfere with a run.
+
 Notes and caveats:
 
 - **`platform` is required** when you omit `apk`/`app`, since Tapsmith normally
