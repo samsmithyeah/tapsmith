@@ -2349,7 +2349,7 @@ impl proto::tapsmith_service_server::TapsmithService for TapsmithServiceImpl {
                 // is what spares the first HTTPS request on a freshly-booted
                 // device. See `ensure_android_ca_installed`.
                 if req.network_tracing_enabled
-                    && matches!(self.require_platform().await, Ok(Platform::Android))
+                    && self.active_platform().await == Some(Platform::Android)
                 {
                     self.ensure_android_ca_installed(&req.serial).await;
                 }
