@@ -159,6 +159,21 @@ describe('resolveInitPlan()', () => {
     ), 'IOS_PHYSICAL_INTERACTIVE_ONLY');
   });
 
+  it('rejects iOS setup on non-macOS hosts before probing iOS artifacts', () => {
+    const detect = {
+      ...detectStubs,
+      findIosAppCandidates: () => {
+        throw new Error('should not probe iOS artifacts');
+      },
+    };
+    const err = expectInitError(() => resolveInitPlan(
+      parseInitArgs(['--yes', '--platform', 'ios']),
+      { ...baseEnv, isMacOS: false },
+      detect,
+    ), 'IOS_REQUIRES_MACOS');
+    expect(err.fix).toContain('macOS');
+  });
+
   it('downgrades iOS both to simulators with a warning', () => {
     const plan = resolveInitPlan(
       parseInitArgs(['--yes', '--platform', 'ios', '--device-type', 'both']),

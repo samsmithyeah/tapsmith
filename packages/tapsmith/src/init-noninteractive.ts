@@ -175,6 +175,12 @@ export function resolveInitPlan(
     platforms = inferred;
   }
 
+  if (platforms.includes('ios') && !env.isMacOS) {
+    throw new InitError('IOS_REQUIRES_MACOS', 'iOS setup is only supported on macOS', {
+      fix: 'Run on a macOS machine, or configure only the android platform',
+    });
+  }
+
   let android: AndroidConfig | undefined;
   if (platforms.includes('android')) {
     let apkPath = args.apk;

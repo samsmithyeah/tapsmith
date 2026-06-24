@@ -41,7 +41,9 @@ describe('parseSimctlDevicesJson()', () => {
   it('returns an empty list for malformed or unexpected JSON', () => {
     expect(parseSimctlDevicesJson('not-json')).toEqual([]);
     expect(parseSimctlDevicesJson('null')).toEqual([]);
+    expect(parseSimctlDevicesJson('[]')).toEqual([]);
     expect(parseSimctlDevicesJson(JSON.stringify({ devices: null }))).toEqual([]);
+    expect(parseSimctlDevicesJson(JSON.stringify({ devices: [] }))).toEqual([]);
     expect(parseSimctlDevicesJson(JSON.stringify({ devices: { bad: {} } }))).toEqual([]);
   });
 });
