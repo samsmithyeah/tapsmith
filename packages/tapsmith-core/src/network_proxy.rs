@@ -805,6 +805,34 @@ async fn connect_tls_upstream(
     }
 }
 
+/// Signal a `route.abort()` to an HTTP/1.x client.
+///
+/// The natural way to abort is to drop the connection, and most clients
+/// (NSURLSession, OkHttp on x86_64) surface a closed socket as a request
+/// failure. But Android OkHttp on the arm64 emulator does *not* — it leaves the
+/// `fetch` hanging until timeout instead of erroring (PILOT-248). It does,
+/// however, reliably read response bytes. So we write response headers that
+/// promise a body and then close without delivering it: the truncated
+/// (`Content-Length`-short) message reads as "unexpected end of stream", which
+/// every client treats as a network error. The headers are well-formed — only
+/// the body is missing — so this doesn't trip the malformed-response handling
+/// that can destabilise NSURLSession.
+///
+/// We `shutdown()` rather than just `flush()` so TLS streams send a graceful
+/// `close_notify` before the socket closes: that keeps the truncation a clean
+/// "unexpected end of stream" instead of an abrupt-closure / bad-record-MAC
+/// error on stricter TLS clients.
+async fn write_abort_response<C: AsyncWrite + Unpin>(client: &mut C) {
+    let _ = client
+        .write_all(
+            b"HTTP/1.1 502 Bad Gateway\r\n\
+              Content-Length: 1024\r\n\
+              Connection: close\r\n\r\n",
+        )
+        .await;
+    let _ = client.shutdown().await;
+}
+
 /// Proxy decrypted HTTPS traffic, connecting upstream only after the client
 /// request has been parsed and route hooks have had a chance to synthesize a
 /// response. This preserves Playwright-like request timing for `waitForRequest`
@@ -838,6 +866,9 @@ async fn handle_mitm_https_lazy_upstream<C>(
             match h.on_request(&mut req, hostname, true).await {
                 RequestOutcome::Synthesized(mut synth) => {
                     if synth.status_code == 0 {
+                        // Abort: surface a request failure to the client
+                        // (PILOT-248 — see write_abort_response).
+                        write_abort_response(&mut client_stream).await;
                         h.notify_response(&req, &synth, hostname, true, "aborted")
                             .await;
                         record_entry(&state, &req, &synth, hostname, true, start, "aborted").await;
@@ -2483,10 +2514,9 @@ async fn handle_mitm_http<C, U>(
             match h.on_request(&mut req, hostname, is_https).await {
                 RequestOutcome::Synthesized(mut synth) => {
                     if synth.status_code == 0 {
-                        // Abort: drop the connection without writing anything.
-                        // A clean TCP close triggers a network error in the app's
-                        // HTTP client without corrupting its state (important for
-                        // iOS NSURLSession which crashes on malformed responses).
+                        // Abort: surface a request failure to the client
+                        // (PILOT-248 — see write_abort_response).
+                        write_abort_response(&mut client_stream).await;
                         h.notify_response(&req, &synth, hostname, is_https, "aborted")
                             .await;
                         record_entry(&state, &req, &synth, hostname, is_https, start, "aborted")
@@ -2720,10 +2750,9 @@ async fn handle_http(
         match h.on_request(&mut parsed_req, hostname, false).await {
             RequestOutcome::Synthesized(mut synth) => {
                 if synth.status_code == 0 {
-                    // Abort: drop the connection without sending anything.
-                    // This causes a clean TCP RST / connection-closed error in
-                    // the app's HTTP client rather than a malformed response
-                    // that could crash iOS's NSURLSession.
+                    // Abort: surface a request failure to the client
+                    // (PILOT-248 — see write_abort_response).
+                    write_abort_response(&mut client).await;
                     h.notify_response(&parsed_req, &synth, hostname, false, "aborted")
                         .await;
                     record_entry(
@@ -4629,6 +4658,94 @@ mod tests {
         assert_eq!(entries[0].url, "https://example.test/users/1");
         assert_eq!(entries[0].status_code, 200);
         assert_eq!(entries[0].route_action, "mocked");
+    }
+
+    /// PILOT-248: `route.abort()` over HTTP/1.1 must surface as a request
+    /// failure even for clients that ignore a bare connection close. We write
+    /// well-formed response headers promising a body, then close without it, so
+    /// the client sees a truncated message (Content-Length unmet) rather than a
+    /// silent hang.
+    #[tokio::test]
+    async fn https_route_abort_writes_truncated_response() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let dir = tempfile::tempdir().unwrap();
+        let ca = Arc::new(
+            MitmAuthority::generate_new(&dir.path().join("ca.pem"), &dir.path().join("ca-key.pem"))
+                .unwrap(),
+        );
+        let state = proxy_state_with_handler(Arc::new(AbortHandler));
+
+        let (client_side, server_side) = tokio::io::duplex(65536);
+        let server_state = state.clone();
+        let server_ca = ca.clone();
+        let server = tokio::spawn(async move {
+            let server_config = server_ca
+                .server_config_for_host("example.test")
+                .await
+                .unwrap();
+            let client_tls = tokio_rustls::LazyConfigAcceptor::new(
+                rustls::server::Acceptor::default(),
+                server_side,
+            )
+            .await
+            .unwrap()
+            .into_stream(server_config)
+            .await
+            .unwrap();
+            handle_mitm_https_lazy_upstream(
+                client_tls,
+                "example.test",
+                "192.0.2.1",
+                443,
+                server_state,
+            )
+            .await;
+        });
+
+        let client_config = client_config_trusting_ca(&ca, &[b"http/1.1"]);
+        let server_name =
+            rustls::pki_types::ServerName::try_from("example.test".to_string()).unwrap();
+        let mut client_tls = TlsConnector::from(client_config)
+            .connect(server_name, client_side)
+            .await
+            .unwrap();
+        client_tls
+            .write_all(b"GET /posts HTTP/1.1\r\nHost: example.test\r\n\r\n")
+            .await
+            .unwrap();
+
+        // Read until the peer closes. We must get response headers (so the
+        // client's read path engages) followed by EOF before the promised body
+        // — i.e. a truncated message, not a silent hang and not a clean body.
+        let mut response = Vec::new();
+        let mut buf = [0u8; 1024];
+        loop {
+            match tokio::time::timeout(std::time::Duration::from_secs(2), client_tls.read(&mut buf))
+                .await
+                .expect("abort must close the stream, not hang")
+            {
+                Ok(0) => break,
+                Ok(n) => response.extend_from_slice(&buf[..n]),
+                Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => break,
+                Err(e) => panic!("client read failed: {e}"),
+            }
+        }
+        let text = String::from_utf8_lossy(&response);
+        assert!(text.starts_with("HTTP/1.1 502"), "got: {text:?}");
+        assert!(text.contains("Content-Length: 1024"), "got: {text:?}");
+        // Headers end with the blank line; the promised 1024-byte body is absent.
+        let body = text.split("\r\n\r\n").nth(1).unwrap_or("");
+        assert!(
+            body.len() < 1024,
+            "body must be truncated, got {} bytes",
+            body.len()
+        );
+
+        server.await.unwrap();
+        let entries = state.lock().await.entries.clone();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].route_action, "aborted");
     }
 
     #[tokio::test]
