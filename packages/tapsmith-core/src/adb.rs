@@ -732,7 +732,7 @@ TMP=/data/local/tmp/tapsmith-cacerts
 rm -rf "$TMP" && mkdir -p "$TMP" || exit 1
 NCERTS=$(ls "$SRC" 2>/dev/null | wc -l)
 cp "$SRC"/* "$TMP"/ 2>/dev/null || exit 1
-cp {tmp_cert_path} "$TMP"/{cert_filename} || exit 1
+cp "{tmp_cert_path}" "$TMP"/{cert_filename} || exit 1
 chmod 644 "$TMP"/* || exit 1
 # Never mount a store smaller than the original: the staged set must contain
 # every existing root plus ours. Mounting fewer certs over the APEX dir would
@@ -743,7 +743,7 @@ ok=0
 for PID in 1 $(pidof zygote) $(pidof zygote64); do
   [ -z "$PID" ] && continue
   if nsenter -t "$PID" -m -- test -f "$SRC"/{cert_filename} 2>/dev/null; then ok=1; continue; fi
-  if nsenter -t "$PID" -m -- sh -c "mount -t tmpfs tmpfs $SRC && (cp $TMP/* $SRC/ && chmod 644 $SRC/* && chown root:root $SRC/* && chcon u:object_r:system_security_cacerts_file:s0 $SRC/* || (umount $SRC && exit 1))" 2>/dev/null; then ok=1; fi
+  if nsenter -t "$PID" -m -- sh -c "mount -t tmpfs tmpfs $SRC && (cp $TMP/* $SRC/ && chmod 644 $SRC/* && chown 0:0 $SRC/* && chcon u:object_r:system_security_cacerts_file:s0 $SRC/* || (umount -l $SRC && exit 1))" 2>/dev/null; then ok=1; fi
 done
 [ "$ok" = 1 ] && echo TAPSMITH_APEX_OK"#
     );
