@@ -301,6 +301,54 @@ export default defineConfig({
 });
 ```
 
+### Testing Expo / React Native Dev Builds
+
+Tapsmith launches the app under test by its package name / bundle identifier, and
+the install step (`apk` / `app`) is optional. That means you can drive an **Expo
+development build** — a debug build with the `expo-dev-client` runtime that
+connects to a Metro dev server — exactly like a release build. The launch path
+(`monkey` / `am start` on Android, `simctl launch` on iOS) does not care whether
+the binary is debug, release, or a dev client.
+
+The cleanest setup is to **omit `apk`/`app`** and point Tapsmith at `package`
+only. Tapsmith detects that the app is already installed and skips installation,
+launching the existing dev build, which reconnects to Metro on its own:
+
+```typescript
+import { defineConfig } from "tapsmith";
+
+export default defineConfig({
+  // No `apk` / `app` — the dev build is already installed.
+  platform: "android", // required when there's no apk/app to infer it from
+  package: "com.example.myapp",
+});
+```
+
+Workflow:
+
+1. Build and install the dev client once. With EAS:
+   `eas build --profile development --platform android` then `adb install <build>.apk`.
+   Or let Expo install it for you: `npx expo run:android` / `npx expo run:ios`.
+2. Start Metro: `npx expo start --dev-client`. On an Android emulator, make Metro
+   reachable from the device with `adb reverse tcp:8081 tcp:8081` (`expo start`
+   usually sets this up for you).
+3. Run Tapsmith pointing at `package` only. It launches the installed dev build,
+   which connects back to Metro.
+
+Notes and caveats:
+
+- **`platform` is required** when you omit `apk`/`app`, since Tapsmith normally
+  infers the platform from those fields.
+- **Don't use the `apk`/`app` install field for a raw dev client on a fresh or
+  CI device.** A dev-client binary is inert until it can reach Metro, so
+  installing it on a clean emulator without a reachable Metro server won't give
+  you a runnable app. For a self-contained artifact that installs and runs like a
+  release build, use an Expo **preview** build
+  (`eas build --profile preview`), which bundles the JS — then the normal
+  `apk`/`app` config works directly.
+- This path works by virtue of the launch-by-id design; it isn't a separately
+  tested Expo integration.
+
 ### CI Configuration (Android)
 
 ```typescript
