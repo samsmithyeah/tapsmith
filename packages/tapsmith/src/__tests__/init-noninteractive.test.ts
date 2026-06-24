@@ -91,6 +91,25 @@ describe('resolveInitPlan()', () => {
     expect(plan.ios).toBeUndefined();
   });
 
+  it('resolves APK paths against cwd before package detection', () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'tapsmith-init-'));
+    let probedApk: string | undefined;
+    const detect = {
+      ...detectStubs,
+      findApkCandidates: () => ['android/app-debug.apk'],
+      detectAndroidPackage: (apkPath: string) => {
+        probedApk = apkPath;
+        return 'com.example.app';
+      },
+    };
+    try {
+      resolveInitPlan(parseInitArgs(['--yes', '--platform', 'android']), baseEnv, detect, tmp);
+      expect(probedApk).toBe(path.resolve(tmp, 'android/app-debug.apk'));
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
   it('picks the newest-runtime simulator for iOS', () => {
     const plan = resolveInitPlan(parseInitArgs(['--yes', '--platform', 'ios']), baseEnv, detectStubs);
     expect(plan.ios).toMatchObject({
@@ -99,6 +118,25 @@ describe('resolveInitPlan()', () => {
       simulator: 'iPhone 16',
       usePhysicalDevice: false,
     });
+  });
+
+  it('resolves iOS app paths against cwd before bundle id detection', () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'tapsmith-init-'));
+    let probedApp: string | undefined;
+    const detect = {
+      ...detectStubs,
+      findIosAppCandidates: () => ['ios/MyApp.app'],
+      detectIosBundleId: (appPath: string) => {
+        probedApp = appPath;
+        return 'com.example.myapp';
+      },
+    };
+    try {
+      resolveInitPlan(parseInitArgs(['--yes', '--platform', 'ios']), baseEnv, detect, tmp);
+      expect(probedApp).toBe(path.resolve(tmp, 'ios/MyApp.app'));
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
   });
 
   it('explicit flags beat detection', () => {

@@ -170,22 +170,23 @@ export async function runVerify(argv: string[]): Promise<void> {
     let target = pickVerifyTarget(testFiles);
     let scaffolded: ScaffoldedVerifyTest | undefined;
     let testDirExisted = true;
-    if (!target) {
-      // No tests yet — scaffold a throwaway smoke test (cleaned up below).
-      const { generateExampleTest } = await import('./init.js');
-      const testDir = path.join(config.rootDir, 'tests');
-      testDirExisted = fs.existsSync(testDir);
-      fs.mkdirSync(testDir, { recursive: true });
-      scaffolded = scaffoldVerifySmokeTest(testDir, generateExampleTest());
-      target = scaffolded.file;
-    }
-
     const resultsFile = path.join(os.tmpdir(), `tapsmith-verify-${process.pid}.json`);
-    if (!args.json) {
-      console.log(`Verifying setup with ${path.relative(config.rootDir, target)} ...`);
-    }
 
     try {
+      if (!target) {
+        // No tests yet — scaffold a throwaway smoke test (cleaned up below).
+        const { generateExampleTest } = await import('./init.js');
+        const testDir = path.join(config.rootDir, 'tests');
+        testDirExisted = fs.existsSync(testDir);
+        fs.mkdirSync(testDir, { recursive: true });
+        scaffolded = scaffoldVerifySmokeTest(testDir, generateExampleTest());
+        target = scaffolded.file;
+      }
+
+      if (!args.json) {
+        console.log(`Verifying setup with ${path.relative(config.rootDir, target)} ...`);
+      }
+
       const child = spawnSync(process.execPath, [
         process.argv[1], 'test', target, '--reporter', 'json',
         ...(args.config ? ['--config', args.config] : []),

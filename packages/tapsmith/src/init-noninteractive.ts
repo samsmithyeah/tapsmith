@@ -201,7 +201,7 @@ export function resolveInitPlan(
       apkPath = candidates[0];
     }
 
-    const packageName = args.packageName ?? detect.detectAndroidPackage(apkPath);
+    const packageName = args.packageName ?? detect.detectAndroidPackage(path.resolve(cwd, apkPath));
     if (!packageName) {
       throw new InitError('NO_PACKAGE', `Could not detect package name from ${apkPath} (aapt2 unavailable or APK missing)`, {
         fix: 'Pass --package <id>',
@@ -247,7 +247,7 @@ export function resolveInitPlan(
       appPath = candidates[0];
     }
 
-    const bundleId = args.bundleId ?? detect.detectIosBundleId(appPath);
+    const bundleId = args.bundleId ?? detect.detectIosBundleId(path.resolve(cwd, appPath));
     if (!bundleId) {
       throw new InitError('NO_BUNDLE_ID', `Could not detect bundle identifier from ${appPath}`, {
         fix: 'Pass --bundle-id <id>',
