@@ -306,6 +306,32 @@ describe('executeInitPlan()', () => {
     }
   });
 
+  it('removes an existing tapsmith.config.ts when force is enabled', () => {
+    const tmp = makeTmp();
+    try {
+      fs.writeFileSync(path.join(tmp, 'tapsmith.config.ts'), '// existing ts');
+      assertConfigWritable(true, tmp);
+      expect(fs.existsSync(path.join(tmp, 'tapsmith.config.ts'))).toBe(false);
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it('replaces a symlinked config without clobbering the link target on force', () => {
+    const tmp = makeTmp();
+    try {
+      const target = path.join(tmp, 'real-config.ts');
+      fs.writeFileSync(target, '// link target');
+      fs.symlinkSync(target, path.join(tmp, 'tapsmith.config.ts'));
+      assertConfigWritable(true, tmp);
+      // The symlink is removed; its target is left untouched.
+      expect(fs.existsSync(path.join(tmp, 'tapsmith.config.ts'))).toBe(false);
+      expect(fs.readFileSync(target, 'utf8')).toBe('// link target');
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
   it('skips existing example test without error', () => {
     const tmp = makeTmp();
     try {

@@ -80,22 +80,28 @@ export function buildDoctorJson(checks: CheckList, inventory: DoctorInventory): 
   };
 }
 
-// Suppressed in --json mode so stdout stays machine-clean.
-let printing = true;
-
-function pass(checks: CheckList, id: string, label: string): void {
-  checks.push({ status: 'pass', id, label });
-  if (printing) console.log(`  ${green('✓')} ${label}`);
+// Bundles the accumulating check list with whether to echo each check to
+// stdout (suppressed in --json mode so stdout stays machine-clean). Passed
+// explicitly rather than via module state so runDoctor is reentrant —
+// concurrent or sequential invocations never share print state.
+interface Reporter {
+  checks: CheckList;
+  print: boolean;
 }
 
-function warn(checks: CheckList, id: string, label: string, fix?: string): void {
-  checks.push({ status: 'warn', id, label, fix });
-  if (printing) console.log(`  ${yellow('⚠')} ${label}`);
+function pass(report: Reporter, id: string, label: string): void {
+  report.checks.push({ status: 'pass', id, label });
+  if (report.print) console.log(`  ${green('✓')} ${label}`);
 }
 
-function fail(checks: CheckList, id: string, label: string, fix?: string): void {
-  checks.push({ status: 'fail', id, label, fix });
-  if (printing) console.log(`  ${red('✗')} ${label}`);
+function warn(report: Reporter, id: string, label: string, fix?: string): void {
+  report.checks.push({ status: 'warn', id, label, fix });
+  if (report.print) console.log(`  ${yellow('⚠')} ${label}`);
+}
+
+function fail(report: Reporter, id: string, label: string, fix?: string): void {
+  report.checks.push({ status: 'fail', id, label, fix });
+  if (report.print) console.log(`  ${red('✗')} ${label}`);
 }
 
 // ─── Individual checks ───
@@ -105,48 +111,48 @@ export function isSupportedNodeVersion(version: string): boolean {
   return major >= 22;
 }
 
-function checkNodeVersion(checks: CheckList): void {
+function checkNodeVersion(report: Reporter): void {
   try {
     const version = process.versions.node;
     if (isSupportedNodeVersion(version)) {
-      pass(checks, 'node', `Node.js ${version}`);
+      pass(report, 'node', `Node.js ${version}`);
     } else {
-      fail(checks, 'node', `Node.js ${version} — requires >= 22`, 'Install Node.js 22 or newer (https://nodejs.org)');
+      fail(report, 'node', `Node.js ${version} — requires >= 22`, 'Install Node.js 22 or newer (https://nodejs.org)');
     }
   } catch {
-    fail(checks, 'node', 'Node.js version check failed', 'Install Node.js 22 or newer (https://nodejs.org)');
+    fail(report, 'node', 'Node.js version check failed', 'Install Node.js 22 or newer (https://nodejs.org)');
   }
 }
 
-function checkDaemonBin(checks: CheckList): void {
+function checkDaemonBin(report: Reporter): void {
   try {
     const bin = findDaemonBin();
-    pass(checks, 'daemon', `Tapsmith daemon found ${dim(`(${bin})`)}`);
+    pass(report, 'daemon', `Tapsmith daemon found ${dim(`(${bin})`)}`);
   } catch {
-    fail(checks, 'daemon', 'Tapsmith daemon not found — try reinstalling: npm install tapsmith', 'Reinstall tapsmith: npm install tapsmith (or set TAPSMITH_DAEMON_BIN)');
+    fail(report, 'daemon', 'Tapsmith daemon not found — try reinstalling: npm install tapsmith', 'Reinstall tapsmith: npm install tapsmith (or set TAPSMITH_DAEMON_BIN)');
   }
 }
 
-function checkConfigFile(checks: CheckList): void {
+function checkConfigFile(report: Reporter): void {
   try {
     const cwd = process.cwd();
     const tsConfig = path.join(cwd, 'tapsmith.config.ts');
     const mjsConfig = path.join(cwd, 'tapsmith.config.mjs');
     if (fs.existsSync(tsConfig)) {
-      pass(checks, 'config', `Config file found ${dim(`(tapsmith.config.ts)`)}`);
+      pass(report, 'config', `Config file found ${dim(`(tapsmith.config.ts)`)}`);
     } else if (fs.existsSync(mjsConfig)) {
-      pass(checks, 'config', `Config file found ${dim(`(tapsmith.config.mjs)`)}`);
+      pass(report, 'config', `Config file found ${dim(`(tapsmith.config.mjs)`)}`);
     } else {
-      warn(checks, 'config', 'No tapsmith.config.ts found in current directory', 'Run: npx tapsmith init --yes (or npx tapsmith init for the wizard)');
+      warn(report, 'config', 'No tapsmith.config.ts found in current directory', 'Run: npx tapsmith init --yes (or npx tapsmith init for the wizard)');
     }
   } catch {
-    warn(checks, 'config', 'Could not check for config file');
+    warn(report, 'config', 'Could not check for config file');
   }
 }
 
 // ─── Android checks ───
 
-function checkAdb(checks: CheckList): boolean {
+function checkAdb(report: Reporter): boolean {
   try {
     const versionOutput = execFileSync('adb', ['--version'], {
       encoding: 'utf-8',
@@ -154,28 +160,28 @@ function checkAdb(checks: CheckList): boolean {
     });
     const versionMatch = versionOutput.match(/Version\s+([\d.]+)/);
     const version = versionMatch ? versionMatch[1] : 'unknown';
-    pass(checks, 'adb', `ADB ${version}`);
+    pass(report, 'adb', `ADB ${version}`);
     return true;
   } catch {
-    fail(checks, 'adb', 'ADB not found on PATH', 'Install Android platform-tools and ensure adb is on PATH');
+    fail(report, 'adb', 'ADB not found on PATH', 'Install Android platform-tools and ensure adb is on PATH');
     return false;
   }
 }
 
-function checkAndroidHome(checks: CheckList): void {
+function checkAndroidHome(report: Reporter): void {
   try {
     const androidHome = process.env.ANDROID_HOME || process.env.ANDROID_SDK_ROOT;
     if (androidHome) {
-      pass(checks, 'android-home', `ANDROID_HOME ${dim(androidHome)}`);
+      pass(report, 'android-home', `ANDROID_HOME ${dim(androidHome)}`);
     } else {
-      warn(checks, 'android-home', 'ANDROID_HOME not set', 'Set ANDROID_HOME to your Android SDK location');
+      warn(report, 'android-home', 'ANDROID_HOME not set', 'Set ANDROID_HOME to your Android SDK location');
     }
   } catch {
-    warn(checks, 'android-home', 'Could not check ANDROID_HOME');
+    warn(report, 'android-home', 'Could not check ANDROID_HOME');
   }
 }
 
-function checkConnectedDevices(checks: CheckList): void {
+function checkConnectedDevices(report: Reporter): void {
   try {
     const output = execFileSync('adb', ['devices'], {
       encoding: 'utf-8',
@@ -187,48 +193,48 @@ function checkConnectedDevices(checks: CheckList): void {
       .filter((line) => line.length > 0 && line.includes('\tdevice'));
     if (devices.length > 0) {
       const serials = devices.map((d) => d.split('\t')[0]).join(', ');
-      pass(checks, 'android-devices', `${devices.length} device${devices.length === 1 ? '' : 's'} connected ${dim(`(${serials})`)}`);
+      pass(report, 'android-devices', `${devices.length} device${devices.length === 1 ? '' : 's'} connected ${dim(`(${serials})`)}`);
     } else {
-      warn(checks, 'android-devices', 'No Android devices connected', 'Start an emulator or connect a device with USB debugging enabled');
+      warn(report, 'android-devices', 'No Android devices connected', 'Start an emulator or connect a device with USB debugging enabled');
     }
   } catch {
-    warn(checks, 'android-devices', 'Could not list Android devices');
+    warn(report, 'android-devices', 'Could not list Android devices');
   }
 }
 
-function checkAgentApks(checks: CheckList): void {
+function checkAgentApks(report: Reporter): void {
   try {
     const apk = findAgentApk();
     const testApk = findAgentTestApk();
     if (apk && testApk) {
-      pass(checks, 'android-agent', `Android agent ${dim(`(${apk.includes(path.join('@tapsmith', 'agent-android')) ? '@tapsmith/agent-android' : 'monorepo build'})`)}`);
+      pass(report, 'android-agent', `Android agent ${dim(`(${apk.includes(path.join('@tapsmith', 'agent-android')) ? '@tapsmith/agent-android' : 'monorepo build'})`)}`);
     } else if (apk || testApk) {
-      warn(checks, 'android-agent', 'Android agent incomplete — one APK found but not both', 'npm install @tapsmith/agent-android');
+      warn(report, 'android-agent', 'Android agent incomplete — one APK found but not both', 'npm install @tapsmith/agent-android');
     } else {
-      warn(checks, 'android-agent', 'Android agent not found — install @tapsmith/agent-android or build from source in agent/', 'npm install @tapsmith/agent-android');
+      warn(report, 'android-agent', 'Android agent not found — install @tapsmith/agent-android or build from source in agent/', 'npm install @tapsmith/agent-android');
     }
   } catch {
-    warn(checks, 'android-agent', 'Could not locate Android agent');
+    warn(report, 'android-agent', 'Could not locate Android agent');
   }
 }
 
-function checkAppApk(checks: CheckList, config: { apk?: string; rootDir?: string } | undefined): void {
+function checkAppApk(report: Reporter, config: { apk?: string; rootDir?: string } | undefined): void {
   if (!config?.apk) return;
   try {
     const resolvedApk = path.resolve(config.rootDir ?? process.cwd(), config.apk);
     if (fs.existsSync(resolvedApk)) {
-      pass(checks, 'app-apk', `App APK exists ${dim(`(${path.basename(resolvedApk)})`)}`);
+      pass(report, 'app-apk', `App APK exists ${dim(`(${path.basename(resolvedApk)})`)}`);
     } else {
-      fail(checks, 'app-apk', `App APK not found at ${resolvedApk}`, 'Build your app APK or fix the apk path in tapsmith.config.ts');
+      fail(report, 'app-apk', `App APK not found at ${resolvedApk}`, 'Build your app APK or fix the apk path in tapsmith.config.ts');
     }
   } catch {
-    warn(checks, 'app-apk', 'Could not check app APK path');
+    warn(report, 'app-apk', 'Could not check app APK path');
   }
 }
 
 // ─── iOS checks ───
 
-function checkXcode(checks: CheckList): void {
+function checkXcode(report: Reporter): void {
   try {
     const output = execFileSync('xcodebuild', ['-version'], {
       encoding: 'utf-8',
@@ -236,30 +242,30 @@ function checkXcode(checks: CheckList): void {
     });
     const versionMatch = output.match(/Xcode\s+(\S+)/);
     const version = versionMatch ? versionMatch[1] : 'unknown';
-    pass(checks, 'xcode', `Xcode ${version}`);
+    pass(report, 'xcode', `Xcode ${version}`);
   } catch {
-    fail(checks, 'xcode', 'Xcode not installed — install from the Mac App Store', 'Install Xcode from the Mac App Store');
+    fail(report, 'xcode', 'Xcode not installed — install from the Mac App Store', 'Install Xcode from the Mac App Store');
   }
 }
 
-function checkSimctl(checks: CheckList): void {
+function checkSimctl(report: Reporter): void {
   try {
     execFileSync('xcrun', ['simctl', 'list', 'devices', 'available', '-j'], {
       encoding: 'utf-8',
       stdio: ['ignore', 'pipe', 'pipe'],
     });
-    pass(checks, 'simctl', 'iOS simulators available');
+    pass(report, 'simctl', 'iOS simulators available');
   } catch {
-    fail(checks, 'simctl', 'xcrun simctl not available — install Xcode command-line tools', 'Run: xcode-select --install');
+    fail(report, 'simctl', 'xcrun simctl not available — install Xcode command-line tools', 'Run: xcode-select --install');
   }
 }
 
-async function checkSimulatorXctestrun(checks: CheckList): Promise<void> {
+async function checkSimulatorXctestrun(report: Reporter): Promise<void> {
   try {
     const { findSimulatorXctestrun, extractSdkVersion, getInstalledSimulatorSdkVersion } = await import('./ios-device-resolve.js');
     const found = findSimulatorXctestrun();
     if (!found) {
-      warn(checks, 'ios-sim-agent', 'No simulator xctestrun found — build with xcodebuild or install @tapsmith/agent-ios-simulator-arm64', 'Run: npx tapsmith init --yes (builds it) or install @tapsmith/agent-ios-simulator-arm64');
+      warn(report, 'ios-sim-agent', 'No simulator xctestrun found — build with xcodebuild or install @tapsmith/agent-ios-simulator-arm64', 'Run: npx tapsmith init --yes (builds it) or install @tapsmith/agent-ios-simulator-arm64');
       return;
     }
 
@@ -273,43 +279,43 @@ async function checkSimulatorXctestrun(checks: CheckList): Promise<void> {
     const installedSdk = getInstalledSimulatorSdkVersion();
 
     if (installedSdk && xctestrunSdk && xctestrunSdk !== installedSdk) {
-      warn(checks, 'ios-sim-agent', `Simulator xctestrun built for iOS ${xctestrunSdk} but installed SDK is ${installedSdk} — will auto-build on first test run`);
+      warn(report, 'ios-sim-agent', `Simulator xctestrun built for iOS ${xctestrunSdk} but installed SDK is ${installedSdk} — will auto-build on first test run`);
     } else {
-      pass(checks, 'ios-sim-agent', `Simulator xctestrun found ${dim(`(${source}${sdkLabel})`)}`);
+      pass(report, 'ios-sim-agent', `Simulator xctestrun found ${dim(`(${source}${sdkLabel})`)}`);
     }
   } catch {
-    warn(checks, 'ios-sim-agent', 'Could not check for simulator xctestrun');
+    warn(report, 'ios-sim-agent', 'Could not check for simulator xctestrun');
   }
 }
 
 // ─── Network Capture checks ───
 
-function checkMitmCa(checks: CheckList): void {
+function checkMitmCa(report: Reporter): void {
   try {
     const caPath = path.join(os.homedir(), '.tapsmith', 'ca.pem');
     if (fs.existsSync(caPath)) {
-      pass(checks, 'mitm-ca', `MITM CA exists ${dim(`(~/.tapsmith/ca.pem)`)}`);
+      pass(report, 'mitm-ca', `MITM CA exists ${dim(`(~/.tapsmith/ca.pem)`)}`);
     } else {
-      warn(checks, 'mitm-ca', 'MITM CA not found at ~/.tapsmith/ca.pem — run `tapsmith setup-ios` to generate', 'Run: npx tapsmith setup-ios');
+      warn(report, 'mitm-ca', 'MITM CA not found at ~/.tapsmith/ca.pem — run `tapsmith setup-ios` to generate', 'Run: npx tapsmith setup-ios');
     }
   } catch {
-    warn(checks, 'mitm-ca', 'Could not check for MITM CA');
+    warn(report, 'mitm-ca', 'Could not check for MITM CA');
   }
 }
 
-function checkMitmproxy(checks: CheckList): void {
+function checkMitmproxy(report: Reporter): void {
   try {
     execFileSync('brew', ['list', 'mitmproxy'], {
       encoding: 'utf-8',
       stdio: ['ignore', 'pipe', 'pipe'],
     });
-    pass(checks, 'mitmproxy', 'mitmproxy installed');
+    pass(report, 'mitmproxy', 'mitmproxy installed');
   } catch {
-    warn(checks, 'mitmproxy', 'mitmproxy not installed — install with `brew install mitmproxy`', 'Run: brew install mitmproxy');
+    warn(report, 'mitmproxy', 'mitmproxy not installed — install with `brew install mitmproxy`', 'Run: brew install mitmproxy');
   }
 }
 
-function checkNetworkExtension(checks: CheckList): void {
+function checkNetworkExtension(report: Reporter): void {
   try {
     const output = execFileSync('systemextensionsctl', ['list'], {
       encoding: 'utf-8',
@@ -317,14 +323,14 @@ function checkNetworkExtension(checks: CheckList): void {
     });
     const bundleId = 'org.mitmproxy.macos-redirector.network-extension';
     if (output.includes(bundleId) && output.includes('[activated enabled]')) {
-      pass(checks, 'network-extension', 'Network Extension enabled');
+      pass(report, 'network-extension', 'Network Extension enabled');
     } else if (output.includes(bundleId)) {
-      warn(checks, 'network-extension', 'Network Extension found but not fully enabled — check System Settings > Privacy & Security', 'Run: npx tapsmith setup-ios, then enable in System Settings > Privacy & Security');
+      warn(report, 'network-extension', 'Network Extension found but not fully enabled — check System Settings > Privacy & Security', 'Run: npx tapsmith setup-ios, then enable in System Settings > Privacy & Security');
     } else {
-      warn(checks, 'network-extension', 'Network Extension not installed — required for iOS network capture', 'Run: npx tapsmith setup-ios, then enable in System Settings > Privacy & Security');
+      warn(report, 'network-extension', 'Network Extension not installed — required for iOS network capture', 'Run: npx tapsmith setup-ios, then enable in System Settings > Privacy & Security');
     }
   } catch {
-    warn(checks, 'network-extension', 'Could not check Network Extension status');
+    warn(report, 'network-extension', 'Could not check Network Extension status');
   }
 }
 
@@ -332,9 +338,10 @@ function checkNetworkExtension(checks: CheckList): void {
 
 export async function runDoctor(argv: string[] = []): Promise<void> {
   const jsonMode = argv.includes('--json');
-  printing = !jsonMode;
+  const printing = !jsonMode;
 
   const checks: CheckList = [];
+  const report: Reporter = { checks, print: printing };
 
   if (printing) {
     console.log();
@@ -351,7 +358,7 @@ export async function runDoctor(argv: string[] = []): Promise<void> {
     if (msg.includes('Could not find') || msg.includes('ENOENT')) {
       // No config file — fine, checkConfigFile() will report it
     } else {
-      warn(checks, 'config-load', `Config file has errors: ${msg}`, 'Fix the syntax error in tapsmith.config.ts');
+      warn(report, 'config-load', `Config file has errors: ${msg}`, 'Fix the syntax error in tapsmith.config.ts');
     }
   }
 
@@ -373,9 +380,9 @@ export async function runDoctor(argv: string[] = []): Promise<void> {
     console.log();
     console.log(`  ${bold('Core')}`);
   }
-  checkNodeVersion(checks);
-  checkDaemonBin(checks);
-  checkConfigFile(checks);
+  checkNodeVersion(report);
+  checkDaemonBin(report);
+  checkConfigFile(report);
 
   // ─── Android ───
   if (hasAndroid) {
@@ -383,13 +390,13 @@ export async function runDoctor(argv: string[] = []): Promise<void> {
       console.log();
       console.log(`  ${bold('Android')}`);
     }
-    const adbOk = checkAdb(checks);
-    checkAndroidHome(checks);
+    const adbOk = checkAdb(report);
+    checkAndroidHome(report);
     if (adbOk) {
-      checkConnectedDevices(checks);
+      checkConnectedDevices(report);
     }
-    checkAgentApks(checks);
-    checkAppApk(checks, config);
+    checkAgentApks(report);
+    checkAppApk(report, config);
   }
 
   // ─── iOS ───
@@ -398,9 +405,9 @@ export async function runDoctor(argv: string[] = []): Promise<void> {
       console.log();
       console.log(`  ${bold('iOS')}`);
     }
-    checkXcode(checks);
-    checkSimctl(checks);
-    await checkSimulatorXctestrun(checks);
+    checkXcode(report);
+    checkSimctl(report);
+    await checkSimulatorXctestrun(report);
   }
 
   // ─── Network Capture ───
@@ -408,10 +415,10 @@ export async function runDoctor(argv: string[] = []): Promise<void> {
     console.log();
     console.log(`  ${bold('Network Capture')}`);
   }
-  checkMitmCa(checks);
+  checkMitmCa(report);
   if (process.platform === 'darwin') {
-    checkMitmproxy(checks);
-    checkNetworkExtension(checks);
+    checkMitmproxy(report);
+    checkNetworkExtension(report);
   }
 
   // ─── Summary ───

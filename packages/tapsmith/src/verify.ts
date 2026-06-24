@@ -180,6 +180,18 @@ export async function runVerify(argv: string[]): Promise<void> {
     let testDirCreated = false;
     const resultsFile = path.join(os.tmpdir(), `tapsmith-verify-${process.pid}.json`);
 
+    // Ctrl-C during the (up to 10-minute) run would otherwise skip the finally
+    // block, leaving a scaffolded smoke test inside the project's tests/ dir
+    // that subsequent runs would discover and execute. Clean up on interrupt.
+    const signals = ['SIGINT', 'SIGTERM', 'SIGHUP'] as const;
+    const onSignal = (): void => {
+      signals.forEach((sig) => process.off(sig, onSignal));
+      fs.rmSync(resultsFile, { force: true });
+      cleanupVerifySmokeTest(scaffolded, testDirCreated, testDir);
+      process.exit(130);
+    };
+    signals.forEach((sig) => process.on(sig, onSignal));
+
     try {
       if (!target) {
         // No tests yet — scaffold a throwaway smoke test (cleaned up below).
@@ -239,6 +251,7 @@ export async function runVerify(argv: string[]): Promise<void> {
       }
       if (!summary.ok) process.exitCode = 1;
     } finally {
+      signals.forEach((sig) => process.off(sig, onSignal));
       fs.rmSync(resultsFile, { force: true });
       cleanupVerifySmokeTest(scaffolded, testDirCreated, testDir);
     }
