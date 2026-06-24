@@ -16,33 +16,63 @@ export function renderAgentsSection(): string {
 
 This project uses [Tapsmith](https://github.com/tapsmith/tapsmith) for mobile E2E tests (Playwright-style API).
 
-### Running tests
+### Running and debugging
 
 - Run all tests: \`npx tapsmith test\`
 - Run one file: \`npx tapsmith test tests/example.test.ts\`
 - Filter by name: \`npx tapsmith test --grep "login"\`
 - Machine-readable results: \`npx tapsmith test --reporter json\` (writes \`tapsmith-results/results.json\`)
+- Interactive UI mode: \`npx tapsmith test --ui\` (preferred for local debugging and agent-assisted work)
 - Config lives in \`tapsmith.config.ts\`.
-
-### Writing tests
-
-- Prefer accessibility-first selectors: \`device.getByRole('button', { name: 'Login' })\`, \`device.getByText('Welcome')\`. Avoid className/xpath.
-- Assertions auto-wait: \`await expect(device.getByText('Done')).toBeVisible()\`.
-
-### Debugging failures
-
 - Environment problems: \`npx tapsmith doctor --json\` (each failing check includes a \`fix\`).
 - Verify the whole setup end-to-end: \`npx tapsmith verify --json\`.
 - Failed runs record traces; open with \`npx tapsmith show-trace <trace.zip>\`.
 
-### MCP server (recommended)
+### MCP workflow
 
-Register the Tapsmith MCP server to inspect the live app, validate selectors, and run tests from your agent:
+Prefer the UI-backed MCP server over the standalone headless server. If the user already has \`npx tapsmith test --ui\` running, ask them for the MCP URL shown in the UI and register it as \`tapsmith-ui\`:
 
-- Claude Code: \`claude mcp add tapsmith -- npx tapsmith mcp-server\`
-- Codex: \`codex mcp add tapsmith -- npx tapsmith mcp-server\`
+- Claude Code: \`claude mcp add tapsmith-ui --transport http http://localhost:<port>/mcp\`
+- Codex: \`codex mcp add tapsmith-ui http://localhost:<port>/mcp\`
 
-Key tools: \`tapsmith_snapshot\` (accessibility tree + suggested selectors), \`tapsmith_test_selector\`, \`tapsmith_run_tests\`, \`tapsmith_read_trace\`.
+The UI MCP session shares the browser test runner, device, test tree, results, traces, and mutual exclusion. Use the headless stdio server only when no UI session is available or you specifically need an isolated agent-owned session:
+
+- Claude Code: \`claude mcp add tapsmith-headless -- npx tapsmith mcp-server\`
+- Codex: \`codex mcp add tapsmith-headless -- npx tapsmith mcp-server\`
+
+Do not start a long-lived UI session yourself unless the user asks you to. Prefer asking the user to start \`npx tapsmith test --ui\` in their terminal so they can see and control the shared session.
+
+When using MCP, inspect before editing: \`tapsmith_snapshot\` for the accessibility tree and suggested selectors, \`tapsmith_test_selector\` to prove a selector is unique, \`tapsmith_screenshot\` when the tree is not enough, \`tapsmith_list_tests\` before \`tapsmith_run_tests\`, and \`tapsmith_read_trace\` for failures.
+
+### Writing tests
+
+- Prefer a custom fixture module once the suite has shared screen objects, setup, or helpers (for example \`tests/fixtures.ts\` or \`e2e/fixtures.ts\`). Export \`test\`, \`expect\`, and shared fixtures from that module, and import from it consistently instead of importing directly from \`tapsmith\` in each spec.
+- Group related behavior with \`describe()\`. Keep each test focused on one user-visible behavior, and use hooks only to put the app into a known starting state.
+- Prefer screen objects for reused screens. A screen object should take \`Device\`, expose locators as getters, and provide composite multi-step actions such as \`login()\` or \`openSettings()\`. Avoid one-line wrappers around \`.tap()\`; tests can tap exposed locators directly.
+- Keep assertions in tests, not screen objects. Screen objects provide locators and intentful actions; specs decide what must be true.
+- Tests should be independent and parallel-safe. Prefer deep links, API setup, \`restartApp()\`, \`launchApp({ clearData: true })\`, setup projects, or saved app state over clicking through unrelated setup UI. Generate unique names/emails/IDs for data created during tests.
+- Clean up per-test network routes or mocks, for example with \`device.unrouteAll()\`, when a test installs routes that could affect later tests.
+
+### Projects and authenticated state
+
+- For authenticated areas, prefer a setup project over logging in inside every spec. Create an \`auth.setup.ts\` test that logs in once and calls \`device.saveAppState(packageName, './tapsmith-results/auth-state-<name>.tar.gz')\`.
+- Add a setup project in \`tapsmith.config.ts\` with \`testMatch: ['**/auth.setup.ts']\`. Add a logged-in project with \`dependencies: ['auth-setup']\` and \`use: { appState: './tapsmith-results/auth-state-auth-setup.tar.gz' }\`, then point that project at the authenticated specs.
+- Keep unauthenticated and authenticated specs in separate projects or use \`testIgnore\` so the setup test does not run as a normal test and logged-out tests do not accidentally inherit app state.
+- For multi-platform suites, create one auth setup project per platform and one logged-in project per platform. Save each platform's state to a distinct file and make each logged-in project depend on its matching setup project.
+
+### Selectors and assertions
+
+- Prefer accessibility-first selectors: \`device.getByRole('button', { name: 'Login' })\`, \`device.getByText('Welcome', { exact: true })\`, \`device.getByDescription('Close')\`, \`device.getByLabel('Email')\`, and \`device.getByPlaceholder('Search')\`.
+- Use \`getByTestId()\` or \`locator({ id })\` only when no user-visible or accessibility selector can uniquely identify the element. Treat \`locator({ xpath })\` as a last resort; it is Android-only and should have an explanatory comment.
+- Assertions auto-wait: prefer \`await expect(locator).toBeVisible()\`, \`toHaveText()\`, \`toBeEnabled()\`, etc. Avoid fixed sleeps and broad timeouts; wait on the UI state, route, response, or traceable app signal that matters.
+- Remember strict mode: if a selector can match multiple elements, disambiguate with role/name, \`{ exact: true }\`, a test id, or \`.first()/.nth()\` only when that ordering is intentional.
+
+### Anti-patterns
+
+- Do not add \`waitForTimeout\`, \`sleep\`, or arbitrary polling when an assertion or explicit app/network signal can wait.
+- Do not duplicate complex locator construction across specs; add it to the relevant screen object or fixture.
+- Do not run the full suite while iterating on one behavior; use a file path, \`--grep\`, or the UI/MCP test tree for targeted runs.
+- Do not depend on a previous test's app state. Reset, deep-link, or restore saved state explicitly.
 ${AGENTS_END}
 `;
 }
