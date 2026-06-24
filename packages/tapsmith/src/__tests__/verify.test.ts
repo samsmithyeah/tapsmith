@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { parseVerifyArgs, pickVerifyTarget, scaffoldVerifySmokeTest, summarizeVerifyReport } from '../verify.js';
+import { parseVerifyArgs, pickVerifyTarget, cleanupVerifySmokeTest, scaffoldVerifySmokeTest, summarizeVerifyReport } from '../verify.js';
 
 describe('parseVerifyArgs()', () => {
   it('parses --json and --config', () => {
@@ -77,6 +77,19 @@ describe('scaffoldVerifySmokeTest()', () => {
       expect(fs.readFileSync(legacy, 'utf8')).toBe('user test');
       expect(fs.readFileSync(scaffolded.file, 'utf8')).toBe('generated test');
       expect(path.dirname(scaffolded.file)).toBe(scaffolded.tempDir);
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it('cleans a test directory created before scaffolding fails', () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'tapsmith-verify-test-'));
+    const testDir = path.join(tmp, 'tests');
+    fs.mkdirSync(testDir);
+
+    try {
+      cleanupVerifySmokeTest(undefined, true, testDir);
+      expect(fs.existsSync(testDir)).toBe(false);
     } finally {
       fs.rmSync(tmp, { recursive: true, force: true });
     }

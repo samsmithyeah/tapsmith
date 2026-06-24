@@ -100,17 +100,21 @@ function fail(checks: CheckList, id: string, label: string, fix?: string): void 
 
 // ─── Individual checks ───
 
+export function isSupportedNodeVersion(version: string): boolean {
+  const major = parseInt(version.split('.')[0], 10);
+  return major >= 22;
+}
+
 function checkNodeVersion(checks: CheckList): void {
   try {
     const version = process.versions.node;
-    const major = parseInt(version.split('.')[0], 10);
-    if (major >= 18) {
+    if (isSupportedNodeVersion(version)) {
       pass(checks, 'node', `Node.js ${version}`);
     } else {
-      fail(checks, 'node', `Node.js ${version} — requires >= 18`, 'Install Node.js 18 or newer (https://nodejs.org)');
+      fail(checks, 'node', `Node.js ${version} — requires >= 22`, 'Install Node.js 22 or newer (https://nodejs.org)');
     }
   } catch {
-    fail(checks, 'node', 'Node.js version check failed', 'Install Node.js 18 or newer (https://nodejs.org)');
+    fail(checks, 'node', 'Node.js version check failed', 'Install Node.js 22 or newer (https://nodejs.org)');
   }
 }
 

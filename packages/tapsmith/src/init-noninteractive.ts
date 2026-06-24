@@ -270,14 +270,18 @@ export function resolveInitPlan(
 
 // ─── Execution ───
 
-/** Throws CONFIG_EXISTS unless force or no config present. */
+/** Throws CONFIG_EXISTS unless force or no config present. Removes alternate configs on force. */
 export function assertConfigWritable(force: boolean, cwd: string = process.cwd()): void {
   const existing = ['tapsmith.config.ts', 'tapsmith.config.mjs', 'tapsmith.config.js']
-    .find((name) => fs.existsSync(path.join(cwd, name)));
-  if (existing && !force) {
-    throw new InitError('CONFIG_EXISTS', `Found existing ${existing}`, {
+    .filter((name) => fs.existsSync(path.join(cwd, name)));
+  if (existing.length === 0) return;
+  if (!force) {
+    throw new InitError('CONFIG_EXISTS', `Found existing ${existing[0]}`, {
       fix: 'Pass --force to overwrite, or delete the existing config',
     });
+  }
+  for (const name of existing) {
+    if (name !== 'tapsmith.config.ts') fs.rmSync(path.join(cwd, name), { force: true });
   }
 }
 

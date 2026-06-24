@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { buildDoctorJson, type CheckEntry } from '../doctor.js';
+import { buildDoctorJson, isSupportedNodeVersion, type CheckEntry } from '../doctor.js';
 
 describe('buildDoctorJson()', () => {
   const checks: CheckEntry[] = [
@@ -44,5 +44,13 @@ describe('buildDoctorJson()', () => {
       detail: 'detail',
       fix: 'fix',
     });
+  });
+});
+
+describe('isSupportedNodeVersion()', () => {
+  it('requires Node.js 22 or newer', () => {
+    expect(isSupportedNodeVersion('21.9.0')).toBe(false);
+    expect(isSupportedNodeVersion('22.0.0')).toBe(true);
+    expect(isSupportedNodeVersion('24.13.0')).toBe(true);
   });
 });

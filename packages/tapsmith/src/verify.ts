@@ -102,6 +102,13 @@ export function scaffoldVerifySmokeTest(testDir: string, contents: string): Scaf
   }
 }
 
+export function cleanupVerifySmokeTest(scaffolded: ScaffoldedVerifyTest | undefined, testDirCreated: boolean, testDir: string | undefined): void {
+  if (scaffolded) fs.rmSync(scaffolded.tempDir, { recursive: true, force: true });
+  if (testDirCreated && testDir) {
+    try { fs.rmdirSync(testDir); } catch { /* non-empty or already gone */ }
+  }
+}
+
 // ─── Command entry ───
 
 const VERIFY_USAGE = `Usage: tapsmith verify [--json] [--config <file>]
@@ -169,16 +176,19 @@ export async function runVerify(argv: string[]): Promise<void> {
 
     let target = pickVerifyTarget(testFiles);
     let scaffolded: ScaffoldedVerifyTest | undefined;
-    let testDirExisted = true;
+    let testDir: string | undefined;
+    let testDirCreated = false;
     const resultsFile = path.join(os.tmpdir(), `tapsmith-verify-${process.pid}.json`);
 
     try {
       if (!target) {
         // No tests yet — scaffold a throwaway smoke test (cleaned up below).
         const { generateExampleTest } = await import('./init.js');
-        const testDir = path.join(config.rootDir, 'tests');
-        testDirExisted = fs.existsSync(testDir);
-        fs.mkdirSync(testDir, { recursive: true });
+        testDir = path.join(config.rootDir, 'tests');
+        if (!fs.existsSync(testDir)) {
+          fs.mkdirSync(testDir, { recursive: true });
+          testDirCreated = true;
+        }
         scaffolded = scaffoldVerifySmokeTest(testDir, generateExampleTest());
         target = scaffolded.file;
       }
@@ -230,12 +240,7 @@ export async function runVerify(argv: string[]): Promise<void> {
       if (!summary.ok) process.exitCode = 1;
     } finally {
       fs.rmSync(resultsFile, { force: true });
-      if (scaffolded) {
-        fs.rmSync(scaffolded.tempDir, { recursive: true, force: true });
-        if (!testDirExisted) {
-          try { fs.rmdirSync(path.dirname(scaffolded.tempDir)); } catch { /* non-empty or already gone */ }
-        }
-      }
+      cleanupVerifySmokeTest(scaffolded, testDirCreated, testDir);
     }
   } catch (err) {
     emitError(args.json, 'UNEXPECTED_ERROR',
