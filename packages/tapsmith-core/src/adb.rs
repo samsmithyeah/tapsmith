@@ -738,7 +738,7 @@ ok=0
 for PID in 1 $(pidof zygote) $(pidof zygote64); do
   [ -z "$PID" ] && continue
   if nsenter -t "$PID" -m -- test -f "$SRC"/{cert_filename} 2>/dev/null; then ok=1; continue; fi
-  if nsenter -t "$PID" -m -- sh -c "mount -t tmpfs tmpfs $SRC && cp $TMP/* $SRC/ && chmod 644 $SRC/* && chown root:root $SRC/* && chcon u:object_r:system_security_cacerts_file:s0 $SRC/*" 2>/dev/null; then ok=1; fi
+  if nsenter -t "$PID" -m -- sh -c "mount -t tmpfs tmpfs $SRC && (cp $TMP/* $SRC/ && chmod 644 $SRC/* && chown root:root $SRC/* && chcon u:object_r:system_security_cacerts_file:s0 $SRC/* || (umount $SRC && exit 1))" 2>/dev/null; then ok=1; fi
 done
 [ "$ok" = 1 ] && echo TAPSMITH_APEX_OK"#
     );
