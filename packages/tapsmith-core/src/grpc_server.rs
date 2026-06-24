@@ -2305,6 +2305,12 @@ impl proto::tapsmith_service_server::TapsmithService for TapsmithServiceImpl {
                 if device_changed {
                     *self.started_agent_config.write().await = None;
                     *self.ios_agent_config.write().await = None;
+                    // Drop the previous device's pre-installed CA marker so the
+                    // Android CA pre-install below runs for the newly-selected
+                    // device rather than short-circuiting on stale state. The
+                    // active device can change within a daemon's lifetime (e.g.
+                    // UI mode switching between devices).
+                    *self.proxy_ca_cert_path.write().await = None;
                 }
                 agent_comms::clear_stream_cache(&self.agent_stream).await;
                 // Persist the CLI's tracing flag on the server so subsequent
