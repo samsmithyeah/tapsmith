@@ -725,9 +725,15 @@ async fn try_install_apex_ca(serial: &str, cert_filename: &str, tmp_cert_path: &
         r#"SRC={APEX_CA_CERT_DIR}
 TMP=/data/local/tmp/tapsmith-cacerts
 rm -rf "$TMP" && mkdir -p "$TMP" || exit 1
-cp "$SRC"/* "$TMP"/ 2>/dev/null
+NCERTS=$(ls "$SRC" 2>/dev/null | wc -l)
+cp "$SRC"/* "$TMP"/ 2>/dev/null || exit 1
 cp {tmp_cert_path} "$TMP"/{cert_filename} || exit 1
 chmod 644 "$TMP"/* || exit 1
+# Never mount a store smaller than the original: the staged set must contain
+# every existing root plus ours. Mounting fewer certs over the APEX dir would
+# strip trusted CAs from every app forked by the zygote and break all other
+# HTTPS, so bail out (falling back to the user store) if the copy came up short.
+[ "$(ls "$TMP" | wc -l)" -gt "$NCERTS" ] || exit 1
 ok=0
 for PID in 1 $(pidof zygote) $(pidof zygote64); do
   [ -z "$PID" ] && continue
