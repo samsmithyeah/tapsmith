@@ -817,6 +817,11 @@ async fn connect_tls_upstream(
 /// every client treats as a network error. The headers are well-formed — only
 /// the body is missing — so this doesn't trip the malformed-response handling
 /// that can destabilise NSURLSession.
+///
+/// We `shutdown()` rather than just `flush()` so TLS streams send a graceful
+/// `close_notify` before the socket closes: that keeps the truncation a clean
+/// "unexpected end of stream" instead of an abrupt-closure / bad-record-MAC
+/// error on stricter TLS clients.
 async fn write_abort_response<C: AsyncWrite + Unpin>(client: &mut C) {
     let _ = client
         .write_all(
@@ -825,7 +830,7 @@ async fn write_abort_response<C: AsyncWrite + Unpin>(client: &mut C) {
               Connection: close\r\n\r\n",
         )
         .await;
-    let _ = client.flush().await;
+    let _ = client.shutdown().await;
 }
 
 /// Proxy decrypted HTTPS traffic, connecting upstream only after the client
