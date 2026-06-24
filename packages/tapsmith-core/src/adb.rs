@@ -82,6 +82,12 @@ const SYSTEM_CA_CERT_DIR: &str = "/system/etc/security/cacerts";
 /// trust these on Android API 24+.
 const USER_CA_CERT_DIR: &str = "/data/misc/user/0/cacerts-added";
 
+/// Conscrypt APEX CA certificate directory — the *runtime* trust store on
+/// Android 14+ (API 34+). It is independent of [`SYSTEM_CA_CERT_DIR`] and is
+/// not made writable by `adb remount`, so the cert is injected via a tmpfs
+/// overlay inside the zygote mount namespace (see [`try_install_apex_ca`]).
+const APEX_CA_CERT_DIR: &str = "/apex/com.android.conscrypt/cacerts";
+
 /// List connected ADB devices.
 #[instrument]
 pub async fn list_devices() -> Result<Vec<AdbDevice>> {
@@ -595,10 +601,26 @@ pub async fn install_ca_cert(
         // Push cert to a temp location
         push_file(serial, ca_pem_path, &tmp_cert).await?;
 
-        // Try the system CA store first (works on rooted emulators).
+        // Try the system CA store first (works on rooted emulators where
+        // `/system/etc/security/cacerts` is both writable and the effective
+        // runtime trust store — pre-Android-14, and CI's cold-booted images).
         let system_path = format!("{SYSTEM_CA_CERT_DIR}/{cert_filename}");
         if try_install_system_ca(serial, cert_filename, &system_path, &tmp_cert).await {
             return Ok(system_path);
+        }
+
+        // Android 14+ (API 34+): the runtime trust store moved to the Conscrypt
+        // APEX, which `adb remount` can't write, so the system-store path above
+        // silently has no effect there. Overlay the APEX cacerts dir inside the
+        // zygote mount namespace instead, so apps launched afterwards trust the
+        // cert without needing a per-app network_security_config.xml.
+        if device_sdk_int(serial).await.map(|v| v >= 34).unwrap_or(false)
+            && try_install_apex_ca(serial, cert_filename, &tmp_cert).await
+        {
+            // Return the cert file path (not the dir) so the capture-stop
+            // `rm -f` is a clean no-op; the volatile tmpfs overlays clear on
+            // reboot and are re-applied idempotently on the next capture.
+            return Ok(format!("{APEX_CA_CERT_DIR}/{cert_filename}"));
         }
 
         // Fall back to the user CA store (requires network_security_config.xml).
@@ -670,6 +692,69 @@ async fn try_install_system_ca(
 
     info!(%serial, cert_filename, "CA certificate installed in system store (trusted by all apps)");
     true
+}
+
+/// Read the device's API level (`ro.build.version.sdk`), if parseable.
+async fn device_sdk_int(serial: &str) -> Option<u32> {
+    shell_lenient(serial, "getprop ro.build.version.sdk")
+        .await
+        .ok()
+        .and_then(|s| s.trim().parse::<u32>().ok())
+}
+
+/// Inject the CA into the Conscrypt APEX trust store on Android 14+ (API 34+).
+///
+/// On Android 14+ the runtime CA store is `/apex/com.android.conscrypt/cacerts`,
+/// which is read-only and decoupled from `/system/etc/security/cacerts` (writing
+/// the latter — even after `adb remount` — has no effect on what apps trust).
+/// The working approach is to overlay a tmpfs containing the existing APEX certs
+/// plus ours, *inside the mount namespace of each zygote*, so every app forked
+/// afterwards inherits the trusted cert. Because Tapsmith installs the CA at
+/// capture-start (before launching the app under test), the test app forks fresh
+/// from the patched zygote and trusts the MITM cert. Requires root.
+///
+/// Returns `true` if at least one zygote namespace was patched. The tmpfs
+/// overlays are volatile (cleared on reboot); a per-namespace idempotency check
+/// avoids stacking mounts across repeated capture sessions.
+async fn try_install_apex_ca(serial: &str, cert_filename: &str, tmp_cert_path: &str) -> bool {
+    // Built as one device-side script: assemble the combined cert set once, then
+    // nsenter into init + every zygote and tmpfs-overlay the APEX cacerts dir.
+    // The SELinux relabel to `system_security_cacerts_file` is mandatory — apps
+    // can't read certs left with the default tmpfs label.
+    let script = format!(
+        r#"SRC={APEX_CA_CERT_DIR}
+TMP=/data/local/tmp/tapsmith-cacerts
+rm -rf "$TMP" && mkdir -p "$TMP" || exit 1
+cp "$SRC"/* "$TMP"/ 2>/dev/null
+cp {tmp_cert_path} "$TMP"/{cert_filename} || exit 1
+chmod 644 "$TMP"/* || exit 1
+ok=0
+for PID in 1 $(pidof zygote) $(pidof zygote64); do
+  [ -z "$PID" ] && continue
+  if nsenter -t "$PID" -m -- test -f "$SRC"/{cert_filename} 2>/dev/null; then ok=1; continue; fi
+  if nsenter -t "$PID" -m -- sh -c "mount -t tmpfs tmpfs $SRC && cp $TMP/* $SRC/ && chmod 644 $SRC/* && chown root:root $SRC/* && chcon u:object_r:system_security_cacerts_file:s0 $SRC/*" 2>/dev/null; then ok=1; fi
+done
+[ "$ok" = 1 ] && echo TAPSMITH_APEX_OK"#
+    );
+
+    match shell_lenient(serial, &script).await {
+        Ok(out) if out.contains("TAPSMITH_APEX_OK") => {
+            info!(
+                %serial, cert_filename,
+                "CA certificate injected into Conscrypt APEX trust store (Android 14+); \
+                 trusted by apps launched after this point"
+            );
+            true
+        }
+        Ok(_) => {
+            debug!(%serial, "APEX CA injection did not confirm success — falling back to user store");
+            false
+        }
+        Err(e) => {
+            debug!(%serial, "APEX CA injection failed: {e} — falling back to user store");
+            false
+        }
+    }
 }
 
 /// Run an adb command (with serial targeting) that may fail, returning combined
