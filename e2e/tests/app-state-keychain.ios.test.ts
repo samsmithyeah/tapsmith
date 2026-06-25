@@ -22,7 +22,10 @@ async function loadStoredValue(device: Device) {
 }
 
 describe("keychain app state", () => {
-  test.use({ timeout: 180_000 })
+  // This is a heavyweight test: three cold app launches plus a full keychain
+  // save/restore round-trip. On an overloaded CI host each cold-launch deep
+  // link can take tens of seconds, so 180s left no headroom for the SDK retry.
+  test.use({ timeout: 300_000 })
 
   test("saveAppState/restoreAppState round-trips keychain items", async ({
     device,

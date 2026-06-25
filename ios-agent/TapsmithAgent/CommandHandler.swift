@@ -27,6 +27,13 @@ class CommandHandler {
     private var touchPath: [(CGPoint, TimeInterval)] = []
     private let touchPathLock = NSLock()
 
+    // Deep-link verification runs on its own serial thread so a wedged
+    // XCUITest query (snapshot / SpringBoard) on a heavily-loaded host can
+    // never pin the socket handler past the daemon's verify timeout. See
+    // deepLinkDestinationReached.
+    private let deepLinkVerifyQueue = DispatchQueue(
+        label: "dev.tapsmith.agent.deeplink-verify", qos: .userInitiated)
+
     init(
         app: XCUIApplication,
         elementFinder: ElementFinder,
@@ -150,6 +157,39 @@ class CommandHandler {
             Thread.sleep(forTimeInterval: 0.2)
         }
         return false
+    }
+
+    /// Bound `waitForDeepLinkDestination` with a hard wall-clock deadline.
+    ///
+    /// The poll loop checks its own deadline only *between* iterations, so a
+    /// single `app.snapshot()` or SpringBoard query that blocks on XCUITest's
+    /// main-runloop responsiveness wait (up to 60s on an overloaded CI host)
+    /// can run far past the loop's nominal timeout — and past the daemon's
+    /// verify read-timeout, which then looks like the agent died and triggers
+    /// a full terminate + re-deliver retry. Three of those in a row burns
+    /// ~100s and most of a test's budget.
+    ///
+    /// Running the verify on a dedicated serial thread and waiting on a
+    /// semaphore guarantees we hand a definitive answer back to the daemon
+    /// before its read-timeout. A wedged query keeps running on the verify
+    /// queue and is abandoned; it unblocks (and the queue drains) when the
+    /// daemon re-delivers and terminates the app, so no query overlaps and
+    /// no thread leaks across re-deliveries. On timeout we report
+    /// not-reached, exactly as if the loop had run out of patience.
+    private func deepLinkDestinationReached(_ app: XCUIApplication) -> Bool {
+        let semaphore = DispatchSemaphore(value: 0)
+        var reached = false
+        deepLinkVerifyQueue.async {
+            let result = self.waitForDeepLinkDestination(app, timeout: 10.0)
+            reached = result
+            semaphore.signal()
+        }
+        // Hard cap just above the loop's 10s deadline but below the daemon's
+        // verify read-timeout, so a clean false beats the daemon giving up.
+        guard semaphore.wait(timeout: .now() + 12.0) == .success else {
+            return false
+        }
+        return reached
     }
 
     /// Dismiss any blocking iOS system dialog currently covering the app
@@ -1301,7 +1341,7 @@ class CommandHandler {
                 }
             }
 
-            if waitForDeepLinkDestination(targetApp, timeout: 10.0) {
+            if deepLinkDestinationReached(targetApp) {
                 _ = rebindApp(bundleId: bundleId)
                 return ["success": true]
             }
