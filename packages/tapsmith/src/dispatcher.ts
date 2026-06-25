@@ -33,6 +33,7 @@ import {
   cleanupStaleEmulators,
   prefilterDevicesForStrategy,
   selectDevicesForStrategy,
+  filterPreferInstalledApp,
   type DeviceHealthResult,
   type LaunchedEmulator,
 } from './emulator.js';
@@ -1101,12 +1102,25 @@ export async function runParallel(opts: DispatcherOptions, _portOffset = 0): Pro
         launchProgress,
       );
 
+      // Disambiguate among already-running same-AVD instances: if more than one
+      // emulator reports the configured AVD name, prefer the one(s) where the
+      // app under test is actually installed. This avoids grabbing a leftover
+      // emulator from another project's run that shares the generic AVD name
+      // but doesn't have this project's app (which would silently run, and
+      // "restore app state", against the wrong app). Fresh emulators we boot
+      // below have nothing installed yet and are handled by selectedProvisioned.
+      const installedOnline = filterPreferInstalledApp(
+        selectedOnline.selectedSerials,
+        config.package,
+      );
+      warnSkippedDevices(installedOnline.skippedDevices, launchProgress);
+
       if (
         config.launchEmulators &&
-        selectedOnline.selectedSerials.length < Math.min(opts.workers, testFiles.length)
+        installedOnline.selectedSerials.length < Math.min(opts.workers, testFiles.length)
       ) {
         const provision = await provisionEmulators({
-          existingSerials: selectedOnline.selectedSerials,
+          existingSerials: installedOnline.selectedSerials,
           occupiedSerials: androidDevices.map((d) => d.serial),
           workers: Math.min(opts.workers, testFiles.length),
           avd: config.avd,
@@ -1127,7 +1141,7 @@ export async function runParallel(opts: DispatcherOptions, _portOffset = 0): Pro
         warnSkippedDevices(selectedProvisioned.skippedDevices, launchProgress);
         deviceSerials = selectedProvisioned.selectedSerials;
       } else {
-        deviceSerials = selectedOnline.selectedSerials;
+        deviceSerials = installedOnline.selectedSerials;
       }
     }
 

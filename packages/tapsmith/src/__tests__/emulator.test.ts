@@ -15,6 +15,7 @@ import {
   prefilterDevicesForStrategy,
   provisionEmulators,
   selectDevicesForStrategy,
+  filterPreferInstalledApp,
   waitForDeviceStability,
 } from '../emulator.js';
 
@@ -326,6 +327,58 @@ describe('emulator utilities', () => {
       expect(() => selectDevicesForStrategy(['emulator-5554'], 'avd-only', undefined)).toThrow(
         'deviceStrategy "avd-only" requires `avd` to be set in config',
       );
+    });
+  });
+
+  describe('filterPreferInstalledApp', () => {
+    it('drops same-AVD instances missing the app when another instance has it', () => {
+      expect(
+        filterPreferInstalledApp(
+          ['emulator-5554', 'emulator-5556'],
+          'com.samlovesit.StoryApp',
+          (serial) => serial === 'emulator-5554',
+        ),
+      ).toEqual({
+        selectedSerials: ['emulator-5554'],
+        skippedDevices: [
+          {
+            serial: 'emulator-5556',
+            reason:
+              'app com.samlovesit.StoryApp is not installed (another running instance of AVD shares this name but has the app)',
+          },
+        ],
+      });
+    });
+
+    it('keeps all devices when none have the app yet (fresh boots / install pending)', () => {
+      expect(
+        filterPreferInstalledApp(
+          ['emulator-5554', 'emulator-5556'],
+          'com.samlovesit.StoryApp',
+          () => false,
+        ),
+      ).toEqual({
+        selectedSerials: ['emulator-5554', 'emulator-5556'],
+        skippedDevices: [],
+      });
+    });
+
+    it('is a no-op when no package is configured', () => {
+      expect(
+        filterPreferInstalledApp(['emulator-5554', 'emulator-5556'], undefined, () => false),
+      ).toEqual({
+        selectedSerials: ['emulator-5554', 'emulator-5556'],
+        skippedDevices: [],
+      });
+    });
+
+    it('is a no-op for a single device', () => {
+      const isInstalled = vi.fn(() => false);
+      expect(filterPreferInstalledApp(['emulator-5554'], 'com.samlovesit.StoryApp', isInstalled)).toEqual({
+        selectedSerials: ['emulator-5554'],
+        skippedDevices: [],
+      });
+      expect(isInstalled).not.toHaveBeenCalled();
     });
   });
 
