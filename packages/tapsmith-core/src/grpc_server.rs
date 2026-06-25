@@ -548,7 +548,12 @@ impl TapsmithServiceImpl {
         // and fall through to the polling path below — continuing to await the
         // *same* `openurl` future so the dialog is dismissed within this same
         // attempt instead of after a full-length timeout + caller retry.
-        if self.ios_open_in_app_trusted.read().await.contains(serial) {
+        // Bind to a local so the read guard is dropped before the block: a
+        // temporary in an `if` condition lives until the end of the whole `if`,
+        // which would still hold the read lock when the timeout branch below
+        // takes the write lock — a same-task deadlock on the tokio RwLock.
+        let is_trusted = self.ios_open_in_app_trusted.read().await.contains(serial);
+        if is_trusted {
             match tokio::time::timeout(IOS_OPEN_URL_TRUSTED_TIMEOUT, &mut open_url).await {
                 Ok(result) => return result,
                 Err(_) => {
