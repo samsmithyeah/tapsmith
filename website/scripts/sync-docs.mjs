@@ -89,6 +89,12 @@ const FILES = [
     desc: 'Integrate Tapsmith with AI coding agents via the Model Context Protocol.',
   },
   {
+    src: 'agents.md',
+    dest: 'guides/agents.md',
+    title: 'AI Coding Agents',
+    desc: 'Set up and run Tapsmith unattended from Claude Code, Codex, or Cursor.',
+  },
+  {
     src: 'ci-setup.md',
     dest: 'platform/ci-setup.md',
     title: 'CI Setup',
@@ -226,6 +232,7 @@ const LINK_MAP = {
   'parallel-and-sharding.md': '/guides/parallel-and-sharding/',
   'debugging.md': '/guides/debugging/',
   'mcp-server.md': '/guides/mcp-server/',
+  'agents.md': '/guides/agents/',
   'ci-setup.md': '/platform/ci-setup/',
   'ios-physical-devices.md': '/platform/ios-physical-devices/',
   'ios-network-capture.md': '/platform/ios-network-capture/',

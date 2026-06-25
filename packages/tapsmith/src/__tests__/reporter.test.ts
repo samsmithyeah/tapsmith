@@ -696,6 +696,33 @@ describe('JsonReporter', () => {
     // Cleanup
     fs.rmSync(tmpDir, { recursive: true });
   });
+
+  it('honors TAPSMITH_JSON_OUTPUT_FILE over the outputFile option', async () => {
+    const fs = await import('node:fs');
+    const path = await import('node:path');
+    const os = await import('node:os');
+
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tapsmith-json-'));
+    const optionFile = path.join(tmpDir, 'option.json');
+    const overrideFile = path.join(tmpDir, 'override.json');
+
+    process.env.TAPSMITH_JSON_OUTPUT_FILE = overrideFile;
+    try {
+      const { JsonReporter } = await import('../reporters/json.js');
+      const reporter = new JsonReporter({ outputFile: optionFile });
+      reporter.onRunStart!(makeConfig({ rootDir: '/' }), 1);
+      await reporter.onRunEnd!(makeFullResult({
+        tests: [makeTestResult({ status: 'passed', fullName: 'test a' })],
+        suites: [],
+      }));
+
+      expect(fs.existsSync(overrideFile)).toBe(true);
+      expect(fs.existsSync(optionFile)).toBe(false);
+    } finally {
+      delete process.env.TAPSMITH_JSON_OUTPUT_FILE;
+      fs.rmSync(tmpDir, { recursive: true });
+    }
+  });
 });
 
 describe('JUnitReporter', () => {

@@ -2,6 +2,8 @@
 
 This guide walks you through installing Tapsmith, writing your first test, and running it against an Android or iOS device/simulator.
 
+> **Setting up with an AI coding agent?** See [Using Tapsmith with AI coding agents](agents.md) for the non-interactive setup loop (`doctor --json` → `init --yes` → `verify --json`).
+
 ## Prerequisites
 
 Before you begin, make sure you have the following installed:

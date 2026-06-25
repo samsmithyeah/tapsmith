@@ -3,8 +3,8 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import Enquirer from 'enquirer';
 import figlet from 'figlet';
-import { findDaemonBin } from './daemon-bin.js';
-import { findAgentApk, findAgentTestApk } from './agent-resolve.js';
+import { tryExec, scanEnvironment, type EnvScan, type SimulatorInfo } from './env-scan.js';
+import { detectAndroidPackage, detectIosBundleId } from './init-detect.js';
 
 const DIM = '\x1b[2m';
 const BOLD = '\x1b[1m';
@@ -30,100 +30,6 @@ function getVersion(): string {
   } catch {
     return '0.0.0';
   }
-}
-
-function tryExec(cmd: string, args: string[]): string | undefined {
-  try {
-    return execFileSync(cmd, args, {
-      encoding: 'utf8',
-      stdio: ['ignore', 'pipe', 'pipe'],
-      timeout: 10_000,
-    }).trim();
-  } catch {
-    return undefined;
-  }
-}
-
-// ─── Environment scanning ───
-
-interface EnvScan {
-  nodeVersion: string;
-  daemonBin: string | undefined;
-  agentApk: boolean;
-  agentTestApk: boolean;
-  adbVersion: string | undefined;
-  androidHome: string | undefined;
-  xcodeVersion: string | undefined;
-  simulators: SimulatorInfo[];
-  avds: string[];
-  isMacOS: boolean;
-}
-
-interface SimulatorInfo {
-  name: string;
-  udid: string;
-  state: string;
-  runtime: string;
-}
-
-function scanEnvironment(): EnvScan {
-  const isMacOS = process.platform === 'darwin';
-  const nodeVersion = process.versions.node;
-
-  let daemonBin: string | undefined;
-  try {
-    daemonBin = findDaemonBin();
-  } catch {
-    // not found
-  }
-
-  const agentApk = !!findAgentApk();
-  const agentTestApk = !!findAgentTestApk();
-
-  let adbVersion: string | undefined;
-  const adbOut = tryExec('adb', ['--version']);
-  if (adbOut) {
-    const match = adbOut.match(/Version\s+([\d.]+)/);
-    adbVersion = match?.[1] ?? 'installed';
-  }
-
-  const androidHome = process.env['ANDROID_HOME'] || process.env['ANDROID_SDK_ROOT'];
-
-  let xcodeVersion: string | undefined;
-  if (isMacOS) {
-    const xcOut = tryExec('xcodebuild', ['-version']);
-    if (xcOut) {
-      const match = xcOut.match(/Xcode\s+([\d.]+)/);
-      xcodeVersion = match?.[1] ?? 'installed';
-    }
-  }
-
-  const simulators: SimulatorInfo[] = [];
-  if (isMacOS) {
-    const simOut = tryExec('xcrun', ['simctl', 'list', 'devices', 'available', '-j']);
-    if (simOut) {
-      try {
-        const data = JSON.parse(simOut);
-        const devices = data.devices as Record<string, Array<{ name: string; udid: string; state: string }>>;
-        for (const [runtime, devs] of Object.entries(devices)) {
-          for (const d of devs) {
-            const runtimeName = runtime.replace(/^com\.apple\.CoreSimulator\.SimRuntime\./, '').replace(/-/g, ' ');
-            simulators.push({ name: d.name, udid: d.udid, state: d.state, runtime: runtimeName });
-          }
-        }
-      } catch {
-        // parse failure
-      }
-    }
-  }
-
-  let avds: string[] = [];
-  const avdOut = tryExec('emulator', ['-list-avds']);
-  if (avdOut) {
-    avds = avdOut.split('\n').map((l) => l.trim()).filter(Boolean);
-  }
-
-  return { nodeVersion, daemonBin, agentApk, agentTestApk, adbVersion, androidHome, xcodeVersion, simulators, avds, isMacOS };
 }
 
 function displayEnvironment(env: EnvScan): void {
@@ -165,9 +71,9 @@ async function ask<T>(question: Record<string, unknown>): Promise<T> {
 
 // ─── Platform-specific questions ───
 
-type Platform = 'android' | 'ios';
+export type Platform = 'android' | 'ios';
 
-interface AndroidConfig {
+export interface AndroidConfig {
   apkPath: string;
   packageName?: string;
   useEmulators: boolean;
@@ -175,7 +81,7 @@ interface AndroidConfig {
   avd?: string;
 }
 
-interface IosConfig {
+export interface IosConfig {
   appPath: string;
   bundleId?: string;
   simulator?: string;
@@ -194,27 +100,10 @@ async function configureAndroid(env: EnvScan): Promise<AndroidConfig> {
   });
 
   let packageName: string | undefined;
-  let aapt2Bin = 'aapt2';
-  if (!tryExec('aapt2', ['version'])) {
-    const androidHome = process.env['ANDROID_HOME'] || process.env['ANDROID_SDK_ROOT'];
-    if (androidHome) {
-      const buildTools = path.join(androidHome, 'build-tools');
-      if (fs.existsSync(buildTools)) {
-        const versions = fs.readdirSync(buildTools).sort((a, b) => b.localeCompare(a, undefined, { numeric: true }));
-        for (const v of versions) {
-          const candidate = path.join(buildTools, v, 'aapt2');
-          if (fs.existsSync(candidate)) { aapt2Bin = candidate; break; }
-        }
-      }
-    }
-  }
-  const aapt = tryExec(aapt2Bin, ['dump', 'badging', apkPath]);
-  if (aapt) {
-    const match = aapt.match(/package: name='([^']+)'/);
-    if (match) {
-      packageName = match[1];
-      console.log(dim(`  Detected package: ${packageName}`));
-    }
+  const detected = detectAndroidPackage(apkPath);
+  if (detected) {
+    packageName = detected;
+    console.log(dim(`  Detected package: ${detected}`));
   }
   if (!packageName) {
     packageName = await ask<string>({
@@ -267,13 +156,10 @@ async function configureIos(env: EnvScan): Promise<IosConfig> {
   });
 
   let bundleId: string | undefined;
-  const plistPath = path.join(appPath, 'Info.plist');
-  if (fs.existsSync(plistPath)) {
-    const plistOut = tryExec('/usr/libexec/PlistBuddy', ['-c', 'Print :CFBundleIdentifier', plistPath]);
-    if (plistOut) {
-      bundleId = plistOut;
-      console.log(dim(`  Detected bundle ID: ${bundleId}`));
-    }
+  const detected = detectIosBundleId(appPath);
+  if (detected) {
+    bundleId = detected;
+    console.log(dim(`  Detected bundle ID: ${detected}`));
   }
   if (!bundleId) {
     bundleId = await ask<string>({
@@ -441,6 +327,33 @@ async function setupNetworkCapture(
   return true;
 }
 
+// ─── iOS simulator agent ───
+
+export async function ensureSimulatorAgent(
+  simulator: string | undefined,
+): Promise<{ status: 'present' | 'built' | 'failed'; error?: string }> {
+  const { findSimulatorXctestrun } = await import('./ios-device-resolve.js');
+  if (findSimulatorXctestrun()) return { status: 'present' };
+  try {
+    const { resolveIosAgentDir } = await import('./build-ios-agent.js');
+    const iosAgentDir = resolveIosAgentDir();
+    const createScript = path.join(iosAgentDir, 'create-xcode-project.sh');
+    if (fs.existsSync(createScript)) {
+      try { execFileSync('sh', [createScript], { cwd: iosAgentDir, stdio: 'ignore' }); } catch { /* optional — xcodebuild will fail below if needed */ }
+    }
+    const dest = simulator ? `platform=iOS Simulator,name=${simulator}` : 'platform=iOS Simulator';
+    execFileSync('xcodebuild', [
+      'build-for-testing',
+      '-project', path.join(iosAgentDir, 'TapsmithAgent.xcodeproj'),
+      '-scheme', 'TapsmithAgentUITests',
+      '-destination', dest,
+    ], { stdio: ['ignore', 'pipe', 'pipe'], timeout: 300_000 });
+    return { status: 'built' };
+  } catch (err) {
+    return { status: 'failed', error: err instanceof Error ? err.message : String(err) };
+  }
+}
+
 // ─── Config generation ───
 
 export function generateConfig(
@@ -524,15 +437,115 @@ export function generateExampleTest(): string {
   return `import { test, expect } from 'tapsmith'
 
 test('app launches successfully', async ({ device }) => {
-  const element = device.getByRole('any')
-  await expect(element).toBeVisible()
+  // Smoke check: the app rendered at least one text element after launch.
+  // Replace this with assertions specific to your app's first screen.
+  await expect(device.getByRole('text').first()).toBeVisible()
 })
 `;
 }
 
 // ─── Main wizard ───
 
-export async function runInit(): Promise<void> {
+const INIT_USAGE = `Usage: tapsmith init [options]
+
+Interactive wizard when run in a terminal with no options.
+Non-interactive (for scripts and AI agents): pass --yes and/or explicit flags.
+
+Options:
+  -y, --yes                 Accept auto-detected defaults for anything not specified
+  --platform <list>         android, ios, or android,ios (default: inferred from android/ and ios/ dirs)
+  --apk <path>              Android APK (default: auto-detected under android/**/build/outputs/apk/)
+  --package <id>            Android package name (default: read from APK via aapt2)
+  --app <path>              iOS simulator .app bundle (default: auto-detected under ios/)
+  --bundle-id <id>          iOS bundle identifier (default: read from Info.plist)
+  --avd <name>              Android AVD to auto-launch (default: first available)
+  --simulator <name>        iOS simulator name (default: newest available iPhone)
+  --device-type <type>      emulator | physical | both (default: emulator)
+  --network-capture         Enable HTTP(S) trace capture
+  --no-example-test         Skip scaffolding tests/example.test.ts
+  --no-agents-md            Skip scaffolding the AGENTS.md section
+  --force                   Overwrite an existing tapsmith.config.*
+  --json                    Machine-readable output (also on errors)
+  -h, --help                Show this help
+
+Examples:
+  npx tapsmith init --yes
+  npx tapsmith init --yes --platform android --apk ./app-debug.apk
+  npx tapsmith doctor --json   # check environment first
+`;
+
+export async function runInit(argv: string[] = []): Promise<void> {
+  const { parseInitArgs, resolveInitPlan, executeInitPlan, InitError } = await import('./init-noninteractive.js');
+
+  let parsed;
+  try {
+    parsed = parseInitArgs(argv);
+  } catch (err) {
+    const initErr = err instanceof InitError
+      ? err
+      : new InitError('UNEXPECTED_ERROR', err instanceof Error ? err.message : String(err));
+    emitInitError(initErr, argv.includes('--json'));
+    process.exit(1);
+    return;
+  }
+
+  if (parsed.help) {
+    console.log(INIT_USAGE);
+    return;
+  }
+
+  const nonInteractive = parsed.yes || parsed.anySetupFlag;
+
+  if (!nonInteractive && !process.stdin.isTTY) {
+    const err = new InitError(
+      'NON_INTERACTIVE_TTY',
+      'tapsmith init is an interactive wizard and stdin is not a TTY',
+      { fix: 'Run non-interactively: npx tapsmith init --yes (see npx tapsmith init --help for all flags)' },
+    );
+    emitInitError(err, parsed.json);
+    if (!parsed.json) console.error(INIT_USAGE);
+    process.exit(1);
+  }
+
+  if (nonInteractive) {
+    try {
+      const env = scanEnvironment();
+      const plan = resolveInitPlan(parsed, env);
+
+      // Guard BEFORE the iOS agent build so a 5-minute xcodebuild is never
+      // launched against a project that already has a config (unless --force).
+      const { assertConfigWritable } = await import('./init-noninteractive.js');
+      assertConfigWritable(parsed.force);
+
+      if (plan.platforms.includes('ios')) {
+        const agentResult = await ensureSimulatorAgent(plan.ios?.simulator);
+        if (agentResult.status === 'failed') {
+          plan.warnings.push(`iOS simulator agent build failed (${agentResult.error ?? 'unknown error'}) — it will be retried on first test run`);
+        }
+      }
+
+      const result = executeInitPlan(plan, parsed);
+
+      if (parsed.json) {
+        console.log(JSON.stringify(result, null, 2));
+      } else {
+        for (const f of result.filesCreated) console.log(`  ${green('✓')} ${f}`);
+        for (const w of result.warnings) console.log(`  ${YELLOW}⚠${RESET} ${w}`);
+        console.log();
+        console.log(`  ${bold('Next steps')}`);
+        for (const s of result.nextSteps) console.log(`  - ${s}`);
+      }
+      return;
+    } catch (err) {
+      const initErr = err instanceof InitError
+        ? err
+        : new InitError('UNEXPECTED_ERROR', err instanceof Error ? err.message : String(err));
+      emitInitError(initErr, parsed.json);
+      process.exit(1);
+    }
+  }
+
+  // Interactive wizard (unchanged path)
   try {
     await runInitInner();
   } catch (err) {
@@ -544,6 +557,16 @@ export async function runInit(): Promise<void> {
     }
     console.log();
     process.exit(1);
+  }
+}
+
+function emitInitError(err: { code: string; message: string; fix?: string; candidates?: string[] }, json: boolean): void {
+  if (json) {
+    console.log(JSON.stringify({ error: { code: err.code, message: err.message, fix: err.fix, candidates: err.candidates } }, null, 2));
+  } else {
+    console.error(`  ${RED}✗${RESET} ${err.message}`);
+    if (err.candidates) for (const c of err.candidates) console.error(`      - ${c}`);
+    if (err.fix) console.error(`  ${YELLOW}→${RESET} ${err.fix}`);
   }
 }
 
@@ -620,25 +643,13 @@ async function runInitInner(): Promise<void> {
 
         if (buildSim) {
           console.log(dim('  Building iOS simulator agent...'));
-          try {
-            const { resolveIosAgentDir } = await import('./build-ios-agent.js');
-            const iosAgentDir = resolveIosAgentDir();
-            const createScript = path.join(iosAgentDir, 'create-xcode-project.sh');
-            if (fs.existsSync(createScript)) {
-              try { execFileSync('sh', [createScript], { cwd: iosAgentDir, stdio: 'ignore' }); } catch { /* optional — xcodebuild will fail below if needed */ }
-            }
-            const dest = iosConfig.simulator
-              ? `platform=iOS Simulator,name=${iosConfig.simulator}`
-              : 'platform=iOS Simulator';
-            execFileSync('xcodebuild', [
-              'build-for-testing',
-              '-project', path.join(iosAgentDir, 'TapsmithAgent.xcodeproj'),
-              '-scheme', 'TapsmithAgentUITests',
-              '-destination', dest,
-            ], { stdio: ['ignore', 'pipe', 'pipe'], timeout: 300_000 });
+          const result = await ensureSimulatorAgent(iosConfig.simulator);
+          if (result.status === 'built' || result.status === 'present') {
             console.log(`  ${green('✓')} iOS simulator agent built`);
-          } catch (err) {
-            console.log(`  ${YELLOW}⚠${RESET} Build failed: ${err instanceof Error ? err.message : String(err)}`);
+          } else if (result.error) {
+            console.log(`  ${YELLOW}⚠${RESET} Build failed: ${result.error}`);
+          } else {
+            console.log(`  ${YELLOW}⚠${RESET} Build failed`);
           }
         }
       }
@@ -675,6 +686,18 @@ async function runInitInner(): Promise<void> {
       fs.writeFileSync(testPath, generateExampleTest());
       console.log(`  ${green('✓')} tests/example.test.ts created`);
     }
+  }
+
+  // Step 8.5: AGENTS.md for coding agents
+  const writeAgents = await ask<boolean>({
+    type: 'confirm',
+    message: 'Add a Tapsmith section to AGENTS.md? (helps AI coding agents use tapsmith correctly)',
+    initial: true,
+  });
+  if (writeAgents) {
+    const { writeAgentsMd } = await import('./agents-md.js');
+    writeAgentsMd(process.cwd());
+    console.log(`  ${green('✓')} AGENTS.md updated`);
   }
 
   // Step 9: Next steps

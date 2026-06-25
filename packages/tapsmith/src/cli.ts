@@ -106,12 +106,19 @@ function commandArgsInclude(command: string, ...flags: string[]): boolean {
   return argsAfterCommand(command).some((arg) => wanted.has(arg));
 }
 
+/** Argv to forward to a subcommand's own parser, minus the tsx re-exec marker. */
+function forwardedArgs(command: string): string[] {
+  return argsAfterCommand(command).filter((a) => a !== '--__tsx-reexec');
+}
+
 function shouldPrintBannerForCommand(args: CliArgs): boolean {
   if (!args.command || args.version || args.help) return false;
 
   // Keep protocol and machine-readable surfaces byte-clean.
   if (args.command === 'mcp-server') return false;
   if (args.command === 'list-devices' && commandArgsInclude(args.command, '--json')) return false;
+  if (args.command === 'doctor' && commandArgsInclude(args.command, '--json')) return false;
+  if (args.command === 'verify' && commandArgsInclude(args.command, '--json')) return false;
 
   // These commands render command-specific help after the top-level parser
   // stops, so suppress the decorative banner when the user only asked for help.
@@ -136,6 +143,7 @@ function shouldPrintBannerForCommand(args: CliArgs): boolean {
     'configure-ios-network',
     'refresh-ios-network',
     'verify-ios-network',
+    'verify',
     'doctor',
   ]).has(args.command);
 }
@@ -1124,6 +1132,8 @@ interface CliArgs {
   grep?: string;
   /** Pattern from `--grep-invert`. Compiled to a RegExp later. */
   grepInvert?: string;
+  /** Reporter override from `--reporter`. */
+  reporter?: string;
 }
 
 function compileGrepPattern(pattern: string, flag: string): RegExp {
@@ -1228,6 +1238,10 @@ function parseArgs(argv: string[]): CliArgs {
       args.config = rest[++i];
     } else if (arg?.startsWith('--config=')) {
       args.config = arg.slice('--config='.length);
+    } else if (arg === '--reporter') {
+      args.reporter = rest[++i];
+    } else if (arg?.startsWith('--reporter=')) {
+      args.reporter = arg.slice('--reporter='.length);
     } else if (arg === '--grep' || arg === '-g') {
       args.grep = rest[++i];
     } else if (arg?.startsWith('--grep=')) {
@@ -1253,8 +1267,11 @@ function parseArgs(argv: string[]): CliArgs {
         || arg === 'configure-ios-network'
         || arg === 'refresh-ios-network'
         || arg === 'verify-ios-network'
+        || arg === 'verify'
         || arg === 'list-devices'
         || arg === 'mcp-server'
+        || arg === 'doctor'
+        || arg === 'init'
       ) {
         break;
       }
@@ -1635,7 +1652,9 @@ ${bold('Usage:')}
   tapsmith refresh-ios-network <udid>     Regenerate the network capture profile after a host Wi-Fi change
   tapsmith verify-ios-network <udid>      Verify HTTPS capture for a normal system-trust client on a physical iOS device
   tapsmith init                      Initialize a new Tapsmith project (interactive wizard)
-  tapsmith doctor                    Check system health and dependencies
+  tapsmith init --yes [--json]       Non-interactive init for scripts/AI agents (see init --help)
+  tapsmith verify [--json]           Run one test end-to-end to prove the setup works
+  tapsmith doctor [--json]           Check system health (--json includes fixes + device inventory)
   tapsmith mcp-server [--config file] Run MCP server for LLM/agent integration (stdio transport)
   tapsmith --version                 Print version
   tapsmith --help                    Show this help
@@ -1652,6 +1671,7 @@ ${bold('Options:')}
   -c, --config <path>      Path to config file (default: tapsmith.config.ts)
   -g, --grep <pattern>     Run only tests whose fullName matches this regex
   --grep-invert <pattern>  Skip tests whose fullName matches this regex
+  --reporter <name>        Override the reporter (list, line, dot, json, junit, html, github)
   --force-install          Reinstall the app even if already installed
   -v, --version            Print version
   -h, --help               Show this help
@@ -1676,6 +1696,8 @@ async function main(): Promise<void> {
     'configure-ios-network',
     'refresh-ios-network',
     'verify-ios-network',
+    'init',
+    'verify',
   ]);
 
   if (args.help && !(args.command && subcommandsWithOwnHelp.has(args.command))) {
@@ -1761,8 +1783,7 @@ async function main(): Promise<void> {
 
   if (args.command === 'list-devices') {
     const { runListDevices } = await import('./list-devices.js');
-    const forwardedArgv = process.argv.slice(process.argv.indexOf('list-devices') + 1)
-      .filter((a) => a !== '--__tsx-reexec');
+    const forwardedArgv = forwardedArgs('list-devices');
     await runListDevices(forwardedArgv);
     return;
   }
@@ -1781,24 +1802,21 @@ async function main(): Promise<void> {
 
   if (args.command === 'configure-ios-network') {
     const { runConfigureIosNetwork } = await import('./configure-ios-network.js');
-    const forwardedArgv = process.argv.slice(process.argv.indexOf('configure-ios-network') + 1)
-      .filter((a) => a !== '--__tsx-reexec');
+    const forwardedArgv = forwardedArgs('configure-ios-network');
     await runConfigureIosNetwork(forwardedArgv);
     return;
   }
 
   if (args.command === 'refresh-ios-network') {
     const { runRefreshIosNetwork } = await import('./configure-ios-network.js');
-    const forwardedArgv = process.argv.slice(process.argv.indexOf('refresh-ios-network') + 1)
-      .filter((a) => a !== '--__tsx-reexec');
+    const forwardedArgv = forwardedArgs('refresh-ios-network');
     await runRefreshIosNetwork(forwardedArgv);
     return;
   }
 
   if (args.command === 'verify-ios-network') {
     const { runVerifyIosNetwork } = await import('./verify-ios-network.js');
-    const forwardedArgv = process.argv.slice(process.argv.indexOf('verify-ios-network') + 1)
-      .filter((a) => a !== '--__tsx-reexec');
+    const forwardedArgv = forwardedArgs('verify-ios-network');
     await runVerifyIosNetwork(forwardedArgv);
     return;
   }
@@ -1806,29 +1824,36 @@ async function main(): Promise<void> {
   if (args.command === 'build-ios-agent') {
     const { runBuildIosAgent } = await import('./build-ios-agent.js');
     // Everything after the subcommand name is forwarded; drop the verb.
-    const forwardedArgv = process.argv.slice(process.argv.indexOf('build-ios-agent') + 1)
-      .filter((a) => a !== '--__tsx-reexec');
+    const forwardedArgv = forwardedArgs('build-ios-agent');
     await runBuildIosAgent(forwardedArgv);
     return;
   }
 
   if (args.command === 'init') {
     const { runInit } = await import('./init.js');
-    await runInit();
+    const forwardedArgv = forwardedArgs('init');
+    await runInit(forwardedArgv);
     return;
   }
 
   if (args.command === 'doctor') {
     const { runDoctor } = await import('./doctor.js');
-    await runDoctor();
+    const forwardedArgv = forwardedArgs('doctor');
+    await runDoctor(forwardedArgv);
     return;
   }
 
   if (args.command === 'mcp-server') {
     const { runMcpServer } = await import('./mcp/index.js');
-    const forwardedArgv = process.argv.slice(process.argv.indexOf('mcp-server') + 1)
-      .filter((a) => a !== '--__tsx-reexec');
+    const forwardedArgv = forwardedArgs('mcp-server');
     await runMcpServer(forwardedArgv);
+    return;
+  }
+
+  if (args.command === 'verify') {
+    const { runVerify } = await import('./verify.js');
+    const forwardedArgv = forwardedArgs('verify');
+    await runVerify(forwardedArgv);
     return;
   }
 
@@ -1866,6 +1891,9 @@ async function main(): Promise<void> {
   }
   if (args.grepInvert !== undefined) {
     config.grepInvert = compileGrepPattern(args.grepInvert, '--grep-invert');
+  }
+  if (args.reporter) {
+    config.reporter = args.reporter;
   }
 
   // Validate watch mode constraints

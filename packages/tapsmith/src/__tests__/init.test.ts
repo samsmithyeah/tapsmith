@@ -111,5 +111,9 @@ describe('generateExampleTest()', () => {
     expect(test).toContain('test(');
     expect(test).toContain('async ({ device })');
     expect(test).toContain('toBeVisible');
+    // Must use a real role — 'any' is not a known role and throws at runtime,
+    // which would make every scaffolded project / `tapsmith verify` fail.
+    expect(test).not.toContain("getByRole('any')");
+    expect(test).toContain("getByRole('text')");
   });
 });
