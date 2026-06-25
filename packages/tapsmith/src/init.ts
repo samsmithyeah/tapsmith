@@ -437,8 +437,9 @@ export function generateExampleTest(): string {
   return `import { test, expect } from 'tapsmith'
 
 test('app launches successfully', async ({ device }) => {
-  const element = device.getByRole('any')
-  await expect(element).toBeVisible()
+  // Smoke check: the app rendered at least one text element after launch.
+  // Replace this with assertions specific to your app's first screen.
+  await expect(device.getByRole('text').first()).toBeVisible()
 })
 `;
 }
