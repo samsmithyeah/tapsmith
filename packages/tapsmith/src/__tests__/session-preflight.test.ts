@@ -115,6 +115,26 @@ describe('session-preflight', () => {
     });
   });
 
+  it('skips clearAppData when skipDataClear is set (appState restore owns isolation)', async () => {
+    // Regression: the per-file preflight must NOT pm-clear an app whose scope
+    // restores a non-empty appState. On Android pm clear wipes the
+    // AndroidKeyStore keys that decrypt saved credentials (device-bound, not in
+    // the archive), so the app comes back signed out after restore.
+    const ctx = makeContext();
+
+    await expect(
+      launchConfiguredApp(ctx, 'file reset', { skipDataClear: true }),
+    ).resolves.toBeUndefined();
+
+    expect(ctx.device.clearAppData).not.toHaveBeenCalled();
+    // The app is still launched so the session is ready; the scope's
+    // restoreAppState then resets data the keystore-preserving way.
+    expect(ctx.device.launchApp).toHaveBeenCalledWith('com.example.app', {
+      activity: '.MainActivity',
+      waitForIdle: false,
+    });
+  });
+
   it('still validates sessions without a configured package', async () => {
     const ctx = makeContext({
       config: { package: undefined, activity: undefined },

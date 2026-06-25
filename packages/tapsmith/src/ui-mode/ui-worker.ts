@@ -344,9 +344,12 @@ async function handleRunFile(
     await device.wake();
     await device.unlock();
 
-    // Reset app between files
+    // Reset app between files. When this scope restores a non-empty `appState`,
+    // skip the destructive clearAppData: the restore owns isolation and
+    // preserves the AndroidKeyStore (a pm clear here would wipe the keys that
+    // decrypt saved credentials, leaving the app signed out after restore).
     if (config.package) {
-      await launchConfiguredApp(sessionContext(undefined), `file reset for ${path.basename(filePath)}`);
+      await launchConfiguredApp(sessionContext(undefined), `file reset for ${path.basename(filePath)}`, { skipDataClear: !!projectUseOptions?.appState });
     }
   } catch (err) {
     // Whether aborted or a genuine preflight failure, this run is over —
