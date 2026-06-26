@@ -316,9 +316,11 @@ pub async fn restore_from_data_dir(serial: &str, pkg: &str, data_dir: &str) -> R
     // keystore2 down.
     let serial_owned = serial.to_string();
     let member_owned = member_path.clone();
+    let pkg_owned = pkg.to_string();
     let critical = tokio::spawn(async move {
         let serial = serial_owned.as_str();
         let member_path = member_owned.as_str();
+        let pkg = pkg_owned.as_str();
 
         // keystore2 holds the DB open and caches it, so edit it while the
         // service is stopped, then restart so it reads the re-inserted rows.
@@ -333,8 +335,9 @@ pub async fn restore_from_data_dir(serial: &str, pkg: &str, data_dir: &str) -> R
         if stop.is_ok() {
             let _ = adb::shell_lenient(
                 serial,
-                "for i in $(seq 1 50); do \
-                 [ \"$(getprop init.svc.keystore2)\" = stopped ] && break; sleep 0.1; done",
+                "i=0; while [ $i -lt 50 ]; do \
+                 [ \"$(getprop init.svc.keystore2)\" = stopped ] && break; \
+                 i=$((i+1)); sleep 0.1; done",
             )
             .await;
         }
@@ -360,6 +363,11 @@ pub async fn restore_from_data_dir(serial: &str, pkg: &str, data_dir: &str) -> R
         // Always attempt to restart keystore2 — even if stop or the edit failed —
         // so a half-finished restore never leaves the service down.
         let start = adb::shell(serial, "start keystore2").await;
+        // A failed restart is the worst outcome (system-wide crypto stays down),
+        // so surface it even when an earlier `edit?` would short-circuit it away.
+        if let Err(ref e) = start {
+            warn!(%pkg, error = %e, "Failed to restart keystore2 after restore; device crypto services may be broken");
+        }
 
         stop.map_err(|e| anyhow::anyhow!("failed to stop keystore2: {e}"))?;
         edit?;
