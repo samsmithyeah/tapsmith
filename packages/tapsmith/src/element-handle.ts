@@ -354,18 +354,14 @@ export function derivedSelectorMisaddresses(
   return firstSharer !== -1 && firstSharer !== targetIndex;
 }
 
-/** Geometric center of an element's bounds, for coordinate-based dispatch. */
-function boundsCenter(bounds: ElementInfo['bounds']): { x: number; y: number } | undefined {
-  if (!bounds) return undefined;
-  return { x: (bounds.left + bounds.right) / 2, y: (bounds.top + bounds.bottom) / 2 };
-}
-
 /**
  * @internal — How an action should be dispatched against a resolved element:
- * by a property selector (the agent re-finds it), or by raw coordinates (the
- * element's center, used when a selector would mis-address it).
+ * by a property selector (the agent re-finds it — used for unmodified handles),
+ * or by the agent-cached `elementId` of the exact element a positional/filtered
+ * handle resolved (so the action can't fall on an earlier match that shares an
+ * accessibility property).
  */
-type ActionTarget = { selector: Selector } | { coordinates: { x: number; y: number } };
+type ActionTarget = { selector: Selector } | { elementId: string };
 
 /** @internal Brand key for cross-instance type checks (CJS/ESM dual-package). */
 export const ELEMENT_HANDLE_BRAND = Symbol.for('tapsmith.ElementHandle');
@@ -1030,81 +1026,61 @@ export class ElementHandle {
   }
 
   /**
-   * @internal — Get the selector to use for an action. For modified handles,
-   * resolves the specific element first and returns a targeting selector.
-   *
-   * @param preResolved - Optional pre-resolved ElementInfo from _waitForEnabled
-   *   to avoid a redundant gRPC round-trip (Fix 2: eliminate TOCTOU).
-   */
-  private async _actionSelector(preResolved?: ElementInfo, orderedElements?: ElementInfo[]): Promise<Selector> {
-    const target = await this._resolveActionTarget(preResolved, false, orderedElements);
-    // coordinateFallback === false ⇒ _resolveActionTarget never yields
-    // coordinates; it returns a selector or throws.
-    return (target as { selector: Selector }).selector;
-  }
-
-  /**
    * @internal — Decide how to dispatch an action against the resolved element.
    *
-   * For an unmodified or strict (filter/and/or/scope) handle the element is the
-   * selector's unique match, so the raw/derived selector addresses it. For a
-   * positional handle (`.first()/.last()/.nth()`) the derived property selector
-   * can mis-address the element: the agent acts on its FIRST document-order
-   * match, so when an earlier match shares the identifying property the action
-   * would land on the wrong element (the silent-mis-tap bug). In that case —
-   * and when the element has no addressable property at all — fall back to a
-   * coordinate dispatch at the element's center for gesture actions
-   * (`coordinateFallback === true`); for actions with no coordinate equivalent,
-   * throw rather than act on the wrong element.
+   * Unmodified handles dispatch by their selector (the agent auto-waits +
+   * finds). A modified handle (.first()/.last()/.nth()/.filter()/.and()/.or()/
+   * scope) has already resolved to a SPECIFIC element host-side, so it
+   * addresses that element by its agent-cached `elementId` — the agent acts on
+   * that exact cached element, so the action can't land on an earlier match
+   * that shares an accessibility property (the silent-mis-tap bug). Used by all
+   * single-element actions (tap, longPress, doubleTap, type, clear, setChecked,
+   * selectOption, focus, blur, highlight, screenshot).
    *
    * @param preResolved - Resolved ElementInfo from the auto-wait step (avoids a
    *   redundant resolution round-trip).
-   * @param coordinateFallback - Whether the calling action can dispatch by raw
-   *   coordinates (tap, longPress). When false, an unaddressable/ambiguous
-   *   positional target throws instead.
-   * @param orderedElements - The match set `preResolved` was selected from, in
-   *   document order. When provided (by the auto-wait step), the ambiguity check
-   *   reuses it instead of re-resolving — saving a round-trip and, since it is
-   *   the same snapshot as `preResolved`, closing the TOCTOU window.
    */
-  private async _resolveActionTarget(
-    preResolved: ElementInfo | undefined,
-    coordinateFallback: boolean,
-    orderedElements?: ElementInfo[],
-  ): Promise<ActionTarget> {
+  private async _actionTarget(preResolved?: ElementInfo): Promise<ActionTarget> {
     if (!this._hasModifiers()) return { selector: this._selector };
     const el = preResolved ?? await this._resolveOne();
+    if (el.elementId) return { elementId: el.elementId };
+    // Agent-resolved matches always carry an id; if one is somehow missing,
+    // fall back to a derived property selector (first-match semantics).
+    return { selector: this._selectorForElement(el) };
+  }
 
-    // Ambiguity only arises for positional handles. Non-positional modified
-    // handles resolve strictly (exactly one match in the set), so the derived
-    // selector is unique among the matches.
+  /**
+   * @internal — Selector to use for actions that can NOT yet target by cached
+   * element id: scroll (the agent resolves the container as a nested selector)
+   * and dragTo (two-ended). For a positional handle these re-derive a property
+   * selector, which the agent acts on by first document-order match — so if the
+   * resolved element shares its identifying property with an earlier match, we
+   * throw rather than silently act on the wrong one.
+   *
+   * @param preResolved - Resolved ElementInfo from the auto-wait step.
+   * @param orderedElements - The match set `preResolved` came from, in document
+   *   order. When provided the ambiguity check reuses it instead of
+   *   re-resolving — saving a round-trip and closing the TOCTOU window.
+   */
+  private async _actionSelector(preResolved?: ElementInfo, orderedElements?: ElementInfo[]): Promise<Selector> {
+    if (!this._hasModifiers()) return this._selector;
+    const el = preResolved ?? await this._resolveOne();
     if (this._options.nthIndex !== undefined) {
       const ordered = orderedElements ?? (this._options.resolvedElementsPromise
         ? await this._options.resolvedElementsPromise
         : await this._resolveAll());
       const idx = this._options.nthIndex < 0 ? ordered.length + this._options.nthIndex : this._options.nthIndex;
       if (derivedSelectorMisaddresses(el, ordered, idx)) {
-        const coords = coordinateFallback ? boundsCenter(el.bounds) : undefined;
-        if (coords) return { coordinates: coords };
         const id = identifyingProperty(el)!;
         throw new Error(
-          `Cannot target ${this._describe()}: its identifying property ` +
-            `(${id.prop} ${JSON.stringify(id.value)}) also matches an earlier element, so the action ` +
-            'would land on the wrong one. Use a more specific selector (getByTestId, or getByRole with ' +
-            'a name) to target this element.',
+          `Cannot target ${this._describe()} for this action: its identifying property ` +
+            `(${id.prop} ${JSON.stringify(id.value)}) also matches an earlier element. This action ` +
+            '(scroll/drag) does not yet support exact-element addressing — use a more specific selector ' +
+            '(getByTestId, or getByRole with a name) to target this element.',
         );
       }
     }
-
-    // No addressable property: dispatch by coordinates for gestures, else the
-    // same hard error _selectorForElement raised before.
-    if (!identifyingProperty(el)) {
-      const coords = coordinateFallback ? boundsCenter(el.bounds) : undefined;
-      if (coords) return { coordinates: coords };
-      return { selector: this._selectorForElement(el) }; // throws with the guidance message
-    }
-
-    return { selector: this._selectorForElement(el) };
+    return this._selectorForElement(el);
   }
 
   // ── Queries ──
@@ -1488,52 +1464,64 @@ export class ElementHandle {
 
   async tap(): Promise<void> {
     const { target, remainingMs } = await this._tracedResolve('tap', 'tap', async () => {
-      const { remainingMs, element, ordered } = await this._waitForEnabled();
-      return { target: await this._resolveActionTarget(element, true, ordered), remainingMs };
+      const { remainingMs, element } = await this._waitForEnabled();
+      return { target: await this._actionTarget(element), remainingMs };
     });
     return this._tracedAction('tap', 'tap',
-      () => 'coordinates' in target
-        ? this._client.tapXY(target.coordinates.x, target.coordinates.y)
+      () => 'elementId' in target
+        ? this._client.tap(undefined, remainingMs, target.elementId)
         : this._client.tap(target.selector, remainingMs),
       'Tap failed');
   }
 
   async longPress(durationMs?: number): Promise<void> {
     const { target, remainingMs } = await this._tracedResolve('longPress', 'tap', async () => {
-      const { remainingMs, element, ordered } = await this._waitForEnabled();
-      return { target: await this._resolveActionTarget(element, true, ordered), remainingMs };
+      const { remainingMs, element } = await this._waitForEnabled();
+      return { target: await this._actionTarget(element), remainingMs };
     });
     return this._tracedAction('longPress', 'tap',
-      () => 'coordinates' in target
-        ? this._client.longPressXY(target.coordinates.x, target.coordinates.y, durationMs)
+      () => 'elementId' in target
+        ? this._client.longPress(undefined, durationMs, remainingMs, target.elementId)
         : this._client.longPress(target.selector, durationMs, remainingMs),
       'Long press failed');
   }
 
   async type(text: string, options?: { delay?: number }): Promise<void> {
-    const { sel, remainingMs } = await this._tracedResolve('type', 'type', async () => {
-      const { remainingMs, element, ordered } = await this._strictResolve();
-      return { sel: await this._actionSelector(element, ordered), remainingMs };
+    const { target, remainingMs } = await this._tracedResolve('type', 'type', async () => {
+      const { remainingMs, element } = await this._strictResolve();
+      return { target: await this._actionTarget(element), remainingMs };
     });
     const delay = options?.delay ?? this._options.typingDelay ?? 0;
-    return this._tracedAction('type', 'type', () => this._client.typeText(sel, text, remainingMs, delay), 'Type text failed', { inputValue: text });
+    return this._tracedAction('type', 'type',
+      () => 'elementId' in target
+        ? this._client.typeText(undefined, text, remainingMs, delay, target.elementId)
+        : this._client.typeText(target.selector, text, remainingMs, delay),
+      'Type text failed', { inputValue: text });
   }
 
   async clearAndType(text: string, options?: { delay?: number }): Promise<void> {
-    const { sel, remainingMs } = await this._tracedResolve('clearAndType', 'type', async () => {
-      const { remainingMs, element, ordered } = await this._strictResolve();
-      return { sel: await this._actionSelector(element, ordered), remainingMs };
+    const { target, remainingMs } = await this._tracedResolve('clearAndType', 'type', async () => {
+      const { remainingMs, element } = await this._strictResolve();
+      return { target: await this._actionTarget(element), remainingMs };
     });
     const delay = options?.delay ?? this._options.typingDelay ?? 0;
-    return this._tracedAction('clearAndType', 'type', () => this._client.clearAndType(sel, text, remainingMs, delay), 'Clear and type failed', { inputValue: text });
+    return this._tracedAction('clearAndType', 'type',
+      () => 'elementId' in target
+        ? this._client.clearAndType(undefined, text, remainingMs, delay, target.elementId)
+        : this._client.clearAndType(target.selector, text, remainingMs, delay),
+      'Clear and type failed', { inputValue: text });
   }
 
   async clear(): Promise<void> {
-    const { sel, remainingMs } = await this._tracedResolve('clear', 'type', async () => {
-      const { remainingMs, element, ordered } = await this._strictResolve();
-      return { sel: await this._actionSelector(element, ordered), remainingMs };
+    const { target, remainingMs } = await this._tracedResolve('clear', 'type', async () => {
+      const { remainingMs, element } = await this._strictResolve();
+      return { target: await this._actionTarget(element), remainingMs };
     });
-    return this._tracedAction('clear', 'type', () => this._client.clearText(sel, remainingMs), 'Clear text failed');
+    return this._tracedAction('clear', 'type',
+      () => 'elementId' in target
+        ? this._client.clearText(undefined, remainingMs, target.elementId)
+        : this._client.clearText(target.selector, remainingMs),
+      'Clear text failed');
   }
 
   async scroll(direction: string, options?: { distance?: number }): Promise<void> {
@@ -1549,14 +1537,18 @@ export class ElementHandle {
   // ── Element Actions (PILOT-2) ──
 
   async doubleTap(options?: { intervalMs?: number }): Promise<void> {
-    const { sel, remainingMs } = await this._tracedResolve('doubleTap', 'tap', async () => {
-      const { remainingMs, element, ordered } = await this._waitForEnabled();
-      return { sel: await this._actionSelector(element, ordered), remainingMs };
+    const { target, remainingMs } = await this._tracedResolve('doubleTap', 'tap', async () => {
+      const { remainingMs, element } = await this._waitForEnabled();
+      return { target: await this._actionTarget(element), remainingMs };
     });
     // 0 on the wire = "use agent default (100ms)". User-supplied values
     // must be positive; ≤0 is treated as "use default".
     const intervalMs = Math.max(0, options?.intervalMs ?? this._options.doubleTapInterval ?? 0);
-    return this._tracedAction('doubleTap', 'tap', () => this._client.doubleTap(sel, remainingMs, intervalMs), 'Double tap failed');
+    return this._tracedAction('doubleTap', 'tap',
+      () => 'elementId' in target
+        ? this._client.doubleTap(undefined, remainingMs, intervalMs, target.elementId)
+        : this._client.doubleTap(target.selector, remainingMs, intervalMs),
+      'Double tap failed');
   }
 
   async dragTo(target: ElementHandle): Promise<void> {
@@ -1577,13 +1569,11 @@ export class ElementHandle {
     const deadline = Date.now() + timeoutMs;
     const POLL_MS = 250;
 
-    const { sel, remainingMs, alreadySet } = await this._tracedResolve('setChecked', 'tap', async () => {
-      const { remainingMs, element, ordered } = await this._waitForEnabled();
-      // The timeout-0 path skips the wait and returns no element; resolve here,
-      // keeping the match set so the action selector can detect mis-addressing.
-      const resolved = element ? { element, ordered } : await this._resolveOneWithSet();
-      const el = resolved.element;
-      return { sel: await this._actionSelector(el, resolved.ordered), remainingMs, alreadySet: el.checked === checked };
+    const { target, remainingMs, alreadySet } = await this._tracedResolve('setChecked', 'tap', async () => {
+      const { remainingMs, element } = await this._waitForEnabled();
+      // The timeout-0 path skips the wait and returns no element; resolve here.
+      const el = element ?? await this._resolveOne();
+      return { target: await this._actionTarget(el), remainingMs, alreadySet: el.checked === checked };
     });
 
     return this._tracedAction('setChecked', 'tap', async () => {
@@ -1596,7 +1586,9 @@ export class ElementHandle {
 
       // Tap once — for toggleable elements (checkboxes, switches) a second
       // tap would revert the state, so we must not re-tap.
-      const tapRes = await this._client.tap(sel, remainingMs);
+      const tapRes = 'elementId' in target
+        ? await this._client.tap(undefined, remainingMs, target.elementId)
+        : await this._client.tap(target.selector, remainingMs);
       if (!tapRes.success) return tapRes;
 
       // Poll for the state change until the full deadline — animations
@@ -1619,17 +1611,23 @@ export class ElementHandle {
   }
 
   async selectOption(option: string | { index: number }): Promise<void> {
-    const { sel, remainingMs } = await this._tracedResolve('selectOption', 'other', async () => {
-      const { remainingMs, element, ordered } = await this._strictResolve();
-      return { sel: await this._actionSelector(element, ordered), remainingMs };
+    const { target, remainingMs } = await this._tracedResolve('selectOption', 'other', async () => {
+      const { remainingMs, element } = await this._strictResolve();
+      return { target: await this._actionTarget(element), remainingMs };
     });
-    return this._tracedAction('selectOption', 'other', () => this._client.selectOption(sel, option, remainingMs), 'Select option failed');
+    return this._tracedAction('selectOption', 'other',
+      () => 'elementId' in target
+        ? this._client.selectOption(undefined, option, remainingMs, target.elementId)
+        : this._client.selectOption(target.selector, option, remainingMs),
+      'Select option failed');
   }
 
   async screenshot(): Promise<Buffer> {
-    const { remainingMs, element, ordered } = await this._strictResolve();
-    const sel = await this._actionSelector(element, ordered);
-    const res = await this._client.takeElementScreenshot(sel, remainingMs);
+    const { remainingMs, element } = await this._strictResolve();
+    const target = await this._actionTarget(element);
+    const res = 'elementId' in target
+      ? await this._client.takeElementScreenshot(undefined, remainingMs, target.elementId)
+      : await this._client.takeElementScreenshot(target.selector, remainingMs);
     if (!res.success) {
       throw new Error(res.errorMessage || 'Element screenshot failed');
     }
@@ -1666,27 +1664,39 @@ export class ElementHandle {
   }
 
   async focus(): Promise<void> {
-    const { sel, remainingMs } = await this._tracedResolve('focus', 'other', async () => {
+    const { target, remainingMs } = await this._tracedResolve('focus', 'other', async () => {
       const { remainingMs, element } = await this._strictResolve();
-      return { sel: await this._actionSelector(element), remainingMs };
+      return { target: await this._actionTarget(element), remainingMs };
     });
-    return this._tracedAction('focus', 'other', () => this._client.focus(sel, remainingMs), 'Focus failed');
+    return this._tracedAction('focus', 'other',
+      () => 'elementId' in target
+        ? this._client.focus(undefined, remainingMs, target.elementId)
+        : this._client.focus(target.selector, remainingMs),
+      'Focus failed');
   }
 
   async blur(): Promise<void> {
-    const { sel, remainingMs } = await this._tracedResolve('blur', 'other', async () => {
+    const { target, remainingMs } = await this._tracedResolve('blur', 'other', async () => {
       const { remainingMs, element } = await this._strictResolve();
-      return { sel: await this._actionSelector(element), remainingMs };
+      return { target: await this._actionTarget(element), remainingMs };
     });
-    return this._tracedAction('blur', 'other', () => this._client.blur(sel, remainingMs), 'Blur failed');
+    return this._tracedAction('blur', 'other',
+      () => 'elementId' in target
+        ? this._client.blur(undefined, remainingMs, target.elementId)
+        : this._client.blur(target.selector, remainingMs),
+      'Blur failed');
   }
 
   async highlight(options?: { durationMs?: number }): Promise<void> {
-    const { sel, remainingMs } = await this._tracedResolve('highlight', 'other', async () => {
+    const { target, remainingMs } = await this._tracedResolve('highlight', 'other', async () => {
       const { remainingMs, element } = await this._strictResolve();
-      return { sel: await this._actionSelector(element), remainingMs };
+      return { target: await this._actionTarget(element), remainingMs };
     });
-    return this._tracedAction('highlight', 'other', () => this._client.highlight(sel, options?.durationMs, remainingMs), 'Highlight failed');
+    return this._tracedAction('highlight', 'other',
+      () => 'elementId' in target
+        ? this._client.highlight(undefined, options?.durationMs, remainingMs, target.elementId)
+        : this._client.highlight(target.selector, options?.durationMs, remainingMs),
+      'Highlight failed');
   }
 
   // ── Info accessors (convenience) ──

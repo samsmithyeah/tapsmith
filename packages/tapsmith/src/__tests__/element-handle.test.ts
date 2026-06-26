@@ -847,12 +847,13 @@ describe('nth()', () => {
     });
     const handle = new ElementHandle(client, _role('listitem'), 5000);
     await handle.nth(1).tap();
-    // Banana has resourceId 'item_2', so the resolved selector should be id('item_2')
-    const calledSelector = (tap.mock.calls[0] as unknown[])[0] as Selector;
-    expect(selectorToProto(calledSelector)).toEqual({ resourceId: 'item_2' });
+    // Banana is elementId 'el-2'; a positional handle dispatches by the exact
+    // resolved element's cached id (selector arg undefined), so the agent acts
+    // on that element rather than re-finding by selector.
+    expect(tap).toHaveBeenCalledWith(undefined, expect.any(Number), 'el-2');
   });
 
-  it('longPress() on nth handle uses resolved element selector', async () => {
+  it('longPress() on nth handle targets the resolved element by id', async () => {
     const longPress = vi.fn(async () => successResponse());
     const client = makeMockClient({
       findElements: vi.fn(async () => makeFindElementsResponse(threeItems)),
@@ -860,11 +861,10 @@ describe('nth()', () => {
     });
     const handle = new ElementHandle(client, _role('listitem'), 5000);
     await handle.nth(2).longPress(500);
-    const calledSelector = (longPress.mock.calls[0] as unknown[])[0] as Selector;
-    expect(selectorToProto(calledSelector)).toEqual({ resourceId: 'item_3' });
+    expect(longPress).toHaveBeenCalledWith(undefined, 500, expect.any(Number), 'el-3');
   });
 
-  it('type() on nth handle uses resolved element selector', async () => {
+  it('type() on nth handle targets the resolved element by id', async () => {
     const typeText = vi.fn(async () => successResponse());
     const client = makeMockClient({
       findElements: vi.fn(async () => makeFindElementsResponse(threeItems)),
@@ -872,88 +872,79 @@ describe('nth()', () => {
     });
     const handle = new ElementHandle(client, _role('listitem'), 5000);
     await handle.nth(0).type('hello');
-    const calledSelector = (typeText.mock.calls[0] as unknown[])[0] as Selector;
-    expect(selectorToProto(calledSelector)).toEqual({ resourceId: 'item_1' });
+    expect(typeText).toHaveBeenCalledWith(undefined, 'hello', expect.any(Number), expect.any(Number), 'el-1');
   });
 });
 
 // ─── Positional actions on elements sharing an a11y property ───
 //
-// When a positional handle resolves to an element whose only identifying
-// property (resourceId → contentDescription → text) is shared by an EARLIER
-// match, a derived property selector would make the agent act on that earlier
-// element. Gesture actions fall back to a coordinate dispatch at the resolved
-// element's center; non-gesture actions error rather than silently mis-act.
+// A positional handle resolves to a SPECIFIC element, then dispatches the
+// action by that element's agent-cached id — so the action lands on it even
+// when its only identifying property (resourceId → contentDescription → text)
+// is shared by an EARLIER match (which a bare selector would hit first). This
+// holds for gesture AND non-gesture actions alike.
 describe('positional actions on shared-property matches', () => {
   // Two delete buttons, each contentDesc "bin", no testID — the reported case.
   const twoBins = [
-    makeElementInfo({ elementId: 'bin-0', contentDescription: 'bin', text: '', bounds: { left: 300, top: 100, right: 360, bottom: 160 } }),
-    makeElementInfo({ elementId: 'bin-1', contentDescription: 'bin', text: '', bounds: { left: 300, top: 300, right: 360, bottom: 360 } }),
+    makeElementInfo({ elementId: 'bin-0', contentDescription: 'bin', text: '' }),
+    makeElementInfo({ elementId: 'bin-1', contentDescription: 'bin', text: '' }),
   ];
 
-  it('last().tap() taps the resolved element by coordinates, not the first match', async () => {
+  it('last().tap() targets the second bin by its cached id, not the first match', async () => {
     const tap = vi.fn(async () => successResponse());
-    const tapXY = vi.fn(async () => successResponse());
     const client = makeMockClient({
       findElements: vi.fn(async () => makeFindElementsResponse(twoBins)),
       tap,
-      tapXY,
     });
     const handle = new ElementHandle(client, _contentDesc('bin'), 5000);
     await handle.last().tap();
-    // Must NOT lower to contentDesc("bin") (agent would tap the first bin).
-    expect(tap).not.toHaveBeenCalled();
-    // Center of the SECOND bin: ((300+360)/2, (300+360)/2) = (330, 330).
-    expect(tapXY).toHaveBeenCalledWith(330, 330);
+    // Dispatched by elementId 'bin-1' with no selector — NOT contentDesc("bin")
+    // (which the agent would act on by first match = the first bin).
+    expect(tap).toHaveBeenCalledWith(undefined, expect.any(Number), 'bin-1');
   });
 
-  it('first().tap() still uses the property selector (unambiguous — earliest match)', async () => {
+  it('first().tap() targets the first bin by its cached id', async () => {
     const tap = vi.fn(async () => successResponse());
-    const tapXY = vi.fn(async () => successResponse());
     const client = makeMockClient({
       findElements: vi.fn(async () => makeFindElementsResponse(twoBins)),
       tap,
-      tapXY,
     });
     const handle = new ElementHandle(client, _contentDesc('bin'), 5000);
     await handle.first().tap();
-    expect(tapXY).not.toHaveBeenCalled();
-    expect(selectorToProto((tap.mock.calls[0] as unknown[])[0] as Selector)).toEqual({ contentDesc: 'bin' });
+    expect(tap).toHaveBeenCalledWith(undefined, expect.any(Number), 'bin-0');
   });
 
-  it('last().longPress() falls back to coordinates too', async () => {
+  it('last().longPress() targets the second bin by id', async () => {
     const longPress = vi.fn(async () => successResponse());
-    const longPressXY = vi.fn(async () => successResponse());
     const client = makeMockClient({
       findElements: vi.fn(async () => makeFindElementsResponse(twoBins)),
       longPress,
-      longPressXY,
     });
     const handle = new ElementHandle(client, _contentDesc('bin'), 5000);
     await handle.last().longPress(400);
-    expect(longPress).not.toHaveBeenCalled();
-    expect(longPressXY).toHaveBeenCalledWith(330, 330, 400);
+    expect(longPress).toHaveBeenCalledWith(undefined, 400, expect.any(Number), 'bin-1');
   });
 
   it('resolves the match set once (auto-wait reused, no redundant query) on a positional tap', async () => {
     const findElements = vi.fn(async () => makeFindElementsResponse(twoBins));
-    const client = makeMockClient({ findElements, tap: vi.fn(async () => successResponse()), tapXY: vi.fn(async () => successResponse()) });
+    const client = makeMockClient({ findElements, tap: vi.fn(async () => successResponse()) });
     const handle = new ElementHandle(client, _contentDesc('bin'), 5000);
     await handle.last().tap();
-    // The auto-wait step threads its resolved set into the action target, so the
-    // ambiguity check does not re-query findElements (was 2 calls, now 1).
+    // The auto-wait resolves the element (with its id); addressing by id needs
+    // no further query (one findElements, not two).
     expect(findElements).toHaveBeenCalledTimes(1);
   });
 
-  it('type() on a shared-property positional handle errors instead of mis-targeting', async () => {
+  it('type() on a shared-property positional handle now targets the resolved element by id', async () => {
     const typeText = vi.fn(async () => successResponse());
     const client = makeMockClient({
       findElements: vi.fn(async () => makeFindElementsResponse(twoBins)),
       typeText,
     });
     const handle = new ElementHandle(client, _contentDesc('bin'), 5000);
-    await expect(handle.last().type('x')).rejects.toThrow(/would land on the wrong one/);
-    expect(typeText).not.toHaveBeenCalled();
+    // Non-gesture actions work too now (no error): dispatched by id 'bin-1'.
+    await handle.last().type('x');
+    expect(typeText).toHaveBeenCalledWith(undefined, 'x', expect.any(Number), expect.any(Number), 'bin-1');
   });
 });
 
@@ -1152,8 +1143,8 @@ describe('and()', () => {
     const submit = new ElementHandle(client, _text('Submit'), 5000);
     await buttons.and(submit).tap();
 
-    const calledSelector = (tap.mock.calls[0] as unknown[])[0] as Selector;
-    expect(selectorToProto(calledSelector)).toEqual({ resourceId: 'btn-submit' });
+    // and() is a modified handle → dispatches by the resolved element's id.
+    expect(tap).toHaveBeenCalledWith(undefined, expect.any(Number), 'e1');
   });
 });
 
@@ -1204,9 +1195,8 @@ describe('or()', () => {
     const confirm = new ElementHandle(client, _text('Confirm'), 5000);
     await ok.or(confirm).tap();
 
-    const calledSelector = (tap.mock.calls[0] as unknown[])[0] as Selector;
-    // OK has no resourceId or contentDescription, so falls back to text selector
-    expect(selectorToProto(calledSelector)).toEqual({ text: 'OK' });
+    // or() is a modified handle → dispatches by the resolved element's id.
+    expect(tap).toHaveBeenCalledWith(undefined, expect.any(Number), 'e1');
   });
 
   it('or() throws when neither selector matches', async () => {
@@ -1332,7 +1322,7 @@ describe('method composition', () => {
     expect(tap).toHaveBeenCalledWith(sel, expect.any(Number));
   });
 
-  it('action selector falls back to contentDescription when no resourceId', async () => {
+  it('modified handle dispatches by element id (no derived selector)', async () => {
     const tap = vi.fn(async () => successResponse());
     const elWithDesc = makeElementInfo({
       elementId: 'e1',
@@ -1347,8 +1337,7 @@ describe('method composition', () => {
     const handle = new ElementHandle(client, _role('button'), 5000);
     await handle.first().tap();
 
-    const calledSelector = (tap.mock.calls[0] as unknown[])[0] as Selector;
-    expect(selectorToProto(calledSelector)).toEqual({ contentDesc: 'Close button' });
+    expect(tap).toHaveBeenCalledWith(undefined, expect.any(Number), 'e1');
   });
 
   it('filter().and() applies filter before intersection, not after', async () => {
@@ -1384,7 +1373,9 @@ describe('method composition', () => {
     expect(result.text).toBe('Banana');
   });
 
-  it('action throws when element has no identifying properties', async () => {
+  it('acts on an element with no addressable property via its cached id', async () => {
+    // Element-id addressing means even a property-less element (no resourceId,
+    // contentDescription, or text) is actionable — the agent has it cached.
     const tap = vi.fn(async () => successResponse());
     const bareEl = makeElementInfo({
       elementId: 'e1',
@@ -1397,10 +1388,11 @@ describe('method composition', () => {
       tap,
     });
     const handle = new ElementHandle(client, _role('button'), 5000);
-    await expect(handle.first().tap()).rejects.toThrow('Cannot target element for action');
+    await handle.first().tap();
+    expect(tap).toHaveBeenCalledWith(undefined, expect.any(Number), 'e1');
   });
 
-  it('doubleTap() on nth handle uses resolved element selector', async () => {
+  it('doubleTap() on nth handle targets the resolved element by id', async () => {
     const doubleTap = vi.fn(async () => successResponse());
     const client = makeMockClient({
       findElements: vi.fn(async () => makeFindElementsResponse(threeItems)),
@@ -1408,8 +1400,7 @@ describe('method composition', () => {
     });
     const handle = new ElementHandle(client, _role('listitem'), 5000);
     await handle.nth(1).doubleTap();
-    const calledSelector = (doubleTap.mock.calls[0] as unknown[])[0] as Selector;
-    expect(selectorToProto(calledSelector)).toEqual({ resourceId: 'item_2' });
+    expect(doubleTap).toHaveBeenCalledWith(undefined, expect.any(Number), expect.any(Number), 'el-2');
   });
 
   it('a.and(b).filter(F) applies filter after intersection', async () => {
@@ -1647,9 +1638,8 @@ describe('setChecked()', () => {
     });
     const handle = new ElementHandle(client, _role('switch'), 5000);
     await handle.nth(1).setChecked(true);
-    expect(tap).toHaveBeenCalled();
-    const calledSelector = (tap.mock.calls[0] as unknown[])[0] as Selector;
-    expect(selectorToProto(calledSelector)).toEqual({ resourceId: 'sw2' });
+    // Dispatched by the resolved switch's cached id 'e2'.
+    expect(tap).toHaveBeenCalledWith(undefined, expect.any(Number), 'e2');
   });
 });
 
@@ -1704,7 +1694,7 @@ describe('screenshot()', () => {
     expect(result).toEqual(Buffer.from('PNG_DATA'));
   });
 
-  it('resolves selector for modified handles', async () => {
+  it('targets the resolved element by id for modified handles', async () => {
     const takeElementScreenshot = vi.fn(async () => screenshotResponse());
     const client = makeMockClient({
       findElements: vi.fn(async () => makeFindElementsResponse(threeItems)),
@@ -1712,8 +1702,7 @@ describe('screenshot()', () => {
     });
     const handle = new ElementHandle(client, _role('image'), 5000);
     await handle.first().screenshot();
-    const calledSelector = (takeElementScreenshot.mock.calls[0] as unknown[])[0] as Selector;
-    expect(selectorToProto(calledSelector)).toEqual({ resourceId: 'item_1' });
+    expect(takeElementScreenshot).toHaveBeenCalledWith(undefined, expect.any(Number), 'el-1');
   });
 
   it('throws on failure', async () => {

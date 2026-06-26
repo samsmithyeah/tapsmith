@@ -346,6 +346,19 @@ export class TapsmithGrpcClient {
     return selectorToProto(selector);
   }
 
+  /**
+   * Target fields for an element action: by selector, or by the agent-cached
+   * `elementId`. When `elementId` is set the agent acts on that exact
+   * previously-found element instead of re-finding by selector — this is how a
+   * positional/filtered handle addresses the specific element it resolved.
+   */
+  private actionTarget(selector: Selector | undefined, elementId: string | undefined): Record<string, unknown> {
+    const fields: Record<string, unknown> = {};
+    if (elementId) fields.elementId = elementId;
+    if (selector) fields.selector = this.selectorProto(selector);
+    return fields;
+  }
+
   // ── RPCs ──
 
   async findElement(selector: Selector, timeoutMs?: number): Promise<FindElementResponse> {
@@ -364,45 +377,45 @@ export class TapsmithGrpcClient {
     });
   }
 
-  async tap(selector: Selector, timeoutMs?: number): Promise<ActionResponse> {
+  async tap(selector: Selector | undefined, timeoutMs?: number, elementId?: string): Promise<ActionResponse> {
     return this.call<ActionResponse>('tap', {
       requestId: requestId(),
-      selector: this.selectorProto(selector),
+      ...this.actionTarget(selector, elementId),
       timeoutMs: timeoutMs ?? 0,
     });
   }
 
-  async longPress(selector: Selector, durationMs?: number, timeoutMs?: number): Promise<ActionResponse> {
+  async longPress(selector: Selector | undefined, durationMs?: number, timeoutMs?: number, elementId?: string): Promise<ActionResponse> {
     return this.call<ActionResponse>('longPress', {
       requestId: requestId(),
-      selector: this.selectorProto(selector),
+      ...this.actionTarget(selector, elementId),
       durationMs: durationMs ?? 0,
       timeoutMs: timeoutMs ?? 0,
     });
   }
 
-  async typeText(selector: Selector, text: string, timeoutMs?: number, typingDelayMs?: number): Promise<ActionResponse> {
+  async typeText(selector: Selector | undefined, text: string, timeoutMs?: number, typingDelayMs?: number, elementId?: string): Promise<ActionResponse> {
     return this.call<ActionResponse>('typeText', {
       requestId: requestId(),
-      selector: this.selectorProto(selector),
+      ...this.actionTarget(selector, elementId),
       text,
       timeoutMs: timeoutMs ?? 0,
       typingDelayMs: typingDelayMs ?? 0,
     });
   }
 
-  async clearText(selector: Selector, timeoutMs?: number): Promise<ActionResponse> {
+  async clearText(selector: Selector | undefined, timeoutMs?: number, elementId?: string): Promise<ActionResponse> {
     return this.call<ActionResponse>('clearText', {
       requestId: requestId(),
-      selector: this.selectorProto(selector),
+      ...this.actionTarget(selector, elementId),
       timeoutMs: timeoutMs ?? 0,
     });
   }
 
-  async clearAndType(selector: Selector, text: string, timeoutMs?: number, typingDelayMs?: number): Promise<ActionResponse> {
+  async clearAndType(selector: Selector | undefined, text: string, timeoutMs?: number, typingDelayMs?: number, elementId?: string): Promise<ActionResponse> {
     return this.call<ActionResponse>('clearAndType', {
       requestId: requestId(),
-      selector: this.selectorProto(selector),
+      ...this.actionTarget(selector, elementId),
       text,
       timeoutMs: timeoutMs ?? 0,
       typingDelayMs: typingDelayMs ?? 0,
@@ -585,10 +598,10 @@ export class TapsmithGrpcClient {
 
   // ── Element Actions (PILOT-2) ──
 
-  async doubleTap(selector: Selector, timeoutMs?: number, intervalMs?: number): Promise<ActionResponse> {
+  async doubleTap(selector: Selector | undefined, timeoutMs?: number, intervalMs?: number, elementId?: string): Promise<ActionResponse> {
     return this.call<ActionResponse>('doubleTap', {
       requestId: requestId(),
-      selector: this.selectorProto(selector),
+      ...this.actionTarget(selector, elementId),
       timeoutMs: timeoutMs ?? 0,
       intervalMs: intervalMs ?? 0,
     });
@@ -604,13 +617,14 @@ export class TapsmithGrpcClient {
   }
 
   async selectOption(
-    selector: Selector,
+    selector: Selector | undefined,
     option: string | { index: number },
     timeoutMs?: number,
+    elementId?: string,
   ): Promise<ActionResponse> {
     const request: Record<string, unknown> = {
       requestId: requestId(),
-      selector: this.selectorProto(selector),
+      ...this.actionTarget(selector, elementId),
       timeoutMs: timeoutMs ?? 0,
     };
     if (typeof option === 'string') {
@@ -630,36 +644,36 @@ export class TapsmithGrpcClient {
     });
   }
 
-  async focus(selector: Selector, timeoutMs?: number): Promise<ActionResponse> {
+  async focus(selector: Selector | undefined, timeoutMs?: number, elementId?: string): Promise<ActionResponse> {
     return this.call<ActionResponse>('focus', {
       requestId: requestId(),
-      selector: this.selectorProto(selector),
+      ...this.actionTarget(selector, elementId),
       timeoutMs: timeoutMs ?? 0,
     });
   }
 
-  async blur(selector: Selector, timeoutMs?: number): Promise<ActionResponse> {
+  async blur(selector: Selector | undefined, timeoutMs?: number, elementId?: string): Promise<ActionResponse> {
     return this.call<ActionResponse>('blur', {
       requestId: requestId(),
-      selector: this.selectorProto(selector),
+      ...this.actionTarget(selector, elementId),
       timeoutMs: timeoutMs ?? 0,
     });
   }
 
-  async highlight(selector: Selector, durationMs?: number, timeoutMs?: number): Promise<ActionResponse> {
+  async highlight(selector: Selector | undefined, durationMs?: number, timeoutMs?: number, elementId?: string): Promise<ActionResponse> {
     const request: Record<string, unknown> = {
       requestId: requestId(),
-      selector: this.selectorProto(selector),
+      ...this.actionTarget(selector, elementId),
       timeoutMs: timeoutMs ?? 0,
     };
     if (durationMs != null) request.durationMs = durationMs;
     return this.call<ActionResponse>('highlight', request);
   }
 
-  async takeElementScreenshot(selector: Selector, timeoutMs?: number): Promise<ScreenshotResponse> {
+  async takeElementScreenshot(selector: Selector | undefined, timeoutMs?: number, elementId?: string): Promise<ScreenshotResponse> {
     return this.call<ScreenshotResponse>('takeElementScreenshot', {
       requestId: requestId(),
-      selector: this.selectorProto(selector),
+      ...this.actionTarget(selector, elementId),
       timeoutMs: timeoutMs ?? 0,
     });
   }

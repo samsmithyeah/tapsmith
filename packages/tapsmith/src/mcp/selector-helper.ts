@@ -2,7 +2,7 @@ import { parseSelectorString, resolvePositionalIndex } from '../trace-viewer/com
 import type { ParsedSelector } from '../trace-viewer/components/selector-matching.js';
 import type { Selector, SelectorKind } from '../selectors.js';
 import { makeSelector } from '../selectors.js';
-import { buildStrictModeViolationError, collapseSameTargetDuplicates, derivedSelectorMisaddresses, identifyingProperty } from '../element-handle.js';
+import { buildStrictModeViolationError, collapseSameTargetDuplicates } from '../element-handle.js';
 import type { TapsmithGrpcClient, ElementInfo } from '../grpc-client.js';
 
 export interface ParsedRuntimeSelector {
@@ -69,8 +69,15 @@ const RESOLVE_TIMEOUT_MS = 5_000;
 const RESOLVE_POLL_MS = 250;
 
 export interface ResolvedActionTarget {
-  /** Selector to dispatch the action with. */
+  /** Selector to dispatch the action with (fallback / display). */
   selector: Selector;
+  /**
+   * Agent-cached id of the exact element a positional chain (.first()/.last()/
+   * .nth(n)) resolved to. When set, dispatch by this instead of `selector` so
+   * the action lands on that exact element even if its property is shared with
+   * an earlier match.
+   */
+  elementId?: string;
   /** Error message to surface instead of acting (ambiguous/not found/unaddressable). */
   error?: string;
 }
@@ -119,24 +126,17 @@ export async function resolveActionTarget(
   if (!el) {
     return { selector, error: `Index ${String(index)} is out of range: ${input} matched ${elements.length} element(s).` };
   }
+  // Address the EXACT resolved element by its agent-cached id, so the action
+  // lands on it even when its identifying property is shared with an earlier
+  // match (the agent acts on a bare selector's first document-order match).
   const targeted = selectorForElement(el);
+  if (el.elementId) {
+    return { selector: targeted ?? selector, elementId: el.elementId };
+  }
+  // Defensive: agent-resolved matches carry an id; if one is missing there is
+  // no exact handle, so fall back to a derived selector when addressable.
   if (!targeted) {
     return { selector, error: `Cannot target match ${String(index)} of ${input}: the element has no resourceId, contentDescription, or text to address it by.` };
-  }
-  // The agent acts on the targeting selector's FIRST match in document order.
-  // If an earlier match shares the identifying property, the action would
-  // silently land on that element instead of the resolved index — error out
-  // rather than mis-tap. Shares the SDK runtime's detection so the two paths
-  // stay in lockstep (see derivedSelectorMisaddresses in element-handle.ts).
-  if (derivedSelectorMisaddresses(el, elements, idx)) {
-    const id = identifyingProperty(el)!;
-    return {
-      selector,
-      error:
-        `Cannot target match ${String(index)} of ${input}: its identifying property ` +
-        `(${id.prop} ${JSON.stringify(id.value)}) also matches an earlier element, ` +
-        'so the action would land on the wrong one. Use a more specific selector (getByTestId, getByRole with name) for this element.',
-    };
   }
   return { selector: targeted };
 }

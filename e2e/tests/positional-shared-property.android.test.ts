@@ -6,10 +6,10 @@ import { resetApp } from "../utils/app-reset.js";
 //
 // Filtering the list to "Item 3" leaves exactly two rows — "Item 3" and
 // "Item 30" — whose category labels both read "Basic" and carry NO testID. So
-// `getByText("Basic").last()` resolves to Item 30's label, but the derived
-// selector `text("Basic")` matches Item 3 first. Before the fix the tap lowered
-// to that selector and silently toggled Item 3; now it must land on Item 30
-// (coordinate fallback), leaving Item 3 untouched.
+// `getByText("Basic").last()` resolves to Item 30's label. A bare `text("Basic")`
+// selector would make the agent act on Item 3 (first match); instead the handle
+// dispatches by the resolved element's agent-cached id, so the action lands on
+// Item 30, leaving Item 3 untouched.
 //
 // Android-only: iOS collapses each row Button's children into its label, so the
 // inner "Basic" Text is not an addressable element there (and the rows expose

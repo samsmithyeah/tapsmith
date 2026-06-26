@@ -139,15 +139,16 @@ describe('review follow-ups (PR #124)', () => {
 });
 
 describe('positional re-targeting ambiguity guard (PR #124 review)', () => {
-  it('errors when the resolved element\'s identifying text also matches an earlier element', async () => {
+  it('addresses the resolved element by its cached id when text is shared', async () => {
     const client = makeClient([
-      makeElementInfo({ text: 'Item' }),
-      makeElementInfo({ text: 'Item' }),
+      makeElementInfo({ elementId: 'item-a', text: 'Item' }),
+      makeElementInfo({ elementId: 'item-b', text: 'Item' }),
     ]);
-    // .nth(1) resolves to the second "Item", but re-targeting by exact text
-    // would make the agent act on the FIRST one — must error, not mis-tap.
+    // .nth(1) resolves to the second "Item". Both share the same text, but the
+    // exact element is addressed by its cached id — no error, no mis-tap.
     const target = await resolveActionTarget(client, 'device.getByText("Item", { exact: true }).nth(1)');
-    expect(target.error).toMatch(/would land on the wrong one/);
+    expect(target.error).toBeUndefined();
+    expect(target.elementId).toBe('item-b');
   });
 
   it('allows re-targeting when the identifying property is unique to the resolved element', async () => {

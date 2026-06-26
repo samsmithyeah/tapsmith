@@ -201,10 +201,18 @@ message FindElementsResponse {
   string error_message = 3;
 }
 
+// Most action requests carry an optional `element_id`: the stable id the agent
+// assigned to a previously-found element (returned in ElementInfo). When set,
+// the agent acts on that exact cached element instead of re-finding by selector
+// — this is how positional/filtered handles (.first()/.last()/.nth()/.filter())
+// address the specific element they resolved, even when its accessibility
+// property is shared with an earlier sibling. Either `selector` or `element_id`
+// must be provided.
 message TapRequest {
   string request_id = 1;
   Selector selector = 2;
   uint64 timeout_ms = 3;
+  string element_id = 4;
 }
 
 message LongPressRequest {
@@ -212,6 +220,7 @@ message LongPressRequest {
   Selector selector = 2;
   uint64 duration_ms = 3;
   uint64 timeout_ms = 4;
+  string element_id = 5;
 }
 
 message TypeTextRequest {
@@ -222,12 +231,14 @@ message TypeTextRequest {
   // Delay in ms between keystrokes. Helps prevent dropped characters
   // on slow CI simulators/emulators. 0 = no delay (default).
   uint32 typing_delay_ms = 5;
+  string element_id = 6;
 }
 
 message ClearTextRequest {
   string request_id = 1;
   Selector selector = 2;
   uint64 timeout_ms = 3;
+  string element_id = 4;
 }
 
 message ClearAndTypeRequest {
@@ -236,6 +247,7 @@ message ClearAndTypeRequest {
   string text = 3;
   uint64 timeout_ms = 4;
   uint32 typing_delay_ms = 5;
+  string element_id = 6;
 }
 
 message SwipeRequest {
@@ -420,6 +432,7 @@ message DoubleTapRequest {
   Selector selector = 2;
   uint64 timeout_ms = 3;
   uint64 interval_ms = 4;
+  string element_id = 5;
 }
 
 message DragAndDropRequest {
@@ -437,6 +450,7 @@ message SelectOptionRequest {
     int32 index = 4;
   }
   uint64 timeout_ms = 5;
+  string element_id = 6;
 }
 
 message PinchZoomRequest {
@@ -450,12 +464,14 @@ message FocusRequest {
   string request_id = 1;
   Selector selector = 2;
   uint64 timeout_ms = 3;
+  string element_id = 4;
 }
 
 message BlurRequest {
   string request_id = 1;
   Selector selector = 2;
   uint64 timeout_ms = 3;
+  string element_id = 4;
 }
 
 message HighlightRequest {
@@ -463,12 +479,14 @@ message HighlightRequest {
   Selector selector = 2;
   uint64 duration_ms = 3;
   uint64 timeout_ms = 4;
+  string element_id = 5;
 }
 
 message TakeElementScreenshotRequest {
   string request_id = 1;
   Selector selector = 2;
   uint64 timeout_ms = 3;
+  string element_id = 4;
 }
 
 // ─── Device Management (PILOT-10) ───
