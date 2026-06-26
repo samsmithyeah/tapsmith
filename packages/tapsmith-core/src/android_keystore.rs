@@ -72,6 +72,9 @@ async fn has_sqlite3(serial: &str) -> bool {
 /// quotes are parsed by sqlite3, not the device shell.
 async fn run_sqlite(serial: &str, sql: &str) -> Result<String> {
     let remote = format!("/data/local/tmp/tapsmith-ks-{}.sql", Uuid::new_v4());
+    // Guard removes the pushed script even if this future is cancelled/panics.
+    let mut guard = adb::DeviceFileGuard::new(serial);
+    guard.track(&remote);
     adb::push_text(serial, sql, &remote).await?;
     let result = adb::shell_with_timeout(
         serial,
@@ -79,7 +82,6 @@ async fn run_sqlite(serial: &str, sql: &str) -> Result<String> {
         SQLITE_TIMEOUT,
     )
     .await;
-    let _ = adb::shell_lenient(serial, &format!("rm -f {remote}")).await;
     result.context("run sqlite3")
 }
 
@@ -322,6 +324,21 @@ pub async fn restore_from_data_dir(serial: &str, pkg: &str, data_dir: &str) -> R
         // service is stopped, then restart so it reads the re-inserted rows.
         let stop = adb::shell(serial, "stop keystore2").await;
 
+        // `stop keystore2` returns before the service has actually stopped, so
+        // wait (best effort) for its init status to flip to `stopped` before
+        // touching the DB. This avoids editing while keystore2 still holds it
+        // open; the PRAGMA busy_timeout in the script backstops any residual
+        // lock contention if the poll can't confirm a stop (e.g. a shell without
+        // fractional sleep, where the loop just falls through immediately).
+        if stop.is_ok() {
+            let _ = adb::shell_lenient(
+                serial,
+                "for i in $(seq 1 50); do \
+                 [ \"$(getprop init.svc.keystore2)\" = stopped ] && break; sleep 0.1; done",
+            )
+            .await;
+        }
+
         // Only touch the DB if keystore2 actually stopped — editing it while the
         // service still holds it open risks corruption.
         let edit = if stop.is_ok() {
@@ -331,9 +348,12 @@ pub async fn restore_from_data_dir(serial: &str, pkg: &str, data_dir: &str) -> R
         };
 
         // Keep ownership/SELinux context correct for keystore2 to reopen the DB.
+        // The glob covers the -wal/-shm/-journal sidecars sqlite3 may create as
+        // root; left root-owned, keystore2 (the `keystore` user) can't open them
+        // and crashes on restart.
         let _ = adb::shell_lenient(
             serial,
-            &format!("chown keystore:keystore {KEYSTORE_DB}; restorecon {KEYSTORE_DB}"),
+            &format!("chown keystore:keystore {KEYSTORE_DB}*; restorecon {KEYSTORE_DB}*"),
         )
         .await;
 
