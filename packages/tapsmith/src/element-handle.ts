@@ -732,6 +732,17 @@ export class ElementHandle {
    * more than one element is an error — never a silent first-match.
    */
   private async _resolveOne(): Promise<ElementInfo> {
+    return (await this._resolveOneWithSet()).element;
+  }
+
+  /**
+   * @internal — Like `_resolveOne`, but also returns the full match set the
+   * element was selected from (document order). Callers acting on the element
+   * reuse `ordered` to detect a mis-addressing positional target without a
+   * second `_resolveAll()` round-trip — and, because it is the SAME snapshot
+   * the element came from, without a TOCTOU window.
+   */
+  private async _resolveOneWithSet(): Promise<{ element: ElementInfo; ordered: ElementInfo[] }> {
     const elements = this._options.resolvedElementsPromise
       ? await this._options.resolvedElementsPromise
       : await this._resolveAll();
@@ -745,7 +756,7 @@ export class ElementHandle {
           `nth(${nthIndex}): expected at least ${expectedCount} element(s), but found ${elements.length}`,
         );
       }
-      return elements[idx];
+      return { element: elements[idx], ordered: elements };
     }
 
     if (elements.length === 0) {
@@ -754,7 +765,7 @@ export class ElementHandle {
     if (elements.length > 1) {
       throw buildStrictModeViolationError(this._describe(), elements);
     }
-    return elements[0];
+    return { element: elements[0], ordered: elements };
   }
 
   /** @internal — Build a human-readable description of this handle for error messages. */
@@ -836,11 +847,13 @@ export class ElementHandle {
    * see elements in document order.)
    *
    * Returns the action's remaining timeout budget plus the resolved element
-   * for modified handles (so `_actionSelector` can skip re-resolution).
+   * for modified handles (so `_actionSelector` can skip re-resolution), and —
+   * for positional handles — the match set the element came from (`ordered`)
+   * so the action can detect a mis-addressing target without re-resolving.
    * `timeoutMs === 0` skips polling entirely, preserving the explicit
    * opt-out behavior of `_waitForEnabled`.
    */
-  private async _strictResolve(): Promise<{ remainingMs: number; element?: ElementInfo }> {
+  private async _strictResolve(): Promise<{ remainingMs: number; element?: ElementInfo; ordered?: ElementInfo[] }> {
     const timeoutMs = this._timeoutMs;
     if (timeoutMs === 0) return { remainingMs: 0 };
     const MIN_ACTION_BUDGET_MS = 1000;
@@ -851,14 +864,16 @@ export class ElementHandle {
         // Floor at 1ms — the daemon treats a 0 timeout as "use the 30s
         // default", which would stall the final poll tick for 30s.
         const findBudget = Math.min(POLL_MS, Math.max(1, deadline - Date.now()));
-        const el = this._hasModifiers()
-          ? await this._resolveOne()
-          : await this._findOneStrict(findBudget);
+        const resolved = this._hasModifiers()
+          ? await this._resolveOneWithSet()
+          : { element: await this._findOneStrict(findBudget), ordered: undefined };
+        const el = resolved.element;
         if (el) {
           const remaining = Math.max(0, deadline - Date.now());
           return {
             remainingMs: Math.min(timeoutMs, Math.max(remaining, MIN_ACTION_BUDGET_MS)),
             element: el,
+            ordered: resolved.ordered,
           };
         }
       } catch (err) {
@@ -964,7 +979,7 @@ export class ElementHandle {
    *
    * Throws if the element is not found or still disabled after the timeout.
    */
-  private async _waitForEnabled(): Promise<{ remainingMs: number; element?: ElementInfo }> {
+  private async _waitForEnabled(): Promise<{ remainingMs: number; element?: ElementInfo; ordered?: ElementInfo[] }> {
     const timeoutMs = this._timeoutMs;
     // timeoutMs === 0 means "no polling": behave like the pre-auto-wait code
     // and hand the full zero budget straight to the action.
@@ -978,9 +993,10 @@ export class ElementHandle {
         // Floor at 1ms — the daemon treats a 0 timeout as "use the 30s
         // default", which would stall the final poll tick for 30s.
         const findBudget = Math.min(POLL_MS, Math.max(1, deadline - Date.now()));
-        const el = this._hasModifiers()
-          ? await this._resolveOne()
-          : await this._findOneStrict(findBudget);
+        const resolved = this._hasModifiers()
+          ? await this._resolveOneWithSet()
+          : { element: await this._findOneStrict(findBudget), ordered: undefined };
+        const el = resolved.element;
         if (el) {
           everFound = true;
           if (el.enabled) {
@@ -988,6 +1004,7 @@ export class ElementHandle {
             return {
               remainingMs: Math.min(timeoutMs, Math.max(remaining, MIN_ACTION_BUDGET_MS)),
               element: el,
+              ordered: resolved.ordered,
             };
           }
         }
@@ -1019,8 +1036,8 @@ export class ElementHandle {
    * @param preResolved - Optional pre-resolved ElementInfo from _waitForEnabled
    *   to avoid a redundant gRPC round-trip (Fix 2: eliminate TOCTOU).
    */
-  private async _actionSelector(preResolved?: ElementInfo): Promise<Selector> {
-    const target = await this._resolveActionTarget(preResolved, false);
+  private async _actionSelector(preResolved?: ElementInfo, orderedElements?: ElementInfo[]): Promise<Selector> {
+    const target = await this._resolveActionTarget(preResolved, false, orderedElements);
     // coordinateFallback === false ⇒ _resolveActionTarget never yields
     // coordinates; it returns a selector or throws.
     return (target as { selector: Selector }).selector;
@@ -1045,10 +1062,15 @@ export class ElementHandle {
    * @param coordinateFallback - Whether the calling action can dispatch by raw
    *   coordinates (tap, longPress). When false, an unaddressable/ambiguous
    *   positional target throws instead.
+   * @param orderedElements - The match set `preResolved` was selected from, in
+   *   document order. When provided (by the auto-wait step), the ambiguity check
+   *   reuses it instead of re-resolving — saving a round-trip and, since it is
+   *   the same snapshot as `preResolved`, closing the TOCTOU window.
    */
   private async _resolveActionTarget(
     preResolved: ElementInfo | undefined,
     coordinateFallback: boolean,
+    orderedElements?: ElementInfo[],
   ): Promise<ActionTarget> {
     if (!this._hasModifiers()) return { selector: this._selector };
     const el = preResolved ?? await this._resolveOne();
@@ -1057,9 +1079,9 @@ export class ElementHandle {
     // handles resolve strictly (exactly one match in the set), so the derived
     // selector is unique among the matches.
     if (this._options.nthIndex !== undefined) {
-      const ordered = this._options.resolvedElementsPromise
+      const ordered = orderedElements ?? (this._options.resolvedElementsPromise
         ? await this._options.resolvedElementsPromise
-        : await this._resolveAll();
+        : await this._resolveAll());
       const idx = this._options.nthIndex < 0 ? ordered.length + this._options.nthIndex : this._options.nthIndex;
       if (derivedSelectorMisaddresses(el, ordered, idx)) {
         const coords = coordinateFallback ? boundsCenter(el.bounds) : undefined;
@@ -1466,8 +1488,8 @@ export class ElementHandle {
 
   async tap(): Promise<void> {
     const { target, remainingMs } = await this._tracedResolve('tap', 'tap', async () => {
-      const { remainingMs, element } = await this._waitForEnabled();
-      return { target: await this._resolveActionTarget(element, true), remainingMs };
+      const { remainingMs, element, ordered } = await this._waitForEnabled();
+      return { target: await this._resolveActionTarget(element, true, ordered), remainingMs };
     });
     return this._tracedAction('tap', 'tap',
       () => 'coordinates' in target
@@ -1478,8 +1500,8 @@ export class ElementHandle {
 
   async longPress(durationMs?: number): Promise<void> {
     const { target, remainingMs } = await this._tracedResolve('longPress', 'tap', async () => {
-      const { remainingMs, element } = await this._waitForEnabled();
-      return { target: await this._resolveActionTarget(element, true), remainingMs };
+      const { remainingMs, element, ordered } = await this._waitForEnabled();
+      return { target: await this._resolveActionTarget(element, true, ordered), remainingMs };
     });
     return this._tracedAction('longPress', 'tap',
       () => 'coordinates' in target
@@ -1490,8 +1512,8 @@ export class ElementHandle {
 
   async type(text: string, options?: { delay?: number }): Promise<void> {
     const { sel, remainingMs } = await this._tracedResolve('type', 'type', async () => {
-      const { remainingMs, element } = await this._strictResolve();
-      return { sel: await this._actionSelector(element), remainingMs };
+      const { remainingMs, element, ordered } = await this._strictResolve();
+      return { sel: await this._actionSelector(element, ordered), remainingMs };
     });
     const delay = options?.delay ?? this._options.typingDelay ?? 0;
     return this._tracedAction('type', 'type', () => this._client.typeText(sel, text, remainingMs, delay), 'Type text failed', { inputValue: text });
@@ -1499,8 +1521,8 @@ export class ElementHandle {
 
   async clearAndType(text: string, options?: { delay?: number }): Promise<void> {
     const { sel, remainingMs } = await this._tracedResolve('clearAndType', 'type', async () => {
-      const { remainingMs, element } = await this._strictResolve();
-      return { sel: await this._actionSelector(element), remainingMs };
+      const { remainingMs, element, ordered } = await this._strictResolve();
+      return { sel: await this._actionSelector(element, ordered), remainingMs };
     });
     const delay = options?.delay ?? this._options.typingDelay ?? 0;
     return this._tracedAction('clearAndType', 'type', () => this._client.clearAndType(sel, text, remainingMs, delay), 'Clear and type failed', { inputValue: text });
@@ -1508,16 +1530,16 @@ export class ElementHandle {
 
   async clear(): Promise<void> {
     const { sel, remainingMs } = await this._tracedResolve('clear', 'type', async () => {
-      const { remainingMs, element } = await this._strictResolve();
-      return { sel: await this._actionSelector(element), remainingMs };
+      const { remainingMs, element, ordered } = await this._strictResolve();
+      return { sel: await this._actionSelector(element, ordered), remainingMs };
     });
     return this._tracedAction('clear', 'type', () => this._client.clearText(sel, remainingMs), 'Clear text failed');
   }
 
   async scroll(direction: string, options?: { distance?: number }): Promise<void> {
     const { sel, remainingMs } = await this._tracedResolve('scroll', 'scroll', async () => {
-      const { remainingMs, element } = await this._strictResolve();
-      return { sel: await this._actionSelector(element), remainingMs };
+      const { remainingMs, element, ordered } = await this._strictResolve();
+      return { sel: await this._actionSelector(element, ordered), remainingMs };
     });
     return this._tracedAction('scroll', 'scroll',
       () => this._client.scroll(sel, direction, { distance: options?.distance, timeoutMs: remainingMs }),
@@ -1528,8 +1550,8 @@ export class ElementHandle {
 
   async doubleTap(options?: { intervalMs?: number }): Promise<void> {
     const { sel, remainingMs } = await this._tracedResolve('doubleTap', 'tap', async () => {
-      const { remainingMs, element } = await this._waitForEnabled();
-      return { sel: await this._actionSelector(element), remainingMs };
+      const { remainingMs, element, ordered } = await this._waitForEnabled();
+      return { sel: await this._actionSelector(element, ordered), remainingMs };
     });
     // 0 on the wire = "use agent default (100ms)". User-supplied values
     // must be positive; ≤0 is treated as "use default".
@@ -1542,8 +1564,8 @@ export class ElementHandle {
       const source = await this._strictResolve();
       const targetRes = await target._strictResolve();
       return {
-        sourceSel: await this._actionSelector(source.element),
-        targetSel: await target._actionSelector(targetRes.element),
+        sourceSel: await this._actionSelector(source.element, source.ordered),
+        targetSel: await target._actionSelector(targetRes.element, targetRes.ordered),
         remainingMs: source.remainingMs,
       };
     });
@@ -1556,9 +1578,12 @@ export class ElementHandle {
     const POLL_MS = 250;
 
     const { sel, remainingMs, alreadySet } = await this._tracedResolve('setChecked', 'tap', async () => {
-      const { remainingMs, element } = await this._waitForEnabled();
-      const el = element ?? await this._resolveOne();
-      return { sel: await this._actionSelector(el), remainingMs, alreadySet: el.checked === checked };
+      const { remainingMs, element, ordered } = await this._waitForEnabled();
+      // The timeout-0 path skips the wait and returns no element; resolve here,
+      // keeping the match set so the action selector can detect mis-addressing.
+      const resolved = element ? { element, ordered } : await this._resolveOneWithSet();
+      const el = resolved.element;
+      return { sel: await this._actionSelector(el, resolved.ordered), remainingMs, alreadySet: el.checked === checked };
     });
 
     return this._tracedAction('setChecked', 'tap', async () => {
@@ -1595,15 +1620,15 @@ export class ElementHandle {
 
   async selectOption(option: string | { index: number }): Promise<void> {
     const { sel, remainingMs } = await this._tracedResolve('selectOption', 'other', async () => {
-      const { remainingMs, element } = await this._strictResolve();
-      return { sel: await this._actionSelector(element), remainingMs };
+      const { remainingMs, element, ordered } = await this._strictResolve();
+      return { sel: await this._actionSelector(element, ordered), remainingMs };
     });
     return this._tracedAction('selectOption', 'other', () => this._client.selectOption(sel, option, remainingMs), 'Select option failed');
   }
 
   async screenshot(): Promise<Buffer> {
-    const { remainingMs, element } = await this._strictResolve();
-    const sel = await this._actionSelector(element);
+    const { remainingMs, element, ordered } = await this._strictResolve();
+    const sel = await this._actionSelector(element, ordered);
     const res = await this._client.takeElementScreenshot(sel, remainingMs);
     if (!res.success) {
       throw new Error(res.errorMessage || 'Element screenshot failed');

@@ -935,6 +935,16 @@ describe('positional actions on shared-property matches', () => {
     expect(longPressXY).toHaveBeenCalledWith(330, 330, 400);
   });
 
+  it('resolves the match set once (auto-wait reused, no redundant query) on a positional tap', async () => {
+    const findElements = vi.fn(async () => makeFindElementsResponse(twoBins));
+    const client = makeMockClient({ findElements, tap: vi.fn(async () => successResponse()), tapXY: vi.fn(async () => successResponse()) });
+    const handle = new ElementHandle(client, _contentDesc('bin'), 5000);
+    await handle.last().tap();
+    // The auto-wait step threads its resolved set into the action target, so the
+    // ambiguity check does not re-query findElements (was 2 calls, now 1).
+    expect(findElements).toHaveBeenCalledTimes(1);
+  });
+
   it('type() on a shared-property positional handle errors instead of mis-targeting', async () => {
     const typeText = vi.fn(async () => successResponse());
     const client = makeMockClient({
