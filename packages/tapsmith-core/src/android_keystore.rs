@@ -291,7 +291,10 @@ pub async fn restore_from_data_dir(serial: &str, pkg: &str, data_dir: &str) -> R
     }
 
     // Clean up the member from the data dir regardless of how we exit — it must
-    // not linger inside the app's files, even if this future is cancelled.
+    // not linger inside the app's files, even if this future is cancelled. Until
+    // the critical task is spawned this guard lives in the outer future and
+    // covers the early bails below; ownership then moves *into* the task so the
+    // member isn't deleted out from under the task while it waits for keystore2.
     let mut guard = adb::DeviceFileGuard::new(serial);
     guard.track(&member_path);
 
@@ -318,6 +321,10 @@ pub async fn restore_from_data_dir(serial: &str, pkg: &str, data_dir: &str) -> R
     let member_owned = member_path.clone();
     let pkg_owned = pkg.to_string();
     let critical = tokio::spawn(async move {
+        // Own the cleanup guard here so the member file outlives the wait for
+        // keystore2 to stop and is only removed once this task is done with it —
+        // even if the spawning future was cancelled in the meantime.
+        let _guard = guard;
         let serial = serial_owned.as_str();
         let member_path = member_owned.as_str();
         let pkg = pkg_owned.as_str();

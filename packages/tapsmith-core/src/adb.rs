@@ -429,7 +429,10 @@ impl Drop for DeviceFileGuard {
         if let Ok(handle) = tokio::runtime::Handle::try_current() {
             handle.spawn(async move {
                 for path in paths {
-                    let _ = shell_lenient(&serial, &format!("rm -f {path}")).await;
+                    // Single-quote the path (escaping embedded quotes) so spaces
+                    // or shell metacharacters can't split the argument or inject.
+                    let escaped = path.replace('\'', "'\\''");
+                    let _ = shell_lenient(&serial, &format!("rm -f '{escaped}'")).await;
                 }
             });
         }
