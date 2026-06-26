@@ -44,7 +44,7 @@ pub async fn capture_into_data_dir(serial: &str, pkg: &str, data_dir: &str) -> R
     }
 
     let member_path = format!("{data_dir}/{PERMISSIONS_ARCHIVE_MEMBER}");
-    push_text(serial, &granted.join("\n"), &member_path)
+    adb::push_text(serial, &granted.join("\n"), &member_path)
         .await
         .context("write permissions member into data dir")?;
     debug!(%pkg, count = granted.len(), "Captured granted runtime permissions into archive member");
@@ -121,19 +121,6 @@ fn is_valid_permission_name(name: &str) -> bool {
         && name
             .chars()
             .all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '_')
-}
-
-/// Push `contents` to `remote_path` on the device via a host temp file.
-async fn push_text(serial: &str, contents: &str, remote_path: &str) -> Result<()> {
-    let dir = tempfile::tempdir().context("create temp dir")?;
-    let host_path = dir.path().join("payload");
-    tokio::fs::write(&host_path, contents)
-        .await
-        .context("write host temp file")?;
-    adb::push_file(serial, &host_path.to_string_lossy(), remote_path)
-        .await
-        .context("adb push")?;
-    Ok(())
 }
 
 #[cfg(test)]

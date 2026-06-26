@@ -377,6 +377,21 @@ pub async fn push_file(serial: &str, local_path: &str, remote_path: &str) -> Res
     Ok(())
 }
 
+/// Push in-memory text to `remote_path` on the device via a host temp file.
+/// Avoids shell-quoting pitfalls when delivering SQL scripts or other payloads
+/// that contain metacharacters.
+pub async fn push_text(serial: &str, contents: &str, remote_path: &str) -> Result<()> {
+    let dir = tempfile::tempdir().context("create temp dir")?;
+    let host_path = dir.path().join("payload");
+    tokio::fs::write(&host_path, contents)
+        .await
+        .context("write host temp file")?;
+    push_file(serial, &host_path.to_string_lossy(), remote_path)
+        .await
+        .context("adb push")?;
+    Ok(())
+}
+
 /// Pull a file from the device to a local path via `adb pull`.
 #[instrument(skip(local_path, remote_path))]
 pub async fn pull_file(serial: &str, remote_path: &str, local_path: &str) -> Result<()> {

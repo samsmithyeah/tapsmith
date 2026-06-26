@@ -67,25 +67,12 @@ async fn has_sqlite3(serial: &str) -> bool {
         .unwrap_or(false)
 }
 
-/// Push `contents` to `remote_path` on the device via a host temp file.
-async fn push_text(serial: &str, contents: &str, remote_path: &str) -> Result<()> {
-    let dir = tempfile::tempdir().context("create temp dir")?;
-    let host_path = dir.path().join("payload");
-    tokio::fs::write(&host_path, contents)
-        .await
-        .context("write host temp file")?;
-    adb::push_file(serial, &host_path.to_string_lossy(), remote_path)
-        .await
-        .context("adb push")?;
-    Ok(())
-}
-
 /// Run a SQL script (provided as text) against [`KEYSTORE_DB`] and return
 /// stdout. The script is delivered as a pushed file so SQL parentheses and
 /// quotes are parsed by sqlite3, not the device shell.
 async fn run_sqlite(serial: &str, sql: &str) -> Result<String> {
     let remote = format!("/data/local/tmp/tapsmith-ks-{}.sql", Uuid::new_v4());
-    push_text(serial, sql, &remote).await?;
+    adb::push_text(serial, sql, &remote).await?;
     let result = adb::shell_with_timeout(
         serial,
         &format!("sqlite3 {KEYSTORE_DB} < {remote}"),
@@ -142,7 +129,7 @@ SELECT 'KM',quote(km.keyentryid),quote(km.tag),quote(km.data) FROM keymetadata k
     };
 
     let member_path = format!("{data_dir}/{KEYSTORE_ARCHIVE_MEMBER}");
-    push_text(serial, &script, &member_path)
+    adb::push_text(serial, &script, &member_path)
         .await
         .context("write keystore member into data dir")?;
     debug!(%pkg, "Captured AndroidKeyStore state into archive member");
@@ -336,11 +323,15 @@ pub async fn restore_from_data_dir(serial: &str, pkg: &str, data_dir: &str) -> R
 
         // keystore2 holds the DB open and caches it, so edit it while the
         // service is stopped, then restart so it reads the re-inserted rows.
-        adb::shell(serial, "stop keystore2")
-            .await
-            .map_err(|e| anyhow::anyhow!("failed to stop keystore2: {e}"))?;
+        let stop = adb::shell(serial, "stop keystore2").await;
 
-        let edit = run_member_script(serial, member_path).await;
+        // Only touch the DB if keystore2 actually stopped — editing it while the
+        // service still holds it open risks corruption.
+        let edit = if stop.is_ok() {
+            run_member_script(serial, member_path).await
+        } else {
+            Err(anyhow::anyhow!("skipped re-insert: keystore2 did not stop"))
+        };
 
         // Keep ownership/SELinux context correct for keystore2 to reopen the DB.
         let _ = adb::shell_lenient(
@@ -349,10 +340,11 @@ pub async fn restore_from_data_dir(serial: &str, pkg: &str, data_dir: &str) -> R
         )
         .await;
 
-        // Always attempt to restart keystore2, even if the edit failed, so we
-        // never leave it down.
+        // Always attempt to restart keystore2 — even if stop or the edit failed —
+        // so a half-finished restore never leaves the service down.
         let start = adb::shell(serial, "start keystore2").await;
 
+        stop.map_err(|e| anyhow::anyhow!("failed to stop keystore2: {e}"))?;
         edit?;
         start.context("failed to restart keystore2")?;
         Ok::<(), anyhow::Error>(())
