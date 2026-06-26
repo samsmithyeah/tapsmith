@@ -2473,7 +2473,10 @@ async function main(): Promise<void> {
             };
             let resetOk = false;
             try {
-              await launchConfiguredApp(resetCtx, `reset before ${path.basename(file)}`);
+              // For appState projects, skip the destructive clearAppData (pm
+              // clear) — the suite-level restoreAppState owns isolation and
+              // preserves the AndroidKeyStore key that decrypts saved creds.
+              await launchConfiguredApp(resetCtx, `reset before ${path.basename(file)}`, { skipDataClear: projectHasAppState });
               const pong = await client!.ping();
               if (!pong.agentConnected) {
                 throw new Error('Not connected to agent after app reset');
@@ -2485,7 +2488,7 @@ async function main(): Promise<void> {
                   dim(`Recovering session after reset failure before ${path.basename(file)}: ${err instanceof Error ? err.message : String(err)}\n`),
                 );
                 try {
-                  await launchConfiguredApp(resetCtx, `recovery for reset before ${path.basename(file)}`, { allowSoftReset: false });
+                  await launchConfiguredApp(resetCtx, `recovery for reset before ${path.basename(file)}`, { allowSoftReset: false, skipDataClear: projectHasAppState });
                   const recoveryPong = await client!.ping();
                   if (recoveryPong.agentConnected) {
                     resetOk = true;

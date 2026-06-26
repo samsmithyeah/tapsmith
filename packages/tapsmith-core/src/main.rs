@@ -1,5 +1,7 @@
 mod adb;
 mod agent_comms;
+mod android_keystore;
+mod android_permissions;
 mod daemon_log_bus;
 mod device;
 mod device_logs;

@@ -377,6 +377,68 @@ pub async fn push_file(serial: &str, local_path: &str, remote_path: &str) -> Res
     Ok(())
 }
 
+/// Push in-memory text to `remote_path` on the device via a host temp file.
+/// Avoids shell-quoting pitfalls when delivering SQL scripts or other payloads
+/// that contain metacharacters.
+pub async fn push_text(serial: &str, contents: &str, remote_path: &str) -> Result<()> {
+    let dir = tempfile::tempdir().context("create temp dir")?;
+    let host_path = dir.path().join("payload");
+    tokio::fs::write(&host_path, contents)
+        .await
+        .context("write host temp file")?;
+    push_file(serial, &host_path.to_string_lossy(), remote_path)
+        .await
+        .context("adb push")?;
+    Ok(())
+}
+
+/// Best-effort RAII cleanup for temporary files written onto a device.
+///
+/// Tracks device paths and `rm -f`s them when dropped — including when the
+/// owning future is cancelled (client disconnect, RPC deadline) or panics, paths
+/// that a plain post-`await` cleanup line would miss. Removal is spawned as a
+/// detached task (the device call is async and `Drop` is not); if no Tokio
+/// runtime is available at drop time (daemon already shutting down) cleanup is
+/// skipped rather than panicking.
+pub struct DeviceFileGuard {
+    serial: String,
+    paths: Vec<String>,
+}
+
+impl DeviceFileGuard {
+    pub fn new(serial: impl Into<String>) -> Self {
+        Self {
+            serial: serial.into(),
+            paths: Vec::new(),
+        }
+    }
+
+    /// Register a device path to be removed when this guard drops.
+    pub fn track(&mut self, path: impl Into<String>) {
+        self.paths.push(path.into());
+    }
+}
+
+impl Drop for DeviceFileGuard {
+    fn drop(&mut self) {
+        if self.paths.is_empty() {
+            return;
+        }
+        let serial = self.serial.clone();
+        let paths = std::mem::take(&mut self.paths);
+        if let Ok(handle) = tokio::runtime::Handle::try_current() {
+            handle.spawn(async move {
+                for path in paths {
+                    // Single-quote the path (escaping embedded quotes) so spaces
+                    // or shell metacharacters can't split the argument or inject.
+                    let escaped = path.replace('\'', "'\\''");
+                    let _ = shell_lenient(&serial, &format!("rm -f '{escaped}'")).await;
+                }
+            });
+        }
+    }
+}
+
 /// Pull a file from the device to a local path via `adb pull`.
 #[instrument(skip(local_path, remote_path))]
 pub async fn pull_file(serial: &str, remote_path: &str, local_path: &str) -> Result<()> {

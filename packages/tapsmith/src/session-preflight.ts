@@ -83,7 +83,7 @@ export async function ensureSessionReady(
 export async function launchConfiguredApp(
   ctx: SessionPreflightContext,
   phase: string,
-  options: { allowSoftReset?: boolean; readinessAttempts?: number; skipAppReset?: boolean } = {},
+  options: { allowSoftReset?: boolean; readinessAttempts?: number; skipAppReset?: boolean; skipDataClear?: boolean } = {},
 ): Promise<void> {
   const readinessAttempts = options.readinessAttempts;
 
@@ -107,12 +107,22 @@ export async function launchConfiguredApp(
     }
   }
 
-  // When skipAppReset is true (fresh install / startup), skip the expensive
-  // clearAppData + restartApp cycle. The app was just installed — there's no
-  // state to clear. On Android, explicitly launch the app (iOS auto-launches
-  // via the XCUITest agent during startAgent). Then go straight to ensuring
-  // the session is ready.
-  if (options.skipAppReset) {
+  // Skip the expensive clearAppData + restartApp cycle when either:
+  //  - skipAppReset (fresh install / startup): the app was just installed,
+  //    there's no state to clear; or
+  //  - skipDataClear: a non-empty `appState` restore will follow for this
+  //    scope and owns isolation. The restore does its own keystore-preserving
+  //    in-place data clear, so clearing here is redundant AND harmful: on
+  //    Android `clearAppData` is `pm clear`, which also wipes the app's
+  //    AndroidKeyStore keys. Those keys decrypt credentials persisted inside
+  //    the data dir (e.g. Firebase Auth's Tink keyset), are device-bound, and
+  //    are NOT in the saved-state archive — so once pm clear destroys them the
+  //    restored ciphertext can't be decrypted and the app comes back signed
+  //    out. (On iOS the keychain is captured into the archive, so a clear here
+  //    is merely wasteful, not destructive.)
+  // On Android, explicitly launch the app (iOS auto-launches via the XCUITest
+  // agent during startAgent). Then go straight to ensuring the session is ready.
+  if (options.skipAppReset || options.skipDataClear) {
     if (ctx.config.platform !== 'ios') {
       await ctx.device.launchApp(ctx.config.package, launchOptions(ctx.config));
     }

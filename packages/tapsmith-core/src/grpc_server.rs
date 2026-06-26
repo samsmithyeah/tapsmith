@@ -13,6 +13,8 @@ use uuid::Uuid;
 use crate::adb;
 use crate::agent_comms;
 use crate::agent_comms::{AgentCommand, AgentConnection, AgentResponse, ConnectionParams};
+use crate::android_keystore;
+use crate::android_permissions;
 use crate::device::DeviceManager;
 use crate::device_logs;
 use crate::ios;
@@ -5211,6 +5213,43 @@ impl proto::tapsmith_service_server::TapsmithService for TapsmithServiceImpl {
                     .map(|out| out.contains("uid=0"))
                     .unwrap_or(false);
 
+                // 2b. Capture device-side state that lives OUTSIDE /data/data and
+                // is destroyed by `pm clear` (root only), embedding each as a
+                // reserved member written into the data dir so the tar below
+                // picks it up and restore can re-establish it:
+                //  - AndroidKeyStore keys: Firebase et al. encrypt data-dir
+                //    credentials with a keystore key the data tar can't carry.
+                //  - Granted runtime permissions (e.g. POST_NOTIFICATIONS): so a
+                //    prompt dismissed once stays dismissed across restore.
+                // Best-effort: capture never fails the save. The guard removes
+                // the members from the live data dir once it drops — after the
+                // tar below has captured them, or on cancellation — so they never
+                // linger inside the app's files.
+                let mut injected_members = adb::DeviceFileGuard::new(serial.clone());
+                if is_root {
+                    match android_keystore::capture_into_data_dir(&serial, pkg, &data_dir).await {
+                        Ok(true) => injected_members.track(format!(
+                            "{data_dir}/{}",
+                            android_keystore::KEYSTORE_ARCHIVE_MEMBER
+                        )),
+                        Ok(false) => {}
+                        Err(e) => {
+                            warn!(%pkg, error = %e, "Keystore capture failed; archive will not include keystore state");
+                        }
+                    }
+                    match android_permissions::capture_into_data_dir(&serial, pkg, &data_dir).await
+                    {
+                        Ok(true) => injected_members.track(format!(
+                            "{data_dir}/{}",
+                            android_permissions::PERMISSIONS_ARCHIVE_MEMBER
+                        )),
+                        Ok(false) => {}
+                        Err(e) => {
+                            warn!(%pkg, error = %e, "Runtime permission capture failed; archive will not include permission state");
+                        }
+                    }
+                }
+
                 // 3. Create tar.gz archive on device, excluding cache
                 // directories that don't carry meaningful app state.
                 // Older Toybox builds (pre-Android 10) lack --exclude, so
@@ -5243,6 +5282,10 @@ impl proto::tapsmith_service_server::TapsmithService for TapsmithServiceImpl {
                             .map(|_| ())
                     }
                 };
+
+                // The reserved members are now inside the archive; `injected_members`
+                // (a DeviceFileGuard) removes them from the live data dir when it
+                // drops at the end of this handler, on every exit path.
 
                 if let Err(e) = tar_result {
                     let _ = adb::shell_lenient(&serial, &format!("rm -f {device_tmp}")).await;
@@ -5713,6 +5756,35 @@ impl proto::tapsmith_service_server::TapsmithService for TapsmithServiceImpl {
 
                 // 7. Clean up temp file
                 let _ = adb::shell_lenient(&serial, &format!("rm -f {device_tmp}")).await;
+
+                // 8. Re-establish device-side state captured outside /data/data
+                // (root only), if the archive carried it.
+                if is_root {
+                    // Keystore keys: without these, credentials encrypted by a
+                    // keystore key destroyed by a `pm clear` between save and
+                    // restore (e.g. a sibling login project resetting the app)
+                    // can't be decrypted and the app comes back signed out.
+                    if let Err(e) =
+                        android_keystore::restore_from_data_dir(&serial, pkg, &data_dir).await
+                    {
+                        return Ok(self
+                            .action_error(
+                                request_id,
+                                "APP_STATE_RESTORE_FAILED",
+                                format!("Keystore restore failed: {e}"),
+                            )
+                            .await);
+                    }
+                    // Granted runtime permissions: re-grant what was granted at
+                    // save time so a dismissed prompt (e.g. notifications) stays
+                    // dismissed. Best-effort — a stale permission must not fail
+                    // the whole restore.
+                    if let Err(e) =
+                        android_permissions::restore_from_data_dir(&serial, pkg, &data_dir).await
+                    {
+                        warn!(%pkg, error = %e, "Runtime permission restore failed; app may re-prompt");
+                    }
+                }
 
                 info!(%pkg, %local_path, "App state restored");
                 Ok(Self::success_action_response(request_id))

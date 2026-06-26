@@ -879,6 +879,52 @@ export function selectDevicesForStrategy(
 }
 
 /**
+ * Disambiguate among already-running devices that all match the requested AVD
+ * by preferring the instance(s) where the app under test is installed.
+ *
+ * The same AVD can be booted more than once (the emulator allows it with
+ * `-read-only`), so AVD-name matching alone can select a foreign instance —
+ * e.g. a leftover emulator from another project's run that happens to share
+ * the generic AVD name but doesn't have this project's app installed. Selecting
+ * it silently runs (and "restores app state") against the wrong app.
+ *
+ * Rule: when at least one matching instance has the package installed, drop the
+ * ones that don't. When *none* have it (fresh boots before Tapsmith installs
+ * the app, or no `package` configured), keep everything — this filter must not
+ * reject a legitimately-empty freshly-booted emulator.
+ */
+export function filterPreferInstalledApp(
+  serials: string[],
+  packageName: string | undefined,
+  isInstalled: (serial: string, packageName: string) => boolean = isPackageInstalled,
+): DeviceSelectionResult {
+  if (!packageName || serials.length <= 1) {
+    return { selectedSerials: serials, skippedDevices: [] };
+  }
+
+  const installed: string[] = [];
+  const missing: string[] = [];
+  for (const serial of serials) {
+    if (isInstalled(serial, packageName)) installed.push(serial);
+    else missing.push(serial);
+  }
+
+  // No instance has the app yet (fresh boots / install pending) — leave the
+  // set untouched so the normal install-then-run flow proceeds.
+  if (installed.length === 0) {
+    return { selectedSerials: serials, skippedDevices: [] };
+  }
+
+  return {
+    selectedSerials: installed,
+    skippedDevices: missing.map((serial) => ({
+      serial,
+      reason: `app ${packageName} is not installed (another running instance of AVD shares this name but has the app)`,
+    })),
+  };
+}
+
+/**
  * Wait for an emulator to finish booting.
  * Polls `adb -s <serial> shell getprop sys.boot_completed` until it returns "1".
  */

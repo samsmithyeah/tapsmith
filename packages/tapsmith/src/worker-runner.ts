@@ -311,10 +311,14 @@ async function handleRunFile(
 
   send({ type: 'file-start', workerId, filePath });
 
-  // Reset app between files for isolation — retry once on transient errors
+  // Reset app between files for isolation — retry once on transient errors.
+  // When this scope restores a non-empty `appState`, skip the destructive
+  // clearAppData: the restore owns isolation and preserves the AndroidKeyStore
+  // (a pm clear here would wipe the keys that decrypt saved credentials).
+  const restoresAppState = !!projectUseOptions?.appState;
   if (config.package) {
     try {
-      await launchConfiguredApp(sessionContext(undefined), `file reset for ${path.basename(filePath)}`);
+      await launchConfiguredApp(sessionContext(undefined), `file reset for ${path.basename(filePath)}`, { skipDataClear: restoresAppState });
     } catch (resetErr) {
       if (!isRecoverableInfrastructureError(resetErr)) throw resetErr;
       process.stderr.write(
