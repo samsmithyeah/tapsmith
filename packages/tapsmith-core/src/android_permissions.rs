@@ -63,6 +63,11 @@ pub async fn restore_from_data_dir(serial: &str, pkg: &str, data_dir: &str) -> R
         return Ok(false);
     }
 
+    // Remove the member on any exit (normal, early return, or cancellation) so
+    // the permissions list never lingers inside the app's data dir.
+    let mut guard = adb::DeviceFileGuard::new(serial);
+    guard.track(&member_path);
+
     let body = adb::shell_lenient(serial, &format!("cat {member_path}"))
         .await
         .unwrap_or_default();
@@ -83,7 +88,7 @@ pub async fn restore_from_data_dir(serial: &str, pkg: &str, data_dir: &str) -> R
         }
     }
 
-    let _ = adb::shell_lenient(serial, &format!("rm -f {member_path}")).await;
+    // `guard` removes the member on drop.
     debug!(%pkg, "Restored granted runtime permissions from archive member");
     Ok(true)
 }

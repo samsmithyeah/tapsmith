@@ -289,13 +289,11 @@ pub async fn restore_from_data_dir(serial: &str, pkg: &str, data_dir: &str) -> R
     }
 
     // Clean up the member from the data dir regardless of how we exit — it must
-    // not linger inside the app's files.
-    let cleanup = || async {
-        let _ = adb::shell_lenient(serial, &format!("rm -f {member_path}")).await;
-    };
+    // not linger inside the app's files, even if this future is cancelled.
+    let mut guard = adb::DeviceFileGuard::new(serial);
+    guard.track(&member_path);
 
     let Some(uid) = app_uid(serial, data_dir).await else {
-        cleanup().await;
         bail!("could not resolve app uid for keystore restore");
     };
 
@@ -306,7 +304,6 @@ pub async fn restore_from_data_dir(serial: &str, pkg: &str, data_dir: &str) -> R
     )
     .await
     {
-        cleanup().await;
         bail!("failed to bind keystore rows to uid {uid}: {e}");
     }
 
@@ -351,7 +348,7 @@ pub async fn restore_from_data_dir(serial: &str, pkg: &str, data_dir: &str) -> R
     });
 
     let outcome = critical.await;
-    cleanup().await;
+    // `guard` removes the member on drop (here, or on cancellation above).
 
     match outcome {
         Ok(Ok(())) => {

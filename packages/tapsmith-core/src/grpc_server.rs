@@ -5221,12 +5221,14 @@ impl proto::tapsmith_service_server::TapsmithService for TapsmithServiceImpl {
                 //    credentials with a keystore key the data tar can't carry.
                 //  - Granted runtime permissions (e.g. POST_NOTIFICATIONS): so a
                 //    prompt dismissed once stays dismissed across restore.
-                // Best-effort: capture never fails the save. Members are removed
-                // from the live data dir after the tar.
-                let mut injected_members: Vec<String> = Vec::new();
+                // Best-effort: capture never fails the save. The guard removes
+                // the members from the live data dir once it drops — after the
+                // tar below has captured them, or on cancellation — so they never
+                // linger inside the app's files.
+                let mut injected_members = adb::DeviceFileGuard::new(serial.clone());
                 if is_root {
                     match android_keystore::capture_into_data_dir(&serial, pkg, &data_dir).await {
-                        Ok(true) => injected_members.push(format!(
+                        Ok(true) => injected_members.track(format!(
                             "{data_dir}/{}",
                             android_keystore::KEYSTORE_ARCHIVE_MEMBER
                         )),
@@ -5237,7 +5239,7 @@ impl proto::tapsmith_service_server::TapsmithService for TapsmithServiceImpl {
                     }
                     match android_permissions::capture_into_data_dir(&serial, pkg, &data_dir).await
                     {
-                        Ok(true) => injected_members.push(format!(
+                        Ok(true) => injected_members.track(format!(
                             "{data_dir}/{}",
                             android_permissions::PERMISSIONS_ARCHIVE_MEMBER
                         )),
@@ -5281,11 +5283,9 @@ impl proto::tapsmith_service_server::TapsmithService for TapsmithServiceImpl {
                     }
                 };
 
-                // The reserved members are now inside the archive; remove them
-                // from the live data dir so they never reach the app.
-                for member in &injected_members {
-                    let _ = adb::shell_lenient(&serial, &format!("rm -f {member}")).await;
-                }
+                // The reserved members are now inside the archive; `injected_members`
+                // (a DeviceFileGuard) removes them from the live data dir when it
+                // drops at the end of this handler, on every exit path.
 
                 if let Err(e) = tar_result {
                     let _ = adb::shell_lenient(&serial, &format!("rm -f {device_tmp}")).await;
