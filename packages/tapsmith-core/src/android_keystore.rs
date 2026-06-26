@@ -119,6 +119,7 @@ pub async fn capture_into_data_dir(serial: &str, pkg: &str, data_dir: &str) -> R
     let query = format!(
         r#".mode list
 .separator |
+PRAGMA busy_timeout=5000;
 SELECT 'KE',quote(id),quote(key_type),quote(domain),quote(state),quote(alias),quote(km_uuid) FROM keyentry WHERE namespace={uid};
 SELECT 'BE',quote(be.id),quote(be.subcomponent_type),quote(be.keyentryid),quote(be.blob) FROM blobentry be JOIN keyentry ke ON be.keyentryid=ke.id WHERE ke.namespace={uid};
 SELECT 'BM',quote(bm.blobentryid),quote(bm.tag),quote(bm.data) FROM blobmetadata bm JOIN blobentry be ON bm.blobentryid=be.id JOIN keyentry ke ON be.keyentryid=ke.id WHERE ke.namespace={uid};
@@ -148,6 +149,33 @@ SELECT 'KM',quote(km.keyentryid),quote(km.tag),quote(km.data) FROM keymetadata k
     Ok(true)
 }
 
+/// Split a `quote()`-tagged output line on `separator`, ignoring separators that
+/// fall inside single-quoted SQL string literals.
+///
+/// `quote()` emits text aliases as quoted strings (`'…'`), and an alias can
+/// legitimately contain the `|` separator — a naive `split('|')` would shatter
+/// such a row into too many parts and silently drop it. SQLite escapes embedded
+/// quotes by doubling them (`''`), which toggles `in_quotes` twice and so leaves
+/// the state correct; blob (`X'..'`), integer and `NULL` forms never contain
+/// `|` and pass through unchanged.
+fn split_quoted(line: &str, separator: char) -> Vec<String> {
+    let mut parts = Vec::new();
+    let mut current = String::new();
+    let mut in_quotes = false;
+    for c in line.chars() {
+        if c == '\'' {
+            in_quotes = !in_quotes;
+            current.push(c);
+        } else if c == separator && !in_quotes {
+            parts.push(std::mem::take(&mut current));
+        } else {
+            current.push(c);
+        }
+    }
+    parts.push(current);
+    parts
+}
+
 /// Build the SQL re-insert script from the tagged `quote()` rows produced by the
 /// capture query. Returns `None` when there are no keyentry rows.
 ///
@@ -167,7 +195,7 @@ fn build_restore_script(rows: &str) -> Option<String> {
         if line.is_empty() {
             continue;
         }
-        let parts: Vec<String> = line.split('|').map(|s| s.to_string()).collect();
+        let parts = split_quoted(line, '|');
         match parts[0].as_str() {
             "KE" if parts.len() == 7 => keyentry.push(parts[1..].to_vec()),
             "BE" if parts.len() == 5 => blobentry.push(parts[1..].to_vec()),
@@ -183,7 +211,9 @@ fn build_restore_script(rows: &str) -> Option<String> {
     }
 
     let mut s = String::new();
-    s.push_str("PRAGMA foreign_keys=OFF;\nBEGIN;\n");
+    // busy_timeout: `stop keystore2` is async, so the service may still hold a
+    // lock on the DB when sqlite3 runs — wait for it rather than failing fast.
+    s.push_str("PRAGMA foreign_keys=OFF;\nPRAGMA busy_timeout=5000;\nBEGIN;\n");
     s.push_str("CREATE TEMP TABLE _be_map(old INTEGER PRIMARY KEY, new INTEGER);\n");
 
     // Purge any pre-existing rows for this namespace so a re-insert can't hit a
@@ -293,30 +323,52 @@ pub async fn restore_from_data_dir(serial: &str, pkg: &str, data_dir: &str) -> R
         bail!("failed to bind keystore rows to uid {uid}: {e}");
     }
 
-    // keystore2 holds the DB open and caches it, so edit it while the service is
-    // stopped, then restart so it reads the re-inserted rows. Always attempt to
-    // restart keystore2, even if the edit failed, so we never leave it down.
-    if let Err(e) = adb::shell(serial, "stop keystore2").await {
-        cleanup().await;
-        bail!("failed to stop keystore2: {e}");
-    }
+    // Critical section: once keystore2 is stopped it MUST be restarted, or the
+    // device's crypto services stay broken. Run it in a detached task so that if
+    // *this* future is cancelled (client disconnect, restore timeout) the
+    // stop→edit→start sequence still runs to completion rather than leaving
+    // keystore2 down.
+    let serial_owned = serial.to_string();
+    let member_owned = member_path.clone();
+    let critical = tokio::spawn(async move {
+        let serial = serial_owned.as_str();
+        let member_path = member_owned.as_str();
 
-    let edit = run_member_script(serial, &member_path).await;
+        // keystore2 holds the DB open and caches it, so edit it while the
+        // service is stopped, then restart so it reads the re-inserted rows.
+        adb::shell(serial, "stop keystore2")
+            .await
+            .map_err(|e| anyhow::anyhow!("failed to stop keystore2: {e}"))?;
 
-    // Keep ownership/SELinux context correct for keystore2 to reopen the DB.
-    let _ = adb::shell_lenient(
-        serial,
-        &format!("chown keystore:keystore {KEYSTORE_DB}; restorecon {KEYSTORE_DB}"),
-    )
-    .await;
+        let edit = run_member_script(serial, member_path).await;
 
-    let start = adb::shell(serial, "start keystore2").await;
+        // Keep ownership/SELinux context correct for keystore2 to reopen the DB.
+        let _ = adb::shell_lenient(
+            serial,
+            &format!("chown keystore:keystore {KEYSTORE_DB}; restorecon {KEYSTORE_DB}"),
+        )
+        .await;
+
+        // Always attempt to restart keystore2, even if the edit failed, so we
+        // never leave it down.
+        let start = adb::shell(serial, "start keystore2").await;
+
+        edit?;
+        start.context("failed to restart keystore2")?;
+        Ok::<(), anyhow::Error>(())
+    });
+
+    let outcome = critical.await;
     cleanup().await;
 
-    edit?;
-    start.context("failed to restart keystore2")?;
-    debug!(%pkg, "Restored AndroidKeyStore state from archive member");
-    Ok(true)
+    match outcome {
+        Ok(Ok(())) => {
+            debug!(%pkg, "Restored AndroidKeyStore state from archive member");
+            Ok(true)
+        }
+        Ok(Err(e)) => Err(e),
+        Err(join_err) => bail!("keystore restore task panicked: {join_err}"),
+    }
 }
 
 /// Run the (uid-substituted) member script against the keystore DB and verify
@@ -403,6 +455,28 @@ KM|7733|300|NULL
         // Wrapped in a transaction.
         assert!(script.trim_start().starts_with("PRAGMA foreign_keys=OFF;"));
         assert!(script.trim_end().ends_with("COMMIT;"));
+    }
+
+    #[test]
+    fn alias_containing_separator_is_not_shattered() {
+        // An alias quoted by sqlite that legitimately contains the '|' separator
+        // must still parse as a single 7-column keyentry row.
+        let rows = "KE|1|2|0|1|'we|ird'|X'bb'\n";
+        let script = build_restore_script(rows).expect("script");
+        assert!(script.contains(
+            "INSERT INTO keyentry(id,key_type,domain,namespace,alias,state,km_uuid) \
+             VALUES(1,2,0,__TAPSMITH_UID__,'we|ird',1,X'bb');"
+        ));
+    }
+
+    #[test]
+    fn split_quoted_handles_doubled_quotes() {
+        // SQLite escapes an embedded quote by doubling it; the separator inside
+        // such a literal must still be ignored.
+        assert_eq!(
+            split_quoted("a|'x''|y'|b", '|'),
+            vec!["a".to_string(), "'x''|y'".to_string(), "b".to_string()]
+        );
     }
 
     #[test]

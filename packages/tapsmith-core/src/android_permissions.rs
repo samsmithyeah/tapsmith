@@ -67,6 +67,13 @@ pub async fn restore_from_data_dir(serial: &str, pkg: &str, data_dir: &str) -> R
         .await
         .unwrap_or_default();
     for perm in body.lines().map(str::trim).filter(|l| !l.is_empty()) {
+        // Defense-in-depth: the name is interpolated into a root `pm grant` shell
+        // command, so reject anything that isn't a bare permission identifier in
+        // case the on-device archive was tampered with.
+        if !is_valid_permission_name(perm) {
+            warn!(%pkg, %perm, "Skipping restore of malformed permission name");
+            continue;
+        }
         // Lenient: a permission may not be grantable in the app's current state
         // (e.g. since removed from the manifest); one failure must not abort the
         // rest. `pm grant` prints to stderr but still exits 0 on some errors, so
@@ -96,12 +103,24 @@ fn parse_granted_runtime_permissions(dump: &str) -> Vec<String> {
         }
         if let Some((name, _)) = line.split_once(": granted=true") {
             let name = name.trim();
-            if !name.is_empty() && !perms.iter().any(|p| p == name) {
+            // The name is later interpolated into a root `pm grant` command;
+            // only accept bare permission identifiers so a malicious app can't
+            // smuggle shell metacharacters in via a custom permission.
+            if is_valid_permission_name(name) && !perms.iter().any(|p| p == name) {
                 perms.push(name.to_string());
             }
         }
     }
     perms
+}
+
+/// A permission name safe to pass to `pm grant`: a non-empty bare identifier of
+/// ASCII alphanumerics, dots and underscores (no shell metacharacters).
+fn is_valid_permission_name(name: &str) -> bool {
+    !name.is_empty()
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '_')
 }
 
 /// Push `contents` to `remote_path` on the device via a host temp file.
@@ -154,6 +173,20 @@ mod tests {
         android.permission.INTERNET: granted=true
 ";
         assert!(parse_granted_runtime_permissions(dump).is_empty());
+    }
+
+    #[test]
+    fn rejects_permission_names_with_shell_metacharacters() {
+        // A custom permission whose name carries a shell injection payload must
+        // not be captured (it would otherwise reach a root `pm grant`).
+        let dump = "\
+        com.evil.perm; rm -rf /: granted=true, flags=[ USER_SET]
+        android.permission.POST_NOTIFICATIONS: granted=true, flags=[ USER_SET]
+";
+        assert_eq!(
+            parse_granted_runtime_permissions(dump),
+            vec!["android.permission.POST_NOTIFICATIONS".to_string()]
+        );
     }
 
     #[test]
