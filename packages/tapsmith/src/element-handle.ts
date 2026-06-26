@@ -314,6 +314,59 @@ export function collapseSameTargetDuplicates(elements: ElementInfo[]): ElementIn
   return result;
 }
 
+/**
+ * The property `_selectorForElement` would address this element by, mirroring
+ * its `resourceId → contentDescription → text` priority. Returns `undefined`
+ * when the element has none of them (unaddressable by a property selector).
+ */
+export function identifyingProperty(
+  el: ElementInfo,
+): { prop: 'resourceId' | 'contentDescription' | 'text'; value: string } | undefined {
+  if (el.resourceId) return { prop: 'resourceId', value: el.resourceId };
+  if (el.contentDescription) return { prop: 'contentDescription', value: el.contentDescription };
+  if (el.text) return { prop: 'text', value: el.text };
+  return undefined;
+}
+
+/**
+ * Whether the property selector derived from `target` would mis-address it.
+ *
+ * A positional handle (`.first()/.last()/.nth()`) resolves to a specific
+ * element, but the agent acts on the derived selector's FIRST match in
+ * document order. If an earlier element in `ordered` shares the same
+ * identifying property value, the action would land on that element instead.
+ * `ordered` must be the match set in document order and `targetIndex` the
+ * resolved element's position within it (`elementId` is not reliably unique, so
+ * the caller passes the index it selected by). Returns false when the target
+ * has no identifying property (the caller handles unaddressable elements
+ * separately).
+ */
+export function derivedSelectorMisaddresses(
+  target: ElementInfo,
+  ordered: ElementInfo[],
+  targetIndex: number,
+): boolean {
+  const id = identifyingProperty(target);
+  if (!id) return false;
+  const valueOf = (e: ElementInfo): string =>
+    id.prop === 'resourceId' ? e.resourceId : id.prop === 'contentDescription' ? e.contentDescription : e.text;
+  const firstSharer = ordered.findIndex((e) => valueOf(e) === id.value);
+  return firstSharer !== -1 && firstSharer !== targetIndex;
+}
+
+/** Geometric center of an element's bounds, for coordinate-based dispatch. */
+function boundsCenter(bounds: ElementInfo['bounds']): { x: number; y: number } | undefined {
+  if (!bounds) return undefined;
+  return { x: (bounds.left + bounds.right) / 2, y: (bounds.top + bounds.bottom) / 2 };
+}
+
+/**
+ * @internal — How an action should be dispatched against a resolved element:
+ * by a property selector (the agent re-finds it), or by raw coordinates (the
+ * element's center, used when a selector would mis-address it).
+ */
+type ActionTarget = { selector: Selector } | { coordinates: { x: number; y: number } };
+
 /** @internal Brand key for cross-instance type checks (CJS/ESM dual-package). */
 export const ELEMENT_HANDLE_BRAND = Symbol.for('tapsmith.ElementHandle');
 
@@ -730,10 +783,11 @@ export class ElementHandle {
    * @internal — Build a selector to target a specific resolved element.
    *
    * Uses the resolved element's identifying property (resourceId,
-   * contentDescription, or text) to build a simple selector. For modified
-   * handles (nth, filter), the caller should pass the pre-resolved element
-   * from `_waitForEnabled` to `_actionSelector` to avoid re-resolution,
-   * which is the primary defense against targeting the wrong element.
+   * contentDescription, or text) to build a simple selector. Such a selector
+   * addresses the agent's FIRST match in document order, so it is only safe
+   * when the property is unique to the resolved element — `_resolveActionTarget`
+   * is responsible for detecting when it is not (positional handles where an
+   * earlier match shares the property) and dispatching by coordinates instead.
    *
    * @param info - The resolved ElementInfo to target.
    */
@@ -966,9 +1020,69 @@ export class ElementHandle {
    *   to avoid a redundant gRPC round-trip (Fix 2: eliminate TOCTOU).
    */
   private async _actionSelector(preResolved?: ElementInfo): Promise<Selector> {
-    if (!this._hasModifiers()) return this._selector;
+    const target = await this._resolveActionTarget(preResolved, false);
+    // coordinateFallback === false ⇒ _resolveActionTarget never yields
+    // coordinates; it returns a selector or throws.
+    return (target as { selector: Selector }).selector;
+  }
+
+  /**
+   * @internal — Decide how to dispatch an action against the resolved element.
+   *
+   * For an unmodified or strict (filter/and/or/scope) handle the element is the
+   * selector's unique match, so the raw/derived selector addresses it. For a
+   * positional handle (`.first()/.last()/.nth()`) the derived property selector
+   * can mis-address the element: the agent acts on its FIRST document-order
+   * match, so when an earlier match shares the identifying property the action
+   * would land on the wrong element (the silent-mis-tap bug). In that case —
+   * and when the element has no addressable property at all — fall back to a
+   * coordinate dispatch at the element's center for gesture actions
+   * (`coordinateFallback === true`); for actions with no coordinate equivalent,
+   * throw rather than act on the wrong element.
+   *
+   * @param preResolved - Resolved ElementInfo from the auto-wait step (avoids a
+   *   redundant resolution round-trip).
+   * @param coordinateFallback - Whether the calling action can dispatch by raw
+   *   coordinates (tap, longPress). When false, an unaddressable/ambiguous
+   *   positional target throws instead.
+   */
+  private async _resolveActionTarget(
+    preResolved: ElementInfo | undefined,
+    coordinateFallback: boolean,
+  ): Promise<ActionTarget> {
+    if (!this._hasModifiers()) return { selector: this._selector };
     const el = preResolved ?? await this._resolveOne();
-    return this._selectorForElement(el);
+
+    // Ambiguity only arises for positional handles. Non-positional modified
+    // handles resolve strictly (exactly one match in the set), so the derived
+    // selector is unique among the matches.
+    if (this._options.nthIndex !== undefined) {
+      const ordered = this._options.resolvedElementsPromise
+        ? await this._options.resolvedElementsPromise
+        : await this._resolveAll();
+      const idx = this._options.nthIndex < 0 ? ordered.length + this._options.nthIndex : this._options.nthIndex;
+      if (derivedSelectorMisaddresses(el, ordered, idx)) {
+        const coords = coordinateFallback ? boundsCenter(el.bounds) : undefined;
+        if (coords) return { coordinates: coords };
+        const id = identifyingProperty(el)!;
+        throw new Error(
+          `Cannot target ${this._describe()}: its identifying property ` +
+            `(${id.prop} ${JSON.stringify(id.value)}) also matches an earlier element, so the action ` +
+            'would land on the wrong one. Use a more specific selector (getByTestId, or getByRole with ' +
+            'a name) to target this element.',
+        );
+      }
+    }
+
+    // No addressable property: dispatch by coordinates for gestures, else the
+    // same hard error _selectorForElement raised before.
+    if (!identifyingProperty(el)) {
+      const coords = coordinateFallback ? boundsCenter(el.bounds) : undefined;
+      if (coords) return { coordinates: coords };
+      return { selector: this._selectorForElement(el) }; // throws with the guidance message
+    }
+
+    return { selector: this._selectorForElement(el) };
   }
 
   // ── Queries ──
@@ -1351,19 +1465,27 @@ export class ElementHandle {
   }
 
   async tap(): Promise<void> {
-    const { sel, remainingMs } = await this._tracedResolve('tap', 'tap', async () => {
+    const { target, remainingMs } = await this._tracedResolve('tap', 'tap', async () => {
       const { remainingMs, element } = await this._waitForEnabled();
-      return { sel: await this._actionSelector(element), remainingMs };
+      return { target: await this._resolveActionTarget(element, true), remainingMs };
     });
-    return this._tracedAction('tap', 'tap', () => this._client.tap(sel, remainingMs), 'Tap failed');
+    return this._tracedAction('tap', 'tap',
+      () => 'coordinates' in target
+        ? this._client.tapXY(target.coordinates.x, target.coordinates.y)
+        : this._client.tap(target.selector, remainingMs),
+      'Tap failed');
   }
 
   async longPress(durationMs?: number): Promise<void> {
-    const { sel, remainingMs } = await this._tracedResolve('longPress', 'tap', async () => {
+    const { target, remainingMs } = await this._tracedResolve('longPress', 'tap', async () => {
       const { remainingMs, element } = await this._waitForEnabled();
-      return { sel: await this._actionSelector(element), remainingMs };
+      return { target: await this._resolveActionTarget(element, true), remainingMs };
     });
-    return this._tracedAction('longPress', 'tap', () => this._client.longPress(sel, durationMs, remainingMs), 'Long press failed');
+    return this._tracedAction('longPress', 'tap',
+      () => 'coordinates' in target
+        ? this._client.longPressXY(target.coordinates.x, target.coordinates.y, durationMs)
+        : this._client.longPress(target.selector, durationMs, remainingMs),
+      'Long press failed');
   }
 
   async type(text: string, options?: { delay?: number }): Promise<void> {

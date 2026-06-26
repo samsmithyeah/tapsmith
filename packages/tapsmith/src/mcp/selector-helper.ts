@@ -2,7 +2,7 @@ import { parseSelectorString, resolvePositionalIndex } from '../trace-viewer/com
 import type { ParsedSelector } from '../trace-viewer/components/selector-matching.js';
 import type { Selector, SelectorKind } from '../selectors.js';
 import { makeSelector } from '../selectors.js';
-import { buildStrictModeViolationError, collapseSameTargetDuplicates } from '../element-handle.js';
+import { buildStrictModeViolationError, collapseSameTargetDuplicates, derivedSelectorMisaddresses, identifyingProperty } from '../element-handle.js';
 import type { TapsmithGrpcClient, ElementInfo } from '../grpc-client.js';
 
 export interface ParsedRuntimeSelector {
@@ -123,26 +123,18 @@ export async function resolveActionTarget(
   if (!targeted) {
     return { selector, error: `Cannot target match ${String(index)} of ${input}: the element has no resourceId, contentDescription, or text to address it by.` };
   }
-  // The agent acts on the targeting selector's FIRST match in document
-  // order. If an earlier match shares the identifying property, the action
-  // would silently land on that element instead of the resolved index —
-  // error out rather than mis-tap. (elements is in document order, so the
-  // first sharer within the match set approximates the agent's pick.)
-  const sharesProperty = (e: ElementInfo): boolean => {
-    switch (targeted.kind.type) {
-      case 'id': return e.resourceId === el.resourceId;
-      case 'contentDesc': return e.contentDescription === el.contentDescription;
-      case 'text': return e.text === el.text;
-      default: return false;
-    }
-  };
-  const firstSharer = elements.findIndex(sharesProperty);
-  if (firstSharer !== -1 && firstSharer !== idx) {
+  // The agent acts on the targeting selector's FIRST match in document order.
+  // If an earlier match shares the identifying property, the action would
+  // silently land on that element instead of the resolved index — error out
+  // rather than mis-tap. Shares the SDK runtime's detection so the two paths
+  // stay in lockstep (see derivedSelectorMisaddresses in element-handle.ts).
+  if (derivedSelectorMisaddresses(el, elements, idx)) {
+    const id = identifyingProperty(el)!;
     return {
       selector,
       error:
         `Cannot target match ${String(index)} of ${input}: its identifying property ` +
-        `(${targeted.kind.type} ${JSON.stringify(String(targeted.kind.value))}) also matches an earlier element, ` +
+        `(${id.prop} ${JSON.stringify(id.value)}) also matches an earlier element, ` +
         'so the action would land on the wrong one. Use a more specific selector (getByTestId, getByRole with name) for this element.',
     };
   }

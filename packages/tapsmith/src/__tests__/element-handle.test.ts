@@ -6,7 +6,7 @@ import { ElementHandle, StrictModeViolationError, isStrictModeViolation } from '
 import { TraceCollector, type TraceCapture } from '../trace/trace-collector.js';
 import type { AnyTraceEvent, ActionTraceEvent } from '../trace/types.js';
 import { isAbortError } from '../abort.js';
-import { type Selector, _text, _textContains, _role, _className, _id, _testId, formatSelector, selectorToProto } from '../selectors.js';
+import { type Selector, _text, _textContains, _role, _className, _id, _testId, _contentDesc, formatSelector, selectorToProto } from '../selectors.js';
 import type {
   TapsmithGrpcClient,
   FindElementsResponse,
@@ -82,7 +82,9 @@ function makeMockClient(overrides: Partial<TapsmithGrpcClient> = {}): TapsmithGr
     })),
     findElements: vi.fn(async () => makeFindElementsResponse([makeElementInfo()])),
     tap: vi.fn(async () => successResponse()),
+    tapXY: vi.fn(async () => successResponse()),
     longPress: vi.fn(async () => successResponse()),
+    longPressXY: vi.fn(async () => successResponse()),
     typeText: vi.fn(async () => successResponse()),
     clearAndType: vi.fn(async () => successResponse()),
     clearText: vi.fn(async () => successResponse()),
@@ -872,6 +874,76 @@ describe('nth()', () => {
     await handle.nth(0).type('hello');
     const calledSelector = (typeText.mock.calls[0] as unknown[])[0] as Selector;
     expect(selectorToProto(calledSelector)).toEqual({ resourceId: 'item_1' });
+  });
+});
+
+// ─── Positional actions on elements sharing an a11y property ───
+//
+// When a positional handle resolves to an element whose only identifying
+// property (resourceId → contentDescription → text) is shared by an EARLIER
+// match, a derived property selector would make the agent act on that earlier
+// element. Gesture actions fall back to a coordinate dispatch at the resolved
+// element's center; non-gesture actions error rather than silently mis-act.
+describe('positional actions on shared-property matches', () => {
+  // Two delete buttons, each contentDesc "bin", no testID — the reported case.
+  const twoBins = [
+    makeElementInfo({ elementId: 'bin-0', contentDescription: 'bin', text: '', bounds: { left: 300, top: 100, right: 360, bottom: 160 } }),
+    makeElementInfo({ elementId: 'bin-1', contentDescription: 'bin', text: '', bounds: { left: 300, top: 300, right: 360, bottom: 360 } }),
+  ];
+
+  it('last().tap() taps the resolved element by coordinates, not the first match', async () => {
+    const tap = vi.fn(async () => successResponse());
+    const tapXY = vi.fn(async () => successResponse());
+    const client = makeMockClient({
+      findElements: vi.fn(async () => makeFindElementsResponse(twoBins)),
+      tap,
+      tapXY,
+    });
+    const handle = new ElementHandle(client, _contentDesc('bin'), 5000);
+    await handle.last().tap();
+    // Must NOT lower to contentDesc("bin") (agent would tap the first bin).
+    expect(tap).not.toHaveBeenCalled();
+    // Center of the SECOND bin: ((300+360)/2, (300+360)/2) = (330, 330).
+    expect(tapXY).toHaveBeenCalledWith(330, 330);
+  });
+
+  it('first().tap() still uses the property selector (unambiguous — earliest match)', async () => {
+    const tap = vi.fn(async () => successResponse());
+    const tapXY = vi.fn(async () => successResponse());
+    const client = makeMockClient({
+      findElements: vi.fn(async () => makeFindElementsResponse(twoBins)),
+      tap,
+      tapXY,
+    });
+    const handle = new ElementHandle(client, _contentDesc('bin'), 5000);
+    await handle.first().tap();
+    expect(tapXY).not.toHaveBeenCalled();
+    expect(selectorToProto((tap.mock.calls[0] as unknown[])[0] as Selector)).toEqual({ contentDesc: 'bin' });
+  });
+
+  it('last().longPress() falls back to coordinates too', async () => {
+    const longPress = vi.fn(async () => successResponse());
+    const longPressXY = vi.fn(async () => successResponse());
+    const client = makeMockClient({
+      findElements: vi.fn(async () => makeFindElementsResponse(twoBins)),
+      longPress,
+      longPressXY,
+    });
+    const handle = new ElementHandle(client, _contentDesc('bin'), 5000);
+    await handle.last().longPress(400);
+    expect(longPress).not.toHaveBeenCalled();
+    expect(longPressXY).toHaveBeenCalledWith(330, 330, 400);
+  });
+
+  it('type() on a shared-property positional handle errors instead of mis-targeting', async () => {
+    const typeText = vi.fn(async () => successResponse());
+    const client = makeMockClient({
+      findElements: vi.fn(async () => makeFindElementsResponse(twoBins)),
+      typeText,
+    });
+    const handle = new ElementHandle(client, _contentDesc('bin'), 5000);
+    await expect(handle.last().type('x')).rejects.toThrow(/would land on the wrong one/);
+    expect(typeText).not.toHaveBeenCalled();
   });
 });
 
