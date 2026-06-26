@@ -331,6 +331,30 @@ class CommandHandler {
         return try snapshotFinder.findElement(selector)
     }
 
+    /// Resolve one end of a drag (source/target) from its params: a cached
+    /// elementId when present, else a selector resolved against the given
+    /// timeout. Mirrors `resolveElement` but the timeout lives on the parent
+    /// dragAndDrop command, not these nested objects.
+    private func resolveDragEnd(_ params: [String: Any], timeoutMs: Int64) throws -> ElementInfo {
+        if let elementId = params["elementId"] as? String {
+            if let info = try? snapshotFinder.getElementInfo(elementId) {
+                return info
+            }
+            return try elementFinder.getElementInfo(elementId)
+        }
+        let selector = SelectorParser.parse(params)
+        do {
+            return try snapshotFinder.findElement(selector)
+        } catch {
+            return try waitEngine.waitForElement(
+                selector,
+                timeoutMs: timeoutMs,
+                elementFinder: elementFinder,
+                snapshotFinder: snapshotFinder
+            )
+        }
+    }
+
     /// Get the XCUIElement for an element ID, checking both caches.
     ///
     /// **Cost:** O(1) cache lookup, no IPC. The IPC happens later when
@@ -1035,31 +1059,11 @@ class CommandHandler {
             else {
                 throw AgentError.invalidRequest("dragAndDrop requires 'source' and 'target' params")
             }
-            let sourceSel = SelectorParser.parse(sourceParams)
-            let targetSel = SelectorParser.parse(targetParams)
             let timeout = params["timeout"] as? Int64 ?? 10000
-            let sourceEl: ElementInfo
-            let targetEl: ElementInfo
-            do {
-                sourceEl = try snapshotFinder.findElement(sourceSel)
-            } catch {
-                sourceEl = try waitEngine.waitForElement(
-                    sourceSel,
-                    timeoutMs: timeout,
-                    elementFinder: elementFinder,
-                    snapshotFinder: snapshotFinder
-                )
-            }
-            do {
-                targetEl = try snapshotFinder.findElement(targetSel)
-            } catch {
-                targetEl = try waitEngine.waitForElement(
-                    targetSel,
-                    timeoutMs: timeout,
-                    elementFinder: elementFinder,
-                    snapshotFinder: snapshotFinder
-                )
-            }
+            // Each end may be a cached elementId (positional/filtered handle) or
+            // a selector to resolve.
+            let sourceEl = try resolveDragEnd(sourceParams, timeoutMs: timeout)
+            let targetEl = try resolveDragEnd(targetParams, timeoutMs: timeout)
             // Use snapshot bounds to avoid XCUIElement .frame IPC which can
             // trigger quiescence waits and hang/crash the XCTest session.
             let sourceFrame = snapshotFinder.getBounds(sourceEl.elementId)

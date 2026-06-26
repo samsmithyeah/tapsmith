@@ -1982,6 +1982,7 @@ impl proto::tapsmith_service_server::TapsmithService for TapsmithServiceImpl {
                 None
             },
             timeout_ms: opt_timeout(req.timeout_ms),
+            element_id: (!req.element_id.is_empty()).then_some(req.element_id),
         };
 
         let result = self
@@ -2675,19 +2676,23 @@ impl proto::tapsmith_service_server::TapsmithService for TapsmithServiceImpl {
         let req = request.into_inner();
         let request_id = Self::request_id(&req.request_id);
 
-        let source = req
-            .source_selector
-            .as_ref()
-            .ok_or_else(|| Status::invalid_argument("source_selector is required"))?;
-        let target = req
-            .target_selector
-            .as_ref()
-            .ok_or_else(|| Status::invalid_argument("target_selector is required"))?;
+        // Each end is addressed by its cached id (positional/filtered handle) or
+        // by selector; require one per end.
+        let (source_selector, source_element_id) =
+            action_target(req.source_selector.as_ref(), &req.source_element_id).map_err(|_| {
+                Status::invalid_argument("source_selector or source_element_id is required")
+            })?;
+        let (target_selector, target_element_id) =
+            action_target(req.target_selector.as_ref(), &req.target_element_id).map_err(|_| {
+                Status::invalid_argument("target_selector or target_element_id is required")
+            })?;
 
         let command = AgentCommand::DragAndDrop {
-            source_selector: selector_to_json(source),
-            target_selector: selector_to_json(target),
+            source_selector,
+            target_selector,
             timeout_ms: opt_timeout(req.timeout_ms),
+            source_element_id,
+            target_element_id,
         };
 
         let result = self
@@ -2740,15 +2745,13 @@ impl proto::tapsmith_service_server::TapsmithService for TapsmithServiceImpl {
         let req = request.into_inner();
         let request_id = Self::request_id(&req.request_id);
 
-        let selector = req
-            .selector
-            .as_ref()
-            .ok_or_else(|| Status::invalid_argument("selector is required"))?;
+        let (selector, element_id) = action_target(req.selector.as_ref(), &req.element_id)?;
 
         let command = AgentCommand::PinchZoom {
-            selector: selector_to_json(selector),
+            selector,
             scale: req.scale,
             timeout_ms: opt_timeout(req.timeout_ms),
+            element_id,
         };
 
         let result = self

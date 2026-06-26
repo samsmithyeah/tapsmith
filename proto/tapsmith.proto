@@ -316,6 +316,9 @@ message ScrollRequest {
   Selector scroll_until_visible = 4;
   float distance = 5;
   uint64 timeout_ms = 6;
+  // Cached id of the scroll container (instead of `container`), for a
+  // positional/filtered handle. See the note above the action requests.
+  string element_id = 7;
 }
 
 message PressKeyRequest {
@@ -440,6 +443,10 @@ message DragAndDropRequest {
   Selector source_selector = 2;
   Selector target_selector = 3;
   uint64 timeout_ms = 4;
+  // Cached ids of the source/target elements (instead of the selectors), for
+  // positional/filtered handles. Either selector or element_id per end.
+  string source_element_id = 5;
+  string target_element_id = 6;
 }
 
 message SelectOptionRequest {
@@ -458,6 +465,7 @@ message PinchZoomRequest {
   Selector selector = 2;
   float scale = 3;
   uint64 timeout_ms = 4;
+  string element_id = 5;
 }
 
 message FocusRequest {

@@ -486,15 +486,16 @@ export class TapsmithGrpcClient {
   }
 
   async scroll(
-    container: Selector,
+    container: Selector | undefined,
     direction: string,
-    options?: ScrollOptions,
+    options?: ScrollOptions & { elementId?: string },
   ): Promise<ActionResponse> {
     const request: Record<string, unknown> = {
       requestId: requestId(),
-      container: this.selectorProto(container),
       direction,
     };
+    if (options?.elementId) request.elementId = options.elementId;
+    else if (container) request.container = this.selectorProto(container);
     if (options?.scrollUntilVisible) {
       request.scrollUntilVisible = this.selectorProto(options.scrollUntilVisible);
     }
@@ -607,13 +608,21 @@ export class TapsmithGrpcClient {
     });
   }
 
-  async dragAndDrop(source: Selector, target: Selector, timeoutMs?: number): Promise<ActionResponse> {
-    return this.call<ActionResponse>('dragAndDrop', {
+  async dragAndDrop(
+    source: Selector | undefined,
+    target: Selector | undefined,
+    timeoutMs?: number,
+    ids?: { sourceElementId?: string; targetElementId?: string },
+  ): Promise<ActionResponse> {
+    const request: Record<string, unknown> = {
       requestId: requestId(),
-      sourceSelector: this.selectorProto(source),
-      targetSelector: this.selectorProto(target),
       timeoutMs: timeoutMs ?? 0,
-    });
+    };
+    if (ids?.sourceElementId) request.sourceElementId = ids.sourceElementId;
+    else if (source) request.sourceSelector = this.selectorProto(source);
+    if (ids?.targetElementId) request.targetElementId = ids.targetElementId;
+    else if (target) request.targetSelector = this.selectorProto(target);
+    return this.call<ActionResponse>('dragAndDrop', request);
   }
 
   async selectOption(
@@ -635,10 +644,10 @@ export class TapsmithGrpcClient {
     return this.call<ActionResponse>('selectOption', request);
   }
 
-  async pinchZoom(selector: Selector, scale: number, timeoutMs?: number): Promise<ActionResponse> {
+  async pinchZoom(selector: Selector | undefined, scale: number, timeoutMs?: number, elementId?: string): Promise<ActionResponse> {
     return this.call<ActionResponse>('pinchZoom', {
       requestId: requestId(),
-      selector: this.selectorProto(selector),
+      ...this.actionTarget(selector, elementId),
       scale,
       timeoutMs: timeoutMs ?? 0,
     });

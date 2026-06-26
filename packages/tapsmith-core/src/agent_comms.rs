@@ -384,6 +384,7 @@ pub enum AgentCommand {
         scroll_until_visible: Option<Value>,
         distance: Option<f32>,
         timeout_ms: Option<u64>,
+        element_id: Option<String>,
     },
     PressKey {
         key: String,
@@ -404,6 +405,8 @@ pub enum AgentCommand {
         source_selector: Value,
         target_selector: Value,
         timeout_ms: Option<u64>,
+        source_element_id: Option<String>,
+        target_element_id: Option<String>,
     },
     SelectOption {
         selector: Value,
@@ -416,6 +419,7 @@ pub enum AgentCommand {
         selector: Value,
         scale: f32,
         timeout_ms: Option<u64>,
+        element_id: Option<String>,
     },
     Focus {
         selector: Value,
@@ -683,11 +687,13 @@ impl AgentCommand {
                 scroll_until_visible,
                 distance,
                 timeout_ms,
+                element_id,
             } => {
                 let mut p = json!({"direction": direction});
                 if let Some(c) = container {
                     p["container"] = c.clone();
                 }
+                add_element_id(&mut p, element_id);
                 if let Some(sv) = scroll_until_visible {
                     p["scrollTo"] = sv.clone();
                 }
@@ -729,11 +735,21 @@ impl AgentCommand {
                 source_selector,
                 target_selector,
                 timeout_ms,
+                source_element_id,
+                target_element_id,
             } => {
-                let mut p = json!({
-                    "source": source_selector,
-                    "target": target_selector,
-                });
+                // Each end is addressed by its cached id (positional/filtered
+                // handle) or by selector. The agent honors `elementId` in the
+                // source/target params ahead of any selector.
+                let source = match source_element_id {
+                    Some(id) => json!({ "elementId": id }),
+                    None => source_selector.clone(),
+                };
+                let target = match target_element_id {
+                    Some(id) => json!({ "elementId": id }),
+                    None => target_selector.clone(),
+                };
+                let mut p = json!({ "source": source, "target": target });
                 if let Some(t) = timeout_ms {
                     p["timeout"] = json!(t);
                 }
@@ -763,12 +779,14 @@ impl AgentCommand {
                 selector,
                 scale,
                 timeout_ms,
+                element_id,
             } => {
                 let mut p = selector.clone();
                 p["scale"] = json!(scale);
                 if let Some(t) = timeout_ms {
                     p["timeout"] = json!(t);
                 }
+                add_element_id(&mut p, element_id);
                 ("pinchZoom", p)
             }
             AgentCommand::Focus {
@@ -1485,6 +1503,7 @@ mod tests {
             scroll_until_visible: Some(json!({"text": "End"})),
             distance: Some(0.5),
             timeout_ms: Some(8000),
+            element_id: None,
         };
         let j = cmd.to_json("sc1");
         assert_eq!(j["method"], "scroll");
@@ -1575,12 +1594,28 @@ mod tests {
             source_selector: json!({"text": "Item 1"}),
             target_selector: json!({"text": "Drop Zone"}),
             timeout_ms: Some(10000),
+            source_element_id: None,
+            target_element_id: None,
         };
         let j = cmd.to_json("dd1");
         assert_eq!(j["method"], "dragAndDrop");
         assert_eq!(j["params"]["source"]["text"], "Item 1");
         assert_eq!(j["params"]["target"]["text"], "Drop Zone");
         assert_eq!(j["params"]["timeout"], 10000);
+    }
+
+    #[test]
+    fn to_json_drag_and_drop_by_element_id() {
+        let cmd = AgentCommand::DragAndDrop {
+            source_selector: json!({}),
+            target_selector: json!({}),
+            timeout_ms: None,
+            source_element_id: Some("src-1".into()),
+            target_element_id: Some("tgt-1".into()),
+        };
+        let j = cmd.to_json("dd2");
+        assert_eq!(j["params"]["source"]["elementId"], "src-1");
+        assert_eq!(j["params"]["target"]["elementId"], "tgt-1");
     }
 
     #[test]
@@ -1619,6 +1654,7 @@ mod tests {
             selector: json!({"text": "Map"}),
             scale: 2.0,
             timeout_ms: Some(5000),
+            element_id: None,
         };
         let j = cmd.to_json("pz1");
         assert_eq!(j["method"], "pinchZoom");

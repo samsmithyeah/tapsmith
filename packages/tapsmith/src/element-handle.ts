@@ -315,46 +315,6 @@ export function collapseSameTargetDuplicates(elements: ElementInfo[]): ElementIn
 }
 
 /**
- * The property `_selectorForElement` would address this element by, mirroring
- * its `resourceId → contentDescription → text` priority. Returns `undefined`
- * when the element has none of them (unaddressable by a property selector).
- */
-export function identifyingProperty(
-  el: ElementInfo,
-): { prop: 'resourceId' | 'contentDescription' | 'text'; value: string } | undefined {
-  if (el.resourceId) return { prop: 'resourceId', value: el.resourceId };
-  if (el.contentDescription) return { prop: 'contentDescription', value: el.contentDescription };
-  if (el.text) return { prop: 'text', value: el.text };
-  return undefined;
-}
-
-/**
- * Whether the property selector derived from `target` would mis-address it.
- *
- * A positional handle (`.first()/.last()/.nth()`) resolves to a specific
- * element, but the agent acts on the derived selector's FIRST match in
- * document order. If an earlier element in `ordered` shares the same
- * identifying property value, the action would land on that element instead.
- * `ordered` must be the match set in document order and `targetIndex` the
- * resolved element's position within it (`elementId` is not reliably unique, so
- * the caller passes the index it selected by). Returns false when the target
- * has no identifying property (the caller handles unaddressable elements
- * separately).
- */
-export function derivedSelectorMisaddresses(
-  target: ElementInfo,
-  ordered: ElementInfo[],
-  targetIndex: number,
-): boolean {
-  const id = identifyingProperty(target);
-  if (!id) return false;
-  const valueOf = (e: ElementInfo): string =>
-    id.prop === 'resourceId' ? e.resourceId : id.prop === 'contentDescription' ? e.contentDescription : e.text;
-  const firstSharer = ordered.findIndex((e) => valueOf(e) === id.value);
-  return firstSharer !== -1 && firstSharer !== targetIndex;
-}
-
-/**
  * @internal — How an action should be dispatched against a resolved element:
  * by a property selector (the agent re-finds it — used for unmodified handles),
  * or by the agent-cached `elementId` of the exact element a positional/filtered
@@ -728,17 +688,6 @@ export class ElementHandle {
    * more than one element is an error — never a silent first-match.
    */
   private async _resolveOne(): Promise<ElementInfo> {
-    return (await this._resolveOneWithSet()).element;
-  }
-
-  /**
-   * @internal — Like `_resolveOne`, but also returns the full match set the
-   * element was selected from (document order). Callers acting on the element
-   * reuse `ordered` to detect a mis-addressing positional target without a
-   * second `_resolveAll()` round-trip — and, because it is the SAME snapshot
-   * the element came from, without a TOCTOU window.
-   */
-  private async _resolveOneWithSet(): Promise<{ element: ElementInfo; ordered: ElementInfo[] }> {
     const elements = this._options.resolvedElementsPromise
       ? await this._options.resolvedElementsPromise
       : await this._resolveAll();
@@ -752,7 +701,7 @@ export class ElementHandle {
           `nth(${nthIndex}): expected at least ${expectedCount} element(s), but found ${elements.length}`,
         );
       }
-      return { element: elements[idx], ordered: elements };
+      return elements[idx];
     }
 
     if (elements.length === 0) {
@@ -761,7 +710,7 @@ export class ElementHandle {
     if (elements.length > 1) {
       throw buildStrictModeViolationError(this._describe(), elements);
     }
-    return { element: elements[0], ordered: elements };
+    return elements[0];
   }
 
   /** @internal — Build a human-readable description of this handle for error messages. */
@@ -791,10 +740,10 @@ export class ElementHandle {
    *
    * Uses the resolved element's identifying property (resourceId,
    * contentDescription, or text) to build a simple selector. Such a selector
-   * addresses the agent's FIRST match in document order, so it is only safe
-   * when the property is unique to the resolved element — `_resolveActionTarget`
-   * is responsible for detecting when it is not (positional handles where an
-   * earlier match shares the property) and dispatching by coordinates instead.
+   * addresses the agent's FIRST match in document order, so it is only a
+   * defensive fallback in `_actionTarget` for the (unexpected) case of a
+   * resolved element with no cached id — normally a modified handle dispatches
+   * by `elementId`, which targets the exact element.
    *
    * @param info - The resolved ElementInfo to target.
    */
@@ -843,13 +792,11 @@ export class ElementHandle {
    * see elements in document order.)
    *
    * Returns the action's remaining timeout budget plus the resolved element
-   * for modified handles (so `_actionSelector` can skip re-resolution), and —
-   * for positional handles — the match set the element came from (`ordered`)
-   * so the action can detect a mis-addressing target without re-resolving.
-   * `timeoutMs === 0` skips polling entirely, preserving the explicit
-   * opt-out behavior of `_waitForEnabled`.
+   * for modified handles (so `_actionTarget` can address it by id without
+   * re-resolving). `timeoutMs === 0` skips polling entirely, preserving the
+   * explicit opt-out behavior of `_waitForEnabled`.
    */
-  private async _strictResolve(): Promise<{ remainingMs: number; element?: ElementInfo; ordered?: ElementInfo[] }> {
+  private async _strictResolve(): Promise<{ remainingMs: number; element?: ElementInfo }> {
     const timeoutMs = this._timeoutMs;
     if (timeoutMs === 0) return { remainingMs: 0 };
     const MIN_ACTION_BUDGET_MS = 1000;
@@ -860,16 +807,14 @@ export class ElementHandle {
         // Floor at 1ms — the daemon treats a 0 timeout as "use the 30s
         // default", which would stall the final poll tick for 30s.
         const findBudget = Math.min(POLL_MS, Math.max(1, deadline - Date.now()));
-        const resolved = this._hasModifiers()
-          ? await this._resolveOneWithSet()
-          : { element: await this._findOneStrict(findBudget), ordered: undefined };
-        const el = resolved.element;
+        const el = this._hasModifiers()
+          ? await this._resolveOne()
+          : await this._findOneStrict(findBudget);
         if (el) {
           const remaining = Math.max(0, deadline - Date.now());
           return {
             remainingMs: Math.min(timeoutMs, Math.max(remaining, MIN_ACTION_BUDGET_MS)),
             element: el,
-            ordered: resolved.ordered,
           };
         }
       } catch (err) {
@@ -962,7 +907,7 @@ export class ElementHandle {
    *
    * Returns `{ remainingMs, element }` where `remainingMs` is the action
    * timeout budget and `element` is the resolved ElementInfo. This avoids a
-   * redundant gRPC round-trip in `_actionSelector` (Fix 2: eliminate TOCTOU).
+   * redundant gRPC round-trip in `_actionTarget` (eliminates a TOCTOU window).
    *
    * The goal is to share the original user timeout across "wait for enabled" +
    * "execute action" instead of doubling it, BUT with a `MIN_ACTION_BUDGET_MS`
@@ -975,7 +920,7 @@ export class ElementHandle {
    *
    * Throws if the element is not found or still disabled after the timeout.
    */
-  private async _waitForEnabled(): Promise<{ remainingMs: number; element?: ElementInfo; ordered?: ElementInfo[] }> {
+  private async _waitForEnabled(): Promise<{ remainingMs: number; element?: ElementInfo }> {
     const timeoutMs = this._timeoutMs;
     // timeoutMs === 0 means "no polling": behave like the pre-auto-wait code
     // and hand the full zero budget straight to the action.
@@ -989,10 +934,9 @@ export class ElementHandle {
         // Floor at 1ms — the daemon treats a 0 timeout as "use the 30s
         // default", which would stall the final poll tick for 30s.
         const findBudget = Math.min(POLL_MS, Math.max(1, deadline - Date.now()));
-        const resolved = this._hasModifiers()
-          ? await this._resolveOneWithSet()
-          : { element: await this._findOneStrict(findBudget), ordered: undefined };
-        const el = resolved.element;
+        const el = this._hasModifiers()
+          ? await this._resolveOne()
+          : await this._findOneStrict(findBudget);
         if (el) {
           everFound = true;
           if (el.enabled) {
@@ -1000,7 +944,6 @@ export class ElementHandle {
             return {
               remainingMs: Math.min(timeoutMs, Math.max(remaining, MIN_ACTION_BUDGET_MS)),
               element: el,
-              ordered: resolved.ordered,
             };
           }
         }
@@ -1047,40 +990,6 @@ export class ElementHandle {
     // Agent-resolved matches always carry an id; if one is somehow missing,
     // fall back to a derived property selector (first-match semantics).
     return { selector: this._selectorForElement(el) };
-  }
-
-  /**
-   * @internal — Selector to use for actions that can NOT yet target by cached
-   * element id: scroll (the agent resolves the container as a nested selector)
-   * and dragTo (two-ended). For a positional handle these re-derive a property
-   * selector, which the agent acts on by first document-order match — so if the
-   * resolved element shares its identifying property with an earlier match, we
-   * throw rather than silently act on the wrong one.
-   *
-   * @param preResolved - Resolved ElementInfo from the auto-wait step.
-   * @param orderedElements - The match set `preResolved` came from, in document
-   *   order. When provided the ambiguity check reuses it instead of
-   *   re-resolving — saving a round-trip and closing the TOCTOU window.
-   */
-  private async _actionSelector(preResolved?: ElementInfo, orderedElements?: ElementInfo[]): Promise<Selector> {
-    if (!this._hasModifiers()) return this._selector;
-    const el = preResolved ?? await this._resolveOne();
-    if (this._options.nthIndex !== undefined) {
-      const ordered = orderedElements ?? (this._options.resolvedElementsPromise
-        ? await this._options.resolvedElementsPromise
-        : await this._resolveAll());
-      const idx = this._options.nthIndex < 0 ? ordered.length + this._options.nthIndex : this._options.nthIndex;
-      if (derivedSelectorMisaddresses(el, ordered, idx)) {
-        const id = identifyingProperty(el)!;
-        throw new Error(
-          `Cannot target ${this._describe()} for this action: its identifying property ` +
-            `(${id.prop} ${JSON.stringify(id.value)}) also matches an earlier element. This action ` +
-            '(scroll/drag) does not yet support exact-element addressing — use a more specific selector ' +
-            '(getByTestId, or getByRole with a name) to target this element.',
-        );
-      }
-    }
-    return this._selectorForElement(el);
   }
 
   // ── Queries ──
@@ -1525,12 +1434,14 @@ export class ElementHandle {
   }
 
   async scroll(direction: string, options?: { distance?: number }): Promise<void> {
-    const { sel, remainingMs } = await this._tracedResolve('scroll', 'scroll', async () => {
-      const { remainingMs, element, ordered } = await this._strictResolve();
-      return { sel: await this._actionSelector(element, ordered), remainingMs };
+    const { target, remainingMs } = await this._tracedResolve('scroll', 'scroll', async () => {
+      const { remainingMs, element } = await this._strictResolve();
+      return { target: await this._actionTarget(element), remainingMs };
     });
     return this._tracedAction('scroll', 'scroll',
-      () => this._client.scroll(sel, direction, { distance: options?.distance, timeoutMs: remainingMs }),
+      () => 'elementId' in target
+        ? this._client.scroll(undefined, direction, { distance: options?.distance, timeoutMs: remainingMs, elementId: target.elementId })
+        : this._client.scroll(target.selector, direction, { distance: options?.distance, timeoutMs: remainingMs }),
       'Scroll failed');
   }
 
@@ -1552,16 +1463,22 @@ export class ElementHandle {
   }
 
   async dragTo(target: ElementHandle): Promise<void> {
-    const { sourceSel, targetSel, remainingMs } = await this._tracedResolve('dragTo', 'swipe', async () => {
+    const { sourceTarget, targetTarget, remainingMs } = await this._tracedResolve('dragTo', 'swipe', async () => {
       const source = await this._strictResolve();
       const targetRes = await target._strictResolve();
       return {
-        sourceSel: await this._actionSelector(source.element, source.ordered),
-        targetSel: await target._actionSelector(targetRes.element, targetRes.ordered),
+        sourceTarget: await this._actionTarget(source.element),
+        targetTarget: await target._actionTarget(targetRes.element),
         remainingMs: source.remainingMs,
       };
     });
-    return this._tracedAction('dragTo', 'swipe', () => this._client.dragAndDrop(sourceSel, targetSel, remainingMs), 'Drag and drop failed');
+    const sourceSel = 'elementId' in sourceTarget ? undefined : sourceTarget.selector;
+    const targetSel = 'elementId' in targetTarget ? undefined : targetTarget.selector;
+    const ids = {
+      sourceElementId: 'elementId' in sourceTarget ? sourceTarget.elementId : undefined,
+      targetElementId: 'elementId' in targetTarget ? targetTarget.elementId : undefined,
+    };
+    return this._tracedAction('dragTo', 'swipe', () => this._client.dragAndDrop(sourceSel, targetSel, remainingMs, ids), 'Drag and drop failed');
   }
 
   async setChecked(checked: boolean): Promise<void> {
@@ -1646,21 +1563,29 @@ export class ElementHandle {
   }
 
   async pinchIn(options?: { scale?: number }): Promise<void> {
-    const { sel, remainingMs } = await this._tracedResolve('pinchIn', 'other', async () => {
+    const { target, remainingMs } = await this._tracedResolve('pinchIn', 'other', async () => {
       const { remainingMs, element } = await this._strictResolve();
-      return { sel: await this._actionSelector(element), remainingMs };
+      return { target: await this._actionTarget(element), remainingMs };
     });
     const scale = options?.scale ?? 0.5;
-    return this._tracedAction('pinchIn', 'other', () => this._client.pinchZoom(sel, scale, remainingMs), 'Pinch in failed');
+    return this._tracedAction('pinchIn', 'other',
+      () => 'elementId' in target
+        ? this._client.pinchZoom(undefined, scale, remainingMs, target.elementId)
+        : this._client.pinchZoom(target.selector, scale, remainingMs),
+      'Pinch in failed');
   }
 
   async pinchOut(options?: { scale?: number }): Promise<void> {
-    const { sel, remainingMs } = await this._tracedResolve('pinchOut', 'other', async () => {
+    const { target, remainingMs } = await this._tracedResolve('pinchOut', 'other', async () => {
       const { remainingMs, element } = await this._strictResolve();
-      return { sel: await this._actionSelector(element), remainingMs };
+      return { target: await this._actionTarget(element), remainingMs };
     });
     const scale = options?.scale ?? 2;
-    return this._tracedAction('pinchOut', 'other', () => this._client.pinchZoom(sel, scale, remainingMs), 'Pinch out failed');
+    return this._tracedAction('pinchOut', 'other',
+      () => 'elementId' in target
+        ? this._client.pinchZoom(undefined, scale, remainingMs, target.elementId)
+        : this._client.pinchZoom(target.selector, scale, remainingMs),
+      'Pinch out failed');
   }
 
   async focus(): Promise<void> {

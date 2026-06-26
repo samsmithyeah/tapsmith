@@ -90,6 +90,23 @@ class CommandHandler(
         return waitEngine.waitForElement(selector, timeout, elementFinder)
     }
 
+    /**
+     * Resolve one end of a drag (source/target) from its params: a cached
+     * elementId when present, else a selector resolved against the given
+     * timeout. Mirrors [resolveElement] but the timeout lives on the parent
+     * dragAndDrop command, not these nested objects.
+     */
+    private fun resolveDragEnd(
+        params: JSONObject,
+        timeout: Long,
+    ): ElementInfo {
+        val elementId = params.optString("elementId", null)
+        if (elementId != null) {
+            return elementFinder.getElementInfo(elementId)
+        }
+        return waitEngine.waitForElement(parseSelectorParams(params), timeout, elementFinder)
+    }
+
     private fun dispatch(
         method: String,
         params: JSONObject,
@@ -297,11 +314,11 @@ class CommandHandler(
             "dragAndDrop" -> {
                 val sourceParams = params.getJSONObject("source")
                 val targetParams = params.getJSONObject("target")
-                val sourceSel = parseSelectorParams(sourceParams)
-                val targetSel = parseSelectorParams(targetParams)
                 val timeout = params.optLong("timeout", 10000L)
-                val sourceEl = waitEngine.waitForElement(sourceSel, timeout, elementFinder)
-                val targetEl = waitEngine.waitForElement(targetSel, timeout, elementFinder)
+                // Each end may be a cached elementId (positional/filtered handle)
+                // or a selector to resolve.
+                val sourceEl = resolveDragEnd(sourceParams, timeout)
+                val targetEl = resolveDragEnd(targetParams, timeout)
                 actionExecutor.dragTo(
                     elementFinder.getElement(sourceEl.elementId),
                     elementFinder.getElement(targetEl.elementId),

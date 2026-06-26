@@ -1506,7 +1506,11 @@ describe('dragTo()', () => {
     const source = new ElementHandle(client, sourceSel, 5000);
     const target = new ElementHandle(client, targetSel, 5000);
     await source.dragTo(target);
-    expect(dragAndDrop).toHaveBeenCalledWith(sourceSel, targetSel, expect.any(Number));
+    // Unmodified handles → both ends dispatched by selector (no element ids).
+    expect(dragAndDrop).toHaveBeenCalledWith(sourceSel, targetSel, expect.any(Number), {
+      sourceElementId: undefined,
+      targetElementId: undefined,
+    });
   });
 
   it('throws on failure', async () => {
@@ -1527,7 +1531,7 @@ describe('dragTo()', () => {
     await expect(source.dragTo(target)).rejects.toThrow('Drag and drop failed');
   });
 
-  it('resolves selectors for modified handles', async () => {
+  it('targets each end by its resolved element id for modified handles', async () => {
     const dragAndDrop = vi.fn(async () => successResponse());
     const client = makeMockClient({
       findElements: vi.fn(async () => makeFindElementsResponse(threeItems)),
@@ -1536,10 +1540,11 @@ describe('dragTo()', () => {
     const source = new ElementHandle(client, _role('listitem'), 5000);
     const target = new ElementHandle(client, _role('listitem'), 5000);
     await source.first().dragTo(target.last());
-    const calledSource = (dragAndDrop.mock.calls[0] as unknown[])[0] as Selector;
-    const calledTarget = (dragAndDrop.mock.calls[0] as unknown[])[1] as Selector;
-    expect(selectorToProto(calledSource)).toEqual({ resourceId: 'item_1' });
-    expect(selectorToProto(calledTarget)).toEqual({ resourceId: 'item_3' });
+    // first() → el-1, last() → el-3; both ends addressed by id, no selectors.
+    expect(dragAndDrop).toHaveBeenCalledWith(undefined, undefined, expect.any(Number), {
+      sourceElementId: 'el-1',
+      targetElementId: 'el-3',
+    });
   });
 });
 
