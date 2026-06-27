@@ -995,6 +995,31 @@ describe('positional actions on shared-property matches', () => {
     await expect(handle.last().tap()).rejects.toThrow('Tap target not found');
     expect(tap).toHaveBeenCalledTimes(1);
   });
+
+  it('drops the cached all() snapshot so the stale retry re-queries for a fresh id', async () => {
+    let tapCalls = 0;
+    const tap = vi.fn(async () =>
+      (tapCalls += 1) === 1 ? failureResponse('Element is stale (UI changed)') : successResponse(),
+    );
+    // The cached all() snapshot must NOT be reused on retry: the second
+    // findElements (re-query) returns fresh ids.
+    let findCalls = 0;
+    const findElements = vi.fn(async () => {
+      findCalls += 1;
+      const tag = findCalls === 1 ? 'stale' : 'fresh';
+      return makeFindElementsResponse([
+        makeElementInfo({ elementId: `${tag}-0`, contentDescription: 'bin' }),
+        makeElementInfo({ elementId: `${tag}-1`, contentDescription: 'bin' }),
+      ]);
+    });
+    const client = makeMockClient({ findElements, tap });
+    const items = await new ElementHandle(client, _contentDesc('bin'), 5000).all();
+    await items[1].tap();
+    // First dispatch used the cached id 'stale-1'; after clearing the cache the
+    // retry re-queried and dispatched the fresh id 'fresh-1'.
+    expect(tap).toHaveBeenNthCalledWith(1, undefined, expect.any(Number), 'stale-1');
+    expect(tap).toHaveBeenNthCalledWith(2, undefined, expect.any(Number), 'fresh-1');
+  });
 });
 
 // ─── filter() (PILOT-16) ───

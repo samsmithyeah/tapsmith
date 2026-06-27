@@ -1026,6 +1026,10 @@ export class ElementHandle {
     } catch (err) {
       if (!isStaleElementError(err instanceof Error ? err.message : String(err))) throw err;
     }
+    // Drop any cached all() snapshot so the re-resolve re-queries the device for
+    // a FRESH id rather than handing back the same stale one (_resolveOne
+    // short-circuits on resolvedElementsPromise).
+    this._options.resolvedElementsPromise = undefined;
     return call(await this._actionTarget());
   }
 
@@ -1530,6 +1534,9 @@ export class ElementHandle {
       } catch (err) {
         if (!isStaleElementError(err instanceof Error ? err.message : String(err))) throw err;
       }
+      // Drop any cached all() snapshot on BOTH ends so each re-resolves fresh.
+      this._options.resolvedElementsPromise = undefined;
+      target._options.resolvedElementsPromise = undefined;
       return dispatch(await this._actionTarget(), await target._actionTarget());
     }, 'Drag and drop failed');
   }
