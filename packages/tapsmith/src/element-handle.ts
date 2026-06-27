@@ -323,6 +323,16 @@ export function collapseSameTargetDuplicates(elements: ElementInfo[]): ElementIn
  */
 type ActionTarget = { selector: Selector } | { elementId: string };
 
+/**
+ * @internal — Whether an action failure means the agent's cached element id is
+ * gone (evicted or its snapshot invalidated by an intervening snapshot, e.g.
+ * trace capture, between resolve and dispatch). Both agents word it "…not
+ * found. It may have gone stale.".
+ */
+function isStaleElementError(message: string | undefined): boolean {
+  return !!message && /gone stale/i.test(message);
+}
+
 /** @internal Brand key for cross-instance type checks (CJS/ESM dual-package). */
 export const ELEMENT_HANDLE_BRAND = Symbol.for('tapsmith.ElementHandle');
 
@@ -992,6 +1002,31 @@ export class ElementHandle {
     return { selector: this._selectorForElement(el) };
   }
 
+  /**
+   * @internal — Dispatch an element-id-targeted action, re-resolving once if the
+   * cached id went stale.
+   *
+   * The id only lives in the agent's element cache; an intervening snapshot
+   * between resolve and dispatch (notably the trace capture, hence CI-only) can
+   * invalidate it, so the action fails with "…gone stale". Re-resolving runs the
+   * positional/filter logic again to a FRESH id (correct for .last()/.nth() too)
+   * and re-dispatches immediately — no capture in between, so the fresh id
+   * survives. Selector targets (unmodified handles) need no retry.
+   */
+  private async _dispatchTargeted<R extends { success: boolean; errorMessage: string }>(
+    target: ActionTarget,
+    call: (t: ActionTarget) => Promise<R>,
+  ): Promise<R> {
+    if (!('elementId' in target)) return call(target);
+    try {
+      const res = await call(target);
+      if (res.success || !isStaleElementError(res.errorMessage)) return res;
+    } catch (err) {
+      if (!isStaleElementError(err instanceof Error ? err.message : String(err))) throw err;
+    }
+    return call(await this._actionTarget());
+  }
+
   // ── Queries ──
 
   /** Resolve this handle to an ElementInfo. Throws if not found within timeout. */
@@ -1377,9 +1412,9 @@ export class ElementHandle {
       return { target: await this._actionTarget(element), remainingMs };
     });
     return this._tracedAction('tap', 'tap',
-      () => 'elementId' in target
-        ? this._client.tap(undefined, remainingMs, target.elementId)
-        : this._client.tap(target.selector, remainingMs),
+      () => this._dispatchTargeted(target, (t) => 'elementId' in t
+        ? this._client.tap(undefined, remainingMs, t.elementId)
+        : this._client.tap(t.selector, remainingMs)),
       'Tap failed');
   }
 
@@ -1389,9 +1424,9 @@ export class ElementHandle {
       return { target: await this._actionTarget(element), remainingMs };
     });
     return this._tracedAction('longPress', 'tap',
-      () => 'elementId' in target
-        ? this._client.longPress(undefined, durationMs, remainingMs, target.elementId)
-        : this._client.longPress(target.selector, durationMs, remainingMs),
+      () => this._dispatchTargeted(target, (t) => 'elementId' in t
+        ? this._client.longPress(undefined, durationMs, remainingMs, t.elementId)
+        : this._client.longPress(t.selector, durationMs, remainingMs)),
       'Long press failed');
   }
 
@@ -1402,9 +1437,9 @@ export class ElementHandle {
     });
     const delay = options?.delay ?? this._options.typingDelay ?? 0;
     return this._tracedAction('type', 'type',
-      () => 'elementId' in target
-        ? this._client.typeText(undefined, text, remainingMs, delay, target.elementId)
-        : this._client.typeText(target.selector, text, remainingMs, delay),
+      () => this._dispatchTargeted(target, (t) => 'elementId' in t
+        ? this._client.typeText(undefined, text, remainingMs, delay, t.elementId)
+        : this._client.typeText(t.selector, text, remainingMs, delay)),
       'Type text failed', { inputValue: text });
   }
 
@@ -1415,9 +1450,9 @@ export class ElementHandle {
     });
     const delay = options?.delay ?? this._options.typingDelay ?? 0;
     return this._tracedAction('clearAndType', 'type',
-      () => 'elementId' in target
-        ? this._client.clearAndType(undefined, text, remainingMs, delay, target.elementId)
-        : this._client.clearAndType(target.selector, text, remainingMs, delay),
+      () => this._dispatchTargeted(target, (t) => 'elementId' in t
+        ? this._client.clearAndType(undefined, text, remainingMs, delay, t.elementId)
+        : this._client.clearAndType(t.selector, text, remainingMs, delay)),
       'Clear and type failed', { inputValue: text });
   }
 
@@ -1427,9 +1462,9 @@ export class ElementHandle {
       return { target: await this._actionTarget(element), remainingMs };
     });
     return this._tracedAction('clear', 'type',
-      () => 'elementId' in target
-        ? this._client.clearText(undefined, remainingMs, target.elementId)
-        : this._client.clearText(target.selector, remainingMs),
+      () => this._dispatchTargeted(target, (t) => 'elementId' in t
+        ? this._client.clearText(undefined, remainingMs, t.elementId)
+        : this._client.clearText(t.selector, remainingMs)),
       'Clear text failed');
   }
 
@@ -1439,9 +1474,9 @@ export class ElementHandle {
       return { target: await this._actionTarget(element), remainingMs };
     });
     return this._tracedAction('scroll', 'scroll',
-      () => 'elementId' in target
-        ? this._client.scroll(undefined, direction, { distance: options?.distance, timeoutMs: remainingMs, elementId: target.elementId })
-        : this._client.scroll(target.selector, direction, { distance: options?.distance, timeoutMs: remainingMs }),
+      () => this._dispatchTargeted(target, (t) => 'elementId' in t
+        ? this._client.scroll(undefined, direction, { distance: options?.distance, timeoutMs: remainingMs, elementId: t.elementId })
+        : this._client.scroll(t.selector, direction, { distance: options?.distance, timeoutMs: remainingMs })),
       'Scroll failed');
   }
 
@@ -1456,9 +1491,9 @@ export class ElementHandle {
     // must be positive; ≤0 is treated as "use default".
     const intervalMs = Math.max(0, options?.intervalMs ?? this._options.doubleTapInterval ?? 0);
     return this._tracedAction('doubleTap', 'tap',
-      () => 'elementId' in target
-        ? this._client.doubleTap(undefined, remainingMs, intervalMs, target.elementId)
-        : this._client.doubleTap(target.selector, remainingMs, intervalMs),
+      () => this._dispatchTargeted(target, (t) => 'elementId' in t
+        ? this._client.doubleTap(undefined, remainingMs, intervalMs, t.elementId)
+        : this._client.doubleTap(t.selector, remainingMs, intervalMs)),
       'Double tap failed');
   }
 
@@ -1472,13 +1507,29 @@ export class ElementHandle {
         remainingMs: source.remainingMs,
       };
     });
-    const sourceSel = 'elementId' in sourceTarget ? undefined : sourceTarget.selector;
-    const targetSel = 'elementId' in targetTarget ? undefined : targetTarget.selector;
-    const ids = {
-      sourceElementId: 'elementId' in sourceTarget ? sourceTarget.elementId : undefined,
-      targetElementId: 'elementId' in targetTarget ? targetTarget.elementId : undefined,
-    };
-    return this._tracedAction('dragTo', 'swipe', () => this._client.dragAndDrop(sourceSel, targetSel, remainingMs, ids), 'Drag and drop failed');
+    const dispatch = (st: ActionTarget, tt: ActionTarget): Promise<ActionResponse> =>
+      this._client.dragAndDrop(
+        'elementId' in st ? undefined : st.selector,
+        'elementId' in tt ? undefined : tt.selector,
+        remainingMs,
+        {
+          sourceElementId: 'elementId' in st ? st.elementId : undefined,
+          targetElementId: 'elementId' in tt ? tt.elementId : undefined,
+        },
+      );
+    return this._tracedAction('dragTo', 'swipe', async () => {
+      const byId = 'elementId' in sourceTarget || 'elementId' in targetTarget;
+      if (!byId) return dispatch(sourceTarget, targetTarget);
+      // Either end's cached id can go stale between resolve and dispatch
+      // (see _dispatchTargeted) — re-resolve both ends and retry once.
+      try {
+        const res = await dispatch(sourceTarget, targetTarget);
+        if (res.success || !isStaleElementError(res.errorMessage)) return res;
+      } catch (err) {
+        if (!isStaleElementError(err instanceof Error ? err.message : String(err))) throw err;
+      }
+      return dispatch(await this._actionTarget(), await target._actionTarget());
+    }, 'Drag and drop failed');
   }
 
   async setChecked(checked: boolean): Promise<void> {
@@ -1503,9 +1554,9 @@ export class ElementHandle {
 
       // Tap once — for toggleable elements (checkboxes, switches) a second
       // tap would revert the state, so we must not re-tap.
-      const tapRes = 'elementId' in target
-        ? await this._client.tap(undefined, remainingMs, target.elementId)
-        : await this._client.tap(target.selector, remainingMs);
+      const tapRes = await this._dispatchTargeted(target, (t) => 'elementId' in t
+        ? this._client.tap(undefined, remainingMs, t.elementId)
+        : this._client.tap(t.selector, remainingMs));
       if (!tapRes.success) return tapRes;
 
       // Poll for the state change until the full deadline — animations
@@ -1533,18 +1584,18 @@ export class ElementHandle {
       return { target: await this._actionTarget(element), remainingMs };
     });
     return this._tracedAction('selectOption', 'other',
-      () => 'elementId' in target
-        ? this._client.selectOption(undefined, option, remainingMs, target.elementId)
-        : this._client.selectOption(target.selector, option, remainingMs),
+      () => this._dispatchTargeted(target, (t) => 'elementId' in t
+        ? this._client.selectOption(undefined, option, remainingMs, t.elementId)
+        : this._client.selectOption(t.selector, option, remainingMs)),
       'Select option failed');
   }
 
   async screenshot(): Promise<Buffer> {
     const { remainingMs, element } = await this._strictResolve();
     const target = await this._actionTarget(element);
-    const res = 'elementId' in target
-      ? await this._client.takeElementScreenshot(undefined, remainingMs, target.elementId)
-      : await this._client.takeElementScreenshot(target.selector, remainingMs);
+    const res = await this._dispatchTargeted(target, (t) => 'elementId' in t
+      ? this._client.takeElementScreenshot(undefined, remainingMs, t.elementId)
+      : this._client.takeElementScreenshot(t.selector, remainingMs));
     if (!res.success) {
       throw new Error(res.errorMessage || 'Element screenshot failed');
     }
@@ -1569,9 +1620,9 @@ export class ElementHandle {
     });
     const scale = options?.scale ?? 0.5;
     return this._tracedAction('pinchIn', 'other',
-      () => 'elementId' in target
-        ? this._client.pinchZoom(undefined, scale, remainingMs, target.elementId)
-        : this._client.pinchZoom(target.selector, scale, remainingMs),
+      () => this._dispatchTargeted(target, (t) => 'elementId' in t
+        ? this._client.pinchZoom(undefined, scale, remainingMs, t.elementId)
+        : this._client.pinchZoom(t.selector, scale, remainingMs)),
       'Pinch in failed');
   }
 
@@ -1582,9 +1633,9 @@ export class ElementHandle {
     });
     const scale = options?.scale ?? 2;
     return this._tracedAction('pinchOut', 'other',
-      () => 'elementId' in target
-        ? this._client.pinchZoom(undefined, scale, remainingMs, target.elementId)
-        : this._client.pinchZoom(target.selector, scale, remainingMs),
+      () => this._dispatchTargeted(target, (t) => 'elementId' in t
+        ? this._client.pinchZoom(undefined, scale, remainingMs, t.elementId)
+        : this._client.pinchZoom(t.selector, scale, remainingMs)),
       'Pinch out failed');
   }
 
@@ -1594,9 +1645,9 @@ export class ElementHandle {
       return { target: await this._actionTarget(element), remainingMs };
     });
     return this._tracedAction('focus', 'other',
-      () => 'elementId' in target
-        ? this._client.focus(undefined, remainingMs, target.elementId)
-        : this._client.focus(target.selector, remainingMs),
+      () => this._dispatchTargeted(target, (t) => 'elementId' in t
+        ? this._client.focus(undefined, remainingMs, t.elementId)
+        : this._client.focus(t.selector, remainingMs)),
       'Focus failed');
   }
 
@@ -1606,9 +1657,9 @@ export class ElementHandle {
       return { target: await this._actionTarget(element), remainingMs };
     });
     return this._tracedAction('blur', 'other',
-      () => 'elementId' in target
-        ? this._client.blur(undefined, remainingMs, target.elementId)
-        : this._client.blur(target.selector, remainingMs),
+      () => this._dispatchTargeted(target, (t) => 'elementId' in t
+        ? this._client.blur(undefined, remainingMs, t.elementId)
+        : this._client.blur(t.selector, remainingMs)),
       'Blur failed');
   }
 
@@ -1618,9 +1669,9 @@ export class ElementHandle {
       return { target: await this._actionTarget(element), remainingMs };
     });
     return this._tracedAction('highlight', 'other',
-      () => 'elementId' in target
-        ? this._client.highlight(undefined, options?.durationMs, remainingMs, target.elementId)
-        : this._client.highlight(target.selector, options?.durationMs, remainingMs),
+      () => this._dispatchTargeted(target, (t) => 'elementId' in t
+        ? this._client.highlight(undefined, options?.durationMs, remainingMs, t.elementId)
+        : this._client.highlight(t.selector, options?.durationMs, remainingMs)),
       'Highlight failed');
   }
 

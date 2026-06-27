@@ -946,6 +946,25 @@ describe('positional actions on shared-property matches', () => {
     await handle.last().type('x');
     expect(typeText).toHaveBeenCalledWith(undefined, 'x', expect.any(Number), expect.any(Number), 'bin-1');
   });
+
+  it('re-resolves to a fresh id and retries when the cached id goes stale', async () => {
+    let tapCalls = 0;
+    const tap = vi.fn(async () => {
+      tapCalls += 1;
+      // First dispatch: the cached id was invalidated (e.g. by an intervening
+      // snapshot) between resolve and act. Second dispatch (fresh id): success.
+      return tapCalls === 1
+        ? failureResponse("Element 'bin-1' not found. It may have gone stale.")
+        : successResponse();
+    });
+    const findElements = vi.fn(async () => makeFindElementsResponse(twoBins));
+    const client = makeMockClient({ findElements, tap });
+    const handle = new ElementHandle(client, _contentDesc('bin'), 5000);
+    await handle.last().tap();
+    expect(tap).toHaveBeenCalledTimes(2);
+    // The retry re-runs .last() against a fresh resolve → still id 'bin-1'.
+    expect(tap).toHaveBeenNthCalledWith(2, undefined, expect.any(Number), 'bin-1');
+  });
 });
 
 // ─── filter() (PILOT-16) ───
