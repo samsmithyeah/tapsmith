@@ -79,7 +79,7 @@ class CommandHandler(
      */
     private fun resolveElement(params: JSONObject): ElementInfo {
         val elementId = params.optString("elementId", null)
-        if (elementId != null) {
+        if (!elementId.isNullOrEmpty()) {
             // Use cached element directly — avoids a new search by className
             // which is not guaranteed to be unique.
             return elementFinder.getElementInfo(elementId)
@@ -101,7 +101,7 @@ class CommandHandler(
         timeout: Long,
     ): ElementInfo {
         val elementId = params.optString("elementId", null)
-        if (elementId != null) {
+        if (!elementId.isNullOrEmpty()) {
             return elementFinder.getElementInfo(elementId)
         }
         return waitEngine.waitForElement(parseSelectorParams(params), timeout, elementFinder)

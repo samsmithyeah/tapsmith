@@ -316,7 +316,7 @@ class CommandHandler {
     /// the `clearText` backspace loop) should prefer the selector
     /// form so each pass sees a fresh snapshot.
     private func resolveElement(_ params: [String: Any]) throws -> ElementInfo {
-        if let elementId = params["elementId"] as? String {
+        if let elementId = params["elementId"] as? String, !elementId.isEmpty {
             // Try snapshot finder cache first, then fall back to old cache
             if let info = try? snapshotFinder.getElementInfo(elementId) {
                 return info
@@ -336,7 +336,7 @@ class CommandHandler {
     /// timeout. Mirrors `resolveElement` but the timeout lives on the parent
     /// dragAndDrop command, not these nested objects.
     private func resolveDragEnd(_ params: [String: Any], timeoutMs: Int64) throws -> ElementInfo {
-        if let elementId = params["elementId"] as? String {
+        if let elementId = params["elementId"] as? String, !elementId.isEmpty {
             if let info = try? snapshotFinder.getElementInfo(elementId) {
                 return info
             }
