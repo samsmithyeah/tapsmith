@@ -324,13 +324,15 @@ export function collapseSameTargetDuplicates(elements: ElementInfo[]): ElementIn
 type ActionTarget = { selector: Selector } | { elementId: string };
 
 /**
- * @internal — Whether an action failure means the agent's cached element id is
- * gone (evicted or its snapshot invalidated by an intervening snapshot, e.g.
- * trace capture, between resolve and dispatch). Both agents word it "…not
- * found. It may have gone stale.".
+ * @internal — Whether an action failure means the agent's cached element is no
+ * longer usable, so re-resolving to a fresh id and retrying may succeed. Covers
+ * both wordings: the cached id was evicted / its snapshot invalidated by an
+ * intervening snapshot ("…not found. It may have gone stale.") and a live
+ * StaleObjectException where the cached object's view re-rendered ("Element is
+ * stale (UI changed): …", Android).
  */
 function isStaleElementError(message: string | undefined): boolean {
-  return !!message && /gone stale/i.test(message);
+  return !!message && /stale/i.test(message);
 }
 
 /** @internal Brand key for cross-instance type checks (CJS/ESM dual-package). */

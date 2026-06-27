@@ -965,6 +965,36 @@ describe('positional actions on shared-property matches', () => {
     // The retry re-runs .last() against a fresh resolve → still id 'bin-1'.
     expect(tap).toHaveBeenNthCalledWith(2, undefined, expect.any(Number), 'bin-1');
   });
+
+  it('retries on the Android StaleObjectException wording too', async () => {
+    let tapCalls = 0;
+    const tap = vi.fn(async () => {
+      tapCalls += 1;
+      // Android wraps a live StaleObjectException as "Element is stale
+      // (UI changed): …" — distinct from the "gone stale" cache-miss message.
+      return tapCalls === 1
+        ? failureResponse('Element is stale (UI changed): StaleObjectException')
+        : successResponse();
+    });
+    const client = makeMockClient({
+      findElements: vi.fn(async () => makeFindElementsResponse(twoBins)),
+      tap,
+    });
+    const handle = new ElementHandle(client, _contentDesc('bin'), 5000);
+    await handle.last().tap();
+    expect(tap).toHaveBeenCalledTimes(2);
+  });
+
+  it('does NOT retry a normal action failure', async () => {
+    const tap = vi.fn(async () => failureResponse('Tap target not found'));
+    const client = makeMockClient({
+      findElements: vi.fn(async () => makeFindElementsResponse(twoBins)),
+      tap,
+    });
+    const handle = new ElementHandle(client, _contentDesc('bin'), 5000);
+    await expect(handle.last().tap()).rejects.toThrow('Tap target not found');
+    expect(tap).toHaveBeenCalledTimes(1);
+  });
 });
 
 // ─── filter() (PILOT-16) ───
