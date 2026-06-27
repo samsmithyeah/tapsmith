@@ -144,7 +144,8 @@ class SnapshotElementFinder {
 
         let screenSize = self.screenSize
 
-        let results = matches.map { (nodeDict, frame) in
+        let results = matches.enumerated().map { (matchIndex, match) in
+            let (nodeDict, frame) = match
             let bounds = ElementBounds(
                 left: Int(frame.origin.x),
                 top: Int(frame.origin.y),
@@ -182,7 +183,7 @@ class SnapshotElementFinder {
             // This is deferred — the query object is created but not evaluated until
             // a property (like .isHittable) is accessed. Pass the snapshot node so the
             // query can use element type + identifier for more precise matching.
-            cacheQueryElement(elementId: elementId, selector: selector, snapshotNode: nodeDict)
+            cacheQueryElement(elementId: elementId, selector: selector, matchIndex: matchIndex, snapshotNode: nodeDict)
             // The snapshot's hasFocus is unreliable on Xcode 26 — it can
             // report false even when the text input is the first responder.
             // Use the snapshot when it reports true; otherwise fall back to
@@ -1159,6 +1160,7 @@ class SnapshotElementFinder {
     private func cacheQueryElement(
         elementId: String,
         selector: ElementSelector,
+        matchIndex: Int,
         snapshotNode: [String: Any]? = nil
     ) {
         // Build a query that matches this element
@@ -1169,75 +1171,54 @@ class SnapshotElementFinder {
         let nodeElType = XCUIElement.ElementType(rawValue: nodeElTypeRaw)
         let nodeIdentifier = snapshotNode?["identifier"] as? String ?? ""
 
+        // Resolve a query to the SPECIFIC match: when the element carries a
+        // unique snapshot identifier, narrow by it (firstMatch then suffices);
+        // otherwise resolve by its positional index in the match set, so
+        // `.last()/.nth()` on same-label, no-id elements resolve to the right
+        // one instead of always the first. `matchIndex` is the element's index
+        // in this `findElements` result (post wrapper-suppression), so it aligns
+        // with the SDK's positional pick.
+        func resolve(_ base: XCUIElementQuery) -> XCUIElement {
+            if !nodeIdentifier.isEmpty {
+                return base.matching(NSPredicate(format: "identifier == %@", nodeIdentifier)).firstMatch
+            }
+            return base.element(boundBy: matchIndex)
+        }
+        // A label predicate scoped to the snapshot element's type when it is
+        // specific (RN buttons surface as `.other`, so fall back to any type).
+        func labelQuery(_ predicate: NSPredicate) -> XCUIElementQuery {
+            if let elType = nodeElType, elType != .other, elType != .any {
+                return app.descendants(matching: elType).matching(predicate)
+            }
+            return app.descendants(matching: .any).matching(predicate)
+        }
+
         if let testId = selector.testId {
             element = app.descendants(matching: .any)
                 .matching(NSPredicate(format: "identifier == %@", testId))
-                .firstMatch
+                .element(boundBy: matchIndex)
         } else if let id = selector.id {
             element = app.descendants(matching: .any)
                 .matching(NSPredicate(format: "identifier == %@", id))
-                .firstMatch
+                .element(boundBy: matchIndex)
         } else if let text = selector.text {
-            // Use type + identifier constraints from the snapshot to narrow
-            // the query beyond just the label, avoiding false matches when
-            // multiple elements share the same text.
-            let labelPredicate = concatenatedLabelPredicate(text)
-            if let elType = nodeElType, elType != .other, elType != .any {
-                var query = app.descendants(matching: elType).matching(labelPredicate)
-                if !nodeIdentifier.isEmpty {
-                    query = query.matching(NSPredicate(format: "identifier == %@", nodeIdentifier))
-                }
-                element = query.firstMatch
-            } else {
-                element = app.descendants(matching: .any)
-                    .matching(labelPredicate)
-                    .firstMatch
-            }
+            element = resolve(labelQuery(concatenatedLabelPredicate(text)))
+        } else if let textContains = selector.textContains {
+            // Mirror the snapshot walk's substring match (label/title/value).
+            let predicate = NSPredicate(
+                format: "label CONTAINS %@ OR title CONTAINS %@ OR value CONTAINS %@",
+                textContains, textContains, textContains
+            )
+            element = resolve(labelQuery(predicate))
         } else if let contentDesc = selector.contentDesc {
-            let labelPredicate = concatenatedLabelPredicate(contentDesc)
-            if let elType = nodeElType, elType != .other, elType != .any {
-                var query = app.descendants(matching: elType).matching(labelPredicate)
-                if !nodeIdentifier.isEmpty {
-                    query = query.matching(NSPredicate(format: "identifier == %@", nodeIdentifier))
-                }
-                element = query.firstMatch
-            } else {
-                element = app.descendants(matching: .any)
-                    .matching(labelPredicate)
-                    .firstMatch
-            }
-        } else if let role = selector.role, let name = selector.name {
+            element = resolve(labelQuery(concatenatedLabelPredicate(contentDesc)))
+        } else if selector.role != nil, let name = selector.name {
             // Role + name: e.g. role("button", "Sign in")
-            // Use type constraint when the snapshot element isn't `.other`
-            // (React Native buttons surface as .other with traits, so a
-            // type-constrained query can miss those — fall back to label-only).
-            let labelPredicate = concatenatedLabelPredicate(name)
-            if let elType = nodeElType, elType != .other, elType != .any {
-                var query = app.descendants(matching: elType).matching(labelPredicate)
-                if !nodeIdentifier.isEmpty {
-                    query = query.matching(NSPredicate(format: "identifier == %@", nodeIdentifier))
-                }
-                element = query.firstMatch
-            } else if !nodeIdentifier.isEmpty {
-                element = app.descendants(matching: .any)
-                    .matching(NSPredicate(format: "identifier == %@", nodeIdentifier))
-                    .matching(labelPredicate)
-                    .firstMatch
-            } else {
-                element = app.descendants(matching: .any)
-                    .matching(labelPredicate)
-                    .firstMatch
-            }
+            element = resolve(labelQuery(concatenatedLabelPredicate(name)))
         } else if let role = selector.role {
-            // Role-only: match by type, narrowed by identifier if available
+            // Role-only: match by type.
             if let types = try? RoleMapping.elementTypes(for: role), let firstType = types.first {
-                if !nodeIdentifier.isEmpty {
-                    element = app.descendants(matching: firstType)
-                        .matching(NSPredicate(format: "identifier == %@", nodeIdentifier))
-                        .firstMatch
-                } else {
-                    element = app.descendants(matching: firstType).firstMatch
-                }
+                element = resolve(app.descendants(matching: firstType))
             } else {
                 element = nil
             }
