@@ -144,6 +144,17 @@ class SnapshotElementFinder {
 
         let screenSize = self.screenSize
 
+        // For each match, its index AMONG matches sharing the same identifier
+        // (document order). Used to resolve same-identifier elements positionally
+        // — `firstMatch` would ignore the position when an id isn't unique.
+        var idSeen: [String: Int] = [:]
+        let idIndices: [Int] = matches.map { (nodeDict, _) in
+            let id = nodeDict["identifier"] as? String ?? ""
+            let n = idSeen[id, default: 0]
+            idSeen[id] = n + 1
+            return n
+        }
+
         let results = matches.enumerated().map { (matchIndex, match) in
             let (nodeDict, frame) = match
             let bounds = ElementBounds(
@@ -183,7 +194,7 @@ class SnapshotElementFinder {
             // This is deferred — the query object is created but not evaluated until
             // a property (like .isHittable) is accessed. Pass the snapshot node so the
             // query can use element type + identifier for more precise matching.
-            cacheQueryElement(elementId: elementId, selector: selector, matchIndex: matchIndex, snapshotNode: nodeDict)
+            cacheQueryElement(elementId: elementId, selector: selector, matchIndex: matchIndex, idIndex: idIndices[matchIndex], snapshotNode: nodeDict)
             // The snapshot's hasFocus is unreliable on Xcode 26 — it can
             // report false even when the text input is the first responder.
             // Use the snapshot when it reports true; otherwise fall back to
@@ -1161,6 +1172,7 @@ class SnapshotElementFinder {
         elementId: String,
         selector: ElementSelector,
         matchIndex: Int,
+        idIndex: Int,
         snapshotNode: [String: Any]? = nil
     ) {
         // Build a query that matches this element
@@ -1180,7 +1192,11 @@ class SnapshotElementFinder {
         // with the SDK's positional pick.
         func resolve(_ base: XCUIElementQuery) -> XCUIElement {
             if !nodeIdentifier.isEmpty {
-                return base.matching(NSPredicate(format: "identifier == %@", nodeIdentifier)).firstMatch
+                // Narrow to the identifier, then index WITHIN that id group so a
+                // non-unique identifier still resolves positionally. For a unique
+                // id, idIndex == 0, i.e. equivalent to firstMatch.
+                return base.matching(NSPredicate(format: "identifier == %@", nodeIdentifier))
+                    .element(boundBy: idIndex)
             }
             return base.element(boundBy: matchIndex)
         }
