@@ -1642,6 +1642,57 @@ describe('setChecked()', () => {
     expect(tap).toHaveBeenCalled();
   });
 
+  it('on a stale retry, skips the tap if the re-resolved element is already in the desired state', async () => {
+    // First resolve: unchecked (so it decides to tap). The tap fails stale.
+    // The re-resolve sees it already checked (the change that staled it set it)
+    // → must NOT tap again (a second tap would uncheck it).
+    let findCount = 0;
+    const findElements = vi.fn(async () => {
+      findCount += 1;
+      return makeFindElementsResponse([
+        makeElementInfo({ elementId: 'sw', checked: findCount > 1, text: 'Switch', resourceId: 'sw1' }),
+      ]);
+    });
+    let tapCount = 0;
+    const tap = vi.fn(async () => {
+      tapCount += 1;
+      return tapCount === 1
+        ? failureResponse("Element 'sw' not found. It may have gone stale.")
+        : successResponse();
+    });
+    const client = makeMockClient({ findElements, tap });
+    // Modified handle → dispatches by element id (the path the stale retry guards).
+    const handle = new ElementHandle(client, _text('Switch'), 5000).first();
+    await handle.setChecked(true);
+    // Only the first (stale) tap happened; the retry was skipped because the
+    // re-resolved switch was already checked.
+    expect(tap).toHaveBeenCalledTimes(1);
+  });
+
+  it('on a stale retry, taps the fresh element when still not in the desired state', async () => {
+    let findCount = 0;
+    const findElements = vi.fn(async () => {
+      findCount += 1;
+      // Stays unchecked until after the retry tap (call 3 = post-tap verify).
+      return makeFindElementsResponse([
+        makeElementInfo({ elementId: 'sw', checked: findCount >= 3, text: 'Switch', resourceId: 'sw1' }),
+      ]);
+    });
+    let tapCount = 0;
+    const tap = vi.fn(async () => {
+      tapCount += 1;
+      return tapCount === 1
+        ? failureResponse("Element 'sw' not found. It may have gone stale.")
+        : successResponse();
+    });
+    const client = makeMockClient({ findElements, tap });
+    const handle = new ElementHandle(client, _text('Switch'), 5000).first();
+    await handle.setChecked(true);
+    // Stale first tap → re-resolve still unchecked → retry tap (dispatched by id).
+    expect(tap).toHaveBeenCalledTimes(2);
+    expect(tap).toHaveBeenNthCalledWith(2, undefined, expect.any(Number), 'sw');
+  });
+
   it('does not tap when current state matches desired state', async () => {
     const tap = vi.fn(async () => successResponse());
     const el = makeElementInfo({ checked: true, text: 'Switch', resourceId: 'sw1' });

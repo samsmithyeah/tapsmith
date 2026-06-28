@@ -1561,11 +1561,30 @@ export class ElementHandle {
       });
       if (alreadySet) return synthetic(true); // Already in desired state
 
-      // Tap once — for toggleable elements (checkboxes, switches) a second
-      // tap would revert the state, so we must not re-tap.
-      const tapRes = await this._dispatchTargeted(target, (t) => 'elementId' in t
-        ? this._client.tap(undefined, remainingMs, t.elementId)
-        : this._client.tap(t.selector, remainingMs));
+      const tapByTarget = (t: ActionTarget): Promise<ActionResponse> =>
+        'elementId' in t
+          ? this._client.tap(undefined, remainingMs, t.elementId)
+          : this._client.tap(t.selector, remainingMs);
+
+      // Tap once — for toggleable elements (checkboxes, switches) a second tap
+      // would revert the state, so we must not blindly re-tap. On a stale
+      // cached id we re-resolve, but DON'T tap if the element is already in the
+      // desired state: the change that staled it may have set it, and tapping
+      // would toggle it the wrong way (cf. _dispatchTargeted, which re-taps).
+      let tapRes: ActionResponse;
+      try {
+        tapRes = await tapByTarget(target);
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        if (!isStaleElementError(msg)) throw err;
+        tapRes = synthetic(false, msg);
+      }
+      if (!tapRes.success && isStaleElementError(tapRes.errorMessage)) {
+        this._options.resolvedElementsPromise = undefined;
+        const fresh = await this._resolveOne();
+        if (fresh.checked === checked) return synthetic(true); // already set after the change
+        tapRes = await tapByTarget(await this._actionTarget(fresh));
+      }
       if (!tapRes.success) return tapRes;
 
       // Poll for the state change until the full deadline — animations

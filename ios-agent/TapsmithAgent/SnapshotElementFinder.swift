@@ -1190,6 +1190,16 @@ class SnapshotElementFinder {
         // one instead of always the first. `matchIndex` is the element's index
         // in this `findElements` result (post wrapper-suppression), so it aligns
         // with the SDK's positional pick.
+        //
+        // KNOWN LIMITATION: `boundBy(matchIndex)` indexes the XCUIElementQuery,
+        // which does NOT apply our wrapper-suppression. If a suppressed wrapper
+        // also matches the query, the query and the snapshot match set diverge
+        // and a non-first index can land on the wrong element. We mitigate this
+        // by scoping the query to the snapshot element's type when it is
+        // specific (`labelQuery`) — wrappers are usually `.other` and so fall
+        // out — and `matchIndex 0` (`.first()`) is always correct. The
+        // identifier path (above) is unaffected. Fully eliminating it would need
+        // frame-based resolution, which XCUIElement predicates can't express.
         func resolve(_ base: XCUIElementQuery) -> XCUIElement {
             if !nodeIdentifier.isEmpty {
                 // Narrow to the identifier, then index WITHIN that id group so a
