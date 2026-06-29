@@ -3403,25 +3403,32 @@ const MITM_ABORT_PASSTHROUGH_THRESHOLD: u32 = 2;
 /// disables capture — kept separate from [`is_likely_client_cert_reject`],
 /// which stays conservative and only matches unambiguous cert alerts.
 fn is_likely_handshake_abort(error: &impl std::fmt::Display) -> bool {
-    let compact: String = error
-        .to_string()
+    let err_str = error.to_string().to_lowercase();
+    let compact: String = err_str
         .chars()
         .filter(|c| c.is_ascii_alphanumeric())
-        .flat_map(|c| c.to_lowercase())
         .collect();
 
-    [
+    let has_compact_needle = [
         "brokenpipe",
         "connectionreset",
         "resetbypeer",
         "unexpectedeof",
-        "eof",
         "endoffile",
         "closedbeforecompletinghandshake",
         "peerclosed",
     ]
     .iter()
-    .any(|needle| compact.contains(needle))
+    .any(|needle| compact.contains(needle));
+
+    // "eof" is matched only as a standalone word, never as a substring of the
+    // compacted string: benign phrases like "type of" / "one of" compact to
+    // "typeof" / "oneof", which contain "eof" and would otherwise be misread
+    // as aborts and (after the threshold) wrongly disable capture for a host.
+    has_compact_needle
+        || err_str
+            .split(|c: char| !c.is_ascii_alphanumeric())
+            .any(|word| word == "eof")
 }
 
 /// Curated convenience list — NOT the mechanism. Any host that rejects our
@@ -5061,6 +5068,17 @@ mod tests {
         assert!(!is_likely_handshake_abort(
             &"received fatal alert: UnknownCA"
         ));
+
+        // Benign phrases containing "of" compact to strings containing "eof"
+        // ("type of" → "typeof") — they must not be matched as aborts.
+        assert!(!is_likely_handshake_abort(
+            &"invalid type of client configuration"
+        ));
+        assert!(!is_likely_handshake_abort(
+            &"one of the certificates is expired"
+        ));
+        // A standalone "eof" word still counts.
+        assert!(is_likely_handshake_abort(&"tls handshake: eof"));
     }
 
     #[test]
