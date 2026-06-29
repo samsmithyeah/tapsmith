@@ -99,8 +99,11 @@ class WaitEngine(private val device: UiDevice) {
                     findOrThrow(selector, elementFinder, deadline, timeoutMs)
                 }
 
-            // Stable across one window and interactable → done.
-            if (match.bounds == prevBounds && match.isEnabled) break
+            // Stable across one window and interactable → done. A selector
+            // that explicitly targets a disabled element (enabled == false) is
+            // "ready" once stable — don't spin waiting for it to enable.
+            val isReady = match.isEnabled || selector.enabled == false
+            if (match.bounds == prevBounds && isReady) break
             checks++
         }
 
