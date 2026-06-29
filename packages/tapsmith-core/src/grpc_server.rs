@@ -1618,6 +1618,26 @@ pub(crate) fn opt_timeout(ms: u64) -> Option<u64> {
     }
 }
 
+/// Resolve an element-targeting action's request into the (selector_json,
+/// element_id) pair the AgentCommand needs. When `element_id` is non-empty the
+/// agent acts on that exact previously-found element (how positional/filtered
+/// handles target the element they resolved); otherwise it finds by selector.
+/// At least one of the two must be provided.
+#[allow(clippy::result_large_err)] // Status is tonic's standard error type
+pub(crate) fn action_target(
+    selector: Option<&proto::Selector>,
+    element_id: &str,
+) -> Result<(Value, Option<String>), Status> {
+    let element_id = (!element_id.is_empty()).then(|| element_id.to_string());
+    match (selector, element_id) {
+        (Some(sel), eid) => Ok((selector_to_json(sel), eid)),
+        (None, Some(eid)) => Ok((json!({}), Some(eid))),
+        (None, None) => Err(Status::invalid_argument(
+            "selector or element_id is required",
+        )),
+    }
+}
+
 /// Extract the reserved keychain member from an app-state archive and swap
 /// it into the simulator's device-level keychain (restarting securityd so
 /// the swapped db is picked up).
@@ -1766,14 +1786,12 @@ impl proto::tapsmith_service_server::TapsmithService for TapsmithServiceImpl {
         let req = request.into_inner();
         let request_id = Self::request_id(&req.request_id);
 
-        let selector = req
-            .selector
-            .as_ref()
-            .ok_or_else(|| Status::invalid_argument("selector is required"))?;
+        let (selector, element_id) = action_target(req.selector.as_ref(), &req.element_id)?;
 
         let command = AgentCommand::Tap {
-            selector: selector_to_json(selector),
+            selector,
             timeout_ms: opt_timeout(req.timeout_ms),
+            element_id,
         };
 
         let result = self
@@ -1790,15 +1808,13 @@ impl proto::tapsmith_service_server::TapsmithService for TapsmithServiceImpl {
         let req = request.into_inner();
         let request_id = Self::request_id(&req.request_id);
 
-        let selector = req
-            .selector
-            .as_ref()
-            .ok_or_else(|| Status::invalid_argument("selector is required"))?;
+        let (selector, element_id) = action_target(req.selector.as_ref(), &req.element_id)?;
 
         let command = AgentCommand::LongPress {
-            selector: selector_to_json(selector),
+            selector,
             duration_ms: opt_timeout(req.duration_ms),
             timeout_ms: opt_timeout(req.timeout_ms),
+            element_id,
         };
 
         let result = self
@@ -1815,13 +1831,10 @@ impl proto::tapsmith_service_server::TapsmithService for TapsmithServiceImpl {
         let req = request.into_inner();
         let request_id = Self::request_id(&req.request_id);
 
-        let selector = req
-            .selector
-            .as_ref()
-            .ok_or_else(|| Status::invalid_argument("selector is required"))?;
+        let (selector, element_id) = action_target(req.selector.as_ref(), &req.element_id)?;
 
         let command = AgentCommand::TypeText {
-            selector: selector_to_json(selector),
+            selector,
             text: req.text,
             timeout_ms: opt_timeout(req.timeout_ms),
             typing_delay_ms: if req.typing_delay_ms > 0 {
@@ -1829,6 +1842,7 @@ impl proto::tapsmith_service_server::TapsmithService for TapsmithServiceImpl {
             } else {
                 None
             },
+            element_id,
         };
 
         let result = self
@@ -1845,14 +1859,12 @@ impl proto::tapsmith_service_server::TapsmithService for TapsmithServiceImpl {
         let req = request.into_inner();
         let request_id = Self::request_id(&req.request_id);
 
-        let selector = req
-            .selector
-            .as_ref()
-            .ok_or_else(|| Status::invalid_argument("selector is required"))?;
+        let (selector, element_id) = action_target(req.selector.as_ref(), &req.element_id)?;
 
         let command = AgentCommand::ClearText {
-            selector: selector_to_json(selector),
+            selector,
             timeout_ms: opt_timeout(req.timeout_ms),
+            element_id,
         };
 
         let result = self
@@ -1869,12 +1881,7 @@ impl proto::tapsmith_service_server::TapsmithService for TapsmithServiceImpl {
         let req = request.into_inner();
         let request_id = Self::request_id(&req.request_id);
 
-        let selector = req
-            .selector
-            .as_ref()
-            .ok_or_else(|| Status::invalid_argument("selector is required"))?;
-
-        let sel_json = selector_to_json(selector);
+        let (sel_json, element_id) = action_target(req.selector.as_ref(), &req.element_id)?;
 
         // Track elapsed time so the type phase uses only the remaining budget
         // instead of the full user timeout (which would double the wall-clock).
@@ -1884,6 +1891,7 @@ impl proto::tapsmith_service_server::TapsmithService for TapsmithServiceImpl {
         let clear_cmd = AgentCommand::ClearText {
             selector: sel_json.clone(),
             timeout_ms: opt_timeout(req.timeout_ms),
+            element_id: element_id.clone(),
         };
 
         let clear_result = self
@@ -1912,6 +1920,7 @@ impl proto::tapsmith_service_server::TapsmithService for TapsmithServiceImpl {
             } else {
                 None
             },
+            element_id,
         };
 
         let result = self
@@ -1973,6 +1982,7 @@ impl proto::tapsmith_service_server::TapsmithService for TapsmithServiceImpl {
                 None
             },
             timeout_ms: opt_timeout(req.timeout_ms),
+            element_id: (!req.element_id.is_empty()).then_some(req.element_id),
         };
 
         let result = self
@@ -2643,15 +2653,13 @@ impl proto::tapsmith_service_server::TapsmithService for TapsmithServiceImpl {
         let req = request.into_inner();
         let request_id = Self::request_id(&req.request_id);
 
-        let selector = req
-            .selector
-            .as_ref()
-            .ok_or_else(|| Status::invalid_argument("selector is required"))?;
+        let (selector, element_id) = action_target(req.selector.as_ref(), &req.element_id)?;
 
         let command = AgentCommand::DoubleTap {
-            selector: selector_to_json(selector),
+            selector,
             timeout_ms: opt_timeout(req.timeout_ms),
             interval_ms: opt_timeout(req.interval_ms),
+            element_id,
         };
 
         let result = self
@@ -2668,19 +2676,23 @@ impl proto::tapsmith_service_server::TapsmithService for TapsmithServiceImpl {
         let req = request.into_inner();
         let request_id = Self::request_id(&req.request_id);
 
-        let source = req
-            .source_selector
-            .as_ref()
-            .ok_or_else(|| Status::invalid_argument("source_selector is required"))?;
-        let target = req
-            .target_selector
-            .as_ref()
-            .ok_or_else(|| Status::invalid_argument("target_selector is required"))?;
+        // Each end is addressed by its cached id (positional/filtered handle) or
+        // by selector; require one per end.
+        let (source_selector, source_element_id) =
+            action_target(req.source_selector.as_ref(), &req.source_element_id).map_err(|_| {
+                Status::invalid_argument("source_selector or source_element_id is required")
+            })?;
+        let (target_selector, target_element_id) =
+            action_target(req.target_selector.as_ref(), &req.target_element_id).map_err(|_| {
+                Status::invalid_argument("target_selector or target_element_id is required")
+            })?;
 
         let command = AgentCommand::DragAndDrop {
-            source_selector: selector_to_json(source),
-            target_selector: selector_to_json(target),
+            source_selector,
+            target_selector,
             timeout_ms: opt_timeout(req.timeout_ms),
+            source_element_id,
+            target_element_id,
         };
 
         let result = self
@@ -2697,10 +2709,7 @@ impl proto::tapsmith_service_server::TapsmithService for TapsmithServiceImpl {
         let req = request.into_inner();
         let request_id = Self::request_id(&req.request_id);
 
-        let selector = req
-            .selector
-            .as_ref()
-            .ok_or_else(|| Status::invalid_argument("selector is required"))?;
+        let (selector, element_id) = action_target(req.selector.as_ref(), &req.element_id)?;
 
         let (option, index) = match req.selection {
             Some(proto::select_option_request::Selection::Option(ref opt)) => {
@@ -2715,10 +2724,11 @@ impl proto::tapsmith_service_server::TapsmithService for TapsmithServiceImpl {
         };
 
         let command = AgentCommand::SelectOption {
-            selector: selector_to_json(selector),
+            selector,
             option,
             index,
             timeout_ms: opt_timeout(req.timeout_ms),
+            element_id,
         };
 
         let result = self
@@ -2735,15 +2745,13 @@ impl proto::tapsmith_service_server::TapsmithService for TapsmithServiceImpl {
         let req = request.into_inner();
         let request_id = Self::request_id(&req.request_id);
 
-        let selector = req
-            .selector
-            .as_ref()
-            .ok_or_else(|| Status::invalid_argument("selector is required"))?;
+        let (selector, element_id) = action_target(req.selector.as_ref(), &req.element_id)?;
 
         let command = AgentCommand::PinchZoom {
-            selector: selector_to_json(selector),
+            selector,
             scale: req.scale,
             timeout_ms: opt_timeout(req.timeout_ms),
+            element_id,
         };
 
         let result = self
@@ -2760,14 +2768,12 @@ impl proto::tapsmith_service_server::TapsmithService for TapsmithServiceImpl {
         let req = request.into_inner();
         let request_id = Self::request_id(&req.request_id);
 
-        let selector = req
-            .selector
-            .as_ref()
-            .ok_or_else(|| Status::invalid_argument("selector is required"))?;
+        let (selector, element_id) = action_target(req.selector.as_ref(), &req.element_id)?;
 
         let command = AgentCommand::Focus {
-            selector: selector_to_json(selector),
+            selector,
             timeout_ms: opt_timeout(req.timeout_ms),
+            element_id,
         };
 
         let result = self
@@ -2784,14 +2790,12 @@ impl proto::tapsmith_service_server::TapsmithService for TapsmithServiceImpl {
         let req = request.into_inner();
         let request_id = Self::request_id(&req.request_id);
 
-        let selector = req
-            .selector
-            .as_ref()
-            .ok_or_else(|| Status::invalid_argument("selector is required"))?;
+        let (selector, element_id) = action_target(req.selector.as_ref(), &req.element_id)?;
 
         let command = AgentCommand::Blur {
-            selector: selector_to_json(selector),
+            selector,
             timeout_ms: opt_timeout(req.timeout_ms),
+            element_id,
         };
 
         let result = self
@@ -2808,15 +2812,13 @@ impl proto::tapsmith_service_server::TapsmithService for TapsmithServiceImpl {
         let req = request.into_inner();
         let request_id = Self::request_id(&req.request_id);
 
-        let selector = req
-            .selector
-            .as_ref()
-            .ok_or_else(|| Status::invalid_argument("selector is required"))?;
+        let (selector, element_id) = action_target(req.selector.as_ref(), &req.element_id)?;
 
         let command = AgentCommand::Highlight {
-            selector: selector_to_json(selector),
+            selector,
             duration_ms: opt_timeout(req.duration_ms),
             timeout_ms: opt_timeout(req.timeout_ms),
+            element_id,
         };
 
         let result = self
@@ -2833,14 +2835,12 @@ impl proto::tapsmith_service_server::TapsmithService for TapsmithServiceImpl {
         let req = request.into_inner();
         let request_id = Self::request_id(&req.request_id);
 
-        let selector = req
-            .selector
-            .as_ref()
-            .ok_or_else(|| Status::invalid_argument("selector is required"))?;
+        let (selector, element_id) = action_target(req.selector.as_ref(), &req.element_id)?;
 
         let command = AgentCommand::TakeElementScreenshot {
-            selector: selector_to_json(selector),
+            selector,
             timeout_ms: opt_timeout(req.timeout_ms),
+            element_id,
         };
 
         let result = self

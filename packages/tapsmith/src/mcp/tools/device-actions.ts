@@ -26,7 +26,8 @@ export function registerDeviceActionTools(server: McpServer): void {
       // tapping the first match.
       const target = await resolveActionTarget(client, selector);
       if (target.error) return actionResult(false, target.error);
-      const { success, errorMessage } = await client.tap(target.selector);
+      // Positional targets carry an elementId — act on that exact element.
+      const { success, errorMessage } = await client.tap(target.elementId ? undefined : target.selector, undefined, target.elementId);
       return actionResult(success, errorMessage);
     },
   );
@@ -45,10 +46,11 @@ export function registerDeviceActionTools(server: McpServer): void {
       if (device) await client.setDevice(device);
       const target = await resolveActionTarget(client, selector);
       if (target.error) return actionResult(false, target.error);
+      const sel = target.elementId ? undefined : target.selector;
       if (clear) {
-        await client.clearText(target.selector);
+        await client.clearText(sel, undefined, target.elementId);
       }
-      const { success, errorMessage } = await client.typeText(target.selector, text);
+      const { success, errorMessage } = await client.typeText(sel, text, undefined, undefined, target.elementId);
       return actionResult(success, errorMessage);
     },
   );

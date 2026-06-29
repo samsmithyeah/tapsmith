@@ -314,6 +314,27 @@ export function collapseSameTargetDuplicates(elements: ElementInfo[]): ElementIn
   return result;
 }
 
+/**
+ * @internal — How an action should be dispatched against a resolved element:
+ * by a property selector (the agent re-finds it — used for unmodified handles),
+ * or by the agent-cached `elementId` of the exact element a positional/filtered
+ * handle resolved (so the action can't fall on an earlier match that shares an
+ * accessibility property).
+ */
+type ActionTarget = { selector: Selector } | { elementId: string };
+
+/**
+ * @internal — Whether an action failure means the agent's cached element is no
+ * longer usable, so re-resolving to a fresh id and retrying may succeed. Covers
+ * both wordings: the cached id was evicted / its snapshot invalidated by an
+ * intervening snapshot ("…not found. It may have gone stale.") and a live
+ * StaleObjectException where the cached object's view re-rendered ("Element is
+ * stale (UI changed): …", Android).
+ */
+function isStaleElementError(message: string | undefined): boolean {
+  return !!message && /stale/i.test(message);
+}
+
 /** @internal Brand key for cross-instance type checks (CJS/ESM dual-package). */
 export const ELEMENT_HANDLE_BRAND = Symbol.for('tapsmith.ElementHandle');
 
@@ -730,10 +751,11 @@ export class ElementHandle {
    * @internal — Build a selector to target a specific resolved element.
    *
    * Uses the resolved element's identifying property (resourceId,
-   * contentDescription, or text) to build a simple selector. For modified
-   * handles (nth, filter), the caller should pass the pre-resolved element
-   * from `_waitForEnabled` to `_actionSelector` to avoid re-resolution,
-   * which is the primary defense against targeting the wrong element.
+   * contentDescription, or text) to build a simple selector. Such a selector
+   * addresses the agent's FIRST match in document order, so it is only a
+   * defensive fallback in `_actionTarget` for the (unexpected) case of a
+   * resolved element with no cached id — normally a modified handle dispatches
+   * by `elementId`, which targets the exact element.
    *
    * @param info - The resolved ElementInfo to target.
    */
@@ -782,9 +804,9 @@ export class ElementHandle {
    * see elements in document order.)
    *
    * Returns the action's remaining timeout budget plus the resolved element
-   * for modified handles (so `_actionSelector` can skip re-resolution).
-   * `timeoutMs === 0` skips polling entirely, preserving the explicit
-   * opt-out behavior of `_waitForEnabled`.
+   * for modified handles (so `_actionTarget` can address it by id without
+   * re-resolving). `timeoutMs === 0` skips polling entirely, preserving the
+   * explicit opt-out behavior of `_waitForEnabled`.
    */
   private async _strictResolve(): Promise<{ remainingMs: number; element?: ElementInfo }> {
     const timeoutMs = this._timeoutMs;
@@ -897,7 +919,7 @@ export class ElementHandle {
    *
    * Returns `{ remainingMs, element }` where `remainingMs` is the action
    * timeout budget and `element` is the resolved ElementInfo. This avoids a
-   * redundant gRPC round-trip in `_actionSelector` (Fix 2: eliminate TOCTOU).
+   * redundant gRPC round-trip in `_actionTarget` (eliminates a TOCTOU window).
    *
    * The goal is to share the original user timeout across "wait for enabled" +
    * "execute action" instead of doubling it, BUT with a `MIN_ACTION_BUDGET_MS`
@@ -959,16 +981,56 @@ export class ElementHandle {
   }
 
   /**
-   * @internal — Get the selector to use for an action. For modified handles,
-   * resolves the specific element first and returns a targeting selector.
+   * @internal — Decide how to dispatch an action against the resolved element.
    *
-   * @param preResolved - Optional pre-resolved ElementInfo from _waitForEnabled
-   *   to avoid a redundant gRPC round-trip (Fix 2: eliminate TOCTOU).
+   * Unmodified handles dispatch by their selector (the agent auto-waits +
+   * finds). A modified handle (.first()/.last()/.nth()/.filter()/.and()/.or()/
+   * scope) has already resolved to a SPECIFIC element host-side, so it
+   * addresses that element by its agent-cached `elementId` — the agent acts on
+   * that exact cached element, so the action can't land on an earlier match
+   * that shares an accessibility property (the silent-mis-tap bug). Used by all
+   * single-element actions (tap, longPress, doubleTap, type, clear, setChecked,
+   * selectOption, focus, blur, highlight, screenshot).
+   *
+   * @param preResolved - Resolved ElementInfo from the auto-wait step (avoids a
+   *   redundant resolution round-trip).
    */
-  private async _actionSelector(preResolved?: ElementInfo): Promise<Selector> {
-    if (!this._hasModifiers()) return this._selector;
+  private async _actionTarget(preResolved?: ElementInfo): Promise<ActionTarget> {
+    if (!this._hasModifiers()) return { selector: this._selector };
     const el = preResolved ?? await this._resolveOne();
-    return this._selectorForElement(el);
+    if (el.elementId) return { elementId: el.elementId };
+    // Agent-resolved matches always carry an id; if one is somehow missing,
+    // fall back to a derived property selector (first-match semantics).
+    return { selector: this._selectorForElement(el) };
+  }
+
+  /**
+   * @internal — Dispatch an element-id-targeted action, re-resolving once if the
+   * cached id went stale.
+   *
+   * The id only lives in the agent's element cache; an intervening snapshot
+   * between resolve and dispatch (notably the trace capture, hence CI-only) can
+   * invalidate it, so the action fails with "…gone stale". Re-resolving runs the
+   * positional/filter logic again to a FRESH id (correct for .last()/.nth() too)
+   * and re-dispatches immediately — no capture in between, so the fresh id
+   * survives. Selector targets (unmodified handles) need no retry.
+   */
+  private async _dispatchTargeted<R extends { success: boolean; errorMessage: string }>(
+    target: ActionTarget,
+    call: (t: ActionTarget) => Promise<R>,
+  ): Promise<R> {
+    if (!('elementId' in target)) return call(target);
+    try {
+      const res = await call(target);
+      if (res.success || !isStaleElementError(res.errorMessage)) return res;
+    } catch (err) {
+      if (!isStaleElementError(err instanceof Error ? err.message : String(err))) throw err;
+    }
+    // Drop any cached all() snapshot so the re-resolve re-queries the device for
+    // a FRESH id rather than handing back the same stale one (_resolveOne
+    // short-circuits on resolvedElementsPromise).
+    this._options.resolvedElementsPromise = undefined;
+    return call(await this._actionTarget());
   }
 
   // ── Queries ──
@@ -1351,81 +1413,132 @@ export class ElementHandle {
   }
 
   async tap(): Promise<void> {
-    const { sel, remainingMs } = await this._tracedResolve('tap', 'tap', async () => {
+    const { target, remainingMs } = await this._tracedResolve('tap', 'tap', async () => {
       const { remainingMs, element } = await this._waitForEnabled();
-      return { sel: await this._actionSelector(element), remainingMs };
+      return { target: await this._actionTarget(element), remainingMs };
     });
-    return this._tracedAction('tap', 'tap', () => this._client.tap(sel, remainingMs), 'Tap failed');
+    return this._tracedAction('tap', 'tap',
+      () => this._dispatchTargeted(target, (t) => 'elementId' in t
+        ? this._client.tap(undefined, remainingMs, t.elementId)
+        : this._client.tap(t.selector, remainingMs)),
+      'Tap failed');
   }
 
   async longPress(durationMs?: number): Promise<void> {
-    const { sel, remainingMs } = await this._tracedResolve('longPress', 'tap', async () => {
+    const { target, remainingMs } = await this._tracedResolve('longPress', 'tap', async () => {
       const { remainingMs, element } = await this._waitForEnabled();
-      return { sel: await this._actionSelector(element), remainingMs };
+      return { target: await this._actionTarget(element), remainingMs };
     });
-    return this._tracedAction('longPress', 'tap', () => this._client.longPress(sel, durationMs, remainingMs), 'Long press failed');
+    return this._tracedAction('longPress', 'tap',
+      () => this._dispatchTargeted(target, (t) => 'elementId' in t
+        ? this._client.longPress(undefined, durationMs, remainingMs, t.elementId)
+        : this._client.longPress(t.selector, durationMs, remainingMs)),
+      'Long press failed');
   }
 
   async type(text: string, options?: { delay?: number }): Promise<void> {
-    const { sel, remainingMs } = await this._tracedResolve('type', 'type', async () => {
+    const { target, remainingMs } = await this._tracedResolve('type', 'type', async () => {
       const { remainingMs, element } = await this._strictResolve();
-      return { sel: await this._actionSelector(element), remainingMs };
+      return { target: await this._actionTarget(element), remainingMs };
     });
     const delay = options?.delay ?? this._options.typingDelay ?? 0;
-    return this._tracedAction('type', 'type', () => this._client.typeText(sel, text, remainingMs, delay), 'Type text failed', { inputValue: text });
+    return this._tracedAction('type', 'type',
+      () => this._dispatchTargeted(target, (t) => 'elementId' in t
+        ? this._client.typeText(undefined, text, remainingMs, delay, t.elementId)
+        : this._client.typeText(t.selector, text, remainingMs, delay)),
+      'Type text failed', { inputValue: text });
   }
 
   async clearAndType(text: string, options?: { delay?: number }): Promise<void> {
-    const { sel, remainingMs } = await this._tracedResolve('clearAndType', 'type', async () => {
+    const { target, remainingMs } = await this._tracedResolve('clearAndType', 'type', async () => {
       const { remainingMs, element } = await this._strictResolve();
-      return { sel: await this._actionSelector(element), remainingMs };
+      return { target: await this._actionTarget(element), remainingMs };
     });
     const delay = options?.delay ?? this._options.typingDelay ?? 0;
-    return this._tracedAction('clearAndType', 'type', () => this._client.clearAndType(sel, text, remainingMs, delay), 'Clear and type failed', { inputValue: text });
+    return this._tracedAction('clearAndType', 'type',
+      () => this._dispatchTargeted(target, (t) => 'elementId' in t
+        ? this._client.clearAndType(undefined, text, remainingMs, delay, t.elementId)
+        : this._client.clearAndType(t.selector, text, remainingMs, delay)),
+      'Clear and type failed', { inputValue: text });
   }
 
   async clear(): Promise<void> {
-    const { sel, remainingMs } = await this._tracedResolve('clear', 'type', async () => {
+    const { target, remainingMs } = await this._tracedResolve('clear', 'type', async () => {
       const { remainingMs, element } = await this._strictResolve();
-      return { sel: await this._actionSelector(element), remainingMs };
+      return { target: await this._actionTarget(element), remainingMs };
     });
-    return this._tracedAction('clear', 'type', () => this._client.clearText(sel, remainingMs), 'Clear text failed');
+    return this._tracedAction('clear', 'type',
+      () => this._dispatchTargeted(target, (t) => 'elementId' in t
+        ? this._client.clearText(undefined, remainingMs, t.elementId)
+        : this._client.clearText(t.selector, remainingMs)),
+      'Clear text failed');
   }
 
   async scroll(direction: string, options?: { distance?: number }): Promise<void> {
-    const { sel, remainingMs } = await this._tracedResolve('scroll', 'scroll', async () => {
+    const { target, remainingMs } = await this._tracedResolve('scroll', 'scroll', async () => {
       const { remainingMs, element } = await this._strictResolve();
-      return { sel: await this._actionSelector(element), remainingMs };
+      return { target: await this._actionTarget(element), remainingMs };
     });
     return this._tracedAction('scroll', 'scroll',
-      () => this._client.scroll(sel, direction, { distance: options?.distance, timeoutMs: remainingMs }),
+      () => this._dispatchTargeted(target, (t) => 'elementId' in t
+        ? this._client.scroll(undefined, direction, { distance: options?.distance, timeoutMs: remainingMs, elementId: t.elementId })
+        : this._client.scroll(t.selector, direction, { distance: options?.distance, timeoutMs: remainingMs })),
       'Scroll failed');
   }
 
   // ── Element Actions (PILOT-2) ──
 
   async doubleTap(options?: { intervalMs?: number }): Promise<void> {
-    const { sel, remainingMs } = await this._tracedResolve('doubleTap', 'tap', async () => {
+    const { target, remainingMs } = await this._tracedResolve('doubleTap', 'tap', async () => {
       const { remainingMs, element } = await this._waitForEnabled();
-      return { sel: await this._actionSelector(element), remainingMs };
+      return { target: await this._actionTarget(element), remainingMs };
     });
     // 0 on the wire = "use agent default (100ms)". User-supplied values
     // must be positive; ≤0 is treated as "use default".
     const intervalMs = Math.max(0, options?.intervalMs ?? this._options.doubleTapInterval ?? 0);
-    return this._tracedAction('doubleTap', 'tap', () => this._client.doubleTap(sel, remainingMs, intervalMs), 'Double tap failed');
+    return this._tracedAction('doubleTap', 'tap',
+      () => this._dispatchTargeted(target, (t) => 'elementId' in t
+        ? this._client.doubleTap(undefined, remainingMs, intervalMs, t.elementId)
+        : this._client.doubleTap(t.selector, remainingMs, intervalMs)),
+      'Double tap failed');
   }
 
   async dragTo(target: ElementHandle): Promise<void> {
-    const { sourceSel, targetSel, remainingMs } = await this._tracedResolve('dragTo', 'swipe', async () => {
+    const { sourceTarget, targetTarget, remainingMs } = await this._tracedResolve('dragTo', 'swipe', async () => {
       const source = await this._strictResolve();
       const targetRes = await target._strictResolve();
       return {
-        sourceSel: await this._actionSelector(source.element),
-        targetSel: await target._actionSelector(targetRes.element),
+        sourceTarget: await this._actionTarget(source.element),
+        targetTarget: await target._actionTarget(targetRes.element),
         remainingMs: source.remainingMs,
       };
     });
-    return this._tracedAction('dragTo', 'swipe', () => this._client.dragAndDrop(sourceSel, targetSel, remainingMs), 'Drag and drop failed');
+    const dispatch = (st: ActionTarget, tt: ActionTarget): Promise<ActionResponse> =>
+      this._client.dragAndDrop(
+        'elementId' in st ? undefined : st.selector,
+        'elementId' in tt ? undefined : tt.selector,
+        remainingMs,
+        {
+          sourceElementId: 'elementId' in st ? st.elementId : undefined,
+          targetElementId: 'elementId' in tt ? tt.elementId : undefined,
+        },
+      );
+    return this._tracedAction('dragTo', 'swipe', async () => {
+      const byId = 'elementId' in sourceTarget || 'elementId' in targetTarget;
+      if (!byId) return dispatch(sourceTarget, targetTarget);
+      // Either end's cached id can go stale between resolve and dispatch
+      // (see _dispatchTargeted) — re-resolve both ends and retry once.
+      try {
+        const res = await dispatch(sourceTarget, targetTarget);
+        if (res.success || !isStaleElementError(res.errorMessage)) return res;
+      } catch (err) {
+        if (!isStaleElementError(err instanceof Error ? err.message : String(err))) throw err;
+      }
+      // Drop any cached all() snapshot on BOTH ends so each re-resolves fresh.
+      this._options.resolvedElementsPromise = undefined;
+      target._options.resolvedElementsPromise = undefined;
+      return dispatch(await this._actionTarget(), await target._actionTarget());
+    }, 'Drag and drop failed');
   }
 
   async setChecked(checked: boolean): Promise<void> {
@@ -1433,10 +1546,11 @@ export class ElementHandle {
     const deadline = Date.now() + timeoutMs;
     const POLL_MS = 250;
 
-    const { sel, remainingMs, alreadySet } = await this._tracedResolve('setChecked', 'tap', async () => {
+    const { target, remainingMs, alreadySet } = await this._tracedResolve('setChecked', 'tap', async () => {
       const { remainingMs, element } = await this._waitForEnabled();
+      // The timeout-0 path skips the wait and returns no element; resolve here.
       const el = element ?? await this._resolveOne();
-      return { sel: await this._actionSelector(el), remainingMs, alreadySet: el.checked === checked };
+      return { target: await this._actionTarget(el), remainingMs, alreadySet: el.checked === checked };
     });
 
     return this._tracedAction('setChecked', 'tap', async () => {
@@ -1447,9 +1561,30 @@ export class ElementHandle {
       });
       if (alreadySet) return synthetic(true); // Already in desired state
 
-      // Tap once — for toggleable elements (checkboxes, switches) a second
-      // tap would revert the state, so we must not re-tap.
-      const tapRes = await this._client.tap(sel, remainingMs);
+      const tapByTarget = (t: ActionTarget): Promise<ActionResponse> =>
+        'elementId' in t
+          ? this._client.tap(undefined, remainingMs, t.elementId)
+          : this._client.tap(t.selector, remainingMs);
+
+      // Tap once — for toggleable elements (checkboxes, switches) a second tap
+      // would revert the state, so we must not blindly re-tap. On a stale
+      // cached id we re-resolve, but DON'T tap if the element is already in the
+      // desired state: the change that staled it may have set it, and tapping
+      // would toggle it the wrong way (cf. _dispatchTargeted, which re-taps).
+      let tapRes: ActionResponse;
+      try {
+        tapRes = await tapByTarget(target);
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        if (!isStaleElementError(msg)) throw err;
+        tapRes = synthetic(false, msg);
+      }
+      if (!tapRes.success && isStaleElementError(tapRes.errorMessage)) {
+        this._options.resolvedElementsPromise = undefined;
+        const fresh = await this._resolveOne();
+        if (fresh.checked === checked) return synthetic(true); // already set after the change
+        tapRes = await tapByTarget(await this._actionTarget(fresh));
+      }
       if (!tapRes.success) return tapRes;
 
       // Poll for the state change until the full deadline — animations
@@ -1472,17 +1607,23 @@ export class ElementHandle {
   }
 
   async selectOption(option: string | { index: number }): Promise<void> {
-    const { sel, remainingMs } = await this._tracedResolve('selectOption', 'other', async () => {
+    const { target, remainingMs } = await this._tracedResolve('selectOption', 'other', async () => {
       const { remainingMs, element } = await this._strictResolve();
-      return { sel: await this._actionSelector(element), remainingMs };
+      return { target: await this._actionTarget(element), remainingMs };
     });
-    return this._tracedAction('selectOption', 'other', () => this._client.selectOption(sel, option, remainingMs), 'Select option failed');
+    return this._tracedAction('selectOption', 'other',
+      () => this._dispatchTargeted(target, (t) => 'elementId' in t
+        ? this._client.selectOption(undefined, option, remainingMs, t.elementId)
+        : this._client.selectOption(t.selector, option, remainingMs)),
+      'Select option failed');
   }
 
   async screenshot(): Promise<Buffer> {
     const { remainingMs, element } = await this._strictResolve();
-    const sel = await this._actionSelector(element);
-    const res = await this._client.takeElementScreenshot(sel, remainingMs);
+    const target = await this._actionTarget(element);
+    const res = await this._dispatchTargeted(target, (t) => 'elementId' in t
+      ? this._client.takeElementScreenshot(undefined, remainingMs, t.elementId)
+      : this._client.takeElementScreenshot(t.selector, remainingMs));
     if (!res.success) {
       throw new Error(res.errorMessage || 'Element screenshot failed');
     }
@@ -1501,45 +1642,65 @@ export class ElementHandle {
   }
 
   async pinchIn(options?: { scale?: number }): Promise<void> {
-    const { sel, remainingMs } = await this._tracedResolve('pinchIn', 'other', async () => {
+    const { target, remainingMs } = await this._tracedResolve('pinchIn', 'other', async () => {
       const { remainingMs, element } = await this._strictResolve();
-      return { sel: await this._actionSelector(element), remainingMs };
+      return { target: await this._actionTarget(element), remainingMs };
     });
     const scale = options?.scale ?? 0.5;
-    return this._tracedAction('pinchIn', 'other', () => this._client.pinchZoom(sel, scale, remainingMs), 'Pinch in failed');
+    return this._tracedAction('pinchIn', 'other',
+      () => this._dispatchTargeted(target, (t) => 'elementId' in t
+        ? this._client.pinchZoom(undefined, scale, remainingMs, t.elementId)
+        : this._client.pinchZoom(t.selector, scale, remainingMs)),
+      'Pinch in failed');
   }
 
   async pinchOut(options?: { scale?: number }): Promise<void> {
-    const { sel, remainingMs } = await this._tracedResolve('pinchOut', 'other', async () => {
+    const { target, remainingMs } = await this._tracedResolve('pinchOut', 'other', async () => {
       const { remainingMs, element } = await this._strictResolve();
-      return { sel: await this._actionSelector(element), remainingMs };
+      return { target: await this._actionTarget(element), remainingMs };
     });
     const scale = options?.scale ?? 2;
-    return this._tracedAction('pinchOut', 'other', () => this._client.pinchZoom(sel, scale, remainingMs), 'Pinch out failed');
+    return this._tracedAction('pinchOut', 'other',
+      () => this._dispatchTargeted(target, (t) => 'elementId' in t
+        ? this._client.pinchZoom(undefined, scale, remainingMs, t.elementId)
+        : this._client.pinchZoom(t.selector, scale, remainingMs)),
+      'Pinch out failed');
   }
 
   async focus(): Promise<void> {
-    const { sel, remainingMs } = await this._tracedResolve('focus', 'other', async () => {
+    const { target, remainingMs } = await this._tracedResolve('focus', 'other', async () => {
       const { remainingMs, element } = await this._strictResolve();
-      return { sel: await this._actionSelector(element), remainingMs };
+      return { target: await this._actionTarget(element), remainingMs };
     });
-    return this._tracedAction('focus', 'other', () => this._client.focus(sel, remainingMs), 'Focus failed');
+    return this._tracedAction('focus', 'other',
+      () => this._dispatchTargeted(target, (t) => 'elementId' in t
+        ? this._client.focus(undefined, remainingMs, t.elementId)
+        : this._client.focus(t.selector, remainingMs)),
+      'Focus failed');
   }
 
   async blur(): Promise<void> {
-    const { sel, remainingMs } = await this._tracedResolve('blur', 'other', async () => {
+    const { target, remainingMs } = await this._tracedResolve('blur', 'other', async () => {
       const { remainingMs, element } = await this._strictResolve();
-      return { sel: await this._actionSelector(element), remainingMs };
+      return { target: await this._actionTarget(element), remainingMs };
     });
-    return this._tracedAction('blur', 'other', () => this._client.blur(sel, remainingMs), 'Blur failed');
+    return this._tracedAction('blur', 'other',
+      () => this._dispatchTargeted(target, (t) => 'elementId' in t
+        ? this._client.blur(undefined, remainingMs, t.elementId)
+        : this._client.blur(t.selector, remainingMs)),
+      'Blur failed');
   }
 
   async highlight(options?: { durationMs?: number }): Promise<void> {
-    const { sel, remainingMs } = await this._tracedResolve('highlight', 'other', async () => {
+    const { target, remainingMs } = await this._tracedResolve('highlight', 'other', async () => {
       const { remainingMs, element } = await this._strictResolve();
-      return { sel: await this._actionSelector(element), remainingMs };
+      return { target: await this._actionTarget(element), remainingMs };
     });
-    return this._tracedAction('highlight', 'other', () => this._client.highlight(sel, options?.durationMs, remainingMs), 'Highlight failed');
+    return this._tracedAction('highlight', 'other',
+      () => this._dispatchTargeted(target, (t) => 'elementId' in t
+        ? this._client.highlight(undefined, options?.durationMs, remainingMs, t.elementId)
+        : this._client.highlight(t.selector, options?.durationMs, remainingMs)),
+      'Highlight failed');
   }
 
   // ── Info accessors (convenience) ──

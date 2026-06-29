@@ -315,21 +315,25 @@ pub enum AgentCommand {
     Tap {
         selector: Value,
         timeout_ms: Option<u64>,
+        element_id: Option<String>,
     },
     LongPress {
         selector: Value,
         duration_ms: Option<u64>,
         timeout_ms: Option<u64>,
+        element_id: Option<String>,
     },
     TypeText {
         selector: Value,
         text: String,
         timeout_ms: Option<u64>,
         typing_delay_ms: Option<u32>,
+        element_id: Option<String>,
     },
     ClearText {
         selector: Value,
         timeout_ms: Option<u64>,
+        element_id: Option<String>,
     },
     Swipe {
         direction: String,
@@ -380,6 +384,7 @@ pub enum AgentCommand {
         scroll_until_visible: Option<Value>,
         distance: Option<f32>,
         timeout_ms: Option<u64>,
+        element_id: Option<String>,
     },
     PressKey {
         key: String,
@@ -394,39 +399,48 @@ pub enum AgentCommand {
         selector: Value,
         timeout_ms: Option<u64>,
         interval_ms: Option<u64>,
+        element_id: Option<String>,
     },
     DragAndDrop {
         source_selector: Value,
         target_selector: Value,
         timeout_ms: Option<u64>,
+        source_element_id: Option<String>,
+        target_element_id: Option<String>,
     },
     SelectOption {
         selector: Value,
         option: Option<String>,
         index: Option<i32>,
         timeout_ms: Option<u64>,
+        element_id: Option<String>,
     },
     PinchZoom {
         selector: Value,
         scale: f32,
         timeout_ms: Option<u64>,
+        element_id: Option<String>,
     },
     Focus {
         selector: Value,
         timeout_ms: Option<u64>,
+        element_id: Option<String>,
     },
     Blur {
         selector: Value,
         timeout_ms: Option<u64>,
+        element_id: Option<String>,
     },
     Highlight {
         selector: Value,
         duration_ms: Option<u64>,
         timeout_ms: Option<u64>,
+        element_id: Option<String>,
     },
     TakeElementScreenshot {
         selector: Value,
         timeout_ms: Option<u64>,
+        element_id: Option<String>,
     },
     SetClipboard {
         text: String,
@@ -463,6 +477,15 @@ pub enum AgentCommand {
     },
     #[allow(dead_code)]
     DismissSystemDialog,
+}
+
+/// Add an `elementId` to an action's params when set. The agent honors
+/// `elementId` ahead of any selector, acting on the exact previously-found
+/// element — how positional/filtered handles target the element they resolved.
+fn add_element_id(params: &mut Value, element_id: &Option<String>) {
+    if let Some(id) = element_id {
+        params["elementId"] = json!(id);
+    }
 }
 
 impl AgentCommand {
@@ -542,17 +565,20 @@ impl AgentCommand {
             AgentCommand::Tap {
                 selector,
                 timeout_ms,
+                element_id,
             } => {
                 let mut p = selector.clone();
                 if let Some(t) = timeout_ms {
                     p["timeout"] = json!(t);
                 }
+                add_element_id(&mut p, element_id);
                 ("tap", p)
             }
             AgentCommand::LongPress {
                 selector,
                 duration_ms,
                 timeout_ms,
+                element_id,
             } => {
                 let mut p = selector.clone();
                 if let Some(d) = duration_ms {
@@ -561,6 +587,7 @@ impl AgentCommand {
                 if let Some(t) = timeout_ms {
                     p["timeout"] = json!(t);
                 }
+                add_element_id(&mut p, element_id);
                 ("longPress", p)
             }
             AgentCommand::TypeText {
@@ -568,6 +595,7 @@ impl AgentCommand {
                 text,
                 timeout_ms,
                 typing_delay_ms,
+                element_id,
             } => {
                 let mut p = selector.clone();
                 p["text"] = json!(text);
@@ -577,16 +605,19 @@ impl AgentCommand {
                 if let Some(d) = typing_delay_ms {
                     p["typingDelayMs"] = json!(d);
                 }
+                add_element_id(&mut p, element_id);
                 ("typeText", p)
             }
             AgentCommand::ClearText {
                 selector,
                 timeout_ms,
+                element_id,
             } => {
                 let mut p = selector.clone();
                 if let Some(t) = timeout_ms {
                     p["timeout"] = json!(t);
                 }
+                add_element_id(&mut p, element_id);
                 ("clearText", p)
             }
             AgentCommand::Swipe {
@@ -656,11 +687,13 @@ impl AgentCommand {
                 scroll_until_visible,
                 distance,
                 timeout_ms,
+                element_id,
             } => {
                 let mut p = json!({"direction": direction});
                 if let Some(c) = container {
                     p["container"] = c.clone();
                 }
+                add_element_id(&mut p, element_id);
                 if let Some(sv) = scroll_until_visible {
                     p["scrollTo"] = sv.clone();
                 }
@@ -686,6 +719,7 @@ impl AgentCommand {
                 selector,
                 timeout_ms,
                 interval_ms,
+                element_id,
             } => {
                 let mut p = selector.clone();
                 if let Some(t) = timeout_ms {
@@ -694,17 +728,28 @@ impl AgentCommand {
                 if let Some(i) = interval_ms {
                     p["intervalMs"] = json!(i);
                 }
+                add_element_id(&mut p, element_id);
                 ("doubleTap", p)
             }
             AgentCommand::DragAndDrop {
                 source_selector,
                 target_selector,
                 timeout_ms,
+                source_element_id,
+                target_element_id,
             } => {
-                let mut p = json!({
-                    "source": source_selector,
-                    "target": target_selector,
-                });
+                // Each end is addressed by its cached id (positional/filtered
+                // handle) or by selector. The agent honors `elementId` in the
+                // source/target params ahead of any selector.
+                let source = match source_element_id {
+                    Some(id) => json!({ "elementId": id }),
+                    None => source_selector.clone(),
+                };
+                let target = match target_element_id {
+                    Some(id) => json!({ "elementId": id }),
+                    None => target_selector.clone(),
+                };
+                let mut p = json!({ "source": source, "target": target });
                 if let Some(t) = timeout_ms {
                     p["timeout"] = json!(t);
                 }
@@ -715,6 +760,7 @@ impl AgentCommand {
                 option,
                 index,
                 timeout_ms,
+                element_id,
             } => {
                 let mut p = selector.clone();
                 if let Some(ref opt) = option {
@@ -726,44 +772,52 @@ impl AgentCommand {
                 if let Some(t) = timeout_ms {
                     p["timeout"] = json!(t);
                 }
+                add_element_id(&mut p, element_id);
                 ("selectOption", p)
             }
             AgentCommand::PinchZoom {
                 selector,
                 scale,
                 timeout_ms,
+                element_id,
             } => {
                 let mut p = selector.clone();
                 p["scale"] = json!(scale);
                 if let Some(t) = timeout_ms {
                     p["timeout"] = json!(t);
                 }
+                add_element_id(&mut p, element_id);
                 ("pinchZoom", p)
             }
             AgentCommand::Focus {
                 selector,
                 timeout_ms,
+                element_id,
             } => {
                 let mut p = selector.clone();
                 if let Some(t) = timeout_ms {
                     p["timeout"] = json!(t);
                 }
+                add_element_id(&mut p, element_id);
                 ("focus", p)
             }
             AgentCommand::Blur {
                 selector,
                 timeout_ms,
+                element_id,
             } => {
                 let mut p = selector.clone();
                 if let Some(t) = timeout_ms {
                     p["timeout"] = json!(t);
                 }
+                add_element_id(&mut p, element_id);
                 ("blur", p)
             }
             AgentCommand::Highlight {
                 selector,
                 duration_ms,
                 timeout_ms,
+                element_id,
             } => {
                 let mut p = selector.clone();
                 if let Some(d) = duration_ms {
@@ -772,16 +826,19 @@ impl AgentCommand {
                 if let Some(t) = timeout_ms {
                     p["timeout"] = json!(t);
                 }
+                add_element_id(&mut p, element_id);
                 ("highlight", p)
             }
             AgentCommand::TakeElementScreenshot {
                 selector,
                 timeout_ms,
+                element_id,
             } => {
                 let mut p = selector.clone();
                 if let Some(t) = timeout_ms {
                     p["timeout"] = json!(t);
                 }
+                add_element_id(&mut p, element_id);
                 ("elementScreenshot", p)
             }
             AgentCommand::SetClipboard { text } => ("setClipboard", json!({"text": text})),
@@ -1238,12 +1295,14 @@ mod tests {
             AgentCommand::Tap {
                 selector: json!({}),
                 timeout_ms: None,
+                element_id: None,
             },
             AgentCommand::TypeText {
                 selector: json!({}),
                 text: "x".into(),
                 timeout_ms: None,
                 typing_delay_ms: None,
+                element_id: None,
             },
             AgentCommand::TapCoordinates { x: 1.0, y: 2.0 },
             AgentCommand::LongPressCoordinates {
@@ -1281,6 +1340,7 @@ mod tests {
             AgentCommand::TakeElementScreenshot {
                 selector: json!({}),
                 timeout_ms: None,
+                element_id: None,
             },
             AgentCommand::GetUiHierarchy {},
             AgentCommand::Screenshot {},
@@ -1324,10 +1384,25 @@ mod tests {
         let cmd = AgentCommand::Tap {
             selector: json!({"testId": "submit"}),
             timeout_ms: None,
+            element_id: None,
         };
         let j = cmd.to_json("t1");
         assert_eq!(j["method"], "tap");
         assert_eq!(j["params"]["testId"], "submit");
+    }
+
+    #[test]
+    fn to_json_tap_by_element_id() {
+        // When element_id is set the agent acts on that exact cached element;
+        // it is serialized alongside (here, instead of) any selector.
+        let cmd = AgentCommand::Tap {
+            selector: json!({}),
+            timeout_ms: None,
+            element_id: Some("el-abc".into()),
+        };
+        let j = cmd.to_json("t2");
+        assert_eq!(j["method"], "tap");
+        assert_eq!(j["params"]["elementId"], "el-abc");
     }
 
     #[test]
@@ -1336,6 +1411,7 @@ mod tests {
             selector: json!({"text": "Item"}),
             duration_ms: Some(2000),
             timeout_ms: Some(10000),
+            element_id: None,
         };
         let j = cmd.to_json("lp1");
         assert_eq!(j["method"], "longPress");
@@ -1350,6 +1426,7 @@ mod tests {
             selector: json!({"text": "X"}),
             duration_ms: None,
             timeout_ms: None,
+            element_id: None,
         };
         let j = cmd.to_json("lp2");
         assert!(j["params"].get("duration").is_none());
@@ -1363,6 +1440,7 @@ mod tests {
             text: "user@example.com".into(),
             timeout_ms: Some(3000),
             typing_delay_ms: Some(10),
+            element_id: None,
         };
         let j = cmd.to_json("tt1");
         assert_eq!(j["method"], "typeText");
@@ -1377,6 +1455,7 @@ mod tests {
         let cmd = AgentCommand::ClearText {
             selector: json!({"resourceId": "input"}),
             timeout_ms: None,
+            element_id: None,
         };
         let j = cmd.to_json("ct1");
         assert_eq!(j["method"], "clearText");
@@ -1424,6 +1503,7 @@ mod tests {
             scroll_until_visible: Some(json!({"text": "End"})),
             distance: Some(0.5),
             timeout_ms: Some(8000),
+            element_id: None,
         };
         let j = cmd.to_json("sc1");
         assert_eq!(j["method"], "scroll");
@@ -1484,6 +1564,7 @@ mod tests {
             selector: json!({"text": "Button"}),
             timeout_ms: Some(5000),
             interval_ms: None,
+            element_id: None,
         };
         let j = cmd.to_json("dt1");
         assert_eq!(j["method"], "doubleTap");
@@ -1498,6 +1579,7 @@ mod tests {
             selector: json!({"text": "Button"}),
             timeout_ms: Some(5000),
             interval_ms: Some(100),
+            element_id: None,
         };
         let j = cmd.to_json("dt2");
         assert_eq!(j["method"], "doubleTap");
@@ -1512,6 +1594,8 @@ mod tests {
             source_selector: json!({"text": "Item 1"}),
             target_selector: json!({"text": "Drop Zone"}),
             timeout_ms: Some(10000),
+            source_element_id: None,
+            target_element_id: None,
         };
         let j = cmd.to_json("dd1");
         assert_eq!(j["method"], "dragAndDrop");
@@ -1521,12 +1605,27 @@ mod tests {
     }
 
     #[test]
+    fn to_json_drag_and_drop_by_element_id() {
+        let cmd = AgentCommand::DragAndDrop {
+            source_selector: json!({}),
+            target_selector: json!({}),
+            timeout_ms: None,
+            source_element_id: Some("src-1".into()),
+            target_element_id: Some("tgt-1".into()),
+        };
+        let j = cmd.to_json("dd2");
+        assert_eq!(j["params"]["source"]["elementId"], "src-1");
+        assert_eq!(j["params"]["target"]["elementId"], "tgt-1");
+    }
+
+    #[test]
     fn to_json_select_option_by_text() {
         let cmd = AgentCommand::SelectOption {
             selector: json!({"role": {"role": "combobox", "name": ""}}),
             option: Some("Option 2".into()),
             index: None,
             timeout_ms: Some(5000),
+            element_id: None,
         };
         let j = cmd.to_json("so1");
         assert_eq!(j["method"], "selectOption");
@@ -1541,6 +1640,7 @@ mod tests {
             option: None,
             index: Some(2),
             timeout_ms: None,
+            element_id: None,
         };
         let j = cmd.to_json("so2");
         assert_eq!(j["method"], "selectOption");
@@ -1554,6 +1654,7 @@ mod tests {
             selector: json!({"text": "Map"}),
             scale: 2.0,
             timeout_ms: Some(5000),
+            element_id: None,
         };
         let j = cmd.to_json("pz1");
         assert_eq!(j["method"], "pinchZoom");
@@ -1566,6 +1667,7 @@ mod tests {
         let cmd = AgentCommand::Focus {
             selector: json!({"hint": "Email"}),
             timeout_ms: Some(3000),
+            element_id: None,
         };
         let j = cmd.to_json("f1");
         assert_eq!(j["method"], "focus");
@@ -1578,6 +1680,7 @@ mod tests {
         let cmd = AgentCommand::Blur {
             selector: json!({"hint": "Email"}),
             timeout_ms: None,
+            element_id: None,
         };
         let j = cmd.to_json("b1");
         assert_eq!(j["method"], "blur");
@@ -1591,6 +1694,7 @@ mod tests {
             selector: json!({"text": "Submit"}),
             duration_ms: Some(2000),
             timeout_ms: Some(5000),
+            element_id: None,
         };
         let j = cmd.to_json("h1");
         assert_eq!(j["method"], "highlight");
@@ -1604,6 +1708,7 @@ mod tests {
             selector: json!({"text": "X"}),
             duration_ms: None,
             timeout_ms: None,
+            element_id: None,
         };
         let j = cmd.to_json("h2");
         assert!(j["params"].get("duration").is_none());
@@ -1615,6 +1720,7 @@ mod tests {
         let cmd = AgentCommand::TakeElementScreenshot {
             selector: json!({"resourceId": "profile_image"}),
             timeout_ms: Some(5000),
+            element_id: None,
         };
         let j = cmd.to_json("es1");
         assert_eq!(j["method"], "elementScreenshot");
