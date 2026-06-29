@@ -1,6 +1,6 @@
 {
   "name": "@tapsmith/core-darwin-arm64",
-  "version": "0.3.0",
+  "version": "0.3.2",
   "description": "Tapsmith daemon binary for macOS ARM64",
   "os": ["darwin"],
   "cpu": ["arm64"],
