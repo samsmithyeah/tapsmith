@@ -90,19 +90,23 @@ class WaitEngine(private val device: UiDevice) {
             val prevBounds = match.bounds
             SystemClock.sleep(STABILITY_WINDOW_MS.coerceAtMost(remaining))
 
-            match =
-                try {
-                    elementFinder.findElement(selector)
-                } catch (_: ElementNotFoundException) {
-                    // Element went away during the settle window; re-acquire
-                    // (or time out) rather than returning a stale match.
-                    findOrThrow(selector, elementFinder, deadline, timeoutMs)
-                }
+            try {
+                match = elementFinder.findElement(selector)
+            } catch (_: ElementNotFoundException) {
+                // Element went away during the settle window; re-acquire (or
+                // time out) and give the new element its own stability window
+                // next iteration rather than comparing it against the old
+                // element's bounds.
+                match = findOrThrow(selector, elementFinder, deadline, timeoutMs)
+                checks++
+                continue
+            }
 
-            // Stable across one window and interactable → done. A selector
-            // that explicitly targets a disabled element (enabled == false) is
-            // "ready" once stable — don't spin waiting for it to enable.
-            val isReady = match.isEnabled || selector.enabled == false
+            // Stable across one window and interactable → done. Only a selector
+            // that explicitly requires an enabled element waits for it to
+            // enable; null/false targets are ready once positionally stable
+            // (the SDK owns enabled-waiting for actions like tap()).
+            val isReady = selector.enabled != true || match.isEnabled
             if (match.bounds == prevBounds && isReady) break
             checks++
         }
