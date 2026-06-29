@@ -3424,12 +3424,16 @@ fn is_likely_handshake_abort(error: &impl std::fmt::Display) -> bool {
     .any(|needle| compact.contains(needle))
 }
 
-/// Hosts whose client stacks embed their own TLS roots and therefore can never
-/// trust our generated MITM certificate (gRPC-C++/BoringSSL — Firestore is the
-/// canonical case, PILOT-245). We tunnel them by default so the very first
-/// connection succeeds, rather than failing once before the dynamic
-/// cert-reject fallback arms. Matched against the ClientHello SNI as host
-/// globs and merged with the user's `trace.networkPassthroughHosts`.
+/// Curated convenience list — NOT the mechanism. Any host that rejects our
+/// MITM certificate is tunnelled automatically by the dynamic fallback
+/// (decodable alert → [`is_likely_client_cert_reject`]; abrupt teardown →
+/// [`is_likely_handshake_abort`]), so unlisted backends are never blocked.
+/// This list only spares the *first* connection to the overwhelmingly common
+/// embedded-root host (Firestore's gRPC-C++/BoringSSL stack, PILOT-245) the
+/// one-or-two failed handshakes it would otherwise take for that fallback to
+/// arm. Matched against the ClientHello SNI as host globs and merged with the
+/// user's `trace.networkPassthroughHosts`; users with their own pinned
+/// backends use that config knob.
 const DEFAULT_PASSTHROUGH_HOSTS: &[&str] = &["firestore.googleapis.com"];
 
 /// Compile [`DEFAULT_PASSTHROUGH_HOSTS`] into matchers. The patterns are
