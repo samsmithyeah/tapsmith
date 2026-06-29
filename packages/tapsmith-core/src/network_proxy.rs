@@ -19,7 +19,7 @@
 //! `trace.networkPassthroughHosts` (certificate pinning) — are tunneled
 //! end-to-end without interception instead of being dropped (PILOT-231).
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -253,6 +253,13 @@ pub(crate) struct ProxyState {
     /// setup. Embedded-root gRPC clients (notably Firestore) cannot be made to
     /// trust an external CA, so after the first reject we tunnel retries.
     mitm_rejected_hosts: HashSet<String>,
+    /// Per-host tally of MITM handshakes the client *aborted* abruptly (TCP
+    /// reset / broken pipe) rather than failing with a decodable cert alert.
+    /// Embedded-root gRPC stacks reject our cert this way (see
+    /// [`is_likely_handshake_abort`]); once a host reaches
+    /// [`MITM_ABORT_PASSTHROUGH_THRESHOLD`] it graduates into
+    /// `mitm_rejected_hosts`. Cleared for a host on any successful handshake.
+    mitm_handshake_aborts: HashMap<String, u32>,
 }
 
 /// Handle to the running proxy. Dropping it stops the proxy.
@@ -318,8 +325,9 @@ impl NetworkProxy {
             h2_client_config,
             handler: None,
             network_hosts: Vec::new(),
-            passthrough_hosts: Vec::new(),
+            passthrough_hosts: default_passthrough_regexes(),
             mitm_rejected_hosts: HashSet::new(),
+            mitm_handshake_aborts: HashMap::new(),
         }));
 
         let (shutdown_tx, mut shutdown_rx) = tokio::sync::oneshot::channel::<()>();
@@ -393,7 +401,7 @@ impl NetworkProxy {
     /// proxy is serving traffic; applies to connections accepted after the
     /// call.
     pub async fn set_passthrough_hosts(&self, hosts: Vec<String>) {
-        let compiled = hosts
+        let mut compiled: Vec<regex::Regex> = hosts
             .iter()
             .filter_map(|pattern| {
                 let re = compile_host_glob(pattern);
@@ -403,6 +411,10 @@ impl NetworkProxy {
                 re
             })
             .collect();
+        // Always tunnel the built-in embedded-root hosts (Firestore) on top of
+        // the user's list — they can never trust our MITM cert, so MITM'ing
+        // them only breaks the app under test (see DEFAULT_PASSTHROUGH_HOSTS).
+        compiled.extend(default_passthrough_regexes());
         let mut state = self.state.lock().await;
         state.passthrough_hosts = compiled;
     }
@@ -3371,6 +3383,75 @@ fn is_likely_client_cert_reject(error: &impl std::fmt::Display) -> bool {
         || (compact.contains("alert") && compact.contains("certificate"))
 }
 
+/// Consecutive MITM handshake aborts from one host before we treat it as a
+/// certificate reject and tunnel future connections. Embedded-root gRPC stacks
+/// reject deterministically — every reconnect aborts — so they reach this in
+/// back-to-back retries within milliseconds, while the threshold keeps a lone
+/// transient reset from disabling capture for a host for the rest of the run.
+const MITM_ABORT_PASSTHROUGH_THRESHOLD: u32 = 2;
+
+/// Heuristic for a client that *aborted* the TLS handshake abruptly — TCP
+/// reset, broken pipe, or a truncated stream — instead of completing it or
+/// sending a decodable alert.
+///
+/// gRPC-C++/BoringSSL stacks that embed their own roots (Firestore, PILOT-245)
+/// reject our minted MITM certificate this way: rather than emitting a
+/// `bad_certificate` alert (which [`is_likely_client_cert_reject`] would catch)
+/// they tear the connection down, so the reject reaches us as a plain I/O
+/// error. Used only under the h2-ALPN gate and behind
+/// [`MITM_ABORT_PASSTHROUGH_THRESHOLD`] so a single transient reset never
+/// disables capture — kept separate from [`is_likely_client_cert_reject`],
+/// which stays conservative and only matches unambiguous cert alerts.
+fn is_likely_handshake_abort(error: &impl std::fmt::Display) -> bool {
+    let err_str = error.to_string().to_lowercase();
+    let compact: String = err_str
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric())
+        .collect();
+
+    let has_compact_needle = [
+        "brokenpipe",
+        "connectionreset",
+        "resetbypeer",
+        "unexpectedeof",
+        "endoffile",
+        "closedbeforecompletinghandshake",
+        "peerclosed",
+    ]
+    .iter()
+    .any(|needle| compact.contains(needle));
+
+    // "eof" is matched only as a standalone word, never as a substring of the
+    // compacted string: benign phrases like "type of" / "one of" compact to
+    // "typeof" / "oneof", which contain "eof" and would otherwise be misread
+    // as aborts and (after the threshold) wrongly disable capture for a host.
+    has_compact_needle
+        || err_str
+            .split(|c: char| !c.is_ascii_alphanumeric())
+            .any(|word| word == "eof")
+}
+
+/// Curated convenience list — NOT the mechanism. Any host that rejects our
+/// MITM certificate is tunnelled automatically by the dynamic fallback
+/// (decodable alert → [`is_likely_client_cert_reject`]; abrupt teardown →
+/// [`is_likely_handshake_abort`]), so unlisted backends are never blocked.
+/// This list only spares the *first* connection to the overwhelmingly common
+/// embedded-root host (Firestore's gRPC-C++/BoringSSL stack, PILOT-245) the
+/// one-or-two failed handshakes it would otherwise take for that fallback to
+/// arm. Matched against the ClientHello SNI as host globs and merged with the
+/// user's `trace.networkPassthroughHosts`; users with their own pinned
+/// backends use that config knob.
+const DEFAULT_PASSTHROUGH_HOSTS: &[&str] = &["firestore.googleapis.com"];
+
+/// Compile [`DEFAULT_PASSTHROUGH_HOSTS`] into matchers. The patterns are
+/// constant and known-valid, so any that somehow fail to compile are dropped.
+fn default_passthrough_regexes() -> Vec<regex::Regex> {
+    DEFAULT_PASSTHROUGH_HOSTS
+        .iter()
+        .filter_map(|p| compile_host_glob(p))
+        .collect()
+}
+
 /// Compile a host glob into an anchored, case-insensitive regex, mirroring
 /// the SDK's `trace/filter-hosts.ts` semantics: `*` matches any run of
 /// characters, and a leading `*.` (or `**.`) prefix is optional so
@@ -3597,20 +3678,67 @@ async fn handle_transparent_tls<S>(
         }
     };
     let client_tls = match start.into_stream(server_config).await {
-        Ok(s) => s,
+        Ok(s) => {
+            // A clean MITM handshake clears any earlier abort tally for this
+            // host, so an unrelated transient reset later starts counting from
+            // zero rather than eventually tipping a long-lived host into
+            // passthrough.
+            state.lock().await.mitm_handshake_aborts.remove(&sni_key);
+            s
+        }
         Err(e) => {
-            if offers_h2(&hello.alpn) && is_likely_client_cert_reject(&e) {
-                let inserted = state.lock().await.mitm_rejected_hosts.insert(sni_key);
-                if inserted {
-                    info!(
-                        %sni,
-                        alpn = ?hello
-                            .alpn
-                            .iter()
-                            .map(|p| String::from_utf8_lossy(p).into_owned())
-                            .collect::<Vec<_>>(),
-                        "client rejected generated MITM certificate; future h2-capable TLS connections for this host will be tunneled"
-                    );
+            if offers_h2(&hello.alpn) {
+                let alpn_dbg = hello
+                    .alpn
+                    .iter()
+                    .map(|p| String::from_utf8_lossy(p).into_owned())
+                    .collect::<Vec<_>>();
+                if is_likely_client_cert_reject(&e) {
+                    // Decodable TLS alert (UnknownCA / BadCertificate): an
+                    // unambiguous reject — arm passthrough immediately.
+                    let inserted = state
+                        .lock()
+                        .await
+                        .mitm_rejected_hosts
+                        .insert(sni_key.clone());
+                    if inserted {
+                        info!(
+                            %sni,
+                            alpn = ?alpn_dbg,
+                            "client rejected generated MITM certificate; future h2-capable TLS connections for this host will be tunneled"
+                        );
+                    }
+                } else if is_likely_handshake_abort(&e) {
+                    // Embedded-root gRPC stacks (Firestore) reject our cert by
+                    // tearing the connection down instead of sending an alert,
+                    // so the reject reaches us as an I/O error. Treat a
+                    // *repeated* abort on an h2 host as a reject; the threshold
+                    // keeps a single transient reset from disabling capture.
+                    let armed = {
+                        let mut guard = state.lock().await;
+                        let count = {
+                            let c = guard
+                                .mitm_handshake_aborts
+                                .entry(sni_key.clone())
+                                .or_insert(0);
+                            *c += 1;
+                            *c
+                        };
+                        if count >= MITM_ABORT_PASSTHROUGH_THRESHOLD {
+                            guard.mitm_handshake_aborts.remove(&sni_key);
+                            guard.mitm_rejected_hosts.insert(sni_key.clone())
+                        } else {
+                            false
+                        }
+                    };
+                    if armed {
+                        info!(
+                            %sni,
+                            alpn = ?alpn_dbg,
+                            threshold = MITM_ABORT_PASSTHROUGH_THRESHOLD,
+                            "client repeatedly aborted the MITM TLS handshake (likely an embedded-root gRPC stack); future h2-capable TLS connections for this host will be tunneled"
+                        );
+                    }
                 }
             }
             debug!("client TLS handshake failed for {sni}: {e}");
@@ -4584,6 +4712,7 @@ mod tests {
             network_hosts: Vec::new(),
             passthrough_hosts: Vec::new(),
             mitm_rejected_hosts: HashSet::new(),
+            mitm_handshake_aborts: HashMap::new(),
         }));
 
         let (client_side, server_side) = tokio::io::duplex(65536);
@@ -4921,6 +5050,38 @@ mod tests {
     }
 
     #[test]
+    fn handshake_abort_detection_matches_abrupt_closes() {
+        // Abrupt teardowns an embedded-root gRPC client produces instead of a
+        // decodable cert alert.
+        assert!(is_likely_handshake_abort(&"Broken pipe (os error 32)"));
+        assert!(is_likely_handshake_abort(&"connection reset by peer"));
+        assert!(is_likely_handshake_abort(
+            &"unexpected EOF during handshake"
+        ));
+        assert!(is_likely_handshake_abort(
+            &"peer closed connection without sending TLS close_notify"
+        ));
+
+        // A clean cert alert is handled by is_likely_client_cert_reject, not
+        // here, but a benign non-abort error must not be mistaken for one.
+        assert!(!is_likely_handshake_abort(&"operation timed out"));
+        assert!(!is_likely_handshake_abort(
+            &"received fatal alert: UnknownCA"
+        ));
+
+        // Benign phrases containing "of" compact to strings containing "eof"
+        // ("type of" → "typeof") — they must not be matched as aborts.
+        assert!(!is_likely_handshake_abort(
+            &"invalid type of client configuration"
+        ));
+        assert!(!is_likely_handshake_abort(
+            &"one of the certificates is expired"
+        ));
+        // A standalone "eof" word still counts.
+        assert!(is_likely_handshake_abort(&"tls handshake: eof"));
+    }
+
+    #[test]
     fn host_glob_matches_semantics() {
         // Exact match, case-insensitive.
         assert!(host_glob_matches("api.example.com", "api.example.com"));
@@ -5053,6 +5214,7 @@ mod tests {
                 .map(|p| compile_host_glob(p).unwrap())
                 .collect(),
             mitm_rejected_hosts: HashSet::new(),
+            mitm_handshake_aborts: HashMap::new(),
         }))
     }
 
@@ -5261,6 +5423,99 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn h2_handshake_aborts_arm_passthrough_after_threshold() {
+        // Embedded-root gRPC clients (Firestore on iOS) reject our MITM cert by
+        // tearing the connection down rather than sending a decodable alert, so
+        // the reject reaches the proxy as a broken pipe / EOF. The dynamic
+        // fallback must still learn to tunnel such a host — once the abort
+        // threshold is reached.
+        let dir = tempfile::tempdir().unwrap();
+        let ca = Arc::new(
+            MitmAuthority::generate_new(&dir.path().join("ca.pem"), &dir.path().join("ca-key.pem"))
+                .unwrap(),
+        );
+        // No host-glob passthrough configured, so the host can only become
+        // tunneled via the dynamic abort-detection path under test.
+        let state = empty_proxy_state(Vec::new());
+
+        // Any h2-offering client config works — we abort before cert checking.
+        let (_origin_config, origin_cert) =
+            origin_server_config("firestore.googleapis.com", &[b"h2"]);
+        let client_config = client_config_trusting(&origin_cert, &[b"h2"]);
+        let server_name =
+            rustls::pki_types::ServerName::try_from("firestore.googleapis.com".to_string())
+                .unwrap();
+
+        // Send a real (h2-offering) ClientHello, then drop the socket so the
+        // proxy's handshake response hits a closed peer — no decodable alert,
+        // just an abrupt teardown.
+        async fn abort_handshake(
+            state: Arc<Mutex<ProxyState>>,
+            ca: Arc<MitmAuthority>,
+            client_config: Arc<ClientConfig>,
+            server_name: rustls::pki_types::ServerName<'static>,
+        ) {
+            // Small buffer so the proxy's larger ServerHello flight blocks and
+            // then errors once we drop the client, giving a deterministic abort.
+            let (mut client_side, server_side) = tokio::io::duplex(256);
+            let proxy = tokio::spawn(async move {
+                handle_transparent_tls(server_side, "127.0.0.1".to_string(), 443, state, ca).await;
+            });
+            let mut conn = rustls::ClientConnection::new(client_config, server_name).unwrap();
+            let mut hello = Vec::new();
+            conn.write_tls(&mut hello).unwrap();
+            // write_all only returns once the proxy has drained the ClientHello
+            // (the buffer is smaller than the message), so the drop below can't
+            // race ahead of the proxy reading it.
+            client_side.write_all(&hello).await.unwrap();
+            client_side.flush().await.unwrap();
+            drop(client_side);
+            proxy.await.unwrap();
+        }
+
+        // First abort: tallied, not yet armed.
+        abort_handshake(
+            state.clone(),
+            ca.clone(),
+            client_config.clone(),
+            server_name.clone(),
+        )
+        .await;
+        {
+            let s = state.lock().await;
+            assert!(
+                !s.mitm_rejected_hosts.contains("firestore.googleapis.com"),
+                "one abort must not yet tunnel the host"
+            );
+            assert_eq!(
+                s.mitm_handshake_aborts.get("firestore.googleapis.com"),
+                Some(&1)
+            );
+        }
+
+        // Second abort: reaches MITM_ABORT_PASSTHROUGH_THRESHOLD and arms it.
+        abort_handshake(
+            state.clone(),
+            ca.clone(),
+            client_config.clone(),
+            server_name.clone(),
+        )
+        .await;
+        {
+            let s = state.lock().await;
+            assert!(
+                s.mitm_rejected_hosts.contains("firestore.googleapis.com"),
+                "repeated aborts must tunnel the host"
+            );
+            assert!(
+                !s.mitm_handshake_aborts
+                    .contains_key("firestore.googleapis.com"),
+                "abort tally is cleared once the host is armed"
+            );
+        }
+    }
+
+    #[tokio::test]
     async fn http1_client_is_mitmd() {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
@@ -5284,6 +5539,7 @@ mod tests {
             network_hosts: Vec::new(),
             passthrough_hosts: Vec::new(),
             mitm_rejected_hosts: HashSet::new(),
+            mitm_handshake_aborts: HashMap::new(),
         }));
 
         let (client_side, server_side) = tokio::io::duplex(65536);
@@ -5520,6 +5776,7 @@ mod tests {
             network_hosts: Vec::new(),
             passthrough_hosts: Vec::new(),
             mitm_rejected_hosts: HashSet::new(),
+            mitm_handshake_aborts: HashMap::new(),
         }))
     }
 
@@ -5671,6 +5928,7 @@ mod tests {
             network_hosts: Vec::new(),
             passthrough_hosts: Vec::new(),
             mitm_rejected_hosts: HashSet::new(),
+            mitm_handshake_aborts: HashMap::new(),
         }))
     }
 
