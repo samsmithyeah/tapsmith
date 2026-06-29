@@ -80,15 +80,18 @@ class WaitEngine(private val device: UiDevice) {
         var match = findOrThrow(selector, elementFinder, deadline, timeoutMs)
 
         // Phase 2: best-effort settle — prefer an enabled, positionally-stable
-        // match, but never block on global idle and always fall back to the
-        // current match so animated screens make progress.
+        // match. The per-check wait is a BOUNDED idle wait (capped at
+        // STABILITY_WINDOW_MS): it returns immediately on an already-quiet
+        // screen (0ms fast-path for the common case) and caps at the window on
+        // a perpetually-animating screen, where we then fall back to the
+        // current match so it still makes progress.
         var checks = 0
         while (checks < SETTLE_MAX_CHECKS) {
             val remaining = deadline - SystemClock.uptimeMillis()
             if (remaining <= 0) break
 
             val prevBounds = match.bounds
-            SystemClock.sleep(STABILITY_WINDOW_MS.coerceAtMost(remaining))
+            device.waitForIdle(STABILITY_WINDOW_MS.coerceAtMost(remaining))
 
             try {
                 match = elementFinder.findElement(selector)
