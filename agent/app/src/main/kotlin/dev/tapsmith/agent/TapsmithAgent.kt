@@ -34,13 +34,29 @@ class TapsmithAgent : Instrumentation() {
         // Initialize UiDevice — must pass the Instrumentation instance
         device = UiDevice.getInstance(this)
 
-        // Lower UIAutomator's default timeouts (10s each) which cause every
-        // action to block for the full duration on React Native apps (which
-        // are never truly "idle" due to JS bridge timers). 500ms is enough
-        // to let UIAutomator's internal accessibility event loop settle
-        // without penalizing every single operation.
+        // Disable UIAutomator's implicit "wait for idle" entirely.
+        //
+        // Every UiDevice.findObjects() call and UiObject2 property read
+        // (getText, getVisibleBounds, isEnabled, …) implicitly blocks on
+        // UiDevice.waitForIdle() up to this timeout before returning. On
+        // perpetually-animated screens (React Native Reanimated loops,
+        // indeterminate progress spinners) the accessibility-event stream
+        // never quiets, so each of those implicit waits burns its full
+        // budget — and they accumulate across every candidate and attribute
+        // in a single findElements, easily exceeding the daemon's
+        // per-command deadline ("Agent command timed out after 5.5s") even
+        // though the target element is fully visible.
+        //
+        // Element queries must therefore snapshot the current tree and match
+        // immediately, never gating on global idle. Setting this to 0 makes
+        // findObjects/property reads return against the live tree at once.
+        // Bounded idle-waiting is still available via the explicit
+        // `waitForIdle` command, which passes its own timeout to
+        // UiDevice.waitForIdle(timeout) and is unaffected by this default.
+        // Positional stability / settling is handled in WaitEngine and the
+        // SDK's poll loop, not by this implicit gate.
         Configurator.getInstance().apply {
-            waitForIdleTimeout = 500L
+            waitForIdleTimeout = 0L
             waitForSelectorTimeout = 500L
         }
 

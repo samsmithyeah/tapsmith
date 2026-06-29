@@ -22,6 +22,11 @@ const screens = [
   { href: "/clipboard", label: "Clipboard", description: "Copy and paste" },
   { href: "/keychain", label: "Keychain", description: "Secure storage (keychain/keystore)" },
   { href: "/slow-load", label: "Slow Load", description: "Simulated loading delays" },
+  {
+    href: "/animating",
+    label: "Animating",
+    description: "Never-idle screen — continuous animation + indeterminate spinner",
+  },
   { href: "/scroll", label: "Scroll", description: "Nested scrollable containers" },
   { href: "/api-calls", label: "API Calls", description: "Real HTTP requests to a test API" },
   {
