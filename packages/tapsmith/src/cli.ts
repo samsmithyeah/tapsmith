@@ -1245,9 +1245,19 @@ function parseArgs(argv: string[]): CliArgs {
     } else if (arg?.startsWith('--reporter=')) {
       args.reporter = arg.slice('--reporter='.length);
     } else if (arg === '--project') {
-      (args.project ??= []).push(rest[++i]);
+      const val = rest[++i];
+      if (!val) {
+        console.error(red('--project requires a project name'));
+        process.exit(1);
+      }
+      (args.project ??= []).push(val);
     } else if (arg?.startsWith('--project=')) {
-      (args.project ??= []).push(arg.slice('--project='.length));
+      const val = arg.slice('--project='.length);
+      if (!val) {
+        console.error(red('--project requires a project name'));
+        process.exit(1);
+      }
+      (args.project ??= []).push(val);
     } else if (arg === '--grep' || arg === '-g') {
       args.grep = rest[++i];
     } else if (arg?.startsWith('--grep=')) {
