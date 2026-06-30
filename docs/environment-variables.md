@@ -29,7 +29,7 @@ Most users will never need to set any of these. They are primarily useful for de
 
 | Variable | Description |
 |---|---|
-| `CI` | When set to `"true"`, Tapsmith auto-selects the `dot` reporter instead of `list`. Most CI providers set this automatically. |
+| `CI` | When set (and not `"false"`), Tapsmith skips the Android device-health preflight and disables interactive progress output. Most CI providers set this automatically. Reporter selection is no longer affected — `list` is the default everywhere; set `reporter: 'dot'` explicitly for compact CI output. |
 | `GITHUB_ACTIONS` | When set (GitHub Actions sets it automatically), Tapsmith auto-adds the `github` reporter for inline annotations on test failures. |
 | `GITHUB_STEP_SUMMARY` | Path to the GitHub Actions step summary file. The GitHub reporter writes a Markdown summary table when this is set. |
 

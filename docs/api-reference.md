@@ -1926,15 +1926,15 @@ export default defineConfig({
 });
 ```
 
-**Auto-detection:** When `reporter` is not set, Tapsmith uses `list` for local runs and `dot` for CI (detected via the `CI` environment variable). The `github` reporter is automatically added when running in GitHub Actions.
+**Default:** When `reporter` is not set, Tapsmith uses the `list` reporter everywhere, including CI. Set `reporter: 'dot'` explicitly if you prefer the compact one-character-per-test output in CI. The `github` reporter is automatically added when running in GitHub Actions.
 
 ### Built-in reporters
 
 | Reporter | Description | Default |
 | --- | --- | --- |
-| `list` | Detailed per-test output with status, name, and duration | Local runs |
+| `list` | Detailed per-test output with status, name, and duration | All runs |
 | `line` | Concise single-line output, overwrites previous line | — |
-| `dot` | Minimal output: one character per test (`·` / `F` / `×`) | CI runs |
+| `dot` | Minimal output: one character per test (`·` / `F` / `×`) | — |
 | `json` | Structured JSON file with full test data | — |
 | `junit` | JUnit XML for CI system ingestion | — |
 | `html` | Self-contained interactive HTML report | — |

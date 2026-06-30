@@ -251,13 +251,13 @@ describe('createReporters', () => {
     if (origCI !== undefined) process.env.CI = origCI;
   });
 
-  it('creates a dot reporter by default when in CI', async () => {
+  it('creates a list reporter by default even in CI', async () => {
     const origCI = process.env.CI;
     process.env.CI = 'true';
 
     const reporters = await createReporters(undefined);
     expect(reporters).toHaveLength(1);
-    expect(reporters[0].constructor.name).toBe('DotReporter');
+    expect(reporters[0].constructor.name).toBe('ListReporter');
 
     if (origCI !== undefined) {
       process.env.CI = origCI;
