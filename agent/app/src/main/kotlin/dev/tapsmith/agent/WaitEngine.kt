@@ -2,194 +2,146 @@ package dev.tapsmith.agent
 
 import android.os.SystemClock
 import android.util.Log
-import androidx.test.uiautomator.By
 import androidx.test.uiautomator.UiDevice
-import androidx.test.uiautomator.Until
-import java.util.regex.Pattern
 
 /**
- * Event-driven waiting engine that avoids polling loops and Thread.sleep().
+ * Element-resolution / waiting engine.
  *
- * Uses UIAutomator's built-in wait mechanisms and accessibility events
- * to detect when the UI has settled or when elements become available.
+ * Element queries snapshot the current accessibility tree (via [ElementFinder])
+ * and match immediately — they are NOT gated on global UI idle. This is
+ * essential on perpetually-animated screens (React Native Reanimated loops,
+ * indeterminate progress spinners, etc.) where the accessibility-event stream
+ * never quiets: an idle-gated wait (UiDevice.waitForIdle / Until.hasObject)
+ * would block for its full timeout even when the target element is already
+ * present, wedging the agent's single command thread and tripping the daemon's
+ * per-command deadline.
+ *
+ * Bounded idle-waiting is reserved for the explicit [waitForIdle] settle command.
  */
 class WaitEngine(private val device: UiDevice) {
     companion object {
         private const val TAG = "TapsmithWait"
+
+        /** Window between settle re-checks, and the default explicit-idle timeout. */
         private const val STABILITY_WINDOW_MS = 100L
         private const val DEFAULT_IDLE_TIMEOUT_MS = 5000L
         private const val DEFAULT_ELEMENT_TIMEOUT_MS = 10000L
 
         /** Polling interval used when re-trying findElement inside the wait loop. */
         private const val FIND_POLL_INTERVAL_MS = 200L
+
+        /**
+         * Max positional-stability re-checks before falling back to the current
+         * match. Caps the settle phase so a never-settling (animated) screen
+         * still makes forward progress instead of blocking.
+         */
+        private const val SETTLE_MAX_CHECKS = 3
     }
 
     /**
-     * Wait until the UI is idle — no pending accessibility events and
-     * no active animations.
+     * Wait until the UI is idle — no pending accessibility events.
      *
-     * Uses UiDevice.waitForIdle() which internally monitors accessibility
-     * events rather than polling.
-     *
-     * @param timeoutMs Maximum time to wait
-     * @throws TimeoutException if the UI does not become idle within the timeout
+     * This is an EXPLICIT settle primitive (the `waitForIdle` command). On a
+     * screen that never goes idle it will block for the full [timeoutMs]; that
+     * is by design — callers ask for it deliberately. Element queries must NOT
+     * route through here; they use [waitForElement] instead.
      */
     fun waitForIdle(timeoutMs: Long = DEFAULT_IDLE_TIMEOUT_MS) {
         val startTime = SystemClock.uptimeMillis()
-
-        // UiDevice.waitForIdle is event-driven — it monitors the accessibility
-        // event stream and waits until no new events arrive within a quiet window.
         device.waitForIdle(timeoutMs)
-
         val elapsed = SystemClock.uptimeMillis() - startTime
         Log.d(TAG, "waitForIdle completed in ${elapsed}ms")
     }
 
     /**
-     * Wait until an element matching the selector exists, is visible,
-     * enabled, and positionally stable.
+     * Wait until an element matching the selector exists, then (best-effort)
+     * until it is enabled and positionally stable.
      *
-     * Uses UIAutomator's event-driven Until conditions rather than
-     * polling loops or Thread.sleep().
+     * Resolution polls [ElementFinder.findElement] — which reads a live snapshot
+     * of the accessibility tree and does the precise match — sleeping between
+     * attempts rather than blocking on global idle. The settle phase is bounded
+     * and idle-free: if the screen never stabilizes, it returns the current
+     * match instead of waiting forever.
      *
      * @param selector The element selector to wait for
-     * @param timeoutMs Maximum time to wait
-     * @param elementFinder The element finder to use for the final result
-     * @return ElementInfo for the found element
-     * @throws TimeoutException if the element does not appear within timeout
+     * @param timeoutMs Maximum time to wait for the element to exist
+     * @param elementFinder The element finder used to match
+     * @return ElementInfo for the matched element
+     * @throws TimeoutException if no matching element appears within the timeout
      */
     fun waitForElement(
         selector: ElementSelector,
         timeoutMs: Long = DEFAULT_ELEMENT_TIMEOUT_MS,
         elementFinder: ElementFinder,
     ): ElementInfo {
-        val startTime = SystemClock.uptimeMillis()
+        val deadline = SystemClock.uptimeMillis() + timeoutMs
 
-        // Build a BySelector for event-driven waiting
-        val bySelector = buildWaitSelector(selector, elementFinder)
+        // Phase 1: wait for the element to be present (idle-free snapshot poll).
+        var match = findOrThrow(selector, elementFinder, deadline, timeoutMs)
 
-        if (bySelector != null) {
-            // Phase 1: Wait for the element to exist using event-driven Until.hasObject
-            val found = device.wait(Until.hasObject(bySelector), timeoutMs)
-            if (!found) {
-                throw TimeoutException(
-                    "Timed out after ${timeoutMs}ms waiting for element to exist. " +
-                        "Selector: ${describeSelector(selector)}",
-                )
+        // Phase 2: best-effort settle — prefer an enabled, positionally-stable
+        // match. The per-check wait is a BOUNDED idle wait (capped at
+        // STABILITY_WINDOW_MS): it returns immediately on an already-quiet
+        // screen (0ms fast-path for the common case) and caps at the window on
+        // a perpetually-animating screen, where we then fall back to the
+        // current match so it still makes progress.
+        var checks = 0
+        while (checks < SETTLE_MAX_CHECKS) {
+            val remaining = deadline - SystemClock.uptimeMillis()
+            if (remaining <= 0) break
+
+            val prevBounds = match.bounds
+            device.waitForIdle(STABILITY_WINDOW_MS.coerceAtMost(remaining))
+
+            try {
+                match = elementFinder.findElement(selector)
+            } catch (_: ElementNotFoundException) {
+                // Element went away during the settle window; re-acquire (or
+                // time out) and give the new element its own stability window
+                // next iteration rather than comparing it against the old
+                // element's bounds.
+                match = findOrThrow(selector, elementFinder, deadline, timeoutMs)
+                checks++
+                continue
             }
 
-            val remainingTime = timeoutMs - (SystemClock.uptimeMillis() - startTime)
-            if (remainingTime <= 0) {
-                throw TimeoutException(
-                    "Timed out after ${timeoutMs}ms: element exists but no time left for stability check. " +
-                        "Selector: ${describeSelector(selector)}",
-                )
-            }
-
-            // Phase 2: Wait for the element to become enabled using event-driven wait
-            val obj = device.findObject(bySelector)
-            if (obj != null && !obj.isEnabled) {
-                val enabled = obj.wait(Until.enabled(true), remainingTime.coerceAtMost(timeoutMs / 2))
-                if (!enabled) {
-                    throw TimeoutException(
-                        "Timed out after ${timeoutMs}ms: element exists but is not enabled. " +
-                            "Selector: ${describeSelector(selector)}",
-                    )
-                }
-            }
-
-            // Phase 3: Verify positional stability — check that the element's
-            // bounds are not changing (i.e., animation has completed).
-            val stableDeadline = SystemClock.uptimeMillis() + STABILITY_WINDOW_MS
-            var lastBounds = device.findObject(bySelector)?.visibleBounds
-            while (SystemClock.uptimeMillis() < stableDeadline) {
-                // Use waitForIdle to yield to the accessibility event loop
-                // rather than sleeping
-                device.waitForIdle(STABILITY_WINDOW_MS)
-                val currentObj = device.findObject(bySelector) ?: break
-                val currentBounds = currentObj.visibleBounds
-                if (lastBounds != null && lastBounds == currentBounds) {
-                    break // Position is stable
-                }
-                lastBounds = currentBounds
-            }
-        } else {
-            // For selectors we can't express as BySelector (e.g., xpath),
-            // use waitForIdle and then check
-            device.waitForIdle(timeoutMs.coerceAtMost(2000))
+            // Stable across one window and interactable → done. Only a selector
+            // that explicitly requires an enabled element waits for it to
+            // enable; null/false targets are ready once positionally stable
+            // (the SDK owns enabled-waiting for actions like tap()).
+            val isReady = selector.enabled != true || match.isEnabled
+            if (match.bounds == prevBounds && isReady) break
+            checks++
         }
 
-        // Final lookup. The BySelector built above is broader than the
-        // full selector for hint/role queries (it matches *any* EditText
-        // for a hint-only wait, *any* element of the role's class set
-        // for a role-only wait), so a `hasObject` hit just means a
-        // candidate exists — not that the specific match the caller
-        // wants is present yet. Poll findElement until the specific
-        // match appears or we run out of time, otherwise this would
-        // throw "not found" within milliseconds whenever a sibling
-        // candidate happened to render before the targeted one.
+        return match
+    }
+
+    /**
+     * Poll [ElementFinder.findElement] until a match exists or [deadline] passes.
+     * Sleeps (never calls device.waitForIdle) between attempts, so it makes
+     * forward progress on screens that never go idle. The first attempt happens
+     * before any sleep, so a visible element returns on the first snapshot.
+     */
+    private fun findOrThrow(
+        selector: ElementSelector,
+        elementFinder: ElementFinder,
+        deadline: Long,
+        timeoutMs: Long,
+    ): ElementInfo {
         while (true) {
             try {
                 return elementFinder.findElement(selector)
             } catch (_: ElementNotFoundException) {
-                val remaining = timeoutMs - (SystemClock.uptimeMillis() - startTime)
+                val remaining = deadline - SystemClock.uptimeMillis()
                 if (remaining <= 0) {
                     throw TimeoutException(
                         "Timed out after ${timeoutMs}ms: element not found after waiting. " +
                             "Selector: ${describeSelector(selector)}",
                     )
                 }
-                device.waitForIdle(FIND_POLL_INTERVAL_MS.coerceAtMost(remaining))
+                SystemClock.sleep(FIND_POLL_INTERVAL_MS.coerceAtMost(remaining))
             }
-        }
-    }
-
-    /**
-     * Build a BySelector from an ElementSelector for use with Until conditions.
-     * Returns null if the selector type cannot be expressed as a BySelector.
-     *
-     * For role-based selectors, this builds a broad BySelector from the role's
-     * class-name mapping. The selector is intentionally broader than the full
-     * match (role+name+attributes) — Phase 1 just needs to wait for an element
-     * of the right type to exist, then the polling loop in waitForElement does
-     * the precise matching via elementFinder.findElement.
-     */
-    private fun buildWaitSelector(
-        selector: ElementSelector,
-        elementFinder: ElementFinder,
-    ): androidx.test.uiautomator.BySelector? {
-        return when {
-            selector.text != null -> By.text(selector.text)
-            selector.textContains != null -> By.textContains(selector.textContains)
-            selector.contentDesc != null -> By.desc(selector.contentDesc)
-            selector.id != null -> By.res(selector.id)
-            selector.className != null -> By.clazz(selector.className)
-            // React Native's testID surfaces as resource-id in the hierarchy,
-            // matching the lookup path in ElementFinder.buildBySelector().
-            selector.testId != null -> By.res(selector.testId)
-            // Hint matches happen via post-filter in ElementFinder; for the
-            // wait phase, just block until any EditText variant is present
-            // so we don't fall through to the slow waitForIdle path. We
-            // share the candidate pattern with ElementFinder so the wait
-            // and the find resolve the same set of widgets (plain EditText,
-            // AppCompat, MaterialTextInput, etc.).
-            selector.hint != null -> By.clazz(ElementFinder.EDIT_TEXT_HINT_CLASS_PATTERN)
-            // Role-based wait: build a BySelector from the role's class-name
-            // mapping. This is broader than the full match (a role can also be
-            // resolved via extractRoleDescription for RN accessibilityRole),
-            // but it lets the event-driven wait detect when a candidate of the
-            // right class type appears, avoiding the 2s waitForIdle penalty.
-            // The polling loop after this does the precise findElement match.
-            selector.role != null -> {
-                val classNames = elementFinder.classNamesForRole(selector.role)
-                if (classNames.isNotEmpty()) {
-                    val pattern = classNames.joinToString("|") { Regex.escape(it) }
-                    By.clazz(Pattern.compile(pattern))
-                } else {
-                    null
-                }
-            }
-            else -> null
         }
     }
 

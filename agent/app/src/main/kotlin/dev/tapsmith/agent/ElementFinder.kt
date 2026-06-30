@@ -142,8 +142,6 @@ class ElementFinder(private val device: UiDevice) {
         // Class names that can carry a hint (placeholder) attribute.
         // Used as a candidate filter when only `hint` is supplied; the actual
         // hint match is applied as a post-filter via extractHint().
-        // Shared with WaitEngine.buildWaitSelector() so the wait phase
-        // matches the same EditText variants the find phase resolves.
         val EDIT_TEXT_HINT_CLASS_PATTERN: java.util.regex.Pattern =
             java.util.regex.Pattern.compile(
                 "(?:" +
@@ -372,16 +370,6 @@ class ElementFinder(private val device: UiDevice) {
      */
     private fun resolveRole(className: String): String {
         return classToRoleMap[className] ?: ""
-    }
-
-    /**
-     * Return the list of Android class names for a given role, applying
-     * ROLE_ALIASES normalization. Returns an empty list for unknown roles.
-     * Used by WaitEngine to build a BySelector for role-based waits.
-     */
-    fun classNamesForRole(role: String): List<String> {
-        val normalized = ROLE_ALIASES[role.lowercase()] ?: role.lowercase()
-        return roleClassMap[normalized] ?: emptyList()
     }
 
     /**
