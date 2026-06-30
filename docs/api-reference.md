@@ -2173,6 +2173,25 @@ npx tapsmith test -g checkout --grep-invert wip  # Checkout tests, excluding wor
 
 Also configurable in `tapsmith.config.ts` as `grepInvert: RegExp | RegExp[]`, with per-project entries unioned with the root entry.
 
+### `tapsmith test --project <name>`
+
+Run only the named [project](#projects) from your config. Repeat the flag to run
+several. Mirrors Playwright's `--project`. Any [dependencies](#projects) of the
+selected projects run automatically, so setup projects are never skipped.
+
+```bash
+npx tapsmith test --project android              # Only the "android" project (+ its deps)
+npx tapsmith test --project android --project ios # Both platforms
+```
+
+The flag requires a `projects` array in your config. An unknown name fails the
+run with the list of available projects. Combine with file arguments to further
+narrow a project to specific test files:
+
+```bash
+npx tapsmith test --project android tests/login.test.ts
+```
+
 ### `tapsmith test --watch` / `tapsmith test -w`
 
 Watch test files for changes and re-run them automatically. The daemon, device, and agent are kept alive across re-runs, so only the app reset + test execution cost is paid (~1-2s per re-run).

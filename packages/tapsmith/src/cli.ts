@@ -1134,6 +1134,8 @@ interface CliArgs {
   grepInvert?: string;
   /** Reporter override from `--reporter`. */
   reporter?: string;
+  /** Project name(s) from `--project` (repeatable). Filters which configured projects run. */
+  project?: string[];
 }
 
 function compileGrepPattern(pattern: string, flag: string): RegExp {
@@ -1242,6 +1244,10 @@ function parseArgs(argv: string[]): CliArgs {
       args.reporter = rest[++i];
     } else if (arg?.startsWith('--reporter=')) {
       args.reporter = arg.slice('--reporter='.length);
+    } else if (arg === '--project') {
+      (args.project ??= []).push(rest[++i]);
+    } else if (arg?.startsWith('--project=')) {
+      (args.project ??= []).push(arg.slice('--project='.length));
     } else if (arg === '--grep' || arg === '-g') {
       args.grep = rest[++i];
     } else if (arg?.startsWith('--grep=')) {
@@ -1672,6 +1678,8 @@ ${bold('Options:')}
   -g, --grep <pattern>     Run only tests whose fullName matches this regex
   --grep-invert <pattern>  Skip tests whose fullName matches this regex
   --reporter <name>        Override the reporter (list, line, dot, json, junit, html, github)
+  --project <name>         Only run the named project from your config (repeatable;
+                           dependencies run automatically)
   --force-install          Reinstall the app even if already installed
   -v, --version            Print version
   -h, --help               Show this help
@@ -1921,9 +1929,20 @@ async function main(): Promise<void> {
   }
 
   // ─── Project resolution & test file discovery ───
-  const { resolveProjects, topologicalSort, collectTransitiveDeps, findProjectsForFile } = await import('./project.js');
+  const { resolveProjects, topologicalSort, collectTransitiveDeps, findProjectsForFile, validateProjectNames } = await import('./project.js');
   const hasProjects = config.projects && config.projects.length > 0;
   const hasExplicitFiles = args.files && args.files.length > 0;
+  const selectedProjects = args.project && args.project.length > 0 ? args.project : undefined;
+
+  // `--project` requires a configured `projects` array (the only exception is
+  // explicitly selecting the synthetic "default" project).
+  if (selectedProjects && !hasProjects && !selectedProjects.every((n) => n === 'default')) {
+    console.error(red(
+      `--project requires a "projects" array in your config. `
+      + `Requested: ${selectedProjects.map((n) => `"${n}"`).join(', ')}`,
+    ));
+    process.exit(1);
+  }
 
   let projects: import('./project.js').ResolvedProject[];
   let projectWaves: import('./project.js').ResolvedProject[][];
@@ -1931,6 +1950,17 @@ async function main(): Promise<void> {
   if (hasProjects && !hasExplicitFiles) {
     // Full project mode — discover all files per project
     projects = resolveProjects(config);
+    if (selectedProjects) {
+      try {
+        validateProjectNames(selectedProjects, projects);
+      } catch (err) {
+        console.error(red((err as Error).message));
+        process.exit(1);
+      }
+      // Run the selected projects plus their transitive dependencies.
+      const required = collectTransitiveDeps(new Set(selectedProjects), projects);
+      projects = projects.filter((p) => required.has(p.name));
+    }
     projectWaves = topologicalSort(projects);
     for (const project of projects) {
       project.testFiles = await discoverTestFiles(project.testMatch, config.rootDir, undefined, project.testIgnore);
@@ -1938,6 +1968,15 @@ async function main(): Promise<void> {
   } else if (hasProjects && hasExplicitFiles) {
     // Explicit files with projects — auto-run dependencies
     const allProjects = resolveProjects(config);
+    if (selectedProjects) {
+      try {
+        validateProjectNames(selectedProjects, allProjects);
+      } catch (err) {
+        console.error(red((err as Error).message));
+        process.exit(1);
+      }
+    }
+    const selectedSet = selectedProjects ? new Set(selectedProjects) : undefined;
     const explicitPaths = args.files.map((f: string) => path.resolve(config.rootDir, f));
 
     // Find which projects the explicit files belong to
@@ -1945,6 +1984,8 @@ async function main(): Promise<void> {
     const filesByProject = new Map<string, string[]>();
     for (const filePath of new Set(explicitPaths)) {
       for (const name of findProjectsForFile(filePath, allProjects, config.rootDir)) {
+        // When `--project` is given, only keep matches in the selected set.
+        if (selectedSet && !selectedSet.has(name)) continue;
         targetProjectNames.add(name);
         let list = filesByProject.get(name);
         if (!list) {
