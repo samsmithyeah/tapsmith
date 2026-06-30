@@ -14,6 +14,7 @@ import {
 import type { WatchRunMessage, WatchRunChildMessage } from '../watch-run.js';
 import { RunQueue } from '../watch-queue.js';
 import { ensureConnected, getAllDaemonAddresses, listAllDevices } from './connection.js';
+import { matchesTestFilter } from '../test-filter.js';
 import type {
   TestDispatcher,
   TestRunResult,
@@ -98,7 +99,7 @@ export class HeadlessTestDispatcher implements TestDispatcher {
         const projectName = proj && proj.name !== 'default' ? proj.name : undefined;
         try {
           const { results, suite } = await this._runFileInChild(
-            f, useOptions, projectName, validFiles.length === 1 ? testFilter : undefined,
+            f, useOptions, projectName, testFilter,
           );
           totalPassed += results.filter((r) => r.status === 'passed').length;
           totalFailed += results.filter((r) => r.status === 'failed').length;
@@ -486,7 +487,7 @@ export class HeadlessTestDispatcher implements TestDispatcher {
         switch (response.type) {
           case 'test-end': {
             const result = deserializeTestResult(response.result);
-            if (testFilter && result.status === 'skipped' && result.fullName !== testFilter) break;
+            if (testFilter && result.status === 'skipped' && !matchesTestFilter(result.fullName, testFilter)) break;
             const key = projectName ? `${projectName}::${result.fullName}` : result.fullName;
             this._testResults.set(key, {
               fullName: result.fullName,
@@ -534,6 +535,7 @@ export class HeadlessTestDispatcher implements TestDispatcher {
         screenshotDir: undefined,
         projectUseOptions,
         projectName,
+        testFilter,
       };
 
       child.send(msg);

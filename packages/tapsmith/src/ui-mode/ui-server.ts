@@ -27,6 +27,7 @@ import { TapsmithGrpcClient } from '../grpc-client.js';
 import type { Device } from '../device.js';
 import type { ResolvedProject } from '../project.js';
 import { collectTransitiveDeps } from '../project.js';
+import { matchesTestFilter } from '../test-filter.js';
 import type { LaunchedEmulator } from '../emulator.js';
 import { preserveEmulatorsForReuse, getRunningAvdName } from '../emulator.js';
 import { listSimulators, getSimulatorScreenScale } from '../ios-simulator.js';
@@ -578,7 +579,7 @@ export async function startUIServer(
       let totalPassed = 0, totalFailed = 0, totalSkipped = 0, totalDuration = 0;
       let stopped = false;
       for (const f of validFiles) {
-        const r = await runFile(f, undefined, project);
+        const r = await runFile(f, testFilter, project);
         totalPassed += r.passed;
         totalFailed += r.failed;
         totalSkipped += r.skipped;
@@ -1189,7 +1190,7 @@ export async function startUIServer(
           case 'test-end': {
             singleWorkerRunningTest = null;
             const result = deserializeTestResult(response.result);
-            if (testFilter && result.status === 'skipped' && result.fullName !== testFilter) {
+            if (testFilter && result.status === 'skipped' && !matchesTestFilter(result.fullName, testFilter)) {
               break;
             }
             updateTestStatus(

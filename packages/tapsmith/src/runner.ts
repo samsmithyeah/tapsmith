@@ -30,6 +30,7 @@ import type { AnyTraceEvent } from './trace/types.js';
 import { getSimulatorScreenScale } from './ios-simulator.js';
 import type { TraceDeviceInfo } from './trace/types.js';
 import { TestAbortedError, isAbortError } from './abort.js';
+import { matchesTestFilter } from './test-filter.js';
 
 // ─── Trace Device Info ───
 
@@ -498,7 +499,10 @@ export interface RunOptions {
   projectUseOptions?: UseOptions;
   /** Project name — stamped on test results for reporter grouping. */
   projectName?: string;
-  /** Run only the test whose fullName matches this value. All other tests are skipped. */
+  /**
+   * Run only tests whose fullName contains this value (case-insensitive
+   * substring match). All other tests are skipped. May match several tests.
+   */
   testFilter?: string;
   /**
    * Regular expressions matched against each test's fullName. When set, only
@@ -570,16 +574,15 @@ async function captureFailureScreenshot(
  * Whether a test's fullName passes all configured selection filters
  * (`testFilter`, `grep`, `grepInvert`). A test that doesn't pass is skipped.
  *
- * - `testFilter`: exact-match or describe-prefix match.
+ * - `testFilter`: case-insensitive substring match against the fullName
+ *   (subsumes exact-name and describe-prefix matches; may match several tests).
  * - `grep` / `projectGrep`: each set must have at least one matching regex
  *   (intersected: root AND project).
  * - `grepInvert` / `projectGrepInvert`: no regex in the union may match.
  */
 // Reset lastIndex before each test() — RegExp with the `g` flag is stateful.
 function passesTestFilter(fullName: string, opts: RunOptions): boolean {
-  if (opts.testFilter
-    && fullName !== opts.testFilter
-    && !fullName.startsWith(opts.testFilter + ' > ')) {
+  if (opts.testFilter && !matchesTestFilter(fullName, opts.testFilter)) {
     return false;
   }
   if (opts.grep && opts.grep.length > 0
@@ -909,7 +912,7 @@ async function runSuiteContext(
     const fullName = parentPrefix ? `${parentPrefix} > ${entry.name}` : entry.name;
 
     // Determine if this test should be skipped.
-    // testFilter matches either an exact test name or a describe prefix.
+    // testFilter is a case-insensitive substring match against the fullName.
     // grep / grepInvert match against the fullName as regular expressions.
     const filteredOut = !passesTestFilter(fullName, opts);
     const shouldSkip = entry.skip || (hasOnly && !entry.only) || filteredOut;

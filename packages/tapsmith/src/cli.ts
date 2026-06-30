@@ -2136,6 +2136,16 @@ async function main(): Promise<void> {
     console.log(`\nStarting watch mode for ${testFiles.length} test file(s)...\n`);
   }
 
+  // A selection filter (grep / grep-invert, at root or any project) is active.
+  // When such a filter selects zero runnable tests — i.e. every discovered test
+  // ends up skipped — that's a usage error (typically a typo'd pattern), not a
+  // green run. The exit paths below fail loud rather than reporting success.
+  const selectionFilterActive =
+    config.grep !== undefined || config.grepInvert !== undefined ||
+    (hasProjects && projects.some((p) => p.grep !== undefined || p.grepInvert !== undefined));
+  const zeroMatchFilterMessage =
+    'No tests ran: every selected test was filtered out. Check your --grep / --grep-invert pattern (it matches against the full "describe > test" name).';
+
   // ─── Parallel mode ───
   // UI and watch modes handle their own execution — skip the dispatcher path.
   // Fall back to sequential when parallelism wouldn't help — either there's
@@ -2158,7 +2168,11 @@ async function main(): Promise<void> {
       });
 
       await reporter.onRunEnd(fullResult);
-      process.exit(fullResult.status === 'failed' ? 1 : 0);
+      const zeroMatch = selectionFilterActive
+        && fullResult.tests.length > 0
+        && fullResult.tests.every((t) => t.status === 'skipped');
+      if (zeroMatch) console.error(red(zeroMatchFilterMessage));
+      process.exit((fullResult.status === 'failed' || zeroMatch) ? 1 : 0);
     }
   }
 
@@ -2574,7 +2588,11 @@ async function main(): Promise<void> {
       suites: allSuites,
     };
     await reporter.onRunEnd(fullResult);
-    sequentialExitCode = hasFailed ? 1 : 0;
+    const zeroMatch = selectionFilterActive
+      && allResults.length > 0
+      && allResults.every((r) => r.status === 'skipped');
+    if (zeroMatch) console.error(red(zeroMatchFilterMessage));
+    sequentialExitCode = (hasFailed || zeroMatch) ? 1 : 0;
   } finally {
     disposeActionProgressPrinter?.();
     device?.close();

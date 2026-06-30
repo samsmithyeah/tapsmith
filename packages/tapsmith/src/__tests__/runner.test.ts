@@ -927,6 +927,79 @@ describe('test.use()', () => {
   });
 });
 
+// ─── testFilter (single-test) filtering ───
+
+describe('testFilter', () => {
+  it('runs the matching test and skips the rest (case-insensitive substring)', async () => {
+    pushContext();
+    tapsmithDescribe('Login screen', () => {
+      tapsmithTest('submits the form', async () => {});
+      tapsmithTest('shows an error', async () => {});
+    });
+    const ctx = popContext();
+
+    const result = await runSuiteContext(ctx, '', [], [], makeOpts({
+      testFilter: 'submits the form',
+    }));
+
+    const byName = new Map(collectResults(result).map((t) => [t.fullName, t.status]));
+    expect(byName.get('Login screen > submits the form')).toBe('passed');
+    expect(byName.get('Login screen > shows an error')).toBe('skipped');
+  });
+
+  it('matches a describe prefix (runs all tests under it)', async () => {
+    pushContext();
+    tapsmithDescribe('Login screen', () => {
+      tapsmithTest('a', async () => {});
+      tapsmithTest('b', async () => {});
+    });
+    tapsmithDescribe('Home screen', () => {
+      tapsmithTest('c', async () => {});
+    });
+    const ctx = popContext();
+
+    const result = await runSuiteContext(ctx, '', [], [], makeOpts({
+      testFilter: 'Login screen',
+    }));
+
+    const byName = new Map(collectResults(result).map((t) => [t.fullName, t.status]));
+    expect(byName.get('Login screen > a')).toBe('passed');
+    expect(byName.get('Login screen > b')).toBe('passed');
+    expect(byName.get('Home screen > c')).toBe('skipped');
+  });
+
+  it('can match multiple tests by a shared substring', async () => {
+    pushContext();
+    tapsmithTest('renders header', async () => {});
+    tapsmithTest('renders footer', async () => {});
+    tapsmithTest('taps button', async () => {});
+    const ctx = popContext();
+
+    const result = await runSuiteContext(ctx, '', [], [], makeOpts({
+      testFilter: 'renders',
+    }));
+
+    const byName = new Map(collectResults(result).map((t) => [t.name, t.status]));
+    expect(byName.get('renders header')).toBe('passed');
+    expect(byName.get('renders footer')).toBe('passed');
+    expect(byName.get('taps button')).toBe('skipped');
+  });
+
+  it('skips every test when nothing matches', async () => {
+    pushContext();
+    tapsmithTest('alpha', async () => {});
+    tapsmithTest('beta', async () => {});
+    const ctx = popContext();
+
+    const result = await runSuiteContext(ctx, '', [], [], makeOpts({
+      testFilter: 'does-not-exist',
+    }));
+
+    const flat = collectResults(result);
+    expect(flat.every((t) => t.status === 'skipped')).toBe(true);
+  });
+});
+
 // ─── grep / grepInvert filtering ───
 
 describe('grep / grepInvert', () => {
