@@ -58,6 +58,12 @@ Key tools: `tapsmith_snapshot` (accessibility tree with suggested selectors),
 `tapsmith_screenshot`. The full API reference is exposed as the MCP resource
 `tapsmith://api-reference`.
 
+**Running a single test:** pass the `test` argument to `tapsmith_run_tests`. It's
+a case-insensitive substring of the full test name (`"Describe > test name"`), so
+a bare fragment like `"submits the form"` is enough. If it matches nothing the
+tool returns an *error* listing the available tests — it never silently reports a
+green run. Use `tapsmith_list_tests` to see exact names.
+
 ## Writing good tests (selector philosophy)
 
 Prefer accessibility-first selectors — they survive refactors and match how

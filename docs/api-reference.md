@@ -2136,6 +2136,8 @@ npx tapsmith test --grep "@smoke|@critical"  # Run smoke + critical tests by tag
 
 The pattern is compiled as a JavaScript `RegExp`. Combine with `--grep-invert` to further narrow the selection.
 
+If a `--grep` / `--grep-invert` filter selects zero tests (e.g. a typo'd pattern), the run exits non-zero with an error rather than reporting a green "0 tests" success.
+
 The same filter can be set in `tapsmith.config.ts`:
 
 ```ts

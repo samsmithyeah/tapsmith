@@ -36,6 +36,8 @@ export interface WatchRunMessage {
   screenshotDir?: string
   projectUseOptions?: RunFileUseOptions
   projectName?: string
+  /** Run only tests whose fullName matches this (case-insensitive substring). */
+  testFilter?: string
 }
 
 export interface WatchRunTestEndMessage {
@@ -182,6 +184,7 @@ async function handleRun(msg: WatchRunMessage): Promise<void> {
       reporter: reporterProxy,
       projectUseOptions: msg.projectUseOptions,
       projectName: msg.projectName,
+      testFilter: msg.testFilter,
       grep: deserializeRegExpArray(msg.config.grep),
       grepInvert: deserializeRegExpArray(msg.config.grepInvert),
     });
