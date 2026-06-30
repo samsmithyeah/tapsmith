@@ -488,7 +488,7 @@ export class HeadlessTestDispatcher implements TestDispatcher {
           case 'test-end': {
             const result = deserializeTestResult(response.result);
             if (testFilter && result.status === 'skipped' && !matchesTestFilter(result.fullName, testFilter)) break;
-            const key = projectName ? `${projectName}::${result.fullName}` : result.fullName;
+            const key = resultEntryKey(projectName, filePath, result.fullName);
             this._testResults.set(key, {
               fullName: result.fullName,
               filePath,
@@ -634,6 +634,20 @@ export class HeadlessTestDispatcher implements TestDispatcher {
 }
 
 // ─── Shared utilities ───
+
+/**
+ * Key for the per-test result map. A test's `fullName` is only unique within a
+ * single file (it's the `describe > test` chain), so the file path must be part
+ * of the key — otherwise same-named tests in different files collide and earlier
+ * files' results are silently overwritten in a multi-file run.
+ */
+export function resultEntryKey(
+  projectName: string | undefined,
+  filePath: string,
+  fullName: string,
+): string {
+  return `${projectName ?? ''}::${filePath}::${fullName}`;
+}
 
 interface WatchedEntry {
   projectName?: string
