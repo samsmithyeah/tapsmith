@@ -165,8 +165,10 @@ export async function createReporters(
 
 function normalizeConfig(config: ReporterConfig | undefined): ReporterDescription[] {
   if (!config) {
-    // Auto-detect: dot for CI, list for local
-    return process.env.CI ? ['dot'] : ['list'];
+    // Default to `list` everywhere (including CI). The per-test list output is
+    // more legible than `dot` when a CI log is the only artifact you have to
+    // debug a failure; opt into `dot` explicitly via the `reporter` config.
+    return ['list'];
   }
 
   if (typeof config === 'string') {

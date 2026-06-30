@@ -45,7 +45,7 @@ For emulator-managed runs, the recommended path is `launchEmulators + avd`.
 | `agentTestApk` | `string` | auto-resolved | Path to the Tapsmith agent test APK (Android). When installed via npm, the APK from `@tapsmith/agent-android` is used automatically. Only set this to override with a custom build. |
 | `iosXctestrun` | `string` | `undefined` | Path to the iOS agent `.xctestrun` file. **Simulator and device builds are NOT interchangeable** — build one with `xcodebuild -destination 'platform=iOS Simulator,…'` for simulators, or `tapsmith build-ios-agent` for physical devices. Use one project per target with its own `iosXctestrun`. |
 | `simulator` | `string` | `undefined` | iOS simulator name or UDID. Run `xcrun simctl list devices` to see available simulators. For physical iOS devices, use `device` with the UDID instead — see [iOS physical devices](./ios-physical-devices.md). |
-| `reporter` | `ReporterConfig` | auto-detected | Reporter output configuration. Defaults to `list` locally and `dot` in CI. |
+| `reporter` | `ReporterConfig` | `list` | Reporter output configuration. Defaults to `list` everywhere, including CI. |
 | `workers` | `number` | `1` | Number of parallel workers. Each worker needs its own device/emulator/simulator. |
 | `shard` | `{ current: number; total: number }` | `undefined` | Shard specification for splitting a run across multiple machines. Usually set via `--shard=x/y`. |
 | `launchEmulators` | `boolean` | `false` | Automatically launch Android emulators to fill the requested worker count. |
