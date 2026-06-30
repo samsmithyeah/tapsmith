@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { resolveProjects, topologicalSort, collectTransitiveDeps, findProjectsForFile, deviceSignature, allocateBucketWorkers, bucketizeProjects, type ResolvedProject } from '../project.js';
+import { resolveProjects, topologicalSort, collectTransitiveDeps, findProjectsForFile, validateProjectNames, deviceSignature, allocateBucketWorkers, bucketizeProjects, type ResolvedProject } from '../project.js';
 import { effectiveConfigForProject, type TapsmithConfig } from '../config.js';
 
 function makeConfig(overrides: Partial<TapsmithConfig> = {}): TapsmithConfig {
@@ -218,6 +218,36 @@ describe('collectTransitiveDeps()', () => {
     }));
     const result = collectTransitiveDeps(new Set(['final']), projects);
     expect([...result].sort()).toEqual(['a', 'b', 'final', 'setup']);
+  });
+});
+
+// ─── validateProjectNames ───
+
+describe('validateProjectNames()', () => {
+  it('accepts names that exist', () => {
+    const projects = resolveProjects(makeConfig({
+      projects: [{ name: 'android' }, { name: 'ios' }],
+    }));
+    expect(() => validateProjectNames(['android'], projects)).not.toThrow();
+    expect(() => validateProjectNames(['android', 'ios'], projects)).not.toThrow();
+  });
+
+  it('throws listing available projects when a name is unknown', () => {
+    const projects = resolveProjects(makeConfig({
+      projects: [{ name: 'android' }, { name: 'ios' }],
+    }));
+    expect(() => validateProjectNames(['web'], projects)).toThrow(
+      /Project "web" not found\. Available projects: android, ios/,
+    );
+  });
+
+  it('reports the first unknown name when several are given', () => {
+    const projects = resolveProjects(makeConfig({
+      projects: [{ name: 'android' }],
+    }));
+    expect(() => validateProjectNames(['android', 'nope'], projects)).toThrow(
+      /Project "nope" not found/,
+    );
   });
 });
 

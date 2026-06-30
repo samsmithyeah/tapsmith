@@ -265,6 +265,7 @@ LINK_REWRITES.push(
   [/\(#video-recording\)/g, '(/reference/api/cli/)'],
   [/\(#api-request-fixture\)/g, '(/reference/api/request/)'],
   [/\(#reusable-auth-state\)/g, '(/reference/api/test-runner/)'],
+  [/\(#projects\)/g, '(/reference/api/test-runner/)'],
 )
 
 // ─── Helpers ───

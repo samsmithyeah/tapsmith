@@ -433,6 +433,24 @@ export function collectTransitiveDeps(
 }
 
 /**
+ * Validate that every requested `--project` name matches a configured project.
+ * Throws with the list of available names if any name is unknown.
+ */
+export function validateProjectNames(
+  requested: string[],
+  allProjects: ResolvedProject[],
+): void {
+  const available = new Set(allProjects.map((p) => p.name));
+  for (const name of requested) {
+    if (!available.has(name)) {
+      throw new Error(
+        `Project "${name}" not found. Available projects: ${[...available].join(', ')}`,
+      );
+    }
+  }
+}
+
+/**
  * Find ALL projects a file belongs to by matching against testMatch/testIgnore
  * patterns. A file can match multiple projects (e.g. the same test running on
  * both Android and iOS).
