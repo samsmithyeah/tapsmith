@@ -200,6 +200,15 @@ interface UITestResultEntry extends TestResultEntry {
   workerId?: number
 }
 
+/**
+ * Key for the per-test result map. A test's `fullName` is only unique within a
+ * single file (it's the `describe > test` chain), so the file path must be part
+ * of the key — otherwise same-named tests in different files collide.
+ */
+function resultEntryKey(entry: Pick<UITestResultEntry, 'projectName' | 'filePath' | 'fullName'>): string {
+  return `${entry.projectName ?? ''}::${entry.filePath}::${entry.fullName}`;
+}
+
 // ─── UI Server ───
 
 export async function startUIServer(
@@ -578,8 +587,15 @@ export async function startUIServer(
       if (validFiles.length === 1) return withFailures(await runFile(validFiles[0], testFilter, project));
       let totalPassed = 0, totalFailed = 0, totalSkipped = 0, totalDuration = 0;
       let stopped = false;
+      // Each runFile() clears testResults at the start of its own run, so the
+      // map only ever holds the most recent file's results. Snapshot each
+      // file's results as it finishes and re-seed the union after the loop so
+      // getResults()/collectFailures() (and thus list_results) reflect the
+      // whole multi-file run, not just the last file.
+      const accumulated: UITestResultEntry[] = [];
       for (const f of validFiles) {
         const r = await runFile(f, testFilter, project);
+        accumulated.push(...testResults.values());
         totalPassed += r.passed;
         totalFailed += r.failed;
         totalSkipped += r.skipped;
@@ -588,6 +604,8 @@ export async function startUIServer(
         // N+1 (each runFile resets the flag when its run begins).
         if (stopRequested || r.status === 'stopped') { stopped = true; break; }
       }
+      testResults.clear();
+      for (const entry of accumulated) testResults.set(resultEntryKey(entry), entry);
       return withFailures({
         status: stopped ? 'stopped' : totalFailed > 0 ? 'failed' : 'passed',
         passed: totalPassed,
@@ -829,7 +847,7 @@ export async function startUIServer(
   ): void {
     if (status === 'failed') failedFiles.add(filePath);
 
-    const key = projectName ? `${projectName}::${fullName}` : fullName;
+    const key = resultEntryKey({ projectName, filePath, fullName });
     testResults.set(key, { fullName, filePath, status, duration, error, tracePath, videoPath, projectName, workerId });
 
     broadcast({
