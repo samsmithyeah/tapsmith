@@ -47,7 +47,7 @@ import {
   waitForDeviceStability,
   ensureAdbRoot,
 } from './emulator.js';
-import { isRecoverableInfrastructureError, serializeRegExpArray } from './worker-protocol.js';
+import { isRecoverableInfrastructureError, isRetryableAgentStartError, serializeRegExpArray } from './worker-protocol.js';
 import { findPidsOnPort, freeStaleAgentPort } from './port-utils.js';
 import { findDaemonBin } from './daemon-bin.js';
 import {
@@ -868,7 +868,7 @@ async function setupSequentialDevice(
       await startAgent();
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      if (msg.includes('xcodebuild exited') || msg.includes('Timed out waiting for iOS agent')) {
+      if (isRetryableAgentStartError(err)) {
         if (progress) progress.update('agent', { state: 'running', detail: 'agent startup failed, retrying once' });
         else console.error(`Agent startup failed, retrying once: ${msg}`);
         try {

@@ -397,24 +397,12 @@ class CommandHandler {
         throw firstError!
     }
 
-    /// Double-tap a resolved element. Prefer XCUIElement.doubleTap() because
-    /// UIKit/RN gesture recognizers handle it more consistently than raw
-    /// coordinate double-taps on CI simulators. Use coordinate synthesis only
-    /// as a fallback when the cached XCUIElement path is unavailable.
+    /// Double-tap a resolved element. Prefer coordinate synthesis: it encodes
+    /// both taps in one event record with precise offsets, so the inter-tap
+    /// gap cannot be stretched past the app's double-tap window by CI load.
+    /// XCUIElement.doubleTap() (whose two taps are subject to scheduling
+    /// jitter) is the fallback when no snapshot center is available.
     private func doubleTapResolvedElement(_ element: ElementInfo, intervalMs: Int) throws {
-        var firstError: Error?
-        do {
-            let xcElem = try getXCUIElement(element.elementId)
-            try actionExecutor.doubleTap(xcElem)
-            return
-        } catch {
-            firstError = error
-            let message = "[TapsmithCommand] XCUIElement.doubleTap failed " +
-                "for \(element.elementId): \(error.localizedDescription), " +
-                "falling back to coordinate doubleTap"
-            NSLog(message)
-        }
-
         if let center = snapshotCenter(for: element.elementId) {
             actionExecutor.doubleTapCoordinates(
                 x: Int(center.x),
@@ -424,7 +412,8 @@ class CommandHandler {
             return
         }
 
-        throw firstError!
+        let xcElem = try getXCUIElement(element.elementId)
+        try actionExecutor.doubleTap(xcElem)
     }
 
     /// Tap inside a text input, biased toward the trailing edge so refocusing

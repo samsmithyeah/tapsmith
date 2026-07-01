@@ -205,7 +205,11 @@ async fn main() -> Result<()> {
 
     Server::builder()
         .http2_keepalive_interval(Some(Duration::from_secs(30)))
-        .http2_keepalive_timeout(Some(Duration::from_secs(10)))
+        // Generous ack window: during agent startup the daemon fans out
+        // simctl/xcodebuild/PlistBuddy subprocess work that can briefly starve
+        // the runtime; a 10s window got connections dropped mid-StartAgent on
+        // loaded CI runners ("14 UNAVAILABLE: Connection dropped").
+        .http2_keepalive_timeout(Some(Duration::from_secs(30)))
         .add_service(
             proto::tapsmith_service_server::TapsmithServiceServer::from_arc(service_handle.clone())
                 .max_decoding_message_size(64 * 1024 * 1024)

@@ -111,8 +111,10 @@ class ElementFinder(private val device: UiDevice) {
     /** Insertion order tracking for cache eviction (ArrayDeque for O(1) removeFirst). */
     private val elementCacheOrder = ArrayDeque<String>()
 
-    /** Maximum number of cached elements before evicting oldest entries. */
-    private val maxCacheSize = 500
+    /** Maximum number of cached elements before evicting oldest entries.
+     *  Kept high so a broad query's own matches cannot evict ids the SDK is
+     *  about to act on (`.first()` acts on the oldest-appended id of a batch). */
+    private val maxCacheSize = 2000
 
     /**
      * Lazily-resolved reflective handle for `UiObject2.getAccessibilityNodeInfo`.
@@ -473,8 +475,17 @@ class ElementFinder(private val device: UiDevice) {
      * @throws ElementNotFoundException if the ID is not in the cache
      */
     fun getElement(elementId: String): UiObject2 {
-        return elementCache[elementId]
-            ?: throw ElementNotFoundException("Element '$elementId' not found. It may have gone stale.")
+        val cached =
+            elementCache[elementId]
+                ?: throw ElementNotFoundException("Element '$elementId' not found. It may have gone stale.")
+        // Touch on access: a resolved-then-acted-on id is refreshed in the
+        // eviction order rather than aging out between resolve and action.
+        synchronized(elementCacheOrder) {
+            if (elementCacheOrder.remove(elementId)) {
+                elementCacheOrder.add(elementId)
+            }
+        }
+        return cached
     }
 
     /**

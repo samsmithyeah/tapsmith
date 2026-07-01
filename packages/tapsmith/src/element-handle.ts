@@ -1061,7 +1061,7 @@ export class ElementHandle {
   }
 
   /**
-   * @internal — Dispatch an element-id-targeted action, re-resolving once if the
+   * @internal — Dispatch an element-id-targeted action, re-resolving if the
    * cached id went stale.
    *
    * The id only lives in the agent's element cache; an intervening snapshot
@@ -1069,24 +1069,31 @@ export class ElementHandle {
    * invalidate it, so the action fails with "…gone stale". Re-resolving runs the
    * positional/filter logic again to a FRESH id (correct for .last()/.nth() too)
    * and re-dispatches immediately — no capture in between, so the fresh id
-   * survives. Selector targets (unmodified handles) need no retry.
+   * survives. Retries are bounded rather than single-shot so sustained cache
+   * pressure (or Android's re-render StaleObjectException) is absorbed too.
+   * Selector targets (unmodified handles) need no retry.
    */
   private async _dispatchTargeted<R extends { success: boolean; errorMessage: string }>(
     target: ActionTarget,
     call: (t: ActionTarget) => Promise<R>,
   ): Promise<R> {
     if (!('elementId' in target)) return call(target);
-    try {
-      const res = await call(target);
-      if (res.success || !isStaleElementError(res.errorMessage)) return res;
-    } catch (err) {
-      if (!isStaleElementError(err instanceof Error ? err.message : String(err))) throw err;
+    const maxStaleRetries = 3;
+    let currentTarget: ActionTarget = target;
+    for (let attempt = 0; ; attempt++) {
+      const isLast = attempt === maxStaleRetries;
+      try {
+        const res = await call(currentTarget);
+        if (isLast || res.success || !isStaleElementError(res.errorMessage)) return res;
+      } catch (err) {
+        if (isLast || !isStaleElementError(err instanceof Error ? err.message : String(err))) throw err;
+      }
+      // Drop any cached all() snapshot so the re-resolve re-queries the device
+      // for a FRESH id rather than handing back the same stale one (_resolveOne
+      // short-circuits on resolvedElementsPromise).
+      this._options.resolvedElementsPromise = undefined;
+      currentTarget = await this._actionTarget();
     }
-    // Drop any cached all() snapshot so the re-resolve re-queries the device for
-    // a FRESH id rather than handing back the same stale one (_resolveOne
-    // short-circuits on resolvedElementsPromise).
-    this._options.resolvedElementsPromise = undefined;
-    return call(await this._actionTarget());
   }
 
   // ── Queries ──

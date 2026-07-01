@@ -19,8 +19,11 @@ class SnapshotElementFinder {
 
     /// Maximum number of cached elements before eviction. Prevents unbounded
     /// growth from thousands of stale XCUIElement references accumulating
-    /// over a long test run.
-    private let maxCacheSize = 500
+    /// over a long test run. Entries are lazy query descriptors (no live
+    /// element tree references), so a few thousand is cheap — and a small cap
+    /// lets broad queries (`getByText` matching many rows) plus the pre-action
+    /// trace capture evict ids the SDK is about to act on.
+    private let maxCacheSize = 2000
 
     private struct LiveFocusedTextInput {
         let elementType: XCUIElement.ElementType
@@ -276,9 +279,13 @@ class SnapshotElementFinder {
             )
         }
 
-        // Evict stale entries if caches have grown too large.
+        // Evict stale entries if caches have grown too large — but never ids
+        // from the batch we are about to return, or a large match set would
+        // evict its own first elements before the SDK can act on them
+        // (`.first()` acts on the oldest-appended id of the batch).
+        let currentBatch = Set(results.map { $0.elementId })
         lock.lock()
-        pruneCacheLocked()
+        pruneCacheLocked(protecting: currentBatch)
         lock.unlock()
 
         return results
@@ -349,13 +356,33 @@ class SnapshotElementFinder {
         lock.unlock()
     }
 
-    /// Evict oldest entries when the cache exceeds `maxCacheSize`.
+    /// Evict oldest entries when the cache exceeds `maxCacheSize`, skipping
+    /// any ids in `protected` (a batch just returned to the caller).
     /// Must be called while `lock` is held.
-    private func pruneCacheLocked() {
-        while elementCache.count > maxCacheSize, !cacheOrder.isEmpty {
-            let oldest = cacheOrder.removeFirst()
-            elementCache.removeValue(forKey: oldest)
-            boundsCache.removeValue(forKey: oldest)
+    private func pruneCacheLocked(protecting protected: Set<String> = []) {
+        var overflow = elementCache.count - maxCacheSize
+        guard overflow > 0 else { return }
+        var index = 0
+        while overflow > 0 && index < cacheOrder.count {
+            let candidate = cacheOrder[index]
+            if protected.contains(candidate) {
+                index += 1
+                continue
+            }
+            cacheOrder.remove(at: index)
+            elementCache.removeValue(forKey: candidate)
+            boundsCache.removeValue(forKey: candidate)
+            overflow -= 1
+        }
+    }
+
+    /// Move an id to the most-recently-used end of the eviction order, so a
+    /// resolved-then-acted-on element is refreshed rather than aging out
+    /// between the resolve and the action. Must be called while `lock` is held.
+    private func touchLocked(_ elementId: String) {
+        if let idx = cacheOrder.firstIndex(of: elementId) {
+            cacheOrder.remove(at: idx)
+            cacheOrder.append(elementId)
         }
     }
 
@@ -363,6 +390,9 @@ class SnapshotElementFinder {
     func getElement(_ elementId: String) throws -> XCUIElement {
         lock.lock()
         let cached = elementCache[elementId]
+        if cached != nil {
+            touchLocked(elementId)
+        }
         lock.unlock()
 
         if let elem = cached {
@@ -380,6 +410,9 @@ class SnapshotElementFinder {
     func getBounds(_ elementId: String) -> CGRect? {
         lock.lock()
         let bounds = boundsCache[elementId]
+        if bounds != nil {
+            touchLocked(elementId)
+        }
         lock.unlock()
         return bounds
     }

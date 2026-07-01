@@ -49,10 +49,15 @@ class ActionExecutor {
     }
 
     /// Double-tap at specific screen coordinates.
-    /// Uses native XCUICoordinate.doubleTap() which correctly synthesizes a
-    /// single-finger double-tap gesture. EventSynthesizer's two-path approach
-    /// produces a multi-finger tap that iOS gesture recognizers reject.
+    /// Prefers a single synthesized event record carrying both taps on one
+    /// pointer path with precise offsets — the inter-tap gap is immune to
+    /// scheduling jitter under CI load. Falls back to XCUICoordinate.doubleTap()
+    /// when synthesis is unavailable.
     func doubleTapCoordinates(x: Int, y: Int, intervalMs: Int = 0) {
+        if EventSynthesizer.doubleTap(at: CGPoint(x: x, y: y), intervalMs: intervalMs) {
+            return
+        }
+        NSLog("[ActionExecutor] Double-tap synthesis failed, falling back to XCUICoordinate.doubleTap()")
         let normalized = app.coordinate(withNormalizedOffset: CGVector(dx: 0, dy: 0))
         let point = normalized.withOffset(CGVector(dx: CGFloat(x), dy: CGFloat(y)))
         point.doubleTap()

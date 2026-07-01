@@ -26,6 +26,7 @@ import {
   serializeTestResult,
   serializeSuiteResult,
   isRecoverableInfrastructureError,
+  isRetryableAgentStartError,
   deserializeRegExpArray,
 } from './worker-protocol.js';
 import { ensureSessionReady, launchConfiguredApp, type SessionPreflightContext } from './session-preflight.js';
@@ -232,7 +233,7 @@ async function handleInit(msg: InitMessage): Promise<void> {
     );
   } catch (err) {
     const msg1 = err instanceof Error ? err.message : String(err);
-    if (msg1.includes('xcodebuild exited') || msg1.includes('Timed out waiting for iOS agent')) {
+    if (isRetryableAgentStartError(err)) {
       process.stderr.write(
         `Worker ${workerId}: Agent startup failed, retrying once: ${msg1}\n`,
       );

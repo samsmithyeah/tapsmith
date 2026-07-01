@@ -47,10 +47,14 @@ const IOS_OPEN_DEEP_LINK_VERIFY_TIMEOUT_MS: u64 = 13_000;
 // auth deep link) have no fallback but the whole-test retry, so they re-deliver
 // persistently.
 const IOS_OPEN_DEEP_LINK_MAX_ATTEMPTS: u32 = 3;
-// Soft-reset deep links (the harness's per-test `__reset`) have a hard-reset
-// fallback in session preflight, so they bail after fewer attempts rather than
-// burning the full budget on a simulator that keeps rejecting openurl.
-const IOS_OPEN_DEEP_LINK_SOFT_RESET_MAX_ATTEMPTS: u32 = 2;
+// Soft-reset deep links (the harness's per-test `__reset`) get the same budget
+// as real navigations: the preflight hard-reset fallback only covers resets
+// driven by session preflight — tests calling resetApp() directly surface an
+// exhausted-attempts failure as a test failure, so bailing early trades a
+// recoverable transient (`simctl openurl` NSPOSIXErrorDomain code=60) for a
+// flake. Worst case is bounded well inside the SDK's 150s openDeepLink
+// deadline (3 × (28s prompt timeout + 13s verify) ≈ 125s).
+const IOS_OPEN_DEEP_LINK_SOFT_RESET_MAX_ATTEMPTS: u32 = 3;
 
 pub struct TapsmithServiceImpl {
     device_manager: Arc<RwLock<DeviceManager>>,
