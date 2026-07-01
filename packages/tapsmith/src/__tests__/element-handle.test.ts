@@ -2634,6 +2634,37 @@ describe('transient agent-command timeout handling (slow-emulator flake regressi
     expect(swipe).toHaveBeenCalled();
   });
 
+  it('setChecked() surfaces a persistent agent timeout during confirmation as the infra error, not "did not change"', async () => {
+    // Resolve + tap succeed; the post-tap confirmation poll then times out for
+    // the whole budget. The action must surface the infra error (→ session
+    // recovery), not the generic "did not change" synthetic failure.
+    let calls = 0;
+    const el = makeElementInfo({ checked: false, text: 'Switch', resourceId: 'sw1' });
+    const findElements = vi.fn(async () => {
+      calls++;
+      return calls < 2
+        ? makeFindElementsResponse([el]) // initial resolve → unchecked element
+        : { requestId: '1', elements: [], errorMessage: 'Agent command timed out after 5.25s' };
+    });
+    const tap = vi.fn(async () => successResponse());
+    const client = makeMockClient({ findElements, tap });
+    const handle = new ElementHandle(client, _text('Switch'), 800);
+
+    await expect(handle.setChecked(true)).rejects.toThrow(/Agent command timed out/);
+    expect(tap).toHaveBeenCalledTimes(1);
+  }, 10000);
+
+  it('scrollIntoView() surfaces a persistent agent timeout as the infra error, not "not visible after N scroll(s)"', async () => {
+    const findElements = vi.fn(async () => ({ requestId: '1', elements: [], errorMessage: 'Agent command timed out after 5.25s' }));
+    const swipe = vi.fn(async () => successResponse());
+    const client = makeMockClient({ findElements, swipe });
+    const handle = new ElementHandle(client, _text('Target'), 5000);
+
+    await expect(handle.scrollIntoView({ maxScrolls: 2 })).rejects.toThrow(/Agent command timed out/);
+    // Retried by swiping across the budget rather than aborting on tick 1.
+    expect(swipe).toHaveBeenCalled();
+  }, 10000);
+
   it('a non-timeout daemon error still fails fast (boundary — only slow-agent timeouts retry)', async () => {
     const findElements = vi.fn(async () => ({ requestId: '1', elements: [], errorMessage: 'UiAutomation not connected' }));
     const client = makeMockClient({ findElements });

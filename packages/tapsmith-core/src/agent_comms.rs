@@ -194,7 +194,10 @@ async fn try_send_persistent(
     }
 
     // Read — once flushed, the agent may have the command
-    let read_timeout = timeout + read_timeout_headroom();
+    // Saturate rather than panic if a pathological timeout + headroom overflows.
+    let read_timeout = timeout
+        .checked_add(read_timeout_headroom())
+        .unwrap_or(Duration::MAX);
     let mut line = String::new();
     let read_result = tokio::time::timeout(read_timeout, stream.reader.read_line(&mut line)).await;
 
@@ -1179,7 +1182,10 @@ impl AgentConnection {
             // supplied timeout plus headroom so the agent's own work clock
             // always finishes first — see DEFAULT_READ_TIMEOUT_HEADROOM for the
             // rationale.
-            let read_timeout = timeout + read_timeout_headroom();
+            // Saturate rather than panic if a pathological timeout + headroom overflows.
+            let read_timeout = timeout
+                .checked_add(read_timeout_headroom())
+                .unwrap_or(Duration::MAX);
             let reader = BufReader::new(&mut stream);
             let mut line = String::new();
 

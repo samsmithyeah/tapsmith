@@ -1644,6 +1644,7 @@ export class ElementHandle {
 
       // Poll for the state change until the full deadline — animations
       // and state propagation can take several frames.
+      let lastTransientErr: Error | undefined;
       while (Date.now() < deadline) {
         await sleep(POLL_MS, this._client._getAbortSignal?.());
         try {
@@ -1653,10 +1654,17 @@ export class ElementHandle {
           // A transient agent-command timeout (slow-but-alive agent) just means
           // this confirmation tick was too slow — keep polling for the state
           // change within the budget rather than failing the whole action.
-          if (!isPollableNotFoundError(err) && !isTransientAgentError(err)) throw err;
+          // Remember it so a budget-long stall surfaces the infra error (→
+          // session recovery) instead of a generic "did not change".
+          if (isTransientAgentError(err)) {
+            lastTransientErr = err as Error;
+          } else if (!isPollableNotFoundError(err)) {
+            throw err;
+          }
         }
       }
 
+      if (lastTransientErr) throw lastTransientErr;
       return synthetic(
         false,
         `setChecked(${checked}): element ${this._describe()} checked state did not change after tap (still ${!checked})`,
@@ -1818,6 +1826,7 @@ export class ElementHandle {
     this._emitQueryStarted('scrollIntoView');
     const start = Date.now();
 
+    let lastTransientErr: Error | undefined;
     try {
       for (let i = 0; i <= maxScrolls; i++) {
         try {
@@ -1872,8 +1881,12 @@ export class ElementHandle {
           // Only "element not found" / "not in hierarchy" type errors should
           // be swallowed to let the scroll loop continue. A transient
           // agent-command timeout (slow-but-alive agent) is likewise retried by
-          // swiping again rather than aborting the scroll.
-          if (!isPollableNotFoundError(err) && !isTransientAgentError(err)) {
+          // swiping again rather than aborting the scroll; remember it so a
+          // budget-long stall surfaces the infra error (→ session recovery)
+          // instead of the generic "not visible after N scroll(s)".
+          if (isTransientAgentError(err)) {
+            lastTransientErr = err as Error;
+          } else if (!isPollableNotFoundError(err)) {
             // Not an element-not-found error — could be gRPC transport
             // failure (UNAVAILABLE, INTERNAL, PERMISSION_DENIED, etc.)
             // or any other infrastructure error. Propagate immediately.
@@ -1890,6 +1903,7 @@ export class ElementHandle {
         }
       }
 
+      if (lastTransientErr) throw lastTransientErr;
       throw new Error(
         `scrollIntoView: ${this._describe()} was not visible after ${maxScrolls} scroll(s) in direction "${direction}"`,
       );
