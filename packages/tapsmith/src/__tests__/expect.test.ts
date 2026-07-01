@@ -2013,3 +2013,40 @@ describe("assertion probe timeouts (PR #124 review)", () => {
     }
   });
 });
+
+// ─── Transient agent-command timeout handling ───
+
+describe("transient agent-command timeout handling (slow-emulator flake regression)", () => {
+  // The daemon stamps this when the on-device agent is alive but too slow to
+  // answer a findElements this tick (e.g. an uninterruptible hierarchy dump on
+  // a loaded CI emulator). Assertions retry it within their budget instead of
+  // failing on the first slow tick.
+  const AGENT_TIMEOUT_MSG = "Agent command timed out after 5.25s";
+
+  it("toBeVisible() retries through a transient agent timeout and then passes", async () => {
+    let calls = 0;
+    const client = makeMockClient(
+      async () => ({ requestId: "1", found: false, errorMessage: "" }),
+      async () => {
+        calls++;
+        return calls < 2
+          ? { requestId: "1", elements: [], errorMessage: AGENT_TIMEOUT_MSG }
+          : { requestId: "1", elements: [makeElementInfo({ visible: true })], errorMessage: "" };
+      },
+    );
+    const handle = makeHandle(client, _text("Hello"), 5000);
+    await tapsmithExpect(handle).toBeVisible({ timeout: 1000 });
+    vitestExpect(calls).toBeGreaterThanOrEqual(2);
+  });
+
+  it("surfaces a persistent agent timeout as the infra error, not a generic assertion failure", async () => {
+    const client = makeMockClient(
+      async () => ({ requestId: "1", found: false, errorMessage: "" }),
+      async () => ({ requestId: "1", elements: [], errorMessage: AGENT_TIMEOUT_MSG }),
+    );
+    const handle = makeHandle(client, _text("Hello"), 300);
+    await vitestExpect(
+      tapsmithExpect(handle).toBeVisible({ timeout: 300 }),
+    ).rejects.toThrow(/Agent command timed out/);
+  });
+});

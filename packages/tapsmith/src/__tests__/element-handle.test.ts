@@ -2543,6 +2543,201 @@ describe('transient stale snapshot handling (wait-for flake regression)', () => 
   });
 });
 
+describe('transient agent-command timeout handling (slow-emulator flake regression)', () => {
+  // The Rust daemon stamps this when the on-device agent is alive (socket
+  // connected, command written) but too slow to answer a findElements within
+  // the per-poll read window — e.g. an uninterruptible UIAutomator hierarchy
+  // dump on a CPU-starved CI emulator. It used to abort the whole action on the
+  // first slow tick; now action auto-wait loops retry it within their budget.
+  const AGENT_TIMEOUT_MSG = 'Agent command timed out after 5.25s';
+
+  it('tap() retries through a transient agent timeout and then succeeds', async () => {
+    let calls = 0;
+    const findElements = vi.fn(async () => {
+      calls++;
+      // First tick times out at the agent (slow dump); the next answers.
+      return calls < 2
+        ? { requestId: '1', elements: [], errorMessage: AGENT_TIMEOUT_MSG }
+        : makeFindElementsResponse([makeElementInfo({ text: 'Settings' })]);
+    });
+    const tap = vi.fn(async () => successResponse());
+    const client = makeMockClient({ findElements, tap });
+    const handle = new ElementHandle(client, _text('Settings'), 5000);
+
+    await handle.tap();
+
+    expect(calls).toBeGreaterThanOrEqual(2);
+    expect(tap).toHaveBeenCalledTimes(1);
+  });
+
+  it('a persistent agent timeout surfaces the infra error (not "not found") so session recovery fires', async () => {
+    const findElements = vi.fn(async () => ({ requestId: '1', elements: [], errorMessage: AGENT_TIMEOUT_MSG }));
+    const tap = vi.fn(async () => successResponse());
+    const client = makeMockClient({ findElements, tap });
+    const handle = new ElementHandle(client, _text('Settings'), 400);
+
+    // Must preserve the "Agent command timed out" wording (a
+    // RECOVERABLE_INFRASTRUCTURE_PATTERN) rather than collapse to "not found".
+    await expect(handle.tap()).rejects.toThrow(/Agent command timed out/);
+    // Retried across ticks within the budget rather than aborting on tick 1.
+    expect(findElements.mock.calls.length).toBeGreaterThan(1);
+    expect(tap).not.toHaveBeenCalled();
+  });
+
+  it('waitFor() retries through a transient agent timeout and then resolves', async () => {
+    let calls = 0;
+    const findElements = vi.fn(async () => {
+      calls++;
+      return calls < 2
+        ? { requestId: '1', elements: [], errorMessage: AGENT_TIMEOUT_MSG }
+        : makeFindElementsResponse([makeElementInfo({ visible: true })]);
+    });
+    const client = makeMockClient({ findElements });
+    const handle = new ElementHandle(client, _text('Banner'), 5000);
+
+    await handle.waitFor({ state: 'visible' });
+
+    expect(calls).toBeGreaterThanOrEqual(2);
+  });
+
+  it('waitFor() surfaces a persistent agent timeout as the infra error, not "did not reach state"', async () => {
+    const findElements = vi.fn(async () => ({ requestId: '1', elements: [], errorMessage: AGENT_TIMEOUT_MSG }));
+    const client = makeMockClient({ findElements });
+    const handle = new ElementHandle(client, _text('Banner'), 400);
+
+    await expect(handle.waitFor({ state: 'visible' })).rejects.toThrow(/Agent command timed out/);
+    expect(findElements.mock.calls.length).toBeGreaterThan(1);
+  });
+
+  it('scrollIntoView() retries through a transient agent timeout (swipes again) instead of aborting', async () => {
+    const bounds = { left: 0, top: 10, right: 100, bottom: 40 };
+    let calls = 0;
+    const findElements = vi.fn(async () => {
+      calls++;
+      // First probe times out at the agent; after one swipe the next settles
+      // with the element visible on screen.
+      return calls < 2
+        ? { requestId: '1', elements: [], errorMessage: AGENT_TIMEOUT_MSG }
+        : makeFindElementsResponse([makeElementInfo({ visible: true, bounds })]);
+    });
+    // Stabilization poll (i > 0): stable Y breaks the loop on the first tick.
+    const findElement = vi.fn(async () => ({
+      requestId: '1', found: true, element: makeElementInfo({ visible: true, bounds }), errorMessage: '',
+    }));
+    const swipe = vi.fn(async () => successResponse());
+    const client = makeMockClient({ findElements, findElement, swipe });
+    const handle = new ElementHandle(client, _text('Target'), 5000);
+
+    await handle.scrollIntoView();
+
+    expect(calls).toBeGreaterThanOrEqual(2);
+    expect(swipe).toHaveBeenCalled();
+  });
+
+  it('setChecked() surfaces a persistent agent timeout during confirmation as the infra error, not "did not change"', async () => {
+    // Resolve + tap succeed; the post-tap confirmation poll then times out for
+    // the whole budget. The action must surface the infra error (→ session
+    // recovery), not the generic "did not change" synthetic failure.
+    let calls = 0;
+    const el = makeElementInfo({ checked: false, text: 'Switch', resourceId: 'sw1' });
+    const findElements = vi.fn(async () => {
+      calls++;
+      return calls < 2
+        ? makeFindElementsResponse([el]) // initial resolve → unchecked element
+        : { requestId: '1', elements: [], errorMessage: 'Agent command timed out after 5.25s' };
+    });
+    const tap = vi.fn(async () => successResponse());
+    const client = makeMockClient({ findElements, tap });
+    const handle = new ElementHandle(client, _text('Switch'), 800);
+
+    await expect(handle.setChecked(true)).rejects.toThrow(/Agent command timed out/);
+    expect(tap).toHaveBeenCalledTimes(1);
+  }, 10000);
+
+  it('scrollIntoView() does not swipe again when a stabilization poll times out on an already-visible target', async () => {
+    const bounds = { left: 0, top: 10, right: 100, bottom: 40 };
+    let findCalls = 0;
+    const findElements = vi.fn(async () => {
+      findCalls++;
+      // i=0: not on screen yet → one swipe; i=1: target is visible.
+      return findCalls < 2
+        ? makeFindElementsResponse([])
+        : makeFindElementsResponse([makeElementInfo({ visible: true, bounds })]);
+    });
+    // The post-scroll stabilization probe times out. The daemon surfaces this
+    // as errorMessage on the response (findElement does NOT reject). Since the
+    // target is already visible, this must stop stabilizing and succeed — NOT
+    // fall through to another swipe that could scroll it back off-screen.
+    const findElement = vi.fn(async () => ({
+      requestId: '1', found: false, element: undefined,
+      errorMessage: 'Agent command timed out after 5.5s',
+    }));
+    const swipe = vi.fn(async () => successResponse());
+    const client = makeMockClient({ findElements, findElement, swipe });
+    const handle = new ElementHandle(client, _text('Target'), 5000);
+
+    await handle.scrollIntoView();
+
+    // Breaks stabilization on the first errored probe rather than re-probing all
+    // 10 ticks (which, with a real ~5s-per-probe timeout, wasted ~50s).
+    expect(findElement).toHaveBeenCalledTimes(1);
+    expect(swipe).toHaveBeenCalledTimes(1); // only the pre-visible swipe, no extra
+  });
+
+  it('scrollIntoView() surfaces a persistent agent timeout as the infra error, not "not visible after N scroll(s)"', async () => {
+    const findElements = vi.fn(async () => ({ requestId: '1', elements: [], errorMessage: 'Agent command timed out after 5.25s' }));
+    const swipe = vi.fn(async () => successResponse());
+    const client = makeMockClient({ findElements, swipe });
+    const handle = new ElementHandle(client, _text('Target'), 5000);
+
+    await expect(handle.scrollIntoView({ maxScrolls: 2 })).rejects.toThrow(/Agent command timed out/);
+    // Retried by swiping across the budget rather than aborting on tick 1.
+    expect(swipe).toHaveBeenCalled();
+  }, 10000);
+
+  it('a recovered agent reports a genuine "not found", not the earlier timeout', async () => {
+    // Agent times out on the first tick, then recovers and answers cleanly
+    // (empty) for the rest of the budget. The element genuinely never appears,
+    // so the action must fail as "not found" — NOT resurface the stale timeout,
+    // which would falsely trigger session recovery for a plain missing element.
+    let calls = 0;
+    const findElements = vi.fn(async () => {
+      calls++;
+      return calls < 2
+        ? { requestId: '1', elements: [], errorMessage: 'Agent command timed out after 5.25s' }
+        : makeFindElementsResponse([]); // agent responsive, element absent
+    });
+    const client = makeMockClient({ findElements });
+    const handle = new ElementHandle(client, _text('Ghost'), 800);
+
+    await expect(handle.tap()).rejects.toThrow(/was not found after waiting/);
+    await expect(handle.tap()).rejects.not.toThrow(/Agent command timed out/);
+  });
+
+  it('waitFor() after a recovered agent reports "did not reach state", not the earlier timeout', async () => {
+    let calls = 0;
+    const findElements = vi.fn(async () => {
+      calls++;
+      return calls < 2
+        ? { requestId: '1', elements: [], errorMessage: 'Agent command timed out after 5.25s' }
+        : makeFindElementsResponse([]); // responsive, never reaches 'visible'
+    });
+    const client = makeMockClient({ findElements });
+    const handle = new ElementHandle(client, _text('Banner'), 800);
+
+    await expect(handle.waitFor({ state: 'visible' })).rejects.toThrow(/did not reach state/);
+  });
+
+  it('a non-timeout daemon error still fails fast (boundary — only slow-agent timeouts retry)', async () => {
+    const findElements = vi.fn(async () => ({ requestId: '1', elements: [], errorMessage: 'UiAutomation not connected' }));
+    const client = makeMockClient({ findElements });
+    const handle = new ElementHandle(client, _text('X'), 5000);
+
+    await expect(handle.tap()).rejects.toThrow(/findElements failed: UiAutomation not connected/);
+    expect(findElements).toHaveBeenCalledTimes(1);
+  });
+});
+
 describe('scoped selector descriptions (review follow-up)', () => {
   it('renders chained getBy* syntax, not .locator(getBy*())', async () => {
     const client = makeMockClient({

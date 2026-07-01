@@ -17,7 +17,7 @@
  *   await expect.poll(async () => fetchCount()).toBe(5);
  */
 
-import { ElementHandle, ELEMENT_HANDLE_BRAND } from "./element-handle.js";
+import { ElementHandle, ELEMENT_HANDLE_BRAND, isTransientAgentError } from "./element-handle.js";
 import type { ElementInfo } from "./grpc-client.js";
 import { formatSelector } from "./selectors.js";
 import { extractStack, getActiveTraceCollector } from "./trace/trace-collector.js";
@@ -48,14 +48,32 @@ async function poll(
 ): Promise<boolean> {
   const target = !negated; // true = want check() to be true; false = want false
   const deadline = Date.now() + timeoutMs;
+  let lastTransientErr: Error | undefined;
   while (Date.now() < deadline) {
     // On user stop (PILOT-222) each tick's RPC rejects with TestAbortedError,
     // which propagates out of the loop (see resolveTick); the only residual
     // latency is one POLL_INTERVAL_MS sleep.
-    const value = await check();
-    if (value === target) return value;
+    try {
+      const value = await check();
+      if (value === target) return value;
+      // check() answered → agent responsive; drop any earlier transient timeout
+      // so exhausting the budget reports the real assertion result, not infra.
+      lastTransientErr = undefined;
+    } catch (err) {
+      // A transient agent-command timeout (slow-but-alive agent, e.g. a
+      // hierarchy dump on a loaded CI emulator) is retried within the
+      // assertion budget instead of failing immediately. Any other throw —
+      // a strict-mode violation or a real infrastructure failure — propagates
+      // with its real cause.
+      if (!isTransientAgentError(err)) throw err;
+      lastTransientErr = err as Error;
+    }
     await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS));
   }
+  // If the most recent tick was a transient timeout, surface it now (→ session
+  // recovery) rather than running one more full agent read (~5s+) — whether the
+  // deadline was crossed by the check() itself or by the poll-interval sleep.
+  if (lastTransientErr) throw lastTransientErr;
   // Final attempt
   return check();
 }
