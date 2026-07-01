@@ -208,7 +208,7 @@ async fn start_agent_impl(
                 let out_lines = stdout_tail.lock().unwrap().join("\n");
                 let err_lines = stderr_tail.lock().unwrap().join("\n");
                 let target_kind = if is_physical { "device" } else { "simulator" };
-                let remaining = deadline - tokio::time::Instant::now();
+                let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
                 if relaunches_left > 0 && remaining > Duration::from_secs(30) {
                     relaunches_left -= 1;
                     warn!(
