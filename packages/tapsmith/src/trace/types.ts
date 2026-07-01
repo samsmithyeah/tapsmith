@@ -283,6 +283,7 @@ export type TraceMode =
   | 'on-all-retries'
   | 'retain-on-failure'
   | 'retain-on-first-failure'
+  | 'retain-on-failure-and-retries'
 
 export interface TraceConfig {
   /** Trace recording mode. */

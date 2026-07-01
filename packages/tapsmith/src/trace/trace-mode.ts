@@ -20,6 +20,7 @@ export function shouldRecord(mode: TraceMode, attempt: number): boolean {
     case 'on':
     case 'retain-on-failure':
     case 'retain-on-first-failure':
+    case 'retain-on-failure-and-retries':
       return true;
     case 'on-first-retry':
       return attempt === 1;
@@ -63,6 +64,11 @@ export function shouldRetain(
       return !passed;
     case 'retain-on-first-failure':
       return !passed && attempt === 0;
+    case 'retain-on-failure-and-retries':
+      // Keep the trace for any run that failed OR that is a retry (attempt > 0).
+      // For a flaky test (fail then pass on retry) this retains both the
+      // failing first run and the passing retry, so they can be compared.
+      return !passed || attempt > 0;
     default:
       return false;
   }

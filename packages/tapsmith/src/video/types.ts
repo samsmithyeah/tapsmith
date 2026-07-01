@@ -16,9 +16,10 @@
 import { shouldRecord, shouldRetain } from '../trace/trace-mode.js';
 
 /**
- * Recording mode. Six modes total — the four listed in PILOT-114 plus two
- * extras (`on-all-retries`, `retain-on-first-failure`) that mirror the trace
- * config for parity. See `shouldRecord` / `shouldRetain` for exact semantics.
+ * Recording mode. Seven modes total — the four listed in PILOT-114 plus three
+ * extras (`on-all-retries`, `retain-on-first-failure`,
+ * `retain-on-failure-and-retries`) that mirror the trace config for parity.
+ * See `shouldRecord` / `shouldRetain` for exact semantics.
  */
 export type VideoMode =
   | 'off'
@@ -27,6 +28,7 @@ export type VideoMode =
   | 'on-all-retries'
   | 'retain-on-failure'
   | 'retain-on-first-failure'
+  | 'retain-on-failure-and-retries'
 
 /** Output resolution. Honoured on Android only; iOS records at native res. */
 export interface VideoSize {

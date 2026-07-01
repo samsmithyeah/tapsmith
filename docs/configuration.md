@@ -100,7 +100,7 @@ reporter: [["html", { outputFolder: "tapsmith-report" }], "list"]
 ### `TraceMode`
 
 ```typescript
-type TraceMode = "off" | "on" | "on-first-retry" | "on-all-retries" | "retain-on-failure" | "retain-on-first-failure";
+type TraceMode = "off" | "on" | "on-first-retry" | "on-all-retries" | "retain-on-failure" | "retain-on-first-failure" | "retain-on-failure-and-retries";
 ```
 
 - `"off"` -- No tracing.
@@ -109,6 +109,7 @@ type TraceMode = "off" | "on" | "on-first-retry" | "on-all-retries" | "retain-on
 - `"on-all-retries"` -- Record traces on every retry.
 - `"retain-on-failure"` -- Always record, but delete the trace zip if the test passes.
 - `"retain-on-first-failure"` -- Always record, but only keep traces for the first failure (attempt 0).
+- `"retain-on-failure-and-retries"` -- Always record, and keep the trace for any run that failed **or** that is a retry. For a flaky test (fails then passes on retry) this keeps both the failing first run and the passing retry, so you can compare them. Mirrors Playwright's mode of the same name.
 
 The retry-only modes (`"on-first-retry"`, `"on-all-retries"`) require `retries >= 1` to ever produce a trace; the runner warns at startup if `retries` is 0.
 
@@ -217,7 +218,7 @@ trace: {
 ### `VideoMode`
 
 ```typescript
-type VideoMode = "off" | "on" | "on-first-retry" | "on-all-retries" | "retain-on-failure" | "retain-on-first-failure";
+type VideoMode = "off" | "on" | "on-first-retry" | "on-all-retries" | "retain-on-failure" | "retain-on-first-failure" | "retain-on-failure-and-retries";
 ```
 
 The mode set is identical to `TraceMode` and the semantics match exactly — `"on"` records every test, `"retain-on-failure"` records but discards passing-test videos, etc.

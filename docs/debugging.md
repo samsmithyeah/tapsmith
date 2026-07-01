@@ -190,6 +190,7 @@ This skips trace recording on the initial run (attempt 0) and only starts record
 | `on-first-retry` | First retry only | Always (when recorded) |
 | `on-all-retries` | All retries | Always (when recorded) |
 | `retain-on-failure` | Every attempt | Test fails |
+| `retain-on-failure-and-retries` | Every attempt | Run fails **or** is a retry |
 
 See [Configuration](configuration.md#tracemode) for the complete list of trace modes.
 

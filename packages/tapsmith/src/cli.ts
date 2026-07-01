@@ -1681,7 +1681,8 @@ ${bold('Options:')}
   -j, --workers <n>        Number of parallel workers (default: 1)
   --shard=x/y              Split tests across CI machines (e.g. --shard=1/4)
   --trace <mode>           Trace mode: off, on, on-first-retry, on-all-retries,
-                           retain-on-failure, retain-on-first-failure
+                           retain-on-failure, retain-on-first-failure,
+                           retain-on-failure-and-retries
   --video <mode>           Video mode (same set as --trace). Records the
                            device screen for the lifetime of each test.
   -c, --config <path>      Path to config file (default: tapsmith.config.ts)

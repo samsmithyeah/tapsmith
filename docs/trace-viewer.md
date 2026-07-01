@@ -55,8 +55,9 @@ test("checkout flow", async ({ device }) => {
 | `on-all-retries` | All retries | Always (when recorded) |
 | `retain-on-failure` | Every attempt | Test fails |
 | `retain-on-first-failure` | Every attempt | First attempt fails |
+| `retain-on-failure-and-retries` | Every attempt | Run fails **or** is a retry |
 
-**Recommended for CI:** `retain-on-failure` — minimal overhead on passing tests, full diagnostics on failures.
+**Recommended for CI:** `retain-on-failure` — minimal overhead on passing tests, full diagnostics on failures. Use `retain-on-failure-and-retries` when you want to keep both the failing and passing runs of flaky tests for comparison.
 
 ## Viewing Traces
 
