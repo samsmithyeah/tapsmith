@@ -45,7 +45,7 @@ export interface RunFileUseOptions {
   timeout?: number
   screenshot?: 'always' | 'only-on-failure' | 'never'
   retries?: number
-  trace?: 'off' | 'on' | 'retain-on-failure' | 'on-first-retry' | 'on-all-retries'
+  trace?: 'off' | 'on' | 'on-first-retry' | 'on-all-retries' | 'retain-on-failure' | 'retain-on-first-failure' | 'retain-on-failure-and-retries'
   appState?: string
   baseURL?: string
   extraHTTPHeaders?: Record<string, string>

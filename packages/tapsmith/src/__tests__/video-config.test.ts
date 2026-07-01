@@ -18,6 +18,7 @@ describe('resolveVideoConfig (PILOT-114)', () => {
       'on-all-retries',
       'retain-on-failure',
       'retain-on-first-failure',
+      'retain-on-failure-and-retries',
     ] as const;
     for (const m of modes) {
       expect(resolveVideoConfig(m)).toEqual({ mode: m });

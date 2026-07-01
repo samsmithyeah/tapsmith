@@ -2328,6 +2328,7 @@ The supported modes are the same as `trace`:
 | `retain-on-first-failure`   | Like `retain-on-failure` but limited to attempt 0.     |
 | `on-first-retry`            | Record only on the first retry attempt.                |
 | `on-all-retries`            | Record on every retry attempt (skips the first run).   |
+| `retain-on-failure-and-retries` | Record every test; keep the video for any run that failed or that is a retry. |
 
 **Recording cost**: `retain-on-failure` still records (and pays the video
 encode cost for) every test — it only deletes the file for passing tests

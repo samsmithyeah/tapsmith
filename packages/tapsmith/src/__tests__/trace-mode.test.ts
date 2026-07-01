@@ -35,6 +35,11 @@ describe('shouldRecord', () => {
     expect(shouldRecord('retain-on-first-failure', 0)).toBe(true);
     expect(shouldRecord('retain-on-first-failure', 1)).toBe(true);
   });
+
+  it('returns true for "retain-on-failure-and-retries" regardless of attempt', () => {
+    expect(shouldRecord('retain-on-failure-and-retries', 0)).toBe(true);
+    expect(shouldRecord('retain-on-failure-and-retries', 1)).toBe(true);
+  });
 });
 
 describe('shouldRetain', () => {
@@ -73,6 +78,17 @@ describe('shouldRetain', () => {
     expect(shouldRetain('retain-on-first-failure', false, 1)).toBe(false);
     expect(shouldRetain('retain-on-first-failure', true, 1)).toBe(false);
   });
+
+  it('retains failures and all retries for "retain-on-failure-and-retries"', () => {
+    // First run: kept only if it failed.
+    expect(shouldRetain('retain-on-failure-and-retries', true, 0)).toBe(false);
+    expect(shouldRetain('retain-on-failure-and-retries', false, 0)).toBe(true);
+    // Any retry (attempt > 0) is kept regardless of pass/fail — this is what
+    // captures a flaky test's passing retry alongside its failing first run.
+    expect(shouldRetain('retain-on-failure-and-retries', true, 1)).toBe(true);
+    expect(shouldRetain('retain-on-failure-and-retries', false, 1)).toBe(true);
+    expect(shouldRetain('retain-on-failure-and-retries', true, 2)).toBe(true);
+  });
 });
 
 describe('resolveTraceConfig null/undefined handling', () => {
@@ -94,5 +110,6 @@ describe('recordsOnlyOnRetry', () => {
     expect(recordsOnlyOnRetry('on')).toBe(false);
     expect(recordsOnlyOnRetry('retain-on-failure')).toBe(false);
     expect(recordsOnlyOnRetry('retain-on-first-failure')).toBe(false);
+    expect(recordsOnlyOnRetry('retain-on-failure-and-retries')).toBe(false);
   });
 });
