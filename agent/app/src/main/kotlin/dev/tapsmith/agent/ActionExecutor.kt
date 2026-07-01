@@ -36,6 +36,12 @@ class ActionExecutor(
         /** Interval between taps for double-tap gesture. */
         private const val DOUBLE_TAP_INTERVAL_MS = 100L
 
+        /** Max time to wait for an element's bounds to stop moving before a tap. */
+        private const val STABLE_BOUNDS_TIMEOUT_MS = 1000L
+
+        /** Delay between consecutive bounds reads in the stability check. */
+        private const val STABLE_BOUNDS_POLL_MS = 50L
+
         /** Timeout for waiting for dropdown options to appear. */
         private const val DROPDOWN_WAIT_TIMEOUT_MS = 3000L
 
