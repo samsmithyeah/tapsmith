@@ -42,6 +42,11 @@ const DEFAULT_READY_TIMEOUT_MS = 5_000;
 const DEFAULT_MAX_ATTEMPTS = 2;
 /** Time to wait for UIAutomator2 to produce a non-empty hierarchy on cold start. */
 const HIERARCHY_READY_TIMEOUT_MS = 10_000;
+/** Time to wait for a cold-launched iOS app to render a non-empty accessibility
+ *  hierarchy. A first RN launch on a loaded CI runner (right after the agent's
+ *  xcodebuild warmup) can take well over 5s to paint; the poll returns as soon
+ *  as the hierarchy appears, so the generous ceiling costs nothing when healthy. */
+const IOS_APP_READY_TIMEOUT_MS = 30_000;
 const HIERARCHY_POLL_INTERVAL_MS = 500;
 const DEFAULT_SOFT_RESET_WAIT_MS = 750;
 
@@ -273,7 +278,7 @@ async function verifySession(ctx: SessionPreflightContext): Promise<void> {
  * because tests may intentionally leave the app stopped.
  */
 async function waitForIosAppReady(ctx: SessionPreflightContext): Promise<void> {
-  const deadline = Date.now() + DEFAULT_READY_TIMEOUT_MS;
+  const deadline = Date.now() + IOS_APP_READY_TIMEOUT_MS;
   while (Date.now() < deadline) {
     try {
       const h = await ctx.client.getUiHierarchy();

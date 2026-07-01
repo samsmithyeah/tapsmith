@@ -107,12 +107,28 @@ async function handleInit(msg: InitMessage): Promise<void> {
   config.device = msg.deviceSerial;
   if (msg.deviceSerial) {
     sendProgress(`selecting device ${msg.deviceSerial}`);
-    await device.setDevice(
+    // Capture the narrowed refs — the closure would otherwise see the
+    // possibly-undefined module-level bindings.
+    const dev = device;
+    const cfg = config;
+    const selectDevice = () => dev.setDevice(
       msg.deviceSerial,
-      isNetworkTracingEnabled(config.trace),
-      networkHostsForPac(config.trace),
-      networkPassthroughHosts(config.trace),
+      isNetworkTracingEnabled(cfg.trace),
+      networkHostsForPac(cfg.trace),
+      networkPassthroughHosts(cfg.trace),
     );
+    try {
+      await selectDevice();
+    } catch (err) {
+      // Device selection refreshes the device list, and `simctl list` can
+      // stall for minutes while simulators boot on a loaded runner. One
+      // retry after the stall clears recovers it.
+      if (!isRecoverableInfrastructureError(err)) throw err;
+      process.stderr.write(
+        `Worker ${workerId}: Device selection failed, retrying once: ${err instanceof Error ? err.message : String(err)}\n`,
+      );
+      await selectDevice();
+    }
   }
 
   // Wake and unlock device screen

@@ -543,7 +543,16 @@ async function setupSequentialDevice(
 
   try {
     progress?.update('primary-device', { state: 'running', detail: `selecting ${cfg.device}` });
-    await device.setDevice(cfg.device, networkTracingEnabled, pacNetworkHosts, passthroughHosts);
+    try {
+      await device.setDevice(cfg.device, networkTracingEnabled, pacNetworkHosts, passthroughHosts);
+    } catch (err) {
+      // Device selection refreshes the device list, and `simctl list` can
+      // stall for minutes while simulators boot on a loaded runner. One
+      // retry after the stall clears recovers it.
+      if (!isRecoverableInfrastructureError(err)) throw err;
+      progress?.update('primary-device', { state: 'running', detail: `selection timed out, retrying ${cfg.device}` });
+      await device.setDevice(cfg.device, networkTracingEnabled, pacNetworkHosts, passthroughHosts);
+    }
     if (!progress) console.log(dim(`Using device: ${cfg.device}`));
   } catch (err) {
     progress?.fail('primary-device', `failed to select ${cfg.device}`);
