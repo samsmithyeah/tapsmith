@@ -1888,13 +1888,20 @@ export class ElementHandle {
                 try {
                   probe = await this._client.findElement(this._selector, 500);
                 } catch (err) {
-                  // The target is already visible; a slow (transient) stabilization
-                  // poll must NOT fall through to another swipe, which could scroll
-                  // it back off-screen. Stop stabilizing and accept the current
-                  // position. Non-transient errors still propagate.
+                  // findElement rejected (transport error / user abort). The
+                  // target was already visible; a slow (transient) poll must NOT
+                  // fall through to another swipe, which could scroll it back
+                  // off-screen — stop stabilizing. Other rejections propagate.
                   if (isTransientAgentError(err)) break;
                   throw err;
                 }
+                // findElement reports an agent/daemon error (a slow transient
+                // poll, or a momentary "not found" as it settles) via
+                // errorMessage rather than rejecting. We can't get a stable
+                // reading and the target was already visible, so stop
+                // stabilizing rather than burning up to ~5s per remaining tick
+                // re-probing (or falling through to another swipe).
+                if (probe.errorMessage) break;
                 const curY = probe.element?.bounds?.top;
                 if (curY !== undefined && curY === lastY) break;
                 lastY = curY;
