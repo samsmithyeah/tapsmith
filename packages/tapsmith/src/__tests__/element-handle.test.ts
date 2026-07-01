@@ -2665,6 +2665,39 @@ describe('transient agent-command timeout handling (slow-emulator flake regressi
     expect(swipe).toHaveBeenCalled();
   }, 10000);
 
+  it('a recovered agent reports a genuine "not found", not the earlier timeout', async () => {
+    // Agent times out on the first tick, then recovers and answers cleanly
+    // (empty) for the rest of the budget. The element genuinely never appears,
+    // so the action must fail as "not found" — NOT resurface the stale timeout,
+    // which would falsely trigger session recovery for a plain missing element.
+    let calls = 0;
+    const findElements = vi.fn(async () => {
+      calls++;
+      return calls < 2
+        ? { requestId: '1', elements: [], errorMessage: 'Agent command timed out after 5.25s' }
+        : makeFindElementsResponse([]); // agent responsive, element absent
+    });
+    const client = makeMockClient({ findElements });
+    const handle = new ElementHandle(client, _text('Ghost'), 800);
+
+    await expect(handle.tap()).rejects.toThrow(/was not found after waiting/);
+    await expect(handle.tap()).rejects.not.toThrow(/Agent command timed out/);
+  });
+
+  it('waitFor() after a recovered agent reports "did not reach state", not the earlier timeout', async () => {
+    let calls = 0;
+    const findElements = vi.fn(async () => {
+      calls++;
+      return calls < 2
+        ? { requestId: '1', elements: [], errorMessage: 'Agent command timed out after 5.25s' }
+        : makeFindElementsResponse([]); // responsive, never reaches 'visible'
+    });
+    const client = makeMockClient({ findElements });
+    const handle = new ElementHandle(client, _text('Banner'), 800);
+
+    await expect(handle.waitFor({ state: 'visible' })).rejects.toThrow(/did not reach state/);
+  });
+
   it('a non-timeout daemon error still fails fast (boundary — only slow-agent timeouts retry)', async () => {
     const findElements = vi.fn(async () => ({ requestId: '1', elements: [], errorMessage: 'UiAutomation not connected' }));
     const client = makeMockClient({ findElements });

@@ -58,6 +58,24 @@ fn read_timeout_headroom() -> Duration {
     })
 }
 
+/// Upper bound for a computed read timeout. `tokio::time::timeout` adds the
+/// duration to `Instant::now()`, so `Duration::MAX` (or anything close) would
+/// overflow the timer and panic. One year is practically infinite for a single
+/// agent command yet leaves ample headroom before the `Instant` overflows.
+const MAX_READ_TIMEOUT: Duration = Duration::from_secs(60 * 60 * 24 * 365);
+
+/// Compute the read-side timeout for an agent command: the caller's timeout
+/// plus the configured headroom, saturated to [`MAX_READ_TIMEOUT`]. Saturating
+/// (rather than `+`) avoids a panic both from the addition itself overflowing
+/// and, downstream, from `tokio::time::timeout` overflowing `Instant::now() +
+/// duration` — the latter is why we cap well below `Duration::MAX`.
+fn read_timeout_for(timeout: Duration) -> Duration {
+    timeout
+        .checked_add(read_timeout_headroom())
+        .unwrap_or(MAX_READ_TIMEOUT)
+        .min(MAX_READ_TIMEOUT)
+}
+
 /// Short timeout used when probing whether the agent is still reachable
 /// after an empty-response EOF. We don't care about the response — only
 /// whether we can re-establish a TCP connection — so this stays tight.
@@ -194,10 +212,7 @@ async fn try_send_persistent(
     }
 
     // Read — once flushed, the agent may have the command
-    // Saturate rather than panic if a pathological timeout + headroom overflows.
-    let read_timeout = timeout
-        .checked_add(read_timeout_headroom())
-        .unwrap_or(Duration::MAX);
+    let read_timeout = read_timeout_for(timeout);
     let mut line = String::new();
     let read_result = tokio::time::timeout(read_timeout, stream.reader.read_line(&mut line)).await;
 
@@ -1182,10 +1197,7 @@ impl AgentConnection {
             // supplied timeout plus headroom so the agent's own work clock
             // always finishes first — see DEFAULT_READ_TIMEOUT_HEADROOM for the
             // rationale.
-            // Saturate rather than panic if a pathological timeout + headroom overflows.
-            let read_timeout = timeout
-                .checked_add(read_timeout_headroom())
-                .unwrap_or(Duration::MAX);
+            let read_timeout = read_timeout_for(timeout);
             let reader = BufReader::new(&mut stream);
             let mut line = String::new();
 
@@ -1307,6 +1319,20 @@ mod tests {
         );
         // Zero is a legitimate explicit override (no headroom).
         assert_eq!(parse_read_timeout_headroom(Some("0")), Duration::ZERO);
+    }
+
+    #[test]
+    fn read_timeout_for_saturates_below_duration_max() {
+        // A normal timeout just adds the headroom.
+        assert_eq!(
+            read_timeout_for(Duration::from_secs(30)),
+            Duration::from_secs(30) + DEFAULT_READ_TIMEOUT_HEADROOM
+        );
+        // A pathological timeout saturates to the timer-safe cap instead of
+        // overflowing (which would later panic inside tokio::time::timeout).
+        let saturated = read_timeout_for(Duration::MAX);
+        assert_eq!(saturated, MAX_READ_TIMEOUT);
+        assert!(saturated < Duration::MAX);
     }
 
     #[test]
