@@ -194,6 +194,30 @@ function isStaleSnapshotError(err: unknown): boolean {
   return err instanceof Error && err.message.includes(STALE_SNAPSHOT_SIGNATURE);
 }
 
+/**
+ * Substring the daemon stamps onto a read-timeout waiting for the on-device
+ * agent to answer (see `agent_comms.rs`). It means the agent process is alive —
+ * we opened the socket and wrote the command — but was too slow to respond this
+ * tick: e.g. an uninterruptible UIAutomator hierarchy dump on a CPU-starved CI
+ * emulator, which the agent runs to completion regardless of the requested
+ * timeout. Unlike a dropped socket, this recovers on its own, so action
+ * auto-wait loops treat it as a transient "not yet" and retry on the next poll
+ * tick within their timeout budget instead of aborting the whole action.
+ *
+ * Kept SEPARATE from {@link isPollableNotFoundError}: when this persists for the
+ * entire action budget the loops surface the timeout unchanged (rather than a
+ * generic "not found") so it still matches `RECOVERABLE_INFRASTRUCTURE_PATTERNS`
+ * and the session-level recovery fires as a last resort.
+ */
+const AGENT_TIMEOUT_SIGNATURE = 'Agent command timed out';
+
+/** @internal — see {@link AGENT_TIMEOUT_SIGNATURE}. Exported for the assertion
+ * poll loop (expect.ts) so both surfaces classify transient agent slowness
+ * identically. */
+export function isTransientAgentError(err: unknown): boolean {
+  return err instanceof Error && err.message.includes(AGENT_TIMEOUT_SIGNATURE);
+}
+
 // ─── Strict mode (PILOT-226) ───
 
 /** @internal Brand key for cross-instance type checks (CJS/ESM dual-package). */
@@ -814,6 +838,7 @@ export class ElementHandle {
     const MIN_ACTION_BUDGET_MS = 1000;
     const deadline = Date.now() + timeoutMs;
     const POLL_MS = 250;
+    let lastTransientErr: Error | undefined;
     while (true) {
       try {
         // Floor at 1ms — the daemon treats a 0 timeout as "use the 30s
@@ -830,11 +855,19 @@ export class ElementHandle {
           };
         }
       } catch (err) {
-        // Keep polling on "no match yet" (including nth-out-of-range);
-        // strict violations and infrastructure errors propagate immediately.
-        if (!isPollableNotFoundError(err)) throw err;
+        // A transient agent-command timeout (slow-but-alive agent) is retried
+        // within the budget rather than aborting the action; remember it so a
+        // budget-long stall surfaces the real infra error, not "not found".
+        if (isTransientAgentError(err)) {
+          lastTransientErr = err as Error;
+          // Keep polling on "no match yet" (including nth-out-of-range);
+          // strict violations and other infrastructure errors propagate now.
+        } else if (!isPollableNotFoundError(err)) {
+          throw err;
+        }
       }
       if (Date.now() >= deadline) {
+        if (lastTransientErr) throw lastTransientErr;
         throw new Error(`Element ${this._describe()} was not found after waiting ${timeoutMs}ms`);
       }
       const sleepMs = Math.min(POLL_MS, Math.max(0, deadline - Date.now()));
@@ -941,6 +974,7 @@ export class ElementHandle {
     const deadline = Date.now() + timeoutMs;
     const POLL_MS = 250;
     let everFound = false;
+    let lastTransientErr: Error | undefined;
     while (true) {
       try {
         // Floor at 1ms — the daemon treats a 0 timeout as "use the 30s
@@ -960,14 +994,24 @@ export class ElementHandle {
           }
         }
       } catch (err) {
-        // Only swallow "element not found" style errors from _resolveOne
-        // (which throws for empty matches, nth-out-of-range, and filter
-        // mismatches). Any other error — notably gRPC failures like a
-        // crashed daemon — must propagate so the user sees the real
-        // cause instead of a misleading "Element not found after Nms".
-        if (!isPollableNotFoundError(err)) throw err;
+        // A transient agent-command timeout (slow-but-alive agent, e.g. a
+        // hierarchy dump on a loaded CI emulator) is retried within the action
+        // budget instead of aborting; remember it so a budget-long stall
+        // surfaces the real infra error (→ session recovery) rather than a
+        // misleading "not found".
+        if (isTransientAgentError(err)) {
+          lastTransientErr = err as Error;
+        } else if (!isPollableNotFoundError(err)) {
+          // Only swallow "element not found" style errors from _resolveOne
+          // (which throws for empty matches, nth-out-of-range, and filter
+          // mismatches). Any other error — notably gRPC failures like a
+          // crashed daemon — must propagate so the user sees the real
+          // cause instead of a misleading "Element not found after Nms".
+          throw err;
+        }
       }
       if (Date.now() >= deadline) {
+        if (lastTransientErr) throw lastTransientErr;
         const desc = this._describe();
         throw new Error(
           everFound
@@ -1217,12 +1261,23 @@ export class ElementHandle {
     };
 
     try {
+      let lastTransientErr: Error | undefined;
       while (true) {
-        if (await checkState()) {
-          await this._traceQuery(`waitFor(${state})`, `State reached: ${state}`, Date.now() - start);
-          return;
+        try {
+          if (await checkState()) {
+            await this._traceQuery(`waitFor(${state})`, `State reached: ${state}`, Date.now() - start);
+            return;
+          }
+        } catch (err) {
+          // A transient agent-command timeout (slow-but-alive agent) is retried
+          // within the wait budget; remember it so a budget-long stall surfaces
+          // the infra error (→ session recovery) rather than a generic "did not
+          // reach state". All other errors propagate to the outer trace/catch.
+          if (!isTransientAgentError(err)) throw err;
+          lastTransientErr = err as Error;
         }
         if (Date.now() >= deadline) {
+          if (lastTransientErr) throw lastTransientErr;
           throw new Error(
             `Element ${this._describe()} did not reach state "${state}" after ${timeoutMs}ms`,
           );
@@ -1595,7 +1650,10 @@ export class ElementHandle {
           const after = await this._resolveOne();
           if (after.checked === checked) return tapRes; // State changed successfully
         } catch (err) {
-          if (!isPollableNotFoundError(err)) throw err;
+          // A transient agent-command timeout (slow-but-alive agent) just means
+          // this confirmation tick was too slow — keep polling for the state
+          // change within the budget rather than failing the whole action.
+          if (!isPollableNotFoundError(err) && !isTransientAgentError(err)) throw err;
         }
       }
 
@@ -1812,8 +1870,10 @@ export class ElementHandle {
           // during scrolling — swipe again and retry.
           // Re-throw all errors that are NOT element-not-found related.
           // Only "element not found" / "not in hierarchy" type errors should
-          // be swallowed to let the scroll loop continue.
-          if (!isPollableNotFoundError(err)) {
+          // be swallowed to let the scroll loop continue. A transient
+          // agent-command timeout (slow-but-alive agent) is likewise retried by
+          // swiping again rather than aborting the scroll.
+          if (!isPollableNotFoundError(err) && !isTransientAgentError(err)) {
             // Not an element-not-found error — could be gRPC transport
             // failure (UNAVAILABLE, INTERNAL, PERMISSION_DENIED, etc.)
             // or any other infrastructure error. Propagate immediately.

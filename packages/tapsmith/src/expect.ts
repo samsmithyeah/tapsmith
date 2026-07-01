@@ -17,7 +17,7 @@
  *   await expect.poll(async () => fetchCount()).toBe(5);
  */
 
-import { ElementHandle, ELEMENT_HANDLE_BRAND } from "./element-handle.js";
+import { ElementHandle, ELEMENT_HANDLE_BRAND, isTransientAgentError } from "./element-handle.js";
 import type { ElementInfo } from "./grpc-client.js";
 import { formatSelector } from "./selectors.js";
 import { extractStack, getActiveTraceCollector } from "./trace/trace-collector.js";
@@ -52,8 +52,18 @@ async function poll(
     // On user stop (PILOT-222) each tick's RPC rejects with TestAbortedError,
     // which propagates out of the loop (see resolveTick); the only residual
     // latency is one POLL_INTERVAL_MS sleep.
-    const value = await check();
-    if (value === target) return value;
+    try {
+      const value = await check();
+      if (value === target) return value;
+    } catch (err) {
+      // A transient agent-command timeout (slow-but-alive agent, e.g. a
+      // hierarchy dump on a loaded CI emulator) is retried within the
+      // assertion budget instead of failing immediately. Any other throw —
+      // a strict-mode violation or a real infrastructure failure — propagates
+      // with its real cause. If the timeout persists to the deadline, the
+      // final check() below surfaces it (→ session recovery).
+      if (!isTransientAgentError(err)) throw err;
+    }
     await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS));
   }
   // Final attempt

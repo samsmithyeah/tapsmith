@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use std::sync::OnceLock;
 use std::time::Duration;
 
 use anyhow::{anyhow, bail, Context, Result};
@@ -19,13 +20,43 @@ const DEFAULT_AGENT_HOST_PORT: u16 = 18700;
 /// Default timeout for agent commands.
 const DEFAULT_COMMAND_TIMEOUT: Duration = Duration::from_secs(30);
 
-/// Headroom added to the read-side timeout so the daemon always outlasts the
-/// agent's own work clock. Without this, an agent command that uses up its
-/// full client-supplied timeout (e.g. FindElement(timeout_ms=100)) races the
-/// daemon's read timeout — the daemon may give up before the agent's "not
-/// found" response arrives, falsely marking the connection as dead and
+/// Default headroom added to the read-side timeout so the daemon always
+/// outlasts the agent's own work clock. Without this, an agent command that
+/// uses up its full client-supplied timeout (e.g. FindElement(timeout_ms=100))
+/// races the daemon's read timeout — the daemon may give up before the agent's
+/// "not found" response arrives, falsely marking the connection as dead and
 /// triggering an unnecessary reconnect on the next command.
-const READ_TIMEOUT_HEADROOM: Duration = Duration::from_secs(5);
+///
+/// This headroom matters most for `findElements`, which the on-device agent
+/// runs to completion *ignoring* the client timeout (a UIAutomator hierarchy
+/// dump is a single uninterruptible native call). So in practice this value is
+/// the ceiling on how long one hierarchy dump may take before the daemon
+/// declares the command timed out. On CPU-starved CI emulators a dump can
+/// exceed the 5s default; raise it via `TAPSMITH_AGENT_READ_HEADROOM_MS`
+/// (milliseconds) rather than lowering it — trimming this converts a slow-but-
+/// completing dump into a hard "Agent command timed out".
+const DEFAULT_READ_TIMEOUT_HEADROOM: Duration = Duration::from_secs(5);
+
+/// Env var overriding [`DEFAULT_READ_TIMEOUT_HEADROOM`], in milliseconds.
+const READ_TIMEOUT_HEADROOM_ENV: &str = "TAPSMITH_AGENT_READ_HEADROOM_MS";
+
+/// Parse the read-timeout headroom from an env-var value. A missing, empty, or
+/// unparseable value falls back to [`DEFAULT_READ_TIMEOUT_HEADROOM`] so a
+/// typo can never silently produce a zero (or absurd) timeout.
+fn parse_read_timeout_headroom(raw: Option<&str>) -> Duration {
+    raw.and_then(|s| s.trim().parse::<u64>().ok())
+        .map(Duration::from_millis)
+        .unwrap_or(DEFAULT_READ_TIMEOUT_HEADROOM)
+}
+
+/// Read-side timeout headroom, honoring `TAPSMITH_AGENT_READ_HEADROOM_MS`.
+/// Cached: the env var is read once per process.
+fn read_timeout_headroom() -> Duration {
+    static HEADROOM: OnceLock<Duration> = OnceLock::new();
+    *HEADROOM.get_or_init(|| {
+        parse_read_timeout_headroom(std::env::var(READ_TIMEOUT_HEADROOM_ENV).ok().as_deref())
+    })
+}
 
 /// Short timeout used when probing whether the agent is still reachable
 /// after an empty-response EOF. We don't care about the response — only
@@ -163,7 +194,7 @@ async fn try_send_persistent(
     }
 
     // Read — once flushed, the agent may have the command
-    let read_timeout = timeout + READ_TIMEOUT_HEADROOM;
+    let read_timeout = timeout + read_timeout_headroom();
     let mut line = String::new();
     let read_result = tokio::time::timeout(read_timeout, stream.reader.read_line(&mut line)).await;
 
@@ -1146,9 +1177,9 @@ impl AgentConnection {
 
             // Read the response (newline-delimited JSON). Use the caller-
             // supplied timeout plus headroom so the agent's own work clock
-            // always finishes first — see READ_TIMEOUT_HEADROOM for the
+            // always finishes first — see DEFAULT_READ_TIMEOUT_HEADROOM for the
             // rationale.
-            let read_timeout = timeout + READ_TIMEOUT_HEADROOM;
+            let read_timeout = timeout + read_timeout_headroom();
             let reader = BufReader::new(&mut stream);
             let mut line = String::new();
 
@@ -1254,6 +1285,45 @@ impl AgentConnection {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    // ─── Read-timeout headroom ───
+
+    #[test]
+    fn read_headroom_parses_valid_millis() {
+        assert_eq!(
+            parse_read_timeout_headroom(Some("10000")),
+            Duration::from_millis(10_000)
+        );
+        // Surrounding whitespace is tolerated.
+        assert_eq!(
+            parse_read_timeout_headroom(Some("  2500 ")),
+            Duration::from_millis(2_500)
+        );
+        // Zero is a legitimate explicit override (no headroom).
+        assert_eq!(parse_read_timeout_headroom(Some("0")), Duration::ZERO);
+    }
+
+    #[test]
+    fn read_headroom_falls_back_to_default() {
+        // Unset, empty, and unparseable all fall back to the 5s default rather
+        // than silently producing a zero timeout.
+        assert_eq!(
+            parse_read_timeout_headroom(None),
+            DEFAULT_READ_TIMEOUT_HEADROOM
+        );
+        assert_eq!(
+            parse_read_timeout_headroom(Some("")),
+            DEFAULT_READ_TIMEOUT_HEADROOM
+        );
+        assert_eq!(
+            parse_read_timeout_headroom(Some("not-a-number")),
+            DEFAULT_READ_TIMEOUT_HEADROOM
+        );
+        assert_eq!(
+            parse_read_timeout_headroom(Some("-1")),
+            DEFAULT_READ_TIMEOUT_HEADROOM
+        );
+    }
 
     // ─── AgentCommand::to_json ───
 

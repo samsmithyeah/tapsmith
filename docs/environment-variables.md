@@ -11,6 +11,7 @@ Most users will never need to set any of these. They are primarily useful for de
 | `TAPSMITH_DAEMON_BIN` | Override the path to the `tapsmith-core` daemon binary. Checked before auto-resolution from npm packages, monorepo builds, and PATH. |
 | `TAPSMITH_DAEMON_LOG` | Path to a file for daemon stdout/stderr. When set, the CLI redirects the spawned daemon's output to this file. Useful for debugging daemon-side behavior (MITM proxy, agent startup, etc.). |
 | `TAPSMITH_REUSE_DAEMON` | When set (any truthy value), the CLI connects to an existing daemon without killing it. Used internally by the MCP server's `tapsmith_run_tests` tool to avoid destroying a daemon owned by UI mode. |
+| `TAPSMITH_AGENT_READ_HEADROOM_MS` | Milliseconds the daemon waits for an on-device agent to answer a command, *on top of* the caller's timeout (default `5000`). This is effectively the ceiling on a single UIAutomator hierarchy dump, which the agent runs uninterruptibly regardless of the caller timeout. Raise it on slow/CPU-starved CI emulators where a dump can exceed 5s and surface as `Agent command timed out`; do not lower it, as that turns a slow-but-completing dump into a hard timeout. |
 
 ## Debugging
 
@@ -69,4 +70,11 @@ TAPSMITH_DAEMON_BIN=/usr/local/bin/tapsmith-core npx tapsmith test
 
 ```bash
 TAPSMITH_DEBUG=1 npx tapsmith test tests/flaky.test.ts
+```
+
+### Tolerating a slow CI emulator
+
+```bash
+# Give a hierarchy dump up to 10s before the daemon declares a command timed out
+TAPSMITH_AGENT_READ_HEADROOM_MS=10000 npx tapsmith test
 ```
