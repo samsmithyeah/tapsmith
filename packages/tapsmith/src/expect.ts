@@ -48,6 +48,7 @@ async function poll(
 ): Promise<boolean> {
   const target = !negated; // true = want check() to be true; false = want false
   const deadline = Date.now() + timeoutMs;
+  let lastTransientErr: Error | undefined;
   while (Date.now() < deadline) {
     // On user stop (PILOT-222) each tick's RPC rejects with TestAbortedError,
     // which propagates out of the loop (see resolveTick); the only residual
@@ -55,6 +56,9 @@ async function poll(
     try {
       const value = await check();
       if (value === target) return value;
+      // check() answered → agent responsive; drop any earlier transient timeout
+      // so exhausting the budget reports the real assertion result, not infra.
+      lastTransientErr = undefined;
     } catch (err) {
       // A transient agent-command timeout (slow-but-alive agent, e.g. a
       // hierarchy dump on a loaded CI emulator) is retried within the
@@ -62,14 +66,14 @@ async function poll(
       // a strict-mode violation or a real infrastructure failure — propagates
       // with its real cause.
       if (!isTransientAgentError(err)) throw err;
-      // If the timeout itself pushed us past the deadline, surface it now (→
-      // session recovery). Falling through to the final check() below would run
-      // another full agent read (~5s+), roughly doubling the assertion's
-      // wall-clock on a slow emulator.
-      if (Date.now() >= deadline) throw err;
+      lastTransientErr = err as Error;
     }
     await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS));
   }
+  // If the most recent tick was a transient timeout, surface it now (→ session
+  // recovery) rather than running one more full agent read (~5s+) — whether the
+  // deadline was crossed by the check() itself or by the poll-interval sleep.
+  if (lastTransientErr) throw lastTransientErr;
   // Final attempt
   return check();
 }
