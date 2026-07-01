@@ -60,9 +60,13 @@ async function poll(
       // hierarchy dump on a loaded CI emulator) is retried within the
       // assertion budget instead of failing immediately. Any other throw —
       // a strict-mode violation or a real infrastructure failure — propagates
-      // with its real cause. If the timeout persists to the deadline, the
-      // final check() below surfaces it (→ session recovery).
+      // with its real cause.
       if (!isTransientAgentError(err)) throw err;
+      // If the timeout itself pushed us past the deadline, surface it now (→
+      // session recovery). Falling through to the final check() below would run
+      // another full agent read (~5s+), roughly doubling the assertion's
+      // wall-clock on a slow emulator.
+      if (Date.now() >= deadline) throw err;
     }
     await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS));
   }
