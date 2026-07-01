@@ -64,16 +64,23 @@ fn read_timeout_headroom() -> Duration {
 /// agent command yet leaves ample headroom before the `Instant` overflows.
 const MAX_READ_TIMEOUT: Duration = Duration::from_secs(60 * 60 * 24 * 365);
 
-/// Compute the read-side timeout for an agent command: the caller's timeout
-/// plus the configured headroom, saturated to [`MAX_READ_TIMEOUT`]. Saturating
+/// Pure `timeout + headroom` saturated to [`MAX_READ_TIMEOUT`]. Saturating
 /// (rather than `+`) avoids a panic both from the addition itself overflowing
 /// and, downstream, from `tokio::time::timeout` overflowing `Instant::now() +
-/// duration` — the latter is why we cap well below `Duration::MAX`.
-fn read_timeout_for(timeout: Duration) -> Duration {
+/// duration` — the latter is why we cap well below `Duration::MAX`. Split out
+/// from [`read_timeout_for`] so it's testable without the ambient env var.
+fn saturating_read_timeout(timeout: Duration, headroom: Duration) -> Duration {
     timeout
-        .checked_add(read_timeout_headroom())
+        .checked_add(headroom)
         .unwrap_or(MAX_READ_TIMEOUT)
         .min(MAX_READ_TIMEOUT)
+}
+
+/// Compute the read-side timeout for an agent command: the caller's timeout
+/// plus the configured headroom (`TAPSMITH_AGENT_READ_HEADROOM_MS`), saturated
+/// to [`MAX_READ_TIMEOUT`].
+fn read_timeout_for(timeout: Duration) -> Duration {
+    saturating_read_timeout(timeout, read_timeout_headroom())
 }
 
 /// Short timeout used when probing whether the agent is still reachable
@@ -1322,17 +1329,26 @@ mod tests {
     }
 
     #[test]
-    fn read_timeout_for_saturates_below_duration_max() {
+    fn saturating_read_timeout_adds_and_caps() {
+        // Tests the pure helper so the result doesn't depend on whether
+        // TAPSMITH_AGENT_READ_HEADROOM_MS is set in the ambient environment.
         // A normal timeout just adds the headroom.
         assert_eq!(
-            read_timeout_for(Duration::from_secs(30)),
-            Duration::from_secs(30) + DEFAULT_READ_TIMEOUT_HEADROOM
+            saturating_read_timeout(Duration::from_secs(30), DEFAULT_READ_TIMEOUT_HEADROOM),
+            Duration::from_secs(35)
         );
         // A pathological timeout saturates to the timer-safe cap instead of
-        // overflowing (which would later panic inside tokio::time::timeout).
-        let saturated = read_timeout_for(Duration::MAX);
-        assert_eq!(saturated, MAX_READ_TIMEOUT);
-        assert!(saturated < Duration::MAX);
+        // overflowing (which would later panic inside tokio::time::timeout) —
+        // whether the overflow comes from the timeout or an absurd headroom.
+        assert_eq!(
+            saturating_read_timeout(Duration::MAX, DEFAULT_READ_TIMEOUT_HEADROOM),
+            MAX_READ_TIMEOUT
+        );
+        assert_eq!(
+            saturating_read_timeout(Duration::from_secs(30), Duration::MAX),
+            MAX_READ_TIMEOUT
+        );
+        assert!(MAX_READ_TIMEOUT < Duration::MAX);
     }
 
     #[test]

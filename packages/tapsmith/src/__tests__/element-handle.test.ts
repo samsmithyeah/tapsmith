@@ -2654,6 +2654,32 @@ describe('transient agent-command timeout handling (slow-emulator flake regressi
     expect(tap).toHaveBeenCalledTimes(1);
   }, 10000);
 
+  it('scrollIntoView() does not swipe again when a stabilization poll times out on an already-visible target', async () => {
+    const bounds = { left: 0, top: 10, right: 100, bottom: 40 };
+    let findCalls = 0;
+    const findElements = vi.fn(async () => {
+      findCalls++;
+      // i=0: not on screen yet → one swipe; i=1: target is visible.
+      return findCalls < 2
+        ? makeFindElementsResponse([])
+        : makeFindElementsResponse([makeElementInfo({ visible: true, bounds })]);
+    });
+    // The post-scroll stabilization probe times out. Since the target is
+    // already visible, this must stop stabilizing and succeed — NOT fall through
+    // to another swipe that could scroll it back off-screen.
+    const findElement = vi.fn(async () => {
+      throw new Error('findElements failed: Agent command timed out after 5.5s');
+    });
+    const swipe = vi.fn(async () => successResponse());
+    const client = makeMockClient({ findElements, findElement, swipe });
+    const handle = new ElementHandle(client, _text('Target'), 5000);
+
+    await handle.scrollIntoView();
+
+    expect(findElement).toHaveBeenCalled(); // stabilization was attempted
+    expect(swipe).toHaveBeenCalledTimes(1); // only the pre-visible swipe, no extra
+  });
+
   it('scrollIntoView() surfaces a persistent agent timeout as the infra error, not "not visible after N scroll(s)"', async () => {
     const findElements = vi.fn(async () => ({ requestId: '1', elements: [], errorMessage: 'Agent command timed out after 5.25s' }));
     const swipe = vi.fn(async () => successResponse());

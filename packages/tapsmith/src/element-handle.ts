@@ -1884,7 +1884,17 @@ export class ElementHandle {
               let lastY = el.bounds?.top;
               for (let s = 0; s < 10; s++) {
                 await sleep(100, this._client._getAbortSignal?.());
-                const probe = await this._client.findElement(this._selector, 500);
+                let probe;
+                try {
+                  probe = await this._client.findElement(this._selector, 500);
+                } catch (err) {
+                  // The target is already visible; a slow (transient) stabilization
+                  // poll must NOT fall through to another swipe, which could scroll
+                  // it back off-screen. Stop stabilizing and accept the current
+                  // position. Non-transient errors still propagate.
+                  if (isTransientAgentError(err)) break;
+                  throw err;
+                }
                 const curY = probe.element?.bounds?.top;
                 if (curY !== undefined && curY === lastY) break;
                 lastY = curY;
