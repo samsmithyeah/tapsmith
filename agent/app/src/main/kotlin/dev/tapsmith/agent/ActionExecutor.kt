@@ -567,11 +567,24 @@ class ActionExecutor(
         SystemClock.sleep(tapDurationMs)
         val up = MotionEvent.obtain(downTime, SystemClock.uptimeMillis(), MotionEvent.ACTION_UP, x.toFloat(), y.toFloat(), 0)
         up.source = InputDevice.SOURCE_TOUCHSCREEN
-        return try {
-            instrumentation.uiAutomation.injectInputEvent(up, true)
-        } finally {
-            up.recycle()
+        val upOk =
+            try {
+                instrumentation.uiAutomation.injectInputEvent(up, true)
+            } finally {
+                up.recycle()
+            }
+        if (!upOk) {
+            // Don't leave the pointer down — a dangling contact would turn the
+            // caller's fallback click into a long-press/multi-touch gesture.
+            val cancel = MotionEvent.obtain(downTime, SystemClock.uptimeMillis(), MotionEvent.ACTION_CANCEL, x.toFloat(), y.toFloat(), 0)
+            cancel.source = InputDevice.SOURCE_TOUCHSCREEN
+            try {
+                instrumentation.uiAutomation.injectInputEvent(cancel, true)
+            } finally {
+                cancel.recycle()
+            }
         }
+        return upOk
     }
 
     /**

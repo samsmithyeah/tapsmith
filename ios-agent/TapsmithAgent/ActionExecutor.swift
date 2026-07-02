@@ -49,18 +49,24 @@ class ActionExecutor {
     }
 
     /// Double-tap at specific screen coordinates.
-    /// Prefers a single synthesized event record carrying both taps on one
-    /// pointer path with precise offsets — the inter-tap gap is immune to
-    /// scheduling jitter under CI load. Falls back to XCUICoordinate.doubleTap()
-    /// when synthesis is unavailable.
+    /// Prefers a single synthesized event record carrying both taps with
+    /// precise offsets — the inter-tap gap is immune to scheduling jitter
+    /// under CI load. Falls back to XCUICoordinate when synthesis is
+    /// unavailable, completing a partially-delivered gesture with exactly one
+    /// more tap rather than re-tapping twice (which would deliver three).
     func doubleTapCoordinates(x: Int, y: Int, intervalMs: Int = 0) {
-        if EventSynthesizer.doubleTap(at: CGPoint(x: x, y: y), intervalMs: intervalMs) {
-            return
-        }
-        NSLog("[ActionExecutor] Double-tap synthesis failed, falling back to XCUICoordinate.doubleTap()")
         let normalized = app.coordinate(withNormalizedOffset: CGVector(dx: 0, dy: 0))
         let point = normalized.withOffset(CGVector(dx: CGFloat(x), dy: CGFloat(y)))
-        point.doubleTap()
+        switch EventSynthesizer.doubleTap(at: CGPoint(x: x, y: y), intervalMs: intervalMs) {
+        case .done:
+            return
+        case .firstTapOnly:
+            NSLog("[ActionExecutor] Double-tap delivered only its first tap; completing with a single coordinate tap")
+            point.tap()
+        case .notStarted:
+            NSLog("[ActionExecutor] Double-tap synthesis failed, falling back to XCUICoordinate.doubleTap()")
+            point.doubleTap()
+        }
     }
 
     /// Long press on an element with configurable duration.

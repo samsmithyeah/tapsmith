@@ -27,6 +27,7 @@ import {
   serializeSuiteResult,
   isRecoverableInfrastructureError,
   isRetryableAgentStartError,
+  retryOnceOnRecoverableInfra,
   deserializeRegExpArray,
 } from './worker-protocol.js';
 import { ensureSessionReady, launchConfiguredApp, type SessionPreflightContext } from './session-preflight.js';
@@ -111,24 +112,17 @@ async function handleInit(msg: InitMessage): Promise<void> {
     // possibly-undefined module-level bindings.
     const dev = device;
     const cfg = config;
-    const selectDevice = () => dev.setDevice(
-      msg.deviceSerial,
-      isNetworkTracingEnabled(cfg.trace),
-      networkHostsForPac(cfg.trace),
-      networkPassthroughHosts(cfg.trace),
-    );
-    try {
-      await selectDevice();
-    } catch (err) {
-      // Device selection refreshes the device list, and `simctl list` can
-      // stall for minutes while simulators boot on a loaded runner. One
-      // retry after the stall clears recovers it.
-      if (!isRecoverableInfrastructureError(err)) throw err;
-      process.stderr.write(
+    await retryOnceOnRecoverableInfra(
+      () => dev.setDevice(
+        msg.deviceSerial,
+        isNetworkTracingEnabled(cfg.trace),
+        networkHostsForPac(cfg.trace),
+        networkPassthroughHosts(cfg.trace),
+      ),
+      (err) => process.stderr.write(
         `Worker ${workerId}: Device selection failed, retrying once: ${err instanceof Error ? err.message : String(err)}\n`,
-      );
-      await selectDevice();
-    }
+      ),
+    );
   }
 
   // Wake and unlock device screen

@@ -260,43 +260,48 @@ enum EventSynthesizer {
         return synthesizeTap(at: point, duration: 0.1)
     }
 
+    /// Outcome of a synthesized double-tap, so callers can fall back without
+    /// over- or under-tapping.
+    enum DoubleTapResult {
+        /// Both taps were delivered.
+        case done
+        /// Nothing was delivered — the caller may safely run a full
+        /// double-tap fallback.
+        case notStarted
+        /// The first tap landed but the second could not be dispatched. The
+        /// caller must complete with exactly ONE more tap — a full double-tap
+        /// fallback here would deliver three taps.
+        case firstTapOnly
+    }
+
     /// Double-tap at a screen coordinate.
     ///
-    /// Synthesizes two back-to-back single-tap event records. A single record
-    /// cannot carry both taps: a second `pressDownAtOffset:` after
-    /// `liftUpAtOffset:` on the same pointer path is silently dropped
-    /// (verified on Xcode 26 — only the first tap is delivered), and two
-    /// paths in one record are two concurrent fingers, which iOS gesture
-    /// recognizers reject as a double tap. Each dispatch blocks until
-    /// testmanagerd confirms delivery, so the inter-tap gap is dispatch
-    /// latency plus `interval` — tens of milliseconds, well inside typical
-    /// app double-tap windows (300-450ms). XCUIElement.doubleTap()'s
-    /// quiescence machinery, by contrast, can stretch the gap past the window
-    /// on loaded CI runners.
-    static func doubleTap(at point: CGPoint, intervalMs: Int = 0) -> Bool {
-        // Primary: ONE event record carrying both taps as two pointer paths
-        // with disjoint time ranges. The replay honors the offsets at the HID
-        // layer, so the inter-tap gap is fixed at `interval` regardless of CPU
-        // starvation on the host — two sequentially dispatched records (the
-        // fallback below) have an unbounded gap under load and missed the
-        // app's double-tap window on saturated CI runners. Disjoint ranges
-        // matter: sequential contacts read as one finger tapping twice, which
-        // tap recognizers accept; overlapping ranges are a two-finger tap,
-        // which they reject. A second pressDownAtOffset: on a single path is
-        // NOT an option — it is silently dropped on Xcode 26.
+    /// Primary mechanism: ONE event record carrying both taps as two pointer
+    /// paths with disjoint time ranges (down/move/lift each). The replay
+    /// honors the offsets inside the event system, so the inter-tap gap is
+    /// fixed at `interval` regardless of CPU starvation on the host — unlike
+    /// XCUIElement.doubleTap(), whose gap stretched past apps' double-tap
+    /// windows (300-450ms) on loaded CI runners. Disjoint time ranges matter:
+    /// sequential contacts read as one finger tapping twice, which tap
+    /// recognizers accept; OVERLAPPING ranges are a two-finger tap, which
+    /// they reject. A second pressDownAtOffset: on a single path is not an
+    /// option — it is silently dropped on Xcode 26.
+    ///
+    /// Fallback (only if the record cannot be dispatched at all): two
+    /// back-to-back single-tap records with a host-side sleep. Delivery is
+    /// reliable but the gap includes dispatch latency, so it can stretch
+    /// under load.
+    static func doubleTap(at point: CGPoint, intervalMs: Int = 0) -> DoubleTapResult {
         let interval = intervalMs > 0 ? TimeInterval(intervalMs) / 1000.0 : 0.15
         if doubleTapSingleRecord(at: point, interval: interval) {
-            return true
+            return .done
         }
 
-        // Last resort: two back-to-back single-tap records with a host-side
-        // sleep. Both taps reliably deliver, but the gap includes dispatch
-        // latency, so it can stretch under load.
         NSLog("[EventSynth] double-tap single-record dispatch failed; falling back to sequential taps")
         let start = Date()
-        guard synthesizeTap(at: point, duration: 0.05) else { return false }
+        guard synthesizeTap(at: point, duration: 0.05) else { return .notStarted }
         Thread.sleep(forTimeInterval: interval)
-        guard synthesizeTap(at: point, duration: 0.05) else { return false }
+        guard synthesizeTap(at: point, duration: 0.05) else { return .firstTapOnly }
         let elapsed = Date().timeIntervalSince(start)
         if elapsed > 0.35 {
             NSLog(
@@ -304,7 +309,7 @@ enum EventSynthesizer {
                 elapsed * 1000
             )
         }
-        return true
+        return .done
     }
 
     /// Build and dispatch a single event record containing two sequential

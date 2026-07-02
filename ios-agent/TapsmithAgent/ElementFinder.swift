@@ -224,11 +224,8 @@ class ElementFinder {
         lock.lock()
         defer { lock.unlock() }
         let cached = elementCache[elementId]
-        // Touch on access: a resolved-then-acted-on id is refreshed in the
-        // eviction order rather than aging out between resolve and action.
-        if cached != nil, let idx = cacheOrder.firstIndex(of: elementId) {
-            cacheOrder.remove(at: idx)
-            cacheOrder.append(elementId)
+        if cached != nil {
+            promoteToMostRecentlyUsed(&cacheOrder, elementId)
         }
         return cached
     }

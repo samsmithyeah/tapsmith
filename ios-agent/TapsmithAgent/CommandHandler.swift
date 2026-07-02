@@ -403,6 +403,12 @@ class CommandHandler {
     /// XCUIElement.doubleTap() (whose two taps are subject to scheduling
     /// jitter) is the fallback when no snapshot center is available.
     private func doubleTapResolvedElement(_ element: ElementInfo, intervalMs: Int) throws {
+        // Resolve the cached element FIRST even on the coordinate path: the
+        // coordinate gesture never throws, so an evicted id would otherwise
+        // silently double-tap stale bounds — this lookup raises the "gone
+        // stale" error the SDK's re-resolve retry keys on.
+        let xcElem = try getXCUIElement(element.elementId)
+
         if let center = snapshotCenter(for: element.elementId) {
             actionExecutor.doubleTapCoordinates(
                 x: Int(center.x),
@@ -412,7 +418,6 @@ class CommandHandler {
             return
         }
 
-        let xcElem = try getXCUIElement(element.elementId)
         try actionExecutor.doubleTap(xcElem)
     }
 

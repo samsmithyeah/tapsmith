@@ -209,7 +209,11 @@ async fn start_agent_impl(
                 let err_lines = stderr_tail.lock().unwrap().join("\n");
                 let target_kind = if is_physical { "device" } else { "simulator" };
                 let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
-                if relaunches_left > 0 && remaining > Duration::from_secs(30) {
+                // Simulators only: kill_existing_agents_on can terminate the
+                // sim-side runner (`simctl terminate`) but has no equivalent
+                // for a physical device — an orphaned attempt-1 runner there
+                // could keep the agent port bound and burn the whole deadline.
+                if !is_physical && relaunches_left > 0 && remaining > Duration::from_secs(30) {
                     relaunches_left -= 1;
                     warn!(
                         udid,

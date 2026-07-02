@@ -1072,13 +1072,18 @@ export class ElementHandle {
    * survives. Retries are bounded rather than single-shot so sustained cache
    * pressure (or Android's re-render StaleObjectException) is absorbed too.
    * Selector targets (unmodified handles) need no retry.
+   *
+   * Non-idempotent actions (append-semantics type()) pass maxStaleRetries: 1
+   * — stale errors are raised at agent-side resolution, before the action
+   * runs, but a repeated partial execution would duplicate input rather than
+   * merely re-tap, so those keep the conservative single retry.
    */
   private async _dispatchTargeted<R extends { success: boolean; errorMessage: string }>(
     target: ActionTarget,
     call: (t: ActionTarget) => Promise<R>,
+    maxStaleRetries = 3,
   ): Promise<R> {
     if (!('elementId' in target)) return call(target);
-    const maxStaleRetries = 3;
     let currentTarget: ActionTarget = target;
     for (let attempt = 0; ; attempt++) {
       const isLast = attempt === maxStaleRetries;
@@ -1524,7 +1529,7 @@ export class ElementHandle {
     return this._tracedAction('type', 'type',
       () => this._dispatchTargeted(target, (t) => 'elementId' in t
         ? this._client.typeText(undefined, text, remainingMs, delay, t.elementId)
-        : this._client.typeText(t.selector, text, remainingMs, delay)),
+        : this._client.typeText(t.selector, text, remainingMs, delay), 1),
       'Type text failed', { inputValue: text });
   }
 

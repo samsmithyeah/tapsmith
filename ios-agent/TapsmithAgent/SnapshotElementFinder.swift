@@ -1,6 +1,16 @@
 import XCTest
 import Foundation
 
+/// Move an id to the most-recently-used end of a cache eviction order, so a
+/// resolved-then-acted-on element is refreshed rather than aging out between
+/// the resolve and the action. Callers must hold their cache's lock.
+func promoteToMostRecentlyUsed(_ order: inout [String], _ elementId: String) {
+    if let idx = order.firstIndex(of: elementId) {
+        order.remove(at: idx)
+        order.append(elementId)
+    }
+}
+
 /// Fast element finder that uses XCUIElement.snapshot() to fetch the entire
 /// accessibility tree in a single IPC call, then searches in memory.
 ///
@@ -376,14 +386,9 @@ class SnapshotElementFinder {
         }
     }
 
-    /// Move an id to the most-recently-used end of the eviction order, so a
-    /// resolved-then-acted-on element is refreshed rather than aging out
-    /// between the resolve and the action. Must be called while `lock` is held.
+    /// Must be called while `lock` is held.
     private func touchLocked(_ elementId: String) {
-        if let idx = cacheOrder.firstIndex(of: elementId) {
-            cacheOrder.remove(at: idx)
-            cacheOrder.append(elementId)
-        }
+        promoteToMostRecentlyUsed(&cacheOrder, elementId)
     }
 
     /// Get a cached XCUIElement by its stable ID (for actions like tap).
