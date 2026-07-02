@@ -1,0 +1,114 @@
+name: Prepare release
+
+# Manually-triggered entry point for a release. Computes the next version,
+# runs scripts/bump-version.sh, and opens a labelled "Release vX.Y.Z" PR.
+# Merging that PR triggers tag-release.yml, which tags the commit and
+# triggers release.yml to publish + create the GitHub Release.
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "patch | minor | major, or an explicit version (e.g. 0.4.0)"
+        required: true
+        default: patch
+        type: string
+
+permissions:
+  contents: read
+  # gh pr create / gh label create run with GITHUB_TOKEN.
+  pull-requests: write
+  issues: write
+
+jobs:
+  prepare:
+    name: Bump version and open PR
+    # macOS to match local dev: bump-version.sh uses BSD `sed -i ''` syntax.
+    runs-on: macos-latest
+    steps:
+      - name: Verify RELEASE_SSH_KEY is set
+        env:
+          RELEASE_SSH_KEY: ${{ secrets.RELEASE_SSH_KEY }}
+        run: |
+          if [ -z "$RELEASE_SSH_KEY" ]; then
+            echo "::error::RELEASE_SSH_KEY secret is not set. It is the private half of a repo deploy key (write access); the release branch is pushed with it so CI runs on the PR (a push made with the default GITHUB_TOKEN does not trigger workflows). See CLAUDE.md > Releases."
+            exit 1
+          fi
+
+      # Check out over SSH using the deploy key so the pushed branch triggers CI
+      # (a push authenticated with the default GITHUB_TOKEN does not).
+      - uses: actions/checkout@v4
+        with:
+          ssh-key: ${{ secrets.RELEASE_SSH_KEY }}
+
+      # Match the Node version release.yml uses to publish, so the lockfile the
+      # bump script regenerates stays compatible with `npm ci` everywhere.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Install protobuf (for cargo check in bump script)
+        run: brew install protobuf
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: packages/tapsmith-core
+
+      - name: Compute new version
+        id: version
+        # Read the input via env, never interpolate ${{ }} into the script, so a
+        # crafted value can't be expanded by the shell.
+        env:
+          VERSION_INPUT: ${{ github.event.inputs.version }}
+        run: |
+          CUR=$(node -p "require('./packages/tapsmith/package.json').version")
+          IN="$VERSION_INPUT"
+          case "$IN" in
+            major|minor|patch)
+              NEW=$(node -e 'const [a,b,c]=process.argv[1].split(".").map(Number);const t=process.argv[2];const v=t==="major"?[a+1,0,0]:t==="minor"?[a,b+1,0]:[a,b,c+1];console.log(v.join("."))' "$CUR" "$IN")
+              ;;
+            *)
+              NEW="$IN"
+              ;;
+          esac
+          # Restrict to digit-dot core plus an optional [0-9A-Za-z.-] pre-release
+          # so no shell metacharacters ($ ( ) ; ` space) can survive.
+          if ! echo "$NEW" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$'; then
+            echo "::error::Invalid version '$NEW'. Use 'patch', 'minor', 'major', or an explicit semver like 0.4.0."
+            exit 1
+          fi
+          echo "current=$CUR" >> "$GITHUB_OUTPUT"
+          echo "new=$NEW" >> "$GITHUB_OUTPUT"
+          echo "Bumping $CUR -> $NEW"
+
+      - name: Run bump script
+        env:
+          NEW: ${{ steps.version.outputs.new }}
+        run: ./scripts/bump-version.sh "$NEW"
+
+      - name: Push branch and open PR
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          NEW: ${{ steps.version.outputs.new }}
+          CUR: ${{ steps.version.outputs.current }}
+        run: |
+          BRANCH="release/v$NEW"
+          git config user.name "tapsmith-release[bot]"
+          git config user.email "tapsmith-release@users.noreply.github.com"
+          git checkout -b "$BRANCH"
+          git commit -am "Release v$NEW"
+          # Pushed over SSH (deploy key) so CI's push trigger runs on the branch.
+          git push --force-with-lease origin "$BRANCH"
+          gh label create release --color 0e8a16 --description "Release preparation PR" --force
+          gh pr create \
+            --base main \
+            --head "$BRANCH" \
+            --title "Release v$NEW" \
+            --label release \
+            --body "$(cat <<EOF
+          Automated release preparation for **v$NEW** (bumped from v$CUR).
+
+          This bumps the version across all packages (SDK, Rust daemon, platform npm packages, website) and refreshes lockfiles.
+
+          On merge, \`tag-release\` tags \`v$NEW\` and \`release\` publishes to npm, creates the GitHub Release with generated notes, and redeploys the website changelog.
+          EOF
+          )"

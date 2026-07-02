@@ -1,0 +1,21 @@
+# Configures GitHub's auto-generated release notes (used by `gh release create
+# --generate-notes` in the github-release job of release.yml). Entries are
+# grouped by the labels on each merged PR; unlabelled PRs fall into "Other".
+changelog:
+  exclude:
+    labels:
+      - release
+      - ignore-for-release
+    authors:
+      - tapsmith-release[bot]
+  categories:
+    - title: 🚀 Features
+      labels: [enhancement, feature]
+    - title: 🐛 Bug Fixes
+      labels: [bug, fix]
+    - title: 📝 Documentation
+      labels: [documentation]
+    - title: 🧹 Maintenance & CI
+      labels: [chore, ci, refactor, test, dependencies]
+    - title: Other Changes
+      labels: ["*"]

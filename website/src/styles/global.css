@@ -63,6 +63,20 @@ html {
   box-shadow: 0 4px 24px -4px rgba(0, 0, 0, 0.1);
 }
 
+/* Tailwind's preflight resets `list-style` on all ul/ol, which strips the
+   bullet/number markers from rendered markdown. Restore them for content lists
+   (Starlight's default look) without affecting nav, sidebar, or TOC lists. */
+.sl-markdown-content ul:not(:where(.not-content *)),
+.sl-markdown-content ol:not(:where(.not-content *)) {
+  padding-inline-start: 1.5rem;
+}
+.sl-markdown-content ul:not(:where(.not-content *)) {
+  list-style: disc;
+}
+.sl-markdown-content ol:not(:where(.not-content *)) {
+  list-style: decimal;
+}
+
 [aria-current='page'],
 [aria-current='page']:hover,
 [aria-current='page']:active {
