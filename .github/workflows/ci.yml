@@ -2,7 +2,9 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    # release/** so the auto-created release PR (pushed via the deploy key)
+    # gets CI — a GITHUB_TOKEN-authored PR does not trigger pull_request runs.
+    branches: [main, 'release/**']
   pull_request:
     branches: [main]
 

@@ -80,6 +80,7 @@ export default defineConfig({
             { label: 'Environment Variables', slug: 'reference/environment-variables' },
           ],
         },
+        { label: 'Changelog', slug: 'changelog' },
       ],
     }),
   ],

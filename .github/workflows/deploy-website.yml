@@ -1,8 +1,9 @@
 name: Deploy Website
 
+# Triggered by release.yml's github-release job (via `gh workflow run`) once a
+# release is published, so the build-time release fetch picks up the new notes.
+# Also runnable manually.
 on:
-  push:
-    tags: ['v*']
   workflow_dispatch:
 
 concurrency:
@@ -34,6 +35,10 @@ jobs:
 
       - name: Build
         run: npm run build
+        env:
+          # Lets sync-releases fetch the GitHub Releases API without hitting the
+          # low unauthenticated rate limit.
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Deploy to Cloudflare Pages
         uses: cloudflare/wrangler-action@v3
