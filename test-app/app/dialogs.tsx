@@ -12,7 +12,11 @@ export default function DialogsScreen() {
   const showToast = (message: string) => {
     setToastMessage(message)
     setToastVisible(true)
-    setTimeout(() => setToastVisible(false), 3000)
+    // Long enough to survive the E2E assertion cadence on loaded CI
+    // simulators: tests assert on the toast after first asserting the modal
+    // dismissed, and each step can take seconds on iOS. A 3s toast expired
+    // before it was ever observed.
+    setTimeout(() => setToastVisible(false), 10000)
   }
 
   const showSnackbar = (message: string) => {

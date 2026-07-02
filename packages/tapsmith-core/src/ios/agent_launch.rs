@@ -4,7 +4,7 @@ use std::time::Duration;
 use anyhow::{bail, Context, Result};
 use tokio::net::TcpStream;
 use tokio::process::Command;
-use tracing::{debug, info, instrument};
+use tracing::{debug, info, instrument, warn};
 
 use super::iproxy::{kill_stray_iproxy, IproxyHandle};
 
@@ -167,70 +167,9 @@ async fn start_agent_impl(
         None
     };
 
-    // Launch xcodebuild test-without-building in background
-    let mut cmd = Command::new("xcodebuild");
-    cmd.args([
-        "test-without-building",
-        "-xctestrun",
-        &patched_xctestrun,
-        "-destination",
-        &format!("id={udid}"),
-        "-derivedDataPath",
-        &derived_data_path.to_string_lossy(),
-    ]);
-
-    // Capture stdout/stderr so we can diagnose failures.
-    let child = cmd
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .spawn()
-        .context("Failed to spawn xcodebuild for iOS agent")?;
-
-    // Spawn tasks to drain stdout/stderr, collecting the last N lines for
-    // error reporting if xcodebuild exits before the agent comes up.
-    // Note: we keep `child` in this scope (not moved into a wait task) so the
-    // timeout path below can kill it explicitly. Without this, a 150s timeout
-    // would leave xcodebuild orphaned until the next kill_existing_agents_on
-    // sweep — which may not happen for a long time, or ever, on a failed run.
-    let mut child = child;
-    let stdout = child.stdout.take();
-    let stderr = child.stderr.take();
-
-    use std::sync::{Arc, Mutex};
-
-    let stderr_tail: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
-    let stderr_tail_writer = stderr_tail.clone();
-    let stdout_tail: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
-    let stdout_tail_writer = stdout_tail.clone();
-
-    tokio::spawn(async move {
-        use tokio::io::{AsyncBufReadExt, BufReader};
-        if let Some(stdout) = stdout {
-            let mut reader = BufReader::new(stdout).lines();
-            while let Ok(Some(line)) = reader.next_line().await {
-                info!(target: "xcodebuild", "{}", line);
-                let mut tail = stdout_tail_writer.lock().unwrap();
-                tail.push(line);
-                if tail.len() > 20 {
-                    tail.remove(0);
-                }
-            }
-        }
-    });
-    tokio::spawn(async move {
-        use tokio::io::{AsyncBufReadExt, BufReader};
-        if let Some(stderr) = stderr {
-            let mut reader = BufReader::new(stderr).lines();
-            while let Ok(Some(line)) = reader.next_line().await {
-                info!(target: "xcodebuild::stderr", "{}", line);
-                let mut tail = stderr_tail_writer.lock().unwrap();
-                tail.push(line);
-                if tail.len() > 20 {
-                    tail.remove(0);
-                }
-            }
-        }
-    });
+    // Launch xcodebuild test-without-building in background.
+    let (mut child, mut stdout_tail, mut stderr_tail) =
+        spawn_agent_xcodebuild(&patched_xctestrun, udid, &derived_data_path)?;
 
     // Wait for the agent to start accepting connections.
     // Freshly booted/cloned simulators can take 90+ seconds for xcodebuild to
@@ -239,6 +178,10 @@ async fn start_agent_impl(
     // devices on first run may also trigger a Developer Disk Image mount which
     // adds ~30s to the first-ever invocation — 150s still covers it.
     let deadline = tokio::time::Instant::now() + Duration::from_secs(150);
+    // xcodebuild occasionally crashes or exits early on contended CI runners.
+    // One in-place relaunch (budget permitting) recovers that case without a
+    // full RPC round trip; the first attempt has usually warmed the simulator.
+    let mut relaunches_left: u32 = 1;
     loop {
         if tokio::time::Instant::now() > deadline {
             // Kill xcodebuild explicitly so it doesn't outlive this function.
@@ -258,14 +201,33 @@ async fn start_agent_impl(
             );
         }
 
-        // If xcodebuild exited, the agent won't come up — fail immediately.
+        // If xcodebuild exited, the agent won't come up on this launch.
         // try_wait is non-blocking and reaps the process if it has exited.
         match child.try_wait() {
             Ok(Some(status)) => {
-                drop(iproxy_handle);
                 let out_lines = stdout_tail.lock().unwrap().join("\n");
                 let err_lines = stderr_tail.lock().unwrap().join("\n");
                 let target_kind = if is_physical { "device" } else { "simulator" };
+                let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+                // Simulators only: kill_existing_agents_on can terminate the
+                // sim-side runner (`simctl terminate`) but has no equivalent
+                // for a physical device — an orphaned attempt-1 runner there
+                // could keep the agent port bound and burn the whole deadline.
+                if !is_physical && relaunches_left > 0 && remaining > Duration::from_secs(30) {
+                    relaunches_left -= 1;
+                    warn!(
+                        udid,
+                        %status,
+                        "xcodebuild exited before the iOS agent became ready; relaunching once.\n\
+                         xcodebuild output (last lines):\n{out_lines}\n\
+                         xcodebuild stderr (last lines):\n{err_lines}"
+                    );
+                    kill_existing_agents_on(udid).await;
+                    (child, stdout_tail, stderr_tail) =
+                        spawn_agent_xcodebuild(&patched_xctestrun, udid, &derived_data_path)?;
+                    continue;
+                }
+                drop(iproxy_handle);
                 bail!(
                     "xcodebuild exited with {status} before the iOS agent became \
                      ready on {target_kind} {udid}.\n\
@@ -301,6 +263,80 @@ async fn start_agent_impl(
             }
         }
     }
+}
+
+type OutputTail = std::sync::Arc<std::sync::Mutex<Vec<String>>>;
+
+/// Spawn `xcodebuild test-without-building` for the agent and drain its
+/// stdout/stderr into rolling 20-line tails for error reporting.
+///
+/// The child is returned (not moved into a wait task) so the caller's timeout
+/// path can kill it explicitly. Without this, a timeout would leave xcodebuild
+/// orphaned until the next kill_existing_agents_on sweep — which may not
+/// happen for a long time, or ever, on a failed run.
+fn spawn_agent_xcodebuild(
+    patched_xctestrun: &str,
+    udid: &str,
+    derived_data_path: &std::path::Path,
+) -> Result<(tokio::process::Child, OutputTail, OutputTail)> {
+    use std::sync::{Arc, Mutex};
+
+    let mut cmd = Command::new("xcodebuild");
+    cmd.args([
+        "test-without-building",
+        "-xctestrun",
+        patched_xctestrun,
+        "-destination",
+        &format!("id={udid}"),
+        "-derivedDataPath",
+        &derived_data_path.to_string_lossy(),
+    ]);
+
+    // Capture stdout/stderr so we can diagnose failures.
+    let mut child = cmd
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .context("Failed to spawn xcodebuild for iOS agent")?;
+
+    let stdout = child.stdout.take();
+    let stderr = child.stderr.take();
+
+    let stderr_tail: OutputTail = Arc::new(Mutex::new(Vec::new()));
+    let stderr_tail_writer = stderr_tail.clone();
+    let stdout_tail: OutputTail = Arc::new(Mutex::new(Vec::new()));
+    let stdout_tail_writer = stdout_tail.clone();
+
+    tokio::spawn(async move {
+        use tokio::io::{AsyncBufReadExt, BufReader};
+        if let Some(stdout) = stdout {
+            let mut reader = BufReader::new(stdout).lines();
+            while let Ok(Some(line)) = reader.next_line().await {
+                info!(target: "xcodebuild", "{}", line);
+                let mut tail = stdout_tail_writer.lock().unwrap();
+                tail.push(line);
+                if tail.len() > 20 {
+                    tail.remove(0);
+                }
+            }
+        }
+    });
+    tokio::spawn(async move {
+        use tokio::io::{AsyncBufReadExt, BufReader};
+        if let Some(stderr) = stderr {
+            let mut reader = BufReader::new(stderr).lines();
+            while let Ok(Some(line)) = reader.next_line().await {
+                info!(target: "xcodebuild::stderr", "{}", line);
+                let mut tail = stderr_tail_writer.lock().unwrap();
+                tail.push(line);
+                if tail.len() > 20 {
+                    tail.remove(0);
+                }
+            }
+        }
+    });
+
+    Ok((child, stdout_tail, stderr_tail))
 }
 
 /// Kill any existing xcodebuild test-without-building processes and the agent.

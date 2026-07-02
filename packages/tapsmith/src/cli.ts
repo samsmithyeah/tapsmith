@@ -47,7 +47,7 @@ import {
   waitForDeviceStability,
   ensureAdbRoot,
 } from './emulator.js';
-import { isRecoverableInfrastructureError, serializeRegExpArray } from './worker-protocol.js';
+import { isRecoverableInfrastructureError, isRetryableAgentStartError, retryOnceOnRecoverableInfra, serializeRegExpArray } from './worker-protocol.js';
 import { findPidsOnPort, freeStaleAgentPort } from './port-utils.js';
 import { findDaemonBin } from './daemon-bin.js';
 import {
@@ -541,9 +541,15 @@ async function setupSequentialDevice(
   const pacNetworkHosts = networkHostsForPac(cfg.trace);
   const passthroughHosts = networkPassthroughHosts(cfg.trace);
 
+  // Capture the narrowed serial — the retry closure would otherwise see the
+  // possibly-undefined config field.
+  const deviceSerial = cfg.device;
   try {
-    progress?.update('primary-device', { state: 'running', detail: `selecting ${cfg.device}` });
-    await device.setDevice(cfg.device, networkTracingEnabled, pacNetworkHosts, passthroughHosts);
+    progress?.update('primary-device', { state: 'running', detail: `selecting ${deviceSerial}` });
+    await retryOnceOnRecoverableInfra(
+      () => device.setDevice(deviceSerial, networkTracingEnabled, pacNetworkHosts, passthroughHosts),
+      () => progress?.update('primary-device', { state: 'running', detail: `selection timed out, retrying ${deviceSerial}` }),
+    );
     if (!progress) console.log(dim(`Using device: ${cfg.device}`));
   } catch (err) {
     progress?.fail('primary-device', `failed to select ${cfg.device}`);
@@ -647,17 +653,22 @@ async function setupSequentialDevice(
             else console.log(dim(`Installed ${path.basename(resolvedApp)} on iOS device ${cfg.device}.`));
           }
         } else {
-          const { installAppAsync, isAppInstalled } = await import('./ios-simulator.js');
+          const { installAppAsync, isAppInstalled, installedAppMatches } = await import('./ios-simulator.js');
           const alreadyInstalled = !deviceJustLaunched
             && cfg.package
             && isAppInstalled(cfg.device, cfg.package);
-          if (alreadyInstalled && !forceInstall) {
-            if (progress) progress.complete('app-install', `${cfg.package} already installed`);
-            else console.log(dim(`App ${cfg.package} already installed, skipping iOS app install. Use --force-install to reinstall.`));
+          // Skip only when the installed bundle is byte-identical — simulator
+          // state can outlive a run (reused CI runner device sets, local app
+          // rebuilds), and a presence-only skip silently tests a stale build.
+          const upToDate = alreadyInstalled
+            && installedAppMatches(cfg.device, cfg.package!, resolvedApp);
+          if (upToDate && !forceInstall) {
+            if (progress) progress.complete('app-install', `${cfg.package} already installed (matching build)`);
+            else console.log(dim(`App ${cfg.package} already installed (matching build), skipping iOS app install. Use --force-install to reinstall.`));
           } else {
             if (alreadyInstalled) {
-              if (progress) progress.update('app-install', { state: 'running', detail: `reinstalling ${path.basename(resolvedApp)}` });
-              else console.log(dim(`Reinstalling iOS app: ${path.basename(resolvedApp)}`));
+              if (progress) progress.update('app-install', { state: 'running', detail: `reinstalling ${path.basename(resolvedApp)} (installed build differs)` });
+              else console.log(dim(`Reinstalling iOS app (installed build differs): ${path.basename(resolvedApp)}`));
             } else {
               progress?.update('app-install', { state: 'running', detail: `installing ${path.basename(resolvedApp)}` });
             }
@@ -868,7 +879,7 @@ async function setupSequentialDevice(
       await startAgent();
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      if (msg.includes('xcodebuild exited') || msg.includes('Timed out waiting for iOS agent')) {
+      if (isRetryableAgentStartError(err)) {
         if (progress) progress.update('agent', { state: 'running', detail: 'agent startup failed, retrying once' });
         else console.error(`Agent startup failed, retrying once: ${msg}`);
         try {
@@ -973,8 +984,11 @@ async function ensureSequentialTargetDevice(
       const booted = listBootedSimulators();
       const sim = booted.find((s) => s.udid === config.device);
       if (sim) {
-        const message = `Reusing simulator ${sim.udid} (${sim.name}) from previous run.`;
-        if (progress) progress.update('primary-device', { state: 'running', detail: `reusing ${sim.name} from previous run` });
+        // "Already booted" and nothing more — the boot may have come from a
+        // previous tapsmith run OR from something else entirely (e.g. a CI
+        // workflow step that pre-boots the simulator).
+        const message = `Reusing already-booted simulator ${sim.udid} (${sim.name}).`;
+        if (progress) progress.update('primary-device', { state: 'running', detail: `reusing already-booted ${sim.name}` });
         else process.stderr.write(`${DIM}${message}${RESET}\n`);
       }
     }
@@ -1019,8 +1033,8 @@ async function ensureSequentialTargetDevice(
     const booted = listBootedSimulators();
     const matching = booted.find((s) => s.name === simulatorName || s.udid === simulatorName);
     if (matching) {
-      const message = `Reusing simulator ${matching.udid} (${matching.name}) from previous run.`;
-      if (progress) progress.update('primary-device', { state: 'running', detail: `reusing ${matching.name} from previous run` });
+      const message = `Reusing already-booted simulator ${matching.udid} (${matching.name}).`;
+      if (progress) progress.update('primary-device', { state: 'running', detail: `reusing already-booted ${matching.name}` });
       else process.stderr.write(`${DIM}${message}${RESET}\n`);
       return { selectedSerial: matching.udid, launched: [] };
     }

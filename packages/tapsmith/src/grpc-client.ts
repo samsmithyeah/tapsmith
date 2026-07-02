@@ -543,7 +543,10 @@ export class TapsmithGrpcClient {
     return this.call<ActionResponse>('waitForIdle', {
       requestId: requestId(),
       timeoutMs: timeoutMs ?? 0,
-    });
+      // Cold app launches on loaded CI runners legitimately exceed the 60s
+      // default call deadline; keep comfortable headroom over the requested
+      // idle wait so the daemon's own timeout reports first.
+    }, Math.max(120_000, (timeoutMs ?? 0) + 30_000));
   }
 
   async installApk(apkPath: string): Promise<ActionResponse> {
@@ -590,7 +593,11 @@ export class TapsmithGrpcClient {
       iosXctestrunPath: iosXctestrunPath ?? '',
       iosAppPath: iosAppPath ?? '',
       networkTracingEnabled,
-    }, 180_000);
+      // Must comfortably exceed the daemon's internal agent-launch wait (150s
+      // in agent_launch.rs) plus simulator configuration around it, so the
+      // daemon's clean, retryable failure text reaches us instead of a bare
+      // DEADLINE_EXCEEDED.
+    }, 240_000);
   }
 
   async ping(): Promise<PingResponse> {
@@ -709,14 +716,16 @@ export class TapsmithGrpcClient {
 
   async openDeepLink(uri: string): Promise<ActionResponse> {
     // iOS deep links can terminate + cold-launch the app, accept the "Open in
-    // <app>?" prompt, and re-deliver several times if the first cold, trust-gated
-    // openurl doesn't foreground the app — so the daemon-side path can run for
-    // over a minute. Keep this deadline above the daemon's worst-case retry
-    // budget so the client never aborts a call the daemon is still processing.
+    // <app>?" prompt, and re-deliver up to 3 times if the first cold,
+    // trust-gated openurl doesn't foreground the app — the daemon-side worst
+    // case is ~140s (3 × (terminate 4s + 28s prompt timeout + 13s verify) +
+    // sleeps). Keep this deadline comfortably above that budget so the client
+    // gets the daemon's clean retryable error, never a bare DEADLINE_EXCEEDED
+    // for a call the daemon is still processing.
     return this.call<ActionResponse>('openDeepLink', {
       requestId: requestId(),
       uri,
-    }, 150_000);
+    }, 180_000);
   }
 
   async getCurrentPackage(): Promise<GetCurrentPackageResponse> {

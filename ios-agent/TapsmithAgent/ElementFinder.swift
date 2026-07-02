@@ -12,8 +12,10 @@ class ElementFinder {
     private var cacheOrder: [String] = []
     private let lock = NSLock()
 
-    /// Maximum number of cached elements before eviction.
-    private let maxCacheSize = 500
+    /// Maximum number of cached elements before eviction. Kept high so a
+    /// broad query's own matches (plus the pre-action trace capture) cannot
+    /// evict ids the SDK is about to act on.
+    private let maxCacheSize = 2000
 
     /// Clear all caches (call after app relaunch).
     func clearCaches() {
@@ -221,7 +223,11 @@ class ElementFinder {
     private func getCachedElement(_ elementId: String) -> XCUIElement? {
         lock.lock()
         defer { lock.unlock() }
-        return elementCache[elementId]
+        let cached = elementCache[elementId]
+        if cached != nil {
+            promoteToMostRecentlyUsed(&cacheOrder, elementId)
+        }
+        return cached
     }
 
     /// Cache an XCUIElement and return its ElementInfo. Called by WaitEngine

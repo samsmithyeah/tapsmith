@@ -36,6 +36,12 @@ class ActionExecutor(
         /** Interval between taps for double-tap gesture. */
         private const val DOUBLE_TAP_INTERVAL_MS = 100L
 
+        /** Max time to wait for an element's bounds to stop moving before a tap. */
+        private const val STABLE_BOUNDS_TIMEOUT_MS = 1000L
+
+        /** Delay between consecutive bounds reads in the stability check. */
+        private const val STABLE_BOUNDS_POLL_MS = 50L
+
         /** Timeout for waiting for dropdown options to appear. */
         private const val DROPDOWN_WAIT_TIMEOUT_MS = 3000L
 
@@ -51,13 +57,39 @@ class ActionExecutor(
 
     /**
      * Tap on an element's center point.
+     *
+     * Waits for the element's bounds to stop moving first (Playwright-style
+     * actionability): a click computed from mid-animation/mid-layout bounds
+     * can land on a non-interactive pixel and silently miss.
      */
     fun tap(element: UiObject2) {
         try {
+            waitForStableBounds(element)
             element.click()
         } catch (e: Exception) {
             throw ActionFailedException("Failed to tap element: ${e.message}")
         }
+    }
+
+    /**
+     * Wait until two consecutive reads of the element's visible bounds agree,
+     * or the deadline passes. visibleBounds refreshes the underlying
+     * accessibility node, so consecutive equal reads mean layout has settled.
+     */
+    private fun waitForStableBounds(
+        element: UiObject2,
+        timeoutMs: Long = STABLE_BOUNDS_TIMEOUT_MS,
+    ) {
+        val deadline = SystemClock.uptimeMillis() + timeoutMs
+        var prev = element.visibleBounds
+        while (SystemClock.uptimeMillis() < deadline) {
+            SystemClock.sleep(STABLE_BOUNDS_POLL_MS)
+            val current = element.visibleBounds
+            if (current == prev) return
+            prev = current
+        }
+        // Bounds still moving at the deadline — proceed with the freshest read
+        // rather than failing; the click recomputes the center from the live node.
     }
 
     /**
@@ -470,24 +502,89 @@ class ActionExecutor(
 
     /**
      * Double-tap on an element's center point.
+     *
+     * Injects the four motion events directly (down/up, pause, down/up) instead
+     * of calling device.click() twice: click() blocks waiting for the device to
+     * go idle after each tap, so under load the gap between the two taps can
+     * exceed the app's double-tap window and register as two single taps.
      */
     fun doubleTap(
         element: UiObject2,
         intervalMs: Long = DOUBLE_TAP_INTERVAL_MS,
     ) {
         try {
-            // Perform two rapid taps at the element's center.
-            // We use device.click() with a short interval to ensure the gesture
-            // is recognized as a double-tap by the target app.
             val bounds = element.visibleBounds
-            val cx = bounds.centerX()
-            val cy = bounds.centerY()
-            device.click(cx, cy)
-            Thread.sleep(if (intervalMs > 0) intervalMs else DOUBLE_TAP_INTERVAL_MS)
-            device.click(cx, cy)
+            doubleTapCoordinates(bounds.centerX(), bounds.centerY(), intervalMs)
+        } catch (e: ActionFailedException) {
+            throw e
         } catch (e: Exception) {
             throw ActionFailedException("Failed to double tap element: ${e.message}")
         }
+    }
+
+    /**
+     * Double-tap at specific screen coordinates with tightly controlled timing.
+     */
+    fun doubleTapCoordinates(
+        x: Int,
+        y: Int,
+        intervalMs: Long = DOUBLE_TAP_INTERVAL_MS,
+    ) {
+        val interval = if (intervalMs > 0) intervalMs else DOUBLE_TAP_INTERVAL_MS
+        if (injectTap(x, y)) {
+            SystemClock.sleep(interval)
+            if (injectTap(x, y)) return
+            // First tap already landed — complete the gesture with a UiDevice
+            // click rather than leaving a lone single tap behind.
+            if (device.click(x, y)) return
+            throw ActionFailedException("Failed to double tap at ($x, $y)")
+        }
+        // Injection unavailable — fall back to UiDevice clicks (waits for idle
+        // between taps, so timing is less precise).
+        device.click(x, y)
+        SystemClock.sleep(interval)
+        if (!device.click(x, y)) {
+            throw ActionFailedException("Failed to double tap at ($x, $y)")
+        }
+    }
+
+    /** Inject a full tap (down + up) synchronously without waiting for idle. */
+    private fun injectTap(
+        x: Int,
+        y: Int,
+        tapDurationMs: Long = 50L,
+    ): Boolean {
+        val downTime = SystemClock.uptimeMillis()
+        val down = MotionEvent.obtain(downTime, downTime, MotionEvent.ACTION_DOWN, x.toFloat(), y.toFloat(), 0)
+        down.source = InputDevice.SOURCE_TOUCHSCREEN
+        val downOk =
+            try {
+                instrumentation.uiAutomation.injectInputEvent(down, true)
+            } finally {
+                down.recycle()
+            }
+        if (!downOk) return false
+        SystemClock.sleep(tapDurationMs)
+        val up = MotionEvent.obtain(downTime, SystemClock.uptimeMillis(), MotionEvent.ACTION_UP, x.toFloat(), y.toFloat(), 0)
+        up.source = InputDevice.SOURCE_TOUCHSCREEN
+        val upOk =
+            try {
+                instrumentation.uiAutomation.injectInputEvent(up, true)
+            } finally {
+                up.recycle()
+            }
+        if (!upOk) {
+            // Don't leave the pointer down — a dangling contact would turn the
+            // caller's fallback click into a long-press/multi-touch gesture.
+            val cancel = MotionEvent.obtain(downTime, SystemClock.uptimeMillis(), MotionEvent.ACTION_CANCEL, x.toFloat(), y.toFloat(), 0)
+            cancel.source = InputDevice.SOURCE_TOUCHSCREEN
+            try {
+                instrumentation.uiAutomation.injectInputEvent(cancel, true)
+            } finally {
+                cancel.recycle()
+            }
+        }
+        return upOk
     }
 
     /**

@@ -23,11 +23,32 @@ class ActionExecutor {
     // MARK: - Tap Actions
 
     /// Tap on an element's center point.
+    ///
+    /// Waits for the element's frame to stop moving first (Playwright-style
+    /// actionability, mirroring the Android agent): a tap whose hit point is
+    /// computed mid-animation — e.g. layout resettling after a keyboard
+    /// dismissal — can land on a non-interactive pixel and silently miss.
     func tap(_ element: XCUIElement) throws {
         guard element.isHittable else {
             throw AgentError.actionFailed("Element is not hittable (may be off-screen or hidden)")
         }
+        waitForStableFrame(element)
         element.tap()
+    }
+
+    /// Wait until two consecutive reads of the element's live frame agree, or
+    /// the deadline passes. Each read is one IPC. On timeout we proceed with
+    /// the freshest state rather than failing — tap() recomputes its hit
+    /// point at dispatch time.
+    private func waitForStableFrame(_ element: XCUIElement, timeout: TimeInterval = 1.0) {
+        let deadline = Date(timeIntervalSinceNow: timeout)
+        var prev = element.frame
+        while Date() < deadline {
+            Thread.sleep(forTimeInterval: 0.05)
+            let current = element.frame
+            if current.equalTo(prev) { return }
+            prev = current
+        }
     }
 
     /// Tap at specific screen coordinates using event synthesis.
@@ -49,13 +70,24 @@ class ActionExecutor {
     }
 
     /// Double-tap at specific screen coordinates.
-    /// Uses native XCUICoordinate.doubleTap() which correctly synthesizes a
-    /// single-finger double-tap gesture. EventSynthesizer's two-path approach
-    /// produces a multi-finger tap that iOS gesture recognizers reject.
+    /// Prefers a single synthesized event record carrying both taps with
+    /// precise offsets — the inter-tap gap is immune to scheduling jitter
+    /// under CI load. Falls back to XCUICoordinate when synthesis is
+    /// unavailable, completing a partially-delivered gesture with exactly one
+    /// more tap rather than re-tapping twice (which would deliver three).
     func doubleTapCoordinates(x: Int, y: Int, intervalMs: Int = 0) {
         let normalized = app.coordinate(withNormalizedOffset: CGVector(dx: 0, dy: 0))
         let point = normalized.withOffset(CGVector(dx: CGFloat(x), dy: CGFloat(y)))
-        point.doubleTap()
+        switch EventSynthesizer.doubleTap(at: CGPoint(x: x, y: y), intervalMs: intervalMs) {
+        case .done:
+            return
+        case .firstTapOnly:
+            NSLog("[ActionExecutor] Double-tap delivered only its first tap; completing with a single coordinate tap")
+            point.tap()
+        case .notStarted:
+            NSLog("[ActionExecutor] Double-tap synthesis failed, falling back to XCUICoordinate.doubleTap()")
+            point.doubleTap()
+        }
     }
 
     /// Long press on an element with configurable duration.

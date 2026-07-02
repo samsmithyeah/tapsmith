@@ -397,23 +397,17 @@ class CommandHandler {
         throw firstError!
     }
 
-    /// Double-tap a resolved element. Prefer XCUIElement.doubleTap() because
-    /// UIKit/RN gesture recognizers handle it more consistently than raw
-    /// coordinate double-taps on CI simulators. Use coordinate synthesis only
-    /// as a fallback when the cached XCUIElement path is unavailable.
+    /// Double-tap a resolved element. Prefer coordinate synthesis: it encodes
+    /// both taps in one event record with precise offsets, so the inter-tap
+    /// gap cannot be stretched past the app's double-tap window by CI load.
+    /// XCUIElement.doubleTap() (whose two taps are subject to scheduling
+    /// jitter) is the fallback when no snapshot center is available.
     private func doubleTapResolvedElement(_ element: ElementInfo, intervalMs: Int) throws {
-        var firstError: Error?
-        do {
-            let xcElem = try getXCUIElement(element.elementId)
-            try actionExecutor.doubleTap(xcElem)
-            return
-        } catch {
-            firstError = error
-            let message = "[TapsmithCommand] XCUIElement.doubleTap failed " +
-                "for \(element.elementId): \(error.localizedDescription), " +
-                "falling back to coordinate doubleTap"
-            NSLog(message)
-        }
+        // Resolve the cached element FIRST even on the coordinate path: the
+        // coordinate gesture never throws, so an evicted id would otherwise
+        // silently double-tap stale bounds — this lookup raises the "gone
+        // stale" error the SDK's re-resolve retry keys on.
+        let xcElem = try getXCUIElement(element.elementId)
 
         if let center = snapshotCenter(for: element.elementId) {
             actionExecutor.doubleTapCoordinates(
@@ -424,7 +418,7 @@ class CommandHandler {
             return
         }
 
-        throw firstError!
+        try actionExecutor.doubleTap(xcElem)
     }
 
     /// Tap inside a text input, biased toward the trailing edge so refocusing
@@ -1408,14 +1402,25 @@ class CommandHandler {
                 // Fallback: tap above keyboard area
                 actionExecutor.tapCoordinates(x: Int(midX), y: 15)
             }
-            Thread.sleep(forTimeInterval: 0.5) // Wait for dismiss animation
-            // If keyboard is still showing, try horizontal swipe
-            _ = EventSynthesizer.swipe(
-                from: CGPoint(x: midX, y: midY),
-                to: CGPoint(x: midX - kbScreenSize.width * 0.03, y: midY),
-                duration: 0.05
-            )
-            Thread.sleep(forTimeInterval: 0.3)
+            // VERIFY the keyboard actually left the hierarchy instead of
+            // sleeping a fixed interval: returning while dismissal is still
+            // in flight makes the very next action race the app's keyboard
+            // relayout (e.g. KeyboardAvoidingView) — observed as a Sign-in
+            // tap landing on a moving layout and silently missing.
+            if !waitForKeyboardDismissed(timeout: 3.0) {
+                // Genuinely still showing — try a horizontal swipe. (This
+                // fallback used to fire unconditionally, landing on app
+                // content whenever the first swipe had already worked.)
+                _ = EventSynthesizer.swipe(
+                    from: CGPoint(x: midX, y: midY),
+                    to: CGPoint(x: midX - kbScreenSize.width * 0.03, y: midY),
+                    duration: 0.05
+                )
+                _ = waitForKeyboardDismissed(timeout: 2.0)
+            }
+            // The keyboard leaving the hierarchy precedes the app's own
+            // animated relayout completing — give that a beat to settle.
+            Thread.sleep(forTimeInterval: 0.35)
             snapshotFinder.clearFocusedTextInputHint()
             return ["success": true]
 
@@ -1498,6 +1503,18 @@ class CommandHandler {
             return nil
         }
         return String(data: data, encoding: .utf8)
+    }
+
+    /// Poll the snapshot tree until the keyboard disappears or the deadline
+    /// passes. Returns true once the keyboard is gone.
+    private func waitForKeyboardDismissed(timeout: TimeInterval) -> Bool {
+        let deadline = Date(timeIntervalSinceNow: timeout)
+        while Date() < deadline {
+            let dict = (try? app.snapshot())?.dictionaryRepresentation ?? [:]
+            if !hasKeyboardInSnapshot(dict) { return true }
+            Thread.sleep(forTimeInterval: 0.15)
+        }
+        return false
     }
 
     /// Check if a keyboard is visible in the snapshot tree by looking for

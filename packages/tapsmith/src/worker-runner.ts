@@ -15,7 +15,7 @@ import { isNetworkTracingEnabled, networkHostsForPac, networkPassthroughHosts } 
 import { runTestFile, collectResults } from './runner.js';
 import type { TapsmithConfig } from './config.js';
 import { isPackageInstalled, waitForPackageIndexed } from './emulator.js';
-import { installApp, isAppInstalled, probeSimulatorHealth, rebootSimulator } from './ios-simulator.js';
+import { installApp, installedAppMatches, isAppInstalled, probeSimulatorHealth, rebootSimulator } from './ios-simulator.js';
 import type {
   MainToWorkerMessage,
   WorkerToMainMessage,
@@ -26,6 +26,8 @@ import {
   serializeTestResult,
   serializeSuiteResult,
   isRecoverableInfrastructureError,
+  isRetryableAgentStartError,
+  retryOnceOnRecoverableInfra,
   deserializeRegExpArray,
 } from './worker-protocol.js';
 import { ensureSessionReady, launchConfiguredApp, type SessionPreflightContext } from './session-preflight.js';
@@ -106,11 +108,20 @@ async function handleInit(msg: InitMessage): Promise<void> {
   config.device = msg.deviceSerial;
   if (msg.deviceSerial) {
     sendProgress(`selecting device ${msg.deviceSerial}`);
-    await device.setDevice(
-      msg.deviceSerial,
-      isNetworkTracingEnabled(config.trace),
-      networkHostsForPac(config.trace),
-      networkPassthroughHosts(config.trace),
+    // Capture the narrowed refs — the closure would otherwise see the
+    // possibly-undefined module-level bindings.
+    const dev = device;
+    const cfg = config;
+    await retryOnceOnRecoverableInfra(
+      () => dev.setDevice(
+        msg.deviceSerial,
+        isNetworkTracingEnabled(cfg.trace),
+        networkHostsForPac(cfg.trace),
+        networkPassthroughHosts(cfg.trace),
+      ),
+      (err) => process.stderr.write(
+        `Worker ${workerId}: Device selection failed, retrying once: ${err instanceof Error ? err.message : String(err)}\n`,
+      ),
     );
   }
 
@@ -167,11 +178,15 @@ async function handleInit(msg: InitMessage): Promise<void> {
         sendProgress('app install complete');
       }
     } else {
+      // Skip only when the installed bundle is byte-identical — simulator
+      // state can outlive a run (reused CI runner device sets, local app
+      // rebuilds), and a presence-only skip silently tests a stale build.
       const alreadyInstalled = !msg.freshEmulator
         && config.package
-        && isAppInstalled(msg.deviceSerial, config.package);
+        && isAppInstalled(msg.deviceSerial, config.package)
+        && installedAppMatches(msg.deviceSerial, config.package, resolvedApp);
       if (alreadyInstalled) {
-        sendProgress(`app ${config.package} already installed, skipping app install`);
+        sendProgress(`app ${config.package} already installed (matching build), skipping app install`);
       } else {
         sendProgress(`installing ${path.basename(resolvedApp)}`);
         installApp(msg.deviceSerial, resolvedApp);
@@ -232,7 +247,7 @@ async function handleInit(msg: InitMessage): Promise<void> {
     );
   } catch (err) {
     const msg1 = err instanceof Error ? err.message : String(err);
-    if (msg1.includes('xcodebuild exited') || msg1.includes('Timed out waiting for iOS agent')) {
+    if (isRetryableAgentStartError(err)) {
       process.stderr.write(
         `Worker ${workerId}: Agent startup failed, retrying once: ${msg1}\n`,
       );

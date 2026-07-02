@@ -260,11 +260,62 @@ enum EventSynthesizer {
         return synthesizeTap(at: point, duration: 0.1)
     }
 
+    /// Outcome of a synthesized double-tap, so callers can fall back without
+    /// over- or under-tapping.
+    enum DoubleTapResult {
+        /// Both taps were delivered.
+        case done
+        /// Nothing was delivered — the caller may safely run a full
+        /// double-tap fallback.
+        case notStarted
+        /// The first tap landed but the second could not be dispatched. The
+        /// caller must complete with exactly ONE more tap — a full double-tap
+        /// fallback here would deliver three taps.
+        case firstTapOnly
+    }
+
     /// Double-tap at a screen coordinate.
-    /// Synthesizes both taps in a single event record so the gesture is atomic
-    /// and immune to Thread.sleep scheduling jitter under CI load.
-    static func doubleTap(at point: CGPoint, intervalMs: Int = 0) -> Bool {
-        let interval = intervalMs > 0 ? TimeInterval(intervalMs) / 1000.0 : 0.1
+    ///
+    /// Primary mechanism: ONE event record carrying both taps as two pointer
+    /// paths with disjoint time ranges (down/move/lift each). The replay
+    /// honors the offsets inside the event system, so the inter-tap gap is
+    /// fixed at `interval` regardless of CPU starvation on the host — unlike
+    /// XCUIElement.doubleTap(), whose gap stretched past apps' double-tap
+    /// windows (300-450ms) on loaded CI runners. Disjoint time ranges matter:
+    /// sequential contacts read as one finger tapping twice, which tap
+    /// recognizers accept; OVERLAPPING ranges are a two-finger tap, which
+    /// they reject. A second pressDownAtOffset: on a single path is not an
+    /// option — it is silently dropped on Xcode 26.
+    ///
+    /// Fallback (only if the record cannot be dispatched at all): two
+    /// back-to-back single-tap records with a host-side sleep. Delivery is
+    /// reliable but the gap includes dispatch latency, so it can stretch
+    /// under load.
+    static func doubleTap(at point: CGPoint, intervalMs: Int = 0) -> DoubleTapResult {
+        let interval = intervalMs > 0 ? TimeInterval(intervalMs) / 1000.0 : 0.15
+        if doubleTapSingleRecord(at: point, interval: interval) {
+            return .done
+        }
+
+        NSLog("[EventSynth] double-tap single-record dispatch failed; falling back to sequential taps")
+        let start = Date()
+        guard synthesizeTap(at: point, duration: 0.05) else { return .notStarted }
+        Thread.sleep(forTimeInterval: interval)
+        guard synthesizeTap(at: point, duration: 0.05) else { return .firstTapOnly }
+        let elapsed = Date().timeIntervalSince(start)
+        if elapsed > 0.35 {
+            NSLog(
+                "[EventSynth] sequential double-tap took %.0fms end-to-end — may exceed the app's double-tap window",
+                elapsed * 1000
+            )
+        }
+        return .done
+    }
+
+    /// Build and dispatch a single event record containing two sequential
+    /// single-finger taps (path 1: down@0 lift@tapDuration; path 2:
+    /// down@tapDuration+interval lift@2*tapDuration+interval).
+    private static func doubleTapSingleRecord(at point: CGPoint, interval: TimeInterval) -> Bool {
         let tapDuration: TimeInterval = 0.05
 
         guard let pathClass = objc_lookUpClass("XCPointerEventPath"),
@@ -274,53 +325,78 @@ enum EventSynthesizer {
         let initSel = NSSelectorFromString("initForTouchAtPoint:offset:")
         let moveSel = NSSelectorFromString("moveToPoint:atOffset:")
         let liftSel = NSSelectorFromString("liftUpAtOffset:")
+        let allocSel = NSSelectorFromString("alloc")
 
-        func makeTapPath(offset: TimeInterval) -> NSObject? {
-            let obj = pathClass.alloc() as! NSObject
-            guard obj.responds(to: initSel) else { return nil }
-            let imp = obj.method(for: initSel)
-            typealias F = @convention(c) (NSObject, Selector, CGPoint, TimeInterval) -> NSObject
-            let path = unsafeBitCast(imp, to: F.self)(obj, initSel, point, offset)
+        guard let pathType = pathClass as? NSObject.Type,
+              pathType.instancesRespond(to: initSel),
+              pathType.instancesRespond(to: liftSel),
+              let meta = object_getClass(pathClass),
+              let allocImp = class_getMethodImplementation(meta, allocSel),
+              let initImp = class_getMethodImplementation(pathClass, initSel)
+        else { return false }
 
+        // Alloc as a RAW pointer so ARC never manages the uninitialized
+        // instance (init via IMP consumes alloc's +1) — same double-free
+        // avoidance as the swipePath/drag paths below.
+        typealias AllocFn = @convention(c) (AnyClass, Selector) -> UnsafeMutableRawPointer
+        typealias InitMethod = @convention(c) (UnsafeMutableRawPointer, Selector, CGPoint, TimeInterval) -> Unmanaged<NSObject>?
+        typealias MoveMethod = @convention(c) (NSObject, Selector, CGPoint, TimeInterval) -> Void
+        typealias OffsetMethod = @convention(c) (NSObject, Selector, TimeInterval) -> Void
+
+        func makeTapPath(downAt offset: TimeInterval) -> NSObject? {
+            let raw = unsafeBitCast(allocImp, to: AllocFn.self)(pathClass, allocSel)
+            guard let path = unsafeBitCast(initImp, to: InitMethod.self)(raw, initSel, point, offset)?.takeRetainedValue()
+            else { return nil }
+            // Stationary move mid-tap, mirroring synthesizeTap: a touch with
+            // no move event is intermittently misclassified/dropped by the
+            // gesture pipeline (observed as the app registering only one of
+            // the two taps).
             if path.responds(to: moveSel) {
-                let mImp = path.method(for: moveSel)
-                typealias M = @convention(c) (NSObject, Selector, CGPoint, TimeInterval) -> Void
-                unsafeBitCast(mImp, to: M.self)(path, moveSel, point, offset + tapDuration * 0.5)
+                let moveFunc = unsafeBitCast(path.method(for: moveSel), to: MoveMethod.self)
+                moveFunc(path, moveSel, point, offset + tapDuration * 0.5)
             }
-            if path.responds(to: liftSel) {
-                let lImp = path.method(for: liftSel)
-                typealias L = @convention(c) (NSObject, Selector, TimeInterval) -> Void
-                unsafeBitCast(lImp, to: L.self)(path, liftSel, offset + tapDuration)
-            }
+            let liftFunc = unsafeBitCast(path.method(for: liftSel), to: OffsetMethod.self)
+            liftFunc(path, liftSel, offset + tapDuration)
             return path
         }
 
-        guard let path1 = makeTapPath(offset: 0.0),
-              let path2 = makeTapPath(offset: tapDuration + interval)
+        guard let path1 = makeTapPath(downAt: 0.0),
+              let path2 = makeTapPath(downAt: tapDuration + interval)
         else { return false }
 
         let record: NSObject
         let recordInitSel = NSSelectorFromString("initWithName:interfaceOrientation:")
-        let recordObj = recordClass.alloc() as! NSObject
-        if recordObj.responds(to: recordInitSel) {
-            let imp = recordObj.method(for: recordInitSel)
-            typealias R = @convention(c) (NSObject, Selector, NSString, Int) -> NSObject
-            record = unsafeBitCast(imp, to: R.self)(recordObj, recordInitSel, "tapsmith-double-tap" as NSString, currentOrientation)
+        if (recordClass as! NSObject.Type).instancesRespond(to: recordInitSel),
+           let recordMeta = object_getClass(recordClass),
+           let recordAllocImp = class_getMethodImplementation(recordMeta, allocSel),
+           let recordInitImp = class_getMethodImplementation(recordClass, recordInitSel) {
+            typealias RMethod = @convention(c) (UnsafeMutableRawPointer, Selector, NSString, Int) -> Unmanaged<NSObject>?
+            let recordRaw = unsafeBitCast(recordAllocImp, to: AllocFn.self)(recordClass, allocSel)
+            guard let r = unsafeBitCast(recordInitImp, to: RMethod.self)(
+                recordRaw,
+                recordInitSel,
+                "tapsmith-double-tap" as NSString,
+                currentOrientation
+            )?.takeRetainedValue() else { return false }
+            record = r
         } else {
             record = (recordClass as! NSObject.Type).init()
         }
 
         let addPathSel = NSSelectorFromString("addPointerEventPath:")
-        if record.responds(to: addPathSel) {
-            record.perform(addPathSel, with: path1)
-            record.perform(addPathSel, with: path2)
-        }
+        guard record.responds(to: addPathSel) else { return false }
+        // Add the LATER path first: the replay session's lifetime appears to
+        // be derived from the first-added path, and adding the early tap first
+        // intermittently raced session teardown against the second tap's
+        // events (the app saw only one tap). With the later path first, the
+        // session provably outlives both taps.
+        record.perform(addPathSel, with: path2)
+        record.perform(addPathSel, with: path1)
 
-        if dispatchViaDaemonSession(record) { return true }
-        if dispatchSync(record) { return true }
-        if dispatchViaDevice(record) { return true }
-        NSLog("[EventSynth] All dispatch methods failed for double-tap")
-        return false
+        // Daemon-session dispatch is the reliable route for this record type;
+        // in-process synthesizeWithError: drops one of the taps far more often
+        // (5/20 runs vs 1/20 measured locally).
+        return dispatchViaDaemonSession(record) || dispatchSync(record) || dispatchViaDevice(record)
     }
 
     /// Swipe from one point to another. Used for keyboard dismissal and scrolling.

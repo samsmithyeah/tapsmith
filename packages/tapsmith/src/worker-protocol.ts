@@ -158,6 +158,41 @@ export function isRecoverableInfrastructureError(err: unknown): boolean {
   return RECOVERABLE_INFRASTRUCTURE_PATTERNS.some((pattern) => message.includes(pattern));
 }
 
+/**
+ * Run a device-infrastructure setup step, retrying once if it fails with a
+ * recoverable infrastructure error (e.g. device selection tripping its
+ * deadline because `simctl list` stalls while simulators boot on a loaded
+ * runner). `onRetry` fires before the second attempt so callers can report
+ * progress their own way.
+ */
+export async function retryOnceOnRecoverableInfra<T>(
+  fn: () => Promise<T>,
+  onRetry: (err: unknown) => void,
+): Promise<T> {
+  try {
+    return await fn();
+  } catch (err) {
+    if (!isRecoverableInfrastructureError(err)) throw err;
+    onRetry(err);
+    return fn();
+  }
+}
+
+/**
+ * Agent startup failures worth one in-place retry: the daemon's own launch
+ * failure text, plus transport-level errors (deadline exceeded, dropped
+ * connection) that mean the startAgent call itself died mid-flight — a cold
+ * first xcodebuild often warms DerivedData/simulator for the second attempt.
+ */
+export function isRetryableAgentStartError(err: unknown): boolean {
+  const message = err instanceof Error ? err.message : String(err);
+  return (
+    message.includes('xcodebuild exited') ||
+    message.includes('Timed out waiting for iOS agent') ||
+    isRecoverableInfrastructureError(err)
+  );
+}
+
 // ─── Serialized types (safe for IPC / structured clone) ───
 
 /** Config fields needed by workers (subset of TapsmithConfig). */
