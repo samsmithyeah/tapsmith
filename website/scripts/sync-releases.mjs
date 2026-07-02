@@ -53,11 +53,51 @@ function formatDate(iso) {
   return d.toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' })
 }
 
+// Drop headings that end up with no bullet items beneath them (e.g. a category
+// whose only entries were filtered-out version-bump PRs). Non-bullet lines in
+// the block (like the trailing "Full Changelog" link) are preserved.
+function removeEmptySections(lines) {
+  const out = []
+  for (let i = 0; i < lines.length; i++) {
+    if (/^#{1,6}\s/.test(lines[i])) {
+      let j = i + 1
+      let hasItems = false
+      while (j < lines.length && !/^#{1,6}\s/.test(lines[j])) {
+        if (/^\s*[*-]\s/.test(lines[j])) hasItems = true
+        j++
+      }
+      if (!hasItems) {
+        for (let k = i + 1; k < j; k++) if (lines[k].trim() !== '') out.push(lines[k])
+        i = j - 1
+        continue
+      }
+    }
+    out.push(lines[i])
+  }
+  return out
+}
+
+// Tidy the auto-generated GitHub notes for the docs page:
+//   - strip the "by @user in <pr-url>" attribution from each item
+//   - drop version-bump PRs ("Bump version to X.Y.Z")
+//   - drop the generic "What's Changed" heading (real category headings stay)
+function cleanBody(md) {
+  const kept = md
+    .split('\n')
+    .filter((line) => !/^\s*[*-]\s+bump version\b/i.test(line))
+    .filter((line) => !/^#{1,6}\s+what['’]s changed\s*$/i.test(line))
+    .map((line) => line.replace(/\s+by @[\w-]+ in https?:\/\/\S+\s*$/i, ''))
+  return removeEmptySections(kept)
+    .join('\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim()
+}
+
 function renderRelease(r) {
   const heading = `## [${r.name || r.tag_name}](${r.html_url})`
   const date = formatDate(r.published_at)
   const meta = date ? `\n\n_Released ${date}${r.prerelease ? ' · pre-release' : ''}_` : ''
-  const body = (r.body || '').trim()
+  const body = cleanBody((r.body || '').trim())
   const notes = body ? `\n\n${demoteHeadings(body)}` : '\n\n_No notes for this release._'
   return `${heading}${meta}${notes}`
 }
