@@ -23,11 +23,32 @@ class ActionExecutor {
     // MARK: - Tap Actions
 
     /// Tap on an element's center point.
+    ///
+    /// Waits for the element's frame to stop moving first (Playwright-style
+    /// actionability, mirroring the Android agent): a tap whose hit point is
+    /// computed mid-animation — e.g. layout resettling after a keyboard
+    /// dismissal — can land on a non-interactive pixel and silently miss.
     func tap(_ element: XCUIElement) throws {
         guard element.isHittable else {
             throw AgentError.actionFailed("Element is not hittable (may be off-screen or hidden)")
         }
+        waitForStableFrame(element)
         element.tap()
+    }
+
+    /// Wait until two consecutive reads of the element's live frame agree, or
+    /// the deadline passes. Each read is one IPC. On timeout we proceed with
+    /// the freshest state rather than failing — tap() recomputes its hit
+    /// point at dispatch time.
+    private func waitForStableFrame(_ element: XCUIElement, timeout: TimeInterval = 1.0) {
+        let deadline = Date(timeIntervalSinceNow: timeout)
+        var prev = element.frame
+        while Date() < deadline {
+            Thread.sleep(forTimeInterval: 0.05)
+            let current = element.frame
+            if current.equalTo(prev) { return }
+            prev = current
+        }
     }
 
     /// Tap at specific screen coordinates using event synthesis.
