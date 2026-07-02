@@ -15,7 +15,7 @@ import { isNetworkTracingEnabled, networkHostsForPac, networkPassthroughHosts } 
 import { runTestFile, collectResults } from './runner.js';
 import type { TapsmithConfig } from './config.js';
 import { isPackageInstalled, waitForPackageIndexed } from './emulator.js';
-import { installApp, isAppInstalled, probeSimulatorHealth, rebootSimulator } from './ios-simulator.js';
+import { installApp, installedAppMatches, isAppInstalled, probeSimulatorHealth, rebootSimulator } from './ios-simulator.js';
 import type {
   MainToWorkerMessage,
   WorkerToMainMessage,
@@ -178,11 +178,15 @@ async function handleInit(msg: InitMessage): Promise<void> {
         sendProgress('app install complete');
       }
     } else {
+      // Skip only when the installed bundle is byte-identical — simulator
+      // state can outlive a run (reused CI runner device sets, local app
+      // rebuilds), and a presence-only skip silently tests a stale build.
       const alreadyInstalled = !msg.freshEmulator
         && config.package
-        && isAppInstalled(msg.deviceSerial, config.package);
+        && isAppInstalled(msg.deviceSerial, config.package)
+        && installedAppMatches(msg.deviceSerial, config.package, resolvedApp);
       if (alreadyInstalled) {
-        sendProgress(`app ${config.package} already installed, skipping app install`);
+        sendProgress(`app ${config.package} already installed (matching build), skipping app install`);
       } else {
         sendProgress(`installing ${path.basename(resolvedApp)}`);
         installApp(msg.deviceSerial, resolvedApp);

@@ -11,6 +11,7 @@
  */
 
 import { execFile, execFileSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
@@ -229,6 +230,36 @@ export function isAppInstalled(udid: string, bundleId: string): boolean {
       stdio: 'ignore',
     });
     return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * True when the app installed on the simulator has a main executable
+ * byte-identical to the candidate bundle's. Presence alone is not a safe
+ * install-skip signal: simulator state can outlive a run (CI runners have
+ * handed back device sets with an app from a previous job; local reruns
+ * follow app rebuilds), and skipping install on a stale bundle silently
+ * tests old app code. Any read/lookup failure returns false so callers
+ * reinstall — the only cost of a false negative is one redundant install.
+ */
+export function installedAppMatches(udid: string, bundleId: string, appPath: string): boolean {
+  try {
+    const container = execFileSync('xcrun', ['simctl', 'get_app_container', udid, bundleId, 'app'], {
+      timeout: 10_000,
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+    }).trim();
+    if (!container) return false;
+    const executable = execFileSync(
+      '/usr/libexec/PlistBuddy',
+      ['-c', 'Print :CFBundleExecutable', path.join(appPath, 'Info.plist')],
+      { timeout: 10_000, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] },
+    ).trim();
+    if (!executable) return false;
+    const digest = (p: string) => createHash('sha256').update(fs.readFileSync(p)).digest('hex');
+    return digest(path.join(container, executable)) === digest(path.join(appPath, executable));
   } catch {
     return false;
   }
