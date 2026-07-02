@@ -479,7 +479,10 @@ jobs:
       contents: write
       actions: write
     steps:
+      # fetch-depth: 0 so all tags are available for the notes-base computation.
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Create release
         env:
@@ -489,11 +492,17 @@ jobs:
           if gh release view "$TAG" >/dev/null 2>&1; then
             echo "Release $TAG already exists; skipping create."
           else
+            # Pin the notes base to the previous tag by semver order. Auto-detection
+            # picks the base from git ancestry, which silently re-lists an earlier
+            # release's changes when tags aren't linear ancestors.
+            PREV=$(git tag --list 'v*' --sort=-version:refname | awk -v cur="$TAG" '$0==cur{f=1;next} f{print;exit}')
+            NOTES_ARGS=(--generate-notes)
+            if [ -n "$PREV" ]; then
+              NOTES_ARGS+=(--notes-start-tag "$PREV")
+              echo "Generating notes from $PREV to $TAG."
+            fi
             # Notes are grouped per .github/release.yml (read from the default branch).
-            gh release create "$TAG" \
-              --title "$TAG" \
-              --generate-notes \
-              --verify-tag
+            gh release create "$TAG" --title "$TAG" --verify-tag "${NOTES_ARGS[@]}"
           fi
 
       # Redeploy the website now that the Release exists, so its build-time
