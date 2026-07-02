@@ -541,11 +541,14 @@ async function setupSequentialDevice(
   const pacNetworkHosts = networkHostsForPac(cfg.trace);
   const passthroughHosts = networkPassthroughHosts(cfg.trace);
 
+  // Capture the narrowed serial — the retry closure would otherwise see the
+  // possibly-undefined config field.
+  const deviceSerial = cfg.device;
   try {
-    progress?.update('primary-device', { state: 'running', detail: `selecting ${cfg.device}` });
+    progress?.update('primary-device', { state: 'running', detail: `selecting ${deviceSerial}` });
     await retryOnceOnRecoverableInfra(
-      () => device.setDevice(cfg.device, networkTracingEnabled, pacNetworkHosts, passthroughHosts),
-      () => progress?.update('primary-device', { state: 'running', detail: `selection timed out, retrying ${cfg.device}` }),
+      () => device.setDevice(deviceSerial, networkTracingEnabled, pacNetworkHosts, passthroughHosts),
+      () => progress?.update('primary-device', { state: 'running', detail: `selection timed out, retrying ${deviceSerial}` }),
     );
     if (!progress) console.log(dim(`Using device: ${cfg.device}`));
   } catch (err) {
