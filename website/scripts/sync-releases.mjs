@@ -50,7 +50,42 @@ function formatDate(iso) {
   if (!iso) return ''
   const d = new Date(iso)
   if (Number.isNaN(d.getTime())) return ''
-  return d.toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' })
+  // timeZone: UTC keeps the rendered date identical regardless of where the
+  // build runs (local dev vs. CI).
+  return d.toLocaleDateString('en-US', {
+    year: 'numeric',
+    month: 'long',
+    day: 'numeric',
+    timeZone: 'UTC',
+  })
+}
+
+// Escape raw HTML in release notes so a PR title/body containing markup can't
+// reach the public changelog unsanitized (Starlight renders raw HTML from
+// markdown). Only < and > are escaped — enough to neutralise tags without
+// touching markdown syntax or URL query strings (&) — and inline code spans and
+// fenced code blocks are left intact.
+function escapeHtml(text) {
+  return text.replace(/</g, '&lt;').replace(/>/g, '&gt;')
+}
+
+function escapeHtmlPreservingCode(md) {
+  let inFence = false
+  return md
+    .split('\n')
+    .map((line) => {
+      if (/^\s*```/.test(line)) {
+        inFence = !inFence
+        return line
+      }
+      if (inFence) return line
+      // Odd-indexed segments are inline code spans (`...`); leave them as-is.
+      return line
+        .split(/(`[^`]*`)/)
+        .map((seg, i) => (i % 2 === 1 ? seg : escapeHtml(seg)))
+        .join('')
+    })
+    .join('\n')
 }
 
 // Drop headings that end up with no bullet items beneath them (e.g. a category
@@ -87,14 +122,13 @@ function cleanBody(md) {
     .filter((line) => !/^\s*[*-]\s+bump version\b/i.test(line))
     .filter((line) => !/^#{1,6}\s+what['’]s changed\s*$/i.test(line))
     .map((line) => line.replace(/\s+by @[\w-]+ in https?:\/\/\S+\s*$/i, ''))
-  return removeEmptySections(kept)
-    .join('\n')
+  return escapeHtmlPreservingCode(removeEmptySections(kept).join('\n'))
     .replace(/\n{3,}/g, '\n\n')
     .trim()
 }
 
 function renderRelease(r) {
-  const heading = `## [${r.name || r.tag_name}](${r.html_url})`
+  const heading = `## [${escapeHtml(r.name || r.tag_name)}](${r.html_url})`
   const date = formatDate(r.published_at)
   const meta = date ? `\n\n_Released ${date}${r.prerelease ? ' · pre-release' : ''}_` : ''
   const body = cleanBody((r.body || '').trim())
@@ -111,6 +145,9 @@ async function main() {
   try {
     const res = await fetch(`https://api.github.com/repos/${REPO}/releases?per_page=100`, {
       headers,
+      // Bound the request so a hung API response aborts into the catch below
+      // (a placeholder page) instead of stalling the whole build.
+      signal: AbortSignal.timeout(10_000),
     })
     if (!res.ok) throw new Error(`GitHub API returned ${res.status} ${res.statusText}`)
     releases = await res.json()

@@ -15,6 +15,9 @@ on:
 
 permissions:
   contents: read
+  # gh pr create / gh label create run with GITHUB_TOKEN.
+  pull-requests: write
+  issues: write
 
 jobs:
   prepare:
@@ -52,9 +55,13 @@ jobs:
 
       - name: Compute new version
         id: version
+        # Read the input via env, never interpolate ${{ }} into the script, so a
+        # crafted value can't be expanded by the shell.
+        env:
+          VERSION_INPUT: ${{ github.event.inputs.version }}
         run: |
           CUR=$(node -p "require('./packages/tapsmith/package.json').version")
-          IN="${{ github.event.inputs.version }}"
+          IN="$VERSION_INPUT"
           case "$IN" in
             major|minor|patch)
               NEW=$(node -e 'const [a,b,c]=process.argv[1].split(".").map(Number);const t=process.argv[2];const v=t==="major"?[a+1,0,0]:t==="minor"?[a,b+1,0]:[a,b,c+1];console.log(v.join("."))' "$CUR" "$IN")
@@ -63,7 +70,9 @@ jobs:
               NEW="$IN"
               ;;
           esac
-          if ! echo "$NEW" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+([-.].+)?$'; then
+          # Restrict to digit-dot core plus an optional [0-9A-Za-z.-] pre-release
+          # so no shell metacharacters ($ ( ) ; ` space) can survive.
+          if ! echo "$NEW" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$'; then
             echo "::error::Invalid version '$NEW'. Use 'patch', 'minor', 'major', or an explicit semver like 0.4.0."
             exit 1
           fi
@@ -72,14 +81,16 @@ jobs:
           echo "Bumping $CUR -> $NEW"
 
       - name: Run bump script
-        run: ./scripts/bump-version.sh "${{ steps.version.outputs.new }}"
+        env:
+          NEW: ${{ steps.version.outputs.new }}
+        run: ./scripts/bump-version.sh "$NEW"
 
       - name: Push branch and open PR
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          NEW: ${{ steps.version.outputs.new }}
+          CUR: ${{ steps.version.outputs.current }}
         run: |
-          NEW="${{ steps.version.outputs.new }}"
-          CUR="${{ steps.version.outputs.current }}"
           BRANCH="release/v$NEW"
           git config user.name "tapsmith-release[bot]"
           git config user.email "tapsmith-release@users.noreply.github.com"

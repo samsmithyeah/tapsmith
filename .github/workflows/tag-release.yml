@@ -37,9 +37,18 @@ jobs:
         run: |
           VERSION=$(node -p "require('./packages/tapsmith/package.json').version")
           TAG="v$VERSION"
-          if git ls-remote --exit-code --tags origin "refs/tags/$TAG" >/dev/null 2>&1; then
-            echo "Tag $TAG already exists on origin; nothing to do."
-            exit 0
+          HEAD_SHA=$(git rev-parse HEAD)
+          # Peeled ref (^{}) resolves an annotated tag to the commit it points at;
+          # fall back to the plain ref for a lightweight tag.
+          REMOTE_SHA=$(git ls-remote origin "refs/tags/$TAG^{}" | awk '{print $1}')
+          [ -z "$REMOTE_SHA" ] && REMOTE_SHA=$(git ls-remote origin "refs/tags/$TAG" | awk '{print $1}')
+          if [ -n "$REMOTE_SHA" ]; then
+            if [ "$REMOTE_SHA" = "$HEAD_SHA" ]; then
+              echo "Tag $TAG already points at $HEAD_SHA; nothing to do."
+              exit 0
+            fi
+            echo "::error::Tag $TAG already exists but points at $REMOTE_SHA, not the merged commit $HEAD_SHA. Refusing to move it."
+            exit 1
           fi
           git config user.name "tapsmith-release[bot]"
           git config user.email "tapsmith-release@users.noreply.github.com"
