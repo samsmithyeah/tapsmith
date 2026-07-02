@@ -1402,14 +1402,25 @@ class CommandHandler {
                 // Fallback: tap above keyboard area
                 actionExecutor.tapCoordinates(x: Int(midX), y: 15)
             }
-            Thread.sleep(forTimeInterval: 0.5) // Wait for dismiss animation
-            // If keyboard is still showing, try horizontal swipe
-            _ = EventSynthesizer.swipe(
-                from: CGPoint(x: midX, y: midY),
-                to: CGPoint(x: midX - kbScreenSize.width * 0.03, y: midY),
-                duration: 0.05
-            )
-            Thread.sleep(forTimeInterval: 0.3)
+            // VERIFY the keyboard actually left the hierarchy instead of
+            // sleeping a fixed interval: returning while dismissal is still
+            // in flight makes the very next action race the app's keyboard
+            // relayout (e.g. KeyboardAvoidingView) — observed as a Sign-in
+            // tap landing on a moving layout and silently missing.
+            if !waitForKeyboardDismissed(timeout: 3.0) {
+                // Genuinely still showing — try a horizontal swipe. (This
+                // fallback used to fire unconditionally, landing on app
+                // content whenever the first swipe had already worked.)
+                _ = EventSynthesizer.swipe(
+                    from: CGPoint(x: midX, y: midY),
+                    to: CGPoint(x: midX - kbScreenSize.width * 0.03, y: midY),
+                    duration: 0.05
+                )
+                _ = waitForKeyboardDismissed(timeout: 2.0)
+            }
+            // The keyboard leaving the hierarchy precedes the app's own
+            // animated relayout completing — give that a beat to settle.
+            Thread.sleep(forTimeInterval: 0.35)
             snapshotFinder.clearFocusedTextInputHint()
             return ["success": true]
 
@@ -1492,6 +1503,18 @@ class CommandHandler {
             return nil
         }
         return String(data: data, encoding: .utf8)
+    }
+
+    /// Poll the snapshot tree until the keyboard disappears or the deadline
+    /// passes. Returns true once the keyboard is gone.
+    private func waitForKeyboardDismissed(timeout: TimeInterval) -> Bool {
+        let deadline = Date(timeIntervalSinceNow: timeout)
+        while Date() < deadline {
+            let dict = (try? app.snapshot())?.dictionaryRepresentation ?? [:]
+            if !hasKeyboardInSnapshot(dict) { return true }
+            Thread.sleep(forTimeInterval: 0.15)
+        }
+        return false
     }
 
     /// Check if a keyboard is visible in the snapshot tree by looking for
