@@ -228,9 +228,12 @@ class ActionExecutor(
         resolvedBounds: Rect?,
     ) {
         val bounds = resolvedBounds?.takeIf { !it.isEmpty }
-        if (bounds != null) {
-            device.click(bounds.centerX(), bounds.centerY())
-        } else {
+        // Coordinate click when fresh bounds are available (skips a node
+        // re-fetch); fall back to the node click if injection is refused
+        // (e.g. coordinates outside the display) so a focus failure is
+        // never silent — the node click targets the element's live center
+        // and throws if the element is gone.
+        if (bounds == null || !device.click(bounds.centerX(), bounds.centerY())) {
             element.click()
         }
     }
