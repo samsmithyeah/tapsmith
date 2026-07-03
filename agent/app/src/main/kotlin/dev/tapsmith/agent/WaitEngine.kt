@@ -2,6 +2,7 @@ package dev.tapsmith.agent
 
 import android.os.SystemClock
 import android.util.Log
+import androidx.test.uiautomator.StaleObjectException
 import androidx.test.uiautomator.UiDevice
 
 /**
@@ -36,6 +37,15 @@ class WaitEngine(private val device: UiDevice) {
          * still makes forward progress instead of blocking.
          */
         private const val SETTLE_MAX_CHECKS = 3
+
+        /**
+         * A settle-phase bounds read costing at least this much means the app's
+         * main thread is too busy to service accessibility calls promptly —
+         * each read blocks on the app's main looper with a multi-second
+         * framework ceiling, so further polling only stacks more blocking
+         * round-trips (PILOT-278). Bail and proceed with the freshest bounds.
+         */
+        private const val SETTLE_SLOW_READ_BAIL_MS = 1000L
     }
 
     /**
@@ -74,10 +84,12 @@ class WaitEngine(private val device: UiDevice) {
         timeoutMs: Long = DEFAULT_ELEMENT_TIMEOUT_MS,
         elementFinder: ElementFinder,
     ): ElementInfo {
-        val deadline = SystemClock.uptimeMillis() + timeoutMs
+        val startTime = SystemClock.uptimeMillis()
+        val deadline = startTime + timeoutMs
 
         // Phase 1: wait for the element to be present (idle-free snapshot poll).
         var match = findOrThrow(selector, elementFinder, deadline, timeoutMs)
+        val findMs = SystemClock.uptimeMillis() - startTime
 
         // Phase 2: best-effort settle — prefer an enabled, positionally-stable
         // match. The per-check wait is a BOUNDED idle wait (capped at
@@ -85,34 +97,82 @@ class WaitEngine(private val device: UiDevice) {
         // screen (0ms fast-path for the common case) and caps at the window on
         // a perpetually-animating screen, where we then fall back to the
         // current match so it still makes progress.
+        //
+        // Each stability check re-reads ONLY the matched element's bounds (one
+        // accessibility round-trip) rather than re-running the full find, which
+        // re-extracts every attribute of every candidate — each read blocking
+        // on the app's main looper, stacking to seconds on a busy app
+        // (PILOT-278). Two selector kinds keep the full re-find: one that
+        // explicitly requires an enabled element (the find filter is what
+        // enforces enabled=true, so re-finding is what waits for it to enable;
+        // null/false targets are ready once positionally stable — the SDK owns
+        // enabled-waiting for actions like tap()), and xpath (its matches are
+        // XML-snapshot-based and never cached as UiObject2, so there is no
+        // cheap bounds read to make).
+        val settleStart = SystemClock.uptimeMillis()
         var checks = 0
+        var slowestReadMs = 0L
         while (checks < SETTLE_MAX_CHECKS) {
             val remaining = deadline - SystemClock.uptimeMillis()
             if (remaining <= 0) break
 
-            val prevBounds = match.bounds
             device.waitForIdle(STABILITY_WINDOW_MS.coerceAtMost(remaining))
 
-            try {
-                match = elementFinder.findElement(selector)
-            } catch (_: ElementNotFoundException) {
-                // Element went away during the settle window; re-acquire (or
-                // time out) and give the new element its own stability window
-                // next iteration rather than comparing it against the old
-                // element's bounds.
-                match = findOrThrow(selector, elementFinder, deadline, timeoutMs)
+            if (selector.enabled == true || selector.xpath != null) {
+                val prevBounds = match.bounds
+                try {
+                    match = elementFinder.findElement(selector)
+                } catch (_: ElementNotFoundException) {
+                    // Element went away (or is disabled) during the settle
+                    // window; re-acquire (or time out) and give the new element
+                    // its own stability window next iteration rather than
+                    // comparing it against the old element's bounds.
+                    match = findOrThrow(selector, elementFinder, deadline, timeoutMs)
+                    checks++
+                    continue
+                }
                 checks++
-                continue
+                val isReady = selector.enabled != true || match.isEnabled
+                if (match.bounds == prevBounds && isReady) break
+            } else {
+                val readStart = SystemClock.uptimeMillis()
+                val currentBounds =
+                    try {
+                        elementFinder.getElementBounds(match.elementId)
+                    } catch (_: ElementNotFoundException) {
+                        null
+                    } catch (_: StaleObjectException) {
+                        null
+                    }
+                val readMs = SystemClock.uptimeMillis() - readStart
+                if (readMs > slowestReadMs) slowestReadMs = readMs
+                checks++
+                if (currentBounds == null) {
+                    // Stale or evicted during the settle window; re-acquire (or
+                    // time out) and give the new element its own stability
+                    // window next iteration.
+                    match = findOrThrow(selector, elementFinder, deadline, timeoutMs)
+                    continue
+                }
+                if (currentBounds == match.bounds) break
+                val ratio = elementFinder.computeViewportRatio(currentBounds)
+                match = match.copy(bounds = currentBounds, viewportRatio = ratio, isVisible = ratio > 0f)
+                if (readMs >= SETTLE_SLOW_READ_BAIL_MS) {
+                    Log.w(
+                        TAG,
+                        "waitForElement settle: single bounds read took ${readMs}ms — " +
+                            "app main thread is busy; proceeding with the freshest bounds",
+                    )
+                    break
+                }
             }
-
-            // Stable across one window and interactable → done. Only a selector
-            // that explicitly requires an enabled element waits for it to
-            // enable; null/false targets are ready once positionally stable
-            // (the SDK owns enabled-waiting for actions like tap()).
-            val isReady = selector.enabled != true || match.isEnabled
-            if (match.bounds == prevBounds && isReady) break
-            checks++
         }
+        val settleMs = SystemClock.uptimeMillis() - settleStart
+        Log.d(
+            TAG,
+            "waitForElement phases: find=${findMs}ms settle=${settleMs}ms " +
+                "(checks=$checks, slowestBoundsRead=${slowestReadMs}ms)",
+        )
 
         return match
     }

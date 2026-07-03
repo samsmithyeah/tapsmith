@@ -352,7 +352,7 @@ class ElementFinder(private val device: UiDevice) {
      * Compute what fraction of the element is within the screen viewport.
      * Returns 0.0 if fully off-screen, 1.0 if fully on-screen.
      */
-    private fun computeViewportRatio(bounds: Rect): Float {
+    internal fun computeViewportRatio(bounds: Rect): Float {
         val screenWidth = device.displayWidth
         val screenHeight = device.displayHeight
         val screenRect = Rect(0, 0, screenWidth, screenHeight)
@@ -486,15 +486,6 @@ class ElementFinder(private val device: UiDevice) {
             }
         }
         return cached
-    }
-
-    /**
-     * Get the ElementInfo for a cached element, reading its current properties
-     * directly from the UiObject2 rather than performing a new search.
-     */
-    fun getElementInfo(elementId: String): ElementInfo {
-        val obj = getElement(elementId)
-        return toElementInfo(obj, elementId)
     }
 
     /**
