@@ -86,7 +86,11 @@ class ActionExecutor(
             val stableMs = SystemClock.uptimeMillis() - stableStart
             val injectStart = SystemClock.uptimeMillis()
             if (!device.click(bounds.centerX(), bounds.centerY())) {
-                throw ActionFailedException("Failed to tap at (${bounds.centerX()}, ${bounds.centerY()})")
+                // Injection refused (e.g. coordinates outside the display) —
+                // fall back to the node click, which targets the element's
+                // live center and throws if the element is gone. Matches
+                // clickToFocus and the pre-PILOT-278 behavior.
+                element.click()
             }
             Log.d(
                 TAG,
@@ -217,7 +221,9 @@ class ActionExecutor(
             } catch (e2: StaleObjectException) {
                 throw e2
             } catch (e2: Exception) {
-                throw ActionFailedException("Failed to type text: ${e.message}")
+                throw ActionFailedException(
+                    "Failed to type text: ${e.message} (fallback also failed: ${e2.message})",
+                )
             }
         }
     }
@@ -347,7 +353,9 @@ class ActionExecutor(
             } catch (e2: StaleObjectException) {
                 throw e2
             } catch (e2: Exception) {
-                throw ActionFailedException("Failed to clear text: ${e.message}")
+                throw ActionFailedException(
+                    "Failed to clear text: ${e.message} (fallback also failed: ${e2.message})",
+                )
             }
         }
     }
