@@ -282,6 +282,7 @@ export interface SerializedTestResult {
   durationMs: number
   error?: { message: string; stack?: string }
   firstAttemptError?: { message: string; stack?: string }
+  failedAttemptArtifacts?: { screenshot?: boolean; trace?: boolean; video?: boolean }
   screenshotPath?: string
   tracePath?: string
   videoPath?: string
@@ -313,6 +314,7 @@ export function serializeTestResult(result: TestResult, workerIndex: number): Se
     firstAttemptError: result.firstAttemptError
       ? { message: result.firstAttemptError.message, stack: result.firstAttemptError.stack }
       : undefined,
+    failedAttemptArtifacts: result.failedAttemptArtifacts,
     screenshotPath: result.screenshotPath,
     tracePath: result.tracePath,
     videoPath: result.videoPath,
@@ -345,6 +347,7 @@ export function deserializeTestResult(s: SerializedTestResult): TestResult & { w
     firstAttemptError: s.firstAttemptError
       ? Object.assign(new Error(s.firstAttemptError.message), { stack: s.firstAttemptError.stack })
       : undefined,
+    failedAttemptArtifacts: s.failedAttemptArtifacts,
     screenshotPath: s.screenshotPath,
     tracePath: s.tracePath,
     videoPath: s.videoPath,

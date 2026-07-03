@@ -376,6 +376,26 @@ describe('ListReporter', () => {
     expect(output).toContain('npx tapsmith show-trace /traces/trace-flaky.zip');
   });
 
+  it('labels flaky-pass artifacts by provenance (failed attempt vs retry)', () => {
+    reporter.onRunStart!(makeConfig(), 1);
+    reporter.onTestEnd!(makeTestResult({
+      status: 'passed',
+      fullName: 'flaky test',
+      retry: 1,
+      firstAttemptError: new Error('boom'),
+      screenshotPath: '/shots/fail.png',
+      tracePath: '/traces/fail.zip',
+      videoPath: '/videos/retry.mp4',
+      failedAttemptArtifacts: { screenshot: true, trace: true },
+    }));
+    const output = stdoutSpy.mock.calls.map((c: unknown[]) => c[0]).join('');
+    expect(output).toContain('Screenshot (failed attempt): /shots/fail.png');
+    expect(output).toContain('Trace (failed attempt): npx tapsmith show-trace /traces/fail.zip');
+    // The video came from the passing retry — no failed-attempt tag.
+    expect(output).toContain('Video: /videos/retry.mp4');
+    expect(output).not.toContain('Video (failed attempt)');
+  });
+
   it('assigns monotonic counters across file retries', () => {
     reporter.onRunStart!(makeConfig({ workers: 1 }), 2);
 

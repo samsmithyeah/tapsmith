@@ -118,16 +118,24 @@ export class ListReporter implements TapsmithReporter {
       this._write(formatError(test.error) + '\n');
     }
 
+    // A flaky pass links the failed attempt's artifacts — label them so a
+    // failure screenshot under a green ✓ reads as intentional, and so they
+    // aren't confused with artifacts of the passing retry (which can appear
+    // alongside, e.g. an on-first-retry video).
+    const fromFailure = test.failedAttemptArtifacts;
     if (test.screenshotPath) {
-      this._write(`        ${dim(`Screenshot: ${test.screenshotPath}`)}\n`);
+      const tag = fromFailure?.screenshot ? ' (failed attempt)' : '';
+      this._write(`        ${dim(`Screenshot${tag}: ${test.screenshotPath}`)}\n`);
     }
 
     if (test.tracePath) {
-      this._write(`        ${dim(`Trace:      npx tapsmith show-trace ${test.tracePath}`)}\n`);
+      const tag = fromFailure?.trace ? ' (failed attempt)' : '';
+      this._write(`        ${dim(`Trace${tag}: npx tapsmith show-trace ${test.tracePath}`)}\n`);
     }
 
     if (test.videoPath) {
-      this._write(`        ${dim(`Video:      ${test.videoPath}`)}\n`);
+      const tag = fromFailure?.video ? ' (failed attempt)' : '';
+      this._write(`        ${dim(`Video${tag}: ${test.videoPath}`)}\n`);
     }
 
     if (this._isTTY) this._printInProgress();

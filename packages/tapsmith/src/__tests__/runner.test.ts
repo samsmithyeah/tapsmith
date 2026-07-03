@@ -1453,6 +1453,11 @@ describe('retries', () => {
       expect(final.tracePath).toBe(failedAttempt!.tracePath);
       expect(fs.existsSync(final.tracePath!)).toBe(true);
       expect(final.firstAttemptError?.message).toBe('first boom');
+      // Provenance flags mark which linked artifacts came from the failure
+      // (no screenshot/video were captured here — only the trace flag set).
+      expect(final.failedAttemptArtifacts?.trace).toBe(true);
+      expect(final.failedAttemptArtifacts?.screenshot).toBeUndefined();
+      expect(final.failedAttemptArtifacts?.video).toBeUndefined();
     } finally {
       fs.rmSync(tempRoot, { recursive: true, force: true });
     }

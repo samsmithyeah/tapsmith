@@ -97,7 +97,8 @@ export function formatFlakySection(
       lines.push(formatError(test.firstAttemptError));
     }
     if (test.tracePath) {
-      lines.push(`        ${dim(`Trace: npx tapsmith show-trace ${test.tracePath}`)}`);
+      const tag = test.failedAttemptArtifacts?.trace ? ' (failed attempt)' : '';
+      lines.push(`        ${dim(`Trace${tag}: npx tapsmith show-trace ${test.tracePath}`)}`);
     }
   }
   return lines.join('\n') + '\n';

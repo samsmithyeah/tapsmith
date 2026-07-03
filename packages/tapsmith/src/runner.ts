@@ -153,6 +153,15 @@ export interface TestResult {
    * trace/screenshot/video are linked via the regular path fields.
    */
   firstAttemptError?: Error;
+  /**
+   * For flaky (passed-on-retry) results: which of the linked artifacts came
+   * from the first failed attempt rather than the passing retry, so
+   * reporters can label them (a failure screenshot under a green ✓ is
+   * confusing otherwise). Artifacts can mix: e.g. trace from the failed
+   * attempt (retain-on-failure) alongside a video from the retry
+   * (on-first-retry).
+   */
+  failedAttemptArtifacts?: { screenshot?: boolean; trace?: boolean; video?: boolean };
   /** @internal True when this result represents a failed attempt that will be retried. */
   _willRetry?: boolean;
   /** Path to the test file this result belongs to. */
@@ -1598,7 +1607,15 @@ async function runSuiteContext(
     // passing retry's — the failure is the thing worth opening. Falls back
     // to the retry's own artifacts when the failed attempt has none (e.g.
     // trace mode 'on-first-retry' records nothing on the first attempt).
+    // Provenance is recorded per artifact so reporters can label which
+    // paths belong to the failure vs the passing retry.
+    let failedAttemptArtifacts: TestResult['failedAttemptArtifacts'];
     if (status === 'passed' && firstFailure) {
+      failedAttemptArtifacts = {
+        screenshot: !!firstFailure.screenshotPath || undefined,
+        trace: !!firstFailure.tracePath || undefined,
+        video: !!firstFailure.videoPath || undefined,
+      };
       tracePath = firstFailure.tracePath ?? tracePath;
       screenshotPath = firstFailure.screenshotPath ?? screenshotPath;
       videoPath = firstFailure.videoPath ?? videoPath;
@@ -1616,6 +1633,7 @@ async function runSuiteContext(
       project: opts.projectName,
       retry: lastAttempt > 0 ? lastAttempt : undefined,
       firstAttemptError: status === 'passed' ? firstFailure?.error : undefined,
+      failedAttemptArtifacts,
       filePath: opts.testFilePath,
     };
     result.tests.push(testResult);

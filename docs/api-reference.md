@@ -2038,6 +2038,7 @@ interface TestResult {
   durationMs: number;
   error?: Error;
   firstAttemptError?: Error; // on a flaky (passed-on-retry) result: the first failed attempt's error
+  failedAttemptArtifacts?: { screenshot?: boolean; trace?: boolean; video?: boolean }; // which linked artifacts came from the failed attempt
   screenshotPath?: string;
   tracePath?: string; // path to the trace archive (.zip) when tracing is enabled
   videoPath?: string; // path to the recorded MP4 when `video` is enabled and retained
