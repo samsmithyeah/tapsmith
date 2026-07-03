@@ -55,16 +55,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Select Xcode
-        # XCTest in Xcode 26.5 (the macos-26 image default since 2026-06-30)
-        # silently drops the second pointer path of a synthesized two-tap
-        # event record, so doubleTap delivers a single tap ("Tap count: 1" in
-        # failure traces). Pin 26.6 (build 17F113), where the synthesis is
-        # verified; fall back to the image default if the version disappears
-        # from a future image rather than hard-failing every job.
-        run: |
-          sudo xcode-select -s /Applications/Xcode_26.6.app/Contents/Developer 2>/dev/null \
-            || sudo xcode-select -s /Applications/Xcode.app/Contents/Developer
-          xcodebuild -version
+        run: sudo xcode-select -s /Applications/Xcode.app/Contents/Developer
 
       - name: Generate Xcode project
         working-directory: ios-agent
@@ -189,11 +180,8 @@ jobs:
           xattr -d com.apple.quarantine packages/tapsmith-core/target/release/tapsmith-core 2>/dev/null || true
 
       - name: Select Xcode and boot simulator
-        # Keep in sync with the Build Agent job's pin (see comment there):
-        # Xcode 26.5's XCTest breaks doubleTap event synthesis.
         run: |
-          sudo xcode-select -s /Applications/Xcode_26.6.app/Contents/Developer 2>/dev/null \
-            || sudo xcode-select -s /Applications/Xcode.app/Contents/Developer
+          sudo xcode-select -s /Applications/Xcode.app/Contents/Developer
           xcodebuild -version
           SIM=$(xcrun simctl list devices available | grep -oE "iPhone [0-9]+ " | head -1 | xargs)
           echo "Using simulator: $SIM"
