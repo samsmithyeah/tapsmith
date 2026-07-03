@@ -1,6 +1,6 @@
 [package]
 name = "tapsmith-core"
-version = "0.3.4"
+version = "0.3.5"
 edition = "2021"
 description = "Tapsmith mobile testing framework - core daemon"
 
