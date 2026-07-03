@@ -157,7 +157,7 @@ describe('session-preflight', () => {
 
     await expect(launchConfiguredApp(ctx, 'file reset')).resolves.toBeUndefined();
 
-    expect(ctx.device.openDeepLink).toHaveBeenNthCalledWith(1, 'example:///__reset');
+    expect(ctx.device.openDeepLink).toHaveBeenNthCalledWith(1, 'example:///__reset', { forceColdLaunch: true });
     expect(ctx.device.openDeepLink).toHaveBeenCalledTimes(1);
     expect(ctx.device.waitForIdle).toHaveBeenNthCalledWith(1, 321);
     expect(ctx.client.getUiHierarchy).toHaveBeenCalledTimes(1);
@@ -178,7 +178,7 @@ describe('session-preflight', () => {
 
     await expect(launchConfiguredApp(ctx, 'file reset')).resolves.toBeUndefined();
 
-    expect(ctx.device.openDeepLink).toHaveBeenCalledWith('example:///__reset');
+    expect(ctx.device.openDeepLink).toHaveBeenCalledWith('example:///__reset', { forceColdLaunch: true });
     expect(ctx.device.clearAppData).toHaveBeenCalledWith('com.example.app');
     expect(ctx.device.restartApp).toHaveBeenCalledWith('com.example.app');
   });
@@ -195,7 +195,7 @@ describe('session-preflight', () => {
 
     await expect(launchConfiguredApp(ctx, 'file reset')).resolves.toBeUndefined();
 
-    expect(ctx.device.openDeepLink).toHaveBeenCalledWith('example:///__reset');
+    expect(ctx.device.openDeepLink).toHaveBeenCalledWith('example:///__reset', { forceColdLaunch: true });
     expect(ctx.device.terminateApp).not.toHaveBeenCalled();
     expect(ctx.device.clearAppData).not.toHaveBeenCalled();
     expect(ctx.device.launchApp).not.toHaveBeenCalled();
@@ -214,7 +214,7 @@ describe('session-preflight', () => {
 
     await expect(launchConfiguredApp(ctx, 'file reset')).resolves.toBeUndefined();
 
-    expect(ctx.device.openDeepLink).toHaveBeenCalledWith('example:///__reset');
+    expect(ctx.device.openDeepLink).toHaveBeenCalledWith('example:///__reset', { forceColdLaunch: true });
     expect(ctx.device.terminateApp).toHaveBeenCalledWith('com.example.app');
     expect(ctx.device.clearAppData).toHaveBeenCalledWith('com.example.app');
     expect(ctx.device.launchApp).toHaveBeenCalledWith('com.example.app', {
@@ -347,7 +347,7 @@ describe('session-preflight', () => {
     await expect(launchConfiguredApp(ctx, 'file reset')).resolves.toBeUndefined();
 
     expect(ctx.device.openDeepLink).toHaveBeenCalledTimes(1);
-    expect(ctx.device.openDeepLink).toHaveBeenCalledWith('example://reset');
+    expect(ctx.device.openDeepLink).toHaveBeenCalledWith('example://reset', { forceColdLaunch: true });
   });
 
   it('iOS soft reset uses default wait time when resetAppWaitMs not set', async () => {

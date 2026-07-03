@@ -3113,34 +3113,49 @@ impl proto::tapsmith_service_server::TapsmithService for TapsmithServiceImpl {
                 // below keeps behavior identical when warm delivery doesn't
                 // land; the worst case is the status quo plus one bounded
                 // warm window (IOS_OPEN_DEEP_LINK_WARM_TIMEOUT_MS).
-                let warm_command = AgentCommand::OpenDeepLink {
-                    url: req.uri.clone(),
-                    package: bundle_id.clone(),
-                    deliver_in_process: true,
-                    require_ui_change: true,
-                };
-                let warm_result = self
-                    .send_agent_command_with_timeout(
-                        &warm_command,
-                        IOS_OPEN_DEEP_LINK_WARM_TIMEOUT_MS,
-                    )
-                    .await;
-                match &warm_result {
-                    Ok(resp) if resp.success => {
-                        return self.make_action_response(request_id, warm_result).await;
-                    }
-                    Ok(resp) => {
-                        info!(
-                            %serial, uri = %req.uri,
-                            error = %resp.error.as_deref().unwrap_or("unknown"),
-                            "warm in-process deep link did not land; falling back to cold relaunch"
-                        );
-                    }
-                    Err(status) => {
-                        info!(
-                            %serial, uri = %req.uri, error = %status.message(),
-                            "warm in-process deep link errored; falling back to cold relaunch"
-                        );
+                //
+                // `force_cold_launch` skips the warm attempt entirely. The SDK
+                // sets it for the between-file soft reset: a July 2026 local
+                // soak of the full E2E suite showed that sessions running
+                // all-warm for ~60+ deliveries accumulate native navigation
+                // state that observably diverges from a cold launch (screen
+                // a11y trees stop being flattened — strict-mode selectors that
+                // matched one element start matching two — and element ids go
+                // stale), while every file-sized warm window (~20-30
+                // deliveries from a cold start) stayed green. Cold-launching
+                // at file boundaries pins each file to the exact starting
+                // state it had before warm delivery existed and bounds the
+                // warm window to one file.
+                if !req.force_cold_launch {
+                    let warm_command = AgentCommand::OpenDeepLink {
+                        url: req.uri.clone(),
+                        package: bundle_id.clone(),
+                        deliver_in_process: true,
+                        require_ui_change: true,
+                    };
+                    let warm_result = self
+                        .send_agent_command_with_timeout(
+                            &warm_command,
+                            IOS_OPEN_DEEP_LINK_WARM_TIMEOUT_MS,
+                        )
+                        .await;
+                    match &warm_result {
+                        Ok(resp) if resp.success => {
+                            return self.make_action_response(request_id, warm_result).await;
+                        }
+                        Ok(resp) => {
+                            info!(
+                                %serial, uri = %req.uri,
+                                error = %resp.error.as_deref().unwrap_or("unknown"),
+                                "warm in-process deep link did not land; falling back to cold relaunch"
+                            );
+                        }
+                        Err(status) => {
+                            info!(
+                                %serial, uri = %req.uri, error = %status.message(),
+                                "warm in-process deep link errored; falling back to cold relaunch"
+                            );
+                        }
                     }
                 }
 

@@ -511,6 +511,14 @@ message LaunchAppRequest {
 message OpenDeepLinkRequest {
   string request_id = 1;
   string uri = 2;
+  // Skip the warm in-process delivery attempt and go straight to the cold
+  // terminate -> relaunch path. Only meaningful on iOS simulators (Android
+  // and physical iOS always deliver warm). The SDK sets this for the
+  // between-file soft reset so every test file starts from a cold-launched
+  // process: long all-warm sessions accumulate native navigation-stack
+  // state that eventually diverges observably from a cold launch (screen
+  // a11y trees stop being flattened, elements go stale).
+  bool force_cold_launch = 3;
 }
 
 message GetCurrentPackageRequest {

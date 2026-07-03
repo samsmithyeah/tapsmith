@@ -501,7 +501,15 @@ describe('Device.openDeepLink()', () => {
     const client = makeMockClient({ openDeepLink });
     const device = new Device(client);
     await device.openDeepLink('myapp://settings');
-    expect(openDeepLink).toHaveBeenCalledWith('myapp://settings');
+    expect(openDeepLink).toHaveBeenCalledWith('myapp://settings', undefined);
+  });
+
+  it('passes forceColdLaunch through to the client', async () => {
+    const openDeepLink = vi.fn(async () => successResponse());
+    const client = makeMockClient({ openDeepLink });
+    const device = new Device(client);
+    await device.openDeepLink('myapp://reset', { forceColdLaunch: true });
+    expect(openDeepLink).toHaveBeenCalledWith('myapp://reset', { forceColdLaunch: true });
   });
 
   it('throws on failure', async () => {

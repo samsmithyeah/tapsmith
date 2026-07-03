@@ -205,6 +205,16 @@ export interface LaunchAppOptions {
   waitForIdle?: boolean;
 }
 
+export interface OpenDeepLinkOptions {
+  /**
+   * Skip the warm in-process delivery attempt on iOS simulators and
+   * cold-relaunch the app with the URL instead. Use when the deep link must
+   * start from a fresh process (e.g. a state-clearing reset between test
+   * files). No effect on Android or physical iOS, which always deliver warm.
+   */
+  forceColdLaunch?: boolean;
+}
+
 // ─── Swipe / scroll options exposed to the SDK ───
 
 export interface SwipeOptions {
@@ -723,7 +733,7 @@ export class TapsmithGrpcClient {
     }, 120_000);
   }
 
-  async openDeepLink(uri: string): Promise<ActionResponse> {
+  async openDeepLink(uri: string, options?: OpenDeepLinkOptions): Promise<ActionResponse> {
     // iOS simulator deep links try a warm in-process delivery first (bounded
     // at 8s), then can terminate + cold-launch the app, accept the "Open in
     // <app>?" prompt, and re-deliver up to 3 times if the first cold,
@@ -735,6 +745,7 @@ export class TapsmithGrpcClient {
     return this.call<ActionResponse>('openDeepLink', {
       requestId: requestId(),
       uri,
+      forceColdLaunch: options?.forceColdLaunch ?? false,
     }, 180_000);
   }
 

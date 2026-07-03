@@ -298,14 +298,26 @@ await device.launchApp("com.example.myapp", { waitForIdle: false }); // return i
 - `clearData?` — clear all app data before launching (default: `false`)
 - `waitForIdle?` — wait for the UI to settle after launch (default: `true`)
 
-### `device.openDeepLink(uri: string): Promise<void>`
+### `device.openDeepLink(uri: string, options?: OpenDeepLinkOptions): Promise<void>`
 
 Navigate to a screen via deep link URI.
 
 ```typescript
 await device.openDeepLink("myapp://settings/profile");
 await device.openDeepLink("https://example.com/product/123"); // app links
+await device.openDeepLink("myapp://__reset", { forceColdLaunch: true });
 ```
+
+**Options:**
+- `forceColdLaunch?` — on iOS simulators, skip the warm in-process delivery
+  attempt and cold-relaunch the app with the URL (default: `false`). Use when
+  the deep link must start from a fresh process, e.g. a state-clearing reset.
+  No effect on Android or physical iOS, which always deliver warm.
+
+Deep links are delivered to the running app without relaunching it (warm
+delivery) whenever possible. On iOS simulators, if warm delivery does not
+reach its destination within a bounded window, Tapsmith automatically falls
+back to a cold relaunch with the URL.
 
 ### `device.currentPackage(): Promise<string>`
 

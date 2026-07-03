@@ -22,6 +22,7 @@ import {
   type ActionResponse,
   type ScreenshotResponse,
   type LaunchAppOptions,
+  type OpenDeepLinkOptions,
   type AppState,
   type Orientation,
   type ColorScheme,
@@ -490,9 +491,9 @@ export class Device {
         'Launch app failed'));
   }
 
-  async openDeepLink(uri: string): Promise<void> {
+  async openDeepLink(uri: string, options?: OpenDeepLinkOptions): Promise<void> {
     return this._tracedAction('openDeepLink', 'navigation', undefined,
-      () => this._client.openDeepLink(uri),
+      () => this._client.openDeepLink(uri, options),
       'Open deep link failed');
   }
 

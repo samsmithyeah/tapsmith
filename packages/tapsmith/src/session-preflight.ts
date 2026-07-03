@@ -387,7 +387,14 @@ async function recoverSession(ctx: SessionPreflightContext): Promise<void> {
 
 async function softResetAppViaDeepLink(ctx: SessionPreflightContext): Promise<void> {
   const resetDeepLink = ctx.config.resetAppDeepLink!;
-  await ctx.device.openDeepLink(resetDeepLink);
+  // forceColdLaunch: the between-file reset is the boundary that keeps warm
+  // in-process delivery safe on iOS simulators. Long all-warm sessions
+  // accumulate native navigation-stack state that diverges observably from a
+  // cold launch (a11y trees stop being flattened, element ids go stale);
+  // cold-relaunching here bounds the warm window to a single test file and
+  // pins each file's starting state to a fresh process. No effect on Android
+  // or physical iOS, which always deliver warm.
+  await ctx.device.openDeepLink(resetDeepLink, { forceColdLaunch: true });
 
   const waitMs = ctx.config.resetAppWaitMs ?? DEFAULT_SOFT_RESET_WAIT_MS;
   try {
