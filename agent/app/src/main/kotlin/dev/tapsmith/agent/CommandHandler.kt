@@ -3,12 +3,15 @@ package dev.tapsmith.agent
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
+import android.graphics.Rect
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
 import android.util.Base64
 import android.util.Log
 import androidx.test.uiautomator.StaleObjectException
 import androidx.test.uiautomator.UiDevice
+import androidx.test.uiautomator.UiObject2
 import org.json.JSONObject
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
@@ -54,6 +57,7 @@ class CommandHandler(
 
         val params = json.optJSONObject("params") ?: JSONObject()
 
+        val start = SystemClock.uptimeMillis()
         return try {
             val result = dispatch(method, params)
             successResponse(id, result)
@@ -70,24 +74,48 @@ class CommandHandler(
         } catch (e: Exception) {
             Log.e(TAG, "Error handling method '$method'", e)
             errorResponse(id, "INTERNAL_ERROR", e.message ?: "Unknown error")
+        } finally {
+            // Per-command timing so per-phase stacking (resolve / settle /
+            // stable-bounds / inject, logged by WaitEngine/ActionExecutor) can
+            // be correlated against the daemon's action budget (PILOT-278).
+            Log.d(TAG, "$method handled in ${SystemClock.uptimeMillis() - start}ms")
         }
     }
+
+    /**
+     * An element resolved for action execution.
+     *
+     * [freshBounds] is non-null only when resolution ran a selector wait just
+     * now — WaitEngine has already settle-checked those bounds, so actions can
+     * compute tap coordinates from them without re-reading the node (each read
+     * is a blocking accessibility round-trip on the app's main looper;
+     * PILOT-278). Cached-elementId resolution performs no reads and leaves it
+     * null; actions then run their own bounded stability check.
+     */
+    private class ResolvedElement(
+        val obj: UiObject2,
+        val freshBounds: Rect?,
+    )
 
     /**
      * Resolve an element from params, supporting both elementId (cached) and
      * selector-based lookup with auto-waiting.
      */
-    private fun resolveElement(params: JSONObject): ElementInfo {
+    private fun resolveElement(params: JSONObject): ResolvedElement {
         val elementId = params.optString("elementId", null)
         if (!elementId.isNullOrEmpty()) {
-            // Use cached element directly — avoids a new search by className
-            // which is not guaranteed to be unique.
-            return elementFinder.getElementInfo(elementId)
+            // Use the cached element directly — a pure cache lookup, zero
+            // accessibility round-trips. (This used to route through
+            // getElementInfo(), re-reading every attribute — ~a dozen blocking
+            // a11y calls, each able to stall for seconds on a busy app — only
+            // for every caller to discard all of it but the id; PILOT-278.)
+            return ResolvedElement(elementFinder.getElement(elementId), freshBounds = null)
         }
         // Selector-based: auto-wait then find
         val selector = parseSelectorParams(params)
         val timeout = params.optLong("timeout", 10000L)
-        return waitEngine.waitForElement(selector, timeout, elementFinder)
+        val info = waitEngine.waitForElement(selector, timeout, elementFinder)
+        return ResolvedElement(elementFinder.getElement(info.elementId), info.bounds)
     }
 
     /**
@@ -99,12 +127,13 @@ class CommandHandler(
     private fun resolveDragEnd(
         params: JSONObject,
         timeout: Long,
-    ): ElementInfo {
+    ): ResolvedElement {
         val elementId = params.optString("elementId", null)
         if (!elementId.isNullOrEmpty()) {
-            return elementFinder.getElementInfo(elementId)
+            return ResolvedElement(elementFinder.getElement(elementId), freshBounds = null)
         }
-        return waitEngine.waitForElement(parseSelectorParams(params), timeout, elementFinder)
+        val info = waitEngine.waitForElement(parseSelectorParams(params), timeout, elementFinder)
+        return ResolvedElement(elementFinder.getElement(info.elementId), info.bounds)
     }
 
     private fun dispatch(
@@ -145,7 +174,7 @@ class CommandHandler(
                     actionExecutor.tapCoordinates(x, y)
                 } else {
                     val element = resolveElement(params)
-                    actionExecutor.tap(elementFinder.getElement(element.elementId))
+                    actionExecutor.tap(element.obj, element.freshBounds)
                 }
                 JSONObject().put("success", true)
             }
@@ -155,8 +184,9 @@ class CommandHandler(
                 val selector = parseSelectorParams(params)
                 val timeout = params.optLong("timeout", 10000L)
                 val element = waitEngine.waitForElement(selector, timeout, elementFinder)
-                // After waiting, tap the element
-                actionExecutor.tap(elementFinder.getElement(element.elementId))
+                // After waiting, tap the element — reusing the settle-checked
+                // bounds from the wait, so the tap adds no further a11y reads.
+                actionExecutor.tap(elementFinder.getElement(element.elementId), element.bounds)
                 JSONObject().put("success", true).put("element", element.toJson())
             }
 
@@ -168,7 +198,7 @@ class CommandHandler(
                     actionExecutor.longPressCoordinates(x, y, duration)
                 } else {
                     val element = resolveElement(params)
-                    actionExecutor.longPress(elementFinder.getElement(element.elementId), duration)
+                    actionExecutor.longPress(element.obj, duration, element.freshBounds)
                 }
                 JSONObject().put("success", true)
             }
@@ -194,7 +224,7 @@ class CommandHandler(
                     val selectorParams = JSONObject(params.toString())
                     selectorParams.remove("text")
                     val element = resolveElement(selectorParams)
-                    actionExecutor.typeText(elementFinder.getElement(element.elementId), text)
+                    actionExecutor.typeText(element.obj, text, element.freshBounds)
                 } else {
                     actionExecutor.typeTextWithoutFocus(text)
                 }
@@ -203,7 +233,7 @@ class CommandHandler(
 
             "clearText" -> {
                 val element = resolveElement(params)
-                actionExecutor.clearText(elementFinder.getElement(element.elementId))
+                actionExecutor.clearText(element.obj)
                 JSONObject().put("success", true)
             }
 
@@ -307,7 +337,7 @@ class CommandHandler(
             "doubleTap" -> {
                 val element = resolveElement(params)
                 val intervalMs = params.optLong("intervalMs", 0)
-                actionExecutor.doubleTap(elementFinder.getElement(element.elementId), intervalMs)
+                actionExecutor.doubleTap(element.obj, intervalMs, element.freshBounds)
                 JSONObject().put("success", true)
             }
 
@@ -319,10 +349,7 @@ class CommandHandler(
                 // or a selector to resolve.
                 val sourceEl = resolveDragEnd(sourceParams, timeout)
                 val targetEl = resolveDragEnd(targetParams, timeout)
-                actionExecutor.dragTo(
-                    elementFinder.getElement(sourceEl.elementId),
-                    elementFinder.getElement(targetEl.elementId),
-                )
+                actionExecutor.dragTo(sourceEl.obj, targetEl.obj)
                 JSONObject().put("success", true)
             }
 
@@ -331,9 +358,9 @@ class CommandHandler(
                 val optionText = params.optString("option", null)
                 val index = if (params.has("index")) params.getInt("index") else -1
                 if (optionText != null) {
-                    actionExecutor.selectOption(elementFinder.getElement(element.elementId), optionText)
+                    actionExecutor.selectOption(element.obj, optionText)
                 } else if (index >= 0) {
-                    actionExecutor.selectOptionByIndex(elementFinder.getElement(element.elementId), index)
+                    actionExecutor.selectOptionByIndex(element.obj, index)
                 } else {
                     throw InvalidSelectorException("selectOption requires either 'option' (string) or 'index' (int)")
                 }
@@ -343,33 +370,34 @@ class CommandHandler(
             "pinchZoom" -> {
                 val element = resolveElement(params)
                 val scale = params.optDouble("scale", 1.0).toFloat()
-                actionExecutor.pinchZoom(elementFinder.getElement(element.elementId), scale)
+                actionExecutor.pinchZoom(element.obj, scale)
                 JSONObject().put("success", true)
             }
 
             "focus" -> {
                 val element = resolveElement(params)
-                actionExecutor.focus(elementFinder.getElement(element.elementId))
+                actionExecutor.focus(element.obj)
                 JSONObject().put("success", true)
             }
 
             "blur" -> {
                 val element = resolveElement(params)
-                actionExecutor.blur(elementFinder.getElement(element.elementId))
+                actionExecutor.blur(element.obj)
                 JSONObject().put("success", true)
             }
 
             "highlight" -> {
                 val element = resolveElement(params)
                 val duration = params.optLong("duration", 1000L)
-                actionExecutor.highlight(elementFinder.getElement(element.elementId), duration)
+                actionExecutor.highlight(element.obj, duration)
                 JSONObject().put("success", true)
             }
 
             "elementScreenshot" -> {
                 val element = resolveElement(params)
-                val uiObj = elementFinder.getElement(element.elementId)
-                val bounds = uiObj.visibleBounds
+                // A screenshot must reflect the element's current position, so
+                // prefer resolve-time bounds only when they are fresh.
+                val bounds = element.freshBounds?.takeIf { !it.isEmpty } ?: element.obj.visibleBounds
 
                 // Take full screenshot and crop to element bounds
                 val base64 = captureElementScreenshot(bounds)

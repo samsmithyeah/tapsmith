@@ -1,12 +1,15 @@
 package dev.tapsmith.agent
 
 import android.app.Instrumentation
+import android.graphics.Rect
 import android.os.SystemClock
+import android.util.Log
 import android.view.InputDevice
 import android.view.KeyEvent
 import android.view.MotionEvent
 import androidx.test.uiautomator.By
 import androidx.test.uiautomator.Direction
+import androidx.test.uiautomator.StaleObjectException
 import androidx.test.uiautomator.UiDevice
 import androidx.test.uiautomator.UiObject2
 import androidx.test.uiautomator.Until
@@ -33,6 +36,8 @@ class ActionExecutor(
     }
 
     companion object {
+        private const val TAG = "TapsmithAction"
+
         /** Interval between taps for double-tap gesture. */
         private const val DOUBLE_TAP_INTERVAL_MS = 100L
 
@@ -60,12 +65,45 @@ class ActionExecutor(
      *
      * Waits for the element's bounds to stop moving first (Playwright-style
      * actionability): a click computed from mid-animation/mid-layout bounds
-     * can land on a non-interactive pixel and silently miss.
+     * can land on a non-interactive pixel and silently miss. When the caller
+     * passes [resolvedBounds] from a resolve that just completed (WaitEngine
+     * has already settle-checked them), the stability wait is skipped and the
+     * tap is injected at those coordinates directly — repeating the check
+     * would only stack more blocking accessibility round-trips (PILOT-278).
+     *
+     * The tap itself is injected at coordinates rather than via
+     * UiObject2.click(), which would re-fetch the accessibility node — one
+     * more round-trip blocking on the app's main looper.
      */
-    fun tap(element: UiObject2) {
+    fun tap(
+        element: UiObject2,
+        resolvedBounds: Rect? = null,
+    ) {
         try {
-            waitForStableBounds(element)
-            element.click()
+            val trusted = resolvedBounds?.takeIf { !it.isEmpty }
+            val stableStart = SystemClock.uptimeMillis()
+            val bounds = trusted ?: waitForStableBounds(element)
+            val stableMs = SystemClock.uptimeMillis() - stableStart
+            val injectStart = SystemClock.uptimeMillis()
+            if (bounds.isEmpty || !device.click(bounds.centerX(), bounds.centerY())) {
+                // Empty bounds (zero-size or fully clipped element) or refused
+                // injection (e.g. coordinates outside the display) — fall back
+                // to the node click, which targets the element's live center
+                // and throws if the element is gone. Matches clickToFocus and
+                // the pre-PILOT-278 behavior.
+                element.click()
+            }
+            Log.d(
+                TAG,
+                "tap phases: stableBounds=${stableMs}ms (resolvedBoundsReused=${trusted != null}) " +
+                    "inject=${SystemClock.uptimeMillis() - injectStart}ms",
+            )
+        } catch (e: StaleObjectException) {
+            // Bubble up: CommandHandler maps this to ELEMENT_NOT_FOUND so the
+            // SDK re-resolves, rather than failing hard on ACTION_FAILED.
+            throw e
+        } catch (e: ActionFailedException) {
+            throw e
         } catch (e: Exception) {
             throw ActionFailedException("Failed to tap element: ${e.message}")
         }
@@ -73,23 +111,41 @@ class ActionExecutor(
 
     /**
      * Wait until two consecutive reads of the element's visible bounds agree,
-     * or the deadline passes. visibleBounds refreshes the underlying
-     * accessibility node, so consecutive equal reads mean layout has settled.
+     * or the deadline passes, and return the freshest read. visibleBounds
+     * refreshes the underlying accessibility node, so consecutive equal reads
+     * mean layout has settled.
+     *
+     * Each read blocks on the app's main looper (with a multi-second framework
+     * ceiling), so the loop is cost-aware: a single read that exceeds the
+     * whole stability budget means the app is too busy to poll further, and we
+     * bail with the freshest bounds instead of stacking more blocking calls
+     * (PILOT-278).
      */
     private fun waitForStableBounds(
         element: UiObject2,
         timeoutMs: Long = STABLE_BOUNDS_TIMEOUT_MS,
-    ) {
+    ): Rect {
         val deadline = SystemClock.uptimeMillis() + timeoutMs
         var prev = element.visibleBounds
         while (SystemClock.uptimeMillis() < deadline) {
             SystemClock.sleep(STABLE_BOUNDS_POLL_MS)
+            val readStart = SystemClock.uptimeMillis()
             val current = element.visibleBounds
-            if (current == prev) return
+            val readMs = SystemClock.uptimeMillis() - readStart
+            if (current == prev) return current
             prev = current
+            if (readMs >= timeoutMs) {
+                Log.w(
+                    TAG,
+                    "waitForStableBounds: single bounds read took ${readMs}ms (budget ${timeoutMs}ms) — " +
+                        "app main thread is busy; proceeding with the freshest read",
+                )
+                break
+            }
         }
         // Bounds still moving at the deadline — proceed with the freshest read
-        // rather than failing; the click recomputes the center from the live node.
+        // rather than failing.
+        return prev
     }
 
     /**
@@ -106,16 +162,31 @@ class ActionExecutor(
 
     /**
      * Long press on an element with configurable duration.
+     *
+     * [resolvedBounds] from a just-completed resolve skips the node re-read
+     * (a blocking accessibility round-trip; PILOT-278).
      */
     fun longPress(
         element: UiObject2,
         durationMs: Long = 1000L,
+        resolvedBounds: Rect? = null,
     ) {
         try {
-            val bounds = element.visibleBounds
+            val bounds = resolvedBounds?.takeIf { !it.isEmpty } ?: element.visibleBounds
+            if (bounds.isEmpty) {
+                // No node-level long-press to fall back to (the gesture is
+                // coordinate-computed) — fail loudly rather than pressing (0, 0).
+                throw ActionFailedException(
+                    "Cannot long press: element has empty visible bounds (zero-size or fully clipped)",
+                )
+            }
             val cx = bounds.centerX()
             val cy = bounds.centerY()
             device.swipe(cx, cy, cx, cy, (durationMs / 5).toInt().coerceAtLeast(1))
+        } catch (e: StaleObjectException) {
+            throw e
+        } catch (e: ActionFailedException) {
+            throw e
         } catch (e: Exception) {
             throw ActionFailedException("Failed to long press element: ${e.message}")
         }
@@ -136,24 +207,50 @@ class ActionExecutor(
     /**
      * Type text into a focused element.
      * First clicks the element to ensure focus, then types the text.
+     *
+     * [resolvedBounds] from a just-completed resolve lets the focus click be
+     * injected at coordinates instead of via UiObject2.click(), skipping a
+     * node re-fetch (a blocking accessibility round-trip; PILOT-278).
      */
     fun typeText(
         element: UiObject2,
         text: String,
+        resolvedBounds: Rect? = null,
     ) {
         try {
-            element.click()
-            // Small delay to ensure focus is established
+            clickToFocus(element, resolvedBounds)
             element.text = text
+        } catch (e: StaleObjectException) {
+            throw e
         } catch (e: Exception) {
             // Fallback: try clicking and using device-level text injection
             try {
-                element.click()
+                clickToFocus(element, resolvedBounds)
                 device.waitForIdle(1000)
                 typeTextWithoutFocus(text)
+            } catch (e2: StaleObjectException) {
+                throw e2
             } catch (e2: Exception) {
-                throw ActionFailedException("Failed to type text: ${e.message}")
+                throw ActionFailedException(
+                    "Failed to type text: ${e.message} (fallback also failed: ${e2.message})",
+                )
             }
+        }
+    }
+
+    /** Click an element's center to focus it, reusing resolve-time bounds when available. */
+    private fun clickToFocus(
+        element: UiObject2,
+        resolvedBounds: Rect?,
+    ) {
+        val bounds = resolvedBounds?.takeIf { !it.isEmpty }
+        // Coordinate click when fresh bounds are available (skips a node
+        // re-fetch); fall back to the node click if injection is refused
+        // (e.g. coordinates outside the display) so a focus failure is
+        // never silent — the node click targets the element's live center
+        // and throws if the element is gone.
+        if (bounds == null || !device.click(bounds.centerX(), bounds.centerY())) {
+            element.click()
         }
     }
 
@@ -252,6 +349,8 @@ class ActionExecutor(
             device.waitForIdle(500)
             // Select all (Ctrl+A) then delete
             element.clear()
+        } catch (e: StaleObjectException) {
+            throw e
         } catch (e: Exception) {
             // Fallback: triple-click to select all, then press delete
             try {
@@ -261,8 +360,12 @@ class ActionExecutor(
                 device.executeShellCommand("input keyevent KEYCODE_MOVE_HOME")
                 device.executeShellCommand("input keyevent --longpress KEYCODE_SHIFT_LEFT KEYCODE_MOVE_END")
                 device.executeShellCommand("input keyevent KEYCODE_DEL")
+            } catch (e2: StaleObjectException) {
+                throw e2
             } catch (e2: Exception) {
-                throw ActionFailedException("Failed to clear text: ${e.message}")
+                throw ActionFailedException(
+                    "Failed to clear text: ${e.message} (fallback also failed: ${e2.message})",
+                )
             }
         }
     }
@@ -284,6 +387,8 @@ class ActionExecutor(
         val dir = parseDirection(direction)
         try {
             element.swipe(dir, distance.toFloat(), speed)
+        } catch (e: StaleObjectException) {
+            throw e
         } catch (e: Exception) {
             throw ActionFailedException("Failed to swipe $direction on element: ${e.message}")
         }
@@ -415,6 +520,8 @@ class ActionExecutor(
         } else {
             try {
                 element.scroll(dir, 1.0f)
+            } catch (e: StaleObjectException) {
+                throw e
             } catch (e: Exception) {
                 throw ActionFailedException("Failed to scroll $direction: ${e.message}")
             }
@@ -511,10 +618,20 @@ class ActionExecutor(
     fun doubleTap(
         element: UiObject2,
         intervalMs: Long = DOUBLE_TAP_INTERVAL_MS,
+        resolvedBounds: Rect? = null,
     ) {
         try {
-            val bounds = element.visibleBounds
+            val bounds = resolvedBounds?.takeIf { !it.isEmpty } ?: element.visibleBounds
+            if (bounds.isEmpty) {
+                // No node-level double-tap to fall back to (the gesture is
+                // coordinate-computed) — fail loudly rather than tapping (0, 0).
+                throw ActionFailedException(
+                    "Cannot double tap: element has empty visible bounds (zero-size or fully clipped)",
+                )
+            }
             doubleTapCoordinates(bounds.centerX(), bounds.centerY(), intervalMs)
+        } catch (e: StaleObjectException) {
+            throw e
         } catch (e: ActionFailedException) {
             throw e
         } catch (e: Exception) {
@@ -597,6 +714,8 @@ class ActionExecutor(
         try {
             val tgtBounds = target.visibleBounds
             source.drag(android.graphics.Point(tgtBounds.centerX(), tgtBounds.centerY()))
+        } catch (e: StaleObjectException) {
+            throw e
         } catch (e: Exception) {
             throw ActionFailedException("Failed to drag element: ${e.message}")
         }
@@ -617,6 +736,8 @@ class ActionExecutor(
                 device.wait(Until.findObject(By.text(optionText)), DROPDOWN_WAIT_TIMEOUT_MS)
                     ?: throw ElementNotFoundException("Option '$optionText' not found in dropdown")
             option.click()
+        } catch (e: StaleObjectException) {
+            throw e
         } catch (e: ElementNotFoundException) {
             throw e
         } catch (e: Exception) {
@@ -648,6 +769,8 @@ class ActionExecutor(
                 throw ActionFailedException("Index $index out of range (0..${children.size - 1})")
             }
             children[index].click()
+        } catch (e: StaleObjectException) {
+            throw e
         } catch (e: ActionFailedException) {
             throw e
         } catch (e: Exception) {
@@ -673,6 +796,8 @@ class ActionExecutor(
                 val percent = ((1.0f - scale) * 100).coerceIn(10f, 100f) / 100f
                 element.pinchClose(percent)
             }
+        } catch (e: StaleObjectException) {
+            throw e
         } catch (e: Exception) {
             throw ActionFailedException("Failed to pinch zoom: ${e.message}")
         }
@@ -685,6 +810,8 @@ class ActionExecutor(
         try {
             element.click()
             device.waitForIdle(FOCUS_IDLE_TIMEOUT_MS)
+        } catch (e: StaleObjectException) {
+            throw e
         } catch (e: Exception) {
             throw ActionFailedException("Failed to focus element: ${e.message}")
         }
@@ -727,6 +854,8 @@ class ActionExecutor(
 
             device.click(tapX, tapY)
             device.waitForIdle(FOCUS_IDLE_TIMEOUT_MS)
+        } catch (e: StaleObjectException) {
+            throw e
         } catch (e: Exception) {
             throw ActionFailedException("Failed to blur element: ${e.message}")
         }
@@ -746,6 +875,8 @@ class ActionExecutor(
             // Validate element exists and is accessible by reading its bounds.
             // TODO: Draw an overlay rectangle on the device screen for visual debugging.
             element.visibleBounds
+        } catch (e: StaleObjectException) {
+            throw e
         } catch (e: Exception) {
             throw ActionFailedException("Failed to highlight element: ${e.message}")
         }
