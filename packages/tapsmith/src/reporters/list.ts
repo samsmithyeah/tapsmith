@@ -95,10 +95,20 @@ export class ListReporter implements TapsmithReporter {
       const project = this._showProjectTags ? projectTag(test.project) : '';
       const file = this._fileSegment(test.filePath);
       this._write(`  ${red('✗')} ${counter} ${worker}${project}${file}${test.fullName} ${duration}\n`);
-      // The failing attempt's error is worth seeing even though a retry is
-      // coming — a flaky pass would otherwise hide what actually failed.
+      // The failing attempt's error and artifacts are worth seeing even
+      // though a retry is coming — a flaky pass would otherwise hide what
+      // actually failed, and this is where they chronologically belong.
       if (test.error) {
         this._write(formatError(test.error) + '\n');
+      }
+      if (test.screenshotPath) {
+        this._write(`        ${dim(`Screenshot: ${test.screenshotPath}`)}\n`);
+      }
+      if (test.tracePath) {
+        this._write(`        ${dim(`Trace: npx tapsmith show-trace ${test.tracePath}`)}\n`);
+      }
+      if (test.videoPath) {
+        this._write(`        ${dim(`Video: ${test.videoPath}`)}\n`);
       }
       if (this._isTTY) this._printInProgress();
       return;
@@ -118,24 +128,22 @@ export class ListReporter implements TapsmithReporter {
       this._write(formatError(test.error) + '\n');
     }
 
-    // A flaky pass links the failed attempt's artifacts — label them so a
-    // failure screenshot under a green ✓ reads as intentional, and so they
-    // aren't confused with artifacts of the passing retry (which can appear
-    // alongside, e.g. an on-first-retry video).
+    // A flaky pass links the failed attempt's artifacts on the result, but
+    // those were already printed under the failing ✗ line above — printing
+    // them again under a green ✓ reads as if the pass produced them. Only
+    // artifacts belonging to the final attempt appear here (e.g. an
+    // on-first-retry video recorded during the passing retry).
     const fromFailure = test.failedAttemptArtifacts;
-    if (test.screenshotPath) {
-      const tag = fromFailure?.screenshot ? ' (failed attempt)' : '';
-      this._write(`        ${dim(`Screenshot${tag}: ${test.screenshotPath}`)}\n`);
+    if (test.screenshotPath && !fromFailure?.screenshot) {
+      this._write(`        ${dim(`Screenshot: ${test.screenshotPath}`)}\n`);
     }
 
-    if (test.tracePath) {
-      const tag = fromFailure?.trace ? ' (failed attempt)' : '';
-      this._write(`        ${dim(`Trace${tag}: npx tapsmith show-trace ${test.tracePath}`)}\n`);
+    if (test.tracePath && !fromFailure?.trace) {
+      this._write(`        ${dim(`Trace: npx tapsmith show-trace ${test.tracePath}`)}\n`);
     }
 
-    if (test.videoPath) {
-      const tag = fromFailure?.video ? ' (failed attempt)' : '';
-      this._write(`        ${dim(`Video${tag}: ${test.videoPath}`)}\n`);
+    if (test.videoPath && !fromFailure?.video) {
+      this._write(`        ${dim(`Video: ${test.videoPath}`)}\n`);
     }
 
     if (this._isTTY) this._printInProgress();

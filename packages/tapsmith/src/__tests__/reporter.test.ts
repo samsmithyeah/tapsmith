@@ -376,8 +376,26 @@ describe('ListReporter', () => {
     expect(output).toContain('npx tapsmith show-trace /traces/trace-flaky.zip');
   });
 
-  it('labels flaky-pass artifacts by provenance (failed attempt vs retry)', () => {
+  it('prints artifacts under the failing ✗ line, not again under the flaky ✓', () => {
     reporter.onRunStart!(makeConfig(), 1);
+    // Failing attempt: error + its artifacts print here.
+    reporter.onTestEnd!(makeTestResult({
+      status: 'failed',
+      fullName: 'flaky test',
+      error: new Error('boom'),
+      screenshotPath: '/shots/fail.png',
+      tracePath: '/traces/fail.zip',
+      _willRetry: true,
+      retry: 0,
+    }));
+    const midOutput = stdoutSpy.mock.calls.map((c: unknown[]) => c[0]).join('');
+    expect(midOutput).toContain('Screenshot: /shots/fail.png');
+    expect(midOutput).toContain('Trace: npx tapsmith show-trace /traces/fail.zip');
+
+    stdoutSpy.mockClear();
+
+    // Final flaky pass: links the failure's screenshot/trace (for blob/HTML)
+    // but must not reprint them; the retry's own video still prints.
     reporter.onTestEnd!(makeTestResult({
       status: 'passed',
       fullName: 'flaky test',
@@ -388,12 +406,10 @@ describe('ListReporter', () => {
       videoPath: '/videos/retry.mp4',
       failedAttemptArtifacts: { screenshot: true, trace: true },
     }));
-    const output = stdoutSpy.mock.calls.map((c: unknown[]) => c[0]).join('');
-    expect(output).toContain('Screenshot (failed attempt): /shots/fail.png');
-    expect(output).toContain('Trace (failed attempt): npx tapsmith show-trace /traces/fail.zip');
-    // The video came from the passing retry — no failed-attempt tag.
-    expect(output).toContain('Video: /videos/retry.mp4');
-    expect(output).not.toContain('Video (failed attempt)');
+    const finalOutput = stdoutSpy.mock.calls.map((c: unknown[]) => c[0]).join('');
+    expect(finalOutput).not.toContain('/shots/fail.png');
+    expect(finalOutput).not.toContain('/traces/fail.zip');
+    expect(finalOutput).toContain('Video: /videos/retry.mp4');
   });
 
   it('assigns monotonic counters across file retries', () => {
