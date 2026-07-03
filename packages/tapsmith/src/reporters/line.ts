@@ -19,6 +19,7 @@ import {
   formatDuration,
   formatError,
   formatSummaryLine,
+  formatFlakySection,
   countFlaky,
   workerTag,
   projectTag,
@@ -98,6 +99,13 @@ export class LineReporter implements TapsmithReporter {
           process.stdout.write(formatError(test.error) + '\n\n');
         }
       }
+    }
+
+    if (flaky > 0) {
+      process.stdout.write(formatFlakySection(result.tests, {
+        showWorkerTags: this._parallel,
+        showProjectTags: this._showProjectTags,
+      }) + '\n');
     }
 
     process.stdout.write(formatSummaryLine(passed, failed, skipped, result.duration, result.setupDuration, flaky) + '\n\n');

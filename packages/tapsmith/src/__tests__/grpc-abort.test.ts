@@ -2,6 +2,7 @@ import { describe, it, expect, vi } from 'vitest';
 import { getEventListeners } from 'node:events';
 import { TapsmithGrpcClient } from '../grpc-client.js';
 import { TestAbortedError, isAbortError, sleep, throwIfAborted } from '../abort.js';
+import { runInAttemptContext, isTestEndedError } from '../attempt-fence.js';
 
 // ─── Abort primitives ───
 
@@ -67,6 +68,41 @@ function invokeCall(
   // eslint-disable-next-line @typescript-eslint/no-explicit-any -- exercise the private unary-call wrapper directly
   return (client as any).call('fakeMethod', {}, deadlineMs, opts);
 }
+
+describe('TapsmithGrpcClient attempt fence', () => {
+  it('rejects a call from a closed attempt context without dispatching', async () => {
+    const fakeMethod = vi.fn();
+    const client = makeClient(fakeMethod as unknown as FakeMethod);
+
+    const token = { closed: false };
+    const zombieCall = runInAttemptContext(token, async () => {
+      token.closed = true; // attempt ends while the body is still running
+      return invokeCall(client);
+    });
+
+    await expect(zombieCall).rejects.toSatisfy(isTestEndedError);
+    expect(fakeMethod).not.toHaveBeenCalled();
+  });
+
+  it('dispatches normally from an open attempt context', async () => {
+    const client = makeClient((_req, _opts, cb) => {
+      cb(null, { ok: true });
+      return { cancel: vi.fn() };
+    });
+    const token = { closed: false };
+    await expect(
+      runInAttemptContext(token, async () => invokeCall(client)),
+    ).resolves.toEqual({ ok: true });
+  });
+
+  it('dispatches normally outside any attempt context', async () => {
+    const client = makeClient((_req, _opts, cb) => {
+      cb(null, { ok: true });
+      return { cancel: vi.fn() };
+    });
+    await expect(invokeCall(client)).resolves.toEqual({ ok: true });
+  });
+});
 
 describe('TapsmithGrpcClient abort signal', () => {
   it('cancels the in-flight call and rejects with a branded AbortError', async () => {

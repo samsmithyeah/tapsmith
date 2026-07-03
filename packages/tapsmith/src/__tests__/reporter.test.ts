@@ -346,6 +346,36 @@ describe('ListReporter', () => {
     expect(output).toContain('assertion failed');
   });
 
+  it('prints error details for a failed attempt that will retry', () => {
+    reporter.onRunStart!(makeConfig(), 1);
+    reporter.onTestEnd!(makeTestResult({
+      status: 'failed',
+      fullName: 'flaky test',
+      error: new Error('Test timed out after 90000ms'),
+      _willRetry: true,
+      retry: 0,
+    }));
+    const output = stdoutSpy.mock.calls.map((c: unknown[]) => c[0]).join('');
+    expect(output).toContain('Test timed out after 90000ms');
+  });
+
+  it('prints the first-attempt error and trace in the flaky summary', () => {
+    reporter.onRunStart!(makeConfig(), 1);
+    const flakyTest = makeTestResult({
+      status: 'passed',
+      fullName: 'flaky test',
+      retry: 1,
+      firstAttemptError: new Error('Test timed out after 90000ms'),
+      tracePath: '/traces/trace-flaky.zip',
+    });
+    reporter.onTestEnd!(flakyTest);
+    reporter.onRunEnd!(makeFullResult({ tests: [flakyTest] }));
+    const output = stdoutSpy.mock.calls.map((c: unknown[]) => c[0]).join('');
+    expect(output).toContain('1 flaky');
+    expect(output).toContain('Test timed out after 90000ms');
+    expect(output).toContain('npx tapsmith show-trace /traces/trace-flaky.zip');
+  });
+
   it('assigns monotonic counters across file retries', () => {
     reporter.onRunStart!(makeConfig({ workers: 1 }), 2);
 
@@ -875,6 +905,43 @@ describe('BlobReporter', () => {
 
     stderrSpy.mockRestore();
     fs.rmSync(tmpDir, { recursive: true });
+  });
+
+  it('round-trips firstAttemptError and the linked (failed-attempt) trace', async () => {
+    const fs = await import('node:fs');
+    const path = await import('node:path');
+    const os = await import('node:os');
+
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tapsmith-blob-flaky-'));
+    const traceDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tapsmith-blob-flaky-trace-'));
+    const tracePath = path.join(traceDir, 'trace-flaky-attempt0.zip');
+    fs.writeFileSync(tracePath, 'zip-bytes');
+
+    const { BlobReporter, mergeBlobs } = await import('../reporters/blob.js');
+    const stderrSpy = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    const reporter = new BlobReporter({ outputDir: tmpDir });
+
+    reporter.onRunStart!(makeConfig({ rootDir: '/' }), 1);
+    await reporter.onRunEnd!(makeFullResult({
+      tests: [makeTestResult({
+        status: 'passed',
+        fullName: 'flaky test',
+        retry: 1,
+        firstAttemptError: new Error('Test timed out after 90000ms'),
+        tracePath,
+      })],
+    }));
+
+    const merged = mergeBlobs(tmpDir);
+    expect(merged.tests).toHaveLength(1);
+    expect(merged.tests[0].firstAttemptError?.message).toBe('Test timed out after 90000ms');
+    // The failed attempt's trace file itself travelled inside the blob.
+    expect(merged.tests[0].tracePath).toBe(path.join(tmpDir, 'trace-flaky-attempt0.zip'));
+    expect(fs.existsSync(merged.tests[0].tracePath!)).toBe(true);
+
+    stderrSpy.mockRestore();
+    fs.rmSync(tmpDir, { recursive: true });
+    fs.rmSync(traceDir, { recursive: true });
   });
 });
 

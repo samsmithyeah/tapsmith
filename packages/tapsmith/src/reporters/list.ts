@@ -18,10 +18,10 @@ import {
   dim,
   bold,
   red,
-  yellow,
   formatDuration,
   formatError,
   formatSummaryLine,
+  formatFlakySection,
   countFlaky,
   workerTag,
   projectTag,
@@ -95,6 +95,11 @@ export class ListReporter implements TapsmithReporter {
       const project = this._showProjectTags ? projectTag(test.project) : '';
       const file = this._fileSegment(test.filePath);
       this._write(`  ${red('✗')} ${counter} ${worker}${project}${file}${test.fullName} ${duration}\n`);
+      // The failing attempt's error is worth seeing even though a retry is
+      // coming — a flaky pass would otherwise hide what actually failed.
+      if (test.error) {
+        this._write(formatError(test.error) + '\n');
+      }
       if (this._isTTY) this._printInProgress();
       return;
     }
@@ -150,13 +155,10 @@ export class ListReporter implements TapsmithReporter {
     this._write('\n');
 
     if (flaky > 0) {
-      const flakyTests = result.tests.filter((t) => t.status === 'passed' && t.retry != null && t.retry > 0);
-      this._write(`  ${yellow(`${flaky} flaky`)}\n`);
-      for (const test of flakyTests) {
-        const worker = this._multipleWorkers ? workerTag(test.workerIndex) : '';
-        const project = this._showProjectTags ? projectTag(test.project) : '';
-        this._write(`    ${worker}${project}${test.fullName}\n`);
-      }
+      this._write(formatFlakySection(result.tests, {
+        showWorkerTags: this._multipleWorkers,
+        showProjectTags: this._showProjectTags,
+      }));
     }
 
     if (failed > 0) {

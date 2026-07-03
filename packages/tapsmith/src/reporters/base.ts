@@ -76,6 +76,33 @@ export function countFlaky(tests: TestResult[]): number {
   return tests.filter((t) => t.status === 'passed' && t.retry != null && t.retry > 0).length;
 }
 
+/**
+ * Format the flaky-tests section for run summaries: each test that passed on
+ * retry, with the first failed attempt's error and linked trace so the
+ * failure is diagnosable without re-running. Returns '' when nothing flaked.
+ */
+export function formatFlakySection(
+  tests: TestResult[],
+  opts: { showWorkerTags?: boolean; showProjectTags?: boolean } = {},
+): string {
+  const flakyTests = tests.filter((t) => t.status === 'passed' && t.retry != null && t.retry > 0);
+  if (flakyTests.length === 0) return '';
+  const lines: string[] = [];
+  lines.push(`  ${yellow(`${flakyTests.length} flaky`)}`);
+  for (const test of flakyTests) {
+    const worker = opts.showWorkerTags ? workerTag(test.workerIndex) : '';
+    const project = opts.showProjectTags ? projectTag(test.project) : '';
+    lines.push(`    ${worker}${project}${test.fullName}`);
+    if (test.firstAttemptError) {
+      lines.push(formatError(test.firstAttemptError));
+    }
+    if (test.tracePath) {
+      lines.push(`        ${dim(`Trace: npx tapsmith show-trace ${test.tracePath}`)}`);
+    }
+  }
+  return lines.join('\n') + '\n';
+}
+
 export function workerTag(workerIndex: number | undefined): string {
   if (workerIndex == null) return '';
   return dim(`[worker ${workerIndex}]`) + ' ';

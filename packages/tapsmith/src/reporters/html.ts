@@ -110,13 +110,17 @@ function generateHtml(
     const screenshotFile = t.screenshotPath ? screenshotMap.get(t.screenshotPath) : null;
     const traceFile = t.tracePath ? traceMap.get(t.tracePath) : null;
     const videoFile = t.videoPath ? videoMap.get(t.videoPath) : null;
+    // Flaky (passed-on-retry) tests carry the first failed attempt's error;
+    // surface it the same way as a failure so the flake is diagnosable.
+    const displayError = t.error ?? t.firstAttemptError;
     return {
       name: escapeHtml(t.fullName),
       status: t.status,
+      flaky: t.status === 'passed' && (t.retry ?? 0) > 0,
       duration: t.durationMs,
-      error: t.error ? escapeHtml(t.error.message) : null,
-      stack: t.error?.stack ? escapeHtml(t.error.stack.split('\n').slice(1, 6).join('\n')) : null,
-      codeSnippet: t.error?.stack ? extractCodeSnippetForHtml(t.error) : null,
+      error: displayError ? escapeHtml(displayError.message) : null,
+      stack: displayError?.stack ? escapeHtml(displayError.stack.split('\n').slice(1, 6).join('\n')) : null,
+      codeSnippet: displayError?.stack ? extractCodeSnippetForHtml(displayError) : null,
       screenshot: screenshotFile,
       trace: traceFile,
       video: videoFile,
@@ -188,6 +192,7 @@ function generateHtml(
   .trace-cmd-copied { background: #e8f5e9; border-color: #a5d6a7; }
   .project-badge { display: inline-block; padding: 1px 6px; background: #dfe6e9; color: #636e72; border-radius: 4px; font-size: 11px; font-weight: 600; }
   .trace-badge { display: inline-flex; align-items: center; gap: 4px; padding: 2px 8px; background: #6c5ce7; color: white; border-radius: 10px; font-size: 11px; font-weight: 600; margin-left: 8px; }
+  .flaky-badge { display: inline-flex; align-items: center; padding: 2px 8px; background: #ff9800; color: white; border-radius: 10px; font-size: 11px; font-weight: 600; margin-left: 8px; }
   .status-passed { color: #4caf50; }
   .status-failed { color: #f44336; }
   .status-skipped { color: #ff9800; }
@@ -237,6 +242,7 @@ function render(filter, query) {
     header += '<span class="test-name">';
     if (t.project) header += '<span class="project-badge">' + t.project + '</span> ';
     header += t.name;
+    if (t.flaky) header += '<span class="flaky-badge">flaky</span>';
     if (t.trace) header += '<span class="trace-badge">&#9654; Trace</span>';
     if (t.video) header += '<span class="video-badge">&#9210; Video</span>';
     header += '</span>';

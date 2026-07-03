@@ -35,6 +35,7 @@ interface SerializedTest {
   status: 'passed' | 'failed' | 'skipped'
   durationMs: number
   error?: { message: string; stack?: string }
+  firstAttemptError?: { message: string; stack?: string }
   screenshotKey?: string
   traceKey?: string
   videoKey?: string
@@ -102,6 +103,9 @@ export class BlobReporter implements TapsmithReporter {
         status: t.status,
         durationMs: t.durationMs,
         error: t.error ? { message: t.error.message, stack: t.error.stack } : undefined,
+        firstAttemptError: t.firstAttemptError
+          ? { message: t.firstAttemptError.message, stack: t.firstAttemptError.stack }
+          : undefined,
         screenshotKey,
         traceKey,
         videoKey,
@@ -173,17 +177,7 @@ export function mergeBlobs(blobDir: string): FullResult {
 
     // Restore tests
     for (const t of blob.tests) {
-      allTests.push({
-        name: t.name,
-        fullName: t.fullName,
-        status: t.status,
-        durationMs: t.durationMs,
-        error: t.error ? Object.assign(new Error(t.error.message), { stack: t.error.stack }) : undefined,
-        screenshotPath: t.screenshotKey ? path.join(blobDir, t.screenshotKey) : undefined,
-        tracePath: t.traceKey ? path.join(blobDir, t.traceKey) : undefined,
-        videoPath: t.videoKey ? path.join(blobDir, t.videoKey) : undefined,
-        retry: t.retry,
-      });
+      allTests.push(restoreTest(t, blobDir));
     }
 
     // Restore suites
@@ -201,6 +195,23 @@ export function mergeBlobs(blobDir: string): FullResult {
   };
 }
 
+function restoreTest(t: SerializedTest, blobDir: string): TestResult {
+  return {
+    name: t.name,
+    fullName: t.fullName,
+    status: t.status,
+    durationMs: t.durationMs,
+    error: t.error ? Object.assign(new Error(t.error.message), { stack: t.error.stack }) : undefined,
+    firstAttemptError: t.firstAttemptError
+      ? Object.assign(new Error(t.firstAttemptError.message), { stack: t.firstAttemptError.stack })
+      : undefined,
+    screenshotPath: t.screenshotKey ? path.join(blobDir, t.screenshotKey) : undefined,
+    tracePath: t.traceKey ? path.join(blobDir, t.traceKey) : undefined,
+    videoPath: t.videoKey ? path.join(blobDir, t.videoKey) : undefined,
+    retry: t.retry,
+  };
+}
+
 function deserializeSuite(
   s: SerializedSuite,
   blobDir: string,
@@ -208,17 +219,7 @@ function deserializeSuite(
   return {
     name: s.name,
     durationMs: s.durationMs,
-    tests: s.tests.map((t) => ({
-      name: t.name,
-      fullName: t.fullName,
-      status: t.status,
-      durationMs: t.durationMs,
-      error: t.error ? Object.assign(new Error(t.error.message), { stack: t.error.stack }) : undefined,
-      screenshotPath: t.screenshotKey ? path.join(blobDir, t.screenshotKey) : undefined,
-      tracePath: t.traceKey ? path.join(blobDir, t.traceKey) : undefined,
-      videoPath: t.videoKey ? path.join(blobDir, t.videoKey) : undefined,
-      retry: t.retry,
-    })),
+    tests: s.tests.map((t) => restoreTest(t, blobDir)),
     suites: s.suites.map((child) => deserializeSuite(child, blobDir)),
   };
 }
