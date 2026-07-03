@@ -640,46 +640,87 @@ describe('GitHubActionsReporter', () => {
     stdoutSpy = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
   });
 
-  it('emits ::error annotations on file completion', () => {
-    reporter.onTestFileEnd!('/test.ts', [makeTestResult({
-      status: 'failed',
-      fullName: 'login > rejects invalid password',
-      error: new Error('Expected element to be visible'),
-    })]);
+  it('emits ::error annotations at run end', async () => {
+    await reporter.onRunEnd!(makeFullResult({
+      tests: [makeTestResult({
+        status: 'failed',
+        fullName: 'login > rejects invalid password',
+        error: new Error('Expected element to be visible'),
+      })],
+    }));
     const output = stdoutSpy.mock.calls.map((c: unknown[]) => c[0]).join('');
     expect(output).toContain('::error');
     expect(output).toContain('Expected element to be visible');
   });
 
-  it('does not emit annotations for passing tests', () => {
-    reporter.onTestFileEnd!('/test.ts', [makeTestResult({ status: 'passed' })]);
-    expect(stdoutSpy).not.toHaveBeenCalled();
-  });
-
-  it('does not emit annotations for skipped tests', () => {
-    reporter.onTestFileEnd!('/test.ts', [makeTestResult({ status: 'skipped' })]);
-    expect(stdoutSpy).not.toHaveBeenCalled();
-  });
-
-  it('does not emit annotations during live onTestEnd streaming', () => {
-    reporter.onTestEnd?.(makeTestResult({
-      status: 'failed',
-      fullName: 'streamed failure',
-      error: new Error('live failure'),
+  it('does not emit annotations for passing tests', async () => {
+    await reporter.onRunEnd!(makeFullResult({
+      tests: [makeTestResult({ status: 'passed' })],
     }));
     expect(stdoutSpy).not.toHaveBeenCalled();
   });
 
-  it('only emits annotations for failed tests in mixed results', () => {
-    reporter.onTestFileEnd!('/test.ts', [
-      makeTestResult({ status: 'passed', fullName: 'test A' }),
-      makeTestResult({ status: 'failed', fullName: 'test B', error: new Error('fail') }),
-      makeTestResult({ status: 'skipped', fullName: 'test C' }),
-    ]);
+  it('does not emit annotations for skipped tests', async () => {
+    await reporter.onRunEnd!(makeFullResult({
+      tests: [makeTestResult({ status: 'skipped' })],
+    }));
+    expect(stdoutSpy).not.toHaveBeenCalled();
+  });
+
+  it('does not emit annotations mid-run (onTestEnd / onTestFileEnd)', () => {
+    const failed = makeTestResult({
+      status: 'failed',
+      fullName: 'streamed failure',
+      error: new Error('live failure'),
+    });
+    reporter.onTestEnd?.(failed);
+    reporter.onTestFileEnd?.('/test.ts', [failed]);
+    expect(stdoutSpy).not.toHaveBeenCalled();
+  });
+
+  it('only emits annotations for failed tests in mixed results', async () => {
+    await reporter.onRunEnd!(makeFullResult({
+      tests: [
+        makeTestResult({ status: 'passed', fullName: 'test A' }),
+        makeTestResult({ status: 'failed', fullName: 'test B', error: new Error('fail') }),
+        makeTestResult({ status: 'skipped', fullName: 'test C' }),
+      ],
+    }));
     const output = stdoutSpy.mock.calls.map((c: unknown[]) => c[0]).join('');
     expect(output).toContain('test B');
     expect(output).not.toContain('test A');
     expect(output).not.toContain('test C');
+  });
+
+  it('emits ::warning annotations for flaky tests with the first-attempt error', async () => {
+    await reporter.onRunEnd!(makeFullResult({
+      tests: [makeTestResult({
+        status: 'passed',
+        fullName: 'flaky test',
+        retry: 1,
+        firstAttemptError: new Error('Test timed out after 90000ms'),
+      })],
+    }));
+    const output = stdoutSpy.mock.calls.map((c: unknown[]) => c[0]).join('');
+    expect(output).toContain('::warning');
+    expect(output).toContain('flaky: flaky test');
+    expect(output).toContain('Test timed out after 90000ms');
+    expect(output).not.toContain('::error');
+  });
+
+  it('anchors annotations to the test file, not tapsmith internals', async () => {
+    const error = new Error('Expected element to be visible');
+    error.stack = [
+      'Error: Expected element to be visible',
+      '    at fail (/repo/packages/tapsmith/src/expect.ts:445:17)',
+      '    at Object.toContainText (/repo/packages/tapsmith/src/expect.ts:665:9)',
+      '    at async Object.fn (/repo/e2e/tests/gestures.test.ts:27:5)',
+    ].join('\n');
+    await reporter.onRunEnd!(makeFullResult({
+      tests: [makeTestResult({ status: 'failed', fullName: 'double tap', error })],
+    }));
+    const output = stdoutSpy.mock.calls.map((c: unknown[]) => c[0]).join('');
+    expect(output).toContain('file=/repo/e2e/tests/gestures.test.ts,line=27');
   });
 
   afterEach(() => {

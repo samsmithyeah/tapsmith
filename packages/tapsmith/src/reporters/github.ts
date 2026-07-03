@@ -5,6 +5,12 @@
  * failed tests. Test failures appear as annotations on the PR/commit.
  * Auto-activates when GITHUB_ACTIONS env var is detected.
  *
+ * Annotations are emitted once at run end, when results are final (past
+ * any file-level infrastructure retries). GitHub collects `::error::`
+ * commands from anywhere in the log, and emitting them mid-run made them
+ * interleave confusingly with the console reporter's stream at file
+ * boundaries — long after the ✗ line they belonged to (PILOT-73 follow-up).
+ *
  * @see PILOT-73
  */
 
@@ -13,19 +19,28 @@ import type { TestResult } from '../runner.js';
 import { countFlaky } from './base.js';
 
 export class GitHubActionsReporter implements TapsmithReporter {
-  onTestFileEnd(_filePath: string, results: TestResult[]): void {
-    for (const test of results) {
-      if (test.status === 'failed' && test.error) {
-        emitAnnotation(test);
-      }
-    }
-  }
-
   async onRunEnd(result: FullResult): Promise<void> {
     const passed = result.tests.filter((t) => t.status === 'passed').length;
     const failed = result.tests.filter((t) => t.status === 'failed').length;
     const skipped = result.tests.filter((t) => t.status === 'skipped').length;
+    const flakyTests = result.tests.filter(
+      (t) => t.status === 'passed' && t.retry != null && t.retry > 0,
+    );
     const flaky = countFlaky(result.tests);
+
+    // Failures annotate as errors; flaky tests as warnings carrying the
+    // first failed attempt's error so the flake is diagnosable from the
+    // PR checks UI without opening the log.
+    for (const test of result.tests) {
+      if (test.status === 'failed' && test.error) {
+        emitAnnotation('error', test, test.error);
+      }
+    }
+    for (const test of flakyTests) {
+      if (test.firstAttemptError) {
+        emitAnnotation('warning', test, test.firstAttemptError, 'flaky: ');
+      }
+    }
 
     // Write a summary using GitHub Actions job summary
     if (process.env.GITHUB_STEP_SUMMARY) {
@@ -52,6 +67,17 @@ export class GitHubActionsReporter implements TapsmithReporter {
         }
       }
 
+      if (flakyTests.length > 0) {
+        summaryLines.push('');
+        summaryLines.push('### Flaky (passed on retry)');
+        summaryLines.push('');
+        for (const test of flakyTests) {
+          const workerInfo = test.workerIndex != null ? ` (worker ${test.workerIndex})` : '';
+          const cause = test.firstAttemptError ? `: ${test.firstAttemptError.message}` : '';
+          summaryLines.push(`- **${test.fullName}${workerInfo}**${cause}`);
+        }
+      }
+
       try {
         const nodeFs = await import('node:fs');
         nodeFs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, summaryLines.join('\n') + '\n');
@@ -62,18 +88,23 @@ export class GitHubActionsReporter implements TapsmithReporter {
   }
 }
 
-function emitAnnotation(test: TestResult): void {
-  if (!test.error) return;
-
+function emitAnnotation(
+  level: 'error' | 'warning',
+  test: TestResult,
+  error: Error,
+  titlePrefix = '',
+): void {
   // Extract file/line from stack trace if possible
-  const location = extractLocation(test.error);
+  const location = extractLocation(error);
   const locationPart = location ? ` file=${location.file},line=${location.line}` : '';
 
   // Escape the message for GitHub Actions
-  const message = escapeGitHub(test.error.message);
+  const message = escapeGitHub(error.message);
 
   const workerSuffix = test.workerIndex != null ? ` (worker ${test.workerIndex})` : '';
-  process.stdout.write(`::error${locationPart} title=${escapeGitHub(test.fullName + workerSuffix)}::${message}\n`);
+  process.stdout.write(
+    `::${level}${locationPart} title=${escapeGitHub(titlePrefix + test.fullName + workerSuffix)}::${message}\n`,
+  );
 }
 
 function extractLocation(error: Error): { file: string; line: number } | null {
@@ -87,8 +118,14 @@ function extractLocation(error: Error): { file: string; line: number } | null {
     if (match) {
       const file = match[1];
       const lineNum = parseInt(match[2], 10);
-      // Only use test file paths (skip node_modules, internal frames)
-      if (!file.includes('node_modules') && !file.startsWith('node:')) {
+      // Only use test file paths: skip node internals, installed tapsmith
+      // (node_modules) and the monorepo SDK source (/packages/tapsmith/) —
+      // otherwise assertion failures annotate expect.ts instead of the test.
+      if (
+        !file.includes('node_modules') &&
+        !file.startsWith('node:') &&
+        !file.includes('/packages/tapsmith/')
+      ) {
         return { file, line: lineNum };
       }
     }
