@@ -512,6 +512,11 @@ pub enum AgentCommand {
         url: String,
         package: String,
         deliver_in_process: bool,
+        /// Require the UI hierarchy to change from its pre-delivery state
+        /// before reporting success. Used for warm in-process delivery to an
+        /// already-running app, where "app has rendered content" is trivially
+        /// true and would mask a dropped Linking event.
+        require_ui_change: bool,
     },
     AcceptOpenInAppDialog {
         timeout_ms: Option<u64>,
@@ -907,12 +912,14 @@ impl AgentCommand {
                 url,
                 package,
                 deliver_in_process,
+                require_ui_change,
             } => (
                 "openDeepLink",
                 json!({
                     "url": url,
                     "bundleId": package,
                     "deliverInProcess": deliver_in_process,
+                    "requireUiChange": require_ui_change,
                 }),
             ),
             AgentCommand::AcceptOpenInAppDialog { timeout_ms } => {
@@ -1852,12 +1859,28 @@ mod tests {
             url: "tapsmithtest:///login".into(),
             package: "dev.tapsmith.testapp".into(),
             deliver_in_process: false,
+            require_ui_change: false,
         };
         let j = cmd.to_json("dl1");
         assert_eq!(j["method"], "openDeepLink");
         assert_eq!(j["params"]["url"], "tapsmithtest:///login");
         assert_eq!(j["params"]["bundleId"], "dev.tapsmith.testapp");
         assert_eq!(j["params"]["deliverInProcess"], false);
+        assert_eq!(j["params"]["requireUiChange"], false);
+    }
+
+    #[test]
+    fn to_json_open_deep_link_warm() {
+        let cmd = AgentCommand::OpenDeepLink {
+            url: "tapsmithtest:///__reset".into(),
+            package: "dev.tapsmith.testapp".into(),
+            deliver_in_process: true,
+            require_ui_change: true,
+        };
+        let j = cmd.to_json("dl2");
+        assert_eq!(j["method"], "openDeepLink");
+        assert_eq!(j["params"]["deliverInProcess"], true);
+        assert_eq!(j["params"]["requireUiChange"], true);
     }
 
     #[test]

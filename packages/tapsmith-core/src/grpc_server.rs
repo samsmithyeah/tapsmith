@@ -38,6 +38,12 @@ const IOS_OPEN_DIALOG_ACCEPT_TIMEOUT_MS: u64 = 300;
 // gRPC round-trip, so each verify returns a verdict rather than tripping this
 // command timeout.
 const IOS_OPEN_DEEP_LINK_VERIFY_TIMEOUT_MS: u64 = 13_000;
+// Budget for the warm in-process delivery attempt on simulators: must exceed
+// the agent-side warm navigation window (5s) plus the pre-open hierarchy
+// snapshot, activate + open, and gRPC round-trip. Deliberately tight — when
+// warm delivery doesn't land, this whole budget is pure overhead added in
+// front of the cold terminate -> openurl path.
+const IOS_OPEN_DEEP_LINK_WARM_TIMEOUT_MS: u64 = 8_000;
 // How many times to (re-)deliver a real iOS simulator deep link (the whole
 // terminate -> openurl -> verify cycle) before giving up. Covers BOTH failure
 // modes — a transient `simctl openurl` error (e.g. NSPOSIXErrorDomain code=60)
@@ -52,8 +58,8 @@ const IOS_OPEN_DEEP_LINK_MAX_ATTEMPTS: u32 = 3;
 // driven by session preflight — tests calling resetApp() directly surface an
 // exhausted-attempts failure as a test failure, so bailing early trades a
 // recoverable transient (`simctl openurl` NSPOSIXErrorDomain code=60) for a
-// flake. Worst case is bounded well inside the SDK's 150s openDeepLink
-// deadline (3 × (28s prompt timeout + 13s verify) ≈ 125s).
+// flake. Worst case is bounded well inside the SDK's 180s openDeepLink
+// deadline (8s warm attempt + 3 × (28s prompt timeout + 13s verify) ≈ 133s).
 const IOS_OPEN_DEEP_LINK_SOFT_RESET_MAX_ATTEMPTS: u32 = 3;
 
 pub struct TapsmithServiceImpl {
@@ -3078,27 +3084,82 @@ impl proto::tapsmith_service_server::TapsmithService for TapsmithServiceImpl {
                         url: req.uri.clone(),
                         package: bundle_id,
                         deliver_in_process: true,
+                        require_ui_change: false,
                     };
                     let result = self.send_agent_command(&command).await;
                     return self.make_action_response(request_id, result).await;
                 }
 
-                // Simulator: terminate -> simctl openurl -> agent verify, retried
-                // as a unit. The first cold, trust-gated openurl on a fresh sim
-                // intermittently fails to foreground the app (the "Open in <app>?"
-                // prompt races the launch and the app lands back on SpringBoard).
-                // Re-delivering self-heals: a second openurl is warm and already
-                // trusted, so it lands. We only succeed once the agent confirms
-                // the app actually rendered content (the verify returns false on a
-                // never-foregrounded app rather than masking it).
+                // Simulator: warm-first, cold fallback.
                 //
-                // XCUIApplication.open(url:) hangs on quiescence on slow CI
-                // runners, so we avoid it entirely. simctl openurl to a running
-                // app doesn't trigger navigation (the React Native scene handler
-                // misses it), so we terminate first — making openurl cold-launch
-                // the app with the URL. Fresh simulators can show "Open in <app>?"
-                // and block simctl itself, so the daemon taps that dialog while
-                // openurl is still pending.
+                // Warm attempt: if the app is already running with rendered
+                // content, deliver in-process (the physical-device path:
+                // activate + XCUIApplication.open(url:)) and require the UI
+                // hierarchy to change from its pre-open state within a bounded
+                // window. The hierarchy-change requirement is what makes warm
+                // delivery verifiable — a warm app trivially "has rendered
+                // content", so the cold verify's readiness check would mask a
+                // dropped Linking event. This skips the terminate -> cold
+                // relaunch cycle (~14-22s on CI) for the common case: per-test
+                // soft resets and in-test navigation against a running app.
+                //
+                // The historical reasons for avoiding this path no longer
+                // hold as written: the "open(url:) hangs on quiescence" finding
+                // predates the QuiescenceDisabler swizzle (which the agent now
+                // applies before delivery), and the "warm delivery doesn't
+                // trigger RN navigation" finding was observed with warm
+                // `simctl openurl`, not XCUIApplication.open(url:) — which
+                // physical devices use for every deep link today. The fallback
+                // below keeps behavior identical when warm delivery doesn't
+                // land; the worst case is the status quo plus one bounded
+                // warm window (IOS_OPEN_DEEP_LINK_WARM_TIMEOUT_MS).
+                let warm_command = AgentCommand::OpenDeepLink {
+                    url: req.uri.clone(),
+                    package: bundle_id.clone(),
+                    deliver_in_process: true,
+                    require_ui_change: true,
+                };
+                let warm_result = self
+                    .send_agent_command_with_timeout(
+                        &warm_command,
+                        IOS_OPEN_DEEP_LINK_WARM_TIMEOUT_MS,
+                    )
+                    .await;
+                match &warm_result {
+                    Ok(resp) if resp.success => {
+                        return self.make_action_response(request_id, warm_result).await;
+                    }
+                    Ok(resp) => {
+                        info!(
+                            %serial, uri = %req.uri,
+                            error = %resp.error.as_deref().unwrap_or("unknown"),
+                            "warm in-process deep link did not land; falling back to cold relaunch"
+                        );
+                    }
+                    Err(status) => {
+                        info!(
+                            %serial, uri = %req.uri, error = %status.message(),
+                            "warm in-process deep link errored; falling back to cold relaunch"
+                        );
+                    }
+                }
+
+                // Cold fallback: terminate -> simctl openurl -> agent verify,
+                // retried as a unit. The first cold, trust-gated openurl on a
+                // fresh sim intermittently fails to foreground the app (the
+                // "Open in <app>?" prompt races the launch and the app lands
+                // back on SpringBoard). Re-delivering self-heals: a second
+                // openurl is warm and already trusted, so it lands. We only
+                // succeed once the agent confirms the app actually rendered
+                // content (the verify returns false on a never-foregrounded app
+                // rather than masking it).
+                //
+                // simctl openurl to a running app doesn't trigger navigation
+                // (the React Native scene handler misses it), so we terminate
+                // first — making openurl cold-launch the app with the URL.
+                // Fresh simulators can show "Open in <app>?" and block simctl
+                // itself, so the daemon taps that dialog while openurl is
+                // still pending.
                 // Soft-reset deep links can bail to the preflight hard-reset
                 // fallback, so they retry fewer times; real navigations have only
                 // the whole-test retry, so they re-deliver more persistently.
@@ -3154,6 +3215,7 @@ impl proto::tapsmith_service_server::TapsmithService for TapsmithServiceImpl {
                         url: req.uri.clone(),
                         package: bundle_id.clone(),
                         deliver_in_process: false,
+                        require_ui_change: false,
                     };
                     let result = self
                         .send_agent_command_with_timeout(
