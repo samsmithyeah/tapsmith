@@ -85,11 +85,12 @@ class ActionExecutor(
             val bounds = trusted ?: waitForStableBounds(element)
             val stableMs = SystemClock.uptimeMillis() - stableStart
             val injectStart = SystemClock.uptimeMillis()
-            if (!device.click(bounds.centerX(), bounds.centerY())) {
-                // Injection refused (e.g. coordinates outside the display) —
-                // fall back to the node click, which targets the element's
-                // live center and throws if the element is gone. Matches
-                // clickToFocus and the pre-PILOT-278 behavior.
+            if (bounds.isEmpty || !device.click(bounds.centerX(), bounds.centerY())) {
+                // Empty bounds (zero-size or fully clipped element) or refused
+                // injection (e.g. coordinates outside the display) — fall back
+                // to the node click, which targets the element's live center
+                // and throws if the element is gone. Matches clickToFocus and
+                // the pre-PILOT-278 behavior.
                 element.click()
             }
             Log.d(
@@ -172,10 +173,19 @@ class ActionExecutor(
     ) {
         try {
             val bounds = resolvedBounds?.takeIf { !it.isEmpty } ?: element.visibleBounds
+            if (bounds.isEmpty) {
+                // No node-level long-press to fall back to (the gesture is
+                // coordinate-computed) — fail loudly rather than pressing (0, 0).
+                throw ActionFailedException(
+                    "Cannot long press: element has empty visible bounds (zero-size or fully clipped)",
+                )
+            }
             val cx = bounds.centerX()
             val cy = bounds.centerY()
             device.swipe(cx, cy, cx, cy, (durationMs / 5).toInt().coerceAtLeast(1))
         } catch (e: StaleObjectException) {
+            throw e
+        } catch (e: ActionFailedException) {
             throw e
         } catch (e: Exception) {
             throw ActionFailedException("Failed to long press element: ${e.message}")
@@ -612,6 +622,13 @@ class ActionExecutor(
     ) {
         try {
             val bounds = resolvedBounds?.takeIf { !it.isEmpty } ?: element.visibleBounds
+            if (bounds.isEmpty) {
+                // No node-level double-tap to fall back to (the gesture is
+                // coordinate-computed) — fail loudly rather than tapping (0, 0).
+                throw ActionFailedException(
+                    "Cannot double tap: element has empty visible bounds (zero-size or fully clipped)",
+                )
+            }
             doubleTapCoordinates(bounds.centerX(), bounds.centerY(), intervalMs)
         } catch (e: StaleObjectException) {
             throw e

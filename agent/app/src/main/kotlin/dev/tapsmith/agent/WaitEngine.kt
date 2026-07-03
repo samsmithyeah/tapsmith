@@ -130,6 +130,13 @@ class WaitEngine(private val device: UiDevice) {
                     match = findOrThrow(selector, elementFinder, deadline, timeoutMs)
                     checks++
                     continue
+                } catch (_: StaleObjectException) {
+                    // A re-render outlasted findElements' internal stale
+                    // retries; re-acquire against a fresh snapshot rather than
+                    // failing the whole wait — mirrors the bounds-read branch.
+                    match = findOrThrow(selector, elementFinder, deadline, timeoutMs)
+                    checks++
+                    continue
                 }
                 checks++
                 val isReady = selector.enabled != true || match.isEnabled
