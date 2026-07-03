@@ -346,6 +346,72 @@ describe('ListReporter', () => {
     expect(output).toContain('assertion failed');
   });
 
+  it('prints error details for a failed attempt that will retry', () => {
+    reporter.onRunStart!(makeConfig(), 1);
+    reporter.onTestEnd!(makeTestResult({
+      status: 'failed',
+      fullName: 'flaky test',
+      error: new Error('Test timed out after 90000ms'),
+      _willRetry: true,
+      retry: 0,
+    }));
+    const output = stdoutSpy.mock.calls.map((c: unknown[]) => c[0]).join('');
+    expect(output).toContain('Test timed out after 90000ms');
+  });
+
+  it('prints the first-attempt error and trace in the flaky summary', () => {
+    reporter.onRunStart!(makeConfig(), 1);
+    const flakyTest = makeTestResult({
+      status: 'passed',
+      fullName: 'flaky test',
+      retry: 1,
+      firstAttemptError: new Error('Test timed out after 90000ms'),
+      tracePath: '/traces/trace-flaky.zip',
+    });
+    reporter.onTestEnd!(flakyTest);
+    reporter.onRunEnd!(makeFullResult({ tests: [flakyTest] }));
+    const output = stdoutSpy.mock.calls.map((c: unknown[]) => c[0]).join('');
+    expect(output).toContain('1 flaky');
+    expect(output).toContain('Test timed out after 90000ms');
+    expect(output).toContain('npx tapsmith show-trace /traces/trace-flaky.zip');
+  });
+
+  it('prints artifacts under the failing ✗ line, not again under the flaky ✓', () => {
+    reporter.onRunStart!(makeConfig(), 1);
+    // Failing attempt: error + its artifacts print here.
+    reporter.onTestEnd!(makeTestResult({
+      status: 'failed',
+      fullName: 'flaky test',
+      error: new Error('boom'),
+      screenshotPath: '/shots/fail.png',
+      tracePath: '/traces/fail.zip',
+      _willRetry: true,
+      retry: 0,
+    }));
+    const midOutput = stdoutSpy.mock.calls.map((c: unknown[]) => c[0]).join('');
+    expect(midOutput).toContain('Screenshot: /shots/fail.png');
+    expect(midOutput).toContain('Trace: npx tapsmith show-trace /traces/fail.zip');
+
+    stdoutSpy.mockClear();
+
+    // Final flaky pass: links the failure's screenshot/trace (for blob/HTML)
+    // but must not reprint them; the retry's own video still prints.
+    reporter.onTestEnd!(makeTestResult({
+      status: 'passed',
+      fullName: 'flaky test',
+      retry: 1,
+      firstAttemptError: new Error('boom'),
+      screenshotPath: '/shots/fail.png',
+      tracePath: '/traces/fail.zip',
+      videoPath: '/videos/retry.mp4',
+      failedAttemptArtifacts: { screenshot: true, trace: true },
+    }));
+    const finalOutput = stdoutSpy.mock.calls.map((c: unknown[]) => c[0]).join('');
+    expect(finalOutput).not.toContain('/shots/fail.png');
+    expect(finalOutput).not.toContain('/traces/fail.zip');
+    expect(finalOutput).toContain('Video: /videos/retry.mp4');
+  });
+
   it('assigns monotonic counters across file retries', () => {
     reporter.onRunStart!(makeConfig({ workers: 1 }), 2);
 
@@ -610,46 +676,87 @@ describe('GitHubActionsReporter', () => {
     stdoutSpy = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
   });
 
-  it('emits ::error annotations on file completion', () => {
-    reporter.onTestFileEnd!('/test.ts', [makeTestResult({
-      status: 'failed',
-      fullName: 'login > rejects invalid password',
-      error: new Error('Expected element to be visible'),
-    })]);
+  it('emits ::error annotations at run end', async () => {
+    await reporter.onRunEnd!(makeFullResult({
+      tests: [makeTestResult({
+        status: 'failed',
+        fullName: 'login > rejects invalid password',
+        error: new Error('Expected element to be visible'),
+      })],
+    }));
     const output = stdoutSpy.mock.calls.map((c: unknown[]) => c[0]).join('');
     expect(output).toContain('::error');
     expect(output).toContain('Expected element to be visible');
   });
 
-  it('does not emit annotations for passing tests', () => {
-    reporter.onTestFileEnd!('/test.ts', [makeTestResult({ status: 'passed' })]);
-    expect(stdoutSpy).not.toHaveBeenCalled();
-  });
-
-  it('does not emit annotations for skipped tests', () => {
-    reporter.onTestFileEnd!('/test.ts', [makeTestResult({ status: 'skipped' })]);
-    expect(stdoutSpy).not.toHaveBeenCalled();
-  });
-
-  it('does not emit annotations during live onTestEnd streaming', () => {
-    reporter.onTestEnd?.(makeTestResult({
-      status: 'failed',
-      fullName: 'streamed failure',
-      error: new Error('live failure'),
+  it('does not emit annotations for passing tests', async () => {
+    await reporter.onRunEnd!(makeFullResult({
+      tests: [makeTestResult({ status: 'passed' })],
     }));
     expect(stdoutSpy).not.toHaveBeenCalled();
   });
 
-  it('only emits annotations for failed tests in mixed results', () => {
-    reporter.onTestFileEnd!('/test.ts', [
-      makeTestResult({ status: 'passed', fullName: 'test A' }),
-      makeTestResult({ status: 'failed', fullName: 'test B', error: new Error('fail') }),
-      makeTestResult({ status: 'skipped', fullName: 'test C' }),
-    ]);
+  it('does not emit annotations for skipped tests', async () => {
+    await reporter.onRunEnd!(makeFullResult({
+      tests: [makeTestResult({ status: 'skipped' })],
+    }));
+    expect(stdoutSpy).not.toHaveBeenCalled();
+  });
+
+  it('does not emit annotations mid-run (onTestEnd / onTestFileEnd)', () => {
+    const failed = makeTestResult({
+      status: 'failed',
+      fullName: 'streamed failure',
+      error: new Error('live failure'),
+    });
+    reporter.onTestEnd?.(failed);
+    reporter.onTestFileEnd?.('/test.ts', [failed]);
+    expect(stdoutSpy).not.toHaveBeenCalled();
+  });
+
+  it('only emits annotations for failed tests in mixed results', async () => {
+    await reporter.onRunEnd!(makeFullResult({
+      tests: [
+        makeTestResult({ status: 'passed', fullName: 'test A' }),
+        makeTestResult({ status: 'failed', fullName: 'test B', error: new Error('fail') }),
+        makeTestResult({ status: 'skipped', fullName: 'test C' }),
+      ],
+    }));
     const output = stdoutSpy.mock.calls.map((c: unknown[]) => c[0]).join('');
     expect(output).toContain('test B');
     expect(output).not.toContain('test A');
     expect(output).not.toContain('test C');
+  });
+
+  it('emits ::warning annotations for flaky tests with the first-attempt error', async () => {
+    await reporter.onRunEnd!(makeFullResult({
+      tests: [makeTestResult({
+        status: 'passed',
+        fullName: 'flaky test',
+        retry: 1,
+        firstAttemptError: new Error('Test timed out after 90000ms'),
+      })],
+    }));
+    const output = stdoutSpy.mock.calls.map((c: unknown[]) => c[0]).join('');
+    expect(output).toContain('::warning');
+    expect(output).toContain('flaky: flaky test');
+    expect(output).toContain('Test timed out after 90000ms');
+    expect(output).not.toContain('::error');
+  });
+
+  it('anchors annotations to the test file, not tapsmith internals', async () => {
+    const error = new Error('Expected element to be visible');
+    error.stack = [
+      'Error: Expected element to be visible',
+      '    at fail (/repo/packages/tapsmith/src/expect.ts:445:17)',
+      '    at Object.toContainText (/repo/packages/tapsmith/src/expect.ts:665:9)',
+      '    at async Object.fn (/repo/e2e/tests/gestures.test.ts:27:5)',
+    ].join('\n');
+    await reporter.onRunEnd!(makeFullResult({
+      tests: [makeTestResult({ status: 'failed', fullName: 'double tap', error })],
+    }));
+    const output = stdoutSpy.mock.calls.map((c: unknown[]) => c[0]).join('');
+    expect(output).toContain('file=/repo/e2e/tests/gestures.test.ts,line=27');
   });
 
   afterEach(() => {
@@ -875,6 +982,43 @@ describe('BlobReporter', () => {
 
     stderrSpy.mockRestore();
     fs.rmSync(tmpDir, { recursive: true });
+  });
+
+  it('round-trips firstAttemptError and the linked (failed-attempt) trace', async () => {
+    const fs = await import('node:fs');
+    const path = await import('node:path');
+    const os = await import('node:os');
+
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tapsmith-blob-flaky-'));
+    const traceDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tapsmith-blob-flaky-trace-'));
+    const tracePath = path.join(traceDir, 'trace-flaky-attempt0.zip');
+    fs.writeFileSync(tracePath, 'zip-bytes');
+
+    const { BlobReporter, mergeBlobs } = await import('../reporters/blob.js');
+    const stderrSpy = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    const reporter = new BlobReporter({ outputDir: tmpDir });
+
+    reporter.onRunStart!(makeConfig({ rootDir: '/' }), 1);
+    await reporter.onRunEnd!(makeFullResult({
+      tests: [makeTestResult({
+        status: 'passed',
+        fullName: 'flaky test',
+        retry: 1,
+        firstAttemptError: new Error('Test timed out after 90000ms'),
+        tracePath,
+      })],
+    }));
+
+    const merged = mergeBlobs(tmpDir);
+    expect(merged.tests).toHaveLength(1);
+    expect(merged.tests[0].firstAttemptError?.message).toBe('Test timed out after 90000ms');
+    // The failed attempt's trace file itself travelled inside the blob.
+    expect(merged.tests[0].tracePath).toBe(path.join(tmpDir, 'trace-flaky-attempt0.zip'));
+    expect(fs.existsSync(merged.tests[0].tracePath!)).toBe(true);
+
+    stderrSpy.mockRestore();
+    fs.rmSync(tmpDir, { recursive: true });
+    fs.rmSync(traceDir, { recursive: true });
   });
 });
 

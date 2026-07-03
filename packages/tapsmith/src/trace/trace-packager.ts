@@ -41,6 +41,8 @@ export interface PackageOptions {
   project?: string
   /** Path to the app state archive restored before this test. */
   appState?: string
+  /** Zero-based attempt number; retries get a `-retryN` filename suffix. */
+  retry?: number
 }
 
 /**
@@ -174,7 +176,10 @@ export function packageTrace(
   fs.mkdirSync(options.outputDir, { recursive: true });
   const safeName = safeFileName(options.testName);
   const projectPrefix = options.project ? `${safeFileName(options.project)}-` : '';
-  const zipPath = path.join(options.outputDir, `trace-${projectPrefix}${safeName}-${options.startTime}.zip`);
+  // Retries carry their attempt in the name so a flaky test's failed-attempt
+  // and retry traces are distinguishable in CI artifacts.
+  const retrySuffix = options.retry ? `-retry${options.retry}` : '';
+  const zipPath = path.join(options.outputDir, `trace-${projectPrefix}${safeName}${retrySuffix}-${options.startTime}.zip`);
   fs.writeFileSync(zipPath, zipped);
 
   // Clean up temporary screenshot files

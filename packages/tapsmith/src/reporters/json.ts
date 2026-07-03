@@ -19,6 +19,7 @@ interface JsonTestEntry {
   status: 'passed' | 'failed' | 'skipped'
   duration: number
   error?: { message: string; stack?: string }
+  firstAttemptError?: { message: string; stack?: string }
   screenshotPath?: string
   videoPath?: string
   workerIndex?: number
@@ -100,6 +101,9 @@ function serializeSuite(suite: SuiteResult): JsonSuiteEntry {
       status: t.status,
       duration: t.durationMs,
       error: t.error ? { message: t.error.message, stack: t.error.stack } : undefined,
+      firstAttemptError: t.firstAttemptError
+        ? { message: t.firstAttemptError.message, stack: t.firstAttemptError.stack }
+        : undefined,
       screenshotPath: t.screenshotPath,
       videoPath: t.videoPath,
       workerIndex: t.workerIndex,

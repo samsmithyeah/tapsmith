@@ -2037,13 +2037,25 @@ interface TestResult {
   status: "passed" | "failed" | "skipped";
   durationMs: number;
   error?: Error;
+  firstAttemptError?: Error; // on a flaky (passed-on-retry) result: the first failed attempt's error
+  failedAttemptArtifacts?: { screenshot?: boolean; trace?: boolean; video?: boolean }; // which linked artifacts came from the failed attempt
   screenshotPath?: string;
   tracePath?: string; // path to the trace archive (.zip) when tracing is enabled
   videoPath?: string; // path to the recorded MP4 when `video` is enabled and retained
   workerIndex?: number; // set in parallel mode — index of the worker that ran this test
+  retry?: number; // zero-based attempt number this result was recorded on (omitted for a first-attempt pass)
   filePath?: string; // path to the test file this result belongs to
 }
 ```
+
+For a **flaky** test (failed, then passed on retry) the final result links the
+**first failed attempt's** trace, screenshot, and video — the failure is what
+needs debugging, and shipping pipelines (blob reports, CI artifacts) only pack
+linked files. The failed attempt's error is kept in `firstAttemptError`, and
+console reporters print it in the flaky section of the run summary. When the
+failed attempt has no artifact of a given kind (e.g. `trace: "on-first-retry"`
+records nothing on the first attempt), the passing retry's artifact is linked
+instead.
 
 ### `SuiteResult`
 

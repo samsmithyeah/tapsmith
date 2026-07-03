@@ -25,6 +25,7 @@ import {
 import type { TapsmithConfig } from '../config.js';
 import { Tracing } from '../trace/tracing.js';
 import type { TraceCollector } from '../trace/trace-collector.js';
+import { isCurrentAttemptClosed } from '../attempt-fence.js';
 
 const { pushContext, popContext, runSuiteContext, resolvePlatformFixture, resetFixtureRegistry } = _internal;
 
@@ -1361,6 +1362,153 @@ describe('retries', () => {
     expect(canonical[0].status).toBe('passed');
     expect(canonical[0].retry).toBe(1);
     expect(canonical[0]._willRetry).toBeUndefined();
+  });
+
+  it('keeps the first failed attempt error on a flaky pass', async () => {
+    let callCount = 0;
+    pushContext();
+    tapsmithTest('flaky', async () => {
+      callCount++;
+      if (callCount === 1) throw new Error('first attempt boom');
+      if (callCount === 2) throw new Error('second attempt boom');
+    });
+    const ctx = popContext();
+    const result = await runSuiteContext(ctx, '', [], [], makeOpts({
+      config: makeConfig({ retries: 2 }),
+    }));
+    expect(result.tests[0].status).toBe('passed');
+    expect(result.tests[0].retry).toBe(2);
+    expect(result.tests[0].firstAttemptError?.message).toBe('first attempt boom');
+  });
+
+  it('does not set firstAttemptError on a permanently failing test', async () => {
+    pushContext();
+    tapsmithTest('always fails', async () => { throw new Error('boom'); });
+    const ctx = popContext();
+    const result = await runSuiteContext(ctx, '', [], [], makeOpts({
+      config: makeConfig({ retries: 1 }),
+    }));
+    expect(result.tests[0].status).toBe('failed');
+    expect(result.tests[0].firstAttemptError).toBeUndefined();
+  });
+
+  it('does not set firstAttemptError on a first-attempt pass', async () => {
+    pushContext();
+    tapsmithTest('passes', async () => {});
+    const ctx = popContext();
+    const result = await runSuiteContext(ctx, '', [], [], makeOpts({
+      config: makeConfig({ retries: 2 }),
+    }));
+    expect(result.tests[0].firstAttemptError).toBeUndefined();
+  });
+
+  it('links the failed attempt trace on a flaky pass', async () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'tapsmith-runner-flaky-trace-'));
+    const tracing = new Tracing(async () => undefined, async () => undefined);
+    const mockDevice = {
+      tracing,
+      waitForIdle: vi.fn(async () => {}),
+      _startDeviceLogStream: vi.fn(),
+      _stopDeviceLogStream: vi.fn(),
+      _startDaemonLogStream: vi.fn(),
+      _stopDaemonLogStream: vi.fn(),
+      _disposeRouteManager: vi.fn(async () => {}),
+      _disposeWebViewManager: vi.fn(async () => {}),
+    };
+    const reported: TestResult[] = [];
+    let callCount = 0;
+
+    try {
+      pushContext();
+      tapsmithTest('flaky traced test', async () => {
+        callCount++;
+        if (callCount === 1) throw new Error('first boom');
+      });
+      const ctx = popContext();
+
+      const result = await runSuiteContext(ctx, '', [], [], makeOpts({
+        config: makeConfig({
+          rootDir: tempRoot,
+          outputDir: 'out',
+          retries: 1,
+          trace: {
+            mode: 'retain-on-failure-and-retries',
+            network: false,
+            screenshots: false,
+            snapshots: false,
+            sources: false,
+          },
+        }),
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any -- focused runner lifecycle mock
+        device: mockDevice as any,
+        reporter: { onTestEnd: (t: TestResult) => { reported.push(t); } },
+      }));
+
+      const final = result.tests[0];
+      expect(final.status).toBe('passed');
+
+      // The final result links the FAILED attempt's trace, not the retry's.
+      const failedAttempt = reported.find((t) => t._willRetry);
+      expect(failedAttempt?.tracePath).toBeTruthy();
+      expect(final.tracePath).toBe(failedAttempt!.tracePath);
+      expect(fs.existsSync(final.tracePath!)).toBe(true);
+      expect(final.firstAttemptError?.message).toBe('first boom');
+      // Provenance flags mark which linked artifacts came from the failure
+      // (no screenshot/video were captured here — only the trace flag set).
+      expect(final.failedAttemptArtifacts?.trace).toBe(true);
+      expect(final.failedAttemptArtifacts?.screenshot).toBeUndefined();
+      expect(final.failedAttemptArtifacts?.video).toBeUndefined();
+    } finally {
+      fs.rmSync(tempRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('closes the attempt fence when the body times out', async () => {
+    let zombieObservedClosed: boolean | undefined;
+    let resolveZombieDone!: () => void;
+    const zombieDone = new Promise<void>((r) => { resolveZombieDone = r; });
+
+    pushContext();
+    tapsmithTest('times out but keeps running', async () => {
+      // Outlive the body timeout (config.timeout * 3 = 90ms), then observe
+      // the fence from the abandoned continuation.
+      await new Promise((r) => setTimeout(r, 300));
+      zombieObservedClosed = isCurrentAttemptClosed();
+      resolveZombieDone();
+    });
+    const ctx = popContext();
+
+    const result = await runSuiteContext(ctx, '', [], [], makeOpts({
+      config: makeConfig({ timeout: 30, retries: 0 }),
+    }));
+
+    expect(result.tests[0].status).toBe('failed');
+    expect(result.tests[0].error?.message).toContain('Test timed out');
+    // The zombie body is still running when the runner returns; once it
+    // resumes it must see its attempt as closed so device calls get fenced.
+    await zombieDone;
+    expect(zombieObservedClosed).toBe(true);
+  });
+
+  it('fences a zombie body of a passed attempt too', async () => {
+    let zombieObservedClosed: boolean | undefined;
+    let resolveZombieDone!: () => void;
+    const zombieDone = new Promise<void>((r) => { resolveZombieDone = r; });
+
+    pushContext();
+    tapsmithTest('passes but leaks a continuation', async () => {
+      void (async () => {
+        await new Promise((r) => setTimeout(r, 100));
+        zombieObservedClosed = isCurrentAttemptClosed();
+        resolveZombieDone();
+      })();
+    });
+    const ctx = popContext();
+
+    const result = await runSuiteContext(ctx, '', [], [], makeOpts({ config: makeConfig() }));
+    expect(result.tests[0].status).toBe('passed');
+    await zombieDone;
+    expect(zombieObservedClosed).toBe(true);
   });
 
   it('uses test.use({ retries }) to override config retries', async () => {

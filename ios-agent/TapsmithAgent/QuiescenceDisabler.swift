@@ -276,34 +276,55 @@ enum EventSynthesizer {
 
     /// Double-tap at a screen coordinate.
     ///
-    /// Primary mechanism: ONE event record carrying both taps as two pointer
-    /// paths with disjoint time ranges (down/move/lift each). The replay
-    /// honors the offsets inside the event system, so the inter-tap gap is
-    /// fixed at `interval` regardless of CPU starvation on the host — unlike
-    /// XCUIElement.doubleTap(), whose gap stretched past apps' double-tap
-    /// windows (300-450ms) on loaded CI runners. Disjoint time ranges matter:
-    /// sequential contacts read as one finger tapping twice, which tap
-    /// recognizers accept; OVERLAPPING ranges are a two-finger tap, which
-    /// they reject. A second pressDownAtOffset: on a single path is not an
-    /// option — it is silently dropped on Xcode 26.
+    /// Primary mechanism (pre-iOS-26 runtimes): ONE event record carrying
+    /// both taps as two pointer paths with disjoint time ranges
+    /// (down/move/lift each). The replay honors the offsets inside the event
+    /// system, so the inter-tap gap is fixed at `interval` regardless of CPU
+    /// starvation on the host — unlike XCUIElement.doubleTap(), whose gap
+    /// stretched past apps' double-tap windows (300-450ms) on loaded CI
+    /// runners. Disjoint time ranges matter: sequential contacts read as one
+    /// finger tapping twice, which tap recognizers accept; OVERLAPPING
+    /// ranges are a two-finger tap, which they reject. A second
+    /// pressDownAtOffset: on a single path is not an option — it is silently
+    /// dropped on Xcode 26.
     ///
-    /// Fallback (only if the record cannot be dispatched at all): two
-    /// back-to-back single-tap records with a host-side sleep. Delivery is
-    /// reliable but the gap includes dispatch latency, so it can stretch
-    /// under load.
+    /// iOS 26 runtimes need a different route entirely (all verified
+    /// empirically on the iOS 26.5 simulator runtime, iPhone 17):
+    /// - The multi-path record dispatch REPORTS success but the event
+    ///   pipeline delivers at most the first path's tap — often none.
+    /// - Two sequential single-path records (which individually deliver
+    ///   reliably) are COALESCED when the inter-tap gap is small: at a
+    ///   ~150ms gap only one tap reaches the app. The same is true of the
+    ///   public XCUICoordinate.doubleTap(). Gaps of 200ms+ deliver both.
+    /// So on iOS 26+ the primary is the sequential two-record route with the
+    /// requested interval floored at 250ms — safely above the observed
+    /// coalescing threshold (≲150-200ms) and below common double-tap
+    /// recognizer windows (~300-500ms). The host-side sleep is shortened by
+    /// the first record's dispatch latency to keep the app-visible gap at
+    /// ~the interval.
     static func doubleTap(at point: CGPoint, intervalMs: Int = 0) -> DoubleTapResult {
-        let interval = intervalMs > 0 ? TimeInterval(intervalMs) / 1000.0 : 0.15
-        if doubleTapSingleRecord(at: point, interval: interval) {
-            return .done
+        var interval = intervalMs > 0 ? TimeInterval(intervalMs) / 1000.0 : 0.15
+
+        if runtimeCoalescesRapidTaps {
+            interval = max(interval, 0.25)
+        } else {
+            if doubleTapSingleRecord(at: point, interval: interval) {
+                return .done
+            }
+            NSLog("[EventSynth] double-tap single-record dispatch failed; falling back to sequential taps")
         }
 
-        NSLog("[EventSynth] double-tap single-record dispatch failed; falling back to sequential taps")
         let start = Date()
         guard synthesizeTap(at: point, duration: 0.05) else { return .notStarted }
-        Thread.sleep(forTimeInterval: interval)
+        // The first record's dispatch wait is already part of the app-visible
+        // inter-tap gap — only sleep the remainder.
+        let remaining = interval - Date().timeIntervalSince(start)
+        if remaining > 0 {
+            Thread.sleep(forTimeInterval: remaining)
+        }
         guard synthesizeTap(at: point, duration: 0.05) else { return .firstTapOnly }
         let elapsed = Date().timeIntervalSince(start)
-        if elapsed > 0.35 {
+        if elapsed > 0.5 {
             NSLog(
                 "[EventSynth] sequential double-tap took %.0fms end-to-end — may exceed the app's double-tap window",
                 elapsed * 1000
@@ -311,6 +332,18 @@ enum EventSynthesizer {
         }
         return .done
     }
+
+    /// True on iOS 26+ runtimes, whose event pipeline mishandles synthesized
+    /// double-taps two ways: a record with multiple sequential pointer paths
+    /// delivers at most its first tap, and rapid same-point taps from
+    /// separate records (or the public doubleTap()) are coalesced into one
+    /// when the gap is ≲150-200ms. Single taps and gaps ≥200ms are
+    /// unaffected. Pre-26 runtimes (e.g. iOS 18.x) replay multi-path records
+    /// correctly and never coalesce.
+    private static let runtimeCoalescesRapidTaps: Bool = {
+        if #available(iOS 26.0, *) { return true }
+        return false
+    }()
 
     /// Build and dispatch a single event record containing two sequential
     /// single-finger taps (path 1: down@0 lift@tapDuration; path 2:

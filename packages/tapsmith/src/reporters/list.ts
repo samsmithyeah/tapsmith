@@ -18,10 +18,10 @@ import {
   dim,
   bold,
   red,
-  yellow,
   formatDuration,
   formatError,
   formatSummaryLine,
+  formatFlakySection,
   countFlaky,
   workerTag,
   projectTag,
@@ -95,6 +95,21 @@ export class ListReporter implements TapsmithReporter {
       const project = this._showProjectTags ? projectTag(test.project) : '';
       const file = this._fileSegment(test.filePath);
       this._write(`  ${red('✗')} ${counter} ${worker}${project}${file}${test.fullName} ${duration}\n`);
+      // The failing attempt's error and artifacts are worth seeing even
+      // though a retry is coming — a flaky pass would otherwise hide what
+      // actually failed, and this is where they chronologically belong.
+      if (test.error) {
+        this._write(formatError(test.error) + '\n');
+      }
+      if (test.screenshotPath) {
+        this._write(`        ${dim(`Screenshot: ${test.screenshotPath}`)}\n`);
+      }
+      if (test.tracePath) {
+        this._write(`        ${dim(`Trace: npx tapsmith show-trace ${test.tracePath}`)}\n`);
+      }
+      if (test.videoPath) {
+        this._write(`        ${dim(`Video: ${test.videoPath}`)}\n`);
+      }
       if (this._isTTY) this._printInProgress();
       return;
     }
@@ -113,16 +128,22 @@ export class ListReporter implements TapsmithReporter {
       this._write(formatError(test.error) + '\n');
     }
 
-    if (test.screenshotPath) {
+    // A flaky pass links the failed attempt's artifacts on the result, but
+    // those were already printed under the failing ✗ line above — printing
+    // them again under a green ✓ reads as if the pass produced them. Only
+    // artifacts belonging to the final attempt appear here (e.g. an
+    // on-first-retry video recorded during the passing retry).
+    const fromFailure = test.failedAttemptArtifacts;
+    if (test.screenshotPath && !fromFailure?.screenshot) {
       this._write(`        ${dim(`Screenshot: ${test.screenshotPath}`)}\n`);
     }
 
-    if (test.tracePath) {
-      this._write(`        ${dim(`Trace:      npx tapsmith show-trace ${test.tracePath}`)}\n`);
+    if (test.tracePath && !fromFailure?.trace) {
+      this._write(`        ${dim(`Trace: npx tapsmith show-trace ${test.tracePath}`)}\n`);
     }
 
-    if (test.videoPath) {
-      this._write(`        ${dim(`Video:      ${test.videoPath}`)}\n`);
+    if (test.videoPath && !fromFailure?.video) {
+      this._write(`        ${dim(`Video: ${test.videoPath}`)}\n`);
     }
 
     if (this._isTTY) this._printInProgress();
@@ -150,13 +171,10 @@ export class ListReporter implements TapsmithReporter {
     this._write('\n');
 
     if (flaky > 0) {
-      const flakyTests = result.tests.filter((t) => t.status === 'passed' && t.retry != null && t.retry > 0);
-      this._write(`  ${yellow(`${flaky} flaky`)}\n`);
-      for (const test of flakyTests) {
-        const worker = this._multipleWorkers ? workerTag(test.workerIndex) : '';
-        const project = this._showProjectTags ? projectTag(test.project) : '';
-        this._write(`    ${worker}${project}${test.fullName}\n`);
-      }
+      this._write(formatFlakySection(result.tests, {
+        showWorkerTags: this._multipleWorkers,
+        showProjectTags: this._showProjectTags,
+      }));
     }
 
     if (failed > 0) {

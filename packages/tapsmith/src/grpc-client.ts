@@ -12,6 +12,7 @@ import * as path from 'node:path';
 import * as crypto from 'node:crypto';
 import { type Selector, selectorToProto } from './selectors.js';
 import { TestAbortedError } from './abort.js';
+import { isCurrentAttemptClosed, fencedRejection } from './attempt-fence.js';
 
 // ─── Types mirroring proto messages ───
 
@@ -296,6 +297,14 @@ export class TapsmithGrpcClient {
     const signal = this._abortSignal;
     const bypassAbort = opts?.bypassAbort ?? false;
     if (signal?.aborted && !bypassAbort) return Promise.reject(new TestAbortedError());
+    // A test body abandoned by the runner's timeout keeps executing; fence
+    // its device RPCs so it cannot drive the device while the retry (or the
+    // next test) is running. Cleanup RPCs (bypassAbort) are runner-issued
+    // and never originate from a test attempt context, but keep the guard
+    // symmetric with the abort check above.
+    if (!bypassAbort && isCurrentAttemptClosed()) {
+      return fencedRejection<T>(`'${method}'`);
+    }
     // Cleanup RPCs (bypassAbort) must still reach the daemon after a stop —
     // they release daemon-held resources (video recorder, network capture)
     // that would otherwise leak past the run and break every later run

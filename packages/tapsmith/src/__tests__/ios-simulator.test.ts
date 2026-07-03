@@ -272,9 +272,37 @@ describe('provisionSimulator', () => {
     expect(calls.some((c) => c.includes('install'))).toBe(true);
   });
 
-  it('throws when no simulator matches', () => {
-    mockListSimulators([]);
-    expect(() => provisionSimulator('iPhone 99')).toThrow(/No iOS simulator found/);
+  it('throws when no simulator matches after exhausting lookup retries', () => {
+    let listCalls = 0;
+    mockedExecFileSync.mockImplementation((cmd: string, args: string[]) => {
+      if (cmd === 'xcrun' && args?.[0] === 'simctl' && args?.[1] === 'list') {
+        listCalls++;
+        return makeSimctlOutput([]) as unknown as Buffer;
+      }
+      return '' as unknown as Buffer;
+    });
+    expect(() => provisionSimulator('iPhone 99', undefined, { attempts: 3, delayMs: 1 }))
+      .toThrow(/No iOS simulator found/);
+    expect(listCalls).toBe(3);
+  });
+
+  it('retries the lookup when simctl transiently returns no devices', () => {
+    // CoreSimulator under load can fail or return an empty set for a beat —
+    // the simulator "reappears" on the next list (seen on CI as a fatal
+    // "No iOS simulator found" minutes after that exact sim was booted).
+    let listCalls = 0;
+    mockedExecFileSync.mockImplementation((cmd: string, args: string[]) => {
+      if (cmd === 'xcrun' && args?.[0] === 'simctl' && args?.[1] === 'list') {
+        listCalls++;
+        if (listCalls === 1) throw new Error('Failed to load CoreSimulatorService');
+        return makeSimctlOutput([{ udid: 'B', name: 'iPhone 17', state: 'Booted' }]) as unknown as Buffer;
+      }
+      return '' as unknown as Buffer;
+    });
+
+    const udid = provisionSimulator('iPhone 17', undefined, { attempts: 4, delayMs: 1 });
+    expect(udid).toBe('B');
+    expect(listCalls).toBe(2);
   });
 });
 

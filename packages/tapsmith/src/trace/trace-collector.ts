@@ -9,6 +9,7 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { isCurrentAttemptClosed } from '../attempt-fence.js';
 import type {
   ActionTraceEvent,
   AssertionTraceEvent,
@@ -366,6 +367,10 @@ export class TraceCollector {
    * Called by tracedAction / wrapAssertionWithTrace before executing the user's fn().
    */
   setPendingOperation(failHandler: (error: string) => void): void {
+    // A zombie body (timed-out attempt still executing) shares the global
+    // active collector with the current attempt — its writes are dropped so
+    // it can't clobber the live attempt's pending operation or events.
+    if (isCurrentAttemptClosed()) return;
     this._pendingOperationHandler = failHandler;
   }
 
@@ -373,6 +378,7 @@ export class TraceCollector {
    * Clear the pending operation after it completes normally.
    */
   clearPendingOperation(): void {
+    if (isCurrentAttemptClosed()) return;
     this._pendingOperationHandler = null;
   }
 
@@ -400,6 +406,9 @@ export class TraceCollector {
   ): Promise<{ actionIndex: number; captures: Partial<CaptureBeforeAfter> }> {
     const actionIndex = this._actionIndex;
     const captures: Partial<CaptureBeforeAfter> = {};
+
+    // Fenced zombie attempt — record nothing against the live attempt.
+    if (isCurrentAttemptClosed()) return { actionIndex, captures };
 
     const tasks: Promise<void>[] = [];
 
@@ -563,6 +572,7 @@ export class TraceCollector {
    * Emit a fully-formed action event.
    */
   addActionEvent(event: Omit<ActionTraceEvent, 'type' | 'actionIndex' | 'timestamp'>): void {
+    if (isCurrentAttemptClosed()) return;
     this._flushPendingGroups();
     const now = Date.now();
     const full = {
@@ -583,6 +593,7 @@ export class TraceCollector {
    * Emit an assertion event.
    */
   addAssertionEvent(event: Omit<AssertionTraceEvent, 'type' | 'actionIndex' | 'timestamp'>): void {
+    if (isCurrentAttemptClosed()) return;
     this._flushPendingGroups();
     const now = Date.now();
     const full = {
@@ -653,7 +664,7 @@ export class TraceCollector {
       hasHierarchyAfter?: boolean
     },
   ): void {
-    if (!this._onEvent) return;
+    if (!this._onEvent || isCurrentAttemptClosed()) return;
     // Flush any pending group-starts so UI mode renders the group header
     // (e.g. "beforeEach Hooks") immediately when the first action in the
     // group goes in-flight, rather than only after it completes. Once
@@ -684,7 +695,7 @@ export class TraceCollector {
       'type' | 'actionIndex' | 'timestamp' | 'duration' | 'attempts' | 'passed'
     >,
   ): void {
-    if (!this._onEvent) return;
+    if (!this._onEvent || isCurrentAttemptClosed()) return;
     this._flushPendingGroups();
     const full = {
       ...partial,
@@ -702,6 +713,7 @@ export class TraceCollector {
   // ── Groups ──
 
   startGroup(name: string): void {
+    if (isCurrentAttemptClosed()) return;
     this._groupStack.push(name);
     // Defer emission — only flush when a child event arrives. Empty
     // groups are dropped silently in endGroup() so the trace viewer
@@ -716,6 +728,7 @@ export class TraceCollector {
   }
 
   endGroup(): void {
+    if (isCurrentAttemptClosed()) return;
     const name = this._groupStack.pop() ?? 'unknown';
     // If the matching group-start is still pending, the group had no
     // children — drop both events.

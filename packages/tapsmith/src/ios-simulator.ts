@@ -284,15 +284,33 @@ export function findSimulator(nameOrUdid: string): SimulatorInfo | undefined {
   return byName[0];
 }
 
+const FIND_SIMULATOR_ATTEMPTS = 4;
+const FIND_SIMULATOR_RETRY_DELAY_MS = 3000;
+
 /**
  * Provision a simulator for testing: find by name, boot if needed, install app.
  * Returns the UDID of the booted simulator.
+ *
+ * The lookup is retried: `simctl list` can transiently fail or return an
+ * empty device set while CoreSimulator is busy (concurrent boots on CI
+ * runners) — `listSimulators()` maps that to `[]`, which is
+ * indistinguishable from the simulator genuinely not existing. Seen on CI
+ * as a fatal "No iOS simulator found matching 'iPhone 17'" minutes after
+ * the workflow booted that exact simulator.
  */
 export function provisionSimulator(
   simulatorName: string,
   appPath?: string,
+  retry: { attempts: number; delayMs: number } = {
+    attempts: FIND_SIMULATOR_ATTEMPTS,
+    delayMs: FIND_SIMULATOR_RETRY_DELAY_MS,
+  },
 ): string {
-  const sim = findSimulator(simulatorName);
+  let sim = findSimulator(simulatorName);
+  for (let attempt = 1; !sim && attempt < retry.attempts; attempt++) {
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, retry.delayMs);
+    sim = findSimulator(simulatorName);
+  }
   if (!sim) {
     throw new Error(
       `No iOS simulator found matching '${simulatorName}'. ` +

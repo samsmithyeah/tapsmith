@@ -30,6 +30,7 @@ import type { AnyTraceEvent } from './trace/types.js';
 import { getSimulatorScreenScale } from './ios-simulator.js';
 import type { TraceDeviceInfo } from './trace/types.js';
 import { TestAbortedError, isAbortError } from './abort.js';
+import { runInAttemptContext, type AttemptToken } from './attempt-fence.js';
 import { matchesTestFilter } from './test-filter.js';
 
 // ─── Trace Device Info ───
@@ -146,6 +147,21 @@ export interface TestResult {
   project?: string;
   /** Zero-based attempt number on which this result was recorded (omitted for first run). */
   retry?: number;
+  /**
+   * The first failed attempt's error, kept on a flaky (passed-on-retry)
+   * result so reporters can show why the test flaked. The failed attempt's
+   * trace/screenshot/video are linked via the regular path fields.
+   */
+  firstAttemptError?: Error;
+  /**
+   * For flaky (passed-on-retry) results: which of the linked artifacts came
+   * from the first failed attempt rather than the passing retry, so
+   * reporters can label them (a failure screenshot under a green ✓ is
+   * confusing otherwise). Artifacts can mix: e.g. trace from the failed
+   * attempt (retain-on-failure) alongside a video from the retry
+   * (on-first-retry).
+   */
+  failedAttemptArtifacts?: { screenshot?: boolean; trace?: boolean; video?: boolean };
   /** @internal True when this result represents a failed attempt that will be retried. */
   _willRetry?: boolean;
   /** Path to the test file this result belongs to. */
@@ -945,6 +961,17 @@ async function runSuiteContext(
     const maxRetries = opts.config.retries;
     let lastAttempt = 0;
     let attemptStart = testStart;
+    // First failed attempt's error + artifacts. When the test ultimately
+    // passes on retry (flaky), the FAILURE is what needs debugging — its
+    // trace/screenshot/video are linked on the final result (shipping
+    // pipelines like the blob reporter only pack linked files) and its
+    // error is surfaced via `firstAttemptError`.
+    let firstFailure: {
+      error: Error;
+      tracePath?: string;
+      screenshotPath?: string;
+      videoPath?: string;
+    } | undefined;
     const traceConfig = resolveTraceConfig(opts.config.trace);
     const videoConfig = resolveVideoConfig(opts.config.video);
 
@@ -1174,12 +1201,23 @@ async function runSuiteContext(
           // spurious timeouts. Also raced against the run's abort signal so a
           // user stop interrupts even pure-JS waits that never touch the
           // device (in-flight device calls are cancelled via the gRPC client).
+          //
+          // The body runs inside an attempt-fence context: a timed-out body
+          // cannot be cancelled (Promise.race only abandons it), so once the
+          // race settles the token is closed and any device RPC the zombie
+          // body still issues rejects immediately instead of racing the
+          // retry on the shared device.
           let testTimer: ReturnType<typeof setTimeout> | undefined;
           let onTestAbort: (() => void) | undefined;
           const abortSignal = opts.abortSignal;
+          const attemptToken: AttemptToken = { closed: false };
+          const bodyPromise = runInAttemptContext(attemptToken, testFn);
+          // The race may abandon the body; its eventual rejection (fenced
+          // device calls) must not surface as an unhandled rejection.
+          bodyPromise.catch(() => {});
           try {
             await Promise.race([
-              testFn(),
+              bodyPromise,
               new Promise<never>((_, reject) => {
                 testTimer = setTimeout(() => reject(new Error(
                   `Test timed out after ${testTimeoutMs}ms`
@@ -1197,6 +1235,7 @@ async function runSuiteContext(
               })] : []),
             ]);
           } finally {
+            attemptToken.closed = true;
             // Clear the timeout here (not via testFn().finally) so an abort
             // settling the race doesn't leave a long-lived timer behind.
             if (testTimer) clearTimeout(testTimer);
@@ -1474,6 +1513,7 @@ async function runSuiteContext(
                 networkEntries,
                 project: opts.projectName,
                 appState: scopeAppState || undefined,
+                retry: attempt > 0 ? attempt : undefined,
               });
             } catch {
               // Trace packaging is best-effort
@@ -1542,6 +1582,10 @@ async function runSuiteContext(
 
       if (status === 'passed' || attempt === maxRetries || opts.abortSignal?.aborted) break;
 
+      if (!firstFailure && error) {
+        firstFailure = { error, tracePath, screenshotPath, videoPath };
+      }
+
       // Report the intermediate failure so reporters can show each attempt
       opts.reporter?.onTestEnd?.({
         name: entry.name,
@@ -1559,6 +1603,24 @@ async function runSuiteContext(
       });
     }
 
+    // Flaky pass: link the first FAILED attempt's artifacts in place of the
+    // passing retry's — the failure is the thing worth opening. Falls back
+    // to the retry's own artifacts when the failed attempt has none (e.g.
+    // trace mode 'on-first-retry' records nothing on the first attempt).
+    // Provenance is recorded per artifact so reporters can label which
+    // paths belong to the failure vs the passing retry.
+    let failedAttemptArtifacts: TestResult['failedAttemptArtifacts'];
+    if (status === 'passed' && firstFailure) {
+      failedAttemptArtifacts = {
+        screenshot: !!firstFailure.screenshotPath || undefined,
+        trace: !!firstFailure.tracePath || undefined,
+        video: !!firstFailure.videoPath || undefined,
+      };
+      tracePath = firstFailure.tracePath ?? tracePath;
+      screenshotPath = firstFailure.screenshotPath ?? screenshotPath;
+      videoPath = firstFailure.videoPath ?? videoPath;
+    }
+
     const testResult: TestResult = {
       name: entry.name,
       fullName,
@@ -1570,6 +1632,8 @@ async function runSuiteContext(
       videoPath,
       project: opts.projectName,
       retry: lastAttempt > 0 ? lastAttempt : undefined,
+      firstAttemptError: status === 'passed' ? firstFailure?.error : undefined,
+      failedAttemptArtifacts,
       filePath: opts.testFilePath,
     };
     result.tests.push(testResult);

@@ -73,8 +73,13 @@ describe("Accessibility screen", () => {
 
   // ─── Grouped Elements ───
 
-  test("grouped profile is visible after scrolling", async ({ device, accessibilityScreen }) => {
-    await device.swipe("up")
+  test("grouped profile is visible after scrolling", async ({ accessibilityScreen }) => {
+    // scrollIntoView rather than a blind swipe: one swipe's scroll distance
+    // depends on device metrics — on iPhone 17 (iOS 26 CI image) it left the
+    // profile below the fold at y=1076 with an ~874pt viewport, failing the
+    // visibility assertion. This test is about grouped a11y semantics, not
+    // swipe mechanics (gestures.test.ts covers those).
+    await accessibilityScreen.groupedProfile.scrollIntoView()
     await expect(accessibilityScreen.groupedProfile).toBeVisible()
   })
 })
