@@ -305,6 +305,51 @@ export class TraceCollector {
   }
 
   /**
+   * @internal — Record an already-formed event replayed from another
+   * collector (beforeAll hooks) so it lands in this collector's packaged
+   * trace, not just the UI-mode live stream. The event keeps its original
+   * actionIndex and timestamps; screenshot captures reference the source
+   * collector's on-disk files, which must outlive this test's packaging.
+   */
+  ingestReplayedEvent(
+    event: AnyTraceEvent,
+    captures?: {
+      screenshotBefore?: string
+      screenshotAfter?: string
+      hierarchyBefore?: string
+      hierarchyAfter?: string
+    },
+  ): void {
+    this._events.push(event);
+    if (event.type !== 'action' && event.type !== 'assertion') return;
+    const pad = String(event.actionIndex).padStart(3, '0');
+    if (captures?.screenshotBefore) {
+      this._screenshots.push({
+        archivePath: `screenshots/action-${pad}-before.png`,
+        diskPath: captures.screenshotBefore,
+      });
+    }
+    if (captures?.screenshotAfter) {
+      this._screenshots.push({
+        archivePath: `screenshots/action-${pad}-after.png`,
+        diskPath: captures.screenshotAfter,
+      });
+    }
+    if (captures?.hierarchyBefore) {
+      this._hierarchies.push({
+        archivePath: `hierarchy/action-${pad}-before.xml`,
+        xml: captures.hierarchyBefore,
+      });
+    }
+    if (captures?.hierarchyAfter) {
+      this._hierarchies.push({
+        archivePath: `hierarchy/action-${pad}-after.xml`,
+        xml: captures.hierarchyAfter,
+      });
+    }
+  }
+
+  /**
    * @internal — Set the timestamp that action wall durations should account
    * from. This should be called before the first action/assertion is emitted.
    */

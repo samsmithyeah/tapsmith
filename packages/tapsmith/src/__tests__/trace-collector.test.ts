@@ -637,3 +637,86 @@ describe('collectReferencedFiles', () => {
     expect(collectReferencedFiles(events).sort()).toEqual(['/p/a.ts', '/p/h.ts']);
   });
 });
+
+describe('ingestReplayedEvent', () => {
+  let tempDir: string;
+  let config: TraceConfig;
+
+  beforeEach(() => {
+    tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tapsmith-trace-test-'));
+    config = {
+      mode: 'on',
+      screenshots: true,
+      snapshots: true,
+      sources: true,
+      attachments: true, network: false, deviceLogs: false, daemonLogs: false,
+    };
+  });
+
+  afterEach(() => {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  function makeActionEvent(actionIndex: number): AnyTraceEvent {
+    return {
+      type: 'action',
+      actionIndex,
+      timestamp: 1000 + actionIndex,
+      category: 'device',
+      action: 'openDeepLink',
+      duration: 42,
+      success: true,
+      log: [],
+      hasScreenshotBefore: true,
+      hasScreenshotAfter: false,
+      hasHierarchyBefore: true,
+      hasHierarchyAfter: false,
+    } as unknown as AnyTraceEvent;
+  }
+
+  it('records the event without touching the action index or event callback', () => {
+    const collector = new TraceCollector(config, tempDir);
+    collector.setActionIndexOffset(3);
+    const streamed: AnyTraceEvent[] = [];
+    collector.setEventCallback((event) => { streamed.push(event); });
+
+    collector.ingestReplayedEvent(makeActionEvent(0));
+
+    expect(collector.events).toHaveLength(1);
+    expect(collector.events[0].actionIndex).toBe(0);
+    expect(collector.currentActionIndex).toBe(3);
+    // Streaming replayed events is the caller's decision, not the ingest path's.
+    expect(streamed).toHaveLength(0);
+  });
+
+  it('registers screenshot and hierarchy captures for packaging', () => {
+    const collector = new TraceCollector(config, tempDir);
+    const shotPath = path.join(tempDir, 'ba-action-000-before.png');
+    fs.writeFileSync(shotPath, Buffer.from('png-bytes'));
+
+    collector.ingestReplayedEvent(makeActionEvent(0), {
+      screenshotBefore: shotPath,
+      hierarchyBefore: '<hierarchy/>',
+    });
+
+    expect(collector.screenshots).toEqual([
+      { archivePath: 'screenshots/action-000-before.png', diskPath: shotPath },
+    ]);
+    expect(collector.hierarchies).toContainEqual(
+      { archivePath: 'hierarchy/action-000-before.xml', xml: '<hierarchy/>' },
+    );
+  });
+
+  it('records group events verbatim without capture registration', () => {
+    const collector = new TraceCollector(config, tempDir);
+    const group = {
+      type: 'group-start', name: 'beforeAll Hooks', actionIndex: 0, timestamp: 1000,
+    } as unknown as AnyTraceEvent;
+
+    collector.ingestReplayedEvent(group);
+
+    expect(collector.events).toEqual([group]);
+    expect(collector.screenshots).toHaveLength(0);
+    expect(collector.hierarchies).toHaveLength(0);
+  });
+});

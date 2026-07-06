@@ -689,18 +689,22 @@ function validateHookFixtures(
 }
 
 /**
- * Replay saved beforeAll trace events through a test's event callback.
- * Reads screenshots from the beforeAll collector's temp dir so they appear
- * in the UI for every test, not just the first.
+ * Replay saved beforeAll trace events into a test's trace.
+ *
+ * Events are recorded into the test's collector so they land in the packaged
+ * trace archive (headless runs included), and — when `stream` is set — also
+ * forwarded through the collector's event callback so UI mode shows them
+ * live. Screenshots are read from the beforeAll collector's temp dir, which
+ * outlives per-test packaging (it is cleaned up after the suite finishes).
  */
 function replayBeforeAllEvents(
   testCollector: TraceCollector,
   events: readonly AnyTraceEvent[],
   beforeAllCollector: TraceCollector | null,
   hierarchies: Map<number, { before?: string; after?: string }>,
+  stream: boolean,
 ): void {
-  const cb = testCollector.getEventCallback();
-  if (!cb) return;
+  const cb = stream ? testCollector.getEventCallback() : undefined;
   const screenshotDir = beforeAllCollector
     ? path.join(beforeAllCollector.tempDir, 'screenshots')
     : null;
@@ -710,18 +714,31 @@ function replayBeforeAllEvents(
       const pad = String(event.actionIndex).padStart(3, '0');
       const beforePath = path.join(screenshotDir, `action-${pad}-before.png`);
       const afterPath = path.join(screenshotDir, `action-${pad}-after.png`);
-      const captures: {
-        before?: Buffer; after?: Buffer;
-        hierarchyBefore?: string; hierarchyAfter?: string;
-      } = {};
-      try { if (fs.existsSync(beforePath)) captures.before = fs.readFileSync(beforePath); } catch { /* best-effort */ }
-      try { if (fs.existsSync(afterPath)) captures.after = fs.readFileSync(afterPath); } catch { /* best-effort */ }
       const hier = hierarchies.get(event.actionIndex);
-      if (hier?.before) captures.hierarchyBefore = hier.before;
-      if (hier?.after) captures.hierarchyAfter = hier.after;
-      cb(event, captures);
+      let hasBefore = false;
+      let hasAfter = false;
+      try { hasBefore = fs.existsSync(beforePath); } catch { /* best-effort */ }
+      try { hasAfter = fs.existsSync(afterPath); } catch { /* best-effort */ }
+      testCollector.ingestReplayedEvent(event, {
+        screenshotBefore: hasBefore ? beforePath : undefined,
+        screenshotAfter: hasAfter ? afterPath : undefined,
+        hierarchyBefore: hier?.before,
+        hierarchyAfter: hier?.after,
+      });
+      if (cb) {
+        const captures: {
+          before?: Buffer; after?: Buffer;
+          hierarchyBefore?: string; hierarchyAfter?: string;
+        } = {};
+        try { if (hasBefore) captures.before = fs.readFileSync(beforePath); } catch { /* best-effort */ }
+        try { if (hasAfter) captures.after = fs.readFileSync(afterPath); } catch { /* best-effort */ }
+        if (hier?.before) captures.hierarchyBefore = hier.before;
+        if (hier?.after) captures.hierarchyAfter = hier.after;
+        cb(event, captures);
+      }
     } else {
-      cb(event);
+      testCollector.ingestReplayedEvent(event);
+      cb?.(event);
     }
   }
 }
@@ -1109,11 +1126,17 @@ async function runSuiteContext(
             opts.reporter?.onTestStart?.(fullName, opts.testFilePath, { project: opts.projectName });
           }
 
-          // Replay beforeAll events into this test's trace stream.
-          // For the first test (which received beforeAll's live-streamed events),
-          // skip replay to avoid duplicates.
-          if (fullName !== beforeAllFirstFullName && savedBeforeAllEvents.length > 0 && traceCollector) {
-            replayBeforeAllEvents(traceCollector, savedBeforeAllEvents, beforeAllCollector, beforeAllHierarchies);
+          // Replay beforeAll events into this test's trace so they appear in
+          // the packaged archive for every test. UI streaming is skipped for
+          // the first test, which already received beforeAll's live-streamed
+          // events (recording them here is still needed — during beforeAll
+          // the active collector was the standalone beforeAll collector, so
+          // no test's own collector has these events).
+          if (savedBeforeAllEvents.length > 0 && traceCollector) {
+            replayBeforeAllEvents(
+              traceCollector, savedBeforeAllEvents, beforeAllCollector, beforeAllHierarchies,
+              fullName !== beforeAllFirstFullName,
+            );
           }
 
           // Open the beforeEach group before running setup work and hooks.
