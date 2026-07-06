@@ -32,20 +32,6 @@ function write(body) {
   writeFileSync(OUT_FILE, FRONTMATTER + body)
 }
 
-// Demote markdown headings by one level (## -> ###) so release-body category
-// headings nest under the per-version `##` heading. Skips fenced code blocks.
-function demoteHeadings(md) {
-  let inFence = false
-  return md
-    .split('\n')
-    .map((line) => {
-      if (/^\s*```/.test(line)) inFence = !inFence
-      if (inFence) return line
-      return line.replace(/^(#{1,5}) /, '#$1 ')
-    })
-    .join('\n')
-}
-
 function formatDate(iso) {
   if (!iso) return ''
   const d = new Date(iso)
@@ -88,41 +74,23 @@ function escapeHtmlPreservingCode(md) {
     .join('\n')
 }
 
-// Drop headings that end up with no bullet items beneath them (e.g. a category
-// whose only entries were filtered-out version-bump PRs). Non-bullet lines in
-// the block (like the trailing "Full Changelog" link) are preserved.
-function removeEmptySections(lines) {
-  const out = []
-  for (let i = 0; i < lines.length; i++) {
-    if (/^#{1,6}\s/.test(lines[i])) {
-      let j = i + 1
-      let hasItems = false
-      while (j < lines.length && !/^#{1,6}\s/.test(lines[j])) {
-        if (/^\s*[*-]\s/.test(lines[j])) hasItems = true
-        j++
-      }
-      if (!hasItems) {
-        for (let k = i + 1; k < j; k++) if (lines[k].trim() !== '') out.push(lines[k])
-        i = j - 1
-        continue
-      }
-    }
-    out.push(lines[i])
-  }
-  return out
-}
-
-// Tidy the auto-generated GitHub notes for the docs page:
-//   - strip the "by @user in <pr-url>" attribution from each item
+// Tidy GitHub's auto-generated notes into a flat bullet list for the docs page.
+// This project doesn't label PRs, so category headings are just noise — we drop
+// every section heading and render each release as a plain list of its PRs:
+//   - drop the HTML comment GitHub prepends when .github/release.yml is present
+//   - drop all section headings (What's Changed / categories / New Contributors)
 //   - drop version-bump PRs ("Bump version to X.Y.Z")
-//   - drop the generic "What's Changed" heading (real category headings stay)
+//   - drop "first contribution" credits (they duplicate PRs already listed)
+//   - strip the "by @user in <pr-url>" attribution from each item
 function cleanBody(md) {
   const kept = md
+    .replace(/<!--[\s\S]*?-->/g, '')
     .split('\n')
+    .filter((line) => !/^#{1,6}\s/.test(line))
     .filter((line) => !/^\s*[*-]\s+bump version\b/i.test(line))
-    .filter((line) => !/^#{1,6}\s+what['’]s changed\s*$/i.test(line))
+    .filter((line) => !/made their first contribution/i.test(line))
     .map((line) => line.replace(/\s+by @[\w-]+ in https?:\/\/\S+\s*$/i, ''))
-  return escapeHtmlPreservingCode(removeEmptySections(kept).join('\n'))
+  return escapeHtmlPreservingCode(kept.join('\n'))
     .replace(/\n{3,}/g, '\n\n')
     .trim()
 }
@@ -132,7 +100,7 @@ function renderRelease(r) {
   const date = formatDate(r.published_at)
   const meta = date ? `\n\n_Released ${date}${r.prerelease ? ' · pre-release' : ''}_` : ''
   const body = cleanBody((r.body || '').trim())
-  const notes = body ? `\n\n${demoteHeadings(body)}` : '\n\n_No notes for this release._'
+  const notes = body ? `\n\n${body}` : '\n\n_No notes for this release._'
   return `${heading}${meta}${notes}`
 }
 
