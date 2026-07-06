@@ -200,6 +200,66 @@ class CommandHandler {
         return false
     }
 
+    /// Whether the simulator display is showing (near-)pure black where the
+    /// app's content should be.
+    ///
+    /// CI simulators intermittently stop compositing the app's window while
+    /// the process, its accessibility tree, and even tap dispatch keep
+    /// working (observed on GitHub macOS runners, July 2026). Warm deep-link
+    /// delivery verifies navigation via the accessibility tree, so without a
+    /// pixel check it reports success against a black display and carries
+    /// the broken state into subsequent tests; the cold path's terminate +
+    /// relaunch recreates the render surface and recovers.
+    ///
+    /// Downscales one screenshot and takes the maximum channel value across
+    /// all sampled pixels, excluding the top and bottom 12% (the status
+    /// bar's clock/battery — and the home indicator — keep rendering even
+    /// when the app's window has stopped compositing). Any visible content,
+    /// including sparse light text on a dark-mode screen, produces bright
+    /// samples; a false positive merely costs a cold relaunch, never a
+    /// wrong verdict.
+    private func displayAppearsBlack() -> Bool {
+        let image = XCUIScreen.main.screenshot().image
+        guard let cgImage = image.cgImage, cgImage.width > 8, cgImage.height > 8 else {
+            return false
+        }
+        let sampleWidth = 64
+        let sampleHeight = 128
+        let bytesPerPixel = 4
+        var pixels = [UInt8](repeating: 0, count: sampleWidth * sampleHeight * bytesPerPixel)
+        let drawn = pixels.withUnsafeMutableBytes { buffer -> Bool in
+            guard let context = CGContext(
+                data: buffer.baseAddress,
+                width: sampleWidth,
+                height: sampleHeight,
+                bitsPerComponent: 8,
+                bytesPerRow: sampleWidth * bytesPerPixel,
+                space: CGColorSpaceCreateDeviceRGB(),
+                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+            ) else { return false }
+            context.interpolationQuality = .low
+            context.draw(
+                cgImage,
+                in: CGRect(x: 0, y: 0, width: sampleWidth, height: sampleHeight)
+            )
+            return true
+        }
+        guard drawn else { return false }
+
+        // Exclude both vertical ends rather than reasoning about CGContext
+        // row order — the status bar is at one end, the home indicator at
+        // the other, and both keep rendering over a dead app window.
+        let excludedRows = Int(Double(sampleHeight) * 0.12)
+        var maxChannel: UInt8 = 0
+        for row in excludedRows..<(sampleHeight - excludedRows) {
+            for col in 0..<sampleWidth {
+                let offset = (row * sampleWidth + col) * bytesPerPixel
+                maxChannel = max(maxChannel, pixels[offset], pixels[offset + 1], pixels[offset + 2])
+            }
+        }
+        return maxChannel < 10
+    }
+
     /// Dismiss any blocking iOS system dialog currently covering the app
     /// (e.g. "Save Password?", "Allow Notifications?", iCloud Keychain
     /// prompts). Returns true if a dialog was dismissed. Intended for
@@ -1371,6 +1431,16 @@ class CommandHandler {
 
                 if let before = preOpenHierarchy {
                     if waitForDeepLinkNavigation(targetApp, before: before, timeout: 5.0) {
+                        // The hierarchy check can pass against a display that
+                        // has stopped compositing (a11y stays healthy while
+                        // the screen shows black); reject so the daemon's
+                        // cold fallback recreates the render surface.
+                        if displayAppearsBlack() {
+                            throw AgentError.actionFailed(
+                                "openDeepLink: display is not rendering after warm "
+                                    + "in-process delivery of \(urlString)"
+                            )
+                        }
                         _ = rebindApp(bundleId: bundleId)
                         return ["success": true]
                     }
