@@ -512,6 +512,24 @@ describe('Device.openDeepLink()', () => {
     expect(openDeepLink).toHaveBeenCalledWith('myapp://reset', { forceColdLaunch: true });
   });
 
+  it('forces cold launch on every call while _setForceColdDeepLinks is set', async () => {
+    const openDeepLink = vi.fn(async () => successResponse());
+    const client = makeMockClient({ openDeepLink });
+    const device = new Device(client);
+
+    device._setForceColdDeepLinks(true);
+    await device.openDeepLink('myapp://settings');
+    expect(openDeepLink).toHaveBeenLastCalledWith('myapp://settings', { forceColdLaunch: true });
+
+    // An explicit warm request cannot override the retry-attempt flag.
+    await device.openDeepLink('myapp://settings', { forceColdLaunch: false });
+    expect(openDeepLink).toHaveBeenLastCalledWith('myapp://settings', { forceColdLaunch: true });
+
+    device._setForceColdDeepLinks(false);
+    await device.openDeepLink('myapp://settings');
+    expect(openDeepLink).toHaveBeenLastCalledWith('myapp://settings', undefined);
+  });
+
   it('throws on failure', async () => {
     const client = makeMockClient({
       openDeepLink: vi.fn(async () => failureResponse('')),

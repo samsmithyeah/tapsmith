@@ -1244,6 +1244,31 @@ describe('resolvePlatformFixture()', () => {
 // ─── Retries ───
 
 describe('retries', () => {
+  it('forces cold deep links on retry attempts and resets on first attempts', async () => {
+    const setForceColdDeepLinks = vi.fn();
+    const mockDevice = {
+      waitForIdle: vi.fn(async () => {}),
+      _setForceColdDeepLinks: setForceColdDeepLinks,
+    };
+    let callCount = 0;
+    pushContext();
+    tapsmithTest('fails then passes', async () => {
+      callCount++;
+      if (callCount < 2) throw new Error('not yet');
+    });
+    tapsmithTest('passes first time', async () => {});
+    const ctx = popContext();
+    const result = await runSuiteContext(ctx, '', [], [], makeOpts({
+      config: makeConfig({ retries: 1 }),
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- focused runner retry mock
+      device: mockDevice as any,
+    }));
+    expect(result.tests.map((t) => t.status)).toEqual(['passed', 'passed']);
+    // Test 1 attempt 0 → false, attempt 1 (retry) → true; test 2 attempt 0
+    // → false again so the previous retry doesn't leak into it.
+    expect(setForceColdDeepLinks.mock.calls.map((c) => c[0])).toEqual([false, true, false]);
+  });
+
   it('does not retry a passing test', async () => {
     let callCount = 0;
     pushContext();
