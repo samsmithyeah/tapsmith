@@ -38,13 +38,24 @@ const RESET = '\x1b[0m';
 export function findPidsOnPort(port: string | number): number[] {
   try {
     if (process.platform === 'darwin') {
-      return execFileSync('lsof', ['-ti', `tcp:${port}`], { encoding: 'utf-8' })
-        .trim().split('\n').filter(Boolean).map(Number).filter(n => !isNaN(n));
+      // -sTCP:LISTEN restricts matches to the listening socket. Without it,
+      // lsof also returns processes with *established* connections to the
+      // port — including the caller's own gRPC probe socket, so the
+      // stale-daemon kill loops in cli.ts/dispatcher.ts SIGTERMed the CLI
+      // itself (silent exit 143 during startup).
+      return execFileSync('lsof', ['-ti', `tcp:${port}`, '-sTCP:LISTEN'], { encoding: 'utf-8' })
+        .trim().split('\n').filter(Boolean).map(Number).filter(n => !isNaN(n))
+        .filter(pid => pid !== process.pid);
     }
-    // Linux: fuser writes PIDs to stderr
-    const result = spawnSync('fuser', [`${port}/tcp`], { encoding: 'utf-8' });
-    const output = (result.stderr || '').trim();
-    return output.split(/\s+/).filter(Boolean).map(Number).filter(n => !isNaN(n));
+    // Linux: ss (iproute2) with -l restricts matches to listening sockets.
+    // fuser was used previously, but it read the wrong stream (PIDs go to
+    // stdout, not stderr — so it never found anything) and, like lsof
+    // without -sTCP:LISTEN, it matches both ends of established
+    // connections. -H drops the header; -p appends
+    // users:(("cmd",pid=N,fd=M)) per socket.
+    const result = spawnSync('ss', ['-ltnpH', `sport = :${port}`], { encoding: 'utf-8' });
+    const pids = [...(result.stdout || '').matchAll(/pid=(\d+)/g)].map((m) => Number(m[1]));
+    return [...new Set(pids)].filter((pid) => pid !== process.pid);
   } catch {
     return [];
   }
