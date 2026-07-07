@@ -978,6 +978,13 @@ async function runSuiteContext(
     for (let attempt = 0; attempt <= maxRetries; attempt++) {
       if (attempt > 0 && opts.abortSignal?.aborted) break;
       attemptStart = Date.now();
+      // Retry attempts force every deep link cold. The first attempt failed
+      // for an unknown reason — a cold terminate + relaunch is the recovery
+      // path for simulator states that warm in-process delivery would carry
+      // straight into the retry (e.g. a display that stopped updating while
+      // the a11y tree stayed healthy, observed on CI July 2026). Attempt 0
+      // resets the flag so a previous test's retry doesn't leak into it.
+      opts.device?._setForceColdDeepLinks?.(attempt > 0);
       // Reset per-attempt state. Only the final attempt's artifacts are
       // reported — prior attempt traces/videos are retained on disk via
       // shouldRetain() but not linked from the TestResult.

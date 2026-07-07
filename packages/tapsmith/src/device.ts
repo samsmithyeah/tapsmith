@@ -22,6 +22,7 @@ import {
   type ActionResponse,
   type ScreenshotResponse,
   type LaunchAppOptions,
+  type OpenDeepLinkOptions,
   type AppState,
   type Orientation,
   type ColorScheme,
@@ -142,6 +143,8 @@ export class Device {
   _routeManager: NetworkRouteManager | null = null;
   private _networkCaptureActive = false;
   private _networkCaptureError: string | undefined;
+  /** Set by the runner on retry attempts — see _setForceColdDeepLinks. */
+  private _forceColdDeepLinks = false;
 
   /** @internal — Active WebView handle, if in WebView context. */
   _activeWebView: WebViewHandle | null = null;
@@ -490,10 +493,29 @@ export class Device {
         'Launch app failed'));
   }
 
-  async openDeepLink(uri: string): Promise<void> {
+  async openDeepLink(uri: string, options?: OpenDeepLinkOptions): Promise<void> {
+    // On retry attempts the runner forces every deep link cold (see
+    // _setForceColdDeepLinks); an explicit forceColdLaunch option can only
+    // add to that, never override it back to warm.
+    const effectiveOptions = this._forceColdDeepLinks
+      ? { ...options, forceColdLaunch: true }
+      : options;
     return this._tracedAction('openDeepLink', 'navigation', undefined,
-      () => this._client.openDeepLink(uri),
+      () => this._client.openDeepLink(uri, effectiveOptions),
       'Open deep link failed');
+  }
+
+  /**
+   * @internal — When set, every openDeepLink call sends forceColdLaunch,
+   * regardless of per-call options. The runner enables this for retry
+   * attempts: a cold terminate + relaunch recreates the app's render
+   * surface, which is the recovery path for simulators whose display has
+   * stopped updating while the a11y tree stays healthy (July 2026 CI
+   * finding — warm delivery verifies against the a11y tree and would
+   * otherwise carry that broken state into the retry).
+   */
+  _setForceColdDeepLinks(force: boolean): void {
+    this._forceColdDeepLinks = force;
   }
 
   async currentPackage(): Promise<string> {
