@@ -38,13 +38,22 @@ const RESET = '\x1b[0m';
 export function findPidsOnPort(port: string | number): number[] {
   try {
     if (process.platform === 'darwin') {
-      return execFileSync('lsof', ['-ti', `tcp:${port}`], { encoding: 'utf-8' })
-        .trim().split('\n').filter(Boolean).map(Number).filter(n => !isNaN(n));
+      // -sTCP:LISTEN restricts matches to the listening socket. Without it,
+      // lsof also returns processes with *established* connections to the
+      // port — including the caller's own gRPC probe socket, so the
+      // stale-daemon kill loops in cli.ts/dispatcher.ts SIGTERMed the CLI
+      // itself (silent exit 143 during startup).
+      return execFileSync('lsof', ['-ti', `tcp:${port}`, '-sTCP:LISTEN'], { encoding: 'utf-8' })
+        .trim().split('\n').filter(Boolean).map(Number).filter(n => !isNaN(n))
+        .filter(pid => pid !== process.pid);
     }
-    // Linux: fuser writes PIDs to stderr
+    // Linux: fuser writes PIDs to stderr. It matches both ends of a
+    // connection and cannot filter to listeners, so at minimum exclude our
+    // own pid to prevent the same self-termination.
     const result = spawnSync('fuser', [`${port}/tcp`], { encoding: 'utf-8' });
     const output = (result.stderr || '').trim();
-    return output.split(/\s+/).filter(Boolean).map(Number).filter(n => !isNaN(n));
+    return output.split(/\s+/).filter(Boolean).map(Number).filter(n => !isNaN(n))
+      .filter(pid => pid !== process.pid);
   } catch {
     return [];
   }
