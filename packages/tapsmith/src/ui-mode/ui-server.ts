@@ -28,6 +28,7 @@ import type { Device } from '../device.js';
 import type { ResolvedProject } from '../project.js';
 import { collectTransitiveDeps } from '../project.js';
 import { matchesTestFilter } from '../test-filter.js';
+import { LaunchSetupError } from '../dispatcher.js';
 import type { LaunchedEmulator } from '../emulator.js';
 import { preserveEmulatorsForReuse, getRunningAvdName } from '../emulator.js';
 import { listSimulators, getSimulatorScreenScale } from '../ios-simulator.js';
@@ -3605,6 +3606,14 @@ export async function startUIServer(
 
   const wss = new WebSocketServer({ server });
 
+  // ws re-emits the HTTP server's 'error' events here; without a listener
+  // they rethrow as uncaughtException and kill the process before the bind
+  // failure below can be reported (PILOT-253). Bind failures are surfaced
+  // via the listen promise, so only log errors from an already-running server.
+  wss.on('error', (err) => {
+    if (server.listening) console.error(`UI server error: ${err.message}`);
+  });
+
   wss.on('connection', (ws) => {
     clients.add(ws);
 
@@ -3763,18 +3772,28 @@ export async function startUIServer(
   // ─── Start ───
 
   launchProgress?.start('ui-server', 'binding local web UI');
-  const actualPort = await new Promise<number>((resolve, reject) => {
-    const tryPort = options.port ?? 0;
-    server.listen(tryPort, '127.0.0.1', () => {
-      const addr = server.address();
-      if (typeof addr === 'object' && addr) {
-        resolve(addr.port);
-      } else {
-        reject(new Error('Failed to bind UI server'));
-      }
+  let actualPort: number;
+  try {
+    actualPort = await new Promise<number>((resolve, reject) => {
+      const tryPort = options.port ?? 0;
+      server.listen(tryPort, '127.0.0.1', () => {
+        const addr = server.address();
+        if (typeof addr === 'object' && addr) {
+          resolve(addr.port);
+        } else {
+          reject(new Error('Failed to bind UI server'));
+        }
+      });
+      server.on('error', reject);
     });
-    server.on('error', reject);
-  });
+  } catch (err) {
+    const cause = err as NodeJS.ErrnoException;
+    const message = cause.code === 'EADDRINUSE' && options.port !== undefined
+      ? `port ${options.port} is already in use — pass a different --ui-port or free the port`
+      : cause.message;
+    launchProgress?.fail('ui-server', message);
+    throw new LaunchSetupError(`Failed to start UI server: ${message}`, { cause });
+  }
   launchProgress?.complete('ui-server', `http://127.0.0.1:${actualPort}/`);
   // ─── MCP Server (separate fixed port) ───
 

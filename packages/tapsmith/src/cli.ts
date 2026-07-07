@@ -2253,6 +2253,7 @@ async function main(): Promise<void> {
   let resolvedIosXctestrun: string | undefined;
   let resolvedIosAppPath: string | undefined;
   let sequentialExitCode = 1;
+  let sequentialErrorEscaping = false;
   const sequentialStart = Date.now();
 
   // Route a crash through teardown so we don't orphan the daemon + its
@@ -2659,6 +2660,13 @@ async function main(): Promise<void> {
       && allResults.every((r) => r.status === 'skipped');
     if (zeroMatch) console.error(red(zeroMatchFilterMessage));
     sequentialExitCode = (hasFailed || zeroMatch) ? 1 : 0;
+  } catch (err) {
+    // Let main().catch own the exit for escaping errors. Its handler needs
+    // async work (dynamic imports) before printing, so the exit timer in
+    // the finally block below would kill the process before any error
+    // message appears (PILOT-253).
+    sequentialErrorEscaping = true;
+    throw err;
   } finally {
     disposeActionProgressPrinter?.();
     device?.close();
@@ -2670,8 +2678,11 @@ async function main(): Promise<void> {
     preserveEmulatorsForReuse(launchedEmulators);
     // Defer process.exit so any pending error handlers (unhandledRejection
     // etc.) in the current microtask queue run first — process.exit() in a
-    // finally block swallows them.
-    setTimeout(() => process.exit(sequentialExitCode), 0);
+    // finally block swallows them. Skipped when an error is escaping:
+    // main().catch prints it and exits with code 1 itself.
+    if (!sequentialErrorEscaping) {
+      setTimeout(() => process.exit(sequentialExitCode), 0);
+    }
   }
 }
 
