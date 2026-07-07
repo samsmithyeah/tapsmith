@@ -3776,7 +3776,9 @@ export async function startUIServer(
   try {
     actualPort = await new Promise<number>((resolve, reject) => {
       const tryPort = options.port ?? 0;
+      server.once('error', reject);
       server.listen(tryPort, '127.0.0.1', () => {
+        server.removeListener('error', reject);
         const addr = server.address();
         if (typeof addr === 'object' && addr) {
           resolve(addr.port);
@@ -3784,11 +3786,10 @@ export async function startUIServer(
           reject(new Error('Failed to bind UI server'));
         }
       });
-      server.on('error', reject);
     });
   } catch (err) {
-    const cause = err as NodeJS.ErrnoException;
-    const message = cause.code === 'EADDRINUSE' && options.port !== undefined
+    const cause = err instanceof Error ? err : new Error(String(err));
+    const message = (cause as NodeJS.ErrnoException).code === 'EADDRINUSE' && options.port !== undefined
       ? `port ${options.port} is already in use — pass a different --ui-port or free the port`
       : cause.message;
     launchProgress?.fail('ui-server', message);
