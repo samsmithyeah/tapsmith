@@ -321,7 +321,10 @@ function wrapAssertionWithTrace(
     let beforeBounds: { left: number; top: number; right: number; bottom: number } | undefined;
     try {
       const res = await handle._client.findElement(handle._selector, 100);
-      if (res.found && res.element?.bounds) beforeBounds = res.element.bounds;
+      // findElement matches hidden elements (present in the hierarchy with a
+      // real frame but visible=false) — only record bounds the viewer can
+      // meaningfully draw over the screenshot.
+      if (res.found && res.element?.visible && res.element.bounds) beforeBounds = res.element.bounds;
     } catch { /* best-effort */ }
 
     // Stream a "started" lifecycle signal so UI mode can render an in-flight
@@ -395,14 +398,18 @@ function wrapAssertionWithTrace(
     const attempts = Math.max(1, Math.round(duration / POLL_INTERVAL_MS));
 
     // Re-lookup bounds after assertion — element may have moved during polling.
-    // Fall back to before-bounds if the element is no longer findable.
-    let bounds = beforeBounds;
+    // The recorded bounds must describe an element that is visible in the
+    // after state (the trace viewer draws them over the next action's
+    // before-screenshot): if the element is now hidden or gone — the passing
+    // case for toBeHidden / not.toBeVisible — record no bounds rather than a
+    // rectangle over empty space.
+    let bounds: typeof beforeBounds;
     try {
       const res = await handle._client.findElement(handle._selector, 100);
-      if (res.found && res.element?.bounds) {
-        bounds = res.element.bounds;
-      }
-    } catch { /* best-effort — keep beforeBounds */ }
+      if (res.found && res.element?.visible) bounds = res.element.bounds;
+    } catch {
+      bounds = beforeBounds; // best-effort — lookup failed, keep before-bounds
+    }
 
     // Emit event immediately so _actionIndex increments before the runner
     // emits group-end boundaries.  No after-capture — the trace viewer uses
