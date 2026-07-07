@@ -7,7 +7,7 @@ vi.mock('node:child_process');
 const mockedExecFileSync = vi.mocked(childProcess.execFileSync) as any;
 const mockedSpawnSync = vi.mocked(childProcess.spawnSync);
 
-import { freeStaleAgentPort } from '../port-utils.js';
+import { findPidsOnPort, freeStaleAgentPort } from '../port-utils.js';
 
 // ─── Tests ───
 //
@@ -137,5 +137,66 @@ describe('freeStaleAgentPort', () => {
     });
     freeStaleAgentPort(18701);
     expect(killSpy).not.toHaveBeenCalled();
+  });
+});
+
+// ─── Tests: findPidsOnPort ───
+//
+// findPidsOnPort feeds the stale-daemon SIGTERM loops in cli.ts and
+// dispatcher.ts. It must return only *listening* pids — matching both ends
+// of established connections made the CLI kill its own gRPC probe socket's
+// process (itself) — and must never include the caller's own pid.
+
+describe('findPidsOnPort', () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+  });
+
+  it('macOS: queries lsof for LISTEN sockets only and excludes its own pid', () => {
+    Object.defineProperty(process, 'platform', { value: 'darwin', configurable: true });
+    mockedExecFileSync.mockReturnValue(`111\n${process.pid}\n222\n`);
+
+    expect(findPidsOnPort(50051)).toEqual([111, 222]);
+    expect(mockedExecFileSync).toHaveBeenCalledWith(
+      'lsof',
+      ['-ti', 'tcp:50051', '-sTCP:LISTEN'],
+      { encoding: 'utf-8' },
+    );
+  });
+
+  it('macOS: returns empty when lsof finds nothing', () => {
+    Object.defineProperty(process, 'platform', { value: 'darwin', configurable: true });
+    // lsof exits 1 when no process matches
+    mockedExecFileSync.mockImplementation(() => { throw new Error('exit 1'); });
+
+    expect(findPidsOnPort(50051)).toEqual([]);
+  });
+
+  it('Linux: parses listener pids from ss output, dedupes, and excludes its own pid', () => {
+    Object.defineProperty(process, 'platform', { value: 'linux', configurable: true });
+    mockedSpawnSync.mockReturnValue({
+      pid: 0, output: [], status: 0, signal: null, stderr: '',
+      stdout: [
+        'LISTEN 0 511 127.0.0.1:50051 0.0.0.0:* users:(("tapsmith-core",pid=333,fd=12),("tapsmith-core",pid=333,fd=13))',
+        `LISTEN 0 511 [::1]:50051 [::]:* users:(("node",pid=${process.pid},fd=20))`,
+      ].join('\n'),
+    } as unknown as ReturnType<typeof childProcess.spawnSync>);
+
+    expect(findPidsOnPort(50051)).toEqual([333]);
+    expect(mockedSpawnSync).toHaveBeenCalledWith(
+      'ss',
+      ['-ltnpH', 'sport = :50051'],
+      { encoding: 'utf-8' },
+    );
+  });
+
+  it('Linux: returns empty when ss is unavailable or finds nothing', () => {
+    Object.defineProperty(process, 'platform', { value: 'linux', configurable: true });
+    mockedSpawnSync.mockReturnValue({
+      pid: 0, output: [], status: null, signal: null, stderr: '', stdout: '',
+      error: new Error('spawn ss ENOENT'),
+    } as unknown as ReturnType<typeof childProcess.spawnSync>);
+
+    expect(findPidsOnPort(50051)).toEqual([]);
   });
 });

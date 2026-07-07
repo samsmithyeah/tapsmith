@@ -47,13 +47,15 @@ export function findPidsOnPort(port: string | number): number[] {
         .trim().split('\n').filter(Boolean).map(Number).filter(n => !isNaN(n))
         .filter(pid => pid !== process.pid);
     }
-    // Linux: fuser writes PIDs to stderr. It matches both ends of a
-    // connection and cannot filter to listeners, so at minimum exclude our
-    // own pid to prevent the same self-termination.
-    const result = spawnSync('fuser', [`${port}/tcp`], { encoding: 'utf-8' });
-    const output = (result.stderr || '').trim();
-    return output.split(/\s+/).filter(Boolean).map(Number).filter(n => !isNaN(n))
-      .filter(pid => pid !== process.pid);
+    // Linux: ss (iproute2) with -l restricts matches to listening sockets.
+    // fuser was used previously, but it read the wrong stream (PIDs go to
+    // stdout, not stderr — so it never found anything) and, like lsof
+    // without -sTCP:LISTEN, it matches both ends of established
+    // connections. -H drops the header; -p appends
+    // users:(("cmd",pid=N,fd=M)) per socket.
+    const result = spawnSync('ss', ['-ltnpH', `sport = :${port}`], { encoding: 'utf-8' });
+    const pids = [...(result.stdout || '').matchAll(/pid=(\d+)/g)].map((m) => Number(m[1]));
+    return [...new Set(pids)].filter((pid) => pid !== process.pid);
   } catch {
     return [];
   }
