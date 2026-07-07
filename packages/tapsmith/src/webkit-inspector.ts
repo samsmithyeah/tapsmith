@@ -306,6 +306,10 @@ export class WebKitInspectorClient {
   async connectToPage(appId: string, pageId: number): Promise<void> {
     this._senderKey = appId;
     this._connectedPageId = pageId;
+    // Reset any target from a previous connectToPage on this client (e.g. a
+    // page that connected but failed its liveness probe) — otherwise the
+    // wait below exits immediately and messages route to the stale target.
+    this._targetId = null;
 
     // Indicate we want to inspect a WebView
     this._sendMessage({

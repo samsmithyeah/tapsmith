@@ -95,23 +95,25 @@ function isNativeWebViewContainer(node: HierarchyNode): boolean {
  */
 export function isWebViewOverlayPending(roots: HierarchyNode[], x: number, y: number): boolean {
   let insideWebView = false;
-  let hasOverlay = false;
+  let hasOverlayAtPoint = false;
+  const contains = (bounds: Bounds) =>
+    x >= bounds.left && x <= bounds.right && y >= bounds.top && y <= bounds.bottom;
   function walk(node: HierarchyNode) {
-    if (hasOverlay) return;
+    const bounds = getNodeBounds(node);
     if (node.attributes.get('webview') === 'true') {
-      hasOverlay = true;
-      return;
-    }
-    if (!insideWebView && isNativeWebViewContainer(node)) {
-      const bounds = getNodeBounds(node);
-      if (bounds && x >= bounds.left && x <= bounds.right && y >= bounds.top && y <= bounds.bottom) {
-        insideWebView = true;
-      }
+      // Only an overlay covering the pick point counts — with multiple
+      // WebViews on screen, another WebView's overlay must not suppress
+      // deferral for this one.
+      // Keep walking: a child DOM node can contain the point even when its
+      // parent's bounds don't (absolutely-positioned elements).
+      if (bounds && contains(bounds)) hasOverlayAtPoint = true;
+    } else if (!insideWebView && isNativeWebViewContainer(node) && bounds && contains(bounds)) {
+      insideWebView = true;
     }
     node.children.forEach(walk);
   }
   roots.forEach(walk);
-  return insideWebView && !hasOverlay;
+  return insideWebView && !hasOverlayAtPoint;
 }
 
 // ─── Hover Handler (called from parent on screenshot mousemove) ───

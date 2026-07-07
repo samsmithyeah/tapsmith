@@ -101,6 +101,21 @@ describe('isWebViewOverlayPending', () => {
     expect(isWebViewOverlayPending(roots, 196, 324)).toBe(false);
   });
 
+  it("another WebView's overlay does not suppress deferral (scoped to the pick point)", () => {
+    // Two WebViews; only the first has its DOM overlay. A pick inside the
+    // second must still be treated as pending.
+    const twoWebViews = `<hierarchy>
+      <XCUIElementTypeApplication type="XCUIElementTypeApplication" bounds="[0,0][393,852]">
+        <XCUIElementTypeWebView type="XCUIElementTypeWebView" bounds="[0,100][393,400]" />
+        <XCUIElementTypeWebView type="XCUIElementTypeWebView" bounds="[0,500][393,800]" />
+        <webview.body bounds="[0,100][393,400]" webview-tag="body" webview="true" />
+      </XCUIElementTypeApplication>
+    </hierarchy>`;
+    const roots = parseHierarchyXml(twoWebViews);
+    expect(isWebViewOverlayPending(roots, 196, 250)).toBe(false); // first: overlay present
+    expect(isWebViewOverlayPending(roots, 196, 650)).toBe(true);  // second: overlay pending
+  });
+
   it('detects Android WebView containers by class attribute', () => {
     const android = `<hierarchy>
       <node class="android.widget.FrameLayout" bounds="[0,0][1080,2400]">

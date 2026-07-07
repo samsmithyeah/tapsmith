@@ -3283,7 +3283,11 @@ export async function startUIServer(
         return dom;
       })
       .finally(() => { webviewDumpPromise = null; });
-    return webviewDumpPromise;
+    // Until the connection is established, run the dump in the background so
+    // no hierarchy broadcast — including the initiator's — blocks behind a
+    // multi-second connect (or a stale-connection failure). Once established,
+    // dumps are cheap and awaiting keeps every broadcast carrying the overlay.
+    return webviewEstablished ? webviewDumpPromise : undefined;
   }
 
   // ─── Command Handler ───

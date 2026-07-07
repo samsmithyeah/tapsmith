@@ -1202,10 +1202,11 @@ function App() {
     if (pickTarget !== 'mirror' || workers.length === 0) return;
     const worker = workers.find((w) => w.workerId === mirrorWorkerId);
     if (!worker || worker.status === 'error') {
+      clearPendingMirrorPick();
       setPickTarget(null);
       setMirrorHoverBounds(null);
     }
-  }, [pickTarget, workers, mirrorWorkerId]);
+  }, [pickTarget, workers, mirrorWorkerId, clearPendingMirrorPick]);
 
   const handleThemeChange = useCallback((newTheme: Theme) => {
     setTheme(newTheme);
@@ -1324,11 +1325,12 @@ function App() {
       lastSentWorkerRef.current = mode;
     } else {
       // The "All" grid has no pick surface — end any live pick session.
+      clearPendingMirrorPick();
       setPickTarget((t) => t === 'mirror' ? null : t);
       setMirrorHoverBounds(null);
     }
     send({ type: 'select-worker-view', mode });
-  }, [send]);
+  }, [send, clearPendingMirrorPick]);
 
   const handleActionPin = useCallback((index: number) => {
     setPinnedIndex(index);
