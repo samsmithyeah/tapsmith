@@ -24,6 +24,7 @@ import { ResizeHandle } from "./components/ResizeHandle.js";
 import { TopBar, type Theme } from "./components/TopBar.js";
 import {
   SelectorTab,
+  computeSelectorHighlights,
   handlePickFromScreenshot,
   handleHoverFromScreenshot,
 } from "./components/SelectorPlayground.js";
@@ -229,7 +230,6 @@ function App() {
     right: number;
     bottom: number;
   } | null>(null);
-  const [selectorHighlights, setSelectorHighlights] = useState<Bounds[]>([]);
   const [pickMode, setPickMode] = useState(false);
   const [selectorText, setSelectorText] = useState("");
   const [pickedNode, setPickedNode] = useState<HierarchyNode | null>(null);
@@ -292,15 +292,16 @@ function App() {
     }
   }, []);
 
+  // Selecting a different action keeps the pick and selector text — the
+  // suggestions and match highlights re-evaluate against the new action's
+  // hierarchy (always-current semantics, matching UI mode's live mirror).
+  // Only per-tree transients are cleared.
   useEffect(() => {
     if (trace) {
       const url = new URL(location.href);
       url.searchParams.set("action", String(selectedIndex));
       history.replaceState(null, "", url.toString());
       setHierarchyHighlight(null);
-      setSelectorHighlights([]);
-      setSelectorText("");
-      setPickedNode(null);
       setHoverBounds(null);
     }
   }, [selectedIndex, trace]);
@@ -474,18 +475,30 @@ function App() {
 
   const selectedEvent = actionEvents[selectedIndex];
 
+  // Which screenshot moment the ScreenshotPanel is displaying — the selector
+  // playground must bind to the hierarchy captured at that same moment, or
+  // picks on a before-screenshot would hit-test the after-hierarchy.
+  const [screenshotVariant, setScreenshotVariant] = useState<'before' | 'after'>('before');
+
   // Hierarchy XML for the current action (used by selector playground)
   const currentHierarchyXml = useMemo(() => {
     if (!trace || !selectedEvent) return undefined;
     const pad = String(selectedEvent.actionIndex).padStart(3, "0");
-    const afterKey = `hierarchy/action-${pad}-after.xml`;
-    const beforeKey = `hierarchy/action-${pad}-before.xml`;
-    return trace.hierarchies.get(afterKey) ?? trace.hierarchies.get(beforeKey);
-  }, [trace, selectedEvent]);
+    const afterXml = trace.hierarchies.get(`hierarchy/action-${pad}-after.xml`);
+    const beforeXml = trace.hierarchies.get(`hierarchy/action-${pad}-before.xml`);
+    return screenshotVariant === 'before' ? (beforeXml ?? afterXml) : (afterXml ?? beforeXml);
+  }, [trace, selectedEvent, screenshotVariant]);
 
   const currentRoots = useMemo(
     () => (currentHierarchyXml ? parseHierarchyXml(currentHierarchyXml) : []),
     [currentHierarchyXml],
+  );
+
+  // Match overlay bounds, derived so they always reflect the hierarchy of the
+  // displayed action/screenshot (never pushed through state, never stale).
+  const selectorHighlights = useMemo(
+    () => computeSelectorHighlights(currentRoots, selectorText),
+    [currentRoots, selectorText],
   );
 
   const dpr = trace.metadata.device?.devicePixelRatio ?? 1;
@@ -579,6 +592,7 @@ function App() {
           onScreenshotHover={pickMode ? handleScreenshotHover : undefined}
           pickMode={pickMode}
           onPickModeToggle={handlePickToggle}
+          onDisplayedVariantChange={setScreenshotVariant}
           devicePixelRatio={trace.metadata.device?.devicePixelRatio}
           nodeType="test"
           hasTrace={true}
@@ -605,7 +619,6 @@ function App() {
               <SelectorTab
                 hierarchyXml={currentHierarchyXml}
                 pickedNode={pickedNode}
-                onHighlightsChange={setSelectorHighlights}
                 selector={selectorText}
                 onSelectorChange={setSelectorText}
               />

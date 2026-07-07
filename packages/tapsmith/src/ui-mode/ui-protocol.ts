@@ -201,6 +201,9 @@ export interface TraceEventMessage {
 export interface HierarchyUpdateMessage {
   type: 'hierarchy-update'
   xml: string
+  /** Worker the hierarchy was captured from (0 in single-worker mode) so
+   * clients can discard updates for a device they're no longer mirroring. */
+  workerId?: number
 }
 
 export interface WatchEventMessage {
@@ -407,6 +410,8 @@ export interface ToggleWatchCommand {
 
 export interface RequestHierarchyCommand {
   type: 'request-hierarchy'
+  /** Target worker (multi-worker mode). Defaults to the selected worker. */
+  workerId?: number
 }
 
 export interface RequestSourceCommand {
