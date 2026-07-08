@@ -44,9 +44,14 @@ export function DeviceMirror({ canvasRef, connected, loading, platform, formFact
   const interaction = useDeviceInteraction({ send, enabled: interactive && !pickMode, force, workerId });
 
   // Hover hit-tests are coalesced to one per animation frame (mousemove can
-  // fire faster than the display refreshes).
+  // fire faster than the display refreshes). The callback is read through a
+  // ref so a queued frame can't fire a stale closure — onPickHover's identity
+  // changes with every live hierarchy refresh (same pattern as optsRef in
+  // use-device-interaction.ts).
   const pendingHover = useRef<{ x: number; y: number } | null>(null);
   const hoverRafId = useRef<number | null>(null);
+  const onPickHoverRef = useRef(onPickHover);
+  onPickHoverRef.current = onPickHover;
   const toLogical = useCallback((e: MouseEvent): { x: number; y: number } | null => {
     const canvas = canvasRef.current;
     if (!canvas) return null;
@@ -63,8 +68,8 @@ export function DeviceMirror({ canvasRef, connected, loading, platform, formFact
 
   const flushHover = useCallback(() => {
     hoverRafId.current = null;
-    onPickHover?.(pendingHover.current);
-  }, [onPickHover]);
+    onPickHoverRef.current?.(pendingHover.current);
+  }, []);
 
   const handlePickMove = useCallback((e: MouseEvent) => {
     pendingHover.current = toLogical(e);
@@ -74,8 +79,8 @@ export function DeviceMirror({ canvasRef, connected, loading, platform, formFact
   const handlePickLeave = useCallback(() => {
     pendingHover.current = null;
     if (hoverRafId.current != null) { cancelAnimationFrame(hoverRafId.current); hoverRafId.current = null; }
-    onPickHover?.(null);
-  }, [onPickHover]);
+    onPickHoverRef.current?.(null);
+  }, []);
 
   useEffect(() => () => {
     if (hoverRafId.current != null) cancelAnimationFrame(hoverRafId.current);

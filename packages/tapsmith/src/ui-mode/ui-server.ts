@@ -3282,6 +3282,15 @@ export async function startUIServer(
         if (dom !== undefined) webviewEstablished = true;
         return dom;
       })
+      // The promise is deliberately left un-awaited until the connection is
+      // established (below), so a rejection would otherwise be unhandled.
+      // _dumpWebViewDomForInspection shouldn't reject, but treat one as a
+      // failure (cooldown) rather than trusting that contract.
+      .catch(() => {
+        webviewInspectFailedAt = Date.now();
+        webviewEstablished = false;
+        return undefined;
+      })
       .finally(() => { webviewDumpPromise = null; });
     // Until the connection is established, run the dump in the background so
     // no hierarchy broadcast — including the initiator's — blocks behind a
