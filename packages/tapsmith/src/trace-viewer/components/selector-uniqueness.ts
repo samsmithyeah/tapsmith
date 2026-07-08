@@ -129,7 +129,7 @@ export function disambiguateSelectors(
     if (idx === -1) {
       // The selector doesn't resolve to the picked node — don't offer it
       // as a top suggestion.
-      return { ...s, label: `${s.label} (may not match)`, priority: Math.max(s.priority, 8) };
+      return { ...s, label: `${s.label} (may not match)`, priority: Math.max(s.priority, 8), mayNotMatch: true };
     }
     if (matches.length <= 1) return s;
 

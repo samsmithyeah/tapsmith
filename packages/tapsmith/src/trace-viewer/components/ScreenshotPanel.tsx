@@ -1,4 +1,4 @@
-import { useState, useRef, useCallback, useEffect } from 'preact/hooks';
+import { useState, useRef, useCallback, useEffect, useMemo } from 'preact/hooks';
 import { Focus, Download, Camera, LoaderCircle, CircleDot, Play, Layers, ListTree } from 'lucide-preact';
 import type { ActionTraceEvent, AssertionTraceEvent } from '../../trace/types.js';
 import type { ContainerSummary } from '../types.js';
@@ -43,6 +43,11 @@ interface Props {
   onScreenshotHover?: (point: { x: number; y: number } | null) => void
   pickMode?: boolean
   onPickModeToggle?: () => void
+  /** Reports whether the displayed screenshot is the before- or after-state of
+   * the action, so the host can bind the selector playground to the hierarchy
+   * captured at the same moment (picking on a before-screenshot must not
+   * hit-test the after-hierarchy — the action may have changed the screen). */
+  onDisplayedVariantChange?: (variant: 'before' | 'after') => void
   /** Device pixel ratio — bounds are in logical points, screenshots in pixels. */
   devicePixelRatio?: number
   testName?: string
@@ -72,10 +77,44 @@ interface RenderedSize {
   top: number
 }
 
-export function ScreenshotPanel({ event, screenshots, highlightBounds, selectorHighlights, hoverBounds, onScreenshotClick, onScreenshotHover, pickMode, onPickModeToggle, devicePixelRatio, testName, testStatus, onDownloadTrace, onDownloadVideo, hasTrace, onRunTest, isTestPending, platform, nodeType, containerSummary, onRunContainer }: Props) {
+export function ScreenshotPanel({ event, screenshots, highlightBounds, selectorHighlights, hoverBounds, onScreenshotClick, onScreenshotHover, pickMode, onPickModeToggle, onDisplayedVariantChange, devicePixelRatio, testName, testStatus, onDownloadTrace, onDownloadVideo, hasTrace, onRunTest, isTestPending, platform, nodeType, containerSummary, onRunContainer }: Props) {
   injectStyles();
 
   const [tab, setTab] = useState<ScreenshotTab>('action');
+
+  // Which screenshots exist for the selected event (also used by the render
+  // body below — kept up here so the displayed-variant effect can run before
+  // the early returns).
+  const shotUrls = useMemo(() => {
+    if (!event) return null;
+    const pad = String(event.actionIndex).padStart(3, '0');
+    const beforeUrl = screenshots.get(`screenshots/action-${pad}-before.png`)
+      ?? findNearestScreenshot(screenshots, event.actionIndex);
+    // "After" = the next action's before-screenshot (screen state after this action).
+    // This avoids capturing 2 screenshots per action through the agent.
+    const nextPad = String(event.actionIndex + 1).padStart(3, '0');
+    const afterUrl = screenshots.get(`screenshots/action-${nextPad}-before.png`)
+      ?? screenshots.get(`screenshots/action-${pad}-after.png`); // fallback for legacy traces
+    return { beforeUrl, afterUrl };
+  }, [event, screenshots]);
+
+  // Mirrors the currentUrl resolution below: which moment does the displayed
+  // screenshot show? Reported to the host so the selector playground binds to
+  // the hierarchy captured at the same moment.
+  const displayedVariant: 'before' | 'after' = useMemo(() => {
+    if (!event || !shotUrls) return 'before';
+    const hasBefore = !!shotUrls.beforeUrl;
+    const hasAfter = !!shotUrls.afterUrl;
+    if (tab === 'before') return hasBefore ? 'before' : 'after';
+    if (tab === 'after') return hasAfter ? 'after' : 'before';
+    // 'action' tab: assertions show the after-state, actions the before-state.
+    if (event.type === 'assertion') return hasAfter ? 'after' : 'before';
+    return hasBefore ? 'before' : 'after';
+  }, [event, shotUrls, tab]);
+
+  useEffect(() => {
+    if (event) onDisplayedVariantChange?.(displayedVariant);
+  }, [event, displayedVariant, onDisplayedVariantChange]);
   const [scale, setScale] = useState(1);
   // Kept in sync on every render so callbacks (ResizeObserver,
   // updateRenderedSize) read the committed scale without re-subscribing.
@@ -304,14 +343,7 @@ export function ScreenshotPanel({ event, screenshots, highlightBounds, selectorH
     );
   }
 
-  const pad = String(event.actionIndex).padStart(3, '0');
-  const beforeUrl = screenshots.get(`screenshots/action-${pad}-before.png`)
-    ?? findNearestScreenshot(screenshots, event.actionIndex);
-  // "After" = the next action's before-screenshot (screen state after this action).
-  // This avoids capturing 2 screenshots per action through the agent.
-  const nextPad = String(event.actionIndex + 1).padStart(3, '0');
-  const afterUrl = screenshots.get(`screenshots/action-${nextPad}-before.png`)
-    ?? screenshots.get(`screenshots/action-${pad}-after.png`); // fallback for legacy traces
+  const { beforeUrl, afterUrl } = shotUrls ?? { beforeUrl: undefined, afterUrl: undefined };
 
   const hasBefore = !!beforeUrl;
   const hasAfter = !!afterUrl;

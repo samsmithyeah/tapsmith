@@ -3234,6 +3234,71 @@ export async function startUIServer(
     };
   }
 
+  // ─── Live WebView DOM for the element picker ───
+
+  // A failed WebView connect spins until the device timeout, so don't
+  // re-attempt on every 1s hierarchy poll: one attempt at a time, with a
+  // cooldown after a failure. A successful connect is cached inside the
+  // Device, making subsequent polls cheap. Concurrent polls share the
+  // in-flight dump once the connection is established, so consecutive
+  // hierarchy broadcasts never alternate between with- and without-DOM —
+  // an alternating tree would make picks race the overlay.
+  const WEBVIEW_INSPECT_FAILURE_COOLDOWN_MS = 15_000;
+  let webviewDumpPromise: Promise<string | undefined> | null = null;
+  let webviewEstablished = false;
+  let webviewInspectFailedAt = 0;
+  const debugWebview = (msg: string) => {
+    if (process.env.TAPSMITH_DEBUG_WEBVIEW) console.error(`[webview-picker ${new Date().toISOString().slice(11, 23)}] ${msg}`);
+  };
+  function dumpWebViewDomForPicker(hierarchyXml: string): Promise<string | undefined> | undefined {
+    // A WebView handle opened by the test session takes priority — it matches
+    // what trace capture appends.
+    const activeWebView = ctx.device?._activeWebView;
+    if (activeWebView) {
+      return activeWebView._dumpDomHierarchy().catch(() => undefined);
+    }
+    if (!ctx.device) return undefined;
+    if (webviewDumpPromise) {
+      // During the initial connect (which can take seconds), don't block the
+      // native broadcast behind it; once established, share the dump so every
+      // broadcast carries the overlay.
+      debugWebview(`in-flight; established=${webviewEstablished}`);
+      return webviewEstablished ? webviewDumpPromise : undefined;
+    }
+    if (Date.now() - webviewInspectFailedAt < WEBVIEW_INSPECT_FAILURE_COOLDOWN_MS) {
+      debugWebview('cooldown; skipping');
+      return undefined;
+    }
+    const device = ctx.device;
+    debugWebview('starting dump');
+    webviewDumpPromise = device._dumpWebViewDomForInspection(hierarchyXml)
+      .then((dom) => {
+        debugWebview(`dump resolved: ${dom === null ? 'FAILED' : dom === undefined ? 'no-webview' : `dom ${dom.length}b`}`);
+        if (dom === null) {
+          webviewInspectFailedAt = Date.now();
+          webviewEstablished = false;
+          return undefined;
+        }
+        if (dom !== undefined) webviewEstablished = true;
+        return dom;
+      })
+      // The promise is deliberately left un-awaited until the connection is
+      // established (below), so a rejection would otherwise be unhandled.
+      // _dumpWebViewDomForInspection shouldn't reject, but treat one as a
+      // failure (cooldown) rather than trusting that contract.
+      .catch(() => {
+        webviewInspectFailedAt = Date.now();
+        webviewEstablished = false;
+        return undefined;
+      })
+      .finally(() => { webviewDumpPromise = null; });
+    // Until the connection is established, run the dump in the background so
+    // no hierarchy broadcast — including the initiator's — blocks behind a
+    // multi-second connect (or a stale-connection failure). Once established,
+    // dumps are cheap and awaiting keeps every broadcast carrying the overlay.
+    return webviewEstablished ? webviewDumpPromise : undefined;
+  }
+
   // ─── Command Handler ───
 
   function handleCommand(msg: ClientMessage): void {
@@ -3349,27 +3414,28 @@ export async function startUIServer(
         }
         break;
       case 'request-hierarchy': {
-        const hierClient = multiWorker && workersInitialized
-          ? uiWorkers.find((w) => w.id === selectedWorkerId && !w.retired)?.screenClient
+        // Note: deliberately does NOT bump lastMirrorInteraction — the client
+        // polls this every second while the Locator tab is live-bound, which
+        // would otherwise pin the screenshot poll at the interactive rate.
+        const isWorkerHierarchy = multiWorker && workersInitialized;
+        const hierWorkerId = isWorkerHierarchy ? (msg.workerId ?? selectedWorkerId) : 0;
+        const hierClient = isWorkerHierarchy
+          ? uiWorkers.find((w) => w.id === hierWorkerId && !w.retired)?.screenClient
           : ctx.client;
         hierClient?.getUiHierarchy().then(async (response) => {
           let xml = response.hierarchyXml;
-          if (xml) {
-            // Append WebView DOM hierarchy if a WebView is active (single-worker mode)
-            const activeWebView = ctx.device?._activeWebView;
-            if (activeWebView) {
-              try {
-                const webviewDom = await activeWebView._dumpDomHierarchy();
-                if (webviewDom) {
-                  const lastClose = xml.lastIndexOf('</');
-                  if (lastClose !== -1) {
-                    xml = xml.slice(0, lastClose) + webviewDom + '\n' + xml.slice(lastClose);
-                  }
-                }
-              } catch { /* best-effort */ }
+          if (!xml) return;
+          // Append the WebView DOM so picks inside a WebView suggest
+          // webview.* locators. Primary-device only — workers have no Device
+          // instance to open a WebView connection through.
+          const webviewDom = isWorkerHierarchy ? undefined : await dumpWebViewDomForPicker(xml);
+          if (webviewDom) {
+            const lastClose = xml.lastIndexOf('</');
+            if (lastClose !== -1) {
+              xml = xml.slice(0, lastClose) + webviewDom + '\n' + xml.slice(lastClose);
             }
-            broadcast({ type: 'hierarchy-update', xml });
           }
+          broadcast({ type: 'hierarchy-update', xml, workerId: hierWorkerId });
         }).catch(() => {});
         break;
       }

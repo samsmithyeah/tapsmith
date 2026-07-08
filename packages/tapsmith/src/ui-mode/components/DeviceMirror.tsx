@@ -2,13 +2,19 @@
  * DeviceMirror — canvas-based live device screen mirror.
  *
  * Renders PNG screenshots received via WebSocket binary frames onto a
- * <canvas> element.
+ * <canvas> element. In pick mode, pointer gestures are not forwarded to the
+ * device; instead clicks/hovers are mapped to hierarchy logical points for
+ * element picking.
  */
 
 import type { RefObject } from 'preact';
+import { useRef, useCallback, useEffect } from 'preact/hooks';
 import { useDeviceInteraction } from '../hooks/use-device-interaction.js';
 import type { ClientMessage, DevicePlatform, DeviceFormFactor } from '../ui-protocol.js';
+import type { Bounds } from '../../trace-viewer/components/hierarchy-utils.js';
 import { DeviceFrame } from './DeviceFrame.js';
+import { MirrorPickOverlay } from './MirrorPickOverlay.js';
+import { mirrorPointToLogical } from './mirror-coords.js';
 
 interface DeviceMirrorProps {
   canvasRef: RefObject<HTMLCanvasElement>
@@ -22,11 +28,69 @@ interface DeviceMirrorProps {
   force: boolean
   workerId: number
   send: (msg: ClientMessage) => void
+  /** Element pick mode — clicks pick an element instead of tapping the device. */
+  pickMode?: boolean
+  /** Device pixel ratio of the mirrored worker (hierarchy bounds are logical points). */
+  pickDpr?: number
+  pickHoverBounds?: Bounds | null
+  pickMatchBounds?: Bounds[]
+  onPickPoint?: (point: { x: number; y: number }) => void
+  onPickHover?: (point: { x: number; y: number } | null) => void
 }
 
-export function DeviceMirror({ canvasRef, connected, loading, platform, formFactor, interactive, force, workerId, send }: DeviceMirrorProps) {
-  const interaction = useDeviceInteraction({ send, enabled: interactive, force, workerId });
+const NO_BOUNDS: Bounds[] = [];
 
+export function DeviceMirror({ canvasRef, connected, loading, platform, formFactor, interactive, force, workerId, send, pickMode, pickDpr, pickHoverBounds, pickMatchBounds, onPickPoint, onPickHover }: DeviceMirrorProps) {
+  const interaction = useDeviceInteraction({ send, enabled: interactive && !pickMode, force, workerId });
+
+  // Hover hit-tests are coalesced to one per animation frame (mousemove can
+  // fire faster than the display refreshes). The callback is read through a
+  // ref so a queued frame can't fire a stale closure — onPickHover's identity
+  // changes with every live hierarchy refresh (same pattern as optsRef in
+  // use-device-interaction.ts).
+  const pendingHover = useRef<{ x: number; y: number } | null>(null);
+  const hoverRafId = useRef<number | null>(null);
+  const onPickHoverRef = useRef(onPickHover);
+  onPickHoverRef.current = onPickHover;
+  const toLogical = useCallback((e: MouseEvent): { x: number; y: number } | null => {
+    const canvas = canvasRef.current;
+    if (!canvas) return null;
+    return mirrorPointToLogical(
+      e.clientX, e.clientY, canvas.getBoundingClientRect(),
+      canvas.width, canvas.height, pickDpr || 1,
+    );
+  }, [canvasRef, pickDpr]);
+
+  const handlePickClick = useCallback((e: MouseEvent) => {
+    const point = toLogical(e);
+    if (point) onPickPoint?.(point);
+  }, [toLogical, onPickPoint]);
+
+  const flushHover = useCallback(() => {
+    hoverRafId.current = null;
+    onPickHoverRef.current?.(pendingHover.current);
+  }, []);
+
+  const handlePickMove = useCallback((e: MouseEvent) => {
+    pendingHover.current = toLogical(e);
+    if (hoverRafId.current == null) hoverRafId.current = requestAnimationFrame(flushHover);
+  }, [toLogical, flushHover]);
+
+  const handlePickLeave = useCallback(() => {
+    pendingHover.current = null;
+    if (hoverRafId.current != null) { cancelAnimationFrame(hoverRafId.current); hoverRafId.current = null; }
+    onPickHoverRef.current?.(null);
+  }, []);
+
+  useEffect(() => () => {
+    if (hoverRafId.current != null) cancelAnimationFrame(hoverRafId.current);
+  }, []);
+
+  // Pick handlers replace the gesture handlers entirely while picking, so a
+  // pick click can never be forwarded to the device as a tap. Picking is
+  // deliberately not gated on `interactive` — it is read-only, so it works
+  // even while the mirror is locked during a run.
+  const gesturesEnabled = interactive && !pickMode;
   return (
     <div class="device-mirror">
       <div class="dm-viewport">
@@ -52,14 +116,25 @@ export function DeviceMirror({ canvasRef, connected, loading, platform, formFact
         <DeviceFrame platform={platform} formFactor={formFactor} heightBound>
           <canvas
             ref={canvasRef}
-            class={`dm-canvas ${interactive ? 'interactive' : 'locked'}`}
-            tabIndex={interactive ? 0 : -1}
-            onPointerDown={interactive ? interaction.onPointerDown : undefined}
-            onPointerMove={interactive ? interaction.onPointerMove : undefined}
-            onPointerUp={interactive ? interaction.onPointerUp : undefined}
-            onPointerCancel={interactive ? interaction.onPointerCancel : undefined}
-            onKeyDown={interactive ? interaction.onKeyDown : undefined}
+            class={`dm-canvas ${pickMode ? 'pick-mode' : interactive ? 'interactive' : 'locked'}`}
+            tabIndex={gesturesEnabled ? 0 : -1}
+            onPointerDown={gesturesEnabled ? interaction.onPointerDown : undefined}
+            onPointerMove={gesturesEnabled ? interaction.onPointerMove : undefined}
+            onPointerUp={gesturesEnabled ? interaction.onPointerUp : undefined}
+            onPointerCancel={gesturesEnabled ? interaction.onPointerCancel : undefined}
+            onKeyDown={gesturesEnabled ? interaction.onKeyDown : undefined}
+            onClick={pickMode ? handlePickClick : undefined}
+            onMouseMove={pickMode ? handlePickMove : undefined}
+            onMouseLeave={pickMode ? handlePickLeave : undefined}
           />
+          {(pickMode || (pickMatchBounds?.length ?? 0) > 0) && (
+            <MirrorPickOverlay
+              canvasRef={canvasRef}
+              dpr={pickDpr || 1}
+              hoverBounds={pickMode ? (pickHoverBounds ?? null) : null}
+              matchBounds={pickMatchBounds ?? NO_BOUNDS}
+            />
+          )}
         </DeviceFrame>
       </div>
     </div>

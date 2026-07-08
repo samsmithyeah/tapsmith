@@ -88,6 +88,10 @@ export interface GeneratedSelector {
   code: string
   label: string
   priority: number
+  /** Set by disambiguateSelectors when the selector no longer resolves to the
+   * picked node in the current hierarchy (e.g. the live screen changed).
+   * The playground renders these rows dimmed. */
+  mayNotMatch?: boolean
 }
 
 export function generateSelectors(node: HierarchyNode): GeneratedSelector[] {

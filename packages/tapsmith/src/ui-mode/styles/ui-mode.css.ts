@@ -1174,7 +1174,7 @@ html, body, #app {
   max-width: 100%; max-height: 100%; object-fit: contain;
   border-radius: 8px; border: 2px solid var(--border); background: #000;
 }
-.dm-canvas.tap-mode { cursor: crosshair; border-color: var(--accent); }
+.dm-canvas.pick-mode { cursor: crosshair; border-color: var(--accent); }
 .dm-canvas.interactive { cursor: pointer; touch-action: none; outline: none; }
 .dm-canvas.interactive:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .dm-canvas.locked { cursor: not-allowed; }
@@ -1192,6 +1192,20 @@ html, body, #app {
 .mirror-lock-toggle.unlocked { color: var(--fg-dim); }
 .mirror-lock-toggle.locked { color: var(--accent); }
 .mirror-lock-toggle:hover { background: var(--bg-elev-2); }
+.mirror-pick-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 2px;
+  border-radius: 5px;
+  color: var(--fg-dim);
+}
+.mirror-pick-toggle.active { color: var(--accent); }
+.mirror-pick-toggle:hover:not(:disabled) { background: var(--bg-elev-2); }
+.mirror-pick-toggle:disabled { opacity: 0.4; cursor: default; }
 
 .dm-overlay {
   position: absolute; inset: 0;

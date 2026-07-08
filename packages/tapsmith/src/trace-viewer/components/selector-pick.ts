@@ -76,6 +76,46 @@ export function handlePickFromScreenshot(
   return { node: betterNode, selector: best?.code ?? generateBestSelector(betterNode), bounds };
 }
 
+// ─── WebView overlay detection (live mirror pick) ───
+
+function isNativeWebViewContainer(node: HierarchyNode): boolean {
+  // iOS: <XCUIElementTypeWebView …>. Android: <node class="android.webkit.WebView" …>.
+  return node.tagName === 'XCUIElementTypeWebView'
+    || (node.attributes.get('class') ?? '').includes('webkit.WebView');
+}
+
+/**
+ * True when a pick at (x, y) landed on the native accessibility projection of
+ * web content while the WebView DOM overlay is still missing from the tree —
+ * i.e. the point is inside a native WebView container but no `webview="true"`
+ * nodes exist. The live mirror uses this to defer finalizing the pick until
+ * the next hierarchy snapshot carries the overlay (the server connects to the
+ * WebView on demand, which takes a moment), so web-content picks yield
+ * webview.* locators instead of native projections.
+ */
+export function isWebViewOverlayPending(roots: HierarchyNode[], x: number, y: number): boolean {
+  let insideWebView = false;
+  let hasOverlayAtPoint = false;
+  const contains = (bounds: Bounds) =>
+    x >= bounds.left && x <= bounds.right && y >= bounds.top && y <= bounds.bottom;
+  function walk(node: HierarchyNode) {
+    const bounds = getNodeBounds(node);
+    if (node.attributes.get('webview') === 'true') {
+      // Only an overlay covering the pick point counts — with multiple
+      // WebViews on screen, another WebView's overlay must not suppress
+      // deferral for this one.
+      // Keep walking: a child DOM node can contain the point even when its
+      // parent's bounds don't (absolutely-positioned elements).
+      if (bounds && contains(bounds)) hasOverlayAtPoint = true;
+    } else if (!insideWebView && isNativeWebViewContainer(node) && bounds && contains(bounds)) {
+      insideWebView = true;
+    }
+    node.children.forEach(walk);
+  }
+  roots.forEach(walk);
+  return insideWebView && !hasOverlayAtPoint;
+}
+
 // ─── Hover Handler (called from parent on screenshot mousemove) ───
 
 export function handleHoverFromScreenshot(
