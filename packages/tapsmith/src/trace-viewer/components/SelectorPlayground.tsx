@@ -1,4 +1,5 @@
-import { useState, useCallback, useMemo } from 'preact/hooks';
+import { useState, useCallback, useMemo, useRef } from 'preact/hooks';
+import { X } from 'lucide-preact';
 import type { HierarchyNode, Bounds } from './hierarchy-utils.js';
 import { parseHierarchyXml } from './hierarchy-utils.js';
 import { generateSelectors, type GeneratedSelector } from './selector-generation.js';
@@ -10,7 +11,10 @@ import { disambiguateSelectors } from './selector-uniqueness.js';
 const SELECTOR_TAB_STYLES = `
   .st-container { display: flex; flex-direction: column; height: 100%; font-family: 'SF Mono', 'Cascadia Code', Consolas, monospace; font-size: 12px; }
   .st-input-row { display: flex; align-items: center; gap: 6px; padding: 8px 10px; border-bottom: 1px solid var(--color-border); flex-shrink: 0; }
-  .st-input { flex: 1; padding: 5px 8px; background: var(--color-bg); border: 1px solid var(--color-border); border-radius: 4px; color: var(--color-text-secondary); font-family: inherit; font-size: 12px; outline: none; min-width: 0; }
+  .st-input-wrap { position: relative; flex: 1; min-width: 0; display: flex; }
+  .st-input { flex: 1; padding: 5px 26px 5px 8px; background: var(--color-bg); border: 1px solid var(--color-border); border-radius: 4px; color: var(--color-text-secondary); font-family: inherit; font-size: 12px; outline: none; min-width: 0; }
+  .st-clear-btn { position: absolute; right: 4px; top: 50%; transform: translateY(-50%); display: inline-flex; align-items: center; justify-content: center; background: none; border: none; cursor: pointer; color: var(--color-text-faint); padding: 2px; border-radius: 3px; }
+  .st-clear-btn:hover { color: var(--color-text-secondary); background: var(--color-bg-hover); }
   .st-input:focus { border-color: var(--color-accent); }
   .st-input::placeholder { color: var(--color-text-faintest); }
   .st-count { font-size: 11px; color: var(--color-text-muted); flex-shrink: 0; }
@@ -116,8 +120,15 @@ export function SelectorTab({ hierarchyXml, pickedNode, selector, onSelectorChan
     return findMatchingNodes(roots, parsed).length;
   }, [selector, roots]);
 
+  const inputRef = useRef<HTMLInputElement>(null);
+
   const handleInput = useCallback((e: Event) => {
     onSelectorChange((e.target as HTMLInputElement).value);
+  }, [onSelectorChange]);
+
+  const handleClear = useCallback(() => {
+    onSelectorChange('');
+    inputRef.current?.focus();
   }, [onSelectorChange]);
 
   const handleCopy = useCallback((code: string, idx: number) => {
@@ -175,13 +186,27 @@ export function SelectorTab({ hierarchyXml, pickedNode, selector, onSelectorChan
             </button>
           </div>
         )}
-        <input
-          class="st-input"
-          type="text"
-          placeholder='device.getByText("Login") · device.getByRole("button", { name: "Submit" })'
-          value={selector}
-          onInput={handleInput}
-        />
+        <div class="st-input-wrap">
+          <input
+            ref={inputRef}
+            class="st-input"
+            type="text"
+            placeholder='device.getByText("Login") · device.getByRole("button", { name: "Submit" })'
+            value={selector}
+            onInput={handleInput}
+          />
+          {selector !== '' && (
+            <button
+              type="button"
+              class="st-clear-btn"
+              onClick={handleClear}
+              aria-label="Clear locator"
+              title="Clear locator"
+            >
+              <X size={12} aria-hidden="true" />
+            </button>
+          )}
+        </div>
         <span class={countClass}>{countLabel}</span>
       </div>
       {strictWarning && (
