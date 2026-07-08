@@ -132,6 +132,10 @@ export const RECOVERABLE_INFRASTRUCTURE_PATTERNS = [
   'Agent command timed out',
   'Agent returned empty response',
   'Agent connection dropped',
+  // TCP-reset variant of a dropped connection ("Agent connection lost during
+  // read" / "... and agent is unreachable", agent_comms.rs). Without it, a
+  // reset-shaped transient drop bypasses every recovery layer (PILOT-282).
+  'Agent connection lost',
   'Not connected to agent',
   'Timed out connecting to agent socket',
   'Failed to connect to agent socket',
