@@ -238,32 +238,26 @@ export class Device {
   async _dumpWebViewDomForInspection(hierarchyXml: string): Promise<string | null | undefined> {
     const marker = this._platform === 'ios' ? 'XCUIElementTypeWebView' : 'android.webkit.WebView';
     if (!hierarchyXml.includes(marker)) return undefined;
-    const prevActive = this._activeWebView;
+    // _establishWebView (unlike _connectWebView) never writes _activeWebView,
+    // so a poll cannot clobber a handle a concurrent test session activated.
     // Captured outside attempt() so the connected handle stays disposable even
     // if something between connect and dump throws — disposal must not depend
     // on _dumpDomHierarchy's (current) never-throws contract.
     let activeHandle: WebViewHandle | undefined;
     const attempt = async (): Promise<string | undefined> => {
-      const handle = await this._connectWebView();
+      const handle = await this._establishWebView();
       activeHandle = handle;
-      // _connectWebView promotes the handle to _activeWebView; undo that so a
-      // picker poll doesn't change what test-run traces capture. If a
-      // concurrently running test installed its own handle meanwhile, keep it.
-      if (this._activeWebView === handle && prevActive !== handle) {
-        this._activeWebView = prevActive;
-      }
       return handle._dumpDomHierarchy();
     };
     // Dispose a connection whose dump failed: it can be "alive" (socket open)
     // yet bound to a page that no longer exists — e.g. the WebView remounted
-    // when the user navigated away and back. Never close a handle the test
-    // session itself opened (prevActive === handle).
+    // when the user navigated away and back. Never close a handle a test
+    // session is actively using.
     const dispose = () => {
       const handle = activeHandle;
       activeHandle = undefined;
-      if (handle && prevActive !== handle && this._cachedWebView === handle) {
+      if (handle && this._activeWebView !== handle && this._cachedWebView === handle) {
         this._cachedWebView = null;
-        if (this._activeWebView === handle) this._activeWebView = prevActive;
         handle.close().catch(() => {});
         return true;
       }
@@ -1202,10 +1196,16 @@ export class Device {
     return handle;
   }
 
-  private async _connectWebView(packageName?: string, log?: string[]): Promise<WebViewHandle> {
+  /**
+   * Establish (or reuse) a WebView connection WITHOUT promoting it to the
+   * session's active WebView. The picker path uses this directly — writing
+   * `_activeWebView` from a poll would race a test session that connects
+   * concurrently (the poll's multi-second connect resolving after the test's
+   * would clobber the test's activation).
+   */
+  private async _establishWebView(packageName?: string, log?: string[]): Promise<WebViewHandle> {
     if (this._cachedWebView?._isAlive()) {
       appendWebViewConnectLog(log, 'Reusing cached WebView connection');
-      this._activeWebView = this._cachedWebView;
       this._applyTraceCtx(this._cachedWebView);
       return this._cachedWebView;
     }
@@ -1216,6 +1216,12 @@ export class Device {
       return this._webviewIos(packageName, generation, log);
     }
     return this._webviewAndroid(packageName, generation, log);
+  }
+
+  private async _connectWebView(packageName?: string, log?: string[]): Promise<WebViewHandle> {
+    const handle = await this._establishWebView(packageName, log);
+    this._activeWebView = handle;
+    return handle;
   }
 
   private async _webviewAndroid(packageName: string | undefined, generation: number, log?: string[]): Promise<WebViewHandle> {
@@ -1297,7 +1303,6 @@ export class Device {
           }
 
           appendWebViewConnectLog(log, `Connected to ${describeWebView(target)} on local port ${fwd.localPort}`);
-          this._activeWebView = handle;
           this._cachedWebView = handle;
           return handle;
         } catch (e) {
@@ -1392,7 +1397,6 @@ export class Device {
         throw new Error('WebView connection was disposed before it completed');
       }
 
-      this._activeWebView = handle;
       this._cachedWebView = handle;
       return handle;
     }
