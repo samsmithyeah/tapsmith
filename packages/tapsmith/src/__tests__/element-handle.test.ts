@@ -98,6 +98,7 @@ function makeMockClient(overrides: Partial<TapsmithGrpcClient> = {}): TapsmithGr
     highlight: vi.fn(async () => successResponse()),
     takeElementScreenshot: vi.fn(async () => screenshotResponse()),
     takeScreenshot: vi.fn(async () => screenshotResponse()),
+    waitForIdle: vi.fn(async () => successResponse()),
     ...overrides,
   } as unknown as TapsmithGrpcClient;
 }
@@ -2609,29 +2610,27 @@ describe('transient agent-command timeout handling (slow-emulator flake regressi
     expect(findElements.mock.calls.length).toBeGreaterThan(1);
   });
 
-  it('scrollIntoView() retries through a transient agent timeout (swipes again) instead of aborting', async () => {
+  it('scrollIntoView() retries through a transient agent timeout by re-probing — without a blind swipe', async () => {
     const bounds = { left: 0, top: 10, right: 100, bottom: 40 };
     let calls = 0;
     const findElements = vi.fn(async () => {
       calls++;
-      // First probe times out at the agent; after one swipe the next settles
-      // with the element visible on screen.
+      // First probe times out at the agent; the next tick answers with the
+      // element visible on screen. A timed-out tick says nothing about where
+      // the element is, so it must NOT trigger a swipe that could displace an
+      // already-visible target (PILOT-283) — just re-probe.
       return calls < 2
         ? { requestId: '1', elements: [], errorMessage: AGENT_TIMEOUT_MSG }
         : makeFindElementsResponse([makeElementInfo({ visible: true, bounds })]);
     });
-    // Stabilization poll (i > 0): stable Y breaks the loop on the first tick.
-    const findElement = vi.fn(async () => ({
-      requestId: '1', found: true, element: makeElementInfo({ visible: true, bounds }), errorMessage: '',
-    }));
     const swipe = vi.fn(async () => successResponse());
-    const client = makeMockClient({ findElements, findElement, swipe });
+    const client = makeMockClient({ findElements, swipe });
     const handle = new ElementHandle(client, _text('Target'), 5000);
 
     await handle.scrollIntoView();
 
     expect(calls).toBeGreaterThanOrEqual(2);
-    expect(swipe).toHaveBeenCalled();
+    expect(swipe).not.toHaveBeenCalled();
   });
 
   it('setChecked() surfaces a persistent agent timeout during confirmation as the infra error, not "did not change"', async () => {
@@ -2659,8 +2658,9 @@ describe('transient agent-command timeout handling (slow-emulator flake regressi
     let findCalls = 0;
     const findElements = vi.fn(async () => {
       findCalls++;
-      // i=0: not on screen yet → one swipe; i=1: target is visible.
-      return findCalls < 2
+      // i=0: not on screen (probe + first-swipe confirmation re-probe both
+      // miss) → one swipe; i=1: target is visible.
+      return findCalls < 3
         ? makeFindElementsResponse([])
         : makeFindElementsResponse([makeElementInfo({ visible: true, bounds })]);
     });
@@ -2691,8 +2691,10 @@ describe('transient agent-command timeout handling (slow-emulator flake regressi
     const handle = new ElementHandle(client, _text('Target'), 5000);
 
     await expect(handle.scrollIntoView({ maxScrolls: 2 })).rejects.toThrow(/Agent command timed out/);
-    // Retried by swiping across the budget rather than aborting on tick 1.
-    expect(swipe).toHaveBeenCalled();
+    // Retried by re-probing across the budget rather than aborting on tick 1;
+    // timed-out ticks carry no position information, so no blind swipes.
+    expect(findElements.mock.calls.length).toBeGreaterThan(1);
+    expect(swipe).not.toHaveBeenCalled();
   }, 10000);
 
   it('a recovered agent reports a genuine "not found", not the earlier timeout', async () => {
@@ -2758,6 +2760,108 @@ describe('scrollIntoView error propagation (review follow-up)', () => {
     const client = makeMockClient({ findElements, swipe });
     const handle = new ElementHandle(client, _text('Target'), 5000);
     await expect(handle.scrollIntoView()).rejects.toThrow(/findElements failed: agent gone/);
+    expect(swipe).not.toHaveBeenCalled();
+  });
+});
+
+describe('scrollIntoView no-op on already-visible targets (PILOT-283)', () => {
+  const bounds = { left: 0, top: 372, right: 340, bottom: 502 };
+
+  it('returns without swiping (or idle-waiting) when the target is visible on the first probe', async () => {
+    const findElements = vi.fn(async () =>
+      makeFindElementsResponse([makeElementInfo({ visible: true, bounds })]));
+    const swipe = vi.fn(async () => successResponse());
+    const waitForIdle = vi.fn(async () => successResponse());
+    const client = makeMockClient({ findElements, swipe, waitForIdle });
+    const handle = new ElementHandle(client, _text('Gesture Tester'), 5000);
+
+    await handle.scrollIntoView();
+
+    expect(findElements).toHaveBeenCalledTimes(1);
+    expect(swipe).not.toHaveBeenCalled();
+    expect(waitForIdle).not.toHaveBeenCalled();
+  });
+
+  it('confirms a first-tick miss (idle wait + re-probe) and skips the swipe when the target turns out visible', async () => {
+    // Right after navigation the a11y tree can lag the rendered screen and
+    // report a plainly-visible element as absent — without any error. The
+    // old behavior swiped on that phantom miss, shifting the element under
+    // the pinned app bar so the follow-up tap silently missed.
+    let calls = 0;
+    const findElements = vi.fn(async () => {
+      calls++;
+      return calls < 2
+        ? makeFindElementsResponse([]) // lagging tree: valid response, element "absent"
+        : makeFindElementsResponse([makeElementInfo({ visible: true, bounds })]);
+    });
+    const swipe = vi.fn(async () => successResponse());
+    const waitForIdle = vi.fn(async () => successResponse());
+    const client = makeMockClient({ findElements, swipe, waitForIdle });
+    const handle = new ElementHandle(client, _text('Gesture Tester'), 5000);
+
+    await handle.scrollIntoView();
+
+    expect(waitForIdle).toHaveBeenCalledTimes(1);
+    expect(findElements).toHaveBeenCalledTimes(2);
+    expect(swipe).not.toHaveBeenCalled();
+  });
+
+  it('still swipes when the confirmed first-tick miss persists (genuinely off-screen element)', async () => {
+    let calls = 0;
+    const findElements = vi.fn(async () => {
+      calls++;
+      // Probe + confirmation re-probe both miss → swipe; then visible.
+      return calls < 3
+        ? makeFindElementsResponse([])
+        : makeFindElementsResponse([makeElementInfo({ visible: true, bounds })]);
+    });
+    const findElement = vi.fn(async () => ({
+      requestId: '1', found: true, element: makeElementInfo({ visible: true, bounds }), errorMessage: '',
+    }));
+    const swipe = vi.fn(async () => successResponse());
+    const client = makeMockClient({ findElements, findElement, swipe });
+    const handle = new ElementHandle(client, _text('Below The Fold'), 5000);
+
+    await handle.scrollIntoView();
+
+    expect(swipe).toHaveBeenCalledTimes(1);
+  });
+
+  it('a failing idle wait does not block the scroll (best effort)', async () => {
+    let calls = 0;
+    const findElements = vi.fn(async () => {
+      calls++;
+      return calls < 3
+        ? makeFindElementsResponse([])
+        : makeFindElementsResponse([makeElementInfo({ visible: true, bounds })]);
+    });
+    const findElement = vi.fn(async () => ({
+      requestId: '1', found: true, element: makeElementInfo({ visible: true, bounds }), errorMessage: '',
+    }));
+    const swipe = vi.fn(async () => successResponse());
+    const waitForIdle = vi.fn(async () => { throw new Error('waitForIdle unsupported'); });
+    const client = makeMockClient({ findElements, findElement, swipe, waitForIdle });
+    const handle = new ElementHandle(client, _text('Below The Fold'), 5000);
+
+    await handle.scrollIntoView();
+
+    expect(swipe).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not swipe on a stale-snapshot tick (no position information)', async () => {
+    let calls = 0;
+    const findElements = vi.fn(async () => {
+      calls++;
+      return calls < 2
+        ? { requestId: '1', elements: [], errorMessage: 'snapshot is stale (UI changed) mid-query' }
+        : makeFindElementsResponse([makeElementInfo({ visible: true, bounds })]);
+    });
+    const swipe = vi.fn(async () => successResponse());
+    const client = makeMockClient({ findElements, swipe });
+    const handle = new ElementHandle(client, _text('Gesture Tester'), 5000);
+
+    await handle.scrollIntoView();
+
     expect(swipe).not.toHaveBeenCalled();
   });
 });

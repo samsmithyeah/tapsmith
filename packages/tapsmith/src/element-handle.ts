@@ -45,6 +45,14 @@ const SCROLL_PROBE_TIMEOUT_MS = 1000;
  *  consumed to stop the scroll rather than being delivered to child views.
  *  500ms is the measured safe minimum for iOS. */
 const SCROLL_SETTLE_MS = 500;
+/** Idle-wait budget used to confirm a first-tick miss in scrollIntoView()
+ *  before committing to the first swipe. Right after navigation or app launch
+ *  the accessibility tree can lag the rendered screen (briefly describing the
+ *  previous screen without any error), so an element that is plainly visible
+ *  can probe as absent; swiping on that phantom miss displaces the visible
+ *  element — e.g. under a pinned app bar (PILOT-283). Bounded so screens with
+ *  continuous animation can't stall a genuine scroll for long. */
+const SCROLL_FIRST_SWIPE_IDLE_TIMEOUT_MS = 1500;
 /** Cap for the best-effort screenshot/hierarchy capture taken when an action's
  *  element resolution has *already* failed. Tighter than the normal 5s
  *  TRACE_CAPTURE_TIMEOUT_MS so a slow/unresponsive device can't add seconds of
@@ -1860,99 +1868,139 @@ export class ElementHandle {
     const start = Date.now();
 
     let lastTransientErr: Error | undefined;
+
+    // One visibility probe against the CURRENT tree (findElements does not
+    // auto-wait). A 'miss' is affirmative — the tree reports the element
+    // absent or off-screen, so scrolling is warranted. An 'unreliable' tick
+    // (transient agent timeout, stale mid-update snapshot) told us nothing
+    // about where the element is, so swiping on it would be a blind gesture
+    // that can displace an already-visible target — e.g. shift it under a
+    // pinned app bar so the follow-up tap silently misses (PILOT-283).
+    const probe = async (): Promise<
+      | { outcome: 'visible'; el: ElementInfo }
+      | { outcome: 'miss' }
+      | { outcome: 'unreliable' }
+    > => {
+      try {
+        const res = await this._client.findElements(this._selector, SCROLL_PROBE_TIMEOUT_MS);
+        // The probe returned → agent responsive; drop any earlier transient
+        // timeout so exhausting the scrolls reports "not visible", not infra.
+        // (If res carries a transient errorMessage below, the catch re-sets it.)
+        lastTransientErr = undefined;
+        if (res.errorMessage) {
+          // Daemon-level failure — not "no match yet"; don't keep swiping.
+          throw new Error(`findElements failed: ${res.errorMessage}`);
+        }
+        const els = collapseSameTargetDuplicates(res.elements ?? []);
+        const nthIndex = this._options.nthIndex;
+        let el: ElementInfo | undefined;
+        if (nthIndex !== undefined) {
+          const idx = nthIndex < 0 ? els.length + nthIndex : nthIndex;
+          el = idx >= 0 && idx < els.length ? els[idx] : undefined;
+        } else {
+          // Strict mode (PILOT-226): scrolling toward an ambiguous selector
+          // is an error — which match should end up on screen?
+          if (els.length > 1) {
+            throw buildStrictModeViolationError(this._describe(), els);
+          }
+          el = els[0];
+        }
+        return el?.visible ? { outcome: 'visible', el } : { outcome: 'miss' };
+      } catch (err) {
+        // A transient agent-command timeout (slow-but-alive agent) is retried
+        // by re-probing rather than aborting the scroll; remember it so a
+        // budget-long stall surfaces the infra error (→ session recovery)
+        // instead of the generic "not visible after N scroll(s)".
+        if (isTransientAgentError(err)) {
+          lastTransientErr = err as Error;
+          return { outcome: 'unreliable' };
+        }
+        // A stale mid-update snapshot is likewise a tick with no information —
+        // distinct from an affirmative "not in the tree" miss.
+        if (isStaleSnapshotError(err)) return { outcome: 'unreliable' };
+        if (isPollableNotFoundError(err)) return { outcome: 'miss' };
+        // Not an element-not-found error — could be gRPC transport
+        // failure (UNAVAILABLE, INTERNAL, PERMISSION_DENIED, etc.)
+        // or any other infrastructure error. Propagate immediately.
+        throw err;
+      }
+    };
+
     try {
+      let swipes = 0;
       for (let i = 0; i <= maxScrolls; i++) {
-        try {
-          const res = await this._client.findElements(this._selector, SCROLL_PROBE_TIMEOUT_MS);
-          // The probe returned → agent responsive; drop any earlier transient
-          // timeout so exhausting the scrolls reports "not visible", not infra.
-          // (If res carries a transient errorMessage below, the catch re-sets it.)
-          lastTransientErr = undefined;
-          if (res.errorMessage) {
-            // Daemon-level failure — not "no match yet"; don't keep swiping.
-            throw new Error(`findElements failed: ${res.errorMessage}`);
+        let result = await probe();
+
+        // Right after navigation or app launch the accessibility tree can lag
+        // the rendered screen — it may briefly describe the PREVIOUS screen
+        // without any error — so a first-tick miss is not yet trustworthy
+        // evidence that the element is off-screen. Confirm it: wait for the
+        // UI to settle (best effort), then probe once more before committing
+        // to the first swipe.
+        if (i === 0 && result.outcome === 'miss') {
+          try {
+            await this._client.waitForIdle(SCROLL_FIRST_SWIPE_IDLE_TIMEOUT_MS);
+          } catch {
+            // Best effort — a slow or unsupported idle wait must not block scrolling.
           }
-          const els = collapseSameTargetDuplicates(res.elements ?? []);
-          const nthIndex = this._options.nthIndex;
-          let el: ElementInfo | undefined;
-          if (nthIndex !== undefined) {
-            const idx = nthIndex < 0 ? els.length + nthIndex : nthIndex;
-            el = idx >= 0 && idx < els.length ? els[idx] : undefined;
-          } else {
-            // Strict mode (PILOT-226): scrolling toward an ambiguous selector
-            // is an error — which match should end up on screen?
-            if (els.length > 1) {
-              throw buildStrictModeViolationError(this._describe(), els);
-            }
-            el = els[0];
-          }
-          if (el?.visible) {
-            // Wait for scroll momentum to fully stop.  On iOS, momentum
-            // deceleration continues after a swipe, and the first tap during
-            // deceleration is consumed by the ScrollView (stops the scroll)
-            // rather than being delivered to the child view.  Poll until the
-            // element's position is stable for two consecutive checks.
-            if (i > 0) {
-              let lastY = el.bounds?.top;
-              for (let s = 0; s < 10; s++) {
-                await sleep(100, this._client._getAbortSignal?.());
-                let probe;
-                try {
-                  probe = await this._client.findElement(this._selector, 500);
-                } catch (err) {
-                  // findElement rejected (transport error / user abort). The
-                  // target was already visible; a slow (transient) poll must NOT
-                  // fall through to another swipe, which could scroll it back
-                  // off-screen — stop stabilizing. Other rejections propagate.
-                  if (isTransientAgentError(err)) break;
-                  throw err;
-                }
-                // findElement reports an agent/daemon error (a slow transient
-                // poll, or a momentary "not found" as it settles) via
-                // errorMessage rather than rejecting. We can't get a stable
-                // reading and the target was already visible, so stop
-                // stabilizing rather than burning up to ~5s per remaining tick
-                // re-probing (or falling through to another swipe).
-                if (probe.errorMessage) break;
-                const curY = probe.element?.bounds?.top;
-                if (curY !== undefined && curY === lastY) break;
-                lastY = curY;
+          result = await probe();
+        }
+
+        if (result.outcome === 'visible') {
+          const el = result.el;
+          // Wait for scroll momentum to fully stop.  On iOS, momentum
+          // deceleration continues after a swipe, and the first tap during
+          // deceleration is consumed by the ScrollView (stops the scroll)
+          // rather than being delivered to the child view.  Poll until the
+          // element's position is stable for two consecutive checks.
+          if (swipes > 0) {
+            let lastY = el.bounds?.top;
+            for (let s = 0; s < 10; s++) {
+              await sleep(100, this._client._getAbortSignal?.());
+              let stabilityProbe;
+              try {
+                stabilityProbe = await this._client.findElement(this._selector, 500);
+              } catch (err) {
+                // findElement rejected (transport error / user abort). The
+                // target was already visible; a slow (transient) poll must NOT
+                // fall through to another swipe, which could scroll it back
+                // off-screen — stop stabilizing. Other rejections propagate.
+                if (isTransientAgentError(err)) break;
+                throw err;
               }
+              // findElement reports an agent/daemon error (a slow transient
+              // poll, or a momentary "not found" as it settles) via
+              // errorMessage rather than rejecting. We can't get a stable
+              // reading and the target was already visible, so stop
+              // stabilizing rather than burning up to ~5s per remaining tick
+              // re-probing (or falling through to another swipe).
+              if (stabilityProbe.errorMessage) break;
+              const curY = stabilityProbe.element?.bounds?.top;
+              if (curY !== undefined && curY === lastY) break;
+              lastY = curY;
             }
-            await this._traceQuery(
-              'scrollIntoView',
-              `Visible after ${i} scroll(s)`,
-              Date.now() - start,
-              el.bounds,
-            );
-            return;
           }
-        } catch (err) {
-          // findElement throws when the element isn't in the tree at all
-          // (e.g. virtualized list hasn't rendered it yet). This is expected
-          // during scrolling — swipe again and retry.
-          // Re-throw all errors that are NOT element-not-found related.
-          // Only "element not found" / "not in hierarchy" type errors should
-          // be swallowed to let the scroll loop continue. A transient
-          // agent-command timeout (slow-but-alive agent) is likewise retried by
-          // swiping again rather than aborting the scroll; remember it so a
-          // budget-long stall surfaces the infra error (→ session recovery)
-          // instead of the generic "not visible after N scroll(s)".
-          if (isTransientAgentError(err)) {
-            lastTransientErr = err as Error;
-          } else if (!isPollableNotFoundError(err)) {
-            // Not an element-not-found error — could be gRPC transport
-            // failure (UNAVAILABLE, INTERNAL, PERMISSION_DENIED, etc.)
-            // or any other infrastructure error. Propagate immediately.
-            throw err;
-          }
+          await this._traceQuery(
+            'scrollIntoView',
+            `Visible after ${swipes} scroll(s)`,
+            Date.now() - start,
+            el.bounds,
+          );
+          return;
         }
 
         if (i < maxScrolls) {
+          if (result.outcome === 'unreliable') {
+            // This tick told us nothing — wait out the blip and re-probe on
+            // the next iteration instead of swiping blind (PILOT-283).
+            await sleep(SCROLL_SETTLE_MS, this._client._getAbortSignal?.());
+            continue;
+          }
           const swipeRes = await this._client.swipe(direction, { speed, distance: 0.6 });
           if (!swipeRes.success) {
             throw new Error(swipeRes.errorMessage || 'Swipe failed during scrollIntoView');
           }
+          swipes++;
           await sleep(SCROLL_SETTLE_MS, this._client._getAbortSignal?.());
         }
       }
