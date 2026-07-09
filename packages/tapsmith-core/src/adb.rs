@@ -633,14 +633,9 @@ pub async fn install_ca_cert(
             Ok(output) => {
                 let msg = String::from_utf8_lossy(&output);
                 if msg.contains("cannot run as root") || msg.contains("adbd cannot run as root") {
-                    tracing::warn!(
-                        %serial,
-                        "Device does not support adb root — CA must be installed manually"
-                    );
-                    return Err(anyhow::anyhow!(
-                        "Device does not support adb root — HTTPS traffic will not be captured. \
-                         Install the CA cert manually from ~/.tapsmith/ca.pem"
-                    ));
+                    let hint = adb_root_unavailable_hint(serial).await;
+                    tracing::warn!(%serial, "Device does not support adb root — {hint}");
+                    return Err(anyhow::anyhow!("Device does not support adb root — {hint}"));
                 }
                 debug!(%serial, "adb root succeeded, waiting for device");
             }
@@ -710,6 +705,50 @@ pub async fn install_ca_cert(
     let _ = shell(serial, &format!("rm -f {tmp_cert}")).await;
 
     result
+}
+
+/// Compose an actionable hint for when `adb root` is unavailable.
+///
+/// On emulators this almost always means a production system image — in
+/// practice a Google Play (`google_apis_playstore`) AVD, since Google APIs
+/// and AOSP emulator images are rootable `userdebug` builds. Recreating the
+/// AVD is the real fix there; a manual user-store CA install only helps apps
+/// that opt in via `network_security_config.xml`.
+async fn adb_root_unavailable_hint(serial: &str) -> String {
+    let mut is_emulator = false;
+    for prop in ["ro.kernel.qemu", "ro.boot.qemu"] {
+        if shell_lenient(serial, &format!("getprop {prop}"))
+            .await
+            .map(|v| v.trim() == "1")
+            .unwrap_or(false)
+        {
+            is_emulator = true;
+            break;
+        }
+    }
+    let product_name = shell_lenient(serial, "getprop ro.product.name")
+        .await
+        .unwrap_or_default();
+    root_unavailable_hint(is_emulator, product_name.trim())
+}
+
+fn root_unavailable_hint(is_emulator: bool, product_name: &str) -> String {
+    if is_emulator {
+        let image = if product_name.contains("playstore") {
+            "a Google Play (google_apis_playstore)"
+        } else {
+            "a production"
+        };
+        format!(
+            "this emulator runs {image} system image, which blocks root. \
+             Recreate the AVD with a Google APIs image (`npx tapsmith create-avd`) \
+             to enable HTTPS capture"
+        )
+    } else {
+        "install the CA cert manually from ~/.tapsmith/ca.pem \
+         (apps must opt in via network_security_config.xml to trust user-installed CAs)"
+            .to_string()
+    }
 }
 
 /// Try to remount /system and install the CA cert into the system trust store.
@@ -1265,6 +1304,30 @@ mod tests {
             state: "".into(),
         };
         assert!(!dev.is_online());
+    }
+
+    // ─── root_unavailable_hint ───
+
+    #[test]
+    fn root_hint_play_store_emulator_names_the_image() {
+        let hint = root_unavailable_hint(true, "sdk_gphone64_arm64_playstore");
+        assert!(hint.contains("google_apis_playstore"));
+        assert!(hint.contains("tapsmith create-avd"));
+    }
+
+    #[test]
+    fn root_hint_other_production_emulator_still_recommends_recreate() {
+        let hint = root_unavailable_hint(true, "sdk_gphone64_arm64");
+        assert!(hint.contains("a production system image"));
+        assert!(hint.contains("tapsmith create-avd"));
+    }
+
+    #[test]
+    fn root_hint_physical_device_recommends_manual_install() {
+        let hint = root_unavailable_hint(false, "husky");
+        assert!(hint.contains("~/.tapsmith/ca.pem"));
+        assert!(hint.contains("network_security_config.xml"));
+        assert!(!hint.contains("create-avd"));
     }
 
     // ─── AdbDevice::is_emulator ───

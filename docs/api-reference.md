@@ -2269,10 +2269,21 @@ npx tapsmith init
 
 ### `tapsmith doctor`
 
-Run a non-interactive system health check. Verifies all prerequisites: Node.js version, daemon binary, ADB (Android), agent APKs, Xcode (iOS), simulators, and iOS network capture dependencies. Exits with code 0 if all checks pass, 1 if any hard errors.
+Run a non-interactive system health check. Verifies all prerequisites: Node.js version, daemon binary, ADB (Android), agent APKs, AVD system image compatibility, Xcode (iOS), simulators, and network capture dependencies. Exits with code 0 if all checks pass, 1 if any hard errors.
 
 ```bash
 npx tapsmith doctor
+```
+
+### `tapsmith create-avd [--api <level>] [--name <name>] [--device <profile>] [--abi <abi>] [--force]`
+
+Create an Android AVD that supports HTTPS network capture. Downloads a **Google APIs** system image with `sdkmanager` and creates the AVD with `avdmanager` — Google Play images (the ones Android Studio preselects) block `adb root`, so Tapsmith cannot decrypt HTTPS traffic on them (see [Android emulator image requirements](./network.md#android-emulator-image-requirements)). Requires the Android SDK command-line tools (`ANDROID_HOME` or on `PATH`).
+
+Defaults: API level 36, name `Tapsmith_Phone_API_<api>`, device profile `medium_phone`, ABI matching the host architecture (`arm64-v8a` on Apple Silicon, `x86_64` on Intel). `--force` overwrites an existing AVD with the same name.
+
+```bash
+npx tapsmith create-avd                         # Tapsmith_Phone_API_36
+npx tapsmith create-avd --api 34 --device pixel_7
 ```
 
 ### `tapsmith list-devices [--json]`

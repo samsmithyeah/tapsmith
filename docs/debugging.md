@@ -536,10 +536,11 @@ Tapsmith Doctor
 
   Network Capture
   ✓ MITM CA exists (~/.tapsmith/ca.pem)
+  ✓ AVD system images support HTTPS capture (2 AVDs checked)
   ✓ mitmproxy installed
   ✓ Network Extension enabled
 
-12 checks passed
+15 checks passed
 ```
 
 The checks cover:
@@ -547,7 +548,7 @@ The checks cover:
 - **Core:** Node.js version, daemon binary presence, config file
 - **Android:** ADB, ANDROID_HOME, connected devices, agent APKs, app APK
 - **iOS:** Xcode, simulators, xctestrun file (macOS only)
-- **Network Capture:** MITM CA certificate, mitmproxy installation, Network Extension status
+- **Network Capture:** MITM CA certificate, AVD system image compatibility (Google Play images can't capture HTTPS — see [Android emulator image requirements](network.md#android-emulator-image-requirements)), mitmproxy installation, Network Extension status
 
 Exit code is 0 when all checks pass (warnings are acceptable), 1 when any hard error is found.
 
