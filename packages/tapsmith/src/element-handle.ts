@@ -1933,6 +1933,11 @@ export class ElementHandle {
       // mean zero actual scrolls). They get their own bound instead, so a
       // persistently sick agent still terminates the loop.
       let unreliableTicks = 0;
+      // The pre-swipe miss confirmation runs at most once: without the flag,
+      // an unreliable tick landing after the confirmation (while swipes is
+      // still 0) would re-trigger the idle wait on the next miss, stacking
+      // redundant multi-second delays.
+      let confirmedFirstMiss = false;
       for (;;) {
         let result = await probe();
 
@@ -1944,7 +1949,8 @@ export class ElementHandle {
         // once more before committing to the first swipe. Gated on swipes
         // (not the loop index) so an unreliable tick 0 doesn't let the first
         // affirmative miss swipe unconfirmed.
-        if (swipes === 0 && result.outcome === 'miss') {
+        if (swipes === 0 && result.outcome === 'miss' && !confirmedFirstMiss) {
+          confirmedFirstMiss = true;
           try {
             await this._client.waitForIdle(SCROLL_FIRST_SWIPE_IDLE_TIMEOUT_MS);
           } catch {

@@ -2917,6 +2917,34 @@ describe('scrollIntoView no-op on already-visible targets (PILOT-283)', () => {
     expect(swipe).toHaveBeenCalledTimes(1);
   });
 
+  it('runs the pre-swipe miss confirmation at most once (review follow-up)', async () => {
+    // miss → confirmation (unreliable) → miss again: the second miss must not
+    // re-trigger the idle wait — one confirmation attempt per scrollIntoView.
+    let calls = 0;
+    const findElements = vi.fn(async () => {
+      calls++;
+      if (calls === 1) return makeFindElementsResponse([]); // first miss
+      if (calls === 2) {
+        // confirmation probe hits a transient timeout
+        return { requestId: '1', elements: [], errorMessage: 'Agent command timed out after 5.25s' };
+      }
+      if (calls === 3) return makeFindElementsResponse([]); // miss again → swipe, no re-confirm
+      return makeFindElementsResponse([makeElementInfo({ visible: true, bounds })]);
+    });
+    const findElement = vi.fn(async () => ({
+      requestId: '1', found: true, element: makeElementInfo({ visible: true, bounds }), errorMessage: '',
+    }));
+    const swipe = vi.fn(async () => successResponse());
+    const waitForIdle = vi.fn(async () => successResponse());
+    const client = makeMockClient({ findElements, findElement, swipe, waitForIdle });
+    const handle = new ElementHandle(client, _text('Below The Fold'), 5000);
+
+    await handle.scrollIntoView();
+
+    expect(waitForIdle).toHaveBeenCalledTimes(1);
+    expect(swipe).toHaveBeenCalledTimes(1);
+  });
+
   it('reports the number of swipes actually performed when giving up (review follow-up)', async () => {
     // Every tick is a stale snapshot: no swipe is ever performed, so the
     // error must say "0 scroll(s)", not claim the full maxScrolls budget ran.
