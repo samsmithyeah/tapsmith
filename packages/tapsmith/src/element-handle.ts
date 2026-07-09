@@ -1933,11 +1933,13 @@ export class ElementHandle {
 
         // Right after navigation or app launch the accessibility tree can lag
         // the rendered screen — it may briefly describe the PREVIOUS screen
-        // without any error — so a first-tick miss is not yet trustworthy
-        // evidence that the element is off-screen. Confirm it: wait for the
-        // UI to settle (best effort), then probe once more before committing
-        // to the first swipe.
-        if (i === 0 && result.outcome === 'miss') {
+        // without any error — so a miss before any scrolling has happened is
+        // not yet trustworthy evidence that the element is off-screen.
+        // Confirm it: wait for the UI to settle (best effort), then probe
+        // once more before committing to the first swipe. Gated on swipes
+        // (not the loop index) so an unreliable tick 0 doesn't let the first
+        // affirmative miss swipe unconfirmed.
+        if (swipes === 0 && result.outcome === 'miss') {
           try {
             await this._client.waitForIdle(SCROLL_FIRST_SWIPE_IDLE_TIMEOUT_MS);
           } catch {

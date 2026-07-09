@@ -2848,6 +2848,32 @@ describe('scrollIntoView no-op on already-visible targets (PILOT-283)', () => {
     expect(swipe).toHaveBeenCalledTimes(1);
   });
 
+  it('confirms the first affirmative miss even when an earlier tick was unreliable (review follow-up)', async () => {
+    // Tick 0 is a transient agent timeout (no swipe, re-probe); tick 1 is the
+    // FIRST affirmative miss. The idle-wait confirmation must still run — it
+    // guards the first swipe, not literally iteration 0 — and here the
+    // confirmation probe finds the target visible, so no swipe happens.
+    let calls = 0;
+    const findElements = vi.fn(async () => {
+      calls++;
+      if (calls === 1) {
+        return { requestId: '1', elements: [], errorMessage: 'Agent command timed out after 5.25s' };
+      }
+      if (calls === 2) return makeFindElementsResponse([]); // first affirmative miss
+      return makeFindElementsResponse([makeElementInfo({ visible: true, bounds })]); // confirmation probe
+    });
+    const swipe = vi.fn(async () => successResponse());
+    const waitForIdle = vi.fn(async () => successResponse());
+    const client = makeMockClient({ findElements, swipe, waitForIdle });
+    const handle = new ElementHandle(client, _text('Gesture Tester'), 5000);
+
+    await handle.scrollIntoView();
+
+    expect(waitForIdle).toHaveBeenCalledTimes(1);
+    expect(findElements).toHaveBeenCalledTimes(3);
+    expect(swipe).not.toHaveBeenCalled();
+  });
+
   it('does not swipe on a stale-snapshot tick (no position information)', async () => {
     let calls = 0;
     const findElements = vi.fn(async () => {
