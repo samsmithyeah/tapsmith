@@ -87,7 +87,7 @@ export async function ensureSessionReady(
         // Give a transient agent-connection drop time to clear before
         // recovering — the recovery RPCs go over the same channel and an
         // immediate retry lands inside the same drop window (PILOT-282).
-        await delay(backoff[attempt - 1] ?? backoff[backoff.length - 1] ?? 0);
+        await delay(backoff[attempt - 1] ?? backoff.at(-1) ?? 0);
         try {
           await recoverSession(ctx);
         } catch (recoveryErr) {
