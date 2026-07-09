@@ -87,7 +87,9 @@ export function registerSuiteStatusTool(server: McpServer, dispatcher: TestDispa
  * Flatten the test tree into one row per test leaf, joined with the session's
  * accumulated results. Tests without a recorded result are 'not run'. Project
  * nodes set the projectName for everything beneath them, matching how run
- * results are keyed.
+ * results are keyed. The tree includes a project node literally named
+ * 'default' when a config mixes named and unnamed projects, but results record
+ * the default project as no projectName — normalize so the join matches.
  */
 function collectRows(
   nodes: TestTreeEntry[],
@@ -107,7 +109,10 @@ function collectRows(
       });
     }
     if (node.children) {
-      collectRows(node.children, node.type === 'project' ? node.name : projectName, store, out);
+      const childProject = node.type === 'project'
+        ? (node.name === 'default' ? undefined : node.name)
+        : projectName;
+      collectRows(node.children, childProject, store, out);
     }
   }
 }
