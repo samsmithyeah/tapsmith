@@ -402,14 +402,13 @@ function wrapAssertionWithTrace(
     // after state (the trace viewer draws them over the next action's
     // before-screenshot): if the element is now hidden or gone — the passing
     // case for toBeHidden / not.toBeVisible — record no bounds rather than a
-    // rectangle over empty space.
+    // rectangle over empty space. Same when the lookup errors: a missing box
+    // is better than a stale one, so there is no before-bounds fallback.
     let bounds: typeof beforeBounds;
     try {
       const res = await handle._client.findElement(handle._selector, 100);
       if (res.found && res.element?.visible) bounds = res.element.bounds;
-    } catch {
-      bounds = beforeBounds; // best-effort — lookup failed, keep before-bounds
-    }
+    } catch { /* best-effort — leave bounds unset */ }
 
     // Emit event immediately so _actionIndex increments before the runner
     // emits group-end boundaries.  No after-capture — the trace viewer uses

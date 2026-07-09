@@ -1973,6 +1973,34 @@ describe("wrapAssertionWithTrace", () => {
     vitestExpect(event.passed).toBe(true);
     vitestExpect(event.bounds).toBeUndefined();
   });
+
+  it("records no bounds when the post-assertion lookup errors", async () => {
+    // A transient lookup failure after a passing toBeHidden must not
+    // resurrect the pre-assertion bounds — a missing box beats a stale one.
+    const bounds = { left: 10, top: 20, right: 110, bottom: 60 };
+    const collector = makeMockCollector();
+    let findElementCalls = 0;
+    const client = makeMockClient(
+      async () => {
+        findElementCalls += 1;
+        if (findElementCalls > 1) throw new Error("agent connection lost");
+        return {
+          requestId: "1",
+          found: true,
+          element: makeElementInfo({ visible: true, bounds }),
+          errorMessage: "",
+        };
+      },
+      async () => ({ requestId: "1", elements: [], errorMessage: "" }),
+    );
+    const handle = makeTracedHandle(client, collector);
+
+    await tapsmithExpect(handle).toBeHidden({ timeout: 50 });
+
+    const event = collector.addAssertionEvent.mock.calls[0][0];
+    vitestExpect(event.passed).toBe(true);
+    vitestExpect(event.bounds).toBeUndefined();
+  });
 });
 
 // ─── Strict mode (PILOT-226) ───
