@@ -57,10 +57,14 @@ export function registerRunTestsTool(server: McpServer, dispatcher?: TestDispatc
         }, PROGRESS_INTERVAL_MS);
         heartbeat.unref?.();
 
+        // Merge in finally so results recorded before a rejection still reach
+        // the session board.
         const result = await dispatcher
           .runFiles(files, { testFilter, project })
-          .finally(() => clearInterval(heartbeat));
-        store.merge(dispatcher.getResults());
+          .finally(() => {
+            clearInterval(heartbeat);
+            store.merge(dispatcher.getResults());
+          });
         const content: CallToolResult['content'] = [];
         const screenshots: Buffer[] = [];
 
@@ -262,12 +266,18 @@ function runTapsmithProcess(args: string[], onOutputLine?: (line: string) => voi
     let stdout = '';
     let stderr = '';
 
+    // Only complete lines are reported as progress; a line straddling two
+    // chunks is carried over rather than emitted as garbled fragments.
+    let pendingLine = '';
     child.stdout.on('data', (chunk: Buffer) => {
       const text = chunk.toString();
       stdout += text;
       if (onOutputLine) {
-        const lines = text.split('\n').map((l) => l.trim()).filter((l) => l.length > 0);
-        if (lines.length > 0) onOutputLine(lines[lines.length - 1]);
+        pendingLine += text;
+        const parts = pendingLine.split('\n');
+        pendingLine = parts.pop() ?? '';
+        const complete = parts.map((l) => l.trim()).filter((l) => l.length > 0);
+        if (complete.length > 0) onOutputLine(complete[complete.length - 1]);
       }
     });
     child.stderr.on('data', (chunk: Buffer) => { stderr += chunk.toString(); });

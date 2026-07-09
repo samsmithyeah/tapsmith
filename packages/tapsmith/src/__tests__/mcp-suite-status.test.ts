@@ -239,6 +239,32 @@ describe('tapsmith_suite_status', () => {
     expect(detailed).not.toContain('b.test.ts');
   });
 
+  it('keeps completed results on the board when a run fails part-way', async () => {
+    const tree = [fileNode('/app/a.test.ts', [testNode('/app/a.test.ts', 'auth > logs in')])];
+    let currentResults: TestResultEntry[] = [];
+    const dispatcher = makeDispatcher({
+      getTestTree: () => tree,
+      getResults: () => currentResults,
+      runFiles: async () => {
+        currentResults = [result('/app/a.test.ts', 'auth > logs in', 'passed')];
+        throw new Error('device disconnected');
+      },
+    });
+
+    const { server, tools } = makeToolCapture();
+    registerRunTestsTool(server, dispatcher);
+    registerSuiteStatusTool(server, dispatcher);
+
+    await expect(tools.get('tapsmith_run_tests')!({ files: ['/app/a.test.ts'] }, extra))
+      .rejects.toThrow('device disconnected');
+    // Simulate the next run resetting the dispatcher's results: only the
+    // session store's merge-on-rejection keeps the passed test visible.
+    currentResults = [];
+
+    const text = textOf(await tools.get('tapsmith_suite_status')!({}, extra));
+    expect(text).toContain('Suite status: 1 passed, 0 failed, 0 skipped, 0 not run (1/1 tests run)');
+  });
+
   it('reports when no test files are discovered', async () => {
     const dispatcher = makeDispatcher();
     const { server, tools } = makeToolCapture();
