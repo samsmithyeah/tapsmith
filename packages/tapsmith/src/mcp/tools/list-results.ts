@@ -6,7 +6,7 @@ import { readTraceSummary } from './trace-utils.js';
 export function registerListResultsTool(server: McpServer, dispatcher: TestDispatcher): void {
   server.tool(
     'tapsmith_list_results',
-    'List test results from the current MCP test session. Shows pass/fail/skip status, duration, and error messages for each test. Use after a test run to inspect results or check which tests failed. Pass details=true to include trace steps for failed tests.',
+    'List test results from the most recent test run. Shows pass/fail/skip status, duration, and error messages for each test. Use after a test run to inspect results or check which tests failed. Pass details=true to include trace steps for failed tests. Only covers the latest run — use tapsmith_suite_status for status accumulated across every run in the session, including tests that have not run yet.',
     {
       status: z.enum(['passed', 'failed', 'skipped']).optional().describe('Filter by status'),
       file: z.string().optional().describe('Filter by file path substring'),

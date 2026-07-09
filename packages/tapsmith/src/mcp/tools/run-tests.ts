@@ -1,11 +1,22 @@
 import { z } from 'zod';
 import { spawn } from 'node:child_process';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
-import type { TestDispatcher, TestTreeEntry } from '../test-dispatcher.js';
+import type { CallToolResult, ServerNotification, ServerRequest } from '@modelcontextprotocol/sdk/types.js';
+import type { RequestHandlerExtra } from '@modelcontextprotocol/sdk/shared/protocol.js';
+import type { TestDispatcher, TestResultEntry, TestTreeEntry } from '../test-dispatcher.js';
 import { readTraceSummary } from './trace-utils.js';
 import { getAllDaemonAddresses } from '../connection.js';
 import { matchesTestFilter } from '../../test-filter.js';
+import { getSessionResultsStore } from '../session-results.js';
+
+/**
+ * How often a running test suite reports progress to the MCP client. Clients
+ * enforce an idle timeout on tool calls (Claude Code aborts after 300s without
+ * output or progress), so a long run must emit `notifications/progress`
+ * periodically or the call is killed client-side while the run continues
+ * server-side (PILOT-285).
+ */
+const PROGRESS_INTERVAL_MS = 10_000;
 
 let _running = false;
 
@@ -19,7 +30,9 @@ export function registerRunTestsTool(server: McpServer, dispatcher?: TestDispatc
       project: z.string().optional().describe('Project name to target a specific platform/device (e.g. "android", "ios"). Use tapsmith_list_tests to see available projects. Required when the same test file runs on multiple platforms.'),
       device: z.string().optional().describe('Device serial (optional, ignored in UI mode — use project instead to target a platform)'),
     },
-    async ({ files, test: testFilter, project, device }) => {
+    async ({ files, test: testFilter, project, device }, extra) => {
+      const sendProgress = makeProgressSender(extra);
+
       if (dispatcher) {
         // Dispatcher-backed mode: UI sessions and headless MCP both provide test management.
         if (dispatcher.isRunning()) {
@@ -28,7 +41,30 @@ export function registerRunTestsTool(server: McpServer, dispatcher?: TestDispatc
             isError: true,
           };
         }
-        const result = await dispatcher.runFiles(files, { testFilter, project });
+        // Capture results of any run this tool didn't start (e.g. triggered
+        // from the UI) into the session board before runFiles() resets them.
+        const store = getSessionResultsStore(dispatcher);
+        store.merge(dispatcher.getResults());
+
+        sendProgress(`Started test run: ${files.length} file(s)`);
+        const startedAt = Date.now();
+        const heartbeat = setInterval(() => {
+          const results = dispatcher.getResults();
+          // Mid-run merge: keeps the session board complete even if the run
+          // is later stopped or the results map is reset per-file.
+          store.merge(results);
+          sendProgress(formatRunProgress(results, Date.now() - startedAt));
+        }, PROGRESS_INTERVAL_MS);
+        heartbeat.unref?.();
+
+        // Merge in finally so results recorded before a rejection still reach
+        // the session board.
+        const result = await dispatcher
+          .runFiles(files, { testFilter, project })
+          .finally(() => {
+            clearInterval(heartbeat);
+            store.merge(dispatcher.getResults());
+          });
         const content: CallToolResult['content'] = [];
         const screenshots: Buffer[] = [];
 
@@ -128,13 +164,60 @@ export function registerRunTestsTool(server: McpServer, dispatcher?: TestDispatc
         if (project) args.push('--project', project);
         if (device) args.push('--device', device);
 
-        const result = await runTapsmithProcess(args);
+        sendProgress(`Started test run: ${files.length} file(s)`);
+        const startedAt = Date.now();
+        let lastLine = '';
+        const heartbeat = setInterval(() => {
+          const elapsed = Math.round((Date.now() - startedAt) / 1000);
+          sendProgress(lastLine ? `Running for ${elapsed}s — ${lastLine}` : `Running for ${elapsed}s`);
+        }, PROGRESS_INTERVAL_MS);
+        heartbeat.unref?.();
+
+        const result = await runTapsmithProcess(args, (line) => { lastLine = line; })
+          .finally(() => clearInterval(heartbeat));
         return { content: [{ type: 'text' as const, text: result }] };
       } finally {
         _running = false;
       }
     },
   );
+}
+
+/**
+ * Build a `notifications/progress` sender for this request. No-op when the
+ * client didn't ask for progress (no `progressToken` in the request `_meta`).
+ * Send failures are swallowed — a dropped client must not kill the test run.
+ */
+function makeProgressSender(
+  extra: RequestHandlerExtra<ServerRequest, ServerNotification>,
+): (message: string) => void {
+  const progressToken = extra._meta?.progressToken;
+  // The spec requires `progress` to increase with each notification; the
+  // human-readable state lives in `message`, so a plain sequence number is
+  // enough (there is no meaningful `total` to report).
+  let progressSeq = 0;
+  return (message: string): void => {
+    if (progressToken === undefined) return;
+    void extra
+      .sendNotification({
+        method: 'notifications/progress',
+        params: { progressToken, progress: ++progressSeq, message },
+      })
+      .catch(() => { /* client gone or transport closed */ });
+  };
+}
+
+/** One-line live summary of an in-flight run for progress notifications. */
+function formatRunProgress(results: TestResultEntry[], elapsedMs: number): string {
+  const passed = results.filter((r) => r.status === 'passed').length;
+  const failed = results.filter((r) => r.status === 'failed').length;
+  const skipped = results.filter((r) => r.status === 'skipped').length;
+  const done = passed + failed + skipped;
+  const elapsed = Math.round(elapsedMs / 1000);
+  const parts = [`${passed} passed`];
+  if (failed > 0) parts.push(`${failed} failed`);
+  if (skipped > 0) parts.push(`${skipped} skipped`);
+  return `${done} test(s) finished (${parts.join(', ')}) after ${elapsed}s`;
 }
 
 /** Flatten the dispatcher's test tree into its `type: 'test'` leaf nodes. */
@@ -165,7 +248,7 @@ function buildZeroMatchMessage(dispatcher: TestDispatcher, files: string[], test
   return `"${testFilter}" matched ${matched.length} test(s), but they are all marked .skip() so nothing ran:\n${list}`;
 }
 
-function runTapsmithProcess(args: string[]): Promise<string> {
+function runTapsmithProcess(args: string[], onOutputLine?: (line: string) => void): Promise<string> {
   return new Promise((resolve) => {
     const env: Record<string, string | undefined> = {
       ...process.env,
@@ -183,7 +266,20 @@ function runTapsmithProcess(args: string[]): Promise<string> {
     let stdout = '';
     let stderr = '';
 
-    child.stdout.on('data', (chunk: Buffer) => { stdout += chunk.toString(); });
+    // Only complete lines are reported as progress; a line straddling two
+    // chunks is carried over rather than emitted as garbled fragments.
+    let pendingLine = '';
+    child.stdout.on('data', (chunk: Buffer) => {
+      const text = chunk.toString();
+      stdout += text;
+      if (onOutputLine) {
+        pendingLine += text;
+        const parts = pendingLine.split('\n');
+        pendingLine = parts.pop() ?? '';
+        const complete = parts.map((l) => l.trim()).filter((l) => l.length > 0);
+        if (complete.length > 0) onOutputLine(complete[complete.length - 1]);
+      }
+    });
     child.stderr.on('data', (chunk: Buffer) => { stderr += chunk.toString(); });
 
     child.on('close', (code) => {

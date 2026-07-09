@@ -127,6 +127,12 @@ export function summarizeResult(tool: string, result: string): string {
       const resMatch = result.match(/(\d+) passed, (\d+) failed, (\d+) skipped/);
       return resMatch ? `${resMatch[1]} passed, ${resMatch[2]} failed, ${resMatch[3]} skipped` : result.slice(0, 60);
     }
+    case 'tapsmith_suite_status': {
+      const statusMatch = result.match(/(\d+) passed, (\d+) failed, (\d+) skipped, (\d+) not run/);
+      return statusMatch
+        ? `${statusMatch[1]} passed, ${statusMatch[2]} failed, ${statusMatch[3]} skipped, ${statusMatch[4]} not run`
+        : result.slice(0, 60);
+    }
     case 'tapsmith_stop_tests':
       return result.includes('Stop signal') ? 'stopped' : 'nothing running';
     case 'tapsmith_session_info':

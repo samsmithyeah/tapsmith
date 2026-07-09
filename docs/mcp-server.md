@@ -191,6 +191,8 @@ Run Tapsmith test files and return structured results. Only one test run can exe
 - Trace file path for further debugging with `tapsmith_read_trace`
 - A screenshot at the moment of failure
 
+**Progress notifications:** when the MCP client supplies a `progressToken` with the request, the tool emits `notifications/progress` every 10 seconds while the run executes, reporting live pass/fail counts. This keeps long suites alive past client-side idle timeouts (for example, Claude Code aborts a tool call after 300 seconds without output or progress), so a full suite can run in a single `tapsmith_run_tests` call instead of being sharded into small batches.
+
 #### `tapsmith_read_trace`
 
 Read a Tapsmith trace archive (.zip) and return step-by-step test execution data. Use to debug why a test failed.
@@ -231,6 +233,19 @@ Browse test results from the current session. Shows pass/fail/skip status, durat
 
 Returns a summary with counts, then per-test results including status, full name, duration, project, file path, and (when `details: true`) the steps and device logs leading to the failure.
 
+Only covers the most recent run — use `tapsmith_suite_status` for the whole-session board.
+
+#### `tapsmith_suite_status`
+
+Report the status of every test in the discovered test tree — `passed`, `failed`, `skipped`, or `not run` — accumulated across all test runs in the session. Unlike `tapsmith_list_results` (which only reflects the most recent run), results build up across batched `tapsmith_run_tests` calls and runs triggered from the UI, so this shows the complete suite board including tests that have not run yet.
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `file` | string | No | Filter by file path substring |
+| `details` | boolean | No | List every test with its status (default: false — per-file counts plus failed test names) |
+
+Returns an overall summary (`Suite status: 27 passed, 2 failed, 1 skipped, 12 not run (30/42 tests run)`) followed by per-file counts, with failed test names and errors listed under each file.
+
 #### `tapsmith_stop_tests`
 
 Stop the currently running test execution and report the outcome. Works whether the run was started by the agent or by the user in the UI.
@@ -269,7 +284,7 @@ Returns a message indicating whether watch mode was enabled or disabled.
 4. **Discover tests:** call `tapsmith_list_tests` to see the full test tree with file paths and test names
 5. **Explore the screen:** use `tapsmith_snapshot` to see the accessibility tree with suggested selectors, then `tapsmith_test_selector` to validate a selector before using it
 6. **Run tests:** call `tapsmith_run_tests` with file paths and optional test name / project filters. On failure, the response includes error details, trace steps, and a screenshot
-7. **Review results:** use `tapsmith_list_results` to browse all results, optionally filtering by status or file. Pass `details: true` to see trace steps for failures
+7. **Review results:** use `tapsmith_list_results` to browse the latest run (pass `details: true` to see trace steps for failures), and `tapsmith_suite_status` to see the whole suite's accumulated status including tests that have not run yet
 8. **Debug failures:** use `tapsmith_read_trace` with the trace file path from the failure report for step-by-step debugging
 9. **Iterate:** toggle `tapsmith_watch` on files being actively developed for automatic re-runs on save
 

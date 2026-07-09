@@ -13,6 +13,7 @@ import { registerListDevicesTool } from './tools/list-devices.js';
 import { registerRunTestsTool } from './tools/run-tests.js';
 import { registerReadTraceTool } from './tools/read-trace.js';
 import { registerListResultsTool } from './tools/list-results.js';
+import { registerSuiteStatusTool } from './tools/suite-status.js';
 import { registerListTestsTool } from './tools/list-tests.js';
 import { registerStopTestsTool } from './tools/stop-tests.js';
 import { registerSessionInfoTool } from './tools/session-info.js';
@@ -83,6 +84,7 @@ export function createMcpServer(options?: McpServerOptions): McpServer {
   if (dispatcher) {
     registerListTestsTool(server, dispatcher);
     registerListResultsTool(server, dispatcher);
+    registerSuiteStatusTool(server, dispatcher);
     registerStopTestsTool(server, dispatcher);
     registerSessionInfoTool(server, dispatcher);
     registerWatchTool(server, dispatcher);
