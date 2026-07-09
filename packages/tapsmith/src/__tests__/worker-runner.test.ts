@@ -113,6 +113,11 @@ describe('isRecoverableInfrastructureError', () => {
     expect(isRecoverableInfrastructureError(new Error('Agent connection dropped (empty response); reconnecting'))).toBe(true);
   });
 
+  it('returns true for the TCP-reset variants of a dropped agent connection (PILOT-282)', () => {
+    expect(isRecoverableInfrastructureError(new Error('Agent connection lost during read'))).toBe(true);
+    expect(isRecoverableInfrastructureError(new Error('Agent connection lost and agent is unreachable'))).toBe(true);
+  });
+
   it('returns false for assertion errors', () => {
     expect(isRecoverableInfrastructureError(new Error('Expected "Login" to be visible'))).toBe(false);
   });

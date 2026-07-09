@@ -34,6 +34,12 @@ import { ensureSessionReady, launchConfiguredApp, type SessionPreflightContext }
 import { createActionProgressMessenger } from './action-progress-renderer.js';
 import type { TapsmithReporter } from './reporter.js';
 
+/** Pause before retrying a failed agent start during worker init. A transient
+ *  agent-connection drop takes a few seconds to clear; an immediate retry
+ *  lands inside the same drop window and retires the worker — failing its
+ *  tests at 0ms with no trace (PILOT-282). */
+const AGENT_START_RETRY_DELAY_MS = 2_000;
+
 let workerId = -1;
 let device: Device | undefined;
 let client: TapsmithGrpcClient | undefined;
@@ -251,6 +257,9 @@ async function handleInit(msg: InitMessage): Promise<void> {
       process.stderr.write(
         `Worker ${workerId}: Agent startup failed, retrying once: ${msg1}\n`,
       );
+      // Let a transient agent-connection drop clear before the retry — an
+      // immediate re-attempt lands inside the same drop window (PILOT-282).
+      await new Promise((resolve) => setTimeout(resolve, AGENT_START_RETRY_DELAY_MS));
       await device.startAgent(
         config.package ?? '',
         resolvedAgentApk,
