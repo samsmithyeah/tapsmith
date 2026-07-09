@@ -2890,6 +2890,46 @@ describe('scrollIntoView no-op on already-visible targets (PILOT-283)', () => {
 
     expect(swipe).not.toHaveBeenCalled();
   });
+
+  it('unreliable ticks do not consume the swipe budget (review follow-up)', async () => {
+    // maxScrolls: 1 with an unreliable first tick. If unreliable ticks ate
+    // the budget, the single allowed swipe would never happen and the scroll
+    // would fail; instead the miss that follows still gets its swipe.
+    let calls = 0;
+    const findElements = vi.fn(async () => {
+      calls++;
+      if (calls === 1) {
+        return { requestId: '1', elements: [], errorMessage: 'Agent command timed out after 5.25s' };
+      }
+      // calls 2-3: affirmative miss (probe + first-swipe confirmation probe)
+      if (calls <= 3) return makeFindElementsResponse([]);
+      return makeFindElementsResponse([makeElementInfo({ visible: true, bounds })]);
+    });
+    const findElement = vi.fn(async () => ({
+      requestId: '1', found: true, element: makeElementInfo({ visible: true, bounds }), errorMessage: '',
+    }));
+    const swipe = vi.fn(async () => successResponse());
+    const client = makeMockClient({ findElements, findElement, swipe });
+    const handle = new ElementHandle(client, _text('Below The Fold'), 5000);
+
+    await handle.scrollIntoView({ maxScrolls: 1 });
+
+    expect(swipe).toHaveBeenCalledTimes(1);
+  });
+
+  it('reports the number of swipes actually performed when giving up (review follow-up)', async () => {
+    // Every tick is a stale snapshot: no swipe is ever performed, so the
+    // error must say "0 scroll(s)", not claim the full maxScrolls budget ran.
+    const findElements = vi.fn(async () => ({
+      requestId: '1', elements: [], errorMessage: 'snapshot is stale (UI changed) mid-query',
+    }));
+    const swipe = vi.fn(async () => successResponse());
+    const client = makeMockClient({ findElements, swipe });
+    const handle = new ElementHandle(client, _text('Ghost'), 5000);
+
+    await expect(handle.scrollIntoView({ maxScrolls: 2 })).rejects.toThrow(/not visible after 0 scroll\(s\)/);
+    expect(swipe).not.toHaveBeenCalled();
+  });
 });
 
 // ─── Action trace lifecycle (PILOT-244) ───

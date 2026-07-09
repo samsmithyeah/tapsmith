@@ -1928,7 +1928,12 @@ export class ElementHandle {
 
     try {
       let swipes = 0;
-      for (let i = 0; i <= maxScrolls; i++) {
+      // Unreliable ticks perform no swipe, so they must not consume the
+      // caller's swipe budget (maxScrolls unreliable ticks would otherwise
+      // mean zero actual scrolls). They get their own bound instead, so a
+      // persistently sick agent still terminates the loop.
+      let unreliableTicks = 0;
+      for (;;) {
         let result = await probe();
 
         // Right after navigation or app launch the accessibility tree can lag
@@ -1991,25 +1996,26 @@ export class ElementHandle {
           return;
         }
 
-        if (i < maxScrolls) {
-          if (result.outcome === 'unreliable') {
-            // This tick told us nothing — wait out the blip and re-probe on
-            // the next iteration instead of swiping blind (PILOT-283).
-            await sleep(SCROLL_SETTLE_MS, this._client._getAbortSignal?.());
-            continue;
-          }
-          const swipeRes = await this._client.swipe(direction, { speed, distance: 0.6 });
-          if (!swipeRes.success) {
-            throw new Error(swipeRes.errorMessage || 'Swipe failed during scrollIntoView');
-          }
-          swipes++;
+        if (result.outcome === 'unreliable') {
+          // This tick told us nothing — wait out the blip and re-probe
+          // instead of swiping blind (PILOT-283).
+          if (++unreliableTicks > maxScrolls) break;
           await sleep(SCROLL_SETTLE_MS, this._client._getAbortSignal?.());
+          continue;
         }
+        // Affirmative miss with the swipe budget spent — give up.
+        if (swipes >= maxScrolls) break;
+        const swipeRes = await this._client.swipe(direction, { speed, distance: 0.6 });
+        if (!swipeRes.success) {
+          throw new Error(swipeRes.errorMessage || 'Swipe failed during scrollIntoView');
+        }
+        swipes++;
+        await sleep(SCROLL_SETTLE_MS, this._client._getAbortSignal?.());
       }
 
       if (lastTransientErr) throw lastTransientErr;
       throw new Error(
-        `scrollIntoView: ${this._describe()} was not visible after ${maxScrolls} scroll(s) in direction "${direction}"`,
+        `scrollIntoView: ${this._describe()} was not visible after ${swipes} scroll(s) in direction "${direction}"`,
       );
     } catch (err) {
       await this._traceQueryFailed('scrollIntoView', err, Date.now() - start);
