@@ -1953,7 +1953,10 @@ export class ElementHandle {
           confirmedFirstMiss = true;
           try {
             await this._client.waitForIdle(SCROLL_FIRST_SWIPE_IDLE_TIMEOUT_MS);
-          } catch {
+          } catch (err) {
+            // A user stop must propagate immediately (PILOT-222), never be
+            // swallowed as a failed best-effort idle wait.
+            if (isAbortError(err)) throw err;
             // Best effort — a slow or unsupported idle wait must not block scrolling.
           }
           result = await probe();

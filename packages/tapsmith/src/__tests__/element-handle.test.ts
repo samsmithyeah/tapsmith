@@ -5,7 +5,7 @@ import * as path from 'node:path';
 import { ElementHandle, StrictModeViolationError, isStrictModeViolation } from '../element-handle.js';
 import { TraceCollector, type TraceCapture } from '../trace/trace-collector.js';
 import type { AnyTraceEvent, ActionTraceEvent } from '../trace/types.js';
-import { isAbortError } from '../abort.js';
+import { isAbortError, TestAbortedError } from '../abort.js';
 import { type Selector, _text, _textContains, _role, _className, _id, _testId, _contentDesc, formatSelector, selectorToProto } from '../selectors.js';
 import type {
   TapsmithGrpcClient,
@@ -2943,6 +2943,21 @@ describe('scrollIntoView no-op on already-visible targets (PILOT-283)', () => {
 
     expect(waitForIdle).toHaveBeenCalledTimes(1);
     expect(swipe).toHaveBeenCalledTimes(1);
+  });
+
+  it('propagates a user stop from the idle wait instead of swallowing it (review follow-up)', async () => {
+    // The confirmation idle wait is best-effort for infra errors, but a user
+    // stop (PILOT-222) must abort scrollIntoView immediately — no further
+    // probes or swipes.
+    const findElements = vi.fn(async () => makeFindElementsResponse([]));
+    const swipe = vi.fn(async () => successResponse());
+    const waitForIdle = vi.fn(async () => { throw new TestAbortedError(); });
+    const client = makeMockClient({ findElements, swipe, waitForIdle });
+    const handle = new ElementHandle(client, _text('Below The Fold'), 5000);
+
+    await expect(handle.scrollIntoView()).rejects.toSatisfy(isAbortError);
+    expect(findElements).toHaveBeenCalledTimes(1); // no post-abort confirmation probe
+    expect(swipe).not.toHaveBeenCalled();
   });
 
   it('reports the number of swipes actually performed when giving up (review follow-up)', async () => {
