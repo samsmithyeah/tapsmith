@@ -7,6 +7,7 @@ import {
   defaultAvdName,
   findSdkTool,
   parseCreateAvdArgs,
+  systemImageDir,
   systemImagePackage,
   DEFAULT_API_LEVEL,
   DEFAULT_DEVICE_PROFILE,
@@ -70,6 +71,13 @@ describe('systemImagePackage()', () => {
   it('always selects the rootable google_apis image', () => {
     expect(systemImagePackage(36, 'arm64-v8a')).toBe('system-images;android-36;google_apis;arm64-v8a');
     expect(systemImagePackage(33, 'x86_64')).toBe('system-images;android-33;google_apis;x86_64');
+  });
+});
+
+describe('systemImageDir()', () => {
+  it('matches where sdkmanager unpacks the image', () => {
+    expect(systemImageDir('/sdk', 36, 'arm64-v8a'))
+      .toBe(path.join('/sdk', 'system-images', 'android-36', 'google_apis', 'arm64-v8a'));
   });
 });
 

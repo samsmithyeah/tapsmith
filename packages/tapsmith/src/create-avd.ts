@@ -163,6 +163,23 @@ export function findSdkTool(tool: string, env: NodeJS.ProcessEnv = process.env):
   return `${tool}${suffix}`;
 }
 
+/**
+ * Where sdkmanager unpacks a system image. Present iff the image is already
+ * installed, letting createAvd skip the sdkmanager step (and its
+ * cmdline-tools requirement) entirely.
+ */
+export function systemImageDir(sdkRoot: string, api: number, abi: string): string {
+  return path.join(sdkRoot, 'system-images', `android-${api}`, 'google_apis', abi);
+}
+
+// Android Studio installs the SDK without cmdline-tools by default, so this
+// is the most common failure mode for Studio-managed SDKs.
+const CMDLINE_TOOLS_HINT =
+  'Install "Android SDK Command-line Tools (latest)" from Android Studio '
+  + '(Settings → Languages & Frameworks → Android SDK → SDK Tools tab), '
+  + 'or download them from https://developer.android.com/tools/sdkmanager '
+  + 'and set ANDROID_HOME.';
+
 // ─── Subprocess helpers ──────────────────────────────────────────────────
 
 /**
@@ -181,10 +198,7 @@ function run(command: string, args: string[], stdinResponse?: string): Promise<v
     }
     child.on('error', (err) => {
       if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
-        reject(new Error(
-          `${command} not found. Install the Android SDK command-line tools and set ANDROID_HOME `
-          + '(https://developer.android.com/tools/sdkmanager)',
-        ));
+        reject(new Error(`${command} not found. ${CMDLINE_TOOLS_HINT}`));
       } else {
         reject(err);
       }
@@ -210,13 +224,20 @@ export async function createAvd(opts: CreateAvdOptions): Promise<void> {
     );
   }
 
-  const sdkmanager = findSdkTool('sdkmanager');
   const avdmanager = findSdkTool('avdmanager');
 
+  const sdkRoot = process.env.ANDROID_HOME || process.env.ANDROID_SDK_ROOT;
+  const imageAlreadyInstalled = !!sdkRoot && fs.existsSync(systemImageDir(sdkRoot, opts.api, opts.abi));
+
   console.log();
-  console.log(`${bold('Step 1/2')} Install system image ${dim(`(${image})`)}`);
-  console.log(dim('sdkmanager may prompt you to accept the Android SDK license.'));
-  await run(sdkmanager, [image]);
+  if (imageAlreadyInstalled) {
+    console.log(`${bold('Step 1/2')} System image already installed ${dim(`(${image})`)}`);
+  } else {
+    const sdkmanager = findSdkTool('sdkmanager');
+    console.log(`${bold('Step 1/2')} Install system image ${dim(`(${image})`)}`);
+    console.log(dim('sdkmanager may prompt you to accept the Android SDK license.'));
+    await run(sdkmanager, [image]);
+  }
 
   console.log();
   console.log(`${bold('Step 2/2')} Create AVD ${dim(`(${opts.name}, device profile ${opts.device})`)}`);
