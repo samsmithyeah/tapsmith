@@ -874,7 +874,7 @@ Android Studio's Device Manager preselects Google Play images for most phone pro
 npx tapsmith create-avd
 ```
 
-This downloads the Google APIs system image for your host architecture and creates a ready-to-use AVD (`Tapsmith_Phone_API_36` by default; see `npx tapsmith create-avd --help` for `--api`, `--name`, `--device`, and `--abi`). The equivalent manual commands:
+This downloads the Google APIs system image for your host architecture and creates a ready-to-use AVD (`Tapsmith_Phone_API_36` by default; see `npx tapsmith create-avd --help` for `--api`, `--name`, `--device`, and `--abi`). If the Android SDK command-line tools are missing — Android Studio doesn't install them by default — the command offers to install those too. The equivalent manual commands:
 
 ```bash
 sdkmanager "system-images;android-36;google_apis;arm64-v8a"   # use x86_64 on Intel hosts

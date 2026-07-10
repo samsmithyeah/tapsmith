@@ -2,10 +2,14 @@ import { describe, it, expect } from 'vitest';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
+import { zipSync } from 'fflate';
 import {
+  cmdlineToolsPlatform,
   defaultAbi,
   defaultAvdName,
+  extractCmdlineTools,
   findSdkTool,
+  latestCmdlineToolsZip,
   parseCreateAvdArgs,
   systemImageDir,
   systemImagePackage,
@@ -22,6 +26,7 @@ describe('parseCreateAvdArgs()', () => {
       device: DEFAULT_DEVICE_PROFILE,
       abi: defaultAbi(),
       force: false,
+      installTools: false,
       help: false,
     });
   });
@@ -31,12 +36,13 @@ describe('parseCreateAvdArgs()', () => {
     expect(parseCreateAvdArgs(['--api=34']).api).toBe(34);
   });
 
-  it('accepts explicit name, device, abi, and force', () => {
-    const opts = parseCreateAvdArgs(['--name', 'My_AVD', '--device=pixel_7', '--abi', 'x86_64', '--force']);
+  it('accepts explicit name, device, abi, force, and install-tools', () => {
+    const opts = parseCreateAvdArgs(['--name', 'My_AVD', '--device=pixel_7', '--abi', 'x86_64', '--force', '--install-tools']);
     expect(opts.name).toBe('My_AVD');
     expect(opts.device).toBe('pixel_7');
     expect(opts.abi).toBe('x86_64');
     expect(opts.force).toBe(true);
+    expect(opts.installTools).toBe(true);
   });
 
   it('parses --help', () => {
@@ -71,6 +77,71 @@ describe('systemImagePackage()', () => {
   it('always selects the rootable google_apis image', () => {
     expect(systemImagePackage(36, 'arm64-v8a')).toBe('system-images;android-36;google_apis;arm64-v8a');
     expect(systemImagePackage(33, 'x86_64')).toBe('system-images;android-33;google_apis;x86_64');
+  });
+});
+
+describe('cmdlineToolsPlatform()', () => {
+  it('maps Node platforms to Google zip platform keys', () => {
+    expect(cmdlineToolsPlatform('darwin')).toBe('mac');
+    expect(cmdlineToolsPlatform('linux')).toBe('linux');
+    expect(cmdlineToolsPlatform('win32')).toBe('win');
+  });
+});
+
+describe('latestCmdlineToolsZip()', () => {
+  const xml = `
+    <sdk:url>commandlinetools-linux-11076708_latest.zip</sdk:url>
+    <sdk:url>commandlinetools-mac-6200805_latest.zip</sdk:url>
+    <sdk:url>commandlinetools-mac-15641748_latest.zip</sdk:url>
+    <sdk:url>commandlinetools-mac-11076708_latest.zip</sdk:url>
+    <sdk:url>commandlinetools-win-15641748_latest.zip</sdk:url>
+  `;
+
+  it('picks the highest build number for the requested platform', () => {
+    expect(latestCmdlineToolsZip(xml, 'mac')).toBe('commandlinetools-mac-15641748_latest.zip');
+    expect(latestCmdlineToolsZip(xml, 'linux')).toBe('commandlinetools-linux-11076708_latest.zip');
+  });
+
+  it('returns undefined when the platform has no package', () => {
+    expect(latestCmdlineToolsZip('<sdk/>', 'mac')).toBeUndefined();
+  });
+});
+
+describe('extractCmdlineTools()', () => {
+  it('unpacks into cmdline-tools/latest and marks bin/ entries executable', () => {
+    const sdkRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'tapsmith-sdkroot-test-'));
+    const zipData = zipSync({
+      'cmdline-tools/bin/sdkmanager': new TextEncoder().encode('#!/bin/sh\necho hi\n'),
+      'cmdline-tools/bin/avdmanager': new TextEncoder().encode('#!/bin/sh\necho hi\n'),
+      'cmdline-tools/lib/tool.jar': new Uint8Array([1, 2, 3]),
+      'cmdline-tools/source.properties': new TextEncoder().encode('Pkg.Revision=1\n'),
+    });
+
+    const dest = extractCmdlineTools(zipData, sdkRoot);
+
+    expect(dest).toBe(path.join(sdkRoot, 'cmdline-tools', 'latest'));
+    const sdkmanager = path.join(dest, 'bin', 'sdkmanager');
+    expect(fs.existsSync(sdkmanager)).toBe(true);
+    expect(fs.existsSync(path.join(dest, 'lib', 'tool.jar'))).toBe(true);
+    expect(fs.existsSync(path.join(dest, 'source.properties'))).toBe(true);
+    if (process.platform !== 'win32') {
+      expect(fs.statSync(sdkmanager).mode & 0o100).toBeTruthy();
+    }
+  });
+
+  it('ignores entries outside cmdline-tools/ and path traversal attempts', () => {
+    const sdkRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'tapsmith-sdkroot-test-'));
+    const zipData = zipSync({
+      'other/evil.txt': new Uint8Array([1]),
+      'cmdline-tools/../escape.txt': new Uint8Array([1]),
+      'cmdline-tools/bin/ok': new Uint8Array([1]),
+    });
+
+    extractCmdlineTools(zipData, sdkRoot);
+
+    expect(fs.existsSync(path.join(sdkRoot, 'escape.txt'))).toBe(false);
+    expect(fs.existsSync(path.join(sdkRoot, 'other'))).toBe(false);
+    expect(fs.existsSync(path.join(sdkRoot, 'cmdline-tools', 'latest', 'bin', 'ok'))).toBe(true);
   });
 });
 

@@ -2275,15 +2275,18 @@ Run a non-interactive system health check. Verifies all prerequisites: Node.js v
 npx tapsmith doctor
 ```
 
-### `tapsmith create-avd [--api <level>] [--name <name>] [--device <profile>] [--abi <abi>] [--force]`
+### `tapsmith create-avd [--api <level>] [--name <name>] [--device <profile>] [--abi <abi>] [--force] [--install-tools]`
 
-Create an Android AVD that supports HTTPS network capture. Downloads a **Google APIs** system image with `sdkmanager` and creates the AVD with `avdmanager` — Google Play images (the ones Android Studio preselects) block `adb root`, so Tapsmith cannot decrypt HTTPS traffic on them (see [Android emulator image requirements](./network.md#android-emulator-image-requirements)). Requires the Android SDK command-line tools (`ANDROID_HOME` or on `PATH`).
+Create an Android AVD that supports HTTPS network capture. Downloads a **Google APIs** system image with `sdkmanager` and creates the AVD with `avdmanager` — Google Play images (the ones Android Studio preselects) block `adb root`, so Tapsmith cannot decrypt HTTPS traffic on them (see [Android emulator image requirements](./network.md#android-emulator-image-requirements)).
+
+If the Android SDK command-line tools are missing (Android Studio doesn't install them by default), the command offers to download and install them into `$ANDROID_HOME/cmdline-tools/latest` for you — pass `--install-tools` to skip the prompt in scripts/CI. When no `java` is available, Android Studio's bundled JDK is used automatically. A system image that is already installed is not re-downloaded.
 
 Defaults: API level 36, name `Tapsmith_Phone_API_<api>`, device profile `medium_phone`, ABI matching the host architecture (`arm64-v8a` on Apple Silicon, `x86_64` on Intel). `--force` overwrites an existing AVD with the same name.
 
 ```bash
 npx tapsmith create-avd                         # Tapsmith_Phone_API_36
 npx tapsmith create-avd --api 34 --device pixel_7
+npx tapsmith create-avd --install-tools         # non-interactive bootstrap (CI)
 ```
 
 ### `tapsmith list-devices [--json]`
