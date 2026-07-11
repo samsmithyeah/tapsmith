@@ -2,7 +2,17 @@ import { describe, it, expect } from 'vitest';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { buildDoctorJson, isSupportedNodeVersion, parseAvdImageTag, scanAvdImageTags, type CheckEntry } from '../doctor.js';
+import {
+  buildDoctorJson,
+  isSupportedNodeVersion,
+  parseAvdImageTag,
+  parseDoctorConfigFlag,
+  scanAvdImageTags,
+  stripAnsi,
+  summarizeAvdImages,
+  type AvdImageInfo,
+  type CheckEntry,
+} from '../doctor.js';
 
 describe('buildDoctorJson()', () => {
   const checks: CheckEntry[] = [
@@ -113,5 +123,97 @@ describe('scanAvdImageTags()', () => {
 
   it('returns empty for a missing AVD home', () => {
     expect(scanAvdImageTags('/nonexistent/avd-home')).toEqual([]);
+  });
+});
+
+describe('summarizeAvdImages()', () => {
+  const goodAvd: AvdImageInfo = { name: 'Tapsmith_Phone_API_36', tagId: 'google_apis' };
+  const playAvd: AvdImageInfo = { name: 'Medium_Phone_API_36', tagId: 'google_apis_playstore' };
+  const brokenAvd: AvdImageInfo = { name: 'Broken', tagId: undefined };
+
+  it('returns undefined when there are no AVDs', () => {
+    expect(summarizeAvdImages([])).toBeUndefined();
+    expect(summarizeAvdImages([], 'X')).toBeUndefined();
+  });
+
+  describe('with a configured AVD', () => {
+    it('passes when the configured AVD is capture-capable, mentioning other Play AVDs as context', () => {
+      const summary = summarizeAvdImages([goodAvd, playAvd], 'Tapsmith_Phone_API_36');
+      expect(summary?.status).toBe('pass');
+      expect(stripAnsi(summary!.label)).toContain('Tapsmith_Phone_API_36 supports HTTPS capture');
+      expect(stripAnsi(summary!.label)).toContain('Medium_Phone_API_36');
+    });
+
+    it('passes without context when no Play AVDs exist', () => {
+      const summary = summarizeAvdImages([goodAvd], 'Tapsmith_Phone_API_36');
+      expect(summary?.status).toBe('pass');
+      expect(stripAnsi(summary!.label)).not.toContain('other AVD');
+    });
+
+    it('warns when the configured AVD uses a Play image', () => {
+      const summary = summarizeAvdImages([goodAvd, playAvd], 'Medium_Phone_API_36');
+      expect(summary?.status).toBe('warn');
+      expect(summary?.label).toContain('Medium_Phone_API_36 uses a Google Play system image');
+      expect(summary?.fix).toContain('create-avd');
+    });
+
+    it('warns when the configured AVD does not exist', () => {
+      const summary = summarizeAvdImages([goodAvd], 'Missing_AVD');
+      expect(summary?.status).toBe('warn');
+      expect(summary?.label).toContain('Missing_AVD not found');
+      expect(summary?.fix).toContain('--name Missing_AVD');
+    });
+
+    it('warns when the configured AVD tag is unreadable', () => {
+      const summary = summarizeAvdImages([brokenAvd], 'Broken');
+      expect(summary?.status).toBe('warn');
+      expect(summary?.label).toContain('Could not read');
+    });
+
+    it('handles multiple configured AVDs (e.g. per-project use.avd), reporting every issue', () => {
+      const summary = summarizeAvdImages([goodAvd, playAvd], ['Tapsmith_Phone_API_36', 'Medium_Phone_API_36', 'Gone']);
+      expect(summary?.status).toBe('warn');
+      expect(summary?.label).toContain('Gone not found');
+      expect(summary?.label).toContain('Medium_Phone_API_36 uses a Google Play system image');
+      expect(summary?.label).not.toContain('Tapsmith_Phone_API_36 uses');
+    });
+
+    it('passes when all configured AVDs are capture-capable', () => {
+      const second: AvdImageInfo = { name: 'Other_Good', tagId: 'google_apis' };
+      const summary = summarizeAvdImages([goodAvd, second, playAvd], ['Tapsmith_Phone_API_36', 'Other_Good']);
+      expect(summary?.status).toBe('pass');
+      expect(stripAnsi(summary!.label)).toContain('Tapsmith_Phone_API_36, Other_Good support HTTPS capture');
+      expect(stripAnsi(summary!.label)).toContain('Medium_Phone_API_36');
+    });
+  });
+
+  describe('without a configured AVD', () => {
+    it('warns on any Play-image AVD, counting capture-capable ones', () => {
+      const summary = summarizeAvdImages([goodAvd, playAvd]);
+      expect(summary?.status).toBe('warn');
+      expect(stripAnsi(summary!.label)).toContain('1 of 2 AVDs uses a Google Play system image');
+      expect(stripAnsi(summary!.label)).toContain('1 other AVD is capture-capable');
+    });
+
+    it('passes when all AVDs are capture-capable', () => {
+      const summary = summarizeAvdImages([goodAvd]);
+      expect(summary?.status).toBe('pass');
+      expect(stripAnsi(summary!.label)).toContain('1 AVD checked');
+    });
+
+    it('discloses unreadable AVDs in the pass label', () => {
+      const summary = summarizeAvdImages([goodAvd, brokenAvd]);
+      expect(summary?.status).toBe('pass');
+      expect(stripAnsi(summary!.label)).toContain('could not read: Broken');
+    });
+  });
+});
+
+describe('parseDoctorConfigFlag()', () => {
+  it('parses -c, --config, and --config= forms', () => {
+    expect(parseDoctorConfigFlag(['-c', 'a.mjs'])).toBe('a.mjs');
+    expect(parseDoctorConfigFlag(['--config', 'b.mjs'])).toBe('b.mjs');
+    expect(parseDoctorConfigFlag(['--config=c.mjs'])).toBe('c.mjs');
+    expect(parseDoctorConfigFlag(['--json'])).toBeUndefined();
   });
 });

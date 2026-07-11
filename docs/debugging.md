@@ -510,7 +510,10 @@ The `tapsmith doctor` command runs a non-interactive system health check across 
 
 ```bash
 npx tapsmith doctor
+npx tapsmith doctor -c tapsmith.config.android.mjs   # judge a specific config
 ```
+
+Config-dependent checks (app APK path, AVD system image) follow the loaded config: the AVD check verifies the AVD(s) your config actually names — top-level `avd` or per-project `use.avd` — and mentions other AVDs on the machine only as context.
 
 Example output:
 

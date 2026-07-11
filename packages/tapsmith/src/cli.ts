@@ -1687,7 +1687,7 @@ ${bold('Usage:')}
   tapsmith init                      Initialize a new Tapsmith project (interactive wizard)
   tapsmith init --yes [--json]       Non-interactive init for scripts/AI agents (see init --help)
   tapsmith verify [--json]           Run one test end-to-end to prove the setup works
-  tapsmith doctor [--json]           Check system health (--json includes fixes + device inventory)
+  tapsmith doctor [--json] [-c file] Check system health (--json includes fixes + device inventory)
   tapsmith mcp-server [--config file] Run MCP server for LLM/agent integration (stdio transport)
   tapsmith --version                 Print version
   tapsmith --help                    Show this help
