@@ -134,14 +134,17 @@ describe('extractCmdlineTools()', () => {
     const zipData = zipSync({
       'other/evil.txt': new Uint8Array([1]),
       'cmdline-tools/../escape.txt': new Uint8Array([1]),
+      'cmdline-tools/..\\..\\escape-win.txt': new Uint8Array([1]),
       'cmdline-tools/bin/ok': new Uint8Array([1]),
     });
 
     extractCmdlineTools(zipData, sdkRoot);
 
     expect(fs.existsSync(path.join(sdkRoot, 'escape.txt'))).toBe(false);
+    expect(fs.existsSync(path.join(sdkRoot, 'escape-win.txt'))).toBe(false);
     expect(fs.existsSync(path.join(sdkRoot, 'other'))).toBe(false);
-    expect(fs.existsSync(path.join(sdkRoot, 'cmdline-tools', 'latest', 'bin', 'ok'))).toBe(true);
+    const extracted = fs.readdirSync(path.join(sdkRoot, 'cmdline-tools', 'latest'));
+    expect(extracted).toEqual(['bin']);
   });
 });
 

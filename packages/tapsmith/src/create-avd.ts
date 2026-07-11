@@ -27,6 +27,7 @@
 
 import { execFileSync, spawn } from 'node:child_process';
 import * as fs from 'node:fs';
+import * as os from 'node:os';
 import * as path from 'node:path';
 import { unzipSync } from 'fflate';
 import Enquirer from 'enquirer';
@@ -259,8 +260,12 @@ export function extractCmdlineTools(zipData: Uint8Array, sdkRoot: string): strin
   for (const [entryName, data] of Object.entries(entries)) {
     if (!entryName.startsWith('cmdline-tools/') || entryName.endsWith('/')) continue;
     const rel = entryName.slice('cmdline-tools/'.length);
-    if (!rel || rel.split('/').includes('..')) continue;
+    // Zip-slip guard: reject `..` segments with either separator (backslash
+    // is a path separator on Windows), and verify the resolved target stays
+    // inside destDir.
+    if (!rel || rel.split(/[\\/]/).includes('..')) continue;
     const target = path.join(destDir, rel);
+    if (!path.resolve(target).startsWith(path.resolve(destDir) + path.sep)) continue;
     fs.mkdirSync(path.dirname(target), { recursive: true });
     fs.writeFileSync(target, data);
     if (rel.startsWith('bin/')) fs.chmodSync(target, 0o755);
@@ -350,10 +355,16 @@ async function ensureSdkTools(opts: CreateAvdOptions, sdkRoot: string | undefine
  */
 function toolEnv(): NodeJS.ProcessEnv {
   if (process.env.JAVA_HOME || isOnPath('java')) return process.env;
-  const studioJbr = '/Applications/Android Studio.app/Contents/jbr/Contents/Home';
-  if (process.platform === 'darwin' && fs.existsSync(studioJbr)) {
-    console.log(dim(`Using Android Studio's bundled JDK (${studioJbr})`));
-    return { ...process.env, JAVA_HOME: studioJbr };
+  const jbrCandidates = process.platform === 'darwin'
+    ? ['/Applications/Android Studio.app/Contents/jbr/Contents/Home']
+    : process.platform === 'win32'
+      ? ['C:\\Program Files\\Android\\Android Studio\\jbr']
+      : ['/opt/android-studio/jbr', path.join(os.homedir(), 'android-studio', 'jbr'), '/usr/local/android-studio/jbr'];
+  for (const jbr of jbrCandidates) {
+    if (fs.existsSync(jbr)) {
+      console.log(dim(`Using Android Studio's bundled JDK (${jbr})`));
+      return { ...process.env, JAVA_HOME: jbr };
+    }
   }
   return process.env;
 }
@@ -365,13 +376,21 @@ function toolEnv(): NodeJS.ProcessEnv {
  * to the child's stdin (avdmanager prompts "Do you wish to create a custom
  * hardware profile" even in scripted use).
  */
+// With shell:true, cmd.exe re-parses the command line — quote anything with
+// whitespace (SDK under "C:\Users\First Last\...") or cmd metacharacters
+// (system image ids contain `;`).
+function winQuote(value: string): string {
+  return /[\s;&^()]/.test(value) ? `"${value}"` : value;
+}
+
 function run(command: string, args: string[], env: NodeJS.ProcessEnv, stdinResponse?: string): Promise<void> {
+  // .bat wrappers (sdkmanager.bat/avdmanager.bat) need a command interpreter.
+  const useShell = process.platform === 'win32';
   return new Promise((resolve, reject) => {
-    const child = spawn(command, args, {
+    const child = spawn(useShell ? winQuote(command) : command, useShell ? args.map(winQuote) : args, {
       stdio: [stdinResponse === undefined ? 'inherit' : 'pipe', 'inherit', 'inherit'],
       env,
-      // .bat wrappers (sdkmanager.bat/avdmanager.bat) need a command interpreter.
-      shell: process.platform === 'win32',
+      shell: useShell,
     });
     if (stdinResponse !== undefined && child.stdin) {
       // EPIPE fires here if the child exits before reading stdin; without a

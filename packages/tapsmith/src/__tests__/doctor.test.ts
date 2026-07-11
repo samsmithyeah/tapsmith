@@ -131,9 +131,14 @@ describe('summarizeAvdImages()', () => {
   const playAvd: AvdImageInfo = { name: 'Medium_Phone_API_36', tagId: 'google_apis_playstore' };
   const brokenAvd: AvdImageInfo = { name: 'Broken', tagId: undefined };
 
-  it('returns undefined when there are no AVDs', () => {
+  it('returns undefined when there are no AVDs and none configured', () => {
     expect(summarizeAvdImages([])).toBeUndefined();
-    expect(summarizeAvdImages([], 'X')).toBeUndefined();
+  });
+
+  it('still reports a configured AVD as missing when the machine has no AVDs at all', () => {
+    const summary = summarizeAvdImages([], 'X');
+    expect(summary?.status).toBe('warn');
+    expect(summary?.label).toContain('X not found');
   });
 
   describe('with a configured AVD', () => {
@@ -215,5 +220,11 @@ describe('parseDoctorConfigFlag()', () => {
     expect(parseDoctorConfigFlag(['--config', 'b.mjs'])).toBe('b.mjs');
     expect(parseDoctorConfigFlag(['--config=c.mjs'])).toBe('c.mjs');
     expect(parseDoctorConfigFlag(['--json'])).toBeUndefined();
+  });
+
+  it('rejects missing or option-like values', () => {
+    expect(() => parseDoctorConfigFlag(['-c'])).toThrow(/Missing value for -c/);
+    expect(() => parseDoctorConfigFlag(['-c', '--json'])).toThrow(/Missing value for -c/);
+    expect(() => parseDoctorConfigFlag(['--config='])).toThrow(/Missing value for --config/);
   });
 });

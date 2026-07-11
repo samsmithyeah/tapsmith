@@ -715,15 +715,20 @@ pub async fn install_ca_cert(
 /// AVD is the real fix there; a manual user-store CA install only helps apps
 /// that opt in via `network_security_config.xml`.
 async fn adb_root_unavailable_hint(serial: &str) -> String {
-    let mut is_emulator = false;
-    for prop in ["ro.kernel.qemu", "ro.boot.qemu"] {
-        if shell_lenient(serial, &format!("getprop {prop}"))
-            .await
-            .map(|v| v.trim() == "1")
-            .unwrap_or(false)
-        {
-            is_emulator = true;
-            break;
+    // Serial prefix identifies locally-launched emulators without any adb
+    // roundtrips; the getprop probe stays as a fallback for emulators
+    // reached over TCP (e.g. CI port-forwards with an opaque serial).
+    let mut is_emulator = serial.starts_with("emulator-") || serial.starts_with("localhost:");
+    if !is_emulator {
+        for prop in ["ro.kernel.qemu", "ro.boot.qemu"] {
+            if shell_lenient(serial, &format!("getprop {prop}"))
+                .await
+                .map(|v| v.trim() == "1")
+                .unwrap_or(false)
+            {
+                is_emulator = true;
+                break;
+            }
         }
     }
     let product_name = shell_lenient(serial, "getprop ro.product.name")

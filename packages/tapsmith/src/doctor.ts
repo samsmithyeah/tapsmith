@@ -299,14 +299,15 @@ export interface AvdImageSummary {
  * running emulator.
  */
 export function summarizeAvdImages(avds: AvdImageInfo[], configuredAvd?: string | string[]): AvdImageSummary | undefined {
-  if (avds.length === 0) return undefined;
-
   const playStore = avds.filter((a) => a.tagId === 'google_apis_playstore');
   const unreadable = avds.filter((a) => a.tagId === undefined);
   const fix = 'Recreate with a Google APIs image: npx tapsmith create-avd';
 
   const configuredNames = (Array.isArray(configuredAvd) ? configuredAvd : configuredAvd ? [configuredAvd] : [])
     .filter((name, i, arr) => arr.indexOf(name) === i);
+  // With no AVDs and nothing configured there is nothing to judge — but a
+  // configured AVD on an AVD-less machine must still be reported as missing.
+  if (avds.length === 0 && configuredNames.length === 0) return undefined;
   if (configuredNames.length > 0) {
     const missing = configuredNames.filter((name) => !avds.some((a) => a.name === name));
     const configured = avds.filter((a) => configuredNames.includes(a.name));
@@ -473,12 +474,26 @@ function checkNetworkExtension(report: Reporter): void {
 
 // ─── Main entry point ───
 
-/** Extract a `-c <path>` / `--config <path>` / `--config=<path>` flag. */
+/**
+ * Extract a `-c <path>` / `--config <path>` / `--config=<path>` flag.
+ * Throws when the flag is present without a usable value (`-c` at the end,
+ * `-c --json`, `--config=`).
+ */
 export function parseDoctorConfigFlag(argv: string[]): string | undefined {
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i]!;
-    if (arg === '-c' || arg === '--config') return argv[i + 1];
-    if (arg.startsWith('--config=')) return arg.slice('--config='.length);
+    let value: string | undefined;
+    if (arg === '-c' || arg === '--config') {
+      value = argv[i + 1];
+    } else if (arg.startsWith('--config=')) {
+      value = arg.slice('--config='.length);
+    } else {
+      continue;
+    }
+    if (!value || value.startsWith('-')) {
+      throw new Error(`Missing value for ${arg.startsWith('--config=') ? '--config' : arg}`);
+    }
+    return value;
   }
   return undefined;
 }
@@ -486,7 +501,15 @@ export function parseDoctorConfigFlag(argv: string[]): string | undefined {
 export async function runDoctor(argv: string[] = []): Promise<void> {
   const jsonMode = argv.includes('--json');
   const printing = !jsonMode;
-  const configFile = parseDoctorConfigFlag(argv);
+  let configFile: string | undefined;
+  try {
+    configFile = parseDoctorConfigFlag(argv);
+  } catch (err) {
+    console.error(red(err instanceof Error ? err.message : String(err)));
+    console.error('Usage: tapsmith doctor [--json] [-c <config-file>]');
+    process.exitCode = 1;
+    return;
+  }
 
   const checks: CheckList = [];
   const report: Reporter = { checks, print: printing };
@@ -503,12 +526,22 @@ export async function runDoctor(argv: string[] = []): Promise<void> {
     config = await loadConfig(undefined, configFile);
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    if (msg.includes('Could not find') || msg.includes('ENOENT')) {
+    if (configFile && msg.includes('Config file not found')) {
+      // The user explicitly asked for this config — a missing file is a
+      // hard error, not a syntax problem in the default config.
+      fail(report, 'config-load', msg, 'Check the -c/--config path');
+    } else if (msg.includes('Could not find') || msg.includes('ENOENT')) {
       // No config file — fine, checkConfigFile() will report it
     } else {
-      warn(report, 'config-load', `Config file has errors: ${msg}`, 'Fix the syntax error in tapsmith.config.ts');
+      warn(report, 'config-load', `Config file has errors: ${msg}`, `Fix the syntax error in ${configFile ?? 'tapsmith.config.ts'}`);
     }
   }
+
+  // AVDs can be configured top-level or per-project (projects[].use.avd).
+  const configuredAvds = [
+    ...(config?.avd ? [config.avd] : []),
+    ...(config?.projects ?? []).map((p) => p.use?.avd).filter((avd): avd is string => !!avd),
+  ];
 
   // Detect whether Android platform tools are available or config references an APK
   const hasAndroid = (() => {
@@ -564,12 +597,9 @@ export async function runDoctor(argv: string[] = []): Promise<void> {
     console.log(`  ${bold('Network Capture')}`);
   }
   checkMitmCa(report);
-  if (hasAndroid) {
-    // AVDs can be configured top-level or per-project (projects[].use.avd).
-    const configuredAvds = [
-      ...(config?.avd ? [config.avd] : []),
-      ...(config?.projects ?? []).map((p) => p.use?.avd).filter((avd): avd is string => !!avd),
-    ];
+  // Filesystem-only check — run whenever the config names AVDs, even if
+  // adb isn't installed (the missing/Play-image diagnosis is still useful).
+  if (hasAndroid || configuredAvds.length > 0) {
     checkAvdImages(report, configuredAvds);
   }
   if (process.platform === 'darwin') {
