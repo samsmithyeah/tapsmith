@@ -11,9 +11,9 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  ANDROID_API_LEVEL: "35"
-  ANDROID_SYSTEM_IMAGE: "system-images;android-35;google_apis;x86_64"
-  AVD_NAME: "Tapsmith_Generic_Phone_API_35"
+  ANDROID_API_LEVEL: "36"
+  ANDROID_SYSTEM_IMAGE: "system-images;android-36;google_apis;x86_64"
+  AVD_NAME: "Tapsmith_Phone_API_36"
   SHARD_TOTAL: 5
 
 jobs:

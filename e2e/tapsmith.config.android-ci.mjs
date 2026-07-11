@@ -15,7 +15,7 @@ export default defineConfig({
   // on-first-retry: no encoder runs on healthy tests (PILOT-240); a failed
   // test's retry is recorded, so flake investigations still get a video.
   video: "on-first-retry",
-  avd: "Tapsmith_Generic_Phone_API_35",
+  avd: "Tapsmith_Phone_API_36",
   agentApk: "../agent/app/build/outputs/apk/debug/app-debug.apk",
   agentTestApk:
     "../agent/app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk",
