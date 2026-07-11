@@ -121,6 +121,17 @@ function App() {
   /** Maps trace key → workerId that ran it. */
   const testWorkerMapRef = useRef<Map<string, number>>(new Map());
   /**
+   * Maps trace key → highest actionIndex seen so far (post-shift), and
+   * trace key → index offset applied to hook events streamed after the test
+   * ended. The afterAll trace collector restarts actionIndex at 0, which
+   * would collide with the test's own indices — same actionIndex means
+   * clobbered screenshot/hierarchy keys and a mis-targeted auto-pin. On an
+   * attribution-only test-start we set the offset to (max seen + 1) so
+   * afterAll events continue the test's index sequence instead.
+   */
+  const maxActionIndexRef = useRef<Map<string, number>>(new Map());
+  const hookIndexOffsetRef = useRef<Map<string, number>>(new Map());
+  /**
    * Auto-follow control for multi-worker mode.
    * - 'auto': follow the latest test start (single-worker behavior)
    * - 'worker:N': only follow tests from worker N
@@ -665,6 +676,20 @@ function App() {
         if (msg.workerId != null) {
           testWorkerMapRef.current.set(key, msg.workerId);
         }
+        // Attribution-only re-tag: the runner points afterAll trace events
+        // at the last test that ran — a test that has already ENDED. Only
+        // redirect trace accumulation; don't flip the finished test back to
+        // 'running' (run-end would then reset it to idle, losing its
+        // pass/fail mark) and don't clear its accumulated trace actions.
+        // The afterAll collector restarts actionIndex at 0, so shift its
+        // events past the test's own indices (see hookIndexOffsetRef).
+        if (msg.attributionOnly) {
+          activeTestRef.current = key;
+          hookIndexOffsetRef.current.set(key, (maxActionIndexRef.current.get(key) ?? -1) + 1);
+          break;
+        }
+        maxActionIndexRef.current.delete(key);
+        hookIndexOffsetRef.current.delete(key);
         // Mark this test (and its parent describe/file) as running — scoped
         // to the project running it so a sibling project's copy of the same
         // file doesn't pulse blue too.
@@ -766,11 +791,27 @@ function App() {
         if (msg.workerId != null) {
           testWorkerMapRef.current.set(key, msg.workerId);
         }
-        const ev = msg.event;
+        let ev = msg.event;
+        // Events streamed after the test ended (afterAll hooks) come from a
+        // fresh collector whose actionIndex restarts at 0. Shift them past
+        // the test's own rows so screenshot/hierarchy keys don't clobber the
+        // test's captures and auto-pin lands on the hook's row, not row 0.
+        const hookOffset = hookIndexOffsetRef.current.get(key) ?? 0;
+        if (hookOffset > 0 && 'actionIndex' in ev) {
+          ev = { ...ev, actionIndex: ev.actionIndex + hookOffset };
+        }
         // Skip internal marker events from the visible event lists and from
         // auto-pin — their actionIndex is one past the last real event.
         const isInternal = ev.type === 'action' && ev.action === '__final_screenshot';
         const isStarted = msg.lifecycle === 'started';
+        // Track the highest visible row index so an attribution-only re-tag
+        // can compute the hook offset. Internal markers are excluded — they
+        // never become rows, and counting them would break the alignment
+        // between shifted actionIndex and the panel's positional row index.
+        if (!isInternal && (ev.type === 'action' || ev.type === 'assertion')
+          && ev.actionIndex > (maxActionIndexRef.current.get(key) ?? -1)) {
+          maxActionIndexRef.current.set(key, ev.actionIndex);
+        }
 
         setTestTraces((prev) => {
           const { data, map } = getOrCreateTrace(key, prev);

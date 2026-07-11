@@ -496,8 +496,13 @@ export interface RunOptions {
    * Notification fired before tracing/group starts so UI mode can tag
    * subsequent trace events to this test. Must be lightweight (no device
    * actions) — it runs outside the beforeEach trace group.
+   *
+   * `attributionOnly` marks re-tags for a test that already finished (the
+   * afterAll hook path re-targets trace events at the last test that ran).
+   * Consumers must not treat these as a new test execution — the UI would
+   * otherwise flip a finished test back to 'running' and clear its trace.
    */
-  onTestStart?: (fullName: string) => Promise<void>;
+  onTestStart?: (fullName: string, options?: { attributionOnly?: boolean }) => Promise<void>;
   /**
    * Setup work that runs inside the beforeEach trace group. Use this for
    * any device actions (e.g. session readiness checks) so they appear
@@ -1690,7 +1695,9 @@ async function runSuiteContext(
       });
       if (lastRunTest && opts.onTestStart) {
         const lastFullName = parentPrefix ? `${parentPrefix} > ${lastRunTest.name}` : lastRunTest.name;
-        await opts.onTestStart(lastFullName);
+        // attributionOnly: this test already ended — we only re-tag the
+        // afterAll trace events to it, we are not starting it again.
+        await opts.onTestStart(lastFullName, { attributionOnly: true });
       }
       const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tapsmith-trace-aa-'));
       const managedCollector = opts.device.tracing._startManaged(traceConfig, tempDir);
