@@ -96,12 +96,18 @@ function pass(report: Reporter, id: string, label: string): void {
 
 function warn(report: Reporter, id: string, label: string, fix?: string): void {
   report.checks.push({ status: 'warn', id, label, fix });
-  if (report.print) console.log(`  ${yellow('⚠')} ${label}`);
+  if (report.print) {
+    console.log(`  ${yellow('⚠')} ${label}`);
+    if (fix) console.log(dim(`    ↳ ${fix}`));
+  }
 }
 
 function fail(report: Reporter, id: string, label: string, fix?: string): void {
   report.checks.push({ status: 'fail', id, label, fix });
-  if (report.print) console.log(`  ${red('✗')} ${label}`);
+  if (report.print) {
+    console.log(`  ${red('✗')} ${label}`);
+    if (fix) console.log(dim(`    ↳ ${fix}`));
+  }
 }
 
 // ─── Individual checks ───
@@ -245,9 +251,16 @@ export function parseAvdImageTag(configIni: string): string | undefined {
   return match ? match[1].trim() : undefined;
 }
 
+/** Extract the Android API level from an AVD's `image.sysdir.1` path. */
+export function parseAvdApiLevel(configIni: string): number | undefined {
+  const match = configIni.match(/^image\.sysdir\.1\s*=\s*.*android-(\d+)/m);
+  return match ? Number(match[1]) : undefined;
+}
+
 export interface AvdImageInfo {
   name: string;
   tagId?: string;
+  apiLevel?: number;
 }
 
 /**
@@ -274,7 +287,7 @@ export function scanAvdImageTags(avdHome?: string): AvdImageInfo[] {
       const pathMatch = ini.match(/^path\s*=\s*(.+)$/m);
       const avdDir = pathMatch ? pathMatch[1].trim() : path.join(home, `${name}.avd`);
       const configIni = fs.readFileSync(path.join(avdDir, 'config.ini'), 'utf-8');
-      avds.push({ name, tagId: parseAvdImageTag(configIni) });
+      avds.push({ name, tagId: parseAvdImageTag(configIni), apiLevel: parseAvdApiLevel(configIni) });
     } catch {
       avds.push({ name });
     }
@@ -301,7 +314,12 @@ export interface AvdImageSummary {
 export function summarizeAvdImages(avds: AvdImageInfo[], configuredAvd?: string | string[]): AvdImageSummary | undefined {
   const playStore = avds.filter((a) => a.tagId === 'google_apis_playstore');
   const unreadable = avds.filter((a) => a.tagId === undefined);
-  const fix = 'Recreate with a Google APIs image: npx tapsmith create-avd';
+
+  // A ready-to-run replacement command. --api pins the AVD's current API
+  // level so the suggestion doesn't silently change Android versions;
+  // --force is needed to overwrite an AVD that already exists.
+  const recreateCommand = (avd: AvdImageInfo): string =>
+    `npx tapsmith create-avd --name ${avd.name}${avd.apiLevel !== undefined ? ` --api ${avd.apiLevel}` : ''} --force`;
 
   const configuredNames = (Array.isArray(configuredAvd) ? configuredAvd : configuredAvd ? [configuredAvd] : [])
     .filter((name, i, arr) => arr.indexOf(name) === i);
@@ -311,21 +329,25 @@ export function summarizeAvdImages(avds: AvdImageInfo[], configuredAvd?: string 
   if (configuredNames.length > 0) {
     const missing = configuredNames.filter((name) => !avds.some((a) => a.name === name));
     const configured = avds.filter((a) => configuredNames.includes(a.name));
-    const issues: string[] = [
-      ...missing.map((name) => `Configured AVD ${name} not found on this machine`),
-      ...configured.filter((a) => a.tagId === 'google_apis_playstore')
-        .map((a) => `Configured AVD ${a.name} uses a Google Play system image — no adb root, so HTTPS traffic will not be captured`),
-      ...configured.filter((a) => a.tagId === undefined)
-        .map((a) => `Could not read the system image tag of configured AVD ${a.name}`),
-    ];
+    const issues: string[] = [];
+    const commands: string[] = [];
+    for (const name of missing) {
+      issues.push(`Configured AVD ${name} not found on this machine`);
+      commands.push(`npx tapsmith create-avd --name ${name}`);
+    }
+    for (const avd of configured.filter((a) => a.tagId === 'google_apis_playstore')) {
+      issues.push(`Configured AVD ${avd.name} uses a Google Play system image — no adb root, so HTTPS traffic will not be captured`);
+      commands.push(recreateCommand(avd));
+    }
+    for (const avd of configured.filter((a) => a.tagId === undefined)) {
+      issues.push(`Could not read the system image tag of configured AVD ${avd.name}`);
+      commands.push(recreateCommand(avd));
+    }
     if (issues.length > 0) {
-      const onlyMissing = issues.length === missing.length;
       return {
         status: 'warn',
         label: issues.join('; '),
-        fix: onlyMissing
-          ? `Create it: npx tapsmith create-avd --name ${missing[0]}`
-          : fix,
+        fix: `Run: ${commands.join(' && ')}`,
       };
     }
     const otherPlay = playStore.filter((a) => !configuredNames.includes(a.name));
@@ -345,7 +367,7 @@ export function summarizeAvdImages(avds: AvdImageInfo[], configuredAvd?: string 
     return {
       status: 'warn',
       label: `${playStore.length} of ${avds.length} AVD${avds.length === 1 ? '' : 's'} use${playStore.length === 1 ? 's' : ''} a Google Play system image — no adb root, so HTTPS traffic will not be captured ${dim(`(${playStore.map((a) => a.name).join(', ')}${context})`)}`,
-      fix,
+      fix: `Recreate with a Google APIs image — run: ${playStore.map(recreateCommand).join(' && ')}`,
     };
   }
 
