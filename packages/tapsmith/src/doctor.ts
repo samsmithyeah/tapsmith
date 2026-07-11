@@ -287,8 +287,13 @@ function checkAvdImages(report: Reporter): void {
     const avds = scanAvdImageTags();
     if (avds.length === 0) return;
     const playStoreAvds = avds.filter((a) => a.tagId === 'google_apis_playstore');
+    const unreadable = avds.filter((a) => a.tagId === undefined);
     if (playStoreAvds.length === 0) {
-      pass(report, 'avd-images', `AVD system images support HTTPS capture ${dim(`(${avds.length} AVD${avds.length === 1 ? '' : 's'} checked)`)}`);
+      // Don't silently vouch for AVDs whose config.ini couldn't be read.
+      const detail = unreadable.length > 0
+        ? `${avds.length - unreadable.length} of ${avds.length} AVDs verified — could not read: ${unreadable.map((a) => a.name).join(', ')}`
+        : `${avds.length} AVD${avds.length === 1 ? '' : 's'} checked`;
+      pass(report, 'avd-images', `AVD system images support HTTPS capture ${dim(`(${detail})`)}`);
     } else {
       const names = playStoreAvds.map((a) => a.name).join(', ');
       warn(

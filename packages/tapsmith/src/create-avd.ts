@@ -370,8 +370,13 @@ function run(command: string, args: string[], env: NodeJS.ProcessEnv, stdinRespo
     const child = spawn(command, args, {
       stdio: [stdinResponse === undefined ? 'inherit' : 'pipe', 'inherit', 'inherit'],
       env,
+      // .bat wrappers (sdkmanager.bat/avdmanager.bat) need a command interpreter.
+      shell: process.platform === 'win32',
     });
     if (stdinResponse !== undefined && child.stdin) {
+      // EPIPE fires here if the child exits before reading stdin; without a
+      // listener that's an uncaught exception.
+      child.stdin.on('error', () => {});
       child.stdin.write(stdinResponse);
       child.stdin.end();
     }
