@@ -7,7 +7,7 @@
 
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import { zipSync, type Zippable } from 'fflate';
+import { unzipSync, zipSync, type Zippable } from 'fflate';
 import type { TraceCollector, HierarchyCapture } from './trace-collector.js';
 import { collectReferencedFiles } from './trace-collector.js';
 import type { TraceMetadata, TraceDeviceInfo, NetworkEntry } from './types.js';
@@ -182,8 +182,12 @@ export function packageTrace(
   const zipPath = path.join(options.outputDir, `trace-${projectPrefix}${safeName}${retrySuffix}-${options.startTime}.zip`);
   fs.writeFileSync(zipPath, zipped);
 
-  // Clean up temporary screenshot files
+  // Clean up temporary screenshot files. External captures (replayed from a
+  // hook collector) are shared with other tests' collectors and cleaned up by
+  // their owning collector after the suite — deleting them here would strip
+  // hook screenshots from every later test's archive and live stream.
   for (const screenshot of collector.screenshots) {
+    if (screenshot.external) continue;
     try {
       fs.unlinkSync(screenshot.diskPath);
     } catch {
@@ -192,4 +196,75 @@ export function packageTrace(
   }
 
   return zipPath;
+}
+
+/**
+ * Read the recorded action count from a packaged trace's metadata.json.
+ * Used to offset hook collector action indices so appended events don't
+ * collide with the archive's existing actions.
+ */
+export function readTraceActionCount(zipPath: string): number {
+  const files = unzipSync(new Uint8Array(fs.readFileSync(zipPath)), {
+    filter: (file) => file.name === 'metadata.json',
+  });
+  if (!files['metadata.json']) return 0;
+  const metadata = JSON.parse(new TextDecoder().decode(files['metadata.json'])) as TraceMetadata;
+  return typeof metadata.actionCount === 'number' ? metadata.actionCount : 0;
+}
+
+/**
+ * Append a hook collector's events to an existing packaged trace archive.
+ *
+ * Used for afterAll hooks: by the time they run, the last test's trace has
+ * already been packaged, so its zip is rewritten in place with the hook
+ * events, screenshots, and hierarchy snapshots appended. The collector's
+ * action indices must already be offset past the archive's actionCount
+ * (see {@link readTraceActionCount}) so archive paths don't collide.
+ */
+export function appendEventsToTrace(
+  zipPath: string,
+  collector: TraceCollector,
+  endTime: number,
+): void {
+  if (collector.events.length === 0) return;
+  collector.finalizeTimeline(endTime);
+
+  const files = unzipSync(new Uint8Array(fs.readFileSync(zipPath)));
+  const encoder = new TextEncoder();
+  const decoder = new TextDecoder();
+  const zipData: Zippable = { ...files };
+
+  const existing = files['trace.json'] ? decoder.decode(files['trace.json']).trimEnd() : '';
+  zipData['trace.json'] = encoder.encode(
+    (existing ? existing + '\n' : '') + collector.toNDJSON(),
+  );
+
+  if (files['metadata.json']) {
+    try {
+      const metadata = JSON.parse(decoder.decode(files['metadata.json'])) as TraceMetadata;
+      metadata.actionCount = Math.max(metadata.actionCount, collector.currentActionIndex);
+      metadata.endTime = Math.max(metadata.endTime, endTime);
+      metadata.screenshotCount += collector.screenshots.length;
+      zipData['metadata.json'] = encoder.encode(JSON.stringify(metadata, null, 2));
+    } catch {
+      // Unparseable metadata — keep the original.
+    }
+  }
+
+  for (const screenshot of collector.screenshots) {
+    try {
+      zipData[screenshot.archivePath] = new Uint8Array(fs.readFileSync(screenshot.diskPath));
+    } catch {
+      // Skip missing screenshots
+    }
+  }
+  for (const hierarchy of collector.hierarchies as HierarchyCapture[]) {
+    zipData[hierarchy.archivePath] = encoder.encode(hierarchy.xml);
+  }
+
+  const zipped = zipSync(zipData, { level: 6 });
+  // Write-then-rename so a crash mid-write can't leave a truncated archive.
+  const tmpPath = `${zipPath}.tmp`;
+  fs.writeFileSync(tmpPath, zipped);
+  fs.renameSync(tmpPath, zipPath);
 }

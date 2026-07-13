@@ -24,8 +24,8 @@ import { FixtureRegistry, resolveFixtures, fixtureParameterNames, functionHasPar
 import { resolveTraceConfig } from './trace/types.js';
 import { shouldRecord, shouldRetain } from './trace/trace-mode.js';
 import { resolveVideoConfig } from './video/types.js';
-import { packageTrace } from './trace/trace-packager.js';
-import { TraceCollector, setActiveTraceCollector, withActiveTraceCollector } from './trace/trace-collector.js';
+import { appendEventsToTrace, packageTrace, readTraceActionCount } from './trace/trace-packager.js';
+import { TraceCollector, screenshotFileName, setActiveTraceCollector, withActiveTraceCollector } from './trace/trace-collector.js';
 import type { AnyTraceEvent } from './trace/types.js';
 import { getSimulatorScreenScale } from './ios-simulator.js';
 import type { TraceDeviceInfo } from './trace/types.js';
@@ -711,9 +711,8 @@ function replayBeforeAllEvents(
 
   for (const event of events) {
     if ((event.type === 'action' || event.type === 'assertion') && screenshotDir) {
-      const pad = String(event.actionIndex).padStart(3, '0');
-      const beforePath = path.join(screenshotDir, `action-${pad}-before.png`);
-      const afterPath = path.join(screenshotDir, `action-${pad}-after.png`);
+      const beforePath = path.join(screenshotDir, screenshotFileName(event.actionIndex, 'before'));
+      const afterPath = path.join(screenshotDir, screenshotFileName(event.actionIndex, 'after'));
       const hier = hierarchies.get(event.actionIndex);
       let hasBefore = false;
       let hasAfter = false;
@@ -1692,7 +1691,11 @@ async function runSuiteContext(
   }
 
   // Run afterAll hooks with tracing (same pattern as beforeAll).
-  // Events are streamed to the UI tagged with the last test that ran.
+  // Events are streamed to the UI tagged with the last test that ran, and
+  // appended to that test's already-packaged trace archive so teardown
+  // actions are visible in headless runs too (the archive was written when
+  // the test finished — beforeAll-style replay into a live collector is no
+  // longer possible at this point).
   if (ctx.afterAll.length > 0 && opts.device) {
     const traceConfig = resolveTraceConfig(opts.config.trace);
     if (shouldRecord(traceConfig.mode, 0)) {
@@ -1704,14 +1707,39 @@ async function runSuiteContext(
         const fn = parentPrefix ? `${parentPrefix} > ${t.name}` : t.name;
         return passesTestFilter(fn, opts);
       });
-      if (lastRunTest && opts.onTestStart) {
-        const lastFullName = parentPrefix ? `${parentPrefix} > ${lastRunTest.name}` : lastRunTest.name;
+      const lastFullName = lastRunTest
+        ? (parentPrefix ? `${parentPrefix} > ${lastRunTest.name}` : lastRunTest.name)
+        : undefined;
+      if (lastFullName && opts.onTestStart) {
         await opts.onTestStart(lastFullName);
       }
+
+      // The archive to amend: the trace linked on the last run test's result
+      // (absent when the test never ran, e.g. aborted, or its trace wasn't
+      // retained, e.g. retain-on-failure with a passing test).
+      const targetTracePath = lastFullName
+        ? result.tests.find((t) => t.fullName === lastFullName)?.tracePath
+        : undefined;
+      // Offset action indices past the archive's actions so appended events
+      // and their screenshot/hierarchy paths don't collide. +1 skips the
+      // terminal end-of-test screenshot, which is registered at index
+      // actionCount without emitting an event.
+      let actionIndexOffset = 0;
+      if (targetTracePath) {
+        try {
+          actionIndexOffset = readTraceActionCount(targetTracePath) + 1;
+        } catch {
+          // Unreadable archive — record unoffsetted and skip the amendment.
+        }
+      }
+
       const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tapsmith-trace-aa-'));
       const managedCollector = opts.device.tracing._startManaged(traceConfig, tempDir);
       const afterAllCollector = new TraceCollector(traceConfig, tempDir);
       afterAllCollector.setTimelineOrigin(Date.now());
+      if (actionIndexOffset > 0) {
+        afterAllCollector.setActionIndexOffset(actionIndexOffset);
+      }
       const cb = managedCollector.getEventCallback();
       if (cb) afterAllCollector.setEventCallback(cb);
       opts.device.tracing._stopManaged();
@@ -1727,6 +1755,14 @@ async function runSuiteContext(
         }
       });
       afterAllCollector.endGroup();
+      await afterAllCollector.flushPendingCaptures();
+      if (targetTracePath && actionIndexOffset > 0) {
+        try {
+          appendEventsToTrace(targetTracePath, afterAllCollector, Date.now());
+        } catch {
+          // Trace amendment is best-effort, like packaging.
+        }
+      }
       afterAllCollector.cleanup();
     } else {
       for (const hook of ctx.afterAll) {

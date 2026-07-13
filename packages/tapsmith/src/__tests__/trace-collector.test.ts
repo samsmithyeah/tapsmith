@@ -699,12 +699,26 @@ describe('ingestReplayedEvent', () => {
       hierarchyBefore: '<hierarchy/>',
     });
 
+    // `external` marks the file as owned by the hook collector so packaging
+    // this collector doesn't delete it out from under later tests' replays.
     expect(collector.screenshots).toEqual([
-      { archivePath: 'screenshots/action-000-before.png', diskPath: shotPath },
+      { archivePath: 'screenshots/action-000-before.png', diskPath: shotPath, external: true },
     ]);
     expect(collector.hierarchies).toContainEqual(
       { archivePath: 'hierarchy/action-000-before.xml', xml: '<hierarchy/>' },
     );
+  });
+
+  it('stores a copy so timeline mutation in one collector cannot corrupt the shared saved event', () => {
+    const collector = new TraceCollector(config, tempDir);
+    const original = makeActionEvent(0);
+
+    collector.ingestReplayedEvent(original);
+
+    expect(collector.events[0]).not.toBe(original);
+    expect(collector.events[0]).toEqual(original);
+    (collector.events[0] as { duration?: number }).duration = 999;
+    expect((original as { duration?: number }).duration).toBe(42);
   });
 
   it('records group events verbatim without capture registration', () => {

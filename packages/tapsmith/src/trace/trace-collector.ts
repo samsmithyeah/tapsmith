@@ -101,6 +101,12 @@ export interface ScreenshotCapture {
   archivePath: string
   /** Absolute path to the temporary file on disk. */
   diskPath: string
+  /**
+   * The disk file is owned by another collector (e.g. a replayed beforeAll
+   * capture). It is still needed after this collector packages, so the
+   * packager must not delete it — the owning collector's cleanup() will.
+   */
+  external?: boolean
 }
 
 export interface HierarchyCapture {
@@ -115,6 +121,23 @@ export interface CaptureBeforeAfter {
   screenshotAfter?: ScreenshotCapture
   hierarchyBefore?: HierarchyCapture
   hierarchyAfter?: HierarchyCapture
+}
+
+// ─── Archive path naming ───
+
+/** Basename of an action screenshot file (both on disk and in the archive). */
+export function screenshotFileName(actionIndex: number, position: 'before' | 'after'): string {
+  return `action-${String(actionIndex).padStart(3, '0')}-${position}.png`;
+}
+
+/** Path of an action screenshot within the trace archive. */
+export function screenshotArchivePath(actionIndex: number, position: 'before' | 'after'): string {
+  return `screenshots/${screenshotFileName(actionIndex, position)}`;
+}
+
+/** Path of an action hierarchy snapshot within the trace archive. */
+export function hierarchyArchivePath(actionIndex: number, position: 'before' | 'after'): string {
+  return `hierarchy/action-${String(actionIndex).padStart(3, '0')}-${position}.xml`;
 }
 
 // ─── Source location extraction ───
@@ -320,30 +343,34 @@ export class TraceCollector {
       hierarchyAfter?: string
     },
   ): void {
-    this._events.push(event);
+    // Shallow copy: the same saved event is replayed into every test's
+    // collector, and later steps (finalizeTimeline) mutate events in place —
+    // a shared reference would let one test's packaging corrupt another's.
+    this._events.push({ ...event });
     if (event.type !== 'action' && event.type !== 'assertion') return;
-    const pad = String(event.actionIndex).padStart(3, '0');
     if (captures?.screenshotBefore) {
       this._screenshots.push({
-        archivePath: `screenshots/action-${pad}-before.png`,
+        archivePath: screenshotArchivePath(event.actionIndex, 'before'),
         diskPath: captures.screenshotBefore,
+        external: true,
       });
     }
     if (captures?.screenshotAfter) {
       this._screenshots.push({
-        archivePath: `screenshots/action-${pad}-after.png`,
+        archivePath: screenshotArchivePath(event.actionIndex, 'after'),
         diskPath: captures.screenshotAfter,
+        external: true,
       });
     }
     if (captures?.hierarchyBefore) {
       this._hierarchies.push({
-        archivePath: `hierarchy/action-${pad}-before.xml`,
+        archivePath: hierarchyArchivePath(event.actionIndex, 'before'),
         xml: captures.hierarchyBefore,
       });
     }
     if (captures?.hierarchyAfter) {
       this._hierarchies.push({
-        archivePath: `hierarchy/action-${pad}-after.xml`,
+        archivePath: hierarchyArchivePath(event.actionIndex, 'after'),
         xml: captures.hierarchyAfter,
       });
     }
@@ -461,7 +488,7 @@ export class TraceCollector {
       tasks.push(
         captureWithTimeout(takeScreenshot(), timeoutMs).then((data) => {
           if (data) {
-            const filename = `action-${String(actionIndex).padStart(3, '0')}-before.png`;
+            const filename = screenshotFileName(actionIndex, 'before');
             const diskPath = path.join(this._tempDir, 'screenshots', filename);
             fs.writeFileSync(diskPath, data);
             const capture: ScreenshotCapture = {
@@ -486,7 +513,7 @@ export class TraceCollector {
         captureWithTimeout(captureHierarchy(), timeoutMs).then((xml) => {
           if (xml) {
             captures.hierarchyBefore = {
-              archivePath: `hierarchy/action-${String(actionIndex).padStart(3, '0')}-before.xml`,
+              archivePath: hierarchyArchivePath(actionIndex, 'before'),
               xml,
             };
             this._hierarchies.push(captures.hierarchyBefore!);
@@ -520,7 +547,7 @@ export class TraceCollector {
       tasks.push(
         captureWithTimeout(takeScreenshot()).then((data) => {
           if (data) {
-            const filename = `action-${String(actionIndex).padStart(3, '0')}-after.png`;
+            const filename = screenshotFileName(actionIndex, 'after');
             const diskPath = path.join(this._tempDir, 'screenshots', filename);
             fs.writeFileSync(diskPath, data);
             const capture: ScreenshotCapture = {
@@ -545,7 +572,7 @@ export class TraceCollector {
         captureWithTimeout(captureHierarchy()).then((xml) => {
           if (xml) {
             captures.hierarchyAfter = {
-              archivePath: `hierarchy/action-${String(actionIndex).padStart(3, '0')}-after.xml`,
+              archivePath: hierarchyArchivePath(actionIndex, 'after'),
               xml,
             };
             this._hierarchies.push(captures.hierarchyAfter!);

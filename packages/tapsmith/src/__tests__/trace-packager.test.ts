@@ -4,8 +4,33 @@ import * as path from 'node:path';
 import * as os from 'node:os';
 import { unzipSync, strFromU8 } from 'fflate';
 import { TraceCollector } from '../trace/trace-collector.js';
-import { packageTrace } from '../trace/trace-packager.js';
+import { appendEventsToTrace, packageTrace, readTraceActionCount } from '../trace/trace-packager.js';
 import type { TraceConfig, TraceDeviceInfo } from '../trace/types.js';
+
+function makeConfig(overrides: Partial<TraceConfig> = {}): TraceConfig {
+  return {
+    mode: 'on',
+    screenshots: false,
+    snapshots: false,
+    sources: false,
+    attachments: true, network: false, deviceLogs: false, daemonLogs: false,
+    ...overrides,
+  };
+}
+
+function makeActionEvent(overrides: Record<string, unknown> = {}) {
+  return {
+    category: 'tap' as const,
+    action: 'tap',
+    duration: 10,
+    success: true,
+    hasScreenshotBefore: false,
+    hasScreenshotAfter: false,
+    hasHierarchyBefore: false,
+    hasHierarchyAfter: false,
+    ...overrides,
+  };
+}
 
 describe('trace packager', () => {
   let tempDir: string;
@@ -205,5 +230,129 @@ describe('packageTrace sources.json', () => {
     } finally {
       fs.rmSync(tmp, { recursive: true, force: true });
     }
+  });
+});
+
+describe('packageTrace screenshot cleanup', () => {
+  it('deletes owned screenshots but preserves external (replayed hook) screenshots', async () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'ts-pkg-ext-'));
+    try {
+      const collector = new TraceCollector(makeConfig({ screenshots: true }), tmp);
+
+      // Owned capture: written into this collector's temp dir.
+      await collector.captureBeforeAction(
+        async () => Buffer.from('own-png'),
+        async () => undefined,
+      );
+      collector.addActionEvent(makeActionEvent({ hasScreenshotBefore: true }));
+      const ownedPath = collector.screenshots[0].diskPath;
+
+      // External capture: a beforeAll screenshot replayed into this collector,
+      // still needed by later tests' replays after this trace packages.
+      const externalPath = path.join(tmp, 'ba-action-000-before.png');
+      fs.writeFileSync(externalPath, Buffer.from('hook-png'));
+      collector.ingestReplayedEvent(
+        {
+          type: 'action', actionIndex: 5, timestamp: 1000,
+          ...makeActionEvent({ hasScreenshotBefore: true }),
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any -- partial trace event literal
+        } as any,
+        { screenshotBefore: externalPath },
+      );
+
+      const zipPath = packageTrace(collector, {
+        testFile: 't.ts', testName: 't', testStatus: 'passed', testDuration: 1,
+        startTime: 1, endTime: 2, device: { serial: 'test', isEmulator: false },
+        tapsmithVersion: '0.0.0', outputDir: tmp,
+      });
+
+      const files = unzipSync(new Uint8Array(fs.readFileSync(zipPath)));
+      expect(files['screenshots/action-000-before.png']).toBeDefined();
+      expect(files['screenshots/action-005-before.png']).toBeDefined();
+      expect(fs.existsSync(ownedPath)).toBe(false);
+      expect(fs.existsSync(externalPath)).toBe(true);
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('appendEventsToTrace', () => {
+  let tmp: string;
+
+  beforeEach(() => {
+    tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'ts-pkg-append-'));
+  });
+
+  afterEach(() => {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  });
+
+  function packageBaseTrace(): string {
+    const collector = new TraceCollector(makeConfig(), path.join(tmp, 'base'));
+    collector.addActionEvent(makeActionEvent());
+    collector.addActionEvent(makeActionEvent({ action: 'type' }));
+    return packageTrace(collector, {
+      testFile: 't.ts', testName: 'last test', testStatus: 'passed', testDuration: 100,
+      startTime: 1000, endTime: 1100, device: { serial: 'test', isEmulator: false },
+      tapsmithVersion: '0.0.0', outputDir: tmp,
+    });
+  }
+
+  it('reads the action count from a packaged trace', () => {
+    const zipPath = packageBaseTrace();
+    expect(readTraceActionCount(zipPath)).toBe(2);
+  });
+
+  it('appends hook events, screenshots, and hierarchies to an existing archive', async () => {
+    const zipPath = packageBaseTrace();
+
+    const hookCollector = new TraceCollector(
+      makeConfig({ screenshots: true, snapshots: true }),
+      path.join(tmp, 'hook'),
+    );
+    hookCollector.setActionIndexOffset(readTraceActionCount(zipPath) + 1);
+    hookCollector.startGroup('afterAll Hooks');
+    await hookCollector.captureBeforeAction(
+      async () => Buffer.from('after-all-png'),
+      async () => '<hierarchy/>',
+    );
+    hookCollector.addActionEvent(makeActionEvent({
+      action: 'openDeepLink', hasScreenshotBefore: true, hasHierarchyBefore: true,
+    }));
+    hookCollector.endGroup();
+
+    appendEventsToTrace(zipPath, hookCollector, Date.now());
+
+    const files = unzipSync(new Uint8Array(fs.readFileSync(zipPath)));
+    const events = strFromU8(files['trace.json']).trim().split('\n')
+      .map((line) => JSON.parse(line) as { type: string; name?: string; action?: string; actionIndex?: number });
+
+    // Original events are preserved, hook events appended after them.
+    expect(events[0].action).toBe('tap');
+    expect(events[1].action).toBe('type');
+    expect(events.some((e) => e.type === 'group-start' && e.name === 'afterAll Hooks')).toBe(true);
+    const hookAction = events.find((e) => e.action === 'openDeepLink');
+    expect(hookAction?.actionIndex).toBe(3);
+
+    // Captures land at the offset archive paths.
+    expect(files['screenshots/action-003-before.png']).toBeDefined();
+    expect(files['hierarchy/action-003-before.xml']).toBeDefined();
+
+    // Metadata reflects the appended events.
+    const metadata = JSON.parse(strFromU8(files['metadata.json']));
+    expect(metadata.actionCount).toBe(4);
+    expect(metadata.screenshotCount).toBe(1);
+    expect(metadata.testName).toBe('last test');
+  });
+
+  it('leaves the archive untouched when the hook collector recorded nothing', () => {
+    const zipPath = packageBaseTrace();
+    const before = fs.readFileSync(zipPath);
+
+    const hookCollector = new TraceCollector(makeConfig(), path.join(tmp, 'hook'));
+    appendEventsToTrace(zipPath, hookCollector, Date.now());
+
+    expect(fs.readFileSync(zipPath).equals(before)).toBe(true);
   });
 });
