@@ -545,7 +545,9 @@ export default defineConfig({
 });
 ```
 
-Between test files, Tapsmith navigates the deep link instead of force-stopping and relaunching the app. The deep link handler should clear app state and land on whatever screen your tests expect to start from. Keep this handler out of production builds, for example behind a test-only build flavor or equivalent guard. This is significantly faster for apps that support it.
+Between test files, Tapsmith navigates the deep link instead of clearing app data and restarting the agent session. The deep link handler should clear app state and land on whatever screen your tests expect to start from. Keep this handler out of production builds, for example behind a test-only build flavor or equivalent guard. This is significantly faster for apps that support it.
+
+On Android and physical iOS devices the reset deep link is delivered to the running app. On iOS simulators the between-file reset cold-relaunches the app with the URL so every file starts from a fresh process; deep links opened *inside* a test file (including `device.openDeepLink()` calls to the reset link) are delivered warm when possible.
 
 ### API Request Fixture
 

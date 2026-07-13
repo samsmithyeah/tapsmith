@@ -496,8 +496,13 @@ export interface RunOptions {
    * Notification fired before tracing/group starts so UI mode can tag
    * subsequent trace events to this test. Must be lightweight (no device
    * actions) — it runs outside the beforeEach trace group.
+   *
+   * `attributionOnly` marks re-tags for a test that already finished (the
+   * afterAll hook path re-targets trace events at the last test that ran).
+   * Consumers must not treat these as a new test execution — the UI would
+   * otherwise flip a finished test back to 'running' and clear its trace.
    */
-  onTestStart?: (fullName: string) => Promise<void>;
+  onTestStart?: (fullName: string, options?: { attributionOnly?: boolean }) => Promise<void>;
   /**
    * Setup work that runs inside the beforeEach trace group. Use this for
    * any device actions (e.g. session readiness checks) so they appear
@@ -994,6 +999,13 @@ async function runSuiteContext(
     for (let attempt = 0; attempt <= maxRetries; attempt++) {
       if (attempt > 0 && opts.abortSignal?.aborted) break;
       attemptStart = Date.now();
+      // Retry attempts force every deep link cold. The first attempt failed
+      // for an unknown reason — a cold terminate + relaunch is the recovery
+      // path for simulator states that warm in-process delivery would carry
+      // straight into the retry (e.g. a display that stopped updating while
+      // the a11y tree stayed healthy, observed on CI July 2026). Attempt 0
+      // resets the flag so a previous test's retry doesn't leak into it.
+      opts.device?._setForceColdDeepLinks?.(attempt > 0);
       // Reset per-attempt state. Only the final attempt's artifacts are
       // reported — prior attempt traces/videos are retained on disk via
       // shouldRetain() but not linked from the TestResult.
@@ -1698,38 +1710,42 @@ async function runSuiteContext(
   // longer possible at this point).
   if (ctx.afterAll.length > 0 && opts.device) {
     const traceConfig = resolveTraceConfig(opts.config.trace);
-    if (shouldRecord(traceConfig.mode, 0)) {
-      // Find the last test that actually ran (not skipped/filtered) to tag events.
-      // Must account for selection filters and .only so we don't tag with a test that didn't run.
-      const lastRunTest = [...ctx.tests].reverse().find((t) => {
-        if (t.skip) return false;
-        if (hasOnly && !t.only) return false;
-        const fn = parentPrefix ? `${parentPrefix} > ${t.name}` : t.name;
-        return passesTestFilter(fn, opts);
-      });
-      const lastFullName = lastRunTest
-        ? (parentPrefix ? `${parentPrefix} > ${lastRunTest.name}` : lastRunTest.name)
-        : undefined;
-      if (lastFullName && opts.onTestStart) {
-        await opts.onTestStart(lastFullName);
+    // Find the last test that actually ran, to tag events. Derived from the
+    // recorded results (which include nested suites, already executed by
+    // this point) rather than re-deriving skip/.only/filter predicates —
+    // a suite whose direct tests were all filtered out can still have run
+    // tests in nested describes, and those are the right attribution target.
+    const lastRunTest = shouldRecord(traceConfig.mode, 0)
+      ? [...collectResults(result)].reverse().find((r) => r.status !== 'skipped')
+      : undefined;
+    // When no test ran at all, skip traced streaming entirely: there is no
+    // test to attach the events to, and streaming them anyway would pollute
+    // whichever test the UI last tagged (potentially one from an earlier
+    // suite) with this suite's hook events.
+    if (lastRunTest) {
+      if (opts.onTestStart) {
+        // attributionOnly: this test already ended — we only re-tag the
+        // afterAll trace events to it, we are not starting it again.
+        await opts.onTestStart(lastRunTest.fullName, { attributionOnly: true });
       }
 
       // The archive to amend: the trace linked on the last run test's result
-      // (absent when the test never ran, e.g. aborted, or its trace wasn't
-      // retained, e.g. retain-on-failure with a passing test).
-      const targetTracePath = lastFullName
-        ? result.tests.find((t) => t.fullName === lastFullName)?.tracePath
-        : undefined;
-      // Offset action indices past the archive's actions so appended events
-      // and their screenshot/hierarchy paths don't collide. +1 skips the
-      // terminal end-of-test screenshot, which is registered at index
-      // actionCount without emitting an event.
+      // (absent when it wasn't retained, e.g. retain-on-failure with a pass).
+      //
+      // The collector records with UNSHIFTED indices — UI mode's live stream
+      // applies its own shift to events arriving after an attribution-only
+      // re-tag (main.tsx hookShiftRef) — so the offset is applied at append
+      // time instead: past the archive's actionCount, +1 to skip the
+      // terminal end-of-test screenshot registered at index actionCount
+      // without an event. That mirrors the UI's shift (highest seen index
+      // including markers, +1), keeping stream and archive indices aligned.
+      const targetTracePath = lastRunTest.tracePath;
       let actionIndexOffset = 0;
       if (targetTracePath) {
         try {
           actionIndexOffset = readTraceActionCount(targetTracePath) + 1;
         } catch {
-          // Unreadable archive — record unoffsetted and skip the amendment.
+          // Unreadable archive — skip the amendment.
         }
       }
 
@@ -1737,9 +1753,6 @@ async function runSuiteContext(
       const managedCollector = opts.device.tracing._startManaged(traceConfig, tempDir);
       const afterAllCollector = new TraceCollector(traceConfig, tempDir);
       afterAllCollector.setTimelineOrigin(Date.now());
-      if (actionIndexOffset > 0) {
-        afterAllCollector.setActionIndexOffset(actionIndexOffset);
-      }
       const cb = managedCollector.getEventCallback();
       if (cb) afterAllCollector.setEventCallback(cb);
       opts.device.tracing._stopManaged();
@@ -1758,7 +1771,7 @@ async function runSuiteContext(
       await afterAllCollector.flushPendingCaptures();
       if (targetTracePath && actionIndexOffset > 0) {
         try {
-          appendEventsToTrace(targetTracePath, afterAllCollector, Date.now());
+          appendEventsToTrace(targetTracePath, afterAllCollector, Date.now(), actionIndexOffset);
         } catch {
           // Trace amendment is best-effort, like packaging.
         }

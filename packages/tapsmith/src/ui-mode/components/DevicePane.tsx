@@ -9,9 +9,10 @@
 
 import type { RefObject } from 'preact';
 import { useRef, useEffect } from 'preact/hooks';
-import { Lock, LockOpen } from 'lucide-preact';
+import { Lock, LockOpen, Focus } from 'lucide-preact';
 import type { WorkerInfo, ClientMessage, DevicePlatform } from '../ui-protocol.js';
 import { inferDevicePlatform, inferDeviceFormFactor } from '../ui-protocol.js';
+import type { Bounds } from '../../trace-viewer/components/hierarchy-utils.js';
 import { DeviceMirror } from './DeviceMirror.js';
 import { DeviceFrame } from './DeviceFrame.js';
 import { useDeviceInteraction } from '../hooks/use-device-interaction.js';
@@ -33,6 +34,15 @@ interface DevicePaneProps {
   force: boolean
   onToggleLock: () => void
   send: (msg: ClientMessage) => void
+  /** Element pick mode on the live mirror (single-mirror view only). */
+  pickMode: boolean
+  onTogglePick: () => void
+  pickAvailable: boolean
+  pickDpr: number
+  pickHoverBounds: Bounds | null
+  pickMatchBounds: Bounds[]
+  onPickPoint: (point: { x: number; y: number }) => void
+  onPickHover: (point: { x: number; y: number } | null) => void
 }
 
 const DOT_CLASS: Record<WorkerInfo['status'], string> = {
@@ -124,6 +134,14 @@ export function DevicePane({
   force,
   onToggleLock,
   send,
+  pickMode,
+  onTogglePick,
+  pickAvailable,
+  pickDpr,
+  pickHoverBounds,
+  pickMatchBounds,
+  onPickPoint,
+  onPickHover,
 }: DevicePaneProps) {
   const hasWorkers = workers.length > 1;
   const selectedWorker = workers.find((worker) => worker.workerId === selectedWorkerId);
@@ -152,6 +170,20 @@ export function DevicePane({
           title={locked ? 'Interaction locked — click to unlock' : 'Interaction unlocked — click to lock'}
         >
           {locked ? <Lock size={15} aria-hidden="true" /> : <LockOpen size={15} aria-hidden="true" />}
+        </button>
+        {/* Element picker for the live mirror — click an element to get a
+            locator in the Locator tab. Single-mirror view only. */}
+        <button
+          type="button"
+          class={`mirror-pick-toggle ${pickMode ? 'active' : ''}`}
+          onClick={onTogglePick}
+          disabled={!pickAvailable}
+          aria-label={pickMode ? 'Picking element — click to cancel' : 'Pick an element to get a locator'}
+          title={!pickAvailable && deviceViewMode === 'all' && workers.length > 1
+            ? 'Select a device tab to pick'
+            : pickMode ? 'Picking element — click to cancel' : 'Pick an element to get a locator'}
+        >
+          <Focus size={15} aria-hidden="true" />
         </button>
       </div>
 
@@ -207,6 +239,12 @@ export function DevicePane({
             force={force}
             workerId={typeof deviceViewMode === 'number' ? deviceViewMode : selectedWorkerId}
             send={send}
+            pickMode={pickMode}
+            pickDpr={pickDpr}
+            pickHoverBounds={pickHoverBounds}
+            pickMatchBounds={pickMatchBounds}
+            onPickPoint={onPickPoint}
+            onPickHover={onPickHover}
           />
         )}
       </div>

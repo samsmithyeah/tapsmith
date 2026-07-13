@@ -144,6 +144,11 @@ export interface TestStartMessage {
    * the matching project node — required when the same file is shared
    * across projects (multi-device configs). */
   projectName?: string
+  /** True when this message only re-tags trace attribution to an
+   * already-finished test (afterAll hooks are attributed to the last test
+   * that ran). The SPA must not treat it as a new execution: no status
+   * reset to 'running', no clearing of the test's accumulated trace. */
+  attributionOnly?: boolean
 }
 
 export interface TestStatusMessage {
@@ -201,6 +206,9 @@ export interface TraceEventMessage {
 export interface HierarchyUpdateMessage {
   type: 'hierarchy-update'
   xml: string
+  /** Worker the hierarchy was captured from (0 in single-worker mode) so
+   * clients can discard updates for a device they're no longer mirroring. */
+  workerId?: number
 }
 
 export interface WatchEventMessage {
@@ -407,6 +415,8 @@ export interface ToggleWatchCommand {
 
 export interface RequestHierarchyCommand {
   type: 'request-hierarchy'
+  /** Target worker (multi-worker mode). Defaults to the selected worker. */
+  workerId?: number
 }
 
 export interface RequestSourceCommand {
@@ -613,6 +623,8 @@ export interface UIRunTestStartMessage {
   type: 'test-start'
   fullName: string
   filePath: string
+  /** Re-tag of trace attribution for a finished test (see TestStartMessage). */
+  attributionOnly?: boolean
 }
 
 export interface UIRunTestEndMessage {
@@ -756,6 +768,8 @@ export interface UIWorkerTestStartMessage {
   workerId: number
   fullName: string
   filePath: string
+  /** Re-tag of trace attribution for a finished test (see TestStartMessage). */
+  attributionOnly?: boolean
 }
 
 /** UI worker → server: test completed. */

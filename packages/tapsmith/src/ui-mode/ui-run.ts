@@ -209,8 +209,8 @@ async function handleRun(msg: UIRunMessage): Promise<void> {
     device,
     screenshotDir,
     reporter: reporterProxy,
-    onTestStart: async (fullName: string) => {
-      send({ type: 'test-start', fullName, filePath: msg.filePath });
+    onTestStart: async (fullName: string, options?: { attributionOnly?: boolean }) => {
+      send({ type: 'test-start', fullName, filePath: msg.filePath, attributionOnly: options?.attributionOnly });
     },
     projectUseOptions: msg.projectUseOptions,
     projectName: msg.projectName,

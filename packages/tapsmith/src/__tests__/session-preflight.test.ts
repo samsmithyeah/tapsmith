@@ -81,10 +81,29 @@ describe('session-preflight', () => {
     vi.mocked(ctx.device.startAgent)
       .mockRejectedValueOnce(new Error('Failed to connect to agent socket'));
 
-    await expect(ensureSessionReady(ctx, 'startup', 3)).resolves.toBeUndefined();
+    await expect(ensureSessionReady(ctx, 'startup', 3, { retryBackoffMs: [0] })).resolves.toBeUndefined();
 
     expect(ctx.device.startAgent).toHaveBeenCalledTimes(1);
     expect(ctx.client.ping).toHaveBeenCalledTimes(2);
+  });
+
+  it('recovers on the third attempt when a transient drop outlasts the first recovery (PILOT-282)', async () => {
+    // A transient agent-connection drop lasts a few seconds: the first verify
+    // AND the verify after the first recovery both land inside the drop
+    // window. The default attempt budget must ride it out instead of failing
+    // the test at 0ms while an interactive session recovers moments later.
+    const ctx = makeContext();
+    vi.mocked(ctx.client.ping)
+      .mockRejectedValueOnce(new Error('Agent connection lost during read'))
+      .mockRejectedValueOnce(new Error('Agent connection lost during read'))
+      .mockResolvedValueOnce({ version: '0.1.0', agentConnected: true });
+
+    await expect(
+      ensureSessionReady(ctx, 'before test', undefined, { retryBackoffMs: [0] }),
+    ).resolves.toBeUndefined();
+
+    expect(ctx.client.ping).toHaveBeenCalledTimes(3);
+    expect(ctx.device.startAgent).toHaveBeenCalledTimes(2);
   });
 
   it('fails when the foreground package never matches', async () => {
@@ -96,10 +115,11 @@ describe('session-preflight', () => {
       errorMessage: '',
     });
 
-    await expect(ensureSessionReady(ctx, 'startup')).rejects.toThrow(
+    await expect(ensureSessionReady(ctx, 'startup', undefined, { retryBackoffMs: [0] })).rejects.toThrow(
       'foreground package mismatch',
     );
-    expect(ctx.device.startAgent).toHaveBeenCalledTimes(1);
+    // Default budget is 3 attempts → recovery (agent restart) runs twice.
+    expect(ctx.device.startAgent).toHaveBeenCalledTimes(2);
   });
 
   it('launches the configured app before verifying readiness', async () => {
@@ -157,7 +177,7 @@ describe('session-preflight', () => {
 
     await expect(launchConfiguredApp(ctx, 'file reset')).resolves.toBeUndefined();
 
-    expect(ctx.device.openDeepLink).toHaveBeenNthCalledWith(1, 'example:///__reset');
+    expect(ctx.device.openDeepLink).toHaveBeenNthCalledWith(1, 'example:///__reset', { forceColdLaunch: true });
     expect(ctx.device.openDeepLink).toHaveBeenCalledTimes(1);
     expect(ctx.device.waitForIdle).toHaveBeenNthCalledWith(1, 321);
     expect(ctx.client.getUiHierarchy).toHaveBeenCalledTimes(1);
@@ -178,7 +198,7 @@ describe('session-preflight', () => {
 
     await expect(launchConfiguredApp(ctx, 'file reset')).resolves.toBeUndefined();
 
-    expect(ctx.device.openDeepLink).toHaveBeenCalledWith('example:///__reset');
+    expect(ctx.device.openDeepLink).toHaveBeenCalledWith('example:///__reset', { forceColdLaunch: true });
     expect(ctx.device.clearAppData).toHaveBeenCalledWith('com.example.app');
     expect(ctx.device.restartApp).toHaveBeenCalledWith('com.example.app');
   });
@@ -195,7 +215,7 @@ describe('session-preflight', () => {
 
     await expect(launchConfiguredApp(ctx, 'file reset')).resolves.toBeUndefined();
 
-    expect(ctx.device.openDeepLink).toHaveBeenCalledWith('example:///__reset');
+    expect(ctx.device.openDeepLink).toHaveBeenCalledWith('example:///__reset', { forceColdLaunch: true });
     expect(ctx.device.terminateApp).not.toHaveBeenCalled();
     expect(ctx.device.clearAppData).not.toHaveBeenCalled();
     expect(ctx.device.launchApp).not.toHaveBeenCalled();
@@ -214,7 +234,7 @@ describe('session-preflight', () => {
 
     await expect(launchConfiguredApp(ctx, 'file reset')).resolves.toBeUndefined();
 
-    expect(ctx.device.openDeepLink).toHaveBeenCalledWith('example:///__reset');
+    expect(ctx.device.openDeepLink).toHaveBeenCalledWith('example:///__reset', { forceColdLaunch: true });
     expect(ctx.device.terminateApp).toHaveBeenCalledWith('com.example.app');
     expect(ctx.device.clearAppData).toHaveBeenCalledWith('com.example.app');
     expect(ctx.device.launchApp).toHaveBeenCalledWith('com.example.app', {
@@ -246,7 +266,7 @@ describe('session-preflight', () => {
       errorMessage: '',
     });
 
-    await expect(ensureSessionReady(ctx, 'startup')).rejects.toThrow(
+    await expect(ensureSessionReady(ctx, 'startup', undefined, { retryBackoffMs: [0] })).rejects.toThrow(
       'foreground package mismatch',
     );
   });
@@ -347,7 +367,7 @@ describe('session-preflight', () => {
     await expect(launchConfiguredApp(ctx, 'file reset')).resolves.toBeUndefined();
 
     expect(ctx.device.openDeepLink).toHaveBeenCalledTimes(1);
-    expect(ctx.device.openDeepLink).toHaveBeenCalledWith('example://reset');
+    expect(ctx.device.openDeepLink).toHaveBeenCalledWith('example://reset', { forceColdLaunch: true });
   });
 
   it('iOS soft reset uses default wait time when resetAppWaitMs not set', async () => {
@@ -457,7 +477,7 @@ describe('session-preflight', () => {
         errorMessage: '',
       });
 
-    await expect(ensureSessionReady(ctx, 'startup')).resolves.toBeUndefined();
+    await expect(ensureSessionReady(ctx, 'startup', undefined, { retryBackoffMs: [0] })).resolves.toBeUndefined();
     expect(ctx.device.startAgent).toHaveBeenCalledTimes(1);
     expect(ctx.client.getUiHierarchy).toHaveBeenCalledTimes(3);
   });

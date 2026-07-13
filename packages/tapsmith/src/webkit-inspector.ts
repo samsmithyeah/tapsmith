@@ -306,6 +306,10 @@ export class WebKitInspectorClient {
   async connectToPage(appId: string, pageId: number): Promise<void> {
     this._senderKey = appId;
     this._connectedPageId = pageId;
+    // Reset any target from a previous connectToPage on this client (e.g. a
+    // page that connected but failed its liveness probe) — otherwise the
+    // wait below exits immediately and messages route to the stale target.
+    this._targetId = null;
 
     // Indicate we want to inspect a WebView
     this._sendMessage({
@@ -343,7 +347,7 @@ export class WebKitInspectorClient {
   }
 
   /** Send a WebKit Inspector command to the connected page and wait for response. */
-  async sendInspectorMessage(appId: string, message: Record<string, unknown>): Promise<Record<string, unknown>> {
+  async sendInspectorMessage(appId: string, message: Record<string, unknown>, timeoutMs = 30_000): Promise<Record<string, unknown>> {
     if (!this._targetId) {
       throw new Error('No WebView target available — Target.targetCreated not received');
     }
@@ -356,7 +360,7 @@ export class WebKitInspectorClient {
       const timeout = setTimeout(() => {
         this._pendingEval.delete(key);
         reject(new Error(`WebKit Inspector message timed out (id=${innerId})`));
-      }, 30000);
+      }, timeoutMs);
 
       this._pendingEval.set(key, {
         resolve: (value) => {

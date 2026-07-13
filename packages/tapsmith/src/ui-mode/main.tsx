@@ -37,13 +37,17 @@ import { ScreenshotPanel } from '../trace-viewer/components/ScreenshotPanel.js';
 import { DetailTabs } from '../trace-viewer/components/DetailTabs.js';
 import { findTestDeclarationLine, findSuiteDeclarationLine } from '../trace-viewer/components/source-view-utils.js';
 import { TimelineFilmstrip } from '../trace-viewer/components/TimelineFilmstrip.js';
-import { SelectorTab, handlePickFromScreenshot, handleHoverFromScreenshot } from '../trace-viewer/components/SelectorPlayground.js';
+import { SelectorTab, computeSelectorHighlights, handlePickFromScreenshot, handleHoverFromScreenshot, isWebViewOverlayPending } from '../trace-viewer/components/SelectorPlayground.js';
 import { parseHierarchyXml } from '../trace-viewer/components/hierarchy-utils.js';
 import type { HierarchyNode, Bounds } from '../trace-viewer/components/hierarchy-utils.js';
 import { uiModeStyles } from './styles/ui-mode.css.js';
 import type { ContainerSummary } from '../trace-viewer/types.js';
 
 type ElementBounds = { left: number; top: number; right: number; bottom: number }
+
+// Stable empty array — selector match highlights for the surface the current
+// selector source does NOT belong to (avoids re-render churn).
+const EMPTY_BOUNDS: Bounds[] = [];
 
 function getResolvedTheme(theme: Theme): 'light' | 'dark' {
   if (theme !== 'system') return theme;
@@ -117,6 +121,27 @@ function App() {
   /** Maps trace key → workerId that ran it. */
   const testWorkerMapRef = useRef<Map<string, number>>(new Map());
   /**
+   * Hook-event index bookkeeping, per trace key. afterAll hooks run on a
+   * fresh collector whose actionIndex restarts at 0, which would collide
+   * with the test's own indices — same actionIndex means clobbered
+   * screenshot/hierarchy keys and a mis-targeted auto-pin.
+   *
+   * - maxActionIndexRef: highest actionIndex seen (post-shift), INCLUDING
+   *   internal markers like __final_screenshot — their screenshot keys
+   *   occupy an index slot that shifted hook events must not reuse.
+   * - rowCountRef: number of visible (non-internal, completed) rows — the
+   *   positional index space that the ActionsPanel, pinning, and
+   *   `actionEvents[selectedIndex]` all use.
+   * - hookShiftRef: set on an attribution-only test-start. `offset` (max
+   *   any + 1) shifts hook events past every reserved slot; `pinDelta`
+   *   (offset − row count) converts a shifted actionIndex back to its
+   *   positional row index, which trails it by the number of reserved
+   *   non-row slots below.
+   */
+  const maxActionIndexRef = useRef<Map<string, number>>(new Map());
+  const rowCountRef = useRef<Map<string, number>>(new Map());
+  const hookShiftRef = useRef<Map<string, { offset: number; pinDelta: number }>>(new Map());
+  /**
    * Auto-follow control for multi-worker mode.
    * - 'auto': follow the latest test start (single-worker behavior)
    * - 'worker:N': only follow tests from worker N
@@ -133,13 +158,23 @@ function App() {
   const [hoveredIndex, setHoveredIndex] = useState<number | null>(null);
   const selectedIndex = hoveredIndex ?? pinnedIndex;
 
-  // Selector playground state
+  // Selector playground state. Picks can come from two surfaces — the trace
+  // screenshot viewer and the live device mirror. `pickTarget` is the surface
+  // currently armed for picking (mutually exclusive by construction);
+  // `selectorSource` is the hierarchy the Locator tab is bound to, which
+  // persists after the pick lands so suggestions/match highlights keep
+  // operating on the right tree and render on the right surface.
   const [hierarchyHighlight, setHierarchyHighlight] = useState<Bounds | null>(null);
-  const [selectorHighlights, setSelectorHighlights] = useState<Bounds[]>([]);
-  const [pickMode, setPickMode] = useState(false);
+  const [pickTarget, setPickTarget] = useState<'screenshot' | 'mirror' | null>(null);
+  const [selectorSource, setSelectorSource] = useState<'trace' | 'live'>('trace');
   const [selectorText, setSelectorText] = useState('');
   const [pickedNode, setPickedNode] = useState<HierarchyNode | null>(null);
   const [hoverBounds, setHoverBounds] = useState<Bounds | null>(null);
+  // Live mirror pick state: hierarchy snapshot fetched over the WebSocket,
+  // refreshed every second while a pick is armed or the Locator tab is
+  // live-bound with a selector (see liveHierarchyInUse below).
+  const [liveHierarchyXml, setLiveHierarchyXml] = useState<string | null>(null);
+  const [mirrorHoverBounds, setMirrorHoverBounds] = useState<Bounds | null>(null);
 
   // Device pane state
   const [selectedWorkerId, setSelectedWorkerId] = useState(0);
@@ -156,6 +191,11 @@ function App() {
     firstFrameRef.current = false;
     setMirrorLoading(connected && deviceViewMode !== 'all');
   }, [deviceViewMode, selectedWorkerId, connected]);
+  // Worker shown in the single-mirror view — the target for live element picks.
+  const mirrorWorkerId = typeof deviceViewMode === 'number' ? deviceViewMode : selectedWorkerId;
+  // Ref for the stable handleMessage callback (same pattern as deviceViewModeRef).
+  const mirrorWorkerIdRef = useRef(mirrorWorkerId);
+  mirrorWorkerIdRef.current = mirrorWorkerId;
 
   // MCP state
   const [mcpUrl, setMcpUrl] = useState<string | undefined>();
@@ -417,7 +457,13 @@ function App() {
     const completed = actionEvents[selectedIndex];
     if (completed) return completed;
     const inFlight = currentTrace?.inFlightAction;
-    if (!inFlight || inFlight.actionIndex !== selectedIndex) return undefined;
+    // selectedIndex is positional; inFlight.actionIndex is the event's own
+    // index, which runs ahead by pinDelta for shifted hook events (see
+    // hookShiftRef). Convert before comparing.
+    const inFlightPinDelta = viewedTraceKey
+      ? (hookShiftRef.current.get(viewedTraceKey)?.pinDelta ?? 0)
+      : 0;
+    if (!inFlight || inFlight.actionIndex - inFlightPinDelta !== selectedIndex) return undefined;
     if (inFlight.kind === 'action') {
       return {
         type: 'action',
@@ -459,14 +505,19 @@ function App() {
     } satisfies AssertionTraceEvent;
   }, [actionEvents, selectedIndex, currentTrace?.inFlightAction]);
 
+  // Which screenshot moment the ScreenshotPanel is displaying — the selector
+  // playground must bind to the hierarchy captured at that same moment, or
+  // picks on a before-screenshot would hit-test the after-hierarchy.
+  const [screenshotVariant, setScreenshotVariant] = useState<'before' | 'after'>('before');
+
   // Hierarchy XML for the current action (used by selector playground)
   const currentHierarchyXml = useMemo(() => {
     if (!selectedEvent || hierarchies.size === 0) return undefined;
     const pad = String(selectedEvent.actionIndex).padStart(3, '0');
-    const afterKey = `hierarchy/action-${pad}-after.xml`;
-    const beforeKey = `hierarchy/action-${pad}-before.xml`;
-    return hierarchies.get(afterKey) ?? hierarchies.get(beforeKey);
-  }, [selectedEvent, hierarchies]);
+    const afterXml = hierarchies.get(`hierarchy/action-${pad}-after.xml`);
+    const beforeXml = hierarchies.get(`hierarchy/action-${pad}-before.xml`);
+    return screenshotVariant === 'before' ? (beforeXml ?? afterXml) : (afterXml ?? beforeXml);
+  }, [selectedEvent, hierarchies, screenshotVariant]);
 
   const currentRoots = useMemo(
     () => currentHierarchyXml ? parseHierarchyXml(currentHierarchyXml) : [],
@@ -475,36 +526,57 @@ function App() {
 
   const dpr = viewedTestDpr ?? 1;
 
+  // Live-mirror hierarchy, parsed once per snapshot (same shape as currentRoots).
+  const liveRoots = useMemo(
+    () => liveHierarchyXml ? parseHierarchyXml(liveHierarchyXml) : [],
+    [liveHierarchyXml],
+  );
+
+  // Match overlay bounds, derived from whichever hierarchy the Locator tab is
+  // bound to. Derived rather than pushed up from SelectorTab so it stays
+  // consistent with the tree even when the Locator tab isn't mounted.
+  const selectorHighlights = useMemo(
+    () => computeSelectorHighlights(selectorSource === 'live' ? liveRoots : currentRoots, selectorText),
+    [selectorSource, liveRoots, currentRoots, selectorText],
+  );
+
   const handleScreenshotClick = useCallback((point: { x: number; y: number }) => {
-    if (!pickMode || currentRoots.length === 0) return;
+    if (pickTarget !== 'screenshot' || currentRoots.length === 0) return;
     const result = handlePickFromScreenshot(currentRoots, point.x / dpr, point.y / dpr);
     if (result) {
       setSelectorText(result.selector);
       setPickedNode(result.node);
-      setPickMode(false);
+      setPickTarget(null);
       setHoverBounds(null);
     }
-  }, [pickMode, currentRoots, dpr]);
+  }, [pickTarget, currentRoots, dpr]);
 
   const handlePickToggle = useCallback(() => {
-    setPickMode(p => !p);
+    setPickTarget(t => t === 'screenshot' ? null : 'screenshot');
+    setSelectorSource('trace');
+    setPickedNode(null);
     setHoverBounds(null);
+    setMirrorHoverBounds(null);
   }, []);
 
   const handleScreenshotHover = useCallback((point: { x: number; y: number } | null) => {
-    if (!pickMode || currentRoots.length === 0 || !point) {
+    if (pickTarget !== 'screenshot' || currentRoots.length === 0 || !point) {
       setHoverBounds(null);
       return;
     }
     setHoverBounds(handleHoverFromScreenshot(currentRoots, point.x / dpr, point.y / dpr));
-  }, [pickMode, currentRoots, dpr]);
+  }, [pickTarget, currentRoots, dpr]);
 
-  // Clear selector state when selected action changes
+  // Selecting a different action re-binds the Locator tab to the trace
+  // hierarchy of that step. The pick and selector text are kept — suggestions
+  // and match highlights re-evaluate against the new step's tree (same
+  // always-current semantics as the live mirror). Only per-tree transients
+  // (hierarchy-tab selection, hover rects) are cleared.
   useEffect(() => {
-    setSelectorHighlights([]);
     setHierarchyHighlight(null);
-    setPickedNode(null);
     setHoverBounds(null);
+    setSelectorSource('trace');
+    setMirrorHoverBounds(null);
   }, [selectedIndex]);
 
   const handleMessage = useCallback((msg: ServerMessage) => {
@@ -620,6 +692,25 @@ function App() {
         if (msg.workerId != null) {
           testWorkerMapRef.current.set(key, msg.workerId);
         }
+        // Attribution-only re-tag: the runner points afterAll trace events
+        // at the last test that ran — a test that has already ENDED. Only
+        // redirect trace accumulation; don't flip the finished test back to
+        // 'running' (run-end would then reset it to idle, losing its
+        // pass/fail mark) and don't clear its accumulated trace actions.
+        // The afterAll collector restarts actionIndex at 0, so shift its
+        // events past the test's own indices (see hookShiftRef).
+        if (msg.attributionOnly) {
+          activeTestRef.current = key;
+          const offset = (maxActionIndexRef.current.get(key) ?? -1) + 1;
+          hookShiftRef.current.set(key, {
+            offset,
+            pinDelta: offset - (rowCountRef.current.get(key) ?? 0),
+          });
+          break;
+        }
+        maxActionIndexRef.current.delete(key);
+        rowCountRef.current.delete(key);
+        hookShiftRef.current.delete(key);
         // Mark this test (and its parent describe/file) as running — scoped
         // to the project running it so a sibling project's copy of the same
         // file doesn't pulse blue too.
@@ -721,11 +812,30 @@ function App() {
         if (msg.workerId != null) {
           testWorkerMapRef.current.set(key, msg.workerId);
         }
-        const ev = msg.event;
+        let ev = msg.event;
+        // Events streamed after the test ended (afterAll hooks) come from a
+        // fresh collector whose actionIndex restarts at 0. Shift them past
+        // every index the test used — its rows AND reserved internal-marker
+        // slots — so screenshot/hierarchy keys don't clobber the test's
+        // captures (including the final screenshot's).
+        const hookShift = hookShiftRef.current.get(key);
+        if (hookShift && 'actionIndex' in ev) {
+          ev = { ...ev, actionIndex: ev.actionIndex + hookShift.offset };
+        }
         // Skip internal marker events from the visible event lists and from
         // auto-pin — their actionIndex is one past the last real event.
         const isInternal = ev.type === 'action' && ev.action === '__final_screenshot';
         const isStarted = msg.lifecycle === 'started';
+        // Track the highest actionIndex seen — internal markers included —
+        // and the visible row count. Both feed hookShiftRef (see its doc).
+        if ((ev.type === 'action' || ev.type === 'assertion')
+          && ev.actionIndex > (maxActionIndexRef.current.get(key) ?? -1)) {
+          maxActionIndexRef.current.set(key, ev.actionIndex);
+        }
+        const isVisibleRow = !isInternal && (ev.type === 'action' || ev.type === 'assertion');
+        if (isVisibleRow && !isStarted) {
+          rowCountRef.current.set(key, (rowCountRef.current.get(key) ?? 0) + 1);
+        }
 
         setTestTraces((prev) => {
           const { data, map } = getOrCreateTrace(key, prev);
@@ -830,14 +940,17 @@ function App() {
         });
 
         // Auto-pin to latest action, but only when viewing the running test.
-        // Skip internal markers (e.g. __final_screenshot) — their actionIndex
-        // is one past the last real event, so pinning to them leaves the UI
-        // with nothing selected once the test ends.
+        // Skip internal markers (e.g. __final_screenshot) — they never
+        // become rows, so pinning to them leaves the UI with nothing
+        // selected once the test ends.
         // Pin on both 'started' and 'completed' so the in-flight row is
         // highlighted while running, then stays selected after it lands.
-        if (!isInternal && (ev.type === 'action' || ev.type === 'assertion') && key === activeTestRef.current
+        // Pinning is positional: for shifted hook events the actionIndex
+        // runs ahead of the row position by the reserved-slot count, so
+        // subtract pinDelta (0 for the test's own events).
+        if (isVisibleRow && key === activeTestRef.current
           && (!viewedTestNameRef.current || viewedTestNameRef.current === testName)) {
-          setPinnedIndex(ev.actionIndex);
+          setPinnedIndex(ev.actionIndex - (hookShift?.pinDelta ?? 0));
         }
         break;
       }
@@ -928,6 +1041,13 @@ function App() {
           return next;
         });
         break;
+      case 'hierarchy-update':
+        // Live-mirror pick snapshot. The broadcast is fan-out (all clients),
+        // so drop updates for a worker we're no longer mirroring.
+        if (msg.workerId == null || msg.workerId === mirrorWorkerIdRef.current) {
+          setLiveHierarchyXml(msg.xml);
+        }
+        break;
       case 'error':
         console.error('[Tapsmith UI]', msg.message);
         showError(msg.message);
@@ -999,6 +1119,162 @@ function App() {
       ? false
       : runningOnActive;
   const mirrorInteractive = !mirrorLocked;
+
+  // ─── Live mirror element pick ───
+
+  // DPR of the mirrored worker — NOT viewedTestDpr (that's the worker of the
+  // viewed trace, which can be a different device in multi-worker mode).
+  const mirrorDpr = workers.find((w) => w.workerId === mirrorWorkerId)?.devicePixelRatio
+    ?? deviceDpr ?? 1;
+
+  // A pick inside a WebView whose DOM overlay hasn't arrived yet (the server
+  // connects to the WebView on demand — takes a moment) is held here instead
+  // of finalizing against the native web-content projection. Resolved when a
+  // snapshot with the overlay lands, or by the timer at the deadline — the
+  // timer matters because identical snapshots don't re-trigger the effect.
+  const pendingMirrorPickRef = useRef<{ x: number; y: number; deadline: number } | null>(null);
+  const pendingPickTimerRef = useRef<ReturnType<typeof setTimeout>>();
+  const clearPendingMirrorPick = useCallback(() => {
+    pendingMirrorPickRef.current = null;
+    clearTimeout(pendingPickTimerRef.current);
+  }, []);
+  useEffect(() => () => clearTimeout(pendingPickTimerRef.current), []);
+
+  const handleMirrorPickToggle = useCallback(() => {
+    clearPendingMirrorPick();
+    if (pickTarget === 'mirror') {
+      setPickTarget(null);
+    } else {
+      // Arming: bind the Locator tab to the live hierarchy and start fresh.
+      setSelectorSource('live');
+      setPickedNode(null);
+      setSelectorText('');
+      setHoverBounds(null);
+      setPickTarget('mirror');
+    }
+    setMirrorHoverBounds(null);
+  }, [pickTarget, clearPendingMirrorPick]);
+
+  const handleMirrorPickHover = useCallback((point: { x: number; y: number } | null) => {
+    if (!point || liveRoots.length === 0) {
+      setMirrorHoverBounds(null);
+      return;
+    }
+    // Coordinates arrive already in logical points (DeviceMirror divides by dpr).
+    setMirrorHoverBounds(handleHoverFromScreenshot(liveRoots, point.x, point.y));
+  }, [liveRoots]);
+
+  const finalizeMirrorPick = useCallback((point: { x: number; y: number }) => {
+    const result = handlePickFromScreenshot(liveRoots, point.x, point.y);
+    if (result) {
+      setSelectorText(result.selector);
+      setPickedNode(result.node);
+      setPickTarget(null);
+      setMirrorHoverBounds(null);
+      // selectorSource stays 'live': the panel keeps matching against the
+      // live hierarchy and highlights render on the mirror.
+    }
+  }, [liveRoots]);
+  // Latest finalizer for the deadline timer (finalizeMirrorPick's identity
+  // changes with every live snapshot).
+  const finalizeMirrorPickRef = useRef(finalizeMirrorPick);
+  finalizeMirrorPickRef.current = finalizeMirrorPick;
+
+  // Covers a stale-connection dump failure (~2s) plus a fresh reconnect that
+  // has to probe past a dead webinspectord page (~5s) with margin.
+  const WEBVIEW_PICK_WAIT_MS = 12_000;
+
+  const handleMirrorPickPoint = useCallback((point: { x: number; y: number }) => {
+    if (liveRoots.length === 0) return;
+    if (isWebViewOverlayPending(liveRoots, point.x, point.y)) {
+      // Pick mode stays armed; hierarchy polling continues. The deadline
+      // timer guarantees the click resolves even if every subsequent
+      // snapshot is identical (e.g. the WebView connect keeps failing).
+      pendingMirrorPickRef.current = { x: point.x, y: point.y, deadline: Date.now() + WEBVIEW_PICK_WAIT_MS };
+      clearTimeout(pendingPickTimerRef.current);
+      pendingPickTimerRef.current = setTimeout(() => {
+        const pending = pendingMirrorPickRef.current;
+        if (!pending) return;
+        pendingMirrorPickRef.current = null;
+        finalizeMirrorPickRef.current(pending);
+      }, WEBVIEW_PICK_WAIT_MS);
+      return;
+    }
+    clearPendingMirrorPick();
+    finalizeMirrorPick(point);
+  }, [liveRoots, finalizeMirrorPick, clearPendingMirrorPick]);
+
+  // Resolve a deferred WebView pick when a fresh snapshot arrives: finalize
+  // once the overlay is present, or fall back to the native projection at the
+  // deadline (WebView not inspectable) rather than swallowing the click.
+  useEffect(() => {
+    const pending = pendingMirrorPickRef.current;
+    if (!pending || liveRoots.length === 0) return;
+    if (!isWebViewOverlayPending(liveRoots, pending.x, pending.y) || Date.now() > pending.deadline) {
+      clearPendingMirrorPick();
+      finalizeMirrorPick(pending);
+    }
+  }, [liveRoots, finalizeMirrorPick, clearPendingMirrorPick]);
+
+  // Explicit source toggle in the Locator tab. Picking still sets the source
+  // implicitly (and clicking a trace action resets to 'trace'); this is the
+  // manual override. The selector text and picked node are kept — suggestions
+  // are attribute-matched, so they re-validate against the new tree.
+  const handleSelectorSourceChange = useCallback((source: 'trace' | 'live') => {
+    setSelectorSource(source);
+    if (source === 'live' && !liveHierarchyXml) {
+      send({ type: 'request-hierarchy', workerId: mirrorWorkerId });
+    }
+  }, [liveHierarchyXml, mirrorWorkerId, send]);
+
+  // Refresh the live hierarchy every second while it's in use: during a pick
+  // session (hover hit-testing must track a changing screen) and while the
+  // Locator tab is live-bound with a selector (so match highlights on the
+  // mirror follow the device instead of going stale — matching is
+  // attribute-based, so each fresh tree recomputes counts and bounds).
+  // Depending on mirrorWorkerId also re-fetches when the user switches worker
+  // tabs mid-pick.
+  const liveHierarchyInUse = pickTarget === 'mirror'
+    || (selectorSource === 'live' && selectorText.trim() !== '');
+  useEffect(() => {
+    if (!liveHierarchyInUse || !connected) return;
+    send({ type: 'request-hierarchy', workerId: mirrorWorkerId });
+    const id = setInterval(() => {
+      send({ type: 'request-hierarchy', workerId: mirrorWorkerId });
+    }, 1000);
+    return () => clearInterval(id);
+  }, [liveHierarchyInUse, connected, mirrorWorkerId, send]);
+
+  // Switching the mirrored device invalidates the previous device's hierarchy
+  // (bounds from one device must never highlight on another's mirror).
+  const prevMirrorWorkerRef = useRef(mirrorWorkerId);
+  useEffect(() => {
+    if (prevMirrorWorkerRef.current === mirrorWorkerId) return;
+    prevMirrorWorkerRef.current = mirrorWorkerId;
+    clearPendingMirrorPick();
+    setLiveHierarchyXml(null);
+    setMirrorHoverBounds(null);
+  }, [mirrorWorkerId, clearPendingMirrorPick]);
+
+  // A disconnect or a dead mirrored worker ends the pick session — there is
+  // no device to fetch a fresh hierarchy from.
+  useEffect(() => {
+    if (!connected) {
+      clearPendingMirrorPick();
+      setPickTarget((t) => t === 'mirror' ? null : t);
+      setLiveHierarchyXml(null);
+      setMirrorHoverBounds(null);
+    }
+  }, [connected, clearPendingMirrorPick]);
+  useEffect(() => {
+    if (pickTarget !== 'mirror' || workers.length === 0) return;
+    const worker = workers.find((w) => w.workerId === mirrorWorkerId);
+    if (!worker || worker.status === 'error') {
+      clearPendingMirrorPick();
+      setPickTarget(null);
+      setMirrorHoverBounds(null);
+    }
+  }, [pickTarget, workers, mirrorWorkerId, clearPendingMirrorPick]);
 
   const handleThemeChange = useCallback((newTheme: Theme) => {
     setTheme(newTheme);
@@ -1115,9 +1391,14 @@ function App() {
     if (typeof mode === 'number') {
       setSelectedWorkerId(mode);
       lastSentWorkerRef.current = mode;
+    } else {
+      // The "All" grid has no pick surface — end any live pick session.
+      clearPendingMirrorPick();
+      setPickTarget((t) => t === 'mirror' ? null : t);
+      setMirrorHoverBounds(null);
     }
     send({ type: 'select-worker-view', mode });
-  }, [send]);
+  }, [send, clearPendingMirrorPick]);
 
   const handleActionPin = useCallback((index: number) => {
     setPinnedIndex(index);
@@ -1340,15 +1621,16 @@ function App() {
               event={selectedEvent}
               screenshots={screenshots}
               highlightBounds={hierarchyHighlight}
-              selectorHighlights={selectorHighlights}
+              selectorHighlights={selectorSource === 'trace' ? selectorHighlights : EMPTY_BOUNDS}
               hoverBounds={hoverBounds}
-              onScreenshotClick={pickMode ? handleScreenshotClick : undefined}
-              onScreenshotHover={pickMode ? handleScreenshotHover : undefined}
+              onScreenshotClick={pickTarget === 'screenshot' ? handleScreenshotClick : undefined}
+              onScreenshotHover={pickTarget === 'screenshot' ? handleScreenshotHover : undefined}
               nodeType={viewedTestNode?.type}
               containerSummary={containerSummary}
               onRunContainer={handleRunContainer}
-              pickMode={pickMode}
+              pickMode={pickTarget === 'screenshot'}
               onPickModeToggle={handlePickToggle}
+              onDisplayedVariantChange={setScreenshotVariant}
               devicePixelRatio={viewedTestDpr}
               testName={metadata.testName}
               testStatus={metadata.testStatus}
@@ -1379,6 +1661,14 @@ function App() {
           force={runningOnActive && mirrorInteractive}
           onToggleLock={() => setMirrorLockPref(mirrorLocked ? 'off' : 'on')}
           send={send}
+          pickMode={pickTarget === 'mirror'}
+          onTogglePick={handleMirrorPickToggle}
+          pickAvailable={connected && !mirrorLoading && !(deviceViewMode === 'all' && workers.length > 1)}
+          pickDpr={mirrorDpr}
+          pickHoverBounds={mirrorHoverBounds}
+          pickMatchBounds={selectorSource === 'live' ? selectorHighlights : EMPTY_BOUNDS}
+          onPickPoint={handleMirrorPickPoint}
+          onPickHover={handleMirrorPickHover}
         />
       }
       mcpPanel={mcpPanelOpen ? (
@@ -1401,15 +1691,17 @@ function App() {
           networkEntries={networkEntries}
           networkBodies={networkBodies}
           onHierarchyNodeSelect={setHierarchyHighlight}
-          pickMode={pickMode}
+          pickMode={pickTarget !== null}
           previewHighlight={previewHighlight}
           locatorTab={
             <SelectorTab
-              hierarchyXml={currentHierarchyXml}
+              hierarchyXml={selectorSource === 'live' ? (liveHierarchyXml ?? undefined) : currentHierarchyXml}
               pickedNode={pickedNode}
-              onHighlightsChange={setSelectorHighlights}
               selector={selectorText}
               onSelectorChange={setSelectorText}
+              source={selectorSource}
+              onSourceChange={handleSelectorSourceChange}
+              liveSourceAvailable={connected}
             />
           }
         />

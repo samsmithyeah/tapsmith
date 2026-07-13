@@ -34,12 +34,28 @@ export interface SessionPreflightContext {
 
 export interface EnsureSessionReadyOptions {
   onRecovery?: (error: unknown) => void
+  /**
+   * Delay (ms) before recovery attempt N (the last entry is reused when
+   * attempts exceed the list). Defaults to {@link DEFAULT_RETRY_BACKOFF_MS};
+   * overridable so unit tests don't sleep for real.
+   */
+  retryBackoffMs?: number[]
 }
 
 class BlockingDialogError extends Error {}
 
 const DEFAULT_READY_TIMEOUT_MS = 5_000;
-const DEFAULT_MAX_ATTEMPTS = 2;
+const DEFAULT_MAX_ATTEMPTS = 3;
+/**
+ * Backoff before each recovery attempt. A transient agent-connection drop
+ * (PILOT-282) takes a few seconds to clear, and the recovery RPCs themselves
+ * can hit the same blip — immediate retries land inside the same window and
+ * burn every layer's budget in milliseconds, failing the test at 0ms while an
+ * interactive (UI-mode/MCP) session recovers from the identical drop simply
+ * because the operator's next command arrives seconds later. This backoff
+ * gives test runs the same wall-clock tolerance.
+ */
+const DEFAULT_RETRY_BACKOFF_MS = [1_000, 2_000];
 /** Time to wait for UIAutomator2 to produce a non-empty hierarchy on cold start. */
 const HIERARCHY_READY_TIMEOUT_MS = 10_000;
 /** Time to wait for a cold-launched iOS app to render a non-empty accessibility
@@ -58,6 +74,7 @@ export async function ensureSessionReady(
 ): Promise<void> {
   return withActionProgress('sessionReady', ctx.config.package, async () => {
     let lastError: unknown;
+    const backoff = options.retryBackoffMs ?? DEFAULT_RETRY_BACKOFF_MS;
 
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
       try {
@@ -67,6 +84,10 @@ export async function ensureSessionReady(
         lastError = err;
         if (attempt === maxAttempts) break;
         options.onRecovery?.(err);
+        // Give a transient agent-connection drop time to clear before
+        // recovering — the recovery RPCs go over the same channel and an
+        // immediate retry lands inside the same drop window (PILOT-282).
+        await delay(backoff[attempt - 1] ?? backoff.at(-1) ?? 0);
         try {
           await recoverSession(ctx);
         } catch (recoveryErr) {
@@ -387,7 +408,14 @@ async function recoverSession(ctx: SessionPreflightContext): Promise<void> {
 
 async function softResetAppViaDeepLink(ctx: SessionPreflightContext): Promise<void> {
   const resetDeepLink = ctx.config.resetAppDeepLink!;
-  await ctx.device.openDeepLink(resetDeepLink);
+  // forceColdLaunch: the between-file reset is the boundary that keeps warm
+  // in-process delivery safe on iOS simulators. Long all-warm sessions
+  // accumulate native navigation-stack state that diverges observably from a
+  // cold launch (a11y trees stop being flattened, element ids go stale);
+  // cold-relaunching here bounds the warm window to a single test file and
+  // pins each file's starting state to a fresh process. No effect on Android
+  // or physical iOS, which always deliver warm.
+  await ctx.device.openDeepLink(resetDeepLink, { forceColdLaunch: true });
 
   const waitMs = ctx.config.resetAppWaitMs ?? DEFAULT_SOFT_RESET_WAIT_MS;
   try {
@@ -448,4 +476,9 @@ async function waitForHierarchy(
 function formatError(err: unknown): string {
   if (err instanceof Error) return err.message;
   return String(err);
+}
+
+function delay(ms: number): Promise<void> {
+  if (ms <= 0) return Promise.resolve();
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }

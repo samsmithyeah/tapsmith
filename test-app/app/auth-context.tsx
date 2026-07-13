@@ -14,6 +14,15 @@ export const AUTH_KEY = "tapsmith_auth_email"
 interface AuthState {
   email: string | null
   loading: boolean
+  /**
+   * Counts completed resetAppState() calls in this process. Rendered into the
+   * accessibility tree by RootLayout's ResetEpochMarker so a warm in-process
+   * `__reset` deep link always produces a hierarchy change, even when it lands
+   * back on the exact screen the app was already showing — the iOS agent
+   * verifies warm delivery by requiring the a11y hierarchy to differ from its
+   * pre-open state.
+   */
+  resetEpoch: number
   login: (email: string) => Promise<void>
   logout: () => Promise<void>
   resetAppState: () => Promise<void>
@@ -22,6 +31,7 @@ interface AuthState {
 const AuthContext = createContext<AuthState>({
   email: null,
   loading: true,
+  resetEpoch: 0,
   login: async () => {},
   logout: async () => {},
   resetAppState: async () => {},
@@ -30,6 +40,7 @@ const AuthContext = createContext<AuthState>({
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [email, setEmail] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
+  const [resetEpoch, setResetEpoch] = useState(0)
   const loadGeneration = useRef(0)
 
   useEffect(() => {
@@ -57,10 +68,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     await AsyncStorage.clear()
     setEmail(null)
     setLoading(false)
+    setResetEpoch((epoch) => epoch + 1)
   }, [])
 
   return (
-    <AuthContext.Provider value={{ email, loading, login, logout, resetAppState }}>
+    <AuthContext.Provider value={{ email, loading, resetEpoch, login, logout, resetAppState }}>
       {children}
     </AuthContext.Provider>
   )

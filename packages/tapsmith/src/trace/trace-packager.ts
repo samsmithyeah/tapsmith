@@ -212,19 +212,33 @@ export function readTraceActionCount(zipPath: string): number {
   return typeof metadata.actionCount === 'number' ? metadata.actionCount : 0;
 }
 
+/** Shift the action index embedded in a capture archive path (e.g.
+ * `screenshots/action-002-before.png` → index+offset). Paths that don't
+ * match the action naming scheme are returned unchanged. */
+function shiftArchivePath(archivePath: string, offset: number): string {
+  return archivePath.replace(
+    /action-(\d+)-(before|after)/,
+    (_, idx: string, position: string) =>
+      `action-${String(parseInt(idx, 10) + offset).padStart(3, '0')}-${position}`,
+  );
+}
+
 /**
  * Append a hook collector's events to an existing packaged trace archive.
  *
  * Used for afterAll hooks: by the time they run, the last test's trace has
  * already been packaged, so its zip is rewritten in place with the hook
- * events, screenshots, and hierarchy snapshots appended. The collector's
- * action indices must already be offset past the archive's actionCount
- * (see {@link readTraceActionCount}) so archive paths don't collide.
+ * events, screenshots, and hierarchy snapshots appended. The collector
+ * records with its own zero-based indices (UI mode live-streams those and
+ * shifts client-side); `actionIndexOffset` shifts the appended events and
+ * capture paths past the archive's existing actions (see
+ * {@link readTraceActionCount}) so nothing collides.
  */
 export function appendEventsToTrace(
   zipPath: string,
   collector: TraceCollector,
   endTime: number,
+  actionIndexOffset = 0,
 ): void {
   if (collector.events.length === 0) return;
   collector.finalizeTimeline(endTime);
@@ -234,15 +248,23 @@ export function appendEventsToTrace(
   const decoder = new TextDecoder();
   const zipData: Zippable = { ...files };
 
+  const shifted = collector.events.map((e) => ({
+    ...e,
+    actionIndex: e.actionIndex + actionIndexOffset,
+  }));
+  const appendedNdjson = shifted.map((e) => JSON.stringify(e)).join('\n') + '\n';
   const existing = files['trace.json'] ? decoder.decode(files['trace.json']).trimEnd() : '';
   zipData['trace.json'] = encoder.encode(
-    (existing ? existing + '\n' : '') + collector.toNDJSON(),
+    (existing ? existing + '\n' : '') + appendedNdjson,
   );
 
   if (files['metadata.json']) {
     try {
       const metadata = JSON.parse(decoder.decode(files['metadata.json'])) as TraceMetadata;
-      metadata.actionCount = Math.max(metadata.actionCount, collector.currentActionIndex);
+      metadata.actionCount = Math.max(
+        metadata.actionCount,
+        actionIndexOffset + collector.currentActionIndex,
+      );
       metadata.endTime = Math.max(metadata.endTime, endTime);
       metadata.screenshotCount += collector.screenshots.length;
       zipData['metadata.json'] = encoder.encode(JSON.stringify(metadata, null, 2));
@@ -253,13 +275,15 @@ export function appendEventsToTrace(
 
   for (const screenshot of collector.screenshots) {
     try {
-      zipData[screenshot.archivePath] = new Uint8Array(fs.readFileSync(screenshot.diskPath));
+      zipData[shiftArchivePath(screenshot.archivePath, actionIndexOffset)] =
+        new Uint8Array(fs.readFileSync(screenshot.diskPath));
     } catch {
       // Skip missing screenshots
     }
   }
   for (const hierarchy of collector.hierarchies as HierarchyCapture[]) {
-    zipData[hierarchy.archivePath] = encoder.encode(hierarchy.xml);
+    zipData[shiftArchivePath(hierarchy.archivePath, actionIndexOffset)] =
+      encoder.encode(hierarchy.xml);
   }
 
   const zipped = zipSync(zipData, { level: 6 });

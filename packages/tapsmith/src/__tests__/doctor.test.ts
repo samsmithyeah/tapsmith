@@ -1,5 +1,19 @@
 import { describe, it, expect } from 'vitest';
-import { buildDoctorJson, isSupportedNodeVersion, type CheckEntry } from '../doctor.js';
+import * as fs from 'node:fs';
+import * as os from 'node:os';
+import * as path from 'node:path';
+import {
+  buildDoctorJson,
+  isSupportedNodeVersion,
+  parseAvdImageTag,
+  parseAvdApiLevel,
+  parseDoctorConfigFlag,
+  scanAvdImageTags,
+  stripAnsi,
+  summarizeAvdImages,
+  type AvdImageInfo,
+  type CheckEntry,
+} from '../doctor.js';
 
 describe('buildDoctorJson()', () => {
   const checks: CheckEntry[] = [
@@ -52,5 +66,179 @@ describe('isSupportedNodeVersion()', () => {
     expect(isSupportedNodeVersion('21.9.0')).toBe(false);
     expect(isSupportedNodeVersion('22.0.0')).toBe(true);
     expect(isSupportedNodeVersion('24.13.0')).toBe(true);
+  });
+});
+
+describe('parseAvdApiLevel()', () => {
+  it('extracts the API level from image.sysdir.1', () => {
+    expect(parseAvdApiLevel('image.sysdir.1 = system-images/android-36/google_apis_playstore/arm64-v8a/\n')).toBe(36);
+    expect(parseAvdApiLevel('image.sysdir.1=system-images/android-34/google_apis/x86_64/\n')).toBe(34);
+  });
+
+  it('returns undefined when absent', () => {
+    expect(parseAvdApiLevel('AvdId = X\n')).toBeUndefined();
+  });
+});
+
+describe('parseAvdImageTag()', () => {
+  it('extracts tag.id from config.ini', () => {
+    const ini = 'AvdId = Medium_Phone\nPlayStore.enabled = true\ntag.id = google_apis_playstore\ntag.ids = google_apis_playstore\n';
+    expect(parseAvdImageTag(ini)).toBe('google_apis_playstore');
+  });
+
+  it('handles google_apis images and whitespace variants', () => {
+    expect(parseAvdImageTag('tag.id=google_apis\n')).toBe('google_apis');
+    expect(parseAvdImageTag('tag.id =  google_apis \n')).toBe('google_apis');
+  });
+
+  it('returns undefined when tag.id is absent', () => {
+    expect(parseAvdImageTag('AvdId = X\n')).toBeUndefined();
+    // tag.ids must not match tag.id
+    expect(parseAvdImageTag('tag.ids = google_apis\n')).toBeUndefined();
+  });
+});
+
+describe('scanAvdImageTags()', () => {
+  function makeAvdHome(avds: Array<{ name: string; tagId?: string }>): string {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'tapsmith-avd-test-'));
+    for (const avd of avds) {
+      const avdDir = path.join(home, `${avd.name}.avd`);
+      fs.mkdirSync(avdDir);
+      fs.writeFileSync(path.join(home, `${avd.name}.ini`), `avd.ini.encoding=UTF-8\npath=${avdDir}\npath.rel=avd/${avd.name}.avd\n`);
+      const tagLine = avd.tagId ? `tag.id = ${avd.tagId}\n` : '';
+      fs.writeFileSync(path.join(avdDir, 'config.ini'), `AvdId = ${avd.name}\n${tagLine}`);
+    }
+    return home;
+  }
+
+  it('returns each AVD with its system image tag', () => {
+    const home = makeAvdHome([
+      { name: 'Pixel_7', tagId: 'google_apis' },
+      { name: 'Medium_Phone', tagId: 'google_apis_playstore' },
+    ]);
+    const avds = scanAvdImageTags(home).sort((a, b) => a.name.localeCompare(b.name));
+    expect(avds).toEqual([
+      { name: 'Medium_Phone', tagId: 'google_apis_playstore' },
+      { name: 'Pixel_7', tagId: 'google_apis' },
+    ]);
+  });
+
+  it('keeps AVDs whose config.ini is unreadable, without a tag', () => {
+    const home = makeAvdHome([{ name: 'Pixel_7', tagId: 'google_apis' }]);
+    fs.writeFileSync(path.join(home, 'Broken.ini'), 'path=/nonexistent/Broken.avd\n');
+    const avds = scanAvdImageTags(home).sort((a, b) => a.name.localeCompare(b.name));
+    expect(avds).toEqual([
+      { name: 'Broken', tagId: undefined },
+      { name: 'Pixel_7', tagId: 'google_apis' },
+    ]);
+  });
+
+  it('returns empty for a missing AVD home', () => {
+    expect(scanAvdImageTags('/nonexistent/avd-home')).toEqual([]);
+  });
+});
+
+describe('summarizeAvdImages()', () => {
+  const goodAvd: AvdImageInfo = { name: 'Tapsmith_Phone_API_36', tagId: 'google_apis', apiLevel: 36 };
+  const playAvd: AvdImageInfo = { name: 'Medium_Phone_API_36', tagId: 'google_apis_playstore', apiLevel: 36 };
+  const brokenAvd: AvdImageInfo = { name: 'Broken', tagId: undefined };
+
+  it('returns undefined when there are no AVDs and none configured', () => {
+    expect(summarizeAvdImages([])).toBeUndefined();
+  });
+
+  it('still reports a configured AVD as missing when the machine has no AVDs at all', () => {
+    const summary = summarizeAvdImages([], 'X');
+    expect(summary?.status).toBe('warn');
+    expect(summary?.label).toContain('X not found');
+  });
+
+  describe('with a configured AVD', () => {
+    it('passes when the configured AVD is capture-capable, mentioning other Play AVDs as context', () => {
+      const summary = summarizeAvdImages([goodAvd, playAvd], 'Tapsmith_Phone_API_36');
+      expect(summary?.status).toBe('pass');
+      expect(stripAnsi(summary!.label)).toContain('Tapsmith_Phone_API_36 supports HTTPS capture');
+      expect(stripAnsi(summary!.label)).toContain('Medium_Phone_API_36');
+    });
+
+    it('passes without context when no Play AVDs exist', () => {
+      const summary = summarizeAvdImages([goodAvd], 'Tapsmith_Phone_API_36');
+      expect(summary?.status).toBe('pass');
+      expect(stripAnsi(summary!.label)).not.toContain('other AVD');
+    });
+
+    it('warns when the configured AVD uses a Play image, suggesting a runnable replacement command', () => {
+      const summary = summarizeAvdImages([goodAvd, playAvd], 'Medium_Phone_API_36');
+      expect(summary?.status).toBe('warn');
+      expect(summary?.label).toContain('Medium_Phone_API_36 uses a Google Play system image');
+      expect(summary?.fix).toContain('npx tapsmith create-avd --name Medium_Phone_API_36 --api 36 --force');
+    });
+
+    it('warns when the configured AVD does not exist', () => {
+      const summary = summarizeAvdImages([goodAvd], 'Missing_AVD');
+      expect(summary?.status).toBe('warn');
+      expect(summary?.label).toContain('Missing_AVD not found');
+      expect(summary?.fix).toContain('--name Missing_AVD');
+    });
+
+    it('warns when the configured AVD tag is unreadable', () => {
+      const summary = summarizeAvdImages([brokenAvd], 'Broken');
+      expect(summary?.status).toBe('warn');
+      expect(summary?.label).toContain('Could not read');
+    });
+
+    it('handles multiple configured AVDs (e.g. per-project use.avd), reporting every issue', () => {
+      const summary = summarizeAvdImages([goodAvd, playAvd], ['Tapsmith_Phone_API_36', 'Medium_Phone_API_36', 'Gone']);
+      expect(summary?.status).toBe('warn');
+      expect(summary?.label).toContain('Gone not found');
+      expect(summary?.label).toContain('Medium_Phone_API_36 uses a Google Play system image');
+      expect(summary?.label).not.toContain('Tapsmith_Phone_API_36 uses');
+      expect(summary?.fix).toBe('Run: npx tapsmith create-avd --name Gone && npx tapsmith create-avd --name Medium_Phone_API_36 --api 36 --force');
+    });
+
+    it('passes when all configured AVDs are capture-capable', () => {
+      const second: AvdImageInfo = { name: 'Other_Good', tagId: 'google_apis' };
+      const summary = summarizeAvdImages([goodAvd, second, playAvd], ['Tapsmith_Phone_API_36', 'Other_Good']);
+      expect(summary?.status).toBe('pass');
+      expect(stripAnsi(summary!.label)).toContain('Tapsmith_Phone_API_36, Other_Good support HTTPS capture');
+      expect(stripAnsi(summary!.label)).toContain('Medium_Phone_API_36');
+    });
+  });
+
+  describe('without a configured AVD', () => {
+    it('warns on any Play-image AVD, counting capture-capable ones', () => {
+      const summary = summarizeAvdImages([goodAvd, playAvd]);
+      expect(summary?.status).toBe('warn');
+      expect(stripAnsi(summary!.label)).toContain('1 of 2 AVDs uses a Google Play system image');
+      expect(stripAnsi(summary!.label)).toContain('1 other AVD is capture-capable');
+      expect(summary?.fix).toContain('npx tapsmith create-avd --name Medium_Phone_API_36 --api 36 --force');
+    });
+
+    it('passes when all AVDs are capture-capable', () => {
+      const summary = summarizeAvdImages([goodAvd]);
+      expect(summary?.status).toBe('pass');
+      expect(stripAnsi(summary!.label)).toContain('1 AVD checked');
+    });
+
+    it('discloses unreadable AVDs in the pass label', () => {
+      const summary = summarizeAvdImages([goodAvd, brokenAvd]);
+      expect(summary?.status).toBe('pass');
+      expect(stripAnsi(summary!.label)).toContain('could not read: Broken');
+    });
+  });
+});
+
+describe('parseDoctorConfigFlag()', () => {
+  it('parses -c, --config, and --config= forms', () => {
+    expect(parseDoctorConfigFlag(['-c', 'a.mjs'])).toBe('a.mjs');
+    expect(parseDoctorConfigFlag(['--config', 'b.mjs'])).toBe('b.mjs');
+    expect(parseDoctorConfigFlag(['--config=c.mjs'])).toBe('c.mjs');
+    expect(parseDoctorConfigFlag(['--json'])).toBeUndefined();
+  });
+
+  it('rejects missing or option-like values', () => {
+    expect(() => parseDoctorConfigFlag(['-c'])).toThrow(/Missing value for -c/);
+    expect(() => parseDoctorConfigFlag(['-c', '--json'])).toThrow(/Missing value for -c/);
+    expect(() => parseDoctorConfigFlag(['--config='])).toThrow(/Missing value for --config/);
   });
 });

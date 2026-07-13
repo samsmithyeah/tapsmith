@@ -253,9 +253,9 @@ describe('emulator utilities', () => {
         prefilterDevicesForStrategy(
           ['emulator-5554', 'emulator-5556', 'device-123'],
           'avd-only',
-          'Tapsmith_Generic_Phone_API_35',
+          'Tapsmith_Phone_API_36',
           (serial) => {
-            if (serial === 'emulator-5554') return 'Tapsmith_Generic_Phone_API_35';
+            if (serial === 'emulator-5554') return 'Tapsmith_Phone_API_36';
             if (serial === 'emulator-5556') return 'Small_Phone_API_35';
             return undefined;
           },
@@ -266,11 +266,11 @@ describe('emulator utilities', () => {
         skippedDevices: [
           {
             serial: 'emulator-5556',
-            reason: 'running AVD Small_Phone_API_35 does not match requested AVD Tapsmith_Generic_Phone_API_35',
+            reason: 'running AVD Small_Phone_API_35 does not match requested AVD Tapsmith_Phone_API_36',
           },
           {
             serial: 'device-123',
-            reason: 'device is not an emulator instance of requested AVD Tapsmith_Generic_Phone_API_35',
+            reason: 'device is not an emulator instance of requested AVD Tapsmith_Phone_API_36',
           },
         ],
       });
@@ -281,7 +281,7 @@ describe('emulator utilities', () => {
         prefilterDevicesForStrategy(
           ['emulator-5554'],
           'avd-only',
-          'Tapsmith_Generic_Phone_API_35',
+          'Tapsmith_Phone_API_36',
           () => undefined,
         ),
       ).toEqual({

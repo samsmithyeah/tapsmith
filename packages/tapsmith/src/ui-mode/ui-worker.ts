@@ -455,8 +455,8 @@ async function runFileWithRecovery(
         reporter: reporterProxy,
         bustImportCache: true,
         abortSignal,
-        onTestStart: async (fullName: string) => {
-          send({ type: 'test-start', workerId, fullName, filePath });
+        onTestStart: async (fullName: string, options?: { attributionOnly?: boolean }) => {
+          send({ type: 'test-start', workerId, fullName, filePath, attributionOnly: options?.attributionOnly });
         },
         beforeEachTest: async (fullName: string) => {
           await ensureSessionReady(sessionContext(undefined), `before test ${fullName}`);

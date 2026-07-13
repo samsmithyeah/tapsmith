@@ -28,6 +28,7 @@ import type { Device } from '../device.js';
 import type { ResolvedProject } from '../project.js';
 import { collectTransitiveDeps } from '../project.js';
 import { matchesTestFilter } from '../test-filter.js';
+import { LaunchSetupError } from '../dispatcher.js';
 import type { LaunchedEmulator } from '../emulator.js';
 import { preserveEmulatorsForReuse, getRunningAvdName } from '../emulator.js';
 import { listSimulators, getSimulatorScreenScale } from '../ios-simulator.js';
@@ -1196,12 +1197,19 @@ export async function startUIServer(
         switch (response.type) {
           case 'test-start': {
             currentTestFullName = response.fullName;
-            singleWorkerRunningTest = { fullName: response.fullName, filePath: response.filePath, projectName };
+            // Attribution-only re-tags (afterAll hooks) refer to a test that
+            // already ended — don't resurrect it as the "running" test, or a
+            // stop/reconnect during afterAll would mark it interrupted or
+            // replay it as still running.
+            if (!response.attributionOnly) {
+              singleWorkerRunningTest = { fullName: response.fullName, filePath: response.filePath, projectName };
+            }
             broadcast({
               type: 'test-start',
               fullName: response.fullName,
               filePath: response.filePath,
               projectName,
+              attributionOnly: response.attributionOnly,
             });
             break;
           }
@@ -2014,14 +2022,18 @@ export async function startUIServer(
 
           switch (msg.type) {
             case 'test-start': {
+              // currentTest is still updated for attribution-only re-tags
+              // (afterAll hooks) so trace events get tagged to the right
+              // test, but the worker was already 'running' — no status ping.
               worker.currentTest = msg.fullName;
-              broadcastWorkerStatus(worker, 'running');
+              if (!msg.attributionOnly) broadcastWorkerStatus(worker, 'running');
               broadcast({
                 type: 'test-start',
                 fullName: msg.fullName,
                 filePath: msg.filePath,
                 workerId: worker.id,
                 projectName: worker.currentFile?.projectName,
+                attributionOnly: msg.attributionOnly,
               });
               break;
             }
@@ -3233,6 +3245,71 @@ export async function startUIServer(
     };
   }
 
+  // ─── Live WebView DOM for the element picker ───
+
+  // A failed WebView connect spins until the device timeout, so don't
+  // re-attempt on every 1s hierarchy poll: one attempt at a time, with a
+  // cooldown after a failure. A successful connect is cached inside the
+  // Device, making subsequent polls cheap. Concurrent polls share the
+  // in-flight dump once the connection is established, so consecutive
+  // hierarchy broadcasts never alternate between with- and without-DOM —
+  // an alternating tree would make picks race the overlay.
+  const WEBVIEW_INSPECT_FAILURE_COOLDOWN_MS = 15_000;
+  let webviewDumpPromise: Promise<string | undefined> | null = null;
+  let webviewEstablished = false;
+  let webviewInspectFailedAt = 0;
+  const debugWebview = (msg: string) => {
+    if (process.env.TAPSMITH_DEBUG_WEBVIEW) console.error(`[webview-picker ${new Date().toISOString().slice(11, 23)}] ${msg}`);
+  };
+  function dumpWebViewDomForPicker(hierarchyXml: string): Promise<string | undefined> | undefined {
+    // A WebView handle opened by the test session takes priority — it matches
+    // what trace capture appends.
+    const activeWebView = ctx.device?._activeWebView;
+    if (activeWebView) {
+      return activeWebView._dumpDomHierarchy().catch(() => undefined);
+    }
+    if (!ctx.device) return undefined;
+    if (webviewDumpPromise) {
+      // During the initial connect (which can take seconds), don't block the
+      // native broadcast behind it; once established, share the dump so every
+      // broadcast carries the overlay.
+      debugWebview(`in-flight; established=${webviewEstablished}`);
+      return webviewEstablished ? webviewDumpPromise : undefined;
+    }
+    if (Date.now() - webviewInspectFailedAt < WEBVIEW_INSPECT_FAILURE_COOLDOWN_MS) {
+      debugWebview('cooldown; skipping');
+      return undefined;
+    }
+    const device = ctx.device;
+    debugWebview('starting dump');
+    webviewDumpPromise = device._dumpWebViewDomForInspection(hierarchyXml)
+      .then((dom) => {
+        debugWebview(`dump resolved: ${dom === null ? 'FAILED' : dom === undefined ? 'no-webview' : `dom ${dom.length}b`}`);
+        if (dom === null) {
+          webviewInspectFailedAt = Date.now();
+          webviewEstablished = false;
+          return undefined;
+        }
+        if (dom !== undefined) webviewEstablished = true;
+        return dom;
+      })
+      // The promise is deliberately left un-awaited until the connection is
+      // established (below), so a rejection would otherwise be unhandled.
+      // _dumpWebViewDomForInspection shouldn't reject, but treat one as a
+      // failure (cooldown) rather than trusting that contract.
+      .catch(() => {
+        webviewInspectFailedAt = Date.now();
+        webviewEstablished = false;
+        return undefined;
+      })
+      .finally(() => { webviewDumpPromise = null; });
+    // Until the connection is established, run the dump in the background so
+    // no hierarchy broadcast — including the initiator's — blocks behind a
+    // multi-second connect (or a stale-connection failure). Once established,
+    // dumps are cheap and awaiting keeps every broadcast carrying the overlay.
+    return webviewEstablished ? webviewDumpPromise : undefined;
+  }
+
   // ─── Command Handler ───
 
   function handleCommand(msg: ClientMessage): void {
@@ -3348,27 +3425,28 @@ export async function startUIServer(
         }
         break;
       case 'request-hierarchy': {
-        const hierClient = multiWorker && workersInitialized
-          ? uiWorkers.find((w) => w.id === selectedWorkerId && !w.retired)?.screenClient
+        // Note: deliberately does NOT bump lastMirrorInteraction — the client
+        // polls this every second while the Locator tab is live-bound, which
+        // would otherwise pin the screenshot poll at the interactive rate.
+        const isWorkerHierarchy = multiWorker && workersInitialized;
+        const hierWorkerId = isWorkerHierarchy ? (msg.workerId ?? selectedWorkerId) : 0;
+        const hierClient = isWorkerHierarchy
+          ? uiWorkers.find((w) => w.id === hierWorkerId && !w.retired)?.screenClient
           : ctx.client;
         hierClient?.getUiHierarchy().then(async (response) => {
           let xml = response.hierarchyXml;
-          if (xml) {
-            // Append WebView DOM hierarchy if a WebView is active (single-worker mode)
-            const activeWebView = ctx.device?._activeWebView;
-            if (activeWebView) {
-              try {
-                const webviewDom = await activeWebView._dumpDomHierarchy();
-                if (webviewDom) {
-                  const lastClose = xml.lastIndexOf('</');
-                  if (lastClose !== -1) {
-                    xml = xml.slice(0, lastClose) + webviewDom + '\n' + xml.slice(lastClose);
-                  }
-                }
-              } catch { /* best-effort */ }
+          if (!xml) return;
+          // Append the WebView DOM so picks inside a WebView suggest
+          // webview.* locators. Primary-device only — workers have no Device
+          // instance to open a WebView connection through.
+          const webviewDom = isWorkerHierarchy ? undefined : await dumpWebViewDomForPicker(xml);
+          if (webviewDom) {
+            const lastClose = xml.lastIndexOf('</');
+            if (lastClose !== -1) {
+              xml = xml.slice(0, lastClose) + webviewDom + '\n' + xml.slice(lastClose);
             }
-            broadcast({ type: 'hierarchy-update', xml });
           }
+          broadcast({ type: 'hierarchy-update', xml, workerId: hierWorkerId });
         }).catch(() => {});
         break;
       }
@@ -3605,6 +3683,14 @@ export async function startUIServer(
 
   const wss = new WebSocketServer({ server });
 
+  // ws re-emits the HTTP server's 'error' events here; without a listener
+  // they rethrow as uncaughtException and kill the process before the bind
+  // failure below can be reported (PILOT-253). Bind failures are surfaced
+  // via the listen promise, so only log errors from an already-running server.
+  wss.on('error', (err) => {
+    if (server.listening) console.error(`UI server error: ${err.message}`);
+  });
+
   wss.on('connection', (ws) => {
     clients.add(ws);
 
@@ -3763,18 +3849,29 @@ export async function startUIServer(
   // ─── Start ───
 
   launchProgress?.start('ui-server', 'binding local web UI');
-  const actualPort = await new Promise<number>((resolve, reject) => {
-    const tryPort = options.port ?? 0;
-    server.listen(tryPort, '127.0.0.1', () => {
-      const addr = server.address();
-      if (typeof addr === 'object' && addr) {
-        resolve(addr.port);
-      } else {
-        reject(new Error('Failed to bind UI server'));
-      }
+  let actualPort: number;
+  try {
+    actualPort = await new Promise<number>((resolve, reject) => {
+      const tryPort = options.port ?? 0;
+      server.once('error', reject);
+      server.listen(tryPort, '127.0.0.1', () => {
+        server.removeListener('error', reject);
+        const addr = server.address();
+        if (typeof addr === 'object' && addr) {
+          resolve(addr.port);
+        } else {
+          reject(new Error('Failed to bind UI server'));
+        }
+      });
     });
-    server.on('error', reject);
-  });
+  } catch (err) {
+    const cause = err instanceof Error ? err : new Error(String(err));
+    const message = (cause as NodeJS.ErrnoException).code === 'EADDRINUSE' && options.port !== undefined
+      ? `port ${options.port} is already in use — pass a different --ui-port or free the port`
+      : cause.message;
+    launchProgress?.fail('ui-server', message);
+    throw new LaunchSetupError(`Failed to start UI server: ${message}`, { cause });
+  }
   launchProgress?.complete('ui-server', `http://127.0.0.1:${actualPort}/`);
   // ─── MCP Server (separate fixed port) ───
 

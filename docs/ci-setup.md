@@ -163,7 +163,10 @@ Android emulators can take 1-3 minutes to boot in CI. Make sure your CI timeout 
 If you are managing the emulator yourself:
 
 ```bash
-# Create an AVD
+# Create an AVD — use a google_apis image, NOT google_apis_playstore:
+# Google Play images don't support `adb root`, which Tapsmith needs to install
+# its CA cert and redirect traffic, so HTTPS traffic won't appear in traces.
+# (`npx tapsmith create-avd` wraps these two steps.)
 avdmanager create avd -n test -k "system-images;android-33;google_apis;x86_64" --force
 
 # Start the emulator in the background
@@ -176,6 +179,8 @@ adb shell 'while [[ -z $(getprop sys.boot_completed) ]]; do sleep 1; done'
 # Run tests
 npx tapsmith test
 ```
+
+See [Android emulator image requirements](network.md#android-emulator-image-requirements) for details on why the system image type matters for network capture.
 
 ### ADB Setup
 

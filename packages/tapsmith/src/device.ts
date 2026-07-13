@@ -22,6 +22,7 @@ import {
   type ActionResponse,
   type ScreenshotResponse,
   type LaunchAppOptions,
+  type OpenDeepLinkOptions,
   type AppState,
   type Orientation,
   type ColorScheme,
@@ -55,6 +56,9 @@ type CaptureTraceStateOptions = {
 
 const WEBVIEW_RPC_TIMEOUT_MS = 5_000;
 const WEBVIEW_RETRY_INTERVAL_MS = 500;
+/** Quick liveness probe (`1`) for a freshly connected WebView page — a dead
+ * webinspectord target accepts the connection but never answers evaluates. */
+const WEBVIEW_PAGE_PROBE_TIMEOUT_MS = 3_000;
 const WEBVIEW_CONNECT_ATTEMPT_TIMEOUT_MS = 5_000;
 const WEBVIEW_CONNECT_LOG_LIMIT = 80;
 
@@ -142,6 +146,8 @@ export class Device {
   _routeManager: NetworkRouteManager | null = null;
   private _networkCaptureActive = false;
   private _networkCaptureError: string | undefined;
+  /** Set by the runner on retry attempts — see _setForceColdDeepLinks. */
+  private _forceColdDeepLinks = false;
 
   /** @internal — Active WebView handle, if in WebView context. */
   _activeWebView: WebViewHandle | null = null;
@@ -215,6 +221,71 @@ export class Device {
     } catch {
       return undefined;
     }
+  }
+
+  /**
+   * @internal — Best-effort WebView DOM dump for the UI-mode live element
+   * picker, so picking inside a WebView suggests `webview.*` locators even
+   * when no test session has called `device.webview()`. Untraced (no
+   * collector events) and leaves `_activeWebView` untouched; the underlying
+   * connection is cached, so repeated polls are cheap.
+   *
+   * Returns `undefined` when the hierarchy shows no WebView on screen
+   * (cheap check, safe to call every poll) and `null` when a WebView is
+   * present but connecting/dumping failed (callers should back off — the
+   * connect attempt spins until the configured timeout).
+   */
+  async _dumpWebViewDomForInspection(hierarchyXml: string): Promise<string | null | undefined> {
+    const marker = this._platform === 'ios' ? 'XCUIElementTypeWebView' : 'android.webkit.WebView';
+    if (!hierarchyXml.includes(marker)) return undefined;
+    // _establishWebView (unlike _connectWebView) never writes _activeWebView,
+    // so a poll cannot clobber a handle a concurrent test session activated.
+    // Captured outside attempt() so the connected handle stays disposable even
+    // if something between connect and dump throws — disposal must not depend
+    // on _dumpDomHierarchy's (current) never-throws contract.
+    let activeHandle: WebViewHandle | undefined;
+    const attempt = async (): Promise<string | undefined> => {
+      const handle = await this._establishWebView();
+      activeHandle = handle;
+      return handle._dumpDomHierarchy();
+    };
+    // Dispose a connection whose dump failed: it can be "alive" (socket open)
+    // yet bound to a page that no longer exists — e.g. the WebView remounted
+    // when the user navigated away and back. Never close a handle a test
+    // session is actively using.
+    const dispose = () => {
+      const handle = activeHandle;
+      activeHandle = undefined;
+      if (handle && this._activeWebView !== handle && this._cachedWebView === handle) {
+        this._cachedWebView = null;
+        handle.close().catch(() => {});
+        return true;
+      }
+      return false;
+    };
+    const debug = (msg: string) => {
+      if (process.env.TAPSMITH_DEBUG_WEBVIEW) console.error(`[webview-inspect] ${msg}`);
+    };
+    try {
+      const dom = await attempt();
+      if (dom !== undefined) return dom;
+      debug('first dump returned undefined');
+    } catch (err) {
+      debug(`first attempt threw: ${err instanceof Error ? err.message : String(err)}`);
+    }
+    if (!dispose()) return null;
+    debug('disposed stale handle; retrying with a fresh connect');
+    // The first attempt likely reused a stale cached connection — retry once
+    // with a fresh connect (which probes pages) before reporting failure.
+    try {
+      const dom = await attempt();
+      if (dom !== undefined) return dom;
+      debug('second dump returned undefined');
+    } catch (err) {
+      debug(`second attempt threw: ${err instanceof Error ? err.message : String(err)}`);
+    }
+    dispose();
+    return null;
   }
 
   private async _appendActiveWebViewDom(xml: string | undefined): Promise<string | undefined> {
@@ -490,10 +561,29 @@ export class Device {
         'Launch app failed'));
   }
 
-  async openDeepLink(uri: string): Promise<void> {
+  async openDeepLink(uri: string, options?: OpenDeepLinkOptions): Promise<void> {
+    // On retry attempts the runner forces every deep link cold (see
+    // _setForceColdDeepLinks); an explicit forceColdLaunch option can only
+    // add to that, never override it back to warm.
+    const effectiveOptions = this._forceColdDeepLinks
+      ? { ...options, forceColdLaunch: true }
+      : options;
     return this._tracedAction('openDeepLink', 'navigation', undefined,
-      () => this._client.openDeepLink(uri),
+      () => this._client.openDeepLink(uri, effectiveOptions),
       'Open deep link failed');
+  }
+
+  /**
+   * @internal — When set, every openDeepLink call sends forceColdLaunch,
+   * regardless of per-call options. The runner enables this for retry
+   * attempts: a cold terminate + relaunch recreates the app's render
+   * surface, which is the recovery path for simulators whose display has
+   * stopped updating while the a11y tree stays healthy (July 2026 CI
+   * finding — warm delivery verifies against the a11y tree and would
+   * otherwise carry that broken state into the retry).
+   */
+  _setForceColdDeepLinks(force: boolean): void {
+    this._forceColdDeepLinks = force;
   }
 
   async currentPackage(): Promise<string> {
@@ -1106,10 +1196,16 @@ export class Device {
     return handle;
   }
 
-  private async _connectWebView(packageName?: string, log?: string[]): Promise<WebViewHandle> {
+  /**
+   * Establish (or reuse) a WebView connection WITHOUT promoting it to the
+   * session's active WebView. The picker path uses this directly — writing
+   * `_activeWebView` from a poll would race a test session that connects
+   * concurrently (the poll's multi-second connect resolving after the test's
+   * would clobber the test's activation).
+   */
+  private async _establishWebView(packageName?: string, log?: string[]): Promise<WebViewHandle> {
     if (this._cachedWebView?._isAlive()) {
       appendWebViewConnectLog(log, 'Reusing cached WebView connection');
-      this._activeWebView = this._cachedWebView;
       this._applyTraceCtx(this._cachedWebView);
       return this._cachedWebView;
     }
@@ -1120,6 +1216,12 @@ export class Device {
       return this._webviewIos(packageName, generation, log);
     }
     return this._webviewAndroid(packageName, generation, log);
+  }
+
+  private async _connectWebView(packageName?: string, log?: string[]): Promise<WebViewHandle> {
+    const handle = await this._establishWebView(packageName, log);
+    this._activeWebView = handle;
+    return handle;
   }
 
   private async _webviewAndroid(packageName: string | undefined, generation: number, log?: string[]): Promise<WebViewHandle> {
@@ -1201,7 +1303,6 @@ export class Device {
           }
 
           appendWebViewConnectLog(log, `Connected to ${describeWebView(target)} on local port ${fwd.localPort}`);
-          this._activeWebView = handle;
           this._cachedWebView = handle;
           return handle;
         } catch (e) {
@@ -1264,20 +1365,38 @@ export class Device {
         continue;
       }
 
-      const page = appTarget.pages[0];
-      appendWebViewConnectLog(log, `Connecting to iOS WebView page "${page.title || page.url || page.id}"`);
-      await inspector.connectToPage(appTarget.appId, page.id);
+      // Try each listed page, probing before accepting: after a WebView
+      // remount, webinspectord keeps advertising the dead page for tens of
+      // seconds — connecting to it times out waiting for Target.targetCreated
+      // (or never answers evaluates), so a blind pages[0] pick can wedge
+      // reconnects until the stale entry expires.
+      let handle: WebViewHandle | undefined;
+      for (const page of appTarget.pages) {
+        appendWebViewConnectLog(log, `Connecting to iOS WebView page "${page.title || page.url || page.id}"`);
+        try {
+          await inspector.connectToPage(appTarget.appId, page.id);
+          const candidate = WebViewHandle._createFromInspector(
+            this._client, inspector, appTarget.appId, page.id, this._defaultTimeoutMs,
+          );
+          await candidate._evaluate('1', WEBVIEW_PAGE_PROBE_TIMEOUT_MS);
+          handle = candidate;
+          break;
+        } catch (err) {
+          lastError = `Page "${page.title || page.url || page.id}" did not respond: ${err instanceof Error ? err.message : String(err)}`;
+          appendWebViewConnectLog(log, lastError);
+        }
+      }
+      if (!handle) {
+        await sleepUpTo(WEBVIEW_RETRY_INTERVAL_MS, deadline);
+        continue;
+      }
 
-      const handle = WebViewHandle._createFromInspector(
-        this._client, inspector, appTarget.appId, page.id, this._defaultTimeoutMs,
-      );
       this._applyTraceCtx(handle);
       if (generation !== this._webviewGeneration) {
         await handle.close();
         throw new Error('WebView connection was disposed before it completed');
       }
 
-      this._activeWebView = handle;
       this._cachedWebView = handle;
       return handle;
     }

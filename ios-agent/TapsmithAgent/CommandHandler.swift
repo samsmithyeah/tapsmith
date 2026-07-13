@@ -152,6 +152,114 @@ class CommandHandler {
         return false
     }
 
+    /// Wait for the UI hierarchy to change from its pre-deep-link state after
+    /// a warm in-process delivery (`XCUIApplication.open(url:)` to an
+    /// already-running app).
+    ///
+    /// `waitForDeepLinkDestination` is the wrong verify for the warm case: a
+    /// warm app trivially "has rendered content", so it would report success
+    /// even when the app dropped the Linking event and never navigated — the
+    /// historical simulator failure mode this verify exists to catch. Instead
+    /// we require the hierarchy to differ from the pre-open dump AND contain
+    /// content. The content requirement keeps us polling through transitional
+    /// screens that hide their accessibility elements (e.g. the test-app's
+    /// `__reset` spinner), matching the cold verify's readiness bar.
+    ///
+    /// A deep link whose destination renders identically to the current screen
+    /// never satisfies the change requirement and times out; the daemon then
+    /// falls back to the cold path, which handles that case correctly. That
+    /// trade (bounded extra latency, never a wrong verdict) is deliberate.
+    private func waitForDeepLinkNavigation(
+        _ app: XCUIApplication,
+        before: String,
+        timeout: TimeInterval
+    ) -> Bool {
+        let springboard = XCUIApplication(bundleIdentifier: "com.apple.springboard")
+        let dumper = HierarchyDumper(app: app)
+        let deadline = Date(timeIntervalSinceNow: timeout)
+        while Date() < deadline {
+            // Same shape as waitForDeepLinkDestination: one SpringBoard query
+            // per iteration in case "Open in <app>?" gates the warm delivery.
+            if self.acceptOpenInAppDialogIfPresent(springboard: springboard, timeout: 0.0) {
+                // Dialog accepted — re-check on the next iteration.
+            } else {
+                var navigated = false
+                _ = ObjCExceptionCatcher.catchException {
+                    guard let snapshot = try? app.snapshot() else { return }
+                    if self.snapshotContainsContent(snapshot)
+                        && dumper.dump(from: snapshot) != before {
+                        navigated = true
+                    }
+                }
+                if navigated {
+                    return true
+                }
+            }
+            Thread.sleep(forTimeInterval: 0.2)
+        }
+        return false
+    }
+
+    /// Whether the simulator display is showing (near-)pure black where the
+    /// app's content should be.
+    ///
+    /// CI simulators intermittently stop compositing the app's window while
+    /// the process, its accessibility tree, and even tap dispatch keep
+    /// working (observed on GitHub macOS runners, July 2026). Warm deep-link
+    /// delivery verifies navigation via the accessibility tree, so without a
+    /// pixel check it reports success against a black display and carries
+    /// the broken state into subsequent tests; the cold path's terminate +
+    /// relaunch recreates the render surface and recovers.
+    ///
+    /// Downscales one screenshot and takes the maximum channel value across
+    /// all sampled pixels, excluding the top and bottom 12% (the status
+    /// bar's clock/battery — and the home indicator — keep rendering even
+    /// when the app's window has stopped compositing). Any visible content,
+    /// including sparse light text on a dark-mode screen, produces bright
+    /// samples; a false positive merely costs a cold relaunch, never a
+    /// wrong verdict.
+    private func displayAppearsBlack() -> Bool {
+        let image = XCUIScreen.main.screenshot().image
+        guard let cgImage = image.cgImage, cgImage.width > 8, cgImage.height > 8 else {
+            return false
+        }
+        let sampleWidth = 64
+        let sampleHeight = 128
+        let bytesPerPixel = 4
+        var pixels = [UInt8](repeating: 0, count: sampleWidth * sampleHeight * bytesPerPixel)
+        let drawn = pixels.withUnsafeMutableBytes { buffer -> Bool in
+            guard let context = CGContext(
+                data: buffer.baseAddress,
+                width: sampleWidth,
+                height: sampleHeight,
+                bitsPerComponent: 8,
+                bytesPerRow: sampleWidth * bytesPerPixel,
+                space: CGColorSpaceCreateDeviceRGB(),
+                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+            ) else { return false }
+            context.interpolationQuality = .low
+            context.draw(
+                cgImage,
+                in: CGRect(x: 0, y: 0, width: sampleWidth, height: sampleHeight)
+            )
+            return true
+        }
+        guard drawn else { return false }
+
+        // Exclude both vertical ends rather than reasoning about CGContext
+        // row order — the status bar is at one end, the home indicator at
+        // the other, and both keep rendering over a dead app window.
+        let excludedRows = Int(Double(sampleHeight) * 0.12)
+        var maxChannel: UInt8 = 0
+        for row in excludedRows..<(sampleHeight - excludedRows) {
+            for col in 0..<sampleWidth {
+                let offset = (row * sampleWidth + col) * bytesPerPixel
+                maxChannel = max(maxChannel, pixels[offset], pixels[offset + 1], pixels[offset + 2])
+            }
+        }
+        return maxChannel < 10
+    }
+
     /// Dismiss any blocking iOS system dialog currently covering the app
     /// (e.g. "Save Password?", "Allow Notifications?", iCloud Keychain
     /// prompts). Returns true if a dialog was dismissed. Intended for
@@ -1278,10 +1386,13 @@ class CommandHandler {
             }
             let bundleId = targetBundleId(fallback: params)
             // Physical devices have no host-side `simctl openurl`, so the agent
-            // delivers the URL itself. On simulators the daemon already ran it;
-            // this command only accepts any remaining prompt and rebinds once
-            // the target app is foreground.
+            // delivers the URL itself. On simulators the daemon first tries the
+            // same in-process delivery warm (with `requireUiChange` so a dropped
+            // Linking event is reported, not masked); on its cold fallback the
+            // daemon runs `simctl openurl` and this command only accepts any
+            // remaining prompt and rebinds once the target app is foreground.
             let deliverInProcess = params["deliverInProcess"] as? Bool ?? true
+            let requireUiChange = params["requireUiChange"] as? Bool ?? false
             let targetApp = XCUIApplication(bundleIdentifier: bundleId)
             _ = safeAppState(targetApp)
             QuiescenceDisabler.disable(for: targetApp)
@@ -1289,13 +1400,54 @@ class CommandHandler {
             if deliverInProcess {
                 guard #available(iOS 16.4, *) else {
                     throw AgentError.actionFailed(
-                        "openDeepLink requires iOS 16.4 or newer on physical devices"
+                        "openDeepLink requires iOS 16.4 or newer for in-process delivery"
                     )
                 }
+
+                // Warm delivery needs the pre-open hierarchy to verify against.
+                // If the app isn't running with rendered content, warm delivery
+                // isn't applicable — fail fast so the daemon can fall back to
+                // its cold path instead of paying activate()'s launch cost here.
+                var preOpenHierarchy: String?
+                if requireUiChange {
+                    var preSnapshot: XCUIElementSnapshot?
+                    _ = ObjCExceptionCatcher.catchException {
+                        preSnapshot = try? targetApp.snapshot()
+                    }
+                    guard let pre = preSnapshot, snapshotContainsContent(pre) else {
+                        throw AgentError.actionFailed(
+                            "openDeepLink: app is not running with rendered content; "
+                                + "warm in-process delivery is not applicable"
+                        )
+                    }
+                    preOpenHierarchy = HierarchyDumper(app: targetApp).dump(from: pre)
+                }
+
                 _ = ObjCExceptionCatcher.catchException {
                     targetApp.activate()
                     Thread.sleep(forTimeInterval: 0.15)
                     targetApp.open(url)
+                }
+
+                if let before = preOpenHierarchy {
+                    if waitForDeepLinkNavigation(targetApp, before: before, timeout: 5.0) {
+                        // The hierarchy check can pass against a display that
+                        // has stopped compositing (a11y stays healthy while
+                        // the screen shows black); reject so the daemon's
+                        // cold fallback recreates the render surface.
+                        if displayAppearsBlack() {
+                            throw AgentError.actionFailed(
+                                "openDeepLink: display is not rendering after warm "
+                                    + "in-process delivery of \(urlString)"
+                            )
+                        }
+                        _ = rebindApp(bundleId: bundleId)
+                        return ["success": true]
+                    }
+                    throw AgentError.actionFailed(
+                        "openDeepLink: UI did not change after warm in-process "
+                            + "delivery of \(urlString)"
+                    )
                 }
             }
 

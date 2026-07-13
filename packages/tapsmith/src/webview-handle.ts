@@ -389,11 +389,14 @@ export class WebViewHandle {
     this._throwIfClosed();
     if (this._useInspector) {
       const id = ++this._msgId;
+      // Honor the caller's timeout — best-effort callers (DOM dumps, page
+      // probes) pass a short one so a dead inspector target fails fast
+      // instead of hanging for the default 30s.
       return this._inspector!.sendInspectorMessage(this._inspectorAppId!, {
         id,
         method,
         params,
-      });
+      }, timeoutMs);
     }
 
     if (!this._ws || this._ws.readyState !== WebSocket.OPEN) {

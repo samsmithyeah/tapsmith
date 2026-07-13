@@ -298,14 +298,26 @@ await device.launchApp("com.example.myapp", { waitForIdle: false }); // return i
 - `clearData?` — clear all app data before launching (default: `false`)
 - `waitForIdle?` — wait for the UI to settle after launch (default: `true`)
 
-### `device.openDeepLink(uri: string): Promise<void>`
+### `device.openDeepLink(uri: string, options?: OpenDeepLinkOptions): Promise<void>`
 
 Navigate to a screen via deep link URI.
 
 ```typescript
 await device.openDeepLink("myapp://settings/profile");
 await device.openDeepLink("https://example.com/product/123"); // app links
+await device.openDeepLink("myapp://__reset", { forceColdLaunch: true });
 ```
+
+**Options:**
+- `forceColdLaunch?` — on iOS simulators, skip the warm in-process delivery
+  attempt and cold-relaunch the app with the URL (default: `false`). Use when
+  the deep link must start from a fresh process, e.g. a state-clearing reset.
+  No effect on Android or physical iOS, which always deliver warm.
+
+Deep links are delivered to the running app without relaunching it (warm
+delivery) whenever possible. On iOS simulators, if warm delivery does not
+reach its destination within a bounded window, Tapsmith automatically falls
+back to a cold relaunch with the URL.
 
 ### `device.currentPackage(): Promise<string>`
 
@@ -942,6 +954,8 @@ await device.getByRole("list").scroll("down", { distance: 300 });
 Scroll the viewport until this element is visible on screen. Useful for reaching elements that are below the fold in a scrollable container.
 
 Swipes in the given direction, checking visibility between each attempt. Throws if the element is not visible after `maxScrolls` attempts.
+
+If the element is already visible, this is a no-op — it returns without scrolling, so calling `scrollIntoView()` before every `tap()` is safe even when the target is on screen (an unnecessary swipe could otherwise shift it under a pinned app bar). When the element isn't found on the first check, Tapsmith waits for the UI to settle and re-checks before the first swipe, so a briefly stale accessibility tree (e.g. right after navigation) doesn't trigger a spurious scroll.
 
 | Option | Default | Description |
 |---|---|---|
@@ -2255,10 +2269,24 @@ npx tapsmith init
 
 ### `tapsmith doctor`
 
-Run a non-interactive system health check. Verifies all prerequisites: Node.js version, daemon binary, ADB (Android), agent APKs, Xcode (iOS), simulators, and iOS network capture dependencies. Exits with code 0 if all checks pass, 1 if any hard errors.
+Run a non-interactive system health check. Verifies all prerequisites: Node.js version, daemon binary, ADB (Android), agent APKs, AVD system image compatibility, Xcode (iOS), simulators, and network capture dependencies. Exits with code 0 if all checks pass, 1 if any hard errors.
 
 ```bash
 npx tapsmith doctor
+```
+
+### `tapsmith create-avd [--api <level>] [--name <name>] [--device <profile>] [--abi <abi>] [--force] [--install-tools]`
+
+Create an Android AVD that supports HTTPS network capture. Downloads a **Google APIs** system image with `sdkmanager` and creates the AVD with `avdmanager` — Google Play images (the ones Android Studio preselects) block `adb root`, so Tapsmith cannot decrypt HTTPS traffic on them (see [Android emulator image requirements](./network.md#android-emulator-image-requirements)).
+
+If the Android SDK command-line tools are missing (Android Studio doesn't install them by default), the command offers to download and install them into `$ANDROID_HOME/cmdline-tools/latest` for you — pass `--install-tools` to skip the prompt in scripts/CI. When no `java` is available, Android Studio's bundled JDK is used automatically. A system image that is already installed is not re-downloaded.
+
+Defaults: API level 36, name `Tapsmith_Phone_API_<api>`, device profile `medium_phone`, ABI matching the host architecture (`arm64-v8a` on Apple Silicon, `x86_64` on Intel). `--force` overwrites an existing AVD with the same name.
+
+```bash
+npx tapsmith create-avd                         # Tapsmith_Phone_API_36
+npx tapsmith create-avd --api 34 --device pixel_7
+npx tapsmith create-avd --install-tools         # non-interactive bootstrap (CI)
 ```
 
 ### `tapsmith list-devices [--json]`

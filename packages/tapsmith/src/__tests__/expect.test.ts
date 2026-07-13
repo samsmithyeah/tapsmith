@@ -1905,6 +1905,102 @@ describe("wrapAssertionWithTrace", () => {
     vitestExpect(collector.captureBeforeAction).toHaveBeenCalledTimes(1);
     vitestExpect(collector.captureAfterAction).not.toHaveBeenCalled();
   });
+
+  it("records bounds for a visible element", async () => {
+    const bounds = { left: 10, top: 20, right: 110, bottom: 60 };
+    const collector = makeMockCollector();
+    const client = makeMockClient(async () => ({
+      requestId: "1",
+      found: true,
+      element: makeElementInfo({ visible: true, bounds }),
+      errorMessage: "",
+    }));
+    const handle = makeTracedHandle(client, collector);
+
+    await tapsmithExpect(handle).toBeVisible({ timeout: 50 });
+
+    const event = collector.addAssertionEvent.mock.calls[0][0];
+    vitestExpect(event.bounds).toEqual(bounds);
+  });
+
+  it("records no bounds when the element is present but hidden (toBeHidden)", async () => {
+    // findElement matches hidden elements with a real frame — a passing
+    // toBeHidden must not carry that rectangle into the trace, or the viewer
+    // draws a box over empty space where the element used to be.
+    const bounds = { left: 10, top: 20, right: 110, bottom: 60 };
+    const collector = makeMockCollector();
+    const client = makeMockClient(async () => ({
+      requestId: "1",
+      found: true,
+      element: makeElementInfo({ visible: false, bounds }),
+      errorMessage: "",
+    }));
+    const handle = makeTracedHandle(client, collector);
+
+    await tapsmithExpect(handle).toBeHidden({ timeout: 50 });
+
+    const event = collector.addAssertionEvent.mock.calls[0][0];
+    vitestExpect(event.passed).toBe(true);
+    vitestExpect(event.bounds).toBeUndefined();
+  });
+
+  it("does not fall back to stale before-bounds when the element is removed", async () => {
+    // Element is visible when the assertion starts (before-bounds captured),
+    // then removed from the hierarchy — the passing toBeHidden must record no
+    // bounds instead of the pre-removal position.
+    const bounds = { left: 10, top: 20, right: 110, bottom: 60 };
+    const collector = makeMockCollector();
+    let findElementCalls = 0;
+    const client = makeMockClient(
+      async () => {
+        findElementCalls += 1;
+        return findElementCalls === 1
+          ? {
+              requestId: "1",
+              found: true,
+              element: makeElementInfo({ visible: true, bounds }),
+              errorMessage: "",
+            }
+          : { requestId: "1", found: false, errorMessage: "" };
+      },
+      async () => ({ requestId: "1", elements: [], errorMessage: "" }),
+    );
+    const handle = makeTracedHandle(client, collector);
+
+    await tapsmithExpect(handle).toBeHidden({ timeout: 50 });
+
+    const event = collector.addAssertionEvent.mock.calls[0][0];
+    vitestExpect(event.passed).toBe(true);
+    vitestExpect(event.bounds).toBeUndefined();
+  });
+
+  it("records no bounds when the post-assertion lookup errors", async () => {
+    // A transient lookup failure after a passing toBeHidden must not
+    // resurrect the pre-assertion bounds — a missing box beats a stale one.
+    const bounds = { left: 10, top: 20, right: 110, bottom: 60 };
+    const collector = makeMockCollector();
+    let findElementCalls = 0;
+    const client = makeMockClient(
+      async () => {
+        findElementCalls += 1;
+        if (findElementCalls > 1) throw new Error("agent connection lost");
+        return {
+          requestId: "1",
+          found: true,
+          element: makeElementInfo({ visible: true, bounds }),
+          errorMessage: "",
+        };
+      },
+      async () => ({ requestId: "1", elements: [], errorMessage: "" }),
+    );
+    const handle = makeTracedHandle(client, collector);
+
+    await tapsmithExpect(handle).toBeHidden({ timeout: 50 });
+
+    const event = collector.addAssertionEvent.mock.calls[0][0];
+    vitestExpect(event.passed).toBe(true);
+    vitestExpect(event.bounds).toBeUndefined();
+  });
 });
 
 // ─── Strict mode (PILOT-226) ───

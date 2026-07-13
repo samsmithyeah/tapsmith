@@ -96,12 +96,18 @@ function pass(report: Reporter, id: string, label: string): void {
 
 function warn(report: Reporter, id: string, label: string, fix?: string): void {
   report.checks.push({ status: 'warn', id, label, fix });
-  if (report.print) console.log(`  ${yellow('⚠')} ${label}`);
+  if (report.print) {
+    console.log(`  ${yellow('⚠')} ${label}`);
+    if (fix) console.log(dim(`    ↳ ${fix}`));
+  }
 }
 
 function fail(report: Reporter, id: string, label: string, fix?: string): void {
   report.checks.push({ status: 'fail', id, label, fix });
-  if (report.print) console.log(`  ${red('✗')} ${label}`);
+  if (report.print) {
+    console.log(`  ${red('✗')} ${label}`);
+    if (fix) console.log(dim(`    ↳ ${fix}`));
+  }
 }
 
 // ─── Individual checks ───
@@ -232,6 +238,160 @@ function checkAppApk(report: Reporter, config: { apk?: string; rootDir?: string 
   }
 }
 
+// ─── AVD system image check ───
+
+/**
+ * Extract the system image tag (`tag.id`) from an AVD's `config.ini`.
+ * `google_apis_playstore` images are production builds without `adb root`,
+ * so Tapsmith cannot install its CA cert or iptables redirect on them —
+ * HTTPS traffic is never captured.
+ */
+export function parseAvdImageTag(configIni: string): string | undefined {
+  const match = configIni.match(/^tag\.id\s*=\s*(.+)$/m);
+  return match ? match[1].trim() : undefined;
+}
+
+/** Extract the Android API level from an AVD's `image.sysdir.1` path. */
+export function parseAvdApiLevel(configIni: string): number | undefined {
+  const match = configIni.match(/^image\.sysdir\.1\s*=\s*.*android-(\d+)/m);
+  return match ? Number(match[1]) : undefined;
+}
+
+export interface AvdImageInfo {
+  name: string;
+  tagId?: string;
+  apiLevel?: number;
+}
+
+/**
+ * Scan the AVD home directory (`$ANDROID_AVD_HOME` or `~/.android/avd`) and
+ * return each AVD with its system image tag. Each `<name>.ini` points at the
+ * `.avd` data directory via its `path=` key; the tag lives in that
+ * directory's `config.ini`.
+ */
+export function scanAvdImageTags(avdHome?: string): AvdImageInfo[] {
+  const home = avdHome ?? process.env.ANDROID_AVD_HOME ?? path.join(os.homedir(), '.android', 'avd');
+  let entries: string[];
+  try {
+    entries = fs.readdirSync(home);
+  } catch {
+    return [];
+  }
+
+  const avds: AvdImageInfo[] = [];
+  for (const entry of entries) {
+    if (!entry.endsWith('.ini')) continue;
+    const name = entry.slice(0, -'.ini'.length);
+    try {
+      const ini = fs.readFileSync(path.join(home, entry), 'utf-8');
+      const pathMatch = ini.match(/^path\s*=\s*(.+)$/m);
+      const avdDir = pathMatch ? pathMatch[1].trim() : path.join(home, `${name}.avd`);
+      const configIni = fs.readFileSync(path.join(avdDir, 'config.ini'), 'utf-8');
+      avds.push({ name, tagId: parseAvdImageTag(configIni), apiLevel: parseAvdApiLevel(configIni) });
+    } catch {
+      avds.push({ name });
+    }
+  }
+  return avds;
+}
+
+export interface AvdImageSummary {
+  status: 'pass' | 'warn';
+  label: string;
+  fix?: string;
+}
+
+/**
+ * Judge the scanned AVDs for HTTPS-capture capability.
+ *
+ * When the tapsmith config names an `avd`, that AVD is what test runs will
+ * actually boot, so the verdict follows it: a capture-capable configured AVD
+ * passes even if unrelated Play-image AVDs exist on the machine (they're
+ * mentioned as context, not warned about). Without a configured AVD, any
+ * Play-image AVD produces a warning since Tapsmith may pick up a matching
+ * running emulator.
+ */
+export function summarizeAvdImages(avds: AvdImageInfo[], configuredAvd?: string | string[]): AvdImageSummary | undefined {
+  const playStore = avds.filter((a) => a.tagId === 'google_apis_playstore');
+  const unreadable = avds.filter((a) => a.tagId === undefined);
+
+  // A ready-to-run replacement command. --api pins the AVD's current API
+  // level so the suggestion doesn't silently change Android versions;
+  // --force is needed to overwrite an AVD that already exists.
+  const recreateCommand = (avd: AvdImageInfo): string =>
+    `npx tapsmith create-avd --name ${avd.name}${avd.apiLevel !== undefined ? ` --api ${avd.apiLevel}` : ''} --force`;
+
+  const configuredNames = (Array.isArray(configuredAvd) ? configuredAvd : configuredAvd ? [configuredAvd] : [])
+    .filter((name, i, arr) => arr.indexOf(name) === i);
+  // With no AVDs and nothing configured there is nothing to judge — but a
+  // configured AVD on an AVD-less machine must still be reported as missing.
+  if (avds.length === 0 && configuredNames.length === 0) return undefined;
+  if (configuredNames.length > 0) {
+    const missing = configuredNames.filter((name) => !avds.some((a) => a.name === name));
+    const configured = avds.filter((a) => configuredNames.includes(a.name));
+    const issues: string[] = [];
+    const commands: string[] = [];
+    for (const name of missing) {
+      issues.push(`Configured AVD ${name} not found on this machine`);
+      commands.push(`npx tapsmith create-avd --name ${name}`);
+    }
+    for (const avd of configured.filter((a) => a.tagId === 'google_apis_playstore')) {
+      issues.push(`Configured AVD ${avd.name} uses a Google Play system image — no adb root, so HTTPS traffic will not be captured`);
+      commands.push(recreateCommand(avd));
+    }
+    for (const avd of configured.filter((a) => a.tagId === undefined)) {
+      issues.push(`Could not read the system image tag of configured AVD ${avd.name}`);
+      commands.push(recreateCommand(avd));
+    }
+    if (issues.length > 0) {
+      return {
+        status: 'warn',
+        label: issues.join('; '),
+        fix: `Run: ${commands.join(' && ')}`,
+      };
+    }
+    const otherPlay = playStore.filter((a) => !configuredNames.includes(a.name));
+    const context = otherPlay.length > 0
+      ? `; ${otherPlay.length} other AVD${otherPlay.length === 1 ? '' : 's'} on this machine use${otherPlay.length === 1 ? 's' : ''} a Play image (${otherPlay.map((a) => a.name).join(', ')})`
+      : '';
+    const tags = configured.map((a) => a.tagId).filter((t, i, arr) => arr.indexOf(t) === i).join(', ');
+    return {
+      status: 'pass',
+      label: `Configured AVD${configuredNames.length === 1 ? '' : 's'} ${configuredNames.join(', ')} support${configuredNames.length === 1 ? 's' : ''} HTTPS capture ${dim(`(${tags}${context})`)}`,
+    };
+  }
+
+  if (playStore.length > 0) {
+    const capable = avds.length - playStore.length - unreadable.length;
+    const context = capable > 0 ? `; ${capable} other AVD${capable === 1 ? ' is' : 's are'} capture-capable` : '';
+    return {
+      status: 'warn',
+      label: `${playStore.length} of ${avds.length} AVD${avds.length === 1 ? '' : 's'} use${playStore.length === 1 ? 's' : ''} a Google Play system image — no adb root, so HTTPS traffic will not be captured ${dim(`(${playStore.map((a) => a.name).join(', ')}${context})`)}`,
+      fix: `Recreate with a Google APIs image — run: ${playStore.map(recreateCommand).join(' && ')}`,
+    };
+  }
+
+  // Don't silently vouch for AVDs whose config.ini couldn't be read.
+  const detail = unreadable.length > 0
+    ? `${avds.length - unreadable.length} of ${avds.length} AVDs verified — could not read: ${unreadable.map((a) => a.name).join(', ')}`
+    : `${avds.length} AVD${avds.length === 1 ? '' : 's'} checked`;
+  return { status: 'pass', label: `AVD system images support HTTPS capture ${dim(`(${detail})`)}` };
+}
+
+function checkAvdImages(report: Reporter, configuredAvd?: string | string[]): void {
+  try {
+    const summary = summarizeAvdImages(scanAvdImageTags(), configuredAvd);
+    if (!summary) return;
+    if (summary.status === 'pass') {
+      pass(report, 'avd-images', summary.label);
+    } else {
+      warn(report, 'avd-images', summary.label, summary.fix);
+    }
+  } catch {
+    warn(report, 'avd-images', 'Could not check AVD system images');
+  }
+}
+
 // ─── iOS checks ───
 
 function checkXcode(report: Reporter): void {
@@ -336,9 +496,42 @@ function checkNetworkExtension(report: Reporter): void {
 
 // ─── Main entry point ───
 
+/**
+ * Extract a `-c <path>` / `--config <path>` / `--config=<path>` flag.
+ * Throws when the flag is present without a usable value (`-c` at the end,
+ * `-c --json`, `--config=`).
+ */
+export function parseDoctorConfigFlag(argv: string[]): string | undefined {
+  for (let i = 0; i < argv.length; i++) {
+    const arg = argv[i]!;
+    let value: string | undefined;
+    if (arg === '-c' || arg === '--config') {
+      value = argv[i + 1];
+    } else if (arg.startsWith('--config=')) {
+      value = arg.slice('--config='.length);
+    } else {
+      continue;
+    }
+    if (!value || value.startsWith('-')) {
+      throw new Error(`Missing value for ${arg.startsWith('--config=') ? '--config' : arg}`);
+    }
+    return value;
+  }
+  return undefined;
+}
+
 export async function runDoctor(argv: string[] = []): Promise<void> {
   const jsonMode = argv.includes('--json');
   const printing = !jsonMode;
+  let configFile: string | undefined;
+  try {
+    configFile = parseDoctorConfigFlag(argv);
+  } catch (err) {
+    console.error(red(err instanceof Error ? err.message : String(err)));
+    console.error('Usage: tapsmith doctor [--json] [-c <config-file>]');
+    process.exitCode = 1;
+    return;
+  }
 
   const checks: CheckList = [];
   const report: Reporter = { checks, print: printing };
@@ -348,19 +541,29 @@ export async function runDoctor(argv: string[] = []): Promise<void> {
     console.log(bold('Tapsmith Doctor'));
   }
 
-  // Try to load config for APK path check
-  let config: { apk?: string; rootDir?: string } | undefined;
+  // Try to load config for the APK path and AVD image checks
+  let config: { apk?: string; rootDir?: string; avd?: string; projects?: Array<{ use?: { avd?: string } }> } | undefined;
   try {
     const { loadConfig } = await import('./config.js');
-    config = await loadConfig();
+    config = await loadConfig(undefined, configFile);
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    if (msg.includes('Could not find') || msg.includes('ENOENT')) {
+    if (configFile && msg.includes('Config file not found')) {
+      // The user explicitly asked for this config — a missing file is a
+      // hard error, not a syntax problem in the default config.
+      fail(report, 'config-load', msg, 'Check the -c/--config path');
+    } else if (msg.includes('Could not find') || msg.includes('ENOENT')) {
       // No config file — fine, checkConfigFile() will report it
     } else {
-      warn(report, 'config-load', `Config file has errors: ${msg}`, 'Fix the syntax error in tapsmith.config.ts');
+      warn(report, 'config-load', `Config file has errors: ${msg}`, `Fix the syntax error in ${configFile ?? 'tapsmith.config.ts'}`);
     }
   }
+
+  // AVDs can be configured top-level or per-project (projects[].use.avd).
+  const configuredAvds = [
+    ...(config?.avd ? [config.avd] : []),
+    ...(config?.projects ?? []).map((p) => p.use?.avd).filter((avd): avd is string => !!avd),
+  ];
 
   // Detect whether Android platform tools are available or config references an APK
   const hasAndroid = (() => {
@@ -416,6 +619,11 @@ export async function runDoctor(argv: string[] = []): Promise<void> {
     console.log(`  ${bold('Network Capture')}`);
   }
   checkMitmCa(report);
+  // Filesystem-only check — run whenever the config names AVDs, even if
+  // adb isn't installed (the missing/Play-image diagnosis is still useful).
+  if (hasAndroid || configuredAvds.length > 0) {
+    checkAvdImages(report, configuredAvds);
+  }
   if (process.platform === 'darwin') {
     checkMitmproxy(report);
     checkNetworkExtension(report);

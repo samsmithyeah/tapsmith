@@ -307,11 +307,12 @@ describe('appendEventsToTrace', () => {
   it('appends hook events, screenshots, and hierarchies to an existing archive', async () => {
     const zipPath = packageBaseTrace();
 
+    // The hook collector records with its own zero-based indices (like the
+    // runner's afterAll collector); the offset is applied at append time.
     const hookCollector = new TraceCollector(
       makeConfig({ screenshots: true, snapshots: true }),
       path.join(tmp, 'hook'),
     );
-    hookCollector.setActionIndexOffset(readTraceActionCount(zipPath) + 1);
     hookCollector.startGroup('afterAll Hooks');
     await hookCollector.captureBeforeAction(
       async () => Buffer.from('after-all-png'),
@@ -322,7 +323,7 @@ describe('appendEventsToTrace', () => {
     }));
     hookCollector.endGroup();
 
-    appendEventsToTrace(zipPath, hookCollector, Date.now());
+    appendEventsToTrace(zipPath, hookCollector, Date.now(), readTraceActionCount(zipPath) + 1);
 
     const files = unzipSync(new Uint8Array(fs.readFileSync(zipPath)));
     const events = strFromU8(files['trace.json']).trim().split('\n')
