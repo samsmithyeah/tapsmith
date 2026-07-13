@@ -496,8 +496,13 @@ export interface RunOptions {
    * Notification fired before tracing/group starts so UI mode can tag
    * subsequent trace events to this test. Must be lightweight (no device
    * actions) — it runs outside the beforeEach trace group.
+   *
+   * `attributionOnly` marks re-tags for a test that already finished (the
+   * afterAll hook path re-targets trace events at the last test that ran).
+   * Consumers must not treat these as a new test execution — the UI would
+   * otherwise flip a finished test back to 'running' and clear its trace.
    */
-  onTestStart?: (fullName: string) => Promise<void>;
+  onTestStart?: (fullName: string, options?: { attributionOnly?: boolean }) => Promise<void>;
   /**
    * Setup work that runs inside the beforeEach trace group. Use this for
    * any device actions (e.g. session readiness checks) so they appear
@@ -1679,18 +1684,23 @@ async function runSuiteContext(
   // Events are streamed to the UI tagged with the last test that ran.
   if (ctx.afterAll.length > 0 && opts.device) {
     const traceConfig = resolveTraceConfig(opts.config.trace);
-    if (shouldRecord(traceConfig.mode, 0)) {
-      // Find the last test that actually ran (not skipped/filtered) to tag events.
-      // Must account for selection filters and .only so we don't tag with a test that didn't run.
-      const lastRunTest = [...ctx.tests].reverse().find((t) => {
-        if (t.skip) return false;
-        if (hasOnly && !t.only) return false;
-        const fn = parentPrefix ? `${parentPrefix} > ${t.name}` : t.name;
-        return passesTestFilter(fn, opts);
-      });
-      if (lastRunTest && opts.onTestStart) {
-        const lastFullName = parentPrefix ? `${parentPrefix} > ${lastRunTest.name}` : lastRunTest.name;
-        await opts.onTestStart(lastFullName);
+    // Find the last test that actually ran, to tag events. Derived from the
+    // recorded results (which include nested suites, already executed by
+    // this point) rather than re-deriving skip/.only/filter predicates —
+    // a suite whose direct tests were all filtered out can still have run
+    // tests in nested describes, and those are the right attribution target.
+    const lastRunTest = shouldRecord(traceConfig.mode, 0)
+      ? [...collectResults(result)].reverse().find((r) => r.status !== 'skipped')
+      : undefined;
+    // When no test ran at all, skip traced streaming entirely: there is no
+    // test to attach the events to, and streaming them anyway would pollute
+    // whichever test the UI last tagged (potentially one from an earlier
+    // suite) with this suite's hook events.
+    if (lastRunTest) {
+      if (opts.onTestStart) {
+        // attributionOnly: this test already ended — we only re-tag the
+        // afterAll trace events to it, we are not starting it again.
+        await opts.onTestStart(lastRunTest.fullName, { attributionOnly: true });
       }
       const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tapsmith-trace-aa-'));
       const managedCollector = opts.device.tracing._startManaged(traceConfig, tempDir);

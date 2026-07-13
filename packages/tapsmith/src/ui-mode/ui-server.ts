@@ -1197,12 +1197,19 @@ export async function startUIServer(
         switch (response.type) {
           case 'test-start': {
             currentTestFullName = response.fullName;
-            singleWorkerRunningTest = { fullName: response.fullName, filePath: response.filePath, projectName };
+            // Attribution-only re-tags (afterAll hooks) refer to a test that
+            // already ended — don't resurrect it as the "running" test, or a
+            // stop/reconnect during afterAll would mark it interrupted or
+            // replay it as still running.
+            if (!response.attributionOnly) {
+              singleWorkerRunningTest = { fullName: response.fullName, filePath: response.filePath, projectName };
+            }
             broadcast({
               type: 'test-start',
               fullName: response.fullName,
               filePath: response.filePath,
               projectName,
+              attributionOnly: response.attributionOnly,
             });
             break;
           }
@@ -2015,14 +2022,18 @@ export async function startUIServer(
 
           switch (msg.type) {
             case 'test-start': {
+              // currentTest is still updated for attribution-only re-tags
+              // (afterAll hooks) so trace events get tagged to the right
+              // test, but the worker was already 'running' — no status ping.
               worker.currentTest = msg.fullName;
-              broadcastWorkerStatus(worker, 'running');
+              if (!msg.attributionOnly) broadcastWorkerStatus(worker, 'running');
               broadcast({
                 type: 'test-start',
                 fullName: msg.fullName,
                 filePath: msg.filePath,
                 workerId: worker.id,
                 projectName: worker.currentFile?.projectName,
+                attributionOnly: msg.attributionOnly,
               });
               break;
             }

@@ -611,6 +611,160 @@ describe('runner execution', () => {
     expect(order).toEqual(['test', 'afterAll']);
   });
 
+  it('marks the afterAll trace re-tag as attributionOnly so the UI does not restart a finished test', async () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'tapsmith-runner-retag-'));
+    const tracing = new Tracing(async () => undefined, async () => undefined);
+    const mockDevice = {
+      tracing,
+      waitForIdle: vi.fn(async () => {}),
+      _stopDeviceLogStream: vi.fn(),
+      _startDeviceLogStream: vi.fn(),
+      _startDaemonLogStream: vi.fn(),
+      _stopDaemonLogStream: vi.fn(),
+    };
+    const startCalls: Array<{ fullName: string; attributionOnly: boolean }> = [];
+
+    try {
+      pushContext();
+      tapsmithTest.afterAll(async () => {});
+      tapsmithTest('only test', async () => {});
+      const ctx = popContext();
+
+      const result = await runSuiteContext(ctx, '', [], [], makeOpts({
+        config: makeConfig({
+          rootDir: tempRoot,
+          outputDir: 'out',
+          trace: {
+            mode: 'on',
+            network: false,
+            screenshots: false,
+            snapshots: false,
+            sources: false,
+          },
+        }),
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any -- focused runner lifecycle mock
+        device: mockDevice as any,
+        onTestStart: async (fullName, options) => {
+          startCalls.push({ fullName, attributionOnly: options?.attributionOnly ?? false });
+        },
+      }));
+
+      expect(result.tests[0].status).toBe('passed');
+      // Real start first, then the afterAll re-tag for the same (finished)
+      // test — the re-tag must be flagged so UI mode doesn't reset the
+      // test's status or clear its trace.
+      expect(startCalls).toEqual([
+        { fullName: 'only test', attributionOnly: false },
+        { fullName: 'only test', attributionOnly: true },
+      ]);
+    } finally {
+      fs.rmSync(tempRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('attributes the afterAll re-tag to the last run test in a nested suite', async () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'tapsmith-runner-retag-nested-'));
+    const tracing = new Tracing(async () => undefined, async () => undefined);
+    const mockDevice = {
+      tracing,
+      waitForIdle: vi.fn(async () => {}),
+      _stopDeviceLogStream: vi.fn(),
+      _startDeviceLogStream: vi.fn(),
+      _startDaemonLogStream: vi.fn(),
+      _stopDaemonLogStream: vi.fn(),
+    };
+    const startCalls: Array<{ fullName: string; attributionOnly: boolean }> = [];
+
+    try {
+      pushContext();
+      // afterAll on the outer scope; the only tests live in a nested describe.
+      tapsmithAfterAll(async () => {});
+      tapsmithDescribe('inner', () => {
+        tapsmithTest('nested test', async () => {});
+      });
+      const ctx = popContext();
+
+      await runSuiteContext(ctx, '', [], [], makeOpts({
+        config: makeConfig({
+          rootDir: tempRoot,
+          outputDir: 'out',
+          trace: {
+            mode: 'on',
+            network: false,
+            screenshots: false,
+            snapshots: false,
+            sources: false,
+          },
+        }),
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any -- focused runner lifecycle mock
+        device: mockDevice as any,
+        onTestStart: async (fullName, options) => {
+          startCalls.push({ fullName, attributionOnly: options?.attributionOnly ?? false });
+        },
+      }));
+
+      // The outer scope has no direct tests, but the nested test ran — the
+      // re-tag must target it, not skip attribution (which would leave the
+      // hook events tagged to whatever test the UI saw last).
+      expect(startCalls).toEqual([
+        { fullName: 'inner > nested test', attributionOnly: false },
+        { fullName: 'inner > nested test', attributionOnly: true },
+      ]);
+    } finally {
+      fs.rmSync(tempRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('skips the afterAll re-tag and traced streaming when no test ran', async () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'tapsmith-runner-retag-skipped-'));
+    const tracing = new Tracing(async () => undefined, async () => undefined);
+    const startManagedSpy = vi.spyOn(tracing, '_startManaged');
+    const mockDevice = {
+      tracing,
+      waitForIdle: vi.fn(async () => {}),
+      _stopDeviceLogStream: vi.fn(),
+      _startDeviceLogStream: vi.fn(),
+      _startDaemonLogStream: vi.fn(),
+      _stopDaemonLogStream: vi.fn(),
+    };
+    const startCalls: string[] = [];
+    let hookRan = false;
+
+    try {
+      pushContext();
+      tapsmithAfterAll(async () => { hookRan = true; });
+      tapsmithTest.skip('skipped test', async () => {});
+      const ctx = popContext();
+
+      const result = await runSuiteContext(ctx, '', [], [], makeOpts({
+        config: makeConfig({
+          rootDir: tempRoot,
+          outputDir: 'out',
+          trace: {
+            mode: 'on',
+            network: false,
+            screenshots: false,
+            snapshots: false,
+            sources: false,
+          },
+        }),
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any -- focused runner lifecycle mock
+        device: mockDevice as any,
+        onTestStart: async (fullName) => { startCalls.push(fullName); },
+      }));
+
+      expect(result.tests[0].status).toBe('skipped');
+      // The hook still runs, but nothing is re-tagged and no hook collector
+      // is started — there is no test to attribute the events to, and
+      // streaming them would pollute whichever test the UI last tagged.
+      expect(hookRan).toBe(true);
+      expect(startCalls).toEqual([]);
+      expect(startManagedSpy).not.toHaveBeenCalled();
+    } finally {
+      fs.rmSync(tempRoot, { recursive: true, force: true });
+    }
+  });
+
   it('starts device log streaming for each traced test collector', async () => {
     const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'tapsmith-runner-logs-'));
     let activeLogCollector: TraceCollector | null = null;
