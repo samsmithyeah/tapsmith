@@ -83,6 +83,11 @@ export function systemImagePackage(api: number, abi: string): string {
 
 // avdmanager rejects names outside this set.
 const AVD_NAME_RE = /^[a-zA-Z0-9._-]+$/;
+// Real avdmanager device ids include spaces and parens ("Nexus 5",
+// "7in WSVGA (Tablet)"), so allow those — but nothing that cmd.exe or a
+// shell could interpret (the tools are spawned with shell:true on Windows).
+const DEVICE_PROFILE_RE = /^[a-zA-Z0-9 ._()-]+$/;
+const ABI_RE = /^[a-zA-Z0-9._-]+$/;
 
 export function parseCreateAvdArgs(argv: string[]): CreateAvdOptions {
   let api = DEFAULT_API_LEVEL;
@@ -144,8 +149,15 @@ export function parseCreateAvdArgs(argv: string[]): CreateAvdOptions {
   if (!AVD_NAME_RE.test(resolvedName)) {
     throw new Error(`Invalid AVD name "${resolvedName}" — use only letters, digits, ".", "_" and "-"`);
   }
+  if (!DEVICE_PROFILE_RE.test(device)) {
+    throw new Error(`Invalid device profile "${device}" — use an id from \`avdmanager list device\` (e.g. ${DEFAULT_DEVICE_PROFILE})`);
+  }
+  const resolvedAbi = abi ?? defaultAbi();
+  if (!ABI_RE.test(resolvedAbi)) {
+    throw new Error(`Invalid ABI "${resolvedAbi}" — expected e.g. arm64-v8a or x86_64`);
+  }
 
-  return { api, name: resolvedName, device, abi: abi ?? defaultAbi(), force, installTools, help };
+  return { api, name: resolvedName, device, abi: resolvedAbi, force, installTools, help };
 }
 
 function parseApiLevel(value: string): number {
@@ -273,21 +285,43 @@ export function extractCmdlineTools(zipData: Uint8Array, sdkRoot: string): strin
   return destDir;
 }
 
-async function fetchBytes(url: string): Promise<Uint8Array> {
-  const res = await fetch(url);
-  if (!res.ok) throw new Error(`Download failed: HTTP ${res.status} for ${url}`);
-  return new Uint8Array(await res.arrayBuffer());
+/**
+ * Fetch a URL fully into memory, aborting if the whole transfer exceeds
+ * `timeoutMs` so a dead connection can't hang the CLI indefinitely.
+ */
+async function fetchBytes(url: string, timeoutMs: number): Promise<Uint8Array> {
+  let res: Response;
+  try {
+    res = await fetch(url, { signal: AbortSignal.timeout(timeoutMs) });
+    if (!res.ok) throw new Error(`Download failed: HTTP ${res.status} for ${url}`);
+    return new Uint8Array(await res.arrayBuffer());
+  } catch (err) {
+    if (err instanceof Error && err.name === 'TimeoutError') {
+      throw new Error(`Download timed out after ${Math.round(timeoutMs / 1000)}s: ${url}. Check your network and retry.`);
+    }
+    throw err;
+  }
 }
+
+const INDEX_FETCH_TIMEOUT_MS = 30_000;
+// The cmdline-tools zip is ~150 MB — allow for slow links, but still bail
+// out eventually instead of hanging a CI pipeline forever.
+const ZIP_FETCH_TIMEOUT_MS = 15 * 60_000;
 
 async function installCmdlineTools(sdkRoot: string): Promise<void> {
   console.log(dim('Looking up the latest version…'));
-  const indexRes = await fetch(SDK_REPO_INDEX_URL);
-  if (!indexRes.ok) throw new Error(`Could not reach Google's SDK repository (HTTP ${indexRes.status}). Check your network and retry.`);
-  const zipName = latestCmdlineToolsZip(await indexRes.text(), cmdlineToolsPlatform());
+  let indexXml: string;
+  try {
+    indexXml = new TextDecoder().decode(await fetchBytes(SDK_REPO_INDEX_URL, INDEX_FETCH_TIMEOUT_MS));
+  } catch (err) {
+    const detail = err instanceof Error ? err.message : String(err);
+    throw new Error(`Could not reach Google's SDK repository (${detail}). Check your network and retry.`);
+  }
+  const zipName = latestCmdlineToolsZip(indexXml, cmdlineToolsPlatform());
   if (!zipName) throw new Error('Could not find a cmdline-tools package in Google\'s SDK repository index.');
 
   console.log(dim(`Downloading ${zipName} (~150 MB)…`));
-  const zipData = await fetchBytes(`https://dl.google.com/android/repository/${zipName}`);
+  const zipData = await fetchBytes(`https://dl.google.com/android/repository/${zipName}`, ZIP_FETCH_TIMEOUT_MS);
 
   const dest = extractCmdlineTools(zipData, sdkRoot);
   console.log(green(`✓ Command-line tools installed ${dim(`(${dest})`)}`));
@@ -380,7 +414,7 @@ function toolEnv(): NodeJS.ProcessEnv {
 // whitespace (SDK under "C:\Users\First Last\...") or cmd metacharacters
 // (system image ids contain `;`).
 function winQuote(value: string): string {
-  return /[\s;&^()]/.test(value) ? `"${value}"` : value;
+  return /[\s;&^()|<>=,]/.test(value) ? `"${value}"` : value;
 }
 
 function run(command: string, args: string[], env: NodeJS.ProcessEnv, stdinResponse?: string): Promise<void> {

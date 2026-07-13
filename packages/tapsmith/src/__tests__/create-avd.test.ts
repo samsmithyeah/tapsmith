@@ -60,6 +60,18 @@ describe('parseCreateAvdArgs()', () => {
     expect(() => parseCreateAvdArgs(['--name', 'has spaces'])).toThrow(/Invalid AVD name/);
   });
 
+  it('accepts real avdmanager device ids, including ones with spaces and parens', () => {
+    expect(parseCreateAvdArgs(['--device', 'Nexus 5']).device).toBe('Nexus 5');
+    expect(parseCreateAvdArgs(['--device', '7in WSVGA (Tablet)']).device).toBe('7in WSVGA (Tablet)');
+  });
+
+  it('rejects device profiles and ABIs containing shell metacharacters', () => {
+    expect(() => parseCreateAvdArgs(['--device', 'pixel_7"&calc'])).toThrow(/Invalid device profile/);
+    expect(() => parseCreateAvdArgs(['--device', 'a|b'])).toThrow(/Invalid device profile/);
+    expect(() => parseCreateAvdArgs(['--abi', 'x86_64;rm -rf /'])).toThrow(/Invalid ABI/);
+    expect(() => parseCreateAvdArgs(['--abi', '%PATH%'])).toThrow(/Invalid ABI/);
+  });
+
   it('rejects unknown flags and missing values', () => {
     expect(() => parseCreateAvdArgs(['--bogus'])).toThrow(/Unknown flag/);
     expect(() => parseCreateAvdArgs(['--name'])).toThrow(/Missing value/);
