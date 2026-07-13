@@ -121,16 +121,26 @@ function App() {
   /** Maps trace key → workerId that ran it. */
   const testWorkerMapRef = useRef<Map<string, number>>(new Map());
   /**
-   * Maps trace key → highest actionIndex seen so far (post-shift), and
-   * trace key → index offset applied to hook events streamed after the test
-   * ended. The afterAll trace collector restarts actionIndex at 0, which
-   * would collide with the test's own indices — same actionIndex means
-   * clobbered screenshot/hierarchy keys and a mis-targeted auto-pin. On an
-   * attribution-only test-start we set the offset to (max seen + 1) so
-   * afterAll events continue the test's index sequence instead.
+   * Hook-event index bookkeeping, per trace key. afterAll hooks run on a
+   * fresh collector whose actionIndex restarts at 0, which would collide
+   * with the test's own indices — same actionIndex means clobbered
+   * screenshot/hierarchy keys and a mis-targeted auto-pin.
+   *
+   * - maxActionIndexRef: highest actionIndex seen (post-shift), INCLUDING
+   *   internal markers like __final_screenshot — their screenshot keys
+   *   occupy an index slot that shifted hook events must not reuse.
+   * - rowCountRef: number of visible (non-internal, completed) rows — the
+   *   positional index space that the ActionsPanel, pinning, and
+   *   `actionEvents[selectedIndex]` all use.
+   * - hookShiftRef: set on an attribution-only test-start. `offset` (max
+   *   any + 1) shifts hook events past every reserved slot; `pinDelta`
+   *   (offset − row count) converts a shifted actionIndex back to its
+   *   positional row index, which trails it by the number of reserved
+   *   non-row slots below.
    */
   const maxActionIndexRef = useRef<Map<string, number>>(new Map());
-  const hookIndexOffsetRef = useRef<Map<string, number>>(new Map());
+  const rowCountRef = useRef<Map<string, number>>(new Map());
+  const hookShiftRef = useRef<Map<string, { offset: number; pinDelta: number }>>(new Map());
   /**
    * Auto-follow control for multi-worker mode.
    * - 'auto': follow the latest test start (single-worker behavior)
@@ -447,7 +457,13 @@ function App() {
     const completed = actionEvents[selectedIndex];
     if (completed) return completed;
     const inFlight = currentTrace?.inFlightAction;
-    if (!inFlight || inFlight.actionIndex !== selectedIndex) return undefined;
+    // selectedIndex is positional; inFlight.actionIndex is the event's own
+    // index, which runs ahead by pinDelta for shifted hook events (see
+    // hookShiftRef). Convert before comparing.
+    const inFlightPinDelta = viewedTraceKey
+      ? (hookShiftRef.current.get(viewedTraceKey)?.pinDelta ?? 0)
+      : 0;
+    if (!inFlight || inFlight.actionIndex - inFlightPinDelta !== selectedIndex) return undefined;
     if (inFlight.kind === 'action') {
       return {
         type: 'action',
@@ -682,14 +698,19 @@ function App() {
         // 'running' (run-end would then reset it to idle, losing its
         // pass/fail mark) and don't clear its accumulated trace actions.
         // The afterAll collector restarts actionIndex at 0, so shift its
-        // events past the test's own indices (see hookIndexOffsetRef).
+        // events past the test's own indices (see hookShiftRef).
         if (msg.attributionOnly) {
           activeTestRef.current = key;
-          hookIndexOffsetRef.current.set(key, (maxActionIndexRef.current.get(key) ?? -1) + 1);
+          const offset = (maxActionIndexRef.current.get(key) ?? -1) + 1;
+          hookShiftRef.current.set(key, {
+            offset,
+            pinDelta: offset - (rowCountRef.current.get(key) ?? 0),
+          });
           break;
         }
         maxActionIndexRef.current.delete(key);
-        hookIndexOffsetRef.current.delete(key);
+        rowCountRef.current.delete(key);
+        hookShiftRef.current.delete(key);
         // Mark this test (and its parent describe/file) as running — scoped
         // to the project running it so a sibling project's copy of the same
         // file doesn't pulse blue too.
@@ -794,23 +815,26 @@ function App() {
         let ev = msg.event;
         // Events streamed after the test ended (afterAll hooks) come from a
         // fresh collector whose actionIndex restarts at 0. Shift them past
-        // the test's own rows so screenshot/hierarchy keys don't clobber the
-        // test's captures and auto-pin lands on the hook's row, not row 0.
-        const hookOffset = hookIndexOffsetRef.current.get(key) ?? 0;
-        if (hookOffset > 0 && 'actionIndex' in ev) {
-          ev = { ...ev, actionIndex: ev.actionIndex + hookOffset };
+        // every index the test used — its rows AND reserved internal-marker
+        // slots — so screenshot/hierarchy keys don't clobber the test's
+        // captures (including the final screenshot's).
+        const hookShift = hookShiftRef.current.get(key);
+        if (hookShift && 'actionIndex' in ev) {
+          ev = { ...ev, actionIndex: ev.actionIndex + hookShift.offset };
         }
         // Skip internal marker events from the visible event lists and from
         // auto-pin — their actionIndex is one past the last real event.
         const isInternal = ev.type === 'action' && ev.action === '__final_screenshot';
         const isStarted = msg.lifecycle === 'started';
-        // Track the highest visible row index so an attribution-only re-tag
-        // can compute the hook offset. Internal markers are excluded — they
-        // never become rows, and counting them would break the alignment
-        // between shifted actionIndex and the panel's positional row index.
-        if (!isInternal && (ev.type === 'action' || ev.type === 'assertion')
+        // Track the highest actionIndex seen — internal markers included —
+        // and the visible row count. Both feed hookShiftRef (see its doc).
+        if ((ev.type === 'action' || ev.type === 'assertion')
           && ev.actionIndex > (maxActionIndexRef.current.get(key) ?? -1)) {
           maxActionIndexRef.current.set(key, ev.actionIndex);
+        }
+        const isVisibleRow = !isInternal && (ev.type === 'action' || ev.type === 'assertion');
+        if (isVisibleRow && !isStarted) {
+          rowCountRef.current.set(key, (rowCountRef.current.get(key) ?? 0) + 1);
         }
 
         setTestTraces((prev) => {
@@ -916,14 +940,17 @@ function App() {
         });
 
         // Auto-pin to latest action, but only when viewing the running test.
-        // Skip internal markers (e.g. __final_screenshot) — their actionIndex
-        // is one past the last real event, so pinning to them leaves the UI
-        // with nothing selected once the test ends.
+        // Skip internal markers (e.g. __final_screenshot) — they never
+        // become rows, so pinning to them leaves the UI with nothing
+        // selected once the test ends.
         // Pin on both 'started' and 'completed' so the in-flight row is
         // highlighted while running, then stays selected after it lands.
-        if (!isInternal && (ev.type === 'action' || ev.type === 'assertion') && key === activeTestRef.current
+        // Pinning is positional: for shifted hook events the actionIndex
+        // runs ahead of the row position by the reserved-slot count, so
+        // subtract pinDelta (0 for the test's own events).
+        if (isVisibleRow && key === activeTestRef.current
           && (!viewedTestNameRef.current || viewedTestNameRef.current === testName)) {
-          setPinnedIndex(ev.actionIndex);
+          setPinnedIndex(ev.actionIndex - (hookShift?.pinDelta ?? 0));
         }
         break;
       }
