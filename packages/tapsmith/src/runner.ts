@@ -1757,26 +1757,31 @@ async function runSuiteContext(
       if (cb) afterAllCollector.setEventCallback(cb);
       opts.device.tracing._stopManaged();
 
-      afterAllCollector.startGroup('afterAll Hooks');
-      await withActiveTraceCollector(afterAllCollector, async () => {
-        for (const hook of ctx.afterAll) {
+      try {
+        afterAllCollector.startGroup('afterAll Hooks');
+        await withActiveTraceCollector(afterAllCollector, async () => {
+          for (const hook of ctx.afterAll) {
+            try {
+              await invokeHookWithTestScope(hook, suiteFixtures, suiteRegistry);
+            } catch (err) {
+              process.stderr.write(`[tapsmith] afterAll hook error: ${err instanceof Error ? err.message : String(err)}\n`);
+            }
+          }
+        });
+        afterAllCollector.endGroup();
+        await afterAllCollector.flushPendingCaptures();
+        if (targetTracePath && actionIndexOffset > 0) {
           try {
-            await invokeHookWithTestScope(hook, suiteFixtures, suiteRegistry);
-          } catch (err) {
-            process.stderr.write(`[tapsmith] afterAll hook error: ${err instanceof Error ? err.message : String(err)}\n`);
+            appendEventsToTrace(targetTracePath, afterAllCollector, Date.now(), actionIndexOffset);
+          } catch {
+            // Trace amendment is best-effort, like packaging.
           }
         }
-      });
-      afterAllCollector.endGroup();
-      await afterAllCollector.flushPendingCaptures();
-      if (targetTracePath && actionIndexOffset > 0) {
-        try {
-          appendEventsToTrace(targetTracePath, afterAllCollector, Date.now(), actionIndexOffset);
-        } catch {
-          // Trace amendment is best-effort, like packaging.
-        }
+      } finally {
+        // The temp dir must go even if something above escapes the
+        // per-hook catches — a leak here also leaves screenshots behind.
+        afterAllCollector.cleanup();
       }
-      afterAllCollector.cleanup();
     } else {
       for (const hook of ctx.afterAll) {
         try {
