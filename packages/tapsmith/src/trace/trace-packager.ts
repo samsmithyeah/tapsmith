@@ -261,12 +261,17 @@ export function appendEventsToTrace(
   if (files['metadata.json']) {
     try {
       const metadata = JSON.parse(decoder.decode(files['metadata.json'])) as TraceMetadata;
+      // Guard each field before arithmetic: a missing or malformed value
+      // (older/foreign archive) would otherwise produce NaN, which
+      // JSON.stringify serializes as null — silently corrupting the
+      // metadata and breaking readTraceActionCount on any later append.
+      const asNumber = (v: unknown): number => (typeof v === 'number' && Number.isFinite(v) ? v : 0);
       metadata.actionCount = Math.max(
-        metadata.actionCount,
+        asNumber(metadata.actionCount),
         actionIndexOffset + collector.currentActionIndex,
       );
-      metadata.endTime = Math.max(metadata.endTime, endTime);
-      metadata.screenshotCount += collector.screenshots.length;
+      metadata.endTime = Math.max(asNumber(metadata.endTime), endTime);
+      metadata.screenshotCount = asNumber(metadata.screenshotCount) + collector.screenshots.length;
       zipData['metadata.json'] = encoder.encode(JSON.stringify(metadata, null, 2));
     } catch {
       // Unparseable metadata — keep the original.
@@ -281,7 +286,7 @@ export function appendEventsToTrace(
       // Skip missing screenshots
     }
   }
-  for (const hierarchy of collector.hierarchies as HierarchyCapture[]) {
+  for (const hierarchy of collector.hierarchies) {
     zipData[shiftArchivePath(hierarchy.archivePath, actionIndexOffset)] =
       encoder.encode(hierarchy.xml);
   }
@@ -289,6 +294,15 @@ export function appendEventsToTrace(
   const zipped = zipSync(zipData, { level: 6 });
   // Write-then-rename so a crash mid-write can't leave a truncated archive.
   const tmpPath = `${zipPath}.tmp`;
-  fs.writeFileSync(tmpPath, zipped);
-  fs.renameSync(tmpPath, zipPath);
+  try {
+    fs.writeFileSync(tmpPath, zipped);
+    fs.renameSync(tmpPath, zipPath);
+  } catch (err) {
+    try {
+      fs.rmSync(tmpPath, { force: true });
+    } catch {
+      // best-effort cleanup
+    }
+    throw err;
+  }
 }

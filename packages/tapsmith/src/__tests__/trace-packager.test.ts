@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as os from 'node:os';
-import { unzipSync, strFromU8 } from 'fflate';
+import { unzipSync, zipSync, strFromU8 } from 'fflate';
 import { TraceCollector } from '../trace/trace-collector.js';
 import { appendEventsToTrace, packageTrace, readTraceActionCount } from '../trace/trace-packager.js';
 import type { TraceConfig, TraceDeviceInfo } from '../trace/types.js';
@@ -345,6 +345,32 @@ describe('appendEventsToTrace', () => {
     expect(metadata.actionCount).toBe(4);
     expect(metadata.screenshotCount).toBe(1);
     expect(metadata.testName).toBe('last test');
+  });
+
+  it('sanitizes malformed metadata fields instead of serializing NaN', () => {
+    const zipPath = packageBaseTrace();
+    // Corrupt the archive's metadata the way an older/foreign trace might
+    // look: numeric fields missing or carrying the wrong type.
+    const files = unzipSync(new Uint8Array(fs.readFileSync(zipPath)));
+    const metadata = JSON.parse(strFromU8(files['metadata.json']));
+    metadata.actionCount = 'two';
+    delete metadata.endTime;
+    delete metadata.screenshotCount;
+    files['metadata.json'] = new TextEncoder().encode(JSON.stringify(metadata));
+    fs.writeFileSync(zipPath, zipSync(files));
+
+    const hookCollector = new TraceCollector(makeConfig(), path.join(tmp, 'hook'));
+    hookCollector.startGroup('afterAll Hooks');
+    hookCollector.addActionEvent(makeActionEvent());
+    hookCollector.endGroup();
+    appendEventsToTrace(zipPath, hookCollector, 5000, 3);
+
+    const amended = JSON.parse(
+      strFromU8(unzipSync(new Uint8Array(fs.readFileSync(zipPath)))['metadata.json']),
+    );
+    expect(amended.actionCount).toBe(4); // 3 offset + 1 hook action, not NaN/null
+    expect(amended.endTime).toBe(5000);
+    expect(amended.screenshotCount).toBe(0);
   });
 
   it('leaves the archive untouched when the hook collector recorded nothing', () => {
