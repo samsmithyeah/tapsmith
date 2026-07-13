@@ -140,6 +140,7 @@ function shouldPrintBannerForCommand(args: CliArgs): boolean {
     'setup-ios',
     'setup-ios-device',
     'build-ios-agent',
+    'create-avd',
     'configure-ios-network',
     'refresh-ios-network',
     'verify-ios-network',
@@ -1294,6 +1295,7 @@ function parseArgs(argv: string[]): CliArgs {
       // re-parses from process.argv after the command name.
       if (
         arg === 'build-ios-agent'
+        || arg === 'create-avd'
         || arg === 'configure-ios-network'
         || arg === 'refresh-ios-network'
         || arg === 'verify-ios-network'
@@ -1678,13 +1680,14 @@ ${bold('Usage:')}
   tapsmith setup-ios                 First-run setup for iOS network capture (macOS only)
   tapsmith setup-ios-device          Preflight checklist for physical iOS device testing
   tapsmith build-ios-agent           Build the signed TapsmithAgent runner for physical iOS devices
+  tapsmith create-avd                Create an Android AVD that supports HTTPS network capture
   tapsmith configure-ios-network <udid>   Generate a network capture profile (.mobileconfig) for a physical iOS device
   tapsmith refresh-ios-network <udid>     Regenerate the network capture profile after a host Wi-Fi change
   tapsmith verify-ios-network <udid>      Verify HTTPS capture for a normal system-trust client on a physical iOS device
   tapsmith init                      Initialize a new Tapsmith project (interactive wizard)
   tapsmith init --yes [--json]       Non-interactive init for scripts/AI agents (see init --help)
   tapsmith verify [--json]           Run one test end-to-end to prove the setup works
-  tapsmith doctor [--json]           Check system health (--json includes fixes + device inventory)
+  tapsmith doctor [--json] [-c file] Check system health (--json includes fixes + device inventory)
   tapsmith mcp-server [--config file] Run MCP server for LLM/agent integration (stdio transport)
   tapsmith --version                 Print version
   tapsmith --help                    Show this help
@@ -1726,6 +1729,7 @@ async function main(): Promise<void> {
   // help below.
   const subcommandsWithOwnHelp = new Set<string>([
     'build-ios-agent',
+    'create-avd',
     'configure-ios-network',
     'refresh-ios-network',
     'verify-ios-network',
@@ -1866,6 +1870,13 @@ async function main(): Promise<void> {
     const { runInit } = await import('./init.js');
     const forwardedArgv = forwardedArgs('init');
     await runInit(forwardedArgv);
+    return;
+  }
+
+  if (args.command === 'create-avd') {
+    const { runCreateAvd } = await import('./create-avd.js');
+    const forwardedArgv = forwardedArgs('create-avd');
+    await runCreateAvd(forwardedArgv);
     return;
   }
 

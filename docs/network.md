@@ -730,11 +730,11 @@ The Rust daemon (`tapsmith-core`) runs a local MITM proxy. Traffic routing depen
 
 | Platform | Mechanism | Scope |
 |---|---|---|
-| **Android** | `adb reverse` + `http_proxy` system setting | All apps on the emulator/device |
+| **Android** | `iptables` transparent redirect (rooted emulator images), falling back to the global HTTP proxy setting | All apps on the emulator/device |
 | **iOS simulator** | macOS Network Extension (per-PID filtering) | Only the simulator's process tree |
 | **iOS physical** | Wi-Fi proxy via `.mobileconfig` profile | System-wide (all apps on the device) |
 
-HTTPS is decrypted using an auto-generated CA certificate installed on the device. On iOS simulators, this is injected transparently via `xcrun simctl keychain add-root-cert`. On Android, it is pushed via ADB. Apps or SDKs that use embedded roots, certificate pinning, custom TLS verification, or another transport Tapsmith cannot speak may still reject that CA. Configure `networkPassthroughHosts` for those hosts; HTTP/2-capable clients that reject the generated certificate may also be tunneled dynamically.
+HTTPS is decrypted using an auto-generated CA certificate installed on the device. On iOS simulators, this is injected transparently via `xcrun simctl keychain add-root-cert`. On Android, it is installed into the system trust store via `adb root`, which requires a rootable emulator image — see [Android emulator image requirements](#android-emulator-image-requirements). Apps or SDKs that use embedded roots, certificate pinning, custom TLS verification, or another transport Tapsmith cannot speak may still reject that CA. Configure `networkPassthroughHosts` for those hosts; HTTP/2-capable clients that reject the generated certificate may also be tunneled dynamically.
 
 Captured requests appear in the trace viewer's **Network tab** alongside screenshots, view hierarchy snapshots, and console output.
 
@@ -850,11 +850,43 @@ iOS simulators are already per-PID filtered by the macOS Network Extension, so s
 
 ### Platform differences
 
-**Android emulators/devices:** The HTTP proxy is set globally via `adb shell settings put global http_proxy`, so every app and system service on the device routes through it. Use `networkHosts` or `networkIgnoreHosts` to reduce noise in traces.
+**Android emulators/devices:** On rootable emulator images, traffic is redirected to the proxy transparently with `iptables`. Where root is unavailable, the HTTP proxy is instead set globally via `adb shell settings put global http_proxy`. Either way, every app and system service on the device routes through it -- use `networkHosts` or `networkIgnoreHosts` to reduce noise in traces. HTTPS decryption additionally requires a rootable (non-Play) emulator image; see [Android emulator image requirements](#android-emulator-image-requirements).
 
 **iOS simulators:** The macOS Network Extension intercepts traffic per-PID, filtering to only the simulator's process tree. Parallel iOS workers each get their own isolated capture session. Host browser traffic is never affected. See [iOS Network Capture](ios-network-capture.md) for first-run setup (a one-time System Extension approval).
 
 **iOS physical devices:** A Wi-Fi proxy configuration profile (`.mobileconfig`) routes the device's traffic through the host Mac. This is system-wide -- there is no per-app filtering at the OS level. Use `networkHosts` to scope what appears in the trace. See [iOS Network Capture](ios-network-capture.md#physical-ios-devices) for the device-specific setup flow.
+
+### Android emulator image requirements
+
+HTTPS decryption on Android emulators requires `adb root`, which only works on **Google APIs** (`google_apis`) and AOSP system images. **Google Play** images (`google_apis_playstore`) are production builds on which `adbd` cannot restart as root, so Tapsmith cannot install its CA certificate into the system trust store or set up the `iptables` redirect. On a Play image, tests still run and plain-HTTP traffic is still captured through the global proxy fallback, but HTTPS traffic is not decrypted and Tapsmith prints this at startup:
+
+```
+Network capture warning: Failed to install CA cert on device: Device does not support
+adb root — this emulator runs a Google Play (google_apis_playstore) system image,
+which blocks root. Recreate the AVD with a Google APIs image (`npx tapsmith create-avd`)
+to enable HTTPS capture — HTTPS traffic will not be captured
+iptables redirect unavailable; using Android system HTTP proxy fallback
+```
+
+Android Studio's Device Manager preselects Google Play images for most phone profiles (marked with a Play Store icon next to the system image). When creating an AVD for Tapsmith, pick an image from the **Google APIs** tab instead — or let Tapsmith do it:
+
+```bash
+npx tapsmith create-avd
+```
+
+This downloads the Google APIs system image for your host architecture and creates a ready-to-use AVD (`Tapsmith_Phone_API_36` by default; see `npx tapsmith create-avd --help` for `--api`, `--name`, `--device`, and `--abi`). If the Android SDK command-line tools are missing — Android Studio doesn't install them by default — the command offers to install those too. The equivalent manual commands:
+
+```bash
+sdkmanager "system-images;android-36;google_apis;arm64-v8a"   # use x86_64 on Intel hosts
+avdmanager create avd -n Tapsmith_Phone_API_36 \
+  -k "system-images;android-36;google_apis;arm64-v8a" -d medium_phone
+```
+
+`npx tapsmith doctor` flags any existing AVD that uses a Google Play image.
+
+To check an existing AVD, look at `tag.id` in `~/.android/avd/<name>.avd/config.ini`: `google_apis` (or `default`/`aosp_atd`) supports HTTPS capture; `google_apis_playstore` does not.
+
+Manually installing `~/.tapsmith/ca.pem` as a *user* CA on a Play image is possible but rarely sufficient: apps targeting API 24+ do not trust user-installed CAs unless they opt in via `network_security_config.xml`. Unless your test build has that opt-in, use a Google APIs image instead.
 
 ---
 

@@ -12,7 +12,7 @@ export default defineConfig({
   screenshot: "only-on-failure",
   workers: 2,
   trace: { mode: "retain-on-failure", daemonLogs: true },
-  avd: "Tapsmith_Generic_Phone_API_35",
+  avd: "Tapsmith_Phone_API_36",
   agentApk: "../agent/app/build/outputs/apk/debug/app-debug.apk",
   agentTestApk:
     "../agent/app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk",
