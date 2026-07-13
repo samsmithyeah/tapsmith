@@ -266,10 +266,14 @@ export function appendEventsToTrace(
       // JSON.stringify serializes as null — silently corrupting the
       // metadata and breaking readTraceActionCount on any later append.
       const asNumber = (v: unknown): number => (typeof v === 'number' && Number.isFinite(v) ? v : 0);
-      metadata.actionCount = Math.max(
-        asNumber(metadata.actionCount),
-        actionIndexOffset + collector.currentActionIndex,
-      );
+      // Only actions move actionCount — a collector holding just console or
+      // error events would otherwise bump it by the offset's +1 slack.
+      metadata.actionCount = collector.currentActionIndex > 0
+        ? Math.max(
+          asNumber(metadata.actionCount),
+          actionIndexOffset + collector.currentActionIndex,
+        )
+        : asNumber(metadata.actionCount);
       metadata.endTime = Math.max(asNumber(metadata.endTime), endTime);
       metadata.screenshotCount = asNumber(metadata.screenshotCount) + collector.screenshots.length;
       zipData['metadata.json'] = encoder.encode(JSON.stringify(metadata, null, 2));
@@ -280,8 +284,9 @@ export function appendEventsToTrace(
 
   for (const screenshot of collector.screenshots) {
     try {
+      // Buffer is a Uint8Array — no copy needed for fflate.
       zipData[shiftArchivePath(screenshot.archivePath, actionIndexOffset)] =
-        new Uint8Array(fs.readFileSync(screenshot.diskPath));
+        fs.readFileSync(screenshot.diskPath);
     } catch {
       // Skip missing screenshots
     }

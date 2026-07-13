@@ -373,6 +373,23 @@ describe('appendEventsToTrace', () => {
     expect(amended.screenshotCount).toBe(0);
   });
 
+  it('does not bump actionCount when the hook collector has events but no actions', () => {
+    const zipPath = packageBaseTrace();
+
+    // Console entries record events without advancing the action index —
+    // actionCount must not absorb the offset's +1 slack in that case.
+    const hookCollector = new TraceCollector(makeConfig(), path.join(tmp, 'hook'));
+    hookCollector.addLogcatEntry('log', 'teardown message');
+    appendEventsToTrace(zipPath, hookCollector, Date.now(), readTraceActionCount(zipPath) + 1);
+
+    const files = unzipSync(new Uint8Array(fs.readFileSync(zipPath)));
+    const metadata = JSON.parse(strFromU8(files['metadata.json']));
+    expect(metadata.actionCount).toBe(2);
+    const events = strFromU8(files['trace.json']).trim().split('\n')
+      .map((line) => JSON.parse(line) as { type: string });
+    expect(events.filter((e) => e.type === 'console')).toHaveLength(1);
+  });
+
   it('leaves the archive untouched when the hook collector recorded nothing', () => {
     const zipPath = packageBaseTrace();
     const before = fs.readFileSync(zipPath);
