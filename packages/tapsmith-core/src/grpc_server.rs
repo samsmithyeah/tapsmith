@@ -394,6 +394,16 @@ impl TapsmithServiceImpl {
             .map_err(|e| Status::failed_precondition(e.to_string()))
     }
 
+    /// Whether the Android soft keyboard is currently shown, per the IME's
+    /// `mInputShown` flag. Propagates the dumpsys failure rather than defaulting
+    /// to a value, so callers can distinguish "not shown" from "check failed".
+    async fn android_is_keyboard_shown(&self, serial: &str) -> Result<bool, Status> {
+        let output = adb::shell_lenient(serial, "dumpsys input_method | grep mInputShown")
+            .await
+            .map_err(|e| Status::internal(e.to_string()))?;
+        Ok(output.contains("mInputShown=true"))
+    }
+
     /// Extract connection params under a brief read lock so TCP I/O
     /// happens without holding the lock.
     #[allow(clippy::result_large_err)] // Status is tonic's standard error type
@@ -3953,10 +3963,7 @@ impl proto::tapsmith_service_server::TapsmithService for TapsmithServiceImpl {
             }
             Platform::Android => {
                 let serial = self.active_serial().await?;
-                let output = adb::shell_lenient(&serial, "dumpsys input_method | grep mInputShown")
-                    .await
-                    .map_err(|e| Status::internal(e.to_string()))?;
-                let shown = output.contains("mInputShown=true");
+                let shown = self.android_is_keyboard_shown(&serial).await?;
                 Ok(Response::new(proto::IsKeyboardShownResponse {
                     request_id,
                     shown,
@@ -3987,10 +3994,7 @@ impl proto::tapsmith_service_server::TapsmithService for TapsmithServiceImpl {
                 // Flutter). Only send BACK when the keyboard is actually shown,
                 // otherwise BACK would pop the current screen / background the app.
                 let serial = self.active_serial().await?;
-                let shown = adb::shell_lenient(&serial, "dumpsys input_method | grep mInputShown")
-                    .await
-                    .map(|o| o.contains("mInputShown=true"))
-                    .unwrap_or(false);
+                let shown = self.android_is_keyboard_shown(&serial).await?;
                 if shown {
                     self.adb_action(request_id, "input keyevent KEYCODE_BACK")
                         .await
