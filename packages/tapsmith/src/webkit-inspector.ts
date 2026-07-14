@@ -319,7 +319,7 @@ export class WebKitInspectorClient {
       setTimeout(() => {
         // The socket may have been torn down in the meantime — a throw here
         // would be an uncaught exception in a timer callback.
-        if (!this._socket) return;
+        if (!this._socket || this._socket.destroyed) return;
         this._sendMessage({
           __selector: '_rpc_getConnectedApplications:',
           __argument: {
@@ -487,9 +487,9 @@ export class WebKitInspectorClient {
 function resolveBootedSimulatorByName(name: string, timeoutMs: number): string | null {
   try {
     const out = execSync('xcrun simctl list devices booted -j', { encoding: 'utf-8', timeout: timeoutMs });
-    const parsed = JSON.parse(out) as { devices?: Record<string, Array<{ udid: string; name: string }>> };
+    const parsed = JSON.parse(out) as { devices?: Record<string, Array<{ udid: string; name: string }>> } | null;
     const matches: string[] = [];
-    for (const devices of Object.values(parsed.devices ?? {})) {
+    for (const devices of Object.values(parsed?.devices ?? {})) {
       for (const d of devices) {
         if (d.name === name) matches.push(d.udid);
       }

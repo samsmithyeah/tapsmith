@@ -156,26 +156,62 @@ describe('Device.webview() on iOS — bounded connection setup (PILOT-288)', () 
     expect(second.connectToPage).toHaveBeenCalledWith('PID:100', 1);
   });
 
-  it('retries on a fresh inspector session when every page attempt in a round fails', async () => {
+  it('retries on a fresh inspector session when a page setup fails', async () => {
     const target: MockTarget = { appId: 'PID:100', bundleId: 'dev.tapsmith.testapp', name: 'TestApp', pages: [page(1)] };
+    const makeGood = () =>
+      makeMockInspector({ listTargets: vi.fn(async (): Promise<MockTarget[]> => [target]) });
     const first = makeMockInspector({
       listTargets: vi.fn(async (): Promise<MockTarget[]> => [target]),
       connectToPage: vi.fn(async () => {
         throw new Error('Timed out waiting for WebView target — no Target.targetCreated received');
       }),
     });
-    const second = makeMockInspector({
+    const goods: ReturnType<typeof makeMockInspector>[] = [];
+    let handedFirst = false;
+    h.nextInspector = () => {
+      if (!handedFirst) {
+        handedFirst = true;
+        return first;
+      }
+      const good = makeGood();
+      goods.push(good);
+      return good;
+    };
+
+    const device = makeIosDevice(10_000);
+    await device.webview();
+
+    // The failed setup must never be retried on the same connection.
+    expect(first.close).toHaveBeenCalled();
+    expect(first.connectToPage).toHaveBeenCalledTimes(1);
+    const winner = goods.find(g => g.connectToPage.mock.calls.length > 0);
+    expect(winner?.connectToPage).toHaveBeenCalledWith('PID:100', 1);
+  });
+
+  it('recycles the session after a failed setup but still tries older pages in the same round', async () => {
+    // Page 7 (newest) never comes up; page 3 is live. The failed setup on
+    // page 7 must not be followed by a setup for page 3 on the SAME
+    // connection (late Target.targetCreated cross-wire), nor may page 3
+    // starve behind round restarts.
+    const target: MockTarget = { appId: 'PID:100', bundleId: 'dev.tapsmith.testapp', name: 'TestApp', pages: [page(3), page(7)] };
+    const first = makeMockInspector({
       listTargets: vi.fn(async (): Promise<MockTarget[]> => [target]),
+      connectToPage: vi.fn(async (_appId: string, pageId: number) => {
+        if (pageId === 7) throw new Error('Setting up the WebView page session timed out after 5000ms');
+        throw new Error('older page must not reuse a connection after a failed setup');
+      }),
     });
+    const second = makeMockInspector();
     const inspectors = [first, second];
     h.nextInspector = () => inspectors.shift() ?? makeMockInspector();
 
     const device = makeIosDevice(10_000);
     await device.webview();
 
+    expect(first.connectToPage).toHaveBeenCalledTimes(1);
+    expect(first.connectToPage).toHaveBeenCalledWith('PID:100', 7);
     expect(first.close).toHaveBeenCalled();
-    expect(second.connectToPage).toHaveBeenCalledWith('PID:100', 1);
-    expect(h.constructed).toHaveLength(2);
+    expect(second.connectToPage).toHaveBeenCalledWith('PID:100', 3);
   });
 
   it('keeps waiting (and eventually times out) when no inspectable pages appear', async () => {

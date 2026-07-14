@@ -76,7 +76,7 @@ describe('WebKitInspectorClient connection lifecycle', () => {
   it('rejects connect() when nothing is listening on the socket path', async () => {
     const client = new WebKitInspectorClient();
     await expect(
-      client.connect(path.join(os.tmpdir(), 'tapsmith-inspector-test-nonexistent.sock')),
+      client.connect(path.join(os.tmpdir(), `tapsmith-inspector-test-nonexistent-${process.pid}-${Math.random().toString(36).slice(2)}.sock`)),
     ).rejects.toThrow();
     expect(client.isConnected()).toBe(false);
   });

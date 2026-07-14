@@ -1451,8 +1451,10 @@ export class Device {
         outer: for (const appTarget of candidates) {
           const pages = appTarget.pages.slice().sort((a, b) => b.id - a.id);
           for (const page of pages) {
+            if (!inspector) break outer;
             const pageDesc = `${page.title || page.url || page.id}`;
             appendWebViewConnectLog(log, `Connecting to iOS WebView page "${pageDesc}" (app ${appTarget.appId})`);
+            let sessionReady = false;
             try {
               const attemptDeadline = Math.min(Date.now() + WEBVIEW_CONNECT_ATTEMPT_TIMEOUT_MS, deadline);
               await withDeadline(
@@ -1460,6 +1462,7 @@ export class Device {
                 attemptDeadline,
                 'Setting up the WebView page session',
               );
+              sessionReady = true;
               const candidate = WebViewHandle._createFromInspector(
                 this._client, inspector, appTarget.appId, page.id, this._defaultTimeoutMs,
               );
@@ -1491,6 +1494,32 @@ export class Device {
             } catch (err) {
               lastError = `Page "${pageDesc}" did not respond: ${err instanceof Error ? err.message : String(err)}`;
               appendWebViewConnectLog(log, lastError);
+              if (!sessionReady) {
+                // A timed-out page-session setup can deliver its late
+                // Target.targetCreated during the NEXT setup on this
+                // connection and cross-wire the session to the wrong page —
+                // never reuse a connection after a failed setup. Reconnect
+                // fresh so the round's remaining candidates still get tried
+                // (a dead newest page must not starve a live older one).
+                inspector.close();
+                inspector = null;
+                lastPhase = 'connecting to the WebKit Inspector service';
+                const fresh = new WebKitInspectorClient();
+                try {
+                  await withDeadline(
+                    fresh.connect(socketPath),
+                    Math.min(Date.now() + WEBVIEW_CONNECT_ATTEMPT_TIMEOUT_MS, deadline),
+                    'Connecting to the WebKit Inspector service',
+                  );
+                  inspector = fresh;
+                  lastPhase = 'connecting to a WebView page';
+                } catch (e) {
+                  fresh.close();
+                  lastError = e instanceof Error ? e.message : String(e);
+                  appendWebViewConnectLog(log, `WebKit Inspector reconnect failed: ${lastError}`);
+                  break outer;
+                }
+              }
             }
           }
         }
@@ -1500,7 +1529,7 @@ export class Device {
         // their WebView off-screen, and the visibility gate must not break
         // them. The detached-predecessor case resolves before this because
         // the real page gets listed within a couple of seconds of a remount.
-        if (!handle && hiddenFallback && remainingMs(deadline) < this._defaultTimeoutMs / 2) {
+        if (!handle && inspector && hiddenFallback && remainingMs(deadline) < this._defaultTimeoutMs / 2) {
           try {
             const attemptDeadline = Math.min(Date.now() + WEBVIEW_CONNECT_ATTEMPT_TIMEOUT_MS, deadline);
             await withDeadline(
@@ -1520,6 +1549,10 @@ export class Device {
             lastError = `Fallback page "${hiddenFallback.desc}" did not respond: ${err instanceof Error ? err.message : String(err)}`;
             appendWebViewConnectLog(log, lastError);
             hiddenFallback = undefined;
+            // A failed fallback setup carries the same late-targetCreated
+            // cross-wire risk as any failed setup.
+            inspector.close();
+            inspector = null;
           }
         }
 
@@ -1528,7 +1561,7 @@ export class Device {
           // inspector connection for many retries while a fresh connection
           // succeeds immediately (observed in PILOT-288 traces: the next
           // test's connect works) — retry each round on a fresh session.
-          inspector.close();
+          inspector?.close();
           inspector = null;
           await sleepUpTo(WEBVIEW_RETRY_INTERVAL_MS, deadline);
           continue;
