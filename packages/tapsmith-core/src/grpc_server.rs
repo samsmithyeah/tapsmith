@@ -401,18 +401,15 @@ impl TapsmithServiceImpl {
     /// `mInputShown` flag. Propagates the dumpsys failure rather than defaulting
     /// to a value, so callers can distinguish "not shown" from "check failed".
     async fn android_is_keyboard_shown(&self, serial: &str) -> Result<bool, Status> {
-        // Strict `shell_with_timeout` (not lenient) so a transport failure — e.g.
-        // an offline/disconnected device — surfaces as an error instead of empty
-        // stdout that reads as "keyboard hidden". The `|| true` keeps grep's
-        // legitimate no-match (exit 1) from tripping that same error path; grep is
-        // the last stage, so it, not dumpsys, sets the pipeline's exit status.
-        let output = adb::shell_with_timeout(
-            serial,
-            "dumpsys input_method | grep mInputShown || true",
-            KEYBOARD_STATE_TIMEOUT,
-        )
-        .await
-        .map_err(|e| Status::internal(e.to_string()))?;
+        // Strict `shell_with_timeout` (not lenient) so a transport failure (offline
+        // device) or a dumpsys failure surfaces as an error rather than empty output
+        // that reads as "keyboard hidden". We fetch the full dumpsys output and match
+        // the flag in Rust — no on-device `grep`, whose no-match exit code would
+        // otherwise mask a genuine dumpsys failure.
+        let output =
+            adb::shell_with_timeout(serial, "dumpsys input_method", KEYBOARD_STATE_TIMEOUT)
+                .await
+                .map_err(|e| Status::internal(e.to_string()))?;
         Ok(output.contains("mInputShown=true"))
     }
 
