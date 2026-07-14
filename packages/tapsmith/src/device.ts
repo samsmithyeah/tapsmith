@@ -142,6 +142,10 @@ export class Device {
   readonly _platform: Platform;
   /** @internal — Simulator UDID for iOS WebView connections. */
   readonly _simulatorUdid?: string;
+  /** @internal — Serial of the explicitly selected device (for iOS simulators
+   * this is the UDID). Set by setDevice(); preferred over `_simulatorUdid`
+   * (usually a device NAME from config) for inspector-socket discovery. */
+  private _deviceSerial?: string;
 
   /** Programmatic tracing API. */
   readonly tracing: Tracing;
@@ -508,6 +512,12 @@ export class Device {
     if (!res.success) {
       throw new Error(res.errorMessage || 'Set device failed');
     }
+    // For iOS simulators the serial IS the UDID. WebView inspector-socket
+    // discovery must use it: the config `simulator` field is usually a NAME,
+    // and resolving by name on a multi-simulator host can land on another
+    // worker's simulator — both workers then drive the SAME WebView page,
+    // silently corrupting each other's tests (PILOT-288).
+    this._deviceSerial = serial;
   }
 
   async startAgent(
@@ -1333,13 +1343,16 @@ export class Device {
   private async _webviewIos(_packageName: string | undefined, generation: number, log?: string[]): Promise<WebViewHandle> {
     const { WebKitInspectorClient, findSimulatorInspectorSocket } = await import('./webkit-inspector.js');
 
-    // The UDID may be the resolved simulator UDID stored by the dispatcher
-    const udid = this._simulatorUdid ?? '';
+    // Prefer the explicitly selected device serial (= simulator UDID) over
+    // the config `simulator` value, which is usually a name and cannot
+    // disambiguate between multiple booted simulators (PILOT-288).
+    const udid = this._deviceSerial ?? this._simulatorUdid ?? '';
     const deadline = Date.now() + this._defaultTimeoutMs;
     let lastError = '';
     let lastPhase = 'discovering the WebKit Inspector socket';
     let socketPath: string | null = null;
     let inspector: WebKitInspectorClient | null = null;
+    let hiddenFallback: { appId: string; pageId: number; desc: string } | undefined;
 
     // Every phase of connection setup is bounded and retried until the device
     // timeout: webinspectord can wedge mid-handshake (a Unix socket connect
@@ -1352,12 +1365,14 @@ export class Device {
           lastPhase = 'discovering the WebKit Inspector socket';
           socketPath = findSimulatorInspectorSocket(udid);
           if (!socketPath) {
-            lastError = `No WebKit Inspector socket found for simulator "${udid}". Ensure the iOS simulator is booted`;
+            lastError =
+              `No WebKit Inspector socket found for simulator "${udid}". ` +
+              'Ensure the iOS simulator is booted; with multiple booted simulators the device must be identified by UDID';
             appendWebViewConnectLog(log, lastError);
             await sleepUpTo(WEBVIEW_RETRY_INTERVAL_MS, deadline);
             continue;
           }
-          appendWebViewConnectLog(log, `Using WebKit Inspector socket ${socketPath}`);
+          appendWebViewConnectLog(log, `Simulator "${udid}" → WebKit Inspector socket ${socketPath}`);
         }
 
         if (!inspector?.isConnected()) {
@@ -1421,13 +1436,20 @@ export class Device {
           await sleepUpTo(WEBVIEW_RETRY_INTERVAL_MS, deadline);
           continue;
         }
+        appendWebViewConnectLog(
+          log,
+          `Candidate WebView pages: ${candidates
+            .map(t => `${t.appId}[${t.pages.map(p => p.id).sort((a, b) => b - a).join(',')}]`)
+            .join(' ')}`,
+        );
 
         lastPhase = 'connecting to a WebView page';
         let handle: WebViewHandle | undefined;
         outer: for (const appTarget of candidates) {
           const pages = appTarget.pages.slice().sort((a, b) => b.id - a.id);
           for (const page of pages) {
-            appendWebViewConnectLog(log, `Connecting to iOS WebView page "${page.title || page.url || page.id}" (app ${appTarget.appId})`);
+            const pageDesc = `${page.title || page.url || page.id}`;
+            appendWebViewConnectLog(log, `Connecting to iOS WebView page "${pageDesc}" (app ${appTarget.appId})`);
             try {
               const attemptDeadline = Math.min(Date.now() + WEBVIEW_CONNECT_ATTEMPT_TIMEOUT_MS, deadline);
               await withDeadline(
@@ -1438,21 +1460,73 @@ export class Device {
               const candidate = WebViewHandle._createFromInspector(
                 this._client, inspector, appTarget.appId, page.id, this._defaultTimeoutMs,
               );
-              await candidate._evaluate('1', Math.min(WEBVIEW_PAGE_PROBE_TIMEOUT_MS, Math.max(1, remainingMs(deadline))));
+              // Liveness probe: the page must answer AND be the rendered
+              // document. After a WebView remount, the detached predecessor
+              // can linger in listings and keep answering evaluates against a
+              // DOM nobody sees (its state matches the previous session) —
+              // only `document.visibilityState` tells the two apart. A
+              // responsive-but-hidden page is remembered as a last-resort
+              // fallback for apps whose WebView is legitimately off-screen.
+              const visibility = await candidate._evaluate(
+                'document.visibilityState',
+                Math.min(WEBVIEW_PAGE_PROBE_TIMEOUT_MS, Math.max(1, remainingMs(deadline))),
+              );
               if (inspector.pageReplaced) {
-                lastError = `Page "${page.title || page.url || page.id}" was replaced while connecting`;
+                lastError = `Page "${pageDesc}" was replaced while connecting`;
                 appendWebViewConnectLog(log, lastError);
                 continue;
               }
+              if (visibility !== 'visible') {
+                lastError = `Page "${pageDesc}" answers but is not rendered (visibilityState=${String(visibility)}) — likely a detached predecessor of the current WebView`;
+                appendWebViewConnectLog(log, lastError);
+                hiddenFallback ??= { appId: appTarget.appId, pageId: page.id, desc: pageDesc };
+                continue;
+              }
+              appendWebViewConnectLog(log, `Page ${page.id} ("${pageDesc}") is responsive and visible — accepting`);
               handle = candidate;
               break outer;
             } catch (err) {
-              lastError = `Page "${page.title || page.url || page.id}" did not respond: ${err instanceof Error ? err.message : String(err)}`;
+              lastError = `Page "${pageDesc}" did not respond: ${err instanceof Error ? err.message : String(err)}`;
               appendWebViewConnectLog(log, lastError);
             }
           }
         }
+
+        // No visible page: once past half the budget, settle for a
+        // responsive-but-hidden page rather than timing out — some apps keep
+        // their WebView off-screen, and the visibility gate must not break
+        // them. The detached-predecessor case resolves before this because
+        // the real page gets listed within a couple of seconds of a remount.
+        if (!handle && hiddenFallback && remainingMs(deadline) < this._defaultTimeoutMs / 2) {
+          try {
+            const attemptDeadline = Math.min(Date.now() + WEBVIEW_CONNECT_ATTEMPT_TIMEOUT_MS, deadline);
+            await withDeadline(
+              inspector.connectToPage(hiddenFallback.appId, hiddenFallback.pageId),
+              attemptDeadline,
+              'Setting up the WebView page session',
+            );
+            const candidate = WebViewHandle._createFromInspector(
+              this._client, inspector, hiddenFallback.appId, hiddenFallback.pageId, this._defaultTimeoutMs,
+            );
+            await candidate._evaluate('1', Math.min(WEBVIEW_PAGE_PROBE_TIMEOUT_MS, Math.max(1, remainingMs(deadline))));
+            if (!inspector.pageReplaced) {
+              appendWebViewConnectLog(log, `No visible WebView page appeared — falling back to non-rendered page "${hiddenFallback.desc}"`);
+              handle = candidate;
+            }
+          } catch (err) {
+            lastError = `Fallback page "${hiddenFallback.desc}" did not respond: ${err instanceof Error ? err.message : String(err)}`;
+            appendWebViewConnectLog(log, lastError);
+            hiddenFallback = undefined;
+          }
+        }
+
         if (!handle) {
+          // A page session that fails to come up can stay wedged on this
+          // inspector connection for many retries while a fresh connection
+          // succeeds immediately (observed in PILOT-288 traces: the next
+          // test's connect works) — retry each round on a fresh session.
+          inspector.close();
+          inspector = null;
           await sleepUpTo(WEBVIEW_RETRY_INTERVAL_MS, deadline);
           continue;
         }
@@ -1490,6 +1564,17 @@ export class Device {
 
   /** Switch back to native context. The WebView connection stays alive for reuse. */
   async native(): Promise<void> {
+    this._activeWebView = null;
+  }
+
+  /**
+   * @internal — Per-test reset: return to the native context but keep the
+   * WebView connection cached for the next test. Re-establishing the iOS
+   * inspector session per test churns webinspectord and is the main trigger
+   * for wedged page sessions and stale-target connects (PILOT-288); a dead
+   * connection is detected by `_isAlive()` and reconnected on next use.
+   */
+  _resetWebViewContext(): void {
     this._activeWebView = null;
   }
 

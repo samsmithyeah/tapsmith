@@ -469,6 +469,24 @@ export class WebKitInspectorClient {
   }
 }
 
+/** Resolve a simulator name to a UDID among BOOTED simulators. Returns null
+ * unless exactly one booted simulator has that name. */
+function resolveBootedSimulatorByName(name: string): string | null {
+  try {
+    const out = execSync('xcrun simctl list devices booted -j', { encoding: 'utf-8', timeout: 10_000 });
+    const parsed = JSON.parse(out) as { devices?: Record<string, Array<{ udid: string; name: string }>> };
+    const matches: string[] = [];
+    for (const devices of Object.values(parsed.devices ?? {})) {
+      for (const d of devices) {
+        if (d.name === name) matches.push(d.udid);
+      }
+    }
+    return matches.length === 1 ? matches[0] : null;
+  } catch {
+    return null;
+  }
+}
+
 /** Find the webinspectord Unix socket for a given iOS simulator UDID (or name). */
 export function findSimulatorInspectorSocket(udidOrName: string): string | null {
   try {
@@ -491,15 +509,24 @@ export function findSimulatorInspectorSocket(udidOrName: string): string | null 
 
     if (sims.length === 0) return null;
 
-    // Match by UDID if provided, otherwise use the first one
+    // Match by UDID, resolving a simulator NAME to a UDID first. Without an
+    // unambiguous identity, only a SINGLE booted simulator is acceptable —
+    // silently picking the first of several attaches to the wrong
+    // simulator's WebViews (with parallel workers, two sessions end up
+    // driving the SAME page — PILOT-288).
+    let udid = udidOrName;
+    if (udid && !udid.match(/^[A-F0-9-]{36}$/i)) {
+      udid = resolveBootedSimulatorByName(udid) ?? '';
+    }
     let targetPid: string;
-    if (udidOrName && udidOrName.match(/^[A-F0-9-]{36}$/i)) {
-      const match = sims.find(s => s.udid === udidOrName);
+    if (udid) {
+      const match = sims.find(s => s.udid.toUpperCase() === udid.toUpperCase());
       if (!match) return null;
       targetPid = match.pid;
-    } else {
-      // Use the first (or only) booted simulator
+    } else if (sims.length === 1) {
       targetPid = sims[0].pid;
+    } else {
+      return null;
     }
 
     // Find the webinspectord socket owned by this specific launchd_sim PID.

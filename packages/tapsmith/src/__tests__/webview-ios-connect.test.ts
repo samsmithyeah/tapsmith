@@ -54,10 +54,31 @@ function makeMockInspector(overrides: Record<string, unknown> = {}) {
     listTargets: vi.fn(async (): Promise<MockTarget[]> => []),
     connectToPage: vi.fn(async () => {}),
     // Shape of a successful Runtime.evaluate reply through the inspector
-    // transport — _evaluate unwraps the outer `result` key.
-    sendInspectorMessage: vi.fn(async () => ({ result: { result: { value: 1 } } })),
+    // transport — _evaluate unwraps the outer `result` key. The connect
+    // probe evaluates document.visibilityState, so a "live rendered page"
+    // answers 'visible'.
+    sendInspectorMessage: vi.fn(async (_appId: string, message: Record<string, unknown>) => {
+      const expression = (message.params as { expression?: string } | undefined)?.expression;
+      const value = expression === 'document.visibilityState' ? 'visible' : 1;
+      return { result: { result: { value } } };
+    }),
     _state: state,
     ...overrides,
+  };
+}
+
+/** sendInspectorMessage mock where the currently connected page answers with a fixed visibilityState. */
+function visibilityByPage(states: Record<number, string>) {
+  let connectedPage = -1;
+  return {
+    connectToPage: vi.fn(async (_appId: string, pageId: number) => {
+      connectedPage = pageId;
+    }),
+    sendInspectorMessage: vi.fn(async (_appId: string, message: Record<string, unknown>) => {
+      const expression = (message.params as { expression?: string } | undefined)?.expression;
+      const value = expression === 'document.visibilityState' ? (states[connectedPage] ?? 'visible') : 1;
+      return { result: { result: { value } } };
+    }),
   };
 }
 
@@ -135,6 +156,28 @@ describe('Device.webview() on iOS — bounded connection setup (PILOT-288)', () 
     expect(second.connectToPage).toHaveBeenCalledWith('PID:100', 1);
   });
 
+  it('retries on a fresh inspector session when every page attempt in a round fails', async () => {
+    const target: MockTarget = { appId: 'PID:100', bundleId: 'dev.tapsmith.testapp', name: 'TestApp', pages: [page(1)] };
+    const first = makeMockInspector({
+      listTargets: vi.fn(async (): Promise<MockTarget[]> => [target]),
+      connectToPage: vi.fn(async () => {
+        throw new Error('Timed out waiting for WebView target — no Target.targetCreated received');
+      }),
+    });
+    const second = makeMockInspector({
+      listTargets: vi.fn(async (): Promise<MockTarget[]> => [target]),
+    });
+    const inspectors = [first, second];
+    h.nextInspector = () => inspectors.shift() ?? makeMockInspector();
+
+    const device = makeIosDevice(10_000);
+    await device.webview();
+
+    expect(first.close).toHaveBeenCalled();
+    expect(second.connectToPage).toHaveBeenCalledWith('PID:100', 1);
+    expect(h.constructed).toHaveLength(2);
+  });
+
   it('keeps waiting (and eventually times out) when no inspectable pages appear', async () => {
     const inspector = makeMockInspector({
       listTargets: vi.fn(async (): Promise<MockTarget[]> => []),
@@ -187,6 +230,74 @@ describe('Device.webview() on iOS — stale dead-page target selection (PILOT-28
   });
 });
 
+describe('Device.webview() on iOS — detached-page rejection (PILOT-288)', () => {
+  it('skips a newer page that answers but is not rendered, and picks the visible one', async () => {
+    // Page 7 is the detached predecessor (higher id here to prove the
+    // visibility gate overrides newest-first); page 3 is the rendered page.
+    const inspector = makeMockInspector({
+      ...visibilityByPage({ 7: 'hidden', 3: 'visible' }),
+      listTargets: vi.fn(async (): Promise<MockTarget[]> => [
+        { appId: 'PID:100', bundleId: 'dev.tapsmith.testapp', name: 'TestApp', pages: [page(3), page(7)] },
+      ]),
+    });
+    h.nextInspector = () => inspector;
+
+    const device = makeIosDevice(5_000);
+    await device.webview();
+
+    expect(inspector.connectToPage).toHaveBeenNthCalledWith(1, 'PID:100', 7);
+    expect(inspector.connectToPage).toHaveBeenNthCalledWith(2, 'PID:100', 3);
+    expect(inspector.connectToPage).toHaveBeenCalledTimes(2);
+  });
+
+  it('falls back to a responsive-but-hidden page once past half the budget', async () => {
+    const inspector = makeMockInspector({
+      ...visibilityByPage({ 5: 'hidden' }),
+      listTargets: vi.fn(async (): Promise<MockTarget[]> => [
+        { appId: 'PID:100', bundleId: 'dev.tapsmith.testapp', name: 'TestApp', pages: [page(5)] },
+      ]),
+    });
+    h.nextInspector = () => inspector;
+
+    const device = makeIosDevice(1_500);
+    const handle = await device.webview();
+
+    expect(handle).toBeDefined();
+    // Rejected at least once as hidden, then re-attached as the fallback.
+    expect(inspector.connectToPage.mock.calls.length).toBeGreaterThanOrEqual(2);
+    expect(inspector.connectToPage).toHaveBeenLastCalledWith('PID:100', 5);
+  });
+
+  it('times out with the guided error when only a hidden page exists and the budget is not yet half spent', async () => {
+    const states: Record<number, string> = { 5: 'hidden' };
+    const base = visibilityByPage(states);
+    let rejected = false;
+    const inspector = makeMockInspector({
+      ...base,
+      listTargets: vi.fn(async (): Promise<MockTarget[]> => [
+        { appId: 'PID:100', bundleId: 'dev.tapsmith.testapp', name: 'TestApp', pages: [page(5)] },
+      ]),
+      sendInspectorMessage: vi.fn(async (appId: string, message: Record<string, unknown>) => {
+        rejected = true;
+        return base.sendInspectorMessage(appId, message);
+      }),
+    });
+    h.nextInspector = () => inspector;
+
+    // With a visible page appearing later, the hidden page must not win early:
+    // flip the page to visible after the first rejection round.
+    setTimeout(() => {
+      states[5] = 'visible';
+    }, 700);
+
+    const device = makeIosDevice(5_000);
+    await device.webview();
+    expect(rejected).toBe(true);
+    // The winning attach happened after the flip — never the early hidden accept.
+    expect(inspector.connectToPage.mock.calls.length).toBeGreaterThanOrEqual(2);
+  });
+});
+
 describe('Device.webview() on iOS — cached connection reuse', () => {
   it('reuses the cached handle while the inspector socket is connected', async () => {
     const inspector = makeMockInspector({
@@ -199,6 +310,23 @@ describe('Device.webview() on iOS — cached connection reuse', () => {
     const device = makeIosDevice(5_000);
     const first = await device.webview();
     await device.native();
+    const second = await device.webview();
+
+    expect(second).toBe(first);
+    expect(h.constructed).toHaveLength(1);
+  });
+
+  it('reuses the cached handle across per-test context resets (PILOT-288)', async () => {
+    const inspector = makeMockInspector({
+      listTargets: vi.fn(async (): Promise<MockTarget[]> => [
+        { appId: 'PID:100', bundleId: 'dev.tapsmith.testapp', name: 'TestApp', pages: [page(1)] },
+      ]),
+    });
+    h.nextInspector = () => inspector;
+
+    const device = makeIosDevice(5_000);
+    const first = await device.webview();
+    device._resetWebViewContext();
     const second = await device.webview();
 
     expect(second).toBe(first);
