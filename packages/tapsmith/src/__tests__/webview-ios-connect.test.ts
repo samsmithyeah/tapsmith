@@ -268,7 +268,7 @@ describe('Device.webview() on iOS — detached-page rejection (PILOT-288)', () =
     expect(inspector.connectToPage).toHaveBeenLastCalledWith('PID:100', 5);
   });
 
-  it('times out with the guided error when only a hidden page exists and the budget is not yet half spent', async () => {
+  it('keeps rejecting a hidden page before half the budget and accepts it once it becomes visible', async () => {
     const states: Record<number, string> = { 5: 'hidden' };
     const base = visibilityByPage(states);
     let rejected = false;
@@ -284,8 +284,10 @@ describe('Device.webview() on iOS — detached-page rejection (PILOT-288)', () =
     });
     h.nextInspector = () => inspector;
 
-    // With a visible page appearing later, the hidden page must not win early:
-    // flip the page to visible after the first rejection round.
+    // The hidden page must not win before half the budget (the permanently
+    // hidden case is covered by the fallback test above) — flip it to
+    // visible after the first rejection round and verify the accept happened
+    // only after the flip.
     setTimeout(() => {
       states[5] = 'visible';
     }, 700);

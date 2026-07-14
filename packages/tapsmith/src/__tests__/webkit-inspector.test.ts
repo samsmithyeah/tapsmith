@@ -1,4 +1,7 @@
 import { describe, it, expect } from 'vitest';
+import * as net from 'node:net';
+import * as os from 'node:os';
+import * as path from 'node:path';
 import { WebKitInspectorClient } from '../webkit-inspector.js';
 
 /**
@@ -49,6 +52,35 @@ function listingMessage(appId: string, pageIds: number[]): Record<string, unknow
     __argument: { WIRApplicationIdentifierKey: appId, WIRListingKey: listing },
   };
 }
+
+describe('WebKitInspectorClient connection lifecycle', () => {
+  it('rejects connect() when the socket closes during the handshake', async () => {
+    const socketPath = path.join(os.tmpdir(), `tapsmith-inspector-test-${process.pid}-${Math.random().toString(36).slice(2)}.sock`);
+    const server = net.createServer((conn) => conn.destroy());
+    await new Promise<void>((resolve) => server.listen(socketPath, resolve));
+
+    const client = new WebKitInspectorClient();
+    try {
+      // Without close-handler rejection this hangs until the 3s report
+      // fallback (or forever, had teardown not cleared _readyResolve).
+      // Whether the write (EPIPE/ECONNRESET) or the close event settles the
+      // promise first is a race — both are the wanted fail-fast outcome.
+      await expect(client.connect(socketPath)).rejects.toThrow(/connection closed|EPIPE|ECONNRESET/);
+      expect(client.isConnected()).toBe(false);
+    } finally {
+      client.close();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
+
+  it('rejects connect() when nothing is listening on the socket path', async () => {
+    const client = new WebKitInspectorClient();
+    await expect(
+      client.connect(path.join(os.tmpdir(), 'tapsmith-inspector-test-nonexistent.sock')),
+    ).rejects.toThrow();
+    expect(client.isConnected()).toBe(false);
+  });
+});
 
 describe('WebKitInspectorClient page-replacement detection (PILOT-288)', () => {
   it('stays live while the connected page is still listed', () => {

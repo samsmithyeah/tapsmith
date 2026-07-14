@@ -1361,9 +1361,12 @@ export class Device {
     // instead of stalling until the caller's test timeout (PILOT-288).
     try {
       while (remainingMs(deadline) > 0) {
+        // A fallback candidate is only ever used within the round that
+        // discovered it — a page recorded in an earlier round may be gone.
+        hiddenFallback = undefined;
         if (!socketPath) {
           lastPhase = 'discovering the WebKit Inspector socket';
-          socketPath = findSimulatorInspectorSocket(udid);
+          socketPath = findSimulatorInspectorSocket(udid, remainingMs(deadline));
           if (!socketPath) {
             lastError =
               `No WebKit Inspector socket found for simulator "${udid}". ` +

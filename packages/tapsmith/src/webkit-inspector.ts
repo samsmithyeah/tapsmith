@@ -64,11 +64,17 @@ export class WebKitInspectorClient {
         this._sendReport().then(resolve).catch(reject);
       });
       socket.on('error', (err) => {
-        this._teardown(err instanceof Error ? err : new Error(String(err)));
-        reject(err);
+        const error = err instanceof Error ? err : new Error(String(err));
+        this._teardown(error);
+        reject(error);
       });
       socket.on('close', () => {
-        this._teardown(new Error('WebKit Inspector connection closed'));
+        const error = new Error('WebKit Inspector connection closed');
+        this._teardown(error);
+        // Settle a still-pending connect — a handshake-time close would
+        // otherwise leave connect() hanging until the caller's deadline.
+        // No-op once the promise is settled.
+        reject(error);
       });
     });
   }
@@ -105,6 +111,10 @@ export class WebKitInspectorClient {
       this._socket.destroy();
       this._socket = null;
     }
+    // A teardown mid-handshake must not let _sendReport() resolve a connect()
+    // whose socket is already gone — connect() is rejected by its own
+    // close/error handler instead.
+    this._readyResolve = null;
     for (const [, p] of this._pendingEval) {
       p.reject(reason);
     }
@@ -307,6 +317,9 @@ export class WebKitInspectorClient {
 
       // Also request the application list
       setTimeout(() => {
+        // The socket may have been torn down in the meantime — a throw here
+        // would be an uncaught exception in a timer callback.
+        if (!this._socket) return;
         this._sendMessage({
           __selector: '_rpc_getConnectedApplications:',
           __argument: {
@@ -471,9 +484,9 @@ export class WebKitInspectorClient {
 
 /** Resolve a simulator name to a UDID among BOOTED simulators. Returns null
  * unless exactly one booted simulator has that name. */
-function resolveBootedSimulatorByName(name: string): string | null {
+function resolveBootedSimulatorByName(name: string, timeoutMs: number): string | null {
   try {
-    const out = execSync('xcrun simctl list devices booted -j', { encoding: 'utf-8', timeout: 10_000 });
+    const out = execSync('xcrun simctl list devices booted -j', { encoding: 'utf-8', timeout: timeoutMs });
     const parsed = JSON.parse(out) as { devices?: Record<string, Array<{ udid: string; name: string }>> };
     const matches: string[] = [];
     for (const devices of Object.values(parsed.devices ?? {})) {
@@ -487,12 +500,20 @@ function resolveBootedSimulatorByName(name: string): string | null {
   }
 }
 
-/** Find the webinspectord Unix socket for a given iOS simulator UDID (or name). */
-export function findSimulatorInspectorSocket(udidOrName: string): string | null {
+/**
+ * Find the webinspectord Unix socket for a given iOS simulator UDID (or name).
+ *
+ * `budgetMs` caps the cumulative time spent in the synchronous subprocess
+ * calls (ps/simctl/lsof) so discovery cannot blow through a caller's shorter
+ * connect deadline; each command gets the remaining budget with a 1s floor.
+ */
+export function findSimulatorInspectorSocket(udidOrName: string, budgetMs = 25_000): string | null {
+  const budgetDeadline = Date.now() + budgetMs;
+  const cap = (maxMs: number) => Math.max(1_000, Math.min(maxMs, budgetDeadline - Date.now()));
   try {
     // Bounded: connection setup runs inside the device timeout, and lsof in
     // particular can stall for a long time on a loaded machine.
-    const psOutput = execSync('ps aux', { encoding: 'utf-8', timeout: 5_000 });
+    const psOutput = execSync('ps aux', { encoding: 'utf-8', timeout: cap(5_000) });
 
     // Collect all launchd_sim PIDs and their UDIDs
     const sims: Array<{ pid: string; udid: string }> = [];
@@ -516,7 +537,7 @@ export function findSimulatorInspectorSocket(udidOrName: string): string | null 
     // driving the SAME page — PILOT-288).
     let udid = udidOrName;
     if (udid && !udid.match(/^[A-F0-9-]{36}$/i)) {
-      udid = resolveBootedSimulatorByName(udid) ?? '';
+      udid = resolveBootedSimulatorByName(udid, cap(10_000)) ?? '';
     }
     let targetPid: string;
     if (udid) {
@@ -531,7 +552,7 @@ export function findSimulatorInspectorSocket(udidOrName: string): string | null 
 
     // Find the webinspectord socket owned by this specific launchd_sim PID.
     // lsof -U shows ALL Unix sockets — match the PID column to filter correctly.
-    const lsofOutput = execSync('lsof -U 2>/dev/null', { encoding: 'utf-8', timeout: 10_000 });
+    const lsofOutput = execSync('lsof -U 2>/dev/null', { encoding: 'utf-8', timeout: cap(10_000) });
     for (const line of lsofOutput.split('\n')) {
       if (!line.includes('webinspectord_sim.socket')) continue;
       const cols = line.trim().split(/\s+/);
