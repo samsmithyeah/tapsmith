@@ -266,6 +266,7 @@ LINK_REWRITES.push(
   [/\(#api-request-fixture\)/g, '(/reference/api/request/)'],
   [/\(#reusable-auth-state\)/g, '(/reference/api/test-runner/)'],
   [/\(#projects\)/g, '(/reference/api/test-runner/)'],
+  [/\(#strict-mode\)/g, '(/reference/api/locators/#strict-mode)'],
 )
 
 // ─── Helpers ───

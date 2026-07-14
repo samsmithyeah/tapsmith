@@ -151,7 +151,7 @@ const disabled = await webview.getAttribute("#submit", "disabled")
 
 ### `webview.isVisible(selector)`
 
-Check whether an element is visible. Returns `false` if the element has `display: none`, `visibility: hidden`, or `opacity: 0`.
+Check whether an element is visible. Returns `false` if the element is not rendered at all (no layout boxes — including when an ancestor has `display: none`), or has `display: none`, `visibility: hidden`, or `opacity: 0`.
 
 ```typescript
 const visible = await webview.isVisible(".error-banner")
@@ -203,6 +203,16 @@ const emailInput = webview.locator("input[type='email']")
 const errorMessage = webview.locator(".error-message")
 ```
 
+Playwright-style locators are also available for common attributes:
+
+```typescript
+await webview.getByRole("button", { name: "Login" }).click()
+await webview.getByPlaceholder("Enter your email").fill("user@test.com")
+await expect(webview.getByText("Welcome back")).toBeVisible()
+await expect(webview.getByTestId("status")).toHaveText("Ready")
+await expect(webview.getByLabel("Close dialog")).toBeVisible()
+```
+
 A `WebViewLocator` supports the same actions as the direct methods:
 
 ```typescript
@@ -217,6 +227,19 @@ const visible = await errorMessage.isVisible()
 ```
 
 Locators are lazy -- no queries are made until you call an action or pass the locator to `expect()`.
+
+WebView locators are **strict**, like native locators: an action, single-element query, or positive assertion on a locator that matches more than one DOM element throws a `StrictModeViolationError` listing the matches. Narrow with `.first()`, `.last()`, or `.nth(index)`, or enumerate matches with `.count()` and `.all()`:
+
+```typescript
+const rows = webview.locator("li.result")
+await rows.first().click()          // positional chains are exempt from strict mode
+console.log(await rows.count())     // multi-element queries too
+for (const row of await rows.all()) {
+  console.log(await row.textContent())
+}
+```
+
+See [Strict mode](api-reference.md#strict-mode) in the API reference for the full rules.
 
 ## WebView Assertions
 
@@ -347,7 +370,7 @@ const webview = await device.webview({ timeout: 60_000 })
 
 **Parallel workers get independent connections.** When running with multiple workers, each worker establishes its own CDP (Android) or WebKit Inspector (iOS) connection to its device's WebView. There are no shared-state concerns between workers.
 
-**CSS selectors only.** Unlike native locators (`getByRole`, `getByText`, etc.), WebView interactions use standard CSS selectors. Use `[data-testid="..."]` attribute selectors as your escape hatch, just as you would in Playwright web tests.
+**CSS selectors and `getBy*` locators.** WebView interactions use standard CSS selectors (`webview.locator(css)`) or the Playwright-style `webview.getByText/getByRole/getByPlaceholder/getByTestId/getByLabel` methods. Use `webview.getByTestId(...)` (matching `data-testid`) as your escape hatch, just as you would in Playwright web tests.
 
 **`device.native()` closes the connection.** After calling `device.native()`, the WebView connection is torn down. If you need to interact with the WebView again, call `device.webview()` again to establish a new connection.
 

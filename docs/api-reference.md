@@ -148,7 +148,7 @@ try {
 
 > **Transient duplicates:** if a screen briefly shows two elements matching the locator mid-transition, the violation throws at that moment (Playwright behaves the same way). Prefer selectors that are unique at all times, or `.first()` when duplication is expected.
 
-> **WebView locators** (`webview.getBy*`) do not enforce strict mode yet; they act on the first DOM match.
+> **WebView locators too.** `webview.getBy*` and `webview.locator(css)` locators enforce the same rules: actions, single-element queries (`isVisible()`, `textContent()`, …), and positive assertions throw on an ambiguous match, while `count()`, `all()`, absence checks, and `.first()/.nth()/.last()` chains are exempt. Element descriptions in the violation message come from the DOM (tag, text, `id`, `data-testid`, `aria-label`), and suggestions use `webview.*` selectors. For WebView violations `err.elements` holds at most the first 10 matches as sampled descriptions — check `err.totalCount` for the full match count. The string-selector convenience methods (`webview.click(css)`, `webview.fill(css, …)`, …) predate locators and still act on the first match — prefer `webview.locator(css)` for strict behavior.
 
 ---
 
@@ -2567,7 +2567,7 @@ Get an attribute value from an element.
 
 #### `webview.isVisible(selector: string): Promise<boolean>`
 
-Check if an element is visible (not `display: none`, `visibility: hidden`, or `opacity: 0`).
+Check if an element is visible: it must be rendered (have layout boxes — an ancestor with `display: none` counts as hidden) and not have `display: none`, `visibility: hidden`, or `opacity: 0`.
 
 #### `webview.evaluate<T>(expression: string): Promise<T>`
 
@@ -2600,15 +2600,50 @@ await loginBtn.click()
 await expect(loginBtn).toBeVisible()
 ```
 
+#### `webview.getByText(text, options?)` and friends
+
+Playwright-style locators for DOM elements, mirroring the native `device.getBy*` API:
+
+| Method | Matches |
+|---|---|
+| `webview.getByText(text, { exact? })` | Leaf elements by visible text (substring by default) |
+| `webview.getByRole(role, { name? })` | ARIA/HTML role, optionally filtered by accessible name |
+| `webview.getByPlaceholder(text)` | `placeholder` attribute |
+| `webview.getByTestId(testId)` | `data-testid` attribute |
+| `webview.getByLabel(text)` | `aria-label` attribute |
+
+```typescript
+await webview.getByRole("button", { name: "Login" }).click()
+await webview.getByPlaceholder("Enter your email").fill("user@test.com")
+await expect(webview.getByText("Welcome back")).toBeVisible()
+```
+
 #### `webview.close(): Promise<void>`
 
 Close the WebView connection. Usually called via `device.native()` instead.
 
 ### WebViewLocator
 
-Lazy reference to a CSS selector within a WebView. Supports actions and assertions.
+Lazy reference to an element within a WebView, created by `webview.locator()` or the `webview.getBy*` methods. Supports actions and assertions.
 
-**Actions:** `click()`, `fill(value)`, `textContent()`, `innerHTML()`, `inputValue()`, `getAttribute(name)`, `isVisible()`
+**Actions & queries (strict):** `click()`, `fill(value)`, `textContent()`, `innerHTML()`, `inputValue()`, `getAttribute(name)`, `isVisible()`
+
+**Narrowing & multi-element (strict-mode exempt):**
+
+- `.first()` / `.last()` / `.nth(index)` — narrow to one match positionally (negative `nth` counts from the end). Returns a new `WebViewLocator`.
+- `.count()` — number of elements currently matching (no auto-wait).
+- `.all()` — one positionally-narrowed locator per current match.
+
+WebView locators are [strict](#strict-mode): acting or asserting on a locator that resolves to more than one DOM element throws a `StrictModeViolationError` listing the matches.
+
+```typescript
+const rows = webview.locator("li.result")
+await expect(rows.first()).toBeVisible()
+console.log(await rows.count())
+for (const row of await rows.all()) {
+  console.log(await row.textContent())
+}
+```
 
 ### WebView Assertions
 

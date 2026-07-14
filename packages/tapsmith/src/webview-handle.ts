@@ -1,5 +1,11 @@
 import { WebSocket } from 'ws';
-import type { TapsmithGrpcClient } from './grpc-client.js';
+import type { ElementInfo, TapsmithGrpcClient } from './grpc-client.js';
+import {
+  buildStrictModeViolationError,
+  STRICT_ERROR_MAX_ELEMENTS,
+  truncateText,
+  type StrictModeViolationError,
+} from './element-handle.js';
 import { WebViewLocator } from './webview-locator.js';
 import type { TraceCollector } from './trace/trace-collector.js';
 import { extractStack } from './trace/trace-collector.js';
@@ -29,6 +35,80 @@ const ROLE_CSS_MAP: Record<string, string[]> = {
   dialog: ['dialog', '[role="dialog"]'],
   image: ['img', '[role="img"]'],
 };
+
+// ─── Strict mode (PILOT-227) ───
+
+/** @internal — DOM-derived description of one matched element. */
+interface WebViewDomDescription {
+  tag: string
+  id: string
+  testId: string
+  ariaLabel: string
+  role: string
+  text: string
+}
+
+/** @internal — Single-tick snapshot of a locator's full match set. */
+export interface WebViewLocatorProbe {
+  count: number
+  /** Whether ANY match is visible (short-circuits in-page). False when the
+   * caller skipped visibility computation (count/strict-resolve paths). */
+  anyVisible: boolean
+  /** Whether the locator's target element (nth-aware, first by default) is
+   * visible. False when out of range or visibility was skipped. */
+  targetVisible: boolean
+  /** DOM descriptions of the first {@link STRICT_ERROR_MAX_ELEMENTS} matches. */
+  sample: WebViewDomDescription[]
+  /** Value read from the target element in the same round-trip, when the
+   * caller passed `valueJs` (assertion value ticks). `found: false` when
+   * there is no target at the locator's position yet. */
+  target?: { found: boolean; value?: unknown }
+}
+
+/** Best-effort unambiguous WebView locator suggestion for one DOM match. */
+function suggestWebViewSelectorFor(d: WebViewDomDescription | undefined): string | undefined {
+  if (!d) return undefined;
+  if (d.testId) return `webview.getByTestId(${JSON.stringify(d.testId)})`;
+  if (d.id) return `webview.locator(${JSON.stringify('#' + d.id)})`;
+  if (d.ariaLabel) return `webview.getByLabel(${JSON.stringify(d.ariaLabel)})`;
+  if (d.text) return `webview.getByText(${JSON.stringify(truncateText(d.text, 60))}, { exact: true })`;
+  return undefined;
+}
+
+/**
+ * Build a StrictModeViolationError for a WebView locator, reusing the native
+ * message format. Element descriptions come from the DOM (tag, text, id,
+ * data-testid, aria-label) mapped onto the ElementInfo shape.
+ */
+function buildWebViewStrictError(loc: WebViewLocator, probe: WebViewLocatorProbe): StrictModeViolationError {
+  const elements: ElementInfo[] = probe.sample.map((d) => ({
+    elementId: '',
+    className: d.tag,
+    text: d.text,
+    contentDescription: d.ariaLabel,
+    resourceId: d.testId,
+    enabled: true,
+    visible: true,
+    clickable: false,
+    focusable: false,
+    scrollable: false,
+    hint: '',
+    checked: false,
+    selected: false,
+    focused: false,
+    role: d.role,
+    viewportRatio: 0,
+  }));
+  return buildStrictModeViolationError(`"${loc._selector}"`, elements, {
+    totalCount: probe.count,
+    suggest: (_el, i) => suggestWebViewSelectorFor(probe.sample[i]),
+  });
+}
+
+/** Normalize a positional index against a match count (negative = from end). */
+function normalizeNthIndex(nthIndex: number, count: number): number {
+  return nthIndex < 0 ? count + nthIndex : nthIndex;
+}
 
 export interface WebViewTraceContext {
   collector: TraceCollector
@@ -453,19 +533,153 @@ export class WebViewHandle {
     );
   }
 
-  /** @internal — Wait for a finder JS expression to return a non-null element. */
-  async _waitForFinder(finderJs: string, displaySelector: string, timeoutMs?: number): Promise<void> {
+  /**
+   * @internal — Single-tick probe of a locator's full match set: count,
+   * per-match visibility, and DOM descriptions of the first matches (for
+   * strict violation messages). Pass `visibility: false` on paths that only
+   * need the count (strict resolve, count()) to skip a getComputedStyle
+   * call per match. Pass `valueJs` (an expression over `el`) to also read a
+   * value from the target element in the same round-trip — the whole
+   * count-check + read is then one atomic DOM snapshot.
+   */
+  async _probeLocator(
+    loc: WebViewLocator,
+    timeoutMs?: number,
+    opts?: { visibility?: boolean; valueJs?: string },
+  ): Promise<WebViewLocatorProbe> {
+    const withVisibility = opts?.visibility !== false;
+    // The target index mirrors _finderJs: nth-aware, defaulting to the first
+    // match — strict callers throw on count > 1 before consulting the target.
+    const nthIndex = loc._nthIndex ?? 0;
+    const idxJs = nthIndex >= 0 ? String(nthIndex) : `els.length - ${-nthIndex}`;
+    const targetJs = opts?.valueJs
+      ? `(() => {
+          const el = els[${idxJs}] ?? null;
+          if (!el) return { found: false };
+          return { found: true, value: (${opts.valueJs}) };
+        })()`
+      : 'undefined';
+    const probe = await this._evaluate(`(() => {
+      const els = (${loc._finderAllJs});
+      const vis = (el) => {
+        // No client rects ⇒ not rendered at all (covers ancestors with
+        // display:none, which the element's own computed style would miss).
+        if (el.getClientRects().length === 0) return false;
+        const s = window.getComputedStyle(el);
+        if (!s) return false;
+        return s.display !== 'none' && s.visibility !== 'hidden' && s.opacity !== '0';
+      };
+      return {
+        count: els.length,
+        anyVisible: ${withVisibility ? 'els.some(vis)' : 'false'},
+        targetVisible: ${withVisibility ? `(els[${idxJs}] ? vis(els[${idxJs}]) : false)` : 'false'},
+        sample: els.slice(0, ${STRICT_ERROR_MAX_ELEMENTS}).map((el) => ({
+          tag: (el.tagName || '').toLowerCase(),
+          id: el.id || '',
+          testId: el.getAttribute('data-testid') || '',
+          ariaLabel: el.getAttribute('aria-label') || '',
+          role: el.getAttribute('role') || '',
+          text: (el.textContent || '').trim().slice(0, 80),
+        })),
+        target: ${targetJs},
+      };
+    })()`, timeoutMs);
+    return probe as WebViewLocatorProbe;
+  }
+
+  /**
+   * @internal — Strict auto-waiting resolution for locator actions (PILOT-227).
+   *
+   * Polls until the locator resolves to a target: exactly one match, or —
+   * for positionally-narrowed locators — the nth index in range. Resolving
+   * to more than one match without a positional modifier throws a
+   * StrictModeViolationError immediately (no further waiting), mirroring
+   * native locators. (A race between this check and the subsequent action
+   * evaluate is accepted — both see elements in document order.)
+   */
+  async _resolveLocatorStrict(loc: WebViewLocator, timeoutMs?: number): Promise<void> {
     const timeout = timeoutMs ?? this._timeoutMs;
     const deadline = Date.now() + timeout;
-    while (Date.now() < deadline) {
+    while (true) {
       const remaining = Math.max(1, deadline - Date.now());
-      const found = await this._evaluate(`(${finderJs}) !== null`, remaining);
-      if (found) return;
+      const probe = await this._probeLocator(loc, remaining, { visibility: false });
+      if (loc._nthIndex !== undefined) {
+        const idx = normalizeNthIndex(loc._nthIndex, probe.count);
+        if (idx >= 0 && idx < probe.count) return;
+      } else {
+        if (probe.count > 1) throw buildWebViewStrictError(loc, probe);
+        if (probe.count === 1) return;
+      }
+      if (Date.now() >= deadline) break;
       await sleep(Math.min(POLL_INTERVAL_MS, Math.max(0, deadline - Date.now())));
     }
     throw new Error(
-      `Timed out waiting for "${displaySelector}" in WebView (${timeout}ms)`,
+      `Timed out waiting for "${loc._selector}" in WebView (${timeout}ms)`,
     );
+  }
+
+  /**
+   * @internal — Single-tick assertion resolution (expect.ts, PILOT-227).
+   *
+   * When `strict` is true and the locator has no positional modifier,
+   * resolving to more than one match throws a StrictModeViolationError
+   * (which propagates out of the assertion poll loop). Absence-style checks
+   * (toBeHidden, negated visibility/existence) pass `strict: false` and
+   * evaluate their condition over the full match set.
+   */
+  async _assertionTickLocator(
+    loc: WebViewLocator,
+    strict: boolean,
+  ): Promise<{ exists: boolean; anyVisible: boolean; allHidden: boolean }> {
+    const probe = await this._probeLocator(loc, Math.min(this._timeoutMs, WEB_SOCKET_CONNECT_TIMEOUT_MS));
+    if (loc._nthIndex !== undefined) {
+      const idx = normalizeNthIndex(loc._nthIndex, probe.count);
+      const exists = idx >= 0 && idx < probe.count;
+      const visible = exists && probe.targetVisible;
+      return { exists, anyVisible: visible, allHidden: !visible };
+    }
+    if (strict && probe.count > 1) throw buildWebViewStrictError(loc, probe);
+    // allHidden ≡ !anyVisible: an empty match set is vacuously all-hidden.
+    return {
+      exists: probe.count > 0,
+      anyVisible: probe.anyVisible,
+      allHidden: !probe.anyVisible,
+    };
+  }
+
+  /** @internal — Count matches for a locator (single tick, no auto-wait). */
+  async _countLocator(loc: WebViewLocator): Promise<number> {
+    const probe = await this._probeLocator(
+      loc,
+      Math.min(this._timeoutMs, WEB_SOCKET_CONNECT_TIMEOUT_MS),
+      { visibility: false },
+    );
+    if (loc._nthIndex !== undefined) {
+      const idx = normalizeNthIndex(loc._nthIndex, probe.count);
+      return idx >= 0 && idx < probe.count ? 1 : 0;
+    }
+    return probe.count;
+  }
+
+  /**
+   * @internal — Single-tick strict value read for assertion polls (expect.ts).
+   *
+   * Resolves the target once — throwing a StrictModeViolationError on an
+   * ambiguous match — then reads `valueJs` (an expression over `el`) from it.
+   * Never auto-waits, so each assertion poll tick stays bounded by the
+   * assertion's own timeout instead of the locator's full auto-wait budget.
+   * Returns `{ found: false }` when there is no target yet (or it vanished
+   * between the probe and the read — the caller's poll loop retries).
+   */
+  async _valueTickLocator(loc: WebViewLocator, valueJs: string): Promise<{ found: boolean; value?: unknown }> {
+    const tickTimeout = Math.min(this._timeoutMs, WEB_SOCKET_CONNECT_TIMEOUT_MS);
+    // Single round-trip: the probe reads the target value in the same DOM
+    // snapshot as the strictness count, so the check and the read can't race.
+    const probe = await this._probeLocator(loc, tickTimeout, { visibility: false, valueJs });
+    if (loc._nthIndex === undefined && probe.count > 1) {
+      throw buildWebViewStrictError(loc, probe);
+    }
+    return probe.target ?? { found: false };
   }
 
   // ─── Locator-based actions (used by WebViewLocator) ───
@@ -473,7 +687,7 @@ export class WebViewHandle {
   /** @internal */
   async _clickLocator(loc: WebViewLocator): Promise<void> {
     return this._traced('click', loc._selector, async (deadline) => {
-      await this._waitForFinder(loc._finderJs, loc._selector, remainingUntil(deadline));
+      await this._resolveLocatorStrict(loc, remainingUntil(deadline));
       await this._evaluate(`(${loc._finderJs}).click()`, remainingUntil(deadline));
     }, loc._finderJs);
   }
@@ -481,7 +695,7 @@ export class WebViewHandle {
   /** @internal */
   async _fillLocator(loc: WebViewLocator, value: string): Promise<void> {
     return this._traced('fill', loc._selector, async (deadline) => {
-      await this._waitForFinder(loc._finderJs, loc._selector, remainingUntil(deadline));
+      await this._resolveLocatorStrict(loc, remainingUntil(deadline));
       const escaped = JSON.stringify(value);
       await this._evaluate(`(() => {
         const el = (${loc._finderJs});
@@ -495,7 +709,7 @@ export class WebViewHandle {
   /** @internal */
   async _textContentLocator(loc: WebViewLocator): Promise<string> {
     return this._traced('textContent', loc._selector, async (deadline) => {
-      await this._waitForFinder(loc._finderJs, loc._selector, remainingUntil(deadline));
+      await this._resolveLocatorStrict(loc, remainingUntil(deadline));
       const result = await this._evaluate(`(${loc._finderJs}).textContent`, remainingUntil(deadline));
       return (result as string) ?? '';
     }, loc._finderJs);
@@ -504,7 +718,7 @@ export class WebViewHandle {
   /** @internal */
   async _innerHTMLLocator(loc: WebViewLocator): Promise<string> {
     return this._traced('innerHTML', loc._selector, async (deadline) => {
-      await this._waitForFinder(loc._finderJs, loc._selector, remainingUntil(deadline));
+      await this._resolveLocatorStrict(loc, remainingUntil(deadline));
       const result = await this._evaluate(`(${loc._finderJs}).innerHTML`, remainingUntil(deadline));
       return (result as string) ?? '';
     }, loc._finderJs);
@@ -513,7 +727,7 @@ export class WebViewHandle {
   /** @internal */
   async _inputValueLocator(loc: WebViewLocator): Promise<string> {
     return this._traced('inputValue', loc._selector, async (deadline) => {
-      await this._waitForFinder(loc._finderJs, loc._selector, remainingUntil(deadline));
+      await this._resolveLocatorStrict(loc, remainingUntil(deadline));
       const result = await this._evaluate(`(${loc._finderJs}).value`, remainingUntil(deadline));
       return (result as string) ?? '';
     }, loc._finderJs);
@@ -522,7 +736,7 @@ export class WebViewHandle {
   /** @internal */
   async _getAttributeLocator(loc: WebViewLocator, name: string): Promise<string | null> {
     return this._traced('getAttribute', loc._selector, async (deadline) => {
-      await this._waitForFinder(loc._finderJs, loc._selector, remainingUntil(deadline));
+      await this._resolveLocatorStrict(loc, remainingUntil(deadline));
       const result = await this._evaluate(
         `(${loc._finderJs}).getAttribute(${JSON.stringify(name)})`,
         remainingUntil(deadline),
@@ -531,15 +745,17 @@ export class WebViewHandle {
     }, loc._finderJs);
   }
 
-  /** @internal */
+  /** @internal — Single-tick visibility query. Strict: an ambiguous locator
+   * (no positional modifier, >1 match) throws instead of silently reporting
+   * the first match's visibility. */
   async _isVisibleLocator(loc: WebViewLocator): Promise<boolean> {
-    const result = await this._evaluate(`(() => {
-      const el = (${loc._finderJs});
-      if (!el) return false;
-      const style = window.getComputedStyle(el);
-      return style.display !== 'none' && style.visibility !== 'hidden' && style.opacity !== '0';
-    })()`, Math.min(this._timeoutMs, WEB_SOCKET_CONNECT_TIMEOUT_MS));
-    return result as boolean;
+    const probe = await this._probeLocator(loc, Math.min(this._timeoutMs, WEB_SOCKET_CONNECT_TIMEOUT_MS));
+    if (loc._nthIndex !== undefined) {
+      const idx = normalizeNthIndex(loc._nthIndex, probe.count);
+      return idx >= 0 && idx < probe.count && probe.targetVisible;
+    }
+    if (probe.count > 1) throw buildWebViewStrictError(loc, probe);
+    return probe.count === 1 && probe.targetVisible;
   }
 
   /**
@@ -726,7 +942,9 @@ export class WebViewHandle {
     const result = await this._evaluate(`(() => {
       const el = document.querySelector(${JSON.stringify(selector)});
       if (!el) return false;
+      if (el.getClientRects().length === 0) return false;
       const style = window.getComputedStyle(el);
+      if (!style) return false;
       return style.display !== 'none' && style.visibility !== 'hidden' && style.opacity !== '0';
     })()`, Math.min(this._timeoutMs, WEB_SOCKET_CONNECT_TIMEOUT_MS));
     return result as boolean;
@@ -757,36 +975,43 @@ export class WebViewHandle {
   /** Locate an element by its visible text content. Substring match by default. */
   getByText(text: string, options?: { exact?: boolean }): WebViewLocator {
     const escaped = JSON.stringify(text);
-    const finderJs = options?.exact
-      ? `(() => { for (const el of document.querySelectorAll('*')) { if (el.children.length === 0 && el.textContent?.trim() === ${escaped}) return el; } return null; })()`
-      : `(() => { for (const el of document.querySelectorAll('*')) { if (el.children.length === 0 && el.textContent?.includes(${escaped})) return el; } return null; })()`;
-    return new WebViewLocator(this, `text=${text}`, this._timeoutMs, finderJs);
+    const finderAllJs = options?.exact
+      ? `(() => { const out = []; for (const el of document.querySelectorAll('*')) { if (el.children.length === 0 && el.textContent?.trim() === ${escaped}) out.push(el); } return out; })()`
+      : `(() => { const out = []; for (const el of document.querySelectorAll('*')) { if (el.children.length === 0 && el.textContent?.includes(${escaped})) out.push(el); } return out; })()`;
+    return new WebViewLocator(this, `text=${text}`, this._timeoutMs, finderAllJs);
   }
 
   /** Locate an element by its ARIA/HTML role, optionally filtered by accessible name. */
   getByRole(role: string, options?: { name?: string }): WebViewLocator {
     const cssSelectors = ROLE_CSS_MAP[role];
+    // `!== undefined` (not truthiness) so an explicit empty name still filters.
+    const hasName = options?.name !== undefined;
+    const displaySuffix = hasName ? `[name=${options!.name}]` : '';
     if (!cssSelectors) {
-      const selector = `[role="${role}"]`;
-      const finderJs = options?.name
-        ? `document.querySelector('${selector}[aria-label="${options.name}"]') || (() => { for (const el of document.querySelectorAll('${selector}')) { if (el.textContent?.trim() === ${JSON.stringify(options.name)}) return el; } return null; })()`
-        : `document.querySelector(${JSON.stringify(selector)})`;
-      return new WebViewLocator(this, `role=${role}${options?.name ? `[name=${options.name}]` : ''}`, this._timeoutMs, finderJs);
+      // Filter [role] elements by attribute comparison rather than
+      // interpolating the role into a CSS selector, where special
+      // characters could break the query.
+      const roleEscaped = JSON.stringify(role);
+      const finderAllJs = hasName
+        ? `(() => { const out = []; for (const el of document.querySelectorAll('[role]')) { if (el.getAttribute('role') === ${roleEscaped} && (el.getAttribute('aria-label') === ${JSON.stringify(options!.name)} || el.textContent?.trim() === ${JSON.stringify(options!.name)})) out.push(el); } return out; })()`
+        : `(() => { const out = []; for (const el of document.querySelectorAll('[role]')) { if (el.getAttribute('role') === ${roleEscaped}) out.push(el); } return out; })()`;
+      return new WebViewLocator(this, `role=${role}${displaySuffix}`, this._timeoutMs, finderAllJs);
     }
 
     const selectorList = cssSelectors.join(', ');
-    const displayName = `role=${role}${options?.name ? `[name=${options.name}]` : ''}`;
+    const displayName = `role=${role}${displaySuffix}`;
 
-    if (!options?.name) {
+    if (!hasName) {
       return new WebViewLocator(this, displayName, this._timeoutMs,
-        `document.querySelector(${JSON.stringify(selectorList)})`);
+        `Array.from(document.querySelectorAll(${JSON.stringify(selectorList)}))`);
     }
 
-    const nameEscaped = JSON.stringify(options.name);
+    // Non-null: hasName guarantees options.name is set (TS can't narrow through the const).
+    const nameEscaped = JSON.stringify(options!.name);
     // W3C Accessible Name computation (matches Playwright's getByRole):
     // 1. aria-labelledby  2. aria-label  3. <label> (for or wrapping)
     // 4. title  5. placeholder  6. textContent (buttons/links only)
-    const finderJs = `(() => {
+    const finderAllJs = `(() => {
       function accessibleName(el) {
         var lblBy = el.getAttribute('aria-labelledby');
         if (lblBy) { var ref = document.getElementById(lblBy); if (ref) return ref.textContent?.trim() || ''; }
@@ -797,30 +1022,31 @@ export class WebViewHandle {
         if (el.getAttribute('placeholder')) return el.getAttribute('placeholder');
         return el.textContent?.trim() || '';
       }
+      const out = [];
       for (const el of document.querySelectorAll(${JSON.stringify(selectorList)})) {
-        if (accessibleName(el) === ${nameEscaped}) return el;
+        if (accessibleName(el) === ${nameEscaped}) out.push(el);
       }
-      return null;
+      return out;
     })()`;
-    return new WebViewLocator(this, displayName, this._timeoutMs, finderJs);
+    return new WebViewLocator(this, displayName, this._timeoutMs, finderAllJs);
   }
 
   /** Locate an element by its placeholder text. */
   getByPlaceholder(text: string): WebViewLocator {
     return new WebViewLocator(this, `placeholder=${text}`, this._timeoutMs,
-      `document.querySelector('[placeholder=' + JSON.stringify(${JSON.stringify(text)}) + ']')`);
+      `Array.from(document.querySelectorAll('[placeholder=' + JSON.stringify(${JSON.stringify(text)}) + ']'))`);
   }
 
   /** Locate an element by its `data-testid` attribute. */
   getByTestId(testId: string): WebViewLocator {
     return new WebViewLocator(this, `testId=${testId}`, this._timeoutMs,
-      `document.querySelector('[data-testid=' + JSON.stringify(${JSON.stringify(testId)}) + ']')`);
+      `Array.from(document.querySelectorAll('[data-testid=' + JSON.stringify(${JSON.stringify(testId)}) + ']'))`);
   }
 
   /** Locate an element by its `aria-label`. */
   getByLabel(text: string): WebViewLocator {
     return new WebViewLocator(this, `label=${text}`, this._timeoutMs,
-      `document.querySelector('[aria-label=' + JSON.stringify(${JSON.stringify(text)}) + ']')`);
+      `Array.from(document.querySelectorAll('[aria-label=' + JSON.stringify(${JSON.stringify(text)}) + ']'))`);
   }
 
   /** Locate an element by CSS selector. */
