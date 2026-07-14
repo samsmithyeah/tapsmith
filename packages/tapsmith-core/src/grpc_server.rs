@@ -31,6 +31,9 @@ const ANDROID_REVERSE_PORT_FALLBACK_SPAN: u16 = 20_000;
 const ANDROID_REVERSE_PORT_FALLBACK_COUNT: usize = 8;
 const ANDROID_REVERSE_PORT_FALLBACK_STEP: u32 = 997;
 const WEBVIEW_ADB_TIMEOUT: Duration = Duration::from_secs(5);
+// The keyboard-state dumpsys check is polled interactively; fail fast rather
+// than hang on the 30s adb default if the device/daemon goes unresponsive.
+const KEYBOARD_STATE_TIMEOUT: Duration = Duration::from_secs(5);
 const WEBVIEW_ADB_CLEANUP_TIMEOUT: Duration = Duration::from_secs(2);
 const IOS_OPEN_URL_PROMPT_TIMEOUT: Duration = Duration::from_secs(28);
 const IOS_OPEN_DIALOG_ACCEPT_TIMEOUT_MS: u64 = 300;
@@ -398,9 +401,13 @@ impl TapsmithServiceImpl {
     /// `mInputShown` flag. Propagates the dumpsys failure rather than defaulting
     /// to a value, so callers can distinguish "not shown" from "check failed".
     async fn android_is_keyboard_shown(&self, serial: &str) -> Result<bool, Status> {
-        let output = adb::shell_lenient(serial, "dumpsys input_method | grep mInputShown")
-            .await
-            .map_err(|e| Status::internal(e.to_string()))?;
+        let output = adb::shell_lenient_with_timeout(
+            serial,
+            "dumpsys input_method | grep mInputShown",
+            KEYBOARD_STATE_TIMEOUT,
+        )
+        .await
+        .map_err(|e| Status::internal(e.to_string()))?;
         Ok(output.contains("mInputShown=true"))
     }
 
