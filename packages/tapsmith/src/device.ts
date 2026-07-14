@@ -1439,6 +1439,11 @@ export class Device {
                 this._client, inspector, appTarget.appId, page.id, this._defaultTimeoutMs,
               );
               await candidate._evaluate('1', Math.min(WEBVIEW_PAGE_PROBE_TIMEOUT_MS, Math.max(1, remainingMs(deadline))));
+              if (inspector.pageReplaced) {
+                lastError = `Page "${page.title || page.url || page.id}" was replaced while connecting`;
+                appendWebViewConnectLog(log, lastError);
+                continue;
+              }
               handle = candidate;
               break outer;
             } catch (err) {

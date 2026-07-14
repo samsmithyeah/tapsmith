@@ -47,6 +47,7 @@ export class WebKitInspectorClient {
   private _targetId: string | null = null;
   private _outerMsgId = 0;
   private _connectedPageId: number | null = null;
+  private _pageReplaced = false;
 
   constructor() {
     this._connectionId = `tapsmith-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -75,6 +76,27 @@ export class WebKitInspectorClient {
   /** Whether the webinspectord socket is still usable. */
   isConnected(): boolean {
     return this._socket !== null && !this._socket.destroyed;
+  }
+
+  /** Whether the connected page has been replaced out from under this session. */
+  get pageReplaced(): boolean {
+    return this._pageReplaced;
+  }
+
+  private static _pageReplacedError(): Error {
+    return new Error(
+      'The connected WebView page was replaced (the app remounted its WebView, ' +
+      'the page loaded into a new WebKit page, or the web content process crashed). ' +
+      'Reconnect with device.webview().',
+    );
+  }
+
+  private _markPageReplaced(): void {
+    this._pageReplaced = true;
+    for (const [, p] of this._pendingEval) {
+      p.reject(WebKitInspectorClient._pageReplacedError());
+    }
+    this._pendingEval.clear();
   }
 
   /** Drop the socket and fail all in-flight inspector messages. */
@@ -140,6 +162,9 @@ export class WebKitInspectorClient {
     if (selector === '_rpc_applicationDisconnected:') {
       const appId = argument.WIRApplicationIdentifierKey as string;
       this._apps.delete(appId);
+      if (appId === this._senderKey && this._connectedPageId !== null) {
+        this._markPageReplaced();
+      }
       return;
     }
 
@@ -162,6 +187,20 @@ export class WebKitInspectorClient {
             type: (pageData.WIRTypeKey as string) ?? '',
           };
           app.pages.set(page.id, page);
+        }
+        // webinspectord pushes listing updates once we've requested one. A
+        // page id never comes back after vanishing, so our connected page
+        // dropping out of its app's listing means the page was replaced
+        // (WebView remount, reload into a new page, or WebContent crash).
+        // Detect it here: a replaced page can keep answering evaluates
+        // against its frozen DOM indefinitely, so callers polling through
+        // this session would otherwise never notice (PILOT-288).
+        if (
+          appId === this._senderKey &&
+          this._connectedPageId !== null &&
+          !app.pages.has(this._connectedPageId)
+        ) {
+          this._markPageReplaced();
         }
       }
       return;
@@ -331,6 +370,7 @@ export class WebKitInspectorClient {
   async connectToPage(appId: string, pageId: number): Promise<void> {
     this._senderKey = appId;
     this._connectedPageId = pageId;
+    this._pageReplaced = false;
     // Reset any target from a previous connectToPage on this client (e.g. a
     // page that connected but failed its liveness probe) — otherwise the
     // wait below exits immediately and messages route to the stale target.
@@ -373,6 +413,9 @@ export class WebKitInspectorClient {
 
   /** Send a WebKit Inspector command to the connected page and wait for response. */
   async sendInspectorMessage(appId: string, message: Record<string, unknown>, timeoutMs = 30_000): Promise<Record<string, unknown>> {
+    if (this._pageReplaced) {
+      throw WebKitInspectorClient._pageReplacedError();
+    }
     if (!this._targetId) {
       throw new Error('No WebView target available — Target.targetCreated not received');
     }
