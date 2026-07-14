@@ -112,6 +112,7 @@ describe("WebView testing", () => {
 
     // Positional narrowing targets a single match.
     await expect(buttons.first()).toBeVisible()
+    await expect(buttons.first()).toHaveText("Login")
     await expect(buttons.nth(1)).toHaveText("Increment")
     await expect(buttons.last()).toHaveText("Increment")
 

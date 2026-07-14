@@ -249,8 +249,53 @@ describe('WebView strict mode (PILOT-227)', () => {
     });
 
     it('toHaveText() passes with a single match', async () => {
-      const { handle } = makeHandle([{ tag: 'h1', text: 'Welcome' }], 'Welcome');
+      const { handle } = makeHandle([{ tag: 'h1', text: 'Welcome' }], { found: true, value: 'Welcome' });
       await texpect(handle.getByText('Welcome')).toHaveText('Welcome');
+    });
+
+    it('toHaveText() on a positional locator reads the narrowed target', async () => {
+      const { handle, evaluated } = makeHandle(
+        [{ text: 'A' }, { text: 'A' }],
+        { found: true, value: 'second' },
+      );
+      await texpect(handle.getByText('A').nth(1)).toHaveText('second');
+      const read = evaluated.find((e) => e.includes('el.textContent'));
+      expect(read).toContain('[1]');
+    });
+
+    it('value assertion ticks honor the assertion timeout instead of the locator auto-wait', async () => {
+      // No matches: each tick is a non-waiting probe, so a 100ms assertion
+      // timeout fails in ~100ms rather than blocking a full locator
+      // auto-wait (TIMEOUT_MS) inside the first tick.
+      const { handle } = makeHandle([]);
+      const start = Date.now();
+      await expect(
+        texpect(handle.getByText('Missing')).toHaveText('x', { timeout: 100 }),
+      ).rejects.toThrow('to have text');
+      expect(Date.now() - start).toBeLessThan(TIMEOUT_MS);
+    });
+
+    it('toHaveAttribute() and toHaveValue() throw strict violations on ambiguous locators', async () => {
+      const { handle } = makeHandle([{ text: 'A' }, { text: 'A' }]);
+      await expect(
+        texpect(handle.getByText('A')).toHaveAttribute('href', '/x', { timeout: 100 }),
+      ).rejects.toThrow('strict mode violation');
+      await expect(
+        texpect(handle.getByText('A')).toHaveValue('x', { timeout: 100 }),
+      ).rejects.toThrow('strict mode violation');
+    });
+  });
+
+  describe('StrictModeViolationError metadata', () => {
+    it('exposes totalCount when elements is a truncated sample', async () => {
+      const matches = Array.from({ length: 14 }, (_, i) => ({ tag: 'li', text: `Row ${i}` }));
+      const { handle } = makeHandle(matches);
+      const err = await handle.locator('li').click().catch((e: unknown) => e);
+      expect(isStrictModeViolation(err)).toBe(true);
+      if (isStrictModeViolation(err)) {
+        expect(err.totalCount).toBe(14);
+        expect(err.elements.length).toBe(10);
+      }
     });
   });
 });

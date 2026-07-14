@@ -241,13 +241,18 @@ export const STRICT_MODE_VIOLATION_BRAND = Symbol.for('tapsmith.StrictModeViolat
 export class StrictModeViolationError extends Error {
   /** @internal */
   readonly [STRICT_MODE_VIOLATION_BRAND] = true;
-  /** The elements the selector resolved to, in document order. */
+  /** The elements the selector resolved to, in document order. May be a
+   * truncated sample (WebView locators cap it at {@link STRICT_ERROR_MAX_ELEMENTS});
+   * `totalCount` always holds the full match count. */
   readonly elements: ElementInfo[];
+  /** Total number of elements the selector resolved to. */
+  readonly totalCount: number;
 
-  constructor(message: string, elements: ElementInfo[]) {
+  constructor(message: string, elements: ElementInfo[], totalCount?: number) {
     super(message);
     this.name = 'StrictModeViolationError';
     this.elements = elements;
+    this.totalCount = totalCount ?? elements.length;
   }
 }
 
@@ -260,10 +265,12 @@ export function isStrictModeViolation(err: unknown): err is StrictModeViolationE
   );
 }
 
-/** Max elements listed in a strict mode violation message before truncating. */
-const STRICT_ERROR_MAX_ELEMENTS = 10;
+/** Max elements listed in a strict mode violation message before truncating.
+ * Also caps the DOM sample WebView locators collect (webview-handle.ts). */
+export const STRICT_ERROR_MAX_ELEMENTS = 10;
 
-function truncateText(s: string, max: number): string {
+/** @internal — Shared by the native and WebView strict violation formatters. */
+export function truncateText(s: string, max: number): string {
   return s.length <= max ? s : s.slice(0, max - 1) + '…';
 }
 
@@ -324,7 +331,7 @@ export function buildStrictModeViolationError(
     `strict mode violation: ${selectorDescription} resolved to ${totalCount} elements:\n` +
     `${lines.join('\n')}\n` +
     'Hint: use { exact: true }, getByRole(role, { name }), getByTestId(), or .first()/.nth()/.last() to target a single element.';
-  return new StrictModeViolationError(message, elements);
+  return new StrictModeViolationError(message, elements, totalCount);
 }
 
 /**

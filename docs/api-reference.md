@@ -148,7 +148,7 @@ try {
 
 > **Transient duplicates:** if a screen briefly shows two elements matching the locator mid-transition, the violation throws at that moment (Playwright behaves the same way). Prefer selectors that are unique at all times, or `.first()` when duplication is expected.
 
-> **WebView locators too.** `webview.getBy*` and `webview.locator(css)` locators enforce the same rules: actions, single-element queries (`isVisible()`, `textContent()`, …), and positive assertions throw on an ambiguous match, while `count()`, `all()`, absence checks, and `.first()/.nth()/.last()` chains are exempt. Element descriptions in the violation message come from the DOM (tag, text, `id`, `data-testid`, `aria-label`), and suggestions use `webview.*` selectors. The string-selector convenience methods (`webview.click(css)`, `webview.fill(css, …)`, …) predate locators and still act on the first match — prefer `webview.locator(css)` for strict behavior.
+> **WebView locators too.** `webview.getBy*` and `webview.locator(css)` locators enforce the same rules: actions, single-element queries (`isVisible()`, `textContent()`, …), and positive assertions throw on an ambiguous match, while `count()`, `all()`, absence checks, and `.first()/.nth()/.last()` chains are exempt. Element descriptions in the violation message come from the DOM (tag, text, `id`, `data-testid`, `aria-label`), and suggestions use `webview.*` selectors. For WebView violations `err.elements` holds at most the first 10 matches as sampled descriptions — check `err.totalCount` for the full match count. The string-selector convenience methods (`webview.click(css)`, `webview.fill(css, …)`, …) predate locators and still act on the first match — prefer `webview.locator(css)` for strict behavior.
 
 ---
 

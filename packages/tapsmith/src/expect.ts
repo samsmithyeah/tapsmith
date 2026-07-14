@@ -1787,13 +1787,19 @@ function createWebViewAssertions(
         const timeout = timeoutFor(options);
         let lastText = '';
         const result = await poll(
+          // Single-tick strict read (PILOT-227): resolves once per tick —
+          // throwing on an ambiguous match — instead of calling the locator's
+          // auto-waiting textContent(), which would block a whole tick for
+          // the locator timeout and ignore the assertion's own `timeout`.
           async () => {
             try {
-              lastText = await locator.textContent();
+              const tick = await locator._handle._valueTickLocator(locator, 'el.textContent');
+              if (!tick.found) return false;
+              lastText = (tick.value as string) ?? '';
               return lastText === expected;
             } catch (err) {
-              // Strict mode (PILOT-227): an ambiguous locator is an error,
-              // not a "keep polling" state.
+              // Strict mode: an ambiguous locator is an error, not a
+              // "keep polling" state. Transport hiccups keep polling.
               if (isStrictModeViolation(err)) throw err;
               return false;
             }
@@ -1817,7 +1823,9 @@ function createWebViewAssertions(
         const result = await poll(
           async () => {
             try {
-              lastText = await locator.textContent();
+              const tick = await locator._handle._valueTickLocator(locator, 'el.textContent');
+              if (!tick.found) return false;
+              lastText = (tick.value as string) ?? '';
               if (typeof expected === 'string') {
                 return lastText.includes(expected);
               }
@@ -1846,7 +1854,12 @@ function createWebViewAssertions(
         const result = await poll(
           async () => {
             try {
-              lastValue = await locator.getAttribute(name);
+              const tick = await locator._handle._valueTickLocator(
+                locator,
+                `el.getAttribute(${JSON.stringify(name)})`,
+              );
+              if (!tick.found) return false;
+              lastValue = (tick.value as string | null) ?? null;
               return lastValue === value;
             } catch (err) {
               if (isStrictModeViolation(err)) throw err;
@@ -1872,7 +1885,9 @@ function createWebViewAssertions(
         const result = await poll(
           async () => {
             try {
-              lastValue = await locator.inputValue();
+              const tick = await locator._handle._valueTickLocator(locator, 'el.value');
+              if (!tick.found) return false;
+              lastValue = (tick.value as string) ?? '';
               return lastValue === expected;
             } catch (err) {
               if (isStrictModeViolation(err)) throw err;

@@ -1,6 +1,11 @@
 import { WebSocket } from 'ws';
 import type { ElementInfo, TapsmithGrpcClient } from './grpc-client.js';
-import { buildStrictModeViolationError, type StrictModeViolationError } from './element-handle.js';
+import {
+  buildStrictModeViolationError,
+  STRICT_ERROR_MAX_ELEMENTS,
+  truncateText,
+  type StrictModeViolationError,
+} from './element-handle.js';
 import { WebViewLocator } from './webview-locator.js';
 import type { TraceCollector } from './trace/trace-collector.js';
 import { extractStack } from './trace/trace-collector.js';
@@ -33,9 +38,6 @@ const ROLE_CSS_MAP: Record<string, string[]> = {
 
 // ─── Strict mode (PILOT-227) ───
 
-/** Max DOM matches described in a strict violation (mirrors native limit). */
-const STRICT_SAMPLE_LIMIT = 10;
-
 /** @internal — DOM-derived description of one matched element. */
 interface WebViewDomDescription {
   tag: string
@@ -49,14 +51,11 @@ interface WebViewDomDescription {
 /** @internal — Single-tick snapshot of a locator's full match set. */
 export interface WebViewLocatorProbe {
   count: number
-  /** Per-match visibility flags, in document order. */
+  /** Per-match visibility flags, in document order. Empty when the caller
+   * skipped visibility computation (count/strict-resolve paths). */
   visible: boolean[]
-  /** DOM descriptions of the first {@link STRICT_SAMPLE_LIMIT} matches. */
+  /** DOM descriptions of the first {@link STRICT_ERROR_MAX_ELEMENTS} matches. */
   sample: WebViewDomDescription[]
-}
-
-function truncateText(s: string, max: number): string {
-  return s.length <= max ? s : s.slice(0, max - 1) + '…';
 }
 
 /** Best-effort unambiguous WebView locator suggestion for one DOM match. */
@@ -530,19 +529,27 @@ export class WebViewHandle {
   /**
    * @internal — Single-tick probe of a locator's full match set: count,
    * per-match visibility, and DOM descriptions of the first matches (for
-   * strict violation messages).
+   * strict violation messages). Pass `visibility: false` on paths that only
+   * need the count (strict resolve, count()) to skip a getComputedStyle
+   * call per match.
    */
-  async _probeLocator(loc: WebViewLocator, timeoutMs?: number): Promise<WebViewLocatorProbe> {
+  async _probeLocator(
+    loc: WebViewLocator,
+    timeoutMs?: number,
+    opts?: { visibility?: boolean },
+  ): Promise<WebViewLocatorProbe> {
+    const withVisibility = opts?.visibility !== false;
     const probe = await this._evaluate(`(() => {
       const els = (${loc._finderAllJs});
       const vis = (el) => {
         const s = window.getComputedStyle(el);
+        if (!s) return false;
         return s.display !== 'none' && s.visibility !== 'hidden' && s.opacity !== '0';
       };
       return {
         count: els.length,
-        visible: els.map((el) => vis(el)),
-        sample: els.slice(0, ${STRICT_SAMPLE_LIMIT}).map((el) => ({
+        visible: ${withVisibility ? 'els.map((el) => vis(el))' : '[]'},
+        sample: els.slice(0, ${STRICT_ERROR_MAX_ELEMENTS}).map((el) => ({
           tag: (el.tagName || '').toLowerCase(),
           id: el.id || '',
           testId: el.getAttribute('data-testid') || '',
@@ -570,7 +577,7 @@ export class WebViewHandle {
     const deadline = Date.now() + timeout;
     while (true) {
       const remaining = Math.max(1, deadline - Date.now());
-      const probe = await this._probeLocator(loc, remaining);
+      const probe = await this._probeLocator(loc, remaining, { visibility: false });
       if (loc._nthIndex !== undefined) {
         const idx = normalizeNthIndex(loc._nthIndex, probe.count);
         if (idx >= 0 && idx < probe.count) return;
@@ -616,12 +623,44 @@ export class WebViewHandle {
 
   /** @internal — Count matches for a locator (single tick, no auto-wait). */
   async _countLocator(loc: WebViewLocator): Promise<number> {
-    const probe = await this._probeLocator(loc, Math.min(this._timeoutMs, WEB_SOCKET_CONNECT_TIMEOUT_MS));
+    const probe = await this._probeLocator(
+      loc,
+      Math.min(this._timeoutMs, WEB_SOCKET_CONNECT_TIMEOUT_MS),
+      { visibility: false },
+    );
     if (loc._nthIndex !== undefined) {
       const idx = normalizeNthIndex(loc._nthIndex, probe.count);
       return idx >= 0 && idx < probe.count ? 1 : 0;
     }
     return probe.count;
+  }
+
+  /**
+   * @internal — Single-tick strict value read for assertion polls (expect.ts).
+   *
+   * Resolves the target once — throwing a StrictModeViolationError on an
+   * ambiguous match — then reads `valueJs` (an expression over `el`) from it.
+   * Never auto-waits, so each assertion poll tick stays bounded by the
+   * assertion's own timeout instead of the locator's full auto-wait budget.
+   * Returns `{ found: false }` when there is no target yet (or it vanished
+   * between the probe and the read — the caller's poll loop retries).
+   */
+  async _valueTickLocator(loc: WebViewLocator, valueJs: string): Promise<{ found: boolean; value?: unknown }> {
+    const tickTimeout = Math.min(this._timeoutMs, WEB_SOCKET_CONNECT_TIMEOUT_MS);
+    const probe = await this._probeLocator(loc, tickTimeout, { visibility: false });
+    if (loc._nthIndex !== undefined) {
+      const idx = normalizeNthIndex(loc._nthIndex, probe.count);
+      if (idx < 0 || idx >= probe.count) return { found: false };
+    } else {
+      if (probe.count > 1) throw buildWebViewStrictError(loc, probe);
+      if (probe.count === 0) return { found: false };
+    }
+    const result = await this._evaluate(`(() => {
+      const el = (${loc._finderJs});
+      if (!el) return { found: false };
+      return { found: true, value: (${valueJs}) };
+    })()`, tickTimeout) as { found: boolean; value?: unknown };
+    return result;
   }
 
   // ─── Locator-based actions (used by WebViewLocator) ───
