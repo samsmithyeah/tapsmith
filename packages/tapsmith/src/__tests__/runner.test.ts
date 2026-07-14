@@ -24,7 +24,7 @@ import {
 } from '../runner.js';
 import type { TapsmithConfig } from '../config.js';
 import { Tracing } from '../trace/tracing.js';
-import type { TraceCollector } from '../trace/trace-collector.js';
+import { getActiveTraceCollector, type TraceCollector } from '../trace/trace-collector.js';
 import { isCurrentAttemptClosed } from '../attempt-fence.js';
 
 const { pushContext, popContext, runSuiteContext, resolvePlatformFixture, resetFixtureRegistry } = _internal;
@@ -1834,5 +1834,181 @@ describe('retries', () => {
     }));
     expect(result.tests[0].status).toBe('failed');
     expect(result.tests[0].error?.message).toBe('Stopped by user');
+  });
+});
+
+describe('beforeAll trace replay into packaged traces', () => {
+  it('includes beforeAll actions in every test trace of a headless run', async () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'tapsmith-runner-ba-trace-'));
+    const tracing = new Tracing(async () => undefined, async () => undefined);
+    const mockDevice = {
+      tracing,
+      waitForIdle: vi.fn(async () => {}),
+      _startDeviceLogStream: vi.fn(),
+      _stopDeviceLogStream: vi.fn(),
+      _startDaemonLogStream: vi.fn(),
+      _stopDaemonLogStream: vi.fn(),
+    };
+
+    try {
+      pushContext();
+      tapsmithBeforeAll(async () => {
+        // Simulate a device action recorded during beforeAll (the runner
+        // routes these to a standalone collector, not any test's collector).
+        getActiveTraceCollector()!.addActionEvent({
+          category: 'device',
+          action: 'openDeepLink',
+          duration: 5,
+          success: true,
+          log: [],
+          hasScreenshotBefore: false,
+          hasScreenshotAfter: false,
+          hasHierarchyBefore: false,
+          hasHierarchyAfter: false,
+        });
+      });
+      tapsmithTest('first test', async () => {});
+      tapsmithTest('second test', async () => {});
+      const ctx = popContext();
+
+      const result = await runSuiteContext(ctx, '', [], [], makeOpts({
+        config: makeConfig({
+          rootDir: tempRoot,
+          outputDir: 'out',
+          trace: {
+            mode: 'on',
+            network: false,
+            screenshots: false,
+            snapshots: false,
+            sources: false,
+          },
+        }),
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any -- focused runner tracing mock
+        device: mockDevice as any,
+      }));
+
+      expect(result.tests.map((t) => t.status)).toEqual(['passed', 'passed']);
+      for (const test of result.tests) {
+        expect(test.tracePath).toBeTruthy();
+        const files = unzipSync(new Uint8Array(fs.readFileSync(test.tracePath!)));
+        const events = Buffer.from(files['trace.json']).toString('utf8')
+          .trim()
+          .split('\n')
+          .filter(Boolean)
+          .map((line) => JSON.parse(line) as { type: string; name?: string; action?: string });
+        expect(
+          events.some((e) => e.type === 'group-start' && e.name === 'beforeAll Hooks'),
+          `trace for "${test.name}" should contain the beforeAll Hooks group`,
+        ).toBe(true);
+        expect(
+          events.some((e) => e.type === 'action' && e.action === 'openDeepLink'),
+          `trace for "${test.name}" should contain the beforeAll openDeepLink action`,
+        ).toBe(true);
+      }
+    } finally {
+      fs.rmSync(tempRoot, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('afterAll trace amendment into packaged traces', () => {
+  it('appends afterAll actions to the last test trace of a headless run', async () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'tapsmith-runner-aa-trace-'));
+    const tracing = new Tracing(async () => undefined, async () => undefined);
+    const mockDevice = {
+      tracing,
+      waitForIdle: vi.fn(async () => {}),
+      _startDeviceLogStream: vi.fn(),
+      _stopDeviceLogStream: vi.fn(),
+      _startDaemonLogStream: vi.fn(),
+      _stopDaemonLogStream: vi.fn(),
+    };
+
+    try {
+      pushContext();
+      tapsmithTest('first test', async () => {});
+      tapsmithTest('second test', async () => {
+        // A regular test action, so the amendment's index offset is exercised
+        // against a trace that already contains actions of its own.
+        getActiveTraceCollector()!.addActionEvent({
+          category: 'device',
+          action: 'tap',
+          duration: 3,
+          success: true,
+          log: [],
+          hasScreenshotBefore: false,
+          hasScreenshotAfter: false,
+          hasHierarchyBefore: false,
+          hasHierarchyAfter: false,
+        });
+      });
+      tapsmithAfterAll(async () => {
+        // Simulate a device action recorded during afterAll (the runner
+        // routes these to a standalone collector after all tests packaged).
+        getActiveTraceCollector()!.addActionEvent({
+          category: 'device',
+          action: 'terminateApp',
+          duration: 5,
+          success: true,
+          log: [],
+          hasScreenshotBefore: false,
+          hasScreenshotAfter: false,
+          hasHierarchyBefore: false,
+          hasHierarchyAfter: false,
+        });
+      });
+      const ctx = popContext();
+
+      const result = await runSuiteContext(ctx, '', [], [], makeOpts({
+        config: makeConfig({
+          rootDir: tempRoot,
+          outputDir: 'out',
+          trace: {
+            mode: 'on',
+            network: false,
+            screenshots: false,
+            snapshots: false,
+            sources: false,
+          },
+        }),
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any -- focused runner tracing mock
+        device: mockDevice as any,
+      }));
+
+      expect(result.tests.map((t) => t.status)).toEqual(['passed', 'passed']);
+      const readEvents = (tracePath: string) =>
+        Buffer.from(unzipSync(new Uint8Array(fs.readFileSync(tracePath)))['trace.json'])
+          .toString('utf8')
+          .trim()
+          .split('\n')
+          .filter(Boolean)
+          .map((line) => JSON.parse(line) as {
+            type: string; name?: string; action?: string; actionIndex?: number;
+          });
+
+      // afterAll ran after the first test's trace was packaged — it must not
+      // appear there.
+      const firstEvents = readEvents(result.tests[0].tracePath!);
+      expect(firstEvents.some((e) => e.type === 'group-start' && e.name === 'afterAll Hooks')).toBe(false);
+
+      // The last run test's archive is amended with the afterAll group.
+      const lastEvents = readEvents(result.tests[1].tracePath!);
+      expect(
+        lastEvents.some((e) => e.type === 'group-start' && e.name === 'afterAll Hooks'),
+        'last test trace should contain the afterAll Hooks group',
+      ).toBe(true);
+      const hookAction = lastEvents.find((e) => e.action === 'terminateApp');
+      expect(hookAction, 'last test trace should contain the afterAll terminateApp action').toBeTruthy();
+
+      // Appended action indices must not collide with the test's own actions.
+      const indices = lastEvents
+        .filter((e) => e.type === 'action')
+        .map((e) => e.actionIndex);
+      expect(new Set(indices).size).toBe(indices.length);
+      const testAction = lastEvents.find((e) => e.action === 'tap');
+      expect(hookAction!.actionIndex!).toBeGreaterThan(testAction!.actionIndex!);
+    } finally {
+      fs.rmSync(tempRoot, { recursive: true, force: true });
+    }
   });
 });

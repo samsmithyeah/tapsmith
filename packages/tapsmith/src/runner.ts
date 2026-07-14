@@ -24,8 +24,8 @@ import { FixtureRegistry, resolveFixtures, fixtureParameterNames, functionHasPar
 import { resolveTraceConfig } from './trace/types.js';
 import { shouldRecord, shouldRetain } from './trace/trace-mode.js';
 import { resolveVideoConfig } from './video/types.js';
-import { packageTrace } from './trace/trace-packager.js';
-import { TraceCollector, setActiveTraceCollector, withActiveTraceCollector } from './trace/trace-collector.js';
+import { appendEventsToTrace, packageTrace, readTraceActionCount } from './trace/trace-packager.js';
+import { TraceCollector, screenshotFileName, setActiveTraceCollector, withActiveTraceCollector } from './trace/trace-collector.js';
 import type { AnyTraceEvent } from './trace/types.js';
 import { getSimulatorScreenScale } from './ios-simulator.js';
 import type { TraceDeviceInfo } from './trace/types.js';
@@ -694,39 +694,55 @@ function validateHookFixtures(
 }
 
 /**
- * Replay saved beforeAll trace events through a test's event callback.
- * Reads screenshots from the beforeAll collector's temp dir so they appear
- * in the UI for every test, not just the first.
+ * Replay saved beforeAll trace events into a test's trace.
+ *
+ * Events are recorded into the test's collector so they land in the packaged
+ * trace archive (headless runs included), and — when `stream` is set — also
+ * forwarded through the collector's event callback so UI mode shows them
+ * live. Screenshots are read from the beforeAll collector's temp dir, which
+ * outlives per-test packaging (it is cleaned up after the suite finishes).
  */
 function replayBeforeAllEvents(
   testCollector: TraceCollector,
   events: readonly AnyTraceEvent[],
   beforeAllCollector: TraceCollector | null,
   hierarchies: Map<number, { before?: string; after?: string }>,
+  stream: boolean,
 ): void {
-  const cb = testCollector.getEventCallback();
-  if (!cb) return;
+  const cb = stream ? testCollector.getEventCallback() : undefined;
   const screenshotDir = beforeAllCollector
     ? path.join(beforeAllCollector.tempDir, 'screenshots')
     : null;
 
   for (const event of events) {
     if ((event.type === 'action' || event.type === 'assertion') && screenshotDir) {
-      const pad = String(event.actionIndex).padStart(3, '0');
-      const beforePath = path.join(screenshotDir, `action-${pad}-before.png`);
-      const afterPath = path.join(screenshotDir, `action-${pad}-after.png`);
-      const captures: {
-        before?: Buffer; after?: Buffer;
-        hierarchyBefore?: string; hierarchyAfter?: string;
-      } = {};
-      try { if (fs.existsSync(beforePath)) captures.before = fs.readFileSync(beforePath); } catch { /* best-effort */ }
-      try { if (fs.existsSync(afterPath)) captures.after = fs.readFileSync(afterPath); } catch { /* best-effort */ }
+      const beforePath = path.join(screenshotDir, screenshotFileName(event.actionIndex, 'before'));
+      const afterPath = path.join(screenshotDir, screenshotFileName(event.actionIndex, 'after'));
       const hier = hierarchies.get(event.actionIndex);
-      if (hier?.before) captures.hierarchyBefore = hier.before;
-      if (hier?.after) captures.hierarchyAfter = hier.after;
-      cb(event, captures);
+      let hasBefore = false;
+      let hasAfter = false;
+      try { hasBefore = fs.existsSync(beforePath); } catch { /* best-effort */ }
+      try { hasAfter = fs.existsSync(afterPath); } catch { /* best-effort */ }
+      testCollector.ingestReplayedEvent(event, {
+        screenshotBefore: hasBefore ? beforePath : undefined,
+        screenshotAfter: hasAfter ? afterPath : undefined,
+        hierarchyBefore: hier?.before,
+        hierarchyAfter: hier?.after,
+      });
+      if (cb) {
+        const captures: {
+          before?: Buffer; after?: Buffer;
+          hierarchyBefore?: string; hierarchyAfter?: string;
+        } = {};
+        try { if (hasBefore) captures.before = fs.readFileSync(beforePath); } catch { /* best-effort */ }
+        try { if (hasAfter) captures.after = fs.readFileSync(afterPath); } catch { /* best-effort */ }
+        if (hier?.before) captures.hierarchyBefore = hier.before;
+        if (hier?.after) captures.hierarchyAfter = hier.after;
+        cb(event, captures);
+      }
     } else {
-      cb(event);
+      testCollector.ingestReplayedEvent(event);
+      cb?.(event);
     }
   }
 }
@@ -1121,11 +1137,17 @@ async function runSuiteContext(
             opts.reporter?.onTestStart?.(fullName, opts.testFilePath, { project: opts.projectName });
           }
 
-          // Replay beforeAll events into this test's trace stream.
-          // For the first test (which received beforeAll's live-streamed events),
-          // skip replay to avoid duplicates.
-          if (fullName !== beforeAllFirstFullName && savedBeforeAllEvents.length > 0 && traceCollector) {
-            replayBeforeAllEvents(traceCollector, savedBeforeAllEvents, beforeAllCollector, beforeAllHierarchies);
+          // Replay beforeAll events into this test's trace so they appear in
+          // the packaged archive for every test. UI streaming is skipped for
+          // the first test, which already received beforeAll's live-streamed
+          // events (recording them here is still needed — during beforeAll
+          // the active collector was the standalone beforeAll collector, so
+          // no test's own collector has these events).
+          if (savedBeforeAllEvents.length > 0 && traceCollector) {
+            replayBeforeAllEvents(
+              traceCollector, savedBeforeAllEvents, beforeAllCollector, beforeAllHierarchies,
+              fullName !== beforeAllFirstFullName,
+            );
           }
 
           // Open the beforeEach group before running setup work and hooks.
@@ -1681,7 +1703,11 @@ async function runSuiteContext(
   }
 
   // Run afterAll hooks with tracing (same pattern as beforeAll).
-  // Events are streamed to the UI tagged with the last test that ran.
+  // Events are streamed to the UI tagged with the last test that ran, and
+  // appended to that test's already-packaged trace archive so teardown
+  // actions are visible in headless runs too (the archive was written when
+  // the test finished — beforeAll-style replay into a live collector is no
+  // longer possible at this point).
   if (ctx.afterAll.length > 0 && opts.device) {
     const traceConfig = resolveTraceConfig(opts.config.trace);
     // Find the last test that actually ran, to tag events. Derived from the
@@ -1702,6 +1728,27 @@ async function runSuiteContext(
         // afterAll trace events to it, we are not starting it again.
         await opts.onTestStart(lastRunTest.fullName, { attributionOnly: true });
       }
+
+      // The archive to amend: the trace linked on the last run test's result
+      // (absent when it wasn't retained, e.g. retain-on-failure with a pass).
+      //
+      // The collector records with UNSHIFTED indices — UI mode's live stream
+      // applies its own shift to events arriving after an attribution-only
+      // re-tag (main.tsx hookShiftRef) — so the offset is applied at append
+      // time instead: past the archive's actionCount, +1 to skip the
+      // terminal end-of-test screenshot registered at index actionCount
+      // without an event. That mirrors the UI's shift (highest seen index
+      // including markers, +1), keeping stream and archive indices aligned.
+      const targetTracePath = lastRunTest.tracePath;
+      let actionIndexOffset = 0;
+      if (targetTracePath) {
+        try {
+          actionIndexOffset = readTraceActionCount(targetTracePath) + 1;
+        } catch {
+          // Unreadable archive — skip the amendment.
+        }
+      }
+
       const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tapsmith-trace-aa-'));
       const managedCollector = opts.device.tracing._startManaged(traceConfig, tempDir);
       const afterAllCollector = new TraceCollector(traceConfig, tempDir);
@@ -1710,18 +1757,31 @@ async function runSuiteContext(
       if (cb) afterAllCollector.setEventCallback(cb);
       opts.device.tracing._stopManaged();
 
-      afterAllCollector.startGroup('afterAll Hooks');
-      await withActiveTraceCollector(afterAllCollector, async () => {
-        for (const hook of ctx.afterAll) {
+      try {
+        afterAllCollector.startGroup('afterAll Hooks');
+        await withActiveTraceCollector(afterAllCollector, async () => {
+          for (const hook of ctx.afterAll) {
+            try {
+              await invokeHookWithTestScope(hook, suiteFixtures, suiteRegistry);
+            } catch (err) {
+              process.stderr.write(`[tapsmith] afterAll hook error: ${err instanceof Error ? err.message : String(err)}\n`);
+            }
+          }
+        });
+        afterAllCollector.endGroup();
+        await afterAllCollector.flushPendingCaptures();
+        if (targetTracePath && actionIndexOffset > 0) {
           try {
-            await invokeHookWithTestScope(hook, suiteFixtures, suiteRegistry);
-          } catch (err) {
-            process.stderr.write(`[tapsmith] afterAll hook error: ${err instanceof Error ? err.message : String(err)}\n`);
+            appendEventsToTrace(targetTracePath, afterAllCollector, Date.now(), actionIndexOffset);
+          } catch {
+            // Trace amendment is best-effort, like packaging.
           }
         }
-      });
-      afterAllCollector.endGroup();
-      afterAllCollector.cleanup();
+      } finally {
+        // The temp dir must go even if something above escapes the
+        // per-hook catches — a leak here also leaves screenshots behind.
+        afterAllCollector.cleanup();
+      }
     } else {
       for (const hook of ctx.afterAll) {
         try {
