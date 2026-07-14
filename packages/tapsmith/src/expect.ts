@@ -17,7 +17,7 @@
  *   await expect.poll(async () => fetchCount()).toBe(5);
  */
 
-import { ElementHandle, ELEMENT_HANDLE_BRAND, isTransientAgentError } from "./element-handle.js";
+import { ElementHandle, ELEMENT_HANDLE_BRAND, isStrictModeViolation, isTransientAgentError } from "./element-handle.js";
 import type { ElementInfo } from "./grpc-client.js";
 import { formatSelector } from "./selectors.js";
 import { extractStack, getActiveTraceCollector } from "./trace/trace-collector.js";
@@ -1732,7 +1732,10 @@ function createWebViewAssertions(
       return traceAssertion('toBeVisible', async () => {
         const timeout = timeoutFor(options);
         const result = await poll(
-          () => locator.isVisible(),
+          // Negated form is an absence check — evaluate over all matches
+          // (strict mode, PILOT-227). A strict violation propagates out of
+          // the poll loop immediately.
+          async () => (await locator._handle._assertionTickLocator(locator, !negated)).anyVisible,
           timeout,
           negated,
         );
@@ -1748,7 +1751,8 @@ function createWebViewAssertions(
       return traceAssertion('toBeHidden', async () => {
         const timeout = timeoutFor(options);
         const result = await poll(
-          async () => !(await locator.isVisible()),
+          // Absence check — non-strict, hidden means EVERY match is hidden.
+          async () => (await locator._handle._assertionTickLocator(locator, false)).allHidden,
           timeout,
           negated,
         );
@@ -1764,12 +1768,9 @@ function createWebViewAssertions(
       return traceAssertion('toExist', async () => {
         const timeout = timeoutFor(options);
         const result = await poll(
-          async () => {
-            const found = await locator._handle._evaluate(
-              `(${locator._finderJs}) !== null`,
-            );
-            return found as boolean;
-          },
+          // Negated form is an absence check — evaluate over all matches
+          // (strict mode, PILOT-227).
+          async () => (await locator._handle._assertionTickLocator(locator, !negated)).exists,
           timeout,
           negated,
         );
@@ -1790,7 +1791,10 @@ function createWebViewAssertions(
             try {
               lastText = await locator.textContent();
               return lastText === expected;
-            } catch {
+            } catch (err) {
+              // Strict mode (PILOT-227): an ambiguous locator is an error,
+              // not a "keep polling" state.
+              if (isStrictModeViolation(err)) throw err;
               return false;
             }
           },
@@ -1818,7 +1822,8 @@ function createWebViewAssertions(
                 return lastText.includes(expected);
               }
               return expected.test(lastText);
-            } catch {
+            } catch (err) {
+              if (isStrictModeViolation(err)) throw err;
               return false;
             }
           },
@@ -1843,7 +1848,8 @@ function createWebViewAssertions(
             try {
               lastValue = await locator.getAttribute(name);
               return lastValue === value;
-            } catch {
+            } catch (err) {
+              if (isStrictModeViolation(err)) throw err;
               return false;
             }
           },
@@ -1868,7 +1874,8 @@ function createWebViewAssertions(
             try {
               lastValue = await locator.inputValue();
               return lastValue === expected;
-            } catch {
+            } catch (err) {
+              if (isStrictModeViolation(err)) throw err;
               return false;
             }
           },

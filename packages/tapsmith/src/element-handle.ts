@@ -290,25 +290,38 @@ function suggestSelectorFor(el: ElementInfo): string | undefined {
   return undefined;
 }
 
-/** @internal — Build the Playwright-style strict mode violation error. */
+/** @internal — Build the Playwright-style strict mode violation error.
+ *
+ * `options` lets non-native surfaces (WebView locators, PILOT-227) reuse the
+ * same message format: `totalCount` when `elements` is a truncated sample of
+ * a larger match set, and `suggest` to override the per-element unambiguous
+ * locator suggestion (the default suggests native `device.getBy*` selectors).
+ */
 export function buildStrictModeViolationError(
   selectorDescription: string,
   elements: ElementInfo[],
+  options?: {
+    totalCount?: number;
+    suggest?: (el: ElementInfo, index: number) => string | undefined;
+  },
 ): StrictModeViolationError {
-  const lines = elements.slice(0, STRICT_ERROR_MAX_ELEMENTS).map((el, i) => {
+  const totalCount = options?.totalCount ?? elements.length;
+  const suggest = options?.suggest ?? suggestSelectorFor;
+  const shown = elements.slice(0, STRICT_ERROR_MAX_ELEMENTS);
+  const lines = shown.map((el, i) => {
     const kind = el.role || el.className || 'element';
     let line = `    ${i + 1}) ${kind}`;
     if (el.text) line += ` "${truncateText(el.text, 60)}"`;
     if (el.bounds) line += ` [${el.bounds.left},${el.bounds.top}][${el.bounds.right},${el.bounds.bottom}]`;
-    const aka = suggestSelectorFor(el);
+    const aka = suggest(el, i);
     if (aka) line += ` aka ${aka}`;
     return line;
   });
-  if (elements.length > STRICT_ERROR_MAX_ELEMENTS) {
-    lines.push(`    … and ${elements.length - STRICT_ERROR_MAX_ELEMENTS} more`);
+  if (totalCount > shown.length) {
+    lines.push(`    … and ${totalCount - shown.length} more`);
   }
   const message =
-    `strict mode violation: ${selectorDescription} resolved to ${elements.length} elements:\n` +
+    `strict mode violation: ${selectorDescription} resolved to ${totalCount} elements:\n` +
     `${lines.join('\n')}\n` +
     'Hint: use { exact: true }, getByRole(role, { name }), getByTestId(), or .first()/.nth()/.last() to target a single element.';
   return new StrictModeViolationError(message, elements);

@@ -9,7 +9,7 @@
  * then stateful tests (login, counter) run last — avoiding WebView
  * remounts between tests for debug socket stability on CI.
  */
-import { beforeAll, describe, expect, test } from "tapsmith"
+import { beforeAll, describe, expect, isStrictModeViolation, test } from "tapsmith"
 import { resetApp } from "../utils/app-reset.js"
 
 describe("WebView testing", () => {
@@ -89,6 +89,35 @@ describe("WebView testing", () => {
     await expect(webview.locator("#count-display")).toHaveText("Count: 1")
     await webview.click("#increment-button")
     await expect(webview.locator("#count-display")).toHaveText("Count: 2")
+
+    await device.native()
+  })
+
+  test("strict mode: ambiguous locator throws, positional chains are exempt (PILOT-227)", async ({ device }) => {
+    const webview = await device.webview()
+
+    // The page has two <button> elements (Login, Increment).
+    const buttons = webview.getByRole("button")
+    expect(await buttons.count()).toBe(2)
+
+    // Acting on the ambiguous locator throws instead of clicking the first match.
+    let error: unknown
+    try {
+      await buttons.click()
+    } catch (err) {
+      error = err
+    }
+    expect(isStrictModeViolation(error)).toBe(true)
+    expect(String(error)).toContain("resolved to 2 elements")
+
+    // Positional narrowing targets a single match.
+    await expect(buttons.first()).toBeVisible()
+    await expect(buttons.nth(1)).toHaveText("Increment")
+    await expect(buttons.last()).toHaveText("Increment")
+
+    // all() enumerates without strict violations.
+    const all = await buttons.all()
+    expect(all.length).toBe(2)
 
     await device.native()
   })
