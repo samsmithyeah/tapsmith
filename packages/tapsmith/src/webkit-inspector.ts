@@ -55,13 +55,38 @@ export class WebKitInspectorClient {
   async connect(socketPath: string): Promise<void> {
     return new Promise((resolve, reject) => {
       const socket = net.createConnection(socketPath);
+      // Store immediately so close() during a still-pending connect destroys
+      // the socket instead of leaking the connection attempt.
+      this._socket = socket;
       socket.on('connect', () => {
-        this._socket = socket;
         this._setupDataHandler();
         this._sendReport().then(resolve).catch(reject);
       });
-      socket.on('error', reject);
+      socket.on('error', (err) => {
+        this._teardown(err instanceof Error ? err : new Error(String(err)));
+        reject(err);
+      });
+      socket.on('close', () => {
+        this._teardown(new Error('WebKit Inspector connection closed'));
+      });
     });
+  }
+
+  /** Whether the webinspectord socket is still usable. */
+  isConnected(): boolean {
+    return this._socket !== null && !this._socket.destroyed;
+  }
+
+  /** Drop the socket and fail all in-flight inspector messages. */
+  private _teardown(reason: Error): void {
+    if (this._socket) {
+      this._socket.destroy();
+      this._socket = null;
+    }
+    for (const [, p] of this._pendingEval) {
+      p.reject(reason);
+    }
+    this._pendingEval.clear();
   }
 
   private _setupDataHandler(): void {
@@ -397,21 +422,16 @@ export class WebKitInspectorClient {
   }
 
   close(): void {
-    if (this._socket) {
-      this._socket.destroy();
-      this._socket = null;
-    }
-    for (const [, p] of this._pendingEval) {
-      p.reject(new Error('Connection closed'));
-    }
-    this._pendingEval.clear();
+    this._teardown(new Error('Connection closed'));
   }
 }
 
 /** Find the webinspectord Unix socket for a given iOS simulator UDID (or name). */
 export function findSimulatorInspectorSocket(udidOrName: string): string | null {
   try {
-    const psOutput = execSync('ps aux', { encoding: 'utf-8' });
+    // Bounded: connection setup runs inside the device timeout, and lsof in
+    // particular can stall for a long time on a loaded machine.
+    const psOutput = execSync('ps aux', { encoding: 'utf-8', timeout: 5_000 });
 
     // Collect all launchd_sim PIDs and their UDIDs
     const sims: Array<{ pid: string; udid: string }> = [];
@@ -441,7 +461,7 @@ export function findSimulatorInspectorSocket(udidOrName: string): string | null 
 
     // Find the webinspectord socket owned by this specific launchd_sim PID.
     // lsof -U shows ALL Unix sockets — match the PID column to filter correctly.
-    const lsofOutput = execSync('lsof -U 2>/dev/null', { encoding: 'utf-8' });
+    const lsofOutput = execSync('lsof -U 2>/dev/null', { encoding: 'utf-8', timeout: 10_000 });
     for (const line of lsofOutput.split('\n')) {
       if (!line.includes('webinspectord_sim.socket')) continue;
       const cols = line.trim().split(/\s+/);

@@ -46,6 +46,7 @@ import {
   matchUrlPattern,
 } from './network.js';
 import { WebViewHandle } from './webview-handle.js';
+import type { WebKitInspectorClient } from './webkit-inspector.js';
 import type { Platform } from './config.js';
 
 type CaptureTraceStateOptions = {
@@ -112,6 +113,12 @@ function describeWebView(webview: WebViewInfo): string {
   const packageName = webview.packageName || 'unknown package';
   const pid = webview.pid ? `pid ${webview.pid}` : 'unknown pid';
   return `${webview.socketName} (${pid}, ${packageName})`;
+}
+
+/** WIRApplicationIdentifierKey is "PID:<n>" — extract n for newest-first ordering. */
+function inspectorAppPid(appId: string): number {
+  const match = /(\d+)/.exec(appId);
+  return match ? Number(match[1]) : -1;
 }
 
 // ─── Types for device-level actions ───
@@ -1326,86 +1333,144 @@ export class Device {
   private async _webviewIos(_packageName: string | undefined, generation: number, log?: string[]): Promise<WebViewHandle> {
     const { WebKitInspectorClient, findSimulatorInspectorSocket } = await import('./webkit-inspector.js');
 
-    // Find the simulator's webinspectord socket
     // The UDID may be the resolved simulator UDID stored by the dispatcher
     const udid = this._simulatorUdid ?? '';
-    const socketPath = findSimulatorInspectorSocket(udid);
-    if (!socketPath) {
-      appendWebViewConnectLog(log, `No WebKit Inspector socket found for simulator "${udid}"`);
-      throw new Error(
-        `Could not find WebKit Inspector socket for simulator "${udid}". ` +
-        'Ensure the iOS simulator is booted.',
-      );
-    }
-    appendWebViewConnectLog(log, `Using WebKit Inspector socket ${socketPath}`);
-
-    const inspector = new WebKitInspectorClient();
-    await inspector.connect(socketPath);
-
     const deadline = Date.now() + this._defaultTimeoutMs;
     let lastError = '';
+    let lastPhase = 'discovering the WebKit Inspector socket';
+    let socketPath: string | null = null;
+    let inspector: WebKitInspectorClient | null = null;
 
-    while (remainingMs(deadline) > 0) {
-      const targets = await inspector.listTargets();
-
-      // Find the target app's WebView pages — prefer matching by package/name,
-      // fall back to the first app with any inspectable pages.
-      const matchesPkg = (t: { bundleId: string; name: string }) => {
-        if (_packageName) return t.bundleId === _packageName || t.name === _packageName;
-        if (this.defaultPackageName) return t.bundleId === this.defaultPackageName;
-        return false;
-      };
-      const appTarget = targets.find(t => t.pages.length > 0 && matchesPkg(t))
-        ?? targets.find(t => t.pages.length > 0);
-
-      if (!appTarget || appTarget.pages.length === 0) {
-        lastError = 'No inspectable WebView pages found';
-        appendWebViewConnectLog(log, lastError);
-        await sleepUpTo(WEBVIEW_RETRY_INTERVAL_MS, deadline);
-        continue;
-      }
-
-      // Try each listed page, probing before accepting: after a WebView
-      // remount, webinspectord keeps advertising the dead page for tens of
-      // seconds — connecting to it times out waiting for Target.targetCreated
-      // (or never answers evaluates), so a blind pages[0] pick can wedge
-      // reconnects until the stale entry expires.
-      let handle: WebViewHandle | undefined;
-      for (const page of appTarget.pages) {
-        appendWebViewConnectLog(log, `Connecting to iOS WebView page "${page.title || page.url || page.id}"`);
-        try {
-          await inspector.connectToPage(appTarget.appId, page.id);
-          const candidate = WebViewHandle._createFromInspector(
-            this._client, inspector, appTarget.appId, page.id, this._defaultTimeoutMs,
-          );
-          await candidate._evaluate('1', WEBVIEW_PAGE_PROBE_TIMEOUT_MS);
-          handle = candidate;
-          break;
-        } catch (err) {
-          lastError = `Page "${page.title || page.url || page.id}" did not respond: ${err instanceof Error ? err.message : String(err)}`;
-          appendWebViewConnectLog(log, lastError);
+    // Every phase of connection setup is bounded and retried until the device
+    // timeout: webinspectord can wedge mid-handshake (a Unix socket connect
+    // that never completes, listings that never arrive), and a hung phase
+    // must fail fast and retry on a fresh session — which typically succeeds —
+    // instead of stalling until the caller's test timeout (PILOT-288).
+    try {
+      while (remainingMs(deadline) > 0) {
+        if (!socketPath) {
+          lastPhase = 'discovering the WebKit Inspector socket';
+          socketPath = findSimulatorInspectorSocket(udid);
+          if (!socketPath) {
+            lastError = `No WebKit Inspector socket found for simulator "${udid}". Ensure the iOS simulator is booted`;
+            appendWebViewConnectLog(log, lastError);
+            await sleepUpTo(WEBVIEW_RETRY_INTERVAL_MS, deadline);
+            continue;
+          }
+          appendWebViewConnectLog(log, `Using WebKit Inspector socket ${socketPath}`);
         }
-      }
-      if (!handle) {
-        await sleepUpTo(WEBVIEW_RETRY_INTERVAL_MS, deadline);
-        continue;
+
+        if (!inspector?.isConnected()) {
+          inspector?.close();
+          lastPhase = 'connecting to the WebKit Inspector service';
+          inspector = new WebKitInspectorClient();
+          const attemptDeadline = Math.min(Date.now() + WEBVIEW_CONNECT_ATTEMPT_TIMEOUT_MS, deadline);
+          try {
+            await withDeadline(inspector.connect(socketPath), attemptDeadline, 'Connecting to the WebKit Inspector service');
+          } catch (e) {
+            lastError = e instanceof Error ? e.message : String(e);
+            appendWebViewConnectLog(log, `WebKit Inspector connect failed: ${lastError}`);
+            inspector.close();
+            inspector = null;
+            // The simulator may have rebooted out from under us — rediscover.
+            socketPath = null;
+            await sleepUpTo(WEBVIEW_RETRY_INTERVAL_MS, deadline);
+            continue;
+          }
+        }
+
+        lastPhase = 'listing WebView targets';
+        let targets: Awaited<ReturnType<WebKitInspectorClient['listTargets']>>;
+        try {
+          targets = await withDeadline(
+            inspector.listTargets(),
+            Math.min(Date.now() + WEBVIEW_RPC_TIMEOUT_MS, deadline),
+            'Listing WebView targets',
+          );
+        } catch (e) {
+          lastError = e instanceof Error ? e.message : String(e);
+          appendWebViewConnectLog(log, `Listing WebView targets failed: ${lastError}`);
+          inspector.close();
+          inspector = null;
+          await sleepUpTo(WEBVIEW_RETRY_INTERVAL_MS, deadline);
+          continue;
+        }
+
+        // Find the target app's WebView pages — prefer matching by package/name,
+        // fall back to any app with inspectable pages.
+        const matchesPkg = (t: { bundleId: string; name: string }) => {
+          if (_packageName) return t.bundleId === _packageName || t.name === _packageName;
+          if (this.defaultPackageName) return t.bundleId === this.defaultPackageName;
+          return false;
+        };
+        const withPages = targets.filter(t => t.pages.length > 0);
+        const matching = withPages.filter(matchesPkg);
+        // After an app relaunch, webinspectord keeps advertising the previous
+        // process's entry for tens of seconds — and its dead pages can keep
+        // answering evaluates against their frozen DOM, so the responsiveness
+        // probe below cannot reject them. The live page is the newest one:
+        // probe apps newest-pid-first and pages newest-id-first.
+        const candidates = (matching.length > 0 ? matching : withPages)
+          .slice()
+          .sort((a, b) => inspectorAppPid(b.appId) - inspectorAppPid(a.appId));
+
+        if (candidates.length === 0) {
+          lastPhase = 'waiting for an inspectable WebView page';
+          lastError = 'No inspectable WebView pages found';
+          appendWebViewConnectLog(log, lastError);
+          await sleepUpTo(WEBVIEW_RETRY_INTERVAL_MS, deadline);
+          continue;
+        }
+
+        lastPhase = 'connecting to a WebView page';
+        let handle: WebViewHandle | undefined;
+        outer: for (const appTarget of candidates) {
+          const pages = appTarget.pages.slice().sort((a, b) => b.id - a.id);
+          for (const page of pages) {
+            appendWebViewConnectLog(log, `Connecting to iOS WebView page "${page.title || page.url || page.id}" (app ${appTarget.appId})`);
+            try {
+              const attemptDeadline = Math.min(Date.now() + WEBVIEW_CONNECT_ATTEMPT_TIMEOUT_MS, deadline);
+              await withDeadline(
+                inspector.connectToPage(appTarget.appId, page.id),
+                attemptDeadline,
+                'Setting up the WebView page session',
+              );
+              const candidate = WebViewHandle._createFromInspector(
+                this._client, inspector, appTarget.appId, page.id, this._defaultTimeoutMs,
+              );
+              await candidate._evaluate('1', Math.min(WEBVIEW_PAGE_PROBE_TIMEOUT_MS, Math.max(1, remainingMs(deadline))));
+              handle = candidate;
+              break outer;
+            } catch (err) {
+              lastError = `Page "${page.title || page.url || page.id}" did not respond: ${err instanceof Error ? err.message : String(err)}`;
+              appendWebViewConnectLog(log, lastError);
+            }
+          }
+        }
+        if (!handle) {
+          await sleepUpTo(WEBVIEW_RETRY_INTERVAL_MS, deadline);
+          continue;
+        }
+
+        this._applyTraceCtx(handle);
+        // The handle owns the inspector connection from here on.
+        inspector = null;
+        if (generation !== this._webviewGeneration) {
+          await handle.close();
+          throw new Error('WebView connection was disposed before it completed');
+        }
+
+        this._cachedWebView = handle;
+        return handle;
       }
 
-      this._applyTraceCtx(handle);
-      if (generation !== this._webviewGeneration) {
-        await handle.close();
-        throw new Error('WebView connection was disposed before it completed');
-      }
-
-      this._cachedWebView = handle;
-      return handle;
+      throw new Error(
+        `WebView connection setup timed out during ${lastPhase} (${this._defaultTimeoutMs}ms). ${lastError}. ` +
+        'Ensure the WebView has webviewDebuggingEnabled={true} (sets isInspectable on iOS 16.4+).',
+      );
+    } finally {
+      inspector?.close();
     }
-
-    inspector.close();
-    throw new Error(
-      `Timed out waiting for WebView (${this._defaultTimeoutMs}ms). ${lastError}. ` +
-      'Ensure the WebView has webviewDebuggingEnabled={true} (sets isInspectable on iOS 16.4+).',
-    );
   }
 
   private _applyTraceCtx(handle: WebViewHandle): void {

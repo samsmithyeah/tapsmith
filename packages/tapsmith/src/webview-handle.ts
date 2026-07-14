@@ -1057,7 +1057,7 @@ export class WebViewHandle {
   /** @internal — Check if this handle is still usable (WebSocket open or inspector connected). */
   _isAlive(): boolean {
     if (this._closed) return false;
-    if (this._useInspector) return this._inspector !== null;
+    if (this._useInspector) return this._inspector !== null && this._inspector.isConnected();
     return this._ws !== null && this._ws.readyState === WebSocket.OPEN;
   }
 
