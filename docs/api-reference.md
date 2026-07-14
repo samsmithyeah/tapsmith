@@ -2567,7 +2567,7 @@ Get an attribute value from an element.
 
 #### `webview.isVisible(selector: string): Promise<boolean>`
 
-Check if an element is visible (not `display: none`, `visibility: hidden`, or `opacity: 0`).
+Check if an element is visible: it must be rendered (have layout boxes — an ancestor with `display: none` counts as hidden) and not have `display: none`, `visibility: hidden`, or `opacity: 0`.
 
 #### `webview.evaluate<T>(expression: string): Promise<T>`
 

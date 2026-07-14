@@ -151,7 +151,7 @@ const disabled = await webview.getAttribute("#submit", "disabled")
 
 ### `webview.isVisible(selector)`
 
-Check whether an element is visible. Returns `false` if the element has `display: none`, `visibility: hidden`, or `opacity: 0`.
+Check whether an element is visible. Returns `false` if the element is not rendered at all (no layout boxes — including when an ancestor has `display: none`), or has `display: none`, `visibility: hidden`, or `opacity: 0`.
 
 ```typescript
 const visible = await webview.isVisible(".error-banner")

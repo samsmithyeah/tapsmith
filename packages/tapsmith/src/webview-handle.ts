@@ -56,6 +56,10 @@ export interface WebViewLocatorProbe {
   visible: boolean[]
   /** DOM descriptions of the first {@link STRICT_ERROR_MAX_ELEMENTS} matches. */
   sample: WebViewDomDescription[]
+  /** Value read from the target element in the same round-trip, when the
+   * caller passed `valueJs` (assertion value ticks). `found: false` when
+   * there is no target at the locator's position yet. */
+  target?: { found: boolean; value?: unknown }
 }
 
 /** Best-effort unambiguous WebView locator suggestion for one DOM match. */
@@ -531,17 +535,33 @@ export class WebViewHandle {
    * per-match visibility, and DOM descriptions of the first matches (for
    * strict violation messages). Pass `visibility: false` on paths that only
    * need the count (strict resolve, count()) to skip a getComputedStyle
-   * call per match.
+   * call per match. Pass `valueJs` (an expression over `el`) to also read a
+   * value from the target element in the same round-trip — the whole
+   * count-check + read is then one atomic DOM snapshot.
    */
   async _probeLocator(
     loc: WebViewLocator,
     timeoutMs?: number,
-    opts?: { visibility?: boolean },
+    opts?: { visibility?: boolean; valueJs?: string },
   ): Promise<WebViewLocatorProbe> {
     const withVisibility = opts?.visibility !== false;
+    // The target index mirrors _finderJs: nth-aware, defaulting to the first
+    // match — strict callers throw on count > 1 before consulting `target`.
+    const nthIndex = loc._nthIndex ?? 0;
+    const idxJs = nthIndex >= 0 ? String(nthIndex) : `els.length - ${-nthIndex}`;
+    const targetJs = opts?.valueJs
+      ? `(() => {
+          const el = els[${idxJs}] ?? null;
+          if (!el) return { found: false };
+          return { found: true, value: (${opts.valueJs}) };
+        })()`
+      : 'undefined';
     const probe = await this._evaluate(`(() => {
       const els = (${loc._finderAllJs});
       const vis = (el) => {
+        // No client rects ⇒ not rendered at all (covers ancestors with
+        // display:none, which the element's own computed style would miss).
+        if (el.getClientRects().length === 0) return false;
         const s = window.getComputedStyle(el);
         if (!s) return false;
         return s.display !== 'none' && s.visibility !== 'hidden' && s.opacity !== '0';
@@ -557,6 +577,7 @@ export class WebViewHandle {
           role: el.getAttribute('role') || '',
           text: (el.textContent || '').trim().slice(0, 80),
         })),
+        target: ${targetJs},
       };
     })()`, timeoutMs);
     return probe as WebViewLocatorProbe;
@@ -647,20 +668,13 @@ export class WebViewHandle {
    */
   async _valueTickLocator(loc: WebViewLocator, valueJs: string): Promise<{ found: boolean; value?: unknown }> {
     const tickTimeout = Math.min(this._timeoutMs, WEB_SOCKET_CONNECT_TIMEOUT_MS);
-    const probe = await this._probeLocator(loc, tickTimeout, { visibility: false });
-    if (loc._nthIndex !== undefined) {
-      const idx = normalizeNthIndex(loc._nthIndex, probe.count);
-      if (idx < 0 || idx >= probe.count) return { found: false };
-    } else {
-      if (probe.count > 1) throw buildWebViewStrictError(loc, probe);
-      if (probe.count === 0) return { found: false };
+    // Single round-trip: the probe reads the target value in the same DOM
+    // snapshot as the strictness count, so the check and the read can't race.
+    const probe = await this._probeLocator(loc, tickTimeout, { visibility: false, valueJs });
+    if (loc._nthIndex === undefined && probe.count > 1) {
+      throw buildWebViewStrictError(loc, probe);
     }
-    const result = await this._evaluate(`(() => {
-      const el = (${loc._finderJs});
-      if (!el) return { found: false };
-      return { found: true, value: (${valueJs}) };
-    })()`, tickTimeout) as { found: boolean; value?: unknown };
-    return result;
+    return probe.target ?? { found: false };
   }
 
   // ─── Locator-based actions (used by WebViewLocator) ───
@@ -923,7 +937,9 @@ export class WebViewHandle {
     const result = await this._evaluate(`(() => {
       const el = document.querySelector(${JSON.stringify(selector)});
       if (!el) return false;
+      if (el.getClientRects().length === 0) return false;
       const style = window.getComputedStyle(el);
+      if (!style) return false;
       return style.display !== 'none' && style.visibility !== 'hidden' && style.opacity !== '0';
     })()`, Math.min(this._timeoutMs, WEB_SOCKET_CONNECT_TIMEOUT_MS));
     return result as boolean;
@@ -963,23 +979,27 @@ export class WebViewHandle {
   /** Locate an element by its ARIA/HTML role, optionally filtered by accessible name. */
   getByRole(role: string, options?: { name?: string }): WebViewLocator {
     const cssSelectors = ROLE_CSS_MAP[role];
+    // `!== undefined` (not truthiness) so an explicit empty name still filters.
+    const hasName = options?.name !== undefined;
+    const displaySuffix = hasName ? `[name=${options!.name}]` : '';
     if (!cssSelectors) {
       const selector = `[role="${role}"]`;
-      const finderAllJs = options?.name
-        ? `(() => { const out = []; for (const el of document.querySelectorAll(${JSON.stringify(selector)})) { if (el.getAttribute('aria-label') === ${JSON.stringify(options.name)} || el.textContent?.trim() === ${JSON.stringify(options.name)}) out.push(el); } return out; })()`
+      const finderAllJs = hasName
+        ? `(() => { const out = []; for (const el of document.querySelectorAll(${JSON.stringify(selector)})) { if (el.getAttribute('aria-label') === ${JSON.stringify(options!.name)} || el.textContent?.trim() === ${JSON.stringify(options!.name)}) out.push(el); } return out; })()`
         : `Array.from(document.querySelectorAll(${JSON.stringify(selector)}))`;
-      return new WebViewLocator(this, `role=${role}${options?.name ? `[name=${options.name}]` : ''}`, this._timeoutMs, finderAllJs);
+      return new WebViewLocator(this, `role=${role}${displaySuffix}`, this._timeoutMs, finderAllJs);
     }
 
     const selectorList = cssSelectors.join(', ');
-    const displayName = `role=${role}${options?.name ? `[name=${options.name}]` : ''}`;
+    const displayName = `role=${role}${displaySuffix}`;
 
-    if (!options?.name) {
+    if (!hasName) {
       return new WebViewLocator(this, displayName, this._timeoutMs,
         `Array.from(document.querySelectorAll(${JSON.stringify(selectorList)}))`);
     }
 
-    const nameEscaped = JSON.stringify(options.name);
+    // Non-null: hasName guarantees options.name is set (TS can't narrow through the const).
+    const nameEscaped = JSON.stringify(options!.name);
     // W3C Accessible Name computation (matches Playwright's getByRole):
     // 1. aria-labelledby  2. aria-label  3. <label> (for or wrapping)
     // 4. title  5. placeholder  6. textContent (buttons/links only)

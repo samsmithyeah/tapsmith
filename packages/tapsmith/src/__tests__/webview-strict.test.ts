@@ -40,12 +40,24 @@ function probeOf(matches: ProbeMatch[]): WebViewLocatorProbe {
   };
 }
 
-/** WebViewHandle with the CDP layer stubbed out: probes come from `matches`,
- * other evaluates are recorded and answered with `evaluateResult`. */
+/** WebViewHandle with the CDP layer stubbed out: probes come from `matches`
+ * (including the target-value read for assertion value ticks, answered with
+ * `evaluateResult`), other evaluates are recorded and answered with
+ * `evaluateResult` too. */
 function makeHandle(matches: ProbeMatch[], evaluateResult: unknown = undefined) {
   const handle = new WebViewHandle({} as TapsmithGrpcClient, 0, TIMEOUT_MS);
   const evaluated: string[] = [];
-  vi.spyOn(handle, '_probeLocator').mockImplementation(async () => probeOf(matches));
+  vi.spyOn(handle, '_probeLocator').mockImplementation(async (loc, _timeoutMs, opts) => {
+    const probe = probeOf(matches);
+    if (opts?.valueJs) {
+      // Mirror the in-page target derivation: nth-aware, first by default.
+      const n = loc._nthIndex ?? 0;
+      const idx = n < 0 ? matches.length + n : n;
+      const found = idx >= 0 && idx < matches.length;
+      probe.target = found ? { found, value: evaluateResult } : { found: false };
+    }
+    return probe;
+  });
   vi.spyOn(handle, '_evaluate').mockImplementation(async (expression: string) => {
     evaluated.push(expression);
     return evaluateResult;
@@ -152,6 +164,14 @@ describe('WebView strict mode (PILOT-227)', () => {
       const { handle } = makeHandle([]);
       expect(() => handle.getByText('A').nth(1.5)).toThrow('nth(1.5): index must be an integer');
     });
+
+    it('getByRole treats an explicit empty accessible name as a filter, not "no filter"', () => {
+      const { handle } = makeHandle([]);
+      // Mapped role: goes through the accessible-name computation.
+      expect(handle.getByRole('button', { name: '' })._finderAllJs).toContain('accessibleName');
+      // Unmapped role: filters on aria-label/text.
+      expect(handle.getByRole('banner', { name: '' })._finderAllJs).toContain('aria-label');
+    });
   });
 
   describe('count() and all() are exempt', () => {
@@ -249,18 +269,20 @@ describe('WebView strict mode (PILOT-227)', () => {
     });
 
     it('toHaveText() passes with a single match', async () => {
-      const { handle } = makeHandle([{ tag: 'h1', text: 'Welcome' }], { found: true, value: 'Welcome' });
+      const { handle } = makeHandle([{ tag: 'h1', text: 'Welcome' }], 'Welcome');
       await texpect(handle.getByText('Welcome')).toHaveText('Welcome');
     });
 
-    it('toHaveText() on a positional locator reads the narrowed target', async () => {
-      const { handle, evaluated } = makeHandle(
-        [{ text: 'A' }, { text: 'A' }],
-        { found: true, value: 'second' },
-      );
+    it('toHaveText() on a positional locator reads the narrowed target without a strict throw', async () => {
+      const { handle } = makeHandle([{ text: 'A' }, { text: 'A' }], 'second');
       await texpect(handle.getByText('A').nth(1)).toHaveText('second');
-      const read = evaluated.find((e) => e.includes('el.textContent'));
-      expect(read).toContain('[1]');
+    });
+
+    it('toHaveText() on an out-of-range positional locator fails as not-found, not strict', async () => {
+      const { handle } = makeHandle([{ text: 'A' }], 'x');
+      await expect(
+        texpect(handle.getByText('A').nth(3)).toHaveText('x', { timeout: 100 }),
+      ).rejects.toThrow('to have text');
     });
 
     it('value assertion ticks honor the assertion timeout instead of the locator auto-wait', async () => {
