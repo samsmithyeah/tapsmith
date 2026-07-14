@@ -25,10 +25,13 @@ interface ProbeMatch {
   visible?: boolean
 }
 
-function probeOf(matches: ProbeMatch[]): WebViewLocatorProbe {
+function probeOf(matches: ProbeMatch[], nthIndex = 0): WebViewLocatorProbe {
+  const idx = nthIndex < 0 ? matches.length + nthIndex : nthIndex;
+  const target = matches[idx];
   return {
     count: matches.length,
-    visible: matches.map((m) => m.visible ?? true),
+    anyVisible: matches.some((m) => m.visible ?? true),
+    targetVisible: target ? (target.visible ?? true) : false,
     sample: matches.slice(0, 10).map((m) => ({
       tag: m.tag ?? 'div',
       id: m.id ?? '',
@@ -48,7 +51,7 @@ function makeHandle(matches: ProbeMatch[], evaluateResult: unknown = undefined) 
   const handle = new WebViewHandle({} as TapsmithGrpcClient, 0, TIMEOUT_MS);
   const evaluated: string[] = [];
   vi.spyOn(handle, '_probeLocator').mockImplementation(async (loc, _timeoutMs, opts) => {
-    const probe = probeOf(matches);
+    const probe = probeOf(matches, loc._nthIndex ?? 0);
     if (opts?.valueJs) {
       // Mirror the in-page target derivation: nth-aware, first by default.
       const n = loc._nthIndex ?? 0;
@@ -163,6 +166,17 @@ describe('WebView strict mode (PILOT-227)', () => {
     it('nth() rejects non-integer indices', () => {
       const { handle } = makeHandle([]);
       expect(() => handle.getByText('A').nth(1.5)).toThrow('nth(1.5): index must be an integer');
+    });
+
+    it('chained positional narrowing composes instead of re-indexing the original set', () => {
+      const { handle } = makeHandle([]);
+      const chained = handle.getByText('A').first().nth(1);
+      expect(chained._selector).toBe('text=A >> nth=0 >> nth=1');
+      // The chained locator's base set is the single already-narrowed element,
+      // so nth(1) can never resolve to the second element of the ORIGINAL set.
+      expect(chained._finderAllJs).toContain('(el) => el ? [el] : []');
+      // Unchained narrowing keeps the raw match set as its base.
+      expect(handle.getByText('A').nth(1)._finderAllJs).not.toContain('(el) => el ? [el] : []');
     });
 
     it('getByRole treats an explicit empty accessible name as a filter, not "no filter"', () => {

@@ -51,9 +51,12 @@ interface WebViewDomDescription {
 /** @internal — Single-tick snapshot of a locator's full match set. */
 export interface WebViewLocatorProbe {
   count: number
-  /** Per-match visibility flags, in document order. Empty when the caller
-   * skipped visibility computation (count/strict-resolve paths). */
-  visible: boolean[]
+  /** Whether ANY match is visible (short-circuits in-page). False when the
+   * caller skipped visibility computation (count/strict-resolve paths). */
+  anyVisible: boolean
+  /** Whether the locator's target element (nth-aware, first by default) is
+   * visible. False when out of range or visibility was skipped. */
+  targetVisible: boolean
   /** DOM descriptions of the first {@link STRICT_ERROR_MAX_ELEMENTS} matches. */
   sample: WebViewDomDescription[]
   /** Value read from the target element in the same round-trip, when the
@@ -78,14 +81,14 @@ function suggestWebViewSelectorFor(d: WebViewDomDescription | undefined): string
  * data-testid, aria-label) mapped onto the ElementInfo shape.
  */
 function buildWebViewStrictError(loc: WebViewLocator, probe: WebViewLocatorProbe): StrictModeViolationError {
-  const elements: ElementInfo[] = probe.sample.map((d, i) => ({
+  const elements: ElementInfo[] = probe.sample.map((d) => ({
     elementId: '',
     className: d.tag,
     text: d.text,
     contentDescription: d.ariaLabel,
     resourceId: d.testId,
     enabled: true,
-    visible: probe.visible[i] ?? true,
+    visible: true,
     clickable: false,
     focusable: false,
     scrollable: false,
@@ -546,7 +549,7 @@ export class WebViewHandle {
   ): Promise<WebViewLocatorProbe> {
     const withVisibility = opts?.visibility !== false;
     // The target index mirrors _finderJs: nth-aware, defaulting to the first
-    // match — strict callers throw on count > 1 before consulting `target`.
+    // match — strict callers throw on count > 1 before consulting the target.
     const nthIndex = loc._nthIndex ?? 0;
     const idxJs = nthIndex >= 0 ? String(nthIndex) : `els.length - ${-nthIndex}`;
     const targetJs = opts?.valueJs
@@ -568,7 +571,8 @@ export class WebViewHandle {
       };
       return {
         count: els.length,
-        visible: ${withVisibility ? 'els.map((el) => vis(el))' : '[]'},
+        anyVisible: ${withVisibility ? 'els.some(vis)' : 'false'},
+        targetVisible: ${withVisibility ? `(els[${idxJs}] ? vis(els[${idxJs}]) : false)` : 'false'},
         sample: els.slice(0, ${STRICT_ERROR_MAX_ELEMENTS}).map((el) => ({
           tag: (el.tagName || '').toLowerCase(),
           id: el.id || '',
@@ -631,14 +635,15 @@ export class WebViewHandle {
     if (loc._nthIndex !== undefined) {
       const idx = normalizeNthIndex(loc._nthIndex, probe.count);
       const exists = idx >= 0 && idx < probe.count;
-      const visible = exists && probe.visible[idx] === true;
+      const visible = exists && probe.targetVisible;
       return { exists, anyVisible: visible, allHidden: !visible };
     }
     if (strict && probe.count > 1) throw buildWebViewStrictError(loc, probe);
+    // allHidden ≡ !anyVisible: an empty match set is vacuously all-hidden.
     return {
       exists: probe.count > 0,
-      anyVisible: probe.visible.some(Boolean),
-      allHidden: probe.visible.every((v) => !v),
+      anyVisible: probe.anyVisible,
+      allHidden: !probe.anyVisible,
     };
   }
 
@@ -747,10 +752,10 @@ export class WebViewHandle {
     const probe = await this._probeLocator(loc, Math.min(this._timeoutMs, WEB_SOCKET_CONNECT_TIMEOUT_MS));
     if (loc._nthIndex !== undefined) {
       const idx = normalizeNthIndex(loc._nthIndex, probe.count);
-      return idx >= 0 && idx < probe.count && probe.visible[idx] === true;
+      return idx >= 0 && idx < probe.count && probe.targetVisible;
     }
     if (probe.count > 1) throw buildWebViewStrictError(loc, probe);
-    return probe.count === 1 && probe.visible[0] === true;
+    return probe.count === 1 && probe.targetVisible;
   }
 
   /**
@@ -983,10 +988,13 @@ export class WebViewHandle {
     const hasName = options?.name !== undefined;
     const displaySuffix = hasName ? `[name=${options!.name}]` : '';
     if (!cssSelectors) {
-      const selector = `[role="${role}"]`;
+      // Filter [role] elements by attribute comparison rather than
+      // interpolating the role into a CSS selector, where special
+      // characters could break the query.
+      const roleEscaped = JSON.stringify(role);
       const finderAllJs = hasName
-        ? `(() => { const out = []; for (const el of document.querySelectorAll(${JSON.stringify(selector)})) { if (el.getAttribute('aria-label') === ${JSON.stringify(options!.name)} || el.textContent?.trim() === ${JSON.stringify(options!.name)}) out.push(el); } return out; })()`
-        : `Array.from(document.querySelectorAll(${JSON.stringify(selector)}))`;
+        ? `(() => { const out = []; for (const el of document.querySelectorAll('[role]')) { if (el.getAttribute('role') === ${roleEscaped} && (el.getAttribute('aria-label') === ${JSON.stringify(options!.name)} || el.textContent?.trim() === ${JSON.stringify(options!.name)})) out.push(el); } return out; })()`
+        : `(() => { const out = []; for (const el of document.querySelectorAll('[role]')) { if (el.getAttribute('role') === ${roleEscaped}) out.push(el); } return out; })()`;
       return new WebViewLocator(this, `role=${role}${displaySuffix}`, this._timeoutMs, finderAllJs);
     }
 

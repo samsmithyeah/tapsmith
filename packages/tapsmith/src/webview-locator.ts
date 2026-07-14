@@ -79,11 +79,18 @@ export class WebViewLocator {
     if (!Number.isInteger(index)) {
       throw new Error(`nth(${index}): index must be an integer`);
     }
+    // Chaining onto an already-narrowed locator narrows the narrowed set
+    // (Playwright semantics): the base set becomes the single target element,
+    // so e.g. `.first().nth(1)` resolves to nothing rather than silently
+    // re-indexing the original match set.
+    const baseAllJs = this._nthIndex === undefined
+      ? this._finderAllJs
+      : `((el) => el ? [el] : [])(${this._finderJs})`;
     return new WebViewLocator(
       this._handle,
       `${this._selector} >> nth=${index}`,
       this._timeoutMs,
-      this._finderAllJs,
+      baseAllJs,
       index,
     );
   }
