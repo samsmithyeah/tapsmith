@@ -172,6 +172,19 @@ int main(int argc, char **argv) {
       return rc == 0 && serr == nil;
     };
 
+    // Fire-and-forget send for the intermediate events of a composite
+    // gesture (double-tap): the client delivers in order, and recognizers
+    // key on the message timestamps stamped at CREATION time — so pacing
+    // the creations paces the gesture, while waiting on each completion
+    // (up to 2s under CI load) stretched the app-visible inter-tap gap
+    // past double-tap recognizer windows.
+    void (^sendTouchNoWait)(double, double, int) = ^(double rx, double ry, int dir) {
+      IndigoMessage *m = makeTouchMessage(rx, ry, dir);
+      if (!m) return;
+      ((void(*)(id, SEL, IndigoMessage *, BOOL, dispatch_queue_t, void(^)(NSError *)))objc_msgSend)(
+          hidClient, sendSel, m, YES, cq, ^(NSError *e) { (void)e; });
+    };
+
     // Announce readiness; the daemon reads this line to confirm the helper is up.
     printf("ready %.0f %.0f %.1f\n", screenPx.width, screenPx.height, scale);
     fflush(stdout);
@@ -212,19 +225,21 @@ int main(int argc, char **argv) {
           break;
         case HID_DOUBLE_TAP: {
           // Full double-tap with in-process timing: ~40ms press, ~120ms
-          // inter-tap gap — inside every double-tap recognizer window. Doing
-          // this here (one wire command) instead of four host round-trips
-          // keeps the gap bounded no matter how loaded the daemon is.
+          // inter-tap gap — inside every double-tap recognizer window. The
+          // first three events are fire-and-forget so the gap between the
+          // CREATION timestamps (what recognizers key on) is exactly the
+          // usleep pacing; only the final lift waits for its completion so
+          // `ok` still reflects delivery.
           lastX = ev.x; lastY = ev.y;
           double nx = hid_normalize(ev.x, widthPt);
           double ny = hid_normalize(ev.y, heightPt);
-          ok = YES;
-          for (int tap = 0; tap < 2 && ok; tap++) {
-            if (tap > 0) usleep(120000);
-            ok = sendTouch(nx, ny, DirDown);
-            usleep(40000);
-            ok = sendTouch(nx, ny, DirUp) && ok;
-          }
+          sendTouchNoWait(nx, ny, DirDown);
+          usleep(40000);
+          sendTouchNoWait(nx, ny, DirUp);
+          usleep(120000);
+          sendTouchNoWait(nx, ny, DirDown);
+          usleep(40000);
+          ok = sendTouch(nx, ny, DirUp);
           break;
         }
         case HID_INVALID:
