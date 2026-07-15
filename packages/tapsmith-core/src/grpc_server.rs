@@ -96,6 +96,12 @@ pub struct TapsmithServiceImpl {
     /// every per-test start/stop cycle pays the NE timeout (~10s × N tests).
     #[cfg(target_os = "macos")]
     ios_ne_unavailable: Arc<RwLock<bool>>,
+    /// Session cache of `simctl get_app_container` results keyed by
+    /// `udid\0bundle_id`. The data-container path of an installed app is
+    /// stable (it changes only on reinstall) and is plain host filesystem —
+    /// so when CoreSimulatorService wedges and the live lookup times out, a
+    /// previously resolved path still works for tar/clear operations.
+    ios_app_container_cache: Arc<RwLock<std::collections::HashMap<String, String>>>,
     /// Simulator UDID whose trust store already has this session's MITM CA.
     /// `simctl keychain add-root-cert` talks to the sim's securityd/trustd —
     /// re-running it every capture start is wasted work and was observed
@@ -266,6 +272,7 @@ impl TapsmithServiceImpl {
             ios_system_proxy_service: Arc::new(RwLock::new(None)),
             #[cfg(target_os = "macos")]
             ios_ne_unavailable: Arc::new(RwLock::new(false)),
+            ios_app_container_cache: Arc::new(RwLock::new(std::collections::HashMap::new())),
             ios_ca_cert_installed: Arc::new(RwLock::new(None)),
             ios_agent_config: Arc::new(RwLock::new(None)),
             started_agent_config: Arc::new(RwLock::new(None)),
@@ -1554,6 +1561,38 @@ impl TapsmithServiceImpl {
         false
     }
 
+    /// `simctl get_app_container` with a session-cache fallback (see
+    /// `ios_app_container_cache`). Live lookup first keeps freshness; the
+    /// cache serves only when the lookup fails — e.g. a wedged
+    /// CoreSimulatorService timing out — so app-state save/clear keep
+    /// working through the wedge instead of failing the test.
+    async fn get_app_container_cached(
+        &self,
+        udid: &str,
+        bundle_id: &str,
+    ) -> anyhow::Result<String> {
+        let key = format!("{udid}\u{0}{bundle_id}");
+        match ios::device::get_app_container(udid, bundle_id).await {
+            Ok(path) => {
+                self.ios_app_container_cache
+                    .write()
+                    .await
+                    .insert(key, path.clone());
+                Ok(path)
+            }
+            Err(e) => {
+                if let Some(cached) = self.ios_app_container_cache.read().await.get(&key) {
+                    warn!(
+                        %udid, bundle_id, error = %e,
+                        "get_app_container failed; using session-cached container path"
+                    );
+                    return Ok(cached.clone());
+                }
+                Err(e)
+            }
+        }
+    }
+
     /// Double-tap via the iOS-simulator HID helper: resolve the element's
     /// center through the agent (which owns waiting and matching), then
     /// inject two real down/up pairs. Real HID input enters below XCTest,
@@ -2707,6 +2746,26 @@ impl proto::tapsmith_service_server::TapsmithService for TapsmithServiceImpl {
         };
         match connect_result {
             Ok(()) => {
+                // Best-effort pre-warm of the app-container cache while
+                // CoreSimulator is (presumably) healthy: if it wedges later
+                // in the session, app-state save/clear fall back to this
+                // resolved path instead of failing on a timed-out lookup.
+                if platform == Platform::Ios
+                    && !self.is_active_ios_physical().await
+                    && !desired_agent_config.target_package.is_empty()
+                {
+                    let cache = self.ios_app_container_cache.clone();
+                    let serial_c = serial.clone();
+                    let pkg = desired_agent_config.target_package.clone();
+                    tokio::spawn(async move {
+                        if let Ok(path) = ios::device::get_app_container(&serial_c, &pkg).await {
+                            cache
+                                .write()
+                                .await
+                                .insert(format!("{serial_c}\u{0}{pkg}"), path);
+                        }
+                    });
+                }
                 *self.started_agent_config.write().await = Some(desired_agent_config);
                 Ok(Self::success_action_response(request_id))
             }
@@ -3046,7 +3105,10 @@ impl proto::tapsmith_service_server::TapsmithService for TapsmithServiceImpl {
                         let _ = ios::device::terminate_app(&serial, &req.package_name).await;
                         // Clear the data container (AsyncStorage, caches, etc.)
                         // without uninstalling the app.
-                        match ios::device::get_app_container(&serial, &req.package_name).await {
+                        match self
+                            .get_app_container_cached(&serial, &req.package_name)
+                            .await
+                        {
                             Ok(ref container) => {
                                 if let Err(e) = ios::device::clear_container(container).await {
                                     warn!(error = %e, "Failed to clear app container");
@@ -3836,7 +3898,10 @@ impl proto::tapsmith_service_server::TapsmithService for TapsmithServiceImpl {
                 // properly re-establishes the XCUITest accessibility bridge.
                 // Clearing data while the app is running is fine because the
                 // app will be relaunched anyway.
-                match ios::device::get_app_container(&serial, &req.package_name).await {
+                match self
+                    .get_app_container_cached(&serial, &req.package_name)
+                    .await
+                {
                     Ok(ref container) => {
                         if let Err(e) = ios::device::clear_container(container).await {
                             warn!(error = %e, "Failed to clear app container, continuing anyway");
@@ -5409,7 +5474,7 @@ impl proto::tapsmith_service_server::TapsmithService for TapsmithServiceImpl {
                 }
                 // iOS simulator: app container is on the host filesystem.
                 // Use simctl to find it, then tar it directly.
-                let container = match ios::device::get_app_container(&serial, pkg).await {
+                let container = match self.get_app_container_cached(&serial, pkg).await {
                     Ok(path) => path,
                     Err(e) => {
                         return Ok(self
@@ -5801,7 +5866,7 @@ impl proto::tapsmith_service_server::TapsmithService for TapsmithServiceImpl {
                 // then extract the saved archive.
                 let _ = ios::device::terminate_app(&serial, pkg).await;
 
-                let container = match ios::device::get_app_container(&serial, pkg).await {
+                let container = match self.get_app_container_cached(&serial, pkg).await {
                     Ok(path) => path,
                     Err(e) => {
                         return Ok(self
