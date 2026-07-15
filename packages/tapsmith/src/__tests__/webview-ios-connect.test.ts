@@ -86,6 +86,7 @@ function makeMockClient(): TapsmithGrpcClient {
   return {
     findElement: vi.fn(async () => ({ requestId: '1', found: false, errorMessage: '' })),
     closeWebViewPort: vi.fn(async () => ({ requestId: '1', success: true, errorType: '', errorMessage: '', screenshot: Buffer.alloc(0) })),
+    setDevice: vi.fn(async () => ({ requestId: '1', success: true, errorMessage: '' })),
   } as unknown as TapsmithGrpcClient;
 }
 
@@ -369,6 +370,36 @@ describe('Device.webview() on iOS — cached connection reuse', () => {
 
     expect(second).toBe(first);
     expect(h.constructed).toHaveLength(1);
+  });
+
+  it('disposes the cached connection when setDevice switches to a different device', async () => {
+    const makeConnected = () =>
+      makeMockInspector({
+        listTargets: vi.fn(async (): Promise<MockTarget[]> => [
+          { appId: 'PID:100', bundleId: 'dev.tapsmith.testapp', name: 'TestApp', pages: [page(1)] },
+        ]),
+      });
+    const first = makeConnected();
+    const second = makeConnected();
+    const inspectors = [first, second];
+    h.nextInspector = () => inspectors.shift() ?? makeMockInspector();
+
+    const device = makeIosDevice(5_000);
+    await device.setDevice('AAAAAAAA-0000-0000-0000-000000000001');
+    const handle1 = await device.webview();
+
+    // Same serial again: the cached connection must survive.
+    await device.setDevice('AAAAAAAA-0000-0000-0000-000000000001');
+    expect(await device.webview()).toBe(handle1);
+    expect(first.close).not.toHaveBeenCalled();
+
+    // Different serial: the cache points at the old device's inspector
+    // socket and must not leak across.
+    await device.setDevice('BBBBBBBB-0000-0000-0000-000000000002');
+    expect(first.close).toHaveBeenCalled();
+    const handle2 = await device.webview();
+    expect(handle2).not.toBe(handle1);
+    expect(h.constructed).toHaveLength(2);
   });
 
   it('reconnects instead of reusing a handle whose inspector socket died', async () => {

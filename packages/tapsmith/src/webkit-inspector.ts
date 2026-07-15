@@ -487,11 +487,14 @@ export class WebKitInspectorClient {
 function resolveBootedSimulatorByName(name: string, timeoutMs: number): string | null {
   try {
     const out = execSync('xcrun simctl list devices booted -j', { encoding: 'utf-8', timeout: timeoutMs });
-    const parsed = JSON.parse(out) as { devices?: Record<string, Array<{ udid: string; name: string }>> } | null;
+    const parsed = JSON.parse(out) as { devices?: Record<string, Array<{ udid: string; name?: string }>> } | null;
+    // Tolerate casing/whitespace drift between the config name and simctl —
+    // a near-miss here would otherwise surface as an opaque connect failure.
+    const wanted = name.trim().toLowerCase();
     const matches: string[] = [];
     for (const devices of Object.values(parsed?.devices ?? {})) {
       for (const d of devices) {
-        if (d.name === name) matches.push(d.udid);
+        if (d.name?.trim().toLowerCase() === wanted) matches.push(d.udid);
       }
     }
     return matches.length === 1 ? matches[0] : null;

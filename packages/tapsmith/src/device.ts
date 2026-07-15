@@ -517,6 +517,11 @@ export class Device {
     // and resolving by name on a multi-simulator host can land on another
     // worker's simulator — both workers then drive the SAME WebView page,
     // silently corrupting each other's tests (PILOT-288).
+    if (this._deviceSerial !== undefined && this._deviceSerial !== serial) {
+      // A cached WebView connection belongs to the previous device's
+      // inspector socket — drop it rather than serve the wrong device.
+      await this._disposeWebViewManager();
+    }
     this._deviceSerial = serial;
   }
 
