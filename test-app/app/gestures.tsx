@@ -1,7 +1,14 @@
 import { useEffect, useRef, useState } from "react"
 import { Animated, PanResponder, StyleSheet, Text, TouchableOpacity, View } from "react-native"
 
-const DOUBLE_TAP_WINDOW_MS = 450
+// The window is measured between JS onPress callbacks (not touch
+// timestamps), so it must absorb JS-thread/bridge scheduling jank on
+// loaded CI runners: touches injected 120ms apart at the HID layer were
+// observed reaching JS >450ms apart there. Every deliberate double-tap
+// the framework synthesizes keeps its taps ≤250ms apart, and the tests
+// never issue two intentional single taps within a second, so a wide
+// window stays unambiguous.
+const DOUBLE_TAP_WINDOW_MS = 800
 
 export default function GesturesScreen() {
   const [lastGesture, setLastGesture] = useState("None")
