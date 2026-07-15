@@ -429,6 +429,41 @@ class CommandHandler {
             if let info = try? snapshotFinder.getElementInfo(elementId) {
                 return info
             }
+            // The live-query read can fail on newer iOS 26 runtimes even for
+            // an id minted milliseconds earlier (the lazily-built XCUIElement
+            // query evaluates differently live than the snapshot walk did,
+            // and some selector shapes never get a query at all). The
+            // find-time snapshot BOUNDS are cached unconditionally — recover
+            // with a minimal ElementInfo so the coordinate-driven action
+            // paths (snapshotCenter) proceed instead of surfacing a spurious
+            // "gone stale" for an element that is still on screen.
+            if let frame = snapshotFinder.getBounds(elementId) {
+                return ElementInfo(
+                    elementId: elementId,
+                    className: "",
+                    text: nil,
+                    contentDescription: nil,
+                    resourceId: nil,
+                    hint: nil,
+                    bounds: ElementBounds(
+                        left: Int(frame.origin.x),
+                        top: Int(frame.origin.y),
+                        right: Int(frame.origin.x + frame.width),
+                        bottom: Int(frame.origin.y + frame.height)
+                    ),
+                    isEnabled: true,
+                    isChecked: false,
+                    isFocused: false,
+                    isClickable: true,
+                    isFocusable: false,
+                    isScrollable: false,
+                    isVisible: true,
+                    isSelected: false,
+                    childCount: 0,
+                    role: "",
+                    viewportRatio: 1.0
+                )
+            }
             return try elementFinder.getElementInfo(elementId)
         }
         let selector = SelectorParser.parse(params)

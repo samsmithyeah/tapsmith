@@ -178,9 +178,24 @@ int main(int argc, char **argv) {
 
     // Process stdin events. Track the last point so a bare `c` can lift there.
     double lastX = 0, lastY = 0;
+    // Pace injections to at least ~a frame apart. iOS never engages the pan
+    // recognizer for a gesture whose entire path lands within a single frame:
+    // a synthetic stream written back-to-back (e.g. a test replaying a drag
+    // with no sleeps) injects in ~2ms and scrolls NOTHING while every send
+    // reports success; the same path at ≥1-frame spacing scrolls normally
+    // (measured on iOS 26.1). Human-paced mirror input arrives slower than
+    // this floor and is unaffected.
+    const uint64_t kMinEventSpacingUs = 12000;
+    uint64_t lastInjectUs = 0;
     char buf[1024];
     while (fgets(buf, sizeof(buf), stdin)) {
       HidEvent ev = hid_parse_line(buf);
+      if (ev.cmd != HID_INVALID) {
+        uint64_t nowUs = clock_gettime_nsec_np(CLOCK_UPTIME_RAW) / 1000;
+        if (lastInjectUs != 0 && nowUs - lastInjectUs < kMinEventSpacingUs) {
+          usleep((useconds_t)(kMinEventSpacingUs - (nowUs - lastInjectUs)));
+        }
+      }
       BOOL ok = NO;
       switch (ev.cmd) {
         case HID_DOWN:
@@ -199,6 +214,7 @@ int main(int argc, char **argv) {
           printf("err invalid line\n"); fflush(stdout);
           continue;
       }
+      lastInjectUs = clock_gettime_nsec_np(CLOCK_UPTIME_RAW) / 1000;
       printf(ok ? "ok\n" : "err send failed\n");
       fflush(stdout);
     }

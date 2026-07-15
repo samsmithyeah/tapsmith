@@ -1215,9 +1215,15 @@ export class ElementHandle {
             break;
           }
           const msg = res.errorMessage ?? '';
+          // The agents' genuine not-found shapes: Android WaitEngine
+          // ("…element not found after waiting"), iOS WaitEngine ("…waiting
+          // for element to exist"), and both agents' direct finders
+          // ("No element found matching…", "Element not found").
           if (
             msg === '' ||
-            /element not found|no element found matching|not found after waiting/i.test(msg)
+            /element not found|no element found matching|not found after waiting|waiting for element to exist/i.test(
+              msg,
+            )
           ) {
             found = false;
             break;

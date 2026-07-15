@@ -120,6 +120,32 @@ function newestIphoneosXctestrun(productsDir: string): string | undefined {
  * Returns `undefined` when no build exists; the CLI turns that into a
  * fix-it message pointing at the simulator build command.
  */
+/**
+ * True when the installed agent platform package's version differs from the
+ * SDK's own version (agent and SDK ship together per release, so a mismatch
+ * means the lockfile drifted). Unreadable manifests return false — the
+ * normal lookup proceeds.
+ */
+function agentPackageVersionMismatch(pkg: string, pkgJsonPath: string): boolean {
+  try {
+    const agentVersion = (JSON.parse(fs.readFileSync(pkgJsonPath, 'utf8')) as { version?: string }).version;
+    const sdkVersion = (JSON.parse(
+      fs.readFileSync(path.resolve(import.meta.dirname, '../package.json'), 'utf8'),
+    ) as { version?: string }).version;
+    if (agentVersion && sdkVersion && agentVersion !== sdkVersion) {
+      process.stderr.write(
+        `[tapsmith] Installed ${pkg}@${agentVersion} does not match the SDK version ` +
+        `(${sdkVersion}); ignoring it in favour of local builds. ` +
+        `Run \`npm update ${pkg}\` (or reinstall) to fix.\n`,
+      );
+      return true;
+    }
+  } catch {
+    // Unreadable manifests — assume compatible.
+  }
+  return false;
+}
+
 export function findSimulatorXctestrun(): string | undefined {
   // 1. Auto-build cache (only if SDK matches installed version).
   const cacheDir = path.join(os.homedir(), '.tapsmith', 'ios-simulator-agent');
@@ -134,12 +160,21 @@ export function findSimulatorXctestrun(): string | undefined {
     }
   }
 
-  // 2. Try the prebuilt npm package for the current architecture.
+  // 2. Try the prebuilt npm package for the current architecture — unless it
+  // is version-drifted. The lockfile pins these via "*", and a stale pinned
+  // agent here silently shadows a fresh DerivedData build (step 3),
+  // producing protocol-mismatch failures that masquerade as flaky tests
+  // (PILOT-289: stale-element taps from an agent predating the textContains
+  // cache branch). On mismatch, warn and use the DerivedData scan instead.
   const arch = process.arch;
   const pkg = `@tapsmith/agent-ios-simulator-${arch}`;
   try {
     const pkgJsonPath = require.resolve(`${pkg}/package.json`);
     const pkgDir = path.dirname(pkgJsonPath);
+
+    if (agentPackageVersionMismatch(pkg, pkgJsonPath)) {
+      throw new Error('agent package version mismatch — use DerivedData scan');
+    }
 
     // 2a. Exact SDK match in sdk-{version}/ subdirectory.
     if (installedSdk) {

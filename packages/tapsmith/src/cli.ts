@@ -793,9 +793,13 @@ async function setupSequentialDevice(
   const resolvedAgentTestApk = cfg.agentTestApk
     ? path.resolve(cfg.rootDir, cfg.agentTestApk)
     : findAgentTestApk();
+  // TAPSMITH_IOS_XCTESTRUN overrides auto-detection for configs that don't
+  // set `iosXctestrun` — CI configs read this env var explicitly, and honoring
+  // it uniformly means a locally built agent can be pinned for ANY config
+  // instead of silently losing to the npm-package lookup.
   let resolvedIosXctestrun = cfg.iosXctestrun
     ? path.resolve(cfg.rootDir, cfg.iosXctestrun)
-    : undefined;
+    : process.env.TAPSMITH_IOS_XCTESTRUN || undefined;
   // iOS xctestrun auto-detect: if the user didn't set `iosXctestrun`,
   // pick the newest built xctestrun for the target slice. Mirrors the way
   // `simulator: "iPhone 16"` is enough to pick a device without hand-rolling

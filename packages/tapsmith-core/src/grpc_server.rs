@@ -1554,6 +1554,81 @@ impl TapsmithServiceImpl {
         false
     }
 
+    /// Double-tap via the iOS-simulator HID helper: resolve the element's
+    /// center through the agent (which owns waiting and matching), then
+    /// inject two real down/up pairs. Real HID input enters below XCTest,
+    /// so the iOS 26.x synthesized-tap coalescing (which swallows the
+    /// second tap of every XCTest-level double-tap route) does not apply.
+    /// Returns false — caller falls back to the agent route — when the
+    /// active device isn't an iOS simulator, the helper is unavailable,
+    /// element resolution fails, or an injection fails.
+    #[cfg(target_os = "macos")]
+    async fn try_hid_double_tap(
+        &self,
+        selector: &Value,
+        timeout_ms: u64,
+        interval_ms: u64,
+    ) -> bool {
+        let udid = {
+            let dm = self.device_manager.read().await;
+            match dm.active_device() {
+                Some(d) if d.platform == Platform::Ios && d.is_emulator => d.serial.clone(),
+                _ => return false,
+            }
+        };
+        if let Err(e) = self.hid_injector.ensure(&udid).await {
+            debug!(%udid, error = %e, "iOS HID helper unavailable for double-tap; using agent route");
+            return false;
+        }
+        let find = AgentCommand::FindElement {
+            selector: selector.clone(),
+            timeout_ms: opt_timeout(timeout_ms),
+        };
+        let resp = match self
+            .send_agent_command_with_timeout(&find, timeout_ms)
+            .await
+        {
+            Ok(r) if r.success => r,
+            _ => return false,
+        };
+        let Some(info) = parse_element_info(&resp.data) else {
+            return false;
+        };
+        let Some(bounds) = info.bounds else {
+            return false;
+        };
+        let x = (bounds.left + bounds.right) / 2;
+        let y = (bounds.top + bounds.bottom) / 2;
+        // Real-input timing: ~60ms press, ~120ms inter-tap gap — inside every
+        // double-tap recognizer window; coalescing doesn't apply to real HID
+        // events. `interval_ms` (when set) overrides the gap.
+        let gap = Duration::from_millis(if interval_ms > 0 { interval_ms } else { 120 });
+        for i in 0..2 {
+            if i > 0 {
+                tokio::time::sleep(gap).await;
+            }
+            if self
+                .hid_injector
+                .send(&udid, &format!("d {x} {y}"))
+                .await
+                .is_err()
+            {
+                return false;
+            }
+            tokio::time::sleep(Duration::from_millis(60)).await;
+            if self
+                .hid_injector
+                .send(&udid, &format!("u {x} {y}"))
+                .await
+                .is_err()
+            {
+                return false;
+            }
+        }
+        info!(%udid, x, y, "double-tap injected via HID");
+        true
+    }
+
     /// Build a synthetic success ActionResponse (used when a touch event was
     /// handled out-of-band by the HID injector, bypassing the agent).
     #[allow(clippy::result_large_err)] // Status is tonic's standard error type
@@ -2673,6 +2748,25 @@ impl proto::tapsmith_service_server::TapsmithService for TapsmithServiceImpl {
         let request_id = Self::request_id(&req.request_id);
 
         let (selector, element_id) = action_target(req.selector.as_ref(), &req.element_id)?;
+
+        // iOS simulators: prefer real HID input for the double-tap when the
+        // helper is available. Newer iOS 26.x runtime builds coalesce rapid
+        // synthesized taps from EVERY XCTest-level route — private
+        // XCSynthesizedEventRecord synthesis, sequential records at 250ms+
+        // gaps, offset second taps, and the public XCUICoordinate.doubleTap()
+        // alike (verified empirically on iOS 26.5: the app receives exactly
+        // one tap). HID events enter below XCTest and are indistinguishable
+        // from real touches, so the pair always arrives. Selector-addressed
+        // targets only — cached-element-id bounds are agent-internal; those
+        // (and any HID failure) fall through to the agent route.
+        #[cfg(target_os = "macos")]
+        if element_id.is_none()
+            && self
+                .try_hid_double_tap(&selector, req.timeout_ms, req.interval_ms)
+                .await
+        {
+            return Ok(Self::success_action_response(request_id));
+        }
 
         let command = AgentCommand::DoubleTap {
             selector,

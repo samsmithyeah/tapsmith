@@ -46,7 +46,12 @@ jobs:
         with:
           name: daemon-binary-macos
           retention-days: 1
-          path: packages/tapsmith-core/target/release/tapsmith-core
+          # tapsmith-ios-hid rides along: the daemon resolves it as a sibling
+          # binary and uses it for real-input touch injection (streamed drags,
+          # double-tap on iOS 26 runtimes that coalesce synthesized taps).
+          path: |
+            packages/tapsmith-core/target/release/tapsmith-core
+            packages/tapsmith-core/target/release/tapsmith-ios-hid
 
   build-agent:
     name: Build Agent
@@ -206,6 +211,10 @@ jobs:
         run: |
           chmod +x packages/tapsmith-core/target/release/tapsmith-core
           xattr -d com.apple.quarantine packages/tapsmith-core/target/release/tapsmith-core 2>/dev/null || true
+          if [ -f packages/tapsmith-core/target/release/tapsmith-ios-hid ]; then
+            chmod +x packages/tapsmith-core/target/release/tapsmith-ios-hid
+            xattr -d com.apple.quarantine packages/tapsmith-core/target/release/tapsmith-ios-hid 2>/dev/null || true
+          fi
 
       - name: Resolve xctestrun path
         run: |

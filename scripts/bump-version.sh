@@ -50,6 +50,17 @@ sed -i '' "s/v$CURRENT_VERSION/v$NEW_VERSION/g" "$ROOT/website/src/pages/index.a
 # everyone once the version went live.)
 echo "Regenerating lockfiles..."
 (cd "$ROOT/packages/tapsmith" && npm install --package-lock-only --silent)
+# `npm install --package-lock-only` leaves "*" deps at whatever version the
+# lockfile already carries (any version satisfies "*"), so the @tapsmith/*
+# platform packages silently drift arbitrarily far behind the SDK — a stale
+# pinned agent then shadows fresh local builds via the npm-package-first
+# lookup in ios-device-resolve. Force them to the latest published version
+# on every bump.
+(cd "$ROOT/packages/tapsmith" && npm update --package-lock-only --silent \
+  @tapsmith/core-darwin-arm64 @tapsmith/core-darwin-x64 \
+  @tapsmith/core-linux-arm64 @tapsmith/core-linux-x64 \
+  @tapsmith/agent-android @tapsmith/agent-ios-simulator-arm64 \
+  @tapsmith/agent-ios-simulator-x64)
 (cd "$ROOT/packages/tapsmith-core" && cargo check --quiet)
 
 echo "Done. Verify with:"

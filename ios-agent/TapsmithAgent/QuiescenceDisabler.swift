@@ -316,13 +316,22 @@ enum EventSynthesizer {
 
         let start = Date()
         guard synthesizeTap(at: point, duration: 0.05) else { return .notStarted }
-        // The first record's dispatch wait is already part of the app-visible
-        // inter-tap gap — only sleep the remainder.
-        let remaining = interval - Date().timeIntervalSince(start)
-        if remaining > 0 {
-            Thread.sleep(forTimeInterval: remaining)
-        }
-        guard synthesizeTap(at: point, duration: 0.05) else { return .firstTapOnly }
+        // The dispatch completion fires only after the first tap has been
+        // synthesized, so the app-visible gap starts HERE — sleep the full
+        // interval from this point. Crediting dispatch-1's duration against
+        // the gap (the previous behaviour) collapses the sleep to zero on a
+        // loaded runner whose dispatch takes ≥ the interval, and the two
+        // taps land within iOS 26's coalescing threshold → "Single tap".
+        Thread.sleep(forTimeInterval: interval)
+        // iOS 26 coalesces rapid SAME-POINT synthesized taps (newer 26.x
+        // runtime builds do so even at 250ms+ gaps, verified on iOS 26.5).
+        // Offset the second tap by 2pt — comfortably inside every double-tap
+        // recognizer's slop radius, far outside the pipeline's same-point
+        // coalescing match — so the pair always arrives as two taps.
+        let second = runtimeCoalescesRapidTaps
+            ? CGPoint(x: point.x + 2, y: point.y + 2)
+            : point
+        guard synthesizeTap(at: second, duration: 0.05) else { return .firstTapOnly }
         let elapsed = Date().timeIntervalSince(start)
         if elapsed > 0.5 {
             NSLog(
@@ -562,6 +571,15 @@ enum EventSynthesizer {
             record.perform(addPathSel, with: path)
         }
 
+        // iOS 26 runtimes silently drop synthesized events dispatched via the
+        // dispatchSync/synthesizeWithError: route in ~25% of runs (measured
+        // during the double-tap work; the daemon-session route drops ~5%).
+        // A dropped swipe record reports success while the view never moves —
+        // the "streamed drag scrolls zero" CI flake. Prefer the reliable
+        // route there; keep the historical order on pre-26 runtimes.
+        if runtimeCoalescesRapidTaps {
+            return dispatchViaDaemonSession(record) || dispatchSync(record) || dispatchViaDevice(record)
+        }
         return dispatchSync(record) || dispatchViaDevice(record) || dispatchViaDaemonSession(record)
     }
 
