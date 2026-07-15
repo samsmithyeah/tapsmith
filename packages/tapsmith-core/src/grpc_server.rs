@@ -4777,6 +4777,8 @@ impl proto::tapsmith_service_server::TapsmithService for TapsmithServiceImpl {
     ) -> Result<Response<proto::StopNetworkCaptureResponse>, Status> {
         let req = request.into_inner();
         let request_id = Self::request_id(&req.request_id);
+        // `mut` is only exercised on macOS (the system-proxy fallback below).
+        #[cfg_attr(not(target_os = "macos"), allow(unused_mut))]
         let mut keep_running = req.keep_running;
 
         // In macOS system-proxy fallback mode (NE redirector unavailable —
