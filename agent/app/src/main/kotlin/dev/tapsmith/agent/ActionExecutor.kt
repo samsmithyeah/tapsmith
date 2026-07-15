@@ -220,6 +220,23 @@ class ActionExecutor(
         try {
             clickToFocus(element, resolvedBounds)
             element.text = text
+            // UiObject2.setText silently logs-and-returns when the framework
+            // rejects ACTION_SET_TEXT (e.g. the field is still gaining focus
+            // on a loaded emulator) — verify the value landed and re-set once.
+            // The read-back can legitimately differ from the input (password
+            // masking, input formatters), so the retry is bounded to one
+            // idempotent re-set and a persistent mismatch only logs.
+            if (element.text != text) {
+                device.waitForIdle(500)
+                element.text = text
+                if (element.text != text) {
+                    Log.w(
+                        TAG,
+                        "typeText verify: field text differs from requested value after " +
+                            "re-set (masking/formatter, or ACTION_SET_TEXT rejected twice)",
+                    )
+                }
+            }
         } catch (e: StaleObjectException) {
             throw e
         } catch (e: Exception) {
@@ -227,6 +244,10 @@ class ActionExecutor(
             try {
                 clickToFocus(element, resolvedBounds)
                 device.waitForIdle(1000)
+                // Key events route through the IME; injecting while the input
+                // session is still restarting after the focus click silently
+                // drops the first commits under load. Wait for focus first.
+                waitForFocus(element)
                 typeTextWithoutFocus(text)
             } catch (e2: StaleObjectException) {
                 throw e2
@@ -235,6 +256,23 @@ class ActionExecutor(
                     "Failed to type text: ${e.message} (fallback also failed: ${e2.message})",
                 )
             }
+        }
+    }
+
+    /**
+     * Wait briefly for the element to hold input focus before key-event
+     * injection. Best-effort: a stale element or a field that never reports
+     * focus falls through so the injection still gets its chance.
+     */
+    private fun waitForFocus(element: UiObject2) {
+        val deadline = SystemClock.uptimeMillis() + 2000
+        while (SystemClock.uptimeMillis() < deadline) {
+            try {
+                if (element.isFocused) return
+            } catch (e: Exception) {
+                return
+            }
+            SystemClock.sleep(100)
         }
     }
 

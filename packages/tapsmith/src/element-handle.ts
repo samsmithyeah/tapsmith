@@ -226,6 +226,33 @@ export function isTransientAgentError(err: unknown): boolean {
   return err instanceof Error && err.message.includes(AGENT_TIMEOUT_SIGNATURE);
 }
 
+/**
+ * @internal — True for any resolution-tick failure that poll loops should
+ * retry within their budget rather than abort on: a transient agent timeout
+ * (slow-but-alive agent) or an agent/daemon command failure surfaced through
+ * `errorMessage` (`findElement(s) failed: …`). The latter covers momentary
+ * agent-side faults during hierarchy churn — e.g. an exception thrown while
+ * reading attributes of a node that a re-render just detached — which recover
+ * on the next tick. Strict violations and user aborts are never retryable.
+ *
+ * Callers keep the `lastTransientErr` pattern: when the failure persists for
+ * the whole budget, the REAL error surfaces at the deadline (so session-level
+ * recovery patterns still match) instead of a generic "not found". Genuine
+ * gRPC transport failures are thrown by the client (not returned via
+ * `errorMessage`) and don't carry the `find… failed:` prefix, so they still
+ * propagate immediately.
+ */
+export function isRetryableResolutionError(err: unknown): boolean {
+  if (isStrictModeViolation(err) || isAbortError(err)) return false;
+  if (isTransientAgentError(err)) return true;
+  // Stale snapshots have their own dedicated handling (a pollable "not yet",
+  // see isPollableNotFoundError) — keep them out of this class so a
+  // budget-long stale stall still reports "not found" rather than a raw
+  // agent error.
+  if (isStaleSnapshotError(err)) return false;
+  return err instanceof Error && /^find(Element|Elements) failed:/.test(err.message);
+}
+
 // ─── Strict mode (PILOT-226) ───
 
 /** @internal Brand key for cross-instance type checks (CJS/ESM dual-package). */
@@ -887,11 +914,12 @@ export class ElementHandle {
           };
         }
       } catch (err) {
-        // A transient agent-command timeout (slow-but-alive agent) is retried
-        // within the budget rather than aborting the action; remember only the
-        // MOST RECENT one so a budget-long stall surfaces the real infra error
-        // (not "not found"), while an agent that recovered doesn't.
-        if (isTransientAgentError(err)) {
+        // A transient agent-command timeout (slow-but-alive agent) or a
+        // momentary agent command failure is retried within the budget rather
+        // than aborting the action; remember only the MOST RECENT one so a
+        // budget-long stall surfaces the real infra error (not "not found"),
+        // while an agent that recovered doesn't.
+        if (isRetryableResolutionError(err)) {
           lastTransientErr = err as Error;
         } else {
           // A definitive response: strict violations / infra errors propagate;
@@ -1034,11 +1062,12 @@ export class ElementHandle {
         }
       } catch (err) {
         // A transient agent-command timeout (slow-but-alive agent, e.g. a
-        // hierarchy dump on a loaded CI emulator) is retried within the action
-        // budget instead of aborting; remember only the MOST RECENT one so a
-        // budget-long stall surfaces the real infra error (→ session recovery)
-        // rather than a misleading "not found".
-        if (isTransientAgentError(err)) {
+        // hierarchy dump on a loaded CI emulator) or a momentary agent command
+        // failure is retried within the action budget instead of aborting;
+        // remember only the MOST RECENT one so a budget-long stall surfaces
+        // the real infra error (→ session recovery) rather than a misleading
+        // "not found".
+        if (isRetryableResolutionError(err)) {
           lastTransientErr = err as Error;
         } else {
           // A definitive response — the agent is responsive, so drop any
@@ -1170,8 +1199,34 @@ export class ElementHandle {
           found = false;
         }
       } else {
-        const res = await this._client.findElement(this._selector, this._timeoutMs);
-        found = res.found;
+        // The daemon maps ANY agent failure to `found: false` + errorMessage,
+        // so classify before trusting a negative: only a genuine not-found
+        // (the agents' wait-timeout / no-match messages) means "doesn't
+        // exist". Anything else — a stale snapshot mid-re-render, an agent
+        // internal error — is an unreliable tick: retry within the budget
+        // rather than reporting a momentary infra fault as absence.
+        const deadline = Date.now() + this._timeoutMs;
+        const RETRY_POLL_MS = 250;
+        while (true) {
+          const budget = Math.max(1, deadline - Date.now());
+          const res = await this._client.findElement(this._selector, budget);
+          if (res.found) {
+            found = true;
+            break;
+          }
+          const msg = res.errorMessage ?? '';
+          if (
+            msg === '' ||
+            /element not found|no element found matching|not found after waiting/i.test(msg)
+          ) {
+            found = false;
+            break;
+          }
+          if (Date.now() + RETRY_POLL_MS >= deadline) {
+            throw new Error(`findElement failed: ${msg}`);
+          }
+          await sleep(RETRY_POLL_MS, this._client._getAbortSignal?.());
+        }
       }
       await this._traceQuery('exists', `Exists: ${found}`, Date.now() - start);
       return found;
@@ -1325,12 +1380,14 @@ export class ElementHandle {
           // state" is genuine, not an infra stall.
           lastTransientErr = undefined;
         } catch (err) {
-          // A transient agent-command timeout (slow-but-alive agent) is retried
-          // within the wait budget; remember only the MOST RECENT one so a
-          // budget-long stall surfaces the infra error (→ session recovery)
-          // rather than a generic "did not reach state". All other errors
-          // propagate to the outer trace/catch.
-          if (!isTransientAgentError(err)) throw err;
+          // A transient agent-command timeout (slow-but-alive agent) or a
+          // momentary agent command failure is retried within the wait budget;
+          // remember only the MOST RECENT one so a budget-long stall surfaces
+          // the infra error (→ session recovery) rather than a generic "did
+          // not reach state". All other errors propagate to the outer
+          // trace/catch. An error tick never yields a state, so absence
+          // states ('detached'/'hidden') cannot falsely resolve off one.
+          if (!isRetryableResolutionError(err)) throw err;
           lastTransientErr = err as Error;
         }
         if (Date.now() >= deadline) {
@@ -1701,6 +1758,18 @@ export class ElementHandle {
 
       // Poll for the state change until the full deadline — animations
       // and state propagation can take several frames.
+      //
+      // If the state PROVABLY hasn't moved after a settle window, re-tap:
+      // CI simulators intermittently swallow a synthesized touch (XCUITest
+      // acks the tap but the app never receives it), and without a re-tap a
+      // single dropped touch burns the whole budget. The blanket "never
+      // re-tap a toggle" rule above only forbids BLIND re-taps — each re-tap
+      // here is gated on a fresh resolution still showing the ORIGINAL
+      // state, so it cannot double-toggle.
+      const RETAP_INTERVAL_MS = 3000;
+      const MAX_RETAPS = 3;
+      let retaps = 0;
+      let lastTapAt = Date.now();
       let lastTransientErr: Error | undefined;
       while (Date.now() < deadline) {
         await sleep(POLL_MS, this._client._getAbortSignal?.());
@@ -1710,13 +1779,35 @@ export class ElementHandle {
           // so a state that simply never changes fails as such, not as infra.
           lastTransientErr = undefined;
           if (after.checked === checked) return tapRes; // State changed successfully
+          if (
+            after.checked === !checked &&
+            retaps < MAX_RETAPS &&
+            Date.now() - lastTapAt >= RETAP_INTERVAL_MS
+          ) {
+            retaps++;
+            lastTapAt = Date.now();
+            try {
+              const retapRes = await tapByTarget(await this._actionTarget(after));
+              if (retapRes.success) tapRes = retapRes;
+            } catch (retapErr) {
+              // A stale id / transient failure on the re-tap is not fatal —
+              // the next poll tick re-resolves and the gate re-evaluates.
+              if (
+                !isStaleElementError(retapErr instanceof Error ? retapErr.message : String(retapErr)) &&
+                !isRetryableResolutionError(retapErr)
+              ) {
+                throw retapErr;
+              }
+            }
+          }
         } catch (err) {
-          // A transient agent-command timeout (slow-but-alive agent) just means
-          // this confirmation tick was too slow — keep polling for the state
-          // change within the budget rather than failing the whole action.
-          // Remember only the MOST RECENT one so a budget-long stall surfaces
-          // the infra error (→ session recovery) instead of "did not change".
-          if (isTransientAgentError(err)) {
+          // A transient agent-command timeout (slow-but-alive agent) or a
+          // momentary agent command failure just means this confirmation tick
+          // was unreliable — keep polling for the state change within the
+          // budget rather than failing the whole action. Remember only the
+          // MOST RECENT one so a budget-long stall surfaces the infra error
+          // (→ session recovery) instead of "did not change".
+          if (isRetryableResolutionError(err)) {
             lastTransientErr = err as Error;
           } else {
             lastTransientErr = undefined;

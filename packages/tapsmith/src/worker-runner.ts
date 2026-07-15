@@ -29,16 +29,12 @@ import {
   isRetryableAgentStartError,
   retryOnceOnRecoverableInfra,
   deserializeRegExpArray,
+  AGENT_START_RETRY_DELAY_MS,
 } from './worker-protocol.js';
 import { ensureSessionReady, launchConfiguredApp, type SessionPreflightContext } from './session-preflight.js';
 import { createActionProgressMessenger } from './action-progress-renderer.js';
 import type { TapsmithReporter } from './reporter.js';
 
-/** Pause before retrying a failed agent start during worker init. A transient
- *  agent-connection drop takes a few seconds to clear; an immediate retry
- *  lands inside the same drop window and retires the worker — failing its
- *  tests at 0ms with no trace (PILOT-282). */
-const AGENT_START_RETRY_DELAY_MS = 2_000;
 
 let workerId = -1;
 let device: Device | undefined;

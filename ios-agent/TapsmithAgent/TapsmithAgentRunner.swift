@@ -87,6 +87,12 @@ class TapsmithAgentRunner: XCTestCase {
             // Xcode 26 restoring stale navigation state during restartApp().
             app.activate()
         } else {
+            // launch() implicitly terminates a running instance first, and on
+            // a busy SpringBoard that terminate+relaunch handshake is the
+            // classic "Timed out attempting to launch app" trigger. Terminate
+            // explicitly so launch() always starts from a clean slate; a
+            // not-running app makes this a fast no-op.
+            app.terminate()
             app.launch()
         }
         // Step 3: Property-based disable on this instance AFTER launch().

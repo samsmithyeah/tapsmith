@@ -47,7 +47,7 @@ import {
   waitForDeviceStability,
   ensureAdbRoot,
 } from './emulator.js';
-import { isRecoverableInfrastructureError, isRetryableAgentStartError, retryOnceOnRecoverableInfra, serializeRegExpArray } from './worker-protocol.js';
+import { AGENT_START_RETRY_DELAY_MS, isRecoverableInfrastructureError, isRetryableAgentStartError, retryOnceOnRecoverableInfra, serializeRegExpArray } from './worker-protocol.js';
 import { findPidsOnPort, freeStaleAgentPort } from './port-utils.js';
 import { findDaemonBin } from './daemon-bin.js';
 import {
@@ -464,12 +464,28 @@ async function ensureDaemonRunning(
   child.unref();
   spawnedDaemonProcess = child;
 
-  // Wait for daemon to be ready
+  // Wait for daemon to be ready. First-exec of a freshly-downloaded unsigned
+  // binary on a loaded CI runner can take ~30s before the listener binds
+  // (macOS scans the binary), and grpc-js reconnect backoff grows ~1.6x per
+  // attempt so a single 10s window can skip right past the moment the server
+  // comes up. Retry in bounded windows up to 60s total, bailing early if the
+  // daemon process exited (crash — no point waiting out the budget).
   const newClient = new TapsmithGrpcClient(address);
-  const started = await newClient.waitForReady(10_000);
+  let daemonExitCode: number | null | undefined;
+  child.on('exit', (code) => {
+    daemonExitCode = code ?? -1;
+  });
+  const connectDeadline = Date.now() + 60_000;
+  let started = false;
+  while (!started && Date.now() < connectDeadline && daemonExitCode === undefined) {
+    started = await newClient.waitForReady(10_000);
+  }
   if (!started) {
-    progress?.fail('daemon', 'failed to start tapsmith-core');
-    console.error(red('Failed to start Tapsmith daemon. Is tapsmith-core installed?'));
+    const reason = daemonExitCode !== undefined
+      ? `tapsmith-core exited with code ${daemonExitCode} during startup`
+      : 'failed to start tapsmith-core (not ready after 60s)';
+    progress?.fail('daemon', reason);
+    console.error(red(`Failed to start Tapsmith daemon (${reason}). Is tapsmith-core installed?`));
     process.exit(1);
   }
 
@@ -881,8 +897,13 @@ async function setupSequentialDevice(
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       if (isRetryableAgentStartError(err)) {
-        if (progress) progress.update('agent', { state: 'running', detail: 'agent startup failed, retrying once' });
+        // Include the first attempt's error — without it a failed retry leaves
+        // no trace of WHY attempt 1 died (the retry error may differ).
+        if (progress) progress.update('agent', { state: 'running', detail: `agent startup failed, retrying once: ${msg}` });
         else console.error(`Agent startup failed, retrying once: ${msg}`);
+        // Let a transient agent-connection drop clear before the retry — an
+        // immediate re-attempt lands inside the same drop window (PILOT-282).
+        await new Promise((resolve) => setTimeout(resolve, AGENT_START_RETRY_DELAY_MS));
         try {
           await startAgent();
         } catch (retryErr) {

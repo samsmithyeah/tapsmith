@@ -962,7 +962,16 @@ class ElementFinder(private val device: UiDevice) {
 
     private fun nodeInfoFor(obj: UiObject2): android.view.accessibility.AccessibilityNodeInfo? {
         val method = nodeInfoMethod ?: return null
-        return method.invoke(obj) as? android.view.accessibility.AccessibilityNodeInfo
+        return try {
+            method.invoke(obj) as? android.view.accessibility.AccessibilityNodeInfo
+        } catch (e: java.lang.reflect.InvocationTargetException) {
+            // Unwrap so a StaleObjectException thrown mid-re-render surfaces as
+            // itself instead of an InvocationTargetException with a null
+            // message — the stale-retry loop in findElements and the typed
+            // ELEMENT_NOT_FOUND mapping in CommandHandler both key on the
+            // real exception type.
+            throw e.targetException
+        }
     }
 
     /**

@@ -197,6 +197,12 @@ export function isRetryableAgentStartError(err: unknown): boolean {
   );
 }
 
+/** Pause before retrying a failed agent start. A transient agent-connection
+ *  drop takes a few seconds to clear; an immediate retry lands inside the
+ *  same drop window and fails identically (PILOT-282). Shared by the CLI
+ *  startup path and worker init so both retry with the same tolerance. */
+export const AGENT_START_RETRY_DELAY_MS = 2_000;
+
 // ─── Serialized types (safe for IPC / structured clone) ───
 
 /** Config fields needed by workers (subset of TapsmithConfig). */

@@ -7,7 +7,9 @@ export default defineConfig({
   package: "dev.tapsmith.testapp",
   resetAppDeepLink: RESET_APP_DEEP_LINK,
   timeout: 15_000,
-  retries: 1,
+  // Two retries (Playwright's CI convention): emulator-load one-offs can
+  // outlast a single retry on oversubscribed runners.
+  retries: 2,
   reporter: [["list"], ["github"], ["html", { open: "never" }]],
   screenshot: "only-on-failure",
   workers: 1,

@@ -60,9 +60,21 @@ const DEFAULT_RETRY_BACKOFF_MS = [1_000, 2_000];
 const HIERARCHY_READY_TIMEOUT_MS = 10_000;
 /** Time to wait for a cold-launched iOS app to render a non-empty accessibility
  *  hierarchy. A first RN launch on a loaded CI runner (right after the agent's
- *  xcodebuild warmup) can take well over 5s to paint; the poll returns as soon
- *  as the hierarchy appears, so the generous ceiling costs nothing when healthy. */
-const IOS_APP_READY_TIMEOUT_MS = 30_000;
+ *  xcodebuild warmup) can take well over 30s to paint — observed when the app
+ *  cold-starts at the tail of a 60s+ xcodebuild warmup on a pegged runner. The
+ *  poll returns as soon as the hierarchy appears, so the generous ceiling costs
+ *  nothing when healthy. This check runs once per file-level launch and sits
+ *  outside `ensureSessionReady`'s retry envelope — a single timeout here kills
+ *  the whole shard at setup, so err on the side of patience. */
+const IOS_APP_READY_TIMEOUT_MS = 90_000;
+/** Per-poll RPC deadline inside {@link waitForIosAppReady}. Without it, one
+ *  snapshot call wedged on a busy simulator inherits the 60s client default
+ *  and eats most of the readiness budget in a single sample. */
+const IOS_APP_READY_POLL_DEADLINE_MS = 5_000;
+/** How long the readiness poll tolerates a non-foreground app before its
+ *  one-shot relaunch. Covers an app that crashed mid-launch or lost the
+ *  foreground to SpringBoard on a slow runner. */
+const IOS_APP_READY_RELAUNCH_AFTER_MS = 20_000;
 const HIERARCHY_POLL_INTERVAL_MS = 500;
 const DEFAULT_SOFT_RESET_WAIT_MS = 750;
 
@@ -299,17 +311,53 @@ async function verifySession(ctx: SessionPreflightContext): Promise<void> {
  * because tests may intentionally leave the app stopped.
  */
 async function waitForIosAppReady(ctx: SessionPreflightContext): Promise<void> {
-  const deadline = Date.now() + IOS_APP_READY_TIMEOUT_MS;
+  const start = Date.now();
+  const deadline = start + IOS_APP_READY_TIMEOUT_MS;
+  // An "empty hierarchy" almost never means an empty tree: the daemon maps
+  // agent snapshot failures (e.g. "Unable to lookup in current state" while
+  // the app is still launching) to an empty string + errorMessage. Track the
+  // last problem so the final error reports the real cause instead of the
+  // misleading "hierarchy is empty".
+  let lastProblem = '';
+  let relaunched = false;
   while (Date.now() < deadline) {
     try {
-      const h = await ctx.client.getUiHierarchy();
+      const h = await ctx.client.getUiHierarchy(IOS_APP_READY_POLL_DEADLINE_MS);
       if (h.hierarchyXml && h.hierarchyXml.trim().length > 0) return;
-    } catch {
+      lastProblem = h.errorMessage || '(hierarchy genuinely empty)';
+    } catch (err) {
       // Agent may not be ready yet
+      lastProblem = err instanceof Error ? err.message : String(err);
+    }
+    // Distinguish "app alive, still loading" from "app never made it to the
+    // foreground" (crashed mid-launch / stuck behind SpringBoard): after a
+    // grace window, relaunch once and keep polling. Guarded to a single shot
+    // so a crash loop still surfaces as a failure, with a stderr breadcrumb.
+    if (
+      !relaunched &&
+      ctx.config.package &&
+      Date.now() - start >= IOS_APP_READY_RELAUNCH_AFTER_MS
+    ) {
+      relaunched = true;
+      try {
+        const state = await ctx.device.getAppState(ctx.config.package, { timeout: 5_000 });
+        if (state !== 'foreground') {
+          process.stderr.write(
+            `[tapsmith] iOS app not in foreground (${state}) after ` +
+            `${Math.round((Date.now() - start) / 1000)}s waiting for readiness; relaunching once\n`,
+          );
+          await ctx.device.launchApp(ctx.config.package);
+        }
+      } catch {
+        // Keep polling — the relaunch probe itself may hit a still-busy agent.
+      }
     }
     await new Promise((resolve) => setTimeout(resolve, HIERARCHY_POLL_INTERVAL_MS));
   }
-  throw new Error('iOS app not ready: accessibility hierarchy is empty after launch');
+  throw new Error(
+    `iOS app not ready ${IOS_APP_READY_TIMEOUT_MS}ms after launch: ` +
+    `${lastProblem || 'accessibility hierarchy is empty'}`,
+  );
 }
 
 async function waitForAndroidAppHierarchy(

@@ -96,6 +96,13 @@ pub struct TapsmithServiceImpl {
     /// every per-test start/stop cycle pays the NE timeout (~10s × N tests).
     #[cfg(target_os = "macos")]
     ios_ne_unavailable: Arc<RwLock<bool>>,
+    /// Simulator UDID whose trust store already has this session's MITM CA.
+    /// `simctl keychain add-root-cert` talks to the sim's securityd/trustd —
+    /// re-running it every capture start is wasted work and was observed
+    /// hanging for minutes when CoreSimulator is under pressure. The CA is
+    /// stable for the daemon session (load_or_create), so once installed on
+    /// a UDID it stays trusted.
+    ios_ca_cert_installed: Arc<RwLock<Option<String>>>,
     /// iOS agent launch config (stored for restart on launchApp).
     ios_agent_config: Arc<RwLock<Option<IosAgentConfig>>>,
     /// Startup inputs for the currently connected agent. Used to make
@@ -259,6 +266,7 @@ impl TapsmithServiceImpl {
             ios_system_proxy_service: Arc::new(RwLock::new(None)),
             #[cfg(target_os = "macos")]
             ios_ne_unavailable: Arc::new(RwLock::new(false)),
+            ios_ca_cert_installed: Arc::new(RwLock::new(None)),
             ios_agent_config: Arc::new(RwLock::new(None)),
             started_agent_config: Arc::new(RwLock::new(None)),
             ios_iproxy: Arc::new(RwLock::new(None)),
@@ -3187,8 +3195,42 @@ impl proto::tapsmith_service_server::TapsmithService for TapsmithServiceImpl {
                 let mut last_error = "openDeepLink: app did not reach destination".to_string();
                 let mut verify_result: Option<Result<AgentResponse, Status>> = None;
                 let mut attempt: u32 = 0;
+                // One-shot escalation for the compositor outage: when the
+                // agent reports the display is not rendering (black screen
+                // with a healthy a11y tree), app relaunches provably don't
+                // recover it — only recreating the whole render surface does.
+                // Reboot the simulator, bring the agent back, and re-deliver.
+                let mut rebooted_for_black_display = false;
                 loop {
                     attempt += 1;
+                    if last_error.contains("display is not rendering")
+                        && !rebooted_for_black_display
+                        && !self.is_active_ios_physical().await
+                    {
+                        rebooted_for_black_display = true;
+                        warn!(
+                            %serial, uri = %req.uri,
+                            "display is not rendering and an app relaunch cannot recover a dead \
+                             compositor; rebooting the simulator and restarting the agent"
+                        );
+                        let _ = ios::device::shutdown_simulator(&serial).await;
+                        if let Err(e) = ios::device::boot_simulator(&serial).await {
+                            warn!(%serial, error = %e, "simulator reboot failed; continuing with re-delivery");
+                        } else {
+                            // Give SpringBoard a moment past `Booted` before
+                            // asking xcodebuild to install/launch the runner.
+                            tokio::time::sleep(Duration::from_secs(5)).await;
+                            if let Err(e) = self
+                                .restart_ios_agent_for_app(&serial, &bundle_id, false, 5_000)
+                                .await
+                            {
+                                warn!(%serial, error = %e, "agent restart after simulator reboot failed");
+                            }
+                        }
+                        // The reboot is recovery, not a delivery attempt —
+                        // don't let it consume one.
+                        attempt -= 1;
+                    }
                     let _ = self
                         .send_agent_command_with_timeout(
                             &AgentCommand::TerminateApp {
@@ -3250,7 +3292,13 @@ impl proto::tapsmith_service_server::TapsmithService for TapsmithServiceImpl {
                         Err(status) => status.message().to_string(),
                     };
                     verify_result = Some(result);
-                    if attempt >= max_attempts {
+                    // A display-not-rendering failure is exempt from the
+                    // attempt cap until the one-shot reboot escalation (top of
+                    // loop) has had its chance — re-delivery alone provably
+                    // can't fix it, so counting it against the cap just gives up.
+                    let reboot_pending = last_error.contains("display is not rendering")
+                        && !rebooted_for_black_display;
+                    if attempt >= max_attempts && !reboot_pending {
                         warn!(
                             %serial, uri = %req.uri, attempt, max_attempts,
                             error = %last_error,
@@ -3792,11 +3840,36 @@ impl proto::tapsmith_service_server::TapsmithService for TapsmithServiceImpl {
                 }
                 // Use simctl pbcopy to avoid the iOS 16+ paste permission dialog
                 // that would crash the XCUITest agent if it accessed UIPasteboard.
+                //
+                // pbcopy rides the sim's pasteboard-sync service, which wedges
+                // intermittently on CI — retry briefly, then fall back to the
+                // agent's `UIPasteboard.general.string = ...` (the physical-
+                // device path above): clipboard WRITES don't trigger the iOS
+                // 16+ paste prompt, so the fallback is prompt-safe on
+                // simulators too.
                 let serial = self.active_serial().await?;
-                ios::device::set_clipboard(&serial, &req.text)
-                    .await
-                    .map_err(|e| Status::internal(e.to_string()))?;
-                Ok(Self::success_action_response(request_id))
+                let mut last_err: Option<anyhow::Error> = None;
+                for attempt in 0..3 {
+                    if attempt > 0 {
+                        tokio::time::sleep(Duration::from_millis(500)).await;
+                    }
+                    match ios::device::set_clipboard(&serial, &req.text).await {
+                        Ok(()) => return Ok(Self::success_action_response(request_id)),
+                        Err(e) => {
+                            warn!(%serial, attempt, error = %e, "simctl pbcopy failed");
+                            last_err = Some(e);
+                        }
+                    }
+                }
+                let pbcopy_err = last_err.expect("loop ran at least once");
+                info!(%serial, "Falling back to agent UIPasteboard write after pbcopy failures");
+                let command = AgentCommand::SetClipboard { text: req.text };
+                let result = self.send_agent_command(&command).await.map_err(|agent_err| {
+                    Status::internal(format!(
+                        "Failed to set clipboard on {serial}: {pbcopy_err} (agent fallback also failed: {agent_err})"
+                    ))
+                })?;
+                self.make_action_response(request_id, Ok(result)).await
             }
             Platform::Android => {
                 // Use the on-device agent for clipboard operations since it has
@@ -3840,10 +3913,34 @@ impl proto::tapsmith_service_server::TapsmithService for TapsmithServiceImpl {
                 } else {
                     // Use simctl pbpaste to avoid the iOS 16+ paste permission dialog
                     // that would crash the XCUITest agent if it accessed UIPasteboard.
+                    // Same bounded retry as set_clipboard — the sim's
+                    // pasteboard-sync service wedges intermittently on CI.
                     let serial = self.active_serial().await?;
-                    ios::device::get_clipboard(&serial)
-                        .await
-                        .map_err(|e| Status::internal(e.to_string()))?
+                    let mut text = None;
+                    let mut last_err = None;
+                    for attempt in 0..3 {
+                        if attempt > 0 {
+                            tokio::time::sleep(Duration::from_millis(500)).await;
+                        }
+                        match ios::device::get_clipboard(&serial).await {
+                            Ok(t) => {
+                                text = Some(t);
+                                break;
+                            }
+                            Err(e) => {
+                                warn!(%serial, attempt, error = %e, "simctl pbpaste failed");
+                                last_err = Some(e);
+                            }
+                        }
+                    }
+                    match text {
+                        Some(t) => t,
+                        None => {
+                            return Err(Status::internal(
+                                last_err.expect("loop ran at least once").to_string(),
+                            ))
+                        }
+                    }
                 }
             }
             Platform::Android => {
@@ -4230,13 +4327,25 @@ impl proto::tapsmith_service_server::TapsmithService for TapsmithServiceImpl {
 
         match platform {
             Platform::Ios if !is_ios_physical => {
-                // Simulator path — install CA into the simulator's trust store.
-                if let Err(e) = ios::device::install_ca_cert(&serial, &ca_pem_path).await {
-                    let msg = format!(
-                        "Failed to install CA cert on simulator: {e} — HTTPS traffic will not be captured"
-                    );
-                    error!("{msg}");
-                    warnings.push(msg);
+                // Simulator path — install CA into the simulator's trust store
+                // once per session; it stays trusted for subsequent captures.
+                let already_installed =
+                    self.ios_ca_cert_installed.read().await.as_deref() == Some(serial.as_str());
+                if already_installed {
+                    debug!(%serial, "MITM CA already installed on simulator this session");
+                } else {
+                    match ios::device::install_ca_cert(&serial, &ca_pem_path).await {
+                        Ok(()) => {
+                            *self.ios_ca_cert_installed.write().await = Some(serial.clone());
+                        }
+                        Err(e) => {
+                            let msg = format!(
+                                "Failed to install CA cert on simulator: {e} — HTTPS traffic will not be captured"
+                            );
+                            error!("{msg}");
+                            warnings.push(msg);
+                        }
+                    }
                 }
             }
             Platform::Ios => {
@@ -4574,7 +4683,22 @@ impl proto::tapsmith_service_server::TapsmithService for TapsmithServiceImpl {
     ) -> Result<Response<proto::StopNetworkCaptureResponse>, Status> {
         let req = request.into_inner();
         let request_id = Self::request_id(&req.request_id);
-        let keep_running = req.keep_running;
+        let mut keep_running = req.keep_running;
+
+        // In macOS system-proxy fallback mode (NE redirector unavailable —
+        // typical on CI runner images), a full per-test teardown toggles
+        // `networksetup` off, kills the listener, and the next start re-toggles
+        // the proxy to a NEW port and re-touches the sim's trust store. That
+        // configd/network churn was observed wedging CoreSimulatorService for
+        // 6–12 minutes, starving every simctl-backed RPC behind it. Keep the
+        // proxy and system-proxy setting alive for the whole session instead:
+        // drain entries here, reuse the listener on the next start, and leave
+        // the real teardown to cleanup_network_proxy() at daemon shutdown.
+        #[cfg(target_os = "macos")]
+        if !keep_running && self.ios_system_proxy_service.read().await.is_some() {
+            debug!("stop_network_capture: keeping system-proxy fallback capture alive for session");
+            keep_running = true;
+        }
 
         if keep_running {
             // Give in-flight requests a moment to complete before draining,

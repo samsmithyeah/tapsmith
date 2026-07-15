@@ -357,6 +357,46 @@ describe('exists()', () => {
     const result = await handle.exists();
     expect(result).toBe(false);
   });
+
+  it('returns false on a genuine agent not-found message', async () => {
+    const client = makeMockClient({
+      findElement: vi.fn(async () => ({
+        requestId: '1',
+        found: false,
+        errorMessage: 'Timed out after 5000ms: element not found after waiting. No element found matching: text("Absent")',
+      })),
+    });
+    const handle = new ElementHandle(client, _text('Absent'), 5000);
+    expect(await handle.exists()).toBe(false);
+  });
+
+  it('does not report a momentary agent error as absence — retries and returns true when it clears', async () => {
+    // The daemon maps ANY agent failure to found:false + errorMessage; an
+    // infra blip must not read as "doesn't exist".
+    let calls = 0;
+    const findElement = vi.fn(async () => {
+      calls++;
+      return calls < 2
+        ? { requestId: '1', found: false, errorMessage: 'Unknown error' }
+        : { requestId: '1', found: true, element: makeElementInfo(), errorMessage: '' };
+    });
+    const client = makeMockClient({ findElement });
+    const handle = new ElementHandle(client, _text('Present'), 5000);
+    expect(await handle.exists()).toBe(true);
+    expect(calls).toBeGreaterThanOrEqual(2);
+  });
+
+  it('surfaces a persistent agent error instead of returning false', async () => {
+    const client = makeMockClient({
+      findElement: vi.fn(async () => ({
+        requestId: '1',
+        found: false,
+        errorMessage: 'UiAutomation not connected',
+      })),
+    });
+    const handle = new ElementHandle(client, _text('X'), 600);
+    await expect(handle.exists()).rejects.toThrow(/findElement failed: UiAutomation not connected/);
+  });
 });
 
 // ─── Action methods ───
@@ -2416,10 +2456,12 @@ describe('review follow-ups (PR #124)', () => {
   });
 
   it('actions surface a daemon errorMessage instead of reporting "not found"', async () => {
+    // The error is retried within the budget (it may be a momentary agent
+    // blip); when it persists, the deadline surfaces the real cause.
     const client = makeMockClient({
       findElements: vi.fn(async () => ({ requestId: '1', elements: [], errorMessage: 'UiAutomation not connected' })),
     });
-    const handle = new ElementHandle(client, _text('X'), 5000);
+    const handle = new ElementHandle(client, _text('X'), 600);
     await expect(handle.tap()).rejects.toThrow(/findElements failed: UiAutomation not connected/);
   });
 
@@ -2471,13 +2513,33 @@ describe('transient stale snapshot handling (wait-for flake regression)', () => 
     expect(tap).not.toHaveBeenCalled();
   });
 
-  it('a non-stale daemon error still fails fast (boundary — only stale is retryable)', async () => {
+  it('a persistent daemon error is retried within the budget and surfaces its real cause at the deadline', async () => {
+    // A momentary agent internal error (e.g. an exception thrown while the
+    // hierarchy is mid-re-render) recovers on the next tick, so actions
+    // retry it instead of aborting. When it PERSISTS, the deadline surfaces
+    // the real error — not a generic "not found".
     const findElements = vi.fn(async () => ({ requestId: '1', elements: [], errorMessage: 'UiAutomation not connected' }));
+    const client = makeMockClient({ findElements });
+    const handle = new ElementHandle(client, _text('X'), 600);
+
+    await expect(handle.tap()).rejects.toThrow(/findElements failed: UiAutomation not connected/);
+    expect(findElements.mock.calls.length).toBeGreaterThan(1);
+  });
+
+  it('tap() rides out a momentary agent internal error and then acts', async () => {
+    let calls = 0;
+    const findElements = vi.fn(async () => {
+      calls++;
+      return calls < 2
+        ? { requestId: '1', elements: [], errorMessage: 'Unknown error' }
+        : makeFindElementsResponse([makeElementInfo({ visible: true })]);
+    });
     const client = makeMockClient({ findElements });
     const handle = new ElementHandle(client, _text('X'), 5000);
 
-    await expect(handle.tap()).rejects.toThrow(/findElements failed: UiAutomation not connected/);
-    expect(findElements).toHaveBeenCalledTimes(1);
+    await handle.tap();
+
+    expect(calls).toBeGreaterThanOrEqual(2);
   });
 
   it('waitFor() retries through a transient stale snapshot and then resolves', async () => {
@@ -2496,13 +2558,46 @@ describe('transient stale snapshot handling (wait-for flake regression)', () => 
     expect(calls).toBeGreaterThanOrEqual(2);
   });
 
-  it('waitFor() fails fast on a non-stale daemon error instead of timing out', async () => {
+  it('waitFor() retries a persistent daemon error and surfaces its real cause at the deadline', async () => {
     const findElements = vi.fn(async () => ({ requestId: '1', elements: [], errorMessage: 'UiAutomation not connected' }));
     const client = makeMockClient({ findElements });
-    const handle = new ElementHandle(client, _text('X'), 5000);
+    const handle = new ElementHandle(client, _text('X'), 600);
 
     await expect(handle.waitFor({ state: 'visible' })).rejects.toThrow(/findElements failed: UiAutomation not connected/);
-    expect(findElements).toHaveBeenCalledTimes(1);
+    expect(findElements.mock.calls.length).toBeGreaterThan(1);
+  });
+
+  it('waitFor() rides out a momentary agent internal error and then resolves', async () => {
+    let calls = 0;
+    const findElements = vi.fn(async () => {
+      calls++;
+      return calls < 2
+        ? { requestId: '1', elements: [], errorMessage: 'Unknown error' }
+        : makeFindElementsResponse([makeElementInfo({ visible: true })]);
+    });
+    const client = makeMockClient({ findElements });
+    const handle = new ElementHandle(client, _text('Banner'), 5000);
+
+    await handle.waitFor({ state: 'visible' });
+
+    expect(calls).toBeGreaterThanOrEqual(2);
+  });
+
+  it('waitFor({ state: "detached" }) does not resolve off an agent internal error tick', async () => {
+    // An error tick is not a confirmed empty set — 'detached' must not
+    // falsely resolve on it (the agent may just have blipped mid-re-render
+    // while the element is still attached).
+    let calls = 0;
+    const findElements = vi.fn(async () => {
+      calls++;
+      return calls < 2
+        ? { requestId: '1', elements: [], errorMessage: 'Unknown error' }
+        : makeFindElementsResponse([makeElementInfo({ visible: true })]);
+    });
+    const client = makeMockClient({ findElements });
+    const handle = new ElementHandle(client, _text('Banner'), 700);
+
+    await expect(handle.waitFor({ state: 'detached' })).rejects.toThrow(/did not reach state "detached"/);
   });
 
   it('filter({ has }) surfaces a daemon error from child resolution instead of mis-filtering', async () => {
@@ -2730,13 +2825,13 @@ describe('transient agent-command timeout handling (slow-emulator flake regressi
     await expect(handle.waitFor({ state: 'visible' })).rejects.toThrow(/did not reach state/);
   });
 
-  it('a non-timeout daemon error still fails fast (boundary — only slow-agent timeouts retry)', async () => {
+  it('a persistent non-timeout daemon error surfaces its real cause at the deadline', async () => {
     const findElements = vi.fn(async () => ({ requestId: '1', elements: [], errorMessage: 'UiAutomation not connected' }));
     const client = makeMockClient({ findElements });
-    const handle = new ElementHandle(client, _text('X'), 5000);
+    const handle = new ElementHandle(client, _text('X'), 600);
 
     await expect(handle.tap()).rejects.toThrow(/findElements failed: UiAutomation not connected/);
-    expect(findElements).toHaveBeenCalledTimes(1);
+    expect(findElements.mock.calls.length).toBeGreaterThan(1);
   });
 });
 

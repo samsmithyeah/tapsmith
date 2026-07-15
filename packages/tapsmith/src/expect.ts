@@ -17,7 +17,7 @@
  *   await expect.poll(async () => fetchCount()).toBe(5);
  */
 
-import { ElementHandle, ELEMENT_HANDLE_BRAND, isStrictModeViolation, isTransientAgentError } from "./element-handle.js";
+import { ElementHandle, ELEMENT_HANDLE_BRAND, isStrictModeViolation, isRetryableResolutionError } from "./element-handle.js";
 import type { ElementInfo } from "./grpc-client.js";
 import { formatSelector } from "./selectors.js";
 import { extractStack, getActiveTraceCollector } from "./trace/trace-collector.js";
@@ -61,11 +61,13 @@ async function poll(
       lastTransientErr = undefined;
     } catch (err) {
       // A transient agent-command timeout (slow-but-alive agent, e.g. a
-      // hierarchy dump on a loaded CI emulator) is retried within the
-      // assertion budget instead of failing immediately. Any other throw —
-      // a strict-mode violation or a real infrastructure failure — propagates
-      // with its real cause.
-      if (!isTransientAgentError(err)) throw err;
+      // hierarchy dump on a loaded CI emulator) or a momentary agent command
+      // failure (e.g. an exception thrown mid-re-render while reading a
+      // detached node's attributes) is retried within the assertion budget
+      // instead of failing immediately. Any other throw — a strict-mode
+      // violation or a real infrastructure failure — propagates with its
+      // real cause.
+      if (!isRetryableResolutionError(err)) throw err;
       lastTransientErr = err as Error;
     }
     await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS));

@@ -536,10 +536,10 @@ export class TapsmithGrpcClient {
     });
   }
 
-  async getUiHierarchy(): Promise<UiHierarchyResponse> {
+  async getUiHierarchy(deadlineMs?: number): Promise<UiHierarchyResponse> {
     return this.call<UiHierarchyResponse>('getUiHierarchy', {
       requestId: requestId(),
-    });
+    }, deadlineMs);
   }
 
   async captureTraceState(options: {

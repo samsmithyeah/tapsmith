@@ -1452,6 +1452,18 @@ class CommandHandler {
             }
 
             if waitForDeepLinkDestination(targetApp, timeout: 10.0) {
+                // Mirror the warm path's pixel gate: a cold relaunch against a
+                // compositor that has stopped rendering "succeeds" by every
+                // a11y measure while the screen stays black, and reporting
+                // success here carries the dead display into every following
+                // test. Reject with a distinguishable error so the daemon can
+                // escalate (simulator reboot) instead of trusting the a11y tree.
+                if displayAppearsBlack() {
+                    throw AgentError.actionFailed(
+                        "openDeepLink: display is not rendering after cold "
+                            + "delivery of \(urlString)"
+                    )
+                }
                 _ = rebindApp(bundleId: bundleId)
                 return ["success": true]
             }

@@ -58,6 +58,13 @@ describe("waitFor", () => {
   })
 
   test("waitFor({ state: 'detached' }) waits for element to be removed from hierarchy", async ({ visibilityScreen }) => {
+    // Self-contained setup: a retry re-runs only this body, so don't depend
+    // on the previous test having left the section expanded — a collapse tap
+    // on an already-collapsed section EXPANDS it and inverts the assertions.
+    if ((await visibilityScreen.expandedContent.count()) === 0) {
+      await visibilityScreen.expandToggle.tap()
+      await visibilityScreen.expandedContent.waitFor({ state: "attached" })
+    }
     // Collapse the expanded section — content gets removed entirely
     await visibilityScreen.expandToggle.tap()
     await visibilityScreen.expandedContent.waitFor({ state: "detached" })
