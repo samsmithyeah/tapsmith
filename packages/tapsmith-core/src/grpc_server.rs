@@ -1638,31 +1638,21 @@ impl TapsmithServiceImpl {
         };
         let x = (bounds.left + bounds.right) / 2;
         let y = (bounds.top + bounds.bottom) / 2;
-        // Real-input timing: ~60ms press, ~120ms inter-tap gap — inside every
-        // double-tap recognizer window; coalescing doesn't apply to real HID
-        // events. `interval_ms` (when set) overrides the gap.
-        let gap = Duration::from_millis(if interval_ms > 0 { interval_ms } else { 120 });
-        for i in 0..2 {
-            if i > 0 {
-                tokio::time::sleep(gap).await;
-            }
-            if self
-                .hid_injector
-                .send(&udid, &format!("d {x} {y}"))
-                .await
-                .is_err()
-            {
-                return false;
-            }
-            tokio::time::sleep(Duration::from_millis(60)).await;
-            if self
-                .hid_injector
-                .send(&udid, &format!("u {x} {y}"))
-                .await
-                .is_err()
-            {
-                return false;
-            }
+        // One wire command: the helper owns the press/gap timing in-process
+        // (~40ms press, ~120ms gap), so the inter-tap gap stays inside the
+        // app's double-tap recognizer window regardless of daemon-side load.
+        // Host-paced down/up pairs were observed stretching the gap past the
+        // window on loaded CI runners (both taps delivered, classified as
+        // two single taps). `interval_ms` is intentionally not forwarded —
+        // fixed real-input timing is the point.
+        let _ = interval_ms;
+        if self
+            .hid_injector
+            .send(&udid, &format!("t2 {x} {y}"))
+            .await
+            .is_err()
+        {
+            return false;
         }
         info!(%udid, x, y, "double-tap injected via HID");
         true

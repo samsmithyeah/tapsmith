@@ -210,6 +210,23 @@ int main(int argc, char **argv) {
         case HID_CANCEL:
           ok = sendTouch(hid_normalize(lastX, widthPt), hid_normalize(lastY, heightPt), DirUp);
           break;
+        case HID_DOUBLE_TAP: {
+          // Full double-tap with in-process timing: ~40ms press, ~120ms
+          // inter-tap gap — inside every double-tap recognizer window. Doing
+          // this here (one wire command) instead of four host round-trips
+          // keeps the gap bounded no matter how loaded the daemon is.
+          lastX = ev.x; lastY = ev.y;
+          double nx = hid_normalize(ev.x, widthPt);
+          double ny = hid_normalize(ev.y, heightPt);
+          ok = YES;
+          for (int tap = 0; tap < 2 && ok; tap++) {
+            if (tap > 0) usleep(120000);
+            ok = sendTouch(nx, ny, DirDown);
+            usleep(40000);
+            ok = sendTouch(nx, ny, DirUp) && ok;
+          }
+          break;
+        }
         case HID_INVALID:
           printf("err invalid line\n"); fflush(stdout);
           continue;

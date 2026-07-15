@@ -7,12 +7,18 @@
  *   m <x> <y>   touch move (contact maintained)
  *   u <x> <y>   touch up
  *   c           cancel (lift at last point; x/y unused)
+ *   t2 <x> <y>  double-tap primitive: the helper injects both down/up pairs
+ *               with in-process timing, so the inter-tap gap stays inside
+ *               every double-tap recognizer window regardless of how loaded
+ *               the daemon-side event loop is (four host round-trips were
+ *               observed stretching the gap past the app's window on CI)
  */
 typedef enum {
   HID_DOWN,
   HID_MOVE,
   HID_UP,
   HID_CANCEL,
+  HID_DOUBLE_TAP,
   HID_INVALID
 } HidCmd;
 
