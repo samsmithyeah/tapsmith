@@ -47,6 +47,7 @@ export class WebKitInspectorClient {
   private _targetId: string | null = null;
   private _outerMsgId = 0;
   private _connectedPageId: number | null = null;
+  private _pageReplaced = false;
 
   constructor() {
     this._connectionId = `tapsmith-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -55,13 +56,69 @@ export class WebKitInspectorClient {
   async connect(socketPath: string): Promise<void> {
     return new Promise((resolve, reject) => {
       const socket = net.createConnection(socketPath);
+      // Store immediately so close() during a still-pending connect destroys
+      // the socket instead of leaking the connection attempt.
+      this._socket = socket;
       socket.on('connect', () => {
-        this._socket = socket;
         this._setupDataHandler();
         this._sendReport().then(resolve).catch(reject);
       });
-      socket.on('error', reject);
+      socket.on('error', (err) => {
+        const error = err instanceof Error ? err : new Error(String(err));
+        this._teardown(error);
+        reject(error);
+      });
+      socket.on('close', () => {
+        const error = new Error('WebKit Inspector connection closed');
+        this._teardown(error);
+        // Settle a still-pending connect — a handshake-time close would
+        // otherwise leave connect() hanging until the caller's deadline.
+        // No-op once the promise is settled.
+        reject(error);
+      });
     });
+  }
+
+  /** Whether the webinspectord socket is still usable. */
+  isConnected(): boolean {
+    return this._socket !== null && !this._socket.destroyed;
+  }
+
+  /** Whether the connected page has been replaced out from under this session. */
+  get pageReplaced(): boolean {
+    return this._pageReplaced;
+  }
+
+  private static _pageReplacedError(): Error {
+    return new Error(
+      'The connected WebView page was replaced (the app remounted its WebView, ' +
+      'the page loaded into a new WebKit page, or the web content process crashed). ' +
+      'Reconnect with device.webview().',
+    );
+  }
+
+  private _markPageReplaced(): void {
+    this._pageReplaced = true;
+    for (const [, p] of this._pendingEval) {
+      p.reject(WebKitInspectorClient._pageReplacedError());
+    }
+    this._pendingEval.clear();
+  }
+
+  /** Drop the socket and fail all in-flight inspector messages. */
+  private _teardown(reason: Error): void {
+    if (this._socket) {
+      this._socket.destroy();
+      this._socket = null;
+    }
+    // A teardown mid-handshake must not let _sendReport() resolve a connect()
+    // whose socket is already gone — connect() is rejected by its own
+    // close/error handler instead.
+    this._readyResolve = null;
+    for (const [, p] of this._pendingEval) {
+      p.reject(reason);
+    }
+    this._pendingEval.clear();
   }
 
   private _setupDataHandler(): void {
@@ -115,6 +172,9 @@ export class WebKitInspectorClient {
     if (selector === '_rpc_applicationDisconnected:') {
       const appId = argument.WIRApplicationIdentifierKey as string;
       this._apps.delete(appId);
+      if (appId === this._senderKey && this._connectedPageId !== null) {
+        this._markPageReplaced();
+      }
       return;
     }
 
@@ -137,6 +197,20 @@ export class WebKitInspectorClient {
             type: (pageData.WIRTypeKey as string) ?? '',
           };
           app.pages.set(page.id, page);
+        }
+        // webinspectord pushes listing updates once we've requested one. A
+        // page id never comes back after vanishing, so our connected page
+        // dropping out of its app's listing means the page was replaced
+        // (WebView remount, reload into a new page, or WebContent crash).
+        // Detect it here: a replaced page can keep answering evaluates
+        // against its frozen DOM indefinitely, so callers polling through
+        // this session would otherwise never notice (PILOT-288).
+        if (
+          appId === this._senderKey &&
+          this._connectedPageId !== null &&
+          !app.pages.has(this._connectedPageId)
+        ) {
+          this._markPageReplaced();
         }
       }
       return;
@@ -243,6 +317,9 @@ export class WebKitInspectorClient {
 
       // Also request the application list
       setTimeout(() => {
+        // The socket may have been torn down in the meantime — a throw here
+        // would be an uncaught exception in a timer callback.
+        if (!this._socket || this._socket.destroyed) return;
         this._sendMessage({
           __selector: '_rpc_getConnectedApplications:',
           __argument: {
@@ -306,6 +383,7 @@ export class WebKitInspectorClient {
   async connectToPage(appId: string, pageId: number): Promise<void> {
     this._senderKey = appId;
     this._connectedPageId = pageId;
+    this._pageReplaced = false;
     // Reset any target from a previous connectToPage on this client (e.g. a
     // page that connected but failed its liveness probe) — otherwise the
     // wait below exits immediately and messages route to the stale target.
@@ -348,6 +426,9 @@ export class WebKitInspectorClient {
 
   /** Send a WebKit Inspector command to the connected page and wait for response. */
   async sendInspectorMessage(appId: string, message: Record<string, unknown>, timeoutMs = 30_000): Promise<Record<string, unknown>> {
+    if (this._pageReplaced) {
+      throw WebKitInspectorClient._pageReplacedError();
+    }
     if (!this._targetId) {
       throw new Error('No WebView target available — Target.targetCreated not received');
     }
@@ -397,21 +478,45 @@ export class WebKitInspectorClient {
   }
 
   close(): void {
-    if (this._socket) {
-      this._socket.destroy();
-      this._socket = null;
-    }
-    for (const [, p] of this._pendingEval) {
-      p.reject(new Error('Connection closed'));
-    }
-    this._pendingEval.clear();
+    this._teardown(new Error('Connection closed'));
   }
 }
 
-/** Find the webinspectord Unix socket for a given iOS simulator UDID (or name). */
-export function findSimulatorInspectorSocket(udidOrName: string): string | null {
+/** Resolve a simulator name to a UDID among BOOTED simulators. Returns null
+ * unless exactly one booted simulator has that name. */
+function resolveBootedSimulatorByName(name: string, timeoutMs: number): string | null {
   try {
-    const psOutput = execSync('ps aux', { encoding: 'utf-8' });
+    const out = execSync('xcrun simctl list devices booted -j', { encoding: 'utf-8', timeout: timeoutMs });
+    const parsed = JSON.parse(out) as { devices?: Record<string, Array<{ udid: string; name?: string }>> } | null;
+    // Tolerate casing/whitespace drift between the config name and simctl —
+    // a near-miss here would otherwise surface as an opaque connect failure.
+    const wanted = name.trim().toLowerCase();
+    const matches: string[] = [];
+    for (const devices of Object.values(parsed?.devices ?? {})) {
+      for (const d of devices) {
+        if (d.name?.trim().toLowerCase() === wanted) matches.push(d.udid);
+      }
+    }
+    return matches.length === 1 ? matches[0] : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Find the webinspectord Unix socket for a given iOS simulator UDID (or name).
+ *
+ * `budgetMs` caps the cumulative time spent in the synchronous subprocess
+ * calls (ps/simctl/lsof) so discovery cannot blow through a caller's shorter
+ * connect deadline; each command gets the remaining budget with a 1s floor.
+ */
+export function findSimulatorInspectorSocket(udidOrName: string, budgetMs = 25_000): string | null {
+  const budgetDeadline = Date.now() + budgetMs;
+  const cap = (maxMs: number) => Math.max(1_000, Math.min(maxMs, budgetDeadline - Date.now()));
+  try {
+    // Bounded: connection setup runs inside the device timeout, and lsof in
+    // particular can stall for a long time on a loaded machine.
+    const psOutput = execSync('ps aux', { encoding: 'utf-8', timeout: cap(5_000) });
 
     // Collect all launchd_sim PIDs and their UDIDs
     const sims: Array<{ pid: string; udid: string }> = [];
@@ -428,20 +533,29 @@ export function findSimulatorInspectorSocket(udidOrName: string): string | null 
 
     if (sims.length === 0) return null;
 
-    // Match by UDID if provided, otherwise use the first one
+    // Match by UDID, resolving a simulator NAME to a UDID first. Without an
+    // unambiguous identity, only a SINGLE booted simulator is acceptable —
+    // silently picking the first of several attaches to the wrong
+    // simulator's WebViews (with parallel workers, two sessions end up
+    // driving the SAME page — PILOT-288).
+    let udid = udidOrName;
+    if (udid && !udid.match(/^[A-F0-9-]{36}$/i)) {
+      udid = resolveBootedSimulatorByName(udid, cap(10_000)) ?? '';
+    }
     let targetPid: string;
-    if (udidOrName && udidOrName.match(/^[A-F0-9-]{36}$/i)) {
-      const match = sims.find(s => s.udid === udidOrName);
+    if (udid) {
+      const match = sims.find(s => s.udid.toUpperCase() === udid.toUpperCase());
       if (!match) return null;
       targetPid = match.pid;
-    } else {
-      // Use the first (or only) booted simulator
+    } else if (sims.length === 1) {
       targetPid = sims[0].pid;
+    } else {
+      return null;
     }
 
     // Find the webinspectord socket owned by this specific launchd_sim PID.
     // lsof -U shows ALL Unix sockets — match the PID column to filter correctly.
-    const lsofOutput = execSync('lsof -U 2>/dev/null', { encoding: 'utf-8' });
+    const lsofOutput = execSync('lsof -U 2>/dev/null', { encoding: 'utf-8', timeout: cap(10_000) });
     for (const line of lsofOutput.split('\n')) {
       if (!line.includes('webinspectord_sim.socket')) continue;
       const cols = line.trim().split(/\s+/);

@@ -856,6 +856,7 @@ describe('runner execution', () => {
       _stopDaemonLogStream: vi.fn(),
       _disposeRouteManager: vi.fn(async () => {}),
       _disposeWebViewManager: vi.fn(async () => {}),
+      _resetWebViewContext: vi.fn(),
     };
 
     try {
@@ -887,6 +888,10 @@ describe('runner execution', () => {
       expect(mockDevice._stopNetworkCapture).toHaveBeenNthCalledWith(1, { keepRunning: true });
       expect(mockDevice._stopNetworkCapture).toHaveBeenNthCalledWith(2, { keepRunning: true });
       expect(mockDevice._disposeRouteManager).not.toHaveBeenCalled();
+      // The WebView connection is kept alive across tests (PILOT-288):
+      // per-test teardown only resets the active context.
+      expect(mockDevice._disposeWebViewManager).not.toHaveBeenCalled();
+      expect(mockDevice._resetWebViewContext).toHaveBeenCalledTimes(2);
     } finally {
       fs.rmSync(tempRoot, { recursive: true, force: true });
     }

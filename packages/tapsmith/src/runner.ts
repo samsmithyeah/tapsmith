@@ -1427,8 +1427,13 @@ async function runSuiteContext(
         if (!traceConfig.network && device._disposeRouteManager) {
           await device._disposeRouteManager();
         }
-        if (device._disposeWebViewManager) {
-          await device._disposeWebViewManager();
+        // Return to the native context but keep the WebView connection cached
+        // across tests — reconnecting per test churns webinspectord on iOS and
+        // triggers wedged/stale page sessions (PILOT-288). A dead connection
+        // is detected and re-established on next use; the file-level hard
+        // teardown closes it for real.
+        if (device._resetWebViewContext) {
+          device._resetWebViewContext();
         }
 
         // Capture a final screenshot so the last action has an "after" view.
@@ -1556,10 +1561,12 @@ async function runSuiteContext(
           collector.cleanup();
         }
       } else if (opts.device?._disposeRouteManager) {
-        // No tracing — still need to clean up routes and WebView state.
+        // No tracing — still need to clean up routes and reset the WebView
+        // context (the connection itself stays cached across tests, see the
+        // traced path above / PILOT-288).
         await opts.device._disposeRouteManager();
-        if (opts.device._disposeWebViewManager) {
-          await opts.device._disposeWebViewManager();
+        if (opts.device._resetWebViewContext) {
+          opts.device._resetWebViewContext();
         }
       }
 
@@ -1956,6 +1963,11 @@ export async function runTestFile(
       }
       if (fileOpts.device?._disposeRouteManager) {
         await fileOpts.device._disposeRouteManager();
+      }
+      // Hard teardown of the cross-test cached WebView connection (kept
+      // alive between tests, see per-test teardown / PILOT-288).
+      if (fileOpts.device?._disposeWebViewManager) {
+        await fileOpts.device._disposeWebViewManager();
       }
     }
   }
