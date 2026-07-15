@@ -193,6 +193,11 @@ export function isRetryableAgentStartError(err: unknown): boolean {
   return (
     message.includes('xcodebuild exited') ||
     message.includes('Timed out waiting for iOS agent') ||
+    // The daemon's post-launch handshake ping can miss a runner that is
+    // still initializing (the launch-time socket probe passed moments
+    // earlier) — a second StartAgent either fast-paths onto the now-ready
+    // agent or relaunches it.
+    message.includes('Agent is not responding') ||
     isRecoverableInfrastructureError(err)
   );
 }
