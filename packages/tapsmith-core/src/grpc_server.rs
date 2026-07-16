@@ -1658,6 +1658,110 @@ impl TapsmithServiceImpl {
         true
     }
 
+    /// Long-press via the iOS-simulator HID helper: resolve the element's
+    /// center through the agent, then inject a real touch-down, hold, and
+    /// lift. XCTest-synthesized presses share the injection pipeline that
+    /// simulator input outages break — the runner acks the press but the app
+    /// never receives it (and the synthesis IPC has been observed wedging for
+    /// minutes) — while HID events enter below XCTest. Returns false — caller
+    /// falls back to the agent route — when the active device isn't an iOS
+    /// simulator, the helper is unavailable, element resolution fails, or an
+    /// injection fails.
+    #[cfg(target_os = "macos")]
+    async fn try_hid_long_press(
+        &self,
+        selector: &Value,
+        timeout_ms: u64,
+        duration_ms: u64,
+    ) -> bool {
+        let udid = {
+            let dm = self.device_manager.read().await;
+            match dm.active_device() {
+                Some(d) if d.platform == Platform::Ios && d.is_emulator => d.serial.clone(),
+                _ => return false,
+            }
+        };
+        if let Err(e) = self.hid_injector.ensure(&udid).await {
+            debug!(%udid, error = %e, "iOS HID helper unavailable for long-press; using agent route");
+            return false;
+        }
+        let find = AgentCommand::FindElement {
+            selector: selector.clone(),
+            timeout_ms: opt_timeout(timeout_ms),
+        };
+        let resp = match self
+            .send_agent_command_with_timeout(&find, timeout_ms)
+            .await
+        {
+            Ok(r) if r.success => r,
+            _ => return false,
+        };
+        let Some(info) = parse_element_info(&resp.data) else {
+            return false;
+        };
+        let Some(bounds) = info.bounds else {
+            return false;
+        };
+        let x = (bounds.left + bounds.right) / 2;
+        let y = (bounds.top + bounds.bottom) / 2;
+        self.hid_long_press_at(&udid, x as f32, y as f32, duration_ms)
+            .await
+    }
+
+    /// Coordinate-addressed variant of [`try_hid_long_press`]: same device
+    /// and helper gating, no element resolution.
+    #[cfg(target_os = "macos")]
+    async fn try_hid_long_press_coords(&self, x: f32, y: f32, duration_ms: u64) -> bool {
+        let udid = {
+            let dm = self.device_manager.read().await;
+            match dm.active_device() {
+                Some(d) if d.platform == Platform::Ios && d.is_emulator => d.serial.clone(),
+                _ => return false,
+            }
+        };
+        if let Err(e) = self.hid_injector.ensure(&udid).await {
+            debug!(%udid, error = %e, "iOS HID helper unavailable for long-press; using agent route");
+            return false;
+        }
+        self.hid_long_press_at(&udid, x, y, duration_ms).await
+    }
+
+    /// Inject down / hold / up through the HID helper. The helper consumes
+    /// stdin lines sequentially, so the up can never overtake the down and
+    /// the daemon-side sleep bounds the hold from BELOW — host scheduling
+    /// jank can only stretch it, and a long press has no upper bound (unlike
+    /// the double-tap gap, which is why `t2` is paced in-process instead).
+    /// No move event between down and up: a move can cancel the press
+    /// recognizer state in React Native's Pressability.
+    #[cfg(target_os = "macos")]
+    async fn hid_long_press_at(&self, udid: &str, x: f32, y: f32, duration_ms: u64) -> bool {
+        let hold =
+            std::time::Duration::from_millis(if duration_ms == 0 { 1000 } else { duration_ms });
+        if self
+            .hid_injector
+            .send(udid, &format!("d {x} {y}"))
+            .await
+            .is_err()
+        {
+            return false;
+        }
+        tokio::time::sleep(hold).await;
+        if self
+            .hid_injector
+            .send(udid, &format!("u {x} {y}"))
+            .await
+            .is_err()
+        {
+            // The down already landed; cancel it best-effort so the app isn't
+            // left with a stuck touch before the agent-route fallback presses
+            // again cleanly.
+            let _ = self.hid_injector.send(udid, "c").await;
+            return false;
+        }
+        info!(%udid, x, y, duration_ms, "long-press injected via HID");
+        true
+    }
+
     /// Build a synthetic success ActionResponse (used when a touch event was
     /// handled out-of-band by the HID injector, bypassing the agent).
     #[allow(clippy::result_large_err)] // Status is tonic's standard error type
@@ -1932,6 +2036,22 @@ impl proto::tapsmith_service_server::TapsmithService for TapsmithServiceImpl {
         let request_id = Self::request_id(&req.request_id);
 
         let (selector, element_id) = action_target(req.selector.as_ref(), &req.element_id)?;
+
+        // iOS simulators: prefer real HID input for the press when the helper
+        // is available. XCTest-synthesized presses are acked by the runner but
+        // silently dropped during simulator input-injection outages (observed
+        // on loaded CI runners even straight after a simulator reboot), and
+        // the synthesis IPC can wedge for minutes. Selector-addressed targets
+        // only — cached-element-id bounds are agent-internal; those (and any
+        // HID failure) fall through to the agent route.
+        #[cfg(target_os = "macos")]
+        if element_id.is_none()
+            && self
+                .try_hid_long_press(&selector, req.timeout_ms, req.duration_ms)
+                .await
+        {
+            return Ok(Self::success_action_response(request_id));
+        }
 
         let command = AgentCommand::LongPress {
             selector,
@@ -6671,6 +6791,16 @@ impl proto::tapsmith_service_server::TapsmithService for TapsmithServiceImpl {
     ) -> Result<Response<proto::ActionResponse>, Status> {
         let req = request.into_inner();
         let request_id = Self::request_id(&req.request_id);
+
+        // Same HID-first routing as `long_press` (see the rationale there).
+        #[cfg(target_os = "macos")]
+        if self
+            .try_hid_long_press_coords(req.x, req.y, req.duration_ms)
+            .await
+        {
+            return Ok(Self::success_action_response(request_id));
+        }
+
         let command = AgentCommand::LongPressCoordinates {
             x: req.x,
             y: req.y,
