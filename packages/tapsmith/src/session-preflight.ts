@@ -292,9 +292,18 @@ async function verifySession(ctx: SessionPreflightContext): Promise<void> {
       // from the expected package — if so, dismiss the overlay rather than failing.
       const appInHierarchy = hierarchyContainsPackage(hierarchy.hierarchyXml, ctx.config.package);
       if (!appInHierarchy) {
-        throw new Error(
-          `foreground package mismatch (expected ${ctx.config.package}, got ${currentPackage || '(none)'})`,
-        );
+        // Not an infra failure by itself: a previous test may have
+        // intentionally terminated or backgrounded the app (the
+        // device-management tests do exactly that). Relaunch cheaply inline —
+        // mirroring the iOS branch above — instead of throwing, which would
+        // classify this routine state as a session recovery and (since
+        // recovery destroys beforeAll-established state) escalate to a
+        // whole-file retry. A genuinely broken session fails the relaunch or
+        // the readiness wait below, and THAT propagates into real recovery.
+        await ctx.device.launchApp(ctx.config.package);
+        const relaunched = await waitForHierarchy(ctx.client);
+        await waitForAndroidAppHierarchy(ctx, relaunched.hierarchyXml, ctx.config.package);
+        return;
       }
       await ctx.device.pressBack();
       await ctx.device.waitForIdle(DEFAULT_READY_TIMEOUT_MS);
