@@ -3497,14 +3497,34 @@ impl proto::tapsmith_service_server::TapsmithService for TapsmithServiceImpl {
                         // don't let it consume one.
                         attempt -= 1;
                     }
-                    let _ = self
-                        .send_agent_command_with_timeout(
+                    // The terminate MUST actually land: `simctl openurl` to a
+                    // still-running app foregrounds it without delivering any
+                    // navigation event to React Native, and the verify below
+                    // can't tell that apart from a legitimate delivery whose
+                    // destination renders like the current screen — the app
+                    // silently stays where it was while the reset "succeeds".
+                    // The agent now confirms the process died; when it can't
+                    // (observed under CoreSimulator pressure with agent
+                    // commands running 10-40s), force it host-side before
+                    // delivering.
+                    let terminate_confirmed = matches!(
+                        self.send_agent_command_with_timeout(
                             &AgentCommand::TerminateApp {
                                 package: bundle_id.clone(),
                             },
-                            4_000,
+                            10_000,
                         )
-                        .await;
+                        .await,
+                        Ok(resp) if resp.success
+                    );
+                    if !terminate_confirmed {
+                        warn!(
+                            %serial, uri = %req.uri,
+                            "agent could not confirm app termination; forcing simctl \
+                             terminate so openurl cold-launches the app"
+                        );
+                        let _ = ios::device::terminate_app(&serial, &bundle_id).await;
+                    }
                     tokio::time::sleep(Duration::from_millis(200)).await;
 
                     if let Err(e) = self

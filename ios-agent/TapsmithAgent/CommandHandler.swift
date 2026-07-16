@@ -1386,13 +1386,31 @@ class CommandHandler {
 
         case "terminateApp":
             let bundleId = params["bundleId"] as? String ?? params["package"] as? String
-            if let bundleId = bundleId {
-                let targetApp = XCUIApplication(bundleIdentifier: bundleId)
-                targetApp.terminate()
-            } else {
-                app.terminate()
+            let targetApp = bundleId.map { XCUIApplication(bundleIdentifier: $0) } ?? app
+            // Verify the app actually died instead of trusting terminate()'s
+            // return: under CoreSimulator pressure it can silently no-op, and
+            // callers act on the result — the daemon's deep-link cold path
+            // runs `simctl openurl` next, which against a still-running app
+            // foregrounds it WITHOUT delivering a navigation event to the
+            // app. Retry once, then report failure so the caller can escalate.
+            for attempt in 0..<2 {
+                _ = ObjCExceptionCatcher.catchException {
+                    targetApp.terminate()
+                }
+                let deadline = Date(timeIntervalSinceNow: 2.0)
+                while Date() < deadline {
+                    if safeAppState(targetApp) == .notRunning {
+                        return ["success": true]
+                    }
+                    Thread.sleep(forTimeInterval: 0.1)
+                }
+                if attempt == 0 {
+                    NSLog("[TapsmithAgent] terminateApp: app still running after terminate(); retrying")
+                }
             }
-            return ["success": true]
+            throw AgentError.actionFailed(
+                "terminateApp: \(bundleId ?? "target app") is still running after terminate()"
+            )
 
         case "getAppState":
             let bundleId = params["bundleId"] as? String ?? params["package"] as? String ?? ""
