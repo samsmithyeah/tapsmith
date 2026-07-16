@@ -1712,6 +1712,12 @@ impl TapsmithServiceImpl {
     /// and helper gating, no element resolution.
     #[cfg(target_os = "macos")]
     async fn try_hid_long_press_coords(&self, x: f32, y: f32, duration_ms: u64) -> bool {
+        // Client-supplied floats: `strtod` in the helper happily parses a
+        // formatted "NaN"/"inf", which would poison the injection math —
+        // route non-finite coordinates to the agent, which validates them.
+        if !x.is_finite() || !y.is_finite() {
+            return false;
+        }
         let udid = {
             let dm = self.device_manager.read().await;
             match dm.active_device() {

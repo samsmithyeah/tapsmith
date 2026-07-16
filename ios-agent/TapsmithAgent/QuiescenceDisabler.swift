@@ -1,6 +1,7 @@
 import XCTest
 import Foundation
 import ObjectiveC
+import UIKit
 
 /// Disables XCUITest's quiescence waiting and provides direct event synthesis.
 ///
@@ -327,10 +328,19 @@ enum EventSynthesizer {
         // runtime builds do so even at 250ms+ gaps, verified on iOS 26.5).
         // Offset the second tap by 2pt — comfortably inside every double-tap
         // recognizer's slop radius, far outside the pipeline's same-point
-        // coalescing match — so the pair always arrives as two taps.
-        let second = runtimeCoalescesRapidTaps
-            ? CGPoint(x: point.x + 2, y: point.y + 2)
-            : point
+        // coalescing match — so the pair always arrives as two taps. Keep the
+        // verified +2 direction except within 2pt of the screen's right or
+        // bottom edge, where it would land off-screen; the coalescing match
+        // only cares that the points differ, not which way they differ.
+        let second: CGPoint
+        if runtimeCoalescesRapidTaps {
+            let bounds = UIScreen.main.bounds
+            let dx: CGFloat = point.x + 2 <= bounds.maxX ? 2 : -2
+            let dy: CGFloat = point.y + 2 <= bounds.maxY ? 2 : -2
+            second = CGPoint(x: point.x + dx, y: point.y + dy)
+        } else {
+            second = point
+        }
         guard synthesizeTap(at: second, duration: 0.05) else { return .firstTapOnly }
         let elapsed = Date().timeIntervalSince(start)
         if elapsed > 0.5 {
