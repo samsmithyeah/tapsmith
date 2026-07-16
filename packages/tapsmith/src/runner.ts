@@ -1623,6 +1623,16 @@ async function runSuiteContext(
 
       if (status === 'passed' || attempt === maxRetries || opts.abortSignal?.aborted) break;
 
+      // A file-abort-worthy failure (e.g. "session recovered during before
+      // test" — the app was relaunched by infra, destroying beforeAll-
+      // established state) must NOT be consumed by per-test retries: the
+      // retries would run against the recovered app without the file's
+      // beforeAll navigation/setup, fail with ordinary assertion errors, and
+      // erase the infra signal that makes the worker retry the whole file
+      // (which re-runs beforeAll). Break so this error stays the test's
+      // final error and the abort check below fires.
+      if (error && opts.abortFileOnError?.(error)) break;
+
       if (!firstFailure && error) {
         firstFailure = { error, tracePath, screenshotPath, videoPath };
       }

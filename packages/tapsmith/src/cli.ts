@@ -2755,10 +2755,30 @@ async function runTestFileWithRecovery(
         screenshotDir: opts.screenshotDir,
         reporter: opts.reporter,
         beforeEachTest: async (fullName) => {
+          // Mirror the worker path: a recovery here relaunched the app, so any
+          // beforeAll-established state (navigation, auth) is gone. Throw the
+          // infra-shaped error so the file retries and beforeAll re-runs —
+          // otherwise the test runs against the recovered app's home screen
+          // and fails with a misleading assertion error.
+          let recovered = false;
+          let recoveryReason = '';
           await ensureSessionReady(
             opts.sessionContext,
             `before test ${fullName}`,
+            undefined,
+            {
+              onRecovery: (err) => {
+                recovered = true;
+                recoveryReason = err instanceof Error ? err.message : String(err);
+              },
+            },
           );
+          if (recovered) {
+            const detail = recoveryReason ? `: ${recoveryReason}` : '';
+            throw new Error(
+              `session recovered during before test ${fullName}; retrying file so beforeAll hooks run against the recovered app${detail}`,
+            );
+          }
         },
         abortFileOnError: isRecoverableInfrastructureError,
         // In-process retries need the same ESM cache busting as worker

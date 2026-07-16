@@ -1428,6 +1428,32 @@ describe('retries', () => {
     expect(setForceColdDeepLinks.mock.calls.map((c) => c[0])).toEqual([false, true, false]);
   });
 
+  it('does not consume per-test retries on a file-abort-worthy failure', async () => {
+    // "session recovered" means the app was relaunched by infra and any
+    // beforeAll-established state is gone — per-test retries would run
+    // against the recovered app, fail with ordinary assertion errors, and
+    // erase the infra signal that triggers the file-level retry (which
+    // re-runs beforeAll). The attempt loop must stop retrying immediately.
+    let attempts = 0;
+    let secondTestRan = false;
+    pushContext();
+    tapsmithTest('hits session recovery', async () => {
+      attempts++;
+      throw new Error('session recovered during before test X; retrying file');
+    });
+    tapsmithTest('later test', async () => { secondTestRan = true; });
+    const ctx = popContext();
+    const result = await runSuiteContext(ctx, '', [], [], makeOpts({
+      config: makeConfig({ retries: 2 }),
+      abortFileOnError: (err) => err.message.includes('session recovered during'),
+    }));
+    expect(attempts).toBe(1);
+    expect(result.tests[0].status).toBe('failed');
+    expect(result.tests[0].error?.message).toContain('session recovered during');
+    // File aborted — the remaining test never ran.
+    expect(secondTestRan).toBe(false);
+  });
+
   it('does not retry a passing test', async () => {
     let callCount = 0;
     pushContext();
