@@ -27,7 +27,7 @@ import {
   serializeSuiteResult,
   isRecoverableInfrastructureError,
   isRetryableAgentStartError,
-  retryOnceOnRecoverableInfra,
+  retryDeviceSelection,
   deserializeRegExpArray,
   AGENT_START_RETRY_DELAY_MS,
 } from './worker-protocol.js';
@@ -114,7 +114,7 @@ async function handleInit(msg: InitMessage): Promise<void> {
     // possibly-undefined module-level bindings.
     const dev = device;
     const cfg = config;
-    await retryOnceOnRecoverableInfra(
+    await retryDeviceSelection(
       () => dev.setDevice(
         msg.deviceSerial,
         isNetworkTracingEnabled(cfg.trace),
@@ -122,7 +122,7 @@ async function handleInit(msg: InitMessage): Promise<void> {
         networkPassthroughHosts(cfg.trace),
       ),
       (err) => process.stderr.write(
-        `Worker ${workerId}: Device selection failed, retrying once: ${err instanceof Error ? err.message : String(err)}\n`,
+        `Worker ${workerId}: Device selection failed transiently, retrying: ${err instanceof Error ? err.message : String(err)}\n`,
       ),
     );
   }

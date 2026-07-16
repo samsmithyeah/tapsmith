@@ -47,7 +47,7 @@ import {
   waitForDeviceStability,
   ensureAdbRoot,
 } from './emulator.js';
-import { AGENT_START_RETRY_DELAY_MS, isRecoverableInfrastructureError, isRetryableAgentStartError, retryOnceOnRecoverableInfra, serializeRegExpArray } from './worker-protocol.js';
+import { AGENT_START_RETRY_DELAY_MS, isRecoverableInfrastructureError, isRetryableAgentStartError, retryDeviceSelection, serializeRegExpArray } from './worker-protocol.js';
 import { findPidsOnPort, freeStaleAgentPort } from './port-utils.js';
 import { findDaemonBin } from './daemon-bin.js';
 import {
@@ -563,9 +563,9 @@ async function setupSequentialDevice(
   const deviceSerial = cfg.device;
   try {
     progress?.update('primary-device', { state: 'running', detail: `selecting ${deviceSerial}` });
-    await retryOnceOnRecoverableInfra(
+    await retryDeviceSelection(
       () => device.setDevice(deviceSerial, networkTracingEnabled, pacNetworkHosts, passthroughHosts),
-      () => progress?.update('primary-device', { state: 'running', detail: `selection timed out, retrying ${deviceSerial}` }),
+      () => progress?.update('primary-device', { state: 'running', detail: `selection failed transiently, retrying ${deviceSerial}` }),
     );
     if (!progress) console.log(dim(`Using device: ${cfg.device}`));
   } catch (err) {

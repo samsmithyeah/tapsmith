@@ -162,23 +162,46 @@ export function isRecoverableInfrastructureError(err: unknown): boolean {
   return RECOVERABLE_INFRASTRUCTURE_PATTERNS.some((pattern) => message.includes(pattern));
 }
 
+export const DEVICE_SELECT_RETRY_BUDGET_MS = 90_000;
+export const DEVICE_SELECT_RETRY_DELAY_MS = 3_000;
+
 /**
- * Run a device-infrastructure setup step, retrying once if it fails with a
- * recoverable infrastructure error (e.g. device selection tripping its
- * deadline because `simctl list` stalls while simulators boot on a loaded
- * runner). `onRetry` fires before the second attempt so callers can report
+ * Device-selection failures worth retrying within a bounded window.
+ *
+ * "not found. Run ListDevices" deserves special mention: SetDevice is only
+ * ever called with a serial the caller just resolved (and, for simulators,
+ * verified Booted) through simctl itself — so the daemon answering "not
+ * found" means its device refresh came back incomplete, i.e. the bounded
+ * `simctl list` timed out under a CoreSimulator stall. That's a transient
+ * listing failure, not a wrong serial; the next refresh sees the device.
+ */
+export function isRetryableDeviceSelectionError(err: unknown): boolean {
+  const message = err instanceof Error ? err.message : String(err);
+  return (
+    message.includes('not found. Run ListDevices') ||
+    isRecoverableInfrastructureError(err)
+  );
+}
+
+/**
+ * Run device selection, retrying transient failures (see
+ * `isRetryableDeviceSelectionError`) with a short pause until the budget is
+ * spent. `onRetry` fires before each re-attempt so callers can report
  * progress their own way.
  */
-export async function retryOnceOnRecoverableInfra<T>(
+export async function retryDeviceSelection<T>(
   fn: () => Promise<T>,
   onRetry: (err: unknown) => void,
 ): Promise<T> {
-  try {
-    return await fn();
-  } catch (err) {
-    if (!isRecoverableInfrastructureError(err)) throw err;
-    onRetry(err);
-    return fn();
+  const deadline = Date.now() + DEVICE_SELECT_RETRY_BUDGET_MS;
+  for (;;) {
+    try {
+      return await fn();
+    } catch (err) {
+      if (!isRetryableDeviceSelectionError(err) || Date.now() >= deadline) throw err;
+      onRetry(err);
+      await new Promise((resolve) => setTimeout(resolve, DEVICE_SELECT_RETRY_DELAY_MS));
+    }
   }
 }
 
