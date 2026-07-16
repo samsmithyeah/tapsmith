@@ -12,7 +12,7 @@ import * as path from 'node:path';
 import { TapsmithGrpcClient } from './grpc-client.js';
 import { Device } from './device.js';
 import { isNetworkTracingEnabled, networkHostsForPac, networkPassthroughHosts } from './trace/types.js';
-import { runTestFile, collectResults } from './runner.js';
+import { runTestFile, collectResults, markFileRetryFlakes } from './runner.js';
 import type { TapsmithConfig } from './config.js';
 import { isPackageInstalled, waitForPackageIndexed } from './emulator.js';
 import { installApp, installedAppMatches, isAppInstalled, probeSimulatorHealth, rebootSimulator } from './ios-simulator.js';
@@ -414,6 +414,7 @@ async function runFileWithRecovery(
   const projectGrepRe = deserializeRegExpArray(projectGrep);
   const projectGrepInvertRe = deserializeRegExpArray(projectGrepInvert);
 
+  let firstAttemptSuite: import('./runner.js').SuiteResult | undefined;
   for (let attempt = 1; attempt <= 2; attempt++) {
     let infraError: Error | undefined;
     try {
@@ -457,12 +458,18 @@ async function runFileWithRecovery(
       });
       const infrastructureFailure = findRecoverableInfrastructureFailure(collectResults(suite));
       if (!infrastructureFailure) {
+        // Tests that failed on the discarded first attempt must surface as
+        // flaky, not as clean passes (see markFileRetryFlakes).
+        if (attempt === 2 && firstAttemptSuite) {
+          markFileRetryFlakes(firstAttemptSuite, suite);
+        }
         return suite;
       }
       if (attempt === 2) {
         throw infrastructureFailure;
       }
       infraError = infrastructureFailure;
+      firstAttemptSuite = suite;
     } catch (err) {
       if (!isRecoverableInfrastructureError(err) || attempt === 2) {
         throw err;

@@ -1878,6 +1878,34 @@ export function collectResults(suite: SuiteResult): TestResult[] {
 }
 
 /**
+ * Mark tests that failed on a discarded file-level retry attempt as flaky in
+ * the retried suite's results. File-level retries (infra recovery) re-run the
+ * whole file and return only the second attempt — without this, a test that
+ * failed and then passed on the file retry reports as a clean pass, hiding
+ * the failure from the flaky count, annotations, and reports. Mirrors what
+ * the per-test retry loop records via `retry` + `firstAttemptError`.
+ */
+export function markFileRetryFlakes(firstAttempt: SuiteResult, retried: SuiteResult): void {
+  const firstErrors = new Map(
+    collectResults(firstAttempt)
+      .filter((t) => t.status === 'failed' && t.error)
+      .map((t) => [t.fullName, t.error]),
+  );
+  if (firstErrors.size === 0) return;
+  const annotate = (suite: SuiteResult): void => {
+    for (const t of suite.tests) {
+      const firstError = firstErrors.get(t.fullName);
+      if (firstError && t.status === 'passed') {
+        t.retry = t.retry ?? 1;
+        t.firstAttemptError = t.firstAttemptError ?? firstError;
+      }
+    }
+    suite.suites.forEach(annotate);
+  };
+  annotate(retried);
+}
+
+/**
  * Run a single test file. The file is imported (which registers tests via the
  * global `test` / `describe` functions), then executed sequentially.
  */

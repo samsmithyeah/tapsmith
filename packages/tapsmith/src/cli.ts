@@ -15,7 +15,7 @@ import { loadConfig, normalizeGrep, resolveDeviceStrategy, EXPLICIT_WORKERS, isE
 import figlet from 'figlet';
 import { TapsmithGrpcClient } from './grpc-client.js';
 import { Device } from './device.js';
-import { runTestFile, collectResults, type TestResult, type SuiteResult } from './runner.js';
+import { runTestFile, collectResults, markFileRetryFlakes, type TestResult, type SuiteResult } from './runner.js';
 import { createReporters, ReporterDispatcher, type FullResult } from './reporter.js';
 import { ensureSessionReady, launchConfiguredApp } from './session-preflight.js';
 import { installActionProgressPrinter } from './action-progress-renderer.js';
@@ -2805,6 +2805,10 @@ async function runTestFileWithRecovery(
           if (fileResults.length < firstResults.length) {
             return firstAttemptSuite;
           }
+          // Tests that failed on the discarded first attempt must surface as
+          // flaky, not as clean passes — the summary would otherwise hide
+          // that the file was re-run at all.
+          markFileRetryFlakes(firstAttemptSuite, suite);
         }
         return suite;
       }

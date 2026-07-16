@@ -16,6 +16,7 @@ import {
   beforeEach as tapsmithBeforeEach,
   afterEach as tapsmithAfterEach,
   collectResults,
+  markFileRetryFlakes,
   runTestFile,
   _internal,
   type SuiteResult,
@@ -1426,6 +1427,41 @@ describe('retries', () => {
     // Test 1 attempt 0 → false, attempt 1 (retry) → true; test 2 attempt 0
     // → false again so the previous retry doesn't leak into it.
     expect(setForceColdDeepLinks.mock.calls.map((c) => c[0])).toEqual([false, true, false]);
+  });
+
+  it('marks tests that failed on a discarded file-retry attempt as flaky', () => {
+    const mkTest = (fullName: string, status: 'passed' | 'failed', error?: Error): TestResult => ({
+      name: fullName, fullName, status, durationMs: 1, error,
+    });
+    const firstAttempt: SuiteResult = {
+      name: '', durationMs: 1, suites: [{
+        name: 'suite', durationMs: 1, suites: [],
+        tests: [
+          mkTest('suite > recovered', 'failed', new Error('session recovered during before test')),
+          mkTest('suite > clean', 'passed'),
+        ],
+      }], tests: [],
+    };
+    const retried: SuiteResult = {
+      name: '', durationMs: 1, suites: [{
+        name: 'suite', durationMs: 1, suites: [],
+        tests: [
+          mkTest('suite > recovered', 'passed'),
+          mkTest('suite > clean', 'passed'),
+        ],
+      }], tests: [],
+    };
+
+    markFileRetryFlakes(firstAttempt, retried);
+
+    const results = collectResults(retried);
+    const recovered = results.find((t) => t.fullName === 'suite > recovered');
+    // Flaky = passed with retry > 0, carrying the first attempt's real error.
+    expect(recovered?.retry).toBe(1);
+    expect(recovered?.firstAttemptError?.message).toContain('session recovered');
+    const clean = results.find((t) => t.fullName === 'suite > clean');
+    expect(clean?.retry).toBeUndefined();
+    expect(clean?.firstAttemptError).toBeUndefined();
   });
 
   it('does not consume per-test retries on a file-abort-worthy failure', async () => {
