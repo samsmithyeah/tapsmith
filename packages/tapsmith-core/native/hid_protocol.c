@@ -22,7 +22,8 @@ HidEvent hid_parse_line(const char *line) {
 
   if (c == 'c') { e.cmd = HID_CANCEL; return e; }
 
-  int isDoubleTap = (c == 't' && line[1] == '2');
+  int isDoubleTap = (c == 't' && line[1] == '2' &&
+                     (line[2] == '\0' || isspace((unsigned char)line[2])));
   if (!isDoubleTap && c != 'd' && c != 'm' && c != 'u') return e;
 
   const char *rest = line + (isDoubleTap ? 2 : 1);

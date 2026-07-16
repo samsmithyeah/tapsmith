@@ -338,9 +338,12 @@ async function waitForIosAppReady(ctx: SessionPreflightContext): Promise<void> {
       ctx.config.package &&
       Date.now() - start >= IOS_APP_READY_RELAUNCH_AFTER_MS
     ) {
-      relaunched = true;
       try {
         const state = await ctx.device.getAppState(ctx.config.package, { timeout: 5_000 });
+        // Consume the one-shot only once the probe answered: a transient
+        // probe failure (caught below) must not permanently disable the
+        // relaunch — the next poll tick gets to probe again.
+        relaunched = true;
         if (state !== 'foreground') {
           process.stderr.write(
             `[tapsmith] iOS app not in foreground (${state}) after ` +

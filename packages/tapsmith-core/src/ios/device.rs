@@ -854,7 +854,17 @@ pub async fn set_clipboard(udid: &str, text: &str) -> Result<()> {
 
     if let Some(mut stdin) = child.stdin.take() {
         use tokio::io::AsyncWriteExt;
-        stdin.write_all(text.as_bytes()).await?;
+        // Bound the write too: if pbcopy's pasteboard-sync service is wedged
+        // and never reads stdin, text larger than the OS pipe buffer would
+        // block here forever — before the bounded wait below is ever reached.
+        tokio::time::timeout(SIMCTL_TIMEOUT, stdin.write_all(text.as_bytes()))
+            .await
+            .map_err(|_| {
+                anyhow!(
+                    "simctl pbcopy stdin write timed out after {}s (CoreSimulatorService may be wedged)",
+                    SIMCTL_TIMEOUT.as_secs()
+                )
+            })??;
     }
 
     let output = tokio::time::timeout(SIMCTL_TIMEOUT, child.wait_with_output())

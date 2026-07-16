@@ -26,6 +26,12 @@ int main(void) {
   e = hid_parse_line("t2");            /* missing coords -> invalid */
   assert(e.cmd == HID_INVALID);
 
+  e = hid_parse_line("t20 1 2");       /* no delimiter after t2 -> invalid */
+  assert(e.cmd == HID_INVALID);
+
+  e = hid_parse_line("t2\t150 300");   /* tab delimiter accepted */
+  assert(e.cmd == HID_DOUBLE_TAP && approx(e.x, 150) && approx(e.y, 300));
+
   e = hid_parse_line("t 100 200");     /* bare 't' is not a command */
   assert(e.cmd == HID_INVALID);
 

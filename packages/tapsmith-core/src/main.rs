@@ -159,48 +159,37 @@ async fn main() -> Result<()> {
         None => AgentConnection::new(),
     }));
 
-    // Tool discovery and stale-proxy cleanup run in the background so the
-    // gRPC listener binds as early as possible. On a loaded CI runner these
-    // probes (plus macOS's first-exec scan of a freshly-downloaded binary)
-    // added tens of seconds before the listener existed, and the SDK's
-    // connect window expired while the daemon was still warming up.
-    {
-        let device_manager = device_manager.clone();
-        tokio::spawn(async move {
-            // Verify ADB is available (Android)
-            match adb::find_adb().await {
-                Ok(path) => info!(path = %path.display(), "Found ADB"),
-                Err(e) => {
-                    warn!("ADB not found on PATH: {e}. Android device operations will not be available.")
-                }
+    // Tool discovery runs in the background so the gRPC listener binds as
+    // early as possible. On a loaded CI runner these probes (plus macOS's
+    // first-exec scan of a freshly-downloaded binary) added tens of seconds
+    // before the listener existed, and the SDK's connect window expired while
+    // the daemon was still warming up.
+    //
+    // NOTE: a "stale proxy cleanup" block used to live here. It read
+    // `active_serial()`, which is always None at startup — so it either
+    // no-oped, or (once backgrounded) raced a fast client's SetDevice +
+    // StartNetworkCapture and reset the proxy the client had just configured.
+    // Stale Android proxies from a crashed session are instead cleared when
+    // capture starts for that device.
+    tokio::spawn(async move {
+        // Verify ADB is available (Android)
+        match adb::find_adb().await {
+            Ok(path) => info!(path = %path.display(), "Found ADB"),
+            Err(e) => {
+                warn!(
+                    "ADB not found on PATH: {e}. Android device operations will not be available."
+                )
             }
+        }
 
-            // Verify xcrun is available (iOS)
-            match ios::device::find_xcrun().await {
-                Ok(path) => info!(path = %path.display(), "Found xcrun"),
-                Err(e) => {
-                    warn!("xcrun not found on PATH: {e}. iOS device operations will not be available.")
-                }
+        // Verify xcrun is available (iOS)
+        match ios::device::find_xcrun().await {
+            Ok(path) => info!(path = %path.display(), "Found xcrun"),
+            Err(e) => {
+                warn!("xcrun not found on PATH: {e}. iOS device operations will not be available.")
             }
-
-            // Clean up stale proxy settings from a previous crash
-            if let Some(serial) = device_manager
-                .read()
-                .await
-                .active_serial()
-                .map(String::from)
-            {
-                let proxy_setting = adb::shell(&serial, "settings get global http_proxy")
-                    .await
-                    .unwrap_or_default();
-                let trimmed = proxy_setting.trim();
-                if !trimmed.is_empty() && trimmed != ":0" && trimmed != "null" {
-                    warn!(%serial, proxy = trimmed, "Cleaning up stale proxy settings from previous session");
-                    let _ = adb::shell(&serial, "settings put global http_proxy :0").await;
-                }
-            }
-        });
-    }
+        }
+    });
 
     let service = TapsmithServiceImpl::new(device_manager, agent_connection, daemon_log_bus);
     let service_handle = Arc::new(service);
