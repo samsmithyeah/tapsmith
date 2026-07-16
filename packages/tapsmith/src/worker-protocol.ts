@@ -162,7 +162,11 @@ export function isRecoverableInfrastructureError(err: unknown): boolean {
   return RECOVERABLE_INFRASTRUCTURE_PATTERNS.some((pattern) => message.includes(pattern));
 }
 
-export const DEVICE_SELECT_RETRY_BUDGET_MS = 90_000;
+// Generous budget: a session-setup failure fails the whole shard (there is
+// no outer retry around setup), and each failed attempt can itself take
+// ~35s when the daemon's bounded `simctl list` is riding out a
+// CoreSimulator stall — so the budget must fit several such attempts.
+export const DEVICE_SELECT_RETRY_BUDGET_MS = 180_000;
 export const DEVICE_SELECT_RETRY_DELAY_MS = 3_000;
 
 /**
