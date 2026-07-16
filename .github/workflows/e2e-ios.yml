@@ -214,13 +214,25 @@ jobs:
           path: .
 
       - name: Make daemon executable
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
-          chmod +x packages/tapsmith-core/target/release/tapsmith-core
-          xattr -d com.apple.quarantine packages/tapsmith-core/target/release/tapsmith-core 2>/dev/null || true
+          REL=packages/tapsmith-core/target/release
+          # download-artifact has been observed reporting success after a
+          # partial extraction (tapsmith-core present, tapsmith-ios-hid
+          # missing, no digest-verification lines in its log). Re-download
+          # once before treating a missing binary as fatal.
+          if [ ! -f "$REL/tapsmith-core" ] || [ ! -f "$REL/tapsmith-ios-hid" ]; then
+            echo "daemon artifact incomplete; re-downloading"
+            rm -f "$REL/tapsmith-core" "$REL/tapsmith-ios-hid"
+            gh run download ${{ github.run_id }} -n daemon-binary-macos -D "$REL"
+          fi
+          chmod +x "$REL/tapsmith-core"
+          xattr -d com.apple.quarantine "$REL/tapsmith-core" 2>/dev/null || true
           # Hard requirement, not best-effort: without the helper every
           # HID-routed gesture silently downgrades to the flaky agent path.
-          chmod +x packages/tapsmith-core/target/release/tapsmith-ios-hid
-          xattr -d com.apple.quarantine packages/tapsmith-core/target/release/tapsmith-ios-hid 2>/dev/null || true
+          chmod +x "$REL/tapsmith-ios-hid"
+          xattr -d com.apple.quarantine "$REL/tapsmith-ios-hid" 2>/dev/null || true
 
       - name: Resolve xctestrun path
         run: |
