@@ -24,6 +24,7 @@ export type SlowActionName =
   | 'launchApp'
   | 'terminateApp'
   | 'startAgent'
+  | 'openDeepLink'
   | 'sessionReady';
 
 export interface ActionProgressEvent {
@@ -64,6 +65,7 @@ export const ACTION_PROGRESS_LABELS: Record<SlowActionName, ActionProgressLabels
   launchApp: { active: 'Launching app', done: 'Launched app', failed: 'Launch app failed' },
   terminateApp: { active: 'Stopping app', done: 'Stopped app', failed: 'Stop app failed' },
   startAgent: { active: 'Starting automation agent', done: 'Automation agent started', failed: 'Automation agent start failed' },
+  openDeepLink: { active: 'Opening deep link', done: 'Opened deep link', failed: 'Open deep link failed' },
   sessionReady: { active: 'Waiting for app to be ready', done: 'App ready', failed: 'App readiness check failed' },
 };
 

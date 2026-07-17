@@ -4,6 +4,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { unzipSync } from 'fflate';
+import { emitActionProgress } from '../action-progress.js';
 
 // We need to test the runner's registration and execution logic.
 // The runner uses module-level state, so we import the internal helpers
@@ -1428,6 +1429,47 @@ describe('retries', () => {
     // → false again so the previous retry doesn't leak into it.
     expect(setForceColdDeepLinks.mock.calls.map((c) => c[0])).toEqual([false, true, false]);
   });
+
+  it('excludes progress-tracked device-action time from the test timeout', async () => {
+    // Device actions carry their own bounded deadlines; time inside them is
+    // infrastructure time, not test time. config.timeout 100ms → test
+    // timeout 300ms; the body spends ~600ms inside a tracked action and
+    // only ~50ms outside — it must pass.
+    pushContext();
+    tapsmithTest('slow action, fast test', async () => {
+      emitActionProgress({ kind: 'start', id: 9001, action: 'openDeepLink' });
+      await new Promise((r) => setTimeout(r, 600));
+      emitActionProgress({ kind: 'end', id: 9001, action: 'openDeepLink', durationMs: 600, success: true });
+      await new Promise((r) => setTimeout(r, 50));
+    });
+    const ctx = popContext();
+    const result = await runSuiteContext(ctx, '', [], [], makeOpts({
+      config: makeConfig({ timeout: 100 }),
+    }));
+    expect(result.tests[0].status).toBe('passed');
+  });
+
+  it('still times out on test-side time and enforces the wall-clock cap', async () => {
+    pushContext();
+    // 300ms test timeout; 500ms of untracked (test-side) time → timeout.
+    tapsmithTest('slow test body', async () => {
+      await new Promise((r) => setTimeout(r, 500));
+    });
+    // Wall cap: 5× timeout = 1.5s; a tracked action that never ends must
+    // still be killed at the cap, not run unbounded.
+    tapsmithTest('action never ends', async () => {
+      emitActionProgress({ kind: 'start', id: 9002, action: 'openDeepLink' });
+      await new Promise((r) => setTimeout(r, 2_500));
+    });
+    const ctx = popContext();
+    const result = await runSuiteContext(ctx, '', [], [], makeOpts({
+      config: makeConfig({ timeout: 100 }),
+    }));
+    expect(result.tests[0].status).toBe('failed');
+    expect(result.tests[0].error?.message).toContain('Test timed out after 300ms');
+    expect(result.tests[1].status).toBe('failed');
+    expect(result.tests[1].error?.message).toContain('wall clock');
+  }, 15_000);
 
   it('marks tests that failed on a discarded file-retry attempt as flaky', () => {
     const mkTest = (fullName: string, status: 'passed' | 'failed', error?: Error): TestResult => ({
