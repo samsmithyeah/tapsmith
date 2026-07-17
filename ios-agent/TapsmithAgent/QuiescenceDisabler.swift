@@ -334,7 +334,7 @@ enum EventSynthesizer {
         // only cares that the points differ, not which way they differ.
         let second: CGPoint
         if runtimeCoalescesRapidTaps {
-            let bounds = UIScreen.main.bounds
+            let bounds = cachedScreenBounds
             let dx: CGFloat = point.x + 2 <= bounds.maxX ? 2 : -2
             let dy: CGFloat = point.y + 2 <= bounds.maxY ? 2 : -2
             second = CGPoint(x: point.x + dx, y: point.y + dy)
@@ -362,6 +362,15 @@ enum EventSynthesizer {
     private static let runtimeCoalescesRapidTaps: Bool = {
         if #available(iOS 26.0, *) { return true }
         return false
+    }()
+
+    /// UIScreen is main-thread-bound and agent commands run on the socket
+    /// handler thread — read the bounds once on the main queue and cache.
+    /// The screen size doesn't change mid-session, and this is only used to
+    /// keep the anti-coalescing tap offset on-screen (2pt tolerance).
+    private static let cachedScreenBounds: CGRect = {
+        if Thread.isMainThread { return UIScreen.main.bounds }
+        return DispatchQueue.main.sync { UIScreen.main.bounds }
     }()
 
     /// Build and dispatch a single event record containing two sequential

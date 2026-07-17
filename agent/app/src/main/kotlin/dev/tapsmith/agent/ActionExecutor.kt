@@ -261,16 +261,23 @@ class ActionExecutor(
 
     /**
      * Wait briefly for the element to hold input focus before key-event
-     * injection. Best-effort: a stale element or a field that never reports
-     * focus falls through so the injection still gets its chance.
+     * injection. A stale element rethrows — blind key events after the
+     * target went stale can land in whatever field IS focused, and the
+     * SDK's stale-retry re-resolves and re-types correctly instead. Other
+     * (transient) read failures keep polling until the deadline; a field
+     * that never reports focus falls through so the injection still gets
+     * its chance.
      */
     private fun waitForFocus(element: UiObject2) {
         val deadline = SystemClock.uptimeMillis() + 2000
         while (SystemClock.uptimeMillis() < deadline) {
             try {
                 if (element.isFocused) return
+            } catch (e: StaleObjectException) {
+                throw e
             } catch (e: Exception) {
-                return
+                // Transient read failure (mid-layout, window transition) —
+                // keep waiting.
             }
             SystemClock.sleep(100)
         }

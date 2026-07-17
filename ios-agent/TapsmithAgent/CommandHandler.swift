@@ -437,7 +437,12 @@ class CommandHandler {
             // with a minimal ElementInfo so the coordinate-driven action
             // paths (snapshotCenter) proceed instead of surfacing a spurious
             // "gone stale" for an element that is still on screen.
-            if let frame = snapshotFinder.getBounds(elementId) {
+            // Guard non-finite frames: a cached CGRect.null has an infinite
+            // origin, and Int(infinity) is a Swift runtime FATAL ERROR —
+            // crashing the whole agent over one bad cached frame.
+            if let frame = snapshotFinder.getBounds(elementId),
+               !frame.isNull, frame.origin.x.isFinite, frame.origin.y.isFinite,
+               frame.size.width.isFinite, frame.size.height.isFinite {
                 return ElementInfo(
                     elementId: elementId,
                     className: "",

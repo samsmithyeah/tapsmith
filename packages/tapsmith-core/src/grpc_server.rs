@@ -108,7 +108,7 @@ pub struct TapsmithServiceImpl {
     /// hanging for minutes when CoreSimulator is under pressure. The CA is
     /// stable for the daemon session (load_or_create), so once installed on
     /// a UDID it stays trusted.
-    ios_ca_cert_installed: Arc<RwLock<Option<String>>>,
+    ios_ca_cert_installed: Arc<RwLock<std::collections::HashSet<String>>>,
     /// iOS agent launch config (stored for restart on launchApp).
     ios_agent_config: Arc<RwLock<Option<IosAgentConfig>>>,
     /// Startup inputs for the currently connected agent. Used to make
@@ -273,7 +273,7 @@ impl TapsmithServiceImpl {
             #[cfg(target_os = "macos")]
             ios_ne_unavailable: Arc::new(RwLock::new(false)),
             ios_app_container_cache: Arc::new(RwLock::new(std::collections::HashMap::new())),
-            ios_ca_cert_installed: Arc::new(RwLock::new(None)),
+            ios_ca_cert_installed: Arc::new(RwLock::new(std::collections::HashSet::new())),
             ios_agent_config: Arc::new(RwLock::new(None)),
             started_agent_config: Arc::new(RwLock::new(None)),
             ios_iproxy: Arc::new(RwLock::new(None)),
@@ -4624,14 +4624,23 @@ impl proto::tapsmith_service_server::TapsmithService for TapsmithServiceImpl {
             Platform::Ios if !is_ios_physical => {
                 // Simulator path — install CA into the simulator's trust store
                 // once per session; it stays trusted for subsequent captures.
-                let already_installed =
-                    self.ios_ca_cert_installed.read().await.as_deref() == Some(serial.as_str());
+                // Per-UDID set, not a single slot: workers switching between
+                // simulators on a shared daemon would otherwise evict each
+                // other's entry and re-run the slow install on every switch.
+                let already_installed = self
+                    .ios_ca_cert_installed
+                    .read()
+                    .await
+                    .contains(serial.as_str());
                 if already_installed {
                     debug!(%serial, "MITM CA already installed on simulator this session");
                 } else {
                     match ios::device::install_ca_cert(&serial, &ca_pem_path).await {
                         Ok(()) => {
-                            *self.ios_ca_cert_installed.write().await = Some(serial.clone());
+                            self.ios_ca_cert_installed
+                                .write()
+                                .await
+                                .insert(serial.clone());
                         }
                         Err(e) => {
                             let msg = format!(
