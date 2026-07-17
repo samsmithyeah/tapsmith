@@ -970,7 +970,7 @@ class ElementFinder(private val device: UiDevice) {
             // message — the stale-retry loop in findElements and the typed
             // ELEMENT_NOT_FOUND mapping in CommandHandler both key on the
             // real exception type.
-            throw e.targetException
+            throw e.targetException ?: e
         }
     }
 
