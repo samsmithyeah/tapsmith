@@ -402,7 +402,11 @@ const threeThings = [
                 response. When a test fails in CI, download the trace and replay it locally. No
                 guessing, no "works on my machine."
               </p>
-              <button type="button" class="tp-devtools-zoom">
+              <button
+                type="button"
+                class="tp-devtools-zoom"
+                aria-label="Enlarge trace viewer screenshot"
+              >
                 <img
                   src="/trace-viewer.png"
                   alt="Tapsmith trace viewer showing a failed login test: timeline of screenshots, action log with the failed assertion, the app's error state, and the error with a source snippet"
@@ -420,7 +424,11 @@ const threeThings = [
                 live, browse traces and screenshots inline, and mirror the device screen, all
                 without leaving the browser.
               </p>
-              <button type="button" class="tp-devtools-zoom">
+              <button
+                type="button"
+                class="tp-devtools-zoom"
+                aria-label="Enlarge UI mode screenshot"
+              >
                 <img
                   src="/ui-mode.png"
                   alt="Tapsmith UI mode running a network-mocking test across Android and iOS, with the test tree, trace actions, mocked network response, and live device mirrors"
