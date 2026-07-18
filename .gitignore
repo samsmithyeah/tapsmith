@@ -52,3 +52,6 @@ repomix-output.xml
 # Superpowers design specs / implementation plans (local workflow artifacts)
 docs/superpowers/
 dogfooding/
+
+# Generated promo video (rebuild via tools/promo)
+tapsmith-promo.mp4

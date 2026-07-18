@@ -1,0 +1,9 @@
+{
+  "name": "tapsmith-promo",
+  "private": true,
+  "type": "module",
+  "description": "Promo video generation pipeline (see README.md)",
+  "dependencies": {
+    "puppeteer-core": "^24.0.0"
+  }
+}

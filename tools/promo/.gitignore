@@ -1,0 +1,14 @@
+node_modules/
+venv/
+rec-frames/
+ui-frames/
+comp-frames/
+leakcheck/
+music.wav
+gray.raw
+*.txt.tmp
+clip-ui.txt
+clip-trace.txt
+tapsmith-promo.mp4
+probe-*.jpg
+qc-*.jpg
