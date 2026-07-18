@@ -275,6 +275,12 @@ function rewriteLinks(content) {
   for (const [pattern, replacement] of LINK_REWRITES) {
     content = content.replace(pattern, replacement)
   }
+  // Docs reference images as `images/<file>` so they render on GitHub;
+  // the images dir is copied flat into website/public, so serve from `/`.
+  // Handles both inline `](images/...)` and reference-style `]: images/...`.
+  content = content
+    .replace(/\]\((?:\.\/)?images\//g, '](/')
+    .replace(/\]:\s*(?:\.\/)?images\//g, ']: /')
   return content
 }
 

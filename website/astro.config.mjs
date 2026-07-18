@@ -2,6 +2,7 @@
 import { defineConfig } from 'astro/config'
 import starlight from '@astrojs/starlight'
 import starlightLinksValidator from 'starlight-links-validator'
+import starlightImageZoom from 'starlight-image-zoom'
 import tailwindcss from '@tailwindcss/vite'
 
 export default defineConfig({
@@ -17,7 +18,7 @@ export default defineConfig({
       social: [
         { icon: 'github', label: 'GitHub', href: 'https://github.com/samsmithyeah/tapsmith' },
       ],
-      plugins: [starlightLinksValidator()],
+      plugins: [starlightLinksValidator(), starlightImageZoom()],
       customCss: ['./src/styles/global.css'],
       expressiveCode: {
         themes: ['github-dark', 'github-light'],

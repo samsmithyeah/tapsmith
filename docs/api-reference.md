@@ -1976,6 +1976,10 @@ export default defineConfig({
 | `outputFolder` | `string` | `"tapsmith-report"` |
 | `open` | `"always" \| "never" \| "on-failure"` | `"on-failure"` |
 
+The HTML report is a self-contained page with pass/fail summary, filtering, and per-test durations, with links to each failure's trace and video:
+
+![HTML report with a pass/fail summary, filter chips, and per-test rows including trace and video links for a failed test](images/html-report.png)
+
 **`blob`**
 
 | Option | Type | Default |
