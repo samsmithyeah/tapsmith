@@ -1172,7 +1172,7 @@ export class Device {
         sourceLocation,
         stack,
       });
-    });
+    }, stack);
 
     let handle: WebViewHandle | undefined;
     try {

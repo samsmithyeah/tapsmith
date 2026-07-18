@@ -177,7 +177,7 @@ export async function tracedAction(
       hasHierarchyAfter: false,
       sourceLocation, stack,
     });
-  });
+  }, stack);
 
   try {
     const res = await fn();

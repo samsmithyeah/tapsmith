@@ -269,6 +269,8 @@ export class TraceCollector {
   private _consoleIntercepted = false;
   /** Handler to emit a failed event for the in-flight action/assertion on timeout. */
   private _pendingOperationHandler: ((error: string) => void) | null = null;
+  /** User-code frames of the in-flight operation, for timeout-error attribution. */
+  private _pendingOperationStack: SourceLocation[] | null = null;
   /** Pending after-action capture promises that must complete before trace packaging. */
   private _pendingAfterCaptures: Promise<void>[] = [];
 
@@ -437,13 +439,19 @@ export class TraceCollector {
   /**
    * Register a fail handler for the currently in-flight action or assertion.
    * Called by tracedAction / wrapAssertionWithTrace before executing the user's fn().
+   *
+   * `stack` is the operation's user-code frames (from extractStack): the runner
+   * reads it via [pendingOperationStack] to attribute a test-timeout error to
+   * the test line whose operation was in flight, instead of the runner's own
+   * timer callback.
    */
-  setPendingOperation(failHandler: (error: string) => void): void {
+  setPendingOperation(failHandler: (error: string) => void, stack?: SourceLocation[]): void {
     // A zombie body (timed-out attempt still executing) shares the global
     // active collector with the current attempt — its writes are dropped so
     // it can't clobber the live attempt's pending operation or events.
     if (isCurrentAttemptClosed()) return;
     this._pendingOperationHandler = failHandler;
+    this._pendingOperationStack = stack ?? null;
   }
 
   /**
@@ -452,6 +460,16 @@ export class TraceCollector {
   clearPendingOperation(): void {
     if (isCurrentAttemptClosed()) return;
     this._pendingOperationHandler = null;
+    this._pendingOperationStack = null;
+  }
+
+  /**
+   * User-code frames of the currently in-flight action/assertion, or null when
+   * nothing is pending. Read by the runner at timeout time — before
+   * [failPendingOperation] clears the registration.
+   */
+  get pendingOperationStack(): SourceLocation[] | null {
+    return this._pendingOperationStack;
   }
 
   /**
@@ -462,6 +480,7 @@ export class TraceCollector {
     if (!this._pendingOperationHandler) return;
     const handler = this._pendingOperationHandler;
     this._pendingOperationHandler = null;
+    this._pendingOperationStack = null;
     handler(error);
   }
 
@@ -887,6 +906,7 @@ export class TraceCollector {
     this.stopConsoleCapture();
     this._pendingCaptures.clear();
     this._pendingOperationHandler = null;
+    this._pendingOperationStack = null;
     // Remove temp directory and its contents
     try {
       fs.rmSync(this._tempDir, { recursive: true, force: true });

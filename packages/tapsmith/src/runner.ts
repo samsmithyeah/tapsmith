@@ -1277,12 +1277,28 @@ async function runSuiteContext(
             await Promise.race([
               bodyPromise,
               new Promise<never>((_, reject) => {
+                // A timeout Error's own stack is just this timer callback plus
+                // node timer internals — useless to the user. Re-point it at
+                // the operation that was in flight when time ran out (its
+                // user-code frames were registered via setPendingOperation),
+                // so reporters render a snippet of the test line that was
+                // executing, not framework code. Read here, before the catch
+                // block's failPendingOperation clears the registration.
+                const timeoutError = (message: string): Error => {
+                  const err = new Error(message);
+                  const frames = traceCollector?.pendingOperationStack;
+                  if (frames && frames.length > 0) {
+                    err.stack = `Error: ${message}\n`
+                      + frames.map((f) => `    at ${f.file}:${f.line}:${f.column ?? 1}`).join('\n');
+                  }
+                  return err;
+                };
                 const check = (): void => {
                   const wallMs = Date.now() - bodyStart;
                   const inFlightMs = excluded.depth > 0 ? Date.now() - excluded.inFlightSince : 0;
                   const countedMs = wallMs - excluded.totalMs - inFlightMs;
                   if (countedMs >= testTimeoutMs) {
-                    reject(new Error(
+                    reject(timeoutError(
                       `Test timed out after ${testTimeoutMs}ms`
                       + (wallMs - countedMs > 1_000
                         ? ` (${Math.round(wallMs / 1000)}s wall clock; ${Math.round((wallMs - countedMs) / 1000)}s inside device actions excluded)`
@@ -1291,7 +1307,7 @@ async function runSuiteContext(
                     return;
                   }
                   if (wallMs >= testTimeoutMs * WALL_CAP_MULTIPLIER) {
-                    reject(new Error(
+                    reject(timeoutError(
                       `Test timed out after ${Math.round(wallMs / 1000)}s wall clock `
                       + `(cap: ${WALL_CAP_MULTIPLIER}× the ${testTimeoutMs}ms test timeout; `
                       + `${Math.round((wallMs - countedMs) / 1000)}s inside device actions)`,

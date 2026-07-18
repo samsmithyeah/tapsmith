@@ -4,6 +4,7 @@
 
 import * as fs from 'node:fs';
 import { buildCodeSnippet } from '../trace/code-frame.js';
+import { extractStack } from '../trace/trace-collector.js';
 import type { TestResult } from '../runner.js';
 
 // ─── ANSI codes ───
@@ -121,13 +122,15 @@ export function formatError(error: Error, indent: string = '        '): string {
   if (error.stack) {
     const stackLines = error.stack.split('\n').slice(1);
 
-    // Find the first user-code frame (not Tapsmith internals or node internals)
-    const userFrame = stackLines.find(
-      (l) => !l.includes('/packages/tapsmith/') && !l.includes('node:internal/') && l.includes(':'),
-    );
+    // Find the first user-code frame via extractStack, which owns the
+    // framework-frame classification: it skips tapsmith internals in BOTH
+    // layouts (packages/tapsmith/* in the monorepo, node_modules/* for npm
+    // installs) plus node internals. An ad-hoc '/packages/tapsmith/' check
+    // here once missed npm installs and rendered snippets of dist/runner.js.
+    const userLoc = extractStack(error.stack)[0];
 
     // Show code snippet from the user frame
-    const snippet = userFrame ? extractCodeSnippet(userFrame.trim()) : null;
+    const snippet = userLoc ? extractCodeSnippet(userLoc.file, userLoc.line) : null;
     if (snippet) {
       lines.push('');
       for (const sl of snippet.lines) {
@@ -151,14 +154,7 @@ export function formatError(error: Error, indent: string = '        '): string {
 
 // ─── Code snippet extraction ───
 
-function extractCodeSnippet(frame: string): ReturnType<typeof buildCodeSnippet> | null {
-  const match = frame.match(/\(?([^()]+):(\d+):\d+\)?$/);
-  if (!match) return null;
-
-  const filePath = match[1];
-  const lineNum = parseInt(match[2], 10);
-  if (isNaN(lineNum)) return null;
-
+function extractCodeSnippet(filePath: string, lineNum: number): ReturnType<typeof buildCodeSnippet> | null {
   try {
     if (!fs.existsSync(filePath)) return null;
     const source = fs.readFileSync(filePath, 'utf-8');

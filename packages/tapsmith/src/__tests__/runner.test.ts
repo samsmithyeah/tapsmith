@@ -1471,6 +1471,54 @@ describe('retries', () => {
     expect(result.tests[1].error?.message).toContain('wall clock');
   }, 15_000);
 
+  it('attributes a timeout error to the in-flight operation instead of the runner timer', async () => {
+    // The timeout Error is constructed in the runner's timer callback, so its
+    // natural stack has no user frames. When an operation registered pending
+    // frames (via setPendingOperation), the error's stack must be rewritten to
+    // those frames so reporters render the test line, not runner internals.
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'tapsmith-runner-timeout-attr-'));
+    const tracing = new Tracing(async () => undefined, async () => undefined);
+    const mockDevice = {
+      tracing,
+      waitForIdle: vi.fn(async () => {}),
+      _stopDeviceLogStream: vi.fn(),
+      _startDeviceLogStream: vi.fn(),
+      _startDaemonLogStream: vi.fn(),
+      _stopDaemonLogStream: vi.fn(),
+    };
+
+    try {
+      pushContext();
+      tapsmithTest('hangs inside a device operation', async () => {
+        getActiveTraceCollector()?.setPendingOperation(() => {}, [
+          { file: '/repo/e2e/login.test.ts', line: 110, column: 35 },
+          { file: '/repo/e2e/helpers/screens.ts', line: 12, column: 3 },
+        ]);
+        await new Promise((r) => setTimeout(r, 2_000));
+      });
+      const ctx = popContext();
+
+      const result = await runSuiteContext(ctx, '', [], [], makeOpts({
+        config: makeConfig({
+          timeout: 100,
+          rootDir: tempRoot,
+          trace: { mode: 'on', network: false, screenshots: false, snapshots: false, sources: false },
+        }),
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any -- focused runner timeout mock
+        device: mockDevice as any,
+      }));
+
+      expect(result.tests[0].status).toBe('failed');
+      const error = result.tests[0].error;
+      expect(error?.message).toContain('Test timed out');
+      expect(error?.stack).toContain('at /repo/e2e/login.test.ts:110:35');
+      expect(error?.stack).toContain('at /repo/e2e/helpers/screens.ts:12:3');
+      expect(error?.stack).not.toContain('runner');
+    } finally {
+      fs.rmSync(tempRoot, { recursive: true, force: true });
+    }
+  }, 15_000);
+
   it('marks tests that failed on a discarded file-retry attempt as flaky', () => {
     const mkTest = (fullName: string, status: 'passed' | 'failed', error?: Error): TestResult => ({
       name: fullName, fullName, status, durationMs: 1, error,

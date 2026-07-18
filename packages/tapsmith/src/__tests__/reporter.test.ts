@@ -1050,4 +1050,39 @@ describe('base formatting utilities', () => {
     const output = formatError(err);
     expect(output).toContain('test error');
   });
+
+  it('formatError renders the snippet from the user frame, skipping npm-installed framework frames', async () => {
+    // A timeout error's top frame points at the framework. In the monorepo
+    // that path contains /packages/tapsmith/ — but for npm installs it is
+    // node_modules/tapsmith/dist/, which an earlier ad-hoc filter missed,
+    // rendering a snippet of compiled dist/runner.js instead of the test.
+    const { formatError } = await import('../reporters/base.js');
+    const fs = await import('node:fs');
+    const os = await import('node:os');
+    const path = await import('node:path');
+
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tapsmith-fmt-err-'));
+    const testFile = path.join(tempDir, 'example.test.ts');
+    fs.writeFileSync(testFile, [
+      "test('signs up', async () => {",
+      "  await device.tap(text('Sign up'));",
+      "  await field.type('user@example.com');",
+      '});',
+    ].join('\n'));
+
+    try {
+      const err = new Error('Test timed out after 90000ms');
+      err.stack = [
+        'Error: Test timed out after 90000ms',
+        '    at Timeout.check (/proj/node_modules/tapsmith/dist/runner.js:1701:115)',
+        `    at ${testFile}:3:15`,
+        '    at listOnTimeout (node:internal/timers:585:17)',
+      ].join('\n');
+
+      const output = formatError(err);
+      expect(output).toContain("await field.type('user@example.com');");
+    } finally {
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
 });
