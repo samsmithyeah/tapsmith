@@ -403,6 +403,11 @@ class SnapshotElementFinder {
         if let elem = cached {
             return elem
         }
+        lock.lock()
+        let cacheSize = elementCache.count
+        let boundsSize = boundsCache.count
+        lock.unlock()
+        NSLog("[TapsmithSnapshot] getElement miss for \(elementId) (elementCache=\(cacheSize), boundsCache=\(boundsSize))")
         throw AgentError.elementNotFound("Element '\(elementId)' not found. It may have gone stale.")
     }
 

@@ -4,6 +4,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { unzipSync } from 'fflate';
+import { emitActionProgress } from '../action-progress.js';
 
 // We need to test the runner's registration and execution logic.
 // The runner uses module-level state, so we import the internal helpers
@@ -16,6 +17,7 @@ import {
   beforeEach as tapsmithBeforeEach,
   afterEach as tapsmithAfterEach,
   collectResults,
+  markFileRetryFlakes,
   runTestFile,
   _internal,
   type SuiteResult,
@@ -1426,6 +1428,108 @@ describe('retries', () => {
     // Test 1 attempt 0 → false, attempt 1 (retry) → true; test 2 attempt 0
     // → false again so the previous retry doesn't leak into it.
     expect(setForceColdDeepLinks.mock.calls.map((c) => c[0])).toEqual([false, true, false]);
+  });
+
+  it('excludes progress-tracked device-action time from the test timeout', async () => {
+    // Device actions carry their own bounded deadlines; time inside them is
+    // infrastructure time, not test time. config.timeout 100ms → test
+    // timeout 300ms; the body spends ~600ms inside a tracked action and
+    // only ~50ms outside — it must pass.
+    pushContext();
+    tapsmithTest('slow action, fast test', async () => {
+      emitActionProgress({ kind: 'start', id: 9001, action: 'openDeepLink' });
+      await new Promise((r) => setTimeout(r, 600));
+      emitActionProgress({ kind: 'end', id: 9001, action: 'openDeepLink', durationMs: 600, success: true });
+      await new Promise((r) => setTimeout(r, 50));
+    });
+    const ctx = popContext();
+    const result = await runSuiteContext(ctx, '', [], [], makeOpts({
+      config: makeConfig({ timeout: 100 }),
+    }));
+    expect(result.tests[0].status).toBe('passed');
+  });
+
+  it('still times out on test-side time and enforces the wall-clock cap', async () => {
+    pushContext();
+    // 300ms test timeout; 500ms of untracked (test-side) time → timeout.
+    tapsmithTest('slow test body', async () => {
+      await new Promise((r) => setTimeout(r, 500));
+    });
+    // Wall cap: 5× timeout = 1.5s; a tracked action that never ends must
+    // still be killed at the cap, not run unbounded.
+    tapsmithTest('action never ends', async () => {
+      emitActionProgress({ kind: 'start', id: 9002, action: 'openDeepLink' });
+      await new Promise((r) => setTimeout(r, 2_500));
+    });
+    const ctx = popContext();
+    const result = await runSuiteContext(ctx, '', [], [], makeOpts({
+      config: makeConfig({ timeout: 100 }),
+    }));
+    expect(result.tests[0].status).toBe('failed');
+    expect(result.tests[0].error?.message).toContain('Test timed out after 300ms');
+    expect(result.tests[1].status).toBe('failed');
+    expect(result.tests[1].error?.message).toContain('wall clock');
+  }, 15_000);
+
+  it('marks tests that failed on a discarded file-retry attempt as flaky', () => {
+    const mkTest = (fullName: string, status: 'passed' | 'failed', error?: Error): TestResult => ({
+      name: fullName, fullName, status, durationMs: 1, error,
+    });
+    const firstAttempt: SuiteResult = {
+      name: '', durationMs: 1, suites: [{
+        name: 'suite', durationMs: 1, suites: [],
+        tests: [
+          mkTest('suite > recovered', 'failed', new Error('session recovered during before test')),
+          mkTest('suite > clean', 'passed'),
+        ],
+      }], tests: [],
+    };
+    const retried: SuiteResult = {
+      name: '', durationMs: 1, suites: [{
+        name: 'suite', durationMs: 1, suites: [],
+        tests: [
+          mkTest('suite > recovered', 'passed'),
+          mkTest('suite > clean', 'passed'),
+        ],
+      }], tests: [],
+    };
+
+    markFileRetryFlakes(firstAttempt, retried);
+
+    const results = collectResults(retried);
+    const recovered = results.find((t) => t.fullName === 'suite > recovered');
+    // Flaky = passed with retry > 0, carrying the first attempt's real error.
+    expect(recovered?.retry).toBe(1);
+    expect(recovered?.firstAttemptError?.message).toContain('session recovered');
+    const clean = results.find((t) => t.fullName === 'suite > clean');
+    expect(clean?.retry).toBeUndefined();
+    expect(clean?.firstAttemptError).toBeUndefined();
+  });
+
+  it('does not consume per-test retries on a file-abort-worthy failure', async () => {
+    // "session recovered" means the app was relaunched by infra and any
+    // beforeAll-established state is gone — per-test retries would run
+    // against the recovered app, fail with ordinary assertion errors, and
+    // erase the infra signal that triggers the file-level retry (which
+    // re-runs beforeAll). The attempt loop must stop retrying immediately.
+    let attempts = 0;
+    let secondTestRan = false;
+    pushContext();
+    tapsmithTest('hits session recovery', async () => {
+      attempts++;
+      throw new Error('session recovered during before test X; retrying file');
+    });
+    tapsmithTest('later test', async () => { secondTestRan = true; });
+    const ctx = popContext();
+    const result = await runSuiteContext(ctx, '', [], [], makeOpts({
+      config: makeConfig({ retries: 2 }),
+      abortFileOnError: (err) => err.message.includes('session recovered during'),
+    }));
+    expect(attempts).toBe(1);
+    expect(result.tests[0].status).toBe('failed');
+    expect(result.tests[0].error?.message).toContain('session recovered during');
+    // File aborted — the remaining test never ran.
+    expect(secondTestRan).toBe(false);
   });
 
   it('does not retry a passing test', async () => {

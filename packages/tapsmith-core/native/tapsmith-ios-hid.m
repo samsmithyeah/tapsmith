@@ -172,15 +172,43 @@ int main(int argc, char **argv) {
       return rc == 0 && serr == nil;
     };
 
+    // Fire-and-forget send for the intermediate events of a composite
+    // gesture (double-tap): the client delivers in order, and recognizers
+    // key on the message timestamps stamped at CREATION time — so pacing
+    // the creations paces the gesture, while waiting on each completion
+    // (up to 2s under CI load) stretched the app-visible inter-tap gap
+    // past double-tap recognizer windows.
+    void (^sendTouchNoWait)(double, double, int) = ^(double rx, double ry, int dir) {
+      IndigoMessage *m = makeTouchMessage(rx, ry, dir);
+      if (!m) return;
+      ((void(*)(id, SEL, IndigoMessage *, BOOL, dispatch_queue_t, void(^)(NSError *)))objc_msgSend)(
+          hidClient, sendSel, m, YES, cq, ^(NSError *e) { (void)e; });
+    };
+
     // Announce readiness; the daemon reads this line to confirm the helper is up.
     printf("ready %.0f %.0f %.1f\n", screenPx.width, screenPx.height, scale);
     fflush(stdout);
 
     // Process stdin events. Track the last point so a bare `c` can lift there.
     double lastX = 0, lastY = 0;
+    // Pace injections to at least ~a frame apart. iOS never engages the pan
+    // recognizer for a gesture whose entire path lands within a single frame:
+    // a synthetic stream written back-to-back (e.g. a test replaying a drag
+    // with no sleeps) injects in ~2ms and scrolls NOTHING while every send
+    // reports success; the same path at ≥1-frame spacing scrolls normally
+    // (measured on iOS 26.1). Human-paced mirror input arrives slower than
+    // this floor and is unaffected.
+    const uint64_t kMinEventSpacingUs = 12000;
+    uint64_t lastInjectUs = 0;
     char buf[1024];
     while (fgets(buf, sizeof(buf), stdin)) {
       HidEvent ev = hid_parse_line(buf);
+      if (ev.cmd != HID_INVALID) {
+        uint64_t nowUs = clock_gettime_nsec_np(CLOCK_UPTIME_RAW) / 1000;
+        if (lastInjectUs != 0 && nowUs - lastInjectUs < kMinEventSpacingUs) {
+          usleep((useconds_t)(kMinEventSpacingUs - (nowUs - lastInjectUs)));
+        }
+      }
       BOOL ok = NO;
       switch (ev.cmd) {
         case HID_DOWN:
@@ -195,10 +223,30 @@ int main(int argc, char **argv) {
         case HID_CANCEL:
           ok = sendTouch(hid_normalize(lastX, widthPt), hid_normalize(lastY, heightPt), DirUp);
           break;
+        case HID_DOUBLE_TAP: {
+          // Full double-tap with in-process timing: ~40ms press, ~120ms
+          // inter-tap gap — inside every double-tap recognizer window. The
+          // first three events are fire-and-forget so the gap between the
+          // CREATION timestamps (what recognizers key on) is exactly the
+          // usleep pacing; only the final lift waits for its completion so
+          // `ok` still reflects delivery.
+          lastX = ev.x; lastY = ev.y;
+          double nx = hid_normalize(ev.x, widthPt);
+          double ny = hid_normalize(ev.y, heightPt);
+          sendTouchNoWait(nx, ny, DirDown);
+          usleep(40000);
+          sendTouchNoWait(nx, ny, DirUp);
+          usleep(120000);
+          sendTouchNoWait(nx, ny, DirDown);
+          usleep(40000);
+          ok = sendTouch(nx, ny, DirUp);
+          break;
+        }
         case HID_INVALID:
           printf("err invalid line\n"); fflush(stdout);
           continue;
       }
+      lastInjectUs = clock_gettime_nsec_np(CLOCK_UPTIME_RAW) / 1000;
       printf(ok ? "ok\n" : "err send failed\n");
       fflush(stdout);
     }

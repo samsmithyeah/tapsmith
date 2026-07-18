@@ -72,8 +72,17 @@ class CommandHandler(
         } catch (e: StaleObjectException) {
             errorResponse(id, "ELEMENT_NOT_FOUND", "Element is stale (UI changed): ${e.message}")
         } catch (e: Exception) {
-            Log.e(TAG, "Error handling method '$method'", e)
-            errorResponse(id, "INTERNAL_ERROR", e.message ?: "Unknown error")
+            // Defense in depth: reflection anywhere in the dispatch can wrap
+            // the real failure in an InvocationTargetException whose message
+            // is null. Unwrap so a stale element still maps to the typed,
+            // SDK-retryable response, and so no error ever surfaces as a
+            // bare "Unknown error".
+            val cause = (e as? java.lang.reflect.InvocationTargetException)?.targetException ?: e
+            if (cause is StaleObjectException) {
+                return errorResponse(id, "ELEMENT_NOT_FOUND", "Element is stale (UI changed): ${cause.message}")
+            }
+            Log.e(TAG, "Error handling method '$method'", cause)
+            errorResponse(id, "INTERNAL_ERROR", cause.message ?: cause.javaClass.name)
         } finally {
             // Per-command timing so per-phase stacking (resolve / settle /
             // stable-bounds / inject, logged by WaitEngine/ActionExecutor) can
@@ -205,15 +214,24 @@ class CommandHandler(
 
             "typeText" -> {
                 val text = params.getString("text")
+                // Every selector key the daemon can serialize must be listed:
+                // a missing key silently degrades targeted typing to the
+                // blind key-event fallback below, which races the IME's
+                // input-session restart and drops leading characters under
+                // load (the "label" omission caused exactly that).
                 val selectorKeys =
                     listOf(
                         "role",
                         "id",
+                        "resourceId",
                         "contentDesc",
                         "className",
                         "testId",
                         "hint",
+                        "label",
                         "textContains",
+                        "xpath",
+                        "parent",
                         "elementId",
                     )
                 val hasSelector = selectorKeys.any(params::has)

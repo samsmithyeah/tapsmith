@@ -125,6 +125,17 @@ async fn start_agent_impl(
         kill_stray_iproxy(udid, agent_port, agent_port).await;
     }
 
+    // In launch mode the runner's `XCUIApplication.launch()` must first kill
+    // any already-running instance of the target app — the classic trigger
+    // for "Timed out attempting to launch app" on a busy SpringBoard. Clear
+    // it from the host side instead so the runner always cold-launches into
+    // a clean slate. Attach mode intentionally preserves the running app.
+    if !is_physical && !attach_to_running_app && !target_bundle_id.is_empty() {
+        if let Err(e) = super::device::terminate_app(udid, target_bundle_id).await {
+            debug!(udid, error = %e, "pre-launch terminate of target app failed (may not be running)");
+        }
+    }
+
     info!(
         udid,
         xctestrun_path, agent_port, is_physical, "Starting iOS agent via xcodebuild"
@@ -201,6 +212,37 @@ async fn start_agent_impl(
             );
         }
 
+        // A runner-side "Timed out attempting to launch app" is terminal for
+        // this xcodebuild run, but xcodebuild can spend minutes finalizing
+        // the .xcresult before exiting — waiting for the exit burns the rest
+        // of the deadline for nothing. Detect the signature in the output
+        // tail, kill xcodebuild immediately, clear the stuck app, and use the
+        // in-place relaunch while there's still budget.
+        let launch_timed_out = stdout_tail
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|l| l.contains("Timed out attempting to launch app"));
+        if launch_timed_out && !is_physical {
+            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+            if relaunches_left > 0 && remaining > Duration::from_secs(30) {
+                relaunches_left -= 1;
+                warn!(
+                    udid,
+                    remaining_secs = remaining.as_secs(),
+                    "XCUITest runner timed out launching the target app; killing xcodebuild and relaunching"
+                );
+                let _ = child.kill().await;
+                kill_existing_agents_on(udid).await;
+                if !target_bundle_id.is_empty() {
+                    let _ = super::device::terminate_app(udid, target_bundle_id).await;
+                }
+                (child, stdout_tail, stderr_tail) =
+                    spawn_agent_xcodebuild(&patched_xctestrun, udid, &derived_data_path)?;
+                continue;
+            }
+        }
+
         // If xcodebuild exited, the agent won't come up on this launch.
         // try_wait is non-blocking and reaps the process if it has exited.
         match child.try_wait() {
@@ -223,6 +265,11 @@ async fn start_agent_impl(
                          xcodebuild stderr (last lines):\n{err_lines}"
                     );
                     kill_existing_agents_on(udid).await;
+                    // Clear a possibly-stuck target app instance so the fresh
+                    // runner's launch() doesn't replay the same terminate race.
+                    if !attach_to_running_app && !target_bundle_id.is_empty() {
+                        let _ = super::device::terminate_app(udid, target_bundle_id).await;
+                    }
                     (child, stdout_tail, stderr_tail) =
                         spawn_agent_xcodebuild(&patched_xctestrun, udid, &derived_data_path)?;
                     continue;
@@ -349,15 +396,22 @@ pub async fn kill_existing_agents_on(udid: &str) {
     // Kill host-side xcodebuild targeting this specific simulator.
     // Match on the destination id= argument to avoid killing agents for other simulators.
     let pattern = format!("xcodebuild test-without-building.*id={udid}");
-    let _ = Command::new("pkill").args(["-f", &pattern]).output().await;
+    let _ = super::device::bounded_output(
+        "pkill xcodebuild",
+        Command::new("pkill").args(["-f", &pattern]),
+        Duration::from_secs(10),
+    )
+    .await;
 
     // Kill the runner app on the simulator — xcrun simctl terminate
     // targets the simulator process, not the host. The runner's bundle ID
     // is set in the Xcode project (dev.tapsmith.agent.xctrunner).
-    let _ = Command::new("xcrun")
-        .args(["simctl", "terminate", udid, "dev.tapsmith.agent.xctrunner"])
-        .output()
-        .await;
+    let _ = super::device::bounded_output(
+        "simctl terminate xctrunner",
+        Command::new("xcrun").args(["simctl", "terminate", udid, "dev.tapsmith.agent.xctrunner"]),
+        super::device::SIMCTL_TIMEOUT,
+    )
+    .await;
 
     // Brief pause for processes to die and port to be released
     tokio::time::sleep(Duration::from_millis(1000)).await;

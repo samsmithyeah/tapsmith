@@ -1,8 +1,50 @@
 use std::path::PathBuf;
+use std::time::Duration;
 
-use anyhow::{bail, Context, Result};
+use anyhow::{anyhow, bail, Context, Result};
 use tokio::process::Command;
-use tracing::{debug, info, instrument};
+use tracing::{debug, info, instrument, warn};
+
+/// Ceiling for a simctl/xcrun invocation on an RPC hot path.
+/// CoreSimulatorService can wedge for many minutes on loaded CI hosts
+/// (observed 6–12 min after network-capture system-proxy churn); an
+/// unbounded call then silently eats the caller's entire gRPC deadline and
+/// cascades DEADLINE_EXCEEDED across unrelated RPCs. Bounding turns the
+/// wedge into a fast, labelled, retryable error.
+pub(crate) const SIMCTL_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Log any subprocess slower than this — a single self-explanatory warning
+/// beats reconstructing a CoreSimulator stall from client-side deadline
+/// errors after the fact.
+const SLOW_SUBPROCESS_WARN: Duration = Duration::from_secs(10);
+
+/// Run a subprocess with a hard timeout, `kill_on_drop` (so cancelled RPC
+/// handlers never leak hung children), and a slow-invocation warning.
+pub(crate) async fn bounded_output(
+    label: &str,
+    cmd: &mut Command,
+    timeout: Duration,
+) -> Result<std::process::Output> {
+    cmd.kill_on_drop(true);
+    let started = std::time::Instant::now();
+    let result = tokio::time::timeout(timeout, cmd.output()).await;
+    let elapsed = started.elapsed();
+    if elapsed >= SLOW_SUBPROCESS_WARN {
+        warn!(
+            label,
+            elapsed_ms = elapsed.as_millis() as u64,
+            "slow subprocess invocation (CoreSimulator under pressure?)"
+        );
+    }
+    result
+        .map_err(|_| {
+            anyhow!(
+                "{label} timed out after {}s (CoreSimulatorService may be wedged)",
+                timeout.as_secs()
+            )
+        })?
+        .with_context(|| format!("Failed to execute {label}"))
+}
 
 /// Locate the `xcrun` binary on PATH.
 pub async fn find_xcrun() -> Result<PathBuf> {
@@ -50,11 +92,12 @@ impl IosDevice {
 /// List available iOS simulators.
 #[instrument]
 pub async fn list_simulators() -> Result<Vec<IosDevice>> {
-    let output = Command::new("xcrun")
-        .args(["simctl", "list", "devices", "--json"])
-        .output()
-        .await
-        .context("Failed to run xcrun simctl list devices")?;
+    let output = bounded_output(
+        "simctl list devices",
+        Command::new("xcrun").args(["simctl", "list", "devices", "--json"]),
+        SIMCTL_TIMEOUT,
+    )
+    .await?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
@@ -267,11 +310,12 @@ pub async fn list_all_devices() -> Result<Vec<IosDevice>> {
 #[allow(dead_code)]
 #[instrument(skip(app_path))]
 pub async fn install_app(udid: &str, app_path: &str) -> Result<()> {
-    let output = Command::new("xcrun")
-        .args(["simctl", "install", udid, app_path])
-        .output()
-        .await
-        .context("Failed to run xcrun simctl install")?;
+    let output = bounded_output(
+        "simctl install",
+        Command::new("xcrun").args(["simctl", "install", udid, app_path]),
+        Duration::from_secs(120),
+    )
+    .await?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
@@ -617,11 +661,12 @@ fn extract_devicectl_error_hint(json_body: Option<&str>) -> Option<String> {
 /// Launch an app on a simulator by bundle ID.
 #[instrument]
 pub async fn launch_app(udid: &str, bundle_id: &str) -> Result<()> {
-    let output = Command::new("xcrun")
-        .args(["simctl", "launch", udid, bundle_id])
-        .output()
-        .await
-        .context("Failed to run xcrun simctl launch")?;
+    let output = bounded_output(
+        "simctl launch",
+        Command::new("xcrun").args(["simctl", "launch", udid, bundle_id]),
+        SIMCTL_TIMEOUT,
+    )
+    .await?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
@@ -656,10 +701,12 @@ pub async fn prepare_grpc_trust(udid: &str, _bundle_id: &str) {
 /// launched afterward, including the XCUITest-agent-launched target app).
 #[cfg(target_os = "macos")]
 async fn sim_setenv(udid: &str, key: &str, value: &str) {
-    match Command::new("xcrun")
-        .args(["simctl", "spawn", udid, "launchctl", "setenv", key, value])
-        .output()
-        .await
+    match bounded_output(
+        "simctl spawn launchctl setenv",
+        Command::new("xcrun").args(["simctl", "spawn", udid, "launchctl", "setenv", key, value]),
+        SIMCTL_TIMEOUT,
+    )
+    .await
     {
         Ok(o) if o.status.success() => debug!(key, value, "published env to simulator launchd"),
         Ok(o) => debug!(
@@ -674,11 +721,12 @@ async fn sim_setenv(udid: &str, key: &str, value: &str) {
 /// Terminate an app on a simulator.
 #[instrument]
 pub async fn terminate_app(udid: &str, bundle_id: &str) -> Result<()> {
-    let output = Command::new("xcrun")
-        .args(["simctl", "terminate", udid, bundle_id])
-        .output()
-        .await
-        .context("Failed to run xcrun simctl terminate")?;
+    let output = bounded_output(
+        "simctl terminate",
+        Command::new("xcrun").args(["simctl", "terminate", udid, bundle_id]),
+        SIMCTL_TIMEOUT,
+    )
+    .await?;
 
     if !output.status.success() {
         // Terminating an already-stopped app is not an error
@@ -693,12 +741,12 @@ pub async fn terminate_app(udid: &str, bundle_id: &str) -> Result<()> {
 #[allow(dead_code)]
 #[instrument]
 pub async fn open_url(udid: &str, url: &str) -> Result<()> {
-    let output = Command::new("xcrun")
-        .args(["simctl", "openurl", udid, url])
-        .kill_on_drop(true)
-        .output()
-        .await
-        .context("Failed to run xcrun simctl openurl")?;
+    let output = bounded_output(
+        "simctl openurl",
+        Command::new("xcrun").args(["simctl", "openurl", udid, url]),
+        SIMCTL_TIMEOUT,
+    )
+    .await?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
@@ -719,11 +767,12 @@ pub fn is_retryable_open_url_error(message: &str) -> bool {
 /// Service names: camera, photos, location, microphone, contacts, calendar, etc.
 #[instrument]
 pub async fn grant_permission(udid: &str, bundle_id: &str, service: &str) -> Result<()> {
-    let output = Command::new("xcrun")
-        .args(["simctl", "privacy", udid, "grant", service, bundle_id])
-        .output()
-        .await
-        .context("Failed to run xcrun simctl privacy grant")?;
+    let output = bounded_output(
+        "simctl privacy grant",
+        Command::new("xcrun").args(["simctl", "privacy", udid, "grant", service, bundle_id]),
+        SIMCTL_TIMEOUT,
+    )
+    .await?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
@@ -736,11 +785,12 @@ pub async fn grant_permission(udid: &str, bundle_id: &str, service: &str) -> Res
 /// Revoke a privacy permission on a simulator.
 #[instrument]
 pub async fn revoke_permission(udid: &str, bundle_id: &str, service: &str) -> Result<()> {
-    let output = Command::new("xcrun")
-        .args(["simctl", "privacy", udid, "revoke", service, bundle_id])
-        .output()
-        .await
-        .context("Failed to run xcrun simctl privacy revoke")?;
+    let output = bounded_output(
+        "simctl privacy revoke",
+        Command::new("xcrun").args(["simctl", "privacy", udid, "revoke", service, bundle_id]),
+        SIMCTL_TIMEOUT,
+    )
+    .await?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
@@ -753,11 +803,12 @@ pub async fn revoke_permission(udid: &str, bundle_id: &str, service: &str) -> Re
 /// Set the simulator appearance (light/dark mode).
 #[instrument]
 pub async fn set_appearance(udid: &str, mode: &str) -> Result<()> {
-    let output = Command::new("xcrun")
-        .args(["simctl", "ui", udid, "appearance", mode])
-        .output()
-        .await
-        .context("Failed to run xcrun simctl ui appearance")?;
+    let output = bounded_output(
+        "simctl ui appearance",
+        Command::new("xcrun").args(["simctl", "ui", udid, "appearance", mode]),
+        SIMCTL_TIMEOUT,
+    )
+    .await?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
@@ -772,11 +823,12 @@ pub async fn set_appearance(udid: &str, mode: &str) -> Result<()> {
 /// by reading UIPasteboard on-device.
 #[instrument]
 pub async fn get_clipboard(udid: &str) -> Result<String> {
-    let output = Command::new("xcrun")
-        .args(["simctl", "pbpaste", udid])
-        .output()
-        .await
-        .context("Failed to run xcrun simctl pbpaste")?;
+    let output = bounded_output(
+        "simctl pbpaste",
+        Command::new("xcrun").args(["simctl", "pbpaste", udid]),
+        SIMCTL_TIMEOUT,
+    )
+    .await?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
@@ -794,17 +846,43 @@ pub async fn set_clipboard(udid: &str, text: &str) -> Result<()> {
     let mut child = Command::new("xcrun")
         .args(["simctl", "pbcopy", udid])
         .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped())
+        .kill_on_drop(true)
         .spawn()
         .context("Failed to run xcrun simctl pbcopy")?;
 
     if let Some(mut stdin) = child.stdin.take() {
         use tokio::io::AsyncWriteExt;
-        stdin.write_all(text.as_bytes()).await?;
+        // Bound the write too: if pbcopy's pasteboard-sync service is wedged
+        // and never reads stdin, text larger than the OS pipe buffer would
+        // block here forever — before the bounded wait below is ever reached.
+        tokio::time::timeout(SIMCTL_TIMEOUT, stdin.write_all(text.as_bytes()))
+            .await
+            .map_err(|_| {
+                anyhow!(
+                    "simctl pbcopy stdin write timed out after {}s (CoreSimulatorService may be wedged)",
+                    SIMCTL_TIMEOUT.as_secs()
+                )
+            })??;
     }
 
-    let status = child.wait().await?;
-    if !status.success() {
-        bail!("Failed to set clipboard on {udid}");
+    let output = tokio::time::timeout(SIMCTL_TIMEOUT, child.wait_with_output())
+        .await
+        .map_err(|_| {
+            anyhow!(
+                "simctl pbcopy timed out after {}s (CoreSimulatorService may be wedged)",
+                SIMCTL_TIMEOUT.as_secs()
+            )
+        })??;
+    if !output.status.success() {
+        // pbcopy talks to the simulator's pasteboard-sync service, which is
+        // known to wedge intermittently on CI — surface stderr so the failure
+        // is diagnosable instead of a bare "Failed to set clipboard".
+        bail!(
+            "Failed to set clipboard on {udid}: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
     }
 
     Ok(())
@@ -841,11 +919,15 @@ pub async fn get_logs(udid: &str, bundle_id: Option<&str>, since: Option<&str>) 
 #[allow(dead_code)]
 #[instrument]
 pub async fn boot_simulator(udid: &str) -> Result<()> {
-    let output = Command::new("xcrun")
-        .args(["simctl", "boot", udid])
-        .output()
-        .await
-        .context("Failed to boot simulator")?;
+    // Boot returns once the device transitions to Booted (the OS keeps
+    // loading asynchronously) — 120s covers a cold boot on a loaded host
+    // without letting a wedged CoreSimulator hold the caller forever.
+    let output = bounded_output(
+        "simctl boot",
+        Command::new("xcrun").args(["simctl", "boot", udid]),
+        Duration::from_secs(120),
+    )
+    .await?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
@@ -881,8 +963,12 @@ pub async fn configure_simulator(udid: &str) {
         "com.apple.Safari",   // Safari password autofill
         "com.apple.Password", // Passwords framework (iOS 26+)
     ] {
-        let _ = Command::new("xcrun")
-            .args([
+        // Best-effort, but bounded tightly: this loop runs inside StartAgent,
+        // and an unbounded `simctl spawn` against a wedged CoreSimulator was
+        // observed stalling agent start past its whole 240s client deadline.
+        let _ = bounded_output(
+            "simctl spawn defaults write",
+            Command::new("xcrun").args([
                 "simctl",
                 "spawn",
                 udid,
@@ -892,9 +978,10 @@ pub async fn configure_simulator(udid: &str) {
                 "AutoFillPasswords",
                 "-bool",
                 "NO",
-            ])
-            .output()
-            .await;
+            ]),
+            Duration::from_secs(10),
+        )
+        .await;
     }
     debug!(udid, "Configured simulator defaults for testing");
 }
@@ -903,11 +990,12 @@ pub async fn configure_simulator(udid: &str) {
 #[allow(dead_code)]
 #[instrument]
 pub async fn shutdown_simulator(udid: &str) -> Result<()> {
-    let output = Command::new("xcrun")
-        .args(["simctl", "shutdown", udid])
-        .output()
-        .await
-        .context("Failed to shutdown simulator")?;
+    let output = bounded_output(
+        "simctl shutdown",
+        Command::new("xcrun").args(["simctl", "shutdown", udid]),
+        Duration::from_secs(60),
+    )
+    .await?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
@@ -920,11 +1008,12 @@ pub async fn shutdown_simulator(udid: &str) -> Result<()> {
 /// Get the app container path on a simulator.
 #[instrument]
 pub async fn get_app_container(udid: &str, bundle_id: &str) -> Result<String> {
-    let output = Command::new("xcrun")
-        .args(["simctl", "get_app_container", udid, bundle_id, "data"])
-        .output()
-        .await
-        .context("Failed to get app container")?;
+    let output = bounded_output(
+        "simctl get_app_container",
+        Command::new("xcrun").args(["simctl", "get_app_container", udid, bundle_id, "data"]),
+        SIMCTL_TIMEOUT,
+    )
+    .await?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
@@ -1170,8 +1259,9 @@ pub async fn restart_securityd(udid: &str) -> Result<()> {
     const KNOWN_LABEL: &str = SECURITYD_LABEL;
 
     let kickstart = |label: String| async move {
-        Command::new("xcrun")
-            .args([
+        bounded_output(
+            "simctl spawn launchctl kickstart",
+            Command::new("xcrun").args([
                 "simctl",
                 "spawn",
                 udid,
@@ -1179,10 +1269,10 @@ pub async fn restart_securityd(udid: &str) -> Result<()> {
                 "kickstart",
                 "-k",
                 &label,
-            ])
-            .output()
-            .await
-            .context("Failed to run launchctl kickstart")
+            ]),
+            SIMCTL_TIMEOUT,
+        )
+        .await
     };
 
     // Track the label actually kickstarted so the readiness probe below
@@ -1216,10 +1306,19 @@ pub async fn restart_securityd(udid: &str) -> Result<()> {
     // while the service is still respawning.
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
     loop {
-        let probe = Command::new("xcrun")
-            .args(["simctl", "spawn", udid, "launchctl", "print", &active_label])
-            .output()
-            .await;
+        let probe = bounded_output(
+            "simctl spawn launchctl print",
+            Command::new("xcrun").args([
+                "simctl",
+                "spawn",
+                udid,
+                "launchctl",
+                "print",
+                &active_label,
+            ]),
+            Duration::from_secs(5),
+        )
+        .await;
         if let Ok(out) = probe {
             let stdout = String::from_utf8_lossy(&out.stdout);
             if out.status.success() && stdout.contains("state = running") {
@@ -1248,11 +1347,13 @@ pub async fn restart_securityd(udid: &str) -> Result<()> {
 /// token. Tokens that are absolute paths (e.g. the daemon's `.plist` path,
 /// which also contains `com.apple.securityd`) start with `/` and are skipped.
 async fn discover_securityd_label(udid: &str) -> Option<String> {
-    let output = Command::new("xcrun")
-        .args(["simctl", "spawn", udid, "launchctl", "print", "system"])
-        .output()
-        .await
-        .ok()?;
+    let output = bounded_output(
+        "simctl spawn launchctl print system",
+        Command::new("xcrun").args(["simctl", "spawn", udid, "launchctl", "print", "system"]),
+        SIMCTL_TIMEOUT,
+    )
+    .await
+    .ok()?;
     let stdout = String::from_utf8_lossy(&output.stdout);
     parse_securityd_label(&stdout)
 }
@@ -1278,11 +1379,15 @@ fn parse_securityd_label(listing: &str) -> Option<String> {
 /// simulator's trust store. This allows the MITM proxy to intercept HTTPS traffic.
 #[instrument]
 pub async fn install_ca_cert(udid: &str, ca_pem_path: &str) -> Result<()> {
-    let output = Command::new("xcrun")
-        .args(["simctl", "keychain", udid, "add-root-cert", ca_pem_path])
-        .output()
-        .await
-        .context("Failed to run xcrun simctl keychain add-root-cert")?;
+    // This call talks to the simulator's securityd/trustd — the exact spot a
+    // wedged CoreSimulator hangs (a single invocation was observed taking
+    // ~10.5 minutes on CI, starving every StartNetworkCapture behind it).
+    let output = bounded_output(
+        "simctl keychain add-root-cert",
+        Command::new("xcrun").args(["simctl", "keychain", udid, "add-root-cert", ca_pem_path]),
+        SIMCTL_TIMEOUT,
+    )
+    .await?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
@@ -1298,11 +1403,12 @@ pub async fn install_ca_cert(udid: &str, ca_pem_path: &str) -> Result<()> {
 #[instrument(skip(app_path))]
 pub async fn clear_app_data(udid: &str, bundle_id: &str, app_path: Option<&str>) -> Result<()> {
     // Uninstall the app
-    let output = Command::new("xcrun")
-        .args(["simctl", "uninstall", udid, bundle_id])
-        .output()
-        .await
-        .context("Failed to uninstall app")?;
+    let output = bounded_output(
+        "simctl uninstall",
+        Command::new("xcrun").args(["simctl", "uninstall", udid, bundle_id]),
+        Duration::from_secs(60),
+    )
+    .await?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);

@@ -536,10 +536,10 @@ export class TapsmithGrpcClient {
     });
   }
 
-  async getUiHierarchy(): Promise<UiHierarchyResponse> {
+  async getUiHierarchy(deadlineMs?: number): Promise<UiHierarchyResponse> {
     return this.call<UiHierarchyResponse>('getUiHierarchy', {
       requestId: requestId(),
-    });
+    }, deadlineMs);
   }
 
   async captureTraceState(options: {
@@ -737,16 +737,21 @@ export class TapsmithGrpcClient {
     // iOS simulator deep links try a warm in-process delivery first (bounded
     // at 8s), then can terminate + cold-launch the app, accept the "Open in
     // <app>?" prompt, and re-deliver up to 3 times if the first cold,
-    // trust-gated openurl doesn't foreground the app — the daemon-side worst
+    // trust-gated openurl doesn't foreground the app — that path's worst
     // case is ~148s (8s warm attempt + 3 × (terminate 4s + 28s prompt timeout
-    // + 13s verify) + sleeps). Keep this deadline comfortably above that
-    // budget so the client gets the daemon's clean retryable error, never a
-    // bare DEADLINE_EXCEEDED for a call the daemon is still processing.
+    // + 13s verify) + sleeps). On top of that, a dead-compositor detection
+    // escalates once per session to a full simulator reboot + agent restart,
+    // which took ~4 minutes on a CI runner with CoreSimulator under pressure
+    // (every step daemon-side is individually bounded, so the call does
+    // terminate). Keep this deadline above the whole recovery budget so the
+    // client gets the daemon's clean retryable error — or the recovered
+    // success — never a bare DEADLINE_EXCEEDED for a call the daemon is
+    // still processing.
     return this.call<ActionResponse>('openDeepLink', {
       requestId: requestId(),
       uri,
       forceColdLaunch: options?.forceColdLaunch ?? false,
-    }, 180_000);
+    }, 420_000);
   }
 
   async getCurrentPackage(): Promise<GetCurrentPackageResponse> {

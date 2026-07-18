@@ -106,20 +106,30 @@ describe('session-preflight', () => {
     expect(ctx.device.startAgent).toHaveBeenCalledTimes(2);
   });
 
-  it('fails when the foreground package never matches', async () => {
+  it('relaunches inline when another app is in the foreground — not a recovery', async () => {
+    // A previous test may have intentionally terminated or backgrounded the
+    // app, so a foreign foreground package must relaunch cheaply WITHOUT
+    // signalling session recovery (recovery escalates to a whole-file retry).
     const ctx = makeContext();
+    const onRecovery = vi.fn();
     vi.mocked(ctx.device.currentPackage).mockResolvedValue('com.other.app');
-    vi.mocked(ctx.client.getUiHierarchy).mockResolvedValue({
-      requestId: '1',
-      hierarchyXml: '<hierarchy><node package="com.other.app" /></hierarchy>',
-      errorMessage: '',
-    });
+    vi.mocked(ctx.client.getUiHierarchy)
+      .mockResolvedValueOnce({
+        requestId: '1',
+        hierarchyXml: '<hierarchy><node package="com.other.app" /></hierarchy>',
+        errorMessage: '',
+      })
+      .mockResolvedValueOnce({
+        requestId: '2',
+        hierarchyXml: '<hierarchy><node package="com.example.app" /></hierarchy>',
+        errorMessage: '',
+      });
 
-    await expect(ensureSessionReady(ctx, 'startup', undefined, { retryBackoffMs: [0] })).rejects.toThrow(
-      'foreground package mismatch',
-    );
-    // Default budget is 3 attempts → recovery (agent restart) runs twice.
-    expect(ctx.device.startAgent).toHaveBeenCalledTimes(2);
+    await expect(ensureSessionReady(ctx, 'before test', undefined, { onRecovery })).resolves.toBeUndefined();
+
+    expect(ctx.device.launchApp).toHaveBeenCalledWith('com.example.app');
+    expect(onRecovery).not.toHaveBeenCalled();
+    expect(ctx.device.startAgent).not.toHaveBeenCalled();
   });
 
   it('launches the configured app before verifying readiness', async () => {
@@ -257,18 +267,29 @@ describe('session-preflight', () => {
     expect(ctx.device.startAgent).not.toHaveBeenCalled();
   });
 
-  it('fails on package mismatch when app is not in hierarchy', async () => {
+  it('escalates to recovery when the inline relaunch itself fails', async () => {
     const ctx = makeContext();
-    vi.mocked(ctx.device.currentPackage).mockResolvedValue('com.google.android.apps.nexuslauncher');
-    vi.mocked(ctx.client.getUiHierarchy).mockResolvedValue({
+    const onRecovery = vi.fn();
+    vi.mocked(ctx.device.currentPackage)
+      .mockResolvedValueOnce('com.google.android.apps.nexuslauncher')
+      .mockResolvedValue('com.example.app');
+    vi.mocked(ctx.client.getUiHierarchy).mockResolvedValueOnce({
       requestId: '1',
       hierarchyXml: '<hierarchy><node package="com.google.android.apps.nexuslauncher" /></hierarchy>',
       errorMessage: '',
     });
+    // First launch attempt (the inline relaunch) fails — a genuinely broken
+    // session; the second (recoverSession's) succeeds.
+    vi.mocked(ctx.device.launchApp)
+      .mockRejectedValueOnce(new Error('launch failed: agent dead'))
+      .mockResolvedValue(undefined);
 
-    await expect(ensureSessionReady(ctx, 'startup', undefined, { retryBackoffMs: [0] })).rejects.toThrow(
-      'foreground package mismatch',
-    );
+    await expect(
+      ensureSessionReady(ctx, 'before test', undefined, { onRecovery, retryBackoffMs: [0] }),
+    ).resolves.toBeUndefined();
+
+    expect(onRecovery).toHaveBeenCalledTimes(1);
+    expect(ctx.device.startAgent).toHaveBeenCalledTimes(1);
   });
 
   it('waits for the Android app hierarchy after a cold launch splash', async () => {

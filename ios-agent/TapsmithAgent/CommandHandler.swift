@@ -429,6 +429,50 @@ class CommandHandler {
             if let info = try? snapshotFinder.getElementInfo(elementId) {
                 return info
             }
+            // The live-query read can fail on newer iOS 26 runtimes even for
+            // an id minted milliseconds earlier (the lazily-built XCUIElement
+            // query evaluates differently live than the snapshot walk did,
+            // and some selector shapes never get a query at all). The
+            // find-time snapshot BOUNDS are cached unconditionally — recover
+            // with a minimal ElementInfo so the coordinate-driven action
+            // paths (snapshotCenter) proceed instead of surfacing a spurious
+            // "gone stale" for an element that is still on screen.
+            // Guard degenerate frames: a cached CGRect.null has an infinite
+            // origin, and Int(x) is a Swift runtime FATAL ERROR for both
+            // non-finite and beyond-Int-range values — crashing the whole
+            // agent over one bad cached frame. 100k pt is far beyond any
+            // real screen.
+            if let frame = snapshotFinder.getBounds(elementId),
+               !frame.isNull, frame.origin.x.isFinite, frame.origin.y.isFinite,
+               frame.size.width.isFinite, frame.size.height.isFinite,
+               abs(frame.origin.x) < 100_000, abs(frame.origin.y) < 100_000,
+               abs(frame.width) < 100_000, abs(frame.height) < 100_000 {
+                return ElementInfo(
+                    elementId: elementId,
+                    className: "",
+                    text: nil,
+                    contentDescription: nil,
+                    resourceId: nil,
+                    hint: nil,
+                    bounds: ElementBounds(
+                        left: Int(frame.origin.x),
+                        top: Int(frame.origin.y),
+                        right: Int(frame.origin.x + frame.width),
+                        bottom: Int(frame.origin.y + frame.height)
+                    ),
+                    isEnabled: true,
+                    isChecked: false,
+                    isFocused: false,
+                    isClickable: true,
+                    isFocusable: false,
+                    isScrollable: false,
+                    isVisible: true,
+                    isSelected: false,
+                    childCount: 0,
+                    role: "",
+                    viewportRatio: 1.0
+                )
+            }
             return try elementFinder.getElementInfo(elementId)
         }
         let selector = SelectorParser.parse(params)
@@ -1351,13 +1395,31 @@ class CommandHandler {
 
         case "terminateApp":
             let bundleId = params["bundleId"] as? String ?? params["package"] as? String
-            if let bundleId = bundleId {
-                let targetApp = XCUIApplication(bundleIdentifier: bundleId)
-                targetApp.terminate()
-            } else {
-                app.terminate()
+            let targetApp = bundleId.map { XCUIApplication(bundleIdentifier: $0) } ?? app
+            // Verify the app actually died instead of trusting terminate()'s
+            // return: under CoreSimulator pressure it can silently no-op, and
+            // callers act on the result — the daemon's deep-link cold path
+            // runs `simctl openurl` next, which against a still-running app
+            // foregrounds it WITHOUT delivering a navigation event to the
+            // app. Retry once, then report failure so the caller can escalate.
+            for attempt in 0..<2 {
+                _ = ObjCExceptionCatcher.catchException {
+                    targetApp.terminate()
+                }
+                let deadline = Date(timeIntervalSinceNow: 2.0)
+                while Date() < deadline {
+                    if safeAppState(targetApp) == .notRunning {
+                        return ["success": true]
+                    }
+                    Thread.sleep(forTimeInterval: 0.1)
+                }
+                if attempt == 0 {
+                    NSLog("[TapsmithAgent] terminateApp: app still running after terminate(); retrying")
+                }
             }
-            return ["success": true]
+            throw AgentError.actionFailed(
+                "terminateApp: \(bundleId ?? "target app") is still running after terminate()"
+            )
 
         case "getAppState":
             let bundleId = params["bundleId"] as? String ?? params["package"] as? String ?? ""
@@ -1452,6 +1514,18 @@ class CommandHandler {
             }
 
             if waitForDeepLinkDestination(targetApp, timeout: 10.0) {
+                // Mirror the warm path's pixel gate: a cold relaunch against a
+                // compositor that has stopped rendering "succeeds" by every
+                // a11y measure while the screen stays black, and reporting
+                // success here carries the dead display into every following
+                // test. Reject with a distinguishable error so the daemon can
+                // escalate (simulator reboot) instead of trusting the a11y tree.
+                if displayAppearsBlack() {
+                    throw AgentError.actionFailed(
+                        "openDeepLink: display is not rendering after cold "
+                            + "delivery of \(urlString)"
+                    )
+                }
                 _ = rebindApp(bundleId: bundleId)
                 return ["success": true]
             }

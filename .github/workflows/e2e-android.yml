@@ -164,6 +164,10 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 24
+          cache: npm
+          cache-dependency-path: |
+            packages/tapsmith/package-lock.json
+            e2e/package-lock.json
 
       - name: Download daemon binary
         uses: actions/download-artifact@v4

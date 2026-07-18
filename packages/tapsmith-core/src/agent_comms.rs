@@ -1080,26 +1080,39 @@ impl AgentConnection {
         }
         // iOS simulator: agent listens on localhost directly, no forwarding needed
 
-        // Try to connect and send a ping
-        match self.ping_agent().await {
-            Ok(_) => {
-                self.connected = true;
-                self.device_serial = Some(serial.to_string());
-                info!(
-                    serial,
-                    platform = if ios { "ios" } else { "android" },
-                    "Connected to on-device agent"
-                );
-                Ok(())
+        // Try to connect and send a ping. A freshly-launched agent can accept
+        // the launch-time socket probe yet miss the very next ping while the
+        // runner finishes initializing (observed on loaded CI runners:
+        // agent-start ping OK, handshake ping ~1s later times out) — retry
+        // briefly before declaring the agent dead.
+        let mut last_err: Option<anyhow::Error> = None;
+        for attempt in 0..4 {
+            if attempt > 0 {
+                tokio::time::sleep(Duration::from_secs(2)).await;
             }
-            Err(e) => {
-                if !ios {
-                    // Clean up the forwarding on failure
-                    let _ = adb::remove_forward(serial, self.host_port).await;
+            match self.ping_agent().await {
+                Ok(_) => {
+                    self.connected = true;
+                    self.device_serial = Some(serial.to_string());
+                    info!(
+                        serial,
+                        platform = if ios { "ios" } else { "android" },
+                        "Connected to on-device agent"
+                    );
+                    return Ok(());
                 }
-                bail!("Agent is not responding on device {serial}: {e}. Is the agent app running?");
+                Err(e) => {
+                    debug!(serial, attempt, error = %e, "agent handshake ping failed");
+                    last_err = Some(e);
+                }
             }
         }
+        if !ios {
+            // Clean up the forwarding on failure
+            let _ = adb::remove_forward(serial, self.host_port).await;
+        }
+        let e = last_err.expect("ping loop ran at least once");
+        bail!("Agent is not responding on device {serial}: {e}. Is the agent app running?");
     }
 
     /// Disconnect and clean up port forwarding.

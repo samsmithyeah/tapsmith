@@ -590,9 +590,14 @@ export class Device {
     const effectiveOptions = this._forceColdDeepLinks
       ? { ...options, forceColdLaunch: true }
       : options;
-    return this._tracedAction('openDeepLink', 'navigation', undefined,
-      () => this._client.openDeepLink(uri, effectiveOptions),
-      'Open deep link failed');
+    // Progress-tracked: delivery can legitimately run for minutes when the
+    // daemon rides out re-deliveries, a trust prompt, or the black-display
+    // reboot escalation — the user should see a heartbeat, and the runner's
+    // test timeout excludes tracked slow-action time.
+    return withActionProgress('openDeepLink', uri,
+      () => this._tracedAction('openDeepLink', 'navigation', undefined,
+        () => this._client.openDeepLink(uri, effectiveOptions),
+        'Open deep link failed'));
   }
 
   /**

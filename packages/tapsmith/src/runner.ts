@@ -30,6 +30,7 @@ import type { AnyTraceEvent } from './trace/types.js';
 import { getSimulatorScreenScale } from './ios-simulator.js';
 import type { TraceDeviceInfo } from './trace/types.js';
 import { TestAbortedError, isAbortError } from './abort.js';
+import { onActionProgress } from './action-progress.js';
 import { runInAttemptContext, type AttemptToken } from './attempt-fence.js';
 import { matchesTestFilter } from './test-filter.js';
 
@@ -1245,6 +1246,29 @@ async function runSuiteContext(
           let onTestAbort: (() => void) | undefined;
           const abortSignal = opts.abortSignal;
           const attemptToken: AttemptToken = { closed: false };
+          // Time spent inside progress-tracked device actions does not count
+          // toward the test timeout: those actions carry their own bounded
+          // deadlines (agent budgets, gRPC deadlines, daemon-side recovery
+          // caps up to ~7 minutes for a deep link that rides out a simulator
+          // reboot), so a CoreSimulator stall that stretches one of them must
+          // not consume the whole test budget and kill the test while the
+          // framework is actively — and successfully — recovering. The wall
+          // clock still caps the attempt (WALL_CAP × the timeout) so a test
+          // looping bounded actions forever cannot run unbounded.
+          //
+          // Subscribe BEFORE creating the body promise: the body executes
+          // synchronously up to its first await, so a device action as the
+          // first statement emits its start event during creation.
+          const WALL_CAP_MULTIPLIER = 5;
+          const excluded = { totalMs: 0, depth: 0, inFlightSince: 0 };
+          const unsubscribeProgress = onActionProgress((ev) => {
+            if (ev.kind === 'start') {
+              if (excluded.depth++ === 0) excluded.inFlightSince = Date.now();
+            } else if (ev.kind === 'end' && excluded.depth > 0) {
+              if (--excluded.depth === 0) excluded.totalMs += Date.now() - excluded.inFlightSince;
+            }
+          });
+          const bodyStart = Date.now();
           const bodyPromise = runInAttemptContext(attemptToken, testFn);
           // The race may abandon the body; its eventual rejection (fenced
           // device calls) must not surface as an unhandled rejection.
@@ -1253,9 +1277,30 @@ async function runSuiteContext(
             await Promise.race([
               bodyPromise,
               new Promise<never>((_, reject) => {
-                testTimer = setTimeout(() => reject(new Error(
-                  `Test timed out after ${testTimeoutMs}ms`
-                )), testTimeoutMs);
+                const check = (): void => {
+                  const wallMs = Date.now() - bodyStart;
+                  const inFlightMs = excluded.depth > 0 ? Date.now() - excluded.inFlightSince : 0;
+                  const countedMs = wallMs - excluded.totalMs - inFlightMs;
+                  if (countedMs >= testTimeoutMs) {
+                    reject(new Error(
+                      `Test timed out after ${testTimeoutMs}ms`
+                      + (wallMs - countedMs > 1_000
+                        ? ` (${Math.round(wallMs / 1000)}s wall clock; ${Math.round((wallMs - countedMs) / 1000)}s inside device actions excluded)`
+                        : ''),
+                    ));
+                    return;
+                  }
+                  if (wallMs >= testTimeoutMs * WALL_CAP_MULTIPLIER) {
+                    reject(new Error(
+                      `Test timed out after ${Math.round(wallMs / 1000)}s wall clock `
+                      + `(cap: ${WALL_CAP_MULTIPLIER}× the ${testTimeoutMs}ms test timeout; `
+                      + `${Math.round((wallMs - countedMs) / 1000)}s inside device actions)`,
+                    ));
+                    return;
+                  }
+                  testTimer = setTimeout(check, Math.min(1_000, testTimeoutMs));
+                };
+                testTimer = setTimeout(check, Math.min(1_000, testTimeoutMs));
               }),
               ...(abortSignal ? [new Promise<never>((_, reject) => {
                 // An already-aborted signal never fires 'abort' for new
@@ -1273,6 +1318,7 @@ async function runSuiteContext(
             // Clear the timeout here (not via testFn().finally) so an abort
             // settling the race doesn't leave a long-lived timer behind.
             if (testTimer) clearTimeout(testTimer);
+            unsubscribeProgress();
             if (onTestAbort) abortSignal?.removeEventListener('abort', onTestAbort);
           }
         } catch (err) {
@@ -1623,6 +1669,16 @@ async function runSuiteContext(
 
       if (status === 'passed' || attempt === maxRetries || opts.abortSignal?.aborted) break;
 
+      // A file-abort-worthy failure (e.g. "session recovered during before
+      // test" — the app was relaunched by infra, destroying beforeAll-
+      // established state) must NOT be consumed by per-test retries: the
+      // retries would run against the recovered app without the file's
+      // beforeAll navigation/setup, fail with ordinary assertion errors, and
+      // erase the infra signal that makes the worker retry the whole file
+      // (which re-runs beforeAll). Break so this error stays the test's
+      // final error and the abort check below fires.
+      if (error && opts.abortFileOnError?.(error)) break;
+
       if (!firstFailure && error) {
         firstFailure = { error, tracePath, screenshotPath, videoPath };
       }
@@ -1865,6 +1921,34 @@ export function collectResults(suite: SuiteResult): TestResult[] {
     results.push(...collectResults(child));
   }
   return results;
+}
+
+/**
+ * Mark tests that failed on a discarded file-level retry attempt as flaky in
+ * the retried suite's results. File-level retries (infra recovery) re-run the
+ * whole file and return only the second attempt — without this, a test that
+ * failed and then passed on the file retry reports as a clean pass, hiding
+ * the failure from the flaky count, annotations, and reports. Mirrors what
+ * the per-test retry loop records via `retry` + `firstAttemptError`.
+ */
+export function markFileRetryFlakes(firstAttempt: SuiteResult, retried: SuiteResult): void {
+  const firstErrors = new Map(
+    collectResults(firstAttempt)
+      .filter((t) => t.status === 'failed' && t.error)
+      .map((t) => [t.fullName, t.error]),
+  );
+  if (firstErrors.size === 0) return;
+  const annotate = (suite: SuiteResult): void => {
+    for (const t of suite.tests) {
+      const firstError = firstErrors.get(t.fullName);
+      if (firstError && t.status === 'passed') {
+        t.retry = t.retry ?? 1;
+        t.firstAttemptError = t.firstAttemptError ?? firstError;
+      }
+    }
+    suite.suites.forEach(annotate);
+  };
+  annotate(retried);
 }
 
 /**

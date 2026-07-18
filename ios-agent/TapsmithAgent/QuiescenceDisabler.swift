@@ -316,13 +316,36 @@ enum EventSynthesizer {
 
         let start = Date()
         guard synthesizeTap(at: point, duration: 0.05) else { return .notStarted }
-        // The first record's dispatch wait is already part of the app-visible
-        // inter-tap gap — only sleep the remainder.
-        let remaining = interval - Date().timeIntervalSince(start)
-        if remaining > 0 {
-            Thread.sleep(forTimeInterval: remaining)
+        // The dispatch completion fires only after the first tap has been
+        // synthesized, so the app-visible gap starts HERE — sleep the full
+        // interval from this point. Crediting dispatch-1's duration against
+        // the gap (the previous behaviour) collapses the sleep to zero on a
+        // loaded runner whose dispatch takes ≥ the interval, and the two
+        // taps land within iOS 26's coalescing threshold → "Single tap".
+        Thread.sleep(forTimeInterval: interval)
+        // iOS 26 coalesces rapid SAME-POINT synthesized taps (newer 26.x
+        // runtime builds do so even at 250ms+ gaps, verified on iOS 26.5).
+        // Offset the second tap by 2pt — comfortably inside every double-tap
+        // recognizer's slop radius, far outside the pipeline's same-point
+        // coalescing match — so the pair always arrives as two taps. Keep the
+        // verified +2 direction except within 2pt of the screen's right or
+        // bottom edge, where it would land off-screen; the coalescing match
+        // only cares that the points differ, not which way they differ.
+        let second: CGPoint
+        if runtimeCoalescesRapidTaps {
+            // Direction doesn't matter to the same-point coalescing match, so
+            // no screen-size lookup is needed (UIScreen is main-thread-bound
+            // and commands run on the socket thread): points in the first
+            // 300pt offset outward (+2 — safe, every iOS screen is ≥320pt),
+            // everything else offsets inward (-2 — safe, the point itself is
+            // on-screen).
+            let dx: CGFloat = point.x <= 300 ? 2 : -2
+            let dy: CGFloat = point.y <= 300 ? 2 : -2
+            second = CGPoint(x: point.x + dx, y: point.y + dy)
+        } else {
+            second = point
         }
-        guard synthesizeTap(at: point, duration: 0.05) else { return .firstTapOnly }
+        guard synthesizeTap(at: second, duration: 0.05) else { return .firstTapOnly }
         let elapsed = Date().timeIntervalSince(start)
         if elapsed > 0.5 {
             NSLog(
@@ -562,6 +585,15 @@ enum EventSynthesizer {
             record.perform(addPathSel, with: path)
         }
 
+        // iOS 26 runtimes silently drop synthesized events dispatched via the
+        // dispatchSync/synthesizeWithError: route in ~25% of runs (measured
+        // during the double-tap work; the daemon-session route drops ~5%).
+        // A dropped swipe record reports success while the view never moves —
+        // the "streamed drag scrolls zero" CI flake. Prefer the reliable
+        // route there; keep the historical order on pre-26 runtimes.
+        if runtimeCoalescesRapidTaps {
+            return dispatchViaDaemonSession(record) || dispatchSync(record) || dispatchViaDevice(record)
+        }
         return dispatchSync(record) || dispatchViaDevice(record) || dispatchViaDaemonSession(record)
     }
 

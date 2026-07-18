@@ -162,23 +162,50 @@ export function isRecoverableInfrastructureError(err: unknown): boolean {
   return RECOVERABLE_INFRASTRUCTURE_PATTERNS.some((pattern) => message.includes(pattern));
 }
 
+// Generous budget: a session-setup failure fails the whole shard (there is
+// no outer retry around setup), and each failed attempt can itself take
+// ~35s when the daemon's bounded `simctl list` is riding out a
+// CoreSimulator stall — so the budget must fit several such attempts.
+export const DEVICE_SELECT_RETRY_BUDGET_MS = 180_000;
+export const DEVICE_SELECT_RETRY_DELAY_MS = 3_000;
+
 /**
- * Run a device-infrastructure setup step, retrying once if it fails with a
- * recoverable infrastructure error (e.g. device selection tripping its
- * deadline because `simctl list` stalls while simulators boot on a loaded
- * runner). `onRetry` fires before the second attempt so callers can report
+ * Device-selection failures worth retrying within a bounded window.
+ *
+ * "not found. Run ListDevices" deserves special mention: SetDevice is only
+ * ever called with a serial the caller just resolved (and, for simulators,
+ * verified Booted) through simctl itself — so the daemon answering "not
+ * found" means its device refresh came back incomplete, i.e. the bounded
+ * `simctl list` timed out under a CoreSimulator stall. That's a transient
+ * listing failure, not a wrong serial; the next refresh sees the device.
+ */
+export function isRetryableDeviceSelectionError(err: unknown): boolean {
+  const message = err instanceof Error ? err.message : String(err);
+  return (
+    message.includes('not found. Run ListDevices') ||
+    isRecoverableInfrastructureError(err)
+  );
+}
+
+/**
+ * Run device selection, retrying transient failures (see
+ * `isRetryableDeviceSelectionError`) with a short pause until the budget is
+ * spent. `onRetry` fires before each re-attempt so callers can report
  * progress their own way.
  */
-export async function retryOnceOnRecoverableInfra<T>(
+export async function retryDeviceSelection<T>(
   fn: () => Promise<T>,
   onRetry: (err: unknown) => void,
 ): Promise<T> {
-  try {
-    return await fn();
-  } catch (err) {
-    if (!isRecoverableInfrastructureError(err)) throw err;
-    onRetry(err);
-    return fn();
+  const deadline = Date.now() + DEVICE_SELECT_RETRY_BUDGET_MS;
+  for (;;) {
+    try {
+      return await fn();
+    } catch (err) {
+      if (!isRetryableDeviceSelectionError(err) || Date.now() >= deadline) throw err;
+      onRetry(err);
+      await new Promise((resolve) => setTimeout(resolve, DEVICE_SELECT_RETRY_DELAY_MS));
+    }
   }
 }
 
@@ -193,9 +220,20 @@ export function isRetryableAgentStartError(err: unknown): boolean {
   return (
     message.includes('xcodebuild exited') ||
     message.includes('Timed out waiting for iOS agent') ||
+    // The daemon's post-launch handshake ping can miss a runner that is
+    // still initializing (the launch-time socket probe passed moments
+    // earlier) — a second StartAgent either fast-paths onto the now-ready
+    // agent or relaunches it.
+    message.includes('Agent is not responding') ||
     isRecoverableInfrastructureError(err)
   );
 }
+
+/** Pause before retrying a failed agent start. A transient agent-connection
+ *  drop takes a few seconds to clear; an immediate retry lands inside the
+ *  same drop window and fails identically (PILOT-282). Shared by the CLI
+ *  startup path and worker init so both retry with the same tolerance. */
+export const AGENT_START_RETRY_DELAY_MS = 2_000;
 
 // ─── Serialized types (safe for IPC / structured clone) ───
 

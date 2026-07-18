@@ -12,7 +12,7 @@ import * as path from 'node:path';
 import { TapsmithGrpcClient } from './grpc-client.js';
 import { Device } from './device.js';
 import { isNetworkTracingEnabled, networkHostsForPac, networkPassthroughHosts } from './trace/types.js';
-import { runTestFile, collectResults } from './runner.js';
+import { runTestFile, collectResults, markFileRetryFlakes } from './runner.js';
 import type { TapsmithConfig } from './config.js';
 import { isPackageInstalled, waitForPackageIndexed } from './emulator.js';
 import { installApp, installedAppMatches, isAppInstalled, probeSimulatorHealth, rebootSimulator } from './ios-simulator.js';
@@ -27,18 +27,14 @@ import {
   serializeSuiteResult,
   isRecoverableInfrastructureError,
   isRetryableAgentStartError,
-  retryOnceOnRecoverableInfra,
+  retryDeviceSelection,
   deserializeRegExpArray,
+  AGENT_START_RETRY_DELAY_MS,
 } from './worker-protocol.js';
 import { ensureSessionReady, launchConfiguredApp, type SessionPreflightContext } from './session-preflight.js';
 import { createActionProgressMessenger } from './action-progress-renderer.js';
 import type { TapsmithReporter } from './reporter.js';
 
-/** Pause before retrying a failed agent start during worker init. A transient
- *  agent-connection drop takes a few seconds to clear; an immediate retry
- *  lands inside the same drop window and retires the worker — failing its
- *  tests at 0ms with no trace (PILOT-282). */
-const AGENT_START_RETRY_DELAY_MS = 2_000;
 
 let workerId = -1;
 let device: Device | undefined;
@@ -118,7 +114,7 @@ async function handleInit(msg: InitMessage): Promise<void> {
     // possibly-undefined module-level bindings.
     const dev = device;
     const cfg = config;
-    await retryOnceOnRecoverableInfra(
+    await retryDeviceSelection(
       () => dev.setDevice(
         msg.deviceSerial,
         isNetworkTracingEnabled(cfg.trace),
@@ -126,7 +122,7 @@ async function handleInit(msg: InitMessage): Promise<void> {
         networkPassthroughHosts(cfg.trace),
       ),
       (err) => process.stderr.write(
-        `Worker ${workerId}: Device selection failed, retrying once: ${err instanceof Error ? err.message : String(err)}\n`,
+        `Worker ${workerId}: Device selection failed transiently, retrying: ${err instanceof Error ? err.message : String(err)}\n`,
       ),
     );
   }
@@ -418,6 +414,7 @@ async function runFileWithRecovery(
   const projectGrepRe = deserializeRegExpArray(projectGrep);
   const projectGrepInvertRe = deserializeRegExpArray(projectGrepInvert);
 
+  let firstAttemptSuite: import('./runner.js').SuiteResult | undefined;
   for (let attempt = 1; attempt <= 2; attempt++) {
     let infraError: Error | undefined;
     try {
@@ -461,12 +458,18 @@ async function runFileWithRecovery(
       });
       const infrastructureFailure = findRecoverableInfrastructureFailure(collectResults(suite));
       if (!infrastructureFailure) {
+        // Tests that failed on the discarded first attempt must surface as
+        // flaky, not as clean passes (see markFileRetryFlakes).
+        if (attempt === 2 && firstAttemptSuite) {
+          markFileRetryFlakes(firstAttemptSuite, suite);
+        }
         return suite;
       }
       if (attempt === 2) {
         throw infrastructureFailure;
       }
       infraError = infrastructureFailure;
+      firstAttemptSuite = suite;
     } catch (err) {
       if (!isRecoverableInfrastructureError(err) || attempt === 2) {
         throw err;

@@ -15,7 +15,7 @@ import { loadConfig, normalizeGrep, resolveDeviceStrategy, EXPLICIT_WORKERS, isE
 import figlet from 'figlet';
 import { TapsmithGrpcClient } from './grpc-client.js';
 import { Device } from './device.js';
-import { runTestFile, collectResults, type TestResult, type SuiteResult } from './runner.js';
+import { runTestFile, collectResults, markFileRetryFlakes, type TestResult, type SuiteResult } from './runner.js';
 import { createReporters, ReporterDispatcher, type FullResult } from './reporter.js';
 import { ensureSessionReady, launchConfiguredApp } from './session-preflight.js';
 import { installActionProgressPrinter } from './action-progress-renderer.js';
@@ -47,7 +47,7 @@ import {
   waitForDeviceStability,
   ensureAdbRoot,
 } from './emulator.js';
-import { isRecoverableInfrastructureError, isRetryableAgentStartError, retryOnceOnRecoverableInfra, serializeRegExpArray } from './worker-protocol.js';
+import { AGENT_START_RETRY_DELAY_MS, isRecoverableInfrastructureError, isRetryableAgentStartError, retryDeviceSelection, serializeRegExpArray } from './worker-protocol.js';
 import { findPidsOnPort, freeStaleAgentPort } from './port-utils.js';
 import { findDaemonBin } from './daemon-bin.js';
 import {
@@ -464,12 +464,28 @@ async function ensureDaemonRunning(
   child.unref();
   spawnedDaemonProcess = child;
 
-  // Wait for daemon to be ready
+  // Wait for daemon to be ready. First-exec of a freshly-downloaded unsigned
+  // binary on a loaded CI runner can take ~30s before the listener binds
+  // (macOS scans the binary), and grpc-js reconnect backoff grows ~1.6x per
+  // attempt so a single 10s window can skip right past the moment the server
+  // comes up. Retry in bounded windows up to 60s total, bailing early if the
+  // daemon process exited (crash — no point waiting out the budget).
   const newClient = new TapsmithGrpcClient(address);
-  const started = await newClient.waitForReady(10_000);
+  let daemonExitCode: number | null | undefined;
+  child.on('exit', (code) => {
+    daemonExitCode = code ?? -1;
+  });
+  const connectDeadline = Date.now() + 60_000;
+  let started = false;
+  while (!started && Date.now() < connectDeadline && daemonExitCode === undefined) {
+    started = await newClient.waitForReady(10_000);
+  }
   if (!started) {
-    progress?.fail('daemon', 'failed to start tapsmith-core');
-    console.error(red('Failed to start Tapsmith daemon. Is tapsmith-core installed?'));
+    const reason = daemonExitCode !== undefined
+      ? `tapsmith-core exited with code ${daemonExitCode} during startup`
+      : 'failed to start tapsmith-core (not ready after 60s)';
+    progress?.fail('daemon', reason);
+    console.error(red(`Failed to start Tapsmith daemon (${reason}). Is tapsmith-core installed?`));
     process.exit(1);
   }
 
@@ -547,9 +563,9 @@ async function setupSequentialDevice(
   const deviceSerial = cfg.device;
   try {
     progress?.update('primary-device', { state: 'running', detail: `selecting ${deviceSerial}` });
-    await retryOnceOnRecoverableInfra(
+    await retryDeviceSelection(
       () => device.setDevice(deviceSerial, networkTracingEnabled, pacNetworkHosts, passthroughHosts),
-      () => progress?.update('primary-device', { state: 'running', detail: `selection timed out, retrying ${deviceSerial}` }),
+      () => progress?.update('primary-device', { state: 'running', detail: `selection failed transiently, retrying ${deviceSerial}` }),
     );
     if (!progress) console.log(dim(`Using device: ${cfg.device}`));
   } catch (err) {
@@ -777,9 +793,13 @@ async function setupSequentialDevice(
   const resolvedAgentTestApk = cfg.agentTestApk
     ? path.resolve(cfg.rootDir, cfg.agentTestApk)
     : findAgentTestApk();
+  // TAPSMITH_IOS_XCTESTRUN overrides auto-detection for configs that don't
+  // set `iosXctestrun` — CI configs read this env var explicitly, and honoring
+  // it uniformly means a locally built agent can be pinned for ANY config
+  // instead of silently losing to the npm-package lookup.
   let resolvedIosXctestrun = cfg.iosXctestrun
     ? path.resolve(cfg.rootDir, cfg.iosXctestrun)
-    : undefined;
+    : process.env.TAPSMITH_IOS_XCTESTRUN || undefined;
   // iOS xctestrun auto-detect: if the user didn't set `iosXctestrun`,
   // pick the newest built xctestrun for the target slice. Mirrors the way
   // `simulator: "iPhone 16"` is enough to pick a device without hand-rolling
@@ -881,8 +901,13 @@ async function setupSequentialDevice(
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       if (isRetryableAgentStartError(err)) {
-        if (progress) progress.update('agent', { state: 'running', detail: 'agent startup failed, retrying once' });
+        // Include the first attempt's error — without it a failed retry leaves
+        // no trace of WHY attempt 1 died (the retry error may differ).
+        if (progress) progress.update('agent', { state: 'running', detail: `agent startup failed, retrying once: ${msg}` });
         else console.error(`Agent startup failed, retrying once: ${msg}`);
+        // Let a transient agent-connection drop clear before the retry — an
+        // immediate re-attempt lands inside the same drop window (PILOT-282).
+        await new Promise((resolve) => setTimeout(resolve, AGENT_START_RETRY_DELAY_MS));
         try {
           await startAgent();
         } catch (retryErr) {
@@ -2730,10 +2755,30 @@ async function runTestFileWithRecovery(
         screenshotDir: opts.screenshotDir,
         reporter: opts.reporter,
         beforeEachTest: async (fullName) => {
+          // Mirror the worker path: a recovery here relaunched the app, so any
+          // beforeAll-established state (navigation, auth) is gone. Throw the
+          // infra-shaped error so the file retries and beforeAll re-runs —
+          // otherwise the test runs against the recovered app's home screen
+          // and fails with a misleading assertion error.
+          let recovered = false;
+          let recoveryReason = '';
           await ensureSessionReady(
             opts.sessionContext,
             `before test ${fullName}`,
+            undefined,
+            {
+              onRecovery: (err) => {
+                recovered = true;
+                recoveryReason = err instanceof Error ? err.message : String(err);
+              },
+            },
           );
+          if (recovered) {
+            const detail = recoveryReason ? `: ${recoveryReason}` : '';
+            throw new Error(
+              `session recovered during before test ${fullName}; retrying file so beforeAll hooks run against the recovered app${detail}`,
+            );
+          }
         },
         abortFileOnError: isRecoverableInfrastructureError,
         // In-process retries need the same ESM cache busting as worker
@@ -2760,6 +2805,10 @@ async function runTestFileWithRecovery(
           if (fileResults.length < firstResults.length) {
             return firstAttemptSuite;
           }
+          // Tests that failed on the discarded first attempt must surface as
+          // flaky, not as clean passes — the summary would otherwise hide
+          // that the file was re-run at all.
+          markFileRetryFlakes(firstAttemptSuite, suite);
         }
         return suite;
       }

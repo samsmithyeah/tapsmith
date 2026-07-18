@@ -8,7 +8,10 @@ export default defineConfig({
   resetAppDeepLink: RESET_APP_DEEP_LINK,
   timeout: 30_000,
   typingDelay: 10,
-  retries: 1,
+  // Two retries (Playwright's CI convention): runner-scoped outages
+  // (compositor stalls, input-injection drops) can outlast a single retry
+  // even after the framework's own recovery escalations.
+  retries: 2,
   reporter: [["list"], ["github"], ["html", { open: "never" }]],
   screenshot: "only-on-failure",
   trace: {

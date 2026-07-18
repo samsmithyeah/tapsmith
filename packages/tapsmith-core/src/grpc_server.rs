@@ -96,6 +96,19 @@ pub struct TapsmithServiceImpl {
     /// every per-test start/stop cycle pays the NE timeout (~10s × N tests).
     #[cfg(target_os = "macos")]
     ios_ne_unavailable: Arc<RwLock<bool>>,
+    /// Session cache of `simctl get_app_container` results keyed by
+    /// `udid\0bundle_id`. The data-container path of an installed app is
+    /// stable (it changes only on reinstall) and is plain host filesystem —
+    /// so when CoreSimulatorService wedges and the live lookup times out, a
+    /// previously resolved path still works for tar/clear operations.
+    ios_app_container_cache: Arc<RwLock<std::collections::HashMap<String, String>>>,
+    /// Simulator UDID whose trust store already has this session's MITM CA.
+    /// `simctl keychain add-root-cert` talks to the sim's securityd/trustd —
+    /// re-running it every capture start is wasted work and was observed
+    /// hanging for minutes when CoreSimulator is under pressure. The CA is
+    /// stable for the daemon session (load_or_create), so once installed on
+    /// a UDID it stays trusted.
+    ios_ca_cert_installed: Arc<RwLock<std::collections::HashSet<String>>>,
     /// iOS agent launch config (stored for restart on launchApp).
     ios_agent_config: Arc<RwLock<Option<IosAgentConfig>>>,
     /// Startup inputs for the currently connected agent. Used to make
@@ -259,6 +272,8 @@ impl TapsmithServiceImpl {
             ios_system_proxy_service: Arc::new(RwLock::new(None)),
             #[cfg(target_os = "macos")]
             ios_ne_unavailable: Arc::new(RwLock::new(false)),
+            ios_app_container_cache: Arc::new(RwLock::new(std::collections::HashMap::new())),
+            ios_ca_cert_installed: Arc::new(RwLock::new(std::collections::HashSet::new())),
             ios_agent_config: Arc::new(RwLock::new(None)),
             started_agent_config: Arc::new(RwLock::new(None)),
             ios_iproxy: Arc::new(RwLock::new(None)),
@@ -1546,6 +1561,213 @@ impl TapsmithServiceImpl {
         false
     }
 
+    /// `simctl get_app_container` with a session-cache fallback (see
+    /// `ios_app_container_cache`). Live lookup first keeps freshness; the
+    /// cache serves only when the lookup fails — e.g. a wedged
+    /// CoreSimulatorService timing out — so app-state save/clear keep
+    /// working through the wedge instead of failing the test.
+    async fn get_app_container_cached(
+        &self,
+        udid: &str,
+        bundle_id: &str,
+    ) -> anyhow::Result<String> {
+        let key = format!("{udid}\u{0}{bundle_id}");
+        match ios::device::get_app_container(udid, bundle_id).await {
+            Ok(path) => {
+                self.ios_app_container_cache
+                    .write()
+                    .await
+                    .insert(key, path.clone());
+                Ok(path)
+            }
+            Err(e) => {
+                if let Some(cached) = self.ios_app_container_cache.read().await.get(&key) {
+                    warn!(
+                        %udid, bundle_id, error = %e,
+                        "get_app_container failed; using session-cached container path"
+                    );
+                    return Ok(cached.clone());
+                }
+                Err(e)
+            }
+        }
+    }
+
+    /// Double-tap via the iOS-simulator HID helper: resolve the element's
+    /// center through the agent (which owns waiting and matching), then
+    /// inject two real down/up pairs. Real HID input enters below XCTest,
+    /// so the iOS 26.x synthesized-tap coalescing (which swallows the
+    /// second tap of every XCTest-level double-tap route) does not apply.
+    /// Returns false — caller falls back to the agent route — when the
+    /// active device isn't an iOS simulator, the helper is unavailable,
+    /// element resolution fails, or an injection fails.
+    #[cfg(target_os = "macos")]
+    async fn try_hid_double_tap(
+        &self,
+        selector: &Value,
+        timeout_ms: u64,
+        interval_ms: u64,
+    ) -> bool {
+        let udid = {
+            let dm = self.device_manager.read().await;
+            match dm.active_device() {
+                Some(d) if d.platform == Platform::Ios && d.is_emulator => d.serial.clone(),
+                _ => return false,
+            }
+        };
+        if let Err(e) = self.hid_injector.ensure(&udid).await {
+            debug!(%udid, error = %e, "iOS HID helper unavailable for double-tap; using agent route");
+            return false;
+        }
+        let find = AgentCommand::FindElement {
+            selector: selector.clone(),
+            timeout_ms: opt_timeout(timeout_ms),
+        };
+        let resp = match self
+            .send_agent_command_with_timeout(&find, timeout_ms)
+            .await
+        {
+            Ok(r) if r.success => r,
+            _ => return false,
+        };
+        let Some(info) = parse_element_info(&resp.data) else {
+            return false;
+        };
+        let Some(bounds) = info.bounds else {
+            return false;
+        };
+        let x = (bounds.left + bounds.right) / 2;
+        let y = (bounds.top + bounds.bottom) / 2;
+        // One wire command: the helper owns the press/gap timing in-process
+        // (~40ms press, ~120ms gap), so the inter-tap gap stays inside the
+        // app's double-tap recognizer window regardless of daemon-side load.
+        // Host-paced down/up pairs were observed stretching the gap past the
+        // window on loaded CI runners (both taps delivered, classified as
+        // two single taps). `interval_ms` is intentionally not forwarded —
+        // fixed real-input timing is the point.
+        let _ = interval_ms;
+        if self
+            .hid_injector
+            .send(&udid, &format!("t2 {x} {y}"))
+            .await
+            .is_err()
+        {
+            return false;
+        }
+        info!(%udid, x, y, "double-tap injected via HID");
+        true
+    }
+
+    /// Long-press via the iOS-simulator HID helper: resolve the element's
+    /// center through the agent, then inject a real touch-down, hold, and
+    /// lift. XCTest-synthesized presses share the injection pipeline that
+    /// simulator input outages break — the runner acks the press but the app
+    /// never receives it (and the synthesis IPC has been observed wedging for
+    /// minutes) — while HID events enter below XCTest. Returns false — caller
+    /// falls back to the agent route — when the active device isn't an iOS
+    /// simulator, the helper is unavailable, element resolution fails, or an
+    /// injection fails.
+    #[cfg(target_os = "macos")]
+    async fn try_hid_long_press(
+        &self,
+        selector: &Value,
+        timeout_ms: u64,
+        duration_ms: u64,
+    ) -> bool {
+        let udid = {
+            let dm = self.device_manager.read().await;
+            match dm.active_device() {
+                Some(d) if d.platform == Platform::Ios && d.is_emulator => d.serial.clone(),
+                _ => return false,
+            }
+        };
+        if let Err(e) = self.hid_injector.ensure(&udid).await {
+            debug!(%udid, error = %e, "iOS HID helper unavailable for long-press; using agent route");
+            return false;
+        }
+        let find = AgentCommand::FindElement {
+            selector: selector.clone(),
+            timeout_ms: opt_timeout(timeout_ms),
+        };
+        let resp = match self
+            .send_agent_command_with_timeout(&find, timeout_ms)
+            .await
+        {
+            Ok(r) if r.success => r,
+            _ => return false,
+        };
+        let Some(info) = parse_element_info(&resp.data) else {
+            return false;
+        };
+        let Some(bounds) = info.bounds else {
+            return false;
+        };
+        let x = (bounds.left + bounds.right) / 2;
+        let y = (bounds.top + bounds.bottom) / 2;
+        self.hid_long_press_at(&udid, x as f32, y as f32, duration_ms)
+            .await
+    }
+
+    /// Coordinate-addressed variant of [`try_hid_long_press`]: same device
+    /// and helper gating, no element resolution.
+    #[cfg(target_os = "macos")]
+    async fn try_hid_long_press_coords(&self, x: f32, y: f32, duration_ms: u64) -> bool {
+        // Client-supplied floats: `strtod` in the helper happily parses a
+        // formatted "NaN"/"inf", which would poison the injection math —
+        // route non-finite coordinates to the agent, which validates them.
+        if !x.is_finite() || !y.is_finite() {
+            return false;
+        }
+        let udid = {
+            let dm = self.device_manager.read().await;
+            match dm.active_device() {
+                Some(d) if d.platform == Platform::Ios && d.is_emulator => d.serial.clone(),
+                _ => return false,
+            }
+        };
+        if let Err(e) = self.hid_injector.ensure(&udid).await {
+            debug!(%udid, error = %e, "iOS HID helper unavailable for long-press; using agent route");
+            return false;
+        }
+        self.hid_long_press_at(&udid, x, y, duration_ms).await
+    }
+
+    /// Inject down / hold / up through the HID helper. The helper consumes
+    /// stdin lines sequentially, so the up can never overtake the down and
+    /// the daemon-side sleep bounds the hold from BELOW — host scheduling
+    /// jank can only stretch it, and a long press has no upper bound (unlike
+    /// the double-tap gap, which is why `t2` is paced in-process instead).
+    /// No move event between down and up: a move can cancel the press
+    /// recognizer state in React Native's Pressability.
+    #[cfg(target_os = "macos")]
+    async fn hid_long_press_at(&self, udid: &str, x: f32, y: f32, duration_ms: u64) -> bool {
+        let hold =
+            std::time::Duration::from_millis(if duration_ms == 0 { 1000 } else { duration_ms });
+        if self
+            .hid_injector
+            .send(udid, &format!("d {x} {y}"))
+            .await
+            .is_err()
+        {
+            return false;
+        }
+        tokio::time::sleep(hold).await;
+        if self
+            .hid_injector
+            .send(udid, &format!("u {x} {y}"))
+            .await
+            .is_err()
+        {
+            // The down already landed; cancel it best-effort so the app isn't
+            // left with a stuck touch before the agent-route fallback presses
+            // again cleanly.
+            let _ = self.hid_injector.send(udid, "c").await;
+            return false;
+        }
+        info!(%udid, x, y, duration_ms, "long-press injected via HID");
+        true
+    }
+
     /// Build a synthetic success ActionResponse (used when a touch event was
     /// handled out-of-band by the HID injector, bypassing the agent).
     #[allow(clippy::result_large_err)] // Status is tonic's standard error type
@@ -1820,6 +2042,22 @@ impl proto::tapsmith_service_server::TapsmithService for TapsmithServiceImpl {
         let request_id = Self::request_id(&req.request_id);
 
         let (selector, element_id) = action_target(req.selector.as_ref(), &req.element_id)?;
+
+        // iOS simulators: prefer real HID input for the press when the helper
+        // is available. XCTest-synthesized presses are acked by the runner but
+        // silently dropped during simulator input-injection outages (observed
+        // on loaded CI runners even straight after a simulator reboot), and
+        // the synthesis IPC can wedge for minutes. Selector-addressed targets
+        // only — cached-element-id bounds are agent-internal; those (and any
+        // HID failure) fall through to the agent route.
+        #[cfg(target_os = "macos")]
+        if element_id.is_none()
+            && self
+                .try_hid_long_press(&selector, req.timeout_ms, req.duration_ms)
+                .await
+        {
+            return Ok(Self::success_action_response(request_id));
+        }
 
         let command = AgentCommand::LongPress {
             selector,
@@ -2624,6 +2862,26 @@ impl proto::tapsmith_service_server::TapsmithService for TapsmithServiceImpl {
         };
         match connect_result {
             Ok(()) => {
+                // Best-effort pre-warm of the app-container cache while
+                // CoreSimulator is (presumably) healthy: if it wedges later
+                // in the session, app-state save/clear fall back to this
+                // resolved path instead of failing on a timed-out lookup.
+                if platform == Platform::Ios
+                    && !self.is_active_ios_physical().await
+                    && !desired_agent_config.target_package.is_empty()
+                {
+                    let cache = self.ios_app_container_cache.clone();
+                    let serial_c = serial.clone();
+                    let pkg = desired_agent_config.target_package.clone();
+                    tokio::spawn(async move {
+                        if let Ok(path) = ios::device::get_app_container(&serial_c, &pkg).await {
+                            cache
+                                .write()
+                                .await
+                                .insert(format!("{serial_c}\u{0}{pkg}"), path);
+                        }
+                    });
+                }
                 *self.started_agent_config.write().await = Some(desired_agent_config);
                 Ok(Self::success_action_response(request_id))
             }
@@ -2665,6 +2923,25 @@ impl proto::tapsmith_service_server::TapsmithService for TapsmithServiceImpl {
         let request_id = Self::request_id(&req.request_id);
 
         let (selector, element_id) = action_target(req.selector.as_ref(), &req.element_id)?;
+
+        // iOS simulators: prefer real HID input for the double-tap when the
+        // helper is available. Newer iOS 26.x runtime builds coalesce rapid
+        // synthesized taps from EVERY XCTest-level route — private
+        // XCSynthesizedEventRecord synthesis, sequential records at 250ms+
+        // gaps, offset second taps, and the public XCUICoordinate.doubleTap()
+        // alike (verified empirically on iOS 26.5: the app receives exactly
+        // one tap). HID events enter below XCTest and are indistinguishable
+        // from real touches, so the pair always arrives. Selector-addressed
+        // targets only — cached-element-id bounds are agent-internal; those
+        // (and any HID failure) fall through to the agent route.
+        #[cfg(target_os = "macos")]
+        if element_id.is_none()
+            && self
+                .try_hid_double_tap(&selector, req.timeout_ms, req.interval_ms)
+                .await
+        {
+            return Ok(Self::success_action_response(request_id));
+        }
 
         let command = AgentCommand::DoubleTap {
             selector,
@@ -2944,7 +3221,10 @@ impl proto::tapsmith_service_server::TapsmithService for TapsmithServiceImpl {
                         let _ = ios::device::terminate_app(&serial, &req.package_name).await;
                         // Clear the data container (AsyncStorage, caches, etc.)
                         // without uninstalling the app.
-                        match ios::device::get_app_container(&serial, &req.package_name).await {
+                        match self
+                            .get_app_container_cached(&serial, &req.package_name)
+                            .await
+                        {
                             Ok(ref container) => {
                                 if let Err(e) = ios::device::clear_container(container).await {
                                     warn!(error = %e, "Failed to clear app container");
@@ -3187,16 +3467,70 @@ impl proto::tapsmith_service_server::TapsmithService for TapsmithServiceImpl {
                 let mut last_error = "openDeepLink: app did not reach destination".to_string();
                 let mut verify_result: Option<Result<AgentResponse, Status>> = None;
                 let mut attempt: u32 = 0;
+                // One-shot escalation for the compositor outage: when the
+                // agent reports the display is not rendering (black screen
+                // with a healthy a11y tree), app relaunches provably don't
+                // recover it — only recreating the whole render surface does.
+                // Reboot the simulator, bring the agent back, and re-deliver.
+                let mut rebooted_for_black_display = false;
                 loop {
                     attempt += 1;
-                    let _ = self
-                        .send_agent_command_with_timeout(
+                    if last_error.contains("display is not rendering")
+                        && !rebooted_for_black_display
+                        && !self.is_active_ios_physical().await
+                    {
+                        rebooted_for_black_display = true;
+                        warn!(
+                            %serial, uri = %req.uri,
+                            "display is not rendering and an app relaunch cannot recover a dead \
+                             compositor; rebooting the simulator and restarting the agent"
+                        );
+                        let _ = ios::device::shutdown_simulator(&serial).await;
+                        if let Err(e) = ios::device::boot_simulator(&serial).await {
+                            warn!(%serial, error = %e, "simulator reboot failed; continuing with re-delivery");
+                        } else {
+                            // Give SpringBoard a moment past `Booted` before
+                            // asking xcodebuild to install/launch the runner.
+                            tokio::time::sleep(Duration::from_secs(5)).await;
+                            if let Err(e) = self
+                                .restart_ios_agent_for_app(&serial, &bundle_id, false, 5_000)
+                                .await
+                            {
+                                warn!(%serial, error = %e, "agent restart after simulator reboot failed");
+                            }
+                        }
+                        // The reboot is recovery, not a delivery attempt —
+                        // don't let it consume one.
+                        attempt -= 1;
+                    }
+                    // The terminate MUST actually land: `simctl openurl` to a
+                    // still-running app foregrounds it without delivering any
+                    // navigation event to React Native, and the verify below
+                    // can't tell that apart from a legitimate delivery whose
+                    // destination renders like the current screen — the app
+                    // silently stays where it was while the reset "succeeds".
+                    // The agent now confirms the process died; when it can't
+                    // (observed under CoreSimulator pressure with agent
+                    // commands running 10-40s), force it host-side before
+                    // delivering.
+                    let terminate_confirmed = matches!(
+                        self.send_agent_command_with_timeout(
                             &AgentCommand::TerminateApp {
                                 package: bundle_id.clone(),
                             },
-                            4_000,
+                            10_000,
                         )
-                        .await;
+                        .await,
+                        Ok(resp) if resp.success
+                    );
+                    if !terminate_confirmed {
+                        warn!(
+                            %serial, uri = %req.uri,
+                            "agent could not confirm app termination; forcing simctl \
+                             terminate so openurl cold-launches the app"
+                        );
+                        let _ = ios::device::terminate_app(&serial, &bundle_id).await;
+                    }
                     tokio::time::sleep(Duration::from_millis(200)).await;
 
                     if let Err(e) = self
@@ -3250,7 +3584,13 @@ impl proto::tapsmith_service_server::TapsmithService for TapsmithServiceImpl {
                         Err(status) => status.message().to_string(),
                     };
                     verify_result = Some(result);
-                    if attempt >= max_attempts {
+                    // A display-not-rendering failure is exempt from the
+                    // attempt cap until the one-shot reboot escalation (top of
+                    // loop) has had its chance — re-delivery alone provably
+                    // can't fix it, so counting it against the cap just gives up.
+                    let reboot_pending = last_error.contains("display is not rendering")
+                        && !rebooted_for_black_display;
+                    if attempt >= max_attempts && !reboot_pending {
                         warn!(
                             %serial, uri = %req.uri, attempt, max_attempts,
                             error = %last_error,
@@ -3694,7 +4034,10 @@ impl proto::tapsmith_service_server::TapsmithService for TapsmithServiceImpl {
                 // properly re-establishes the XCUITest accessibility bridge.
                 // Clearing data while the app is running is fine because the
                 // app will be relaunched anyway.
-                match ios::device::get_app_container(&serial, &req.package_name).await {
+                match self
+                    .get_app_container_cached(&serial, &req.package_name)
+                    .await
+                {
                     Ok(ref container) => {
                         if let Err(e) = ios::device::clear_container(container).await {
                             warn!(error = %e, "Failed to clear app container, continuing anyway");
@@ -3792,11 +4135,36 @@ impl proto::tapsmith_service_server::TapsmithService for TapsmithServiceImpl {
                 }
                 // Use simctl pbcopy to avoid the iOS 16+ paste permission dialog
                 // that would crash the XCUITest agent if it accessed UIPasteboard.
+                //
+                // pbcopy rides the sim's pasteboard-sync service, which wedges
+                // intermittently on CI — retry briefly, then fall back to the
+                // agent's `UIPasteboard.general.string = ...` (the physical-
+                // device path above): clipboard WRITES don't trigger the iOS
+                // 16+ paste prompt, so the fallback is prompt-safe on
+                // simulators too.
                 let serial = self.active_serial().await?;
-                ios::device::set_clipboard(&serial, &req.text)
-                    .await
-                    .map_err(|e| Status::internal(e.to_string()))?;
-                Ok(Self::success_action_response(request_id))
+                let mut last_err: Option<anyhow::Error> = None;
+                for attempt in 0..3 {
+                    if attempt > 0 {
+                        tokio::time::sleep(Duration::from_millis(500)).await;
+                    }
+                    match ios::device::set_clipboard(&serial, &req.text).await {
+                        Ok(()) => return Ok(Self::success_action_response(request_id)),
+                        Err(e) => {
+                            warn!(%serial, attempt, error = %e, "simctl pbcopy failed");
+                            last_err = Some(e);
+                        }
+                    }
+                }
+                let pbcopy_err = last_err.expect("loop ran at least once");
+                info!(%serial, "Falling back to agent UIPasteboard write after pbcopy failures");
+                let command = AgentCommand::SetClipboard { text: req.text };
+                let result = self.send_agent_command(&command).await.map_err(|agent_err| {
+                    Status::internal(format!(
+                        "Failed to set clipboard on {serial}: {pbcopy_err} (agent fallback also failed: {agent_err})"
+                    ))
+                })?;
+                self.make_action_response(request_id, Ok(result)).await
             }
             Platform::Android => {
                 // Use the on-device agent for clipboard operations since it has
@@ -3840,10 +4208,34 @@ impl proto::tapsmith_service_server::TapsmithService for TapsmithServiceImpl {
                 } else {
                     // Use simctl pbpaste to avoid the iOS 16+ paste permission dialog
                     // that would crash the XCUITest agent if it accessed UIPasteboard.
+                    // Same bounded retry as set_clipboard — the sim's
+                    // pasteboard-sync service wedges intermittently on CI.
                     let serial = self.active_serial().await?;
-                    ios::device::get_clipboard(&serial)
-                        .await
-                        .map_err(|e| Status::internal(e.to_string()))?
+                    let mut text = None;
+                    let mut last_err = None;
+                    for attempt in 0..3 {
+                        if attempt > 0 {
+                            tokio::time::sleep(Duration::from_millis(500)).await;
+                        }
+                        match ios::device::get_clipboard(&serial).await {
+                            Ok(t) => {
+                                text = Some(t);
+                                break;
+                            }
+                            Err(e) => {
+                                warn!(%serial, attempt, error = %e, "simctl pbpaste failed");
+                                last_err = Some(e);
+                            }
+                        }
+                    }
+                    match text {
+                        Some(t) => t,
+                        None => {
+                            return Err(Status::internal(
+                                last_err.expect("loop ran at least once").to_string(),
+                            ))
+                        }
+                    }
                 }
             }
             Platform::Android => {
@@ -4230,13 +4622,34 @@ impl proto::tapsmith_service_server::TapsmithService for TapsmithServiceImpl {
 
         match platform {
             Platform::Ios if !is_ios_physical => {
-                // Simulator path — install CA into the simulator's trust store.
-                if let Err(e) = ios::device::install_ca_cert(&serial, &ca_pem_path).await {
-                    let msg = format!(
-                        "Failed to install CA cert on simulator: {e} — HTTPS traffic will not be captured"
-                    );
-                    error!("{msg}");
-                    warnings.push(msg);
+                // Simulator path — install CA into the simulator's trust store
+                // once per session; it stays trusted for subsequent captures.
+                // Per-UDID set, not a single slot: workers switching between
+                // simulators on a shared daemon would otherwise evict each
+                // other's entry and re-run the slow install on every switch.
+                let already_installed = self
+                    .ios_ca_cert_installed
+                    .read()
+                    .await
+                    .contains(serial.as_str());
+                if already_installed {
+                    debug!(%serial, "MITM CA already installed on simulator this session");
+                } else {
+                    match ios::device::install_ca_cert(&serial, &ca_pem_path).await {
+                        Ok(()) => {
+                            self.ios_ca_cert_installed
+                                .write()
+                                .await
+                                .insert(serial.clone());
+                        }
+                        Err(e) => {
+                            let msg = format!(
+                                "Failed to install CA cert on simulator: {e} — HTTPS traffic will not be captured"
+                            );
+                            error!("{msg}");
+                            warnings.push(msg);
+                        }
+                    }
                 }
             }
             Platform::Ios => {
@@ -4574,7 +4987,24 @@ impl proto::tapsmith_service_server::TapsmithService for TapsmithServiceImpl {
     ) -> Result<Response<proto::StopNetworkCaptureResponse>, Status> {
         let req = request.into_inner();
         let request_id = Self::request_id(&req.request_id);
-        let keep_running = req.keep_running;
+        // `mut` is only exercised on macOS (the system-proxy fallback below).
+        #[cfg_attr(not(target_os = "macos"), allow(unused_mut))]
+        let mut keep_running = req.keep_running;
+
+        // In macOS system-proxy fallback mode (NE redirector unavailable —
+        // typical on CI runner images), a full per-test teardown toggles
+        // `networksetup` off, kills the listener, and the next start re-toggles
+        // the proxy to a NEW port and re-touches the sim's trust store. That
+        // configd/network churn was observed wedging CoreSimulatorService for
+        // 6–12 minutes, starving every simctl-backed RPC behind it. Keep the
+        // proxy and system-proxy setting alive for the whole session instead:
+        // drain entries here, reuse the listener on the next start, and leave
+        // the real teardown to cleanup_network_proxy() at daemon shutdown.
+        #[cfg(target_os = "macos")]
+        if !keep_running && self.ios_system_proxy_service.read().await.is_some() {
+            debug!("stop_network_capture: keeping system-proxy fallback capture alive for session");
+            keep_running = true;
+        }
 
         if keep_running {
             // Give in-flight requests a moment to complete before draining,
@@ -5189,7 +5619,7 @@ impl proto::tapsmith_service_server::TapsmithService for TapsmithServiceImpl {
                 }
                 // iOS simulator: app container is on the host filesystem.
                 // Use simctl to find it, then tar it directly.
-                let container = match ios::device::get_app_container(&serial, pkg).await {
+                let container = match self.get_app_container_cached(&serial, pkg).await {
                     Ok(path) => path,
                     Err(e) => {
                         return Ok(self
@@ -5581,7 +6011,7 @@ impl proto::tapsmith_service_server::TapsmithService for TapsmithServiceImpl {
                 // then extract the saved archive.
                 let _ = ios::device::terminate_app(&serial, pkg).await;
 
-                let container = match ios::device::get_app_container(&serial, pkg).await {
+                let container = match self.get_app_container_cached(&serial, pkg).await {
                     Ok(path) => path,
                     Err(e) => {
                         return Ok(self
@@ -6396,6 +6826,16 @@ impl proto::tapsmith_service_server::TapsmithService for TapsmithServiceImpl {
     ) -> Result<Response<proto::ActionResponse>, Status> {
         let req = request.into_inner();
         let request_id = Self::request_id(&req.request_id);
+
+        // Same HID-first routing as `long_press` (see the rationale there).
+        #[cfg(target_os = "macos")]
+        if self
+            .try_hid_long_press_coords(req.x, req.y, req.duration_ms)
+            .await
+        {
+            return Ok(Self::success_action_response(request_id));
+        }
+
         let command = AgentCommand::LongPressCoordinates {
             x: req.x,
             y: req.y,
