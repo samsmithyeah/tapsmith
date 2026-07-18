@@ -402,11 +402,17 @@ const threeThings = [
                 response. When a test fails in CI, download the trace and replay it locally. No
                 guessing, no "works on my machine."
               </p>
-              <img
-                src="/trace-viewer.png"
-                alt="Tapsmith trace viewer showing a failed authentication test with timeline, device screenshot, action log, and error details"
-                class="tp-devtools-img"
-              />
+              <button
+                type="button"
+                class="tp-devtools-zoom"
+                aria-label="Enlarge trace viewer screenshot"
+              >
+                <img
+                  src="/trace-viewer.png"
+                  alt="Tapsmith trace viewer showing a failed authentication test with timeline, device screenshot, action log, and error details"
+                  class="tp-devtools-img"
+                />
+              </button>
               <div class="tp-devtools-code">
                 <pre class="tp-snippet-code">npx tapsmith show-trace trace.zip</pre>
               </div>
@@ -418,11 +424,17 @@ const threeThings = [
                 live, browse traces and screenshots inline, and mirror the device screen, all
                 without leaving the browser.
               </p>
-              <img
-                src="/ui-mode.png"
-                alt="Tapsmith UI mode showing the interactive test runner with test list, live device mirror, and network inspection panel"
-                class="tp-devtools-img"
-              />
+              <button
+                type="button"
+                class="tp-devtools-zoom"
+                aria-label="Enlarge UI mode screenshot"
+              >
+                <img
+                  src="/ui-mode.png"
+                  alt="Tapsmith UI mode showing the interactive test runner with test list, live device mirror, and network inspection panel"
+                  class="tp-devtools-img"
+                />
+              </button>
               <div class="tp-devtools-code">
                 <pre class="tp-snippet-code">npx tapsmith test --ui</pre>
               </div>
@@ -455,6 +467,11 @@ const threeThings = [
         </div>
       </section>
     </main>
+
+    <!-- Lightbox for enlarged screenshots -->
+    <dialog class="tp-lightbox" id="tp-lightbox">
+      <img class="tp-lightbox-img" src="" alt="" />
+    </dialog>
 
     <!-- 9. Footer -->
     <footer class="tp-footer">
@@ -565,6 +582,24 @@ const threeThings = [
 
         tabs.forEach((t, i) => {
           t.setAttribute('tabindex', i === 0 ? '0' : '-1')
+        })
+      }
+
+      const lightbox = document.getElementById('tp-lightbox') as HTMLDialogElement | null
+      if (lightbox) {
+        const lightboxImg = lightbox.querySelector('.tp-lightbox-img') as HTMLImageElement
+        document.querySelectorAll('.tp-devtools-zoom').forEach((btn) => {
+          btn.addEventListener('click', () => {
+            const img = btn.querySelector('img')
+            if (!img) return
+            lightboxImg.src = img.src
+            lightboxImg.alt = img.alt
+            lightbox.showModal()
+          })
+        })
+        // Close on any click (backdrop or image)
+        lightbox.addEventListener('click', () => {
+          lightbox.close()
         })
       }
     </script>
@@ -1303,7 +1338,7 @@ const threeThings = [
       .tp-devtools-card .tp-devtools-body {
         grid-column: 1;
       }
-      .tp-devtools-card .tp-devtools-img {
+      .tp-devtools-card .tp-devtools-zoom {
         grid-column: 2;
         grid-row: 1 / -1;
         align-self: center;
@@ -1321,11 +1356,42 @@ const threeThings = [
         color: var(--tp-ink-2);
         line-height: 1.7;
       }
+      .tp-devtools-zoom {
+        display: block;
+        padding: 0;
+        margin: 0;
+        border: none;
+        background: none;
+        cursor: zoom-in;
+        border-radius: var(--tp-radius);
+      }
       .tp-devtools-img {
+        display: block;
         width: 100%;
         border-radius: var(--tp-radius);
         border: 1px solid var(--tp-border);
         box-shadow: 0 4px 24px -4px rgba(0, 0, 0, 0.1);
+      }
+      .tp-lightbox {
+        border: none;
+        padding: 0;
+        margin: auto;
+        max-width: min(1400px, 92vw);
+        max-height: 92vh;
+        background: transparent;
+        overflow: visible;
+      }
+      .tp-lightbox::backdrop {
+        background: rgba(10, 10, 12, 0.82);
+        backdrop-filter: blur(4px);
+      }
+      .tp-lightbox-img {
+        display: block;
+        max-width: 100%;
+        max-height: 92vh;
+        border-radius: var(--tp-radius);
+        cursor: zoom-out;
+        box-shadow: 0 12px 48px rgba(0, 0, 0, 0.5);
       }
       .tp-devtools-code {
         margin-top: auto;
@@ -1478,7 +1544,7 @@ const threeThings = [
         .tp-devtools-card {
           grid-template-columns: 1fr;
         }
-        .tp-devtools-card .tp-devtools-img {
+        .tp-devtools-card .tp-devtools-zoom {
           grid-column: 1;
           grid-row: auto;
         }

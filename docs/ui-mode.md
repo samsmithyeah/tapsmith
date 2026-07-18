@@ -10,7 +10,7 @@ npx tapsmith test --ui
 
 This opens an interactive web-based test runner in your browser. The UI server picks an available port automatically and prints the URL to the terminal.
 
-<img src="/ui-mode.png" alt="UI mode showing the interactive test runner with test list, live device mirror, and network inspection panel" />
+![UI mode running a network-mocking test across Android and iOS, with the test tree, trace actions, mocked network response, and live device mirrors](images/ui-mode.png)
 
 To set a specific port:
 
@@ -49,6 +49,8 @@ The pick button (crosshair icon) in the mirror header turns the mirror into an e
 - **Hover** highlights the element under the cursor.
 - **Click** selects the element and opens the **Locator** tab with suggested locators (role, text, test ID, ...). Suggestions are checked for uniqueness against the device's current UI, and match highlights draw directly on the mirror.
 - Editing the locator in the Locator tab updates the match highlights live, so you can refine a selector against the real app state without running a test.
+
+![Pick mode in the live device mirror: the picked element is highlighted on the device and the Locator tab lists suggested locators with match counts](images/ui-mode-pick-locator.png)
 
 The Locator tab has a **Trace | Live** toggle showing which hierarchy it is bound to: `Trace` matches against the selected action's captured hierarchy (highlights draw on the screenshot), `Live` matches against the device's current UI (highlights draw on the mirror). Picking sets the source automatically -- the toggle lets you flip a locator between the two without re-picking. Switching to Live takes a fresh snapshot of the device UI.
 
