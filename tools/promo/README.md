@@ -78,14 +78,22 @@ cd ../tools/promo && node record-ui.mjs      # runs the network-mocking test liv
 python3 build-clips.py                       # rebuild clip-ui.mp4 / clip-trace.mp4
 ```
 
-After re-recording the UI clip, re-derive the SOURCE-row patch windows: the
-Call tab shows the test file's **absolute path**, and `comp.html` covers it
-with a neutral path (`.src-patch` divs) during frame-accurately detected
-windows. The detection recipe (crop the row bands to raw grayscale, threshold
-dark pixels per frame) is in the git history of this file's session notes —
-or simply re-measure: extract crops around the post-pass segment, find when
-each of the three panel layouts shows SOURCE, and update the `show('patchA'|
-'patchB'|'patchC', ...)` windows in `comp.html`.
+After rebuilding `clip-ui.mp4`, regenerate the SOURCE-row patch table: the
+Call tab shows the running test file's **absolute path** (during the run it
+auto-shows each action's panel, so the row appears many times at varying
+heights). `detect-paths.py` scans every frame for it (continuous monospace
+run in the value column reaching far right) and writes `patch-table.js`,
+which `comp.html` uses to cover the row with a neutral path, frame-accurately:
+
+```bash
+./venv/bin/python detect-paths.py   # clip-ui.mp4 -> patch-table.js
+node probe-s3.mjs 31.5 33 36 40     # spot-check stills of the patched scene
+```
+
+`clip-ui-session.mp4` is a full-session archive cut (near-real pacing) kept
+so future re-cuts of the UI scene don't require a simulator: point
+`build-clips.py` at it (or keep the raw `ui-frames/` around) instead of
+re-recording.
 
 ## Files
 
@@ -96,9 +104,12 @@ each of the three panel layouts shows SOURCE, and update the `show('patchA'|
 | `assemble.sh` | frames + VO + music -> `tapsmith-promo.mp4` (loudnorm -14 LUFS) |
 | `record.mjs` / `record-ui.mjs` | Screen-recording choreography (CDP screencast) |
 | `server.mjs` | Local trace-viewer server (no browser auto-open) |
-| `build-clips.py` | Screencast frames -> retimed 30fps clips |
+| `build-clips.py` | Screencast frames -> retimed 30fps clips (UI: setup / streaming run / results) |
+| `detect-paths.py` | Scans clip-ui.mp4 for absolute-path rows -> `patch-table.js` |
+| `probe-s3.mjs` | Renders QC stills of specific timeline moments |
 | `synth-music.py` | Ambient music bed (numpy, deterministic) |
 | `vo/lines.txt` | Voiceover script, one line per segment |
 | `assets/` | Vector mark, Poppins/JetBrains Mono woff2, screenshots |
 | `clip-ui.mp4` / `clip-trace.mp4` | Finished screen-recording clips |
+| `clip-ui-session.mp4` | Full UI-mode session archive (source for future re-cuts) |
 | `demo-trace.zip` | Scrubbed failing trace driving the trace-viewer recording |

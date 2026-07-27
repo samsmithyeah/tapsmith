@@ -12,3 +12,13 @@ clip-trace.txt
 tapsmith-promo.mp4
 probe-*.jpg
 qc-*.jpg
+shim/
+*.log
+chk*.png
+seq-*.png
+s3probe-*.jpg
+s3crop*.png
+s3crops.png
+pix-*.png
+scan.raw
+s3scan.raw

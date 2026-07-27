@@ -140,9 +140,8 @@
         <div class="url">localhost:4830 · Tapsmith UI Mode</div>
       </div>
       <video id="v-ui" src="clip-ui.mp4" muted preload="auto"></video>
-      <div class="src-patch" id="patchA" style="top:953px;height:22px">/Users/dev/acme-mobile/e2e/tests/network-mocking.test.ts:103</div>
-      <div class="src-patch" id="patchB" style="top:1023px;height:22px">/Users/dev/acme-mobile/e2e/tests/network-mocking.test.ts:87</div>
-      <div class="src-patch" id="patchC" style="top:1000px;height:21px">/Users/dev/acme-mobile/e2e/tests/network-mocking.test.ts:91</div>
+      <div class="src-patch" id="src-patch0"></div>
+      <div class="src-patch" id="src-patch1"></div>
     </div>
     <div class="scene-label" id="l3"><div class="pin"></div>UI Mode — run tests live</div>
   </div>
@@ -182,6 +181,7 @@
   <div class="fade" id="fade"></div>
 </div>
 
+<script src="patch-table.js"></script>
 <script>
 const $ = (id) => document.getElementById(id);
 window.addEventListener('DOMContentLoaded', () => { $('lk6').innerHTML = $('lk1').innerHTML; });
@@ -296,14 +296,27 @@ window.seekComp = async function(t) {
     b.style.transform = `translate(-50%, -50%) scale(${1.0 + 0.018 * P(t, 24, 46.8)})`;
     const l = $('l3');
     l.style.opacity = P(t, 24.6, 25.2) * (1 - P(t, 45.4, 46.2));
-    // Cover the real filesystem path in the Call tab's SOURCE row with a neutral
-    // one. Windows detected frame-accurately from the clip (three panel layouts).
+    // Cover the real filesystem path in the Call tab's SOURCE row with a
+    // neutral one. Windows + row geometry come from patch-table.js (generated
+    // per-frame by detect-paths.py from the clip itself).
     const clipT = rel + UI_CLIP_OFFSET;
-    const show = (id, on) => { $(id).style.display = on ? 'flex' : 'none'; };
-    show('patchA', clipT >= 12.933 && clipT < 15.633);
-    show('patchB', (clipT >= 15.633 && clipT < 17.6) || (clipT >= 18.4 && clipT < 19.733));
-    show('patchC', clipT >= 17.6 && clipT < 18.233);
-    jobs.push(seekVideo($('v-ui'), clipT));
+    const clipFrame = Math.round(clipT * 30);
+    const VS = 1598 / 1920;  // clip -> displayed video scale
+    const active = (window.PATCH_RUNS || []).filter((r) => clipFrame >= r.f0 && clipFrame <= r.f1);
+    for (let pi = 0; pi < 2; pi++) {
+      const patch = $(`src-patch${pi}`);
+      const run = active[pi];
+      if (run) {
+        patch.style.display = 'flex';
+        patch.style.top = `${46 + run.y0 * VS}px`;
+        patch.style.height = `${(run.y1 - run.y0) * VS}px`;
+        patch.textContent = run.text;
+      } else {
+        patch.style.display = 'none';
+      }
+    }
+    // seek to mid-frame so the displayed video frame always equals clipFrame
+    jobs.push(seekVideo($('v-ui'), (clipFrame + 0.5) / 30));
   }
   // ── S4 trace ──
   if (t >= T.s4[0] - 0.3 && t < T.s4[1] + 0.4) {

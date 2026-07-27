@@ -9,7 +9,9 @@ fs.mkdirSync(OUT);
 const browser = await puppeteer.launch({
   executablePath: '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
   headless: 'new',
-  args: ['--no-first-run', '--hide-scrollbars', '--force-device-scale-factor=2'],
+  timeout: 120000,
+  args: ['--no-first-run', '--hide-scrollbars', '--force-device-scale-factor=2',
+         '--user-data-dir=/tmp/promo-chrome-profile', '--no-default-browser-check'],
 });
 const page = await browser.newPage();
 await page.setViewport({ width: 1600, height: 1000, deviceScaleFactor: 2 });
