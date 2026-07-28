@@ -1,7 +1,9 @@
 # Promo video pipeline
 
-Generates `tapsmith-promo.mp4` — an ~80s promotional video (1080p30, voiceover,
-music, real screen recordings of UI mode and the trace viewer).
+Generates `tapsmith-promo.mp4` — an ~89s promotional video (1080p30, voiceover,
+music, real screen recordings of UI mode and the trace viewer, plus synthetic
+scenes: a YAML-flow -> TypeScript morph with an autocomplete moment, and an
+MCP-server scene showing an agent writing and running a test).
 
 The video is defined as a deterministic timeline in **`comp.html`**
 (`window.seekComp(t)` renders the exact frame for any time `t`), rendered
@@ -28,13 +30,14 @@ while IFS='|' read -r n text; do
   ./venv/bin/edge-tts --voice en-US-AndrewMultilingualNeural --rate=-4% \
     --text "$text" --write-media "vo/seg$n.mp3"
 done < vo/lines.txt
+# (seg6, the feature list, is synthesized at --rate=+8% to fit its scene)
 
 # 2. Music bed (deterministic synth; regenerates music.wav)
 ./venv/bin/python synth-music.py
 
 # 3. Render all frames at 2x (≈10 min), or a subrange for quick edits
 node render-comp.mjs full 2              # everything
-node render-comp.mjs full 2 705 1410     # only frames 705-1409 (S3, for example)
+node render-comp.mjs full 2 738 1315     # only the UI-mode scene, for example
 node render-comp.mjs probe               # quick QC stills at key timestamps
 
 # 4. Assemble final mp4
@@ -87,7 +90,15 @@ which `comp.html` uses to cover the row with a neutral path, frame-accurately:
 
 ```bash
 ./venv/bin/python detect-paths.py   # clip-ui.mp4 -> patch-table.js
-node probe-s3.mjs 31.5 33 36 40     # spot-check stills of the patched scene
+node probe-s3.mjs 30 33 36 40       # spot-check stills of the patched scene
+```
+
+After every full render, run the leak sweep, which re-detects path-like rows
+in the rendered S3 frames and verifies each one is covered by an active patch
+run (it accounts for the scene's zoom drift and clip playback rate):
+
+```bash
+./venv/bin/python sweep-s3.py       # expect "0 uncovered path-like rows"
 ```
 
 `clip-ui-session.mp4` is a full-session archive cut (near-real pacing) kept
@@ -106,10 +117,12 @@ re-recording.
 | `server.mjs` | Local trace-viewer server (no browser auto-open) |
 | `build-clips.py` | Screencast frames -> retimed 30fps clips (UI: setup / streaming run / results) |
 | `detect-paths.py` | Scans clip-ui.mp4 for absolute-path rows -> `patch-table.js` |
+| `sweep-s3.py` | Post-render leak sweep: verifies every path row in S3 is patched |
 | `probe-s3.mjs` | Renders QC stills of specific timeline moments |
 | `synth-music.py` | Ambient music bed (numpy, deterministic) |
 | `vo/lines.txt` | Voiceover script, one line per segment |
 | `assets/` | Vector mark, Poppins/JetBrains Mono woff2, screenshots |
 | `clip-ui.mp4` / `clip-trace.mp4` | Finished screen-recording clips |
 | `clip-ui-session.mp4` | Full UI-mode session archive (source for future re-cuts) |
+| `clip-mirror.mp4` | Device-mirror crop of the session archive (MCP scene) |
 | `demo-trace.zip` | Scrubbed failing trace driving the trace-viewer recording |

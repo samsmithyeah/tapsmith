@@ -1,6 +1,7 @@
-1|Mobile UI testing is stuck in the past. Flaky selectors, hard-coded sleeps, and failures you can't reproduce.
-2|Tapsmith changes that. It brings the Playwright developer experience to iOS and Android — one TypeScript API for both platforms.
-3|This is UI mode. Pick a test, and watch it run live on real simulators — every tap, assertion, and network call streaming in as it happens.
-4|And when a test fails, you don't guess. Every run records a full trace. Time-travel through screenshots, inspect each action, and see exactly what your app looked like when things broke — with hints that tell you the fix.
-5|Auto-waiting assertions. Network mocking. Accessibility-first selectors. Parallel workers. Built for CI from day one.
-6|Tapsmith. Mobile testing that finally feels modern. Get started at tapsmith dot dev.
+1|Mobile UI testing is stuck. Flaky selectors. Hard-coded sleeps. Or flows that hit a wall the moment you need real logic.
+2|Tapsmith is the next step. As readable as a flow file — but real TypeScript: autocomplete, type safety, reusable helpers. One API for iOS and Android.
+3|This is UI mode — studio-style running, and then some. Pick a test and watch it run live: every tap, assertion, and network call streaming in, with the full accessibility tree a click away.
+4|UI mode isn't just for humans — it's an MCP server. Connect Claude Code, and your agent reads the accessibility tree, writes the test — network mock included — and verifies it passes.
+5|And when a test fails — even on CI — you don't guess. Time-travel through screenshots, actions, and network calls to see exactly what broke — with hints that tell you the fix.
+6|Auto-waiting assertions. In-test network mocking. Accessibility-first selectors. Parallel workers. An MCP server for AI agents. Built for CI from day one.
+7|Tapsmith. Mobile testing that finally feels modern. Get started at tapsmith dot dev.

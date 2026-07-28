@@ -45,10 +45,19 @@
                       border-bottom: 1px solid #383026; }
   .dot { width: 14px; height: 14px; border-radius: 50%; margin-right: 10px; }
   #code-window .fname { margin-left: 18px; font-family: ui-monospace, Menlo, monospace; font-size: 21px; color: #a89f93; }
-  #code { padding: 40px 48px 48px; font-family: ui-monospace, 'SF Mono', Menlo, monospace;
-          font-size: 27px; line-height: 1.72; white-space: pre; color: #e8e4df; min-height: 480px; }
-  #code .kw { color: #fd8567; } #code .st { color: #9ec98a; } #code .fn { color: #82aaff; }
-  #code .cm { color: #6f675c; } #code .caret { border-left: 3px solid #fd8567; margin-left: 1px; }
+  #code2 { position: relative; padding: 40px 48px 48px; font-family: ui-monospace, 'SF Mono', Menlo, monospace;
+           font-size: 27px; line-height: 1.72; white-space: pre; color: #e8e4df; height: 560px; }
+  .cl { position: absolute; left: 48px; right: 48px; height: 46.44px; opacity: 0; }
+  .kw { color: #fd8567; } .st { color: #9ec98a; } .fn { color: #82aaff; } .cm { color: #6f675c; }
+  .caret { border-left: 3px solid #fd8567; margin-left: 1px; }
+  /* autocomplete dropdown */
+  #acbox { position: absolute; width: 380px; background: #2a241d; border: 1px solid #4a4030;
+           border-radius: 10px; box-shadow: 0 18px 60px rgba(0,0,0,0.6); overflow: hidden; opacity: 0;
+           font-family: ui-monospace, Menlo, monospace; font-size: 22px; z-index: 5; white-space: normal; }
+  .ac-row { display: flex; align-items: center; gap: 14px; padding: 7px 18px; color: #c9c2b8; }
+  .ac-row.hl { background: rgba(253,133,103,0.18); color: #f0ece6; }
+  .ac-row .fico { color: #82aaff; font-style: normal; }
+  .ac-row .fico::before { content: 'ƒ'; }
   .platform-chips { position: absolute; left: 50%; bottom: 74px; transform: translateX(-50%); display: flex; gap: 20px; }
   .chip { font-size: 26px; padding: 12px 28px; border-radius: 999px; color: #e8e4df;
           background: rgba(253,133,103,0.12); border: 1px solid rgba(253,133,103,0.45); }
@@ -68,13 +77,43 @@
                  padding: 16px 28px; box-shadow: 0 12px 44px rgba(0,0,0,0.5); }
   .scene-label .pin { width: 12px; height: 12px; border-radius: 3px; background: #fd8567; }
 
+  /* S3.5 MCP agent scene */
+  #agent-win { position: absolute; left: 110px; top: 50%; transform: translateY(-50%);
+               width: 1070px; background: #1c1712; border: 1px solid #3a3228; border-radius: 18px;
+               box-shadow: 0 40px 120px rgba(0,0,0,0.55); overflow: hidden; }
+  #agent-win .bar { height: 52px; background: #26201a; display: flex; align-items: center; padding: 0 22px;
+                    border-bottom: 1px solid #383026; }
+  #ag-body { padding: 34px 42px 40px; font-family: ui-monospace, 'SF Mono', Menlo, monospace;
+             font-size: 23px; line-height: 1.62; color: #d8d2ca; height: 640px; white-space: pre-wrap; }
+  .ag-prompt { color: #e8e4df; }
+  .ag-prompt .ps { color: #fd8567; margin-right: 14px; }
+  .ag-el { opacity: 0; }
+  .ag-step { margin-top: 24px; }
+  .ag-step .dot2 { color: #fd8567; margin-right: 12px; }
+  .ag-step .tname { color: #82aaff; }
+  .ag-step .dim, .ag-res .dim { color: #a89f93; }
+  .ag-res { margin-top: 4px; padding-left: 35px; color: #a89f93; }
+  .ag-res .ok { color: #7ec97f; }
+  .ag-code { margin-top: 12px; margin-left: 35px; padding: 18px 26px; background: #211c17;
+             border: 1px solid #383026; border-radius: 12px; font-size: 21px; line-height: 1.6; white-space: pre; }
+  .ag-code .ln { opacity: 0; display: block; }
+  #ag-spin { display: inline-block; width: 17px; height: 17px; border-radius: 50%; margin-left: 14px;
+             border: 3px solid #3a3228; border-top-color: #fd8567; vertical-align: -2px; }
+  #phone-card { position: absolute; right: 130px; top: 50%; transform: translateY(-50%);
+                width: 452px; background: #f4f2ef; border-radius: 22px; padding: 20px 24px 24px;
+                box-shadow: 0 40px 120px rgba(0,0,0,0.55); }
+  #phone-card .cap { display: flex; align-items: center; gap: 10px; font-size: 17px; font-weight: 600;
+                     letter-spacing: 0.08em; color: #6b6459; padding: 2px 4px 12px; }
+  #phone-card .cap .live { width: 10px; height: 10px; border-radius: 50%; background: #37c26e; }
+  #phone-card video { display: block; width: 404px; height: 847px; object-fit: cover; border-radius: 12px; }
+
   /* S5 features */
   #s5 .bgshot { position: absolute; inset: -40px; background: url('assets/ui-mode.png') center/cover;
                 filter: blur(26px) brightness(0.38) saturate(0.85); }
   #s5 .veil { position: absolute; inset: 0; background: rgba(23,19,16,0.45); }
   #s5 .head { position: absolute; left: 0; right: 0; top: 150px; text-align: center; font-size: 52px;
               font-weight: 700; color: #e8e4df; }
-  #feat { position: absolute; left: 50%; top: 300px; transform: translateX(-50%); width: 1180px;
+  #feat { position: absolute; left: 50%; top: 300px; transform: translateX(-50%); width: 1280px;
           display: flex; flex-wrap: wrap; gap: 26px; justify-content: center; }
   .feat { font-size: 34px; font-weight: 600; color: #e8e4df; padding: 26px 44px; border-radius: 18px;
           background: rgba(38,32,26,0.92); border: 1px solid #3a3228; box-shadow: 0 18px 60px rgba(0,0,0,0.4); }
@@ -112,7 +151,7 @@
   <div class="scene" id="s2a">
     <div class="prob" id="p1" style="top:36%"><span class="x">✕</span>Flaky selectors</div>
     <div class="prob" id="p2" style="top:47%"><span class="x">✕</span>sleep(5000)</div>
-    <div class="prob" id="p3" style="top:58%"><span class="x">✕</span>Failures you can’t reproduce</div>
+    <div class="prob" id="p3" style="top:58%"><span class="x">✕</span>Flows that hit a wall</div>
   </div>
 
   <div class="scene" id="s2b">
@@ -121,9 +160,15 @@
         <div class="dot" style="background:#ff5f57"></div>
         <div class="dot" style="background:#febc2e"></div>
         <div class="dot" style="background:#28c840"></div>
-        <div class="fname">checkout.test.ts</div>
+        <div class="fname" id="fname">checkout.flow.yaml</div>
       </div>
-      <div id="code"></div>
+      <div id="code2">
+        <div id="acbox">
+          <div class="ac-row hl"><i class="fico"></i>toBeVisible</div>
+          <div class="ac-row"><i class="fico"></i>toBeHidden</div>
+          <div class="ac-row"><i class="fico"></i>toBeTruthy</div>
+                  </div>
+      </div>
     </div>
     <div class="platform-chips" id="chips">
       <div class="chip">iOS Simulators &amp; Devices</div>
@@ -146,6 +191,23 @@
     <div class="scene-label" id="l3"><div class="pin"></div>UI Mode — run tests live</div>
   </div>
 
+  <div class="scene" id="s35">
+    <div id="agent-win">
+      <div class="bar">
+        <div class="dot" style="background:#ff5f57"></div>
+        <div class="dot" style="background:#febc2e"></div>
+        <div class="dot" style="background:#28c840"></div>
+        <div class="fname">Claude Code — acme-mobile</div>
+      </div>
+      <div id="ag-body"><div class="ag-prompt"><span class="ps">❯</span><span id="ag-typed"></span><span class="caret" id="ag-caret"></span></div><div class="ag-el ag-step" id="ag-s1"><span class="dot2">⏺</span><span class="tname">tapsmith_snapshot</span> <span class="dim">(device: "iPhone 17")</span></div><div class="ag-el ag-res" id="ag-r1">⎿  <span class="dim">38 interactive elements</span></div><div class="ag-el ag-step" id="ag-s2"><span class="dot2">⏺</span><span class="tname">Write</span> <span class="dim">(e2e/tests/api-error.test.ts)</span></div><div class="ag-el ag-code" id="ag-codebox"><span class="ln"><span class="kw">await</span> device.<span class="fn">route</span>(<span class="st">'**/posts*'</span>, (route) =&gt;</span><span class="ln">  route.<span class="fn">fulfill</span>({ status: <span class="kw">500</span> }))</span><span class="ln"><span class="kw">await</span> device.<span class="fn">getByRole</span>(<span class="st">'button'</span>, <span class="st">'Fetch Posts'</span>).<span class="fn">tap</span>()</span><span class="ln"><span class="kw">await</span> <span class="fn">expect</span>(device.<span class="fn">getByText</span>(<span class="st">'Request failed'</span>)).<span class="fn">toBeVisible</span>()</span></div><div class="ag-el ag-step" id="ag-s3"><span class="dot2">⏺</span><span class="tname">tapsmith_run_tests</span> <span class="dim">(files: ["api-error.test.ts"])</span><span id="ag-spin"></span></div><div class="ag-el ag-res" id="ag-pass">⎿  <span class="ok">✓ 1 passed</span> <span class="dim">(4.2s)</span></div></div>
+    </div>
+    <div id="phone-card">
+      <div class="cap"><div class="live"></div>LIVE DEVICE MIRROR</div>
+      <video id="v-mirror" src="clip-mirror.mp4" muted preload="auto"></video>
+    </div>
+    <div class="scene-label" id="l35"><div class="pin"></div>MCP server — bring your own agent</div>
+  </div>
+
   <div class="scene" id="s4">
     <div class="browser" id="b4">
       <div class="bar">
@@ -165,9 +227,10 @@
     <div class="head">Everything you expect. On mobile.</div>
     <div id="feat">
       <div class="feat"><span class="tick">✓</span>Auto-waiting assertions</div>
-      <div class="feat"><span class="tick">✓</span>Network mocking</div>
+      <div class="feat"><span class="tick">✓</span>In-test network mocking</div>
       <div class="feat"><span class="tick">✓</span>Accessibility-first selectors</div>
       <div class="feat"><span class="tick">✓</span>Parallel workers</div>
+      <div class="feat"><span class="tick">✓</span>MCP server for AI agents</div>
       <div class="feat"><span class="tick">✓</span>Built for CI</div>
     </div>
   </div>
@@ -190,47 +253,92 @@ const ease = (x) => x < 0.5 ? 2*x*x : 1 - Math.pow(-2*x + 2, 2) / 2;
 const easeOut = (x) => 1 - Math.pow(1 - x, 3);
 // progress of t within [a,b]
 const P = (t, a, b) => clamp((t - a) / (b - a), 0, 1);
-
-// ─── Code typing ───
-const CODE = [
-  ["kw","import"],["pl"," { "],["pl","test"],["pl",", "],["pl","expect"],["pl"," } "],["kw","from"],["st"," 'tapsmith'"],["pl","\n\n"],
-  ["fn","test"],["pl","("],["st","'checkout applies discount'"],["pl",", "],["kw","async"],["pl"," ({ "],["pl","device"],["pl"," }) => {\n"],
-  ["pl","  "],["kw","await"],["pl"," device."],["fn","getByRole"],["pl","("],["st","'textfield'"],["pl",", "],["st","'Promo code'"],["pl",")."],["fn","type"],["pl","("],["st","'LAUNCH20'"],["pl",")\n"],
-  ["pl","  "],["kw","await"],["pl"," device."],["fn","getByRole"],["pl","("],["st","'button'"],["pl",", "],["st","'Apply'"],["pl",")."],["fn","tap"],["pl","()\n\n"],
-  ["pl","  "],["kw","await"],["pl"," "],["fn","expect"],["pl","(device."],["fn","getByText"],["pl","("],["st","'20% off'"],["pl","))."],["fn","toBeVisible"],["pl","()\n"],
-  ["pl","})"]
-];
-const FLAT = [];
-for (const [cls, txt] of CODE) for (const ch of txt) FLAT.push([cls, ch]);
-function renderCode(chars, caret) {
-  let html = '', curCls = null, buf = '';
-  const flush = () => {
-    if (buf) html += curCls === 'pl' ? esc(buf) : `<span class="${curCls}">${esc(buf)}</span>`;
-    buf = '';
-  };
-  for (let i = 0; i < Math.min(chars, FLAT.length); i++) {
-    const [cls, ch] = FLAT[i];
-    if (cls !== curCls) { flush(); curCls = cls; }
-    buf += ch;
-  }
-  flush();
-  if (caret) html += '<span class="caret"></span>';
-  $('code').innerHTML = html;
-}
 function esc(s) { return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+
+// ─── S2b: YAML flow that morphs into the TypeScript test ───
+const LH = 46.44;
+const YAML_ROWS = [
+  '<span class="fn">appId:</span> com.acme.shop',
+  '<span class="cm">---</span>',
+  '- <span class="fn">launchApp</span>',
+  '- <span class="fn">tapOn:</span> <span class="st">"Promo code"</span>',
+  '- <span class="fn">inputText:</span> <span class="st">"LAUNCH20"</span>',
+  '- <span class="fn">tapOn:</span> <span class="st">"Apply"</span>',
+  '- <span class="fn">assertVisible:</span> <span class="st">"20% off"</span>',
+];
+const TS_ROWS = [
+  '<span class="kw">import</span> { test, expect } <span class="kw">from</span> <span class="st">\'tapsmith\'</span>',
+  '',
+  '<span class="fn">test</span>(<span class="st">\'checkout applies discount\'</span>, <span class="kw">async</span> ({ device }) =&gt; {',
+  '  <span class="kw">await</span> device.<span class="fn">getByRole</span>(<span class="st">\'textfield\'</span>, <span class="st">\'Promo code\'</span>).<span class="fn">type</span>(<span class="st">\'LAUNCH20\'</span>)',
+  '  <span class="kw">await</span> device.<span class="fn">getByRole</span>(<span class="st">\'button\'</span>, <span class="st">\'Apply\'</span>).<span class="fn">tap</span>()',
+  '',
+  '',   // row 6: typed live
+  '})',
+];
+// typed line: prefix tokens then "toBe" then accepted completion
+const TYPE_TOKENS = [
+  ['pl','  '],['kw','await'],['pl',' '],['fn','expect'],['pl','(device.'],['fn','getByText'],
+  ['pl','('],['st','\'20% off\''],['pl',')).'],
+];
+const TYPE_FLAT = [];
+for (const [cls, txt] of TYPE_TOKENS) for (const ch of txt) TYPE_FLAT.push([cls, ch]);
+const NPREFIX = TYPE_FLAT.length;          // chars in "  await expect(...))."
+const CW = 16.24;                          // monospace advance at 27px
+
+// build row divs once
+window.addEventListener('DOMContentLoaded', () => {
+  const c = $('code2');
+  YAML_ROWS.forEach((h, i) => {
+    const d = document.createElement('div');
+    d.className = 'cl'; d.id = `yr${i}`; d.style.top = `${40 + i * LH}px`; d.innerHTML = h;
+    c.appendChild(d);
+  });
+  TS_ROWS.forEach((h, i) => {
+    const d = document.createElement('div');
+    d.className = 'cl'; d.id = `tr${i}`; d.style.top = `${40 + i * LH}px`; d.innerHTML = h;
+    c.appendChild(d);
+  });
+  // dropdown sits under row 6, anchored where "toBe" starts
+  const ac = $('acbox');
+  ac.style.left = `${48 + NPREFIX * CW - 6}px`;
+  ac.style.top = `${40 + 7 * LH + 4}px`;
+});
+
+function renderTyped(t) {
+  // returns html for the live-typed row 6 and dropdown/caret state
+  const TY = 15.5, PRE_END = 18.1, TB0 = 18.4, TB1 = 19.2, ACCEPT = 19.75;
+  if (t < TY) return { html: '', caret: false, ac: 0 };
+  if (t >= ACCEPT) {
+    let html = '';
+    for (const [cls, txt] of TYPE_TOKENS) html += cls === 'pl' ? esc(txt) : `<span class="${cls}">${esc(txt)}</span>`;
+    html += '<span class="fn">toBeVisible</span>()';
+    return { html, caret: t < 20.8 && (t * 2) % 1 < 0.55, ac: 0 };
+  }
+  let n = Math.floor(NPREFIX * clamp((t - TY) / (PRE_END - TY), 0, 1));
+  let html = '', curCls = null, buf = '';
+  const flush = () => { if (buf) html += curCls === 'pl' ? esc(buf) : `<span class="${curCls}">${esc(buf)}</span>`; buf = ''; };
+  for (let i = 0; i < n; i++) { const [cls, ch] = TYPE_FLAT[i]; if (cls !== curCls) { flush(); curCls = cls; } buf += ch; }
+  flush();
+  const tb = 'toBe'.slice(0, Math.floor(4 * P(t, TB0, TB1)));
+  html += esc(tb);
+  return { html, caret: (t * 2) % 1 < 0.55, ac: t >= TB0 + 0.05 ? 1 : 0 };
+}
 
 // ─── Timeline ───
 const T = {
-  s1: [0, 5.0],
-  s2a: [5.0, 13.6],
-  s2b: [13.6, 24.0],
-  s3: [24.0, 46.8],
-  s4: [46.8, 63.6],
-  s5: [63.6, 73.4],
-  s6: [73.4, 80.5],
+  s1:  [0, 4.4],
+  s2a: [4.4, 10.2],
+  s2b: [10.2, 24.6],
+  s3:  [24.6, 43.8],
+  s35: [43.8, 57.8],
+  s4:  [57.8, 70.6],
+  s5:  [70.6, 82.4],
+  s6:  [82.4, 89.0],
 };
 const UI_CLIP_OFFSET = 0.4;    // start clip slightly in
-const TRACE_CLIP_OFFSET = 0.0;
+const UI_RATE = 1.18;          // ui clip playback rate (footage 23.2s into 19.2s scene)
+const TRACE_RATE = 1.24;       // trace clip playback rate (15.9s into 12.8s scene)
 
 function seekVideo(v, t) {
   return new Promise((resolve) => {
@@ -246,25 +354,25 @@ function seekVideo(v, t) {
 window.seekComp = async function(t) {
   const jobs = [];
   // default: all scenes hidden
-  for (const id of ['s1','s2a','s2b','s3','s4','s5','s6']) $(id).style.opacity = 0;
+  for (const id of ['s1','s2a','s2b','s3','s35','s4','s5','s6']) $(id).style.opacity = 0;
 
   // ── S1 ──
   if (t < T.s1[1] + 0.5) {
     const s = $('s1');
-    s.style.opacity = P(t, 0.15, 0.7) * (1 - P(t, 4.55, 5.0));
+    s.style.opacity = P(t, 0.15, 0.7) * (1 - P(t, 3.95, 4.4));
     const lg = s.querySelector('.lockup');
-    const k = easeOut(P(t, 0.15, 1.6));
+    const k = easeOut(P(t, 0.15, 1.5));
     lg.style.transform = `translate(-50%, -50%) scale(${0.88 + 0.12 * k})`;
-    lg.style.opacity = P(t, 0.15, 1.0);
+    lg.style.opacity = P(t, 0.15, 0.95);
     const tag = s.querySelector('.tagline');
-    tag.style.opacity = P(t, 1.7, 2.6);
-    tag.style.transform = `translateY(${(1 - easeOut(P(t, 1.7, 2.6))) * 24}px)`;
+    tag.style.opacity = P(t, 1.5, 2.3);
+    tag.style.transform = `translateY(${(1 - easeOut(P(t, 1.5, 2.3))) * 24}px)`;
   }
   // ── S2a problems ──
   if (t >= T.s2a[0] - 0.3 && t < T.s2a[1] + 0.4) {
     const s = $('s2a');
-    s.style.opacity = P(t, 5.0, 5.4) * (1 - P(t, 13.1, 13.6));
-    const starts = [5.6, 7.6, 9.6];
+    s.style.opacity = P(t, 4.4, 4.8) * (1 - P(t, 9.7, 10.2));
+    const starts = [4.8, 6.2, 7.7];
     ['p1','p2','p3'].forEach((id, i) => {
       const el = $(id);
       const k = easeOut(P(t, starts[i], starts[i] + 0.7));
@@ -272,34 +380,55 @@ window.seekComp = async function(t) {
       el.style.transform = `translateY(${(1 - k) * 30}px)`;
     });
   }
-  // ── S2b code ──
+  // ── S2b code: YAML -> TypeScript morph, then autocomplete ──
   if (t >= T.s2b[0] - 0.3 && t < T.s2b[1] + 0.4) {
     const s = $('s2b');
-    s.style.opacity = P(t, 13.6, 14.1) * (1 - P(t, 23.5, 24.0));
+    s.style.opacity = P(t, 10.2, 10.7) * (1 - P(t, 24.1, 24.6));
     const w = $('code-window');
-    const k = easeOut(P(t, 13.6, 14.4));
+    const k = easeOut(P(t, 10.2, 11.0));
     w.style.transform = `translate(-50%, -50%) scale(${0.96 + 0.04 * k})`;
-    const typeStart = 14.3, typeDur = 6.8;
-    const chars = Math.floor(FLAT.length * clamp((t - typeStart) / typeDur, 0, 1));
-    renderCode(chars, (t * 2) % 1 < 0.55);
+    const MST = 13.4;                       // morph start
+    // yaml rows: paste in at 10.9, morph out at MST (staggered)
+    YAML_ROWS.forEach((_, i) => {
+      const el = $(`yr${i}`);
+      const inK = P(t, 10.9 + i * 0.05, 11.15 + i * 0.05);
+      const outK = easeOut(P(t, MST + i * 0.12, MST + 0.4 + i * 0.12));
+      el.style.opacity = inK * (1 - outK);
+      el.style.transform = `translateY(${-12 * outK}px)`;
+    });
+    // ts rows: morph in (staggered), row 6 is typed live
+    const typed = renderTyped(t);
+    TS_ROWS.forEach((_, i) => {
+      const el = $(`tr${i}`);
+      if (i === 6) {
+        el.innerHTML = typed.html + (typed.caret ? '<span class="caret"></span>' : '');
+        el.style.opacity = 1;
+        return;
+      }
+      const inK = easeOut(P(t, MST + 0.2 + i * 0.12, MST + 0.6 + i * 0.12));
+      el.style.opacity = inK;
+      el.style.transform = `translateY(${12 * (1 - inK)}px)`;
+    });
+    $('acbox').style.opacity = typed.ac;
+    $('fname').textContent = t < MST + 0.75 ? 'checkout.flow.yaml' : 'checkout.test.ts';
     const chips = $('chips');
-    const ck = easeOut(P(t, 21.2, 21.9));
+    const ck = easeOut(P(t, 22.2, 22.9));
     chips.style.opacity = ck;
     chips.style.transform = `translateX(-50%) translateY(${(1 - ck) * 26}px)`;
   }
   // ── S3 UI mode ──
   if (t >= T.s3[0] - 0.3 && t < T.s3[1] + 0.4) {
     const s = $('s3');
-    s.style.opacity = P(t, 24.0, 24.45) * (1 - P(t, 46.35, 46.8));
-    const rel = clamp(t - T.s3[0], 0, 22.8);
+    s.style.opacity = P(t, 24.6, 25.05) * (1 - P(t, 43.35, 43.8));
+    const rel = clamp(t - T.s3[0], 0, 19.2);
     const b = $('b3');
-    b.style.transform = `translate(-50%, -50%) scale(${1.0 + 0.018 * P(t, 24, 46.8)})`;
+    b.style.transform = `translate(-50%, -50%) scale(${1.0 + 0.018 * P(t, T.s3[0], T.s3[1])})`;
     const l = $('l3');
-    l.style.opacity = P(t, 24.6, 25.2) * (1 - P(t, 45.4, 46.2));
+    l.style.opacity = P(t, 25.2, 25.8) * (1 - P(t, 42.4, 43.2));
     // Cover the real filesystem path in the Call tab's SOURCE row with a
     // neutral one. Windows + row geometry come from patch-table.js (generated
     // per-frame by detect-paths.py from the clip itself).
-    const clipT = rel + UI_CLIP_OFFSET;
+    const clipT = rel * UI_RATE + UI_CLIP_OFFSET;
     const clipFrame = Math.round(clipT * 30);
     const VS = 1598 / 1920;  // clip -> displayed video scale
     const active = (window.PATCH_RUNS || []).filter((r) => clipFrame >= r.f0 && clipFrame <= r.f1);
@@ -318,54 +447,88 @@ window.seekComp = async function(t) {
     // seek to mid-frame so the displayed video frame always equals clipFrame
     jobs.push(seekVideo($('v-ui'), (clipFrame + 0.5) / 30));
   }
+  // ── S3.5 MCP agent ──
+  if (t >= T.s35[0] - 0.3 && t < T.s35[1] + 0.4) {
+    const s = $('s35');
+    const S = T.s35[0];
+    s.style.opacity = P(t, S, S + 0.45) * (1 - P(t, 57.35, 57.8));
+    const win = $('agent-win');
+    const wk = easeOut(P(t, S, S + 0.7));
+    win.style.transform = `translateY(-50%) translateX(${(1 - wk) * -30}px)`;
+    const card = $('phone-card');
+    card.style.transform = `translateY(-50%) translateX(${(1 - wk) * 40}px)`;
+    // prompt typing
+    const PROMPT = 'Add a test: when the posts API returns a 500, the app shows an error state.';
+    const n = Math.floor(PROMPT.length * P(t, S + 0.4, S + 2.5));
+    $('ag-typed').textContent = PROMPT.slice(0, n);
+    $('ag-caret').style.opacity = t < S + 2.9 && (t * 2) % 1 < 0.55 ? 1 : 0;
+    // steps reveal
+    const reveals = [['ag-s1', 3.0], ['ag-r1', 3.8], ['ag-s2', 4.6], ['ag-codebox', 4.9], ['ag-s3', 7.9], ['ag-pass', 12.1]];
+    for (const [id, at] of reveals) {
+      const el = $(id);
+      const k = easeOut(P(t, S + at, S + at + 0.4));
+      el.style.opacity = k;
+      el.style.transform = `translateY(${(1 - k) * 8}px)`;
+    }
+    document.querySelectorAll('#ag-codebox .ln').forEach((el, i) => {
+      el.style.opacity = P(t, S + 5.1 + i * 0.5, S + 5.35 + i * 0.5);
+    });
+    // spinner: spins while the run is in flight, turns into nothing after pass
+    const spin = $('ag-spin');
+    spin.style.display = t >= S + 7.9 && t < S + 12.1 ? 'inline-block' : 'none';
+    spin.style.transform = `rotate(${(t * 540) % 360}deg)`;
+    const l = $('l35');
+    l.style.opacity = P(t, S + 0.9, S + 1.5) * (1 - P(t, 56.6, 57.3));
+    jobs.push(seekVideo($('v-mirror'), clamp(t - S, 0, 14.2)));
+  }
   // ── S4 trace ──
   if (t >= T.s4[0] - 0.3 && t < T.s4[1] + 0.4) {
     const s = $('s4');
-    s.style.opacity = P(t, 46.8, 47.25) * (1 - P(t, 63.15, 63.6));
-    const rel = clamp(t - T.s4[0], 0, 15.9);
+    s.style.opacity = P(t, 57.8, 58.25) * (1 - P(t, 70.15, 70.6));
+    const rel = clamp(t - T.s4[0], 0, 12.8);
     const b = $('b4');
-    b.style.transform = `translate(-50%, -50%) scale(${1.018 - 0.018 * P(t, 46.8, 63.6)})`;
+    b.style.transform = `translate(-50%, -50%) scale(${1.018 - 0.018 * P(t, T.s4[0], T.s4[1])})`;
     const l = $('l4');
-    l.style.opacity = P(t, 47.4, 48.0) * (1 - P(t, 62.2, 63.0));
-    jobs.push(seekVideo($('v-trace'), rel + TRACE_CLIP_OFFSET));
+    l.style.opacity = P(t, 58.4, 59.0) * (1 - P(t, 69.2, 70.0));
+    jobs.push(seekVideo($('v-trace'), rel * TRACE_RATE));
   }
   // ── S5 features ──
   if (t >= T.s5[0] - 0.3 && t < T.s5[1] + 0.4) {
     const s = $('s5');
-    s.style.opacity = P(t, 63.6, 64.0) * (1 - P(t, 73.0, 73.4));
+    s.style.opacity = P(t, 70.6, 71.0) * (1 - P(t, 81.9, 82.4));
     const feats = document.querySelectorAll('.feat');
     feats.forEach((el, i) => {
-      const st = 64.1 + i * 1.72;
+      const st = 71.0 + i * 1.55;
       const k = easeOut(P(t, st, st + 0.5));
       el.style.opacity = k;
       el.style.transform = `translateY(${(1 - k) * 34}px) scale(${0.92 + 0.08 * k})`;
     });
     const head = s.querySelector('.head');
-    head.style.opacity = P(t, 63.8, 64.4);
+    head.style.opacity = P(t, 70.8, 71.4);
   }
   // ── S6 outro ──
   if (t >= T.s6[0] - 0.3) {
     const s = $('s6');
-    s.style.opacity = P(t, 73.4, 73.9);
+    s.style.opacity = P(t, 82.4, 82.9);
     const lg = s.querySelector('.lockup');
-    const k = easeOut(P(t, 73.4, 74.6));
+    const k = easeOut(P(t, 82.4, 83.6));
     lg.style.transform = `translate(-50%, -50%) scale(${0.9 + 0.1 * k})`;
     const u = s.querySelector('.url');
-    u.style.opacity = P(t, 74.4, 75.0);
-    u.style.transform = `translateY(${(1 - easeOut(P(t, 74.4, 75.0))) * 20}px)`;
+    u.style.opacity = P(t, 83.4, 84.0);
+    u.style.transform = `translateY(${(1 - easeOut(P(t, 83.4, 84.0))) * 20}px)`;
     const p = s.querySelector('.pill');
-    p.style.opacity = P(t, 75.4, 76.0);
+    p.style.opacity = P(t, 84.4, 85.0);
   }
   // final fade to black
-  $('fade').style.opacity = P(t, 79.7, 80.4);
+  $('fade').style.opacity = P(t, 88.2, 88.9);
 
   await Promise.all(jobs);
   return true;
 };
 
 window.compReady = new Promise((resolve) => {
-  let need = 2;
-  for (const id of ['v-ui', 'v-trace']) {
+  let need = 3;
+  for (const id of ['v-ui', 'v-trace', 'v-mirror']) {
     const v = $(id);
     if (v.readyState >= 2) { if (--need === 0) resolve(); }
     else v.addEventListener('loadeddata', () => { if (--need === 0) resolve(); });

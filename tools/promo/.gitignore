@@ -22,3 +22,8 @@ s3crops.png
 pix-*.png
 scan.raw
 s3scan.raw
+fin-*.png
+mcp-*.png
+sweep.raw
+clip-ui-session.txt
+qc-*.png
