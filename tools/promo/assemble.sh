@@ -25,3 +25,5 @@ ffmpeg -y -framerate 30 -i comp-frames/f%05d.jpg \
   tapsmith-promo.mp4
 
 ffprobe -v quiet -show_entries format=duration,size -of default=nw=1 tapsmith-promo.mp4
+# keep the repo-root copy (the one that gets shared) in sync
+cp tapsmith-promo.mp4 ../../tapsmith-promo.mp4
