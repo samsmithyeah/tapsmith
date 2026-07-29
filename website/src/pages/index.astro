@@ -194,6 +194,21 @@ const threeThings = [
         </div>
       </section>
 
+      <!-- 2b. Demo video -->
+      <section class="tp-demo" id="demo">
+        <div class="tp-container">
+          <video
+            class="tp-demo-video"
+            src="/promo.mp4"
+            poster="/promo-poster.jpg"
+            controls
+            preload="metadata"
+            playsinline
+          ></video>
+          <p class="tp-demo-caption">Tapsmith in 100 seconds — UI mode, the selector playground, the MCP server, and the trace viewer.</p>
+        </div>
+      </section>
+
       <!-- 3. Proof strip -->
       <section class="tp-proof">
         <div class="tp-container tp-proof-inner">
@@ -1025,6 +1040,28 @@ const threeThings = [
         gap: 8px;
         box-shadow: var(--tp-shadow-chip);
         pointer-events: auto;
+      }
+
+      /* ─── 2b. Demo video ─── */
+      .tp-demo {
+        padding: 1rem 0 4.5rem;
+      }
+      .tp-demo-video {
+        display: block;
+        width: 100%;
+        max-width: 1040px;
+        margin: 0 auto;
+        border-radius: 14px;
+        border: 1px solid var(--tp-border);
+        box-shadow: 0 30px 90px rgba(0, 0, 0, 0.45);
+        background: #171310;
+      }
+      .tp-demo-caption {
+        margin: 1rem auto 0;
+        max-width: 1040px;
+        text-align: center;
+        font-size: 0.9rem;
+        color: var(--tp-ink-3);
       }
 
       /* ─── 3. Proof strip ─── */
