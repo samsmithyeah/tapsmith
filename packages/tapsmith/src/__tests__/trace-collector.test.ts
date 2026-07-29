@@ -473,6 +473,26 @@ describe('TraceCollector', () => {
     expect(collector.events).toHaveLength(0);
   });
 
+  it('pendingOperationStack exposes the in-flight operation frames and clears with the registration', () => {
+    const collector = new TraceCollector(config, tempDir);
+    const stack = [
+      { file: '/repo/e2e/login.test.ts', line: 110, column: 35 },
+      { file: '/repo/e2e/helpers.ts', line: 12, column: 3 },
+    ];
+
+    expect(collector.pendingOperationStack).toBeNull();
+
+    collector.setPendingOperation(() => {}, stack);
+    expect(collector.pendingOperationStack).toEqual(stack);
+
+    collector.clearPendingOperation();
+    expect(collector.pendingOperationStack).toBeNull();
+
+    collector.setPendingOperation(() => {}, stack);
+    collector.failPendingOperation('timeout');
+    expect(collector.pendingOperationStack).toBeNull();
+  });
+
   it('failPendingOperation only fires once (idempotent)', () => {
     const collector = new TraceCollector(config, tempDir);
 

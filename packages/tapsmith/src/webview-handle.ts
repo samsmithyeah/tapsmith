@@ -283,7 +283,7 @@ export class WebViewHandle {
         sourceLocation,
         stack,
       });
-    });
+    }, stack);
 
     try {
       result = await fn(deadline);

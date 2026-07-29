@@ -376,7 +376,7 @@ function wrapAssertionWithTrace(
         hasHierarchyBefore: !!beforeCaptures.hierarchyBefore,
         hasHierarchyAfter: false,
       } as Parameters<typeof trace.collector.addAssertionEvent>[0]);
-    });
+    }, stack);
 
     try {
       await fn(...args);
@@ -1680,7 +1680,7 @@ function createWebViewAssertions(
         hasHierarchyBefore: !!beforeCaptures.hierarchyBefore,
         hasHierarchyAfter: false,
       } as Parameters<typeof traceCtx.collector.addAssertionEvent>[0]);
-    });
+    }, stack);
 
     try {
       await fn();

@@ -10,6 +10,7 @@
 
 import * as fs from 'node:fs';
 import * as path from 'node:path';
+import { extractStack } from '../trace/trace-collector.js';
 import type { TapsmithReporter, FullResult } from '../reporter.js';
 import type { TapsmithConfig } from '../config.js';
 type OpenMode = 'always' | 'never' | 'on-failure'
@@ -338,18 +339,14 @@ function extractCodeSnippetForHtml(
 ): { file: string; lines: HtmlSnippetLine[] } | null {
   if (!error.stack) return null;
 
-  const frames = error.stack.split('\n').slice(1);
-  const userFrame = frames.find(
-    (l) => !l.includes('/packages/tapsmith/') && !l.includes('node:internal/') && l.includes(':'),
-  );
-  if (!userFrame) return null;
+  // extractStack owns the framework-frame classification: it skips tapsmith
+  // internals in both layouts (packages/tapsmith/* in the monorepo,
+  // node_modules/* for npm installs) plus node internals.
+  const userLoc = extractStack(error.stack)[0];
+  if (!userLoc) return null;
 
-  const match = userFrame.trim().match(/\(?([^()]+):(\d+):\d+\)?$/);
-  if (!match) return null;
-
-  const filePath = match[1];
-  const lineNum = parseInt(match[2], 10);
-  if (isNaN(lineNum)) return null;
+  const filePath = userLoc.file;
+  const lineNum = userLoc.line;
 
   try {
     if (!fs.existsSync(filePath)) return null;
