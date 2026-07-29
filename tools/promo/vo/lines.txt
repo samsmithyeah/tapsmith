@@ -1,0 +1,8 @@
+1|Mobile test automation has lagged behind the web for a while. Flaky selectors. Hard-coded sleeps. Or declarative flows that hit a wall the moment you need real logic.
+2|Tapsmith is the next step. As readable as a YAML flow file — but real TypeScript: autocomplete, type safety, reusable helpers. One API for iOS and Android.
+3|This is the Tapsmith UI mode. Pick a test and watch it run live: every tap, assertion, and network call streaming in, with the full accessibility tree a click away.
+4|No more selector guesswork. Point at an element on the live mirror, and the playground hands you a robust, accessibility-first locator — every match highlighted live.
+5|UI mode isn't just for humans — it's an MCP server. Connect Claude Code, and your agent discovers your tests, writes a new one — network mock included — and verifies it passes.
+6|And when a test fails — even on CI — you don't guess. Time-travel through screenshots, actions, and network calls to see exactly what broke — with hints that tell you the fix.
+7|Auto-waiting assertions. In-test network mocking. Accessibility-first selectors. Parallel workers. An MCP server for AI agents. Built for CI from day one.
+8|Tapsmith. Mobile testing that finally feels modern. Get started at tapsmith dot dev.
