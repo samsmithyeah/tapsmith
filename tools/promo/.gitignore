@@ -37,3 +37,17 @@ col.raw
 v5-*.png
 qc5-*.png
 sweep.raw
+pick-frames/
+clip-pick.txt
+clip-pick-session.txt
+clip-mcp-full.txt
+pk-*.jpg
+pk2-*.jpg
+pk-look.png
+pk2-look.png
+probe-page.png
+probe.raw
+canvas-rect.json
+qc6-*.png
+v6*.png
+qc*.png

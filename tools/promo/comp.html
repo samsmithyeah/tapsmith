@@ -20,7 +20,7 @@
   .scene { position: absolute; inset: 0; opacity: 0; }
 
   /* Vector logo lockup */
-  .lockup { position: absolute; left: 50%; top: 44%; transform: translate(-50%, -50%);
+  .lockup { position: absolute; left: 50%; top: 47%; transform: translate(-50%, -50%);
             display: flex; align-items: center; gap: 26px; }
   .lockup svg { display: block; }
   .lockup .word { font-family: 'Poppins', sans-serif; font-weight: 500; color: #d6d1c9;
@@ -30,7 +30,7 @@
   .src-patch { position: absolute; left: 438px; padding-left: 8px; width: 562px; background: #fafafa;
                font-family: 'JetBrains Mono', monospace; font-weight: 400; font-size: 13px;
                color: #3b4148; display: none; align-items: center; white-space: nowrap; overflow: hidden; }
-  #s1 .tagline { position: absolute; left: 0; right: 0; top: 58%; text-align: center;
+  #s1 .tagline { position: absolute; left: 0; right: 0; top: 55.5%; text-align: center;
                  font-size: 40px; font-weight: 400; color: #b8b0a6; letter-spacing: 0.01em; }
   #s1 .tagline b { color: #e8e4df; font-weight: 600; }
 
@@ -58,6 +58,13 @@
   .ac-row.hl { background: rgba(253,133,103,0.18); color: #f0ece6; }
   .ac-row .fico { color: #82aaff; font-style: normal; }
   .ac-row .fico::before { content: 'ƒ'; }
+  #code-window .bar { position: relative; }
+  .win-badge { position: absolute; right: 22px; top: 50%; transform: translateY(-50%);
+               display: flex; align-items: center; gap: 9px; font-size: 17px; color: #8a8175;
+               border: 1px solid #4a4030; border-radius: 999px; padding: 6px 16px; opacity: 0; }
+  .win-badge.tapsmith { color: #fd8567; border-color: rgba(253,133,103,0.5);
+                        background: rgba(253,133,103,0.09); font-weight: 600; }
+  .win-badge svg { height: 20px; }
   .platform-chips { position: absolute; left: 50%; bottom: 74px; transform: translateX(-50%); display: flex; gap: 20px; }
   .chip { font-size: 26px; padding: 12px 28px; border-radius: 999px; color: #e8e4df;
           background: rgba(253,133,103,0.12); border: 1px solid rgba(253,133,103,0.45); }
@@ -102,11 +109,12 @@
   #mcp-card { position: absolute; right: 118px; top: 50%; transform: translateY(-50%);
               width: 306px; border-radius: 14px; overflow: hidden; background: #26201a;
               border: 1px solid #3a3228; box-shadow: 0 40px 120px rgba(0,0,0,0.55); }
-  #mcp-card .bar { height: 40px; display: flex; align-items: center; padding: 0 14px; background: #26201a;
-                   border-bottom: 1px solid #38302655; }
-  #mcp-card .bar .dot { width: 11px; height: 11px; margin-right: 8px; }
-  #mcp-card .url { margin: 0 auto; font-family: ui-monospace, Menlo, monospace; font-size: 13px;
-                   color: #a89f93; background: #1c1712; border-radius: 6px; padding: 4px 18px; }
+  #mcp-card .lab { display: flex; align-items: center; gap: 10px; height: 44px; padding: 0 14px;
+                   background: #26201a; border-bottom: 1px solid #38302655;
+                   font-size: 14.5px; font-weight: 600; color: #e8e4df; }
+  #mcp-card .pin { width: 10px; height: 10px; border-radius: 3px; background: #fd8567; flex-shrink: 0; }
+  #mcp-hl { position: absolute; left: 1295px; top: 98px; width: 304px; height: 947px;
+            border: 3px solid #fd8567; border-radius: 8px; opacity: 0; pointer-events: none; }
   #mcp-card video { display: block; width: 304px; height: 948px; object-fit: cover; }
 
   /* S5 features */
@@ -147,13 +155,13 @@
       </svg>
       <span class="word">Tapsmith</span>
     </div>
-    <div class="tagline">Mobile testing, <b>the Playwright way</b>.</div>
+    <div class="tagline">The web testing experience, <b>on mobile</b>.</div>
   </div>
 
   <div class="scene" id="s2a">
     <div class="prob" id="p1" style="top:36%"><span class="x">✕</span>Flaky selectors</div>
     <div class="prob" id="p2" style="top:47%"><span class="x">✕</span>sleep(5000)</div>
-    <div class="prob" id="p3" style="top:58%"><span class="x">✕</span>Flows that hit a wall</div>
+    <div class="prob" id="p3" style="top:58%"><span class="x">✕</span>Restrictive YAML flows</div>
   </div>
 
   <div class="scene" id="s2b">
@@ -163,6 +171,8 @@
         <div class="dot" style="background:#febc2e"></div>
         <div class="dot" style="background:#28c840"></div>
         <div class="fname" id="fname">checkout.flow.yaml</div>
+        <span class="win-badge" id="wb-yaml">generic YAML flow</span>
+        <span class="win-badge tapsmith" id="wb-ts">Tapsmith</span>
       </div>
       <div id="code2">
         <div id="acbox">
@@ -193,7 +203,30 @@
     <div class="scene-label" id="l3"><div class="pin"></div>UI Mode — run tests live</div>
   </div>
 
+  <div class="scene" id="s37">
+    <div class="browser" id="b37">
+      <div class="bar">
+        <div class="dot" style="background:#ff5f57"></div>
+        <div class="dot" style="background:#febc2e"></div>
+        <div class="dot" style="background:#28c840"></div>
+        <div class="url">localhost:4830 · Tapsmith UI Mode</div>
+      </div>
+      <video id="v-pick" src="clip-pick.mp4" muted preload="auto"></video>
+    </div>
+    <div class="scene-label" id="l37"><div class="pin"></div>Selector playground — point, click, locate</div>
+  </div>
+
   <div class="scene" id="s35">
+    <div class="browser" id="mcp-full">
+      <div class="bar">
+        <div class="dot" style="background:#ff5f57"></div>
+        <div class="dot" style="background:#febc2e"></div>
+        <div class="dot" style="background:#28c840"></div>
+        <div class="url">localhost:4830 · Tapsmith UI Mode</div>
+      </div>
+      <video id="v-mcpfull" src="clip-mcp-full.mp4" muted preload="auto"></video>
+      <div id="mcp-hl"></div>
+    </div>
     <div id="agent-win">
       <div class="bar">
         <div class="dot" style="background:#ff5f57"></div>
@@ -204,12 +237,7 @@
       <div id="ag-body"><div class="ag-prompt"><span class="ps">❯</span><span id="ag-typed"></span><span class="caret" id="ag-caret"></span></div><div class="ag-el ag-step" id="ag-s1"><span class="dot2">⏺</span><span class="tname">tapsmith_list_tests</span> <span class="dim">()</span></div><div class="ag-el ag-res" id="ag-r1">⎿  <span class="dim">222 tests across 36 files</span></div><div class="ag-el ag-step" id="ag-s2"><span class="dot2">⏺</span><span class="tname">Write</span> <span class="dim">(e2e/tests/api-error.test.ts)</span></div><div class="ag-el ag-code" id="ag-codebox"><span class="ln"><span class="kw">await</span> device.<span class="fn">route</span>(<span class="st">'**/posts*'</span>, (route) =&gt;</span><span class="ln">  route.<span class="fn">fulfill</span>({ status: <span class="kw">500</span> }))</span><span class="ln"><span class="kw">await</span> device.<span class="fn">getByRole</span>(<span class="st">'button'</span>, { name: <span class="st">'Fetch Posts'</span> }).<span class="fn">tap</span>()</span><span class="ln"><span class="kw">await</span> <span class="fn">expect</span>(device.<span class="fn">getByText</span>(<span class="st">'Failed to fetch posts: HTTP 500'</span>)).<span class="fn">toBeVisible</span>()</span></div><div class="ag-el ag-step" id="ag-s3"><span class="dot2">⏺</span><span class="tname">tapsmith_run_tests</span> <span class="dim">(files: ["api-error.test.ts"])</span><span id="ag-spin"></span></div><div class="ag-el ag-res" id="ag-pass">⎿  <span class="ok">✓ 1 passed</span> <span class="dim">(13.4s)</span></div><div class="ag-el ag-step" id="ag-s4"><span class="dot2">⏺</span><span class="tname">tapsmith_screenshot</span> <span class="dim">()</span></div><div class="ag-el ag-res" id="ag-r4">⎿  <span class="dim">PNG image captured</span></div></div>
     </div>
     <div id="mcp-card">
-      <div class="bar">
-        <div class="dot" style="background:#ff5f57"></div>
-        <div class="dot" style="background:#febc2e"></div>
-        <div class="dot" style="background:#28c840"></div>
-        <div class="url">UI Mode · MCP</div>
-      </div>
+      <div class="lab"><div class="pin"></div>UI Mode — MCP panel · live mirror</div>
       <video id="v-mcp" src="clip-mcp.mp4" muted preload="auto"></video>
     </div>
     <div class="scene-label" id="l35"><div class="pin"></div>MCP server — bring your own agent</div>
@@ -254,7 +282,10 @@
 <script src="patch-table.js"></script>
 <script>
 const $ = (id) => document.getElementById(id);
-window.addEventListener('DOMContentLoaded', () => { $('lk6').innerHTML = $('lk1').innerHTML; });
+window.addEventListener('DOMContentLoaded', () => {
+  $('lk6').innerHTML = $('lk1').innerHTML;
+  $('wb-ts').insertAdjacentHTML('afterbegin', $('lk1').querySelector('svg').outerHTML);
+});
 const clamp = (x, a, b) => Math.min(b, Math.max(a, x));
 const ease = (x) => x < 0.5 ? 2*x*x : 1 - Math.pow(-2*x + 2, 2) / 2;
 const easeOut = (x) => 1 - Math.pow(1 - x, 3);
@@ -314,13 +345,13 @@ window.addEventListener('DOMContentLoaded', () => {
 
 function renderTyped(t) {
   // returns html for the live-typed row 6 and dropdown/caret state
-  const TY = 15.5, PRE_END = 18.1, TB0 = 18.4, TB1 = 19.2, ACCEPT = 19.75;
+  const TY = 17.6, PRE_END = 20.0, TB0 = 20.3, TB1 = 21.1, ACCEPT = 21.65;
   if (t < TY) return { html: '', caret: false, ac: 0 };
   if (t >= ACCEPT) {
     let html = '';
     for (const [cls, txt] of TYPE_TOKENS) html += cls === 'pl' ? esc(txt) : `<span class="${cls}">${esc(txt)}</span>`;
     html += '<span class="fn">toBeVisible</span>()';
-    return { html, caret: t < 20.8 && (t * 2) % 1 < 0.55, ac: 0 };
+    return { html, caret: t < 22.4 && (t * 2) % 1 < 0.55, ac: 0 };
   }
   let n = Math.floor(NPREFIX * clamp((t - TY) / (PRE_END - TY), 0, 1));
   let html = '', curCls = null, buf = '';
@@ -338,10 +369,11 @@ const T = {
   s2a: [4.4, 10.2],
   s2b: [10.2, 24.6],
   s3:  [24.6, 43.8],
-  s35: [43.8, 57.8],
-  s4:  [57.8, 70.6],
-  s5:  [70.6, 82.4],
-  s6:  [82.4, 89.0],
+  s37: [43.8, 55.0],
+  s35: [55.0, 71.3],
+  s4:  [71.3, 84.1],
+  s5:  [84.1, 95.9],
+  s6:  [95.9, 102.5],
 };
 const UI_CLIP_OFFSET = 0.4;    // start clip slightly in
 const UI_RATE = 1.18;          // ui clip playback rate (footage 23.2s into 19.2s scene)
@@ -361,7 +393,7 @@ function seekVideo(v, t) {
 window.seekComp = async function(t) {
   const jobs = [];
   // default: all scenes hidden
-  for (const id of ['s1','s2a','s2b','s3','s35','s4','s5','s6']) $(id).style.opacity = 0;
+  for (const id of ['s1','s2a','s2b','s3','s37','s35','s4','s5','s6']) $(id).style.opacity = 0;
 
   // ── S1 ──
   if (t < T.s1[1] + 0.5) {
@@ -394,7 +426,7 @@ window.seekComp = async function(t) {
     const w = $('code-window');
     const k = easeOut(P(t, 10.2, 11.0));
     w.style.transform = `translate(-50%, -50%) scale(${0.96 + 0.04 * k})`;
-    const MST = 13.4;                       // morph start
+    const MST = 15.6;                       // morph start
     // yaml rows: paste in at 10.9, morph out at MST (staggered)
     YAML_ROWS.forEach((_, i) => {
       const el = $(`yr${i}`);
@@ -418,8 +450,10 @@ window.seekComp = async function(t) {
     });
     $('acbox').style.opacity = typed.ac;
     $('fname').textContent = t < MST + 0.75 ? 'checkout.flow.yaml' : 'checkout.test.ts';
+    $('wb-yaml').style.opacity = P(t, 11.1, 11.5) * (1 - P(t, MST, MST + 0.5));
+    $('wb-ts').style.opacity = P(t, MST + 0.6, MST + 1.2);
     const chips = $('chips');
-    const ck = easeOut(P(t, 22.2, 22.9));
+    const ck = easeOut(P(t, 22.7, 23.4));
     chips.style.opacity = ck;
     chips.style.transform = `translateX(-50%) translateY(${(1 - ck) * 26}px)`;
   }
@@ -454,23 +488,44 @@ window.seekComp = async function(t) {
     // seek to mid-frame so the displayed video frame always equals clipFrame
     jobs.push(seekVideo($('v-ui'), (clipFrame + 0.5) / 30));
   }
+  // ── S3.7 selector playground ──
+  if (t >= T.s37[0] - 0.3 && t < T.s37[1] + 0.4) {
+    const s = $('s37');
+    const S = T.s37[0];
+    s.style.opacity = P(t, S, S + 0.45) * (1 - P(t, T.s37[1] - 0.45, T.s37[1]));
+    const rel = clamp(t - S, 0, 11.2);
+    $('b37').style.transform = `translate(-50%, -50%) scale(${1.0 + 0.018 * P(t, S, T.s37[1])})`;
+    const l = $('l37');
+    l.style.opacity = P(t, S + 0.6, S + 1.2) * (1 - P(t, T.s37[1] - 1.6, T.s37[1] - 0.8));
+    jobs.push(seekVideo($('v-pick'), rel));
+  }
   // ── S3.5 MCP agent ──
   if (t >= T.s35[0] - 0.3 && t < T.s35[1] + 0.4) {
     const s = $('s35');
     const S = T.s35[0];
-    s.style.opacity = P(t, S, S + 0.45) * (1 - P(t, 57.35, 57.8));
+    s.style.opacity = P(t, S, S + 0.45) * (1 - P(t, T.s35[1] - 0.45, T.s35[1]));
+    // intro: the full UI-mode window with the right column highlighted, so the
+    // enlarged card below reads as a crop of this UI, not a standalone app
+    const full = $('mcp-full');
+    const fk = P(t, S, S + 0.5) * (1 - P(t, S + 2.3, S + 2.9));
+    full.style.opacity = fk;
+    full.style.display = t < S + 3.0 ? 'block' : 'none';
+    if (t < S + 3.0) jobs.push(seekVideo($('v-mcpfull'), clamp(t - S, 0, 4.6)));
+    $('mcp-hl').style.opacity = P(t, S + 0.9, S + 1.4) * (1 - P(t, S + 2.3, S + 2.9));
     const win = $('agent-win');
-    const wk = easeOut(P(t, S, S + 0.7));
-    win.style.transform = `translateY(-50%) translateX(${(1 - wk) * -30}px)`;
     const card = $('mcp-card');
+    const wk = easeOut(P(t, S + 2.4, S + 3.1));
+    win.style.opacity = wk;
+    card.style.opacity = wk;
+    win.style.transform = `translateY(-50%) translateX(${(1 - wk) * -30}px)`;
     card.style.transform = `translateY(-50%) translateX(${(1 - wk) * 40}px)`;
     // prompt typing
     const PROMPT = 'Add a test: when the posts API returns a 500, the app shows an error state.';
-    const n = Math.floor(PROMPT.length * P(t, S + 0.4, S + 2.5));
+    const n = Math.floor(PROMPT.length * P(t, S + 3.0, S + 5.1));
     $('ag-typed').textContent = PROMPT.slice(0, n);
-    $('ag-caret').style.opacity = t < S + 2.9 && (t * 2) % 1 < 0.55 ? 1 : 0;
-    // steps reveal
-    const reveals = [['ag-s1', 3.6], ['ag-r1', 4.3], ['ag-s2', 4.8], ['ag-codebox', 5.0], ['ag-s3', 6.1], ['ag-pass', 10.9], ['ag-s4', 12.4], ['ag-r4', 12.9]];
+    $('ag-caret').style.opacity = t < S + 5.5 && (t * 2) % 1 < 0.55 ? 1 : 0;
+    // steps reveal (loosely synced to the card footage's feed beats)
+    const reveals = [['ag-s1', 6.2], ['ag-r1', 6.9], ['ag-s2', 7.4], ['ag-codebox', 7.6], ['ag-s3', 8.7], ['ag-pass', 13.5], ['ag-s4', 15.0], ['ag-r4', 15.5]];
     for (const [id, at] of reveals) {
       const el = $(id);
       const k = easeOut(P(t, S + at, S + at + 0.4));
@@ -478,64 +533,64 @@ window.seekComp = async function(t) {
       el.style.transform = `translateY(${(1 - k) * 8}px)`;
     }
     document.querySelectorAll('#ag-codebox .ln').forEach((el, i) => {
-      el.style.opacity = P(t, S + 5.15 + i * 0.35, S + 5.4 + i * 0.35);
+      el.style.opacity = P(t, S + 7.75 + i * 0.35, S + 8.0 + i * 0.35);
     });
     // spinner: spins while the run is in flight, turns into nothing after pass
     const spin = $('ag-spin');
-    spin.style.display = t >= S + 6.1 && t < S + 10.9 ? 'inline-block' : 'none';
+    spin.style.display = t >= S + 8.7 && t < S + 13.5 ? 'inline-block' : 'none';
     spin.style.transform = `rotate(${(t * 540) % 360}deg)`;
     const l = $('l35');
-    l.style.opacity = P(t, S + 0.9, S + 1.5) * (1 - P(t, 56.6, 57.3));
-    jobs.push(seekVideo($('v-mcp'), clamp(t - S, 0, 14.0)));
+    l.style.opacity = P(t, S + 3.5, S + 4.1) * (1 - P(t, T.s35[1] - 1.3, T.s35[1] - 0.6));
+    jobs.push(seekVideo($('v-mcp'), clamp(t - S - 2.6, 0, 14.0)));
   }
   // ── S4 trace ──
   if (t >= T.s4[0] - 0.3 && t < T.s4[1] + 0.4) {
     const s = $('s4');
-    s.style.opacity = P(t, 57.8, 58.25) * (1 - P(t, 70.15, 70.6));
+    s.style.opacity = P(t, 71.3, 71.75) * (1 - P(t, 83.65, 84.1));
     const rel = clamp(t - T.s4[0], 0, 12.8);
     const b = $('b4');
     b.style.transform = `translate(-50%, -50%) scale(${1.018 - 0.018 * P(t, T.s4[0], T.s4[1])})`;
     const l = $('l4');
-    l.style.opacity = P(t, 58.4, 59.0) * (1 - P(t, 69.2, 70.0));
+    l.style.opacity = P(t, 71.9, 72.5) * (1 - P(t, 82.7, 83.5));
     jobs.push(seekVideo($('v-trace'), rel * TRACE_RATE));
   }
   // ── S5 features ──
   if (t >= T.s5[0] - 0.3 && t < T.s5[1] + 0.4) {
     const s = $('s5');
-    s.style.opacity = P(t, 70.6, 71.0) * (1 - P(t, 81.9, 82.4));
+    s.style.opacity = P(t, 84.1, 84.5) * (1 - P(t, 95.4, 95.9));
     const feats = document.querySelectorAll('.feat');
     feats.forEach((el, i) => {
-      const st = 71.0 + i * 1.55;
+      const st = 84.5 + i * 1.55;
       const k = easeOut(P(t, st, st + 0.5));
       el.style.opacity = k;
       el.style.transform = `translateY(${(1 - k) * 34}px) scale(${0.92 + 0.08 * k})`;
     });
     const head = s.querySelector('.head');
-    head.style.opacity = P(t, 70.8, 71.4);
+    head.style.opacity = P(t, 84.3, 84.9);
   }
   // ── S6 outro ──
   if (t >= T.s6[0] - 0.3) {
     const s = $('s6');
-    s.style.opacity = P(t, 82.4, 82.9);
+    s.style.opacity = P(t, 95.9, 96.4);
     const lg = s.querySelector('.lockup');
-    const k = easeOut(P(t, 82.4, 83.6));
+    const k = easeOut(P(t, 95.9, 97.1));
     lg.style.transform = `translate(-50%, -50%) scale(${0.9 + 0.1 * k})`;
     const u = s.querySelector('.url');
-    u.style.opacity = P(t, 83.4, 84.0);
-    u.style.transform = `translateY(${(1 - easeOut(P(t, 83.4, 84.0))) * 20}px)`;
+    u.style.opacity = P(t, 96.9, 97.5);
+    u.style.transform = `translateY(${(1 - easeOut(P(t, 96.9, 97.5))) * 20}px)`;
     const p = s.querySelector('.pill');
-    p.style.opacity = P(t, 84.4, 85.0);
+    p.style.opacity = P(t, 97.9, 98.5);
   }
   // final fade to black
-  $('fade').style.opacity = P(t, 88.2, 88.9);
+  $('fade').style.opacity = P(t, 101.75, 102.45);
 
   await Promise.all(jobs);
   return true;
 };
 
 window.compReady = new Promise((resolve) => {
-  let need = 3;
-  for (const id of ['v-ui', 'v-trace', 'v-mcp']) {
+  let need = 5;
+  for (const id of ['v-ui', 'v-trace', 'v-mcp', 'v-mcpfull', 'v-pick']) {
     const v = $(id);
     if (v.readyState >= 2) { if (--need === 0) resolve(); }
     else v.addEventListener('loadeddata', () => { if (--need === 0) resolve(); });

@@ -1,6 +1,6 @@
 # Promo video pipeline
 
-Generates `tapsmith-promo.mp4` — an ~89s promotional video (1080p30, voiceover,
+Generates `tapsmith-promo.mp4` — an ~102s promotional video (1080p30, voiceover,
 music, real screen recordings of UI mode and the trace viewer, plus synthetic
 scenes: a YAML-flow -> TypeScript morph with an autocomplete moment, and an
 MCP-server scene showing an agent writing and running a test).
@@ -121,6 +121,14 @@ python3 build-clips.py            # -> clip-mcp.mp4 (right-column crop) + sessio
 rm ../../e2e/tests/api-error.test.ts
 ```
 
+**Selector playground** (the S3.7 scene; claims the simulator): same server
+setup as the MCP recording, then `node record-pick.mjs` — it warms the
+session with a headless MCP run (set `SKIP_RUN=1` if the app is already on
+the API Calls screen), toggles pick mode, hovers the mirror, and picks the
+"Fetch 404" button so the Locator tab fills with generated selectors.
+`probe-pick.mjs` captures the mirror-canvas rect + a screenshot for
+recalibrating the hover fractions if the app layout changes.
+
 `record-mcp.mjs` drives the choreography and spawns `mcp-client.mjs`, a real
 MCP client (SDK from packages/tapsmith) that presents itself as `claude-code`
 and executes `tapsmith_list_tests` / `tapsmith_run_tests` /
@@ -136,7 +144,7 @@ server and re-take rather than shipping those frames.
 | `comp.html` | The video: scenes, animations, typed code, clips, patches, vector logo |
 | `render-comp.mjs` | Frame renderer (`probe` \| `full <dsf> [from] [to]`) |
 | `assemble.sh` | frames + VO + music -> `tapsmith-promo.mp4` (loudnorm -14 LUFS) |
-| `record.mjs` / `record-ui.mjs` / `record-mcp.mjs` | Screen-recording choreography (CDP screencast) |
+| `record.mjs` / `record-ui.mjs` / `record-mcp.mjs` / `record-pick.mjs` | Screen-recording choreography (CDP screencast) |
 | `mcp-client.mjs` | Scripted MCP client ("claude-code") driving real tool calls for the MCP take |
 | `api-error.test.ts.fixture` | The test the agent "writes" on camera — copy into e2e/tests before re-recording |
 | `server.mjs` | Local trace-viewer server (no browser auto-open) |
@@ -149,5 +157,6 @@ server and re-take rather than shipping those frames.
 | `assets/` | Vector mark, Poppins/JetBrains Mono woff2, screenshots |
 | `clip-ui.mp4` / `clip-trace.mp4` | Finished screen-recording clips |
 | `clip-ui-session.mp4` | Full UI-mode session archive (source for future re-cuts) |
-| `clip-mcp.mp4` / `clip-mcp-session.mp4` | MCP-panel footage (scene cut + full-frame archive) |
+| `clip-mcp.mp4` / `clip-mcp-session.mp4` / `clip-mcp-full.mp4` | MCP-panel footage (crop cut, full-frame archive, full-window intro) |
+| `clip-pick.mp4` / `clip-pick-session.mp4` | Selector-playground footage (scene cut + archive) |
 | `demo-trace.zip` | Scrubbed failing trace driving the trace-viewer recording |

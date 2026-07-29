@@ -73,3 +73,25 @@ if os.path.exists('mcp-frames/meta.json'):
           vf_pre='crop=608:1896:2592:104')
     # Archive: full-frame session at near-real pacing for future re-crops.
     build('mcp-frames', 'clip-mcp-session', [(mmeta['frames'][0]['t'], mmeta['frames'][-1]['t'], 0.6, 1.0)])
+
+if os.path.exists('pick-frames/meta.json'):
+    pmeta = json.load(open('pick-frames/meta.json'))
+    pk = pmeta['marks']
+    pend = pmeta['frames'][-1]['t']
+    # Selector playground: chip click -> hovers with green highlight -> pick ->
+    # locator list fills -> option interactions. Target ~10.9s.
+    build('pick-frames', 'clip-pick', [
+        (pk['start'] + 0.2, pk['pickOn'] + 0.7, 0.4, 1.3),
+        (pk['pickOn'] + 0.7, pk['hover1'] - 1.2, 0.4, 3.5),
+        (pk['hover1'] - 1.2, pk['picked'] + 0.4, 0.45, 2.4),
+        (pk['picked'] + 0.4, pk['picked'] + 2.2, 0.4, 1.2),
+        (pk['picked'] + 2.2, pk['optionClicked'] + 0.8, 0.45, 3.5),
+    ])
+    build('pick-frames', 'clip-pick-session', [(pmeta['frames'][0]['t'], pend, 0.6, 1.0)])
+
+if os.path.exists('mcp-frames/meta.json'):
+    fmeta = json.load(open('mcp-frames/meta.json'))
+    fm = fmeta['marks']
+    # Full-window intro for the MCP scene: the whole UI visible while the
+    # panel opens, so the zoom-in makes clear the card is a crop of UI mode.
+    build('mcp-frames', 'clip-mcp-full', [(fm['mcpOpened'] - 0.8, fm['connected'] + 1.6, 0.45, 1.15)])
