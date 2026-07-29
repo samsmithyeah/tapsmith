@@ -5,7 +5,7 @@
   "scripts": {
     "sync-docs": "node scripts/sync-docs.mjs",
     "sync-releases": "node scripts/sync-releases.mjs",
-    "sync": "npm run sync-docs && npm run sync-releases",
+    "sync": "npm run sync-docs && npm run sync-releases && npm run sync-promo",
     "dev": "npm run sync && astro dev",
     "start": "npm run sync && astro dev",
     "build": "npm run sync && astro build",
@@ -15,7 +15,8 @@
     "format:check": "prettier --check .",
     "format": "prettier --write .",
     "knip": "knip",
-    "astro": "astro"
+    "astro": "astro",
+    "sync-promo": "node scripts/sync-promo.mjs"
   },
   "dependencies": {
     "@astrojs/starlight": "^0.39.2",

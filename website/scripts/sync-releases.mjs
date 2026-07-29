@@ -125,7 +125,10 @@ async function main() {
     return
   }
 
-  const published = (Array.isArray(releases) ? releases : []).filter((r) => !r.draft)
+  // `promo-video` is a rolling asset-hosting release (see sync-promo.mjs), not a version.
+  const published = (Array.isArray(releases) ? releases : []).filter(
+    (r) => !r.draft && r.tag_name !== 'promo-video',
+  )
   if (published.length === 0) {
     write('Release notes will appear here once the first version is published.\n')
     console.log('[sync-releases] No published releases yet; wrote placeholder.')

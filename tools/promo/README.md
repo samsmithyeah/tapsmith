@@ -137,6 +137,24 @@ call. A passing run's feed shows no absolute paths (verified); a FAILED run
 does (trace path in the result), so if the on-camera run fails, restart the
 server and re-take rather than shipping those frames.
 
+## Publishing the video to the website
+
+The front page embeds `/promo.mp4`, fetched at build time by
+`website/scripts/sync-promo.mjs` from the rolling `promo-video` GitHub
+release (the mp4 is a derived artifact and stays out of git history). To
+ship a new cut:
+
+```bash
+ffmpeg -i tapsmith-promo.mp4 -c:v libx264 -crf 24 -preset slow -pix_fmt yuv420p \
+  -c:a aac -b:a 128k -movflags +faststart promo.mp4
+gh release upload promo-video promo.mp4 --clobber
+gh workflow run deploy-website.yml
+```
+
+If the opening frames changed, also refresh the poster:
+`ffmpeg -ss 2.6 -i tapsmith-promo.mp4 -frames:v 1 -q:v 3 website/public/promo-poster.jpg`
+(the poster IS tracked in git — it's ~50KB).
+
 ## Files
 
 | File | Purpose |
