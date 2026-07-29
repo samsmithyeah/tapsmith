@@ -106,6 +106,29 @@ so future re-cuts of the UI scene don't require a simulator: point
 `build-clips.py` at it (or keep the raw `ui-frames/` around) instead of
 re-recording.
 
+**MCP panel** (the S3.5 scene's right-hand footage; claims the simulator):
+
+```bash
+# Restore the recording prop: the test the "agent" writes must really exist
+cp api-error.test.ts.fixture ../../e2e/tests/api-error.test.ts
+# Fresh server is REQUIRED — the MCP feed replays server-side history, so a
+# reused server leaks old entries (including failed runs, whose result text
+# contains the real trace path) into the recording.
+cd ../../e2e && PATH="$(pwd)/../tools/promo/shim:$PATH" \
+  node node_modules/.bin/tapsmith test --ui --ui-port 4830 --workers 1 -c tapsmith.config.ios.mjs &
+cd ../tools/promo && PATH="$(pwd)/shim:$PATH" node record-mcp.mjs
+python3 build-clips.py            # -> clip-mcp.mp4 (right-column crop) + session archive
+rm ../../e2e/tests/api-error.test.ts
+```
+
+`record-mcp.mjs` drives the choreography and spawns `mcp-client.mjs`, a real
+MCP client (SDK from packages/tapsmith) that presents itself as `claude-code`
+and executes `tapsmith_list_tests` / `tapsmith_run_tests` /
+`tapsmith_screenshot` on cue — every feed entry in the footage is a real tool
+call. A passing run's feed shows no absolute paths (verified); a FAILED run
+does (trace path in the result), so if the on-camera run fails, restart the
+server and re-take rather than shipping those frames.
+
 ## Files
 
 | File | Purpose |
@@ -113,7 +136,9 @@ re-recording.
 | `comp.html` | The video: scenes, animations, typed code, clips, patches, vector logo |
 | `render-comp.mjs` | Frame renderer (`probe` \| `full <dsf> [from] [to]`) |
 | `assemble.sh` | frames + VO + music -> `tapsmith-promo.mp4` (loudnorm -14 LUFS) |
-| `record.mjs` / `record-ui.mjs` | Screen-recording choreography (CDP screencast) |
+| `record.mjs` / `record-ui.mjs` / `record-mcp.mjs` | Screen-recording choreography (CDP screencast) |
+| `mcp-client.mjs` | Scripted MCP client ("claude-code") driving real tool calls for the MCP take |
+| `api-error.test.ts.fixture` | The test the agent "writes" on camera — copy into e2e/tests before re-recording |
 | `server.mjs` | Local trace-viewer server (no browser auto-open) |
 | `build-clips.py` | Screencast frames -> retimed 30fps clips (UI: setup / streaming run / results) |
 | `detect-paths.py` | Scans clip-ui.mp4 for absolute-path rows -> `patch-table.js` |
@@ -124,5 +149,5 @@ re-recording.
 | `assets/` | Vector mark, Poppins/JetBrains Mono woff2, screenshots |
 | `clip-ui.mp4` / `clip-trace.mp4` | Finished screen-recording clips |
 | `clip-ui-session.mp4` | Full UI-mode session archive (source for future re-cuts) |
-| `clip-mirror.mp4` | Device-mirror crop of the session archive (MCP scene) |
+| `clip-mcp.mp4` / `clip-mcp-session.mp4` | MCP-panel footage (scene cut + full-frame archive) |
 | `demo-trace.zip` | Scrubbed failing trace driving the trace-viewer recording |

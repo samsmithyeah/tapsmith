@@ -39,7 +39,7 @@
           font-family: ui-monospace, 'SF Mono', Menlo, monospace; font-size: 54px; color: #d8d2ca; }
   .prob .x { color: #fd8567; margin-right: 22px; }
   #code-window { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%);
-                 width: 1280px; background: #211c17; border: 1px solid #383026; border-radius: 18px;
+                 width: 1400px; background: #211c17; border: 1px solid #383026; border-radius: 18px;
                  box-shadow: 0 40px 120px rgba(0,0,0,0.55); overflow: hidden; }
   #code-window .bar { height: 52px; background: #26201a; display: flex; align-items: center; padding: 0 22px;
                       border-bottom: 1px solid #383026; }
@@ -84,28 +84,30 @@
   #agent-win .bar { height: 52px; background: #26201a; display: flex; align-items: center; padding: 0 22px;
                     border-bottom: 1px solid #383026; }
   #ag-body { padding: 34px 42px 40px; font-family: ui-monospace, 'SF Mono', Menlo, monospace;
-             font-size: 23px; line-height: 1.62; color: #d8d2ca; height: 640px; white-space: pre-wrap; }
+             font-size: 23px; line-height: 1.6; color: #d8d2ca; height: 700px; white-space: pre-wrap; }
   .ag-prompt { color: #e8e4df; }
   .ag-prompt .ps { color: #fd8567; margin-right: 14px; }
   .ag-el { opacity: 0; }
-  .ag-step { margin-top: 24px; }
+  .ag-step { margin-top: 19px; }
   .ag-step .dot2 { color: #fd8567; margin-right: 12px; }
   .ag-step .tname { color: #82aaff; }
   .ag-step .dim, .ag-res .dim { color: #a89f93; }
   .ag-res { margin-top: 4px; padding-left: 35px; color: #a89f93; }
   .ag-res .ok { color: #7ec97f; }
   .ag-code { margin-top: 12px; margin-left: 35px; padding: 18px 26px; background: #211c17;
-             border: 1px solid #383026; border-radius: 12px; font-size: 21px; line-height: 1.6; white-space: pre; }
+             border: 1px solid #383026; border-radius: 12px; font-size: 20px; line-height: 1.6; white-space: pre; }
   .ag-code .ln { opacity: 0; display: block; }
   #ag-spin { display: inline-block; width: 17px; height: 17px; border-radius: 50%; margin-left: 14px;
              border: 3px solid #3a3228; border-top-color: #fd8567; vertical-align: -2px; }
-  #phone-card { position: absolute; right: 130px; top: 50%; transform: translateY(-50%);
-                width: 452px; background: #f4f2ef; border-radius: 22px; padding: 20px 24px 24px;
-                box-shadow: 0 40px 120px rgba(0,0,0,0.55); }
-  #phone-card .cap { display: flex; align-items: center; gap: 10px; font-size: 17px; font-weight: 600;
-                     letter-spacing: 0.08em; color: #6b6459; padding: 2px 4px 12px; }
-  #phone-card .cap .live { width: 10px; height: 10px; border-radius: 50%; background: #37c26e; }
-  #phone-card video { display: block; width: 404px; height: 847px; object-fit: cover; border-radius: 12px; }
+  #mcp-card { position: absolute; right: 118px; top: 50%; transform: translateY(-50%);
+              width: 306px; border-radius: 14px; overflow: hidden; background: #26201a;
+              border: 1px solid #3a3228; box-shadow: 0 40px 120px rgba(0,0,0,0.55); }
+  #mcp-card .bar { height: 40px; display: flex; align-items: center; padding: 0 14px; background: #26201a;
+                   border-bottom: 1px solid #38302655; }
+  #mcp-card .bar .dot { width: 11px; height: 11px; margin-right: 8px; }
+  #mcp-card .url { margin: 0 auto; font-family: ui-monospace, Menlo, monospace; font-size: 13px;
+                   color: #a89f93; background: #1c1712; border-radius: 6px; padding: 4px 18px; }
+  #mcp-card video { display: block; width: 304px; height: 948px; object-fit: cover; }
 
   /* S5 features */
   #s5 .bgshot { position: absolute; inset: -40px; background: url('assets/ui-mode.png') center/cover;
@@ -199,11 +201,16 @@
         <div class="dot" style="background:#28c840"></div>
         <div class="fname">Claude Code — acme-mobile</div>
       </div>
-      <div id="ag-body"><div class="ag-prompt"><span class="ps">❯</span><span id="ag-typed"></span><span class="caret" id="ag-caret"></span></div><div class="ag-el ag-step" id="ag-s1"><span class="dot2">⏺</span><span class="tname">tapsmith_snapshot</span> <span class="dim">(device: "iPhone 17")</span></div><div class="ag-el ag-res" id="ag-r1">⎿  <span class="dim">38 interactive elements</span></div><div class="ag-el ag-step" id="ag-s2"><span class="dot2">⏺</span><span class="tname">Write</span> <span class="dim">(e2e/tests/api-error.test.ts)</span></div><div class="ag-el ag-code" id="ag-codebox"><span class="ln"><span class="kw">await</span> device.<span class="fn">route</span>(<span class="st">'**/posts*'</span>, (route) =&gt;</span><span class="ln">  route.<span class="fn">fulfill</span>({ status: <span class="kw">500</span> }))</span><span class="ln"><span class="kw">await</span> device.<span class="fn">getByRole</span>(<span class="st">'button'</span>, <span class="st">'Fetch Posts'</span>).<span class="fn">tap</span>()</span><span class="ln"><span class="kw">await</span> <span class="fn">expect</span>(device.<span class="fn">getByText</span>(<span class="st">'Request failed'</span>)).<span class="fn">toBeVisible</span>()</span></div><div class="ag-el ag-step" id="ag-s3"><span class="dot2">⏺</span><span class="tname">tapsmith_run_tests</span> <span class="dim">(files: ["api-error.test.ts"])</span><span id="ag-spin"></span></div><div class="ag-el ag-res" id="ag-pass">⎿  <span class="ok">✓ 1 passed</span> <span class="dim">(4.2s)</span></div></div>
+      <div id="ag-body"><div class="ag-prompt"><span class="ps">❯</span><span id="ag-typed"></span><span class="caret" id="ag-caret"></span></div><div class="ag-el ag-step" id="ag-s1"><span class="dot2">⏺</span><span class="tname">tapsmith_list_tests</span> <span class="dim">()</span></div><div class="ag-el ag-res" id="ag-r1">⎿  <span class="dim">222 tests across 36 files</span></div><div class="ag-el ag-step" id="ag-s2"><span class="dot2">⏺</span><span class="tname">Write</span> <span class="dim">(e2e/tests/api-error.test.ts)</span></div><div class="ag-el ag-code" id="ag-codebox"><span class="ln"><span class="kw">await</span> device.<span class="fn">route</span>(<span class="st">'**/posts*'</span>, (route) =&gt;</span><span class="ln">  route.<span class="fn">fulfill</span>({ status: <span class="kw">500</span> }))</span><span class="ln"><span class="kw">await</span> device.<span class="fn">getByRole</span>(<span class="st">'button'</span>, { name: <span class="st">'Fetch Posts'</span> }).<span class="fn">tap</span>()</span><span class="ln"><span class="kw">await</span> <span class="fn">expect</span>(device.<span class="fn">getByText</span>(<span class="st">'Failed to fetch posts: HTTP 500'</span>)).<span class="fn">toBeVisible</span>()</span></div><div class="ag-el ag-step" id="ag-s3"><span class="dot2">⏺</span><span class="tname">tapsmith_run_tests</span> <span class="dim">(files: ["api-error.test.ts"])</span><span id="ag-spin"></span></div><div class="ag-el ag-res" id="ag-pass">⎿  <span class="ok">✓ 1 passed</span> <span class="dim">(13.4s)</span></div><div class="ag-el ag-step" id="ag-s4"><span class="dot2">⏺</span><span class="tname">tapsmith_screenshot</span> <span class="dim">()</span></div><div class="ag-el ag-res" id="ag-r4">⎿  <span class="dim">PNG image captured</span></div></div>
     </div>
-    <div id="phone-card">
-      <div class="cap"><div class="live"></div>LIVE DEVICE MIRROR</div>
-      <video id="v-mirror" src="clip-mirror.mp4" muted preload="auto"></video>
+    <div id="mcp-card">
+      <div class="bar">
+        <div class="dot" style="background:#ff5f57"></div>
+        <div class="dot" style="background:#febc2e"></div>
+        <div class="dot" style="background:#28c840"></div>
+        <div class="url">UI Mode · MCP</div>
+      </div>
+      <video id="v-mcp" src="clip-mcp.mp4" muted preload="auto"></video>
     </div>
     <div class="scene-label" id="l35"><div class="pin"></div>MCP server — bring your own agent</div>
   </div>
@@ -270,8 +277,8 @@ const TS_ROWS = [
   '<span class="kw">import</span> { test, expect } <span class="kw">from</span> <span class="st">\'tapsmith\'</span>',
   '',
   '<span class="fn">test</span>(<span class="st">\'checkout applies discount\'</span>, <span class="kw">async</span> ({ device }) =&gt; {',
-  '  <span class="kw">await</span> device.<span class="fn">getByRole</span>(<span class="st">\'textfield\'</span>, <span class="st">\'Promo code\'</span>).<span class="fn">type</span>(<span class="st">\'LAUNCH20\'</span>)',
-  '  <span class="kw">await</span> device.<span class="fn">getByRole</span>(<span class="st">\'button\'</span>, <span class="st">\'Apply\'</span>).<span class="fn">tap</span>()',
+  '  <span class="kw">await</span> device.<span class="fn">getByRole</span>(<span class="st">\'textfield\'</span>, { name: <span class="st">\'Promo code\'</span> }).<span class="fn">type</span>(<span class="st">\'LAUNCH20\'</span>)',
+  '  <span class="kw">await</span> device.<span class="fn">getByRole</span>(<span class="st">\'button\'</span>, { name: <span class="st">\'Apply\'</span> }).<span class="fn">tap</span>()',
   '',
   '',   // row 6: typed live
   '})',
@@ -455,7 +462,7 @@ window.seekComp = async function(t) {
     const win = $('agent-win');
     const wk = easeOut(P(t, S, S + 0.7));
     win.style.transform = `translateY(-50%) translateX(${(1 - wk) * -30}px)`;
-    const card = $('phone-card');
+    const card = $('mcp-card');
     card.style.transform = `translateY(-50%) translateX(${(1 - wk) * 40}px)`;
     // prompt typing
     const PROMPT = 'Add a test: when the posts API returns a 500, the app shows an error state.';
@@ -463,7 +470,7 @@ window.seekComp = async function(t) {
     $('ag-typed').textContent = PROMPT.slice(0, n);
     $('ag-caret').style.opacity = t < S + 2.9 && (t * 2) % 1 < 0.55 ? 1 : 0;
     // steps reveal
-    const reveals = [['ag-s1', 3.0], ['ag-r1', 3.8], ['ag-s2', 4.6], ['ag-codebox', 4.9], ['ag-s3', 7.9], ['ag-pass', 12.1]];
+    const reveals = [['ag-s1', 3.6], ['ag-r1', 4.3], ['ag-s2', 4.8], ['ag-codebox', 5.0], ['ag-s3', 6.1], ['ag-pass', 10.9], ['ag-s4', 12.4], ['ag-r4', 12.9]];
     for (const [id, at] of reveals) {
       const el = $(id);
       const k = easeOut(P(t, S + at, S + at + 0.4));
@@ -471,15 +478,15 @@ window.seekComp = async function(t) {
       el.style.transform = `translateY(${(1 - k) * 8}px)`;
     }
     document.querySelectorAll('#ag-codebox .ln').forEach((el, i) => {
-      el.style.opacity = P(t, S + 5.1 + i * 0.5, S + 5.35 + i * 0.5);
+      el.style.opacity = P(t, S + 5.15 + i * 0.35, S + 5.4 + i * 0.35);
     });
     // spinner: spins while the run is in flight, turns into nothing after pass
     const spin = $('ag-spin');
-    spin.style.display = t >= S + 7.9 && t < S + 12.1 ? 'inline-block' : 'none';
+    spin.style.display = t >= S + 6.1 && t < S + 10.9 ? 'inline-block' : 'none';
     spin.style.transform = `rotate(${(t * 540) % 360}deg)`;
     const l = $('l35');
     l.style.opacity = P(t, S + 0.9, S + 1.5) * (1 - P(t, 56.6, 57.3));
-    jobs.push(seekVideo($('v-mirror'), clamp(t - S, 0, 14.2)));
+    jobs.push(seekVideo($('v-mcp'), clamp(t - S, 0, 14.0)));
   }
   // ── S4 trace ──
   if (t >= T.s4[0] - 0.3 && t < T.s4[1] + 0.4) {
@@ -528,7 +535,7 @@ window.seekComp = async function(t) {
 
 window.compReady = new Promise((resolve) => {
   let need = 3;
-  for (const id of ['v-ui', 'v-trace', 'v-mirror']) {
+  for (const id of ['v-ui', 'v-trace', 'v-mcp']) {
     const v = $(id);
     if (v.readyState >= 2) { if (--need === 0) resolve(); }
     else v.addEventListener('loadeddata', () => { if (--need === 0) resolve(); });

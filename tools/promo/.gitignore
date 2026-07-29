@@ -27,3 +27,13 @@ mcp-*.png
 sweep.raw
 clip-ui-session.txt
 qc-*.png
+mcp-frames/
+clip-mcp.txt
+clip-mcp-session.txt
+look-*
+take-*
+crop-*
+col.raw
+v5-*.png
+qc5-*.png
+sweep.raw

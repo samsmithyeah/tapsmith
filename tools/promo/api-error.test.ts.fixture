@@ -1,0 +1,25 @@
+/**
+ * Error-state handling for the API Calls screen: a mocked 500 from the posts
+ * endpoint must surface the error banner instead of failing silently.
+ */
+import { describe, expect, test } from "../fixtures.js"
+import { resetApp } from "../utils/app-reset.js"
+
+describe("API error handling", () => {
+  test.use({ timeout: 20_000 })
+
+  test.beforeEach(async ({ device }) => {
+    await resetApp(device, "/api-calls")
+  })
+
+  test("posts API 500 shows an error state", async ({ device }) => {
+    await device.route("**/posts*", async (route) => {
+      await route.fulfill({ status: 500, body: "Internal Server Error" })
+    })
+
+    await device.getByRole("button", { name: "Fetch Posts" }).tap()
+    await expect(device.getByText("Failed to fetch posts: HTTP 500")).toBeVisible()
+
+    await device.unrouteAll()
+  })
+})
