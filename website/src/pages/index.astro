@@ -33,25 +33,27 @@ await device.getByLabel("Reorder").dragTo(device.getByText("Pinned"))`,
 
 const comparisonRows = [
   ['Playwright-style TypeScript API', 'Y', 'N', 'N', 'P'],
+  ['Reusable helpers, loops & fixtures', 'Y', 'Y', 'P', 'Y'],
   ['iOS + Android single suite', 'Y', 'Y', 'Y', 'Y'],
   ['Auto-waiting on every action', 'Y', 'N', 'Y', 'Y'],
-  ['Network interception (built-in)', 'Y', 'P', 'N', 'N'],
+  ['Rich assertions with auto-retry', 'Y', 'N', 'P', 'P'],
+  ['Network mocking (no proxy, no mock server)', 'Y', 'P', 'N', 'N'],
   ['Trace viewer', 'Y', 'N', 'N', 'P'],
-  ['Parallel sharding & blob reports', 'Y', 'N', 'P', 'N'],
+  ['CI sharding with merged reports', 'Y', 'N', 'P', 'P'],
   ['Interactive UI mode', 'Y', 'N', 'Y', 'N'],
-  ['MCP server for AI agents', 'Y', 'N', 'N', 'N'],
+  ['MCP for AI agents (selectors, traces)', 'Y', 'P', 'P', 'N'],
 ]
 
 const threeThings = [
   {
     n: '01',
     title: 'Mock the network without a mock server.',
-    body: 'In Detox, mocking an API means setting up a separate server and managing fixtures. In Tapsmith, it’s device.route("**/api/payment", r => r.fulfill({ json })). One line, inline, done.',
+    body: 'In every other framework, mocking an API means a separate mock server, a proxy with certificate fiddling, or a special build of your app. In Tapsmith it’s <code>device.route("**/api/payment", r => r.fulfill({ json }))</code>. One line, inline, done.',
   },
   {
     n: '02',
-    title: 'Locators that survive redesigns.',
-    body: 'No fragile XPaths or test IDs sprinkled through production code. getByRole("button", { name: "Sign in" }) finds the element the same way a screen reader does, on both platforms, from one test file.',
+    title: 'A real language, not a YAML ceiling.',
+    body: 'Maestro flows are brilliantly simple, right up until the suite grows and logic ends up scattered across YAML, env-var parameters, and <code>runScript</code> snippets. Tapsmith tests are plain TypeScript: extract helpers, loop over fixtures, share setup between tests, and refactor with autocomplete and type-checking behind you.',
   },
   {
     n: '03',
@@ -94,7 +96,7 @@ const threeThings = [
           <img src="/logo.png" alt="Tapsmith" class="tp-logo-img tp-logo-light" />
           <img src="/logo-dark.png" alt="Tapsmith" class="tp-logo-img tp-logo-dark" />
         </a>
-        <nav class="tp-nav">
+        <nav class="tp-nav" id="tp-nav">
           <a href="/getting-started/">Docs</a>
           <a href="/reference/api/locators/">API</a>
           <a href="/guides/network/">Guides</a>
@@ -143,6 +145,40 @@ const threeThings = [
             >
           </button>
           <a href="/getting-started/" class="tp-btn-solid tp-btn-sm">Get started →</a>
+          <button
+            class="tp-nav-toggle"
+            type="button"
+            aria-label="Open menu"
+            aria-expanded="false"
+            aria-controls="tp-nav"
+          >
+            <svg
+              class="tp-icon-menu"
+              width="16"
+              height="16"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              ><line x1="3" y1="6" x2="21" y2="6"></line><line x1="3" y1="12" x2="21" y2="12"
+              ></line><line x1="3" y1="18" x2="21" y2="18"></line></svg
+            >
+            <svg
+              class="tp-icon-close"
+              width="16"
+              height="16"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              ><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"
+              ></line></svg
+            >
+          </button>
         </div>
       </div>
     </header>
@@ -158,8 +194,8 @@ const threeThings = [
 
           <p class="tp-hero-lead">
             Tapsmith is a test framework for native iOS and Android. We took the parts of Playwright
-            that engineers actually love: the locators, the auto&#8209;waiting, the trace viewer,
-            and rebuilt them for real devices.
+            that engineers love: the locators, the auto&#8209;waiting, the trace viewer, and rebuilt
+            them for real devices.
           </p>
 
           <div class="tp-hero-ctas">
@@ -205,8 +241,8 @@ const threeThings = [
             preload="metadata"
             playsinline></video>
           <p class="tp-demo-caption">
-            Tapsmith in 100 seconds — UI mode, the selector playground, the MCP server, and the
-            trace viewer.
+            Tapsmith in 100 seconds: UI mode, the selector playground, the MCP server, and the trace
+            viewer.
           </p>
         </div>
       </section>
@@ -215,8 +251,9 @@ const threeThings = [
       <section class="tp-proof">
         <div class="tp-container tp-proof-inner">
           <p class="tp-proof-text">
-            Open source under the Apache 2.0 licence. Native agents on XCUITest and UIAutomator2, no
-            browser shims or half-working bridges.
+            Open source under the Apache 2.0 licence. Native agents on XCUITest and UIAutomator2
+            drive your app from the outside: no code changes, no embedded SDK, no browser shims or
+            half-working bridges.
           </p>
           <div class="tp-proof-stats">
             <div class="tp-stat">
@@ -252,7 +289,7 @@ const threeThings = [
                 <div class="tp-three-row">
                   <span class="tp-three-num">{item.n}</span>
                   <h3 class="tp-three-title">{item.title}</h3>
-                  <p class="tp-three-body">{item.body}</p>
+                  <p class="tp-three-body" set:html={item.body} />
                 </div>
               ))
             }
@@ -323,6 +360,7 @@ const threeThings = [
           </div>
           <p class="tp-table-legend">
             ✓ supported &nbsp;&nbsp; ◐ partial / via plugin &nbsp;&nbsp; — not available
+            &nbsp;&nbsp; last verified Aug 2026
           </p>
         </div>
       </section>
@@ -460,7 +498,7 @@ const threeThings = [
         </div>
       </section>
 
-      <!-- 8. CTA card -->
+      <!-- 9. CTA card -->
       <section class="tp-cta">
         <div class="tp-container">
           <div class="tp-cta-card">
@@ -490,7 +528,7 @@ const threeThings = [
       <img class="tp-lightbox-img" src="" alt="" />
     </dialog>
 
-    <!-- 9. Footer -->
+    <!-- 10. Footer -->
     <footer class="tp-footer">
       <div class="tp-container">
         <div class="tp-footer-top">
@@ -525,6 +563,7 @@ const threeThings = [
             <a href="/guides/network/">Network</a>
             <a href="/guides/trace-viewer/">Trace viewer</a>
             <a href="/guides/ui-mode/">UI mode</a>
+            <a href="/guides/mcp-server/">MCP server</a>
           </div>
           <div class="tp-footer-col">
             <h4>Community</h4>
@@ -553,6 +592,24 @@ const threeThings = [
           localStorage.setItem('starlight-theme', next)
         })
       })
+
+      const header = document.querySelector('.tp-header')
+      const navToggle = document.querySelector('.tp-nav-toggle')
+      if (header && navToggle) {
+        navToggle.addEventListener('click', () => {
+          const open = header.classList.toggle('tp-nav-open')
+          navToggle.setAttribute('aria-expanded', String(open))
+          navToggle.setAttribute('aria-label', open ? 'Close menu' : 'Open menu')
+        })
+        // Close the menu when a nav link is tapped (same-page anchors don't reload)
+        header.querySelectorAll('.tp-nav a').forEach((link) => {
+          link.addEventListener('click', () => {
+            header.classList.remove('tp-nav-open')
+            navToggle.setAttribute('aria-expanded', 'false')
+            navToggle.setAttribute('aria-label', 'Open menu')
+          })
+        })
+      }
 
       const tablist = document.querySelector('[role="tablist"]')
       if (tablist) {
@@ -666,7 +723,6 @@ const threeThings = [
         --tp-radius-pill: 999px;
         --tp-shadow-code: 0 30px 80px -20px rgba(11, 16, 32, 0.25);
         --tp-shadow-phone: 0 30px 60px rgba(11, 16, 32, 0.28);
-        --tp-shadow-chip: 0 10px 30px -10px rgba(11, 16, 32, 0.18);
       }
 
       [data-theme='dark'] {
@@ -733,6 +789,29 @@ const threeThings = [
         display: none;
       }
       [data-theme='dark'] .tp-icon-moon {
+        display: block;
+      }
+
+      /* ─── Mobile nav toggle ─── */
+      .tp-nav-toggle {
+        display: none;
+        align-items: center;
+        justify-content: center;
+        width: 32px;
+        height: 32px;
+        border: 1px solid var(--tp-border-3);
+        border-radius: var(--tp-radius);
+        background: transparent;
+        color: var(--tp-ink-3);
+        cursor: pointer;
+      }
+      .tp-icon-close {
+        display: none;
+      }
+      .tp-nav-open .tp-icon-menu {
+        display: none;
+      }
+      .tp-nav-open .tp-icon-close {
         display: block;
       }
 
@@ -808,12 +887,6 @@ const threeThings = [
         gap: 10px;
         align-items: center;
       }
-      .tp-version-chip {
-        font-family: var(--tp-font-mono);
-        font-size: 12px;
-        color: var(--tp-ink-4);
-      }
-
       /* ─── Buttons ─── */
       .tp-btn-solid {
         display: inline-flex;
@@ -867,24 +940,6 @@ const threeThings = [
         padding: 88px 0 72px;
       }
 
-      .tp-pill {
-        display: inline-flex;
-        align-items: center;
-        gap: 6px;
-        padding: 4px 10px;
-        border: 1px solid var(--tp-border);
-        border-radius: var(--tp-radius-pill);
-        background: var(--tp-surface);
-        font-size: 12.5px;
-        margin-bottom: 28px;
-      }
-      .tp-dot-purple {
-        width: 6px;
-        height: 6px;
-        border-radius: var(--tp-radius-pill);
-        background: var(--tp-accent);
-        flex-shrink: 0;
-      }
       .tp-dot-green {
         width: 6px;
         height: 6px;
@@ -892,14 +947,6 @@ const threeThings = [
         background: var(--tp-success);
         flex-shrink: 0;
       }
-      .tp-pill-bold {
-        font-weight: 500;
-        color: var(--tp-ink);
-      }
-      .tp-pill-muted {
-        color: var(--tp-ink-4);
-      }
-
       .tp-hero-h1 {
         font-size: 64px;
         line-height: 1.02;
@@ -1026,24 +1073,6 @@ const threeThings = [
         filter: drop-shadow(var(--tp-shadow-phone));
         transform: rotate(2deg);
       }
-      .tp-device-chip {
-        position: absolute;
-        right: 24px;
-        top: 24px;
-        background: var(--tp-surface);
-        border: 1px solid var(--tp-border);
-        border-radius: var(--tp-radius-pill);
-        padding: 6px 12px;
-        font-family: var(--tp-font-mono);
-        font-size: 11px;
-        color: var(--tp-ink);
-        display: inline-flex;
-        align-items: center;
-        gap: 8px;
-        box-shadow: var(--tp-shadow-chip);
-        pointer-events: auto;
-      }
-
       /* ─── 2b. Demo video ─── */
       .tp-demo {
         padding: 1rem 0 4.5rem;
@@ -1160,6 +1189,15 @@ const threeThings = [
         font-size: 15px;
         color: var(--tp-ink-2);
         line-height: 1.7;
+      }
+      .tp-three-body code {
+        font-family: var(--tp-font-mono);
+        font-size: 0.85em;
+        color: var(--tp-ink);
+        background: var(--tp-bg-2);
+        border: 1px solid var(--tp-border);
+        border-radius: var(--tp-radius-sm);
+        padding: 1px 6px;
       }
 
       /* ─── 5. Comparison table ─── */
@@ -1308,6 +1346,8 @@ const threeThings = [
         line-height: 1.8;
         color: var(--tp-code-fg);
         white-space: pre-wrap;
+        /* Long unbreakable tokens must scroll, not widen the mobile layout viewport */
+        overflow-x: auto;
       }
 
       /* ─── 7. Quote ─── */
@@ -1323,34 +1363,13 @@ const threeThings = [
         max-width: 880px;
         padding: 0;
       }
-      .tp-quote-mark {
-        color: var(--tp-accent);
-      }
       .tp-attribution {
         display: flex;
         align-items: center;
         gap: 12px;
         margin-top: 28px;
       }
-      .tp-avatar {
-        width: 32px;
-        height: 32px;
-        border-radius: var(--tp-radius-pill);
-        background: #e8e4df;
-        display: inline-block;
-        flex-shrink: 0;
-      }
-      .tp-attr-name {
-        font-size: 14px;
-        font-weight: 500;
-        color: var(--tp-ink);
-      }
-      .tp-attr-role {
-        font-size: 14px;
-        color: var(--tp-ink-3);
-      }
-
-      /* ─── 7. Dev tools ─── */
+      /* ─── 8. Dev tools ─── */
       .tp-devtools {
         padding: 0 0 120px;
       }
@@ -1448,7 +1467,7 @@ const threeThings = [
         line-height: 1.5;
       }
 
-      /* ─── 8. CTA card ─── */
+      /* ─── 9. CTA card ─── */
       .tp-cta {
         padding: 0 0 120px;
       }
@@ -1491,7 +1510,7 @@ const threeThings = [
         color: var(--tp-ink-4);
       }
 
-      /* ─── 9. Footer ─── */
+      /* ─── 10. Footer ─── */
       .tp-footer {
         background: var(--tp-bg);
         border-top: 1px solid var(--tp-border);
@@ -1605,27 +1624,87 @@ const threeThings = [
         .tp-footer-top {
           grid-template-columns: 1fr 1fr;
         }
+        /* Keep the feature column readable while the table scrolls */
+        .tp-table .tp-table-feature {
+          position: sticky;
+          left: 0;
+          z-index: 1;
+          background: var(--tp-surface);
+          box-shadow: 1px 0 0 var(--tp-border-2);
+        }
+        .tp-table-head .tp-table-feature {
+          background: var(--tp-bg-2);
+          box-shadow: 1px 0 0 var(--tp-border);
+        }
       }
 
       @media (max-width: 640px) {
+        /* Collapse the nav into a hamburger dropdown under the sticky header */
+        .tp-nav-toggle {
+          display: flex;
+        }
         .tp-nav {
           display: none;
+          position: absolute;
+          top: 64px;
+          left: 0;
+          right: 0;
+          flex-direction: column;
+          gap: 0;
+          background: var(--tp-bg);
+          border-bottom: 1px solid var(--tp-border);
+          padding: 4px 24px 8px;
+          box-shadow: 0 24px 32px -28px rgba(11, 16, 32, 0.25);
         }
-        .tp-version-chip {
+        .tp-nav-open .tp-nav {
+          display: flex;
+        }
+        .tp-nav a {
+          padding: 12px 0;
+          font-size: 15px;
+        }
+        /* Hero */
+        .tp-hero {
+          padding: 48px 0 56px;
+        }
+        .tp-hero-h1 br {
           display: none;
         }
-        .tp-signin {
-          display: none;
+        .tp-hero-lead {
+          font-size: 17px;
         }
         .tp-hero-ctas {
           flex-direction: column;
+          margin-bottom: 48px;
         }
+        .tp-hero-visual {
+          padding-top: 0;
+        }
+        .tp-code-body {
+          padding: 16px 18px;
+          font-size: 12.5px;
+          line-height: 1.75;
+        }
+
+        /* Proof strip */
         .tp-proof-stats {
-          flex-wrap: wrap;
-          gap: 24px;
+          display: grid;
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+          gap: 20px 24px;
+          width: 100%;
+        }
+
+        /* Section rhythm */
+        .tp-three {
+          padding: 72px 0 64px;
+        }
+        .tp-three-header {
+          margin-bottom: 32px;
         }
         .tp-three-row {
           grid-template-columns: 1fr;
+          gap: 8px;
+          padding: 28px 0;
         }
         .tp-three-num {
           display: block;
@@ -1633,10 +1712,54 @@ const threeThings = [
         .tp-three-body {
           grid-column: 1;
         }
+        .tp-compare {
+          padding: 24px 0 80px;
+        }
+        .tp-snippets {
+          padding: 0 0 80px;
+        }
+        .tp-quote {
+          padding: 24px 0 80px;
+        }
+        .tp-devtools {
+          padding: 0 0 80px;
+        }
+        .tp-cta {
+          padding: 0 0 80px;
+        }
+
+        /* Comparison table: edge-to-edge scroll, tighter cells */
         .tp-table-wrap {
           margin: 0 -24px;
           padding: 0 24px;
         }
+        .tp-table {
+          min-width: 580px;
+        }
+        .tp-table-head .tp-table-feature,
+        .tp-table-head .tp-table-col {
+          padding: 12px 14px;
+        }
+        .tp-table-row .tp-table-feature {
+          padding: 12px 14px;
+          font-size: 13px;
+        }
+        .tp-table-row .tp-table-col {
+          padding: 12px 14px;
+        }
+
+        /* Code panels */
+        .tp-snippet-panel {
+          padding: 20px 18px;
+        }
+        .tp-snippet-code {
+          font-size: 13px;
+        }
+        .tp-devtools-card {
+          padding: 20px;
+        }
+
+        /* Footer */
         .tp-footer-top {
           grid-template-columns: 1fr;
         }
@@ -1644,6 +1767,8 @@ const threeThings = [
           flex-direction: column;
           gap: 8px;
         }
+
+        /* Type scale */
         .tp-blockquote {
           font-size: 22px;
         }
