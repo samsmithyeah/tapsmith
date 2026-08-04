@@ -5,7 +5,7 @@ import { spawn, type ChildProcess } from 'node:child_process';
 import { TapsmithGrpcClient, type DeviceInfoProto } from '../grpc-client.js';
 import { findDaemonBin } from '../daemon-bin.js';
 import { pickFreePort } from '../port-utils.js';
-import type { TapsmithConfig } from '../config.js';
+import type { TapsmithConfig, NotificationPermissionState } from '../config.js';
 import { loadMcpConfig } from './config-loader.js';
 import { uiPortFilePath } from './port-file.js';
 
@@ -378,6 +378,20 @@ async function startAgentFromConfig(
     }
   }
 
+  // PILOT-291: keep the session's notification policy across MCP-triggered
+  // agent starts — omitting it would relaunch the agent with the default
+  // allow-first behavior and silently grant a permission the config denies.
+  let notificationPermission: NotificationPermissionState | undefined;
+  if (config?.platform === 'ios' && config.permissions?.notifications) {
+    try {
+      const { isPhysicalDevice } = await import('../ios-devicectl.js');
+      const isPhys = !!config.device && isPhysicalDevice(config.device);
+      notificationPermission = isPhys ? undefined : config.permissions.notifications;
+    } catch {
+      notificationPermission = config.permissions.notifications;
+    }
+  }
+
   try {
     log('Starting agent on device...');
     await client.startAgent(
@@ -385,6 +399,9 @@ async function startAgentFromConfig(
       agentApk,
       agentTestApk,
       iosXctestrun,
+      undefined,
+      false,
+      notificationPermission,
     );
     log('Agent started');
   } catch (err) {

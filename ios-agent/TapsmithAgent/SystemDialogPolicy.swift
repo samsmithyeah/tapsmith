@@ -55,6 +55,13 @@ enum SystemDialogPolicy {
     /// Whether an alert is the one-shot notification permission prompt
     /// ("“AppName” Would Like to Send You Notifications"). English-only,
     /// like every other label match in the agent.
+    ///
+    /// Deliberate asymmetry under the "denied" policy: when this match
+    /// SUCCEEDS but no deny button is recognized, the prompt is left
+    /// unhandled (a hang beats a permanent wrong grant); when this match
+    /// FAILS, the alert falls through to allow-first handling (an unknown
+    /// dialog shouldn't stall the suite). Both failure modes require Apple
+    /// to change the English wording — revisit if that happens.
     static func isNotificationPermissionAlert(_ alertLabel: String) -> Bool {
         return alertLabel.contains("Would Like to Send You Notifications")
     }

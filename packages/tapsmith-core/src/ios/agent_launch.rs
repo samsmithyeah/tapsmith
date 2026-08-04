@@ -50,6 +50,11 @@ async fn clear_prior_xcresults(derived_data_path: &Path) -> Result<()> {
 /// For simulators (and for the fast-path case where an existing agent is
 /// already responding) returns `None` and the caller keeps any existing
 /// tracking state unchanged.
+/// `force_fresh` skips the ping-based "already running" fast path and
+/// relaunches unconditionally. Pass true whenever the running agent may have
+/// been launched with a different configuration (the caller's reuse check
+/// failed) — its environment (notably TAPSMITH_NOTIFICATION_PERMISSION) is
+/// baked in at launch and cannot serve a session with a different policy.
 #[instrument(skip(xctestrun_path, target_bundle_id))]
 pub async fn start_agent(
     udid: &str,
@@ -58,12 +63,13 @@ pub async fn start_agent(
     agent_port: u16,
     is_physical: bool,
     notification_permission: &str,
+    force_fresh: bool,
 ) -> Result<Option<IproxyHandle>> {
     start_agent_impl(
         udid,
         xctestrun_path,
         target_bundle_id,
-        false,
+        force_fresh,
         false,
         agent_port,
         is_physical,

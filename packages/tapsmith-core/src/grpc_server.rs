@@ -2745,6 +2745,17 @@ impl proto::tapsmith_service_server::TapsmithService for TapsmithServiceImpl {
             return Ok(Self::success_action_response(request_id));
         }
 
+        // Reuse was refused. A still-running agent from the mismatched config
+        // must not survive via the ping-based fast path inside
+        // agent_launch::start_agent — it was launched with a different
+        // environment (notably TAPSMITH_NOTIFICATION_PERMISSION) and would
+        // silently serve the new session with the old policy. Force a fresh
+        // launch when a previous agent config was recorded, and always when a
+        // notification policy is requested (after a daemon restart the record
+        // is gone but a stale agent may still be running with no policy).
+        let force_fresh_agent = self.started_agent_config.read().await.is_some()
+            || !req.notification_permission.is_empty();
+
         *self.started_agent_config.write().await = None;
 
         match platform {
@@ -2800,6 +2811,7 @@ impl proto::tapsmith_service_server::TapsmithService for TapsmithServiceImpl {
                     agent_port,
                     is_physical,
                     &req.notification_permission,
+                    force_fresh_agent,
                 )
                 .await
                 {

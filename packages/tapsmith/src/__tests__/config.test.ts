@@ -11,6 +11,19 @@ import {
 } from '../config.js';
 
 describe('defineConfig()', () => {
+  it('accepts valid permissions.notifications values', () => {
+    for (const value of ['granted', 'denied', 'prompt'] as const) {
+      expect(defineConfig({ permissions: { notifications: value } }).permissions?.notifications)
+        .toBe(value);
+    }
+  });
+
+  it('rejects an invalid permissions.notifications value at load time', () => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- deliberately invalid input
+    expect(() => defineConfig({ permissions: { notifications: 'allow' as any } }))
+      .toThrow(/permissions\.notifications.*'granted', 'denied', or 'prompt'/);
+  });
+
   it('returns defaults when called with no arguments', () => {
     const config = defineConfig();
     expect(config.timeout).toBe(30_000);

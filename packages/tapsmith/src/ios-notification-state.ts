@@ -42,10 +42,38 @@ const BINARY_PLIST_MAGIC = 'bplist00';
 
 function simulatorBulletinBoardPlist(udid: string): string {
   return path.join(
+    simulatorDataPath(udid),
+    'Library/BulletinBoard/VersionedSectionInfo.plist',
+  );
+}
+
+/**
+ * The simulator's data root. Asks `simctl list` (whose `dataPath` is
+ * authoritative and covers non-default device sets) and falls back to the
+ * default CoreSimulator location when the lookup fails.
+ */
+function simulatorDataPath(udid: string): string {
+  try {
+    const json = execFileSync('xcrun', ['simctl', 'list', 'devices', '-j'], {
+      encoding: 'utf8',
+      timeout: 15_000,
+    });
+    const parsed = JSON.parse(json) as {
+      devices?: Record<string, Array<{ udid?: string; dataPath?: string }>>;
+    };
+    for (const runtimeDevices of Object.values(parsed.devices ?? {})) {
+      for (const device of runtimeDevices) {
+        if (device.udid === udid && device.dataPath) return device.dataPath;
+      }
+    }
+  } catch {
+    // Fall through to the default location.
+  }
+  return path.join(
     os.homedir(),
     'Library/Developer/CoreSimulator/Devices',
     udid,
-    'data/Library/BulletinBoard/VersionedSectionInfo.plist',
+    'data',
   );
 }
 

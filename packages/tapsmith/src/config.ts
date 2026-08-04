@@ -404,12 +404,29 @@ export function defineConfig(overrides: Partial<TapsmithConfig> = {}): TapsmithC
   return withExplicitWorkers(merged, clean.workers !== undefined);
 }
 
+const VALID_NOTIFICATION_PERMISSION_STATES: readonly string[] = ['granted', 'denied', 'prompt'];
+
+/** A config value failed validation — must abort the run, never be swallowed
+ * into loadConfig's "failed to load, falling back" warning path. */
+export class ConfigValidationError extends Error {}
+
 function applyConfigDefaults(
   config: TapsmithConfig,
   raw: Partial<TapsmithConfig>,
 ): TapsmithConfig {
   if (raw.launchEmulators === undefined && raw.avd) {
     config.launchEmulators = true;
+  }
+  // Validate at load time so a typo surfaces as a config error, not as a
+  // misattributed failure from whichever setup step first consumes the
+  // value (e.g. "Failed to install iOS app: ..."). Covers project-level
+  // `use` overrides too — effectiveConfigForProject routes through here.
+  const notifications = config.permissions?.notifications;
+  if (notifications !== undefined && !VALID_NOTIFICATION_PERMISSION_STATES.includes(notifications)) {
+    throw new ConfigValidationError(
+      `Invalid permissions.notifications value: ${JSON.stringify(notifications)} — `
+      + `expected 'granted', 'denied', or 'prompt'.`,
+    );
   }
   return config;
 }
@@ -522,6 +539,9 @@ export async function loadConfig(dir?: string, configFile?: string): Promise<Tap
         );
         return withExplicitWorkers(merged, rawHasExplicitWorkers(original));
       } catch (err) {
+        // Validation failures are the user's config being wrong, not the file
+        // failing to load — surface them instead of falling back to defaults.
+        if (err instanceof ConfigValidationError) throw err;
         console.warn(`Warning: failed to load ${configPath}: ${err}`);
       }
     }

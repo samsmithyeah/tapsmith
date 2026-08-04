@@ -49,6 +49,7 @@ import {
 } from './emulator.js';
 import { AGENT_START_RETRY_DELAY_MS, isRecoverableInfrastructureError, isRetryableAgentStartError, retryDeviceSelection, serializeRegExpArray } from './worker-protocol.js';
 import { findPidsOnPort, freeStaleAgentPort } from './port-utils.js';
+import { applyAndroidNotificationPermission, applySimulatorNotificationPermissionSetup, notificationPermissionForAgent } from './permission-setup.js';
 import { findDaemonBin } from './daemon-bin.js';
 import {
   createUiLaunchSteps,
@@ -507,6 +508,9 @@ interface SequentialDeviceState {
   resolvedAgentTestApk?: string
   resolvedIosXctestrun?: string
   resolvedIosAppPath?: string
+  /** Agent-side notification policy computed at setup (PILOT-291); reused by
+   * recovery contexts so relaunches keep the session's configured policy. */
+  notificationPermission?: import('./config.js').NotificationPermissionState
   signature: string
 }
 
@@ -592,6 +596,21 @@ async function setupSequentialDevice(
 
   // Physical-iOS fast-fail checks. Fire BEFORE the 8-second installAppOnDevice
   // so the user gets an immediate, actionable error instead of a mid-test hang.
+  // PILOT-291: one message sink + one computed agent policy shared by every
+  // permission-setup step below, so the sequential path can't drift from the
+  // worker paths (they use the same permission-setup helpers).
+  const permissionSetupLog = {
+    info: (m: string) => {
+      if (progress) progress.note(m);
+      else console.log(dim(m));
+    },
+    warn: (m: string) => {
+      if (progress) progress.note(m);
+      else console.log(`Warning: ${m}`);
+    },
+  };
+  const agentNotificationPermission = notificationPermissionForAgent(cfg, targetIsPhysical, permissionSetupLog);
+
   if (cfg.platform === 'ios' && targetIsPhysical && cfg.device) {
     // Cert-trust probe. The devicectl launch is ~1s and pattern-matches
     // cleanly on "cert not trusted". Only helpful when the runner is
@@ -650,14 +669,6 @@ async function setupSequentialDevice(
       try {
         const resolvedApp = resolvedIosAppPath!;
         if (targetIsPhysical) {
-          if (cfg.permissions?.notifications) {
-            // No supported reset path on real hardware (devicectl can
-            // reinstall, but the agent-side prompt policy is still
-            // simulator-scoped for now) — skip loudly rather than half-apply.
-            const warning = 'permissions.notifications is not supported on physical iOS devices; skipping.';
-            if (progress) progress.note(warning);
-            else console.log(`Warning: ${warning}`);
-          }
           const { installAppOnDevice, isAppInstalledOnDevice } = await import('./ios-devicectl.js');
           const alreadyInstalled = !deviceJustLaunched
             && cfg.package
@@ -679,23 +690,7 @@ async function setupSequentialDevice(
           }
         } else {
           const { installAppAsync, isAppInstalled, installedAppMatches } = await import('./ios-simulator.js');
-          if (cfg.permissions?.notifications) {
-            if (cfg.package) {
-              // PILOT-291: uninstall when the simulator's recorded notification
-              // state conflicts with the configured target, so the fresh
-              // install below returns it to notDetermined and the agent can
-              // answer the prompt per policy.
-              const { ensureSimulatorNotificationPermissionState } = await import('./ios-notification-state.js');
-              if (ensureSimulatorNotificationPermissionState(cfg.device, cfg.package, cfg.permissions.notifications)) {
-                if (progress) progress.update('app-install', { state: 'running', detail: `reinstalling to reset notification permission (target: ${cfg.permissions.notifications})` });
-                else console.log(dim(`Reinstalling ${cfg.package} to reset notification permission state (target: ${cfg.permissions.notifications}).`));
-              }
-            } else {
-              const warning = 'permissions.notifications is set but no `package` is configured; skipping notification permission setup.';
-              if (progress) progress.note(warning);
-              else console.log(`Warning: ${warning}`);
-            }
-          }
+          applySimulatorNotificationPermissionSetup(cfg.device, cfg, permissionSetupLog);
           const alreadyInstalled = !deviceJustLaunched
             && cfg.package
             && isAppInstalled(cfg.device, cfg.package);
@@ -726,6 +721,11 @@ async function setupSequentialDevice(
       }
     } else {
       progress?.skip('app-install', 'no iOS app configured');
+      if (!targetIsPhysical && cfg.device) {
+        // No app to (re)install, but a configured permission that conflicts
+        // with the recorded state must still be surfaced (the helper warns).
+        applySimulatorNotificationPermissionSetup(cfg.device, cfg, permissionSetupLog);
+      }
     }
     if (cfg.package && cfg.device && !pendingSimulatorInstall) {
       // For simulators we fire a best-effort simctl launch so the app is in
@@ -794,17 +794,7 @@ async function setupSequentialDevice(
       progress?.skip('app-install', 'no Android APK configured');
     }
 
-    if (cfg.permissions?.notifications) {
-      if (cfg.package) {
-        // PILOT-291: deterministic notification permission state before tests.
-        await device.setNotificationPermission(cfg.package, cfg.permissions.notifications);
-        if (!progress) console.log(dim(`Notification permission set to '${cfg.permissions.notifications}' for ${cfg.package}.`));
-      } else {
-        const warning = 'permissions.notifications is set but no `package` is configured; skipping notification permission setup.';
-        if (progress) progress.note(warning);
-        else console.log(`Warning: ${warning}`);
-      }
-    }
+    await applyAndroidNotificationPermission(device, cfg, permissionSetupLog);
   }
 
   const traceConfig = resolveTraceConfig(cfg.trace);
@@ -934,8 +924,8 @@ async function setupSequentialDevice(
       networkTracingEnabled,
       // iOS simulator only: the agent answers the notification prompt per
       // this policy. Android is handled via setNotificationPermission above;
-      // physical iOS is unsupported (warned during app install).
-      cfg.platform === 'ios' && !targetIsPhysical ? cfg.permissions?.notifications : undefined,
+      // physical iOS is unsupported (warned when the policy was computed).
+      agentNotificationPermission,
     );
     try {
       await startAgent();
@@ -971,6 +961,7 @@ async function setupSequentialDevice(
         iosXctestrunPath: resolvedIosXctestrun,
         deviceSerial: cfg.device,
         networkTracingEnabled,
+        notificationPermission: agentNotificationPermission,
       }, 'startup');
     }
     if (progress) progress.complete('agent', 'agent connected');
@@ -994,6 +985,7 @@ async function setupSequentialDevice(
         iosAppPath: resolvedIosAppPath,
         deviceSerial: cfg.device,
         networkTracingEnabled,
+        notificationPermission: agentNotificationPermission,
       }, 'startup', { allowSoftReset: false, readinessAttempts: 3, skipAppReset });
       if (progress) progress.complete('app-launch', `launched ${cfg.package}`);
       else console.log(dim(`Launched ${cfg.package}`));
@@ -1015,6 +1007,7 @@ async function setupSequentialDevice(
     resolvedAgentTestApk,
     resolvedIosXctestrun,
     resolvedIosAppPath,
+    notificationPermission: agentNotificationPermission,
     signature,
   };
 }
@@ -1523,6 +1516,7 @@ function buildSerializedConfig(cfg: TapsmithConfig): import('./worker-protocol.j
     resetAppWaitMs: cfg.resetAppWaitMs,
     baseURL: cfg.baseURL,
     extraHTTPHeaders: cfg.extraHTTPHeaders,
+    permissions: cfg.permissions,
     grep: serializeRegExpArray(normalizeGrep(cfg.grep)),
     grepInvert: serializeRegExpArray(normalizeGrep(cfg.grepInvert)),
   };
@@ -2329,6 +2323,7 @@ async function main(): Promise<void> {
   let resolvedAgentTestApk: string | undefined;
   let resolvedIosXctestrun: string | undefined;
   let resolvedIosAppPath: string | undefined;
+  let sessionNotificationPermission: import('./config.js').NotificationPermissionState | undefined;
   let sequentialExitCode = 1;
   let sequentialErrorEscaping = false;
   const sequentialStart = Date.now();
@@ -2384,6 +2379,7 @@ async function main(): Promise<void> {
     resolvedAgentTestApk = currentSequentialState.resolvedAgentTestApk;
     resolvedIosXctestrun = currentSequentialState.resolvedIosXctestrun;
     resolvedIosAppPath = currentSequentialState.resolvedIosAppPath;
+    sessionNotificationPermission = currentSequentialState.notificationPermission;
     // Mirror the chosen device serial onto the root config so any code path
     // still reading from `config.device` (UI/watch handoff) sees it.
     config.device = currentSequentialState.deviceSerial;
@@ -2596,6 +2592,7 @@ async function main(): Promise<void> {
           resolvedAgentTestApk = currentSequentialState.resolvedAgentTestApk;
           resolvedIosXctestrun = currentSequentialState.resolvedIosXctestrun;
           resolvedIosAppPath = currentSequentialState.resolvedIosAppPath;
+          sessionNotificationPermission = currentSequentialState.notificationPermission;
           // After switching, the launchConfiguredApp on first file is not
           // needed because setupSequentialDevice already launched the app.
           fileIndex = 0;
@@ -2628,6 +2625,7 @@ async function main(): Promise<void> {
               iosAppPath: resolvedIosAppPath,
               deviceSerial: projectConfig.device,
               networkTracingEnabled: isNetworkTracingEnabled(projectConfig.trace),
+              notificationPermission: sessionNotificationPermission,
             };
             let resetOk = false;
             try {
@@ -2700,6 +2698,7 @@ async function main(): Promise<void> {
               iosXctestrunPath: resolvedIosXctestrun,
               iosAppPath: resolvedIosAppPath,
               deviceSerial: projectConfig.device,
+              notificationPermission: sessionNotificationPermission,
             },
           });
 

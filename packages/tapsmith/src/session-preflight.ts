@@ -1,4 +1,4 @@
-import type { TapsmithConfig } from './config.js';
+import type { TapsmithConfig, NotificationPermissionState } from './config.js';
 import type { Device } from './device.js';
 import type { LaunchAppOptions, TapsmithGrpcClient } from './grpc-client.js';
 import { detectBlockingSystemDialog, dismissSystemDialogsViaAdb } from './emulator.js';
@@ -30,6 +30,15 @@ export interface SessionPreflightContext {
    * no-op. Callers should compute this once via `isNetworkTracingEnabled`.
    */
   networkTracingEnabled?: boolean
+  /**
+   * The session's notification permission policy (PILOT-291). Threaded
+   * through to `startAgent` so recovery-path agent relaunches keep the
+   * configured policy — omitting it would relaunch the agent with the
+   * default allow-first behavior and silently grant a permission the
+   * session was configured to deny. Callers should compute this once via
+   * `notificationPermissionForAgent`.
+   */
+  notificationPermission?: NotificationPermissionState
 }
 
 export interface EnsureSessionReadyOptions {
@@ -232,6 +241,7 @@ export async function launchConfiguredApp(
     await ctx.device.startAgent(
       ctx.config.package, ctx.agentApkPath, ctx.agentTestApkPath, ctx.iosXctestrunPath, ctx.iosAppPath,
       ctx.networkTracingEnabled ?? false,
+      ctx.notificationPermission,
     );
   } catch {
     // Will be recovered by ensureSessionReady below
@@ -454,7 +464,7 @@ async function recoverSession(ctx: SessionPreflightContext): Promise<void> {
 
   // Then try agent-level dismissal if the agent is reachable
   await dismissBlockingSystemUi(ctx);
-  await ctx.device.startAgent(ctx.config.package ?? '', ctx.agentApkPath, ctx.agentTestApkPath, ctx.iosXctestrunPath, ctx.iosAppPath, ctx.networkTracingEnabled ?? false);
+  await ctx.device.startAgent(ctx.config.package ?? '', ctx.agentApkPath, ctx.agentTestApkPath, ctx.iosXctestrunPath, ctx.iosAppPath, ctx.networkTracingEnabled ?? false, ctx.notificationPermission);
   if (!ctx.config.package) return;
 
   try {

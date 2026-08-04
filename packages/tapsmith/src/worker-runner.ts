@@ -32,6 +32,7 @@ import {
   AGENT_START_RETRY_DELAY_MS,
 } from './worker-protocol.js';
 import { ensureSessionReady, launchConfiguredApp, type SessionPreflightContext } from './session-preflight.js';
+import { applyAndroidNotificationPermission, applySimulatorNotificationPermissionSetup, notificationPermissionForAgent } from './permission-setup.js';
 import { createActionProgressMessenger } from './action-progress-renderer.js';
 import type { TapsmithReporter } from './reporter.js';
 
@@ -45,6 +46,7 @@ let resolvedXctestrunPath: string | undefined;
 let resolvedAppPath: string | undefined;
 let rootGrep: RegExp[] | undefined;
 let rootGrepInvert: RegExp[] | undefined;
+let sessionNotificationPermission: NotificationPermissionState | undefined;
 
 function send(msg: WorkerToMainMessage): void {
   if (process.send) {
@@ -55,6 +57,11 @@ function send(msg: WorkerToMainMessage): void {
 function sendProgress(message: string): void {
   send({ type: 'progress', workerId, message });
 }
+
+const permissionSetupLog = {
+  info: (m: string) => sendProgress(m),
+  warn: (m: string) => sendProgress(`warning: ${m}`),
+};
 
 function configFromSerialized(s: SerializedConfig, daemonAddress: string): TapsmithConfig {
   return {
@@ -181,21 +188,10 @@ async function handleInit(msg: InitMessage): Promise<void> {
         sendProgress('app install complete');
       }
     } else {
-      if (config.permissions?.notifications) {
-        if (config.package) {
-          // PILOT-291: uninstall when this simulator's recorded notification
-          // state conflicts with the configured target — the install below
-          // then returns it to notDetermined for the agent to answer per
-          // policy. Worker simulators (clones, reused CI sets) carry their
-          // own BulletinBoard state, so this runs per worker.
-          const { ensureSimulatorNotificationPermissionState } = await import('./ios-notification-state.js');
-          if (ensureSimulatorNotificationPermissionState(msg.deviceSerial, config.package, config.permissions.notifications)) {
-            sendProgress(`reinstalling to reset notification permission (target: ${config.permissions.notifications})`);
-          }
-        } else {
-          sendProgress('warning: permissions.notifications is set but no `package` is configured; skipping notification permission setup');
-        }
-      }
+      // PILOT-291: reset the recorded notification state on conflict before
+      // the install below. Worker simulators (clones, reused CI sets) carry
+      // their own BulletinBoard state, so this runs per worker.
+      applySimulatorNotificationPermissionSetup(msg.deviceSerial, config, permissionSetupLog);
       // Skip only when the installed bundle is byte-identical — simulator
       // state can outlive a run (reused CI runner device sets, local app
       // rebuilds), and a presence-only skip silently tests a stale build.
@@ -213,17 +209,19 @@ async function handleInit(msg: InitMessage): Promise<void> {
     }
   } else {
     sendProgress('app install skipped');
-  }
-
-  if (config.platform !== 'ios' && config.permissions?.notifications) {
-    if (config.package) {
-      // PILOT-291: deterministic notification permission state before tests.
-      sendProgress(`setting notification permission to '${config.permissions.notifications}'`);
-      await device.setNotificationPermission(config.package, config.permissions.notifications);
-    } else {
-      sendProgress('warning: permissions.notifications is set but no `package` is configured; skipping notification permission setup');
+    if (config.platform === 'ios' && msg.deviceSerial) {
+      const { isPhysicalDevice } = await import('./ios-devicectl.js');
+      if (!isPhysicalDevice(msg.deviceSerial)) {
+        // No app to (re)install, but a configured permission that conflicts
+        // with the recorded state must still be surfaced (the helper warns).
+        applySimulatorNotificationPermissionSetup(msg.deviceSerial, config, permissionSetupLog);
+      }
     }
   }
+
+  // PILOT-291: deterministic notification permission state before tests
+  // (Android only — no-op on iOS).
+  await applyAndroidNotificationPermission(device, config, permissionSetupLog);
 
   // Start agent
   const resolvedAgentApk = config.agentApk
@@ -265,14 +263,15 @@ async function handleInit(msg: InitMessage): Promise<void> {
   resolvedAppPath = resolvedIosAppPath;
   // iOS simulator only: the agent answers the notification prompt per this
   // policy. Android applies it via setNotificationPermission above; physical
-  // iOS is unsupported.
-  let notificationPermissionForAgent: NotificationPermissionState | undefined;
+  // iOS is unsupported (the helper warns).
+  let agentNotificationPermission: NotificationPermissionState | undefined;
   if (config.platform === 'ios' && config.permissions?.notifications && msg.deviceSerial) {
     const { isPhysicalDevice } = await import('./ios-devicectl.js');
-    if (!isPhysicalDevice(msg.deviceSerial)) {
-      notificationPermissionForAgent = config.permissions.notifications;
-    }
+    agentNotificationPermission = notificationPermissionForAgent(
+      config, isPhysicalDevice(msg.deviceSerial), permissionSetupLog,
+    );
   }
+  sessionNotificationPermission = agentNotificationPermission;
   sendProgress('starting Tapsmith agent');
   try {
     await device.startAgent(
@@ -282,7 +281,7 @@ async function handleInit(msg: InitMessage): Promise<void> {
       resolvedIosXctestrun,
       resolvedIosAppPath,
       isNetworkTracingEnabled(config.trace),
-      notificationPermissionForAgent,
+      agentNotificationPermission,
     );
   } catch (err) {
     const msg1 = err instanceof Error ? err.message : String(err);
@@ -300,7 +299,7 @@ async function handleInit(msg: InitMessage): Promise<void> {
         resolvedIosXctestrun,
         resolvedIosAppPath,
         isNetworkTracingEnabled(config.trace),
-        notificationPermissionForAgent,
+        agentNotificationPermission,
       );
     } else {
       throw err;
@@ -559,6 +558,7 @@ function sessionContext(
     iosAppPath: iosAppPath ?? resolvedAppPath,
     deviceSerial: serial,
     networkTracingEnabled: isNetworkTracingEnabled(config.trace),
+    notificationPermission: sessionNotificationPermission,
   };
 }
 
