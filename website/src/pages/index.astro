@@ -48,12 +48,12 @@ const threeThings = [
   {
     n: '01',
     title: 'Mock the network without a mock server.',
-    body: 'In every other framework, mocking an API means a separate mock server, a proxy with certificate fiddling, or a special build of your app. In Tapsmith it’s device.route("**/api/payment", r => r.fulfill({ json })). One line, inline, done.',
+    body: 'In every other framework, mocking an API means a separate mock server, a proxy with certificate fiddling, or a special build of your app. In Tapsmith it’s <code>device.route("**/api/payment", r => r.fulfill({ json }))</code>. One line, inline, done.',
   },
   {
     n: '02',
     title: 'A real language, not a YAML ceiling.',
-    body: 'Maestro flows are brilliantly simple — until the suite grows and logic ends up scattered across YAML, env-var parameters, and runScript snippets. Tapsmith tests are plain TypeScript: extract helpers, loop over fixtures, share setup between tests, and refactor with autocomplete and type-checking behind you.',
+    body: 'Maestro flows are brilliantly simple — until the suite grows and logic ends up scattered across YAML, env-var parameters, and <code>runScript</code> snippets. Tapsmith tests are plain TypeScript: extract helpers, loop over fixtures, share setup between tests, and refactor with autocomplete and type-checking behind you.',
   },
   {
     n: '03',
@@ -289,7 +289,7 @@ const threeThings = [
                 <div class="tp-three-row">
                   <span class="tp-three-num">{item.n}</span>
                   <h3 class="tp-three-title">{item.title}</h3>
-                  <p class="tp-three-body">{item.body}</p>
+                  <p class="tp-three-body" set:html={item.body} />
                 </div>
               ))
             }
@@ -1240,6 +1240,15 @@ const threeThings = [
         font-size: 15px;
         color: var(--tp-ink-2);
         line-height: 1.7;
+      }
+      .tp-three-body code {
+        font-family: var(--tp-font-mono);
+        font-size: 0.85em;
+        color: var(--tp-ink);
+        background: var(--tp-bg-2);
+        border: 1px solid var(--tp-border);
+        border-radius: var(--tp-radius-sm);
+        padding: 1px 6px;
       }
 
       /* ─── 5. Comparison table ─── */
