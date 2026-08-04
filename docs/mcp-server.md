@@ -1,6 +1,6 @@
 # MCP Server
 
-Tapsmith includes a built-in [MCP](https://modelcontextprotocol.io/) server that lets AI coding agents run tests, interact with devices, and inspect results through a standardized tool interface. Both modes expose the same **16 tools** for device interaction, test execution, result browsing, watch mode, and session info.
+Tapsmith includes a built-in [MCP](https://modelcontextprotocol.io/) server that lets AI coding agents run tests, interact with devices, and inspect results through a standardized tool interface. Both modes expose the same **17 tools** for device interaction, test execution, result browsing, watch mode, and session info.
 
 ## Modes
 
@@ -173,14 +173,14 @@ Returns a JSON array of device objects with `serial`, `model`, `platform` (andro
 
 #### `tapsmith_run_tests`
 
-Run Tapsmith test files and return structured results. Only one test run can execute at a time. In SSE mode, runs appear in the UI with full progress tracking. In stdio mode, runs execute in the headless MCP session and results are available through `tapsmith_list_results`.
+Run Tapsmith test files and return structured results. Only one test run can execute at a time. In HTTP mode, runs appear in the UI with full progress tracking. In stdio mode, runs execute in the headless MCP session and results are available through `tapsmith_list_results`.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
 | `files` | string[] | Yes | Absolute file paths or glob patterns. Use `tapsmith_list_tests` to find available files. |
 | `test` | string | No | Run a specific test by its full name (e.g. `"Login screen > submits form"`). Only works with a single file. |
 | `project` | string | No | Project name to target a specific platform/device (e.g. `"android"`, `"ios"`). Required when the same test file runs on multiple platforms. |
-| `device` | string | No | Device serial (ignored in SSE mode — use `project` instead). |
+| `device` | string | No | Device serial (ignored in HTTP mode — use `project` instead). |
 
 **On success:** returns a summary like "All tests passed: 5 passed, 0 skipped (12.3s)".
 
@@ -207,7 +207,7 @@ Returns trace metadata (device, platform, test file, duration) followed by a ste
 
 ### Test session tools (both modes)
 
-These tools operate on the current MCP test session. In SSE mode that is the browser UI session; in stdio mode it is the standalone headless session created by the client-launched `tapsmith mcp-server` subprocess.
+These tools operate on the current MCP test session. In HTTP mode that is the browser UI session; in stdio mode it is the standalone headless session created by the client-launched `tapsmith mcp-server` subprocess.
 
 #### `tapsmith_list_tests`
 
