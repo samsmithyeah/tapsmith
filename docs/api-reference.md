@@ -1773,6 +1773,19 @@ export default defineConfig({
 
 See the [Configuration](configuration.md) guide for all options.
 
+### `permissions`
+
+Deterministic permission state for the app under test, applied during session setup before any test runs:
+
+```typescript
+export default defineConfig({
+  package: "com.example.myapp",
+  permissions: { notifications: "granted" }, // or "denied" | "prompt"
+});
+```
+
+Currently supports `notifications`. See [Configuration → Permissions](configuration.md#permissions) for per-platform behavior and caveats.
+
 ### Projects
 
 Projects group test files with shared options and dependency ordering, mirroring Playwright's project concept. Each project can target its own device by overriding device-shaping fields under `use:`. Setup projects run first; dependent projects run after their dependencies complete.

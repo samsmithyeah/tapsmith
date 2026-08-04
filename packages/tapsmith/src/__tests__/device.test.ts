@@ -1001,7 +1001,7 @@ describe('Device.startAgent()', () => {
     const client = makeMockClient({ startAgent });
     const device = new Device(client);
     await device.startAgent('com.example.app');
-    expect(startAgent).toHaveBeenCalledWith('com.example.app', undefined, undefined, undefined, undefined, false);
+    expect(startAgent).toHaveBeenCalledWith('com.example.app', undefined, undefined, undefined, undefined, false, undefined);
   });
 
   it('passes APK paths through', async () => {
@@ -1009,7 +1009,7 @@ describe('Device.startAgent()', () => {
     const client = makeMockClient({ startAgent });
     const device = new Device(client);
     await device.startAgent('com.example.app', '/path/agent.apk', '/path/test.apk');
-    expect(startAgent).toHaveBeenCalledWith('com.example.app', '/path/agent.apk', '/path/test.apk', undefined, undefined, false);
+    expect(startAgent).toHaveBeenCalledWith('com.example.app', '/path/agent.apk', '/path/test.apk', undefined, undefined, false, undefined);
   });
 
   it('throws on failure', async () => {

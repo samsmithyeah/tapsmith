@@ -57,6 +57,7 @@ pub async fn start_agent(
     target_bundle_id: &str,
     agent_port: u16,
     is_physical: bool,
+    notification_permission: &str,
 ) -> Result<Option<IproxyHandle>> {
     start_agent_impl(
         udid,
@@ -66,6 +67,7 @@ pub async fn start_agent(
         false,
         agent_port,
         is_physical,
+        notification_permission,
     )
     .await
 }
@@ -79,6 +81,7 @@ pub async fn start_agent_fresh(
     target_bundle_id: &str,
     agent_port: u16,
     is_physical: bool,
+    notification_permission: &str,
 ) -> Result<Option<IproxyHandle>> {
     start_agent_impl(
         udid,
@@ -88,10 +91,12 @@ pub async fn start_agent_fresh(
         true,
         agent_port,
         is_physical,
+        notification_permission,
     )
     .await
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn start_agent_impl(
     udid: &str,
     xctestrun_path: &str,
@@ -100,6 +105,7 @@ async fn start_agent_impl(
     attach_to_running_app: bool,
     agent_port: u16,
     is_physical: bool,
+    notification_permission: &str,
 ) -> Result<Option<IproxyHandle>> {
     let boot_start = std::time::Instant::now();
     // Check if agent is already running by trying to connect
@@ -149,6 +155,7 @@ async fn start_agent_impl(
         target_bundle_id,
         attach_to_running_app,
         agent_port,
+        notification_permission,
     )
     .await
     .context("Failed to patch xctestrun file")?;
@@ -432,6 +439,7 @@ async fn patch_xctestrun(
     target_bundle_id: &str,
     attach_to_running_app: bool,
     agent_port: u16,
+    notification_permission: &str,
 ) -> Result<String> {
     let mode = if attach_to_running_app {
         "attach"
@@ -493,6 +501,16 @@ async fn patch_xctestrun(
             k.push((
                 format!(":{base}:TestingEnvironmentVariables:TAPSMITH_ATTACH_TO_RUNNING_APP"),
                 "string 1".to_string(),
+            ));
+        }
+        if !notification_permission.is_empty() {
+            k.push((
+                format!(":{base}:EnvironmentVariables:TAPSMITH_NOTIFICATION_PERMISSION"),
+                format!("string {notification_permission}"),
+            ));
+            k.push((
+                format!(":{base}:TestingEnvironmentVariables:TAPSMITH_NOTIFICATION_PERMISSION"),
+                format!("string {notification_permission}"),
             ));
         }
         k
@@ -721,9 +739,10 @@ mod tests {
     async fn patch_xctestrun_launch_mode_injects_bundle_id_and_port() {
         let (_dir, path) = write_fixture(FIXTURE_EMPTY).await;
 
-        let patched_path = patch_xctestrun(path.to_str().unwrap(), "com.example.app", false, 18800)
-            .await
-            .expect("patch should succeed");
+        let patched_path =
+            patch_xctestrun(path.to_str().unwrap(), "com.example.app", false, 18800, "")
+                .await
+                .expect("patch should succeed");
 
         assert!(
             patched_path.ends_with(".launch.port18800.patched.xctestrun"),
@@ -737,15 +756,37 @@ mod tests {
         assert!(contents.contains("UITargetAppBundleIdentifier"));
         // Launch mode must NOT inject the attach flag.
         assert!(!contents.contains("TAPSMITH_ATTACH_TO_RUNNING_APP"));
+        // No notification policy configured — the env var must be absent.
+        assert!(!contents.contains("TAPSMITH_NOTIFICATION_PERMISSION"));
+    }
+
+    #[tokio::test]
+    async fn patch_xctestrun_injects_notification_permission_when_set() {
+        let (_dir, path) = write_fixture(FIXTURE_EMPTY).await;
+
+        let patched_path = patch_xctestrun(
+            path.to_str().unwrap(),
+            "com.example.app",
+            false,
+            18800,
+            "denied",
+        )
+        .await
+        .expect("patch should succeed");
+
+        let contents = tokio::fs::read_to_string(&patched_path).await.unwrap();
+        assert!(contents.contains("TAPSMITH_NOTIFICATION_PERMISSION"));
+        assert!(contents.contains("denied"));
     }
 
     #[tokio::test]
     async fn patch_xctestrun_attach_mode_sets_attach_flag() {
         let (_dir, path) = write_fixture(FIXTURE_EMPTY).await;
 
-        let patched_path = patch_xctestrun(path.to_str().unwrap(), "com.example.app", true, 19000)
-            .await
-            .expect("patch should succeed");
+        let patched_path =
+            patch_xctestrun(path.to_str().unwrap(), "com.example.app", true, 19000, "")
+                .await
+                .expect("patch should succeed");
 
         assert!(
             patched_path.ends_with(".attach.port19000.patched.xctestrun"),
@@ -764,7 +805,7 @@ mod tests {
         let (_dir, path) = write_fixture(FIXTURE_WITH_STALE).await;
 
         let patched_path =
-            patch_xctestrun(path.to_str().unwrap(), "com.fresh.bundle", false, 18800)
+            patch_xctestrun(path.to_str().unwrap(), "com.fresh.bundle", false, 18800, "")
                 .await
                 .expect("patch should succeed");
 
@@ -789,13 +830,13 @@ mod tests {
         let (_dir, path) = write_fixture(FIXTURE_EMPTY).await;
         let src = path.to_str().unwrap();
 
-        let p1 = patch_xctestrun(src, "com.example.app", false, 18800)
+        let p1 = patch_xctestrun(src, "com.example.app", false, 18800, "")
             .await
             .unwrap();
-        let p2 = patch_xctestrun(src, "com.example.app", false, 18801)
+        let p2 = patch_xctestrun(src, "com.example.app", false, 18801, "")
             .await
             .unwrap();
-        let p3 = patch_xctestrun(src, "com.example.app", true, 18800)
+        let p3 = patch_xctestrun(src, "com.example.app", true, 18800, "")
             .await
             .unwrap();
         assert_ne!(p1, p2);
@@ -809,7 +850,7 @@ mod tests {
         let bogus = dir.path().join("does-not-exist.xctestrun");
 
         let result =
-            patch_xctestrun(bogus.to_str().unwrap(), "com.example.app", false, 18800).await;
+            patch_xctestrun(bogus.to_str().unwrap(), "com.example.app", false, 18800, "").await;
         assert!(result.is_err(), "expected error for missing source file");
     }
 

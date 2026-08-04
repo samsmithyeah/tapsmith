@@ -168,6 +168,11 @@ struct IosAgentConfig {
     /// `restoreAppState` to uninstall + reinstall the app for a clean
     /// data container.
     app_path: Option<String>,
+    /// Configured notification permission policy ("granted"/"denied"/
+    /// "prompt", empty = default). Re-injected into the agent environment
+    /// on restart so a recovered agent keeps answering permission prompts
+    /// per the session's policy.
+    notification_permission: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -180,6 +185,7 @@ struct StartedAgentConfig {
     ios_xctestrun: Option<StartupArtifactIdentity>,
     ios_app: Option<StartupArtifactIdentity>,
     network_tracing_enabled: bool,
+    notification_permission: String,
 }
 
 impl StartedAgentConfig {
@@ -197,6 +203,7 @@ impl StartedAgentConfig {
             ios_xctestrun: StartupArtifactIdentity::from_path(&req.ios_xctestrun_path),
             ios_app: StartupArtifactIdentity::from_path(&req.ios_app_path),
             network_tracing_enabled: req.network_tracing_enabled,
+            notification_permission: req.notification_permission.clone(),
         }
     }
 }
@@ -873,6 +880,7 @@ impl TapsmithServiceImpl {
             &config.target_package,
             agent_port,
             is_physical,
+            &config.notification_permission,
         )
         .await
         {
@@ -890,6 +898,7 @@ impl TapsmithServiceImpl {
                         &config.target_package,
                         agent_port,
                         is_physical,
+                        &config.notification_permission,
                     )
                     .await
                     .map_err(|e| format!("Failed to restart iOS agent (retry): {e}"))?
@@ -1245,6 +1254,43 @@ impl TapsmithServiceImpl {
             )));
         }
         Ok(())
+    }
+
+    /// Build the Android shell command sequence that moves the app's
+    /// notification permission to a deterministic state, or `None` for an
+    /// unrecognized state. Three pieces must agree for the state to stick:
+    /// the POST_NOTIFICATIONS runtime permission (`pm grant`/`pm revoke`),
+    /// the permission flags (`user-set`/`user-fixed` suppress or allow
+    /// re-prompting), and the POST_NOTIFICATION appop backing the
+    /// Settings → Notifications toggle.
+    fn android_notification_permission_commands(
+        package_name: &str,
+        state: &str,
+    ) -> Option<Vec<String>> {
+        const PERMISSION: &str = "android.permission.POST_NOTIFICATIONS";
+        let commands = match state {
+            "granted" => vec![
+                format!("pm grant {package_name} {PERMISSION}"),
+                format!("cmd appops set {package_name} POST_NOTIFICATION allow"),
+            ],
+            "denied" => vec![
+                format!("pm revoke {package_name} {PERMISSION}"),
+                // user-fixed = "Don't ask again": requestPermission() reports
+                // denied without showing a dialog, so tests exercising the
+                // denied UI aren't interrupted by a system prompt.
+                format!("pm set-permission-flags {package_name} {PERMISSION} user-fixed"),
+                format!("cmd appops set {package_name} POST_NOTIFICATION ignore"),
+            ],
+            "prompt" => vec![
+                format!("pm revoke {package_name} {PERMISSION}"),
+                format!(
+                    "pm clear-permission-flags {package_name} {PERMISSION} user-set user-fixed"
+                ),
+                format!("cmd appops set {package_name} POST_NOTIFICATION default"),
+            ],
+            _ => return None,
+        };
+        Some(commands)
     }
 
     /// Validate that a string looks like a valid Android activity name (e.g. `.MainActivity`).
@@ -2740,6 +2786,7 @@ impl proto::tapsmith_service_server::TapsmithService for TapsmithServiceImpl {
                     &req.target_package,
                     agent_port,
                     is_physical,
+                    &req.notification_permission,
                 )
                 .await
                 {
@@ -2764,6 +2811,7 @@ impl proto::tapsmith_service_server::TapsmithService for TapsmithServiceImpl {
                     xctestrun_path: req.ios_xctestrun_path.clone(),
                     target_package: req.target_package.clone(),
                     app_path: (!req.ios_app_path.is_empty()).then(|| req.ios_app_path.clone()),
+                    notification_permission: req.notification_permission.clone(),
                 });
             }
             Platform::Android => {
@@ -4109,6 +4157,72 @@ impl proto::tapsmith_service_server::TapsmithService for TapsmithServiceImpl {
 
         self.platform_permission_action(request_id, &req.package_name, &req.permission, "revoke")
             .await
+    }
+
+    #[instrument(skip_all, fields(request_id))]
+    async fn set_notification_permission(
+        &self,
+        request: Request<proto::SetNotificationPermissionRequest>,
+    ) -> Result<Response<proto::ActionResponse>, Status> {
+        let req = request.into_inner();
+        let request_id = Self::request_id(&req.request_id);
+        let platform = self.require_platform().await?;
+
+        Self::validate_package_name(&req.package_name)?;
+        let commands = match Self::android_notification_permission_commands(
+            &req.package_name,
+            &req.state,
+        ) {
+            Some(commands) => commands,
+            None => {
+                return Err(Status::invalid_argument(format!(
+                    "invalid notification permission state: {:?} — expected \"granted\", \"denied\", or \"prompt\"",
+                    req.state
+                )));
+            }
+        };
+
+        match platform {
+            Platform::Ios => {
+                // Notification state on iOS is not scriptable while the OS is
+                // running (`simctl privacy` has no notifications service, and
+                // SpringBoard rewrites its BulletinBoard store on exit). The
+                // SDK owns the iOS path instead: it resets state by
+                // reinstalling the app and configures the agent's prompt
+                // policy via StartAgent. Reaching this RPC on iOS means a
+                // client skipped that flow.
+                let error_type = if self.is_active_ios_physical().await {
+                    "UNSUPPORTED_ON_PHYSICAL_DEVICE"
+                } else {
+                    "UNSUPPORTED_ON_PLATFORM"
+                };
+                Ok(self
+                    .action_error(
+                        request_id,
+                        error_type,
+                        "setNotificationPermission is not supported on iOS via RPC. \
+                         Set `permissions: { notifications: ... }` in your Tapsmith \
+                         config — the SDK applies it during session setup."
+                            .to_string(),
+                    )
+                    .await)
+            }
+            Platform::Android => {
+                // POST_NOTIFICATIONS is a runtime permission only on API 33+
+                // and only for apps that declare it; `pm` fails loudly for
+                // both cases, which is the honest outcome. The appops toggle
+                // (POST_NOTIFICATION, no trailing S) additionally drives the
+                // Settings → Notifications switch so the app's own
+                // `areNotificationsEnabled()` checks agree with the grant.
+                for cmd in &commands {
+                    let response = self.adb_action(request_id.clone(), cmd).await?;
+                    if !response.get_ref().success {
+                        return Ok(response);
+                    }
+                }
+                Ok(Self::success_action_response(request_id))
+            }
+        }
     }
 
     #[instrument(skip_all, fields(request_id))]
@@ -7316,6 +7430,7 @@ mod tests {
             ios_xctestrun_path: "Runner.xctestrun".to_string(),
             ios_app_path: String::new(),
             network_tracing_enabled: true,
+            notification_permission: String::new(),
         };
         let first = StartedAgentConfig::from_start_agent_request("device-1", Platform::Ios, &req);
 
@@ -7324,6 +7439,83 @@ mod tests {
 
         assert_eq!(first, second);
         assert_eq!(first.ios_app, None);
+    }
+
+    #[test]
+    fn started_agent_config_changes_when_notification_permission_changes() {
+        // A changed notification policy must invalidate agent reuse — the
+        // policy is baked into the agent's environment at launch, so a
+        // running agent with the old policy cannot serve the new session.
+        let mut req = proto::StartAgentRequest {
+            request_id: String::new(),
+            target_package: "com.example.app".to_string(),
+            agent_apk_path: String::new(),
+            agent_test_apk_path: String::new(),
+            ios_xctestrun_path: "Runner.xctestrun".to_string(),
+            ios_app_path: String::new(),
+            network_tracing_enabled: false,
+            notification_permission: String::new(),
+        };
+        let default_policy =
+            StartedAgentConfig::from_start_agent_request("device-1", Platform::Ios, &req);
+
+        req.notification_permission = "denied".to_string();
+        let denied_policy =
+            StartedAgentConfig::from_start_agent_request("device-1", Platform::Ios, &req);
+
+        assert_ne!(default_policy, denied_policy);
+    }
+
+    #[test]
+    fn android_notification_permission_commands_cover_all_states() {
+        let granted = TapsmithServiceImpl::android_notification_permission_commands(
+            "com.example.app",
+            "granted",
+        )
+        .unwrap();
+        assert_eq!(
+            granted,
+            vec![
+                "pm grant com.example.app android.permission.POST_NOTIFICATIONS".to_string(),
+                "cmd appops set com.example.app POST_NOTIFICATION allow".to_string(),
+            ]
+        );
+
+        let denied = TapsmithServiceImpl::android_notification_permission_commands(
+            "com.example.app",
+            "denied",
+        )
+        .unwrap();
+        assert_eq!(denied.len(), 3);
+        assert!(denied[0].starts_with("pm revoke"));
+        assert!(denied[1].contains("user-fixed"));
+        assert!(denied[2].ends_with("POST_NOTIFICATION ignore"));
+
+        let prompt = TapsmithServiceImpl::android_notification_permission_commands(
+            "com.example.app",
+            "prompt",
+        )
+        .unwrap();
+        assert_eq!(prompt.len(), 3);
+        assert!(prompt[0].starts_with("pm revoke"));
+        assert!(prompt[1].contains("clear-permission-flags"));
+        assert!(prompt[1].contains("user-set user-fixed"));
+        assert!(prompt[2].ends_with("POST_NOTIFICATION default"));
+    }
+
+    #[test]
+    fn android_notification_permission_commands_reject_unknown_state() {
+        assert!(
+            TapsmithServiceImpl::android_notification_permission_commands(
+                "com.example.app",
+                "maybe"
+            )
+            .is_none()
+        );
+        assert!(
+            TapsmithServiceImpl::android_notification_permission_commands("com.example.app", "")
+                .is_none()
+        );
     }
 
     #[test]
@@ -7336,6 +7528,7 @@ mod tests {
             ios_xctestrun_path: "Runner.xctestrun".to_string(),
             ios_app_path: "Example.app".to_string(),
             network_tracing_enabled: false,
+            notification_permission: String::new(),
         };
 
         let base =

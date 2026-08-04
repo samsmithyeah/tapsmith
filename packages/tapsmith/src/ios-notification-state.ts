@@ -1,0 +1,168 @@
+/**
+ * Deterministic notification permission state for iOS simulators (PILOT-291).
+ *
+ * iOS notification authorization is not scriptable while the simulator is
+ * booted: `simctl privacy` has no `notifications` service, and SpringBoard
+ * rewrites its BulletinBoard store on exit, so editing it in place requires
+ * a shutdown. What IS reliable while booted:
+ *
+ * - Reading the recorded state from
+ *   `<device>/data/Library/BulletinBoard/VersionedSectionInfo.plist`, which
+ *   maps bundle id → keyed-archived `BBSectionInfo` whose
+ *   `BBSectionInfoSettings.authorizationStatus` holds the
+ *   `UNAuthorizationStatus` raw value (0 = notDetermined, 1 = denied,
+ *   2 = authorized).
+ * - Uninstalling the app, which clears its BulletinBoard section and returns
+ *   the permission to notDetermined, so the one-shot prompt shows again.
+ *
+ * Session setup combines the two: read the state, and only when it
+ * conflicts with the configured target uninstall the app (the normal
+ * install flow reinstalls it immediately after). The prompt that then
+ * appears at first request is answered by the agent's interruption monitor
+ * according to the same configured policy (see SystemDialogPolicy in the
+ * iOS agent).
+ */
+
+import * as fs from 'node:fs';
+import * as os from 'node:os';
+import * as path from 'node:path';
+import { execFileSync } from 'node:child_process';
+import bplist from 'bplist-parser';
+import * as plist from 'plist';
+import type { NotificationPermissionState } from './config.js';
+
+export type NotificationAuthorizationStatus =
+  | 'notDetermined'
+  | 'denied'
+  | 'authorized'
+  | 'unknown';
+
+const BINARY_PLIST_MAGIC = 'bplist00';
+
+function simulatorBulletinBoardPlist(udid: string): string {
+  return path.join(
+    os.homedir(),
+    'Library/Developer/CoreSimulator/Devices',
+    udid,
+    'data/Library/BulletinBoard/VersionedSectionInfo.plist',
+  );
+}
+
+/**
+ * Parse the raw bytes of a VersionedSectionInfo.plist and extract the
+ * recorded authorization status for `bundleId`. Exported for tests.
+ *
+ * A missing section means iOS has never recorded a decision for that bundle
+ * id — i.e. notDetermined. 'unknown' means the file didn't match the
+ * expected shape; callers should treat it as "state cannot be trusted".
+ */
+export function parseNotificationAuthorizationStatus(
+  raw: Buffer,
+  bundleId: string,
+): NotificationAuthorizationStatus {
+  let outer: unknown;
+  if (raw.subarray(0, BINARY_PLIST_MAGIC.length).toString('latin1') === BINARY_PLIST_MAGIC) {
+    outer = bplist.parseBuffer(raw)[0];
+  } else {
+    outer = plist.parse(raw.toString('utf8'));
+  }
+  if (typeof outer !== 'object' || outer === null) return 'unknown';
+
+  const sectionInfo = (outer as Record<string, unknown>).sectionInfo;
+  if (typeof sectionInfo !== 'object' || sectionInfo === null) return 'unknown';
+
+  const blob = (sectionInfo as Record<string, unknown>)[bundleId];
+  if (blob === undefined) return 'notDetermined';
+  // The XML parser yields Uint8Array for <data>, the binary parser Buffer.
+  if (!(blob instanceof Uint8Array)) return 'unknown';
+
+  // The blob is an NSKeyedArchiver archive. Exactly one archived object —
+  // the BBSectionInfoSettings — carries a numeric `authorizationStatus`.
+  const archive = bplist.parseBuffer(Buffer.from(blob))[0] as Record<string, unknown> | undefined;
+  const objects = archive?.['$objects'];
+  if (!Array.isArray(objects)) return 'unknown';
+  for (const obj of objects) {
+    if (typeof obj !== 'object' || obj === null) continue;
+    const status = (obj as Record<string, unknown>).authorizationStatus;
+    if (typeof status === 'number') {
+      if (status === 0) return 'notDetermined';
+      if (status === 1) return 'denied';
+      if (status === 2) return 'authorized';
+      return 'unknown';
+    }
+  }
+  return 'unknown';
+}
+
+/**
+ * Read the recorded notification authorization status for an app on a
+ * simulator. Never throws — unreadable state reports as 'unknown'.
+ */
+export function readNotificationAuthorizationStatus(
+  udid: string,
+  bundleId: string,
+): NotificationAuthorizationStatus {
+  const plistPath = simulatorBulletinBoardPlist(udid);
+  try {
+    if (!fs.existsSync(plistPath)) {
+      // No BulletinBoard store at all — nothing has ever requested
+      // notification authorization on this simulator.
+      return 'notDetermined';
+    }
+    return parseNotificationAuthorizationStatus(fs.readFileSync(plistPath), bundleId);
+  } catch {
+    return 'unknown';
+  }
+}
+
+/**
+ * Whether the recorded state conflicts with the configured target and the
+ * app must be reinstalled to get back to notDetermined. Exported for tests.
+ *
+ * - granted: notDetermined is fine — the agent accepts the prompt when the
+ *   app asks. Only a recorded denial needs the reset.
+ * - denied: symmetric — the agent declines the prompt, so only a recorded
+ *   grant needs the reset.
+ * - prompt: any recorded decision needs the reset.
+ * - 'unknown' always resets: determinism is the whole point of the setting.
+ */
+export function needsNotificationReset(
+  status: NotificationAuthorizationStatus,
+  target: NotificationPermissionState,
+): boolean {
+  switch (target) {
+    case 'granted':
+      return status === 'denied' || status === 'unknown';
+    case 'denied':
+      return status === 'authorized' || status === 'unknown';
+    case 'prompt':
+      return status !== 'notDetermined';
+    default:
+      throw new Error(
+        `Invalid permissions.notifications value: ${JSON.stringify(target)} — `
+        + `expected 'granted', 'denied', or 'prompt'.`,
+      );
+  }
+}
+
+/**
+ * Ensure a simulator app's notification permission can reach the configured
+ * target state, uninstalling the app when its recorded state conflicts.
+ * Returns true when the app was uninstalled — the caller's install flow
+ * must then (re)install it.
+ */
+export function ensureSimulatorNotificationPermissionState(
+  udid: string,
+  bundleId: string,
+  target: NotificationPermissionState,
+): boolean {
+  const status = readNotificationAuthorizationStatus(udid, bundleId);
+  if (!needsNotificationReset(status, target)) return false;
+  try {
+    execFileSync('xcrun', ['simctl', 'uninstall', udid, bundleId]);
+  } catch {
+    // Uninstall of a not-installed app fails; there is then no recorded
+    // state left to conflict, so the fresh install proceeds as normal.
+  }
+  return true;
+}

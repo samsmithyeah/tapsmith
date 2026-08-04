@@ -180,6 +180,17 @@ async function handleInit(msg: InitMessage): Promise<void> {
         sendProgress('app install complete');
       }
     } else {
+      if (config.permissions?.notifications && config.package) {
+        // PILOT-291: uninstall when this simulator's recorded notification
+        // state conflicts with the configured target — the install below
+        // then returns it to notDetermined for the agent to answer per
+        // policy. Worker simulators (clones, reused CI sets) carry their
+        // own BulletinBoard state, so this runs per worker.
+        const { ensureSimulatorNotificationPermissionState } = await import('./ios-notification-state.js');
+        if (ensureSimulatorNotificationPermissionState(msg.deviceSerial, config.package, config.permissions.notifications)) {
+          sendProgress(`reinstalling to reset notification permission (target: ${config.permissions.notifications})`);
+        }
+      }
       // Skip only when the installed bundle is byte-identical — simulator
       // state can outlive a run (reused CI runner device sets, local app
       // rebuilds), and a presence-only skip silently tests a stale build.
@@ -197,6 +208,12 @@ async function handleInit(msg: InitMessage): Promise<void> {
     }
   } else {
     sendProgress('app install skipped');
+  }
+
+  if (config.platform !== 'ios' && config.permissions?.notifications && config.package) {
+    // PILOT-291: deterministic notification permission state before tests.
+    sendProgress(`setting notification permission to '${config.permissions.notifications}'`);
+    await device.setNotificationPermission(config.package, config.permissions.notifications);
   }
 
   // Start agent
@@ -237,6 +254,16 @@ async function handleInit(msg: InitMessage): Promise<void> {
     : undefined;
   resolvedXctestrunPath = resolvedIosXctestrun;
   resolvedAppPath = resolvedIosAppPath;
+  // iOS simulator only: the agent answers the notification prompt per this
+  // policy. Android applies it via setNotificationPermission above; physical
+  // iOS is unsupported.
+  let notificationPermissionForAgent: string | undefined;
+  if (config.platform === 'ios' && config.permissions?.notifications && msg.deviceSerial) {
+    const { isPhysicalDevice } = await import('./ios-devicectl.js');
+    if (!isPhysicalDevice(msg.deviceSerial)) {
+      notificationPermissionForAgent = config.permissions.notifications;
+    }
+  }
   sendProgress('starting Tapsmith agent');
   try {
     await device.startAgent(
@@ -246,6 +273,7 @@ async function handleInit(msg: InitMessage): Promise<void> {
       resolvedIosXctestrun,
       resolvedIosAppPath,
       isNetworkTracingEnabled(config.trace),
+      notificationPermissionForAgent,
     );
   } catch (err) {
     const msg1 = err instanceof Error ? err.message : String(err);
@@ -263,6 +291,7 @@ async function handleInit(msg: InitMessage): Promise<void> {
         resolvedIosXctestrun,
         resolvedIosAppPath,
         isNetworkTracingEnabled(config.trace),
+        notificationPermissionForAgent,
       );
     } else {
       throw err;

@@ -69,6 +69,20 @@ class TapsmithAgentRunner: XCTestCase {
         // confirmation. The daemon taps it through acceptOpenInAppDialog while
         // simctl openurl is pending, before XCUITest interactions can race it.
         addUIInterruptionMonitor(withDescription: "System Alert") { alert in
+            // Deliberate deny: when the session is configured with
+            // notificationPermission == "denied", decline the notification
+            // prompt (and only that prompt) so tests can exercise the
+            // app's denied-state UI. Everything else stays allow-first.
+            if SystemDialogPolicy.notificationPermission == "denied",
+               SystemDialogPolicy.isNotificationPermissionAlert(alert.label) {
+                for title in SystemDialogPolicy.notificationDenyButtonLabels {
+                    let button = alert.buttons[title]
+                    if button.exists {
+                        button.tap()
+                        return true
+                    }
+                }
+            }
             for title in SystemDialogPolicy.allowButtonLabels {
                 let button = alert.buttons[title]
                 if button.exists {

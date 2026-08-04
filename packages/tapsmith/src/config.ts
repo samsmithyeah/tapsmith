@@ -17,6 +17,14 @@ export type ScreenshotMode = 'always' | 'only-on-failure' | 'never';
 export type DeviceStrategy = 'prefer-connected' | 'avd-only';
 export type Platform = 'android' | 'ios';
 
+/** Desired permission state for the app under test at session start. */
+export type NotificationPermissionState = 'granted' | 'denied' | 'prompt';
+
+/** Permission states applied at session setup. See `TapsmithConfig.permissions`. */
+export interface PermissionsConfig {
+  notifications?: NotificationPermissionState;
+}
+
 export type { TraceMode, TraceConfig, VideoMode, VideoConfig };
 
 export interface TapsmithConfig {
@@ -220,6 +228,34 @@ export interface TapsmithConfig {
   extraHTTPHeaders?: Record<string, string>;
 
   /**
+   * Permission states applied to the app under test during session setup,
+   * before any test runs (PILOT-291). Mirrors Maestro's `permissions` map.
+   *
+   * `notifications`:
+   * - `'granted'` — the app starts the run able to post notifications.
+   *   Android: granted silently via `pm grant`. iOS simulator: iOS has no
+   *   silent grant for notifications, so Tapsmith ensures the one-shot
+   *   permission prompt is available (reinstalling the app if a previous
+   *   run denied it) and the agent accepts the prompt when the app asks.
+   * - `'denied'` — the app starts the run with notifications denied, for
+   *   testing denied-state UI. Android: revoked with "don't ask again" so
+   *   no dialog interrupts the test. iOS simulator: the agent declines the
+   *   prompt when the app asks (reinstalling first if a previous run
+   *   granted it).
+   * - `'prompt'` — reset to the never-asked state so the permission flow
+   *   can be exercised from scratch.
+   *
+   * On iOS a reset means an app reinstall, which clears app data — this
+   * only happens when the recorded state conflicts with the requested one.
+   * Not supported on physical iOS devices (a warning is printed and the
+   * setting is skipped).
+   *
+   * @example
+   * permissions: { notifications: 'granted' }
+   */
+  permissions?: PermissionsConfig;
+
+  /**
    * Run only tests whose fullName (`describe > test`) matches at least one of
    * these regular expressions. Mirrors Playwright's `grep` /  `--grep` CLI flag.
    * Combined with `grepInvert` via logical AND.
@@ -267,6 +303,7 @@ export type UseOptions = Partial<Pick<TapsmithConfig,
   | 'doubleTapInterval'
   | 'baseURL'
   | 'extraHTTPHeaders'
+  | 'permissions'
 >> & {
   /**
    * Path to a saved app state archive (created by `device.saveAppState()`).

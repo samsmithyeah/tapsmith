@@ -259,6 +259,7 @@ export interface SerializedConfig {
   resetAppWaitMs?: number
   baseURL?: string
   extraHTTPHeaders?: Record<string, string>
+  permissions?: { notifications?: 'granted' | 'denied' | 'prompt' }
   /** RegExp filters for test fullNames. Source/flags are serialized for IPC. */
   grep?: SerializedRegExp[]
   grepInvert?: SerializedRegExp[]
@@ -291,6 +292,7 @@ export function serializeConfig(config: TapsmithConfig): SerializedConfig {
     resetAppWaitMs: config.resetAppWaitMs,
     baseURL: config.baseURL,
     extraHTTPHeaders: config.extraHTTPHeaders,
+    permissions: config.permissions,
     grep: serializeRegExpArray(normalizeGrep(config.grep)),
     grepInvert: serializeRegExpArray(normalizeGrep(config.grepInvert)),
   };
