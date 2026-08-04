@@ -71,7 +71,6 @@
   "devDependencies": {
     "@prefresh/vite": "^2.4.12",
     "@types/node": "^22.0.0",
-    "@types/plist": "^3.0.5",
     "@types/proper-lockfile": "^4.1.4",
     "@types/ws": "^8.18.1",
     "eslint": "^9.0.0",
