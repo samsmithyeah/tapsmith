@@ -79,9 +79,17 @@ class TapsmithAgentRunner: XCTestCase {
                     let button = alert.buttons[title]
                     if button.exists {
                         button.tap()
+                        NSLog("[TapsmithAgent] Declined notification prompt per configured policy")
                         return true
                     }
                 }
+                // No recognized deny button (localized simulator, or Apple
+                // changed the wording). Never fall through to the allow
+                // labels: iOS records notification authorization once per
+                // bundle id, so a single Allow here would permanently
+                // contradict the configured denied policy.
+                NSLog("[TapsmithAgent] Notification prompt has no recognized deny button; leaving it unhandled (label: \(alert.label))")
+                return false
             }
             for title in SystemDialogPolicy.allowButtonLabels {
                 let button = alert.buttons[title]

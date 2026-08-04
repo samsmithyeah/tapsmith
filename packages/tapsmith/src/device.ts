@@ -33,7 +33,7 @@ import {
 import * as nodePath from 'node:path';
 import { ElementHandle, locatorOptionsToSelector, type LocatorOptions } from './element-handle.js';
 import { withActionProgress } from './action-progress.js';
-import type { TapsmithConfig } from './config.js';
+import type { TapsmithConfig, NotificationPermissionState } from './config.js';
 import { Tracing } from './trace/tracing.js';
 import { type TraceCollector, getActiveTraceCollector, extractStack } from './trace/trace-collector.js';
 import type { ActionCategory, ConsoleLevel } from './trace/types.js';
@@ -532,7 +532,7 @@ export class Device {
     iosXctestrunPath?: string,
     iosAppPath?: string,
     networkTracingEnabled = false,
-    notificationPermission?: string,
+    notificationPermission?: NotificationPermissionState,
   ): Promise<void> {
     return withActionProgress('startAgent', targetPackage || undefined, async () => {
       const res = await this._client.startAgent(
@@ -559,7 +559,7 @@ export class Device {
    * @internal Not part of the public API — set
    * `permissions: { notifications: ... }` in your Tapsmith config.
    */
-  async setNotificationPermission(packageName: string, state: string): Promise<void> {
+  async setNotificationPermission(packageName: string, state: NotificationPermissionState): Promise<void> {
     const res = await this._client.setNotificationPermission(packageName, state);
     if (!res.success) {
       throw new Error(

@@ -654,9 +654,9 @@ async function setupSequentialDevice(
             // No supported reset path on real hardware (devicectl can
             // reinstall, but the agent-side prompt policy is still
             // simulator-scoped for now) — skip loudly rather than half-apply.
-            console.log(
-              'Warning: permissions.notifications is not supported on physical iOS devices; skipping.',
-            );
+            const warning = 'permissions.notifications is not supported on physical iOS devices; skipping.';
+            if (progress) progress.note(warning);
+            else console.log(`Warning: ${warning}`);
           }
           const { installAppOnDevice, isAppInstalledOnDevice } = await import('./ios-devicectl.js');
           const alreadyInstalled = !deviceJustLaunched
@@ -679,15 +679,21 @@ async function setupSequentialDevice(
           }
         } else {
           const { installAppAsync, isAppInstalled, installedAppMatches } = await import('./ios-simulator.js');
-          if (cfg.permissions?.notifications && cfg.package) {
-            // PILOT-291: uninstall when the simulator's recorded notification
-            // state conflicts with the configured target, so the fresh
-            // install below returns it to notDetermined and the agent can
-            // answer the prompt per policy.
-            const { ensureSimulatorNotificationPermissionState } = await import('./ios-notification-state.js');
-            if (ensureSimulatorNotificationPermissionState(cfg.device, cfg.package, cfg.permissions.notifications)) {
-              if (progress) progress.update('app-install', { state: 'running', detail: `reinstalling to reset notification permission (target: ${cfg.permissions.notifications})` });
-              else console.log(dim(`Reinstalling ${cfg.package} to reset notification permission state (target: ${cfg.permissions.notifications}).`));
+          if (cfg.permissions?.notifications) {
+            if (cfg.package) {
+              // PILOT-291: uninstall when the simulator's recorded notification
+              // state conflicts with the configured target, so the fresh
+              // install below returns it to notDetermined and the agent can
+              // answer the prompt per policy.
+              const { ensureSimulatorNotificationPermissionState } = await import('./ios-notification-state.js');
+              if (ensureSimulatorNotificationPermissionState(cfg.device, cfg.package, cfg.permissions.notifications)) {
+                if (progress) progress.update('app-install', { state: 'running', detail: `reinstalling to reset notification permission (target: ${cfg.permissions.notifications})` });
+                else console.log(dim(`Reinstalling ${cfg.package} to reset notification permission state (target: ${cfg.permissions.notifications}).`));
+              }
+            } else {
+              const warning = 'permissions.notifications is set but no `package` is configured; skipping notification permission setup.';
+              if (progress) progress.note(warning);
+              else console.log(`Warning: ${warning}`);
             }
           }
           const alreadyInstalled = !deviceJustLaunched
@@ -788,10 +794,16 @@ async function setupSequentialDevice(
       progress?.skip('app-install', 'no Android APK configured');
     }
 
-    if (cfg.permissions?.notifications && cfg.package) {
-      // PILOT-291: deterministic notification permission state before tests.
-      await device.setNotificationPermission(cfg.package, cfg.permissions.notifications);
-      if (!progress) console.log(dim(`Notification permission set to '${cfg.permissions.notifications}' for ${cfg.package}.`));
+    if (cfg.permissions?.notifications) {
+      if (cfg.package) {
+        // PILOT-291: deterministic notification permission state before tests.
+        await device.setNotificationPermission(cfg.package, cfg.permissions.notifications);
+        if (!progress) console.log(dim(`Notification permission set to '${cfg.permissions.notifications}' for ${cfg.package}.`));
+      } else {
+        const warning = 'permissions.notifications is set but no `package` is configured; skipping notification permission setup.';
+        if (progress) progress.note(warning);
+        else console.log(`Warning: ${warning}`);
+      }
     }
   }
 

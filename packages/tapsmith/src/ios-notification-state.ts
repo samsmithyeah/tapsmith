@@ -29,6 +29,7 @@ import * as path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import bplist from 'bplist-parser';
 import * as plist from 'plist';
+import { isAppInstalled } from './ios-simulator.js';
 import type { NotificationPermissionState } from './config.js';
 
 export type NotificationAuthorizationStatus =
@@ -87,7 +88,11 @@ export function parseNotificationAuthorizationStatus(
     if (typeof status === 'number') {
       if (status === 0) return 'notDetermined';
       if (status === 1) return 'denied';
-      if (status === 2) return 'authorized';
+      // 2 = authorized; 3 = provisional (quiet delivery) and 4 = ephemeral
+      // (App Clips) are both forms of granted authorization — no reset is
+      // needed to reach 'granted', and they conflict with 'denied'/'prompt'
+      // exactly like a full grant.
+      if (status === 2 || status === 3 || status === 4) return 'authorized';
       return 'unknown';
     }
   }
@@ -160,9 +165,19 @@ export function ensureSimulatorNotificationPermissionState(
   if (!needsNotificationReset(status, target)) return false;
   try {
     execFileSync('xcrun', ['simctl', 'uninstall', udid, bundleId]);
-  } catch {
+  } catch (err) {
     // Uninstall of a not-installed app fails; there is then no recorded
     // state left to conflict, so the fresh install proceeds as normal.
+    // Any other failure means the conflicting state survived — the caller
+    // would skip the reinstall (installed bundle still matches) and run
+    // the session against the wrong permission state, so fail loudly.
+    if (isAppInstalled(udid, bundleId)) {
+      throw new Error(
+        `Failed to uninstall ${bundleId} to reset its notification permission `
+        + `state (recorded '${status}', configured '${target}'): `
+        + (err instanceof Error ? err.message : String(err)),
+      );
+    }
   }
   return true;
 }

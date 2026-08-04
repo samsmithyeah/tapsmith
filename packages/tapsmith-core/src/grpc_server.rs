@@ -2695,6 +2695,19 @@ impl proto::tapsmith_service_server::TapsmithService for TapsmithServiceImpl {
         let serial = self.active_serial().await?;
         let platform = self.require_platform().await?;
 
+        // The value is written verbatim into the agent's environment, and the
+        // agent treats anything that isn't "denied" as allow-first — reject
+        // unknown values here so a typo can't silently select that fallback.
+        if !matches!(
+            req.notification_permission.as_str(),
+            "" | "granted" | "denied" | "prompt"
+        ) {
+            return Err(Status::invalid_argument(format!(
+                "invalid notification_permission: {:?} — expected \"granted\", \"denied\", \"prompt\", or empty",
+                req.notification_permission
+            )));
+        }
+
         info!(serial = %serial, %platform, "Starting agent connection");
 
         info!(ios_xctestrun_path = %req.ios_xctestrun_path, "StartAgent fields");

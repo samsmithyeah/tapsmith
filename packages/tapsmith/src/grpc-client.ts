@@ -13,6 +13,7 @@ import * as crypto from 'node:crypto';
 import { type Selector, selectorToProto } from './selectors.js';
 import { TestAbortedError } from './abort.js';
 import { isCurrentAttemptClosed, fencedRejection } from './attempt-fence.js';
+import type { NotificationPermissionState } from './config.js';
 
 // ─── Types mirroring proto messages ───
 
@@ -603,7 +604,7 @@ export class TapsmithGrpcClient {
     iosXctestrunPath?: string,
     iosAppPath?: string,
     networkTracingEnabled = false,
-    notificationPermission?: string,
+    notificationPermission?: NotificationPermissionState,
   ): Promise<ActionResponse> {
     return this.call<ActionResponse>('startAgent', {
       requestId: requestId(),
@@ -623,7 +624,7 @@ export class TapsmithGrpcClient {
 
   async setNotificationPermission(
     packageName: string,
-    state: string,
+    state: NotificationPermissionState,
   ): Promise<ActionResponse> {
     return this.call<ActionResponse>('setNotificationPermission', {
       requestId: requestId(),

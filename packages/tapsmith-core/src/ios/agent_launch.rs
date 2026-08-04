@@ -521,6 +521,17 @@ async fn patch_xctestrun(
     for (key, _) in &keys {
         del_cmd.arg("-c").arg(format!("Delete {key}"));
     }
+    // The notification-permission keys are only in `keys` when a policy is
+    // set, but they must ALWAYS be deleted: the source may itself be a
+    // previously patched file (see strip_patched_suffixes), and a session
+    // with no policy must not inherit the previous session's value.
+    if notification_permission.is_empty() {
+        for dict in ["EnvironmentVariables", "TestingEnvironmentVariables"] {
+            del_cmd.arg("-c").arg(format!(
+                "Delete :{base}:{dict}:TAPSMITH_NOTIFICATION_PERMISSION"
+            ));
+        }
+    }
     del_cmd.arg(&patched_path);
     let _ = del_cmd.output().await;
 
@@ -777,6 +788,34 @@ mod tests {
         let contents = tokio::fs::read_to_string(&patched_path).await.unwrap();
         assert!(contents.contains("TAPSMITH_NOTIFICATION_PERMISSION"));
         assert!(contents.contains("denied"));
+    }
+
+    #[tokio::test]
+    async fn patch_xctestrun_clears_stale_notification_permission() {
+        // The source can itself be a previously patched file (that's why
+        // strip_patched_suffixes exists). A session with no policy must not
+        // inherit the previous session's TAPSMITH_NOTIFICATION_PERMISSION.
+        let (_dir, path) = write_fixture(FIXTURE_EMPTY).await;
+
+        let patched_with_policy = patch_xctestrun(
+            path.to_str().unwrap(),
+            "com.example.app",
+            false,
+            18800,
+            "denied",
+        )
+        .await
+        .expect("first patch should succeed");
+
+        let repatched = patch_xctestrun(&patched_with_policy, "com.example.app", false, 18801, "")
+            .await
+            .expect("re-patch should succeed");
+
+        let contents = tokio::fs::read_to_string(&repatched).await.unwrap();
+        assert!(
+            !contents.contains("TAPSMITH_NOTIFICATION_PERMISSION"),
+            "stale notification policy leaked into re-patched plist:\n{contents}"
+        );
     }
 
     #[tokio::test]

@@ -13,7 +13,7 @@ import { TapsmithGrpcClient } from './grpc-client.js';
 import { Device } from './device.js';
 import { isNetworkTracingEnabled, networkHostsForPac, networkPassthroughHosts } from './trace/types.js';
 import { runTestFile, collectResults, markFileRetryFlakes } from './runner.js';
-import type { TapsmithConfig } from './config.js';
+import type { TapsmithConfig, NotificationPermissionState } from './config.js';
 import { isPackageInstalled, waitForPackageIndexed } from './emulator.js';
 import { installApp, installedAppMatches, isAppInstalled, probeSimulatorHealth, rebootSimulator } from './ios-simulator.js';
 import type {
@@ -82,6 +82,7 @@ function configFromSerialized(s: SerializedConfig, daemonAddress: string): Tapsm
     resetAppWaitMs: s.resetAppWaitMs,
     baseURL: s.baseURL,
     extraHTTPHeaders: s.extraHTTPHeaders,
+    permissions: s.permissions,
     grep: deserializeRegExpArray(s.grep),
     grepInvert: deserializeRegExpArray(s.grepInvert),
   };
@@ -180,15 +181,19 @@ async function handleInit(msg: InitMessage): Promise<void> {
         sendProgress('app install complete');
       }
     } else {
-      if (config.permissions?.notifications && config.package) {
-        // PILOT-291: uninstall when this simulator's recorded notification
-        // state conflicts with the configured target — the install below
-        // then returns it to notDetermined for the agent to answer per
-        // policy. Worker simulators (clones, reused CI sets) carry their
-        // own BulletinBoard state, so this runs per worker.
-        const { ensureSimulatorNotificationPermissionState } = await import('./ios-notification-state.js');
-        if (ensureSimulatorNotificationPermissionState(msg.deviceSerial, config.package, config.permissions.notifications)) {
-          sendProgress(`reinstalling to reset notification permission (target: ${config.permissions.notifications})`);
+      if (config.permissions?.notifications) {
+        if (config.package) {
+          // PILOT-291: uninstall when this simulator's recorded notification
+          // state conflicts with the configured target — the install below
+          // then returns it to notDetermined for the agent to answer per
+          // policy. Worker simulators (clones, reused CI sets) carry their
+          // own BulletinBoard state, so this runs per worker.
+          const { ensureSimulatorNotificationPermissionState } = await import('./ios-notification-state.js');
+          if (ensureSimulatorNotificationPermissionState(msg.deviceSerial, config.package, config.permissions.notifications)) {
+            sendProgress(`reinstalling to reset notification permission (target: ${config.permissions.notifications})`);
+          }
+        } else {
+          sendProgress('warning: permissions.notifications is set but no `package` is configured; skipping notification permission setup');
         }
       }
       // Skip only when the installed bundle is byte-identical — simulator
@@ -210,10 +215,14 @@ async function handleInit(msg: InitMessage): Promise<void> {
     sendProgress('app install skipped');
   }
 
-  if (config.platform !== 'ios' && config.permissions?.notifications && config.package) {
-    // PILOT-291: deterministic notification permission state before tests.
-    sendProgress(`setting notification permission to '${config.permissions.notifications}'`);
-    await device.setNotificationPermission(config.package, config.permissions.notifications);
+  if (config.platform !== 'ios' && config.permissions?.notifications) {
+    if (config.package) {
+      // PILOT-291: deterministic notification permission state before tests.
+      sendProgress(`setting notification permission to '${config.permissions.notifications}'`);
+      await device.setNotificationPermission(config.package, config.permissions.notifications);
+    } else {
+      sendProgress('warning: permissions.notifications is set but no `package` is configured; skipping notification permission setup');
+    }
   }
 
   // Start agent
@@ -257,7 +266,7 @@ async function handleInit(msg: InitMessage): Promise<void> {
   // iOS simulator only: the agent answers the notification prompt per this
   // policy. Android applies it via setNotificationPermission above; physical
   // iOS is unsupported.
-  let notificationPermissionForAgent: string | undefined;
+  let notificationPermissionForAgent: NotificationPermissionState | undefined;
   if (config.platform === 'ios' && config.permissions?.notifications && msg.deviceSerial) {
     const { isPhysicalDevice } = await import('./ios-devicectl.js');
     if (!isPhysicalDevice(msg.deviceSerial)) {
