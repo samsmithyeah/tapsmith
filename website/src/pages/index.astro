@@ -33,25 +33,27 @@ await device.getByLabel("Reorder").dragTo(device.getByText("Pinned"))`,
 
 const comparisonRows = [
   ['Playwright-style TypeScript API', 'Y', 'N', 'N', 'P'],
+  ['Reusable helpers, loops & fixtures', 'Y', 'Y', 'P', 'Y'],
   ['iOS + Android single suite', 'Y', 'Y', 'Y', 'Y'],
   ['Auto-waiting on every action', 'Y', 'N', 'Y', 'Y'],
-  ['Network interception (built-in)', 'Y', 'P', 'N', 'N'],
+  ['Rich assertions with auto-retry', 'Y', 'N', 'P', 'P'],
+  ['Network mocking (no proxy, no mock server)', 'Y', 'P', 'N', 'N'],
   ['Trace viewer', 'Y', 'N', 'N', 'P'],
-  ['Parallel sharding & blob reports', 'Y', 'N', 'P', 'N'],
+  ['CI sharding with merged reports', 'Y', 'N', 'P', 'P'],
   ['Interactive UI mode', 'Y', 'N', 'Y', 'N'],
-  ['MCP server for AI agents', 'Y', 'N', 'N', 'N'],
+  ['MCP for AI agents (selectors, traces)', 'Y', 'P', 'P', 'N'],
 ]
 
 const threeThings = [
   {
     n: '01',
     title: 'Mock the network without a mock server.',
-    body: 'In Detox, mocking an API means setting up a separate server and managing fixtures. In Tapsmith, it’s device.route("**/api/payment", r => r.fulfill({ json })). One line, inline, done.',
+    body: 'In every other framework, mocking an API means a separate mock server, a proxy with certificate fiddling, or a special build of your app. In Tapsmith it’s device.route("**/api/payment", r => r.fulfill({ json })). One line, inline, done.',
   },
   {
     n: '02',
-    title: 'Locators that survive redesigns.',
-    body: 'No fragile XPaths or test IDs sprinkled through production code. getByRole("button", { name: "Sign in" }) finds the element the same way a screen reader does, on both platforms, from one test file.',
+    title: 'A real language, not a YAML ceiling.',
+    body: 'Maestro flows are brilliantly simple — until the suite grows and you’re copy-pasting steps and hiding logic in runScript blocks. Tapsmith tests are plain TypeScript: extract helpers, loop over fixtures, share setup between tests, and refactor with autocomplete and type-checking behind you.',
   },
   {
     n: '03',
@@ -192,8 +194,8 @@ const threeThings = [
 
           <p class="tp-hero-lead">
             Tapsmith is a test framework for native iOS and Android. We took the parts of Playwright
-            that engineers actually love: the locators, the auto&#8209;waiting, the trace viewer,
-            and rebuilt them for real devices.
+            that engineers love: the locators, the auto&#8209;waiting, the trace viewer, and rebuilt
+            them for real devices.
           </p>
 
           <div class="tp-hero-ctas">
@@ -249,8 +251,9 @@ const threeThings = [
       <section class="tp-proof">
         <div class="tp-container tp-proof-inner">
           <p class="tp-proof-text">
-            Open source under the Apache 2.0 licence. Native agents on XCUITest and UIAutomator2, no
-            browser shims or half-working bridges.
+            Open source under the Apache 2.0 licence. Native agents on XCUITest and UIAutomator2
+            drive your app from the outside — no code changes, no embedded SDK, no browser shims or
+            half-working bridges.
           </p>
           <div class="tp-proof-stats">
             <div class="tp-stat">
@@ -357,6 +360,7 @@ const threeThings = [
           </div>
           <p class="tp-table-legend">
             ✓ supported &nbsp;&nbsp; ◐ partial / via plugin &nbsp;&nbsp; — not available
+            &nbsp;&nbsp; last verified Aug 2026
           </p>
         </div>
       </section>
@@ -559,6 +563,7 @@ const threeThings = [
             <a href="/guides/network/">Network</a>
             <a href="/guides/trace-viewer/">Trace viewer</a>
             <a href="/guides/ui-mode/">UI mode</a>
+            <a href="/guides/mcp-server/">MCP server</a>
           </div>
           <div class="tp-footer-col">
             <h4>Community</h4>
