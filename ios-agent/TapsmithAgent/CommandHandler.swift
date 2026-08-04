@@ -262,39 +262,37 @@ class CommandHandler {
 
     /// Dismiss any blocking iOS system dialog currently covering the app
     /// (e.g. "Save Password?", "Allow Notifications?", iCloud Keychain
-    /// prompts). Returns true if a dialog was dismissed. Intended for
+    /// prompts). Returns true if a dialog was tapped through. Intended for
     /// physical iOS devices where iOS system UI can cover the app between
-    /// test actions; simulators rarely show these dialogs.
+    /// test actions; simulators rarely show these dialogs, and the
+    /// findElement call site is compiled out there (PILOT-290).
+    ///
+    /// Follows SystemDialogPolicy: permission prompts are ACCEPTED, never
+    /// denied — a single denial of e.g. the notification prompt is
+    /// permanent for that bundle id, with no supported reset short of
+    /// reinstalling the app.
     ///
     /// Some dialogs are hosted by SpringBoard (notifications, location
     /// permission prompts). Others — notably iCloud Keychain's "Save
     /// Password?" prompt — are presented as a remote view controller
     /// inside the target app's process via AuthenticationServices, so
     /// they appear under the target app's hierarchy, not SpringBoard.
-    /// We check both. Order of labels matters — "Not Now" / "Don't Allow"
-    /// come before "OK"/"Continue" so we never accidentally accept a
-    /// permission grant when the intent was to decline.
+    /// We check both, but allow-style labels are only probed on
+    /// SpringBoard: in the app's own hierarchy they could match ordinary
+    /// in-app buttons ("Continue", "OK") and derail the test.
     @discardableResult
     private func dismissBlockingSystemDialogs() -> Bool {
         if acceptOpenInAppDialogIfPresent(timeout: 0.1) {
             return true
         }
 
-        let dismissalLabels = [
-            "Not Now",
-            "Don’t Allow",
-            "Don't Allow",
-            "Not now",
-            "Dismiss",
-            "Close",
-            "Cancel",
+        let springboard = XCUIApplication(bundleIdentifier: "com.apple.springboard")
+        let sweeps: [(XCUIApplication, [String])] = [
+            (app, SystemDialogPolicy.dismissButtonLabels),
+            (springboard, SystemDialogPolicy.allowButtonLabels + SystemDialogPolicy.dismissButtonLabels),
         ]
-        let sources: [XCUIApplication] = [
-            app,
-            XCUIApplication(bundleIdentifier: "com.apple.springboard"),
-        ]
-        for source in sources {
-            for label in dismissalLabels {
+        for (source, labels) in sweeps {
+            for label in labels {
                 let button = source.buttons[label]
                 if button.exists && button.isHittable {
                     button.tap()
@@ -740,13 +738,21 @@ class CommandHandler {
                 do {
                     element = try snapshotFinder.findElement(selector)
                 } catch {
-                    // Before falling through to the wait engine, check for
-                    // blocking iOS system dialogs (Save Password, Allow
-                    // Notifications, etc.) that may be covering the target.
-                    // Common on physical devices — iCloud Keychain can pop
-                    // up after a sign-in tap and obscure post-login UI. If
-                    // we dismiss one, try the snapshot once more before
-                    // polling.
+                    // Physical devices only: before falling through to the
+                    // wait engine, check for blocking iOS system dialogs
+                    // (Save Password, Allow Notifications, etc.) that may be
+                    // covering the target — iCloud Keychain can pop up after
+                    // a sign-in tap and obscure post-login UI. If we tap one
+                    // away, try the snapshot once more before polling.
+                    //
+                    // Compiled out on simulators: these dialogs rarely appear
+                    // there (prompts triggered by test interactions are
+                    // handled by the UIInterruptionMonitor), first-snapshot
+                    // misses are routine so this sweep would probe two extra
+                    // hierarchies on a hot path, and it historically denied
+                    // permission prompts here, permanently poisoning
+                    // simulator notification state (PILOT-290).
+                    #if !targetEnvironment(simulator)
                     if dismissBlockingSystemDialogs() {
                         do {
                             let retried = try snapshotFinder.findElement(selector)
@@ -755,6 +761,7 @@ class CommandHandler {
                             // Fall through to wait engine
                         }
                     }
+                    #endif
                     if timeout >= 1000 {
                         // Element not in current snapshot — poll with wait engine
                         element = try waitEngine.waitForElement(
