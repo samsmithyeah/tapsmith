@@ -69,9 +69,7 @@ class TapsmithAgentRunner: XCTestCase {
         // confirmation. The daemon taps it through acceptOpenInAppDialog while
         // simctl openurl is pending, before XCUITest interactions can race it.
         addUIInterruptionMonitor(withDescription: "System Alert") { alert in
-            let allowButtons = ["Allow", "OK", "Allow While Using App",
-                                "Allow Once", "Continue", "Dismiss"]
-            for title in allowButtons {
+            for title in SystemDialogPolicy.allowButtonLabels {
                 let button = alert.buttons[title]
                 if button.exists {
                     button.tap()
