@@ -94,7 +94,7 @@ const threeThings = [
           <img src="/logo.png" alt="Tapsmith" class="tp-logo-img tp-logo-light" />
           <img src="/logo-dark.png" alt="Tapsmith" class="tp-logo-img tp-logo-dark" />
         </a>
-        <nav class="tp-nav">
+        <nav class="tp-nav" id="tp-nav">
           <a href="/getting-started/">Docs</a>
           <a href="/reference/api/locators/">API</a>
           <a href="/guides/network/">Guides</a>
@@ -143,6 +143,40 @@ const threeThings = [
             >
           </button>
           <a href="/getting-started/" class="tp-btn-solid tp-btn-sm">Get started →</a>
+          <button
+            class="tp-nav-toggle"
+            type="button"
+            aria-label="Open menu"
+            aria-expanded="false"
+            aria-controls="tp-nav"
+          >
+            <svg
+              class="tp-icon-menu"
+              width="16"
+              height="16"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              ><line x1="3" y1="6" x2="21" y2="6"></line><line x1="3" y1="12" x2="21" y2="12"
+              ></line><line x1="3" y1="18" x2="21" y2="18"></line></svg
+            >
+            <svg
+              class="tp-icon-close"
+              width="16"
+              height="16"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              ><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"
+              ></line></svg
+            >
+          </button>
         </div>
       </div>
     </header>
@@ -554,6 +588,24 @@ const threeThings = [
         })
       })
 
+      const header = document.querySelector('.tp-header')
+      const navToggle = document.querySelector('.tp-nav-toggle')
+      if (header && navToggle) {
+        navToggle.addEventListener('click', () => {
+          const open = header.classList.toggle('tp-nav-open')
+          navToggle.setAttribute('aria-expanded', String(open))
+          navToggle.setAttribute('aria-label', open ? 'Close menu' : 'Open menu')
+        })
+        // Close the menu when a nav link is tapped (same-page anchors don't reload)
+        header.querySelectorAll('.tp-nav a').forEach((link) => {
+          link.addEventListener('click', () => {
+            header.classList.remove('tp-nav-open')
+            navToggle.setAttribute('aria-expanded', 'false')
+            navToggle.setAttribute('aria-label', 'Open menu')
+          })
+        })
+      }
+
       const tablist = document.querySelector('[role="tablist"]')
       if (tablist) {
         const tabs = Array.from(tablist.querySelectorAll('[role="tab"]'))
@@ -733,6 +785,29 @@ const threeThings = [
         display: none;
       }
       [data-theme='dark'] .tp-icon-moon {
+        display: block;
+      }
+
+      /* ─── Mobile nav toggle ─── */
+      .tp-nav-toggle {
+        display: none;
+        align-items: center;
+        justify-content: center;
+        width: 32px;
+        height: 32px;
+        border: 1px solid var(--tp-border-3);
+        border-radius: var(--tp-radius);
+        background: transparent;
+        color: var(--tp-ink-3);
+        cursor: pointer;
+      }
+      .tp-icon-close {
+        display: none;
+      }
+      .tp-nav-open .tp-icon-menu {
+        display: none;
+      }
+      .tp-nav-open .tp-icon-close {
         display: block;
       }
 
@@ -1308,6 +1383,8 @@ const threeThings = [
         line-height: 1.8;
         color: var(--tp-code-fg);
         white-space: pre-wrap;
+        /* Long unbreakable tokens must scroll, not widen the mobile layout viewport */
+        overflow-x: auto;
       }
 
       /* ─── 7. Quote ─── */
@@ -1605,11 +1682,44 @@ const threeThings = [
         .tp-footer-top {
           grid-template-columns: 1fr 1fr;
         }
+        /* Keep the feature column readable while the table scrolls */
+        .tp-table .tp-table-feature {
+          position: sticky;
+          left: 0;
+          z-index: 1;
+          background: var(--tp-surface);
+          box-shadow: 1px 0 0 var(--tp-border-2);
+        }
+        .tp-table-head .tp-table-feature {
+          background: var(--tp-bg-2);
+          box-shadow: 1px 0 0 var(--tp-border);
+        }
       }
 
       @media (max-width: 640px) {
+        /* Collapse the nav into a hamburger dropdown under the sticky header */
+        .tp-nav-toggle {
+          display: flex;
+        }
         .tp-nav {
           display: none;
+          position: absolute;
+          top: 64px;
+          left: 0;
+          right: 0;
+          flex-direction: column;
+          gap: 0;
+          background: var(--tp-bg);
+          border-bottom: 1px solid var(--tp-border);
+          padding: 4px 24px 8px;
+          box-shadow: 0 24px 32px -28px rgba(11, 16, 32, 0.25);
+        }
+        .tp-nav-open .tp-nav {
+          display: flex;
+        }
+        .tp-nav a {
+          padding: 12px 0;
+          font-size: 15px;
         }
         .tp-version-chip {
           display: none;
@@ -1617,15 +1727,49 @@ const threeThings = [
         .tp-signin {
           display: none;
         }
+
+        /* Hero */
+        .tp-hero {
+          padding: 48px 0 56px;
+        }
+        .tp-hero-h1 br {
+          display: none;
+        }
+        .tp-hero-lead {
+          font-size: 17px;
+        }
         .tp-hero-ctas {
           flex-direction: column;
+          margin-bottom: 48px;
         }
+        .tp-hero-visual {
+          padding-top: 0;
+        }
+        .tp-code-body {
+          padding: 16px 18px;
+          font-size: 12.5px;
+          line-height: 1.75;
+        }
+
+        /* Proof strip */
         .tp-proof-stats {
-          flex-wrap: wrap;
-          gap: 24px;
+          display: grid;
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+          gap: 20px 24px;
+          width: 100%;
+        }
+
+        /* Section rhythm */
+        .tp-three {
+          padding: 72px 0 64px;
+        }
+        .tp-three-header {
+          margin-bottom: 32px;
         }
         .tp-three-row {
           grid-template-columns: 1fr;
+          gap: 8px;
+          padding: 28px 0;
         }
         .tp-three-num {
           display: block;
@@ -1633,10 +1777,54 @@ const threeThings = [
         .tp-three-body {
           grid-column: 1;
         }
+        .tp-compare {
+          padding: 24px 0 80px;
+        }
+        .tp-snippets {
+          padding: 0 0 80px;
+        }
+        .tp-quote {
+          padding: 24px 0 80px;
+        }
+        .tp-devtools {
+          padding: 0 0 80px;
+        }
+        .tp-cta {
+          padding: 0 0 80px;
+        }
+
+        /* Comparison table: edge-to-edge scroll, tighter cells */
         .tp-table-wrap {
           margin: 0 -24px;
           padding: 0 24px;
         }
+        .tp-table {
+          min-width: 580px;
+        }
+        .tp-table-head .tp-table-feature,
+        .tp-table-head .tp-table-col {
+          padding: 12px 14px;
+        }
+        .tp-table-row .tp-table-feature {
+          padding: 12px 14px;
+          font-size: 13px;
+        }
+        .tp-table-row .tp-table-col {
+          padding: 12px 14px;
+        }
+
+        /* Code panels */
+        .tp-snippet-panel {
+          padding: 20px 18px;
+        }
+        .tp-snippet-code {
+          font-size: 13px;
+        }
+        .tp-devtools-card {
+          padding: 20px;
+        }
+
+        /* Footer */
         .tp-footer-top {
           grid-template-columns: 1fr;
         }
@@ -1644,6 +1832,8 @@ const threeThings = [
           flex-direction: column;
           gap: 8px;
         }
+
+        /* Type scale */
         .tp-blockquote {
           font-size: 22px;
         }
