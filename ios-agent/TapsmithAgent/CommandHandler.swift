@@ -1685,7 +1685,14 @@ class CommandHandler {
         // ─── Ping ───
 
         case "ping":
-            return ["pong": true]
+            // notificationPermission lets the daemon verify that a running
+            // agent's baked-in policy matches the session before reusing it
+            // ("" = no policy / default allow-first). Authoritative, unlike
+            // any on-disk record: this is the live process answering.
+            return [
+                "pong": true,
+                "notificationPermission": SystemDialogPolicy.notificationPermission,
+            ]
 
         default:
             throw AgentError.actionFailed("Unknown method: \(method)")

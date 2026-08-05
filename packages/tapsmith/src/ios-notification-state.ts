@@ -53,7 +53,9 @@ const dataRootCache = new Map<string, SimulatorDataRoot>();
  * The simulator's data root. Asks `simctl list` (whose `dataPath` is
  * authoritative and covers non-default device sets) and falls back to the
  * default CoreSimulator location when the lookup fails or doesn't know the
- * udid. Cached per udid — the location cannot change while a device exists.
+ * udid. Only authoritative answers are cached — a guess produced by a
+ * transient simctl failure must not poison every later read in the process
+ * (each 'unknown' read triggers an app-data-wiping reinstall reset).
  */
 function simulatorDataRoot(udid: string): SimulatorDataRoot {
   const cached = dataRootCache.get(udid);
@@ -77,7 +79,11 @@ function simulatorDataRoot(udid: string): SimulatorDataRoot {
   } catch {
     // Fall through to the default location.
   }
-  resolved ??= {
+  if (resolved) {
+    dataRootCache.set(udid, resolved);
+    return resolved;
+  }
+  return {
     dataPath: path.join(
       os.homedir(),
       'Library/Developer/CoreSimulator/Devices',
@@ -86,8 +92,6 @@ function simulatorDataRoot(udid: string): SimulatorDataRoot {
     ),
     authoritative: false,
   };
-  dataRootCache.set(udid, resolved);
-  return resolved;
 }
 
 /**

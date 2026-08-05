@@ -116,26 +116,31 @@ async fn start_agent_impl(
     let boot_start = std::time::Instant::now();
     // Check if agent is already running by trying to connect. Reuse is only
     // safe when the running agent's baked-in notification policy matches the
-    // requested one — the patched xctestrun it was launched from records
-    // that. This closes the daemon-restart hole: with no in-memory record of
-    // the previous launch, a surviving agent with a different policy would
-    // otherwise silently serve this session (in either direction).
-    if !force && ping_agent(agent_port).await.is_ok() {
-        if running_agent_policy_matches(xctestrun_path, agent_port, notification_permission) {
-            info!("iOS agent is already running");
-            crate::timing::timing_log!(
-                "kind=boot name=agent dur_ms={} reused=true udid={udid}",
-                boot_start.elapsed().as_millis()
+    // requested one — the agent reports its own policy in the ping response,
+    // which is authoritative (the live process answering about its own
+    // environment). This closes the daemon-restart hole in both directions:
+    // with no in-memory record of the previous launch, a surviving agent
+    // with a different policy would otherwise silently serve this session.
+    // Agents predating the field report nothing → unverifiable → relaunch.
+    if !force {
+        if let Ok(reported_policy) = ping_agent(agent_port).await {
+            if reported_policy.as_deref() == Some(notification_permission) {
+                info!("iOS agent is already running");
+                crate::timing::timing_log!(
+                    "kind=boot name=agent dur_ms={} reused=true udid={udid}",
+                    boot_start.elapsed().as_millis()
+                );
+                // For physical devices, pingable-on-localhost means the caller's
+                // iproxy tunnel is still up; no new handle is returned and the
+                // caller's existing stored state remains authoritative.
+                return Ok(None);
+            }
+            info!(
+                reported = ?reported_policy,
+                requested = notification_permission,
+                "Running agent's notification policy does not match this session; relaunching"
             );
-            // For physical devices, pingable-on-localhost means the caller's
-            // iproxy tunnel is still up; no new handle is returned and the
-            // caller's existing stored state remains authoritative.
-            return Ok(None);
         }
-        info!(
-            "Running agent's notification policy does not match this session \
-             (or cannot be verified); relaunching"
-        );
     }
 
     // Kill any stale xcodebuild processes targeting this device/simulator before
@@ -314,7 +319,7 @@ async fn start_agent_impl(
         }
 
         match ping_agent(agent_port).await {
-            Ok(_) => {
+            Ok(_reported_policy) => {
                 info!(udid, "iOS agent is ready");
                 crate::timing::timing_log!(
                     "kind=boot name=agent dur_ms={} reused=false udid={udid}",
@@ -451,31 +456,6 @@ pub async fn kill_existing_agents() {
 /// application bundle ID and the agent's environment variables.
 ///
 /// Uses PlistBuddy to modify a copy — the original file is left untouched.
-/// Whether the agent currently listening on `agent_port` was launched with
-/// the requested notification policy. The evidence is the patched xctestrun
-/// the last launch on this port wrote (path is deterministic per mode+port,
-/// and each launch overwrites it before spawning xcodebuild). An unreadable
-/// or missing file returns false — unverifiable means relaunch.
-///
-/// Only launch mode is checked: the ping fast path this guards is never
-/// reached in attach mode (attach implies force).
-fn running_agent_policy_matches(
-    xctestrun_path: &str,
-    agent_port: u16,
-    notification_permission: &str,
-) -> bool {
-    let source_root = strip_patched_suffixes(xctestrun_path);
-    let patched_path = format!("{source_root}.launch.port{agent_port}.patched.xctestrun");
-    let Ok(contents) = std::fs::read_to_string(&patched_path) else {
-        return false;
-    };
-    let has_key = contents.contains("TAPSMITH_NOTIFICATION_PERMISSION");
-    if notification_permission.is_empty() {
-        return !has_key;
-    }
-    has_key && contents.contains(&format!("<string>{notification_permission}</string>"))
-}
-
 async fn patch_xctestrun(
     xctestrun_path: &str,
     target_bundle_id: &str,
@@ -686,8 +666,12 @@ fn strip_patched_suffixes(path: &str) -> String {
     }
 }
 
-/// Ping the iOS agent to check if it's running.
-async fn ping_agent(port: u16) -> Result<()> {
+/// Ping the iOS agent to check if it's running. On success, returns the
+/// notification-permission policy the agent reports for itself: `Some("")`
+/// for a policy-free agent, `Some(value)` when one is configured, `None`
+/// when the agent predates the field (treated as unverifiable by callers
+/// deciding on reuse).
+async fn ping_agent(port: u16) -> Result<Option<String>> {
     let addr = format!("127.0.0.1:{port}");
     let stream = tokio::time::timeout(Duration::from_secs(2), TcpStream::connect(&addr))
         .await
@@ -708,11 +692,22 @@ async fn ping_agent(port: u16) -> Result<()> {
         .await
         .map_err(|_| anyhow::anyhow!("Ping response timeout"))??;
 
-    if response.contains("pong") {
-        Ok(())
-    } else {
+    if !response.contains("pong") {
         bail!("Unexpected ping response: {response}")
     }
+    Ok(parse_ping_notification_permission(&response))
+}
+
+/// Extract the agent-reported notification policy from a ping response
+/// (`{"id":"ping","result":{"pong":true,"notificationPermission":"..."}}`).
+/// Absent field (older agent) → None.
+fn parse_ping_notification_permission(response: &str) -> Option<String> {
+    let value: serde_json::Value = serde_json::from_str(response.trim()).ok()?;
+    value
+        .get("result")?
+        .get("notificationPermission")?
+        .as_str()
+        .map(String::from)
 }
 
 #[cfg(test)]
@@ -860,31 +855,29 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn running_agent_policy_matches_verifies_against_patched_file() {
-        let (_dir, path) = write_fixture(FIXTURE_EMPTY).await;
-        let src = path.to_str().unwrap();
-
-        // No patched file yet — unverifiable, must not report a match.
-        assert!(!running_agent_policy_matches(src, 18800, ""));
-        assert!(!running_agent_policy_matches(src, 18800, "denied"));
-
-        // Launch with a policy: matches only that policy.
-        patch_xctestrun(src, "com.example.app", false, 18800, "denied")
-            .await
-            .unwrap();
-        assert!(running_agent_policy_matches(src, 18800, "denied"));
-        assert!(!running_agent_policy_matches(src, 18800, ""));
-        assert!(!running_agent_policy_matches(src, 18800, "granted"));
-        // A different port has no patched file — unverifiable.
-        assert!(!running_agent_policy_matches(src, 18801, "denied"));
-
-        // Re-launch with no policy: only the empty policy matches now.
-        patch_xctestrun(src, "com.example.app", false, 18800, "")
-            .await
-            .unwrap();
-        assert!(running_agent_policy_matches(src, 18800, ""));
-        assert!(!running_agent_policy_matches(src, 18800, "denied"));
+    #[test]
+    fn ping_response_notification_permission_parsing() {
+        // New agent, policy configured.
+        assert_eq!(
+            parse_ping_notification_permission(
+                r#"{"id":"ping","result":{"pong":true,"notificationPermission":"denied"}}"#
+            ),
+            Some("denied".to_string())
+        );
+        // New agent, no policy.
+        assert_eq!(
+            parse_ping_notification_permission(
+                r#"{"id":"ping","result":{"pong":true,"notificationPermission":""}}"#
+            ),
+            Some(String::new())
+        );
+        // Old agent without the field — unverifiable.
+        assert_eq!(
+            parse_ping_notification_permission(r#"{"id":"ping","result":{"pong":true}}"#),
+            None
+        );
+        // Garbage — unverifiable rather than a panic.
+        assert_eq!(parse_ping_notification_permission("pong"), None);
     }
 
     #[tokio::test]

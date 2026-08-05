@@ -377,6 +377,19 @@ describe('deviceSignature()', () => {
     expect(a).not.toBe(i);
   });
 
+  it('projects differing only in permissions.notifications do not share a device session', () => {
+    for (const platform of ['android', 'ios'] as const) {
+      const base = platform === 'ios'
+        ? { platform, simulator: 'iPhone 17' }
+        : { platform, avd: 'Pixel_6' };
+      const granted = deviceSignature(makeConfig({ ...base, permissions: { notifications: 'granted' as const } }));
+      const denied = deviceSignature(makeConfig({ ...base, permissions: { notifications: 'denied' as const } }));
+      const unset = deviceSignature(makeConfig({ ...base }));
+      expect(granted).not.toBe(denied);
+      expect(granted).not.toBe(unset);
+    }
+  });
+
   it('two android configs targeting different AVDs differ', () => {
     const a = deviceSignature(makeConfig({ platform: 'android', avd: 'Pixel_6' }));
     const b = deviceSignature(makeConfig({ platform: 'android', avd: 'Pixel_7' }));

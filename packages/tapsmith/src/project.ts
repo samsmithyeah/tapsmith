@@ -45,6 +45,11 @@ export interface ResolvedProject {
  */
 export function deviceSignature(config: TapsmithConfig): string {
   const platform = config.platform ?? 'android';
+  // permissions.notifications is device-shaping: it is applied to the
+  // device/agent at session setup, so projects that differ in it cannot
+  // share a device session — folding them together would silently run the
+  // second project against the first project's permission state.
+  const notifications = config.permissions?.notifications ?? '';
   if (platform === 'ios') {
     return [
       'ios',
@@ -53,6 +58,7 @@ export function deviceSignature(config: TapsmithConfig): string {
       config.package ?? '',
       config.app ?? '',
       config.iosXctestrun ?? '',
+      notifications,
     ].join('|');
   }
   return [
@@ -63,6 +69,7 @@ export function deviceSignature(config: TapsmithConfig): string {
     config.apk ?? '',
     config.deviceStrategy ?? '',
     config.launchEmulators ? '1' : '0',
+    notifications,
   ].join('|');
 }
 

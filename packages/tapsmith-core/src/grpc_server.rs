@@ -1304,9 +1304,15 @@ impl TapsmithServiceImpl {
             return false;
         }
         [
+            // API < 33: the permission doesn't exist.
             "Unknown permission",
+            // API 33+ but the app doesn't declare it.
             "has not requested permission",
             "not requested by package",
+            // Older `pm` binaries predate set-permission-flags /
+            // clear-permission-flags entirely.
+            "Unknown command",
+            "unknown command",
         ]
         .iter()
         .any(|marker| error_message.contains(marker))
@@ -2769,11 +2775,10 @@ impl proto::tapsmith_service_server::TapsmithService for TapsmithServiceImpl {
         // agent_launch::start_agent — it was launched with a different
         // environment (notably TAPSMITH_NOTIFICATION_PERMISSION) and would
         // silently serve the new session with the old policy. Force a fresh
-        // launch when a previous agent config was recorded, and always when a
-        // notification policy is requested (after a daemon restart the record
-        // is gone but a stale agent may still be running with no policy).
-        let force_fresh_agent = self.started_agent_config.read().await.is_some()
-            || !req.notification_permission.is_empty();
+        // launch when a previous agent config was recorded; with no record
+        // (daemon restart), the ping fast path itself verifies the running
+        // agent's self-reported policy before reusing it.
+        let force_fresh_agent = self.started_agent_config.read().await.is_some();
 
         *self.started_agent_config.write().await = None;
 
@@ -7575,6 +7580,11 @@ mod tests {
         assert!(!TapsmithServiceImpl::is_benign_pm_notification_error(
             grant,
             "Error: java.lang.IllegalArgumentException: Unknown package: com.example.app",
+        ));
+        // Older pm without the flags subcommands is benign — appops still runs.
+        assert!(TapsmithServiceImpl::is_benign_pm_notification_error(
+            "pm set-permission-flags com.example.app android.permission.POST_NOTIFICATIONS user-fixed",
+            "Error: unknown command 'set-permission-flags'",
         ));
         // appops failures are never benign — the toggle must apply.
         assert!(!TapsmithServiceImpl::is_benign_pm_notification_error(

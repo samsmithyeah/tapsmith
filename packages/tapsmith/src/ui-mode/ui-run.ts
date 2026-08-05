@@ -20,7 +20,7 @@ import { createActionProgressMessenger } from '../action-progress-renderer.js';
 import {
   serializeTestResult,
   serializeSuiteResult,
-  type SerializedConfig,
+  configFromSerialized,
 } from '../worker-protocol.js';
 import type {
   UIRunMessage,
@@ -48,40 +48,13 @@ function send(msg: UIRunChildMessage): Promise<void> {
   });
 }
 
-function configFromSerialized(s: SerializedConfig, daemonAddress: string): TapsmithConfig {
-  return {
-    timeout: s.timeout,
-    retries: s.retries,
-    screenshot: s.screenshot,
-    testMatch: [],
-    daemonAddress,
-    rootDir: s.rootDir,
-    outputDir: s.outputDir,
-    apk: s.apk,
-    activity: s.activity,
-    package: s.package,
-    agentApk: s.agentApk,
-    agentTestApk: s.agentTestApk,
-    workers: 1,
-    launchEmulators: false,
-    trace: s.trace as TapsmithConfig['trace'],
-    video: s.video as TapsmithConfig['video'],
-    platform: s.platform,
-    app: s.app,
-    iosXctestrun: s.iosXctestrun,
-    simulator: s.simulator,
-    resetAppDeepLink: s.resetAppDeepLink,
-    resetAppWaitMs: s.resetAppWaitMs,
-    baseURL: s.baseURL,
-    extraHTTPHeaders: s.extraHTTPHeaders,
-  };
-}
 
 function buildSessionContext(
   config: TapsmithConfig,
   device: Device,
   client: TapsmithGrpcClient,
   deviceSerial: string,
+  notificationPermission?: import('../config.js').NotificationPermissionState,
 ): SessionPreflightContext {
   return {
     label: `UI mode (${deviceSerial})`,
@@ -90,6 +63,10 @@ function buildSessionContext(
     client,
     deviceSerial,
     networkTracingEnabled: isNetworkTracingEnabled(config.trace),
+    // PILOT-291: recovery-path agent relaunches must keep the session's
+    // configured notification policy — an empty value would relaunch the
+    // agent allow-first and could permanently grant a denied permission.
+    notificationPermission,
   };
 }
 
@@ -155,7 +132,9 @@ async function handleRun(msg: UIRunMessage): Promise<void> {
     networkHostsForPac(config.trace),
   );
 
-  const ctx = buildSessionContext(config, device, client, msg.deviceSerial);
+  const { notificationPermissionForAgent } = await import('../permission-setup.js');
+  const notificationPermission = await notificationPermissionForAgent(config, msg.deviceSerial);
+  const ctx = buildSessionContext(config, device, client, msg.deviceSerial, notificationPermission);
 
   // Stream slow-device-action progress (preflight reset, test.use({appState})
   // restore) so the UI shows "Clearing app data…" instead of a generic
