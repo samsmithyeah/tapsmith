@@ -264,13 +264,9 @@ async function handleInit(msg: InitMessage): Promise<void> {
   // iOS simulator only: the agent answers the notification prompt per this
   // policy. Android applies it via setNotificationPermission above; physical
   // iOS is unsupported (the helper warns).
-  let agentNotificationPermission: NotificationPermissionState | undefined;
-  if (config.platform === 'ios' && config.permissions?.notifications && msg.deviceSerial) {
-    const { isPhysicalDevice } = await import('./ios-devicectl.js');
-    agentNotificationPermission = notificationPermissionForAgent(
-      config, isPhysicalDevice(msg.deviceSerial), permissionSetupLog,
-    );
-  }
+  const agentNotificationPermission = await notificationPermissionForAgent(
+    config, msg.deviceSerial, permissionSetupLog,
+  );
   sessionNotificationPermission = agentNotificationPermission;
   sendProgress('starting Tapsmith agent');
   try {

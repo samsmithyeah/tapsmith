@@ -40,19 +40,25 @@ export type NotificationAuthorizationStatus =
 
 const BINARY_PLIST_MAGIC = 'bplist00';
 
-function simulatorBulletinBoardPlist(udid: string): string {
-  return path.join(
-    simulatorDataPath(udid),
-    'Library/BulletinBoard/VersionedSectionInfo.plist',
-  );
+interface SimulatorDataRoot {
+  dataPath: string;
+  /** True when `simctl list` itself reported this path for the udid. A
+   * guessed default-location path proves nothing when files are missing. */
+  authoritative: boolean;
 }
+
+const dataRootCache = new Map<string, SimulatorDataRoot>();
 
 /**
  * The simulator's data root. Asks `simctl list` (whose `dataPath` is
  * authoritative and covers non-default device sets) and falls back to the
- * default CoreSimulator location when the lookup fails.
+ * default CoreSimulator location when the lookup fails or doesn't know the
+ * udid. Cached per udid — the location cannot change while a device exists.
  */
-function simulatorDataPath(udid: string): string {
+function simulatorDataRoot(udid: string): SimulatorDataRoot {
+  const cached = dataRootCache.get(udid);
+  if (cached) return cached;
+  let resolved: SimulatorDataRoot | undefined;
   try {
     const json = execFileSync('xcrun', ['simctl', 'list', 'devices', '-j'], {
       encoding: 'utf8',
@@ -63,18 +69,25 @@ function simulatorDataPath(udid: string): string {
     };
     for (const runtimeDevices of Object.values(parsed.devices ?? {})) {
       for (const device of runtimeDevices) {
-        if (device.udid === udid && device.dataPath) return device.dataPath;
+        if (device.udid === udid && device.dataPath) {
+          resolved = { dataPath: device.dataPath, authoritative: true };
+        }
       }
     }
   } catch {
     // Fall through to the default location.
   }
-  return path.join(
-    os.homedir(),
-    'Library/Developer/CoreSimulator/Devices',
-    udid,
-    'data',
-  );
+  resolved ??= {
+    dataPath: path.join(
+      os.homedir(),
+      'Library/Developer/CoreSimulator/Devices',
+      udid,
+      'data',
+    ),
+    authoritative: false,
+  };
+  dataRootCache.set(udid, resolved);
+  return resolved;
 }
 
 /**
@@ -135,12 +148,16 @@ export function readNotificationAuthorizationStatus(
   udid: string,
   bundleId: string,
 ): NotificationAuthorizationStatus {
-  const plistPath = simulatorBulletinBoardPlist(udid);
+  const root = simulatorDataRoot(udid);
+  const plistPath = path.join(root.dataPath, 'Library/BulletinBoard/VersionedSectionInfo.plist');
   try {
     if (!fs.existsSync(plistPath)) {
-      // No BulletinBoard store at all — nothing has ever requested
-      // notification authorization on this simulator.
-      return 'notDetermined';
+      // A verified data root with no BulletinBoard store means nothing has
+      // ever requested notification authorization on this simulator. A
+      // guessed root (simctl didn't know the udid — e.g. a custom device
+      // set) proves nothing, and reporting notDetermined would silently
+      // skip a required reset.
+      return root.authoritative ? 'notDetermined' : 'unknown';
     }
     return parseNotificationAuthorizationStatus(fs.readFileSync(plistPath), bundleId);
   } catch {
@@ -188,8 +205,9 @@ export function ensureSimulatorNotificationPermissionState(
   udid: string,
   bundleId: string,
   target: NotificationPermissionState,
+  precomputedStatus?: NotificationAuthorizationStatus,
 ): boolean {
-  const status = readNotificationAuthorizationStatus(udid, bundleId);
+  const status = precomputedStatus ?? readNotificationAuthorizationStatus(udid, bundleId);
   if (!needsNotificationReset(status, target)) return false;
   try {
     execFileSync('xcrun', ['simctl', 'uninstall', udid, bundleId]);

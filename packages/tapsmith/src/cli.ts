@@ -609,7 +609,7 @@ async function setupSequentialDevice(
       else console.log(`Warning: ${m}`);
     },
   };
-  const agentNotificationPermission = notificationPermissionForAgent(cfg, targetIsPhysical, permissionSetupLog);
+  const agentNotificationPermission = await notificationPermissionForAgent(cfg, cfg.device, permissionSetupLog);
 
   if (cfg.platform === 'ios' && targetIsPhysical && cfg.device) {
     // Cert-trust probe. The devicectl launch is ~1s and pattern-matches

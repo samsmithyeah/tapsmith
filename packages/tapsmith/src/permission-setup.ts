@@ -42,18 +42,29 @@ export const PHYSICAL_IOS_WARNING =
 
 /**
  * The policy to pass to StartAgent — the iOS agent answers the one-shot
- * notification prompt per this value. Returns undefined (and warns, when a
- * log is given) on physical iOS, where the setting is unsupported; Android
+ * notification prompt per this value. Performs the physical-device check
+ * itself from the serial so no caller can drift on the guard. Returns
+ * undefined (and warns, when a log is given) on physical iOS, where the
+ * setting is unsupported, and when the device cannot be identified; Android
  * and unset configs return undefined silently. Pass a log only at initial
- * session setup — recovery paths reuse the value without re-warning.
+ * session setup — recovery paths reuse the resolved value without
+ * re-warning.
  */
-export function notificationPermissionForAgent(
+export async function notificationPermissionForAgent(
   config: PermissionSetupConfig,
-  isPhysicalIos: boolean,
+  deviceSerial: string | undefined,
   log?: PermissionSetupLog,
-): NotificationPermissionState | undefined {
+): Promise<NotificationPermissionState | undefined> {
   if (config.platform !== 'ios' || !config.permissions?.notifications) return undefined;
-  if (isPhysicalIos) {
+  if (!deviceSerial) {
+    log?.warn(
+      'permissions.notifications is set but the target iOS device is unknown, so it cannot '
+      + 'be checked for physical-device support; skipping the notification permission policy.',
+    );
+    return undefined;
+  }
+  const { isPhysicalDevice } = await import('./ios-devicectl.js');
+  if (isPhysicalDevice(deviceSerial)) {
     log?.warn(PHYSICAL_IOS_WARNING);
     return undefined;
   }
@@ -82,8 +93,8 @@ export function applySimulatorNotificationPermissionSetup(
     log.warn(NO_PACKAGE_WARNING);
     return false;
   }
+  const status = readNotificationAuthorizationStatus(udid, config.package);
   if (!config.app) {
-    const status = readNotificationAuthorizationStatus(udid, config.package);
     if (needsNotificationReset(status, target)) {
       log.warn(
         `permissions.notifications: '${target}' requested but the recorded state is '${status}' `
@@ -92,7 +103,18 @@ export function applySimulatorNotificationPermissionSetup(
     }
     return false;
   }
-  if (ensureSimulatorNotificationPermissionState(udid, config.package, target)) {
+  if (status === 'unknown') {
+    // The reset below still runs (determinism is the point of the setting),
+    // but an unreadable store deserves an explanation: if this repeats on
+    // every run, the BulletinBoard format may be unsupported and each
+    // session is paying an app-data-wiping reinstall.
+    log.warn(
+      'recorded notification state could not be read; resetting by reinstall. '
+      + 'If this warning appears on every run, the simulator\'s notification '
+      + 'store is unreadable and each session will reinstall the app.',
+    );
+  }
+  if (ensureSimulatorNotificationPermissionState(udid, config.package, target, status)) {
     log.info(`reinstalling to reset notification permission (target: ${target})`);
     return true;
   }

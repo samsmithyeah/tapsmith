@@ -1293,6 +1293,25 @@ impl TapsmithServiceImpl {
         Some(commands)
     }
 
+    /// Whether a failed `pm` command from the notification-permission
+    /// sequence means "POST_NOTIFICATIONS is not a runtime permission on
+    /// this device/app" — API < 33 ("Unknown permission") or an app that
+    /// doesn't declare it ("has not requested permission"). Those are
+    /// no-ops, not failures: notifications are enabled by default in both
+    /// cases and only the appops toggle applies.
+    fn is_benign_pm_notification_error(command: &str, error_message: &str) -> bool {
+        if !command.starts_with("pm ") {
+            return false;
+        }
+        [
+            "Unknown permission",
+            "has not requested permission",
+            "not requested by package",
+        ]
+        .iter()
+        .any(|marker| error_message.contains(marker))
+    }
+
     /// Validate that a string looks like a valid Android activity name (e.g. `.MainActivity`).
     #[allow(clippy::result_large_err)]
     fn validate_activity(activity: &str) -> Result<(), Status> {
@@ -4234,14 +4253,26 @@ impl proto::tapsmith_service_server::TapsmithService for TapsmithServiceImpl {
             }
             Platform::Android => {
                 // POST_NOTIFICATIONS is a runtime permission only on API 33+
-                // and only for apps that declare it; `pm` fails loudly for
-                // both cases, which is the honest outcome. The appops toggle
-                // (POST_NOTIFICATION, no trailing S) additionally drives the
-                // Settings → Notifications switch so the app's own
-                // `areNotificationsEnabled()` checks agree with the grant.
+                // and only for apps that declare it. In both "the permission
+                // doesn't exist here" cases notifications are enabled by
+                // default and cannot be runtime-revoked, so a failing `pm`
+                // command is a no-op, not an error — the appops toggle (the
+                // POST_NOTIFICATION op, no trailing S) still runs and drives
+                // the Settings → Notifications switch on every API level.
+                // Any other failure still aborts loudly.
                 for cmd in &commands {
                     let response = self.adb_action(request_id.clone(), cmd).await?;
                     if !response.get_ref().success {
+                        let message = response.get_ref().error_message.clone();
+                        if Self::is_benign_pm_notification_error(cmd, &message) {
+                            warn!(
+                                command = %cmd,
+                                error = %message,
+                                "POST_NOTIFICATIONS is not a runtime permission here (API < 33 \
+                                 or not declared by the app); skipping this step"
+                            );
+                            continue;
+                        }
                         return Ok(response);
                     }
                 }
@@ -7526,6 +7557,30 @@ mod tests {
         assert!(prompt[1].contains("clear-permission-flags"));
         assert!(prompt[1].contains("user-set user-fixed"));
         assert!(prompt[2].ends_with("POST_NOTIFICATION default"));
+    }
+
+    #[test]
+    fn benign_pm_notification_errors_are_recognized() {
+        let grant = "pm grant com.example.app android.permission.POST_NOTIFICATIONS";
+        // API < 33 and app-doesn't-declare cases are benign no-ops.
+        assert!(TapsmithServiceImpl::is_benign_pm_notification_error(
+            grant,
+            "Operation not allowed: java.lang.SecurityException: Unknown permission: android.permission.POST_NOTIFICATIONS",
+        ));
+        assert!(TapsmithServiceImpl::is_benign_pm_notification_error(
+            grant,
+            "Package com.example.app has not requested permission android.permission.POST_NOTIFICATIONS",
+        ));
+        // A real pm failure is not benign.
+        assert!(!TapsmithServiceImpl::is_benign_pm_notification_error(
+            grant,
+            "Error: java.lang.IllegalArgumentException: Unknown package: com.example.app",
+        ));
+        // appops failures are never benign — the toggle must apply.
+        assert!(!TapsmithServiceImpl::is_benign_pm_notification_error(
+            "cmd appops set com.example.app POST_NOTIFICATION allow",
+            "Unknown permission",
+        ));
     }
 
     #[test]
