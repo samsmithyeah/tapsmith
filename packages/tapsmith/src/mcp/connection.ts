@@ -351,12 +351,20 @@ async function setDeviceAndAgent(
 
   await client.setDevice(serial);
   log(`Using device: ${serial}`);
-  await startAgentFromConfig(client, config);
+  await startAgentFromConfig(client, config, serial);
 }
 
+/**
+ * `deviceSerial` is the device the daemon is actually using when the caller
+ * selected it (setDeviceAndAgent); discovery-path callers attaching to an
+ * existing daemon don't know it and fall back to config.device — the shared
+ * helper warns and skips the notification policy when neither identifies
+ * the device.
+ */
 async function startAgentFromConfig(
   client: TapsmithGrpcClient,
   config: TapsmithConfig | null,
+  deviceSerial?: string,
 ): Promise<void> {
   const { agentConnected } = await client.ping();
   if (agentConnected) return;
@@ -390,7 +398,7 @@ async function startAgentFromConfig(
     warn: (m: string) => log(`Warning: ${m}`),
   };
   const notificationPermission = await notificationPermissionForAgent(
-    config ?? {}, config?.device, permissionSetupLog,
+    config ?? {}, deviceSerial ?? config?.device, permissionSetupLog,
   );
 
   try {
