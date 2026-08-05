@@ -305,7 +305,12 @@ export function configFromSerialized(s: SerializedConfig, daemonAddress: string)
   };
 }
 
-/** Convert a TapsmithConfig into the IPC-safe subset needed by worker child processes. */
+/**
+ * Convert a TapsmithConfig into the IPC-safe subset needed by worker child
+ * processes. The single sending-side implementation (cli, dispatcher, watch,
+ * ui-server) — the counterpart of `configFromSerialized` above, and subject
+ * to the same rule: never hand-roll this literal at a call site.
+ */
 export function serializeConfig(config: TapsmithConfig): SerializedConfig {
   return {
     timeout: config.timeout,

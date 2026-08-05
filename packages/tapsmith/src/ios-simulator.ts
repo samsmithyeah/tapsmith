@@ -224,14 +224,31 @@ export async function installAppAsync(udid: string, appPath: string): Promise<vo
  * Check whether an app bundle is already installed on a simulator.
  */
 export function isAppInstalled(udid: string, bundleId: string): boolean {
+  return getAppInstallState(udid, bundleId) === 'installed';
+}
+
+/**
+ * Tri-state install probe for callers that must distinguish "simctl
+ * confirmed the app is absent" from "the probe itself failed" (timeout,
+ * wedged CoreSimulator). `isAppInstalled` collapses both to false, which is
+ * fine for opportunistic checks but not for verifying that a destructive
+ * operation actually happened.
+ */
+export function getAppInstallState(
+  udid: string,
+  bundleId: string,
+): 'installed' | 'not-installed' | 'unknown' {
   try {
     execFileSync('xcrun', ['simctl', 'get_app_container', udid, bundleId, 'app'], {
       timeout: 10_000,
       stdio: 'ignore',
     });
-    return true;
-  } catch {
-    return false;
+    return 'installed';
+  } catch (err) {
+    // A clean non-zero exit means simctl ran and reported the app absent; a
+    // killed process (timeout) or spawn failure proves nothing either way.
+    const status = (err as { status?: unknown }).status;
+    return typeof status === 'number' ? 'not-installed' : 'unknown';
   }
 }
 

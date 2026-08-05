@@ -366,9 +366,11 @@ async function setDeviceAndAgent(
 /**
  * `deviceSerial` is the device the daemon is actually using when the caller
  * selected it (setDeviceAndAgent); discovery-path callers attaching to an
- * existing daemon don't know it and fall back to config.device — the shared
- * helper warns and skips the notification policy when neither identifies
- * the device.
+ * existing daemon don't know it, so it is resolved from the daemon's own
+ * device list (the `Active` entry) — never from config.device, which may
+ * name a different device than the daemon is driving and would aim the
+ * data-wiping iOS reset at the wrong simulator. The shared helper warns and
+ * skips the notification policy when the device cannot be identified.
  */
 async function startAgentFromConfig(
   client: TapsmithGrpcClient,
@@ -377,12 +379,17 @@ async function startAgentFromConfig(
 ): Promise<void> {
   const { agentConnected } = await client.ping();
   if (agentConnected) {
-    // Attaching to a live agent: leave the app alone (no iOS reinstall
-    // reset under a running session), but the Android permission state is
-    // adb-only and must still reflect this config — without this, an MCP
-    // session attaching to a leftover agent silently ignores
-    // permissions.notifications.
-    await applyAndroidPermissionFromConfig(client, config);
+    // Attaching to a live agent must be non-mutating: the session that
+    // started this agent already applied its own permission state, and a
+    // test run may since have deliberately changed it (e.g. accepting the
+    // prompt under 'prompt'). Re-applying this config's policy here would
+    // yank that state out from under the in-flight session.
+    if (config?.permissions?.notifications) {
+      log(
+        'Attached to a running agent; permissions.notifications is applied at session '
+        + 'start and was not re-applied.',
+      );
+    }
     return;
   }
 
@@ -411,7 +418,15 @@ async function startAgentFromConfig(
   const { notificationPermissionForAgent, applySimulatorNotificationPermissionSetup } =
     await import('../permission-setup.js');
   const permissionSetupLog = mcpPermissionSetupLog();
-  const resolvedSerial = deviceSerial ?? config?.device;
+  let resolvedSerial = deviceSerial;
+  if (!resolvedSerial) {
+    try {
+      const { devices } = await client.listDevices();
+      resolvedSerial = devices.find((d) => d.state === 'Active')?.serial;
+    } catch {
+      // Leave undefined — the shared helper warns and skips the policy.
+    }
+  }
   const notificationPermission = await notificationPermissionForAgent(
     config ?? {}, resolvedSerial, permissionSetupLog,
   );
@@ -423,7 +438,7 @@ async function startAgentFromConfig(
   // here.
   if (notificationPermission && config && resolvedSerial) {
     try {
-      if (applySimulatorNotificationPermissionSetup(resolvedSerial, config, permissionSetupLog)
+      if ((await applySimulatorNotificationPermissionSetup(resolvedSerial, config, permissionSetupLog))
           && config.app) {
         const { installApp } = await import('../ios-simulator.js');
         const appPath = path.resolve(config.rootDir ?? process.cwd(), config.app);

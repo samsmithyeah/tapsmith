@@ -4,11 +4,22 @@ import {
   NO_PACKAGE_WARNING,
   PHYSICAL_IOS_WARNING,
   applyAndroidNotificationPermission,
+  applySimulatorNotificationPermissionSetup,
   type PermissionSetupLog,
 } from '../permission-setup.js';
+import {
+  ensureSimulatorNotificationPermissionState,
+  readNotificationAuthorizationStatus,
+} from '../ios-notification-state.js';
 
 vi.mock('../ios-devicectl.js', () => ({
   isPhysicalDevice: (serial: string) => serial.startsWith('physical'),
+}));
+
+vi.mock('../ios-notification-state.js', () => ({
+  readNotificationAuthorizationStatus: vi.fn(() => 'denied'),
+  needsNotificationReset: vi.fn(() => true),
+  ensureSimulatorNotificationPermissionState: vi.fn(() => true),
 }));
 
 function collectingLog(): PermissionSetupLog & { infos: string[]; warns: string[] } {
@@ -67,6 +78,44 @@ describe('notificationPermissionForAgent', () => {
       { platform: 'ios' }, 'SIM-UDID-1234', log,
     )).toBeUndefined();
     expect(log.warns).toEqual([]);
+  });
+});
+
+describe('applySimulatorNotificationPermissionSetup', () => {
+  const iosConfig = {
+    platform: 'ios' as const,
+    package: 'com.example.app',
+    app: './App.app',
+    permissions: { notifications: 'granted' as const },
+  };
+  beforeEach(() => { vi.clearAllMocks(); });
+
+  it('skips physical devices without touching the notification store', async () => {
+    // The guard lives inside the helper so no caller can drift on it. The
+    // skip is silent: notificationPermissionForAgent owns the warning.
+    const log = collectingLog();
+    const result = await applySimulatorNotificationPermissionSetup('physical-serial', iosConfig, log);
+    expect(result).toBe(false);
+    expect(vi.mocked(readNotificationAuthorizationStatus)).not.toHaveBeenCalled();
+    expect(log.warns).toEqual([]);
+  });
+
+  it('uninstalls on conflict for a simulator', async () => {
+    const log = collectingLog();
+    const result = await applySimulatorNotificationPermissionSetup('SIM-UDID-1234', iosConfig, log);
+    expect(result).toBe(true);
+    expect(vi.mocked(ensureSimulatorNotificationPermissionState))
+      .toHaveBeenCalledWith('SIM-UDID-1234', 'com.example.app', 'granted', 'denied');
+    expect(log.infos).toHaveLength(1);
+  });
+
+  it('is a no-op when no policy is configured', async () => {
+    const log = collectingLog();
+    const result = await applySimulatorNotificationPermissionSetup(
+      'SIM-UDID-1234', { platform: 'ios', package: 'com.example.app', app: './App.app' }, log,
+    );
+    expect(result).toBe(false);
+    expect(vi.mocked(readNotificationAuthorizationStatus)).not.toHaveBeenCalled();
   });
 });
 

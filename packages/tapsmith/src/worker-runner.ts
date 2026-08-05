@@ -160,7 +160,7 @@ async function handleInit(msg: InitMessage): Promise<void> {
       // PILOT-291: reset the recorded notification state on conflict before
       // the install below. Worker simulators (clones, reused CI sets) carry
       // their own BulletinBoard state, so this runs per worker.
-      applySimulatorNotificationPermissionSetup(msg.deviceSerial, config, permissionSetupLog);
+      await applySimulatorNotificationPermissionSetup(msg.deviceSerial, config, permissionSetupLog);
       // Skip only when the installed bundle is byte-identical — simulator
       // state can outlive a run (reused CI runner device sets, local app
       // rebuilds), and a presence-only skip silently tests a stale build.
@@ -179,12 +179,10 @@ async function handleInit(msg: InitMessage): Promise<void> {
   } else {
     sendProgress('app install skipped');
     if (config.platform === 'ios' && msg.deviceSerial) {
-      const { isPhysicalDevice } = await import('./ios-devicectl.js');
-      if (!isPhysicalDevice(msg.deviceSerial)) {
-        // No app to (re)install, but a configured permission that conflicts
-        // with the recorded state must still be surfaced (the helper warns).
-        applySimulatorNotificationPermissionSetup(msg.deviceSerial, config, permissionSetupLog);
-      }
+      // No app to (re)install, but a configured permission that conflicts
+      // with the recorded state must still be surfaced (the helper warns;
+      // it also owns the physical-device guard).
+      await applySimulatorNotificationPermissionSetup(msg.deviceSerial, config, permissionSetupLog);
     }
   }
 

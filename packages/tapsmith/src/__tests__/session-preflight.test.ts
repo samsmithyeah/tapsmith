@@ -15,6 +15,7 @@ function makeContext(overrides: Partial<Parameters<typeof ensureSessionReady>[0]
     clearAppData: vi.fn(async () => undefined),
     restartApp: vi.fn(async () => undefined),
     getAppState: vi.fn(async () => 'foreground' as const),
+    setNotificationPermission: vi.fn(async () => undefined),
   };
 
   const client = {
@@ -143,6 +144,36 @@ describe('session-preflight', () => {
       activity: '.MainActivity',
       waitForIdle: false,
     });
+  });
+
+  it('re-applies the notification permission after the per-file pm clear', async () => {
+    // Regression: `pm clear` resets runtime permission grants and user-set
+    // flags, so the state applied at session setup must be re-applied for
+    // every file after the first — otherwise only the first file runs with
+    // the configured permission.
+    const ctx = makeContext({
+      config: {
+        package: 'com.example.app',
+        activity: '.MainActivity',
+        permissions: { notifications: 'granted' },
+      },
+    });
+
+    await expect(launchConfiguredApp(ctx, 'file reset')).resolves.toBeUndefined();
+
+    expect(ctx.device.clearAppData).toHaveBeenCalledWith('com.example.app');
+    expect(ctx.device.setNotificationPermission).toHaveBeenCalledWith('com.example.app', 'granted');
+    const clearOrder = vi.mocked(ctx.device.clearAppData).mock.invocationCallOrder[0];
+    const applyOrder = vi.mocked(ctx.device.setNotificationPermission).mock.invocationCallOrder[0];
+    expect(applyOrder).toBeGreaterThan(clearOrder);
+  });
+
+  it('does not touch permissions on per-file reset when none are configured', async () => {
+    const ctx = makeContext();
+
+    await expect(launchConfiguredApp(ctx, 'file reset')).resolves.toBeUndefined();
+
+    expect(ctx.device.setNotificationPermission).not.toHaveBeenCalled();
   });
 
   it('skips clearAppData when skipDataClear is set (appState restore owns isolation)', async () => {

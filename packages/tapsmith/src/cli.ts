@@ -47,7 +47,7 @@ import {
   waitForDeviceStability,
   ensureAdbRoot,
 } from './emulator.js';
-import { AGENT_START_RETRY_DELAY_MS, isRecoverableInfrastructureError, isRetryableAgentStartError, retryDeviceSelection, serializeRegExpArray } from './worker-protocol.js';
+import { AGENT_START_RETRY_DELAY_MS, isRecoverableInfrastructureError, isRetryableAgentStartError, retryDeviceSelection, serializeConfig } from './worker-protocol.js';
 import { findPidsOnPort, freeStaleAgentPort } from './port-utils.js';
 import { applyAndroidNotificationPermission, applySimulatorNotificationPermissionSetup, notificationPermissionForAgent } from './permission-setup.js';
 import { findDaemonBin } from './daemon-bin.js';
@@ -690,7 +690,7 @@ async function setupSequentialDevice(
           }
         } else {
           const { installAppAsync, isAppInstalled, installedAppMatches } = await import('./ios-simulator.js');
-          applySimulatorNotificationPermissionSetup(cfg.device, cfg, permissionSetupLog);
+          await applySimulatorNotificationPermissionSetup(cfg.device, cfg, permissionSetupLog);
           const alreadyInstalled = !deviceJustLaunched
             && cfg.package
             && isAppInstalled(cfg.device, cfg.package);
@@ -721,10 +721,11 @@ async function setupSequentialDevice(
       }
     } else {
       progress?.skip('app-install', 'no iOS app configured');
-      if (!targetIsPhysical && cfg.device) {
+      if (cfg.device) {
         // No app to (re)install, but a configured permission that conflicts
-        // with the recorded state must still be surfaced (the helper warns).
-        applySimulatorNotificationPermissionSetup(cfg.device, cfg, permissionSetupLog);
+        // with the recorded state must still be surfaced (the helper warns;
+        // it also owns the physical-device guard).
+        await applySimulatorNotificationPermissionSetup(cfg.device, cfg, permissionSetupLog);
       }
     }
     if (cfg.package && cfg.device && !pendingSimulatorInstall) {
@@ -1491,35 +1492,7 @@ interface PerProjectProvisionResult {
  * Build a SerializedConfig from a TapsmithConfig (a per-bucket effective config).
  */
 function buildSerializedConfig(cfg: TapsmithConfig): import('./worker-protocol.js').SerializedConfig {
-  return {
-    timeout: cfg.timeout,
-    retries: cfg.retries,
-    screenshot: cfg.screenshot,
-    rootDir: cfg.rootDir,
-    outputDir: cfg.outputDir,
-    apk: cfg.apk,
-    activity: cfg.activity,
-    package: cfg.package,
-    agentApk: cfg.agentApk,
-    agentTestApk: cfg.agentTestApk,
-    trace: typeof cfg.trace === 'string' || typeof cfg.trace === 'object'
-      ? cfg.trace
-      : undefined,
-    video: typeof cfg.video === 'string' || typeof cfg.video === 'object'
-      ? cfg.video
-      : undefined,
-    platform: cfg.platform,
-    app: cfg.app,
-    iosXctestrun: cfg.iosXctestrun,
-    simulator: cfg.simulator,
-    resetAppDeepLink: cfg.resetAppDeepLink,
-    resetAppWaitMs: cfg.resetAppWaitMs,
-    baseURL: cfg.baseURL,
-    extraHTTPHeaders: cfg.extraHTTPHeaders,
-    permissions: cfg.permissions,
-    grep: serializeRegExpArray(normalizeGrep(cfg.grep)),
-    grepInvert: serializeRegExpArray(normalizeGrep(cfg.grepInvert)),
-  };
+  return serializeConfig(cfg);
 }
 
 /**

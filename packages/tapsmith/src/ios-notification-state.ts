@@ -29,7 +29,7 @@ import * as path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import bplist from 'bplist-parser';
 import * as plist from 'plist';
-import { isAppInstalled } from './ios-simulator.js';
+import { getAppInstallState } from './ios-simulator.js';
 import type { NotificationPermissionState } from './config.js';
 
 export type NotificationAuthorizationStatus =
@@ -218,10 +218,12 @@ export function ensureSimulatorNotificationPermissionState(
   } catch (err) {
     // Uninstall of a not-installed app fails; there is then no recorded
     // state left to conflict, so the fresh install proceeds as normal.
-    // Any other failure means the conflicting state survived — the caller
-    // would skip the reinstall (installed bundle still matches) and run
-    // the session against the wrong permission state, so fail loudly.
-    if (isAppInstalled(udid, bundleId)) {
+    // Only a probe that AFFIRMATIVELY reports the app absent may swallow
+    // the failure — the probe itself erroring (timeout, wedged
+    // CoreSimulator) proves nothing, and treating it as success would let
+    // the caller reinstall over the still-recorded state and silently run
+    // the session against the wrong permission state. Fail loudly.
+    if (getAppInstallState(udid, bundleId) !== 'not-installed') {
       throw new Error(
         `Failed to uninstall ${bundleId} to reset its notification permission `
         + `state (recorded '${status}', configured '${target}'): `

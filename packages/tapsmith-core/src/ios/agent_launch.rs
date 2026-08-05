@@ -121,10 +121,10 @@ async fn start_agent_impl(
     // environment). This closes the daemon-restart hole in both directions:
     // with no in-memory record of the previous launch, a surviving agent
     // with a different policy would otherwise silently serve this session.
-    // Agents predating the field report nothing → unverifiable → relaunch.
+    // See `policy_matches` for how agents predating the field are treated.
     if !force {
         if let Ok(reported_policy) = ping_agent(agent_port).await {
-            if reported_policy.as_deref() == Some(notification_permission) {
+            if policy_matches(reported_policy.as_deref(), notification_permission) {
                 info!("iOS agent is already running");
                 crate::timing::timing_log!(
                     "kind=boot name=agent dur_ms={} reused=true udid={udid}",
@@ -319,7 +319,32 @@ async fn start_agent_impl(
         }
 
         match ping_agent(agent_port).await {
-            Ok(_reported_policy) => {
+            Ok(reported_policy) => {
+                // A pingable agent is not enough: verify it actually honors
+                // the policy this launch injected. A stale agent build that
+                // predates TAPSMITH_NOTIFICATION_PERMISSION would otherwise
+                // pass readiness and answer the one-shot notification prompt
+                // with its allow-first default — permanently recording a
+                // grant the config forbids (the PILOT-290 failure mode).
+                if !policy_matches(reported_policy.as_deref(), notification_permission) {
+                    let _ = child.kill().await;
+                    drop(iproxy_handle);
+                    let detail = match reported_policy.as_deref() {
+                        None => "the agent did not report a notification policy, so its build \
+                             predates notification permission support. Rebuild the iOS agent \
+                             (simulator: `xcodebuild build-for-testing`; physical device: \
+                             `npx tapsmith build-ios-agent`) and re-run."
+                            .to_string(),
+                        Some(reported) => format!(
+                            "the agent reported policy '{reported}', so the injected \
+                             TAPSMITH_NOTIFICATION_PERMISSION did not reach the XCUITest runner."
+                        ),
+                    };
+                    bail!(
+                        "iOS agent started but cannot enforce the configured \
+                         permissions.notifications value '{notification_permission}': {detail}"
+                    );
+                }
                 info!(udid, "iOS agent is ready");
                 crate::timing::timing_log!(
                     "kind=boot name=agent dur_ms={} reused=false udid={udid}",
@@ -698,6 +723,20 @@ async fn ping_agent(port: u16) -> Result<Option<String>> {
     Ok(parse_ping_notification_permission(&response))
 }
 
+/// Whether a running agent's self-reported notification policy satisfies the
+/// requested one. Agents built before the policy field existed report nothing
+/// (`None`): when no policy is requested they behave identically to a current
+/// build (same allow-first default), so they stay reusable — relaunching them
+/// would needlessly kill warm app state on every daemon restart. When a
+/// policy IS requested, an unreported policy cannot be verified and does not
+/// match.
+fn policy_matches(reported: Option<&str>, requested: &str) -> bool {
+    match reported {
+        Some(reported) => reported == requested,
+        None => requested.is_empty(),
+    }
+}
+
 /// Extract the agent-reported notification policy from a ping response
 /// (`{"id":"ping","result":{"pong":true,"notificationPermission":"..."}}`).
 /// Absent field (older agent) → None.
@@ -878,6 +917,19 @@ mod tests {
         );
         // Garbage — unverifiable rather than a panic.
         assert_eq!(parse_ping_notification_permission("pong"), None);
+    }
+
+    #[test]
+    fn policy_matching_rules() {
+        // Exact matches, including the no-policy default.
+        assert!(policy_matches(Some("denied"), "denied"));
+        assert!(policy_matches(Some(""), ""));
+        // Old agent (no field): reusable only when no policy is requested.
+        assert!(policy_matches(None, ""));
+        assert!(!policy_matches(None, "denied"));
+        // Live policy differs from the requested one.
+        assert!(!policy_matches(Some("granted"), "denied"));
+        assert!(!policy_matches(Some(""), "granted"));
     }
 
     #[tokio::test]

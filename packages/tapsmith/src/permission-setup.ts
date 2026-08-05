@@ -81,14 +81,21 @@ export async function notificationPermissionForAgent(
  * Without an `app` path there is nothing to reinstall from, so no uninstall
  * happens; a recorded conflict is surfaced as a warning instead of running
  * the session against the wrong state.
+ *
+ * Performs the physical-device check itself so no caller can drift on the
+ * guard. Physical iOS is skipped silently: every setup flow pairs this call
+ * with `notificationPermissionForAgent`, which owns the user-facing
+ * PHYSICAL_IOS_WARNING — warning here as well would print it twice.
  */
-export function applySimulatorNotificationPermissionSetup(
+export async function applySimulatorNotificationPermissionSetup(
   udid: string,
   config: PermissionSetupConfig,
   log: PermissionSetupLog,
-): boolean {
+): Promise<boolean> {
   const target = config.permissions?.notifications;
   if (!target) return false;
+  const { isPhysicalDevice } = await import('./ios-devicectl.js');
+  if (isPhysicalDevice(udid)) return false;
   if (!config.package) {
     log.warn(NO_PACKAGE_WARNING);
     return false;

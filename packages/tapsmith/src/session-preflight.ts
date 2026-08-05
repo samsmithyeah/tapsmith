@@ -2,14 +2,15 @@ import type { TapsmithConfig, NotificationPermissionState } from './config.js';
 import type { Device } from './device.js';
 import type { LaunchAppOptions, TapsmithGrpcClient } from './grpc-client.js';
 import { detectBlockingSystemDialog, dismissSystemDialogsViaAdb } from './emulator.js';
+import { applyAndroidNotificationPermission } from './permission-setup.js';
 import { withActionProgress } from './action-progress.js';
 
-type SessionDevice = Pick<Device, 'startAgent' | 'terminateApp' | 'launchApp' | 'restartApp' | 'waitForIdle' | 'currentPackage' | 'getByText' | 'pressBack' | 'clearAppData' | 'openDeepLink' | 'getAppState'>
+type SessionDevice = Pick<Device, 'startAgent' | 'terminateApp' | 'launchApp' | 'restartApp' | 'waitForIdle' | 'currentPackage' | 'getByText' | 'pressBack' | 'clearAppData' | 'openDeepLink' | 'getAppState' | 'setNotificationPermission'>
 type SessionClient = Pick<TapsmithGrpcClient, 'ping' | 'getUiHierarchy'>
 
 export interface SessionPreflightContext {
   label: string
-  config: Pick<TapsmithConfig, 'package' | 'activity' | 'platform' | 'resetAppDeepLink' | 'resetAppWaitMs' | 'device'>
+  config: Pick<TapsmithConfig, 'package' | 'activity' | 'platform' | 'resetAppDeepLink' | 'resetAppWaitMs' | 'device' | 'permissions'>
   device: SessionDevice
   client: SessionClient
   agentApkPath?: string
@@ -229,6 +230,14 @@ export async function launchConfiguredApp(
   // AsyncStorage) leaks into the next file. Projects that need persisted
   // state use test.use({ appState }) which restores after this reset.
   await ctx.device.clearAppData(ctx.config.package);
+
+  // `pm clear` also resets runtime permission grants and user-set flags, so
+  // the notification permission applied at session setup must be re-applied
+  // for every file after the first.
+  await applyAndroidNotificationPermission(ctx.device, ctx.config, {
+    info: () => {},
+    warn: (m) => process.stderr.write(`[tapsmith] ${m}\n`),
+  });
 
   // Restart the agent BEFORE launching the app. The terminate + clearAppData
   // sequence above kills the agent process. If we launch the app first and

@@ -196,7 +196,7 @@ async function handleInit(msg: UIWorkerInitMessage): Promise<void> {
     } else {
       // PILOT-291: reset the recorded notification state on conflict before
       // the install below, mirroring cli.ts and worker-runner.ts.
-      applySimulatorNotificationPermissionSetup(msg.deviceSerial, config, permissionSetupLog);
+      await applySimulatorNotificationPermissionSetup(msg.deviceSerial, config, permissionSetupLog);
       const alreadyInstalled = !msg.freshEmulator
         && config.package
         && isAppInstalled(msg.deviceSerial, config.package);
@@ -205,13 +205,11 @@ async function handleInit(msg: UIWorkerInitMessage): Promise<void> {
         installApp(msg.deviceSerial, resolvedApp);
       }
     }
-  } else if (config.platform === 'ios' && config.permissions?.notifications && msg.deviceSerial) {
-    const { isPhysicalDevice } = await import('../ios-devicectl.js');
-    if (!isPhysicalDevice(msg.deviceSerial)) {
-      // No app to (re)install, but a configured permission that conflicts
-      // with the recorded state must still be surfaced (the helper warns).
-      applySimulatorNotificationPermissionSetup(msg.deviceSerial, config, permissionSetupLog);
-    }
+  } else if (config.platform === 'ios' && msg.deviceSerial) {
+    // No app to (re)install, but a configured permission that conflicts
+    // with the recorded state must still be surfaced (the helper warns; it
+    // also owns the permissions-unset and physical-device guards).
+    await applySimulatorNotificationPermissionSetup(msg.deviceSerial, config, permissionSetupLog);
   }
 
   // PILOT-291: deterministic notification permission state before tests

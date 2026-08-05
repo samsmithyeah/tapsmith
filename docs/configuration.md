@@ -82,6 +82,7 @@ Platform notes:
 - **Android** requires API 33+ (`POST_NOTIFICATIONS` became a runtime permission in Android 13) and the permission must be declared in the app's manifest.
 - **iOS simulator**: notification state cannot be changed while iOS is running (`simctl privacy` has no `notifications` service), so when the recorded state conflicts with the requested one, Tapsmith reinstalls the app -- which also clears app data. No reinstall happens when the states already agree.
 - **iOS physical devices** are not supported; Tapsmith prints a warning and skips the setting.
+- `permissions` works at the config root and in a project's `use` block. It has no effect from file-level `test.use()` (which warns): the state is applied once at session setup, before any test file runs.
 - Other permissions (camera, location, ...) can be controlled imperatively via [`device.grantPermission()`](api-reference.md#devicegrantpermissionpackagename-string-permission-string-promisevoid-android-only) and `device.revokePermission()`, which on iOS map to `simctl privacy` services.
 
 ### `ScreenshotMode`

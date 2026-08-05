@@ -278,6 +278,8 @@ export interface TapsmithConfig {
  * Device-shaping fields (`platform`, `avd`, `simulator`, `app`, `apk`, etc.)
  * may only be overridden at the project level — they have no effect from
  * `test.use()` since the device is bound to the worker before any test runs.
+ * The same applies to `permissions`: it is applied once at session setup, so
+ * `test.use({ permissions })` warns and has no effect.
  */
 export type UseOptions = Partial<Pick<TapsmithConfig,
   | 'timeout'

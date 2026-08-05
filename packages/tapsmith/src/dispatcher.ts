@@ -22,7 +22,7 @@ import type {
   MainToWorkerMessage,
   SerializedConfig,
 } from './worker-protocol.js';
-import { deserializeTestResult, deserializeSuiteResult, serializeRegExpArray } from './worker-protocol.js';
+import { deserializeTestResult, deserializeSuiteResult, serializeConfig, serializeRegExpArray } from './worker-protocol.js';
 import {
   clearOfflineEmulatorTransports,
   provisionEmulators,
@@ -1201,31 +1201,7 @@ export async function runParallel(opts: DispatcherOptions, _portOffset = 0): Pro
     }
 
     // Serialize config for workers
-    const serializedConfig: SerializedConfig = {
-      timeout: config.timeout,
-      retries: config.retries,
-      screenshot: config.screenshot,
-      rootDir: config.rootDir,
-      outputDir: config.outputDir,
-      apk: config.apk,
-      activity: config.activity,
-      package: config.package,
-      agentApk: config.agentApk,
-      agentTestApk: config.agentTestApk,
-      trace: typeof config.trace === 'string' || typeof config.trace === 'object'
-        ? config.trace
-        : undefined,
-      platform: config.platform,
-      app: config.app,
-      iosXctestrun: config.iosXctestrun,
-      simulator: config.simulator,
-      resetAppDeepLink: config.resetAppDeepLink,
-      resetAppWaitMs: config.resetAppWaitMs,
-      baseURL: config.baseURL,
-      extraHTTPHeaders: config.extraHTTPHeaders,
-      grep: serializeRegExpArray(normalizeGrep(config.grep)),
-      grepInvert: serializeRegExpArray(normalizeGrep(config.grepInvert)),
-    };
+    const serializedConfig: SerializedConfig = serializeConfig(config);
 
     const launchedSerials = new Set(launchedEmulators.map((emu) => emu.serial));
 
