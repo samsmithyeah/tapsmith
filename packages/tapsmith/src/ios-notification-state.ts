@@ -122,26 +122,35 @@ export function parseNotificationAuthorizationStatus(
   // The XML parser yields Uint8Array for <data>, the binary parser Buffer.
   if (!(blob instanceof Uint8Array)) return 'unknown';
 
-  // The blob is an NSKeyedArchiver archive. Exactly one archived object —
-  // the BBSectionInfoSettings — carries a numeric `authorizationStatus`.
+  // The blob is an NSKeyedArchiver archive. For a plain app exactly one
+  // archived object — the BBSectionInfoSettings — carries a numeric
+  // `authorizationStatus`. Apps with notification subsections can archive
+  // several (one per BBSectionInfo), and `$objects` ordering does not
+  // promise the app-level one comes first, so we do not trust position:
+  // collect every status and only answer when they agree. Disagreement is
+  // reported as 'unknown', which callers treat as untrusted and reset —
+  // conservative and loud, rather than silently adopting a subsection's
+  // state as the app's. (Resolving `$top` → root → `settings` through the
+  // archive's UID graph would answer exactly; tracked on PILOT-292.)
   const archive = bplist.parseBuffer(Buffer.from(blob))[0] as Record<string, unknown> | undefined;
   const objects = archive?.['$objects'];
   if (!Array.isArray(objects)) return 'unknown';
+  const found = new Set<NotificationAuthorizationStatus>();
   for (const obj of objects) {
     if (typeof obj !== 'object' || obj === null) continue;
     const status = (obj as Record<string, unknown>).authorizationStatus;
-    if (typeof status === 'number') {
-      if (status === 0) return 'notDetermined';
-      if (status === 1) return 'denied';
-      // 2 = authorized; 3 = provisional (quiet delivery) and 4 = ephemeral
-      // (App Clips) are both forms of granted authorization — no reset is
-      // needed to reach 'granted', and they conflict with 'denied'/'prompt'
-      // exactly like a full grant.
-      if (status === 2 || status === 3 || status === 4) return 'authorized';
-      return 'unknown';
-    }
+    if (typeof status !== 'number') continue;
+    if (status === 0) found.add('notDetermined');
+    else if (status === 1) found.add('denied');
+    // 2 = authorized; 3 = provisional (quiet delivery) and 4 = ephemeral
+    // (App Clips) are both forms of granted authorization — no reset is
+    // needed to reach 'granted', and they conflict with 'denied'/'prompt'
+    // exactly like a full grant.
+    else if (status === 2 || status === 3 || status === 4) found.add('authorized');
+    else return 'unknown';
   }
-  return 'unknown';
+  if (found.size !== 1) return 'unknown';
+  return [...found][0];
 }
 
 /**
@@ -214,7 +223,11 @@ export function ensureSimulatorNotificationPermissionState(
   const status = precomputedStatus ?? readNotificationAuthorizationStatus(udid, bundleId);
   if (!needsNotificationReset(status, target)) return false;
   try {
-    execFileSync('xcrun', ['simctl', 'uninstall', udid, bundleId]);
+    // Bounded like every other simctl call in this module: a wedged
+    // CoreSimulator would otherwise hang session setup indefinitely with no
+    // attributable error. On timeout execFileSync throws and the probe
+    // below decides whether that was fatal.
+    execFileSync('xcrun', ['simctl', 'uninstall', udid, bundleId], { timeout: 60_000 });
   } catch (err) {
     // Uninstall of a not-installed app fails; there is then no recorded
     // state left to conflict, so the fresh install proceeds as normal.

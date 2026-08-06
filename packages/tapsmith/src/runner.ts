@@ -767,7 +767,17 @@ async function runSuiteContext(
   // `timeout` is handled separately via the device — it should only affect
   // assertion/action auto-wait, not the test-level safety timeout.
   // `appState` is handled below (restore before hooks).
-  const { timeout: scopeTimeout, appState: scopeAppState, ...configOverrides } = ctx.useOptions ?? {};
+  // `permissions` is dropped: the state is established once at session
+  // setup, so a scope-level override cannot take effect coherently. Letting
+  // it reach the scope config would make it *partially* apply anyway (the
+  // appState-clear branch below re-applies from config), contradicting the
+  // warning test.use() already prints.
+  const {
+    timeout: scopeTimeout,
+    appState: scopeAppState,
+    permissions: _scopePermissions,
+    ...configOverrides
+  } = ctx.useOptions ?? {};
   const opts: RunOptions = Object.keys(configOverrides).length > 0
     ? { ...parentOpts, config: { ...parentOpts.config, ...configOverrides } }
     : parentOpts;

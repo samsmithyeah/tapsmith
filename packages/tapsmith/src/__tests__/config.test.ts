@@ -234,6 +234,39 @@ describe('isExplicitWorkers() / loadConfig()', () => {
     });
   });
 
+  it('loadConfig aborts on an invalid permissions value instead of falling back', async () => {
+    const contents = 'export default { permissions: { notifications: "allow" } };\n';
+    await withTempConfig(contents, 'tapsmith.config.mjs', async (dir) => {
+      await expect(loadConfig(dir))
+        .rejects.toThrow(/permissions\.notifications.*'granted', 'denied', or 'prompt'/);
+    });
+  });
+
+  it('loadConfig aborts even when the error came from another copy of the package', async () => {
+    // A user's config resolves `defineConfig` through its own node_modules,
+    // which can be a different installed copy than the running CLI. Its
+    // ConfigValidationError is a different class, so an `instanceof` check
+    // would miss it and swallow the failure into the fall-back-to-defaults
+    // path — running the whole suite against DEFAULT config.
+    const contents = [
+      'class ConfigValidationError extends Error {',
+      '  isTapsmithConfigValidationError = true;',
+      '}',
+      'throw new ConfigValidationError("Invalid permissions.notifications value from another realm");',
+    ].join('\n');
+    await withTempConfig(contents, 'tapsmith.config.mjs', async (dir) => {
+      await expect(loadConfig(dir)).rejects.toThrow(/from another realm/);
+    });
+  });
+
+  it('loadConfig still falls back for ordinary load failures', async () => {
+    const contents = 'throw new Error("boom, not a validation error");\n';
+    await withTempConfig(contents, 'tapsmith.config.mjs', async (dir) => {
+      const config = await loadConfig(dir);
+      expect(config.timeout).toBe(30_000);
+    });
+  });
+
   it('loadConfig ignores explicit-undefined keys instead of clobbering defaults', async () => {
     const contents = 'export default { retries: undefined, timeout: undefined, workers: undefined };\n';
     await withTempConfig(contents, 'tapsmith.config.mjs', async (dir) => {

@@ -1489,13 +1489,6 @@ interface PerProjectProvisionResult {
 }
 
 /**
- * Build a SerializedConfig from a TapsmithConfig (a per-bucket effective config).
- */
-function buildSerializedConfig(cfg: TapsmithConfig): import('./worker-protocol.js').SerializedConfig {
-  return serializeConfig(cfg);
-}
-
-/**
  * Provision devices for a single bucket using its effective config and a
  * fixed worker count. Returns the device serials successfully provisioned
  * (may be fewer than requested if hardware constraints prevent it).
@@ -1678,7 +1671,7 @@ async function provisionPerProjectDevices(
     const { signature, bucketEffective, provisioned } = outcome;
     result.launched.push(...provisioned.launched);
     result.reusedSimulatorCount += provisioned.reusedSimulatorCount;
-    const bucketSerialized = buildSerializedConfig(bucketEffective);
+    const bucketSerialized = serializeConfig(bucketEffective);
     for (const serial of provisioned.serials) {
       result.deviceSerials.push(serial);
       result.configByDevice.set(serial, bucketSerialized);

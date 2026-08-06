@@ -1200,8 +1200,16 @@ export async function runParallel(opts: DispatcherOptions, _portOffset = 0): Pro
       notifyLegacySudoersIfPresent();
     }
 
-    // Serialize config for workers
-    const serializedConfig: SerializedConfig = serializeConfig(config);
+    // Serialize config for workers.
+    //
+    // `video` is deliberately cleared: this path has never forwarded it, so
+    // parallel runs have never recorded video. Adopting the shared
+    // serializer would switch per-test screen recording on for every worker
+    // of every user with `video` configured — a real behavior change (extra
+    // load on contended CI devices, an MP4 per test attempt) that belongs in
+    // its own PR rather than riding along with a permissions change. Watch
+    // and UI mode already serialize video and are unaffected.
+    const serializedConfig: SerializedConfig = { ...serializeConfig(config), video: undefined };
 
     const launchedSerials = new Set(launchedEmulators.map((emu) => emu.serial));
 

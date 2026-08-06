@@ -51,25 +51,14 @@ export interface PhysicalDeviceInfo {
  * which the CLI calls during setup. Returns an empty array if devicectl
  * is not available (older Xcode, no Core Device services).
  *
- * Cached for a few seconds: setup flows probe `isPhysicalDevice` several
- * times in one init (install branch, agent policy, xctestrun resolution),
- * and each uncached call spawns an ~1s devicectl subprocess. Attach/detach
- * is a human-timescale event, so a short TTL dedupes the burst without
- * hiding a newly plugged-in device for long.
+ * Deliberately uncached. A TTL cache here saves a couple of subprocess
+ * spawns per init, but every failure mode of devicectl also yields an empty
+ * list — so a single transient failure would be cached as "no physical
+ * devices" and make the following guards treat a real iPhone as a
+ * simulator. Re-probing is the cheap, safe option; if the spawn cost ever
+ * matters, resolve `isPhysicalDevice` once per init and thread the boolean.
  */
 export function listPhysicalDevices(): PhysicalDeviceInfo[] {
-  if (_listCache && Date.now() - _listCache.at < LIST_CACHE_TTL_MS) {
-    return _listCache.devices;
-  }
-  const devices = listPhysicalDevicesUncached();
-  _listCache = { at: Date.now(), devices };
-  return devices;
-}
-
-const LIST_CACHE_TTL_MS = 5_000;
-let _listCache: { at: number; devices: PhysicalDeviceInfo[] } | null = null;
-
-function listPhysicalDevicesUncached(): PhysicalDeviceInfo[] {
   const scratch = scratchJsonPath('list-devices');
   try {
     execFileSync('xcrun', ['devicectl', 'list', 'devices', '--json-output', scratch], {

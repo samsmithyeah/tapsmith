@@ -88,8 +88,16 @@ class TapsmithAgentRunner: XCTestCase {
                 // labels: iOS records notification authorization once per
                 // bundle id, so a single Allow here would permanently
                 // contradict the configured denied policy.
-                NSLog("[TapsmithAgent] Notification prompt has no recognized deny button; leaving it unhandled (label: \(alert.label))")
-                return false
+                //
+                // Return true (claim the interruption) rather than false.
+                // False hands the alert to XCUITest's implicit default
+                // interruption handling, which dismisses it by tapping the
+                // default button — Allow — producing exactly the permanent
+                // wrong grant this branch exists to prevent. Claiming it and
+                // tapping nothing leaves the alert on screen, so the blocked
+                // interaction fails loudly and the log below explains why.
+                NSLog("[TapsmithAgent] Notification prompt has no recognized deny button; leaving it on screen rather than granting (label: \(alert.label))")
+                return true
             }
             for title in SystemDialogPolicy.allowButtonLabels {
                 let button = alert.buttons[title]

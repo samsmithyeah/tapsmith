@@ -410,7 +410,26 @@ const VALID_NOTIFICATION_PERMISSION_STATES: readonly string[] = ['granted', 'den
 
 /** A config value failed validation — must abort the run, never be swallowed
  * into loadConfig's "failed to load, falling back" warning path. */
-export class ConfigValidationError extends Error {}
+export class ConfigValidationError extends Error {
+  /** Brand for {@link isConfigValidationError}. */
+  readonly isTapsmithConfigValidationError = true;
+}
+
+/**
+ * `instanceof` is not enough here: the user's config file imports
+ * `defineConfig` through its own module resolution, which can land on a
+ * different installed copy of this package than the running CLI (nested
+ * node_modules, a globally-installed CLI, a symlinked monorepo SDK). Each
+ * copy defines its own class, so a validation error thrown by one is not an
+ * `instanceof` the other's — and would be swallowed into the
+ * "failed to load, falling back to defaults" path. Match the brand too.
+ */
+export function isConfigValidationError(err: unknown): err is ConfigValidationError {
+  if (err instanceof ConfigValidationError) return true;
+  return typeof err === 'object'
+    && err !== null
+    && (err as { isTapsmithConfigValidationError?: unknown }).isTapsmithConfigValidationError === true;
+}
 
 function applyConfigDefaults(
   config: TapsmithConfig,
@@ -543,7 +562,7 @@ export async function loadConfig(dir?: string, configFile?: string): Promise<Tap
       } catch (err) {
         // Validation failures are the user's config being wrong, not the file
         // failing to load — surface them instead of falling back to defaults.
-        if (err instanceof ConfigValidationError) throw err;
+        if (isConfigValidationError(err)) throw err;
         console.warn(`Warning: failed to load ${configPath}: ${err}`);
       }
     }
