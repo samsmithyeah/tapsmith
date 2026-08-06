@@ -199,8 +199,11 @@ async function discover(): Promise<void> {
         log(`Connected to daemon at ${address}`);
         return { client, address, devices: [] } as DaemonConnection;
       } catch (err) {
+        // Includes a failed permission setup, which is deliberately fatal:
+        // this daemon is dropped rather than exposed as a healthy session
+        // running with the wrong permission state.
         const msg = err instanceof Error ? err.message : String(err);
-        log(`Failed to connect to daemon at ${address}: ${msg}`);
+        log(`Not using daemon at ${address}: ${msg}`);
         client.close();
         return null;
       }
@@ -237,8 +240,11 @@ async function discover(): Promise<void> {
     log(`Started daemon v${version} on port ${port}`);
     await setDeviceAndAgent(client, config);
   } catch (err) {
+    // Setup includes permission application, which is a precondition rather
+    // than a nicety — the daemon is torn down instead of serving a session
+    // whose permission state contradicts the config.
     const msg = err instanceof Error ? err.message : String(err);
-    log(`Daemon started but setup failed: ${msg}`);
+    log(`Daemon started but setup failed, shutting it down: ${msg}`);
     client.close();
     daemonProcess.kill();
     return;
@@ -446,8 +452,18 @@ async function startAgentFromConfig(
         installApp(resolvedSerial, appPath);
       }
     } catch (err) {
+      // Not recoverable and not ignorable: iOS records the notification
+      // decision once per bundle id and never re-prompts, so a failed reset
+      // means the agent's policy cannot take effect and the session would
+      // run with the opposite permission state while looking healthy. The
+      // CLI and worker paths abort on this exact error — do the same here
+      // rather than letting MCP be the one door that lets it through.
       const msg = err instanceof Error ? err.message : String(err);
-      log(`Warning: notification permission reset failed (${msg}).`);
+      throw new Error(
+        `permissions.notifications: could not reset the recorded notification state on `
+        + `${resolvedSerial}, so this session would run with the wrong state — not starting the `
+        + `agent. Cause: ${msg}`,
+      );
     }
   }
 
@@ -479,13 +495,21 @@ function mcpPermissionSetupLog() {
   };
 }
 
-/** PILOT-291: Android applies the state via the daemon RPC — without this
- * an MCP-started session silently ignores permissions.notifications. */
+/**
+ * PILOT-291: Android applies the state via the daemon RPC — without this
+ * an MCP-started session silently ignores permissions.notifications.
+ *
+ * Throws on failure. The state is configured, not best-effort: continuing
+ * would leave the session on whatever the device happened to be left in
+ * while the config promises otherwise. `cli.ts` treats the same failure as
+ * fatal, and the entry point should not change the guarantee.
+ */
 async function applyAndroidPermissionFromConfig(
   client: TapsmithGrpcClient,
   config: TapsmithConfig | null,
 ): Promise<void> {
-  if (!config || config.platform === 'ios' || !config.permissions?.notifications) return;
+  const target = config?.permissions?.notifications;
+  if (!config || config.platform === 'ios' || !target) return;
   try {
     const { applyAndroidNotificationPermission } = await import('../permission-setup.js');
     await applyAndroidNotificationPermission({
@@ -498,7 +522,11 @@ async function applyAndroidPermissionFromConfig(
     }, config, mcpPermissionSetupLog());
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    log(`Warning: failed to apply permissions.notifications (${msg}).`);
+    throw new Error(
+      `permissions.notifications: could not apply '${target}'`
+      + `${config.package ? ` to ${config.package}` : ''}, so this session would run with the `
+      + `device's previous notification state. Cause: ${msg}`,
+    );
   }
 }
 
