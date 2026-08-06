@@ -18,6 +18,9 @@
     },
     "android": {
       "package": "dev.tapsmith.testapp",
+      "permissions": [
+        "android.permission.POST_NOTIFICATIONS"
+      ],
       "adaptiveIcon": {
         "backgroundColor": "#E6F4FE",
         "foregroundImage": "./assets/android-icon-foreground.png",
@@ -47,7 +50,8 @@
       "expo-router",
       "./plugins/with-network-security-config",
       "./plugins/with-webview-debugging",
-      "expo-secure-store"
+      "expo-secure-store",
+      "expo-notifications"
     ],
     "experiments": {
       "typedRoutes": true

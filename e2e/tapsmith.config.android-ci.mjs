@@ -21,6 +21,11 @@ export default defineConfig({
   agentApk: "../agent/app/build/outputs/apk/debug/app-debug.apk",
   agentTestApk:
     "../agent/app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk",
+  // PILOT-291: applied at the root so EVERY session in this suite exercises
+  // the permissions plumbing (config serialization to workers, pm grant at
+  // setup, re-apply after the per-file pm clear) — not just the dedicated
+  // test.
+  permissions: { notifications: "granted" },
   projects: [
     {
       name: "authentication",
@@ -29,13 +34,26 @@ export default defineConfig({
     {
       name: "default",
       testMatch: ["**/*.test.ts"],
-      testIgnore: ["**/app-state.test.ts", "**/auth-gate.test.ts", "**/*.ios.test.ts"],
+      testIgnore: [
+        "**/app-state.test.ts",
+        "**/auth-gate.test.ts",
+        "**/notification-permission-denied.test.ts",
+        "**/*.ios.test.ts",
+      ],
     },
     {
       name: "authenticated",
       dependencies: ["authentication"],
       use: { appState: "./tapsmith-results/auth-state-authentication.tar.gz" },
       testMatch: ["**/app-state.test.ts", "**/auth-gate.test.ts"],
+    },
+    // Runs last: flipping the policy on the same device forces the revoke +
+    // user-fixed path after the suite ran granted, plus a per-project
+    // session re-establishment.
+    {
+      name: "notifications-denied",
+      use: { permissions: { notifications: "denied" } },
+      testMatch: ["**/notification-permission-denied.test.ts"],
     },
   ],
 })

@@ -25,6 +25,10 @@ export default defineConfig({
   workers: 1,
   simulator: process.env.TAPSMITH_IOS_SIMULATOR || "iPhone 16",
   iosXctestrun: process.env.TAPSMITH_IOS_XCTESTRUN || undefined,
+  // PILOT-291: applied at the root so EVERY session in this suite exercises
+  // the permissions plumbing (config serialization to workers, agent policy
+  // handshake, BulletinBoard conflict reset) — not just the dedicated test.
+  permissions: { notifications: "granted" },
   projects: [
     {
       name: "authentication",
@@ -36,6 +40,7 @@ export default defineConfig({
       testIgnore: [
         "**/app-state.test.ts",
         "**/auth-gate.test.ts",
+        "**/notification-permission-denied.test.ts",
         "**/*.android.test.ts",
       ],
     },
@@ -44,6 +49,14 @@ export default defineConfig({
       dependencies: ["authentication"],
       use: { appState: "./tapsmith-results/auth-state-authentication.tar.gz" },
       testMatch: ["**/app-state.test.ts", "**/auth-gate.test.ts"],
+    },
+    // Runs last: flipping the policy on the same device forces the full
+    // conflict-reset path (recorded granted → uninstall/reinstall → agent
+    // declines the prompt) plus a per-project session re-establishment.
+    {
+      name: "notifications-denied",
+      use: { permissions: { notifications: "denied" } },
+      testMatch: ["**/notification-permission-denied.test.ts"],
     },
   ],
 })

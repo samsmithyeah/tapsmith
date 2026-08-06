@@ -16,6 +16,9 @@ export default defineConfig({
   agentApk: "../agent/app/build/outputs/apk/debug/app-debug.apk",
   agentTestApk:
     "../agent/app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk",
+  // PILOT-291: mirrors the CI configs so local runs exercise the same
+  // permissions plumbing (see tapsmith.config.android-ci.mjs).
+  permissions: { notifications: "granted" },
   projects: [
     {
       name: "authentication",
@@ -27,6 +30,7 @@ export default defineConfig({
       testIgnore: [
         "**/app-state.test.ts",
         "**/auth-gate.test.ts",
+        "**/notification-permission-denied.test.ts",
         "**/webview*.test.ts",
         "**/*.ios.test.ts",
       ],
@@ -36,6 +40,11 @@ export default defineConfig({
       dependencies: ["authentication"],
       use: { appState: "./tapsmith-results/auth-state-authentication.tar.gz" },
       testMatch: ["**/app-state.test.ts", "**/auth-gate.test.ts"],
+    },
+    {
+      name: "notifications-denied",
+      use: { permissions: { notifications: "denied" } },
+      testMatch: ["**/notification-permission-denied.test.ts"],
     },
   ],
 });

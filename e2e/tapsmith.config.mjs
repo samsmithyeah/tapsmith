@@ -52,6 +52,9 @@ export default defineConfig({
   video: {
     mode: "retain-on-failure",
   },
+  // PILOT-291: mirrors the CI configs so multi-device runs exercise the
+  // permissions plumbing on both platforms at once.
+  permissions: { notifications: "granted" },
   projects: [
     // ─── Android ───
     {
@@ -63,7 +66,12 @@ export default defineConfig({
       name: "android",
       workers: 1,
       testMatch: ["**/*.test.ts"],
-      testIgnore: ["**/app-state.test.ts", "**/auth-gate.test.ts", "**/*.ios.test.ts"],
+      testIgnore: [
+        "**/app-state.test.ts",
+        "**/auth-gate.test.ts",
+        "**/notification-permission-denied.test.ts",
+        "**/*.ios.test.ts",
+      ],
       use: ANDROID_USE,
     },
     {
@@ -71,6 +79,11 @@ export default defineConfig({
       dependencies: ["android:auth-setup"],
       testMatch: ["**/app-state.test.ts", "**/auth-gate.test.ts"],
       use: { ...ANDROID_USE, appState: "./tapsmith-results/auth-state-android-auth-setup.tar.gz" },
+    },
+    {
+      name: "android:notifications-denied",
+      testMatch: ["**/notification-permission-denied.test.ts"],
+      use: { ...ANDROID_USE, permissions: { notifications: "denied" } },
     },
 
     // ─── iOS ───
@@ -86,6 +99,7 @@ export default defineConfig({
       testIgnore: [
         "**/app-state.test.ts",
         "**/auth-gate.test.ts",
+        "**/notification-permission-denied.test.ts",
         "**/*.android.test.ts",
       ],
       use: IOS_USE,
@@ -95,6 +109,11 @@ export default defineConfig({
       dependencies: ["ios:auth-setup"],
       testMatch: ["**/app-state.test.ts", "**/auth-gate.test.ts"],
       use: { ...IOS_USE, appState: "./tapsmith-results/auth-state-ios-auth-setup.tar.gz" },
+    },
+    {
+      name: "ios:notifications-denied",
+      testMatch: ["**/notification-permission-denied.test.ts"],
+      use: { ...IOS_USE, permissions: { notifications: "denied" } },
     },
   ],
 })

@@ -1,11 +1,13 @@
 import { useState } from "react"
 import { ScrollView, StyleSheet, Text, TouchableOpacity, View } from "react-native"
 import * as Location from "expo-location"
+import * as Notifications from "expo-notifications"
 import { Camera } from "expo-camera"
 
 export default function PermissionsScreen() {
   const [cameraStatus, setCameraStatus] = useState("unknown")
   const [locationStatus, setLocationStatus] = useState("unknown")
+  const [notificationsStatus, setNotificationsStatus] = useState("unknown")
 
   const requestCamera = async () => {
     try {
@@ -22,6 +24,24 @@ export default function PermissionsScreen() {
       setLocationStatus(status)
     } catch {
       setLocationStatus("error")
+    }
+  }
+
+  const requestNotifications = async () => {
+    try {
+      const { status } = await Notifications.requestPermissionsAsync()
+      setNotificationsStatus(status)
+    } catch {
+      setNotificationsStatus("error")
+    }
+  }
+
+  const checkNotifications = async () => {
+    try {
+      const { status } = await Notifications.getPermissionsAsync()
+      setNotificationsStatus(status)
+    } catch {
+      setNotificationsStatus("error")
     }
   }
 
@@ -91,6 +111,44 @@ export default function PermissionsScreen() {
         </TouchableOpacity>
       </View>
 
+      <View
+        style={styles.permissionCard}
+        accessible
+        accessibilityLabel={`Notifications permission: ${notificationsStatus}`}
+      >
+        <View style={styles.permissionInfo}>
+          <Text style={styles.permissionName}>Notifications</Text>
+          <Text
+            style={[
+              styles.permissionStatus,
+              notificationsStatus === "granted" && styles.statusGranted,
+              notificationsStatus === "denied" && styles.statusDenied,
+            ]}
+            testID="notifications-status"
+          >
+            {notificationsStatus}
+          </Text>
+        </View>
+        <TouchableOpacity
+          style={[styles.button, styles.buttonSecondary]}
+          onPress={checkNotifications}
+          accessibilityRole="button"
+          accessibilityLabel="Check notifications permission"
+          testID="check-notifications"
+        >
+          <Text style={styles.buttonText}>Check</Text>
+        </TouchableOpacity>
+        <TouchableOpacity
+          style={styles.button}
+          onPress={requestNotifications}
+          accessibilityRole="button"
+          accessibilityLabel="Request notifications permission"
+          testID="request-notifications"
+        >
+          <Text style={styles.buttonText}>Request</Text>
+        </TouchableOpacity>
+      </View>
+
       <View style={styles.spacer} />
     </ScrollView>
   )
@@ -146,6 +204,10 @@ const styles = StyleSheet.create({
     borderRadius: 8,
     paddingHorizontal: 20,
     paddingVertical: 10,
+  },
+  buttonSecondary: {
+    backgroundColor: "#8E8E93",
+    marginRight: 8,
   },
   buttonText: {
     color: "#fff",

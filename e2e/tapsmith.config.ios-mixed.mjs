@@ -33,6 +33,8 @@ const SIM_USE = {
   platform: "ios",
   app: "../test-app/build/Build/Products/Release-iphonesimulator/TapsmithTestApp.app",
   simulator: process.env.TAPSMITH_IOS_SIMULATOR || "iPhone 17",
+  // PILOT-291: simulator side only — unsupported on physical devices.
+  permissions: { notifications: "granted" },
 }
 
 // Physical device: both `device` (UDID) and `iosXctestrun` are intentionally
@@ -74,6 +76,7 @@ export default defineConfig({
       testIgnore: [
         "**/app-state.test.ts",
         "**/auth-gate.test.ts",
+        "**/notification-permission-denied.test.ts",
         "**/*.android.test.ts",
       ],
       use: SIM_USE,
@@ -83,6 +86,11 @@ export default defineConfig({
       dependencies: ["ios-sim:auth-setup"],
       testMatch: ["**/app-state.test.ts", "**/auth-gate.test.ts"],
       use: { ...SIM_USE, appState: "./tapsmith-results/auth-state-ios-sim-auth-setup.tar.gz" },
+    },
+    {
+      name: "ios-sim:notifications-denied",
+      testMatch: ["**/notification-permission-denied.test.ts"],
+      use: { ...SIM_USE, permissions: { notifications: "denied" } },
     },
 
     // ─── Physical device ───
@@ -98,9 +106,13 @@ export default defineConfig({
       name: "ios-device",
       workers: 1,
       testMatch: ["**/*.test.ts"],
+      // notification-permission tests are excluded on the physical side:
+      // permissions.notifications is unsupported there (no BulletinBoard
+      // access), so neither policy can be established deterministically.
       testIgnore: [
         "**/app-state.test.ts",
         "**/auth-gate.test.ts",
+        "**/notification-permission*.test.ts",
         "**/*.android.test.ts",
       ],
       use: DEVICE_USE,
