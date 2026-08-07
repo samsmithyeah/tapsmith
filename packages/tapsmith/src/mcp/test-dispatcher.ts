@@ -28,6 +28,12 @@ export interface TestResultEntry {
   projectName?: string
 }
 
+/** A test file that could not be loaded, so it holds no entry in the test tree. */
+export interface DiscoveryError {
+  filePath: string
+  error: string
+}
+
 export interface TestTreeEntry {
   type: 'project' | 'file' | 'suite' | 'test'
   name: string
@@ -70,6 +76,11 @@ export interface TestDispatcher {
   getTestFiles(): string[]
   getProjects(): string[]
   getTestTree(): TestTreeEntry[]
+  /**
+   * Files that failed to load during discovery. They are absent from the test
+   * tree, so a caller that only reads the tree sees a silently short list.
+   */
+  getDiscoveryErrors?(): DiscoveryError[]
   getSessionInfo(): SessionInfo
   toggleWatch(filePath: string, options?: { testFilter?: string; project?: string }): { enabled: boolean }
 }

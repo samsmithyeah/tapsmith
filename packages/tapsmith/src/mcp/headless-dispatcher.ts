@@ -1,6 +1,7 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { fork, type ChildProcess } from 'node:child_process';
+import { createRequire } from 'node:module';
 import { watch as chokidarWatch, type FSWatcher } from 'chokidar';
 import { resolveProjects, topologicalSort, type ResolvedProject } from '../project.js';
 import { discoverTestFiles } from '../test-file-discovery.js';
@@ -22,6 +23,7 @@ import type {
   TestTreeEntry,
   SessionInfo,
   TestFailureDetail,
+  DiscoveryError,
 } from './test-dispatcher.js';
 import { loadMcpConfig } from './config-loader.js';
 import type { TestTreeNode, UIDiscoverMessage, UIDiscoverChildMessage } from '../ui-mode/ui-protocol.js';
@@ -54,6 +56,7 @@ export class HeadlessTestDispatcher implements TestDispatcher {
   private _watchedEntries = new Map<string, WatchedEntry[]>();
   private _watchQueue: RunQueue;
   private _scripts: ResolvedScripts | null = null;
+  private _discoveryErrors = new Map<string, string>();
 
   constructor(options?: { configFile?: string }) {
     this._configFile = options?.configFile;
@@ -107,7 +110,7 @@ export class HeadlessTestDispatcher implements TestDispatcher {
           totalDuration += suite.durationMs;
         } catch (err) {
           totalFailed++;
-          log(`Error running ${path.basename(f)}: ${err instanceof Error ? err.message : err}`);
+          this._recordFileError(f, projectName, err);
         }
       }
       return this._finishRun(this._withFailures({
@@ -163,7 +166,7 @@ export class HeadlessTestDispatcher implements TestDispatcher {
               } catch (err) {
                 totalFailed++;
                 projectFailed = true;
-                log(`Error running ${path.basename(file)}: ${err instanceof Error ? err.message : err}`);
+                this._recordFileError(file, projectName, err);
               }
             }
 
@@ -181,7 +184,7 @@ export class HeadlessTestDispatcher implements TestDispatcher {
             totalDuration += suite.durationMs;
           } catch (err) {
             totalFailed++;
-            log(`Error running ${path.basename(file)}: ${err instanceof Error ? err.message : err}`);
+            this._recordFileError(file, undefined, err);
           }
         }
       }
@@ -264,6 +267,10 @@ export class HeadlessTestDispatcher implements TestDispatcher {
 
   getTestTree(): TestTreeEntry[] {
     return this._testTree;
+  }
+
+  getDiscoveryErrors(): DiscoveryError[] {
+    return [...this._discoveryErrors].map(([filePath, error]) => ({ filePath, error }));
   }
 
   getSessionInfo(): SessionInfo {
@@ -381,7 +388,7 @@ export class HeadlessTestDispatcher implements TestDispatcher {
       this._serializedConfig = serializeConfig(config);
     }
 
-    this._scripts = resolveScripts();
+    this._scripts = resolveScripts(this._testFiles);
 
     // Discover test tree
     if (this._testFiles.length > 0 && this._scripts) {
@@ -397,13 +404,18 @@ export class HeadlessTestDispatcher implements TestDispatcher {
   private async _discoverTestTree(): Promise<void> {
     const scripts = this._scripts!;
     const fileNodes = new Map<string, TestTreeNode>();
+    this._discoveryErrors.clear();
 
     const discovered = await mapWithConcurrency(this._testFiles, DISCOVERY_CONCURRENCY, async (file) => {
-      const tree = await discoverFile(file, scripts);
-      return { file, tree };
+      const { tree, error } = await discoverFile(file, scripts);
+      return { file, tree, error };
     });
-    for (const { file, tree } of discovered) {
+    for (const { file, tree, error } of discovered) {
       if (tree) fileNodes.set(file, tree);
+      // A file that fails to load has no tests to show, so it would otherwise
+      // vanish from the tree with nothing to distinguish it from a file that
+      // genuinely holds no tests. Keep the reason for the caller.
+      else this._discoveryErrors.set(file, error ?? 'Discovery failed (no result returned)');
     }
 
     if (this._hasRealProjects()) {
@@ -615,6 +627,22 @@ export class HeadlessTestDispatcher implements TestDispatcher {
     return this._projects.find((p) => p.testFiles.includes(filePath));
   }
 
+  /**
+   * Record a failure that killed a whole file before any test could report —
+   * an import error, a missing module, a crashed or timed-out worker.
+   *
+   * The message used to go to stderr only, which an MCP client never sees: the
+   * caller got `0 passed, 1 failed` with no cause, and `tapsmith_list_results`
+   * showed nothing at all. Storing it as a result entry puts it in front of
+   * every consumer — the run's failure details, the results list, and the
+   * accumulated suite board.
+   */
+  private _recordFileError(filePath: string, projectName: string | undefined, err: unknown): void {
+    const entry = fileFailureEntry(filePath, projectName, err);
+    this._testResults.set(resultEntryKey(projectName, filePath, entry.fullName), entry);
+    log(`Error running ${path.basename(filePath)}: ${entry.error}`);
+  }
+
   private _collectFailures(): TestFailureDetail[] {
     return [...this._testResults.values()]
       .filter((r) => r.status === 'failed' && r.error)
@@ -641,6 +669,27 @@ export class HeadlessTestDispatcher implements TestDispatcher {
  * of the key — otherwise same-named tests in different files collide and earlier
  * files' results are silently overwritten in a multi-file run.
  */
+/**
+ * A whole-file failure as a result entry, so it reaches every consumer that
+ * reads results rather than living only in the server's stderr.
+ *
+ * @internal — exported for unit testing.
+ */
+export function fileFailureEntry(
+  filePath: string,
+  projectName: string | undefined,
+  err: unknown,
+): TestResultEntry {
+  return {
+    fullName: `${path.basename(filePath)} — file failed to run`,
+    filePath,
+    status: 'failed',
+    duration: 0,
+    error: err instanceof Error ? err.message : String(err),
+    projectName,
+  };
+}
+
 export function resultEntryKey(
   projectName: string | undefined,
   filePath: string,
@@ -652,6 +701,12 @@ export function resultEntryKey(
 interface WatchedEntry {
   projectName?: string
   testFilter?: string
+}
+
+interface DiscoverFileResult {
+  tree: TestTreeNode | null
+  /** Why the file produced no tree. Absent on success. */
+  error?: string
 }
 
 interface ResolvedScripts {
@@ -687,7 +742,21 @@ async function mapWithConcurrency<T, R>(
   return results;
 }
 
-function resolveScripts(): ResolvedScripts {
+/**
+ * Locate the scripts the discovery/run children run, and the loader they need.
+ *
+ * `testFiles` decides the loader: the children `import()` the project's test
+ * files, so TypeScript tests need tsx regardless of whether *our* scripts are
+ * compiled. Deciding from our own scripts alone (as this used to) meant a
+ * published install — which ships only `.js` — always forked bare node, whose
+ * native type stripping resolves `.ts` files but does not remap a `./x.js`
+ * specifier to `x.ts`. Every test file importing a sibling module the ESM way
+ * then failed to load: silently dropped from the test tree during discovery,
+ * and failing with a bare count at run time.
+ *
+ * @internal — exported for unit testing.
+ */
+export function resolveScripts(testFiles: string[] = []): ResolvedScripts {
   // import.meta.dirname is either src/mcp/ or dist/mcp/
   // watch-run is at src/watch-run.ts or dist/watch-run.js
   // ui-discover is at src/ui-mode/ui-discover.ts or dist/ui-mode/ui-discover.js
@@ -706,16 +775,82 @@ function resolveScripts(): ResolvedScripts {
     : jsDiscover;
 
   let tsxBin: string | undefined;
-  if (watchRunScript.endsWith('.ts') || discoverScript.endsWith('.ts')) {
-    const tapsmithPkgDir = path.resolve(baseDir, '..');
-    const localTsx = path.join(tapsmithPkgDir, 'node_modules', '.bin', 'tsx');
-    tsxBin = fs.existsSync(localTsx) ? localTsx : 'tsx';
+  if (needsTsxLoader([watchRunScript, discoverScript], testFiles)) {
+    tsxBin = resolveTsxBin(path.resolve(baseDir, '..'));
+    if (!tsxBin) {
+      log(
+        'Warning: TypeScript test files were found but the tsx loader could not be located. '
+        + 'Test discovery and runs will fail for any file importing a sibling module '
+        + '(e.g. `import { test } from "./fixtures.js"`). Install tsx: npm install -D tsx',
+      );
+    }
   }
 
   return { watchRunScript, discoverScript, tsxBin, baseDir };
 }
 
-function discoverFile(filePath: string, scripts: ResolvedScripts): Promise<TestTreeNode | null> {
+/**
+ * Whether the forked children need the tsx loader: either they are TypeScript
+ * themselves, or the test files they import are.
+ *
+ * @internal — exported for unit testing.
+ */
+export function needsTsxLoader(scriptPaths: string[], testFiles: string[]): boolean {
+  const isTypeScript = (f: string): boolean => f.endsWith('.ts') || f.endsWith('.tsx');
+  return scriptPaths.some(isTypeScript) || testFiles.some(isTypeScript);
+}
+
+/**
+ * Find the tsx executable. npm may keep it under our own package, hoist it to
+ * the consumer's `node_modules/.bin`, or leave it reachable only through the
+ * package itself — check every shape rather than assuming one, since guessing
+ * wrong forks bare node and breaks TypeScript imports silently.
+ *
+ * @internal — exported for unit testing.
+ */
+export function resolveTsxBin(tapsmithPkgDir: string): string | undefined {
+  const candidates = [
+    // Our own dependency tree (source checkout, or an un-hoisted install).
+    path.join(tapsmithPkgDir, 'node_modules', '.bin', 'tsx'),
+    // Hoisted next to us: <node_modules>/.bin/tsx when we are <node_modules>/tapsmith.
+    path.resolve(tapsmithPkgDir, '..', '.bin', 'tsx'),
+  ];
+  for (const candidate of candidates) {
+    if (fs.existsSync(candidate)) return candidate;
+  }
+
+  // The package may be resolvable even when no .bin shim is reachable from here.
+  try {
+    const require = createRequire(import.meta.url);
+    const pkgPath = require.resolve('tsx/package.json');
+    const bin = JSON.parse(fs.readFileSync(pkgPath, 'utf-8')).bin;
+    const relative = typeof bin === 'string' ? bin : bin?.tsx;
+    if (relative) {
+      const resolved = path.resolve(path.dirname(pkgPath), relative);
+      if (fs.existsSync(resolved)) return resolved;
+    }
+  } catch {
+    // Not resolvable from here — fall through to PATH.
+  }
+
+  return findExecutableOnPath('tsx');
+}
+
+function findExecutableOnPath(name: string): string | undefined {
+  for (const dir of (process.env.PATH ?? '').split(path.delimiter)) {
+    if (!dir) continue;
+    const candidate = path.join(dir, name);
+    try {
+      fs.accessSync(candidate, fs.constants.X_OK);
+      return candidate;
+    } catch {
+      // Not in this directory.
+    }
+  }
+  return undefined;
+}
+
+function discoverFile(filePath: string, scripts: ResolvedScripts): Promise<DiscoverFileResult> {
   return new Promise((resolve) => {
     const child = fork(scripts.discoverScript, [], {
       stdio: ['ignore', 'ignore', 'inherit', 'ipc'],
@@ -732,37 +867,33 @@ function discoverFile(filePath: string, scripts: ResolvedScripts): Promise<TestT
       settled = true;
       log(`Discovery timed out for ${filePath} after ${DISCOVERY_TIMEOUT_MS}ms`);
       try { child.kill(); } catch { /* already dead */ }
-      resolve(null);
+      resolve({ tree: null, error: `Discovery timed out after ${DISCOVERY_TIMEOUT_MS}ms` });
     }, DISCOVERY_TIMEOUT_MS);
     timeout.unref?.();
-    const settle = (tree: TestTreeNode | null): void => {
+    const settle = (result: DiscoverFileResult): void => {
       if (settled) return;
       settled = true;
       clearTimeout(timeout);
-      resolve(tree);
+      resolve(result);
     };
 
     child.on('message', (response: UIDiscoverChildMessage) => {
       if (settled) return;
 
       if (response.type === 'discover-result') {
-        settle(response.tree);
+        settle({ tree: response.tree });
       } else {
         log(`Discovery error for ${filePath}: ${response.error.message}`);
-        settle(null);
+        settle({ tree: null, error: response.error.message });
       }
     });
 
-    child.on('exit', () => {
-      if (!settled) {
-        settle(null);
-      }
+    child.on('exit', (code, signal) => {
+      settle({ tree: null, error: `Discovery process exited without a result (code ${code ?? 'null'}, signal ${signal ?? 'none'})` });
     });
 
-    child.on('error', () => {
-      if (!settled) {
-        settle(null);
-      }
+    child.on('error', (err) => {
+      settle({ tree: null, error: `Discovery process failed to start: ${err.message}` });
     });
 
     const msg: UIDiscoverMessage = { type: 'discover', filePath };

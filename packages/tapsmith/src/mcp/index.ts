@@ -57,8 +57,12 @@ export interface RunMcpServerOptions {
 }
 
 export interface RunMcpServerRuntimeOptions {
+  /** Exit the process after cleanup when a shutdown signal arrives (default true). */
   exitOnSigint?: boolean
 }
+
+/** Signals that must run session cleanup before the process goes away. */
+const SHUTDOWN_SIGNALS = ['SIGINT', 'SIGTERM', 'SIGHUP'] as const;
 
 export function createMcpServer(options?: McpServerOptions): McpServer {
   const { name = 'tapsmith', events, dispatcher } = options ?? {};
@@ -313,19 +317,23 @@ export async function runMcpServer(
   configureMcpConnection({ configFile: options.configFile });
   const dispatcher = new HeadlessTestDispatcher({ configFile: options.configFile });
   let cleanedUp = false;
-  const sigintHandler = (): void => {
+  const signalHandler = (): void => {
     cleanup();
     if (runtimeOptions.exitOnSigint ?? true) process.exit(0);
   };
   function cleanup(): void {
     if (cleanedUp) return;
     cleanedUp = true;
-    process.off('SIGINT', sigintHandler);
+    for (const signal of SHUTDOWN_SIGNALS) process.off(signal, signalHandler);
     stopActivityMonitor();
     dispatcher.dispose();
     closeAllClients();
   }
-  process.once('SIGINT', sigintHandler);
+  // SIGTERM matters as much as SIGINT here: the MCP SDK's stdio client kills
+  // its server with SIGTERM on shutdown, and node's default handling for it
+  // terminates the process without running any of this — orphaning the daemon
+  // (and its device agent) that the session started.
+  for (const signal of SHUTDOWN_SIGNALS) process.once(signal, signalHandler);
 
   const server = createMcpServer({ events, dispatcher });
   attachMcpClientEventReporting(server, events, cleanup);
