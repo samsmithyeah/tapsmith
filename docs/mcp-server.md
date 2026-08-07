@@ -177,7 +177,7 @@ Run Tapsmith test files and return structured results. Only one test run can exe
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
-| `files` | string[] | Yes | Absolute file paths or glob patterns. Use `tapsmith_list_tests` to find available files. |
+| `files` | string[] | Yes | File paths — absolute, relative to the project root, or globs. Use `tapsmith_list_tests` to find available files. An argument that matches no discovered file is named in the error rather than reported as an empty run. |
 | `test` | string | No | Run a specific test by its full name (e.g. `"Login screen > submits form"`). Only works with a single file. |
 | `project` | string | No | Project name to target a specific platform/device (e.g. `"android"`, `"ios"`). Required when the same test file runs on multiple platforms. |
 | `device` | string | No | Device serial (ignored in HTTP mode — use `project` instead). |
@@ -270,7 +270,15 @@ Get configuration and environment info for the current test session. Useful for 
 
 No parameters.
 
-Returns session details: device serial, platform, app package, timeout, retries, and per-project settings (name, platform, package, test file count, dependencies).
+Returns session details: the config file backing the session, device serial, platform, app package, timeout, retries, and per-project settings (name, platform, package, test file count, dependencies).
+
+Check the `Config:` line first — everything else is derived from it. A session
+started outside a project directory may pick up a config you did not intend, or
+find none at all and fall back to defaults; in the latter case it has no app to
+launch, so a warning is returned here and on every failed run.
+
+Paths inside a config are resolved relative to the config file's own directory,
+so it does not matter which directory the MCP server was started in.
 
 #### `tapsmith_watch`
 
