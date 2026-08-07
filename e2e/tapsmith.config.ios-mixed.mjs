@@ -87,8 +87,15 @@ export default defineConfig({
       testMatch: ["**/app-state.test.ts", "**/auth-gate.test.ts"],
       use: { ...SIM_USE, appState: "./tapsmith-results/auth-state-ios-sim-auth-setup.tar.gz" },
     },
+    // Must run after every project that assumes the root's "granted"
+    // policy: notification permission is device-global per package, so a
+    // session that flips it to "denied" while those tests are still running
+    // changes state out from under them. `dependencies` is what actually
+    // enforces that ordering — without it this project is scheduled in the
+    // first wave and races them on a shared device.
     {
       name: "ios-sim:notifications-denied",
+      dependencies: ["ios-sim", "ios-sim:authenticated"],
       testMatch: ["**/notification-permission-denied.test.ts"],
       use: { ...SIM_USE, permissions: { notifications: "denied" } },
     },

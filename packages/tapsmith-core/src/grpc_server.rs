@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
@@ -115,6 +116,12 @@ pub struct TapsmithServiceImpl {
     /// StartAgent idempotent when the daemon is already connected to the same
     /// live agent for the same device/configuration.
     started_agent_config: Arc<RwLock<Option<StartedAgentConfig>>>,
+    /// Notification permission last applied per Android package, so that a
+    /// subsequent `pm clear` (which resets runtime grants and user-set flags)
+    /// can restore it. Keyed by package name; only ever populated when a
+    /// caller explicitly set a permission, so it is inert for everyone who
+    /// does not use `permissions.notifications`.
+    applied_notification_permissions: Arc<RwLock<HashMap<String, String>>>,
     /// iproxy USB tunnel for the physical iOS device, if any. Held for the
     /// lifetime of the XCUITest runner session; dropped when a new agent is
     /// started or the session is torn down.
@@ -283,6 +290,7 @@ impl TapsmithServiceImpl {
             ios_ca_cert_installed: Arc::new(RwLock::new(std::collections::HashSet::new())),
             ios_agent_config: Arc::new(RwLock::new(None)),
             started_agent_config: Arc::new(RwLock::new(None)),
+            applied_notification_permissions: Arc::new(RwLock::new(HashMap::new())),
             ios_iproxy: Arc::new(RwLock::new(None)),
             network_tracing_enabled: Arc::new(RwLock::new(false)),
             passthrough_hosts: Arc::new(RwLock::new(Vec::new())),
@@ -1316,6 +1324,39 @@ impl TapsmithServiceImpl {
         ]
         .iter()
         .any(|marker| error_message.contains(marker))
+    }
+
+    /// Re-run the notification-permission command sequence for `package`
+    /// after a `pm clear` wiped it. Mirrors the Android arm of
+    /// `set_notification_permission`, including its benign-error handling —
+    /// an API < 33 device has nothing to restore and must not be treated as
+    /// a failure.
+    async fn reapply_notification_permission_after_clear(
+        &self,
+        package: &str,
+        state: &str,
+    ) -> Result<(), String> {
+        let commands = Self::android_notification_permission_commands(package, state)
+            .ok_or_else(|| format!("invalid recorded notification permission state: {state:?}"))?;
+        for cmd in &commands {
+            let response = self
+                .adb_action(Uuid::new_v4().to_string(), cmd)
+                .await
+                .map_err(|e| e.to_string())?;
+            if !response.get_ref().success {
+                let message = response.get_ref().error_message.clone();
+                if Self::is_benign_pm_notification_error(cmd, &message) {
+                    continue;
+                }
+                return Err(message);
+            }
+        }
+        debug!(
+            package = %package,
+            state = %state,
+            "Restored the configured notification permission after `pm clear`"
+        );
+        Ok(())
     }
 
     /// Validate that a string looks like a valid Android activity name (e.g. `.MainActivity`).
@@ -4188,7 +4229,45 @@ impl proto::tapsmith_service_server::TapsmithService for TapsmithServiceImpl {
             }
             Platform::Android => {
                 let cmd = format!("pm clear {}", req.package_name);
-                self.adb_action(request_id, &cmd).await
+                let response = self.adb_action(request_id.clone(), &cmd).await?;
+                if !response.get_ref().success {
+                    return Ok(response);
+                }
+                // `pm clear` resets runtime permission grants and user-set
+                // flags, so a package whose notification permission was
+                // configured comes back as "not determined" and the app
+                // prompts again — silently contradicting the config for the
+                // rest of the session. Restoring here rather than at the SDK
+                // call sites means no caller can forget: the between-file
+                // reset, MCP, and a test calling `device.clearAppData()`
+                // directly all get the same guarantee.
+                let configured = self
+                    .applied_notification_permissions
+                    .read()
+                    .await
+                    .get(&req.package_name)
+                    .cloned();
+                if let Some(state) = configured {
+                    if let Err(e) = self
+                        .reapply_notification_permission_after_clear(&req.package_name, &state)
+                        .await
+                    {
+                        // Best-effort by design: the clear itself succeeded,
+                        // which is what the caller asked for. Failing it here
+                        // would turn a permission hiccup into a failed reset.
+                        // The warning is the signal; session setup is where
+                        // this state is enforced strictly.
+                        warn!(
+                            package = %req.package_name,
+                            state = %state,
+                            error = %e,
+                            "Could not restore the configured notification permission after \
+                             `pm clear`; the app may prompt or behave as though notifications \
+                             were never configured"
+                        );
+                    }
+                }
+                Ok(response)
             }
         }
     }
@@ -4295,6 +4374,15 @@ impl proto::tapsmith_service_server::TapsmithService for TapsmithServiceImpl {
                         return Ok(response);
                     }
                 }
+                // Remember it so `pm clear` can put it back. `pm clear` wipes
+                // runtime grants and user-set flags, and callers reach it from
+                // many places (the SDK's between-file reset, MCP, and
+                // `device.clearAppData` straight from a test) — recording it
+                // here is what makes the restore caller-proof.
+                self.applied_notification_permissions
+                    .write()
+                    .await
+                    .insert(req.package_name.clone(), req.state.clone());
                 Ok(Self::success_action_response(request_id))
             }
         }

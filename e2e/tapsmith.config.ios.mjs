@@ -38,8 +38,15 @@ export default defineConfig({
       use: { appState: "./tapsmith-results/auth-state-authentication.tar.gz" },
       testMatch: ["**/app-state.test.ts", "**/auth-gate.test.ts"],
     },
+    // Must run after every project that assumes the root's "granted"
+    // policy: notification permission is device-global per package, so a
+    // session that flips it to "denied" while those tests are still running
+    // changes state out from under them. `dependencies` is what actually
+    // enforces that ordering — without it this project is scheduled in the
+    // first wave and races them on a shared device.
     {
       name: "notifications-denied",
+      dependencies: ["default", "authenticated"],
       use: { permissions: { notifications: "denied" } },
       testMatch: ["**/notification-permission-denied.test.ts"],
     },

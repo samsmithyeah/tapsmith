@@ -80,8 +80,13 @@ export default defineConfig({
       testMatch: ["**/app-state.test.ts", "**/auth-gate.test.ts"],
       use: { ...ANDROID_USE, appState: "./tapsmith-results/auth-state-android-auth-setup.tar.gz" },
     },
+    // Must run after every project that assumes the root's "granted" policy:
+    // notification permission is device-global per package, so a session that
+    // flips it to "denied" while those tests are still running changes state
+    // out from under them. `dependencies` is what enforces that ordering.
     {
       name: "android:notifications-denied",
+      dependencies: ["android", "android:authenticated"],
       testMatch: ["**/notification-permission-denied.test.ts"],
       use: { ...ANDROID_USE, permissions: { notifications: "denied" } },
     },
@@ -110,8 +115,13 @@ export default defineConfig({
       testMatch: ["**/app-state.test.ts", "**/auth-gate.test.ts"],
       use: { ...IOS_USE, appState: "./tapsmith-results/auth-state-ios-auth-setup.tar.gz" },
     },
+    // Must run after every project that assumes the root's "granted" policy:
+    // notification permission is device-global per package, so a session that
+    // flips it to "denied" while those tests are still running changes state
+    // out from under them. `dependencies` is what enforces that ordering.
     {
       name: "ios:notifications-denied",
+      dependencies: ["ios", "ios:authenticated"],
       testMatch: ["**/notification-permission-denied.test.ts"],
       use: { ...IOS_USE, permissions: { notifications: "denied" } },
     },
