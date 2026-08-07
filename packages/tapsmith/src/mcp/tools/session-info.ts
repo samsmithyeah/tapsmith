@@ -16,7 +16,20 @@ export function registerSessionInfoTool(server: McpServer, dispatcher: TestDispa
       // session running on synthesized defaults is otherwise indistinguishable
       // from one backed by a real project.
       lines.push(`Config: ${info.configPath ?? 'none — using built-in defaults'}`);
-      if (info.device) lines.push(`Device: ${info.device}`);
+      // One device line per platform: a multi-platform session runs on several
+      // at once, and a platform that failed to provision must not look like it
+      // is simply sharing the other one's device.
+      const targets = info.deviceTargets ?? [];
+      if (targets.length > 1) {
+        for (const t of targets) {
+          const label = t.platform ?? 'device';
+          lines.push(t.device ? `Device (${label}): ${t.device}` : `Device (${label}): unavailable — ${t.error}`);
+        }
+      } else if (targets.length === 1 && !targets[0].device) {
+        lines.push(`Device: unavailable — ${targets[0].error}`);
+      } else if (info.device) {
+        lines.push(`Device: ${info.device}`);
+      }
       if (info.platform) lines.push(`Platform: ${info.platform}`);
       if (info.package) lines.push(`Package: ${info.package}`);
       lines.push(`Timeout: ${info.timeout}ms`);

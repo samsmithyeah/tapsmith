@@ -213,8 +213,31 @@ async function discover(): Promise<void> {
   }
 
   // 7. No live daemons — start our own
-  log('No daemon found, starting one...');
-  const platform = config?.platform;
+  const conn = await startDaemon(config?.platform);
+  if (!conn) return;
+
+  try {
+    await setDeviceAndAgent(conn.client, config);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    log(`Daemon started but setup failed: ${msg}`);
+    removeConnection(conn);
+    unregisterDaemon(conn.address);
+    return;
+  }
+
+  await refreshDeviceIndex();
+}
+
+/**
+ * Start a daemon for `platform` and add it to the pool.
+ *
+ * A daemon only serves the platform it was started for, so a session spanning
+ * Android and iOS needs one of each — hence this is callable outside the
+ * initial discovery.
+ */
+async function startDaemon(platform?: string): Promise<DaemonConnection | null> {
+  log(platform ? `Starting a ${platform} daemon...` : 'No daemon found, starting one...');
   const port = String(await pickFreePort());
   const bin = findDaemonBin();
   const daemonArgs = ['--port', port];
@@ -225,37 +248,123 @@ async function discover(): Promise<void> {
   daemonProcess.on('error', (err) => { log(`Daemon process error: ${err.message}`); });
   daemonProcess.stderr?.on('data', (data: Buffer) => { log(`Daemon: ${data.toString().trim()}`); });
 
-  const client = new TapsmithGrpcClient(`127.0.0.1:${port}`);
+  const address = `127.0.0.1:${port}`;
+  const client = new TapsmithGrpcClient(address);
   const started = await client.waitForReady(10_000);
   if (!started) {
     client.close();
     daemonProcess.kill();
     log('Failed to start daemon. Is tapsmith-core installed? Set TAPSMITH_DAEMON_BIN to an explicit path if it lives elsewhere.');
-    return;
+    return null;
   }
 
   try {
     const { version } = await client.ping();
-    log(`Started daemon v${version} on port ${port}`);
-    await setDeviceAndAgent(client, config);
+    log(`Started daemon v${version} on port ${port}${platform ? ` (${platform})` : ''}`);
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    log(`Daemon started but setup failed: ${msg}`);
+    log(`Daemon started but did not respond: ${msg}`);
     client.close();
     daemonProcess.kill();
-    return;
+    return null;
   }
 
-  const address = `127.0.0.1:${port}`;
   registerDaemon(address);
-  const conn: DaemonConnection = {
-    client,
-    address,
-    devices: [],
-    daemonProcess,
-  };
+  const conn: DaemonConnection = { client, address, devices: [], daemonProcess };
   _connections.push(conn);
+  return conn;
+}
+
+// ─── Per-platform targets ───
+
+export interface PlatformTarget {
+  /** Address of the daemon serving this platform's device. */
+  address: string
+  deviceSerial: string
+  platform?: string
+}
+
+/**
+ * Resolve a daemon + device + running agent for one project's platform.
+ *
+ * A multi-platform config has no top-level `platform`, so the session-wide
+ * setup could not tell which agent artifacts to use and started none: iOS
+ * projects failed with "iOS agent is not configured" no matter how the run was
+ * requested. Each project's *effective* config carries its own platform, app
+ * and agent paths, so resolve a target per platform from that instead.
+ */
+export async function ensurePlatformTarget(config: TapsmithConfig): Promise<PlatformTarget> {
+  await ensureConnected();
+  const platform = config.platform;
+
+  const existing = await findConnectionForPlatform(platform, config.device);
+  if (existing) {
+    await prepareTarget(existing.conn, existing.serial, config);
+    return { address: existing.conn.address, deviceSerial: existing.serial, platform };
+  }
+
+  // No pooled daemon serves this platform — daemons are per-platform, so start one.
+  const conn = await startDaemon(platform);
+  if (!conn) {
+    throw new Error(`Failed to start a ${platform ?? 'Tapsmith'} daemon. Is tapsmith-core installed?`);
+  }
+  const serial = await pickDevice(conn, platform, config.device);
+  if (!serial) {
+    await refreshDeviceIndex();
+    throw new Error(
+      `No ${platform ?? ''} device is available.`.replace('  ', ' ')
+      + (platform === 'android'
+        ? ' Start an emulator (or connect a device) and try again.'
+        : platform === 'ios'
+          ? ' Boot a simulator (or connect a device) and try again.'
+          : ' Connect a device or start an emulator and try again.'),
+    );
+  }
+  await prepareTarget(conn, serial, config);
   await refreshDeviceIndex();
+  return { address: conn.address, deviceSerial: serial, platform };
+}
+
+async function findConnectionForPlatform(
+  platform: string | undefined,
+  wantedSerial: string | undefined,
+): Promise<{ conn: DaemonConnection; serial: string } | null> {
+  for (const conn of _connections) {
+    const serial = await pickDevice(conn, platform, wantedSerial);
+    if (serial) return { conn, serial };
+  }
+  return null;
+}
+
+async function pickDevice(
+  conn: DaemonConnection,
+  platform: string | undefined,
+  wantedSerial: string | undefined,
+): Promise<string | undefined> {
+  let devices: DeviceInfoProto[];
+  try {
+    ({ devices } = await conn.client.listDevices());
+  } catch {
+    return undefined;
+  }
+
+  const candidates = platform ? devices.filter((d) => d.platform === platform) : devices;
+  if (wantedSerial) return candidates.find((d) => d.serial === wantedSerial)?.serial;
+  return (
+    candidates.find((d) => d.state === 'Active' || d.state === 'online')
+    ?? candidates.find((d) => d.state === 'Discovered')
+    ?? candidates[0]
+  )?.serial;
+}
+
+/** Point a daemon at a device and make sure its agent is running. */
+async function prepareTarget(
+  conn: DaemonConnection,
+  serial: string,
+  config: TapsmithConfig,
+): Promise<void> {
+  await conn.client.setDevice(serial);
+  await startAgentFromConfig(conn.client, config);
 }
 
 interface UiDiscoveryResult {

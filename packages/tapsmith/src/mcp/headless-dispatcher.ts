@@ -15,7 +15,8 @@ import {
 } from '../worker-protocol.js';
 import type { WatchRunMessage, WatchRunChildMessage } from '../watch-run.js';
 import { RunQueue } from '../watch-queue.js';
-import { ensureConnected, getAllDaemonAddresses, listAllDevices } from './connection.js';
+import { ensurePlatformTarget, type PlatformTarget } from './connection.js';
+import type { TapsmithConfig } from '../config.js';
 import { matchesTestFilter } from '../test-filter.js';
 import type {
   TestDispatcher,
@@ -25,9 +26,35 @@ import type {
   SessionInfo,
   TestFailureDetail,
   DiscoveryError,
+  DeviceTarget,
 } from './test-dispatcher.js';
 import { loadMcpConfig } from './config-loader.js';
 import type { TestTreeNode, UIDiscoverMessage, UIDiscoverChildMessage } from '../ui-mode/ui-protocol.js';
+
+/** Key for a session with no platform of its own (single-platform configs). */
+const DEFAULT_PLATFORM_KEY = 'default';
+
+function platformKey(platform?: string): string {
+  return platform ?? DEFAULT_PLATFORM_KEY;
+}
+
+/**
+ * Which platform's device a run belongs on.
+ *
+ * A project's own platform wins: in a multi-platform config the root has none,
+ * which is exactly the case that used to leave every run pointing at whichever
+ * device the session picked first.
+ *
+ * @internal — exported for unit testing.
+ */
+export function platformKeyForProject(
+  projects: Array<{ name: string; effectiveConfig: { platform?: string } }>,
+  projectName: string | undefined,
+  rootPlatform: string | undefined,
+): string {
+  const project = projectName ? projects.find((p) => p.name === projectName) : undefined;
+  return platformKey(project?.effectiveConfig.platform ?? rootPlatform);
+}
 
 const DISCOVERY_CONCURRENCY = 4;
 const DISCOVERY_TIMEOUT_MS = 30_000;
@@ -50,7 +77,6 @@ export class HeadlessTestDispatcher implements TestDispatcher {
   private _activeChild: ChildProcess | null = null;
   private _initialized = false;
   private _initPromise: Promise<void> | null = null;
-  private _daemonAddress: string | null = null;
   private _deviceSerial: string | null = null;
   private _serializedConfig: SerializedConfig | null = null;
   private _watcher: FSWatcher | null = null;
@@ -60,6 +86,12 @@ export class HeadlessTestDispatcher implements TestDispatcher {
   private _discoveryErrors = new Map<string, string>();
   private _configPath: string | null = null;
   private _configWarning: string | null = null;
+  /** Daemon + device per platform, keyed by platform (or DEFAULT_PLATFORM_KEY). */
+  private _targets = new Map<string, PlatformTarget>();
+  /** Why a platform has no target, kept so a run for it can say so. */
+  private _targetErrors = new Map<string, string>();
+  /** Per-project serialized configs handed to workers, built on first use. */
+  private _projectConfigs = new Map<string, SerializedConfig>();
 
   constructor(options?: { configFile?: string }) {
     this._configFile = options?.configFile;
@@ -305,6 +337,7 @@ export class HeadlessTestDispatcher implements TestDispatcher {
       timeout: this._config?.timeout ?? 30_000,
       retries: this._config?.retries ?? 0,
       projects,
+      deviceTargets: this._deviceTargets(),
       configPath: this._configPath ?? undefined,
       configWarning: this._configWarning ?? undefined,
     };
@@ -385,21 +418,7 @@ export class HeadlessTestDispatcher implements TestDispatcher {
       }
     }
 
-    // Resolve daemon/device connection
-    try {
-      await ensureConnected(config?.device);
-      this._daemonAddress = getAllDaemonAddresses();
-      if (config?.device) {
-        this._deviceSerial = config.device;
-      } else {
-        const devices = await listAllDevices();
-        const active = devices.find((d) => d.state === 'Active' || d.state === 'online')
-          ?? devices.find((d) => d.state === 'Discovered');
-        this._deviceSerial = active?.serial ?? devices[0]?.serial ?? null;
-      }
-    } catch (err) {
-      log(`Warning: daemon/device setup failed: ${err instanceof Error ? err.message : err}`);
-    }
+    await this._resolvePlatformTargets(config);
 
     if (config) {
       this._serializedConfig = serializeConfig(config);
@@ -414,6 +433,87 @@ export class HeadlessTestDispatcher implements TestDispatcher {
 
     this._initialized = true;
     log(`Initialized: ${this._testFiles.length} test file(s), device=${this._deviceSerial ?? 'none'}`);
+  }
+
+  // ─── Device targets ───
+
+  /**
+   * Resolve a daemon + device + agent for every platform the session runs on.
+   *
+   * A multi-platform config carries its platforms on the projects, not at the
+   * top level, so a single session-wide device was both arbitrary (whichever
+   * device a daemon happened to list first) and unusable for iOS, whose agent
+   * needs platform-specific artifacts. One target per platform fixes both.
+   *
+   * A platform that cannot be satisfied (no emulator running, say) is recorded
+   * rather than thrown: the other platform's tests still run, and a request for
+   * the missing one fails with the reason.
+   */
+  private async _resolvePlatformTargets(config: TapsmithConfig | null): Promise<void> {
+    this._targets.clear();
+    this._targetErrors.clear();
+    if (!config) return;
+
+    const wanted = this._hasRealProjects()
+      ? [...new Map(this._projects.map((p) => [platformKey(p.effectiveConfig.platform), p.effectiveConfig])).values()]
+      : [config];
+
+    for (const effective of wanted) {
+      const key = platformKey(effective.platform);
+      try {
+        const target = await ensurePlatformTarget(effective);
+        this._targets.set(key, target);
+        log(`Using ${key === DEFAULT_PLATFORM_KEY ? 'device' : `${key} device`} ${target.deviceSerial} via ${target.address}`);
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        this._targetErrors.set(key, message);
+        log(`Warning: ${key === DEFAULT_PLATFORM_KEY ? 'device' : key} setup failed: ${message}`);
+      }
+    }
+
+    this._deviceSerial = [...this._targets.values()][0]?.deviceSerial ?? null;
+  }
+
+  /**
+   * The config a project's worker runs under.
+   *
+   * The worker's session preflight (app launch, agent checks) reads the config
+   * it is handed, so handing it the *root* config left a project's platform,
+   * app bundle and agent artifacts behind — everything a multi-platform config
+   * keeps in `use`. The project's effective config carries all of it.
+   */
+  private _configForProject(projectName?: string): SerializedConfig {
+    if (!projectName) return this._serializedConfig!;
+    const cached = this._projectConfigs.get(projectName);
+    if (cached) return cached;
+
+    const project = this._projects.find((p) => p.name === projectName);
+    const serialized = project ? serializeConfig(project.effectiveConfig) : this._serializedConfig!;
+    this._projectConfigs.set(projectName, serialized);
+    return serialized;
+  }
+
+  /** Every platform this session runs on, with its device or its failure. */
+  private _deviceTargets(): DeviceTarget[] {
+    const toPlatform = (key: string): string | undefined =>
+      key === DEFAULT_PLATFORM_KEY ? undefined : key;
+    return [
+      ...[...this._targets].map(([key, t]) => ({ platform: toPlatform(key), device: t.deviceSerial })),
+      ...[...this._targetErrors].map(([key, error]) => ({ platform: toPlatform(key), error })),
+    ];
+  }
+
+  /** The daemon/device a project's tests must run against. */
+  private _targetForProject(projectName?: string): PlatformTarget {
+    const key = platformKeyForProject(this._projects, projectName, this._config?.platform);
+
+    const target = this._targets.get(key) ?? this._targets.get(DEFAULT_PLATFORM_KEY);
+    if (target) return target;
+
+    const reason = this._targetErrors.get(key) ?? this._targetErrors.get(DEFAULT_PLATFORM_KEY);
+    throw new Error(
+      reason ?? `No device is configured for ${key === DEFAULT_PLATFORM_KEY ? 'this session' : key}.`,
+    );
   }
 
   // ─── Test tree discovery ───
@@ -468,8 +568,17 @@ export class HeadlessTestDispatcher implements TestDispatcher {
     projectName?: string,
     testFilter?: string,
   ): Promise<RunFileChildResult> {
-    if (!this._daemonAddress || !this._deviceSerial || !this._serializedConfig) {
-      return Promise.reject(new Error('No device connected. Ensure a device/emulator is available and a daemon is running.'));
+    if (!this._serializedConfig) {
+      return Promise.reject(new Error('No Tapsmith config is loaded, so there is nothing to run against.'));
+    }
+
+    let target: PlatformTarget;
+    let serializedConfig: SerializedConfig;
+    try {
+      target = this._targetForProject(projectName);
+      serializedConfig = this._configForProject(projectName);
+    } catch (err) {
+      return Promise.reject(err);
     }
 
     const scripts = this._scripts!;
@@ -554,13 +663,14 @@ export class HeadlessTestDispatcher implements TestDispatcher {
         rejectOnce(err);
       });
 
-      // Non-null safe: validated at top of _runFileInChild before the fork
+      // One address, not the pool: a multi-platform session runs several
+      // daemons, and the child connects to exactly one.
       const msg: WatchRunMessage = {
         type: 'run',
-        daemonAddress: this._daemonAddress!,
-        deviceSerial: this._deviceSerial!,
+        daemonAddress: target.address,
+        deviceSerial: target.deviceSerial,
         filePath,
-        config: this._serializedConfig!,
+        config: serializedConfig,
         screenshotDir: undefined,
         projectUseOptions,
         projectName,

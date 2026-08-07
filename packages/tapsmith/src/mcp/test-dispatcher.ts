@@ -51,6 +51,13 @@ export interface ProjectInfo {
   dependencies: string[]
 }
 
+/** A platform's device, or why it has none. */
+export interface DeviceTarget {
+  platform?: string
+  device?: string
+  error?: string
+}
+
 export interface SessionInfo {
   platform?: string
   package?: string
@@ -58,6 +65,12 @@ export interface SessionInfo {
   timeout: number
   retries: number
   projects: ProjectInfo[]
+  /**
+   * The device each platform runs on. A multi-platform session has one per
+   * platform, and an entry carries `error` instead of `device` when that
+   * platform could not be provisioned.
+   */
+  deviceTargets?: DeviceTarget[]
   /** Config file backing the session. Absent when none was found. */
   configPath?: string
   /** Why the session has no config file, and what it means for the caller. */

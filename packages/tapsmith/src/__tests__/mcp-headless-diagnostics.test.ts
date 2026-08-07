@@ -6,7 +6,12 @@ import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { registerListTestsTool } from '../mcp/tools/list-tests.js';
 import { needsTsxLoader, resolveTsxBin, resolveChildLoader } from '../child-scripts.js';
-import { fileFailureEntry, resultEntryKey, matchRequestedFiles } from '../mcp/headless-dispatcher.js';
+import {
+  fileFailureEntry,
+  resultEntryKey,
+  matchRequestedFiles,
+  platformKeyForProject,
+} from '../mcp/headless-dispatcher.js';
 import { registerSessionInfoTool } from '../mcp/tools/session-info.js';
 import { loadMcpConfig } from '../mcp/config-loader.js';
 import {
@@ -412,6 +417,98 @@ describe('loadMcpConfig config-file reporting', () => {
     expect(result.warning).toContain('Multiple configs');
     expect(result.warning).toContain('e2e');
     expect(result.warning).toContain('smoke');
+  });
+});
+
+// A multi-platform config keeps its platforms on the projects, not at the top
+// level. The session used to provision one device for the whole session and
+// start its agent from the (absent) root platform, so iOS projects failed with
+// "iOS agent is not configured" however the run was requested.
+describe('platformKeyForProject', () => {
+  const projects = [
+    { name: 'android', effectiveConfig: { platform: 'android' } },
+    { name: 'ios', effectiveConfig: { platform: 'ios' } },
+    { name: 'ios:authenticated', effectiveConfig: { platform: 'ios' } },
+  ];
+
+  it("routes a run to its project's platform when the root config has none", () => {
+    expect(platformKeyForProject(projects, 'ios', undefined)).toBe('ios');
+    expect(platformKeyForProject(projects, 'android', undefined)).toBe('android');
+  });
+
+  it('routes dependent projects to the same platform as their siblings', () => {
+    expect(platformKeyForProject(projects, 'ios:authenticated', undefined)).toBe('ios');
+  });
+
+  it('falls back to the root platform for a single-platform config', () => {
+    expect(platformKeyForProject([], undefined, 'ios')).toBe('ios');
+  });
+
+  it("prefers the project's platform over the root's", () => {
+    expect(platformKeyForProject(projects, 'android', 'ios')).toBe('android');
+  });
+
+  it('falls back to the default key when nothing declares a platform', () => {
+    expect(platformKeyForProject([], undefined, undefined)).toBe('default');
+  });
+
+  it('falls back to the root platform for an unknown project name', () => {
+    expect(platformKeyForProject(projects, 'nope', 'android')).toBe('android');
+  });
+});
+
+describe('tapsmith_session_info device targets', () => {
+  async function callSessionInfo(dispatcher: TestDispatcher): Promise<string> {
+    const { server, tools } = makeToolCapture();
+    registerSessionInfoTool(server, dispatcher);
+    const result = await tools.get('tapsmith_session_info')!({}, extra);
+    return result.content.map((c) => (c.type === 'text' ? c.text : '')).join('\n');
+  }
+
+  it('lists a device per platform for a multi-platform session', async () => {
+    const text = await callSessionInfo(makeDispatcher({
+      getSessionInfo: () => ({
+        timeout: 0,
+        retries: 0,
+        projects: [],
+        deviceTargets: [
+          { platform: 'ios', device: 'SIM-1' },
+          { platform: 'android', device: 'emulator-5554' },
+        ],
+      }),
+    }));
+    expect(text).toContain('Device (ios): SIM-1');
+    expect(text).toContain('Device (android): emulator-5554');
+  });
+
+  it('says which platform has no device, and why', async () => {
+    const text = await callSessionInfo(makeDispatcher({
+      getSessionInfo: () => ({
+        timeout: 0,
+        retries: 0,
+        projects: [],
+        deviceTargets: [
+          { platform: 'ios', device: 'SIM-1' },
+          { platform: 'android', error: 'No android device is available. Start an emulator and try again.' },
+        ],
+      }),
+    }));
+    expect(text).toContain('Device (ios): SIM-1');
+    expect(text).toContain('Device (android): unavailable — No android device is available.');
+  });
+
+  it('keeps the single-device line for a single-platform session', async () => {
+    const text = await callSessionInfo(makeDispatcher({
+      getSessionInfo: () => ({
+        timeout: 0,
+        retries: 0,
+        projects: [],
+        device: 'SIM-1',
+        deviceTargets: [{ platform: 'ios', device: 'SIM-1' }],
+      }),
+    }));
+    expect(text).toContain('Device: SIM-1');
+    expect(text).not.toContain('Device (ios)');
   });
 });
 
