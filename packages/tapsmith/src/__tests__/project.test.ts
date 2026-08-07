@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { resolveProjects, topologicalSort, collectTransitiveDeps, findProjectsForFile, validateProjectNames, deviceSignature, allocateBucketWorkers, bucketizeProjects, type ResolvedProject } from '../project.js';
+import { resolveProjects, topologicalSort, collectTransitiveDeps, findProjectsForFile, validateProjectNames, deviceSignature, devicePoolKey, allocateBucketWorkers, bucketizeProjects, type ResolvedProject } from '../project.js';
 import { effectiveConfigForProject, type TapsmithConfig } from '../config.js';
 
 function makeConfig(overrides: Partial<TapsmithConfig> = {}): TapsmithConfig {
@@ -645,5 +645,49 @@ describe('allocateBucketWorkers()', () => {
     const alloc = allocateBucketWorkers(2, buckets, 3);
     expect(alloc.get('explicit')).toBe(2);
     expect(alloc.get('implicit')).toBe(1);
+  });
+});
+
+// ─── devicePoolKey ───
+//
+// PILOT-291. `deviceSignature` answers "can these share a device session?";
+// `devicePoolKey` answers "do these draw from the same physical device?".
+// Conflating the two put two workers on one emulator applying opposing
+// notification policies to the same package.
+
+describe('devicePoolKey', () => {
+  it('ignores session-shaping fields that do not change which device you get', () => {
+    // The exact case that broke CI: same emulator, opposite policies.
+    const granted = devicePoolKey({ platform: 'android', avd: 'Pixel_6', permissions: { notifications: 'granted' } } as never);
+    const denied = devicePoolKey({ platform: 'android', avd: 'Pixel_6', permissions: { notifications: 'denied' } } as never);
+    expect(granted).toBe(denied);
+    // ...while deviceSignature still separates them, so they keep distinct
+    // sessions rather than being folded into one worker.
+    expect(deviceSignature({ platform: 'android', avd: 'Pixel_6', permissions: { notifications: 'granted' } } as never))
+      .not.toBe(deviceSignature({ platform: 'android', avd: 'Pixel_6', permissions: { notifications: 'denied' } } as never));
+  });
+
+  it('separates distinct AVDs, simulators and explicit serials', () => {
+    expect(devicePoolKey({ platform: 'android', avd: 'Pixel_6' } as never))
+      .not.toBe(devicePoolKey({ platform: 'android', avd: 'Pixel_7' } as never));
+    expect(devicePoolKey({ platform: 'ios', simulator: 'iPhone 17' } as never))
+      .not.toBe(devicePoolKey({ platform: 'ios', simulator: 'iPhone 16' } as never));
+    expect(devicePoolKey({ platform: 'android', device: 'emulator-5554' } as never))
+      .not.toBe(devicePoolKey({ platform: 'android', device: 'emulator-5556' } as never));
+  });
+
+  it('separates platforms', () => {
+    expect(devicePoolKey({ platform: 'android' } as never))
+      .not.toBe(devicePoolKey({ platform: 'ios' } as never));
+  });
+
+  it('ignores provisioning strategy, which shapes how a device is obtained, not which', () => {
+    expect(devicePoolKey({ platform: 'android', avd: 'Pixel_6', launchEmulators: true, deviceStrategy: 'all' } as never))
+      .toBe(devicePoolKey({ platform: 'android', avd: 'Pixel_6', launchEmulators: false } as never));
+  });
+
+  it('defaults to android when platform is unset', () => {
+    expect(devicePoolKey({ avd: 'Pixel_6' } as never))
+      .toBe(devicePoolKey({ platform: 'android', avd: 'Pixel_6' } as never));
   });
 });

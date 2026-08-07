@@ -2,6 +2,7 @@ import { describe, it, expect, vi } from 'vitest';
 import type { ChildProcess } from 'node:child_process';
 import {
   planMultiBucket,
+  planBucketRounds,
   mergeBucketResults,
   sendToWorkerProcess,
   PORTS_PER_BUCKET,
@@ -479,5 +480,80 @@ describe('sendToWorkerProcess()', () => {
     await flushMicrotasks();
     expect(send).toHaveBeenCalledOnce();
     expect(onSendFailure).not.toHaveBeenCalled();
+  });
+});
+
+// ─── planBucketRounds ───
+//
+// PILOT-291. Buckets exist because projects differ in `deviceSignature`,
+// which includes session-shaping fields (package, app, notification policy).
+// Differing there does not give them different hardware — with one AVD they
+// all resolve to the same emulator, and running concurrently let two workers
+// apply opposing permission state to the same package.
+
+describe('planBucketRounds()', () => {
+  const plan = (label: string, config: Partial<TapsmithConfig>) => ({
+    portOffset: 0,
+    bucketOpts: {
+      ...makeOpts([], 1),
+      config: makeConfig(config),
+      workers: 1,
+      bucketLabel: label,
+    },
+  });
+
+  it('keeps buckets on different device pools in one concurrent round', () => {
+    // The common case: an Android suite alongside an iOS suite. Different
+    // hardware, so nothing to serialize.
+    const rounds = planBucketRounds([
+      plan('android', { platform: 'android', avd: 'Pixel_6' }),
+      plan('ios', { platform: 'ios', simulator: 'iPhone 17' }),
+    ]);
+    expect(rounds).toHaveLength(1);
+    expect(rounds[0].map((p) => p.bucketOpts.bucketLabel)).toEqual(['android', 'ios']);
+  });
+
+  it('splits buckets that share one emulator into sequential rounds', () => {
+    const rounds = planBucketRounds([
+      plan('granted', { platform: 'android', avd: 'Pixel_6' }),
+      plan('denied', { platform: 'android', avd: 'Pixel_6' }),
+    ]);
+    expect(rounds).toHaveLength(2);
+    expect(rounds[0].map((p) => p.bucketOpts.bucketLabel)).toEqual(['granted']);
+    expect(rounds[1].map((p) => p.bucketOpts.bucketLabel)).toEqual(['denied']);
+  });
+
+  it('splits buckets that share one simulator into sequential rounds', () => {
+    const rounds = planBucketRounds([
+      plan('granted', { platform: 'ios', simulator: 'iPhone 17' }),
+      plan('denied', { platform: 'ios', simulator: 'iPhone 17' }),
+    ]);
+    expect(rounds).toHaveLength(2);
+  });
+
+  it('treats distinct AVDs as distinct pools', () => {
+    const rounds = planBucketRounds([
+      plan('a', { platform: 'android', avd: 'Pixel_6' }),
+      plan('b', { platform: 'android', avd: 'Pixel_7' }),
+    ]);
+    expect(rounds).toHaveLength(1);
+  });
+
+  it('serializes only within a pool, running pools alongside each other', () => {
+    // 2 Android buckets on one AVD + 1 iOS bucket: two rounds, and the iOS
+    // bucket rides along in round 1 rather than waiting for Android.
+    const rounds = planBucketRounds([
+      plan('android-granted', { platform: 'android', avd: 'Pixel_6' }),
+      plan('android-denied', { platform: 'android', avd: 'Pixel_6' }),
+      plan('ios', { platform: 'ios', simulator: 'iPhone 17' }),
+    ]);
+    expect(rounds).toHaveLength(2);
+    expect(rounds[0].map((p) => p.bucketOpts.bucketLabel).sort())
+      .toEqual(['android-granted', 'ios']);
+    expect(rounds[1].map((p) => p.bucketOpts.bucketLabel)).toEqual(['android-denied']);
+  });
+
+  it('returns no rounds for no plans', () => {
+    expect(planBucketRounds([])).toEqual([]);
   });
 });

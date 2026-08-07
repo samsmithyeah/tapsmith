@@ -73,6 +73,34 @@ export function deviceSignature(config: TapsmithConfig): string {
   ].join('|');
 }
 
+/**
+ * Which pool of physical devices a config draws from.
+ *
+ * `deviceSignature` answers "can these projects share a device *session*?"
+ * and includes session-shaping fields (package, app/apk, notification
+ * policy). Two projects can differ there — and so get separate buckets —
+ * while still resolving to the *same emulator or simulator*, because only
+ * the fields below decide which hardware you actually get.
+ *
+ * That distinction matters: buckets in the same pool must not run
+ * concurrently. Handing two workers the same device lets them install over
+ * each other, `pm clear` each other's app, and apply opposing permission
+ * state to the same package (PILOT-291).
+ *
+ * Deliberately narrower than `deviceSignature`: it omits `deviceStrategy`
+ * and `launchEmulators`, which shape *how* a device is provisioned but not
+ * *which* one. Fewer distinct keys means more serialization, and
+ * serializing when we did not have to only costs time — running
+ * concurrently when we should not have costs correctness.
+ */
+export function devicePoolKey(config: TapsmithConfig): string {
+  const platform = config.platform ?? 'android';
+  if (platform === 'ios') {
+    return ['ios', config.simulator ?? '', config.device ?? ''].join('|');
+  }
+  return ['android', config.avd ?? '', config.device ?? ''].join('|');
+}
+
 // ─── Worker allocation ───
 
 /**
