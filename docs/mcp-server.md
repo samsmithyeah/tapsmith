@@ -191,6 +191,11 @@ Run Tapsmith test files and return structured results. Only one test run can exe
 - Trace file path for further debugging with `tapsmith_read_trace`
 - A screenshot at the moment of failure
 
+A file that dies before any test reports — a failed import, a crashed or
+timed-out worker — is reported as a single failure named
+`<file> — file failed to run`, carrying the underlying error. It appears in
+`tapsmith_list_results` and `tapsmith_suite_status` like any other failure.
+
 **Progress notifications:** when the MCP client supplies a `progressToken` with the request, the tool emits `notifications/progress` every 10 seconds while the run executes, reporting live pass/fail counts. This keeps long suites alive past client-side idle timeouts (for example, Claude Code aborts a tool call after 300 seconds without output or progress), so a full suite can run in a single `tapsmith_run_tests` call instead of being sharded into small batches.
 
 #### `tapsmith_read_trace`
@@ -220,6 +225,11 @@ Returns a hierarchical tree showing:
 - Test files with absolute paths
 - Describe blocks (suites)
 - Individual test names with their full names (for use with `tapsmith_run_tests`)
+
+A file that fails to load (a missing import, a syntax error) has no tests to
+list, so it is reported separately at the end of the tree as a warning with the
+reason. Those files cannot be run until the error is fixed — the tree is only
+complete when no warning is shown.
 
 #### `tapsmith_list_results`
 
