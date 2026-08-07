@@ -7,7 +7,7 @@ import { findDaemonBin } from '../daemon-bin.js';
 import { pickFreePort } from '../port-utils.js';
 import type { TapsmithConfig } from '../config.js';
 import { loadMcpConfig } from './config-loader.js';
-import { uiPortFilePath } from './port-file.js';
+import { uiPortFilePath, mcpDaemonRegistryPath } from './port-file.js';
 
 const DEFAULT_ADDRESS = 'localhost:50051';
 
@@ -154,7 +154,14 @@ async function discover(): Promise<void> {
     candidates.add(conn.address);
   }
 
-  // 5. Default address
+  // 5. Daemons started by other MCP sessions in this project. Without this each
+  // session starts its own daemon on a random port and they pile up, all
+  // driving the same device.
+  for (const address of readDaemonRegistry()) {
+    candidates.add(address);
+  }
+
+  // 6. Default address
   if (candidates.size === 0) {
     candidates.add(DEFAULT_ADDRESS);
   }
@@ -174,6 +181,10 @@ async function discover(): Promise<void> {
   });
   const results = await Promise.all(probes);
   const live = results.filter((r): r is { client: TapsmithGrpcClient; address: string } => r !== null);
+  // Probing is the liveness check, so this is the moment we know which
+  // registered daemons are gone. Drop them rather than re-probing dead ports
+  // on every future session.
+  pruneDaemonRegistry(live.map((l) => l.address));
 
   if (live.length > 0) {
     // Connect to all live daemons in parallel, then batch-update shared state
@@ -201,7 +212,7 @@ async function discover(): Promise<void> {
     return;
   }
 
-  // 5. No live daemons — start our own
+  // 7. No live daemons — start our own
   log('No daemon found, starting one...');
   const platform = config?.platform;
   const port = String(await pickFreePort());
@@ -235,9 +246,11 @@ async function discover(): Promise<void> {
     return;
   }
 
+  const address = `127.0.0.1:${port}`;
+  registerDaemon(address);
   const conn: DaemonConnection = {
     client,
-    address: `127.0.0.1:${port}`,
+    address,
     devices: [],
     daemonProcess,
   };
@@ -292,6 +305,59 @@ function httpGet(url: string, timeoutMs: number): Promise<string> {
     req.on('error', reject);
     req.on('timeout', () => { req.destroy(); reject(new Error('timeout')); });
   });
+}
+
+// ─── Daemon Registry ───
+
+/**
+ * Addresses of daemons other MCP sessions in this project started.
+ *
+ * Best-effort throughout: a missing, unreadable or malformed registry just
+ * means we fall back to starting our own daemon, which is what happened before
+ * the registry existed. Liveness is never trusted from the file — every address
+ * is probed like any other candidate.
+ */
+/** @internal — exported for unit testing. */
+export function readDaemonRegistry(): string[] {
+  try {
+    const parsed: unknown = JSON.parse(fs.readFileSync(mcpDaemonRegistryPath(), 'utf-8'));
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter((a): a is string => typeof a === 'string');
+  } catch {
+    return [];
+  }
+}
+
+function writeDaemonRegistry(addresses: string[]): void {
+  try {
+    const file = mcpDaemonRegistryPath();
+    // Write-then-rename so a concurrent reader never sees a half-written file.
+    const tmp = `${file}.${process.pid}.tmp`;
+    fs.writeFileSync(tmp, JSON.stringify([...new Set(addresses)]), 'utf-8');
+    fs.renameSync(tmp, file);
+  } catch {
+    // The registry is an optimisation; never fail a session over it.
+  }
+}
+
+/** @internal — exported for unit testing. */
+export function registerDaemon(address: string): void {
+  writeDaemonRegistry([...readDaemonRegistry(), address]);
+}
+
+/** @internal — exported for unit testing. */
+export function unregisterDaemon(address: string): void {
+  const remaining = readDaemonRegistry().filter((a) => a !== address);
+  writeDaemonRegistry(remaining);
+}
+
+/** Keep only addresses that just answered a probe. @internal — exported for unit testing. */
+export function pruneDaemonRegistry(liveAddresses: string[]): void {
+  const registered = readDaemonRegistry();
+  if (registered.length === 0) return;
+  const live = new Set(liveAddresses);
+  const surviving = registered.filter((a) => live.has(a));
+  if (surviving.length !== registered.length) writeDaemonRegistry(surviving);
 }
 
 // ─── Device Index ───
@@ -402,7 +468,10 @@ function log(msg: string): void {
 export function closeAllClients(): void {
   for (const conn of _connections) {
     conn.client.close();
-    if (conn.daemonProcess) conn.daemonProcess.kill();
+    if (conn.daemonProcess) {
+      conn.daemonProcess.kill();
+      unregisterDaemon(conn.address);
+    }
   }
   _connections = [];
   _deviceIndex = new Map();

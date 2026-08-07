@@ -23,6 +23,7 @@ import { McpSessionRouter } from '../mcp/http-session-router.js';
 import type { TestDispatcher, TestRunResult, TestResultEntry, TestTreeEntry, SessionInfo } from '../mcp/index.js';
 import type { TapsmithConfig } from '../config.js';
 import { findDaemonBin } from '../daemon-bin.js';
+import { resolveChildLoader } from '../child-scripts.js';
 import { TapsmithGrpcClient } from '../grpc-client.js';
 import type { Device } from '../device.js';
 import type { ResolvedProject } from '../project.js';
@@ -472,14 +473,18 @@ export async function startUIServer(
     ? tsDiscoverScript
     : jsDiscoverScript;
 
-  let tsxBin: string | undefined;
-  if (useTypeScript || resolvedDiscoverScript.endsWith('.ts') || resolvedWorkerScript.endsWith('.ts')) {
-    // import.meta.dirname is packages/tapsmith/{src,dist}/ui-mode — the package root
-    // (where node_modules lives) is two levels up in both cases.
-    const tapsmithPkgDir = path.resolve(import.meta.dirname, '..', '..');
-    const localTsx = path.join(tapsmithPkgDir, 'node_modules', '.bin', 'tsx');
-    tsxBin = fs.existsSync(localTsx) ? localTsx : 'tsx';
-  }
+  // The loader has to follow the *test files*: these children import them, and
+  // a compiled install runs .js scripts against a TypeScript suite. Deciding
+  // from our own scripts alone only works while something upstream (the CLI's
+  // tsx re-exec, via NODE_OPTIONS) happens to have set a loader for us.
+  // import.meta.dirname is packages/tapsmith/{src,dist}/ui-mode — the package
+  // root (where node_modules lives) is two levels up in both cases.
+  const tsxBin = resolveChildLoader(
+    [resolvedRunScript, resolvedDiscoverScript, resolvedWorkerScript],
+    ctx.testFiles,
+    path.resolve(import.meta.dirname, '..', '..'),
+    (message) => console.error(`Warning: ${message}`),
+  );
 
   // ─── Broadcast ───
 

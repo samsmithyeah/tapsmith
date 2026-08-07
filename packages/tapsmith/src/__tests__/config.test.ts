@@ -1,7 +1,68 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
+import * as fs from 'node:fs';
+import * as os from 'node:os';
+import * as path from 'node:path';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+
+// A config file describes the project it sits in. `defineConfig` merges
+// DEFAULT_CONFIG, whose `rootDir` is the *loading* process's cwd — so loading a
+// config from another directory used to keep the caller's cwd as the root and
+// glob test files from there. An MCP server started in a repo root then swept
+// the whole repo (including the SDK's own unit tests) through a config that
+// describes a single subdirectory.
+describe('loadConfig rootDir anchoring', () => {
+  let root: string;
+
+  beforeEach(() => {
+    root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'tapsmith-root-')));
+  });
+
+  afterEach(() => {
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  function writeConfig(dir: string, body: string): string {
+    fs.mkdirSync(dir, { recursive: true });
+    const file = path.join(dir, 'tapsmith.config.mjs');
+    fs.writeFileSync(file, body, 'utf-8');
+    return file;
+  }
+
+  it('anchors rootDir to the config file directory, not the caller', async () => {
+    const projectDir = path.join(root, 'e2e');
+    writeConfig(projectDir, 'export default { platform: "ios" }\n');
+    expect((await loadConfig(projectDir)).rootDir).toBe(projectDir);
+  });
+
+  it('anchors rootDir for an explicitly named config file in another directory', async () => {
+    const projectDir = path.join(root, 'e2e');
+    const file = writeConfig(projectDir, 'export default { platform: "ios" }\n');
+    expect((await loadConfig(root, path.relative(root, file))).rootDir).toBe(projectDir);
+  });
+
+  it('anchors rootDir for a config that went through defineConfig', async () => {
+    const projectDir = path.join(root, 'e2e');
+    // defineConfig stamps rootDir from the loading process's cwd; that must not
+    // be mistaken for the user pinning it.
+    writeConfig(
+      projectDir,
+      'import { defineConfig } from "tapsmith"\nexport default defineConfig({ platform: "ios" })\n',
+    );
+    expect((await loadConfig(projectDir)).rootDir).toBe(projectDir);
+  });
+
+  it('keeps a rootDir the config itself pins, resolved against the config directory', async () => {
+    const projectDir = path.join(root, 'e2e');
+    writeConfig(projectDir, 'export default { rootDir: "../suites" }\n');
+    expect((await loadConfig(projectDir)).rootDir).toBe(path.join(root, 'suites'));
+  });
+
+  it('falls back to the given directory when no config file exists', async () => {
+    expect((await loadConfig(root)).rootDir).toBe(root);
+  });
+});
 import {
   defineConfig,
   resolveDeviceStrategy,

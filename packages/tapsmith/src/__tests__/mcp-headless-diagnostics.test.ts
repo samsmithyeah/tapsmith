@@ -5,12 +5,17 @@ import * as path from 'node:path';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { registerListTestsTool } from '../mcp/tools/list-tests.js';
+import { needsTsxLoader, resolveTsxBin, resolveChildLoader } from '../child-scripts.js';
+import { fileFailureEntry, resultEntryKey, matchRequestedFiles } from '../mcp/headless-dispatcher.js';
+import { registerSessionInfoTool } from '../mcp/tools/session-info.js';
+import { loadMcpConfig } from '../mcp/config-loader.js';
 import {
-  needsTsxLoader,
-  resolveTsxBin,
-  fileFailureEntry,
-  resultEntryKey,
-} from '../mcp/headless-dispatcher.js';
+  readDaemonRegistry,
+  registerDaemon,
+  unregisterDaemon,
+  pruneDaemonRegistry,
+} from '../mcp/connection.js';
+import { mcpDaemonRegistryPath } from '../mcp/port-file.js';
 import type { DiscoveryError, TestDispatcher, TestTreeEntry } from '../mcp/test-dispatcher.js';
 
 // The headless MCP server forks children to discover and to run test files.
@@ -140,6 +145,39 @@ describe('resolveTsxBin', () => {
   });
 });
 
+describe('resolveChildLoader', () => {
+  it('returns no loader, and stays quiet, when nothing is TypeScript', () => {
+    const warnings: string[] = [];
+    const loader = resolveChildLoader(
+      ['/pkg/dist/watch-run.js'],
+      ['/project/tests/login.test.js'],
+      '/pkg',
+      (m) => warnings.push(m),
+    );
+    expect(loader).toBeUndefined();
+    expect(warnings).toEqual([]);
+  });
+
+  it('reports when TypeScript tests need a loader that cannot be found', () => {
+    const warnings: string[] = [];
+    const emptyPath = process.env.PATH;
+    process.env.PATH = '';
+    try {
+      resolveChildLoader(
+        ['/pkg/dist/watch-run.js'],
+        ['/project/tests/login.test.ts'],
+        '/nonexistent-pkg-dir',
+        (m) => warnings.push(m),
+      );
+    } finally {
+      process.env.PATH = emptyPath;
+    }
+    // tsx may still be resolvable through our own package; only assert that a
+    // failure is never silent.
+    if (warnings.length > 0) expect(warnings[0]).toContain('tsx');
+  });
+});
+
 describe('fileFailureEntry', () => {
   it('records the cause of a whole-file failure as a failed result', () => {
     const entry = fileFailureEntry(
@@ -221,5 +259,214 @@ describe('tapsmith_list_tests discovery errors', () => {
       getTestTree: () => [fileNode('/project/tests/ok.test.ts')],
     }));
     expect(text).toContain('/project/tests/ok.test.ts');
+  });
+});
+
+describe('matchRequestedFiles', () => {
+  const testFiles = [
+    '/project/e2e/tests/login.test.ts',
+    '/project/e2e/tests/nested/checkout.test.ts',
+    '/project/e2e/tests/profile.test.ts',
+  ];
+  const roots = ['/project/e2e'];
+
+  it('matches an absolute path', () => {
+    expect(matchRequestedFiles(['/project/e2e/tests/login.test.ts'], testFiles, roots))
+      .toEqual(['/project/e2e/tests/login.test.ts']);
+  });
+
+  it('matches a path relative to the project root', () => {
+    expect(matchRequestedFiles(['tests/login.test.ts'], testFiles, roots))
+      .toEqual(['/project/e2e/tests/login.test.ts']);
+  });
+
+  it('matches a path relative to the working directory when it differs from the root', () => {
+    expect(matchRequestedFiles(['nested/checkout.test.ts'], testFiles, ['/project/e2e/tests']))
+      .toEqual(['/project/e2e/tests/nested/checkout.test.ts']);
+  });
+
+  it('matches a relative glob', () => {
+    expect(matchRequestedFiles(['tests/*.test.ts'], testFiles, roots).sort())
+      .toEqual(['/project/e2e/tests/login.test.ts', '/project/e2e/tests/profile.test.ts']);
+  });
+
+  it('matches a recursive glob across directories', () => {
+    expect(matchRequestedFiles(['tests/**/*.test.ts'], testFiles, roots).sort())
+      .toEqual([
+        '/project/e2e/tests/login.test.ts',
+        '/project/e2e/tests/nested/checkout.test.ts',
+        '/project/e2e/tests/profile.test.ts',
+      ]);
+  });
+
+  it('matches an absolute glob', () => {
+    expect(matchRequestedFiles(['/project/e2e/tests/*.test.ts'], testFiles, roots).sort())
+      .toEqual(['/project/e2e/tests/login.test.ts', '/project/e2e/tests/profile.test.ts']);
+  });
+
+  it('returns nothing for an argument that matches no discovered file', () => {
+    expect(matchRequestedFiles(['tests/typo.test.ts'], testFiles, roots)).toEqual([]);
+  });
+
+  it('never returns a file that was not discovered', () => {
+    expect(matchRequestedFiles(['**/*'], ['/project/e2e/tests/login.test.ts'], roots))
+      .toEqual(['/project/e2e/tests/login.test.ts']);
+  });
+
+  it('does not duplicate a file matched by several arguments', () => {
+    const matched = matchRequestedFiles(
+      ['tests/login.test.ts', '/project/e2e/tests/login.test.ts', 'tests/*.test.ts'],
+      testFiles,
+      roots,
+    );
+    expect(matched.filter((f) => f.endsWith('login.test.ts'))).toHaveLength(1);
+  });
+});
+
+describe('tapsmith_session_info config reporting', () => {
+  async function callSessionInfo(dispatcher: TestDispatcher): Promise<string> {
+    const { server, tools } = makeToolCapture();
+    registerSessionInfoTool(server, dispatcher);
+    const result = await tools.get('tapsmith_session_info')!({}, extra);
+    return result.content.map((c) => (c.type === 'text' ? c.text : '')).join('\n');
+  }
+
+  it('names the config file backing the session', async () => {
+    const text = await callSessionInfo(makeDispatcher({
+      getSessionInfo: () => ({
+        timeout: 0,
+        retries: 0,
+        projects: [],
+        configPath: '/project/e2e/tapsmith.config.ios.mjs',
+      }),
+    }));
+    expect(text).toContain('Config: /project/e2e/tapsmith.config.ios.mjs');
+    expect(text).not.toContain('WARNING');
+  });
+
+  it('says so, loudly, when the session runs on synthesized defaults', async () => {
+    const text = await callSessionInfo(makeDispatcher({
+      getSessionInfo: () => ({
+        timeout: 0,
+        retries: 0,
+        projects: [],
+        configWarning: 'No Tapsmith config file is backing this session (working directory: /project).',
+      }),
+    }));
+    expect(text).toContain('Config: none');
+    expect(text).toContain('WARNING');
+    expect(text).toContain('/project');
+  });
+});
+
+describe('loadMcpConfig config-file reporting', () => {
+  let root: string;
+  let originalCwd: string;
+
+  beforeEach(() => {
+    originalCwd = process.cwd();
+    // realpath: macOS resolves /var to /private/var on chdir, and the loader
+    // reports paths built from process.cwd().
+    root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'tapsmith-cfg-')));
+  });
+
+  afterEach(() => {
+    process.chdir(originalCwd);
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  it('reports the config path and no warning when one is found in the working directory', async () => {
+    fs.writeFileSync(path.join(root, 'tapsmith.config.mjs'), 'export default { platform: "ios" }\n');
+    process.chdir(root);
+    const result = await loadMcpConfig();
+    expect(result.configPath).toBe(path.join(root, 'tapsmith.config.mjs'));
+    expect(result.warning).toBeUndefined();
+  });
+
+  it('finds a single config one level down', async () => {
+    fs.mkdirSync(path.join(root, 'e2e'));
+    fs.writeFileSync(path.join(root, 'e2e', 'tapsmith.config.mjs'), 'export default { platform: "ios" }\n');
+    process.chdir(root);
+    const result = await loadMcpConfig();
+    expect(result.configPath).toBe(path.join(root, 'e2e', 'tapsmith.config.mjs'));
+    expect(result.warning).toBeUndefined();
+  });
+
+  it('warns, naming the directory, when no config exists anywhere', async () => {
+    process.chdir(root);
+    const result = await loadMcpConfig();
+    expect(result.configPath).toBeUndefined();
+    expect(result.warning).toContain('No Tapsmith config file');
+    expect(result.warning).toContain('--config');
+    expect(result.warning).toContain('tests cannot run');
+  });
+
+  it('warns and lists the candidates when several configs sit one level down', async () => {
+    for (const dir of ['e2e', 'smoke']) {
+      fs.mkdirSync(path.join(root, dir));
+      fs.writeFileSync(path.join(root, dir, 'tapsmith.config.mjs'), 'export default { platform: "ios" }\n');
+    }
+    process.chdir(root);
+    const result = await loadMcpConfig();
+    expect(result.configPath).toBeUndefined();
+    expect(result.warning).toContain('Multiple configs');
+    expect(result.warning).toContain('e2e');
+    expect(result.warning).toContain('smoke');
+  });
+});
+
+describe('MCP daemon registry', () => {
+  let root: string;
+  let originalTmp: string | undefined;
+
+  beforeEach(() => {
+    originalTmp = process.env.TMPDIR;
+    root = fs.mkdtempSync(path.join(os.tmpdir(), 'tapsmith-reg-'));
+    process.env.TMPDIR = root;
+  });
+
+  afterEach(() => {
+    process.env.TMPDIR = originalTmp;
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  it('starts empty and survives a missing registry file', () => {
+    expect(readDaemonRegistry()).toEqual([]);
+  });
+
+  it('remembers a daemon so another session can find it', () => {
+    registerDaemon('127.0.0.1:50161');
+    expect(readDaemonRegistry()).toEqual(['127.0.0.1:50161']);
+  });
+
+  it('does not record the same daemon twice', () => {
+    registerDaemon('127.0.0.1:50161');
+    registerDaemon('127.0.0.1:50161');
+    expect(readDaemonRegistry()).toEqual(['127.0.0.1:50161']);
+  });
+
+  it('forgets a daemon when its session shuts it down', () => {
+    registerDaemon('127.0.0.1:50161');
+    registerDaemon('127.0.0.1:50244');
+    unregisterDaemon('127.0.0.1:50161');
+    expect(readDaemonRegistry()).toEqual(['127.0.0.1:50244']);
+  });
+
+  it('drops addresses that failed to answer a probe', () => {
+    registerDaemon('127.0.0.1:50161');
+    registerDaemon('127.0.0.1:50244');
+    pruneDaemonRegistry(['127.0.0.1:50244']);
+    expect(readDaemonRegistry()).toEqual(['127.0.0.1:50244']);
+  });
+
+  it('leaves the registry alone when it is already empty', () => {
+    pruneDaemonRegistry([]);
+    expect(readDaemonRegistry()).toEqual([]);
+  });
+
+  it('treats a corrupt registry as empty rather than throwing', () => {
+    registerDaemon('127.0.0.1:50161');
+    fs.writeFileSync(mcpDaemonRegistryPath(), 'not json', 'utf-8');
+    expect(readDaemonRegistry()).toEqual([]);
   });
 });

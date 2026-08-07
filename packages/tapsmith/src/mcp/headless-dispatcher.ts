@@ -1,8 +1,9 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { fork, type ChildProcess } from 'node:child_process';
-import { createRequire } from 'node:module';
+import { resolveChildLoader } from '../child-scripts.js';
 import { watch as chokidarWatch, type FSWatcher } from 'chokidar';
+import { minimatch } from 'minimatch';
 import { resolveProjects, topologicalSort, type ResolvedProject } from '../project.js';
 import { discoverTestFiles } from '../test-file-discovery.js';
 import {
@@ -57,6 +58,8 @@ export class HeadlessTestDispatcher implements TestDispatcher {
   private _watchQueue: RunQueue;
   private _scripts: ResolvedScripts | null = null;
   private _discoveryErrors = new Map<string, string>();
+  private _configPath: string | null = null;
+  private _configWarning: string | null = null;
 
   constructor(options?: { configFile?: string }) {
     this._configFile = options?.configFile;
@@ -85,7 +88,7 @@ export class HeadlessTestDispatcher implements TestDispatcher {
     }
 
     const { testFilter, project } = options ?? {};
-    const validFiles = files.filter((f) => this._testFiles.includes(f));
+    const validFiles = this.resolveRequestedFiles(files);
     if (validFiles.length === 0) {
       return { status: 'failed', passed: 0, failed: 0, skipped: 0, duration: 0 };
     }
@@ -269,6 +272,18 @@ export class HeadlessTestDispatcher implements TestDispatcher {
     return this._testTree;
   }
 
+  /**
+   * Map the caller's `files` onto discovered test files.
+   *
+   * Callers reasonably pass a path relative to the project, or a glob — both
+   * used to match nothing and surface as "no tests executed", which reads
+   * exactly like a suite that ran and found nothing to do.
+   */
+  resolveRequestedFiles(files: string[]): string[] {
+    const roots = [this._config?.rootDir, process.cwd()].filter((r): r is string => Boolean(r));
+    return matchRequestedFiles(files, this._testFiles, roots);
+  }
+
   getDiscoveryErrors(): DiscoveryError[] {
     return [...this._discoveryErrors].map(([filePath, error]) => ({ filePath, error }));
   }
@@ -290,6 +305,8 @@ export class HeadlessTestDispatcher implements TestDispatcher {
       timeout: this._config?.timeout ?? 30_000,
       retries: this._config?.retries ?? 0,
       projects,
+      configPath: this._configPath ?? undefined,
+      configWarning: this._configWarning ?? undefined,
     };
   }
 
@@ -603,11 +620,21 @@ export class HeadlessTestDispatcher implements TestDispatcher {
   private async _loadConfigWithFallback(): Promise<import('../config.js').TapsmithConfig | null> {
     return loadMcpConfig(this._configFile)
       .then((result) => {
+        this._configPath = result.configPath ?? null;
+        // Kept for every tool that reports session state: a synthesized config
+        // looks exactly like a real one in the tool output, so the session must
+        // carry the reason it has none rather than logging it once to stderr
+        // that no MCP client ever reads.
+        this._configWarning = result.warning ?? null;
         if (result.configPath) log(`Using config: ${path.relative(process.cwd(), result.configPath) || result.configPath}`);
+        if (result.warning) log(`Warning: ${result.warning}`);
         return result.config;
       })
       .catch((err) => {
-        log(`Warning: failed to load config: ${err instanceof Error ? err.message : err}`);
+        const message = err instanceof Error ? err.message : String(err);
+        this._configPath = null;
+        this._configWarning = `Failed to load the Tapsmith config: ${message}`;
+        log(`Warning: failed to load config: ${message}`);
         return null;
       });
   }
@@ -669,6 +696,56 @@ export class HeadlessTestDispatcher implements TestDispatcher {
  * of the key — otherwise same-named tests in different files collide and earlier
  * files' results are silently overwritten in a multi-file run.
  */
+/**
+ * Match caller-supplied file arguments against the discovered test files.
+ *
+ * Accepts an absolute path, a path relative to any of `roots`, or a glob
+ * (matched against the absolute path and against the path relative to each
+ * root). Returns only files that exist in `testFiles`, so an argument that
+ * matches nothing is distinguishable from one that matches an empty file.
+ *
+ * @internal — exported for unit testing.
+ */
+export function matchRequestedFiles(
+  requested: string[],
+  testFiles: string[],
+  roots: string[],
+): string[] {
+  const uniqueRoots = [...new Set(roots)];
+  const matched = new Set<string>();
+
+  for (const request of requested) {
+    if (testFiles.includes(request)) {
+      matched.add(request);
+      continue;
+    }
+
+    const relativeMatch = uniqueRoots
+      .map((root) => path.resolve(root, request))
+      .find((resolved) => testFiles.includes(resolved));
+    if (relativeMatch) {
+      matched.add(relativeMatch);
+      continue;
+    }
+
+    for (const candidate of testFiles) {
+      if (minimatch(candidate, request)) {
+        matched.add(candidate);
+        continue;
+      }
+      for (const root of uniqueRoots) {
+        const relative = path.relative(root, candidate);
+        if (!relative.startsWith('..') && minimatch(relative, request)) {
+          matched.add(candidate);
+          break;
+        }
+      }
+    }
+  }
+
+  return [...matched];
+}
+
 /**
  * A whole-file failure as a result entry, so it reaches every consumer that
  * reads results rather than living only in the server's stderr.
@@ -774,80 +851,14 @@ export function resolveScripts(testFiles: string[] = []): ResolvedScripts {
     ? tsDiscover
     : jsDiscover;
 
-  let tsxBin: string | undefined;
-  if (needsTsxLoader([watchRunScript, discoverScript], testFiles)) {
-    tsxBin = resolveTsxBin(path.resolve(baseDir, '..'));
-    if (!tsxBin) {
-      log(
-        'Warning: TypeScript test files were found but the tsx loader could not be located. '
-        + 'Test discovery and runs will fail for any file importing a sibling module '
-        + '(e.g. `import { test } from "./fixtures.js"`). Install tsx: npm install -D tsx',
-      );
-    }
-  }
+  const tsxBin = resolveChildLoader(
+    [watchRunScript, discoverScript],
+    testFiles,
+    path.resolve(baseDir, '..'),
+    (message) => log(`Warning: ${message}`),
+  );
 
   return { watchRunScript, discoverScript, tsxBin, baseDir };
-}
-
-/**
- * Whether the forked children need the tsx loader: either they are TypeScript
- * themselves, or the test files they import are.
- *
- * @internal — exported for unit testing.
- */
-export function needsTsxLoader(scriptPaths: string[], testFiles: string[]): boolean {
-  const isTypeScript = (f: string): boolean => f.endsWith('.ts') || f.endsWith('.tsx');
-  return scriptPaths.some(isTypeScript) || testFiles.some(isTypeScript);
-}
-
-/**
- * Find the tsx executable. npm may keep it under our own package, hoist it to
- * the consumer's `node_modules/.bin`, or leave it reachable only through the
- * package itself — check every shape rather than assuming one, since guessing
- * wrong forks bare node and breaks TypeScript imports silently.
- *
- * @internal — exported for unit testing.
- */
-export function resolveTsxBin(tapsmithPkgDir: string): string | undefined {
-  const candidates = [
-    // Our own dependency tree (source checkout, or an un-hoisted install).
-    path.join(tapsmithPkgDir, 'node_modules', '.bin', 'tsx'),
-    // Hoisted next to us: <node_modules>/.bin/tsx when we are <node_modules>/tapsmith.
-    path.resolve(tapsmithPkgDir, '..', '.bin', 'tsx'),
-  ];
-  for (const candidate of candidates) {
-    if (fs.existsSync(candidate)) return candidate;
-  }
-
-  // The package may be resolvable even when no .bin shim is reachable from here.
-  try {
-    const require = createRequire(import.meta.url);
-    const pkgPath = require.resolve('tsx/package.json');
-    const bin = JSON.parse(fs.readFileSync(pkgPath, 'utf-8')).bin;
-    const relative = typeof bin === 'string' ? bin : bin?.tsx;
-    if (relative) {
-      const resolved = path.resolve(path.dirname(pkgPath), relative);
-      if (fs.existsSync(resolved)) return resolved;
-    }
-  } catch {
-    // Not resolvable from here — fall through to PATH.
-  }
-
-  return findExecutableOnPath('tsx');
-}
-
-function findExecutableOnPath(name: string): string | undefined {
-  for (const dir of (process.env.PATH ?? '').split(path.delimiter)) {
-    if (!dir) continue;
-    const candidate = path.join(dir, name);
-    try {
-      fs.accessSync(candidate, fs.constants.X_OK);
-      return candidate;
-    } catch {
-      // Not in this directory.
-    }
-  }
-  return undefined;
 }
 
 function discoverFile(filePath: string, scripts: ResolvedScripts): Promise<DiscoverFileResult> {

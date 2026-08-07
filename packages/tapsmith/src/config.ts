@@ -364,6 +364,7 @@ function omitUndefined<T extends object>(raw: T): T {
 export function defineConfig(overrides: Partial<TapsmithConfig> = {}): TapsmithConfig {
   const clean = omitUndefined(overrides);
   const merged = applyConfigDefaults({ ...DEFAULT_CONFIG, ...clean }, clean);
+  withExplicitRootDir(merged, clean.rootDir !== undefined);
   return withExplicitWorkers(merged, clean.workers !== undefined);
 }
 
@@ -411,6 +412,18 @@ export function resolveDeviceStrategy(
  */
 export const EXPLICIT_WORKERS = Symbol.for('tapsmith.explicitWorkers');
 
+/** Set when a config file itself pinned `rootDir`, as opposed to inheriting the default. */
+export const EXPLICIT_ROOT_DIR = Symbol.for('tapsmith.explicitRootDir');
+
+function withExplicitRootDir(config: TapsmithConfig, explicit: boolean): void {
+  Object.defineProperty(config, EXPLICIT_ROOT_DIR, {
+    value: explicit,
+    enumerable: false,
+    writable: true,
+    configurable: true,
+  });
+}
+
 function withExplicitWorkers(config: TapsmithConfig, explicit: boolean): TapsmithConfig {
   Object.defineProperty(config, EXPLICIT_WORKERS, {
     value: explicit,
@@ -448,6 +461,34 @@ function rawHasExplicitWorkers(raw: Partial<TapsmithConfig>): boolean {
   return raw.workers !== undefined;
 }
 
+/**
+ * Whether the user actually wrote `rootDir` in their config.
+ *
+ * `defineConfig` merges DEFAULT_CONFIG, which fills `rootDir` with the
+ * *loading* process's cwd — so by the time `loadConfig` sees the object, a
+ * config that never mentioned rootDir is indistinguishable from one that
+ * pinned it, and `raw.rootDir ?? root` keeps cwd. Loading a config from
+ * another directory then globs test files relative to wherever the caller
+ * happened to be standing: an MCP server started in a repo root swept the
+ * whole repo (including packages' own unit tests) using a config that lives
+ * in, and describes, a single subdirectory.
+ *
+ * Same subtlety as EXPLICIT_WORKERS: check for the symbol's *presence*, since
+ * `defineConfig` stamps it false while still populating `rootDir` from the
+ * defaults. Only fall back to "rootDir is set" for raw object literals that
+ * never went through `defineConfig`.
+ */
+function rawHasExplicitRootDir(raw: Partial<TapsmithConfig>): boolean {
+  const symbolPresent = Object.getOwnPropertySymbols(raw).includes(EXPLICIT_ROOT_DIR);
+  if (symbolPresent) return (raw as unknown as Record<symbol, boolean>)[EXPLICIT_ROOT_DIR] === true;
+  return raw.rootDir !== undefined;
+}
+
+/** Resolve the root a loaded config's relative paths are anchored to. */
+function resolveRootDir(raw: Partial<TapsmithConfig>, configDir: string): string {
+  return rawHasExplicitRootDir(raw) && raw.rootDir ? path.resolve(configDir, raw.rootDir) : configDir;
+}
+
 export async function loadConfig(dir?: string, configFile?: string): Promise<TapsmithConfig> {
   const root = dir ?? process.cwd();
 
@@ -463,7 +504,7 @@ export async function loadConfig(dir?: string, configFile?: string): Promise<Tap
     const original: Partial<TapsmithConfig> = mod.default ?? mod;
     const raw = omitUndefined(original);
     const merged = applyConfigDefaults(
-      { ...DEFAULT_CONFIG, ...raw, rootDir: raw.rootDir ?? root },
+      { ...DEFAULT_CONFIG, ...raw, rootDir: resolveRootDir(original, path.dirname(configPath)) },
       raw,
     );
     return withExplicitWorkers(merged, rawHasExplicitWorkers(original));
@@ -480,7 +521,7 @@ export async function loadConfig(dir?: string, configFile?: string): Promise<Tap
         const original: Partial<TapsmithConfig> = mod.default ?? mod;
         const raw = omitUndefined(original);
         const merged = applyConfigDefaults(
-          { ...DEFAULT_CONFIG, ...raw, rootDir: raw.rootDir ?? root },
+          { ...DEFAULT_CONFIG, ...raw, rootDir: resolveRootDir(original, root) },
           raw,
         );
         return withExplicitWorkers(merged, rawHasExplicitWorkers(original));

@@ -58,6 +58,10 @@ export interface SessionInfo {
   timeout: number
   retries: number
   projects: ProjectInfo[]
+  /** Config file backing the session. Absent when none was found. */
+  configPath?: string
+  /** Why the session has no config file, and what it means for the caller. */
+  configWarning?: string
 }
 
 export interface TestDispatcher {
@@ -81,6 +85,12 @@ export interface TestDispatcher {
    * tree, so a caller that only reads the tree sees a silently short list.
    */
   getDiscoveryErrors?(): DiscoveryError[]
+  /**
+   * The discovered test files a caller's `files` argument maps onto —
+   * absolute paths, project-relative paths and globs alike. Empty means
+   * nothing matched, which is a different answer from "ran and found nothing".
+   */
+  resolveRequestedFiles?(files: string[]): string[]
   getSessionInfo(): SessionInfo
   toggleWatch(filePath: string, options?: { testFilter?: string; project?: string }): { enabled: boolean }
 }

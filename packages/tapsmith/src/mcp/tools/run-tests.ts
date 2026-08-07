@@ -132,9 +132,16 @@ export function registerRunTestsTool(server: McpServer, dispatcher?: TestDispatc
           const lines: string[] = [
             result.failed > 0
               ? `Tests failed: ${result.passed} passed, ${result.failed} failed, ${result.skipped} skipped (${result.duration}ms)`
-              : `Test run failed — no tests executed (${result.passed} passed, ${result.skipped} skipped, ${result.duration}ms). Check that the requested file path(s) exist and were discovered (use tapsmith_list_tests).`,
+              : buildNoTestsExecutedMessage(dispatcher, files, result.passed, result.skipped, result.duration),
           ];
           appendFailureDetails(lines);
+          // A session with no config has no app to launch, so every run here
+          // fails for a reason that has nothing to do with the tests.
+          const configWarning = dispatcher.getSessionInfo().configWarning;
+          if (configWarning) {
+            lines.push('');
+            lines.push(`NOTE: ${configWarning}`);
+          }
           content.push({ type: 'text' as const, text: lines.join('\n') });
           pushScreenshots();
           return { content, isError: true };
@@ -234,6 +241,34 @@ function flattenTestNodes(nodes: TestTreeEntry[], out: TestTreeEntry[] = []): Te
  * distinguishes an unknown/empty file, a typo'd filter (lists candidates), and
  * a filter that matched only `.skip()`'d tests.
  */
+/**
+ * Explain a run that executed nothing. "No tests executed" alone is ambiguous:
+ * it reads the same whether the paths matched nothing or matched files with no
+ * tests. Name the arguments that matched nothing so the caller can fix them.
+ */
+function buildNoTestsExecutedMessage(
+  dispatcher: TestDispatcher,
+  files: string[],
+  passed: number,
+  skipped: number,
+  duration: number,
+): string {
+  const summary = `Test run failed — no tests executed (${passed} passed, ${skipped} skipped, ${duration}ms).`;
+  const resolve = dispatcher.resolveRequestedFiles;
+  if (!resolve) {
+    return `${summary} Check that the requested file path(s) exist and were discovered (use tapsmith_list_tests).`;
+  }
+
+  const unmatched = files.filter((f) => resolve.call(dispatcher, [f]).length === 0);
+  if (unmatched.length === 0) {
+    return `${summary} The file(s) were found but contained no runnable tests — use tapsmith_list_tests to see what they hold.`;
+  }
+  return `${summary} These argument(s) matched no discovered test file:\n`
+    + unmatched.map((f) => `  - ${f}`).join('\n')
+    + '\n\nPaths may be absolute, relative to the project root, or globs. '
+    + 'Use tapsmith_list_tests for the exact paths — and note that a file which failed to load is reported there as a warning rather than listed.';
+}
+
 function buildZeroMatchMessage(dispatcher: TestDispatcher, files: string[], testFilter: string): string {
   const inFiles = flattenTestNodes(dispatcher.getTestTree()).filter((t) => files.includes(t.filePath));
   if (inFiles.length === 0) {
