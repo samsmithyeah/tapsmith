@@ -2770,15 +2770,29 @@ impl proto::tapsmith_service_server::TapsmithService for TapsmithServiceImpl {
             return Ok(Self::success_action_response(request_id));
         }
 
-        // Reuse was refused. A still-running agent from the mismatched config
-        // must not survive via the ping-based fast path inside
-        // agent_launch::start_agent — it was launched with a different
-        // environment (notably TAPSMITH_NOTIFICATION_PERMISSION) and would
-        // silently serve the new session with the old policy. Force a fresh
-        // launch when a previous agent config was recorded; with no record
-        // (daemon restart), the ping fast path itself verifies the running
-        // agent's self-reported policy before reusing it.
-        let force_fresh_agent = self.started_agent_config.read().await.is_some();
+        // Reuse was refused — but *why* decides whether the ping-based fast
+        // path inside agent_launch::start_agent may still reuse the running
+        // agent.
+        //
+        // A startup-config mismatch means the live agent was launched with a
+        // different environment (notably TAPSMITH_NOTIFICATION_PERMISSION),
+        // so it must not survive the fast path: force a fresh launch.
+        //
+        // `can_reuse_started_agent` also refuses when the config matched but
+        // the connection did not — a cleared stream cache, or a single
+        // transient ping timeout against a live, healthy runner. The agent's
+        // environment is correct in those cases, so the fast path is welcome
+        // to reuse it. Forcing a relaunch there would cost a full 30-60s
+        // XCUITest boot and discard warm app state on *every* iOS run,
+        // including for users who never set permissions.notifications.
+        //
+        // With no record at all (daemon restart) the fast path verifies the
+        // running agent's self-reported policy before reusing it, so there is
+        // nothing to force.
+        let force_fresh_agent = match self.started_agent_config.read().await.as_ref() {
+            Some(started) => started != &desired_agent_config,
+            None => false,
+        };
 
         *self.started_agent_config.write().await = None;
 

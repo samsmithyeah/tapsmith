@@ -28,7 +28,7 @@ import { appendEventsToTrace, packageTrace, readTraceActionCount } from './trace
 import { TraceCollector, screenshotFileName, setActiveTraceCollector, withActiveTraceCollector } from './trace/trace-collector.js';
 import type { AnyTraceEvent } from './trace/types.js';
 import { getSimulatorScreenScale } from './ios-simulator.js';
-import { applyAndroidNotificationPermission } from './permission-setup.js';
+import { reapplyAndroidNotificationPermissionAfterClear } from './permission-setup.js';
 import type { TraceDeviceInfo } from './trace/types.js';
 import { TestAbortedError, isAbortError } from './abort.js';
 import { onActionProgress } from './action-progress.js';
@@ -814,7 +814,7 @@ async function runSuiteContext(
       // On Android, `pm clear` also resets runtime permission grants and
       // user-set flags — re-apply the configured notification permission
       // (no-op on iOS or when permissions is unset).
-      await applyAndroidNotificationPermission(opts.device, opts.config, {
+      await reapplyAndroidNotificationPermissionAfterClear(opts.device, opts.config, {
         info: () => {},
         warn: (m) => process.stderr.write(`[tapsmith] ${m}\n`),
       });

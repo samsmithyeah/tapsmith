@@ -241,14 +241,31 @@ export function getAppInstallState(
   try {
     execFileSync('xcrun', ['simctl', 'get_app_container', udid, bundleId, 'app'], {
       timeout: 10_000,
-      stdio: 'ignore',
+      stdio: ['ignore', 'ignore', 'pipe'],
     });
     return 'installed';
   } catch (err) {
-    // A clean non-zero exit means simctl ran and reported the app absent; a
-    // killed process (timeout) or spawn failure proves nothing either way.
-    const status = (err as { status?: unknown }).status;
-    return typeof status === 'number' ? 'not-installed' : 'unknown';
+    // A non-zero exit is NOT enough to conclude the app is absent — simctl
+    // uses it for device-level failures too, and reading those as "absent"
+    // would report a failed uninstall as a successful one. Measured against
+    // Xcode 26:
+    //
+    //   app absent        exit 2    "(domain=NSPOSIXErrorDomain, code=2)"
+    //                               "No such file or directory"
+    //   device shut down  exit 149  "(domain=com.apple.CoreSimulator.SimError,
+    //                               code=405) Unable to lookup in current
+    //                               state: Shutdown"
+    //   unknown udid      exit 148  "Invalid device: <udid>"
+    //
+    // Only the first answers the question, and note the second is an
+    // ordinary shut-down simulator, not just a wedged one. Everything else —
+    // including a timeout or spawn failure, which carry no status at all —
+    // is 'unknown', which callers treat as "could not verify" and fail
+    // loudly on rather than proceeding against unknown state.
+    const stderr = String((err as { stderr?: unknown }).stderr ?? '');
+    const appAbsent = stderr.includes('NSPOSIXErrorDomain, code=2')
+      || stderr.includes('No such file or directory');
+    return appAbsent ? 'not-installed' : 'unknown';
   }
 }
 

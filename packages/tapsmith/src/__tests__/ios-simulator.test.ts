@@ -45,6 +45,7 @@ import {
   unrecordSimulators,
   provisionSimulators,
   getSimulatorScreenScale,
+  getAppInstallState,
 } from '../ios-simulator.js';
 import type { SimulatorInfo } from '../ios-simulator.js';
 
@@ -733,5 +734,56 @@ describe('getSimulatorScreenScale', () => {
   it('returns 3 for unknown UDIDs', () => {
     mockListSimulators([]);
     expect(getSimulatorScreenScale('UNKNOWN')).toBe(3);
+  });
+});
+
+describe('getAppInstallState', () => {
+  beforeEach(() => { vi.clearAllMocks(); });
+
+  /** Build the error execFileSync throws for a non-zero simctl exit. */
+  function simctlFailure(status: number, stderr: string): Error {
+    return Object.assign(new Error('Command failed'), { status, stderr });
+  }
+
+  it('reports installed when simctl resolves the container', () => {
+    mockedExecFileSync.mockReturnValue('/path/to/App.app');
+    expect(getAppInstallState('UDID', 'com.example.app')).toBe('installed');
+  });
+
+  it('reports not-installed only for the app-absent error', () => {
+    // Real stderr from `simctl get_app_container` on a booted device for a
+    // bundle id that is not installed (Xcode 26).
+    mockedExecFileSync.mockImplementation(() => {
+      throw simctlFailure(2, 'An error was encountered processing the command '
+        + '(domain=NSPOSIXErrorDomain, code=2):\nThe operation couldn’t be completed. '
+        + 'No such file or directory\nNo such file or directory\n');
+    });
+    expect(getAppInstallState('UDID', 'com.example.app')).toBe('not-installed');
+  });
+
+  it('reports unknown for a shut-down simulator rather than claiming the app is absent', () => {
+    // The regression this guards: a shut-down (not even wedged) simulator
+    // exits non-zero, and reading that as 'not-installed' told the uninstall
+    // verification the reset had worked when it had not.
+    mockedExecFileSync.mockImplementation(() => {
+      throw simctlFailure(149, 'An error was encountered processing the command '
+        + '(domain=com.apple.CoreSimulator.SimError, code=405):\n'
+        + 'Unable to lookup in current state: Shutdown\n');
+    });
+    expect(getAppInstallState('UDID', 'com.example.app')).toBe('unknown');
+  });
+
+  it('reports unknown for an invalid device id', () => {
+    mockedExecFileSync.mockImplementation(() => {
+      throw simctlFailure(148, 'Invalid device: 00000000-0000-0000-0000-000000000000\n');
+    });
+    expect(getAppInstallState('UDID', 'com.example.app')).toBe('unknown');
+  });
+
+  it('reports unknown when the probe itself never ran (timeout / spawn failure)', () => {
+    mockedExecFileSync.mockImplementation(() => {
+      throw Object.assign(new Error('spawnSync ETIMEDOUT'), { errno: -60 });
+    });
+    expect(getAppInstallState('UDID', 'com.example.app')).toBe('unknown');
   });
 });

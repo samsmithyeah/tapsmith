@@ -5,6 +5,7 @@ import {
   PHYSICAL_IOS_WARNING,
   applyAndroidNotificationPermission,
   applySimulatorNotificationPermissionSetup,
+  reapplyAndroidNotificationPermissionAfterClear,
   type PermissionSetupLog,
 } from '../permission-setup.js';
 import {
@@ -159,5 +160,50 @@ describe('applyAndroidNotificationPermission', () => {
     );
     expect(setNotificationPermission).not.toHaveBeenCalled();
     expect(log.warns).toEqual([]);
+  });
+});
+
+describe('reapplyAndroidNotificationPermissionAfterClear', () => {
+  let log: ReturnType<typeof collectingLog>;
+  beforeEach(() => { log = collectingLog(); });
+
+  const config = { platform: 'android' as const, package: 'com.example.app', permissions: { notifications: 'granted' as const } };
+
+  it('applies once when the device cooperates', async () => {
+    const setNotificationPermission = vi.fn(async () => {});
+    await reapplyAndroidNotificationPermissionAfterClear({ setNotificationPermission }, config, log);
+    expect(setNotificationPermission).toHaveBeenCalledTimes(1);
+    expect(setNotificationPermission).toHaveBeenCalledWith('com.example.app', 'granted');
+    expect(log.warns).toEqual([]);
+  });
+
+  it('absorbs a single transient failure by retrying', async () => {
+    // `pm` can transiently fail while re-indexing right after `pm clear`;
+    // aborting the whole suite for that would be a worse trade than a retry.
+    const setNotificationPermission = vi.fn()
+      .mockRejectedValueOnce(new Error('Failure calling service package'))
+      .mockResolvedValueOnce(undefined);
+    await reapplyAndroidNotificationPermissionAfterClear({ setNotificationPermission }, config, log);
+    expect(setNotificationPermission).toHaveBeenCalledTimes(2);
+    expect(log.warns.join('\n')).toMatch(/retrying once/);
+  });
+
+  it('reports a persistent failure rather than running on in the wrong state', async () => {
+    const setNotificationPermission = vi.fn(async () => { throw new Error('Unknown package: com.example.app'); });
+    await expect(
+      reapplyAndroidNotificationPermissionAfterClear({ setNotificationPermission }, config, log),
+    ).rejects.toThrow(/permissions\.notifications: could not restore 'granted' after clearing app data/);
+    expect(setNotificationPermission).toHaveBeenCalledTimes(2);
+  });
+
+  it('does nothing on iOS or when permissions is unset', async () => {
+    const setNotificationPermission = vi.fn(async () => {});
+    await reapplyAndroidNotificationPermissionAfterClear(
+      { setNotificationPermission }, { ...config, platform: 'ios' }, log,
+    );
+    await reapplyAndroidNotificationPermissionAfterClear(
+      { setNotificationPermission }, { platform: 'android', package: 'com.example.app' }, log,
+    );
+    expect(setNotificationPermission).not.toHaveBeenCalled();
   });
 });

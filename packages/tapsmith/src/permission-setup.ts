@@ -146,3 +146,53 @@ export async function applyAndroidNotificationPermission(
   await device.setNotificationPermission(config.package, target);
   log.info(`notification permission set to '${target}' for ${config.package}`);
 }
+
+/** How long to wait before the single re-apply retry (package-manager settle). */
+const REAPPLY_RETRY_DELAY_MS = 500;
+
+/**
+ * Re-apply the configured notification permission after `clearAppData`.
+ *
+ * `pm clear` resets runtime permission grants *and* user-set flags, so every
+ * app-data reset drops what session setup established. This runs mid-suite,
+ * against a device that has just been put through a package-manager reset —
+ * where `pm` can transiently fail ("Failure calling service package") while
+ * it re-indexes. Aborting the whole run on that would be a worse trade than
+ * one retry.
+ *
+ * A second failure does propagate: the remaining tests would otherwise run
+ * in the opposite notification state to the configured one, and failing
+ * loudly beats failing mysteriously several tests later.
+ *
+ * Both post-clear call sites use this rather than calling
+ * `applyAndroidNotificationPermission` directly, so the retry-and-report
+ * semantics can't drift between them.
+ */
+export async function reapplyAndroidNotificationPermissionAfterClear(
+  device: Pick<Device, 'setNotificationPermission'>,
+  config: PermissionSetupConfig,
+  log: PermissionSetupLog,
+): Promise<void> {
+  if (config.platform === 'ios' || !config.permissions?.notifications) return;
+  try {
+    await applyAndroidNotificationPermission(device, config, log);
+    return;
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    log.warn(
+      `could not re-apply the notification permission after the app-data reset (${msg}); `
+      + 'retrying once',
+    );
+  }
+  await new Promise((resolve) => setTimeout(resolve, REAPPLY_RETRY_DELAY_MS));
+  try {
+    await applyAndroidNotificationPermission(device, config, log);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    throw new Error(
+      `permissions.notifications: could not restore '${config.permissions.notifications}' after `
+      + `clearing app data${config.package ? ` for ${config.package}` : ''}, so the remaining `
+      + `tests would run in the wrong notification state. Cause: ${msg}`,
+    );
+  }
+}

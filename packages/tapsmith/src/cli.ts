@@ -664,6 +664,19 @@ async function setupSequentialDevice(
 
   if (cfg.platform === 'ios') {
     progress?.complete('primary-device', `${cfg.device} selected`);
+    if (cfg.device) {
+      // Reset the recorded notification state before any install decision:
+      // the reset works by uninstalling, so it has to precede the "already
+      // installed?" check that decides whether to install at all.
+      //
+      // Deliberately outside the app-install try/catch below. Its failures
+      // are about the simulator's permission record, not the bundle, and
+      // that catch rewrites everything as "Failed to install iOS app" —
+      // sending operators after a codesign or bundle problem that isn't
+      // there. The helper owns the physical-device guard and no-ops when
+      // permissions.notifications is unset, so it is safe on every path.
+      await applySimulatorNotificationPermissionSetup(cfg.device, cfg, permissionSetupLog);
+    }
     if (cfg.app && cfg.device) {
       progress?.start('app-install', `checking ${path.basename(cfg.app)}`);
       try {
@@ -690,7 +703,6 @@ async function setupSequentialDevice(
           }
         } else {
           const { installAppAsync, isAppInstalled, installedAppMatches } = await import('./ios-simulator.js');
-          await applySimulatorNotificationPermissionSetup(cfg.device, cfg, permissionSetupLog);
           const alreadyInstalled = !deviceJustLaunched
             && cfg.package
             && isAppInstalled(cfg.device, cfg.package);
@@ -721,12 +733,6 @@ async function setupSequentialDevice(
       }
     } else {
       progress?.skip('app-install', 'no iOS app configured');
-      if (cfg.device) {
-        // No app to (re)install, but a configured permission that conflicts
-        // with the recorded state must still be surfaced (the helper warns;
-        // it also owns the physical-device guard).
-        await applySimulatorNotificationPermissionSetup(cfg.device, cfg, permissionSetupLog);
-      }
     }
     if (cfg.package && cfg.device && !pendingSimulatorInstall) {
       // For simulators we fire a best-effort simctl launch so the app is in

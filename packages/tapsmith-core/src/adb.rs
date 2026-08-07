@@ -57,11 +57,29 @@ async fn run_adb(serial: Option<&str>, args: &[&str], timeout: Duration) -> Resu
         .context("Failed to execute adb")?;
 
     if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        bail!("adb command failed (exit {}): {stderr}", output.status);
+        let detail = adb_failure_detail(&output.stdout, &output.stderr);
+        bail!("adb command failed (exit {}): {detail}", output.status);
     }
 
     Ok(output.stdout)
+}
+
+/// Pick the diagnostic text for a failed adb command.
+///
+/// `adb shell` forwards the remote command's exit status but not its stream
+/// separation. Android's shell tools built on `BasicShellCommandHandler` —
+/// `pm`, `cmd`, `appops` — print their diagnostics ("Unknown command:
+/// set-permission-flags") to *stdout* and exit non-zero, so an stderr-only
+/// message is empty for exactly the failures callers most need to classify
+/// (see `is_benign_pm_notification_error` in grpc_server). stdout is used
+/// only when stderr is empty, so every message that already carried a
+/// diagnostic keeps its existing text.
+fn adb_failure_detail(stdout: &[u8], stderr: &[u8]) -> String {
+    let stderr = String::from_utf8_lossy(stderr);
+    if !stderr.trim().is_empty() {
+        return stderr.trim_end().to_string();
+    }
+    String::from_utf8_lossy(stdout).trim().to_string()
 }
 
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(30);
@@ -1155,6 +1173,44 @@ pub async fn cleanup_iptables_redirect(serial: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ─── Failure detail selection ───
+
+    #[test]
+    fn adb_failure_detail_prefers_stderr() {
+        assert_eq!(
+            adb_failure_detail(b"", b"error: device offline\n"),
+            "error: device offline"
+        );
+        // stdout is ignored whenever stderr carries a diagnostic, so existing
+        // messages (and the matchers built on them) are unchanged.
+        assert_eq!(
+            adb_failure_detail(b"some stdout noise\n", b"adb: device offline\n"),
+            "adb: device offline"
+        );
+    }
+
+    #[test]
+    fn adb_failure_detail_falls_back_to_stdout_for_shell_tools() {
+        // The regression this guards: `pm` writes "Unknown command" to stdout
+        // and exits non-zero, so an stderr-only message left the notification
+        // permission classifier nothing to match and a benign no-op on an
+        // older `pm` aborted the whole session.
+        assert_eq!(
+            adb_failure_detail(b"Unknown command: set-permission-flags\n", b""),
+            "Unknown command: set-permission-flags"
+        );
+        // Whitespace-only stderr counts as empty.
+        assert_eq!(
+            adb_failure_detail(b"Unknown command: clear-permission-flags\n", b"  \n"),
+            "Unknown command: clear-permission-flags"
+        );
+    }
+
+    #[test]
+    fn adb_failure_detail_is_empty_when_both_streams_are() {
+        assert_eq!(adb_failure_detail(b"", b""), "");
+    }
 
     // ─── Retryable ADB transport errors ───
 

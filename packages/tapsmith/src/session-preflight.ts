@@ -2,7 +2,7 @@ import type { TapsmithConfig, NotificationPermissionState } from './config.js';
 import type { Device } from './device.js';
 import type { LaunchAppOptions, TapsmithGrpcClient } from './grpc-client.js';
 import { detectBlockingSystemDialog, dismissSystemDialogsViaAdb } from './emulator.js';
-import { applyAndroidNotificationPermission } from './permission-setup.js';
+import { reapplyAndroidNotificationPermissionAfterClear } from './permission-setup.js';
 import { withActionProgress } from './action-progress.js';
 
 type SessionDevice = Pick<Device, 'startAgent' | 'terminateApp' | 'launchApp' | 'restartApp' | 'waitForIdle' | 'currentPackage' | 'getByText' | 'pressBack' | 'clearAppData' | 'openDeepLink' | 'getAppState' | 'setNotificationPermission'>
@@ -234,7 +234,7 @@ export async function launchConfiguredApp(
   // `pm clear` also resets runtime permission grants and user-set flags, so
   // the notification permission applied at session setup must be re-applied
   // for every file after the first.
-  await applyAndroidNotificationPermission(ctx.device, ctx.config, {
+  await reapplyAndroidNotificationPermissionAfterClear(ctx.device, ctx.config, {
     info: () => {},
     warn: (m) => process.stderr.write(`[tapsmith] ${m}\n`),
   });

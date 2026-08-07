@@ -24,6 +24,7 @@ import type {
   TestFailureDetail,
 } from './test-dispatcher.js';
 import { loadMcpConfig } from './config-loader.js';
+import { isConfigValidationError } from '../config.js';
 import type { TestTreeNode, UIDiscoverMessage, UIDiscoverChildMessage } from '../ui-mode/ui-protocol.js';
 
 const DISCOVERY_CONCURRENCY = 4;
@@ -595,6 +596,18 @@ export class HeadlessTestDispatcher implements TestDispatcher {
         return result.config;
       })
       .catch((err) => {
+        // A validation error is a typo in the config file, not an
+        // environmental hiccup — it fails identically on every retry, and
+        // falling back to `null` here skips project resolution and test
+        // discovery entirely, so the user sees "0 test file(s)" with the real
+        // cause buried in a log line. `loadConfig` deliberately refuses to
+        // swallow it; this path should not undo that.
+        //
+        // Safe to throw: initialization is lazy and only reached from tool
+        // handlers (list_tests, suite_status, session_info, run_tests), so
+        // the failure surfaces on the tool call that needs the config and the
+        // server itself stays up.
+        if (isConfigValidationError(err)) throw err;
         log(`Warning: failed to load config: ${err instanceof Error ? err.message : err}`);
         return null;
       });
