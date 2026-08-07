@@ -134,7 +134,7 @@ export class HeadlessTestDispatcher implements TestDispatcher {
         if (this._stopRequested) break;
         const proj = this._projectForFile(f, project);
         const useOptions = proj?.use as RunFileUseOptions | undefined;
-        const projectName = proj && proj.name !== 'default' ? proj.name : undefined;
+        const projectName = this._realProjectName(proj);
         try {
           const { results, suite } = await this._runFileInChild(
             f, useOptions, projectName, testFilter,
@@ -186,7 +186,7 @@ export class HeadlessTestDispatcher implements TestDispatcher {
             }
 
             const useOptions = project.use as RunFileUseOptions | undefined;
-            const projectName = project.name !== 'default' ? project.name : undefined;
+            const projectName = this._realProjectName(project);
             let projectFailed = false;
 
             for (const file of project.testFiles) {
@@ -493,6 +493,20 @@ export class HeadlessTestDispatcher implements TestDispatcher {
     return serialized;
   }
 
+  /**
+   * A project's name, or `undefined` for the synthetic project `resolveProjects`
+   * invents when a config declares none.
+   *
+   * Testing the name alone would also swallow a project a user actually named
+   * "default" — which then routes to no platform target and no per-project
+   * config, so every one of its files fails with "No device is configured"
+   * despite a healthy device.
+   */
+  private _realProjectName(project?: ResolvedProject): string | undefined {
+    if (!project || !this._hasRealProjects()) return undefined;
+    return project.name;
+  }
+
   /** Every platform this session runs on, with its device or its failure. */
   private _deviceTargets(): DeviceTarget[] {
     const toPlatform = (key: string): string | undefined =>
@@ -503,17 +517,17 @@ export class HeadlessTestDispatcher implements TestDispatcher {
     ];
   }
 
-  /** The daemon/device a project's tests must run against. */
+  /**
+   * The daemon/device a project's tests must run against.
+   *
+   * Never substitutes another platform's target. A missing iOS device must
+   * surface as "boot a simulator", not quietly run the iOS suite against an
+   * Android emulator, where every assertion fails for reasons that look
+   * nothing like the actual problem.
+   */
   private _targetForProject(projectName?: string): PlatformTarget {
     const key = platformKeyForProject(this._projects, projectName, this._config?.platform);
-
-    const target = this._targets.get(key) ?? this._targets.get(DEFAULT_PLATFORM_KEY);
-    if (target) return target;
-
-    const reason = this._targetErrors.get(key) ?? this._targetErrors.get(DEFAULT_PLATFORM_KEY);
-    throw new Error(
-      reason ?? `No device is configured for ${key === DEFAULT_PLATFORM_KEY ? 'this session' : key}.`,
-    );
+    return selectPlatformTarget(key, this._targets, this._targetErrors);
   }
 
   // ─── Test tree discovery ───
@@ -806,6 +820,45 @@ export class HeadlessTestDispatcher implements TestDispatcher {
  * of the key — otherwise same-named tests in different files collide and earlier
  * files' results are silently overwritten in a multi-file run.
  */
+/**
+ * The device target for a platform key.
+ *
+ * Never substitutes another platform's target: a missing iOS device must
+ * surface as "boot a simulator", not quietly run the iOS suite against an
+ * Android emulator, where every assertion then fails for reasons that look
+ * nothing like the actual problem.
+ *
+ * @internal — exported for unit testing.
+ */
+export function selectPlatformTarget(
+  key: string,
+  targets: Map<string, PlatformTarget>,
+  errors: Map<string, string>,
+): PlatformTarget {
+  const exact = targets.get(key);
+  if (exact) return exact;
+
+  const reason = errors.get(key);
+  if (reason) throw new Error(reason);
+
+  // The run declares no platform of its own, so a single session target is
+  // unambiguous — but several are not.
+  if (key === DEFAULT_PLATFORM_KEY) {
+    const all = [...targets.values()];
+    if (all.length === 1) return all[0];
+    if (all.length > 1) {
+      throw new Error(
+        `This session runs on ${all.length} platforms (${[...targets.keys()].join(', ')}) `
+        + 'but the requested tests declare none. Pass a project name so the run targets one of them.',
+      );
+    }
+    const anyReason = [...errors.values()][0];
+    if (anyReason) throw new Error(anyReason);
+  }
+
+  throw new Error(`No device is configured for ${key === DEFAULT_PLATFORM_KEY ? 'this session' : key}.`);
+}
+
 /**
  * Match caller-supplied file arguments against the discovered test files.
  *

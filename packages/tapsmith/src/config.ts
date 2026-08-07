@@ -467,11 +467,10 @@ function rawHasExplicitWorkers(raw: Partial<TapsmithConfig>): boolean {
  * `defineConfig` merges DEFAULT_CONFIG, which fills `rootDir` with the
  * *loading* process's cwd — so by the time `loadConfig` sees the object, a
  * config that never mentioned rootDir is indistinguishable from one that
- * pinned it, and `raw.rootDir ?? root` keeps cwd. Loading a config from
- * another directory then globs test files relative to wherever the caller
- * happened to be standing: an MCP server started in a repo root swept the
- * whole repo (including packages' own unit tests) using a config that lives
- * in, and describes, a single subdirectory.
+ * pinned it, and `raw.rootDir ?? root` always kept cwd. That silently
+ * overrode the root the caller asked for: an MCP server started in a repo
+ * root, loading a config discovered in a subdirectory, swept the whole repo
+ * (including the SDK's own unit tests) instead of that subdirectory.
  *
  * Same subtlety as EXPLICIT_WORKERS: check for the symbol's *presence*, since
  * `defineConfig` stamps it false while still populating `rootDir` from the
@@ -484,9 +483,19 @@ function rawHasExplicitRootDir(raw: Partial<TapsmithConfig>): boolean {
   return raw.rootDir !== undefined;
 }
 
-/** Resolve the root a loaded config's relative paths are anchored to. */
-function resolveRootDir(raw: Partial<TapsmithConfig>, configDir: string): string {
-  return rawHasExplicitRootDir(raw) && raw.rootDir ? path.resolve(configDir, raw.rootDir) : configDir;
+/**
+ * The root a loaded config's relative paths are anchored to: what the caller
+ * asked for, unless the config pinned `rootDir` itself.
+ *
+ * Deliberately NOT the config file's own directory. `tapsmith test -c
+ * configs/ci.config.ts` has always discovered tests relative to the working
+ * directory, and re-anchoring to `configs/` would find none — a green-to-red
+ * change for every project whose config does not sit where it is invoked
+ * from. Callers that do want the config's directory as the root pass it in
+ * (see `loadMcpConfig`).
+ */
+function resolveRootDir(raw: Partial<TapsmithConfig>, root: string): string {
+  return rawHasExplicitRootDir(raw) && raw.rootDir ? path.resolve(root, raw.rootDir) : root;
 }
 
 export async function loadConfig(dir?: string, configFile?: string): Promise<TapsmithConfig> {
@@ -504,7 +513,7 @@ export async function loadConfig(dir?: string, configFile?: string): Promise<Tap
     const original: Partial<TapsmithConfig> = mod.default ?? mod;
     const raw = omitUndefined(original);
     const merged = applyConfigDefaults(
-      { ...DEFAULT_CONFIG, ...raw, rootDir: resolveRootDir(original, path.dirname(configPath)) },
+      { ...DEFAULT_CONFIG, ...raw, rootDir: resolveRootDir(original, root) },
       raw,
     );
     return withExplicitWorkers(merged, rawHasExplicitWorkers(original));

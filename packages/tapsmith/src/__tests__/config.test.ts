@@ -6,12 +6,13 @@ import * as path from 'node:path';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-// A config file describes the project it sits in. `defineConfig` merges
-// DEFAULT_CONFIG, whose `rootDir` is the *loading* process's cwd — so loading a
-// config from another directory used to keep the caller's cwd as the root and
-// glob test files from there. An MCP server started in a repo root then swept
-// the whole repo (including the SDK's own unit tests) through a config that
-// describes a single subdirectory.
+// `defineConfig` merges DEFAULT_CONFIG, whose `rootDir` is the *loading*
+// process's cwd, so `raw.rootDir ?? root` always kept cwd and silently
+// overrode the root the caller asked for — an MCP server started in a repo
+// root swept the whole repo through a config describing one subdirectory.
+// The root must follow the caller's argument; re-anchoring to the config
+// file's own directory instead would break `tapsmith test -c sub/config.ts`,
+// which has always discovered tests relative to the working directory.
 describe('loadConfig rootDir anchoring', () => {
   let root: string;
 
@@ -30,22 +31,24 @@ describe('loadConfig rootDir anchoring', () => {
     return file;
   }
 
-  it('anchors rootDir to the config file directory, not the caller', async () => {
+  it('uses the directory it was asked to load from', async () => {
     const projectDir = path.join(root, 'e2e');
     writeConfig(projectDir, 'export default { platform: "ios" }\n');
     expect((await loadConfig(projectDir)).rootDir).toBe(projectDir);
   });
 
-  it('anchors rootDir for an explicitly named config file in another directory', async () => {
-    const projectDir = path.join(root, 'e2e');
+  it("keeps the caller's directory for `-c <subdir>/config` (regression guard)", async () => {
+    // `tapsmith test -c configs/ci.config.ts` from the repo root must keep
+    // discovering tests relative to the repo root, not to configs/.
+    const projectDir = path.join(root, 'configs');
     const file = writeConfig(projectDir, 'export default { platform: "ios" }\n');
-    expect((await loadConfig(root, path.relative(root, file))).rootDir).toBe(projectDir);
+    expect((await loadConfig(root, path.relative(root, file))).rootDir).toBe(root);
   });
 
-  it('anchors rootDir for a config that went through defineConfig', async () => {
+  it('does not mistake defineConfig\'s default rootDir for a user-pinned one', async () => {
     const projectDir = path.join(root, 'e2e');
-    // defineConfig stamps rootDir from the loading process's cwd; that must not
-    // be mistaken for the user pinning it.
+    // defineConfig stamps rootDir from the loading process's cwd, which used to
+    // win over the caller's argument.
     writeConfig(
       projectDir,
       'import { defineConfig } from "tapsmith"\nexport default defineConfig({ platform: "ios" })\n',
@@ -53,7 +56,7 @@ describe('loadConfig rootDir anchoring', () => {
     expect((await loadConfig(projectDir)).rootDir).toBe(projectDir);
   });
 
-  it('keeps a rootDir the config itself pins, resolved against the config directory', async () => {
+  it('keeps a rootDir the config itself pins, resolved against the root', async () => {
     const projectDir = path.join(root, 'e2e');
     writeConfig(projectDir, 'export default { rootDir: "../suites" }\n');
     expect((await loadConfig(projectDir)).rootDir).toBe(path.join(root, 'suites'));

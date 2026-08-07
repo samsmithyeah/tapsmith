@@ -15,7 +15,7 @@ import { createHash } from 'node:crypto';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import lockfile from 'proper-lockfile';
+import { withFileLockSync } from './file-lock.js';
 
 export interface SimulatorInfo {
   udid: string
@@ -456,32 +456,25 @@ function withManifestLock<T>(
   fn: (entries: SimulatorManifestEntry[]) => { result: T; updated?: SimulatorManifestEntry[] },
 ): T {
   const file = ensureManifestFile();
-  let release: (() => void) | undefined;
-  try {
-    release = lockfile.lockSync(file, {
-      retries: { retries: 10, minTimeout: 50, maxTimeout: 500 },
-      stale: 10_000,
-    });
-  } catch {
-    // Couldn't acquire the lock — fall back to a best-effort unlocked operation.
-    // Worst case is a stale entry cleaned up next run, same as the prior behavior.
+  // withFileLockSync, not lockfile.lockSync directly: the sync API rejects a
+  // `retries` option ("Cannot use retries with the sync api"), so passing one
+  // threw every time and this always ran unlocked.
+  const locked = withFileLockSync(file, () => {
     const entries = readManifestUnlocked(file);
     const { result, updated } = fn(entries);
-    if (updated !== undefined) {
-      try { atomicWriteManifest(file, updated); } catch { /* best effort */ }
-    }
-    return result;
+    if (updated !== undefined) atomicWriteManifest(file, updated);
+    return { result };
+  }, { attempts: 10, waitMs: 50 });
+  if (locked) return locked.result;
+
+  // Couldn't acquire the lock — fall back to a best-effort unlocked operation.
+  // Worst case is a stale entry cleaned up next run, same as the prior behavior.
+  const entries = readManifestUnlocked(file);
+  const { result, updated } = fn(entries);
+  if (updated !== undefined) {
+    try { atomicWriteManifest(file, updated); } catch { /* best effort */ }
   }
-  try {
-    const entries = readManifestUnlocked(file);
-    const { result, updated } = fn(entries);
-    if (updated !== undefined) {
-      atomicWriteManifest(file, updated);
-    }
-    return result;
-  } finally {
-    release();
-  }
+  return result;
 }
 
 function readManifestUnlocked(file: string): SimulatorManifestEntry[] {

@@ -1,7 +1,8 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as http from 'node:http';
-import { spawn, type ChildProcess } from 'node:child_process';
+import { spawn, execFileSync, type ChildProcess } from 'node:child_process';
+import { withFileLockSync } from '../file-lock.js';
 import { TapsmithGrpcClient, type DeviceInfoProto } from '../grpc-client.js';
 import { findDaemonBin } from '../daemon-bin.js';
 import { pickFreePort } from '../port-utils.js';
@@ -13,11 +14,24 @@ const DEFAULT_ADDRESS = 'localhost:50051';
 
 // ─── Connection Pool ───
 
+/**
+ * Where a pooled daemon came from. It decides what we may do to it: a daemon
+ * we started (or an equivalent peer MCP session's) can be pointed at a device
+ * and have an agent started on it, but a UI-mode worker daemon is mid-run for
+ * someone else and must not be repointed underneath them.
+ */
+type DaemonSource = 'started' | 'peer' | 'configured' | 'ui';
+
 interface DaemonConnection {
   client: TapsmithGrpcClient
   address: string
   devices: string[]
   daemonProcess?: ChildProcess
+  source: DaemonSource
+  /** Platform this daemon was started for. Unknown for daemons we found. */
+  platform?: string
+  /** Set once a platform target claims this daemon, so a second cannot. */
+  claimedBy?: string
 }
 
 let _connections: DaemonConnection[] = [];
@@ -124,26 +138,30 @@ export async function listAllDevices(): Promise<DeviceInfoProto[]> {
 async function discover(): Promise<void> {
   const config = await loadMcpConfig(_configFile).then((result) => result.config).catch(() => null);
 
-  // Collect candidate addresses from all sources
-  const candidates = new Set<string>();
+  // Collect candidate addresses from all sources, remembering where each came
+  // from — provenance decides whether we may repoint that daemon later.
+  const candidates = new Map<string, DaemonSource>();
+  const addCandidate = (address: string, source: DaemonSource): void => {
+    if (!candidates.has(address)) candidates.set(address, source);
+  };
 
   // 1. Env var (supports comma-separated for multi-daemon)
   if (process.env.TAPSMITH_DAEMON_ADDRESS) {
     for (const addr of process.env.TAPSMITH_DAEMON_ADDRESS.split(',')) {
       const trimmed = addr.trim();
-      if (trimmed) candidates.add(trimmed);
+      if (trimmed) addCandidate(trimmed, 'configured');
     }
   }
 
   // 2. Config file
   if (config?.daemonAddress) {
-    candidates.add(config.daemonAddress);
+    addCandidate(config.daemonAddress, 'configured');
   }
 
   // 3. UI mode discovery — query the UI server for worker daemon ports
   const uiDaemons = await discoverFromUiServer();
   for (const addr of uiDaemons.addresses) {
-    candidates.add(addr);
+    addCandidate(addr, 'ui');
   }
   if (uiDaemons.deviceSerials.size > 0) {
     _sessionDevices = uiDaemons.deviceSerials;
@@ -151,28 +169,28 @@ async function discover(): Promise<void> {
 
   // 4. Include existing connections so re-discovery doesn't spawn redundant daemons
   for (const conn of _connections) {
-    candidates.add(conn.address);
+    addCandidate(conn.address, conn.source);
   }
 
   // 5. Daemons started by other MCP sessions in this project. Without this each
   // session starts its own daemon on a random port and they pile up, all
   // driving the same device.
   for (const address of readDaemonRegistry()) {
-    candidates.add(address);
+    addCandidate(address, 'peer');
   }
 
   // 6. Default address
   if (candidates.size === 0) {
-    candidates.add(DEFAULT_ADDRESS);
+    addCandidate(DEFAULT_ADDRESS, 'configured');
   }
 
   // Probe all candidates in parallel
-  const probes = [...candidates].map(async (address) => {
+  const probes = [...candidates].map(async ([address, source]) => {
     let client: TapsmithGrpcClient | undefined;
     try {
       client = new TapsmithGrpcClient(address);
       const alive = await client.waitForReady(1_000);
-      if (alive) return { client, address };
+      if (alive) return { client, address, source };
       client.close();
     } catch {
       client?.close();
@@ -180,7 +198,9 @@ async function discover(): Promise<void> {
     return null;
   });
   const results = await Promise.all(probes);
-  const live = results.filter((r): r is { client: TapsmithGrpcClient; address: string } => r !== null);
+  const live = results.filter(
+    (r): r is { client: TapsmithGrpcClient; address: string; source: DaemonSource } => r !== null,
+  );
   // Probing is the liveness check, so this is the moment we know which
   // registered daemons are gone. Drop them rather than re-probing dead ports
   // on every future session.
@@ -188,7 +208,7 @@ async function discover(): Promise<void> {
 
   if (live.length > 0) {
     // Connect to all live daemons in parallel, then batch-update shared state
-    const newConns = await Promise.all(live.map(async ({ client, address }) => {
+    const newConns = await Promise.all(live.map(async ({ client, address, source }) => {
       if (_connections.some(c => c.address === address)) {
         client.close();
         return null;
@@ -199,7 +219,10 @@ async function discover(): Promise<void> {
           await startAgentFromConfig(client, config);
         }
         log(`Connected to daemon at ${address}`);
-        return { client, address, devices: [] } as DaemonConnection;
+        // Adopting a peer session's daemon makes us a user of it, so its
+        // starter must not kill it while we are still here.
+        if (source === 'peer') registerDaemon(address);
+        return { client, address, devices: [], source } as DaemonConnection;
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
         log(`Failed to connect to daemon at ${address}: ${msg}`);
@@ -269,10 +292,23 @@ async function startDaemon(platform?: string): Promise<DaemonConnection | null> 
     return null;
   }
 
-  registerDaemon(address);
-  const conn: DaemonConnection = { client, address, devices: [], daemonProcess };
+  registerDaemon(address, daemonProcess.pid);
+  const conn: DaemonConnection = {
+    client,
+    address,
+    devices: [],
+    daemonProcess,
+    source: 'started',
+    platform,
+  };
   _connections.push(conn);
   return conn;
+}
+
+/** Tear down a daemon we started but cannot use, so it does not linger. */
+function discardDaemon(conn: DaemonConnection): void {
+  removeConnection(conn);
+  unregisterDaemon(conn.address);
 }
 
 // ─── Per-platform targets ───
@@ -296,40 +332,68 @@ export interface PlatformTarget {
 export async function ensurePlatformTarget(config: TapsmithConfig): Promise<PlatformTarget> {
   await ensureConnected();
   const platform = config.platform;
+  const key = platform ?? 'default';
 
-  const existing = await findConnectionForPlatform(platform, config.device);
+  const existing = await findConnectionForPlatform(platform, key, config.device);
   if (existing) {
+    existing.conn.claimedBy = key;
     await prepareTarget(existing.conn, existing.serial, config);
     return { address: existing.conn.address, deviceSerial: existing.serial, platform };
   }
 
-  // No pooled daemon serves this platform — daemons are per-platform, so start one.
+  // Nothing reusable serves this platform — daemons are per-platform, so start
+  // one dedicated to it.
   const conn = await startDaemon(platform);
   if (!conn) {
     throw new Error(`Failed to start a ${platform ?? 'Tapsmith'} daemon. Is tapsmith-core installed?`);
   }
+
   const serial = await pickDevice(conn, platform, config.device);
   if (!serial) {
+    // A daemon with no device to drive is dead weight: it would sit in the pool
+    // and the shared registry, and a second unsatisfiable platform would start
+    // yet another one.
+    discardDaemon(conn);
     await refreshDeviceIndex();
-    throw new Error(
-      `No ${platform ?? ''} device is available.`.replace('  ', ' ')
-      + (platform === 'android'
-        ? ' Start an emulator (or connect a device) and try again.'
-        : platform === 'ios'
-          ? ' Boot a simulator (or connect a device) and try again.'
-          : ' Connect a device or start an emulator and try again.'),
-    );
+    throw new Error(noDeviceMessage(platform));
   }
+
+  conn.claimedBy = key;
   await prepareTarget(conn, serial, config);
   await refreshDeviceIndex();
   return { address: conn.address, deviceSerial: serial, platform };
 }
 
+function noDeviceMessage(platform?: string): string {
+  const what = platform ? `No ${platform} device is available.` : 'No device is available.';
+  if (platform === 'android') return `${what} Start an emulator (or connect a device) and try again.`;
+  if (platform === 'ios') return `${what} Boot a simulator (or connect a device) and try again.`;
+  return `${what} Connect a device or start an emulator and try again.`;
+}
+
+/**
+ * A pooled daemon this platform may take over, if any.
+ *
+ * Two things make a daemon unusable even when it can see a matching device:
+ *
+ * - It belongs to a live UI-mode run. Claiming it means `setDevice`-ing it out
+ *   from under that run, whose next action then lands on the wrong device.
+ * - Another platform already claimed it. A daemon started without `--platform`
+ *   lists both Android and iOS devices, so a multi-platform session would find
+ *   the same daemon twice; the second claim repoints it away from the first
+ *   platform's device, and `startAgentFromConfig` skips the agent because the
+ *   daemon already reports one connected (the first platform's).
+ */
 async function findConnectionForPlatform(
   platform: string | undefined,
+  key: string,
   wantedSerial: string | undefined,
 ): Promise<{ conn: DaemonConnection; serial: string } | null> {
   for (const conn of _connections) {
+    if (conn.source === 'ui') continue;
+    if (conn.claimedBy && conn.claimedBy !== key) continue;
+    // A daemon started for another platform cannot serve this one.
+    if (conn.platform && platform && conn.platform !== platform) continue;
     const serial = await pickDevice(conn, platform, wantedSerial);
     if (serial) return { conn, serial };
   }
@@ -419,54 +483,167 @@ function httpGet(url: string, timeoutMs: number): Promise<string> {
 // ─── Daemon Registry ───
 
 /**
- * Addresses of daemons other MCP sessions in this project started.
+ * Which daemons the MCP sessions of this project are using.
+ *
+ * Each record is one session's *use* of one daemon, so a daemon is only torn
+ * down when the last session using it goes away. Recording only the starter
+ * would let its shutdown kill a daemon a peer had adopted, and that peer
+ * cannot recover — its resolved targets are cached from init and would keep
+ * pointing at a dead address.
  *
  * Best-effort throughout: a missing, unreadable or malformed registry just
- * means we fall back to starting our own daemon, which is what happened before
- * the registry existed. Liveness is never trusted from the file — every address
- * is probed like any other candidate.
+ * means we start our own daemon, which is what happened before it existed.
+ * Liveness is never trusted from the file — every address is probed like any
+ * other candidate.
  */
-/** @internal — exported for unit testing. */
-export function readDaemonRegistry(): string[] {
+interface DaemonRegistryEntry {
+  address: string
+  /** Session holding this daemon open. Entries of dead pids are pruned. */
+  pid: number
+  /**
+   * The daemon process itself, recorded by whichever session started it.
+   * A session that merely adopted the address has no child handle, so without
+   * this the last session out could not shut the daemon down and it would
+   * outlive every user with no one left to reap it.
+   */
+  daemonPid?: number
+}
+
+/**
+ * Only loopback addresses are accepted from the registry.
+ *
+ * Unlike every other candidate source — an env var, the user's own config, a
+ * port file this process wrote — the registry lives at a path derived solely
+ * from the project directory, in a shared temp directory. On a multi-user host
+ * anyone can plant one, and an accepted address receives the session's
+ * screenshots and UI trees and decides what it believes the device shows.
+ */
+function isLoopbackAddress(address: string): boolean {
+  const match = /^(.+):(\d+)$/.exec(address);
+  if (!match) return false;
+  const [, host, port] = match;
+  const portNumber = Number(port);
+  if (!Number.isInteger(portNumber) || portNumber <= 0 || portNumber > 65535) return false;
+  return host === 'localhost' || host === '127.0.0.1' || host === '::1' || host === '[::1]';
+}
+
+function readRegistryEntries(): DaemonRegistryEntry[] {
+  let parsed: unknown;
   try {
-    const parsed: unknown = JSON.parse(fs.readFileSync(mcpDaemonRegistryPath(), 'utf-8'));
-    if (!Array.isArray(parsed)) return [];
-    return parsed.filter((a): a is string => typeof a === 'string');
+    parsed = JSON.parse(fs.readFileSync(mcpDaemonRegistryPath(), 'utf-8'));
   } catch {
     return [];
   }
+  if (!Array.isArray(parsed)) return [];
+  return parsed.flatMap((entry): DaemonRegistryEntry[] => {
+    if (typeof entry !== 'object' || entry === null) return [];
+    const { address, pid, daemonPid } = entry as Partial<DaemonRegistryEntry>;
+    if (typeof address !== 'string' || !isLoopbackAddress(address)) return [];
+    if (typeof pid !== 'number' || !Number.isInteger(pid) || pid <= 0) return [];
+    const validDaemonPid = typeof daemonPid === 'number' && Number.isInteger(daemonPid) && daemonPid > 0
+      ? daemonPid
+      : undefined;
+    return [{ address, pid, daemonPid: validDaemonPid }];
+  });
 }
 
-function writeDaemonRegistry(addresses: string[]): void {
+function isProcessAlive(pid: number): boolean {
   try {
-    const file = mcpDaemonRegistryPath();
-    // Write-then-rename so a concurrent reader never sees a half-written file.
-    const tmp = `${file}.${process.pid}.tmp`;
-    fs.writeFileSync(tmp, JSON.stringify([...new Set(addresses)]), 'utf-8');
-    fs.renameSync(tmp, file);
+    process.kill(pid, 0);
+    return true;
+  } catch (err) {
+    // EPERM means it exists but belongs to someone else.
+    return (err as NodeJS.ErrnoException).code === 'EPERM';
+  }
+}
+
+/**
+ * Read, transform and write the registry under an exclusive lock.
+ *
+ * Read-modify-write over a shared file is a lost-update race: two sessions
+ * registering at the same moment each overwrite the other's entry, and the
+ * next session then starts a third daemon on the same device — the pile-up
+ * the registry exists to prevent.
+ */
+function updateRegistry(
+  transform: (entries: DaemonRegistryEntry[]) => DaemonRegistryEntry[],
+): void {
+  const file = mcpDaemonRegistryPath();
+  try {
+    fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
+    if (!fs.existsSync(file)) fs.writeFileSync(file, '[]', { encoding: 'utf-8', mode: 0o600 });
+    withFileLockSync(file, () => {
+      const next = transform(readRegistryEntries()).filter((e) => isProcessAlive(e.pid));
+      const deduped = [...new Map(next.map((e) => [`${e.address}::${e.pid}`, e])).values()];
+      const tmp = `${file}.${process.pid}.tmp`;
+      fs.writeFileSync(tmp, JSON.stringify(deduped), { encoding: 'utf-8', mode: 0o600 });
+      fs.renameSync(tmp, file);
+    });
   } catch {
     // The registry is an optimisation; never fail a session over it.
   }
 }
 
-/** @internal — exported for unit testing. */
-export function registerDaemon(address: string): void {
-  writeDaemonRegistry([...readDaemonRegistry(), address]);
+/** Addresses of daemons this project's MCP sessions are using. @internal — exported for unit testing. */
+export function readDaemonRegistry(): string[] {
+  return [...new Set(readRegistryEntries().filter((e) => isProcessAlive(e.pid)).map((e) => e.address))];
 }
 
-/** @internal — exported for unit testing. */
+/** Record that this session is using a daemon. @internal — exported for unit testing. */
+export function registerDaemon(address: string, daemonPid?: number): void {
+  if (!isLoopbackAddress(address)) return;
+  updateRegistry((entries) => [...entries, { address, pid: process.pid, daemonPid }]);
+}
+
+/** The daemon process behind an address, if its starter recorded one. */
+function registeredDaemonPid(address: string): number | undefined {
+  return readRegistryEntries().find((e) => e.address === address && e.daemonPid)?.daemonPid;
+}
+
+/**
+ * Whether a pid is a Tapsmith daemon, checked before signalling a process we
+ * did not spawn — pids are reused, and a registry entry may be stale.
+ */
+function isTapsmithDaemonProcess(pid: number): boolean {
+  if (process.platform === 'win32') return false;
+  try {
+    return execFileSync('ps', ['-p', String(pid), '-o', 'comm='], { encoding: 'utf-8' })
+      .includes('tapsmith-core');
+  } catch {
+    return false;
+  }
+}
+
+/** Drop this session's use of a daemon. @internal — exported for unit testing. */
 export function unregisterDaemon(address: string): void {
-  const remaining = readDaemonRegistry().filter((a) => a !== address);
-  writeDaemonRegistry(remaining);
+  updateRegistry((entries) => entries.filter((e) => !(e.address === address && e.pid === process.pid)));
 }
 
-/** Keep only addresses that just answered a probe. @internal — exported for unit testing. */
+/**
+ * Whether any other live session is still using a daemon — i.e. whether
+ * killing it on our way out would pull it from under them.
+ */
+function daemonInUseByOthers(address: string): boolean {
+  return readRegistryEntries().some(
+    (e) => e.address === address && e.pid !== process.pid && isProcessAlive(e.pid),
+  );
+}
+
+/**
+ * Drop *our own* records for addresses that failed to answer a probe.
+ *
+ * Only ours: another session's entry may be for a daemon it can still reach
+ * (a different network view, or a daemon started microseconds ago), and
+ * deleting it would make its owner invisible to everyone else.
+ *
+ * @internal — exported for unit testing.
+ */
 export function pruneDaemonRegistry(liveAddresses: string[]): void {
-  const registered = readDaemonRegistry();
-  if (registered.length === 0) return;
   const live = new Set(liveAddresses);
-  const surviving = registered.filter((a) => live.has(a));
-  if (surviving.length !== registered.length) writeDaemonRegistry(surviving);
+  const entries = readRegistryEntries();
+  const stale = entries.some((e) => e.pid === process.pid && !live.has(e.address));
+  if (!stale) return;
+  updateRegistry((current) => current.filter((e) => e.pid !== process.pid || live.has(e.address)));
 }
 
 // ─── Device Index ───
@@ -577,9 +754,22 @@ function log(msg: string): void {
 export function closeAllClients(): void {
   for (const conn of _connections) {
     conn.client.close();
+    // Drop our claim first, then keep the daemon alive if a peer session still
+    // holds one: it adopted this address from the registry and has no process
+    // of its own to fall back on.
+    if (conn.source !== 'started' && conn.source !== 'peer') continue;
+    // Read the daemon's pid before dropping our record: an adopted daemon has
+    // no child handle here, and we may be the last session able to reap it.
+    const daemonPid = conn.daemonProcess?.pid ?? registeredDaemonPid(conn.address);
+    unregisterDaemon(conn.address);
+    if (daemonInUseByOthers(conn.address)) {
+      log(`Leaving daemon at ${conn.address} running — another session is still using it`);
+      continue;
+    }
     if (conn.daemonProcess) {
       conn.daemonProcess.kill();
-      unregisterDaemon(conn.address);
+    } else if (daemonPid && isTapsmithDaemonProcess(daemonPid)) {
+      try { process.kill(daemonPid); } catch { /* already gone */ }
     }
   }
   _connections = [];

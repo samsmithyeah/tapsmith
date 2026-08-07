@@ -11,6 +11,7 @@ import {
   resultEntryKey,
   matchRequestedFiles,
   platformKeyForProject,
+  selectPlatformTarget,
 } from '../mcp/headless-dispatcher.js';
 import { registerSessionInfoTool } from '../mcp/tools/session-info.js';
 import { loadMcpConfig } from '../mcp/config-loader.js';
@@ -531,6 +532,55 @@ describe('MCP daemon registry', () => {
     expect(readDaemonRegistry()).toEqual([]);
   });
 
+  it('ignores non-loopback addresses planted in the shared temp file', () => {
+    // The path is derived only from the project directory, so on a multi-user
+    // host anyone can write this file; an accepted address would receive the
+    // session's screenshots and drive its device.
+    fs.mkdirSync(path.dirname(mcpDaemonRegistryPath()), { recursive: true });
+    fs.writeFileSync(
+      mcpDaemonRegistryPath(),
+      JSON.stringify([
+        { address: 'evil.example:50051', pid: process.pid },
+        { address: '10.0.0.9:50051', pid: process.pid },
+        { address: '127.0.0.1:50161', pid: process.pid },
+      ]),
+      'utf-8',
+    );
+    expect(readDaemonRegistry()).toEqual(['127.0.0.1:50161']);
+  });
+
+  it('refuses to register a non-loopback address', () => {
+    registerDaemon('evil.example:50051');
+    expect(readDaemonRegistry()).toEqual([]);
+  });
+
+  it('ignores entries whose session is gone', () => {
+    fs.mkdirSync(path.dirname(mcpDaemonRegistryPath()), { recursive: true });
+    // Pid 0x7FFFFFFF is beyond any real pid_max, so it is reliably absent.
+    fs.writeFileSync(
+      mcpDaemonRegistryPath(),
+      JSON.stringify([{ address: '127.0.0.1:50161', pid: 2147483647 }]),
+      'utf-8',
+    );
+    expect(readDaemonRegistry()).toEqual([]);
+  });
+
+  it('keeps another live session\'s entry when pruning our own dead addresses', () => {
+    registerDaemon('127.0.0.1:50161');
+    // A peer session (this test's own pid stands in for "still alive") holding
+    // a different daemon must survive our prune.
+    fs.writeFileSync(
+      mcpDaemonRegistryPath(),
+      JSON.stringify([
+        { address: '127.0.0.1:50161', pid: process.pid },
+        { address: '127.0.0.1:50244', pid: process.ppid },
+      ]),
+      'utf-8',
+    );
+    pruneDaemonRegistry([]);
+    expect(readDaemonRegistry()).toEqual(['127.0.0.1:50244']);
+  });
+
   it('remembers a daemon so another session can find it', () => {
     registerDaemon('127.0.0.1:50161');
     expect(readDaemonRegistry()).toEqual(['127.0.0.1:50161']);
@@ -565,5 +615,43 @@ describe('MCP daemon registry', () => {
     registerDaemon('127.0.0.1:50161');
     fs.writeFileSync(mcpDaemonRegistryPath(), 'not json', 'utf-8');
     expect(readDaemonRegistry()).toEqual([]);
+  });
+});
+
+// A run must never be silently redirected to another platform's device: the
+// iOS suite against an Android emulator fails on every assertion for reasons
+// that look nothing like "no simulator is booted".
+describe('selectPlatformTarget', () => {
+  const ios = { address: '127.0.0.1:1', deviceSerial: 'SIM-1', platform: 'ios' };
+  const android = { address: '127.0.0.1:2', deviceSerial: 'emulator-5554', platform: 'android' };
+
+  it('returns the target for the requested platform', () => {
+    const targets = new Map([['ios', ios], ['android', android]]);
+    expect(selectPlatformTarget('ios', targets, new Map())).toBe(ios);
+  });
+
+  it("reports the platform's own failure instead of borrowing another device", () => {
+    const targets = new Map([['android', android]]);
+    const errors = new Map([['ios', 'No ios device is available. Boot a simulator and try again.']]);
+    expect(() => selectPlatformTarget('ios', targets, errors)).toThrow(/Boot a simulator/);
+  });
+
+  it('never falls back across platforms even with no recorded reason', () => {
+    const targets = new Map([['android', android]]);
+    expect(() => selectPlatformTarget('ios', targets, new Map())).toThrow(/No device is configured for ios/);
+  });
+
+  it('uses the only target when the run declares no platform', () => {
+    expect(selectPlatformTarget('default', new Map([['ios', ios]]), new Map())).toBe(ios);
+  });
+
+  it('refuses to guess when a platform-less run could go to either of two platforms', () => {
+    const targets = new Map([['ios', ios], ['android', android]]);
+    expect(() => selectPlatformTarget('default', targets, new Map())).toThrow(/runs on 2 platforms/);
+  });
+
+  it('surfaces the only recorded failure for a platform-less run with no targets', () => {
+    const errors = new Map([['android', 'No android device is available. Start an emulator.']]);
+    expect(() => selectPlatformTarget('default', new Map(), errors)).toThrow(/Start an emulator/);
   });
 });

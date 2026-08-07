@@ -479,12 +479,33 @@ export async function startUIServer(
   // tsx re-exec, via NODE_OPTIONS) happens to have set a loader for us.
   // import.meta.dirname is packages/tapsmith/{src,dist}/ui-mode — the package
   // root (where node_modules lives) is two levels up in both cases.
-  const tsxBin = resolveChildLoader(
-    [resolvedRunScript, resolvedDiscoverScript, resolvedWorkerScript],
+  const childScripts = [resolvedRunScript, resolvedDiscoverScript, resolvedWorkerScript];
+  const tapsmithPkgDir = path.resolve(import.meta.dirname, '..', '..');
+  let tsxBin = resolveChildLoader(
+    childScripts,
     ctx.testFiles,
-    path.resolve(import.meta.dirname, '..', '..'),
+    tapsmithPkgDir,
     (message) => console.error(`Warning: ${message}`),
   );
+
+  /**
+   * The loader for a fork, resolved lazily.
+   *
+   * A UI session started with no TypeScript tests needs no loader — until the
+   * user writes one, which the watcher adds to `ctx.testFiles` at runtime. A
+   * loader decided once at startup would fork that file under bare node, so it
+   * silently drops out of the test tree until the server is restarted.
+   */
+  function childLoader(files: string[] = ctx.testFiles): string | undefined {
+    if (tsxBin) return tsxBin;
+    tsxBin = resolveChildLoader(
+      childScripts,
+      files,
+      tapsmithPkgDir,
+      (message) => console.error(`Warning: ${message}`),
+    );
+    return tsxBin;
+  }
 
   // ─── Broadcast ───
 
@@ -721,7 +742,7 @@ export async function startUIServer(
     return new Promise((resolve) => {
       const child = fork(resolvedDiscoverScript, [], {
         stdio: forkStdioForLaunchProgress(launchProgress),
-        ...(tsxBin ? { execPath: tsxBin } : {}),
+        ...(childLoader([filePath]) ? { execPath: childLoader([filePath])! } : {}),
         env: {
           ...process.env,
           NODE_PATH: path.resolve(import.meta.dirname, '..', '..'),
@@ -1184,7 +1205,7 @@ export async function startUIServer(
     return new Promise((resolve, reject) => {
       const child = fork(resolvedRunScript, [], {
         stdio: forkStdioForLaunchProgress(launchProgress),
-        ...(tsxBin ? { execPath: tsxBin } : {}),
+        ...(childLoader() ? { execPath: childLoader()! } : {}),
         env: {
           ...process.env,
           NODE_PATH: path.resolve(import.meta.dirname, '..', '..'),
@@ -1711,7 +1732,7 @@ export async function startUIServer(
     // Fork ui-worker.ts
     const child = fork(resolvedWorkerScript, [], {
       stdio: forkStdioForLaunchProgress(launchProgress),
-      ...(tsxBin ? { execPath: tsxBin } : {}),
+      ...(childLoader() ? { execPath: childLoader()! } : {}),
       env: {
         ...process.env,
         NODE_PATH: path.resolve(import.meta.dirname, '..', '..'),
