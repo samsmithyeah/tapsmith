@@ -41,15 +41,19 @@ export default defineConfig({
       use: { appState: "./tapsmith-results/auth-state-authentication.tar.gz" },
       testMatch: ["**/app-state.test.ts", "**/auth-gate.test.ts"],
     },
-    // Must run after every project that assumes the root's "granted"
-    // policy: notification permission is device-global per package, so a
-    // session that flips it to "denied" while those tests are still running
-    // changes state out from under them. `dependencies` is what actually
-    // enforces that ordering — without it this project is scheduled in the
-    // first wave and races them on a shared device.
+    // Isolation from the "granted" projects comes from device-pool
+    // serialization, not `dependencies`: this project has a different
+    // deviceSignature, so it becomes its own bucket, and the dispatcher runs
+    // same-pool buckets in sequential rounds (round order follows config
+    // order, so this one runs last).
+    //
+    // Do NOT add `dependencies` here to express that ordering. Sharding
+    // treats any depended-on project as an unsharded setup project, so
+    // depending on `default` would make every shard run the entire suite
+    // and starve the rest — shard 1 went from 11 files to 42 when this was
+    // tried.
     {
       name: "notifications-denied",
-      dependencies: ["default", "authenticated"],
       use: { permissions: { notifications: "denied" } },
       testMatch: ["**/notification-permission-denied.test.ts"],
     },
