@@ -2193,23 +2193,38 @@ async function main(): Promise<void> {
   // so reporters can correctly suppress file headings / show project tags
   // when buckets or per-project `workers:` push the actual concurrency above
   // the global `config.workers` value.
-  const { allocateBucketWorkers, bucketizeProjects } = await import('./project.js');
+  const {
+    allocateBucketWorkers, bucketizeProjects, devicePoolKey, peakConcurrentWorkers,
+  } = await import('./project.js');
   const budgetCap = isExplicitWorkers(config) ? config.workers : undefined;
-  const allocation = allocateBucketWorkers(config.workers, bucketizeProjects(projects), budgetCap);
-  const totalWorkers = [...allocation.values()].reduce((s, n) => s + n, 0);
+  const buckets = bucketizeProjects(projects);
+  const allocation = allocateBucketWorkers(config.workers, buckets, budgetCap);
+
+  // Peak concurrency, not the sum of the allocation. Buckets sharing a device
+  // pool run in sequential rounds, so their workers never coexist — this is
+  // what "how parallel is this run" actually means, and what an explicit
+  // --workers should be measured against.
+  const totalWorkers = peakConcurrentWorkers(buckets.map((b) => ({
+    poolKey: devicePoolKey(b.projects[0].effectiveConfig),
+    workers: allocation.get(b.signature) ?? 0,
+  })));
   const maxFilesInAnyWave = Math.max(...projectWaves.map((wave) =>
     wave.reduce((sum, p) => sum + p.testFiles.length, 0),
   ));
   const effectiveWorkers = Math.min(totalWorkers, maxFilesInAnyWave);
 
-  // Warn only when the irreducible minimum (one worker per active bucket)
-  // exceeds the user's explicit --workers value. Per-project `workers:`
-  // inflation is now capped by the budget, so this only fires when there
-  // are genuinely more device buckets than workers.
+  // Warn only when the irreducible minimum (one worker per active bucket that
+  // has a device to itself) exceeds the user's explicit --workers value.
+  // Buckets queued behind another on the same device don't inflate this:
+  // they cost wall-clock, not parallelism.
   let workerPlanWarning: string | undefined;
   if (isExplicitWorkers(config) && totalWorkers > config.workers) {
-    const activeBuckets = [...allocation.values()].filter((n) => n > 0).length;
-    workerPlanWarning = `requested ${countLabel(config.workers, 'worker')}; running ${totalWorkers} because ${countLabel(activeBuckets, 'device target')} ${activeBuckets === 1 ? 'needs a worker' : 'need one each'}`;
+    const concurrentPools = new Set(
+      buckets
+        .filter((b) => (allocation.get(b.signature) ?? 0) > 0)
+        .map((b) => devicePoolKey(b.projects[0].effectiveConfig)),
+    ).size;
+    workerPlanWarning = `requested ${countLabel(config.workers, 'worker')}; running ${totalWorkers} because ${countLabel(concurrentPools, 'device target')} ${concurrentPools === 1 ? 'needs a worker' : 'need one each'}`;
   }
 
   // Reflect the effective parallelism on the config so reporters see the

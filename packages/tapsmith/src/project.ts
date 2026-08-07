@@ -270,6 +270,39 @@ export function bucketizeProjects(
   return [...m.entries()].map(([signature, projects]) => ({ signature, projects }));
 }
 
+/**
+ * Peak number of workers running at the same moment.
+ *
+ * Not the same as the sum of the allocation. Buckets that draw from the same
+ * device pool are executed in sequential rounds by the dispatcher (see
+ * `planBucketRounds`), so their workers never coexist — a run allocating one
+ * worker to each of two same-pool buckets peaks at one, not two.
+ *
+ * Round `i` takes the i-th bucket of every pool, so peak concurrency is the
+ * largest per-round total. This is the number users mean by "how parallel is
+ * this run", and the one that should be checked against an explicit
+ * `--workers`.
+ */
+export function peakConcurrentWorkers(
+  buckets: Array<{ poolKey: string; workers: number }>,
+): number {
+  const byPool = new Map<string, number[]>();
+  for (const b of buckets) {
+    if (b.workers <= 0) continue;
+    const arr = byPool.get(b.poolKey) ?? [];
+    arr.push(b.workers);
+    byPool.set(b.poolKey, arr);
+  }
+  const roundCount = Math.max(0, ...[...byPool.values()].map((g) => g.length));
+  let peak = 0;
+  for (let i = 0; i < roundCount; i++) {
+    let inRound = 0;
+    for (const g of byPool.values()) inRound += g[i] ?? 0;
+    peak = Math.max(peak, inRound);
+  }
+  return peak;
+}
+
 // ─── Per-project use validation ───
 
 function validateProjectUse(name: string, use: UseOptions | undefined): void {

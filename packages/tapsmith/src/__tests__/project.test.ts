@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { resolveProjects, topologicalSort, collectTransitiveDeps, findProjectsForFile, validateProjectNames, deviceSignature, devicePoolKey, allocateBucketWorkers, bucketizeProjects, type ResolvedProject } from '../project.js';
+import { resolveProjects, topologicalSort, collectTransitiveDeps, findProjectsForFile, validateProjectNames, deviceSignature, devicePoolKey, peakConcurrentWorkers, allocateBucketWorkers, bucketizeProjects, type ResolvedProject } from '../project.js';
 import { effectiveConfigForProject, type TapsmithConfig } from '../config.js';
 
 function makeConfig(overrides: Partial<TapsmithConfig> = {}): TapsmithConfig {
@@ -689,5 +689,45 @@ describe('devicePoolKey', () => {
   it('defaults to android when platform is unset', () => {
     expect(devicePoolKey({ avd: 'Pixel_6' } as never))
       .toBe(devicePoolKey({ platform: 'android', avd: 'Pixel_6' } as never));
+  });
+});
+
+// ─── peakConcurrentWorkers ───
+
+describe('peakConcurrentWorkers', () => {
+  it('sums workers across distinct pools — they really do run at once', () => {
+    expect(peakConcurrentWorkers([
+      { poolKey: 'android|Pixel_6|', workers: 2 },
+      { poolKey: 'ios|iPhone 17|', workers: 3 },
+    ])).toBe(5);
+  });
+
+  it('does not sum buckets queued behind each other on one device', () => {
+    // The reporting bug this fixes: `--workers 1` with a granted and a denied
+    // bucket on one AVD reported "running 2" when only one runs at a time.
+    expect(peakConcurrentWorkers([
+      { poolKey: 'android|Pixel_6|', workers: 1 },
+      { poolKey: 'android|Pixel_6|', workers: 1 },
+    ])).toBe(1);
+  });
+
+  it('takes the largest round when pools are unevenly sized', () => {
+    // round 1 = 2 (android) + 3 (ios) = 5; round 2 = 4 (android alone).
+    expect(peakConcurrentWorkers([
+      { poolKey: 'android|Pixel_6|', workers: 2 },
+      { poolKey: 'android|Pixel_6|', workers: 4 },
+      { poolKey: 'ios|iPhone 17|', workers: 3 },
+    ])).toBe(5);
+  });
+
+  it('ignores buckets with no workers', () => {
+    expect(peakConcurrentWorkers([
+      { poolKey: 'android|Pixel_6|', workers: 0 },
+      { poolKey: 'android|Pixel_6|', workers: 2 },
+    ])).toBe(2);
+  });
+
+  it('is zero for no buckets', () => {
+    expect(peakConcurrentWorkers([])).toBe(0);
   });
 });
