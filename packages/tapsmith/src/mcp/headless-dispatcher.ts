@@ -537,6 +537,22 @@ export class HeadlessTestDispatcher implements TestDispatcher {
     return selectPlatformTarget(key, this._targets, this._targetErrors);
   }
 
+  /**
+   * A platform's target, re-resolving once if it previously failed.
+   *
+   * Targets are resolved at startup, but the failure message tells the user to
+   * boot a simulator "and try again" — and a server that caches the error for
+   * its whole life never lets them. Only failed platforms are retried, so a
+   * working session never pays for this.
+   */
+  private async _ensureTargetForProject(projectName?: string): Promise<PlatformTarget> {
+    const key = platformKeyForProject(this._projects, projectName, this._config?.platform);
+    if (this._targetErrors.has(key) && !this._targets.has(key)) {
+      await this._resolvePlatformTargets(this._config);
+    }
+    return selectPlatformTarget(key, this._targets, this._targetErrors);
+  }
+
   // ─── Test tree discovery ───
 
   private async _discoverTestTree(): Promise<void> {
@@ -583,24 +599,18 @@ export class HeadlessTestDispatcher implements TestDispatcher {
 
   // ─── Test execution ───
 
-  private _runFileInChild(
+  private async _runFileInChild(
     filePath: string,
     projectUseOptions?: RunFileUseOptions,
     projectName?: string,
     testFilter?: string,
   ): Promise<RunFileChildResult> {
     if (!this._serializedConfig) {
-      return Promise.reject(new Error('No Tapsmith config is loaded, so there is nothing to run against.'));
+      throw new Error('No Tapsmith config is loaded, so there is nothing to run against.');
     }
 
-    let target: PlatformTarget;
-    let serializedConfig: SerializedConfig;
-    try {
-      target = this._targetForProject(projectName);
-      serializedConfig = this._configForProject(projectName);
-    } catch (err) {
-      return Promise.reject(err);
-    }
+    const target = await this._ensureTargetForProject(projectName);
+    const serializedConfig = this._configForProject(projectName);
 
     const scripts = this._scripts!;
     return new Promise((resolve, reject) => {

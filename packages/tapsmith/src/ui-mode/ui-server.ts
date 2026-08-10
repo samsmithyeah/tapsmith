@@ -770,10 +770,13 @@ export async function startUIServer(
   // ─── Test Discovery ───
 
   async function discoverFile(filePath: string): Promise<TestTreeNode | null> {
+    // Resolved once: a miss re-runs the filesystem and PATH probes, and this
+    // is called for every discovered file.
+    const fileLoader = childLoader([filePath]);
     return new Promise((resolve) => {
       const child = fork(resolvedDiscoverScript, [], {
         stdio: forkStdioForLaunchProgress(launchProgress),
-        ...(childLoader([filePath]) ? { execPath: childLoader([filePath])! } : {}),
+        ...(fileLoader ? { execPath: fileLoader } : {}),
         env: {
           ...process.env,
           NODE_PATH: path.resolve(import.meta.dirname, '..', '..'),

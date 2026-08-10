@@ -457,9 +457,12 @@ async function prepareTarget(
   // `agentConnected` is daemon-global and `set_device` does not disconnect the
   // agent, so a daemon repointed to a different device still reports one as
   // connected — the platform's real agent would never start, and the session
-  // would drive the previous device's agent. Force a start whenever the device
-  // changed under it.
-  await startAgentFromConfig(conn.client, config, conn.agentDevice !== serial);
+  // would drive the previous device's agent. Force a start only when we know
+  // *we* moved it: an unset `preparedDevice` means we have never pointed this
+  // daemon anywhere, and forcing then would tear down an agent that is already
+  // serving this device — including one a peer session is mid-run against.
+  const repointed = conn.preparedDevice !== undefined && conn.preparedDevice !== serial;
+  await startAgentFromConfig(conn.client, config, { force: repointed, required: true });
   conn.preparedDevice = serial;
   conn.agentDevice = serial;
   // The daemon that was prepared for a serial is the one that serves it, even
@@ -751,10 +754,15 @@ function daemonInUseByOthers(address: string): boolean {
  */
 export function pruneDaemonRegistry(liveAddresses: string[]): void {
   const live = new Set(liveAddresses);
+  // A daemon whose process is still running has not gone away — a 1s probe can
+  // time out under load or a GC pause. Dropping the row on that evidence loses
+  // the recorded pid, and an adopted daemon then has nothing left to reap it.
+  const gone = (entry: DaemonRegistryEntry): boolean =>
+    !live.has(entry.address) && !(entry.daemonPid && isTapsmithDaemonProcess(entry.daemonPid));
   const entries = readRegistryEntries();
-  const stale = entries.some((e) => e.pid === process.pid && !live.has(e.address));
+  const stale = entries.some((e) => e.pid === process.pid && gone(e));
   if (!stale) return;
-  updateRegistry((current) => current.filter((e) => e.pid !== process.pid || live.has(e.address)));
+  updateRegistry((current) => current.filter((e) => e.pid !== process.pid || !gone(e)));
 }
 
 // ─── Device Index ───
@@ -834,12 +842,21 @@ async function setDeviceAndAgent(
   await startAgentFromConfig(client, config);
 }
 
+/**
+ * Start the device agent described by `config`.
+ *
+ * `force` re-starts one the daemon already reports as connected; `required`
+ * makes a failure the caller's problem instead of a log line. Discovery starts
+ * agents opportunistically and must survive a failure — but a platform target
+ * that cannot start its agent is not a working target, and reporting it as one
+ * gives the session a device whose every run fails.
+ */
 async function startAgentFromConfig(
   client: TapsmithGrpcClient,
   config: TapsmithConfig | null,
-  force = false,
+  options?: { force?: boolean; required?: boolean },
 ): Promise<void> {
-  if (!force) {
+  if (!options?.force) {
     const { agentConnected } = await client.ping();
     if (agentConnected) return;
   }
@@ -873,6 +890,7 @@ async function startAgentFromConfig(
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     log(`Warning: agent start failed (${msg}). Device tools may not work.`);
+    if (options?.required) throw new Error(`Failed to start the agent on this device: ${msg}`);
   }
 }
 

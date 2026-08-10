@@ -766,6 +766,45 @@ describe('project listing', () => {
   // project is called "default" is the case where getting it wrong hurts
   // most: its testMatch, platform and agent artifacts all get ignored in
   // favour of the root config's.
+  // The failure text says "Boot a simulator and try again", so a run must
+  // actually re-resolve the platform rather than replay the startup error for
+  // the life of the server.
+  it('retries a platform whose target failed, and keeps the failure until it works', async () => {
+    const dispatcher = new HeadlessTestDispatcher({});
+    const internals = dispatcher as unknown as {
+      _targets: Map<string, { address: string; deviceSerial: string }>
+      _targetErrors: Map<string, string>
+      _config: { platform?: string } | null
+      _projects: unknown[]
+      _resolvePlatformTargets: () => Promise<void>
+      _ensureTargetForProject: (project?: string) => Promise<{ deviceSerial: string }>
+    };
+    internals._config = { platform: 'ios' };
+    internals._projects = [];
+    internals._targetErrors.set('ios', 'No ios device is available. Boot a simulator and try again.');
+
+    let attempts = 0;
+    internals._resolvePlatformTargets = async (): Promise<void> => {
+      attempts++;
+      // Still nothing the first time round; the simulator appears before the second.
+      if (attempts > 1) {
+        internals._targetErrors.delete('ios');
+        internals._targets.set('ios', { address: '127.0.0.1:50051', deviceSerial: 'SIM-1' });
+      }
+    };
+
+    await expect(internals._ensureTargetForProject()).rejects.toThrow(/Boot a simulator/);
+    expect(attempts).toBe(1);
+
+    const target = await internals._ensureTargetForProject();
+    expect(target.deviceSerial).toBe('SIM-1');
+    expect(attempts).toBe(2);
+
+    // Resolved now, so no further re-resolution.
+    await internals._ensureTargetForProject();
+    expect(attempts).toBe(2);
+  });
+
   it('lists a lone project the config named "default" itself', () => {
     const dispatcher = dispatcherWithProjects([{ name: 'default' }]);
     expect(dispatcher.getProjects()).toEqual(['default']);
