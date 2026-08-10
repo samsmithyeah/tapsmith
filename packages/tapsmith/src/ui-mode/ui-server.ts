@@ -20,6 +20,7 @@ import { watch as chokidarWatch, type FSWatcher } from 'chokidar';
 import { WebSocketServer, type WebSocket } from 'ws';
 import { McpEventEmitter } from '../mcp/events.js';
 import { McpSessionRouter } from '../mcp/http-session-router.js';
+import { matchRequestedFiles } from '../mcp/headless-dispatcher.js';
 import type { TestDispatcher, TestRunResult, TestResultEntry, TestTreeEntry, SessionInfo } from '../mcp/index.js';
 import type { TapsmithConfig } from '../config.js';
 import { findDaemonBin } from '../daemon-bin.js';
@@ -130,6 +131,12 @@ function isEmulatorOrSimulator(serial: string, platform?: 'android' | 'ios'): bo
 
 export interface UIServerContext {
   config: TapsmithConfig
+  /**
+   * The config file backing this session, reported over MCP. Absent means the
+   * session really is running on built-in defaults — so it must not be left
+   * unset when a config was loaded, or `session_info` says the opposite.
+   */
+  configPath?: string
   /** Single-worker mode device/client (required when workers <= 1). */
   device?: Device
   client?: TapsmithGrpcClient
@@ -603,11 +610,33 @@ export async function startUIServer(
     return entry;
   }
 
+  /**
+   * Projects a caller can actually name. A config that declares none gets one
+   * synthesized for it called "default", which is an implementation detail —
+   * but a config that genuinely names a project "default" must still be listed,
+   * or its files look project-less and cannot be targeted by name.
+   */
+  function realProjects(): ResolvedProject[] {
+    const projects = ctx.projects ?? [];
+    if (projects.length === 1 && projects[0].name === 'default') return [];
+    return projects;
+  }
+
+  /**
+   * Map a caller's file arguments onto discovered test files. MCP callers pass
+   * project-relative paths and globs as readily as absolute ones; matching on
+   * exact absolute paths alone silently ran nothing.
+   */
+  function resolveRequested(files: string[]): string[] {
+    const roots = [ctx.config.rootDir, process.cwd()].filter((r): r is string => Boolean(r));
+    return matchRequestedFiles(files, ctx.testFiles, roots);
+  }
+
   const testDispatcher: TestDispatcher = {
     async runFiles(files, options) {
       if (multiWorker) await ensureWorkersReady();
       const { testFilter, project } = options ?? {};
-      const validFiles = files.filter((f) => ctx.testFiles.includes(f));
+      const validFiles = resolveRequested(files);
       if (validFiles.length === 0) {
         return { status: 'failed', passed: 0, failed: 0, skipped: 0, duration: 0 };
       }
@@ -668,21 +697,17 @@ export async function startUIServer(
     isRunning: () => isRunning,
     getResults: () => [...testResults.values()],
     getTestFiles: () => ctx.testFiles,
-    getProjects: () => {
-      if (!ctx.projects) return [];
-      return ctx.projects.filter((p) => p.name !== 'default').map((p) => p.name);
-    },
+    resolveRequestedFiles: (files) => resolveRequested(files),
+    getProjects: () => realProjects().map((p) => p.name),
     getTestTree: () => testTree.map(toTreeEntry),
     getSessionInfo: (): SessionInfo => {
-      const projects = (ctx.projects ?? [])
-        .filter((p) => p.name !== 'default')
-        .map((p) => ({
-          name: p.name,
-          platform: p.effectiveConfig.platform,
-          package: p.effectiveConfig.package,
-          testFiles: p.testFiles,
-          dependencies: p.dependencies,
-        }));
+      const projects = realProjects().map((p) => ({
+        name: p.name,
+        platform: p.effectiveConfig.platform,
+        package: p.effectiveConfig.package,
+        testFiles: p.testFiles,
+        dependencies: p.dependencies,
+      }));
       return {
         platform: singleWorkerPlatform ?? ctx.config.platform,
         package: ctx.config.package,
@@ -690,6 +715,7 @@ export async function startUIServer(
         timeout: ctx.config.timeout,
         retries: ctx.config.retries,
         projects,
+        configPath: ctx.configPath,
       };
     },
     toggleWatch(filePath, options) {

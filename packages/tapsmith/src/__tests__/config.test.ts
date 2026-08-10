@@ -65,12 +65,34 @@ describe('loadConfig rootDir anchoring', () => {
   it('falls back to the given directory when no config file exists', async () => {
     expect((await loadConfig(root)).rootDir).toBe(root);
   });
+
+  // `loadConfig` returns the merged config and nothing about where it came
+  // from, so UI mode reported "Config: none — using built-in defaults" over
+  // MCP even when launched with `-c`. Naming the file is the whole point of
+  // that line, so it has to be resolved the same way loadConfig resolves it.
+  describe('resolveConfigPath', () => {
+    it('names the explicitly requested config file', () => {
+      const file = writeConfig(path.join(root, 'configs'), 'export default {}\n');
+      expect(resolveConfigPath(root, path.relative(root, file))).toBe(file);
+    });
+
+    it('names the config it discovers in the directory', () => {
+      const file = writeConfig(root, 'export default {}\n');
+      expect(resolveConfigPath(root)).toBe(file);
+    });
+
+    it('reports no config when none exists, rather than a path that is not read', () => {
+      expect(resolveConfigPath(root)).toBeUndefined();
+      expect(resolveConfigPath(root, 'missing.config.mjs')).toBeUndefined();
+    });
+  });
 });
 import {
   defineConfig,
   resolveDeviceStrategy,
   isExplicitWorkers,
   loadConfig,
+  resolveConfigPath,
   normalizeGrep,
 } from '../config.js';
 

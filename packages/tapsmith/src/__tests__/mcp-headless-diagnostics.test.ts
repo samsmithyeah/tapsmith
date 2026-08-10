@@ -7,6 +7,7 @@ import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { registerListTestsTool } from '../mcp/tools/list-tests.js';
 import { needsTsxLoader, resolveTsxBin, resolveChildLoader } from '../child-scripts.js';
 import {
+  HeadlessTestDispatcher,
   fileFailureEntry,
   resultEntryKey,
   matchRequestedFiles,
@@ -653,5 +654,44 @@ describe('selectPlatformTarget', () => {
   it('surfaces the only recorded failure for a platform-less run with no targets', () => {
     const errors = new Map([['android', 'No android device is available. Start an emulator.']]);
     expect(() => selectPlatformTarget('default', new Map(), errors)).toThrow(/Start an emulator/);
+  });
+});
+
+// A config that declares no projects gets one synthesized for it, named
+// "default", which is an implementation detail and must stay hidden. Filtering
+// that name blindly also hid projects a user had deliberately named "default"
+// — in the e2e iOS config that is 33 of 35 files, listed in the test tree but
+// absent from `Projects:`, so no caller could pass it to run_tests.
+describe('project listing', () => {
+  function dispatcherWithProjects(names: string[]): TestDispatcher {
+    const dispatcher = new HeadlessTestDispatcher({});
+    const internals = dispatcher as unknown as {
+      _projects: Array<{
+        name: string
+        effectiveConfig: Record<string, unknown>
+        testFiles: string[]
+        dependencies: string[]
+      }>
+    };
+    internals._projects = names.map((name) => ({
+      name,
+      effectiveConfig: { platform: 'ios' },
+      testFiles: [`/tests/${name}.test.ts`],
+      dependencies: [],
+    }));
+    return dispatcher;
+  }
+
+  it('hides the project synthesized for a config that declares none', () => {
+    const dispatcher = dispatcherWithProjects(['default']);
+    expect(dispatcher.getProjects()).toEqual([]);
+    expect(dispatcher.getSessionInfo().projects).toEqual([]);
+  });
+
+  it('lists a project the config genuinely named "default"', () => {
+    const dispatcher = dispatcherWithProjects(['authentication', 'default', 'authenticated']);
+    expect(dispatcher.getProjects()).toEqual(['authentication', 'default', 'authenticated']);
+    expect(dispatcher.getSessionInfo().projects.map((p) => p.name))
+      .toEqual(['authentication', 'default', 'authenticated']);
   });
 });

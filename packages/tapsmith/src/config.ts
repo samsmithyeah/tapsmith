@@ -498,6 +498,25 @@ function resolveRootDir(raw: Partial<TapsmithConfig>, root: string): string {
   return rawHasExplicitRootDir(raw) && raw.rootDir ? path.resolve(root, raw.rootDir) : root;
 }
 
+const CONFIG_CANDIDATES = ['tapsmith.config.ts', 'tapsmith.config.js', 'tapsmith.config.mjs'];
+
+/**
+ * The config file `loadConfig(dir, configFile)` would read, or undefined when
+ * it would fall back to built-in defaults. Callers that report which config
+ * backs a session need this: `loadConfig` returns the merged config only, so
+ * without it a synthesized default is indistinguishable from a real project.
+ */
+export function resolveConfigPath(dir?: string, configFile?: string): string | undefined {
+  const root = dir ?? process.cwd();
+  if (configFile) {
+    const configPath = path.resolve(root, configFile);
+    return fs.existsSync(configPath) ? configPath : undefined;
+  }
+  return CONFIG_CANDIDATES
+    .map((name) => path.resolve(root, name))
+    .find((candidate) => fs.existsSync(candidate));
+}
+
 export async function loadConfig(dir?: string, configFile?: string): Promise<TapsmithConfig> {
   const root = dir ?? process.cwd();
 
@@ -519,9 +538,7 @@ export async function loadConfig(dir?: string, configFile?: string): Promise<Tap
     return withExplicitWorkers(merged, rawHasExplicitWorkers(original));
   }
 
-  const candidates = ['tapsmith.config.ts', 'tapsmith.config.js', 'tapsmith.config.mjs'];
-
-  for (const name of candidates) {
+  for (const name of CONFIG_CANDIDATES) {
     const configPath = path.resolve(root, name);
     if (fs.existsSync(configPath)) {
       try {

@@ -295,9 +295,11 @@ export class HeadlessTestDispatcher implements TestDispatcher {
   }
 
   getProjects(): string[] {
-    return this._projects
-      .filter((p) => p.name !== 'default')
-      .map((p) => p.name);
+    // Hide only the project synthesized for a config that declares none — a
+    // config that genuinely names a project "default" must still list it, or
+    // the caller cannot pass it to `run_tests`.
+    if (!this._hasRealProjects()) return [];
+    return this._projects.map((p) => p.name);
   }
 
   getTestTree(): TestTreeEntry[] {
@@ -321,8 +323,7 @@ export class HeadlessTestDispatcher implements TestDispatcher {
   }
 
   getSessionInfo(): SessionInfo {
-    const projects = this._projects
-      .filter((p) => p.name !== 'default')
+    const projects = (this._hasRealProjects() ? this._projects : [])
       .map((p) => ({
         name: p.name,
         platform: p.effectiveConfig.platform,

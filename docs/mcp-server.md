@@ -279,10 +279,12 @@ No parameters.
 
 Returns session details: the config file backing the session, device serial, platform, app package, timeout, retries, and per-project settings (name, platform, package, test file count, dependencies).
 
-Check the `Config:` line first — everything else is derived from it. A session
-started outside a project directory may pick up a config you did not intend, or
-find none at all and fall back to defaults; in the latter case it has no app to
-launch, so a warning is returned here and on every failed run.
+Check the `Config:` line first — everything else is derived from it. A headless
+session started outside a project directory may pick up a config you did not
+intend, or find none at all and fall back to defaults; in the latter case it has
+no app to launch, so a warning is returned here and on every failed run. A
+UI-mode session reports the config `tapsmith test --ui` was launched with, which
+is always a real one.
 
 Paths inside a config are resolved relative to the config file's own directory,
 so it does not matter which directory the MCP server was started in.
