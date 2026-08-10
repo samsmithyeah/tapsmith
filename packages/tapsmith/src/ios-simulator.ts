@@ -454,6 +454,7 @@ function atomicWriteManifest(file: string, entries: SimulatorManifestEntry[]): v
 // next to the target file with retry/backoff and stale-lock detection.
 function withManifestLock<T>(
   fn: (entries: SimulatorManifestEntry[]) => { result: T; updated?: SimulatorManifestEntry[] },
+  options?: { staleMs?: number },
 ): T {
   const file = ensureManifestFile();
   // withFileLockSync, not lockfile.lockSync directly: the sync API rejects a
@@ -469,7 +470,7 @@ function withManifestLock<T>(
       try { atomicWriteManifest(file, updated); } catch { /* stale entry cleaned up next run */ }
     }
     return { result };
-  }, { attempts: 10, waitMs: 50 });
+  }, { attempts: 10, waitMs: 50, staleMs: options?.staleMs });
   if (locked) return locked.result;
 
   // Couldn't acquire the lock — fall back to a best-effort unlocked operation.
@@ -682,7 +683,11 @@ export function cleanupStaleSimulators(
     }
 
     return { result: undefined, updated: surviving };
-  });
+  // Each entry runs synchronous simctl probes and deletes, which block the
+  // event loop — so proper-lockfile's mtime refresh timer never fires and the
+  // default 10s stale window would let a concurrent run break this lock and
+  // delete the same UDIDs. Declare a window that covers the whole sweep.
+  }, { staleMs: 5 * 60_000 });
 
   // Phase 2: heuristic cleanup — delete orphaned "Tapsmith Worker" sims
   const allSims = listSimulators();

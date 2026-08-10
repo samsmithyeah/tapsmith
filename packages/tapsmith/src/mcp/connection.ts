@@ -247,7 +247,13 @@ async function discover(): Promise<void> {
   if (!conn) return;
 
   try {
-    await setDeviceAndAgent(conn.client, config);
+    // Record what it was pointed at: a platform-less daemon picks whichever
+    // device is Active and starts that platform's agent, so a later target
+    // claiming this daemon for a *different* device must know it is repointing
+    // one — otherwise the daemon reports an agent connected and the second
+    // platform silently runs against the first one's.
+    conn.preparedDevice = await setDeviceAndAgent(conn.client, config);
+    conn.agentDevice = conn.preparedDevice;
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     log(`Daemon started but setup failed: ${msg}`);
@@ -817,10 +823,11 @@ function removeConnection(conn: DaemonConnection): void {
 
 // ─── Device & Agent Setup ───
 
+/** Points the daemon at a device and starts its agent; returns that device. */
 async function setDeviceAndAgent(
   client: TapsmithGrpcClient,
   config: TapsmithConfig | null,
-): Promise<void> {
+): Promise<string | undefined> {
   let serial: string | undefined;
 
   if (config?.device) {
@@ -834,12 +841,13 @@ async function setDeviceAndAgent(
 
   if (!serial) {
     log('No devices found — device tools will fail until one is connected');
-    return;
+    return undefined;
   }
 
   await client.setDevice(serial);
   log(`Using device: ${serial}`);
   await startAgentFromConfig(client, config);
+  return serial;
 }
 
 /**

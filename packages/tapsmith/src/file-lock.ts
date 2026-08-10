@@ -29,15 +29,20 @@ function sleepSync(ms: number): void {
 export function withFileLockSync<T>(
   file: string,
   fn: () => T,
-  options?: { attempts?: number; waitMs?: number },
+  options?: { attempts?: number; waitMs?: number; staleMs?: number },
 ): T | undefined {
   const attempts = options?.attempts ?? DEFAULT_ATTEMPTS;
   const waitMs = options?.waitMs ?? DEFAULT_WAIT_MS;
+  // proper-lockfile keeps a held lock fresh from a timer, which cannot fire
+  // while `fn` blocks the event loop. A critical section that runs synchronous
+  // subprocesses therefore has to declare a stale window long enough to cover
+  // itself, or a concurrent process breaks the lock and both proceed.
+  const staleMs = options?.staleMs ?? STALE_MS;
 
   let release: (() => void) | undefined;
   for (let attempt = 0; attempt < attempts; attempt++) {
     try {
-      release = lockfile.lockSync(file, { stale: STALE_MS });
+      release = lockfile.lockSync(file, { stale: staleMs });
       break;
     } catch (err) {
       // ENOENT means the target vanished — retrying cannot help.

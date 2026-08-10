@@ -90,6 +90,8 @@ export class HeadlessTestDispatcher implements TestDispatcher {
   private _targets = new Map<string, PlatformTarget>();
   /** Why a platform has no target, kept so a run for it can say so. */
   private _targetErrors = new Map<string, string>();
+  /** Platforms already retried once, so a stuck one is not retried per file. */
+  private _retriedTargets = new Set<string>();
   /** Per-project serialized configs handed to workers, built on first use. */
   private _projectConfigs = new Map<string, SerializedConfig>();
 
@@ -459,26 +461,37 @@ export class HeadlessTestDispatcher implements TestDispatcher {
   private async _resolvePlatformTargets(config: TapsmithConfig | null): Promise<void> {
     this._targets.clear();
     this._targetErrors.clear();
+    this._retriedTargets.clear();
     if (!config) return;
 
-    const wanted = this._hasRealProjects()
-      ? [...new Map(this._projects.map((p) => [platformKey(p.effectiveConfig.platform), p.effectiveConfig])).values()]
-      : [config];
-
-    for (const effective of wanted) {
-      const key = platformKey(effective.platform);
-      try {
-        const target = await ensurePlatformTarget(effective);
-        this._targets.set(key, target);
-        log(`Using ${key === DEFAULT_PLATFORM_KEY ? 'device' : `${key} device`} ${target.deviceSerial} via ${target.address}`);
-      } catch (err) {
-        const message = err instanceof Error ? err.message : String(err);
-        this._targetErrors.set(key, message);
-        log(`Warning: ${key === DEFAULT_PLATFORM_KEY ? 'device' : key} setup failed: ${message}`);
-      }
+    for (const effective of this._wantedConfigs(config)) {
+      await this._resolveOnePlatformTarget(effective);
     }
 
     this._deviceSerial = [...this._targets.values()][0]?.deviceSerial ?? null;
+  }
+
+  /** One effective config per platform the session runs on. */
+  private _wantedConfigs(config: TapsmithConfig): TapsmithConfig[] {
+    return this._hasRealProjects()
+      ? [...new Map(this._projects.map((p) => [platformKey(p.effectiveConfig.platform), p.effectiveConfig])).values()]
+      : [config];
+  }
+
+  /** Resolve (or re-resolve) a single platform, leaving the others alone. */
+  private async _resolveOnePlatformTarget(effective: TapsmithConfig): Promise<void> {
+    const key = platformKey(effective.platform);
+    try {
+      const target = await ensurePlatformTarget(effective);
+      this._targets.set(key, target);
+      this._targetErrors.delete(key);
+      this._deviceSerial ??= target.deviceSerial;
+      log(`Using ${key === DEFAULT_PLATFORM_KEY ? 'device' : `${key} device`} ${target.deviceSerial} via ${target.address}`);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      this._targetErrors.set(key, message);
+      log(`Warning: ${key === DEFAULT_PLATFORM_KEY ? 'device' : key} setup failed: ${message}`);
+    }
   }
 
   /**
@@ -532,23 +545,22 @@ export class HeadlessTestDispatcher implements TestDispatcher {
    * Android emulator, where every assertion fails for reasons that look
    * nothing like the actual problem.
    */
-  private _targetForProject(projectName?: string): PlatformTarget {
-    const key = platformKeyForProject(this._projects, projectName, this._config?.platform);
-    return selectPlatformTarget(key, this._targets, this._targetErrors);
-  }
-
   /**
-   * A platform's target, re-resolving once if it previously failed.
+   * A platform's target, re-resolving it once if it previously failed.
    *
    * Targets are resolved at startup, but the failure message tells the user to
    * boot a simulator "and try again" — and a server that caches the error for
-   * its whole life never lets them. Only failed platforms are retried, so a
-   * working session never pays for this.
+   * its whole life never lets them. Strictly this platform, and strictly once
+   * per platform: re-resolving everything would spawn and discard a daemon per
+   * file for a platform that stays unavailable, and a transient failure while
+   * re-resolving a *healthy* platform would throw away a working target.
    */
   private async _ensureTargetForProject(projectName?: string): Promise<PlatformTarget> {
     const key = platformKeyForProject(this._projects, projectName, this._config?.platform);
-    if (this._targetErrors.has(key) && !this._targets.has(key)) {
-      await this._resolvePlatformTargets(this._config);
+    if (this._config && this._targetErrors.has(key) && !this._retriedTargets.has(key)) {
+      this._retriedTargets.add(key);
+      const effective = this._wantedConfigs(this._config).find((c) => platformKey(c.platform) === key);
+      if (effective) await this._resolveOnePlatformTarget(effective);
     }
     return selectPlatformTarget(key, this._targets, this._targetErrors);
   }

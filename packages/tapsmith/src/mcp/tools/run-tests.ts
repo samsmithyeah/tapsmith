@@ -254,6 +254,13 @@ function buildNoTestsExecutedMessage(
   duration: number,
 ): string {
   const summary = `Test run failed — no tests executed (${passed} passed, ${skipped} skipped, ${duration}ms).`;
+  // A whole-suite run supplied no paths, so there is nothing to blame on the
+  // arguments — saying "the file(s) were found but contained no tests" invents
+  // files the caller never named.
+  if (files.length === 0) {
+    return `${summary} The session discovered no runnable tests — use tapsmith_list_tests to see what it found, `
+      + 'including any file that failed to load.';
+  }
   const resolve = dispatcher.resolveRequestedFiles;
   if (!resolve) {
     return `${summary} Check that the requested file path(s) exist and were discovered (use tapsmith_list_tests).`;

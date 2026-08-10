@@ -769,40 +769,61 @@ describe('project listing', () => {
   // The failure text says "Boot a simulator and try again", so a run must
   // actually re-resolve the platform rather than replay the startup error for
   // the life of the server.
-  it('retries a platform whose target failed, and keeps the failure until it works', async () => {
+  it('retries a platform whose target failed, and only that platform, only once', async () => {
     const dispatcher = new HeadlessTestDispatcher({});
     const internals = dispatcher as unknown as {
       _targets: Map<string, { address: string; deviceSerial: string }>
       _targetErrors: Map<string, string>
       _config: { platform?: string } | null
       _projects: unknown[]
-      _resolvePlatformTargets: () => Promise<void>
+      _resolveOnePlatformTarget: (effective: { platform?: string }) => Promise<void>
       _ensureTargetForProject: (project?: string) => Promise<{ deviceSerial: string }>
+    };
+    internals._config = { platform: 'ios' };
+    internals._projects = [];
+    internals._targets.set('android', { address: '127.0.0.1:50052', deviceSerial: 'EMU-1' });
+    internals._targetErrors.set('ios', 'No ios device is available. Boot a simulator and try again.');
+
+    const retried: Array<string | undefined> = [];
+    internals._resolveOnePlatformTarget = async (effective): Promise<void> => {
+      retried.push(effective.platform);
+      // The simulator appears before the retry lands.
+      internals._targetErrors.delete('ios');
+      internals._targets.set('ios', { address: '127.0.0.1:50051', deviceSerial: 'SIM-1' });
+    };
+
+    const target = await internals._ensureTargetForProject();
+    expect(target.deviceSerial).toBe('SIM-1');
+    // Only the failed platform, and the healthy android target is untouched.
+    expect(retried).toEqual(['ios']);
+    expect(internals._targets.get('android')?.deviceSerial).toBe('EMU-1');
+
+    await internals._ensureTargetForProject();
+    expect(retried).toEqual(['ios']);
+  });
+
+  it('gives up on a platform that stays unavailable instead of retrying per file', async () => {
+    const dispatcher = new HeadlessTestDispatcher({});
+    const internals = dispatcher as unknown as {
+      _targets: Map<string, unknown>
+      _targetErrors: Map<string, string>
+      _config: { platform?: string } | null
+      _projects: unknown[]
+      _resolveOnePlatformTarget: (effective: { platform?: string }) => Promise<void>
+      _ensureTargetForProject: (project?: string) => Promise<unknown>
     };
     internals._config = { platform: 'ios' };
     internals._projects = [];
     internals._targetErrors.set('ios', 'No ios device is available. Boot a simulator and try again.');
 
     let attempts = 0;
-    internals._resolvePlatformTargets = async (): Promise<void> => {
-      attempts++;
-      // Still nothing the first time round; the simulator appears before the second.
-      if (attempts > 1) {
-        internals._targetErrors.delete('ios');
-        internals._targets.set('ios', { address: '127.0.0.1:50051', deviceSerial: 'SIM-1' });
-      }
-    };
+    internals._resolveOnePlatformTarget = async (): Promise<void> => { attempts++; };
 
     await expect(internals._ensureTargetForProject()).rejects.toThrow(/Boot a simulator/);
+    await expect(internals._ensureTargetForProject()).rejects.toThrow(/Boot a simulator/);
+    await expect(internals._ensureTargetForProject()).rejects.toThrow(/Boot a simulator/);
+    // A 20-file run must not spawn and discard a daemon 20 times.
     expect(attempts).toBe(1);
-
-    const target = await internals._ensureTargetForProject();
-    expect(target.deviceSerial).toBe('SIM-1');
-    expect(attempts).toBe(2);
-
-    // Resolved now, so no further re-resolution.
-    await internals._ensureTargetForProject();
-    expect(attempts).toBe(2);
   });
 
   it('lists a lone project the config named "default" itself', () => {
