@@ -15,12 +15,26 @@ const DEFAULT_ADDRESS = 'localhost:50051';
 // ─── Connection Pool ───
 
 /**
- * Where a pooled daemon came from. It decides what we may do to it: a daemon
- * we started (or an equivalent peer MCP session's) can be pointed at a device
- * and have an agent started on it, but a UI-mode worker daemon is mid-run for
- * someone else and must not be repointed underneath them.
+ * Where a pooled daemon came from. It decides what we may do to it.
+ *
+ * The line that matters is whether something else is still driving it. A
+ * daemon we `started`, one the user `configured` us to use, or an `orphan`
+ * whose starting session is gone, are all ours: they can be repointed and have
+ * an agent started on them. A `peer` MCP session's and a `ui` worker's are
+ * mid-run for someone else — repointing one sends their next action to our
+ * device, and starting an agent installs our config's artifacts on theirs.
  */
-type DaemonSource = 'started' | 'peer' | 'configured' | 'ui';
+type DaemonSource = 'started' | 'peer' | 'orphan' | 'configured' | 'ui';
+
+/** Sources we are free to repoint and start agents on. */
+function isOurs(source: DaemonSource): boolean {
+  return source === 'started' || source === 'configured' || source === 'orphan';
+}
+
+/** Sources that record themselves in the shared registry, and so must unregister. */
+function isRegistered(source: DaemonSource): boolean {
+  return source === 'started' || source === 'peer' || source === 'orphan';
+}
 
 interface DaemonConnection {
   client: TapsmithGrpcClient
@@ -182,8 +196,8 @@ async function discover(): Promise<void> {
   // 5. Daemons started by other MCP sessions in this project. Without this each
   // session starts its own daemon on a random port and they pile up, all
   // driving the same device.
-  for (const address of readDaemonRegistry()) {
-    addCandidate(address, 'peer');
+  for (const { address, orphaned } of readDaemonRegistry()) {
+    addCandidate(address, orphaned ? 'orphan' : 'peer');
   }
 
   // 6. Default address
@@ -221,14 +235,20 @@ async function discover(): Promise<void> {
         return null;
       }
       try {
-        const { agentConnected } = await client.ping();
-        if (!agentConnected) {
-          await startAgentFromConfig(client, config);
+        // Only on a daemon that is ours to drive. A 'peer' or 'ui' daemon
+        // belongs to a live session of someone else's, and one reporting no
+        // agent is usually between runs rather than free — installing our
+        // config's agent artifacts on its active device puts a different
+        // platform's app on a device we do not own. An 'orphan' has no such
+        // owner left, so recovering its agent here is exactly right.
+        if (isOurs(source)) {
+          const { agentConnected } = await client.ping();
+          if (!agentConnected) await startAgentFromConfig(client, config);
         }
         log(`Connected to daemon at ${address}`);
         // Adopting a peer session's daemon makes us a user of it, so its
         // starter must not kill it while we are still here.
-        if (source === 'peer') registerDaemon(address);
+        if (source === 'peer' || source === 'orphan') registerDaemon(address);
         return { client, address, devices: [], source } as DaemonConnection;
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
@@ -786,12 +806,7 @@ function updateRegistry(
   if (!file) return;
   try {
     if (!fs.existsSync(file)) fs.writeFileSync(file, '[]', { encoding: 'utf-8', mode: 0o600 });
-    // A dropped write is not fatal, but it is worth saying: the session then
-    // holds a daemon no peer knows about, and whoever started it may reap it
-    // mid-session believing nobody else is attached.
-    let wrote = false;
-    withFileLockSync(file, () => {
-      wrote = true;
+    const { locked } = withFileLockSync(file, () => {
       // Share before transforming as well as after: the row being removed here
       // is often the only one carrying the daemon pid, and the same is true of
       // a row about to be dropped for a dead session.
@@ -802,7 +817,10 @@ function updateRegistry(
       fs.writeFileSync(tmp, JSON.stringify(deduped), { encoding: 'utf-8', mode: 0o600 });
       fs.renameSync(tmp, file);
     });
-    if (!wrote) log(`Warning: could not lock the daemon registry at ${file}; this session's daemon record was not written`);
+    // A dropped write is not fatal, but it is worth saying: the session then
+    // holds a daemon no peer knows about, and whoever started it may reap it
+    // mid-session believing nobody else is attached.
+    if (!locked) log(`Warning: could not lock the daemon registry at ${file}; this session's daemon record was not written`);
   } catch {
     // The registry is an optimisation; never fail a session over it.
   }
@@ -825,9 +843,27 @@ function entryIsLive(entry: DaemonRegistryEntry): boolean {
   return Boolean(entry.daemonPid && isTapsmithDaemonProcess(entry.daemonPid));
 }
 
-/** Addresses of daemons this project's MCP sessions are using. @internal — exported for unit testing. */
-export function readDaemonRegistry(): string[] {
-  return [...new Set(readRegistryEntries().filter(entryIsLive).map((e) => e.address))];
+/**
+ * Daemons this project's MCP sessions are using, and whether each still has an
+ * owner.
+ *
+ * `orphaned` is what separates "another session is driving this" from "the
+ * session that started this is gone". The second is ours to repoint, to start
+ * an agent on, and eventually to reap; treating it as a peer would leave it
+ * running untouched forever.
+ *
+ * @internal — exported for unit testing.
+ */
+export function readDaemonRegistry(): Array<{ address: string; orphaned: boolean }> {
+  const byAddress = new Map<string, boolean>();
+  for (const entry of readRegistryEntries()) {
+    if (!entryIsLive(entry)) continue;
+    const orphaned = !isProcessAlive(entry.pid);
+    // Any live owner wins: one dead session's row must not mark an address
+    // orphaned while another session is still using the same daemon.
+    byAddress.set(entry.address, (byAddress.get(entry.address) ?? true) && orphaned);
+  }
+  return [...byAddress].map(([address, orphaned]) => ({ address, orphaned }));
 }
 
 /** Record that this session is using a daemon. @internal — exported for unit testing. */
@@ -930,7 +966,7 @@ function removeConnection(conn: DaemonConnection): void {
   // sources that ever registered pay for the locked registry write: this runs
   // from `ensureConnected` whenever a 1s probe fails, and the lock blocks the
   // event loop while it waits.
-  if (conn.source === 'started' || conn.source === 'peer') {
+  if (isRegistered(conn.source)) {
     unregisterDaemon(conn.address);
     if (conn.daemonProcess && !daemonInUseByOthers(conn.address)) conn.daemonProcess.kill();
   } else if (conn.daemonProcess) {
@@ -1035,7 +1071,7 @@ export function closeAllClients(): void {
     // Drop our claim first, then keep the daemon alive if a peer session still
     // holds one: it adopted this address from the registry and has no process
     // of its own to fall back on.
-    if (conn.source !== 'started' && conn.source !== 'peer') continue;
+    if (!isRegistered(conn.source)) continue;
     // Read the daemon's pid before dropping our record: an adopted daemon has
     // no child handle here, and we may be the last session able to reap it.
     const daemonPid = conn.daemonProcess?.pid ?? registeredDaemonPid(conn.address);

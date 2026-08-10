@@ -28,7 +28,7 @@ describe('withFileLockSync', () => {
       expect(lockfile.checkSync(file)).toBe(true);
       return 'done';
     });
-    expect(held).toBe('done');
+    expect(held).toEqual({ locked: true, value: 'done' });
   });
 
   it('releases the lock afterwards', () => {
@@ -45,14 +45,25 @@ describe('withFileLockSync', () => {
     const release = lockfile.lockSync(file, { stale: 60_000 });
     try {
       const result = withFileLockSync(file, () => 'should not run', { attempts: 2, waitMs: 5 });
-      expect(result).toBeUndefined();
+      expect(result).toEqual({ locked: false });
     } finally {
       release();
     }
   });
 
-  it('returns undefined for a file that does not exist', () => {
-    expect(withFileLockSync(path.join(root, 'missing.json'), () => 'x')).toBeUndefined();
+  it('reports not-locked for a file that does not exist', () => {
+    expect(withFileLockSync(path.join(root, 'missing.json'), () => 'x')).toEqual({ locked: false });
+  });
+
+  // The reason the outcome is a discriminated result rather than `T |
+  // undefined`: a callback that legitimately returns undefined is
+  // indistinguishable from one that never ran under the old signature, so a
+  // caller would read its own success as contention.
+  it('distinguishes a callback returning undefined from never running', () => {
+    let ran = false;
+    const outcome = withFileLockSync(file, () => { ran = true; return undefined; });
+    expect(ran).toBe(true);
+    expect(outcome).toEqual({ locked: true, value: undefined });
   });
 
   it('serialises concurrent read-modify-write cycles', () => {

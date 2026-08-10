@@ -20,17 +20,25 @@ function sleepSync(ms: number): void {
   Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 }
 
+/** Outcome of {@link withFileLockSync}: whether the lock was held, and what `fn` returned. */
+export type LockOutcome<T> =
+  | { locked: true; value: T }
+  | { locked: false };
+
 /**
  * Run `fn` while holding an exclusive lock on `file`.
  *
- * Returns `fn`'s result, or `undefined` when the lock could not be acquired —
- * callers decide whether to skip the work or proceed unlocked.
+ * The result says whether the lock was acquired, separately from what `fn`
+ * returned — callers decide whether to skip the work or proceed unlocked, and
+ * a bare `undefined` return could not tell "never ran" from "ran and returned
+ * nothing". Any caller whose `fn` returns `undefined` or `false` would
+ * otherwise read its own success as contention.
  */
 export function withFileLockSync<T>(
   file: string,
   fn: () => T,
   options?: { attempts?: number; waitMs?: number; staleMs?: number },
-): T | undefined {
+): LockOutcome<T> {
   const attempts = options?.attempts ?? DEFAULT_ATTEMPTS;
   const waitMs = options?.waitMs ?? DEFAULT_WAIT_MS;
   // proper-lockfile keeps a held lock fresh from a timer, which cannot fire
@@ -46,15 +54,15 @@ export function withFileLockSync<T>(
       break;
     } catch (err) {
       // ENOENT means the target vanished — retrying cannot help.
-      if ((err as NodeJS.ErrnoException).code === 'ENOENT' && !fs.existsSync(file)) return undefined;
-      if (attempt === attempts - 1) return undefined;
+      if ((err as NodeJS.ErrnoException).code === 'ENOENT' && !fs.existsSync(file)) return { locked: false };
+      if (attempt === attempts - 1) return { locked: false };
       sleepSync(waitMs);
     }
   }
-  if (!release) return undefined;
+  if (!release) return { locked: false };
 
   try {
-    return fn();
+    return { locked: true, value: fn() };
   } finally {
     try { release(); } catch { /* lock already released or broken */ }
   }

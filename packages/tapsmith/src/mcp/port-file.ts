@@ -25,13 +25,29 @@ export function uiPortFilePath(): string {
  * default port.
  */
 export function mcpDaemonRegistryPath(): string {
-  // Under a per-user directory rather than loose in the shared temp dir: the
-  // file name is derived only from the project path, so on a multi-user host
-  // anyone could otherwise plant one and hand the session a daemon address of
-  // their choosing. The directory is only as good as its permissions, which
-  // the writer verifies before trusting it (see `privateRegistryFile`).
+  // Under the home directory, not the temp dir, because `os.tmpdir()` reads
+  // `TMPDIR` — and an MCP server is spawned by its client, which may sanitize
+  // the environment (the reference stdio transport passes only a small
+  // allow-list, dropping `TMPDIR`). The path would then differ between a
+  // client-launched session and a shell-launched one, so two sessions in the
+  // same project would keep separate registries and each start its own daemon:
+  // exactly the pile-up this file exists to prevent.
+  //
+  // Its own subdirectory, so the permission tightening in `privateRegistryFile`
+  // applies here and never to a `~/.tapsmith` the user shares with other tools.
+  return path.join(daemonStateDir(), `mcp-daemons-${projectHash()}.json`);
+}
+
+function daemonStateDir(): string {
+  const home = os.homedir();
+  if (home) return path.join(home, '.tapsmith', 'daemons');
+  // No home directory to speak of: fall back to a per-user temp directory. The
+  // name is derived only from the project path, so on a multi-user host anyone
+  // could otherwise plant a file and hand the session a daemon address of their
+  // choosing — which is why the writer verifies the directory before trusting
+  // it (see `privateRegistryFile`).
   const uid = typeof process.getuid === 'function' ? process.getuid() : 'user';
-  return path.join(os.tmpdir(), `tapsmith-${uid}`, `mcp-daemons-${projectHash()}.json`);
+  return path.join(os.tmpdir(), `tapsmith-${uid}`);
 }
 
 export function mcpActivityFilePath(): string {

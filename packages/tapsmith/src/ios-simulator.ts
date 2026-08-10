@@ -480,7 +480,7 @@ function withManifestLock<T>(
   // withFileLockSync, not lockfile.lockSync directly: the sync API rejects a
   // `retries` option ("Cannot use retries with the sync api"), so passing one
   // threw every time and this always ran unlocked.
-  const locked = withFileLockSync(file, () => {
+  const outcome = withFileLockSync(file, () => {
     const entries = readManifestUnlocked(file);
     const { result, updated } = fn(entries);
     // Best effort inside the lock too. While the lock never worked, every call
@@ -491,7 +491,7 @@ function withManifestLock<T>(
     }
     return { result };
   }, { attempts: 10, waitMs: 50, staleMs: MANIFEST_STALE_MS });
-  if (locked) return locked.result;
+  if (outcome.locked) return outcome.value.result;
 
   // Couldn't acquire the lock. For bookkeeping the unlocked fallback below is
   // fine — worst case is a stale entry cleaned up next run, same as the prior
@@ -716,6 +716,16 @@ export function cleanupStaleSimulators(
     // `handledUdids`, so continuing with an empty set would delete the very
     // clones that run is reclaiming. Skipping costs this run its reusable
     // clones — it clones fresh instead — and the next sweep cleans up.
+    //
+    // Said out loud because the symptom otherwise reads as "reuse is broken":
+    // a process killed with SIGKILL mid-sweep leaves its lock behind, and
+    // every run for the next MANIFEST_STALE_MS clones fresh with no clue why.
+    // (An ordinary Ctrl-C is fine — proper-lockfile removes held locks from
+    // its own exit hook.)
+    console.error(
+      'Skipping simulator cleanup: another Tapsmith run holds the simulator manifest lock. '
+      + 'This run will clone fresh simulators instead of reusing any.',
+    );
     return { reusable, killed };
   }
 

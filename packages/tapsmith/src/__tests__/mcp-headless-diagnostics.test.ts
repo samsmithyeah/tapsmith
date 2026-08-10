@@ -423,6 +423,31 @@ describe('loadMcpConfig config-file reporting', () => {
     expect(result.warning).toContain('e2e');
     expect(result.warning).toContain('smoke');
   });
+
+  // The working directory's config is the one the user meant. When it is
+  // broken, quietly adopting a nested one instead reports a config the session
+  // is not running under and buries the import error the user has to fix.
+  it('reports a broken working-directory config instead of falling back to a nested one', async () => {
+    fs.writeFileSync(path.join(root, 'tapsmith.config.mjs'), 'throw new Error("boom")\n');
+    fs.mkdirSync(path.join(root, 'e2e'));
+    fs.writeFileSync(path.join(root, 'e2e', 'tapsmith.config.mjs'), 'export default { platform: "ios" }\n');
+    process.chdir(root);
+    const result = await loadMcpConfig();
+    expect(result.configPath).toBeUndefined();
+    expect(result.warning).toContain('could not be loaded');
+    expect(result.warning).toContain('tapsmith.config.mjs');
+    // And it points at the alternative rather than only saying "fix it".
+    expect(result.warning).toContain('e2e');
+  });
+
+  it('reports a broken nested config rather than passing defaults off as it', async () => {
+    fs.mkdirSync(path.join(root, 'e2e'));
+    fs.writeFileSync(path.join(root, 'e2e', 'tapsmith.config.mjs'), 'throw new Error("boom")\n');
+    process.chdir(root);
+    const result = await loadMcpConfig();
+    expect(result.configPath).toBeUndefined();
+    expect(result.warning).toContain('could not be loaded');
+  });
 });
 
 // A multi-platform config keeps its platforms on the projects, not at the top
@@ -519,25 +544,31 @@ describe('tapsmith_session_info device targets', () => {
 
 describe('MCP daemon registry', () => {
   let root: string;
-  let originalTmp: string | undefined;
+  let originalHome: string | undefined;
 
+  /** Registry addresses alone, for the cases that do not care about ownership. */
+  const addresses = (): string[] => readDaemonRegistry().map((e) => e.address);
+
+  // HOME, because the registry lives under the home directory — deliberately,
+  // so an MCP client that sanitizes TMPDIR out of the server's environment
+  // cannot split one project's sessions across two registries.
   beforeEach(() => {
-    originalTmp = process.env.TMPDIR;
+    originalHome = process.env.HOME;
     root = fs.mkdtempSync(path.join(os.tmpdir(), 'tapsmith-reg-'));
-    process.env.TMPDIR = root;
+    process.env.HOME = root;
   });
 
   afterEach(() => {
     // Assigning undefined to an env var stores the string "undefined", which
-    // os.tmpdir() then hands back as a path. On Linux CI, where TMPDIR is
-    // normally unset, that poisoned every test after the first.
-    if (originalTmp === undefined) delete process.env.TMPDIR;
-    else process.env.TMPDIR = originalTmp;
+    // os.homedir() then hands back as a path — pointing the next test at a
+    // literal ./undefined directory instead of the real home.
+    if (originalHome === undefined) delete process.env.HOME;
+    else process.env.HOME = originalHome;
     fs.rmSync(root, { recursive: true, force: true });
   });
 
   it('starts empty and survives a missing registry file', () => {
-    expect(readDaemonRegistry()).toEqual([]);
+    expect(addresses()).toEqual([]);
   });
 
   it('ignores non-loopback addresses planted in the shared temp file', () => {
@@ -554,12 +585,12 @@ describe('MCP daemon registry', () => {
       ]),
       'utf-8',
     );
-    expect(readDaemonRegistry()).toEqual(['127.0.0.1:50161']);
+    expect(addresses()).toEqual(['127.0.0.1:50161']);
   });
 
   it('refuses to register a non-loopback address', () => {
     registerDaemon('evil.example:50051');
-    expect(readDaemonRegistry()).toEqual([]);
+    expect(addresses()).toEqual([]);
   });
 
   it('ignores entries whose session is gone', () => {
@@ -570,7 +601,7 @@ describe('MCP daemon registry', () => {
       JSON.stringify([{ address: '127.0.0.1:50161', pid: 2147483647 }]),
       'utf-8',
     );
-    expect(readDaemonRegistry()).toEqual([]);
+    expect(addresses()).toEqual([]);
   });
 
   // A dead session's row is the only record of the daemon pid it started, so
@@ -585,7 +616,7 @@ describe('MCP daemon registry', () => {
       JSON.stringify([{ address: '127.0.0.1:50161', pid: 2147483647, daemonPid: process.pid }]),
       'utf-8',
     );
-    expect(readDaemonRegistry()).toEqual([]);
+    expect(addresses()).toEqual([]);
   });
 
   it('keeps another live session\'s entry when pruning our own dead addresses', () => {
@@ -601,12 +632,34 @@ describe('MCP daemon registry', () => {
       'utf-8',
     );
     pruneDaemonRegistry([]);
-    expect(readDaemonRegistry()).toEqual(['127.0.0.1:50244']);
+    expect(addresses()).toEqual(['127.0.0.1:50244']);
   });
 
   it('remembers a daemon so another session can find it', () => {
     registerDaemon('127.0.0.1:50161');
-    expect(readDaemonRegistry()).toEqual(['127.0.0.1:50161']);
+    expect(addresses()).toEqual(['127.0.0.1:50161']);
+  });
+
+  // A live session's daemon and an abandoned one need opposite treatment: the
+  // first must not be repointed or have an agent started on it, the second is
+  // ours to drive and to reap. The row's session pid is what tells them apart.
+  it('marks a daemon owned by a live session as not orphaned', () => {
+    registerDaemon('127.0.0.1:50161');
+    expect(readDaemonRegistry()).toEqual([{ address: '127.0.0.1:50161', orphaned: false }]);
+  });
+
+  it('does not mark an address orphaned while any live session still holds it', () => {
+    fs.mkdirSync(path.dirname(mcpDaemonRegistryPath()), { recursive: true });
+    // The same daemon, recorded by a session that is gone and one that is not.
+    fs.writeFileSync(
+      mcpDaemonRegistryPath(),
+      JSON.stringify([
+        { address: '127.0.0.1:50161', pid: 2147483647 },
+        { address: '127.0.0.1:50161', pid: process.pid },
+      ]),
+      'utf-8',
+    );
+    expect(readDaemonRegistry()).toEqual([{ address: '127.0.0.1:50161', orphaned: false }]);
   });
 
   // mkdirSync applies its mode only when it creates the directory, so a
@@ -618,7 +671,7 @@ describe('MCP daemon registry', () => {
     fs.chmodSync(dir, 0o777);
     registerDaemon('127.0.0.1:50161');
     expect(fs.statSync(dir).mode & 0o777).toBe(0o700);
-    expect(readDaemonRegistry()).toEqual(['127.0.0.1:50161']);
+    expect(addresses()).toEqual(['127.0.0.1:50161']);
   });
 
   // Only the session that started a daemon knows its pid. Keeping that on one
@@ -661,40 +714,41 @@ describe('MCP daemon registry', () => {
     // user cannot secure: either way the path is not a private directory, and
     // trusting it hands the session an address someone else chose.
     const dir = path.dirname(mcpDaemonRegistryPath());
+    fs.mkdirSync(path.dirname(dir), { recursive: true });
     fs.writeFileSync(dir, 'not a directory', 'utf-8');
     registerDaemon('127.0.0.1:50161');
-    expect(readDaemonRegistry()).toEqual([]);
+    expect(addresses()).toEqual([]);
   });
 
   it('does not record the same daemon twice', () => {
     registerDaemon('127.0.0.1:50161');
     registerDaemon('127.0.0.1:50161');
-    expect(readDaemonRegistry()).toEqual(['127.0.0.1:50161']);
+    expect(addresses()).toEqual(['127.0.0.1:50161']);
   });
 
   it('forgets a daemon when its session shuts it down', () => {
     registerDaemon('127.0.0.1:50161');
     registerDaemon('127.0.0.1:50244');
     unregisterDaemon('127.0.0.1:50161');
-    expect(readDaemonRegistry()).toEqual(['127.0.0.1:50244']);
+    expect(addresses()).toEqual(['127.0.0.1:50244']);
   });
 
   it('drops addresses that failed to answer a probe', () => {
     registerDaemon('127.0.0.1:50161');
     registerDaemon('127.0.0.1:50244');
     pruneDaemonRegistry(['127.0.0.1:50244']);
-    expect(readDaemonRegistry()).toEqual(['127.0.0.1:50244']);
+    expect(addresses()).toEqual(['127.0.0.1:50244']);
   });
 
   it('leaves the registry alone when it is already empty', () => {
     pruneDaemonRegistry([]);
-    expect(readDaemonRegistry()).toEqual([]);
+    expect(addresses()).toEqual([]);
   });
 
   it('treats a corrupt registry as empty rather than throwing', () => {
     registerDaemon('127.0.0.1:50161');
     fs.writeFileSync(mcpDaemonRegistryPath(), 'not json', 'utf-8');
-    expect(readDaemonRegistry()).toEqual([]);
+    expect(addresses()).toEqual([]);
   });
 });
 
