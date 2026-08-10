@@ -26,6 +26,11 @@ export class SessionResultsStore {
     return this._results.get(this._key(projectName, filePath, fullName));
   }
 
+  /** Every result held, for callers that need what the test tree cannot show. */
+  all(): TestResultEntry[] {
+    return [...this._results.values()];
+  }
+
   private _key(projectName: string | undefined, filePath: string, fullName: string): string {
     return `${projectName ?? ''}::${filePath}::${fullName}`;
   }

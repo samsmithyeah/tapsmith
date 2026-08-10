@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-import type { TestDispatcher, TestTreeEntry } from '../test-dispatcher.js';
+import type { TestDispatcher, TestResultEntry, TestTreeEntry } from '../test-dispatcher.js';
 import { getSessionResultsStore } from '../session-results.js';
 
 type SuiteTestStatus = 'passed' | 'failed' | 'skipped' | 'not run';
@@ -35,6 +35,7 @@ export function registerSuiteStatusTool(server: McpServer, dispatcher: TestDispa
 
       let rows: SuiteTestRow[] = [];
       collectRows(tree, undefined, store, rows);
+      rows.push(...unmatchedFailures(store.all(), rows));
       if (file) rows = rows.filter((r) => r.filePath.includes(file));
       if (rows.length === 0) {
         return { content: [{ type: 'text' as const, text: 'No tests match the filter.' }] };
@@ -117,6 +118,29 @@ function collectRows(
       collectRows(node.children, childProject, store, out);
     }
   }
+}
+
+/**
+ * Failures that have no test-tree leaf to hang from.
+ *
+ * The board is built by walking the tree, which only knows tests a file
+ * successfully declared. A file that fails to *load* — an import error, a
+ * crashed worker — has no node at all, and its recorded failure would be the
+ * one thing the whole-suite board never showed. Its tests are genuinely
+ * unknown, so it appears as the single synthetic entry the dispatcher stored.
+ */
+function unmatchedFailures(all: TestResultEntry[], rows: SuiteTestRow[]): SuiteTestRow[] {
+  const known = new Set(rows.map((r) => `${r.projectName ?? ''}::${r.filePath}::${r.fullName}`));
+  return all
+    .filter((r) => r.status === 'failed')
+    .filter((r) => !known.has(`${r.projectName ?? ''}::${r.filePath}::${r.fullName}`))
+    .map((r) => ({
+      projectName: r.projectName,
+      filePath: r.filePath,
+      fullName: r.fullName,
+      status: 'failed' as const,
+      error: r.error,
+    }));
 }
 
 function countByStatus(rows: SuiteTestRow[]): Record<SuiteTestStatus, number> {

@@ -1238,10 +1238,14 @@ export async function startUIServer(
     results: import('../runner.js').TestResult[]
     suite: import('../runner.js').SuiteResult
   }> {
+    // Once per fork: `childLoader` memoizes only on success, so in the miss
+    // case — the expensive one, which re-runs the filesystem and PATH probes —
+    // calling it twice per fork paid for the whole scan twice.
+    const loader = childLoader();
     return new Promise((resolve, reject) => {
       const child = fork(resolvedRunScript, [], {
         stdio: forkStdioForLaunchProgress(launchProgress),
-        ...(childLoader() ? { execPath: childLoader()! } : {}),
+        ...(loader ? { execPath: loader } : {}),
         env: {
           ...process.env,
           NODE_PATH: path.resolve(import.meta.dirname, '..', '..'),
@@ -1766,9 +1770,10 @@ export async function startUIServer(
     daemonProcess.unref();
 
     // Fork ui-worker.ts
+    const workerLoader = childLoader();
     const child = fork(resolvedWorkerScript, [], {
       stdio: forkStdioForLaunchProgress(launchProgress),
-      ...(childLoader() ? { execPath: childLoader()! } : {}),
+      ...(workerLoader ? { execPath: workerLoader } : {}),
       env: {
         ...process.env,
         NODE_PATH: path.resolve(import.meta.dirname, '..', '..'),

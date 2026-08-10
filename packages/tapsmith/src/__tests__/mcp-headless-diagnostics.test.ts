@@ -850,11 +850,15 @@ describe('project listing', () => {
       _projects: unknown[]
       _resolveOnePlatformTarget: (effective: { platform?: string }) => Promise<void>
       _ensureTargetForProject: (project?: string) => Promise<{ deviceSerial: string }>
+      _dropTargetIfDaemonDied: (key: string) => Promise<void>
     };
     internals._config = { platform: 'ios' };
     internals._projects = [];
     internals._targets.set('android', { address: '127.0.0.1:50052', deviceSerial: 'EMU-1' });
     internals._targetErrors.set('ios', 'No ios device is available. Boot a simulator and try again.');
+    // These targets are fixtures, with no daemon behind them; the liveness
+    // check is exercised on its own below.
+    internals._dropTargetIfDaemonDied = async (): Promise<void> => {};
 
     const retried: Array<string | undefined> = [];
     internals._resolveOnePlatformTarget = async (effective): Promise<void> => {
@@ -902,6 +906,39 @@ describe('project listing', () => {
     expect(resolved).toEqual(['SIM-1', 'EMU-1']);
   });
 
+  // A resolved target was never revisited, so a daemon killed mid-session left
+  // every later run failing at gRPC connect with no way back but restarting the
+  // server. The address here is in no connection pool, which is exactly what a
+  // dead daemon looks like.
+  it('re-resolves a target whose daemon has died, even after the one retry is spent', async () => {
+    const dispatcher = new HeadlessTestDispatcher({});
+    const internals = dispatcher as unknown as {
+      _targets: Map<string, { address: string; deviceSerial: string }>
+      _targetErrors: Map<string, string>
+      _retriedTargets: Set<string>
+      _config: { platform?: string } | null
+      _projects: unknown[]
+      _resolveOnePlatformTarget: (effective: { platform?: string }) => Promise<void>
+      _ensureTargetForProject: (project?: string) => Promise<{ deviceSerial: string }>
+    };
+    internals._config = { platform: 'ios' };
+    internals._projects = [];
+    internals._targets.set('ios', { address: '127.0.0.1:59998', deviceSerial: 'SIM-1' });
+    // The session's single retry is already used up.
+    internals._retriedTargets.add('ios');
+
+    let resolves = 0;
+    internals._resolveOnePlatformTarget = async (): Promise<void> => {
+      resolves++;
+      internals._targetErrors.delete('ios');
+      internals._targets.set('ios', { address: '127.0.0.1:59999', deviceSerial: 'SIM-2' });
+    };
+
+    const target = await internals._ensureTargetForProject();
+    expect(resolves).toBe(1);
+    expect(target.deviceSerial).toBe('SIM-2');
+  });
+
   it('gives up on a platform that stays unavailable instead of retrying per file', async () => {
     const dispatcher = new HeadlessTestDispatcher({});
     const internals = dispatcher as unknown as {
@@ -911,10 +948,12 @@ describe('project listing', () => {
       _projects: unknown[]
       _resolveOnePlatformTarget: (effective: { platform?: string }) => Promise<void>
       _ensureTargetForProject: (project?: string) => Promise<unknown>
+      _dropTargetIfDaemonDied: (key: string) => Promise<void>
     };
     internals._config = { platform: 'ios' };
     internals._projects = [];
     internals._targetErrors.set('ios', 'No ios device is available. Boot a simulator and try again.');
+    internals._dropTargetIfDaemonDied = async (): Promise<void> => {};
 
     let attempts = 0;
     internals._resolveOnePlatformTarget = async (): Promise<void> => { attempts++; };

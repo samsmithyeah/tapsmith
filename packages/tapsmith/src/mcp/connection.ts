@@ -277,8 +277,9 @@ async function discover(): Promise<void> {
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     log(`Daemon started but setup failed: ${msg}`);
+    // `removeConnection` already unregisters a daemon we started; a second call
+    // would take the registry lock again, and that lock blocks the event loop.
     removeConnection(conn);
-    unregisterDaemon(conn.address);
     return;
   }
 
@@ -316,7 +317,13 @@ async function startDaemon(platform?: string): Promise<DaemonConnection | null> 
   const bin = findDaemonBin();
   const daemonArgs = daemonSpawnArgs(port, agentPort, platform);
 
-  const daemonProcess = spawn(bin, daemonArgs, { stdio: ['ignore', 'ignore', 'pipe'] });
+  // `detached`, not just `unref`. A daemon may outlive the session that started
+  // it — that is the whole point of the registry, and `closeAllClients`
+  // deliberately leaves one running when a peer has adopted it. Without its own
+  // process group, a Ctrl-C in the starter's shell is delivered to the group and
+  // kills the daemon anyway, before any of that reasoning runs. `unref` only
+  // stops it holding *our* event loop open, which is a different problem.
+  const daemonProcess = spawn(bin, daemonArgs, { stdio: ['ignore', 'ignore', 'pipe'], detached: true });
   daemonProcess.unref();
   daemonProcess.on('error', (err) => { log(`Daemon process error: ${err.message}`); });
   daemonProcess.stderr?.on('data', (data: Buffer) => { log(`Daemon: ${data.toString().trim()}`); });
@@ -357,8 +364,11 @@ async function startDaemon(platform?: string): Promise<DaemonConnection | null> 
 
 /** Tear down a daemon we started but cannot use, so it does not linger. */
 function discardDaemon(conn: DaemonConnection): void {
+  // Just `removeConnection`: it unregisters every source that registered, and
+  // each extra `unregisterDaemon` is another locked registry write — the lock
+  // spins on `Atomics.wait`, so the cost lands on the event loop, on a path
+  // that runs whenever a platform fails to provision.
   removeConnection(conn);
-  unregisterDaemon(conn.address);
 }
 
 // ─── Per-platform targets ───
@@ -368,6 +378,25 @@ export interface PlatformTarget {
   address: string
   deviceSerial: string
   platform?: string
+}
+
+/**
+ * Whether the daemon behind a resolved target is still answering.
+ *
+ * A target is resolved once and then handed to every run child, which connects
+ * to `address` itself. Nothing revisits that decision, so a daemon that dies
+ * mid-session — killed by hand, OOM, a crash — leaves the session pointing at a
+ * dead port with no way back short of restarting the server. Callers holding a
+ * cached target check here and re-resolve when this comes back false.
+ */
+export async function platformTargetIsLive(target: PlatformTarget): Promise<boolean> {
+  const conn = _connections.find((c) => c.address === target.address);
+  if (!conn) return false;
+  try {
+    return await conn.client.waitForReady(1_000);
+  } catch {
+    return false;
+  }
 }
 
 /**

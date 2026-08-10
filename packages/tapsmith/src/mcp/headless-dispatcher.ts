@@ -15,7 +15,7 @@ import {
 } from '../worker-protocol.js';
 import type { WatchRunMessage, WatchRunChildMessage } from '../watch-run.js';
 import { RunQueue } from '../watch-queue.js';
-import { ensurePlatformTarget, type PlatformTarget } from './connection.js';
+import { ensurePlatformTarget, platformTargetIsLive, type PlatformTarget } from './connection.js';
 import type { TapsmithConfig } from '../config.js';
 import { matchesTestFilter } from '../test-filter.js';
 import type {
@@ -568,12 +568,32 @@ export class HeadlessTestDispatcher implements TestDispatcher {
    */
   private async _ensureTargetForProject(projectName?: string): Promise<PlatformTarget> {
     const key = platformKeyForProject(this._projects, projectName, this._config?.platform);
+    await this._dropTargetIfDaemonDied(key);
     if (this._config && this._targetErrors.has(key) && !this._retriedTargets.has(key)) {
       this._retriedTargets.add(key);
       const effective = this._wantedConfigs(this._config).find((c) => platformKey(c.platform) === key);
       if (effective) await this._resolveOnePlatformTarget(effective);
     }
     return selectPlatformTarget(key, this._targets, this._targetErrors);
+  }
+
+  /**
+   * Forget a resolved target whose daemon has since died.
+   *
+   * A *successful* target was never revisited: run children connect to its
+   * address themselves, so a daemon killed mid-session left every later run
+   * failing at gRPC connect with no path back short of restarting the server.
+   * The retry budget is cleared with it — that budget exists to stop churning
+   * on a platform with no device, which is a different situation from a daemon
+   * that was working a moment ago.
+   */
+  private async _dropTargetIfDaemonDied(key: string): Promise<void> {
+    const target = this._targets.get(key);
+    if (!target || await platformTargetIsLive(target)) return;
+    log(`Daemon at ${target.address} is gone; re-resolving the ${key === DEFAULT_PLATFORM_KEY ? 'device' : key} target`);
+    this._targets.delete(key);
+    this._targetErrors.set(key, `The daemon at ${target.address} stopped responding.`);
+    this._retriedTargets.delete(key);
   }
 
   // ─── Test tree discovery ───
@@ -826,6 +846,10 @@ export class HeadlessTestDispatcher implements TestDispatcher {
    * showed nothing at all. Storing it as a result entry puts it in front of
    * every consumer — the run's failure details, the results list, and the
    * accumulated suite board.
+   *
+   * The board takes some care: it is built by walking the test tree, and a file
+   * that failed to load contributes no node, so `tapsmith_suite_status` picks
+   * this entry up separately (see `unmatchedFailures`).
    */
   private _recordFileError(filePath: string, projectName: string | undefined, err: unknown): void {
     const entry = fileFailureEntry(filePath, projectName, err);

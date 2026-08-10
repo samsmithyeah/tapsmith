@@ -212,6 +212,45 @@ describe('tapsmith_suite_status', () => {
     expect(text).toContain('/app/a.test.ts: 1 passed');
   });
 
+  // A file that fails to *load* declares no tests, so it has no tree node for
+  // the board to hang a row on — and the board is exactly where a reader looks
+  // to find out what happened. It used to be the one place the failure never
+  // appeared.
+  it('shows a file that failed to run, which has no node in the test tree', async () => {
+    const tree = [fileNode('/app/a.test.ts', [testNode('/app/a.test.ts', 'auth > logs in')])];
+    const dispatcher = makeDispatcher({
+      getTestTree: () => tree,
+      getResults: () => [
+        result('/app/a.test.ts', 'auth > logs in', 'passed'),
+        result('/app/broken.test.ts', '/app/broken.test.ts — file failed to run', 'failed', {
+          error: "Cannot find module '/app/fixtures.js'",
+        }),
+      ],
+    });
+
+    const { server, tools } = makeToolCapture();
+    registerSuiteStatusTool(server, dispatcher);
+    const text = textOf(await tools.get('tapsmith_suite_status')!({}, extra));
+
+    expect(text).toContain('Suite status: 1 passed, 1 failed, 0 skipped, 0 not run (2/2 tests run)');
+    expect(text).toContain('/app/broken.test.ts: 1 failed');
+    expect(text).toContain("Cannot find module '/app/fixtures.js'");
+  });
+
+  it('does not duplicate a failure that the test tree already accounts for', async () => {
+    const tree = [fileNode('/app/a.test.ts', [testNode('/app/a.test.ts', 'auth > logs in')])];
+    const dispatcher = makeDispatcher({
+      getTestTree: () => tree,
+      getResults: () => [result('/app/a.test.ts', 'auth > logs in', 'failed', { error: 'boom' })],
+    });
+
+    const { server, tools } = makeToolCapture();
+    registerSuiteStatusTool(server, dispatcher);
+    const text = textOf(await tools.get('tapsmith_suite_status')!({}, extra));
+
+    expect(text).toContain('Suite status: 0 passed, 1 failed, 0 skipped, 0 not run (1/1 tests run)');
+  });
+
   it('ignores in-flight (running/idle) statuses when merging', async () => {
     const tree = [
       fileNode('/app/a.test.ts', [

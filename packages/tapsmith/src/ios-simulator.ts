@@ -474,7 +474,7 @@ const MANIFEST_STALE_MS = 5 * 60_000;
 // next to the target file with retry/backoff and stale-lock detection.
 function withManifestLock<T>(
   fn: (entries: SimulatorManifestEntry[]) => { result: T; updated?: SimulatorManifestEntry[] },
-  options?: { onContended?: () => T },
+  options?: { onContended?: () => T; waitBudget?: 'brief' | 'whole-sweep' },
 ): T {
   const file = ensureManifestFile();
   // withFileLockSync, not lockfile.lockSync directly: the sync API rejects a
@@ -490,7 +490,14 @@ function withManifestLock<T>(
       try { atomicWriteManifest(file, updated); } catch { /* stale entry cleaned up next run */ }
     }
     return { result };
-  }, { attempts: 10, waitMs: 50, staleMs: MANIFEST_STALE_MS });
+  // A bookkeeping write waits briefly and then proceeds unlocked; the sweep
+  // waits out the holder instead. ~500ms is nowhere near a sweep's runtime — it
+  // shells out to `simctl` per manifest entry — so the second of two concurrent
+  // runs would give up every time and clone every simulator fresh, losing the
+  // reuse the lock was protecting.
+  }, options?.waitBudget === 'whole-sweep'
+    ? { attempts: 120, waitMs: 250, staleMs: MANIFEST_STALE_MS }
+    : { attempts: 10, waitMs: 50, staleMs: MANIFEST_STALE_MS });
   if (outcome.locked) return outcome.value.result;
 
   // Couldn't acquire the lock. For bookkeeping the unlocked fallback below is
@@ -708,7 +715,7 @@ export function cleanupStaleSimulators(
     }
 
     return { result: true, updated: surviving };
-  }, { onContended: () => false });
+  }, { waitBudget: 'whole-sweep', onContended: () => false });
 
   if (!swept) {
     // Another run is sweeping right now. Don't fall through: phase 2 deletes by
