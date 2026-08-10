@@ -28,6 +28,13 @@ export async function deviceClientFor(
   request: DeviceRequest,
   dispatcher?: TestDispatcher,
 ): Promise<TapsmithGrpcClient> {
+  // Before anything asks what this session drives, not just on the `project`
+  // branch. A multi-platform session spawns its per-platform daemons during
+  // initialization; a device tool arriving first would otherwise see only the
+  // one daemon discovery started, count a single target, and answer from
+  // whichever device happened to be Active — silently, because the ambiguity
+  // guard never fires on a session that does not yet know it has two devices.
+  await dispatcher?.ensureInitialized?.();
   const project = request.project
     ? await resolveProject(request.project, dispatcher)
     : undefined;
@@ -47,7 +54,6 @@ async function resolveProject(
   if (!dispatcher) {
     throw new Error('This session cannot resolve a project name. Pass `device` instead.');
   }
-  await dispatcher.ensureInitialized?.();
   const projects = dispatcher.getSessionInfo().projects;
   const match = projects.find((p) => p.name === name);
   if (!match) {

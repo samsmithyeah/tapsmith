@@ -161,7 +161,7 @@ export async function resolveDeviceTarget(
   if (device) return { client: await ensureConnected(device), device };
 
   // Discovery has to run before the session can say what it is driving.
-  const fallback = await ensureConnected();
+  await ensureConnected();
   // UI mode spawns its worker daemons on the first run, which is usually after
   // the first tool call — and the pool is cached once discovery has succeeded.
   // Without this refresh a UI session keeps answering from the primary daemon
@@ -180,7 +180,11 @@ export async function resolveDeviceTarget(
   // pointed anywhere, and answering from the wrong one is the whole failure
   // this function exists to prevent.
   if (targets.length === 1) return forDevice(targets[0].serial);
-  if (targets.length === 0) return { client: fallback };
+  // Asked for again rather than held across the refresh: retiring the last UI
+  // worker closes that connection's client, and the pool it left behind may be
+  // empty — in which case this re-discovers instead of handing back a client
+  // that is already closed, which surfaces as an opaque "Channel closed".
+  if (targets.length === 0) return { client: await ensureConnected() };
   throw new Error(ambiguousDeviceMessage(targets)!);
 }
 
@@ -254,13 +258,27 @@ function describeTargets(targets: SessionDevice[]): string {
  * @internal — exported for unit testing.
  */
 export function sessionTargetDevices(): SessionDevice[] {
+  return sessionDevicesFrom(_connections);
+}
+
+/** The decision behind {@link sessionTargetDevices}. @internal — exported for unit testing. */
+export function sessionDevicesFrom(
+  connections: Array<{ preparedDevice?: string; activeDevice?: string; platform?: string }>,
+): SessionDevice[] {
   const bySerial = new Map<string, SessionDevice>();
-  for (const conn of _connections) {
+  for (const conn of connections) {
     // `devices` is refreshed from each daemon's own list, so the one it reports
     // Active is what it drives even when nothing here pointed it there — a
     // daemon found at the default address, say.
     const serial = conn.preparedDevice ?? conn.activeDevice;
-    if (serial) bySerial.set(serial, { serial, platform: conn.platform });
+    if (!serial) continue;
+    // A platform-tagged connection wins over an untagged one reporting the same
+    // serial — a daemon nothing claimed still names whichever device is Active,
+    // and letting it overwrite the tag would leave the device matching no
+    // project at all, so a valid `project` argument would be refused.
+    const known = bySerial.get(serial);
+    if (known?.platform && !conn.platform) continue;
+    bySerial.set(serial, { serial, platform: conn.platform });
   }
   // Deliberately not `_sessionDevices`: that is what the UI server *says* it
   // has, and a worker whose daemon we could not reach is not something this
@@ -408,28 +426,35 @@ async function discover(): Promise<void> {
     addCandidate(address, orphaned ? 'orphan' : 'peer');
   }
 
-  // 6. Default address
-  if (candidates.size === 0) {
-    addCandidate(DEFAULT_ADDRESS, 'configured');
-  }
+  // Probe candidates in parallel
+  type LiveDaemon = { client: TapsmithGrpcClient; address: string; source: DaemonSource };
+  const probeAll = async (entries: Array<[string, DaemonSource]>): Promise<LiveDaemon[]> => {
+    const results = await Promise.all(entries.map(async ([address, source]) => {
+      let client: TapsmithGrpcClient | undefined;
+      try {
+        client = new TapsmithGrpcClient(address);
+        const alive = await client.waitForReady(1_000);
+        if (alive) return { client, address, source };
+        client.close();
+      } catch {
+        client?.close();
+      }
+      return null;
+    }));
+    return results.filter((r): r is LiveDaemon => r !== null);
+  };
 
-  // Probe all candidates in parallel
-  const probes = [...candidates].map(async ([address, source]) => {
-    let client: TapsmithGrpcClient | undefined;
-    try {
-      client = new TapsmithGrpcClient(address);
-      const alive = await client.waitForReady(1_000);
-      if (alive) return { client, address, source };
-      client.close();
-    } catch {
-      client?.close();
-    }
-    return null;
-  });
-  const results = await Promise.all(probes);
-  const live = results.filter(
-    (r): r is { client: TapsmithGrpcClient; address: string; source: DaemonSource } => r !== null,
-  );
+  let live = await probeAll([...candidates]);
+
+  // 6. Default address — a last resort, and one judged on what answered rather
+  // than on how many addresses we had. Skipping it whenever the candidate list
+  // was non-empty stopped being safe once the registry started filling that
+  // list: a peer session that is still alive but whose daemon has died leaves
+  // a candidate that answers nothing, and the default port — where a
+  // hand-started daemon lives — would then never be probed at all.
+  if (live.length === 0 && !candidates.has(DEFAULT_ADDRESS)) {
+    live = await probeAll([[DEFAULT_ADDRESS, 'configured']]);
+  }
   // Probing is the liveness check, so this is the moment we know which
   // registered daemons are gone. Drop them rather than re-probing dead ports
   // on every future session.

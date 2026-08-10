@@ -3025,6 +3025,9 @@ export async function startUIServer(
     removeFile(ctx.testFiles, resolved);
     discoveredFileNodes.delete(resolved);
     failedFiles.delete(resolved);
+    // Or a file deleted while failing to import goes on being reported as a
+    // load failure, by path, for the life of the server.
+    discoveryErrors.delete(resolved);
     for (const [key, value] of runningFiles) {
       if (value.filePath === resolved) runningFiles.delete(key);
     }

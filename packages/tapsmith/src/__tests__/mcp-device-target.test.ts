@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { deviceClientFor } from '../mcp/tools/device-target.js';
-import { selectProjectDevice, retiredUiConnections } from '../mcp/connection.js';
+import { selectProjectDevice, retiredUiConnections, sessionDevicesFrom } from '../mcp/connection.js';
 import type { TestDispatcher } from '../mcp/test-dispatcher.js';
 
 // A device tool used to fall back to the first pooled daemon whenever no
@@ -125,5 +125,39 @@ describe('retiredUiConnections', () => {
       { address: '127.0.0.1:50054', source: 'configured' },
     ];
     expect(retiredUiConnections(ours, [])).toEqual([]);
+  });
+});
+
+// A daemon nothing claimed still names whichever device is Active, so the same
+// serial can arrive twice: once tagged with the platform that claimed it, once
+// bare. Last-writer-wins dropped the tag, and a valid `project` argument was
+// then refused for a device the session was demonstrably driving.
+describe('sessionDevicesFrom', () => {
+  it('keeps the platform when an untagged connection reports the same serial', () => {
+    const devices = sessionDevicesFrom([
+      { preparedDevice: 'emulator-5554', platform: 'android' },
+      { activeDevice: 'emulator-5554' },
+    ]);
+    expect(devices).toEqual([{ serial: 'emulator-5554', platform: 'android' }]);
+    expect(selectProjectDevice(devices, { name: 'android', platform: 'android' }))
+      .toEqual({ serial: 'emulator-5554' });
+  });
+
+  it('keeps the platform whichever order the connections arrive in', () => {
+    expect(sessionDevicesFrom([
+      { activeDevice: 'emulator-5554' },
+      { preparedDevice: 'emulator-5554', platform: 'android' },
+    ])).toEqual([{ serial: 'emulator-5554', platform: 'android' }]);
+  });
+
+  it('still reports one entry per device the session drives', () => {
+    expect(sessionDevicesFrom([
+      { preparedDevice: 'emulator-5554', platform: 'android' },
+      { preparedDevice: 'SIM-1', platform: 'ios' },
+      { activeDevice: undefined },
+    ])).toEqual([
+      { serial: 'emulator-5554', platform: 'android' },
+      { serial: 'SIM-1', platform: 'ios' },
+    ]);
   });
 });

@@ -43,10 +43,24 @@ export type LockOutcome<T> =
  *
  * `fn` is handed a `heartbeat` it should call between slow steps. See
  * {@link STALE_MS} for why that beats simply declaring a long stale window.
+ *
+ * `fn` must be synchronous — see {@link Synchronous}.
  */
+/**
+ * A value that is not a promise, which is what the lock can actually guard.
+ *
+ * An `async fn` typechecks against a bare `T` but is released the instant it
+ * returns its promise — so the guarded work runs outside the lock, and
+ * `{ locked: true }` says otherwise. Worse, once it yields, proper-lockfile's
+ * update timer can fire, see the mtime {@link touchLock} wrote, decide the lock
+ * was compromised, and throw from an fs callback where nothing can catch it.
+ * Rejecting it at the type level is cheaper than diagnosing either.
+ */
+type Synchronous<T> = T extends PromiseLike<unknown> ? never : T;
+
 export function withFileLockSync<T>(
   file: string,
-  fn: (heartbeat: () => void) => T,
+  fn: (heartbeat: () => void) => Synchronous<T>,
   options?: { attempts?: number; waitMs?: number; staleMs?: number },
 ): LockOutcome<T> {
   const attempts = options?.attempts ?? DEFAULT_ATTEMPTS;
@@ -68,7 +82,7 @@ export function withFileLockSync<T>(
   if (!release) return { locked: false };
 
   try {
-    return { locked: true, value: fn(() => touchLock(file)) };
+    return { locked: true, value: fn(() => touchLock(file)) as T };
   } finally {
     try { release(); } catch { /* lock already released or broken */ }
   }
