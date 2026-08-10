@@ -190,8 +190,10 @@ function describeWorkerDevices(input: UiLaunchPlanInput): string {
 
 export function createUiLaunchSteps(input: UiLaunchPlanInput): LaunchStep[] {
   const mode = input.mode ?? "ui";
+  // `synthesized`, not the name: a config may genuinely call a project
+  // "default", and counting by name hid it from the banner.
   const projectCount =
-    input.projects?.filter((p) => p.name !== "default").length ?? 0;
+    input.projects?.filter((p) => !p.synthesized).length ?? 0;
   const configDetail = [
     plural(input.workerCount, "worker"),
     plural(input.testFileCount, "test file"),

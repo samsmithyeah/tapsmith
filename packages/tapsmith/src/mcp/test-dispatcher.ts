@@ -86,6 +86,13 @@ export interface SessionInfo {
 
 export interface TestDispatcher {
   ensureInitialized?(): Promise<void>
+  /**
+   * Settle only what a device tool needs — config, projects, and a device per
+   * platform — skipping the test-tree discovery `ensureInitialized` also waits
+   * for. Optional: a dispatcher that is ready by the time it is handed over
+   * (UI mode's) need not implement it.
+   */
+  ensureDevicesReady?(): Promise<void>
   runFiles(files: string[], options?: { testFilter?: string; project?: string }): Promise<TestRunResult>
   runAll(): Promise<TestRunResult>
   stop(): void

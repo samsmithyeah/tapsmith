@@ -51,12 +51,10 @@ interface DaemonConnection {
   /** Set once a platform target claims this daemon, so a second cannot. */
   claimedBy?: string
   /**
-   * The device this daemon was pointed at, and the device its agent was
-   * started for. A daemon can list devices it is not driving, so these — not
-   * `devices` — say which connection actually serves a serial.
+   * The device this daemon was pointed at. A daemon can list devices it is not
+   * driving, so this — not `devices` — says which connection serves a serial.
    */
   preparedDevice?: string
-  agentDevice?: string
   /** The device this daemon reports as Active, refreshed with the device index. */
   activeDevice?: string
 }
@@ -158,7 +156,7 @@ export async function resolveDeviceTarget(
   request?: { device?: string; project?: RequestedProject },
 ): Promise<{ client: TapsmithGrpcClient; device?: string }> {
   const { device, project } = request ?? {};
-  if (device) return { client: await ensureConnected(device), device };
+  if (device) return { client: await clientPointedAt(device), device };
 
   // Discovery has to run before the session can say what it is driving.
   await ensureConnected();
@@ -224,7 +222,39 @@ export function selectProjectDevice(
 }
 
 async function forDevice(serial: string): Promise<{ client: TapsmithGrpcClient; device: string }> {
-  return { client: await ensureConnected(serial), device: serial };
+  return { client: await clientPointedAt(serial), device: serial };
+}
+
+/**
+ * The client for a device, with its daemon actually pointed at it.
+ *
+ * Pooled connections are shared, so a tool naming a device explicitly moves the
+ * daemon for every later tool too. Doing that without recording it left the
+ * session's own account of itself wrong: `preparedDevice` still named the old
+ * device, so a following no-argument call resolved to it, was handed the same
+ * client, saw nothing to change — and answered from the device the explicit
+ * call had moved to, while `session_info` reported the old one.
+ *
+ * Pointing is skipped when the daemon is already there, which is the common
+ * case and keeps a round trip off every call.
+ */
+async function clientPointedAt(serial: string): Promise<TapsmithGrpcClient> {
+  const client = await ensureConnected(serial);
+  const conn = _deviceIndex.get(serial);
+  if (!conn || conn.preparedDevice === serial) return client;
+  // A UI worker's daemon is mid-run for someone else, and its device came from
+  // the UI server rather than from anything we did. Moving it sends that run's
+  // next action to our device — the same reason discovery will not claim one.
+  if (conn.source === 'ui' && conn.preparedDevice) {
+    throw new Error(
+      `Device ${serial} is only reachable through a UI-mode worker that is driving `
+      + `${conn.preparedDevice}. Pointing it at ${serial} would redirect that run. `
+      + 'Use that worker\'s device, or run this against a session of your own.',
+    );
+  }
+  await client.setDevice(serial);
+  conn.preparedDevice = serial;
+  return client;
 }
 
 /**
@@ -391,6 +421,10 @@ async function discover(): Promise<void> {
     if (!candidates.has(address) || source === 'ui') candidates.set(address, source);
   };
 
+  // Whether the user named an address for us. A pin means "this daemon", so a
+  // pinned session that cannot reach it must not quietly land somewhere else.
+  const pinned = Boolean(process.env.TAPSMITH_DAEMON_ADDRESS ?? config?.daemonAddress);
+
   // 1. Env var (supports comma-separated for multi-daemon)
   if (process.env.TAPSMITH_DAEMON_ADDRESS) {
     for (const addr of process.env.TAPSMITH_DAEMON_ADDRESS.split(',')) {
@@ -452,7 +486,12 @@ async function discover(): Promise<void> {
   // list: a peer session that is still alive but whose daemon has died leaves
   // a candidate that answers nothing, and the default port — where a
   // hand-started daemon lives — would then never be probed at all.
-  if (live.length === 0 && !candidates.has(DEFAULT_ADDRESS)) {
+  //
+  // Never against a pin, though. A user who named an address meant that daemon;
+  // falling through to 50051 because theirs is briefly down would hand the
+  // session an unrelated daemon, classified `configured` and so treated as ours
+  // to repoint and install this config's agent artifacts on.
+  if (live.length === 0 && !pinned && !candidates.has(DEFAULT_ADDRESS)) {
     live = await probeAll([[DEFAULT_ADDRESS, 'configured']]);
   }
   // Probing is the liveness check, so this is the moment we know which
@@ -517,7 +556,6 @@ async function discover(): Promise<void> {
     // one — otherwise the daemon reports an agent connected and the second
     // platform silently runs against the first one's.
     conn.preparedDevice = await setDeviceAndAgent(conn.client, config);
-    conn.agentDevice = conn.preparedDevice;
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     log(`Daemon started but setup failed: ${msg}`);
@@ -761,7 +799,16 @@ export function noDeviceMessage(platform?: string, wanted?: string, visible: str
   if (wanted && visible.length > 0) {
     return `Device "${wanted}" from your config is not available. `
       + `${platform ? `Visible ${platform} devices` : 'Visible devices'}: ${visible.join(', ')}. `
-      + 'Update `device` in your config, or start that device.';
+      + 'Update `device` in your config, or start that device.'
+      // A top-level `device` is inherited by every project that does not
+      // override it, so one pinned for the Android emulator is also asked of
+      // the iOS target — which reports a booted simulator as "not available"
+      // and sends the user looking for a device problem they do not have.
+      + (platform
+        ? ` If "${wanted}" belongs to another platform, set \`device\` inside the `
+          + 'relevant project\'s `use` rather than at the top level, where every '
+          + 'project inherits it.'
+        : '');
   }
   if (wanted) {
     return `Device "${wanted}" from your config is not available, and no other `
@@ -900,7 +947,6 @@ async function prepareTarget(
   // daemon as pointed here rather than assume it never moved.
   conn.preparedDevice = serial;
   await startAgentFromConfig(conn.client, config, { force: repointed, required: true });
-  conn.agentDevice = serial;
   // The daemon that was prepared for a serial is the one that serves it, even
   // when another daemon can merely see it.
   _deviceIndex.set(serial, conn);

@@ -1071,6 +1071,19 @@ describe('noDeviceMessage', () => {
     expect(msg).toContain('no other android was found');
   });
 
+  // A top-level `device` is inherited by every project that doesn't override
+  // it, so an emulator pinned for Android is also demanded of the iOS target —
+  // which then calls a booted simulator "not available".
+  it('points at the inherited-device trap when a platform target is pinned', () => {
+    const msg = noDeviceMessage('ios', 'emulator-5554', ['SIM-1']);
+    expect(msg).toContain('`use`');
+    expect(msg).toContain('top level');
+  });
+
+  it('leaves that advice out when no platform is in play', () => {
+    expect(noDeviceMessage(undefined, 'OLD-UDID', ['SIM-1'])).not.toContain('top level');
+  });
+
   it('keeps the start-a-device advice when the config pins nothing', () => {
     expect(noDeviceMessage('ios')).toContain('Boot a simulator');
     expect(noDeviceMessage('android')).toContain('Start an emulator');

@@ -84,6 +84,8 @@ export class HeadlessTestDispatcher implements TestDispatcher {
   private _watchQueue: RunQueue;
   private _scripts: ResolvedScripts | null = null;
   private _discoveryErrors = new Map<string, string>();
+  private _devicesReady = false;
+  private _devicesPromise: Promise<void> | null = null;
   private _configPath: string | null = null;
   private _configWarning: string | null = null;
   /** Daemon + device per platform, keyed by platform (or DEFAULT_PLATFORM_KEY). */
@@ -384,9 +386,43 @@ export class HeadlessTestDispatcher implements TestDispatcher {
     }
   }
 
+  /**
+   * Config, projects and a device per platform — and nothing else.
+   *
+   * What a device tool needs to know which device it is talking to, without the
+   * part of initialization that costs the time: a forked discovery child per
+   * test file. On a suite of any size that is minutes, and a `tap` that waits
+   * for it is a `tap` the MCP client times out.
+   */
+  async ensureDevicesReady(): Promise<void> {
+    if (this._initialized || this._devicesReady) return;
+    if (this._devicesPromise) {
+      await this._devicesPromise;
+      return;
+    }
+    this._devicesPromise = this._prepareDevices();
+    try {
+      await this._devicesPromise;
+    } finally {
+      this._devicesPromise = null;
+    }
+  }
+
   private async _initialize(): Promise<void> {
     log('Initializing test dispatcher...');
+    // Shares the in-flight promise, so a device tool and a run racing to
+    // initialize resolve the same targets once rather than twice.
+    await this.ensureDevicesReady();
 
+    if (this._testFiles.length > 0 && this._scripts) {
+      await this._discoverTestTree();
+    }
+
+    this._initialized = true;
+    log(`Initialized: ${this._testFiles.length} test file(s), device=${this._deviceSerial ?? 'none'}`);
+  }
+
+  private async _prepareDevices(): Promise<void> {
     const config = await this._loadConfigWithFallback();
     this._config = config;
 
@@ -428,14 +464,8 @@ export class HeadlessTestDispatcher implements TestDispatcher {
     }
 
     this._scripts = resolveScripts(this._testFiles);
-
-    // Discover test tree
-    if (this._testFiles.length > 0 && this._scripts) {
-      await this._discoverTestTree();
-    }
-
-    this._initialized = true;
-    log(`Initialized: ${this._testFiles.length} test file(s), device=${this._deviceSerial ?? 'none'}`);
+    this._devicesReady = true;
+    log(`Devices ready: ${this._testFiles.length} test file(s), device=${this._deviceSerial ?? 'none'}`);
   }
 
   // ─── Device targets ───

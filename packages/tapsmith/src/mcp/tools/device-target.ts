@@ -34,16 +34,18 @@ export async function deviceClientFor(
   // one daemon discovery started, count a single target, and answer from
   // whichever device happened to be Active — silently, because the ambiguity
   // guard never fires on a session that does not yet know it has two devices.
-  await dispatcher?.ensureInitialized?.();
+  //
+  // Devices only: waiting for the test tree as well would make the first device
+  // tool of a session pay for a discovery child per test file.
+  if (dispatcher?.ensureDevicesReady) await dispatcher.ensureDevicesReady();
+  else await dispatcher?.ensureInitialized?.();
   const project = request.project
     ? await resolveProject(request.project, dispatcher)
     : undefined;
+  // `resolveDeviceTarget` points the daemon and records that it did — both
+  // matter, and doing the pointing here left the pool's own account of itself
+  // stale for every call that followed.
   const { client } = await resolveDeviceTarget({ device: request.device, project });
-  // Only for an explicitly named device: it may be one this daemon can see but
-  // is not currently pointed at. Everything else resolved to the daemon's own
-  // device, and re-pointing a UI worker's daemon at what it already holds is a
-  // needless round trip at best.
-  if (request.device) await client.setDevice(request.device);
   return client;
 }
 
